@@ -94,8 +94,8 @@ static void ck(int cond, const char *what) {
 static char *po_prompt;
 
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
-                    jv *req, const tool_envelope *env) {
-    (void)s; (void)fd; (void)api; (void)req; (void)env;
+                    jv *req, const tool_envelope *env, const render_state *rs) {
+    (void)s; (void)fd; (void)api; (void)req; (void)env; (void)rs;
     free(po_prompt);
     po_prompt = prompt ? strdup(prompt) : NULL;
 }

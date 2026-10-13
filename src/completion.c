@@ -2720,10 +2720,14 @@ typedef struct {
 // buffer); false when the request was refused.
 static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
                             const tool_envelope *env, bool chat,
-                            bool muse_forced_think, bool gemma4_primed_think,
-                            completion_req *q) {
+                            const render_state *rs, completion_req *q) {
     model_t *m = s->m;
     engine *e = &s->e;
+    // the turn's start as rendered: the grammars open where the prompt left
+    // the model and read the mode it was rendered under (a raw prompt keeps
+    // the request's own enable_thinking)
+    bool reasoning_open = rs && rs->reasoning_open;
+    int think_mode = rs ? rs->think_mode : req_thinking_mode(req);
     const char *unsupported = unsupported_completion_field(req, api);
     if (unsupported) {
         char msg[128];
@@ -3380,7 +3384,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
             schema = schema_compile_harmony_turn(
                 env->tools, env->kind == TCH_AUTO, only,
                 env->kind == TCH_AUTO ? request_schema(req) : NULL,
-                req_thinking_mode(req) != THINK_OFF, serr, sizeof(serr));
+                think_mode != THINK_OFF, serr, sizeof(serr));
         } else if (env->proto == TP_GEMMA4) {
             const char *only = env->kind == TCH_NAMED ? env->named : NULL;
             schema = env->parallel && env->kind != TCH_AUTO
@@ -3389,8 +3393,12 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
                        : schema_compile_gemma4_turn(
                              env->tools, env->kind == TCH_AUTO, only,
                              env->kind == TCH_AUTO ? request_schema(req) : NULL,
-                             req_thinking_mode(req) != THINK_OFF,
-                             gemma4_primed_think, serr, sizeof(serr));
+                             think_mode != THINK_OFF,
+                             // as before: the prompt-suffix probe this
+                             // replaces never matched a marked prompt, so
+                             // the grammar has always started outside the
+                             // thought a continuation opens (the next change)
+                             false, serr, sizeof(serr));
         } else if (env->proto == TP_QWEN_XML) {
             schema = schema_compile_qwen_xml_turn(
                 env->tools, env->kind == TCH_AUTO,
@@ -3405,7 +3413,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
                        : schema_compile_qwen_turn(
                              env->tools, env->kind == TCH_AUTO, only,
                              env->kind == TCH_AUTO ? request_schema(req) : NULL,
-                             req_thinking_mode(req) != THINK_OFF,
+                             think_mode != THINK_OFF,
                              env->parallel, serr, sizeof(serr));
         } else if (env->proto == TP_NEMOTRON) {
             // an auto turn is parse-only (tool_decl_native), so only a
@@ -3426,7 +3434,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
                        ? schema_compile_atem_turn(
                              env->tools, true, only, final, ATEM_TURN_EITHER,
                              serr, sizeof(serr))
-                       : muse_forced_think
+                       : reasoning_open
                        ? schema_compile_atem_turn(
                              env->tools, env->kind == TCH_AUTO, only, NULL,
                              ATEM_TURN_AFTER_REASONING,
@@ -3822,62 +3830,19 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
 }
 
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
-                           jv *req, const tool_envelope *env) {
+                           jv *req, const tool_envelope *env,
+                           const render_state *rs) {
     bool chat = api != API_TEXT; // chat-shaped: thinking channels, tools
     model_t *m = s->m;
     engine *e = &s->e;
-    bool muse_forced_think = chat && s->tmpl == TMPL_MUSE &&
-                             req_thinking_mode(req) == THINK_ON;
-    // Harmony primes the analysis channel in the prompt for every mode except
-    // THINK_OFF (see the generation-prompt comment in template.c), so the
-    // stream starts INSIDE reasoning and the splitter must too — the same
-    // reason ornith always does and muse does when forced. Getting this wrong
-    // is silent: the split simply never fires and the model's analysis is
-    // served as content, which is what the first live run did.
-    bool harmony_primed_think = chat && s->tmpl == TMPL_HARMONY &&
-                                !(env && env->proto == TP_HARMONY) &&
-                                req_thinking_mode(req) != THINK_OFF;
-    // granite 4.2's, Qwen 3.8's and ornith's generation prompts open
-    // `<think>\n` in every mode but THINK_OFF, where the block is already
-    // closed and the stream starts in content (template.c, TMPL_GRANITE42 /
-    // TMPL_QWEN38 / TMPL_ORNITH). Ornith used to prime the splitter in every
-    // mode, so a caller who turned thinking off had the answer served as
-    // reasoning_content.
-    // Qwen 3.5-0.8B inverts the default: its prompt opens the block only
-    // for an explicit THINK_ON.
-    // Nemotron Nano decides from the conversation's own /think and
-    // /no_think strings, so the question is asked of the rendered prompt.
-    bool nemotron_primed_think = false;
-    if (chat && s->tmpl == TMPL_NEMOTRON && prompt) {
-        static const char open[] = "<think>\n";
-        size_t e = strlen(prompt), k = sizeof(open) - 1;
-        while (k && e) {
-            char c = prompt[e - 1];
-            if (c == PROMPT_RAW_OPEN || c == PROMPT_RAW_CLOSE) { e--; continue; }
-            if (c != open[k - 1]) break;
-            e--; k--;
-        }
-        nemotron_primed_think = k == 0;
-    }
-    bool granite42_primed_think = chat &&
-                                  (tmpl_granite42_like(s->tmpl) ||
-                                   s->tmpl == TMPL_QWEN38 ||
-                                   tmpl_ornith_like(s->tmpl)) &&
-                                  (s->tmpl == TMPL_QWEN35_NOTHINK
-                                       ? req_thinking_mode(req) == THINK_ON
-                                       : req_thinking_mode(req) != THINK_OFF);
-    granite42_primed_think = granite42_primed_think || nemotron_primed_think;
-    // gemma4's thought block is opened BY THE PROMPT on a tool-result
-    // continuation with thinking on (template.c's g4_prev == 2 branch), so the
-    // grammar must start inside it. Asked of the prompt itself rather than
-    // re-derived from the message list: the renderer owns that decision, and a
-    // second copy of the condition is a second thing to keep in step.
-    size_t prompt_n = prompt ? strlen(prompt) : 0;
-    static const char G4_THOUGHT_OPEN[] = "<|channel>thought\n";
-    bool gemma4_primed_think =
-        chat && is_gemma4(s->tmpl) && prompt_n >= sizeof(G4_THOUGHT_OPEN) - 1 &&
-        !memcmp(prompt + prompt_n - (sizeof(G4_THOUGHT_OPEN) - 1),
-                G4_THOUGHT_OPEN, sizeof(G4_THOUGHT_OPEN) - 1);
+    // Where generation starts is the renderer's report (template.h,
+    // render_state): the prompt it wrote leaves the model inside a reasoning
+    // segment, or it does not. It used to be reconstructed here from the
+    // family, the request's enable_thinking and two prompt-suffix probes --
+    // a second copy of the renderer's decision that missed every other
+    // spelling of the mode (Messages' `thinking` object rendered one start
+    // and split from another). A raw prompt has no report and no split.
+    bool reasoning_open = chat && rs && rs->reasoning_open;
     // Major faults are page-ins that went to disk, so the delta across a
     // request IS the paging stall rather than an inference from wall-clock: a
     // slow request that took no major faults was slow for some other reason.
@@ -3894,8 +3859,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
              atomic_fetch_add(&SV.req_counter, 1));
 
     completion_req q;
-    if (!completion_read(s, fd, api, req, env, chat, muse_forced_think,
-                         gemma4_primed_think, &q))
+    if (!completion_read(s, fd, api, req, env, chat, chat ? rs : NULL, &q))
         return;
     completion_apply(s, &q, prompt, chat, env);
 
@@ -4040,14 +4004,19 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                               "context_length_exceeded");
         return;
     }
-    if (muse_forced_think || harmony_primed_think || granite42_primed_think)
+    // A protocol whose own demultiplexer follows the channels (the Harmony
+    // and Gemma 4 envelopes) starts the splitter cold and owns that state;
+    // any other turn starts where its prompt left it.
+    bool demux_channels = env && (env->proto == TP_HARMONY || env->proto == TP_GEMMA4);
+    bool primed = reasoning_open && !demux_channels;
+    if (primed)
         engine_think_started(e);
 
     tool_envelope muse_plain_env = {.proto = TP_MUSE_PLAIN};
     // split thinking channels out of chat responses; raw completions stay raw
-    if (env && (env->proto == TP_HARMONY || env->proto == TP_GEMMA4))
+    if (demux_channels)
         think_init(&g.ts, NULL, NULL);
-    else if (muse_forced_think || harmony_primed_think || granite42_primed_think)
+    else if (primed)
         think_init_reasoning(&g.ts, m->think_open, m->think_close);
     else
         think_init(&g.ts, chat ? m->think_open : NULL, m->think_close);

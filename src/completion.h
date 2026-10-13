@@ -22,9 +22,11 @@ enum { API_TEXT, API_CHAT, API_RESPONSES, API_MESSAGES };
 
 // Generate an answer to `prompt` and write it back on fd in the `api` dialect,
 // buffered or streamed as the request asked. `env` is the strict tool-call
-// envelope when the request opted into one, else NULL.
+// envelope when the request opted into one, else NULL. `rs` is where the
+// rendered turn starts (template.h, render_state): what the chat-shaped
+// surfaces' renderer reported for this prompt, NULL for a raw prompt.
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
-                    jv *req, const tool_envelope *env);
+                    jv *req, const tool_envelope *env, const render_state *rs);
 
 // Request-field readers the routes share with the completion path. `absent`
 // distinguishes a missing key from an explicit JSON null, which several

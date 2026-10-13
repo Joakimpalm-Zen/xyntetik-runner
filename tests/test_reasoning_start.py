@@ -148,3 +148,45 @@ def test_nemotron_nano_reads_its_own_control_strings(exe, model):
                 assert reasoning and not content, (text, mode, content, reasoning)
             else:
                 assert content and not reasoning, (text, mode, content, reasoning)
+
+
+ANTHROPIC_THINKING = {"on": {"thinking": {"type": "enabled", "budget_tokens": 1024}},
+                      "off": {"thinking": {"type": "disabled"}}}
+
+
+def stream_block_types(srv, body):
+    """content_block_start types of a streamed Messages turn."""
+    req = urllib.request.Request(srv.base_url + "/v1/messages",
+                                 data=json.dumps(dict(body, stream=True)).encode(),
+                                 headers={"Content-Type": "application/json"})
+    kinds = []
+    with urllib.request.urlopen(req, timeout=120) as r:
+        for line in r:
+            line = line.strip()
+            if line.startswith(b"data:"):
+                ev = json.loads(line[5:])
+                if ev.get("type") == "content_block_start":
+                    kinds.append(ev["content_block"]["type"])
+    return kinds
+
+
+@pytest.mark.parametrize("family", ["granite42", "nemotron35", "qwen38", "qwen35", "qwen35-nothink"])
+def test_messages_thinking_object_decides_where_generation_starts(exe, model, family):
+    """Anthropic's own spelling of the mode, `thinking: {"type": ...}`, is the
+    one a Messages client sends. The prompt is rendered under it, so the turn
+    has to be split from where that prompt left the model -- not from where
+    `enable_thinking`, absent here, would have left it."""
+    with RunnerServer(exe, model, ctx=1024, parallel=1,
+                      extra_args=["--gpu", "off", "-t", "2", "-s", "42",
+                                  "--chat-template", family]) as srv:
+        mid = json.load(urllib.request.urlopen(srv.base_url + "/v1/models"))["data"][0]["id"]
+        for mode, extra in ANTHROPIC_THINKING.items():
+            primed = mode in PRIMED[family]
+            body = {"model": mid, "max_tokens": 12, "temperature": 0,
+                    "messages": [{"role": "user", "content": "Hello"}], **extra}
+            status, doc = post(srv, "/v1/messages", body)
+            assert status == 200, doc
+            blocks = [b.get("type") for b in doc.get("content") or []]
+            want = ["thinking"] if primed else ["text"]
+            assert blocks == want, (family, extra, blocks)
+            assert stream_block_types(srv, body) == want, (family, extra, "streamed")

@@ -61,8 +61,8 @@ static void ck(int cond, const char *what) {
 static char *ta_prompt;
 
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
-                    jv *req, const tool_envelope *env) {
-    (void)s; (void)fd; (void)api; (void)req; (void)env;
+                    jv *req, const tool_envelope *env, const render_state *rs) {
+    (void)s; (void)fd; (void)api; (void)req; (void)env; (void)rs;
     free(ta_prompt);
     ta_prompt = prompt ? strdup(prompt) : NULL;
     // Every check below reads the prompt as text: the literal native blocks

@@ -338,7 +338,18 @@ static void run_request(harness *h, const char *req_json,
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) { ck(0, "socketpair"); return; }
     jv *req = json_parse(req_json, strlen(req_json));
     if (!req) { ck(0, "request parsed"); close(sv[0]); close(sv[1]); return; }
-    run_completion(&h->s, sv[0], "hello", api, req, env);
+    // The harness feeds a raw prompt, so it supplies the start state the
+    // slot's render reports for that request. Harmony primes the analysis
+    // channel unless thinking is off or a Harmony envelope picks the channel
+    // (template.c, render_harmony; the envelope's tools render a bare
+    // header); the ChatML case below opens nothing.
+    render_state rs = {
+        .reasoning_open = h->s.tmpl == TMPL_HARMONY &&
+                          !(env && env->proto == TP_HARMONY) &&
+                          req_thinking_mode(req) != THINK_OFF,
+        .think_mode = req_thinking_mode(req),
+    };
+    run_completion(&h->s, sv[0], "hello", api, req, env, &rs);
     jv_free(req);
     shutdown(sv[0], SHUT_WR);
     size_t got = 0;

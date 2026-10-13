@@ -1003,9 +1003,10 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         }
         thinking |= effort;
     }
-    char *prompt = render_prompt_alloc(s->tmpl, cm, n_cm, true,
-                                       thinking,
-                                       native_tools, total + 256);
+    render_state rs;
+    char *prompt = render_prompt_state_alloc(s->tmpl, cm, n_cm, true,
+                                             thinking,
+                                             native_tools, total + 256, &rs);
     if (!prompt) {
         for (int i = 0; i < n_own; i++) free(owned[i]);
         free(owned); free(cm); free(ts.s);
@@ -1015,7 +1016,7 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         send_error(fd, 500, "out of memory building responses prompt");
         return;
     }
-    run_completion(s, fd, prompt, API_RESPONSES, req, strict ? &env : NULL);
+    run_completion(s, fd, prompt, API_RESPONSES, req, strict ? &env : NULL, &rs);
     free(prompt);
     for (int i = 0; i < n_own; i++) free(owned[i]);
     free(owned);

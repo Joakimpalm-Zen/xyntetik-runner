@@ -736,7 +736,7 @@ static int messages_thinking_mode(jv *req) {
 // Returns a heap prompt on success (caller frees) with *strict/*env set, or
 // NULL having already answered `fd` with the error.
 static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
-                             bool *strict) {
+                             bool *strict, render_state *rs) {
     // Initialised, because the tail below reads terr[0] to choose between a
     // caller-fixable 400 and a server 5xx. An allocation failure reaches that
     // tail without anything having written here, and an indeterminate first
@@ -912,9 +912,9 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
     if (ok) {
         // t.total is the opening guess only -- under Harmony the tool
         // namespace it never counted is rendered into the prompt too.
-        prompt = render_prompt_alloc(s->tmpl, t.cm, t.n, true,
-                                     messages_thinking_mode(req),
-                                     native_tools, t.total + 256);
+        prompt = render_prompt_state_alloc(s->tmpl, t.cm, t.n, true,
+                                           messages_thinking_mode(req),
+                                           native_tools, t.total + 256, rs);
         if (!prompt) { oom = true; ok = false; }
     }
     turnbuf_free(&t);
@@ -946,9 +946,10 @@ void handle_messages(slot_t *s, sock_t fd, jv *req) {
     }
     tool_envelope env;
     bool strict = false;
-    char *prompt = messages_prompt(s, fd, req, &env, &strict);
+    render_state rs;
+    char *prompt = messages_prompt(s, fd, req, &env, &strict, &rs);
     if (!prompt) return;
-    run_completion(s, fd, prompt, API_MESSAGES, req, strict ? &env : NULL);
+    run_completion(s, fd, prompt, API_MESSAGES, req, strict ? &env : NULL, &rs);
     free(prompt);
     tool_envelope_free(&env);
 }
@@ -960,7 +961,8 @@ void handle_count_tokens(slot_t *s, sock_t fd, jv *req) {
     if (anth_reject_unsupported(s, fd, req)) return;
     tool_envelope env;
     bool strict = false;
-    char *prompt = messages_prompt(s, fd, req, &env, &strict);
+    render_state rs;
+    char *prompt = messages_prompt(s, fd, req, &env, &strict, &rs);
     if (!prompt) return;
     int32_t *toks = NULL;
     int n = tok_encode_fit(s->tok, prompt, true, TOK_PROMPT, 0, &toks);
