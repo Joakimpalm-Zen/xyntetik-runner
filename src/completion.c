@@ -3549,6 +3549,237 @@ static void completion_apply(slot_t *s, const completion_req *q, const char *pro
                             !(env && env->proto == TP_HARMONY);
 }
 
+// What preparing an accepted request came to: the prompt's tokens (owned
+// here, freed by run_completion once the prompt is fed), the tokenizing time,
+// how many leading tokens a named context covers, and the diagnostics the
+// response reports.
+typedef struct {
+    int32_t *toks;
+    int n_prompt;
+    double tokenize_s;
+    int ctx_tokens;
+    bool omit_reasoning;
+    req_diag diag;
+} completion_prep;
+
+// The work an accepted request needs before its prompt is fed, each step a
+// possible refusal: tokenizing the prompt (or taking caller ids as sent),
+// the named-context check, the token budget the context leaves, the
+// choice-logprob and logprob buffers, the diagnostics and a scripted
+// reply. A refusal frees what the request installed (completion_cleanup)
+// and answers; false then.
+static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api,
+                               jv *req, const tool_envelope *env, bool chat,
+                               completion_req *q, completion_prep *p) {
+    model_t *m = s->m;
+    engine *e = &s->e;
+    int ctx_tokens = 0;
+    // -1 is an allocation failure (a dropped segment, or no buffer): a 500,
+    // never a prompt silently short by the missing piece. The buffer is
+    // sized to the text, not guessed from its byte count (tok_encode_fit).
+    // A chat prompt is a render: the tokenizer recognizes control tokens
+    // only in the template's own bytes, never in message content; a raw
+    // completion prompt is the caller's to compose, specials and all.
+    int32_t *toks = NULL;
+    double tokenize_t0 = now_s();
+    // `prompt` sent as token ids (server.c validated them): used exactly as
+    // sent, so the receipt records the caller's ids and --verify replays them
+    const jv *pid = api == API_TEXT ? jv_get(req, "prompt") : NULL;
+    int n_prompt;
+    if (pid && pid->type == J_ARR) {
+        toks = malloc(sizeof(*toks) * (size_t)(pid->n ? pid->n : 1));
+        n_prompt = toks ? pid->n : -1;
+        for (int i = 0; toks && i < pid->n; i++)
+            toks[i] = (int32_t)pid->items[i]->num;
+    } else {
+        n_prompt = tok_encode_fit(s->tok, prompt, true,
+                                  chat ? TOK_PROMPT : TOK_RAW, 0, &toks);
+    }
+    double tokenize_s = now_s() - tokenize_t0;
+    if (n_prompt < 0) {
+        free(toks);
+        completion_cleanup(e, q->schema, NULL);
+        send_error(fd, 500, "out of memory tokenizing prompt");
+        return false;
+    }
+    if (n_prompt == 0 || n_prompt >= m->n_ctx) {
+        free(toks);
+        completion_cleanup(e, q->schema, NULL);
+        if (n_prompt == 0) send_error(fd, 400, "empty prompt");
+        else send_error_detail(fd, 400, "prompt exceeds context window",
+                               api == API_TEXT ? "prompt" :
+                               api == API_RESPONSES ? "input" : "messages",
+                               "context_length_exceeded");
+        return false;
+    }
+    if (q->ctx_id) {
+        // The context is only worth naming if it is what this prompt starts
+        // with; a caller whose system prompt changed must hear it, not be
+        // served cold under a name that promised a warm prefix.
+        const char *why = !q->cache_prompt || !q->share_prefix
+                ? "context_id needs the prefix cache (cache_prompt and "
+                  "prefix_cache must not be false)"
+            : q->echo || q->plp >= 0
+                ? "context_id cannot be combined with echo or prompt_logprobs, "
+                  "which score the whole prompt from position 0"
+            : NULL;
+        if (why) {
+            free(toks);
+            completion_cleanup(e, q->schema, NULL);
+            send_error_detail(fd, 400, why, "context_id", "invalid_value");
+            return false;
+        }
+        int at = -1;
+        int cn = prefix_context_check(e, q->ctx_id, toks, n_prompt, &at);
+        if (cn < 0) {
+            free(toks);
+            completion_cleanup(e, q->schema, NULL);
+            char msg[256];
+            if (cn == PFX_CTX_UNKNOWN)
+                snprintf(msg, sizeof msg, "no context \"%s\" is pinned for "
+                         "this model (POST /v1/runner/contexts)", q->ctx_id);
+            else
+                snprintf(msg, sizeof msg, "the prompt does not start with "
+                         "context \"%s\": it differs at token %d", q->ctx_id, at);
+            send_error_detail(fd, cn == PFX_CTX_UNKNOWN ? 404 : 409, msg,
+                              "context_id", cn == PFX_CTX_UNKNOWN
+                              ? "context_not_found" : "context_mismatch");
+            return false;
+        }
+        ctx_tokens = cn;
+    }
+    int remaining_ctx = m->n_ctx - n_prompt;
+    if (q->max_tokens < 0 || q->max_tokens > remaining_ctx) q->max_tokens = remaining_ctx;
+
+    if (q->cl_on) {
+        if (!q->schema && !e->json_mode) {
+            free(toks);
+            completion_cleanup(e, q->schema, NULL);
+            send_error(fd, 400, q->confirm_below > 0
+                       ? "confirm_below needs a constrained turn: a json_schema "
+                         "response_format, tools under a grammar, or JSON mode "
+                         "(a native protocol's auto turn is parsed, not "
+                         "constrained, and has no decision to report)"
+                       : "choice_logprobs requires a json_schema "
+                         "response_format, tool schema, or JSON mode");
+            return false;
+        }
+        if (e->dm) {
+            free(toks);
+            completion_cleanup(e, q->schema, NULL);
+            send_error(fd, 400, "choice_logprobs is not supported with "
+                                "speculative decoding");
+            return false;
+        }
+        if (q->max_tokens > 0) {
+            e->cl_recs  = malloc(sizeof(cl_rec) * (size_t)q->max_tokens);
+            if (!e->cl_recs) {
+                free(toks);
+                completion_cleanup(e, q->schema, NULL);
+                send_error(fd, 500,
+                           "out of memory allocating choice_logprobs buffer");
+                return false;
+            }
+            e->cl_cap   = q->max_tokens;
+            e->cl_count = 0;
+            e->cl_probe = (int)q->cl_probe_d;
+        }
+    }
+    if (q->special_tokens && (q->schema || e->json_mode)) {
+        free(toks);
+        completion_cleanup(e, q->schema, NULL);
+        send_error(fd, 400, "special_tokens cannot be combined with "
+                            "response_format: a constrained payload is "
+                            "validated on decoded bytes");
+        return false;
+    }
+    e->render_special = q->special_tokens;
+    if (q->want_lp && q->max_tokens > 0) {
+        e->lp_cap    = q->max_tokens;
+        e->lp_n      = q->lp_n;
+        e->lp_chosen = malloc(sizeof(float) * q->max_tokens);
+        e->lp_ids    = malloc(sizeof(int32_t) * q->max_tokens);
+        e->lp_top    = q->lp_n ? malloc(sizeof(lp_alt) * (size_t)q->max_tokens * q->lp_n) : NULL;
+        // These scale with max_tokens * top_logprobs (tens of MB): a NULL here
+        // would be dereferenced while collecting logprobs. Fail the request
+        // cleanly instead. completion_cleanup frees whatever did allocate.
+        if (!e->lp_chosen || !e->lp_ids || (q->lp_n && !e->lp_top)) {
+            free(toks);
+            completion_cleanup(e, q->schema, NULL);
+            send_error(fd, 500, "out of memory allocating logprobs buffers");
+            return false;
+        }
+    }
+
+    bool omit_reasoning = false;
+    if (api == API_MESSAGES) {
+        jv *thinking = jv_get(req, "thinking");
+        jv *display = thinking && thinking->type == J_OBJ
+                    ? jv_get(thinking, "display") : NULL;
+        omit_reasoning = display && display->type == J_STR &&
+                         !strcmp(display->str, "omitted");
+    }
+    // The request's effective sampling, with each field's source, and the
+    // tool contract it was served under (req_diag). Read back by clients
+    // from runner_telemetry; the values are what the sampler holds now.
+    bool native_tp = false;
+    sampler_file sfile;
+    model_sampling_file(&s->m->gf, &sfile);
+    req_diag diag = {
+        .preset = SV.preset_name,
+        .temp = s->smp.temp, .top_p = s->smp.top_p, .min_p = s->smp.min_p,
+        .repeat_penalty = s->smp.repeat_penalty, .top_k = s->smp.top_k,
+        .src_temp = !absent(jv_get(req, "temperature")) ? "request"
+                  : SV.ov.has_temp ? "cli" : sfile.has_temp ? "file" : "preset",
+        .src_top_p = !absent(jv_get(req, "top_p")) ? "request"
+                   : SV.ov.has_top_p ? "cli" : sfile.has_top_p ? "file" : "preset",
+        .src_min_p = !absent(jv_get(req, "min_p")) ? "request"
+                   : SV.ov.has_min_p ? "cli" : sfile.has_min_p ? "file" : "preset",
+        .src_top_k = !absent(jv_get(req, "top_k")) ? "request"
+                   : SV.ov.has_top_k ? "cli" : sfile.has_top_k ? "file" : "preset",
+        .src_repeat = !absent(jv_get(req, "repeat_penalty")) ? "request"
+                    : SV.ov.has_repeat_penalty ? "cli" : "preset",
+        .seed = q->seed > 0 ? (uint64_t)q->seed : 0,
+        .template_name = template_name(s->tmpl),
+        // with tools declared, the protocol this request actually runs
+        // under (a fallback to the generic envelope is reported as such);
+        // without, the family's native one
+        .tool_protocol = !chat ? NULL
+                       : env ? tool_envelope_protocol_name(env)
+                       : tool_protocol_name(s->tmpl, &native_tp),
+        .tools = env != NULL,
+        .constrained = env != NULL && q->schema != NULL,
+        .parse_only = env != NULL && env->parse_only,
+        .context_id = q->ctx_id, .context_tokens = ctx_tokens,
+        .adapter_name = s->adapter >= 0 ? SV.adapters[s->adapter].name : NULL,
+        .adapter_sha256 = s->adapter >= 0 ? SV.adapters[s->adapter].sha256 : NULL,
+    };
+    if (q->script_text) {
+        int32_t *ids = NULL;
+        int n = scripted_reply_tokens(s->tok, q->script_text, &ids);
+        if (n < 0) {
+            free(toks);
+            completion_cleanup(e, q->schema, NULL);
+            if (n == -2)
+                send_error(fd, 400, "runner_test_reply cannot be spelled in "
+                                    "this model's vocabulary");
+            else
+                send_error(fd, 500, "out of memory tokenizing runner_test_reply");
+            return false;
+        }
+        s->smp.script = ids;
+        s->smp.script_n = n;
+        s->smp.script_at = 0;
+    }
+    p->toks = toks;
+    p->n_prompt = n_prompt;
+    p->tokenize_s = tokenize_s;
+    p->ctx_tokens = ctx_tokens;
+    p->omit_reasoning = omit_reasoning;
+    p->diag = diag;
+    return true;
+}
+
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            jv *req, const tool_envelope *env) {
     bool chat = api != API_TEXT; // chat-shaped: thinking channels, tools
@@ -3626,144 +3857,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                          gemma4_primed_think, &q))
         return;
     completion_apply(s, &q, prompt, chat, env);
-    int ctx_tokens = 0;
 
-    // -1 is an allocation failure (a dropped segment, or no buffer): a 500,
-    // never a prompt silently short by the missing piece. The buffer is
-    // sized to the text, not guessed from its byte count (tok_encode_fit).
-    // A chat prompt is a render: the tokenizer recognizes control tokens
-    // only in the template's own bytes, never in message content; a raw
-    // completion prompt is the caller's to compose, specials and all.
-    int32_t *toks = NULL;
-    double tokenize_t0 = now_s();
-    // `prompt` sent as token ids (server.c validated them): used exactly as
-    // sent, so the receipt records the caller's ids and --verify replays them
-    const jv *pid = api == API_TEXT ? jv_get(req, "prompt") : NULL;
-    int n_prompt;
-    if (pid && pid->type == J_ARR) {
-        toks = malloc(sizeof(*toks) * (size_t)(pid->n ? pid->n : 1));
-        n_prompt = toks ? pid->n : -1;
-        for (int i = 0; toks && i < pid->n; i++)
-            toks[i] = (int32_t)pid->items[i]->num;
-    } else {
-        n_prompt = tok_encode_fit(s->tok, prompt, true,
-                                  chat ? TOK_PROMPT : TOK_RAW, 0, &toks);
-    }
-    double tokenize_s = now_s() - tokenize_t0;
-    if (n_prompt < 0) {
-        free(toks);
-        completion_cleanup(e, q.schema, NULL);
-        send_error(fd, 500, "out of memory tokenizing prompt");
-        return;
-    }
-    if (n_prompt == 0 || n_prompt >= m->n_ctx) {
-        free(toks);
-        completion_cleanup(e, q.schema, NULL);
-        if (n_prompt == 0) send_error(fd, 400, "empty prompt");
-        else send_error_detail(fd, 400, "prompt exceeds context window",
-                               api == API_TEXT ? "prompt" :
-                               api == API_RESPONSES ? "input" : "messages",
-                               "context_length_exceeded");
-        return;
-    }
-    if (q.ctx_id) {
-        // The context is only worth naming if it is what this prompt starts
-        // with; a caller whose system prompt changed must hear it, not be
-        // served cold under a name that promised a warm prefix.
-        const char *why = !q.cache_prompt || !q.share_prefix
-                ? "context_id needs the prefix cache (cache_prompt and "
-                  "prefix_cache must not be false)"
-            : q.echo || q.plp >= 0
-                ? "context_id cannot be combined with echo or prompt_logprobs, "
-                  "which score the whole prompt from position 0"
-            : NULL;
-        if (why) {
-            free(toks);
-            completion_cleanup(e, q.schema, NULL);
-            send_error_detail(fd, 400, why, "context_id", "invalid_value");
-            return;
-        }
-        int at = -1;
-        int cn = prefix_context_check(e, q.ctx_id, toks, n_prompt, &at);
-        if (cn < 0) {
-            free(toks);
-            completion_cleanup(e, q.schema, NULL);
-            char msg[256];
-            if (cn == PFX_CTX_UNKNOWN)
-                snprintf(msg, sizeof msg, "no context \"%s\" is pinned for "
-                         "this model (POST /v1/runner/contexts)", q.ctx_id);
-            else
-                snprintf(msg, sizeof msg, "the prompt does not start with "
-                         "context \"%s\": it differs at token %d", q.ctx_id, at);
-            send_error_detail(fd, cn == PFX_CTX_UNKNOWN ? 404 : 409, msg,
-                              "context_id", cn == PFX_CTX_UNKNOWN
-                              ? "context_not_found" : "context_mismatch");
-            return;
-        }
-        ctx_tokens = cn;
-    }
-    int remaining_ctx = m->n_ctx - n_prompt;
-    if (q.max_tokens < 0 || q.max_tokens > remaining_ctx) q.max_tokens = remaining_ctx;
-
-    if (q.cl_on) {
-        if (!q.schema && !e->json_mode) {
-            free(toks);
-            completion_cleanup(e, q.schema, NULL);
-            send_error(fd, 400, q.confirm_below > 0
-                       ? "confirm_below needs a constrained turn: a json_schema "
-                         "response_format, tools under a grammar, or JSON mode "
-                         "(a native protocol's auto turn is parsed, not "
-                         "constrained, and has no decision to report)"
-                       : "choice_logprobs requires a json_schema "
-                         "response_format, tool schema, or JSON mode");
-            return;
-        }
-        if (e->dm) {
-            free(toks);
-            completion_cleanup(e, q.schema, NULL);
-            send_error(fd, 400, "choice_logprobs is not supported with "
-                                "speculative decoding");
-            return;
-        }
-        if (q.max_tokens > 0) {
-            e->cl_recs  = malloc(sizeof(cl_rec) * (size_t)q.max_tokens);
-            if (!e->cl_recs) {
-                free(toks);
-                completion_cleanup(e, q.schema, NULL);
-                send_error(fd, 500,
-                           "out of memory allocating choice_logprobs buffer");
-                return;
-            }
-            e->cl_cap   = q.max_tokens;
-            e->cl_count = 0;
-            e->cl_probe = (int)q.cl_probe_d;
-        }
-    }
-    if (q.special_tokens && (q.schema || e->json_mode)) {
-        free(toks);
-        completion_cleanup(e, q.schema, NULL);
-        send_error(fd, 400, "special_tokens cannot be combined with "
-                            "response_format: a constrained payload is "
-                            "validated on decoded bytes");
-        return;
-    }
-    e->render_special = q.special_tokens;
-    if (q.want_lp && q.max_tokens > 0) {
-        e->lp_cap    = q.max_tokens;
-        e->lp_n      = q.lp_n;
-        e->lp_chosen = malloc(sizeof(float) * q.max_tokens);
-        e->lp_ids    = malloc(sizeof(int32_t) * q.max_tokens);
-        e->lp_top    = q.lp_n ? malloc(sizeof(lp_alt) * (size_t)q.max_tokens * q.lp_n) : NULL;
-        // These scale with max_tokens * top_logprobs (tens of MB): a NULL here
-        // would be dereferenced while collecting logprobs. Fail the request
-        // cleanly instead. completion_cleanup frees whatever did allocate.
-        if (!e->lp_chosen || !e->lp_ids || (q.lp_n && !e->lp_top)) {
-            free(toks);
-            completion_cleanup(e, q.schema, NULL);
-            send_error(fd, 500, "out of memory allocating logprobs buffers");
-            return;
-        }
-    }
+    completion_prep prep;
+    if (!completion_prepare(s, fd, prompt, api, req, env, chat, &q, &prep)) return;
 
     // Reuse the KV for whatever prefix this prompt shares with one already
     // computed — pipeline callers repeat long system/template prefixes
@@ -3776,68 +3872,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // prompt still wants its own slot's cache, and one that wants fresh-prompt
     // telemetry wants neither. cache_prompt:false remains the full opt-out.
     prefix_reuse reuse = { 0, 0, 0.0 };
-    bool omit_reasoning = false;
-    if (api == API_MESSAGES) {
-        jv *thinking = jv_get(req, "thinking");
-        jv *display = thinking && thinking->type == J_OBJ
-                    ? jv_get(thinking, "display") : NULL;
-        omit_reasoning = display && display->type == J_STR &&
-                         !strcmp(display->str, "omitted");
-    }
-    // The request's effective sampling, with each field's source, and the
-    // tool contract it was served under (req_diag). Read back by clients
-    // from runner_telemetry; the values are what the sampler holds now.
-    bool native_tp = false;
-    sampler_file sfile;
-    model_sampling_file(&s->m->gf, &sfile);
-    req_diag diag = {
-        .preset = SV.preset_name,
-        .temp = s->smp.temp, .top_p = s->smp.top_p, .min_p = s->smp.min_p,
-        .repeat_penalty = s->smp.repeat_penalty, .top_k = s->smp.top_k,
-        .src_temp = !absent(jv_get(req, "temperature")) ? "request"
-                  : SV.ov.has_temp ? "cli" : sfile.has_temp ? "file" : "preset",
-        .src_top_p = !absent(jv_get(req, "top_p")) ? "request"
-                   : SV.ov.has_top_p ? "cli" : sfile.has_top_p ? "file" : "preset",
-        .src_min_p = !absent(jv_get(req, "min_p")) ? "request"
-                   : SV.ov.has_min_p ? "cli" : sfile.has_min_p ? "file" : "preset",
-        .src_top_k = !absent(jv_get(req, "top_k")) ? "request"
-                   : SV.ov.has_top_k ? "cli" : sfile.has_top_k ? "file" : "preset",
-        .src_repeat = !absent(jv_get(req, "repeat_penalty")) ? "request"
-                    : SV.ov.has_repeat_penalty ? "cli" : "preset",
-        .seed = q.seed > 0 ? (uint64_t)q.seed : 0,
-        .template_name = template_name(s->tmpl),
-        // with tools declared, the protocol this request actually runs
-        // under (a fallback to the generic envelope is reported as such);
-        // without, the family's native one
-        .tool_protocol = !chat ? NULL
-                       : env ? tool_envelope_protocol_name(env)
-                       : tool_protocol_name(s->tmpl, &native_tp),
-        .tools = env != NULL,
-        .constrained = env != NULL && q.schema != NULL,
-        .parse_only = env != NULL && env->parse_only,
-        .context_id = q.ctx_id, .context_tokens = ctx_tokens,
-        .adapter_name = s->adapter >= 0 ? SV.adapters[s->adapter].name : NULL,
-        .adapter_sha256 = s->adapter >= 0 ? SV.adapters[s->adapter].sha256 : NULL,
-    };
-    if (q.script_text) {
-        int32_t *ids = NULL;
-        int n = scripted_reply_tokens(s->tok, q.script_text, &ids);
-        if (n < 0) {
-            free(toks);
-            completion_cleanup(e, q.schema, NULL);
-            if (n == -2)
-                send_error(fd, 400, "runner_test_reply cannot be spelled in "
-                                    "this model's vocabulary");
-            else
-                send_error(fd, 500, "out of memory tokenizing runner_test_reply");
-            return;
-        }
-        s->smp.script = ids;
-        s->smp.script_n = n;
-        s->smp.script_at = 0;
-    }
     gen_ctx g = { .out = {0}, .fd = fd, .stream = q.stream, .api = api,
-                  .omit_reasoning = omit_reasoning,
+                  .omit_reasoning = prep.omit_reasoning,
                   .stop_strs = q.stops, .n_stop = q.n_stops, .eng = e,
                   .created = (long)time(NULL) };
     client_stop stop = { .fd = fd, .dead = &g.dead,
@@ -3856,35 +3892,35 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     engine_set_prefill_yield(e, prefill_yield_turn, NULL);
     double device_t0 = now_s();
     sched_prefill_begin();
-    diag.device_wait_s = now_s() - device_t0;
-    diag.queue_s = s->queue_wait_s;
-    diag.tokenize_s = tokenize_s;
-    diag.first_visible_s = -1;
+    prep.diag.device_wait_s = now_s() - device_t0;
+    prep.diag.queue_s = s->queue_wait_s;
+    prep.diag.tokenize_s = prep.tokenize_s;
+    prep.diag.first_visible_s = -1;
     // Scoring the prompt reads every position's logits, so no prefix is
     // reused: the whole prompt is fed, one solo forward per token.
     bool score_prompt = (q.echo && q.want_lp) || q.plp >= 0;
     if (score_prompt)
         engine_reset(e);
     else if (q.cache_prompt && q.share_prefix)
-        reuse = engine_prefix_reuse(e, toks, n_prompt);
+        reuse = engine_prefix_reuse(e, prep.toks, prep.n_prompt);
     else if (q.cache_prompt)
-        reuse.keep = engine_rewind(e, toks, n_prompt);
+        reuse.keep = engine_rewind(e, prep.toks, prep.n_prompt);
     else
         engine_reset(e);
     int keep = reuse.keep;
-    if (q.ctx_id && keep < ctx_tokens) {
+    if (q.ctx_id && keep < prep.ctx_tokens) {
         // The context passed the prefix check and still was not what the
         // prompt was built on (released between the check and here, or a
         // model that cannot fork one): the request named a warm prefix, so
         // it is refused rather than served cold under that name.
-        free(toks);
+        free(prep.toks);
         completion_cleanup(e, q.schema, NULL);
         send_error_detail(fd, 409, "the named context could not be forked for "
                           "this request; pin it again or drop context_id",
                           "context_id", "context_unavailable");
         return;
     }
-    atomic_store(&s->rq_prompt, n_prompt);
+    atomic_store(&s->rq_prompt, prep.n_prompt);
     atomic_store(&s->rq_done, keep);
     atomic_store(&s->rq_gen, 0);
     atomic_store(&s->rq_phase, 1);
@@ -3900,9 +3936,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // per request and makes that case visible; it also carries the prompt
     // length and how much of it the cache covered, which is what says whether
     // a long silence is a cold prefill or something worse.
-    diag.prompt_reuse = engine_rewind_how_name(e->rewind_how);
+    prep.diag.prompt_reuse = engine_rewind_how_name(e->rewind_how);
     fprintf(stderr, "[slot %d] %s: start, %d prompt (%d cached, %s)\n",
-            s->id, req_id, n_prompt, keep, diag.prompt_reuse);
+            s->id, req_id, prep.n_prompt, keep, prep.diag.prompt_reuse);
 
     // A recurrent slot marks its fold one token short of the prompt end, so
     // the next request resumes there whether it replays this prompt verbatim
@@ -3912,33 +3948,33 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // it. Inside the device turn: on CUDA the mark reads device-resident
     // state. Attention-only models mark nothing and take the single feed.
     float *logits = NULL;
-    int mark_at = n_prompt - 1;
+    int mark_at = prep.n_prompt - 1;
     if (score_prompt) {
-        g.ptoks = malloc(sizeof(int32_t) * (size_t)n_prompt);
+        g.ptoks = malloc(sizeof(int32_t) * (size_t)prep.n_prompt);
         int top_n = q.plp > q.lp_n ? q.plp : q.lp_n;
         if (g.ptoks) {
-            memcpy(g.ptoks, toks, sizeof(int32_t) * (size_t)n_prompt);
-            logits = engine_score_prompt(e, toks, n_prompt, top_n, &g.ps);
+            memcpy(g.ptoks, prep.toks, sizeof(int32_t) * (size_t)prep.n_prompt);
+            logits = engine_score_prompt(e, prep.toks, prep.n_prompt, top_n, &g.ps);
         }
-    } else if (q.cache_prompt && n_prompt > 1 && model_has_recurrent(e->m)) {
+    } else if (q.cache_prompt && prep.n_prompt > 1 && model_has_recurrent(e->m)) {
         bool ok = mark_at == keep ||   // resumed at the mark: nothing before it to feed
-                  engine_feed(e, toks + keep, mark_at - keep) != NULL;
+                  engine_feed(e, prep.toks + keep, mark_at - keep) != NULL;
         if (ok) engine_mark_turn(e);
-        if (ok) logits = engine_feed(e, toks + mark_at, 1);
+        if (ok) logits = engine_feed(e, prep.toks + mark_at, 1);
     } else {
-        logits = engine_feed(e, toks + keep, n_prompt - keep);
+        logits = engine_feed(e, prep.toks + keep, prep.n_prompt - keep);
     }
     atomic_store(&s->rq_phase, 2);
     double prefill_s = now_s() - prefill_t0;
-    diag.prefill_s = prefill_s;
-    diag.prefill_tokens = n_prompt - keep;
+    prep.diag.prefill_s = prefill_s;
+    prep.diag.prefill_tokens = prep.n_prompt - keep;
     sched_prefill_end();
     engine_set_prefill_yield(e, NULL, NULL);
     // Publish outside the device turn: it is a host-memory copy, and this
     // sequence is the only writer of its own KV between prefill and decode.
     if (logits && q.cache_prompt && q.share_prefix)
-        engine_prefix_publish(e, toks, n_prompt, n_prompt - keep, prefill_s);
-    free(toks);
+        engine_prefix_publish(e, prep.toks, prep.n_prompt, prep.n_prompt - keep, prefill_s);
+    free(prep.toks);
     if (!logits) {
         completion_cleanup(e, q.schema, &g);
         // Three ways to get here and they are not the same answer. The
@@ -4020,7 +4056,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // its content: the id, model and input token count are known
             // before a token exists, and a client renders the turn's identity
             // from them immediately. stop_reason is null until message_delta.
-            resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .n_prompt = n_prompt, .req = req };
+            resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .n_prompt = prep.n_prompt, .req = req };
             sbuf f = {0};
             sb_lit(&f, ",\"message\":");
             anth_body(&f, &g, &d);
@@ -4049,17 +4085,17 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     int n_gen = sched_generate(s, logits, q.max_tokens, gen_collect, &g, &gtime,
                                q.req_deadline);
     if (g.doc_on) {
-        diag.closure_json = closure_json(g.doc.s, g.doc.n, g.close_at);
+        prep.diag.closure_json = closure_json(g.doc.s, g.doc.n, g.close_at);
         free(g.doc.s);
         g.doc = (sbuf){0};
     }
-    diag.wm_on = SV.wm_on;
-    diag.wm_marked = s->wm.marked;
+    prep.diag.wm_on = SV.wm_on;
+    prep.diag.wm_marked = s->wm.marked;
     if (q.confirm_below > 0) {
-        diag.confirm_on = true;
-        diag.confirm_below = q.confirm_below;
-        diag.min_chosen_p = 1.0;
-        diag.min_margin = 1.0;
+        prep.diag.confirm_on = true;
+        prep.diag.confirm_below = q.confirm_below;
+        prep.diag.min_chosen_p = 1.0;
+        prep.diag.min_margin = 1.0;
         for (int i = 0; i < e->cl_count; i++) {
             const cl_rec *c = &e->cl_recs[i];
             int at = e->gen_start + c->pos;
@@ -4081,11 +4117,11 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // every stored one, possibly far less: counted as 0, so the turn
             // asks for confirmation rather than guessing it was safe
             if (p < 0) p = 0;
-            diag.decisions++;
-            if (p < diag.min_chosen_p) {
-                diag.min_chosen_p = p;
-                diag.min_margin = p - best_other;
-                diag.min_at = c->pos;
+            prep.diag.decisions++;
+            if (p < prep.diag.min_chosen_p) {
+                prep.diag.min_chosen_p = p;
+                prep.diag.min_margin = p - best_other;
+                prep.diag.min_at = c->pos;
             }
         }
     }
@@ -4093,7 +4129,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // and /metrics' cumulative counters see chat, completions, responses and
     // messages alike. The speculation counters are read only when this request
     // actually took the speculative walk (see work_record).
-    work_record work = { .n_prompt = n_prompt, .n_gen = n_gen,
+    work_record work = { .n_prompt = prep.n_prompt, .n_gen = n_gen,
                          .n_cached = keep, .gen_seconds = gtime };
     if (spec_used) {
         work.spec_rounds   = e->spec_st.rounds;
@@ -4112,14 +4148,14 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         turn_shape_of(&shape, req, e, env, q.constrain, q.sch, q.stops, q.n_stops,
                       q.req_stops, q.n_req_stops, q.script_text != NULL);
 #define WRITE_RECEIPT() do {                                                  \
-        if (g.raw_on && !g.dead && !receipt_file[0] && !diag.receipt_error) { \
-            diag.receipt_error = serve_receipt(                               \
-                s, e, &g, prompt, api, chat, gen_rng, q.max_tokens, n_prompt,   \
-                n_gen, keep, diag.prompt_reuse, spec_used, &shape,            \
-                diag.context_id, receipt_file, receipt_chain);                \
-            if (!diag.receipt_error) {                                        \
-                diag.receipt_file = receipt_file;                             \
-                diag.receipt_chain = receipt_chain;                           \
+        if (g.raw_on && !g.dead && !receipt_file[0] && !prep.diag.receipt_error) { \
+            prep.diag.receipt_error = serve_receipt(                               \
+                s, e, &g, prompt, api, chat, gen_rng, q.max_tokens, prep.n_prompt,   \
+                n_gen, keep, prep.diag.prompt_reuse, spec_used, &shape,            \
+                prep.diag.context_id, receipt_file, receipt_chain);                \
+            if (!prep.diag.receipt_error) {                                        \
+                prep.diag.receipt_file = receipt_file;                             \
+                prep.diag.receipt_chain = receipt_chain;                           \
             }                                                                 \
         }                                                                     \
     } while (0)
@@ -4138,7 +4174,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // the first visible byte, from the moment the slot took the request
     // (a request the accept loop answered itself has no slot clock: 0)
     if (g.first_visible_t > 0 && s->req_t0 > 0)
-        diag.first_visible_s = g.first_visible_t - s->req_t0;
+        prep.diag.first_visible_s = g.first_visible_t - s->req_t0;
     // A native-envelope document the demultiplexer cannot map is a GENERATION
     // fault, not a dead client — and the difference decides whether the stream
     // is terminated. Recording it as g.dead skipped all three terminal blocks
@@ -4241,12 +4277,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .output_text = g.out_text.s,
                            .output_text_n = g.out_text.n,
                            .with_usage = true,
-                           .n_prompt = n_prompt, .n_gen = n_gen, .cached = keep,
+                           .n_prompt = prep.n_prompt, .n_gen = n_gen, .cached = keep,
                            .forked = reuse.forked, .saved_s = reuse.saved_s,
                            .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
                            .schema = q.schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
-                           SPEC_DOC_FIELDS(e), .diag = &diag,
+                           SPEC_DOC_FIELDS(e), .diag = &prep.diag,
                            .req = req,
                            .repeated_calls = g.repeat_json };
             sbuf f = {0};
@@ -4307,7 +4343,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // message_delta carries the *cumulative* output token count, which
             // is the only place a streamed turn reports it
             sb_fmt(&f, "},\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d}",
-                   n_prompt, n_gen);
+                   prep.n_prompt, n_gen);
             // R4.12.19: present only when a delivered call repeats one the
             // conversation already holds, so an ordinary stream is unchanged
             g.repeat_json = repeated_calls_streamed(&g, req, api);
@@ -4358,7 +4394,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             if (sdet) sb_fmt(&c, ",\"finish_detail\":\"%s\"", sdet);
             if (g.repeat_json)
                 sb_fmt(&c, ",\"repeated_tool_calls\":%s", g.repeat_json);
-            diag_json(&c, &diag);
+            diag_json(&c, &prep.diag);
             sb_lit(&c, "}");
             sb_lit(&c, "}");
             bool ok = chunk_send(&g, &c) == 0;
@@ -4373,12 +4409,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                        g.created);
                 sb_esc(&u, SV.model_name, strlen(SV.model_name));
                 sb_lit(&u, "\",\"choices\":[],");
-                openai_usage_json(&u, n_prompt, n_gen, keep);
+                openai_usage_json(&u, prep.n_prompt, n_gen, keep);
                 // the one terminal chunk a stream opts into is also where
                 // its effective sampling and protocol can be read back
                 sb_lit(&u, ",\"runner_telemetry\":{\"prompt_cached_tokens\":");
                 sb_fmt(&u, "%d", keep);
-                diag_json(&u, &diag);
+                diag_json(&u, &prep.diag);
                 sb_lit(&u, "}}");
                 ok = chunk_send(&g, &u) == 0;
             }
@@ -4478,12 +4514,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .reason = g.reason.s, .reason_n = g.reason.n,
                            .reason_tokens = g.reason_tokens,
                            .with_usage = true,
-                           .n_prompt = n_prompt, .n_gen = n_gen, .cached = keep,
+                           .n_prompt = prep.n_prompt, .n_gen = n_gen, .cached = keep,
                            .forked = reuse.forked, .saved_s = reuse.saved_s,
                            .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
                            .schema = q.schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
-                           SPEC_DOC_FIELDS(e), .diag = &diag,
+                           SPEC_DOC_FIELDS(e), .diag = &prep.diag,
                            .req = req,
                            .repeated_calls = g.repeat_json };
             sbuf r = {0};
@@ -4521,12 +4557,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .reason = g.reason.s, .reason_n = g.reason.n,
                            .reason_tokens = g.reason_tokens,
                            .with_usage = true,
-                           .n_prompt = n_prompt, .n_gen = n_gen, .cached = keep,
+                           .n_prompt = prep.n_prompt, .n_gen = n_gen, .cached = keep,
                            .forked = reuse.forked, .saved_s = reuse.saved_s,
                            .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
                            .schema = q.schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
-                           SPEC_DOC_FIELDS(e), .diag = &diag,
+                           SPEC_DOC_FIELDS(e), .diag = &prep.diag,
                            .req = req,
                            .repeated_calls = g.repeat_json };
             sbuf r = {0};
@@ -4654,16 +4690,16 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         sb_fmt(&r, "\"finish_reason\":\"%s\"", openai_finish(finish));
         append_stop_token(&r, s, e);
         sb_lit(&r, "}],");
-        openai_usage_json(&r, n_prompt, n_gen, keep);
+        openai_usage_json(&r, prep.n_prompt, n_gen, keep);
         sb_lit(&r, ",");
-        resp_doc td = { .n_prompt = n_prompt, .n_gen = n_gen, .cached = keep,
+        resp_doc td = { .n_prompt = prep.n_prompt, .n_gen = n_gen, .cached = keep,
                         .forked = reuse.forked, .saved_s = reuse.saved_s,
                         .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
                            .schema = q.schema != NULL,
                         .finish_detail = finish_detail_of(finish)
                                        ? finish_detail_of(finish) : cut_detail,
                         .json_mode = e->json_mode, .spec = spec_used,
-                        SPEC_DOC_FIELDS(e), .diag = &diag,
+                        SPEC_DOC_FIELDS(e), .diag = &prep.diag,
                         .repeated_calls = g.repeat_json };
         telemetry_json(&r, &td);
         sb_lit(&r, "}");
@@ -4673,7 +4709,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
 done: ;
 #undef WRITE_RECEIPT
     free(shape.json.s);
-    free(diag.closure_json);
+    free(prep.diag.closure_json);
     // A paging note only when there was paging. Silence is the normal case and
     // a per-request "0 page-ins" would be noise, but when the weights have been
     // evicted this line is the only thing that says the time went to the disk
@@ -4681,12 +4717,12 @@ done: ;
     uint64_t faults = plat_major_faults() - faults_at_start;
     char paging[80];
     paging[0] = '\0';
-    if (model_paging_note_wanted(faults, n_prompt + n_gen))
+    if (model_paging_note_wanted(faults, prep.n_prompt + n_gen))
         snprintf(paging, sizeof(paging),
                  " [%llu page-ins — weights not resident]",
                  (unsigned long long)faults);
     fprintf(stderr, "[slot %d] %s: %d prompt (%d cached) + %d gen tok (%.1f tok/s)%s%s%s\n",
-            s->id, g.id, n_prompt, keep, n_gen,
+            s->id, g.id, prep.n_prompt, keep, n_gen,
             n_gen / (gtime > 0 ? gtime : 1e-9),
             q.schema ? " [schema]" : e->json_mode ? " [json]" : spec_used ? " [spec]" : "",
             // "[client gone]" is an accusation, and it used to be made about a
