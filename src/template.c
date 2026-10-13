@@ -2063,6 +2063,74 @@ static size_t render_hermes4(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_CHATML and TMPL_CHATML_THINK.
+static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
+                            bool add_assistant, int thinking, const jv *tools,
+                            char *out, size_t cap) {
+    size_t off = 0;
+    bool qwen_tools = tools && tools->type == J_ARR && tools->n > 0;
+    int first = 0;
+    int last_user = -1;
+    for (int i = 0; i < n_msgs; i++)
+        if (!strcmp(msgs[i].role, "user")) last_user = i;
+    if (qwen_tools) {
+        off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
+        if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
+            off = emit(out, cap, off, "%s\n\n", msgs[0].content, NULL);
+            first = 1;
+        }
+        sbuf decl = {0};
+        tools_render_for(tmpl, tools, &decl);
+        off = emit(out, cap, off, "%s<|im_end|>\n",
+                   decl.s ? decl.s : "", NULL);
+        free(decl.s);
+    }
+    for (int i = first; i < n_msgs; i++) {
+        // A tool result is not a `tool` turn in this family: every ChatML
+        // reference -- Qwen2.5, Qwen3 and ornith alike -- renders it as a
+        // USER turn carrying a <tool_response> block, and folds
+        // consecutive results into one turn. Runner already did exactly
+        // this on its ORNITH path; emitting `<|im_start|>tool` here sent
+        // the model a role header its own template never produces.
+        if (!strcmp(msgs[i].role, "tool")) {
+            bool prev_tool = i > 0 && !strcmp(msgs[i - 1].role, "tool");
+            bool next_tool = i + 1 < n_msgs &&
+                             !strcmp(msgs[i + 1].role, "tool");
+            if (!prev_tool)
+                off = emit(out, cap, off, "<|im_start|>user", NULL, NULL);
+            off = emit(out, cap, off,
+                       "\n<tool_response>\n%s\n</tool_response>",
+                       msgs[i].content, NULL);
+            if (!next_tool)
+                off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+            continue;
+        }
+        bool qwen3_empty_think =
+            tmpl == TMPL_CHATML_THINK && i == n_msgs - 1 &&
+            i > last_user && !strcmp(msgs[i].role, "assistant") &&
+            !content_starts(msgs[i].content, "<think>");
+        off = emit(out, cap, off, "<|im_start|>%s\n", msgs[i].role,
+                   NULL);
+        if (qwen3_empty_think)
+            off = emit(out, cap, off, "<think>\n\n</think>\n\n",
+                       NULL, NULL);
+        off = emit(out, cap, off, "%s<|im_end|>\n", msgs[i].content,
+                   NULL);
+    }
+    if (add_assistant) {
+        off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+        // Qwen3's enable_thinking=false branch, verbatim from
+        // Qwen/Qwen3-* tokenizer_config.json: an already-closed thought
+        // block, which is how the family is asked not to reason. Its
+        // reference defaults thinking ON, so this is emitted only when a
+        // caller explicitly turns it off -- never for THINK_DEFAULT.
+        if (tmpl == TMPL_CHATML_THINK && thinking == THINK_OFF)
+            off = emit(out, cap, off, "<think>\n\n</think>\n\n",
+                       NULL, NULL);
+    }
+    return off;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -2086,69 +2154,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_HERMES4:
         return render_hermes4(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_CHATML:
-    case TMPL_CHATML_THINK: {
-        bool qwen_tools = tools && tools->type == J_ARR && tools->n > 0;
-        int first = 0;
-        int last_user = -1;
-        for (int i = 0; i < n_msgs; i++)
-            if (!strcmp(msgs[i].role, "user")) last_user = i;
-        if (qwen_tools) {
-            off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
-            if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
-                off = emit(out, cap, off, "%s\n\n", msgs[0].content, NULL);
-                first = 1;
-            }
-            sbuf decl = {0};
-            tools_render_for(tmpl, tools, &decl);
-            off = emit(out, cap, off, "%s<|im_end|>\n",
-                       decl.s ? decl.s : "", NULL);
-            free(decl.s);
-        }
-        for (int i = first; i < n_msgs; i++) {
-            // A tool result is not a `tool` turn in this family: every ChatML
-            // reference -- Qwen2.5, Qwen3 and ornith alike -- renders it as a
-            // USER turn carrying a <tool_response> block, and folds
-            // consecutive results into one turn. Runner already did exactly
-            // this on its ORNITH path; emitting `<|im_start|>tool` here sent
-            // the model a role header its own template never produces.
-            if (!strcmp(msgs[i].role, "tool")) {
-                bool prev_tool = i > 0 && !strcmp(msgs[i - 1].role, "tool");
-                bool next_tool = i + 1 < n_msgs &&
-                                 !strcmp(msgs[i + 1].role, "tool");
-                if (!prev_tool)
-                    off = emit(out, cap, off, "<|im_start|>user", NULL, NULL);
-                off = emit(out, cap, off,
-                           "\n<tool_response>\n%s\n</tool_response>",
-                           msgs[i].content, NULL);
-                if (!next_tool)
-                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-                continue;
-            }
-            bool qwen3_empty_think =
-                tmpl == TMPL_CHATML_THINK && i == n_msgs - 1 &&
-                i > last_user && !strcmp(msgs[i].role, "assistant") &&
-                !content_starts(msgs[i].content, "<think>");
-            off = emit(out, cap, off, "<|im_start|>%s\n", msgs[i].role,
-                       NULL);
-            if (qwen3_empty_think)
-                off = emit(out, cap, off, "<think>\n\n</think>\n\n",
-                           NULL, NULL);
-            off = emit(out, cap, off, "%s<|im_end|>\n", msgs[i].content,
-                       NULL);
-        }
-        if (add_assistant) {
-            off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
-            // Qwen3's enable_thinking=false branch, verbatim from
-            // Qwen/Qwen3-* tokenizer_config.json: an already-closed thought
-            // block, which is how the family is asked not to reason. Its
-            // reference defaults thinking ON, so this is emitted only when a
-            // caller explicitly turns it off -- never for THINK_DEFAULT.
-            if (tmpl == TMPL_CHATML_THINK && thinking == THINK_OFF)
-                off = emit(out, cap, off, "<think>\n\n</think>\n\n",
-                           NULL, NULL);
-        }
-        break;
-    }
+    case TMPL_CHATML_THINK:
+        return render_chatml(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_LLAMA3:
         for (int i = 0; i < n_msgs; i++)
             off = emit(out, cap, off,
