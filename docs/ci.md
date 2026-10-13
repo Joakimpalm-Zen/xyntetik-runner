@@ -44,11 +44,15 @@ The `changes` job runs ahead of everything else and answers two questions.
   full Windows and macOS suites still run, because the pull request never ran
   them. A direct push, or a merge after main moved, runs everything.
 
-`main` is protected: the pull-request checks are required, including
-`changes` itself (so a failure there blocks the merge rather than skipping
-the rest), the rules apply to administrators, and force pushes are refused.
-A red pull request cannot be merged; a docs-only one is merged on skipped
-checks.
+`main` is protected. Four checks are required: `changes` itself (so a
+failure there blocks the merge rather than skipping the rest), `pr-gate`,
+`check` and `commit-hygiene`. `pr-gate` runs after every engine job with
+`if: always()` and fails when any of them failed or was cancelled; a skipped
+job passes it. The engine jobs are not required one by one, because a
+skipped matrix job reports under its unexpanded name and its per-group
+checks never appear, which left a docs-only pull request unmergeable. The
+rules apply to administrators, and force pushes are refused. A red pull
+request cannot be merged; a docs-only one is merged on skipped checks.
 
 ## Timing and test execution
 
