@@ -11,8 +11,11 @@ def exchange(server, payload, chunk):
             for offset in range(0, len(payload), chunk):
                 s.sendall(payload[offset:offset + chunk])
             s.shutdown(socket.SHUT_WR)
-        except (BrokenPipeError, ConnectionResetError):
-            pass  # an invalid header may be refused before all bytes arrive
+        except OSError:
+            # an invalid header may be refused before all bytes arrive: a broken
+            # pipe or reset mid-send, or ENOTCONN when the server closed before
+            # the write side was shut down (seen on the hosted Linux runner)
+            pass
         data = bytearray()
         while len(data) < 65536:
             try:

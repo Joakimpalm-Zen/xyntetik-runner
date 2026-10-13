@@ -2208,6 +2208,7 @@ endif
 # take half an hour; `make test` runs it on the merge and on a lab Mac.
 .PHONY: test-metal
 test-metal:
+	@[ -f test-moe-fixture.moe1.gguf ] || $(PYTHON) scripts/make-test-moe.py test-moe-fixture
 	$(MAKE) --no-print-directory test-metal-shader-gate
 	$(MAKE) --no-print-directory test-metal-fallback PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-metal-kquant
