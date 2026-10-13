@@ -350,7 +350,7 @@ def shell(meta: dict, body: str, sha: str) -> str:
       <h4>Runner</h4>
       <a href="/runner/">What it is</a>
       <a href="/runner/#sixty-seconds">Sixty seconds to a served model</a>
-      <a href="/runner/#compare">Where it wins, where it does not</a>
+      <a href="/#compare">Where it wins, where it does not</a>
       <a href="{REPO}/releases">Releases</a>
       <a href="{REPO}/blob/main/README.md">README and CLI reference</a>
     </div>

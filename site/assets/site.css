@@ -168,6 +168,9 @@ li { margin: 0.3rem 0; }
 .shot figcaption { margin-top: 0.6rem; }
 .fig picture { display: block; max-width: 540px; margin: 0 auto; }
 .grid-2 > .fig { align-self: start; }
+.card .fig { margin: 0.8rem 0 0.4rem; }
+.card .fig picture { max-width: none; }
+.card .measured { display: block; margin: 0.2rem 0 0.4rem; }
 .hf-logo { display: inline-block; vertical-align: -0.12em; margin-right: 0.25rem; }
 .card.accent { border-top: 3px solid var(--teal); }
 .card .icon { width: 36px; height: 36px; color: var(--teal); margin-bottom: 0.4rem; }
