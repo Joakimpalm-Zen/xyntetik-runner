@@ -1982,132 +1982,127 @@ static bool bind_hparams(model_t *m, gguf_file *g, const char *arch, bool hybrid
     return true;
 }
 
-static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
-    if (!gguf_open(&m->gf, path)) return false;
-    gguf_file *g = &m->gf;
-    if (!bind_agent_profile(m, g)) return false;
-    // kept for the backend's shared-weight registry: two instances of the same
-    // file are what let `--parallel N` upload the weights once
-    size_t plen = strlen(path) + 1;
-    m->path = malloc(plen);
-    if (!m->path) return false;
-    memcpy(m->path, path, plen);
-    model_record_file_id(m, path);
-
-    const char *arch = gguf_get_str(g, "general.architecture", "?");
-    if (!bind_admit_architecture(m, arch)) return false;
+// Gemma 3: its attention and embedding scaling, activation, rope base and
+// sliding pattern.
+static bool bind_meta_gemma3(model_t *m, gguf_file *g, const char *arch) {
     char key[128];
-    // The hybrid families type their blocks with zeros in the per-layer
-    // arrays (nemotron_h: head_count_kv / feed_forward_length; granitehybrid:
-    // head_count_kv). Their own blocks below read those arrays; the removal
-    // reading of a zero (this block's sublayer was dropped from the file)
-    // applies to every other architecture.
-    const bool hybrid_typed = strcmp(arch, "nemotron_h") == 0 ||
-                              strcmp(arch, "nemotron_h_moe") == 0 ||
-                              strcmp(arch, "granitehybrid") == 0;
+    // gemma3: scaled embeddings, GELU ffn, sliding-window attention on 5
+    // of every 6 layers (the 6th is global), locals rope at their own base
+    m->embd_scale  = sqrtf((float)m->n_embd);
+    m->ffn_act     = ACT_GELU;
+    m->swa_window  = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
+    m->rms_eps     = gguf_get_f32(g, AK("attention.layer_norm_rms_epsilon"), 1e-6f);
+    // gemma3 ropes global layers at 1M; some exports omit the key
+    m->rope_base   = gguf_get_f32(g, AK("rope.freq_base"), 1000000.0f);
+    int pattern    = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 6);
+    if (pattern < 1) pattern = 6;   // it is a divisor below (every other
+                                    // arch block clamps its own period)
+    m->l_is_swa    = calloc(m->n_layer, sizeof(bool));
+    if (!m->l_is_swa) return false;
+    if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
+                           m->l_is_swa, m->n_layer))
+        for (int i = 0; i < m->n_layer; i++)
+            m->l_is_swa[i] = m->swa_window > 0 && ((i + 1) % pattern) != 0;
+    else if (m->swa_window <= 0)
+        for (int i = 0; i < m->n_layer; i++) m->l_is_swa[i] = false;
+    // The reference scales attention by query_pre_attn_scalar ** -0.5,
+    // and that scalar is the head width on every size but the 27B, where
+    // it is hidden_size / num_attention_heads (168, over 128-wide heads).
+    // The GGUF does not carry it; the 27B is the 62-block size, which is
+    // how llama.cpp recovers the same rule (gemma_pytorch config.py).
+    if (m->n_layer == 62 && m->n_head > 0)
+        m->attn_scale = 1.0f / sqrtf((float)(m->n_embd / m->n_head));
+    return true;
+}
 
-    if (!bind_hparams(m, g, arch, hybrid_typed)) return false;
-    if (strcmp(arch, "gemma3") == 0) {
-        // gemma3: scaled embeddings, GELU ffn, sliding-window attention on 5
-        // of every 6 layers (the 6th is global), locals rope at their own base
-        m->embd_scale  = sqrtf((float)m->n_embd);
-        m->ffn_act     = ACT_GELU;
-        m->swa_window  = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
-        m->rms_eps     = gguf_get_f32(g, AK("attention.layer_norm_rms_epsilon"), 1e-6f);
-        // gemma3 ropes global layers at 1M; some exports omit the key
-        m->rope_base   = gguf_get_f32(g, AK("rope.freq_base"), 1000000.0f);
-        int pattern    = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 6);
-        if (pattern < 1) pattern = 6;   // it is a divisor below (every other
-                                        // arch block clamps its own period)
-        m->l_is_swa    = calloc(m->n_layer, sizeof(bool));
-        if (!m->l_is_swa) return false;
-        if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
-                               m->l_is_swa, m->n_layer))
-            for (int i = 0; i < m->n_layer; i++)
-                m->l_is_swa[i] = m->swa_window > 0 && ((i + 1) % pattern) != 0;
-        else if (m->swa_window <= 0)
-            for (int i = 0; i < m->n_layer; i++) m->l_is_swa[i] = false;
-        // The reference scales attention by query_pre_attn_scalar ** -0.5,
-        // and that scalar is the head width on every size but the 27B, where
-        // it is hidden_size / num_attention_heads (168, over 128-wide heads).
-        // The GGUF does not carry it; the 27B is the 62-block size, which is
-        // how llama.cpp recovers the same rule (gemma_pytorch config.py).
-        if (m->n_layer == 62 && m->n_head > 0)
-            m->attn_scale = 1.0f / sqrtf((float)(m->n_embd / m->n_head));
-    }
-    if (strcmp(arch, "gpt-oss") == 0) {
-        // gpt-oss (OpenAI MoE). Transcribed from llama.cpp
-        // src/models/openai-moe.cpp + build_moe_ffn, not inferred:
-        //   * attn_norm pre-attention, post_attention_norm as the FFN norm
-        //     (the qwen35 loading shape, not llama's ffn_norm);
-        //   * per-head attention SINKS in the softmax denominator;
-        //   * clamped alpha-sigmoid GLU (ACT_SWIGLU_OAI), not SwiGLU;
-        //   * router bias + per-expert gate/up/down biases;
-        //   * SWA period 2 with NO separate SWA rope base — llama.cpp seeds
-        //     rope_freq_base_train_swa from the main base and only overrides
-        //     it if the key exists, so the locals rope at 150k here. The
-        //     runner's generic SWA path defaults that to 10k, which would be
-        //     silently wrong, so it is pinned explicitly below.
-        m->gptoss     = true;
-        // Harmony's analysis channel, split out of content by think_feed the
-        // same way muse's ` to=self` reasoning turn is. Suppressed from
-        // content by default and surfaced as reasoning_content.
-        m->think_open  = HARMONY_THINK_OPEN;
-        m->think_close = HARMONY_THINK_CLOSE;
-        m->swa_rope_global = true;   // sliding layers rope like the global ones
-        m->ffn_act    = ACT_SWIGLU_OAI;
-        m->swa_window = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
-        int swa_period = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 2);
-        if (swa_period < 1) swa_period = 2;
-        m->l_is_swa = calloc(m->n_layer, sizeof(bool));
-        if (!m->l_is_swa) return false;
-        // llama.cpp set_swa_pattern(p): is_swa[il] = il % p < p-1, which for
-        // p=2 marks the EVEN layers — identical to the runner's existing
-        // ((i + 1) % p) != 0 form used by gemma3.
-        for (int i = 0; i < m->n_layer; i++)
-            m->l_is_swa[i] = m->swa_window > 0 && ((i + 1) % swa_period) != 0;
-        m->rms_eps = gguf_get_f32(g, AK("attention.layer_norm_rms_epsilon"), 1e-5f);
-    }
-    if (strcmp(arch, "afmoe") == 0) {
-        // afmoe (Arcee Trinity, AfmoeForCausalLM). Transcribed from llama.cpp
-        // src/models/afmoe.cpp (PR #16477) + the Trinity GGUF headers:
-        //   * muP embedding scale sqrt(n_embd), hardcoded exactly as llama.cpp
-        //     does for this arch;
-        //   * Qwen-G1 output-gated attention: a separate blk.N.attn_gate
-        //     projection of the normed block input, sigmoid, elementwise on
-        //     the concatenated heads before attn_output (the qwen35 gate math
-        //     with a standalone tensor instead of a fused Q slice);
-        //   * SWA 2048 at period 4 (3 local : 1 global); the global layers
-        //     are NoPE — the Llama-4 no_rope knob with the SAME period, set
-        //     after the generic key read below since the GGUF carries no key;
-        //   * sigmoid routing with a DeepSeek-style selection-only bias
-        //     (exp_probs_b.bias), renormalized weights, then x route_scale —
-        //     all existing generalized-router behavior driven by keys;
-        //   * the first leading_dense_block_count layers are plain dense FFN.
-        m->attn_out_gate = true;
-        m->embd_scale    = sqrtf((float)m->n_embd);
-        m->swa_window    = (int)gguf_get_u32(g, AK("attention.sliding_window"), 2048);
-        int period       = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 4);
-        if (period < 1) period = 4;
-        m->l_is_swa = calloc(m->n_layer, sizeof(bool));
-        if (!m->l_is_swa) return false;
-        for (int i = 0; i < m->n_layer; i++)
-            m->l_is_swa[i] = m->swa_window > 0 && ((i + 1) % period) != 0;
-        m->swa_rope_global = true;   // single 10k rope base; globals skip rope
-        m->n_dense_lead  = (int)gguf_get_u32(g, AK("leading_dense_block_count"), 0);
-        int gating = (int)gguf_get_u32(g, AK("expert_gating_func"), 2);
-        m->expert_gating  = gating == 1 ? EXPERT_GATE_SOFTMAX : EXPERT_GATE_SIGMOID;
-        m->expert_w_scale = gguf_get_f32(g, AK("expert_weights_scale"), 0.0f);
-        m->expert_norm_w  = gguf_get_bool(g, AK("expert_weights_norm"), false);
-    }
-    if (strcmp(arch, "qwen3") == 0 || strcmp(arch, "qwen3moe") == 0) {
-        // Thinking-tuned Qwen3 (dense and sparse-MoE) responses wrap hidden
-        // reasoning before the visible answer; shared CLI/server output
-        // handling splits this pair. qwen3moe = qwen3 attention (qk-norm, GQA,
-        // NeoX rope) with a sparse-MoE FFN, handled by the is_moe layer path.
-        m->think_open  = "<think>";
-        m->think_close = "</think>";
-    }
+// gpt-oss: the Harmony reasoning channel, SWIGLU-OAI and the sliding layers.
+static bool bind_meta_gptoss(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    // gpt-oss (OpenAI MoE). Transcribed from llama.cpp
+    // src/models/openai-moe.cpp + build_moe_ffn, not inferred:
+    //   * attn_norm pre-attention, post_attention_norm as the FFN norm
+    //     (the qwen35 loading shape, not llama's ffn_norm);
+    //   * per-head attention SINKS in the softmax denominator;
+    //   * clamped alpha-sigmoid GLU (ACT_SWIGLU_OAI), not SwiGLU;
+    //   * router bias + per-expert gate/up/down biases;
+    //   * SWA period 2 with NO separate SWA rope base — llama.cpp seeds
+    //     rope_freq_base_train_swa from the main base and only overrides
+    //     it if the key exists, so the locals rope at 150k here. The
+    //     runner's generic SWA path defaults that to 10k, which would be
+    //     silently wrong, so it is pinned explicitly below.
+    m->gptoss     = true;
+    // Harmony's analysis channel, split out of content by think_feed the
+    // same way muse's ` to=self` reasoning turn is. Suppressed from
+    // content by default and surfaced as reasoning_content.
+    m->think_open  = HARMONY_THINK_OPEN;
+    m->think_close = HARMONY_THINK_CLOSE;
+    m->swa_rope_global = true;   // sliding layers rope like the global ones
+    m->ffn_act    = ACT_SWIGLU_OAI;
+    m->swa_window = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
+    int swa_period = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 2);
+    if (swa_period < 1) swa_period = 2;
+    m->l_is_swa = calloc(m->n_layer, sizeof(bool));
+    if (!m->l_is_swa) return false;
+    // llama.cpp set_swa_pattern(p): is_swa[il] = il % p < p-1, which for
+    // p=2 marks the EVEN layers — identical to the runner's existing
+    // ((i + 1) % p) != 0 form used by gemma3.
+    for (int i = 0; i < m->n_layer; i++)
+        m->l_is_swa[i] = m->swa_window > 0 && ((i + 1) % swa_period) != 0;
+    m->rms_eps = gguf_get_f32(g, AK("attention.layer_norm_rms_epsilon"), 1e-5f);
+    return true;
+}
+
+// AFMoE: its dense lead, attention gate, sliding pattern and expert gating.
+static bool bind_meta_afmoe(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    // afmoe (Arcee Trinity, AfmoeForCausalLM). Transcribed from llama.cpp
+    // src/models/afmoe.cpp (PR #16477) + the Trinity GGUF headers:
+    //   * muP embedding scale sqrt(n_embd), hardcoded exactly as llama.cpp
+    //     does for this arch;
+    //   * Qwen-G1 output-gated attention: a separate blk.N.attn_gate
+    //     projection of the normed block input, sigmoid, elementwise on
+    //     the concatenated heads before attn_output (the qwen35 gate math
+    //     with a standalone tensor instead of a fused Q slice);
+    //   * SWA 2048 at period 4 (3 local : 1 global); the global layers
+    //     are NoPE — the Llama-4 no_rope knob with the SAME period, set
+    //     after the generic key read below since the GGUF carries no key;
+    //   * sigmoid routing with a DeepSeek-style selection-only bias
+    //     (exp_probs_b.bias), renormalized weights, then x route_scale —
+    //     all existing generalized-router behavior driven by keys;
+    //   * the first leading_dense_block_count layers are plain dense FFN.
+    m->attn_out_gate = true;
+    m->embd_scale    = sqrtf((float)m->n_embd);
+    m->swa_window    = (int)gguf_get_u32(g, AK("attention.sliding_window"), 2048);
+    int period       = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 4);
+    if (period < 1) period = 4;
+    m->l_is_swa = calloc(m->n_layer, sizeof(bool));
+    if (!m->l_is_swa) return false;
+    for (int i = 0; i < m->n_layer; i++)
+        m->l_is_swa[i] = m->swa_window > 0 && ((i + 1) % period) != 0;
+    m->swa_rope_global = true;   // single 10k rope base; globals skip rope
+    m->n_dense_lead  = (int)gguf_get_u32(g, AK("leading_dense_block_count"), 0);
+    int gating = (int)gguf_get_u32(g, AK("expert_gating_func"), 2);
+    m->expert_gating  = gating == 1 ? EXPERT_GATE_SOFTMAX : EXPERT_GATE_SIGMOID;
+    m->expert_w_scale = gguf_get_f32(g, AK("expert_weights_scale"), 0.0f);
+    m->expert_norm_w  = gguf_get_bool(g, AK("expert_weights_norm"), false);
+    return true;
+}
+
+// Qwen3, dense and sparse: the think tags its responses wrap reasoning in.
+static bool bind_meta_qwen3(model_t *m, gguf_file *g, const char *arch) {
+    // Thinking-tuned Qwen3 (dense and sparse-MoE) responses wrap hidden
+    // reasoning before the visible answer; shared CLI/server output
+    // handling splits this pair. qwen3moe = qwen3 attention (qk-norm, GQA,
+    // NeoX rope) with a sparse-MoE FFN, handled by the is_moe layer path.
+    m->think_open  = "<think>";
+    m->think_close = "</think>";
+    return true;
+}
+
+// NextN/MTP predictor blocks: the trunk count, or the --mtp-file companion
+// attached to it.
+static bool bind_mtp_layers(model_t *m, gguf_file *g, const char *arch, const model_params *p) {
+    char key[128];
     // Multi-token-prediction heads, admitted as training-only for EVERY
     // architecture that declares them. An export whose block_count includes
     // auxiliary NextN/MTP predictor blocks says so with
@@ -2152,58 +2147,103 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         m->mtp_layers = 1;
         m->mtp_external = true;
     }
-    if (!m->l_is_swa) {
-        int sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
-        if (sw > 0) {
-            int pattern = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 2);
-            if (pattern < 1) pattern = 2;
-            m->swa_window = sw;
-            m->l_is_swa = calloc(m->n_layer, sizeof(bool));
-            if (!m->l_is_swa) return false;
-            if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
-                                   m->l_is_swa, m->n_layer))
-                for (int i = 0; i < m->n_layer; i++)
-                    m->l_is_swa[i] = ((i + 1) % pattern) != 0;
-        }
+    return true;
+}
+
+// The sliding window and its pattern, for an architecture whose block above
+// set none.
+static bool bind_swa_default(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    int sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
+    if (sw > 0) {
+        int pattern = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 2);
+        if (pattern < 1) pattern = 2;
+        m->swa_window = sw;
+        m->l_is_swa = calloc(m->n_layer, sizeof(bool));
+        if (!m->l_is_swa) return false;
+        if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
+                               m->l_is_swa, m->n_layer))
+            for (int i = 0; i < m->n_layer; i++)
+                m->l_is_swa[i] = ((i + 1) % pattern) != 0;
     }
-    if (strcmp(arch, "qwen35") == 0 || strcmp(arch, "qwen4exp") == 0) {
-        // Qwen3.5 dense (the architecture used by Ornith-1.0-9B) alternates
-        // three Gated DeltaNet layers with one conventional attention layer.
-        // qwen4exp (Qwen3.8-Flash-Next, "a preview of the Qwen4
-        // architecture") keeps that token mixer and adds routed experts
-        // with a gated shared expert on every block, a hyper-connection
-        // residual (hc parallel streams, mixers in place of the pre-norms),
-        // a sparse-attention indexer on the full-attention blocks (dense
-        // under the admission cap, see below) and an n-gram PLE block.
-        m->qwen35            = true;
-        m->think_open        = "<think>";
-        m->think_close       = "</think>";
-        m->full_attn_interval = (int)gguf_get_u32(g, AK("full_attention_interval"), 4);
-        m->ssm_conv_kernel   = (int)gguf_get_u32(g, AK("ssm.conv_kernel"), 0);
-        m->ssm_inner         = (int)gguf_get_u32(g, AK("ssm.inner_size"), 0);
-        m->ssm_state         = (int)gguf_get_u32(g, AK("ssm.state_size"), 0);
-        m->ssm_v_heads       = (int)gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
-        m->ssm_groups        = (int)gguf_get_u32(g, AK("ssm.group_count"), 0);
-        // The ratio tests below say the fields agree with each other; the
-        // range tests say they fit the `int` arithmetic that carries them.
-        // Both sibling Mamba-style gates (granitehybrid, nemotron_h) have had
-        // these ceilings all along and this one did not, so a file could
-        // satisfy every ratio with values whose conv_dim
-        // (2 * ssm_state * ssm_groups + ssm_inner) overflows a signed int --
-        // UB, and a negative conv_dim then makes check_shape's row test
-        // vacuous, admitting attn_qkv and ssm_conv1d at any row count.
-        if (m->full_attn_interval <= 0 ||
-            m->ssm_conv_kernel <= 0 || m->ssm_conv_kernel > 8 ||
-            m->ssm_inner <= 0 || m->ssm_inner > MDL_DIM_MAX ||
-            m->ssm_state <= 0 || m->ssm_state > MDL_DIM_MAX ||
-            m->ssm_v_heads <= 0 || m->ssm_groups <= 0 ||
-            m->ssm_inner % m->ssm_v_heads != 0 ||
-            m->ssm_inner / m->ssm_v_heads != m->ssm_state ||
-            m->ssm_v_heads % m->ssm_groups != 0) {
-            fprintf(stderr, "error: invalid qwen35 Gated DeltaNet geometry\n");
-            return false;
-        }
+    return true;
+}
+
+// Qwen 3.5 and qwen4exp: Gated DeltaNet geometry, the attention interval and
+// the think tags.
+static bool bind_meta_qwen35(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    // Qwen3.5 dense (the architecture used by Ornith-1.0-9B) alternates
+    // three Gated DeltaNet layers with one conventional attention layer.
+    // qwen4exp (Qwen3.8-Flash-Next, "a preview of the Qwen4
+    // architecture") keeps that token mixer and adds routed experts
+    // with a gated shared expert on every block, a hyper-connection
+    // residual (hc parallel streams, mixers in place of the pre-norms),
+    // a sparse-attention indexer on the full-attention blocks (dense
+    // under the admission cap, see below) and an n-gram PLE block.
+    m->qwen35            = true;
+    m->think_open        = "<think>";
+    m->think_close       = "</think>";
+    m->full_attn_interval = (int)gguf_get_u32(g, AK("full_attention_interval"), 4);
+    m->ssm_conv_kernel   = (int)gguf_get_u32(g, AK("ssm.conv_kernel"), 0);
+    m->ssm_inner         = (int)gguf_get_u32(g, AK("ssm.inner_size"), 0);
+    m->ssm_state         = (int)gguf_get_u32(g, AK("ssm.state_size"), 0);
+    m->ssm_v_heads       = (int)gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
+    m->ssm_groups        = (int)gguf_get_u32(g, AK("ssm.group_count"), 0);
+    // The ratio tests below say the fields agree with each other; the
+    // range tests say they fit the `int` arithmetic that carries them.
+    // Both sibling Mamba-style gates (granitehybrid, nemotron_h) have had
+    // these ceilings all along and this one did not, so a file could
+    // satisfy every ratio with values whose conv_dim
+    // (2 * ssm_state * ssm_groups + ssm_inner) overflows a signed int --
+    // UB, and a negative conv_dim then makes check_shape's row test
+    // vacuous, admitting attn_qkv and ssm_conv1d at any row count.
+    if (m->full_attn_interval <= 0 ||
+        m->ssm_conv_kernel <= 0 || m->ssm_conv_kernel > 8 ||
+        m->ssm_inner <= 0 || m->ssm_inner > MDL_DIM_MAX ||
+        m->ssm_state <= 0 || m->ssm_state > MDL_DIM_MAX ||
+        m->ssm_v_heads <= 0 || m->ssm_groups <= 0 ||
+        m->ssm_inner % m->ssm_v_heads != 0 ||
+        m->ssm_inner / m->ssm_v_heads != m->ssm_state ||
+        m->ssm_v_heads % m->ssm_groups != 0) {
+        fprintf(stderr, "error: invalid qwen35 Gated DeltaNet geometry\n");
+        return false;
     }
+    return true;
+}
+
+static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
+    if (!gguf_open(&m->gf, path)) return false;
+    gguf_file *g = &m->gf;
+    if (!bind_agent_profile(m, g)) return false;
+    // kept for the backend's shared-weight registry: two instances of the same
+    // file are what let `--parallel N` upload the weights once
+    size_t plen = strlen(path) + 1;
+    m->path = malloc(plen);
+    if (!m->path) return false;
+    memcpy(m->path, path, plen);
+    model_record_file_id(m, path);
+
+    const char *arch = gguf_get_str(g, "general.architecture", "?");
+    if (!bind_admit_architecture(m, arch)) return false;
+    char key[128];
+    // The hybrid families type their blocks with zeros in the per-layer
+    // arrays (nemotron_h: head_count_kv / feed_forward_length; granitehybrid:
+    // head_count_kv). Their own blocks below read those arrays; the removal
+    // reading of a zero (this block's sublayer was dropped from the file)
+    // applies to every other architecture.
+    const bool hybrid_typed = strcmp(arch, "nemotron_h") == 0 ||
+                              strcmp(arch, "nemotron_h_moe") == 0 ||
+                              strcmp(arch, "granitehybrid") == 0;
+
+    if (!bind_hparams(m, g, arch, hybrid_typed)) return false;
+    if (strcmp(arch, "gemma3") == 0 && !bind_meta_gemma3(m, g, arch)) return false;
+    if (strcmp(arch, "gpt-oss") == 0 && !bind_meta_gptoss(m, g, arch)) return false;
+    if (strcmp(arch, "afmoe") == 0 && !bind_meta_afmoe(m, g, arch)) return false;
+    if ((strcmp(arch, "qwen3") == 0 || strcmp(arch, "qwen3moe") == 0) && !bind_meta_qwen3(m, g, arch)) return false;
+    if (!bind_mtp_layers(m, g, arch, p)) return false;
+    if (!m->l_is_swa && !bind_swa_default(m, g, arch)) return false;
+    if ((strcmp(arch, "qwen35") == 0 || strcmp(arch, "qwen4exp") == 0) && !bind_meta_qwen35(m, g, arch)) return false;
     m->ple4_layer = -1;
     if (strcmp(arch, "qwen4exp") == 0) {
         m->hyper_conn  = true;
