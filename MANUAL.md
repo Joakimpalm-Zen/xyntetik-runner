@@ -362,50 +362,95 @@ guarantees the SHAPE of a call at any quantization, not its contents
 <a id="adaptation"></a>
 ### Train the GGUF you actually serve
 
-Runner trains LoRA adapters **directly through the frozen quantized GGUF
-used for inference**. There is no FP16 training copy and no separate
-training framework: the serving forward pass is the training forward pass,
-so **the policy you sample is the policy you train** - the train/infer
-numerical mismatch that silently breaks on-policy learning cannot occur
-between two codepaths that are one codepath. That identity is the CPU
-codepath's: the trainer tapes the host forward, so it holds exactly for an
-adapter served on the CPU, and within the engine's measured CPU/GPU envelope
-(1.255e-3 max \|Δlogprob\| on Qwen2.5-1.5B Q4_K_M) for one served on CUDA. And training is deterministic
-in the strongest sense: same data + same seed + same config produce a
-**byte-identical adapter file**, with a machine-written provenance record
-(base/data/adapter sha256s, seed, full config) beside every adapter -
-adaptation as an auditable artifact, not a run that is merely repeatable
-"within tolerance."
+**What it is.** `--train` fits a LoRA adapter, a small set of extra weights
+on the model's projections, through the quantized GGUF the binary serves.
+There is no 16-bit training copy, no second framework and no conversion
+step afterwards: the serving forward pass is the training forward pass,
+and the adapter comes out beside a provenance record (base, data and
+adapter sha256, seed, full configuration, binary identity). The trained
+adapter is then served on the same file with `--lora`, routed per request
+with `--adapter`, or folded into a standalone file with `--merge-lora`.
 
-What the backward covers is the dense gated transformer in its shapes:
+**What it is for, and what it costs.** Small, targeted datasets: a tool
+habit, a format, a house style, on the order of hundreds of examples and
+hundreds of steps. It is not a pretraining or a large-corpus instrument. A
+step costs about a minute on a consumer GPU (Qwen2.5-7B Q4_K_M: 64.8 s on an
+RTX 3070 with the CUDA assist, 76.5 s on 8 CPU threads) and about 20 s for a
+4B on a many-core CPU host; the published Qwen3-4B adapter took 316 steps.
+Budget hours, not minutes, and expect a Python training stack to be
+faster per step. What Runner buys for that is one numerical path and an
+auditable artifact.
+
+**What was measured.** One public base and task, Qwen3-4B Q4_K_M with a
+29-prompt held-out tool-calling evaluation, greedy, measured 2026-08-22 on
+[Qwen3-4B-Runner-ToolUse-Q4_K_M](https://huggingface.co/Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M)
+(rank 8 on every projection, alpha 16, AdamW, lr 1e-4, 316 steps, ctx 128,
+seed 0; the data and records are in the
+[training record](https://huggingface.co/datasets/Joakimpalm-Zen/Qwen3-4B-ToolUse-LoRA-training-record)):
+
+| Serving form | Exact held-out tool calls |
+| --- | --- |
+| Frozen Q4_K_M base | 0.69 |
+| Base with the trained adapter (`--lora`) | 1.00 |
+| Adapter merged into F16 or Q8_0 | 1.00 |
+| Adapter merged back into the 4-bit grid | 0.69 |
+
+Two independent runs wrote the same adapter file, sha256 for sha256; stock
+llama.cpp serves the adapter at the same 1.00; adapters trained through
+BF16 and Q8_0 bases have cosine 0.9998 to each other and the Q4_K_M-trained
+one 0.9926, a measurably different object that is capability-equivalent on
+this task; a neutral corpus moved from 4.063 to 4.026 nats per token, so
+the adapter leaves unrelated text alone. These are measurements for that
+base and task; a different base or task is not covered by them.
+
+**Reproducibility, with its boundary.** Training is deterministic in the
+strongest sense: same data, same seed, same configuration and the same
+build produce a byte-identical adapter file, gated in `make test`. An
+independent tester on a Tesla T4 reproduced the adapter bytes and the loss,
+CPU against GPU, and the same report found the boundary: a binary rebuilt
+under a different instruction-set profile writes different adapter bytes.
+So the bytes are a property of the build, the way `--verify` replay is
+bound to the build that wrote a receipt ([determinism scope](docs/determinism-scope.md)).
+Say "same build" when you say "same bytes".
+
+**What the backward covers.** The dense gated transformer in its shapes:
 Llama, Mistral, Qwen2.5 and Granite 4.x dense (muP scalars, tied output),
 the head transforms (logit scale, softcap, suppressed tokens), the afmoe
 and Muse-Glimmer attention output gate, the sandwich norms, the per-layer
 output scale and sliding-window attention, the GELU gated FFN (Gemma 3)
-beside the SiLU one, Gemma 4 in full: the weightless V norm, the V-less
-full-attention layers, the E-series shared KV and per-layer embeddings, and
-sparse-MoE models with Qwen3-MoE or Mixtral routing (softmax
-router, top-k, with or without renormalization): the adapter goes on the
+beside the SiLU one, Gemma 4 in full (the weightless V norm, the V-less
+full-attention layers, the E-series shared KV and per-layer embeddings),
+and sparse-MoE models with Qwen3-MoE or Mixtral routing (softmax router,
+top-k, with or without renormalization): there the adapter goes on the
 attention projections and the backward runs through the frozen experts and
 the router's softmax weights, held per coordinate to 0.5% by a strict
-finite-difference gate (a backward without the router term fails it). The
-training gate names what it still refuses: adapters on the experts
-themselves, other MoE routers (sigmoid, group-limited, biased), shared
-experts, attention sinks, recurrent or hybrid blocks, and the derived-K
-cache layout. Every
-covered shape is pinned by the finite-difference gate in `make test` on
-a fixture that carries it,
-and by a directional derivative over the whole adapter that averages out
-the f16 cache staircase.
+finite-difference gate (a backward without the router term fails it).
+The gate names what it still refuses: adapters on the experts themselves,
+other MoE routers (sigmoid, group-limited, biased), shared experts,
+attention sinks, recurrent or hybrid blocks, and the derived-K cache
+layout. Every covered shape is pinned by the finite-difference gate in
+`make test` on a fixture that carries it, and by a directional derivative
+over the whole adapter that averages out the f16 cache staircase.
 
-**Serving and merging:** use `--lora` to preserve the adapter delta. A quantized
-merge rounds it; in the measured study, merging into the 4-bit base erased the
-fine-tune, while Q8_0 and F16 retained it. Every merge now measures how much of the
-delta its output kept, and refuses one that keeps under half
-([`--merge-lora`](#cli-merge-lora)).
+**Where the numbers hold.** The train/infer identity is the CPU codepath's:
+the trainer tapes the host forward, so it holds exactly for an adapter
+served on the CPU, and within the engine's measured CPU/GPU envelope
+(1.255e-3 max \|Δlogprob\| on Qwen2.5-1.5B Q4_K_M) for one served on CUDA.
 
-Start with the [training walkthrough](docs/train-lora-on-quantized-gguf.md)
-or [reproducible training with receipts](docs/reproducible-lora-training-receipts.md).
+**Serving and merging.** `--lora` keeps the adapter delta exact. A merge
+rounds it onto the output grid: in the measured study, merging into the
+4-bit base kept 1.8% of the delta and the score fell back to the base's
+0.69, while Q8_0 kept 99.5% and F16 all of it. Every merge measures how much
+of the delta its output kept and refuses one that keeps under half
+([`--merge-lora`](#cli-merge-lora), `--merge-allow-erased` to override).
+A merged Q8_0 or F16 file is a standalone GGUF any runtime can serve.
+
+Flags and their semantics: [`--train`](#cli-train), [`--lora`](#cli-lora),
+[`--adapter`](#cli-adapter), [`--merge-lora`](#cli-merge-lora). Start with the
+[training walkthrough](docs/train-lora-on-quantized-gguf.md) or
+[reproducible training with receipts](docs/reproducible-lora-training-receipts.md);
+design, gates and failure modes are in
+[docs/adaptation-engine.md](docs/adaptation-engine.md).
 
 ![Two independent training runs producing byte-identical adapters](docs/assets/deterministic-training.gif)
 
