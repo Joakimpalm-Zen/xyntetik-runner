@@ -3346,7 +3346,8 @@ which for an unconstrained turn is a grammar's bound and no grammar is
 active. The regression gate is `tests/test_native_xml_routing.py`, which
 dictates the model's reply through a test hook
 (`RUNNER_TEST_SCRIPTED_REPLY=1` at server start admits `runner_test_reply`
-on a request; the field is refused otherwise) so the whole path from
+on a request, and `runner_test_fault` to end that reply in a generation
+fault; both fields are refused otherwise) so the whole path from
 sampler to wire runs on known bytes; `scripts/tool-protocol-check.py` is
 the report's own cases against a live server, at shipped defaults.
 

@@ -4695,9 +4695,10 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
         // to. render_messages truncates the TAIL, so a fixed buffer that a
         // long --system overruns does not fail the turn, it deletes the
         // question and the generation header and asks something else.
-        char *rendered = render_prompt_alloc(tmpl, msgs, n_msgs, true, o->thinking,
-                                             NULL, strlen(line) +
-                                             strlen(o->system_prompt) + 1024);
+        render_state rs;
+        char *rendered = render_prompt_state_alloc(tmpl, msgs, n_msgs, true, o->thinking,
+                                                   NULL, strlen(line) +
+                                                   strlen(o->system_prompt) + 1024, &rs);
         free(line);   // the render is the only reader; every path below is safe
         if (!rendered) {
             fprintf(stderr, "[out of memory rendering the prompt — turn skipped]\n");
@@ -4721,12 +4722,13 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
 
         jsonv_init(&rt->e.jv); // fresh JSON constraint per turn
         chat_out co = { .in_think = false };
-        // Harmony primes the analysis channel in the generation prompt, so the
-        // stream starts INSIDE reasoning; a content-first split would never
-        // see the open marker and would print the model's analysis (and the
-        // "assistantfinal" handoff) as the answer. Same seam the server uses
-        // for this template — see harmony_primed_think in completion.c.
-        if (tmpl == TMPL_HARMONY)
+        // The turn starts where the rendered prompt left it (render_state),
+        // the seam the server reads too: a prompt that opened a reasoning
+        // segment (Harmony's primed analysis channel, the `<think>` of Qwen
+        // 3.5 and 3.8, Granite 4.2, Nemotron) is reasoning from its first
+        // token, and a content-first split would never see the open marker
+        // and print the model's reasoning as the answer.
+        if (rs.reasoning_open)
             think_init_reasoning(&co.ts, rt->m.think_open, rt->m.think_close);
         else
             think_init(&co.ts, rt->m.think_open, rt->m.think_close);

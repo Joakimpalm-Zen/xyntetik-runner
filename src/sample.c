@@ -264,7 +264,7 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
     // the script is spent. The constraint keeps its veto so a script that
     // walks off a grammar ends the turn rather than corrupting the validator.
     if (s->script) {
-        if (s->script_at >= s->script_n) return -1;
+        if (s->script_at >= s->script_n) return s->script_fault ? -2 : -1;
         int tok = s->script[s->script_at++];
         if (tok < 0 || tok >= n_vocab) return -1;
         return !ok || ok(ud, tok) ? tok : -1;
@@ -836,6 +836,7 @@ const sampler_preset *sampler_resolve_file(sampler *s, const char *arch,
     // on the stack must not inherit a stale one from the stack's past.
     s->script = NULL;
     s->script_n = s->script_at = 0;
+    s->script_fault = false;
     s->temp           = p->temp;
     s->top_p          = p->top_p;
     s->min_p          = p->min_p;

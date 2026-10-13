@@ -73,12 +73,19 @@ const char *slot_default_system(const slot_t *s) {
 char *render_prompt_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
                           bool add_assistant, int thinking, const jv *tools,
                           size_t hint) {
+    return render_prompt_state_alloc(tmpl, msgs, n_msgs, add_assistant,
+                                     thinking, tools, hint, NULL);
+}
+
+char *render_prompt_state_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
+                                bool add_assistant, int thinking, const jv *tools,
+                                size_t hint, render_state *st) {
     size_t cap = hint < 512 ? 512 : hint;
     for (;;) {
         char *p = malloc(cap);
         if (!p) return NULL;
-        size_t n = render_messages_with_tools(tmpl, msgs, n_msgs, add_assistant,
-                                              thinking, tools, p, cap);
+        size_t n = render_messages_state(tmpl, msgs, n_msgs, add_assistant,
+                                         thinking, tools, p, cap, st);
         if (n == SIZE_MAX) {
             free(p);
             return NULL;
@@ -436,14 +443,15 @@ const char *sole_tool_name(const jv *tools) {
 // context built from messages is byte for byte the prefix a later chat
 // request renders from the same messages.
 typedef void (*chat_prompt_fn)(slot_t *s, sock_t fd, const char *prompt,
-                               jv *req, const tool_envelope *env);
+                               jv *req, const tool_envelope *env,
+                               const render_state *rs);
 
 static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                                bool add_assistant, chat_prompt_fn run);
 
 static void chat_generate(slot_t *s, sock_t fd, const char *prompt, jv *req,
-                          const tool_envelope *env) {
-    run_completion(s, fd, prompt, API_CHAT, req, env);
+                          const tool_envelope *env, const render_state *rs) {
+    run_completion(s, fd, prompt, API_CHAT, req, env, rs);
 }
 
 static void handle_chat(slot_t *s, sock_t fd, jv *req) {
@@ -779,9 +787,10 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         }
         thinking |= strength ? strength : effort;
     }
-    char *prompt = render_prompt_alloc(s->tmpl, cm, n_cm, add_assistant,
-                                       thinking, native_tools,
-                                       total + 256);
+    render_state rs;
+    char *prompt = render_prompt_state_alloc(s->tmpl, cm, n_cm, add_assistant,
+                                             thinking, native_tools,
+                                             total + 256, &rs);
     if (!prompt) {
         for (int i = 0; i < n_own; i++) free(owned[i]);
         free(owned); free(cm); free(ts.s);
@@ -789,7 +798,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         send_error(fd, 500, "out of memory building chat prompt");
         return;
     }
-    run(s, fd, prompt, req, strict ? &env : NULL);
+    run(s, fd, prompt, req, strict ? &env : NULL, &rs);
     free(prompt);
     for (int i = 0; i < n_own; i++) free(owned[i]);
     free(owned);
@@ -866,8 +875,10 @@ static void context_pin_prompt(slot_t *s, sock_t fd, const char *prompt,
 }
 
 static void context_from_chat(slot_t *s, sock_t fd, const char *prompt,
-                              jv *req, const tool_envelope *env) {
+                              jv *req, const tool_envelope *env,
+                              const render_state *rs) {
     (void)env;   // declarations are in the rendered prompt; nothing is parsed
+    (void)rs;    // a pinned prefix starts no generation
     context_pin_prompt(s, fd, prompt, true, req);
 }
 
@@ -1517,13 +1528,13 @@ static void handle_completion(slot_t *s, sock_t fd, jv *req) {
             send_error(fd, !strcmp(why, "out of memory") ? 500 : 400, why);
             return;
         }
-        run_completion(s, fd, text, API_TEXT, req, NULL);
+        run_completion(s, fd, text, API_TEXT, req, NULL, NULL);
         free(text);
         return;
     }
     const char *prompt = jv_str(p, NULL);
     if (!prompt) { send_error(fd, 400, "missing prompt"); return; }
-    run_completion(s, fd, prompt, API_TEXT, req, NULL);
+    run_completion(s, fd, prompt, API_TEXT, req, NULL, NULL);
 }
 
 // One byte of the vector as the wire sees it: little-endian float32, spelled

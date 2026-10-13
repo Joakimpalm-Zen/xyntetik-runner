@@ -5,6 +5,59 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`runner -i` shows a reasoning model's thinking as thinking.** The chat
+  loop started its reasoning split inside the thought only for Harmony,
+  whatever the thinking mode. Qwen 3.5 and 3.8, Granite 4.2, Nemotron and
+  Ornith, whose prompts open `<think>` themselves, printed their reasoning
+  as the answer, and Harmony under `--no-think` started primed. The chat
+  loop now reads where the rendered prompt left the turn, as the server
+  does.
+
+- **A Gemma 4 turn that continues after a tool result with thinking on is
+  read from the thought its prompt opened.** The prompt ends by opening
+  `<|channel>thought`, so the model's first words are its thought. The
+  check meant to notice that compared the raw prompt's last bytes, which
+  end in an ownership mark, and never matched. The tool grammar therefore
+  started outside the thought, and the stream demultiplexer and the
+  buffered mapper waited for an opener that would never come, so a
+  continuation's thought and its next call could not be read as reasoning
+  and a call. All three now start inside the thought the prompt opened.
+
+- **A Messages request's `thinking` object now decides where its reply
+  starts.** The prompt was rendered under Anthropic's own `thinking: {"type":
+  "enabled" | "disabled"}`, but where the reply starts, inside a thought
+  block or in content, was rebuilt from `enable_thinking` alone. So
+  `thinking: {"type": "disabled"}` on Granite 4.2, Nemotron 3.5, Qwen 3.8,
+  Qwen 3.5, Ornith or gpt-oss returned the answer as a `thinking` block,
+  and `{"type": "enabled"}` on Qwen 3.5-0.8B or Muse returned the
+  reasoning as `text`. The renderer now reports the start
+  of the turn it wrote, and the reasoning split, the think budget and the
+  tool grammars read that report on every surface. A Harmony turn whose
+  tools are declared but not enforced starts in content, because its prompt
+  leaves the channel to the model.
+
+- **A request's recipient or effort bits no longer change another family's
+  thinking.** The thinking argument carries the mode with the effort bits
+  (read by Qwen 3.8 and Muse) and the recipient bits (read by Muse) above
+  it, and a request's `bare_recipients` is added for every family. Six
+  renderers compared the whole value with `THINK_OFF` or `THINK_ON`, so
+  `bare_recipients` with thinking off rendered an open thought block for
+  ChatML-think, Granite 4.2 and Nemotron 3.5 Lightning and primed Harmony's
+  analysis channel, and an effort bit with thinking on dropped Gemma 4's
+  `<|think|>`. They now compare the mode bits only; every render of a
+  family that does not read a bit is identical with and without it.
+
+- **A Responses turn that hit an allocation failure no longer reports
+  `completed`.** A generation fault is a turn with nothing usable behind it,
+  and chat (`finish_reason: "error"`) and Messages (an `error` object, or
+  the `error` event on a stream) already said so. Responses only treated an
+  unmappable tool envelope as a fault, so an allocation failure
+  mid-generation came back `status: "completed"`, and on a stream the turn
+  ended on `response.completed`. Both faults now report `status:
+  "incomplete"` with `incomplete_details.reason` naming the fault
+  (`envelope_unmapped` or `out_of_memory`), the message item is
+  `incomplete`, and a stream ends on `response.incomplete`.
+
 - **A refused `--serve` no longer leaves a tray behind.** The tray is
   raised only after every argument check a serve or interactive run can
   still fail, which is what the code already said, but the serving

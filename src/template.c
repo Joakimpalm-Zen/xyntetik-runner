@@ -1579,533 +1579,1449 @@ static char *nemotron_clean(const char *s, bool ctl) {
     return o;
 }
 
-size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
-                                  bool add_assistant, int thinking,
-                                  const jv *tools,
-                                  char *out, size_t cap) {
+// NVIDIA Nemotron Nano (TMPL_NEMOTRON).
+static size_t render_nemotron_nano(int tmpl, const chat_msg *msgs, int n_msgs,
+                                   bool add_assistant, int thinking, const jv *tools,
+                                   char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    // The last `/think` or `/no_think` in a system or user turn decides
+    // (`/think` wins inside one turn); thinking is on when neither
+    // appears. An explicit request setting outranks the text.
+    bool think = true;
+    for (int i = 0; i < n_msgs; i++) {
+        if (strcmp(msgs[i].role, "user") && strcmp(msgs[i].role, "system"))
+            continue;
+        if (strstr(msgs[i].content, "/think")) think = true;
+        else if (strstr(msgs[i].content, "/no_think")) think = false;
+    }
+    int mode = thinking & THINK_MODE_MASK;
+    if (mode == THINK_ON) think = true;
+    if (mode == THINK_OFF) think = false;
+    // Every conversation opens with the system header. The reference
+    // reads one leading system turn; the generic tool envelope adds a
+    // second in front of the caller's, so every leading one is joined.
+    off = emit_raw(out, cap, off, "<SPECIAL_10>System\n", NULL, NULL);
+    int first = 0;
+    bool wrote = false;
+    while (first < n_msgs && !strcmp(msgs[first].role, "system")) {
+        char *c = nemotron_clean(msgs[first].content, true);
+        if (!c) return SIZE_MAX;
+        if (c[0]) {
+            off = emit(out, cap, off, wrote ? "\n\n%s" : "%s", c, NULL);
+            wrote = true;
+        }
+        free(c);
+        first++;
+    }
+    // native declarations follow the caller's system text, after a blank
+    // line when there was any (the reference's non_tool_system_content)
+    if (tools && tools->type == J_ARR && tools->n > 0) {
+        sbuf decl = {0};
+        tools_render_for(tmpl, tools, &decl);
+        if (decl.failed) { free(decl.s); return SIZE_MAX; }
+        off = emit(out, cap, off, wrote ? "\n\n%s" : "%s", decl.s, NULL);
+        free(decl.s);
+    }
+    off = emit(out, cap, off, "\n", NULL, NULL);
+    // A trailing assistant turn is held back and written after the
+    // generation prompt's thought tag: the reference's prefill.
+    int last = n_msgs;
+    char *held = NULL;
+    if (last > first && !strcmp(msgs[last - 1].role, "assistant")) {
+        held = nemotron_clean(msgs[last - 1].content, false);
+        if (!held) return SIZE_MAX;
+        last--;
+    }
+    for (int i = first; i < last; i++) {
+        const char *role = msgs[i].role;
+        if (!strcmp(role, "user")) {
+            char *c = nemotron_clean(msgs[i].content, true);
+            if (!c) { free(held); return SIZE_MAX; }
+            off = emit_raw(out, cap, off, "<SPECIAL_11>User\n", NULL, NULL);
+            off = emit(out, cap, off, "%s\n", c, NULL);
+            free(c);
+        } else if (!strcmp(role, "tool")) {
+            bool prev = i > first && !strcmp(msgs[i - 1].role, "tool");
+            bool next = i + 1 < last && !strcmp(msgs[i + 1].role, "tool");
+            if (!prev)
+                off = emit_raw(out, cap, off,
+                               "<SPECIAL_11>User\n<TOOL_RESPONSE>[", NULL, NULL);
+            off = emit(out, cap, off, next ? "%s, " : "%s",
+                       msgs[i].content, NULL);
+            if (!next)
+                off = emit_raw(out, cap, off, "]</TOOL_RESPONSE>\n", NULL, NULL);
+        } else if (!strcmp(role, "assistant")) {
+            const char *body = msgs[i].content;
+            const char *close = strstr(body, "</think>");
+            if (close) body = close + 8;
+            char *c = nemotron_clean(body, false);
+            if (!c) { free(held); return SIZE_MAX; }
+            off = emit_raw(out, cap, off, "<SPECIAL_11>Assistant\n", NULL, NULL);
+            off = emit(out, cap, off, "%s", c, NULL);
+            off = emit_raw(out, cap, off, "\n<SPECIAL_12>\n", NULL, NULL);
+            free(c);
+        }
+        // a system turn after the first, like any other role, has no
+        // branch in the reference and renders as nothing
+    }
+    if (add_assistant || (held && held[0])) {
+        off = emit_raw(out, cap, off, "<SPECIAL_11>Assistant\n", NULL, NULL);
+        off = emit_raw(out, cap, off, think ? "<think>\n" : "<think></think>",
+                       NULL, NULL);
+        st->reasoning_open = think && add_assistant && !(held && held[0]);
+        st->opener = st->reasoning_open ? "<think>\n" : NULL;
+        if (held && held[0]) off = emit(out, cap, off, "%s", held, NULL);
+        if (!add_assistant)
+            off = emit_raw(out, cap, off, "\n<SPECIAL_12>\n", NULL, NULL);
+    }
+    free(held);
+    return off;
+}
+
+// TMPL_ORNITH, TMPL_QWEN35 and TMPL_QWEN35_NOTHINK.
+static size_t render_qwen35(int tmpl, const chat_msg *msgs, int n_msgs,
+                            bool add_assistant, int thinking, const jv *tools,
+                            char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    for (int i = 0; i < n_msgs; i++) {
+        bool tool_response =
+            !strcmp(msgs[i].role, "user") &&
+            content_starts(msgs[i].content, "<tool_response>");
+        bool prev_tool_response = i > 0 &&
+            !strcmp(msgs[i - 1].role, "user") &&
+            content_starts(msgs[i - 1].content, "<tool_response>");
+        bool next_tool_response = i + 1 < n_msgs &&
+            !strcmp(msgs[i + 1].role, "user") &&
+            content_starts(msgs[i + 1].content, "<tool_response>");
+        if (tool_response) {
+            if (!prev_tool_response)
+                off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
+            else
+                off = emit(out, cap, off, "\n", NULL, NULL);
+            off = emit(out, cap, off, "%s", msgs[i].content, NULL);
+            if (!next_tool_response)
+                off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+        } else {
+            off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
+                       msgs[i].role, msgs[i].content);
+        }
+    }
+    if (add_assistant) {
+        off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+        // ornith's reference branches on enable_thinking exactly the way
+        // Qwen3's does below: `false` means an ALREADY-CLOSED thought
+        // block, everything else (including undefined) means an OPEN one.
+        // Emitting the open block for THINK_OFF handed a caller who asked
+        // for no reasoning the one construct that starts it.
+        // Qwen 3.5-0.8B inverts the default: only an explicit `true`
+        // opens the block (chat_template.jinja:149).
+        int mode = thinking & THINK_MODE_MASK;
+        bool closed = tmpl == TMPL_QWEN35_NOTHINK ? mode != THINK_ON
+                                                  : mode == THINK_OFF;
+        off = emit(out, cap, off,
+                   closed ? "<think>\n\n</think>\n\n" : "<think>\n",
+                   NULL, NULL);
+        st->reasoning_open = !closed;
+        st->opener = closed ? NULL : "<think>\n";
+    }
+    return off;
+}
+
+// TMPL_QWEN3_CODER.
+static size_t render_qwen3_coder(int tmpl, const chat_msg *msgs, int n_msgs,
+                                 bool add_assistant, int thinking, const jv *tools,
+                                 char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    // Qwen/Qwen3-Coder-30B-A3B-Instruct tokenizer_config.json.
+    bool have_tools = tools && tools->type == J_ARR && tools->n;
+    int first = n_msgs && !strcmp(msgs[0].role, "system") ? 1 : 0;
+    if (first || have_tools) {
+        off = emit(out, cap, off, "<|im_start|>system\n%s",
+                   first ? msgs[0].content : "You are Qwen, a helpful AI assistant that can interact with a computer to solve tasks.", NULL);
+        if (have_tools) {
+            sbuf decl = {0};
+            tools_render_for(tmpl, tools, &decl);
+            if (decl.failed) { free(decl.s); return SIZE_MAX; }
+            off = emit(out, cap, off, "\n\n%s", decl.s, NULL);
+            free(decl.s);
+        }
+        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+    }
+    for (int i = first; i < n_msgs; i++) {
+        if (!strcmp(msgs[i].role, "tool")) {
+            if (i > first && strcmp(msgs[i-1].role, "tool"))
+                off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
+            off = emit(out, cap, off, "<tool_response>\n%s\n</tool_response>\n", msgs[i].content, NULL);
+            if (i+1 == n_msgs || strcmp(msgs[i+1].role, "tool"))
+                off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+        } else {
+            off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n", msgs[i].role, msgs[i].content);
+        }
+    }
+    if (add_assistant)
+        off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+    return off;
+}
+
+// TMPL_QWEN38.
+static size_t render_qwen38(int tmpl, const chat_msg *msgs, int n_msgs,
+                            bool add_assistant, int thinking, const jv *tools,
+                            char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    // Qwen/Qwen3.8-27B chat_template.jinja (2026-09-06), see the enum
+    // comment. Every content the reference renders goes through
+    // `|trim`; the reasoning preamble depends on the effort bits.
+    int mode = thinking & THINK_MODE_MASK;
+    int effort = thinking & THINK_EFFORT_MASK;
+    const char *instr = NULL;
+    if (mode != THINK_OFF) {
+        if (effort == THINK_EFFORT_LOW)
+            instr = "Reasoning effort is set to low. Keep your thinking "
+                    "brief and focused, moving directly to the conclusion "
+                    "without unnecessary elaboration.";
+        else if (effort != THINK_EFFORT_MEDIUM)
+            instr = "Reasoning effort is set to xhigh. Please think "
+                    "carefully through the task, validate key "
+                    "assumptions, consider plausible alternatives, and "
+                    "prioritize correctness, consistency, and clarity in "
+                    "the final answer.";
+    }
+    bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
+    int first = n_msgs > 0 && !strcmp(msgs[0].role, "system") ? 1 : 0;
+    const char *sc = first ? msgs[0].content : "";
+    const char *sc_e = trim_right(sc, sc + strlen(sc));
+    const char *sc_b = trim_left(sc, sc_e);
+    if (have_tools) {
+        // preamble, declarations, then the caller's system text
+        off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
+        if (instr) off = emit_raw(out, cap, off, "%s\n\n", instr, NULL);
+        sbuf decl = {0};
+        tools_render_for(tmpl, tools, &decl);
+        off = emit(out, cap, off, "%s", decl.s, NULL);
+        free(decl.s);
+        if (sc_e > sc_b) {
+            off = emit(out, cap, off, "\n\n", NULL, NULL);
+            off = emit_n(out, cap, off, sc_b, (size_t)(sc_e - sc_b));
+        }
+        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+    } else if (sc_e > sc_b) {
+        off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
+        if (instr) off = emit_raw(out, cap, off, "%s\n\n", instr, NULL);
+        off = emit_n(out, cap, off, sc_b, (size_t)(sc_e - sc_b));
+        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+    } else if (instr) {
+        off = emit_raw(out, cap, off, "<|im_start|>system\n%s<|im_end|>\n",
+                       instr, NULL);
+    }
+    for (int i = first; i < n_msgs; i++) {
+        const char *role = msgs[i].role;
+        const char *c = msgs[i].content;
+        const char *e = trim_right(c, c + strlen(c));
+        const char *b = trim_left(c, e);
+        if (!strcmp(role, "tool")) {
+            bool prev_tool = i > first && !strcmp(msgs[i - 1].role, "tool");
+            bool next_tool = i + 1 < n_msgs &&
+                             !strcmp(msgs[i + 1].role, "tool");
+            if (!prev_tool)
+                off = emit(out, cap, off, "<|im_start|>user", NULL, NULL);
+            off = emit(out, cap, off, "\n<tool_response>\n", NULL, NULL);
+            off = emit_n(out, cap, off, b, (size_t)(e - b));
+            off = emit(out, cap, off, "\n</tool_response>", NULL, NULL);
+            if (!next_tool)
+                off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+            continue;
+        }
+        if (strcmp(role, "assistant")) {
+            off = emit(out, cap, off, "<|im_start|>%s\n", role, NULL);
+            off = emit_n(out, cap, off, b, (size_t)(e - b));
+            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+            continue;
+        }
+        // Every assistant turn carries its thought block
+        // (preserve_thinking defaults true): `<think>\n` reasoning
+        // `\n</think>\n\n` then the trimmed content and its calls. A
+        // caller that composed the block already (the chat surface
+        // does, from reasoning_content) is passed through with the
+        // reasoning and the content each trimmed; one that did not gets
+        // the empty block the reference writes for no reasoning.
+        off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+        // The chat surface composes the block with its framing marked
+        // (server.c message_text, prompt_lit), so the parse looks past
+        // the marks and re-emits the framing as its own literals.
+        const char *rest = c;
+        const char *c0 = skip_marks(c);
+        if (!strncmp(c0, "<think>\n", 8)) {
+            const char *close = strstr(c0 + 8, "\n</think>\n\n");
+            if (close) {
+                const char *rb0 = skip_marks(c0 + 8);
+                const char *re = trim_right(rb0, unmark_end(rb0, close));
+                const char *rb = trim_left(rb0, re);
+                off = emit(out, cap, off, "<think>\n", NULL, NULL);
+                off = emit_n(out, cap, off, rb, (size_t)(re - rb));
+                off = emit(out, cap, off, "\n</think>\n\n", NULL, NULL);
+                // past the framing's own CLOSE only: an OPEN right after
+                // it begins the calls' framing and must stay with them
+                rest = close + 11;
+                while (*rest == PROMPT_RAW_CLOSE) rest++;
+            } else {
+                rest = NULL;   // an open block: replay verbatim
+            }
+        } else {
+            off = emit(out, cap, off, "<think>\n\n</think>\n\n", NULL, NULL);
+        }
+        if (!rest) {
+            off = emit(out, cap, off, "%s", c, NULL);
+        } else {
+            // the calls a turn carries end in `</tool_call>` and are
+            // not trimmed away with the content's own whitespace
+            const char *xe = rest + strlen(rest);
+            const char *tc = strstr(rest, "<tool_call>");
+            // The calls were framed by tool_history_render_for with the
+            // marks around their scaffolding; the first `<tool_call>` sits
+            // right after its OPEN mark, and the replay must carry that
+            // mark or the tokenizer reads the block as text.
+            while (tc && tc > rest && is_mark(tc[-1])) tc--;
+            const char *ce = tc ? tc : xe;
+            const char *cend = trim_right(rest, ce);
+            const char *cb = trim_left(rest, cend);
+            off = emit_n(out, cap, off, cb, (size_t)(cend - cb));
+            if (tc) {
+                // chat_template.jinja:140-147: the first call follows
+                // spoken text after a blank line, nothing otherwise
+                if (cend > cb) off = emit(out, cap, off, "\n\n", NULL, NULL);
+                off = emit(out, cap, off, "%s", tc, NULL);
+            }
+        }
+        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+    }
+    // emit_raw, not emit: the thought block is the template's own
+    // bytes, and emit() treats a %s argument as caller text (unmarked),
+    // which left `<think>` to tokenize as `<th` `ink` `>` on every
+    // thinking-enabled turn (found on Qwen 3.8, 2026-09-15; gated in
+    // tests/test_prompt_marks.c).
+    if (add_assistant) {
+        off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
+                       mode == THINK_OFF ? "<think>\n\n</think>\n\n"
+                                         : "<think>\n", NULL);
+        st->reasoning_open = mode != THINK_OFF;
+        st->opener = mode != THINK_OFF ? "<think>\n" : NULL;
+    }
+    return off;
+}
+
+// TMPL_GRANITE42 and TMPL_NEMOTRON35.
+static size_t render_granite42(int tmpl, const chat_msg *msgs, int n_msgs,
+                               bool add_assistant, int thinking, const jv *tools,
+                               char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    // ibm-granite/granite-4.2-3b chat_template.jinja (2026-09-06), see
+    // the enum comment. Line references below are into that file.
+    bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
+    int first = n_msgs > 0 && !strcmp(msgs[0].role, "system") ? 1 : 0;
+    // The reference sets system_message to "" when messages[0] is not a
+    // system turn and then branches on `system_message is defined`,
+    // which is true either way: a system turn is ALWAYS emitted.
+    off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
+    if (first) off = emit(out, cap, off, "%s", msgs[0].content, NULL);
+    if (have_tools) {
+        if (first && msgs[0].content[0])
+            off = emit(out, cap, off, "\n\n", NULL, NULL);
+        sbuf decl = {0};
+        tools_render_for(tmpl, tools, &decl);
+        off = emit(out, cap, off, "%s", decl.s, NULL);
+        free(decl.s);
+    }
+    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+    // last_user_idx is computed over loop_messages, i.e. after the
+    // leading system turn was split off; `i` below is the same index.
+    int last_user = -1;
+    for (int i = first; i < n_msgs; i++)
+        if (!strcmp(msgs[i].role, "user")) last_user = i;
+    for (int i = first; i < n_msgs; i++) {
+        const char *role = msgs[i].role;
+        const char *c = msgs[i].content;
+        if (!strcmp(role, "tool")) {
+            // consecutive results share one user turn; every result
+            // block ends in its own newline, unlike ornith's
+            bool prev_tool = i > first && !strcmp(msgs[i - 1].role, "tool");
+            bool next_tool = i + 1 < n_msgs &&
+                             !strcmp(msgs[i + 1].role, "tool");
+            if (!prev_tool)
+                off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
+            off = emit(out, cap, off,
+                       "<tool_response>\n%s\n</tool_response>\n", c, NULL);
+            if (!next_tool)
+                off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+            continue;
+        }
+        if (strcmp(role, "assistant")) {
+            off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
+                       role, c);
+            continue;
+        }
+        // An assistant turn without a thought block is seeded with the
+        // closed one. A turn BEFORE the last user turn that carried a
+        // complete block keeps only what follows its last </think>,
+        // behind that same closed block (truncate_history_thinking,
+        // default true); the latest turn is replayed verbatim. Either
+        // way the result is `| trim`med as a whole, so a seeded body
+        // keeps its leading whitespace behind the seed.
+        const char *open = strstr(c, "<think>");
+        const char *close = strstr(c, "</think>");
+        const char *body = c;
+        bool seed = !open && !close;
+        if (i < last_user && open && close) {
+            const char *p = close, *q;
+            while ((q = strstr(p + 8, "</think>"))) p = q;
+            body = p + 8;
+            seed = true;
+        }
+        const char *end = body + strlen(body);
+        const char *b = seed ? body : trim_left(body, end);
+        // granite 4.2 trims the text it kept from a truncated TOOL-CALL
+        // turn (`"<think></think>" ~ c | trim`, the filter binding to c);
+        // Nemotron 3.5's copy of that line has no trim, and a truncated
+        // turn without calls is trimmed as a whole, seed first, by both.
+        // Only the caller's text is trimmed: it is unmarked, so the walk
+        // stops at the first mark, which leaves the template's own
+        // newline before the first call (`c ~ '\n'`) and the call's
+        // marks in place.
+        if (tmpl == TMPL_GRANITE42 && i < last_user && trim_right(b, end) - b >= 12 &&
+            !strncmp(trim_right(b, end) - 12, "</tool_call>", 12))
+            while (b < end && strchr(" \t\n\r\f\v", *b) && *b) b++;
+        const char *e = trim_right(b, end);
+        off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
+                       seed ? "<think></think>" : "", NULL);   // the seed is the template's
+        off = emit_n(out, cap, off, b, (size_t)(e - b));
+        // a tool-call turn ends `</tool_call>\n` before <|im_end|>
+        // (chat_template.jinja:118); the trim above took that newline
+        if (e - b >= 12 && !strncmp(e - 12, "</tool_call>", 12))
+            off = emit(out, cap, off, "\n", NULL, NULL);
+        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+    }
+    if (add_assistant) {   // emit_raw: the block is the template's (see qwen38)
+        bool open = (thinking & THINK_MODE_MASK) != THINK_OFF;
+        off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
+                       open ? "<think>\n" : "<think></think>", NULL);
+        st->reasoning_open = open;
+        st->opener = open ? "<think>\n" : NULL;
+    }
+    return off;
+}
+
+// TMPL_HERMES4.
+static size_t render_hermes4(int tmpl, const chat_msg *msgs, int n_msgs,
+                             bool add_assistant, int thinking, const jv *tools,
+                             char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    // NousResearch/Hermes-4-14B chat_template (2026-10-02). The system
+    // turn is always written: the caller's first message when it is a
+    // system one, else the standard prompt, or the thinking prompt when
+    // the request asks for reasoning (the template's `thinking`, false
+    // by default). The tools preamble is appended to it.
+    static const char standard[] = "You are Hermes, created by Nous Research.";
+    static const char deep[] = "You are a deep thinking AI, you may use extremely long chains of thought to deeply consider the problem and deliberate with yourself via systematic reasoning processes to help come to a correct solution prior to answering. You should enclose your thoughts and internal monologue inside <think> </think> tags, and then provide your solution or response to the problem.";
+    bool think = (thinking & THINK_MODE_MASK) == THINK_ON;
+    bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
+    bool sys0 = n_msgs > 0 && !strcmp(msgs[0].role, "system");
+    off = emit(out, cap, off, "<|im_start|>system\n%s",
+               sys0 ? msgs[0].content : think ? deep : standard, NULL);
+    if (have_tools) {
+        sbuf decl = {0};
+        tools_render_for(tmpl, tools, &decl);
+        if (decl.failed) { free(decl.s); return SIZE_MAX; }
+        off = emit(out, cap, off, "%s", decl.s, NULL);
+        free(decl.s);
+    }
+    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+    for (int i = sys0 ? 1 : 0; i < n_msgs; i++) {
+        const char *role = msgs[i].role;
+        if (!strcmp(role, "tool")) {
+            bool prev_tool = i > 0 && !strcmp(msgs[i - 1].role, "tool");
+            bool next_tool = i + 1 < n_msgs &&
+                             !strcmp(msgs[i + 1].role, "tool");
+            if (!prev_tool)
+                off = emit(out, cap, off, "<|im_start|>user", NULL, NULL);
+            off = emit(out, cap, off,
+                       "\n<tool_response>\n%s\n</tool_response>",
+                       msgs[i].content, NULL);
+            if (!next_tool)
+                off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+        } else if (!strcmp(role, "assistant")) {
+            // The reference writes the header, then "\n" + content when
+            // there is content, then "\n<tool_call>..." per call, and
+            // closes the turn only when it wrote one of the two. The
+            // flattened turn here is content followed by the calls, each
+            // already led by its newline (assistant_calls_render).
+            const char *c = skip_marks(msgs[i].content);
+            off = emit(out, cap, off, "<|im_start|>assistant", NULL, NULL);
+            if (!c[0]) continue;
+            // (the builder marks its literals one by one, so the newline
+            // and the tag are separated by marks)
+            bool calls_first = c[0] == '\n' &&
+                !strncmp(skip_marks(c + 1), "<tool_call>", 11);
+            if (!calls_first)
+                off = emit(out, cap, off, "\n", NULL, NULL);
+            off = emit(out, cap, off, "%s<|im_end|>\n", msgs[i].content, NULL);
+        } else {
+            off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
+                       role, msgs[i].content);
+        }
+    }
+    if (add_assistant)
+        off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+    return off;
+}
+
+// TMPL_CHATML and TMPL_CHATML_THINK.
+static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
+                            bool add_assistant, int thinking, const jv *tools,
+                            char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    bool qwen_tools = tools && tools->type == J_ARR && tools->n > 0;
+    int first = 0;
+    int last_user = -1;
+    for (int i = 0; i < n_msgs; i++)
+        if (!strcmp(msgs[i].role, "user")) last_user = i;
+    if (qwen_tools) {
+        off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
+        if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
+            off = emit(out, cap, off, "%s\n\n", msgs[0].content, NULL);
+            first = 1;
+        }
+        sbuf decl = {0};
+        tools_render_for(tmpl, tools, &decl);
+        off = emit(out, cap, off, "%s<|im_end|>\n",
+                   decl.s ? decl.s : "", NULL);
+        free(decl.s);
+    }
+    for (int i = first; i < n_msgs; i++) {
+        // A tool result is not a `tool` turn in this family: every ChatML
+        // reference -- Qwen2.5, Qwen3 and ornith alike -- renders it as a
+        // USER turn carrying a <tool_response> block, and folds
+        // consecutive results into one turn. Runner already did exactly
+        // this on its ORNITH path; emitting `<|im_start|>tool` here sent
+        // the model a role header its own template never produces.
+        if (!strcmp(msgs[i].role, "tool")) {
+            bool prev_tool = i > 0 && !strcmp(msgs[i - 1].role, "tool");
+            bool next_tool = i + 1 < n_msgs &&
+                             !strcmp(msgs[i + 1].role, "tool");
+            if (!prev_tool)
+                off = emit(out, cap, off, "<|im_start|>user", NULL, NULL);
+            off = emit(out, cap, off,
+                       "\n<tool_response>\n%s\n</tool_response>",
+                       msgs[i].content, NULL);
+            if (!next_tool)
+                off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+            continue;
+        }
+        bool qwen3_empty_think =
+            tmpl == TMPL_CHATML_THINK && i == n_msgs - 1 &&
+            i > last_user && !strcmp(msgs[i].role, "assistant") &&
+            !content_starts(msgs[i].content, "<think>");
+        off = emit(out, cap, off, "<|im_start|>%s\n", msgs[i].role,
+                   NULL);
+        if (qwen3_empty_think)
+            off = emit(out, cap, off, "<think>\n\n</think>\n\n",
+                       NULL, NULL);
+        off = emit(out, cap, off, "%s<|im_end|>\n", msgs[i].content,
+                   NULL);
+    }
+    if (add_assistant) {
+        off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+        // Qwen3's enable_thinking=false branch, verbatim from
+        // Qwen/Qwen3-* tokenizer_config.json: an already-closed thought
+        // block, which is how the family is asked not to reason. Its
+        // reference defaults thinking ON, so this is emitted only when a
+        // caller explicitly turns it off -- never for THINK_DEFAULT.
+        if (tmpl == TMPL_CHATML_THINK && (thinking & THINK_MODE_MASK) == THINK_OFF)
+            off = emit(out, cap, off, "<think>\n\n</think>\n\n",
+                       NULL, NULL);
+    }
+    return off;
+}
+
+// TMPL_APERTUS.
+static size_t render_apertus(int tmpl, const chat_msg *msgs, int n_msgs,
+                             bool add_assistant, int thinking, const jv *tools,
+                             char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    // apertus (reference: swiss-ai/Apertus-8B-Instruct-2509
+    // chat_template.jinja): <|role_start|>CONTENT<|role_end|> per turn,
+    // with a native system role that must come first.
+    //
+    // Between the system turn and the first real turn the reference always
+    // emits a developer block carrying two switches. Runner does not
+    // expose Apertus thinking, but declared tools use the reference's
+    // render_tools TypeScript rather than the generic protocol.
+    //
+    // Two deliberate omissions, both matching decisions already made for
+    // other families: when there is no system message the reference
+    // substitutes a default one containing strftime_now('%Y-%m-%d'), and
+    // runner does not embed a live date in a prompt (as with Llama-3.2's
+    // "Cutting Knowledge Date" header); and BOS is added by the tokenizer,
+    // not spelled into the template.
+    const char *sys = NULL;
+    int first = 0;
+    if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
+        sys = msgs[0].content;
+        first = 1;
+    }
+    if (sys)
+        off = emit(out, cap, off, "<|system_start|>%s<|system_end|>", sys, NULL);
+    off = emit(out, cap, off,
+               "<|developer_start|>Deliberation: disabled\n"
+               "Tool Capabilities:", NULL, NULL);
+    if (tools && tools->type == J_ARR && tools->n) {
+        sbuf defs = {0};
+        apertus_render_tools(tools, &defs);
+        off = emit(out, cap, off, "\n%s", defs.s ? defs.s : "", NULL);
+        free(defs.s);
+    } else {
+        off = emit(out, cap, off, " disabled", NULL, NULL);
+    }
+    off = emit(out, cap, off, "<|developer_end|>", NULL, NULL);
+    // The reference's ns.in_assistant/ns.in_tool state keeps consecutive
+    // assistant messages, their calls, and following tool results in ONE
+    // assistant turn. Results are raw values inside one bracketed list;
+    // no role marker or family-generic wrapper exists. An assistant reply
+    // after those results therefore continues the same turn -- the marked
+    // direct-adjacency limitation is discharged now that the tool turn is
+    // conformant.
+    bool in_assistant = false, in_tool = false, waiting_for_outputs = false;
+    for (int i = first; i < n_msgs; i++) {
+        const char *role = msgs[i].role;
+        if (!strcmp(role, "user")) {
+            if (in_tool) {
+                off = emit(out, cap, off, "]", NULL, NULL);
+                in_tool = false;
+            }
+            if (in_assistant) {
+                off = emit(out, cap, off, "<|assistant_end|>", NULL, NULL);
+                in_assistant = false;
+            }
+            off = emit(out, cap, off, "<|user_start|>%s<|user_end|>",
+                       msgs[i].content, NULL);
+        } else if (!strcmp(role, "assistant")) {
+            if (!in_assistant) {
+                off = emit(out, cap, off, "<|assistant_start|>", NULL, NULL);
+                in_assistant = true;
+            }
+            if (in_tool) {
+                off = emit(out, cap, off, "]", NULL, NULL);
+                in_tool = false;
+            }
+            off = emit(out, cap, off, "%s", msgs[i].content, NULL);
+            if (strstr(msgs[i].content, "<|tools_prefix|>"))
+                waiting_for_outputs = true;
+        } else if (!strcmp(role, "tool")) {
+            // The reference rejects an orphan tool message. The renderer
+            // has no error channel, so it drops that invalid role rather
+            // than inventing a prompt token for it.
+            if (!in_assistant) continue;
+            off = emit(out, cap, off, in_tool ? ", " : "[", NULL, NULL);
+            in_tool = true;
+            waiting_for_outputs = false;
+            off = emit(out, cap, off, "%s", msgs[i].content, NULL);
+        } else {
+            off = emit_raw(out, cap, off, "<|%s_start|>", role, NULL);
+            off = emit(out, cap, off, "%s", msgs[i].content, NULL);
+            off = emit_raw(out, cap, off, "<|%s_end|>", role, NULL);
+        }
+    }
+    if (in_tool) off = emit(out, cap, off, "]", NULL, NULL);
+    if (in_assistant && !waiting_for_outputs)
+        off = emit(out, cap, off, "<|assistant_end|>", NULL, NULL);
+    if (add_assistant)
+        off = emit(out, cap, off, "<|assistant_start|>", NULL, NULL);
+    return off;
+}
+
+// TMPL_HARMONY.
+static size_t render_harmony(int tmpl, const chat_msg *msgs, int n_msgs,
+                             bool add_assistant, int thinking, const jv *tools,
+                             char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    // gpt-oss / OpenAI Harmony. Reference: the model's OWN
+    // tokenizer.chat_template in the official GGUF. Turn framing is
+    // <|start|>ROLE<|message|>CONTENT<|end|>; the assistant additionally
+    // names a channel, <|channel|>analysis for reasoning and
+    // <|channel|>final for the answer, and closes its final message with
+    // <|return|> when generating.
+    //
+    // The system turn is the format's own preamble (identity, reasoning
+    // effort, channel declaration) — NOT the caller's system message. A
+    // caller system message is a DEVELOPER turn in Harmony, which is the
+    // one structural thing that surprises people porting from ChatML.
+    //
+    // The preamble carries the knowledge cutoff but NOT the current date.
+    // The reference emits both, adjacent, which makes them look like one
+    // decision; they are two. `Current date:` is strftime_now() — a live
+    // wall-clock value, so the prompt prefix would change at midnight and
+    // evict the whole prefix cache for no gain (the same call llama3,
+    // apertus and muse make). The cutoff is a FROZEN literal: byte-
+    // identical on every render, nothing to interpolate, no cache cost, and
+    // it is a fact the model is trained to have. Omitting it was a
+    // side-effect of omitting the date, not a decision.
+    bool have_tools = tools && tools->type == J_ARR && tools->n;
+    sbuf system = {0};
+    pl_lit(&system, "<|start|>system<|message|>You are ChatGPT, a large "
+                    "language model trained by OpenAI.\n"
+                    "Knowledge cutoff: 2024-06\n\nReasoning: medium");
+    // The channel list is a CONSTANT in the reference, not a function of
+    // the declared tools: SystemContent::default() (openai-harmony
+    // abd677f7, chat.rs) always requires analysis, commentary, final, and
+    // the model's own GGUF jinja template writes the same three as a
+    // literal. commentary is where the model puts a user-visible preamble
+    // before a tool call, so it is legal even with nothing to call.
+    pl_lit(&system, "\n\n# Valid channels: analysis, commentary, final. "
+                    "Channel must be included for every message.");
+    // Declared function tools add one routing line to the SYSTEM turn.
+    // The reference gates it on the CONVERSATION carrying a developer
+    // `functions` namespace with at least one tool, not on the system
+    // turn's own contents (encoding.rs:175-194 feeds
+    // RenderOptions::conversation_has_function_tools, consumed at :996).
+    if (have_tools)
+        pl_lit(&system, "\nCalls to these tools must go to the commentary "
+                        "channel: 'functions'.");
+    pl_lit(&system, "<|end|>");
+    if (system.failed) {
+        free(system.s);
+        return SIZE_MAX;
+    }
+    off = emit(out, cap, off, "%s", system.s, NULL);
+    free(system.s);
+
+    // The DEVELOPER turn carries the caller's instructions and the tool
+    // namespace, in that order, separated by a blank line, and it sits
+    // immediately after the system preamble. Both halves are optional and
+    // the turn exists if either does — the reference builds it from
+    // DeveloperContent's two fields and joins the present ones with "\n\n"
+    // (openai-harmony abd677f7, encoding.rs:1012-1037), and the model's own
+    // GGUF jinja gates the whole turn on `developer_message or tools`.
+    //
+    // The namespace goes HERE, not in the system turn. openai-harmony has a
+    // second slot that renders identical bytes into the system turn
+    // (SystemContent::with_tools), but that one is for the model's BUILT-IN
+    // tools; OpenAI function tools, which is all Runner ever declares, are
+    // developer content. Only the position differs, so a golden taken from
+    // the wrong slot looks perfect and is wrong.
+    sbuf dev = {0};
+    for (int i = 0; i < n_msgs; i++) {
+        if (strcmp(msgs[i].role, "system")) continue;
+        // fold every system message into one instructions block, in order
+        sb_lit(&dev, dev.n ? "\n\n" : "# Instructions\n\n");
+        pl_fmt(&dev, "%s", msgs[i].content);
+    }
+    if (have_tools) {
+        if (dev.n) pl_lit(&dev, "\n\n");
+        harmony_render_tool_defs(tools, &dev);
+    }
+    if (dev.failed) {
+        free(dev.s);
+        return SIZE_MAX;
+    }
+    if (dev.n) {
+        off = emit(out, cap, off, "<|start|>developer<|message|>",
+                   NULL, NULL);
+        off = emit(out, cap, off, "%s<|end|>", dev.s, NULL);
+    }
+    free(dev.s);
+
+    for (int i = 0; i < n_msgs; i++) {
+        const chat_msg *mm = &msgs[i];
+        if (!strcmp(mm->role, "system")) continue;  // already in developer
+        if (!strcmp(mm->role, "assistant") && mm->name && mm->name[0]) {
+            const char *prefix = !strncmp(mm->name, "functions.", 10)
+                               ? "" : "functions.";
+            off = emit(out, cap, off, "<|start|>assistant to=%s%s",
+                       prefix, mm->name);
+            off = emit(out, cap, off,
+                       "<|channel|>commentary <|constrain|>json<|message|>%s"
+                       "<|call|>", mm->content, NULL);
+        } else if (!strcmp(mm->role, "tool") && mm->name && mm->name[0]) {
+            const char *prefix = !strncmp(mm->name, "functions.", 10)
+                               ? "" : "functions.";
+            // ` to=assistant` is load-bearing, not decoration. The
+            // reference resolves the author token BEFORE it consumes the
+            // channel, and a namespaced author ("functions.NAME") matches
+            // no known role; it is accepted as Role::Tool only via the
+            // recipient fallback branch. Drop the recipient and the whole
+            // prompt fails to parse with "Unknown role: functions.NAME".
+            off = emit(out, cap, off,
+                       "<|start|>%s%s to=assistant<|channel|>commentary",
+                       prefix, mm->name);
+            off = emit(out, cap, off, "<|message|>%s<|end|>",
+                       mm->content, NULL);
+        } else if (!strcmp(mm->role, "assistant") && mm->channel &&
+                   (!strcmp(mm->channel, "analysis") ||
+                    !strcmp(mm->channel, "commentary"))) {
+            off = emit(out, cap, off,
+                       "<|start|>assistant<|channel|>%s<|message|>",
+                       mm->channel, NULL);
+            off = emit(out, cap, off, "%s<|end|>", mm->content, NULL);
+        } else if (!strcmp(mm->role, "assistant")) {
+            // history carries answers only: a past turn's analysis is not
+            // replayed, which is what the reference template does too
+            off = emit(out, cap, off,
+                       "<|start|>assistant<|channel|>final<|message|>",
+                       NULL, NULL);
+            off = emit(out, cap, off, "%s<|end|>", mm->content, NULL);
+        } else {
+            off = emit(out, cap, off, "<|start|>%s<|message|>",
+                       mm->role, NULL);
+            off = emit(out, cap, off, "%s<|end|>", mm->content, NULL);
+        }
+    }
+    // Generation prompt. The bare header lets the model pick its own
+    // channel, which is what it is trained to do and what the splitter
+    // expects by default; THINK_ON/THINK_OFF prime a channel explicitly,
+    // the same lever muse pulls with ` to=self` / ` to=user`.
+    if (add_assistant) {
+        // Unlike muse, the DEFAULT primes the analysis channel rather
+        // than leaving the header bare. Two reasons, both practical: the
+        // model opens analysis on its own anyway (it is a reasoning
+        // model), and the decoded open marker is the bare word
+        // "analysis", which is far too common to hunt for in a free
+        // stream. Priming lets the splitter start already inside
+        // reasoning and never search for it. THINK_OFF primes final and
+        // gets no reasoning at all.
+        const char *head = have_tools
+                ? "<|start|>assistant"
+            : (thinking & THINK_MODE_MASK) == THINK_OFF
+                ? "<|start|>assistant<|channel|>final<|message|>"
+                : "<|start|>assistant<|channel|>analysis<|message|>";
+        off = emit_raw(out, cap, off, "%s", head, NULL);
+        st->reasoning_open = !have_tools && (thinking & THINK_MODE_MASK) != THINK_OFF;
+        st->opener = st->reasoning_open ? "<|channel|>analysis<|message|>" : NULL;
+    }
+    return off;
+}
+
+// TMPL_MUSE.
+static size_t render_muse(int tmpl, const chat_msg *msgs, int n_msgs,
+                          bool add_assistant, int thinking, const jv *tools,
+                          char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    // muse-glimmer (reference: the model's OWN tokenizer.chat_template,
+    // read from the official meta-models GGUF, not a summary):
+    // <|start|>ROLE<|message|>CONTENT<|eot|> per turn; assistant turns
+    // carry a recipient — ` to=user` for answers, ` to=self` for
+    // reasoning turns, which is what the think_open/close pair splits.
+    // When no system message is present the reference injects a default
+    // one whose constant parts are reproduced here. Its current-date line
+    // is omitted for one reason only: a live wall-clock date changes the
+    // prompt prefix at midnight and evicts the prefix cache, which is the
+    // same call llama3, apertus and harmony make. It is NOT omitted
+    // because the reference makes it optional — an earlier version of this
+    // comment claimed the template gates it on `current_date is defined`,
+    // which is false: that branch falls through to `elif strftime_now is
+    // defined`, so under transformers the line always renders.
+    // Structured tools are rendered below with the model's native atem
+    // declaration macro; the legacy wrapper passes NULL and stays plain.
+    // `reasoning_strength` is a template kwarg in the reference
+    // (`render_reasoning`: the word verbatim, 'high' when absent); it
+    // arrives here as the THINK_EFFORT bits, xhigh (the absent value)
+    // reading as the reference's default "high". A caller's own system
+    // prompt may carry the directive itself: the reference normalises
+    // "reasoning effort" to "reasoning strength" (four casings) and
+    // then skips its line when the text already has one.
+    int effort_bits = thinking & THINK_EFFORT_MASK;
+    const char *strength = effort_bits == THINK_EFFORT_LOW ? "low"
+                         : effort_bits == THINK_EFFORT_MEDIUM ? "medium"
+                         : "high";
+    sbuf muse_line = {0};
+    pl_lit(&muse_line, "\n\nReasoning strength: ");
+    pl_lit(&muse_line, strength);
+    pl_lit(&muse_line, ".");
+    sbuf muse_tail = {0};
+    if (tools && tools->type == J_ARR && tools->n) {
+        pl_lit(&muse_tail, "\n\n");
+        muse_render_tool_defs(tools, &muse_tail);
+    }
+    pl_lit(&muse_tail, "\n\n# Valid recipients: \"self\"");
+    if (tools && tools->type == J_ARR) {
+        bool bare_mode = (thinking & THINK_BARE_RECIPIENTS) ? true
+                       : (thinking & THINK_NS_RECIPIENTS)   ? false
+                       : g_bare_recipients;
+        muse_render_recipients(tools, &muse_tail, bare_mode);
+    }
+    pl_lit(&muse_tail, ", \"user\".<|eot|>");
+    bool has_system = false;
+    for (int i = 0; i < n_msgs; i++)
+        if (!strcmp(msgs[i].role, "system")) has_system = true;
+    if (!has_system) {
+        off = emit(out, cap, off,
+                   "<|start|>system<|message|>You are a helpful AI "
+                   "assistant.\nKnowledge cutoff: 2026-01-04.", NULL, NULL);
+        off = emit(out, cap, off, "%s", muse_line.s, NULL);
+        off = emit(out, cap, off, "%s", muse_tail.s, NULL);
+    }
+    for (int i = 0; i < n_msgs; i++) {
+        const chat_msg *mm = &msgs[i];
+        if (!strcmp(mm->role, "system")) {
+            char *sys_text = muse_normalise_reasoning(mm->content);
+            const char *st = sys_text ? sys_text : mm->content;
+            off = emit(out, cap, off, "<|start|>system<|message|>%s",
+                       st, NULL);
+            if (!muse_has_reasoning_strength(st))
+                off = emit(out, cap, off, "%s", muse_line.s, NULL);
+            free(sys_text);
+            off = emit(out, cap, off, "%s", muse_tail.s, NULL);
+        } else if (!strcmp(mm->role, "assistant") && mm->channel &&
+                   !strcmp(mm->channel, "analysis")) {
+            // the reference replays an assistant message's reasoning_content
+            // as its own turn: `<|start|>assistant to=self<|message|>` the
+            // reasoning `<|eom|>`, before the answer or call it led to
+            off = emit(out, cap, off, "<|start|>assistant to=self<|message|>%s<|eom|>",
+                       mm->content, NULL);
+        } else if (!strcmp(mm->role, "assistant")) {
+            off = emit(out, cap, off, "<|start|>assistant to=%s<|message|>",
+                       mm->name ? mm->name : "user", NULL);
+            off = emit(out, cap, off, "%s<|eot|>", mm->content, NULL);
+        } else if (!strcmp(mm->role, "tool") && mm->name) {
+            off = emit(out, cap, off, "<|start|>tool %s<|message|>",
+                       mm->name, NULL);
+            off = emit(out, cap, off, "<tool_output name=\"%s\">\n",
+                       mm->name, NULL);
+            off = emit(out, cap, off, "%s\n</tool_output><|eot|>",
+                       mm->content, NULL);
+        } else {
+            // user and anything else (a tool result arrives as its own
+            // named role in the reference) render as a plain named turn
+            off = emit(out, cap, off, "<|start|>%s<|message|>",
+                       mm->role, NULL);
+            off = emit(out, cap, off, "%s<|eot|>", mm->content, NULL);
+        }
+    }
+    // The reference generation prompt is the bare header: the model then
+    // chooses its recipient, opening ` to=self` when it wants a reasoning
+    // turn. An explicit THINK_ON starts that self-addressed turn in the
+    // prompt, which makes reasoning-before-tool deterministic. With tools,
+    // THINK_OFF still leaves the recipient to the constrained header (it
+    // cannot pin `user`, because a required tool must remain reachable).
+    if (add_assistant) {
+        bool have_tools = tools && tools->type == J_ARR && tools->n;
+        int mode = thinking & THINK_MODE_MASK;   // effort bits ride above
+        const char *head = mode == THINK_ON
+                     ? "<|start|>assistant to=self<|message|>"
+                     : mode == THINK_OFF && !have_tools
+                     ? "<|start|>assistant to=user<|message|>"
+                     : "<|start|>assistant";
+        off = emit_raw(out, cap, off, "%s", head, NULL);
+        st->reasoning_open = mode == THINK_ON;
+        st->opener = mode == THINK_ON ? " to=self<|message|>" : NULL;
+    }
+    free(muse_line.s);
+    free(muse_tail.s);
+    return off;
+}
+
+// TMPL_GRANITE and TMPL_GRANITE4.
+static size_t render_granite(int tmpl, const chat_msg *msgs, int n_msgs,
+                             bool add_assistant, int thinking, const jv *tools,
+                             char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    // granite (reference: the model's OWN tokenizer.chat_template):
+    // <|start_of_role|>ROLE<|end_of_role|>CONTENT<|end_of_text|>\n per
+    // turn, assistant included. Granite 3.x defines another tool
+    // protocol that is not rendered; its tools ride the generic
+    // envelope, whose teaching turn arrives here as a system message.
+    //
+    // The 4.0-H / 4.1 templates (TMPL_GRANITE4) also define tools: the
+    // declarations join the system turn (after the caller's text and a
+    // blank line, or alone), a call is the Hermes JSON block the caller
+    // already folded into the assistant content, and consecutive tool
+    // results share one user turn of <tool_response> blocks.
+    bool have_tools = tmpl == TMPL_GRANITE4 && tools &&
+                      tools->type == J_ARR && tools->n > 0;
+    int first = 0;
+    if (have_tools) {
+        sbuf decl = {0};
+        tools_render_for(tmpl, tools, &decl);
+        if (decl.failed) { free(decl.s); return SIZE_MAX; }
+        off = emit(out, cap, off, "<|start_of_role|>system<|end_of_role|>",
+                   NULL, NULL);
+        if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
+            off = emit(out, cap, off, "%s\n\n", msgs[0].content, NULL);
+            first = 1;
+        }
+        off = emit(out, cap, off, "%s<|end_of_text|>\n", decl.s, NULL);
+        free(decl.s);
+    }
+    for (int i = first; i < n_msgs; i++) {
+        if (tmpl == TMPL_GRANITE4 && !strcmp(msgs[i].role, "tool")) {
+            bool prev_tool = i > 0 && !strcmp(msgs[i - 1].role, "tool");
+            bool next_tool = i + 1 < n_msgs &&
+                             !strcmp(msgs[i + 1].role, "tool");
+            if (!prev_tool)
+                off = emit(out, cap, off,
+                           "<|start_of_role|>user<|end_of_role|>", NULL, NULL);
+            off = emit(out, cap, off,
+                       "\n<tool_response>\n%s\n</tool_response>",
+                       msgs[i].content, NULL);
+            if (!next_tool)
+                off = emit(out, cap, off, "<|end_of_text|>\n", NULL, NULL);
+            continue;
+        }
+        off = emit(out, cap, off, "<|start_of_role|>%s<|end_of_role|>",
+                   msgs[i].role, NULL);
+        off = emit(out, cap, off, "%s<|end_of_text|>\n",
+                   msgs[i].content, NULL);
+    }
+    if (add_assistant)
+        off = emit(out, cap, off, "<|start_of_role|>assistant<|end_of_role|>",
+                   NULL, NULL);
+    return off;
+}
+
+// TMPL_GEMMA4_MAINLINE and TMPL_GEMMA4.
+static size_t render_gemma4(int tmpl, const chat_msg *msgs, int n_msgs,
+                            bool add_assistant, int thinking, const jv *tools,
+                            char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    // gemma4 (reference: llama.cpp models/templates/google-gemma-4-31B-it
+    // .jinja): <|turn>role\n CONTENT <turn|>\n per turn, a native system
+    // role (unlike gemma1-3), assistant role named "model"
+    // Thinking is selected in the FIRST SYSTEM TURN, not at the
+    // generation prompt: the model's own template (read from
+    // tokenizer.chat_template on gemma-4-E2B, 2026-08-12) opens that turn
+    // when `enable_thinking or tools or messages[0] is system/developer`
+    // and injects `<|think|>` at the very top of it, above any system
+    // text. `<|think|>` is a real token in that vocabulary. With no
+    // system message the turn is created anyway, carrying only the
+    // marker — which is why this cannot be folded into the loop below.
+    // (A `developer` first message is rendered as its own turn here, as
+    // it always has been; the template folds it into the system turn.
+    // That divergence predates this path and is untouched by it.)
+    //
+    // TOOLS open that same turn, on the same `or`, and their declarations
+    // go inside it: after the system text, before <turn|>. That is why
+    // this block also runs with thinking off -- with tools declared and no
+    // thinking, the reference still emits one system turn and runner used
+    // to emit a SEPARATE prepended turn carrying its generic JSON envelope
+    // instead (+88 tokens on every gemma4 tool prompt, and a protocol the
+    // model was never trained on). With no tools and no thinking the turn
+    // is left to the loop below, which renders it identically.
+    bool g4_tools = tools && tools->type == J_ARR && tools->n;
+    int g4_first = 0;
+    bool g4_think = (thinking & THINK_MODE_MASK) == THINK_ON;
+    if (g4_think || g4_tools) {
+        off = emit(out, cap, off, "<|turn>system\n", NULL, NULL);
+        if (g4_think)
+            off = emit(out, cap, off, "<|think|>\n", NULL, NULL);
+        if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
+            off = emit(out, cap, off, "%s", msgs[0].content, NULL);
+            g4_first = 1;
+        }
+        if (g4_tools) {
+            sbuf decls = {0};
+            g4_render_tool_defs(tools, &decls);
+            if (decls.s) off = emit(out, cap, off, "%s", decls.s, NULL);
+            free(decls.s);
+        }
+        off = emit(out, cap, off, "<turn|>\n", NULL, NULL);
+    }
+    // Consecutive assistant messages are ONE model turn, not two. The
+    // reference suppresses BOTH ends of the framing:
+    //
+    //   {%- set continue_same_model_turn =
+    //         (role == 'model' and ns.prev_non_tool_role == 'assistant') -%}
+    //   {%- if not continue_same_model_turn -%}
+    //       {{- '<|turn>' + role + '\n' }}
+    //   {%- endif -%}
+    //   ... {%- set continues_into_next = (role == 'model'
+    //         and next_nt.role == 'assistant' and ...) -%}
+    //
+    // so the contents are concatenated with NO separator. Emitting
+    // <turn|>\n<|turn>model\n between them handed the model a turn
+    // boundary its own template never produces, and cost 5 extra tokens
+    // on gemma-4-E2B's vocabulary.
+    //
+    // The continuation is for the MODEL role only -- the reference gates it
+    // on `role == 'model'` -- so consecutive USER turns still get one
+    // <|turn>user each.
+    //
+    // Adjacency is the reference's PREVIOUS NON-TOOL role, not msgs[i-1].
+    // It was direct adjacency until 2026-08-14, because runner rendered a
+    // `tool` message as its own <|turn>tool turn and skipping over one
+    // would have left that turn unbalanced. The tool result is now a
+    // <|tool_response> block inside the open model turn, which is what the
+    // reference does, so the reason for the narrower rule is gone and the
+    // merge widens to match:
+    //
+    //   {%- set continue_same_model_turn =
+    //         (role == 'model' and ns.prev_non_tool_role == 'assistant') -%}
+    //   ...
+    //   {%- set ns.prev_non_tool_role = message['role'] -%}   (non-tool only)
+    //
+    // Without the widening, the answer that follows a tool result opened a
+    // second model turn where the reference continues the first.
+    //
+    // `tool` messages are not iterated at all. The reference's loop body is
+    // wrapped in `{%- if message['role'] != 'tool' -%}`, and it renders the
+    // results by forward-scanning from the assistant turn that made the
+    // calls (below). A tool message no such turn claims is therefore
+    // DROPPED, exactly as the reference drops it.
+    //
+    // g4_prev is the reference's ns.prev_message_type, which the generation
+    // prompt reads: 0 = neither, 1 = 'tool_call', 2 = 'tool_response'.
+    int g4_prev = 0;
+    const char *prev_non_tool = NULL;
+    for (int i = g4_first; i < n_msgs; i++) {
+        if (!strcmp(msgs[i].role, "tool")) continue;
+        g4_prev = 0;
+        bool asst = !strcmp(msgs[i].role, "assistant");
+        const char *role = asst ? "model" : msgs[i].role;
+        bool merge_prev = asst && prev_non_tool &&
+                          !strcmp(prev_non_tool, "assistant");
+        if (!merge_prev)
+            off = emit(out, cap, off, "<|turn>%s\n", role, NULL);
+        // calls first, then the results they collected, then the text
+        const char *calls_end = g4_calls_end(msgs[i].content);
+        const char *text = calls_end ? calls_end : msgs[i].content;
+        if (calls_end) {
+            off = emit_n(out, cap, off, msgs[i].content,
+                         (size_t)(calls_end - msgs[i].content));
+            g4_prev = 1;
+        }
+        bool tr = false;
+        for (int k = i + 1; calls_end && k < n_msgs &&
+                            !strcmp(msgs[k].role, "tool"); k++) {
+            off = emit(out, cap, off,
+                       "<|tool_response>response:%s{value:<|\"|>",
+                       msgs[k].name ? msgs[k].name : "unknown", NULL);
+            off = emit(out, cap, off, "%s<|\"|>}<tool_response|>",
+                       msgs[k].content, NULL);
+            tr = true;
+            g4_prev = 2;
+        }
+        off = emit(out, cap, off, "%s", text, NULL);
+        // the reference's three-way close, in its own order
+        const char *next_non_tool = NULL;
+        for (int k = i + 1; k < n_msgs; k++)
+            if (strcmp(msgs[k].role, "tool")) {
+                next_non_tool = msgs[k].role;
+                break;
+            }
+        bool continues = asst && next_non_tool &&
+                         !strcmp(next_non_tool, "assistant") &&
+                         (!calls_end || tr);
+        if (g4_prev == 1 && !tr)
+            off = emit(out, cap, off, "<|tool_response>", NULL, NULL);
+        else if (continues)
+            ;  // the next assistant message continues this turn
+        else if (!(tr && !g4_has_text(text) && !next_non_tool))
+            off = emit(out, cap, off, "<turn|>\n", NULL, NULL);
+        prev_non_tool = msgs[i].role;
+    }
+    // Generation prompt, read from the MODEL'S OWN chat template
+    // (gguf tokenizer.chat_template on gemma-4-E2B), not from a summary
+    // of llama.cpp's copy:
+    //
+    //   {%- if add_generation_prompt -%}
+    //     {%- if ns.prev_message_type != 'tool_response'
+    //            and ns.prev_message_type != 'tool_call' -%}
+    //         {{- '<|turn>model\n' -}}
+    //     {%- elif ns.prev_message_type == 'tool_response'
+    //              and enable_thinking -%}
+    //         {{- '<|channel>thought\n' -}}
+    //     {%- endif -%}
+    //   {%- endif -%}
+    //
+    // There is NO empty-thought-block pre-seed here, in either thinking
+    // mode. On 2026-08-08 this code grew one — `<|channel>thought\n`
+    // immediately closed by `<channel|>` — from a web summary of the
+    // llama.cpp template rather than the model's own. That construct
+    // exists in the real template only when re-rendering a PRIOR
+    // assistant message that actually contained thinking text; handing it
+    // to the model as an empty block at generation time is a state it was
+    // never trained on. Measured cost: gemma-4-E2B's planning score fell
+    // 0.575 -> 0.300 and it emitted raw reasoning prose as its visible
+    // answer. The original unconditional `<|turn>model\n` was right.
+    //
+    // Thinking is not selected HERE for this family — it was selected in
+    // the first system turn above, which is where the template puts it.
+    if (add_assistant) {
+        // g4_prev is ns.prev_message_type, so the three branches are the
+        // template's three branches. It used to be approximated by "the
+        // last message is a `tool` message", which is a different question:
+        // it answered yes for a tool message no assistant turn claims (the
+        // reference drops those and emits the ordinary header) and no for
+        // an assistant turn whose calls have no results yet (the reference
+        // leaves prev_message_type == 'tool_call' and emits nothing).
+        if (g4_prev == 0) {
+            off = emit(out, cap, off, "<|turn>model\n", NULL, NULL);
+            // The ONE mainline/E-series divergence. The mainline template
+            // follows the header with `{%- if not enable_thinking -%}
+            // {{- '<|channel>thought\n<channel|>' -}}{%- endif -%}`, and
+            // enable_thinking defaults false -- so THINK_DEFAULT and
+            // THINK_OFF both pre-seed the empty CLOSED thought block,
+            // THINK_ON does not. The block is closed, so the model starts
+            // OUTSIDE reasoning (completion.c's primed-think probe keys on
+            // the OPEN form and correctly does not fire here). The E-series
+            // omits this entirely: emitting it there cost E2B planning
+            // 0.650 -> 0.250 (reasoning-leak), verified 2026-08-19 against
+            // all three real templates.
+            if (tmpl == TMPL_GEMMA4_MAINLINE && !g4_think)
+                off = emit(out, cap, off, "<|channel>thought\n<channel|>",
+                           NULL, NULL);
+        }
+        else if (g4_prev == 2 && g4_think) {
+            off = emit(out, cap, off, "<|channel>thought\n", NULL, NULL);
+            st->reasoning_open = true;
+            st->opener = "<|channel>thought\n";
+        }
+        // prev was a tool response and thinking is off, or a call still
+        // awaiting its result: emit nothing, which is what the template
+        // does and what the unconditional header used to get wrong.
+    }
+    return off;
+}
+
+// TMPL_GEMMA.
+static size_t render_gemma(int tmpl, const chat_msg *msgs, int n_msgs,
+                           bool add_assistant, int thinking, const jv *tools,
+                           char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    // gemma has no system role: fold a system message into the first
+    // user turn; the assistant role is named "model"
+    const char *gsys = NULL;
+    int g_lead; bool g_oom;
+    char *g_joined = leading_system_join(msgs, n_msgs, &g_lead, &g_oom);
+    if (g_oom) return SIZE_MAX;
+    for (int i = 0; i < n_msgs; i++) {
+        const chat_msg *m = &msgs[i];
+        if (!strcmp(m->role, "system")) {
+            gsys = i < g_lead && g_joined ? g_joined : m->content;
+            continue;
+        }
+        const char *role = !strcmp(m->role, "assistant") ? "model" : m->role;
+        if (gsys && !strcmp(m->role, "user")) {
+            off = emit(out, cap, off, "<start_of_turn>%s\n%s\n\n", role, gsys);
+            off = emit(out, cap, off, "%s<end_of_turn>\n", m->content, NULL);
+            gsys = NULL;
+        } else {
+            off = emit(out, cap, off, "<start_of_turn>%s\n", role, NULL);
+            off = emit(out, cap, off, "%s<end_of_turn>\n", m->content, NULL);
+        }
+    }
+    if (add_assistant)
+        off = emit(out, cap, off, "<start_of_turn>model\n", NULL, NULL);
+    free(g_joined);
+    return off;
+}
+
+// TMPL_LLAMA2 and TMPL_LLAMA2_FALLBACK.
+static size_t render_llama2(int tmpl, const chat_msg *msgs, int n_msgs,
+                            bool add_assistant, int thinking, const jv *tools,
+                            char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    // Reference (unsloth/llama-2-7b-chat tokenizer_config.json):
+    //   user      bos_token + '[INST] ' + content.strip() + ' [/INST]'
+    //   assistant ' ' + content.strip() + ' ' + eos_token
+    // with an initial system message folded into the FIRST user turn as
+    // '<<SYS>>\n' + system + '\n<</SYS>>\n\n' + content, before the strip.
+    //
+    // Two things runner got wrong until 2026-08-15, both measured by the
+    // conformance gate:
+    //
+    //   * `.strip()` was not applied. With an empty user turn the folded
+    //     content kept its trailing "\n\n", so `<</SYS>>\n\n [/INST]`
+    //     went out where the reference writes `<</SYS>> [/INST]` -- two
+    //     tokens the model never saw there.
+    //   * BOS is on EVERY user turn, not just the first. The leading one
+    //     comes from the tokenizer (hence the gate's strip-bos
+    //     allowlist), but turns 2+ begin without the sequence-restart
+    //     token the model was trained to see at each instruction
+    //     boundary. So a multi-turn Llama-2 prompt reads `</s><s>[INST]`
+    //     in the reference and `</s>[INST]` here.
+    //
+    // The literal `<s>` is emitted ONLY for a recognised Llama-2.
+    // tok_encode matches specials at any offset, so mid-prompt it becomes
+    // the BOS id -- but in a vocabulary that has no `<s>` special it would
+    // tokenize as the characters `<`, `s`, `>`, which is worse than the
+    // token being absent. TMPL_LLAMA2_FALLBACK is the id every
+    // unrecognised model lands on, and it renders the same markup without
+    // that literal.
+    const bool real_llama2 = tmpl == TMPL_LLAMA2;
+    const char *sys = NULL;
+    int user_turns = 0;
+    int l_lead; bool l_oom;
+    char *l_joined = leading_system_join(msgs, n_msgs, &l_lead, &l_oom);
+    if (l_oom) return SIZE_MAX;
+    for (int i = 0; i < n_msgs; i++) {
+        const chat_msg *m = &msgs[i];
+        if (!strcmp(m->role, "system")) {
+            sys = i < l_lead && l_joined ? l_joined : m->content;
+            continue;
+        }
+        if (!strcmp(m->role, "user")) {
+            sbuf c = {0};
+            if (sys) {
+                sb_lit(&c, "<<SYS>>\n");    // text in this vocabulary; the turn is trimmed after assembly
+                sb_put(&c, sys, strlen(sys));
+                sb_lit(&c, "\n<</SYS>>\n\n");
+                sys = NULL;
+            }
+            sb_put(&c, m->content, strlen(m->content));
+            const char *b = c.s ? c.s : "";
+            const char *e = b + (c.s ? c.n : 0);
+            b = trim_left(b, e);
+            e = trim_right(b, e);
+            if (real_llama2 && user_turns) off = emit(out, cap, off, "<s>", NULL, NULL);
+            user_turns++;
+            off = emit(out, cap, off, "[INST] ", NULL, NULL);
+            off = emit_n(out, cap, off, b, (size_t)(e - b));
+            off = emit(out, cap, off, " [/INST]", NULL, NULL);
+            free(c.s);
+        } else { // assistant
+            const char *b = m->content, *e = b + strlen(b);
+            b = trim_left(b, e);
+            e = trim_right(b, e);
+            off = emit(out, cap, off, " ", NULL, NULL);
+            off = emit_n(out, cap, off, b, (size_t)(e - b));
+            off = emit(out, cap, off, " </s>", NULL, NULL);
+        }
+    }
+    free(l_joined);
+    return off;
+}
+
+// TMPL_MISTRAL, TMPL_MISTRAL_V1 and TMPL_MISTRAL_NEMO.
+static size_t render_mistral(int tmpl, const chat_msg *msgs, int n_msgs,
+                             bool add_assistant, int thinking, const jv *tools,
+                             char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    // Three framings, one loop. Until 2026-08-14 there was no loop at all
+    // for Mistral: it fell through llama-2's case with the <<SYS>> block
+    // swapped out, which produced a FOURTH framing matching no Mistral
+    // checkpoint (see template.h). Each of the three below is the bytes
+    // its own checkpoint's chat_template renders, verified by running that
+    // template through jinja rather than by reading runner's output back.
+    //
+    //   v0.1 / v0.2      ' [INST] ' sys '\n\n' user ' [/INST]'  first turn
+    //                    ' ' assistant '</s>'
+    //   v0.3 / Small     '[INST] '  ... user '[/INST]'          LAST turn
+    //                    ' ' trim(assistant) '</s>'
+    //   Nemo-2407        '[INST]'   ... user '[/INST]'          LAST turn
+    //                    assistant '</s>'
+    //
+    // The v0.3 assistant turn is `" " + content|trim + eos_token`; the
+    // other two do not trim. That is the reference's own filter, not a
+    // tidy-up added here.
+    const bool v1   = tmpl == TMPL_MISTRAL_V1;
+    const bool nemo = tmpl == TMPL_MISTRAL_NEMO;
+    const char *open  = v1 ? " [INST] " : nemo ? "[INST]" : "[INST] ";
+    const char *close = v1 ? " [/INST]" : "[/INST]";
+
+    // Which user turn carries the system text. v0.1/v0.2 put it on the
+    // first user turn after the system message; v0.3 and Nemo on the last.
+    //
+    // DELIBERATE DEVIATION, and the only one: the v0.3 and Nemo references
+    // fold on `loop.last`, so they attach the system text only when the
+    // final message is a user turn -- a conversation ending in a tool
+    // result or an assistant turn (a prefill or continuation) renders
+    // with the caller's system prompt silently dropped. Runner attaches it
+    // to the last USER turn instead, as mistral-common's own encoder does.
+    // Every conversation that ends with a user turn renders
+    // byte-identically to the reference; the tool-result and prefill
+    // shapes differ by keeping a system prompt the caller sent rather
+    // than discarding it.
+    const char *sys = NULL;
+    int sys_at = -1, fold_at = -1;
+    for (int i = 0; i < n_msgs; i++)
+        if (!strcmp(msgs[i].role, "system")) {
+            sys = msgs[i].content;
+            sys_at = i;
+        }
+    int m_lead; bool m_oom;
+    char *m_joined = leading_system_join(msgs, n_msgs, &m_lead, &m_oom);
+    if (m_oom) return SIZE_MAX;
+    if (m_joined && sys_at == m_lead - 1) sys = m_joined;
+    for (int i = sys_at + 1; sys && i < n_msgs; i++)
+        if (!strcmp(msgs[i].role, "user")) {
+            fold_at = i;
+            if (v1) break;
+        }
+    // v0.3 and Nemo declare tools in a block right before the LAST user
+    // turn (the reference's `message == user_messages[-1]`).
+    int last_user = -1;
+    for (int i = 0; i < n_msgs; i++)
+        if (!strcmp(msgs[i].role, "user")) last_user = i;
+    sbuf decl = {0};
+    if (!v1 && tools && tools->type == J_ARR && tools->n > 0) {
+        tools_render_for(tmpl, tools, &decl);
+        if (decl.failed) { free(decl.s); free(m_joined); return SIZE_MAX; }
+    }
+
+    for (int i = 0; i < n_msgs; i++) {
+        const chat_msg *m = &msgs[i];
+        if (!strcmp(m->role, "system")) continue;
+        if (!v1 && (builder_starts(m->content, "[TOOL_CALLS]") ||
+                    builder_starts(m->content, "[TOOL_RESULTS]"))) {
+            // a native call turn (assistant_calls_render) or result
+            // block (tool_result_wrap): no leading space, no trim; a
+            // call turn ends with the eos
+            off = emit(out, cap, off, "%s", m->content, NULL);
+            if (builder_starts(m->content, "[TOOL_CALLS]"))
+                off = emit_raw(out, cap, off, "</s>", NULL, NULL);
+            continue;
+        }
+        if (!strcmp(m->role, "user")) {
+            if (i == last_user && decl.s)
+                off = emit(out, cap, off, "%s", decl.s, NULL);
+            if (i == fold_at) {
+                // no <<SYS>> block anywhere in this family: its template
+                // accepts only user and assistant, so the system text
+                // leads the turn's content
+                off = emit_raw(out, cap, off, "%s", open, NULL);
+                off = emit(out, cap, off, "%s", sys, NULL);
+                off = emit(out, cap, off, "\n\n%s", m->content, NULL);
+            } else {
+                off = emit_raw(out, cap, off, "%s", open, NULL);
+                off = emit(out, cap, off, "%s", m->content, NULL);
+            }
+            off = emit_raw(out, cap, off, "%s", close, NULL);
+        } else { // assistant
+            off = emit_trimmed(out, cap, off, nemo ? "" : " ", m->content,
+                               tmpl == TMPL_MISTRAL, "</s>");
+        }
+    }
+    free(decl.s);
+    free(m_joined);
+    return off;
+}
+
+size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
+                             bool add_assistant, int thinking,
+                             const jv *tools,
+                             char *out, size_t cap, render_state *st) {
+    render_state unused;
+    if (!st) st = &unused;
+    *st = (render_state){ .reasoning_open = false, .opener = NULL,
+                          .think_mode = thinking & THINK_MODE_MASK };
     size_t off = 0;
     out[0] = 0;
     switch (tmpl) {
-    case TMPL_NEMOTRON: {
-        // The last `/think` or `/no_think` in a system or user turn decides
-        // (`/think` wins inside one turn); thinking is on when neither
-        // appears. An explicit request setting outranks the text.
-        bool think = true;
-        for (int i = 0; i < n_msgs; i++) {
-            if (strcmp(msgs[i].role, "user") && strcmp(msgs[i].role, "system"))
-                continue;
-            if (strstr(msgs[i].content, "/think")) think = true;
-            else if (strstr(msgs[i].content, "/no_think")) think = false;
-        }
-        int mode = thinking & THINK_MODE_MASK;
-        if (mode == THINK_ON) think = true;
-        if (mode == THINK_OFF) think = false;
-        // Every conversation opens with the system header. The reference
-        // reads one leading system turn; the generic tool envelope adds a
-        // second in front of the caller's, so every leading one is joined.
-        off = emit_raw(out, cap, off, "<SPECIAL_10>System\n", NULL, NULL);
-        int first = 0;
-        bool wrote = false;
-        while (first < n_msgs && !strcmp(msgs[first].role, "system")) {
-            char *c = nemotron_clean(msgs[first].content, true);
-            if (!c) return SIZE_MAX;
-            if (c[0]) {
-                off = emit(out, cap, off, wrote ? "\n\n%s" : "%s", c, NULL);
-                wrote = true;
-            }
-            free(c);
-            first++;
-        }
-        // native declarations follow the caller's system text, after a blank
-        // line when there was any (the reference's non_tool_system_content)
-        if (tools && tools->type == J_ARR && tools->n > 0) {
-            sbuf decl = {0};
-            tools_render_for(tmpl, tools, &decl);
-            if (decl.failed) { free(decl.s); return SIZE_MAX; }
-            off = emit(out, cap, off, wrote ? "\n\n%s" : "%s", decl.s, NULL);
-            free(decl.s);
-        }
-        off = emit(out, cap, off, "\n", NULL, NULL);
-        // A trailing assistant turn is held back and written after the
-        // generation prompt's thought tag: the reference's prefill.
-        int last = n_msgs;
-        char *held = NULL;
-        if (last > first && !strcmp(msgs[last - 1].role, "assistant")) {
-            held = nemotron_clean(msgs[last - 1].content, false);
-            if (!held) return SIZE_MAX;
-            last--;
-        }
-        for (int i = first; i < last; i++) {
-            const char *role = msgs[i].role;
-            if (!strcmp(role, "user")) {
-                char *c = nemotron_clean(msgs[i].content, true);
-                if (!c) { free(held); return SIZE_MAX; }
-                off = emit_raw(out, cap, off, "<SPECIAL_11>User\n", NULL, NULL);
-                off = emit(out, cap, off, "%s\n", c, NULL);
-                free(c);
-            } else if (!strcmp(role, "tool")) {
-                bool prev = i > first && !strcmp(msgs[i - 1].role, "tool");
-                bool next = i + 1 < last && !strcmp(msgs[i + 1].role, "tool");
-                if (!prev)
-                    off = emit_raw(out, cap, off,
-                                   "<SPECIAL_11>User\n<TOOL_RESPONSE>[", NULL, NULL);
-                off = emit(out, cap, off, next ? "%s, " : "%s",
-                           msgs[i].content, NULL);
-                if (!next)
-                    off = emit_raw(out, cap, off, "]</TOOL_RESPONSE>\n", NULL, NULL);
-            } else if (!strcmp(role, "assistant")) {
-                const char *body = msgs[i].content;
-                const char *close = strstr(body, "</think>");
-                if (close) body = close + 8;
-                char *c = nemotron_clean(body, false);
-                if (!c) { free(held); return SIZE_MAX; }
-                off = emit_raw(out, cap, off, "<SPECIAL_11>Assistant\n", NULL, NULL);
-                off = emit(out, cap, off, "%s", c, NULL);
-                off = emit_raw(out, cap, off, "\n<SPECIAL_12>\n", NULL, NULL);
-                free(c);
-            }
-            // a system turn after the first, like any other role, has no
-            // branch in the reference and renders as nothing
-        }
-        if (add_assistant || (held && held[0])) {
-            off = emit_raw(out, cap, off, "<SPECIAL_11>Assistant\n", NULL, NULL);
-            off = emit_raw(out, cap, off, think ? "<think>\n" : "<think></think>",
-                           NULL, NULL);
-            if (held && held[0]) off = emit(out, cap, off, "%s", held, NULL);
-            if (!add_assistant)
-                off = emit_raw(out, cap, off, "\n<SPECIAL_12>\n", NULL, NULL);
-        }
-        free(held);
-        break;
-    }
+    case TMPL_NEMOTRON:
+        return render_nemotron_nano(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_ORNITH:
     case TMPL_QWEN35:
     case TMPL_QWEN35_NOTHINK:
-        for (int i = 0; i < n_msgs; i++) {
-            bool tool_response =
-                !strcmp(msgs[i].role, "user") &&
-                content_starts(msgs[i].content, "<tool_response>");
-            bool prev_tool_response = i > 0 &&
-                !strcmp(msgs[i - 1].role, "user") &&
-                content_starts(msgs[i - 1].content, "<tool_response>");
-            bool next_tool_response = i + 1 < n_msgs &&
-                !strcmp(msgs[i + 1].role, "user") &&
-                content_starts(msgs[i + 1].content, "<tool_response>");
-            if (tool_response) {
-                if (!prev_tool_response)
-                    off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
-                else
-                    off = emit(out, cap, off, "\n", NULL, NULL);
-                off = emit(out, cap, off, "%s", msgs[i].content, NULL);
-                if (!next_tool_response)
-                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-            } else {
-                off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
-                           msgs[i].role, msgs[i].content);
-            }
-        }
-        if (add_assistant) {
-            off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
-            // ornith's reference branches on enable_thinking exactly the way
-            // Qwen3's does below: `false` means an ALREADY-CLOSED thought
-            // block, everything else (including undefined) means an OPEN one.
-            // Emitting the open block for THINK_OFF handed a caller who asked
-            // for no reasoning the one construct that starts it.
-            // Qwen 3.5-0.8B inverts the default: only an explicit `true`
-            // opens the block (chat_template.jinja:149).
-            int mode = thinking & THINK_MODE_MASK;
-            bool closed = tmpl == TMPL_QWEN35_NOTHINK ? mode != THINK_ON
-                                                      : mode == THINK_OFF;
-            off = emit(out, cap, off,
-                       closed ? "<think>\n\n</think>\n\n" : "<think>\n",
-                       NULL, NULL);
-        }
-        break;
-    case TMPL_QWEN3_CODER: {
-        // Qwen/Qwen3-Coder-30B-A3B-Instruct tokenizer_config.json.
-        bool have_tools = tools && tools->type == J_ARR && tools->n;
-        int first = n_msgs && !strcmp(msgs[0].role, "system") ? 1 : 0;
-        if (first || have_tools) {
-            off = emit(out, cap, off, "<|im_start|>system\n%s",
-                       first ? msgs[0].content : "You are Qwen, a helpful AI assistant that can interact with a computer to solve tasks.", NULL);
-            if (have_tools) {
-                sbuf decl = {0};
-                tools_render_for(tmpl, tools, &decl);
-                if (decl.failed) { free(decl.s); return SIZE_MAX; }
-                off = emit(out, cap, off, "\n\n%s", decl.s, NULL);
-                free(decl.s);
-            }
-            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-        }
-        for (int i = first; i < n_msgs; i++) {
-            if (!strcmp(msgs[i].role, "tool")) {
-                if (i > first && strcmp(msgs[i-1].role, "tool"))
-                    off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
-                off = emit(out, cap, off, "<tool_response>\n%s\n</tool_response>\n", msgs[i].content, NULL);
-                if (i+1 == n_msgs || strcmp(msgs[i+1].role, "tool"))
-                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-            } else {
-                off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n", msgs[i].role, msgs[i].content);
-            }
-        }
-        if (add_assistant)
-            off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
-        break;
-    }
-    case TMPL_QWEN38: {
-        // Qwen/Qwen3.8-27B chat_template.jinja (2026-09-06), see the enum
-        // comment. Every content the reference renders goes through
-        // `|trim`; the reasoning preamble depends on the effort bits.
-        int mode = thinking & THINK_MODE_MASK;
-        int effort = thinking & THINK_EFFORT_MASK;
-        const char *instr = NULL;
-        if (mode != THINK_OFF) {
-            if (effort == THINK_EFFORT_LOW)
-                instr = "Reasoning effort is set to low. Keep your thinking "
-                        "brief and focused, moving directly to the conclusion "
-                        "without unnecessary elaboration.";
-            else if (effort != THINK_EFFORT_MEDIUM)
-                instr = "Reasoning effort is set to xhigh. Please think "
-                        "carefully through the task, validate key "
-                        "assumptions, consider plausible alternatives, and "
-                        "prioritize correctness, consistency, and clarity in "
-                        "the final answer.";
-        }
-        bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
-        int first = n_msgs > 0 && !strcmp(msgs[0].role, "system") ? 1 : 0;
-        const char *sc = first ? msgs[0].content : "";
-        const char *sc_e = trim_right(sc, sc + strlen(sc));
-        const char *sc_b = trim_left(sc, sc_e);
-        if (have_tools) {
-            // preamble, declarations, then the caller's system text
-            off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
-            if (instr) off = emit_raw(out, cap, off, "%s\n\n", instr, NULL);
-            sbuf decl = {0};
-            tools_render_for(tmpl, tools, &decl);
-            off = emit(out, cap, off, "%s", decl.s, NULL);
-            free(decl.s);
-            if (sc_e > sc_b) {
-                off = emit(out, cap, off, "\n\n", NULL, NULL);
-                off = emit_n(out, cap, off, sc_b, (size_t)(sc_e - sc_b));
-            }
-            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-        } else if (sc_e > sc_b) {
-            off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
-            if (instr) off = emit_raw(out, cap, off, "%s\n\n", instr, NULL);
-            off = emit_n(out, cap, off, sc_b, (size_t)(sc_e - sc_b));
-            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-        } else if (instr) {
-            off = emit_raw(out, cap, off, "<|im_start|>system\n%s<|im_end|>\n",
-                           instr, NULL);
-        }
-        for (int i = first; i < n_msgs; i++) {
-            const char *role = msgs[i].role;
-            const char *c = msgs[i].content;
-            const char *e = trim_right(c, c + strlen(c));
-            const char *b = trim_left(c, e);
-            if (!strcmp(role, "tool")) {
-                bool prev_tool = i > first && !strcmp(msgs[i - 1].role, "tool");
-                bool next_tool = i + 1 < n_msgs &&
-                                 !strcmp(msgs[i + 1].role, "tool");
-                if (!prev_tool)
-                    off = emit(out, cap, off, "<|im_start|>user", NULL, NULL);
-                off = emit(out, cap, off, "\n<tool_response>\n", NULL, NULL);
-                off = emit_n(out, cap, off, b, (size_t)(e - b));
-                off = emit(out, cap, off, "\n</tool_response>", NULL, NULL);
-                if (!next_tool)
-                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-                continue;
-            }
-            if (strcmp(role, "assistant")) {
-                off = emit(out, cap, off, "<|im_start|>%s\n", role, NULL);
-                off = emit_n(out, cap, off, b, (size_t)(e - b));
-                off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-                continue;
-            }
-            // Every assistant turn carries its thought block
-            // (preserve_thinking defaults true): `<think>\n` reasoning
-            // `\n</think>\n\n` then the trimmed content and its calls. A
-            // caller that composed the block already (the chat surface
-            // does, from reasoning_content) is passed through with the
-            // reasoning and the content each trimmed; one that did not gets
-            // the empty block the reference writes for no reasoning.
-            off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
-            // The chat surface composes the block with its framing marked
-            // (server.c message_text, prompt_lit), so the parse looks past
-            // the marks and re-emits the framing as its own literals.
-            const char *rest = c;
-            const char *c0 = skip_marks(c);
-            if (!strncmp(c0, "<think>\n", 8)) {
-                const char *close = strstr(c0 + 8, "\n</think>\n\n");
-                if (close) {
-                    const char *rb0 = skip_marks(c0 + 8);
-                    const char *re = trim_right(rb0, unmark_end(rb0, close));
-                    const char *rb = trim_left(rb0, re);
-                    off = emit(out, cap, off, "<think>\n", NULL, NULL);
-                    off = emit_n(out, cap, off, rb, (size_t)(re - rb));
-                    off = emit(out, cap, off, "\n</think>\n\n", NULL, NULL);
-                    // past the framing's own CLOSE only: an OPEN right after
-                    // it begins the calls' framing and must stay with them
-                    rest = close + 11;
-                    while (*rest == PROMPT_RAW_CLOSE) rest++;
-                } else {
-                    rest = NULL;   // an open block: replay verbatim
-                }
-            } else {
-                off = emit(out, cap, off, "<think>\n\n</think>\n\n", NULL, NULL);
-            }
-            if (!rest) {
-                off = emit(out, cap, off, "%s", c, NULL);
-            } else {
-                // the calls a turn carries end in `</tool_call>` and are
-                // not trimmed away with the content's own whitespace
-                const char *xe = rest + strlen(rest);
-                const char *tc = strstr(rest, "<tool_call>");
-                // The calls were framed by tool_history_render_for with the
-                // marks around their scaffolding; the first `<tool_call>` sits
-                // right after its OPEN mark, and the replay must carry that
-                // mark or the tokenizer reads the block as text.
-                while (tc && tc > rest && is_mark(tc[-1])) tc--;
-                const char *ce = tc ? tc : xe;
-                const char *cend = trim_right(rest, ce);
-                const char *cb = trim_left(rest, cend);
-                off = emit_n(out, cap, off, cb, (size_t)(cend - cb));
-                if (tc) {
-                    // chat_template.jinja:140-147: the first call follows
-                    // spoken text after a blank line, nothing otherwise
-                    if (cend > cb) off = emit(out, cap, off, "\n\n", NULL, NULL);
-                    off = emit(out, cap, off, "%s", tc, NULL);
-                }
-            }
-            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-        }
-        // emit_raw, not emit: the thought block is the template's own
-        // bytes, and emit() treats a %s argument as caller text (unmarked),
-        // which left `<think>` to tokenize as `<th` `ink` `>` on every
-        // thinking-enabled turn (found on Qwen 3.8, 2026-09-15; gated in
-        // tests/test_prompt_marks.c).
-        if (add_assistant)
-            off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
-                           mode == THINK_OFF ? "<think>\n\n</think>\n\n"
-                                             : "<think>\n", NULL);
-        break;
-    }
+        return render_qwen35(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+    case TMPL_QWEN3_CODER:
+        return render_qwen3_coder(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+    case TMPL_QWEN38:
+        return render_qwen38(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_GRANITE42:
-    case TMPL_NEMOTRON35: {
-        // ibm-granite/granite-4.2-3b chat_template.jinja (2026-09-06), see
-        // the enum comment. Line references below are into that file.
-        bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
-        int first = n_msgs > 0 && !strcmp(msgs[0].role, "system") ? 1 : 0;
-        // The reference sets system_message to "" when messages[0] is not a
-        // system turn and then branches on `system_message is defined`,
-        // which is true either way: a system turn is ALWAYS emitted.
-        off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
-        if (first) off = emit(out, cap, off, "%s", msgs[0].content, NULL);
-        if (have_tools) {
-            if (first && msgs[0].content[0])
-                off = emit(out, cap, off, "\n\n", NULL, NULL);
-            sbuf decl = {0};
-            tools_render_for(tmpl, tools, &decl);
-            off = emit(out, cap, off, "%s", decl.s, NULL);
-            free(decl.s);
-        }
-        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-        // last_user_idx is computed over loop_messages, i.e. after the
-        // leading system turn was split off; `i` below is the same index.
-        int last_user = -1;
-        for (int i = first; i < n_msgs; i++)
-            if (!strcmp(msgs[i].role, "user")) last_user = i;
-        for (int i = first; i < n_msgs; i++) {
-            const char *role = msgs[i].role;
-            const char *c = msgs[i].content;
-            if (!strcmp(role, "tool")) {
-                // consecutive results share one user turn; every result
-                // block ends in its own newline, unlike ornith's
-                bool prev_tool = i > first && !strcmp(msgs[i - 1].role, "tool");
-                bool next_tool = i + 1 < n_msgs &&
-                                 !strcmp(msgs[i + 1].role, "tool");
-                if (!prev_tool)
-                    off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
-                off = emit(out, cap, off,
-                           "<tool_response>\n%s\n</tool_response>\n", c, NULL);
-                if (!next_tool)
-                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-                continue;
-            }
-            if (strcmp(role, "assistant")) {
-                off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
-                           role, c);
-                continue;
-            }
-            // An assistant turn without a thought block is seeded with the
-            // closed one. A turn BEFORE the last user turn that carried a
-            // complete block keeps only what follows its last </think>,
-            // behind that same closed block (truncate_history_thinking,
-            // default true); the latest turn is replayed verbatim. Either
-            // way the result is `| trim`med as a whole, so a seeded body
-            // keeps its leading whitespace behind the seed.
-            const char *open = strstr(c, "<think>");
-            const char *close = strstr(c, "</think>");
-            const char *body = c;
-            bool seed = !open && !close;
-            if (i < last_user && open && close) {
-                const char *p = close, *q;
-                while ((q = strstr(p + 8, "</think>"))) p = q;
-                body = p + 8;
-                seed = true;
-            }
-            const char *end = body + strlen(body);
-            const char *b = seed ? body : trim_left(body, end);
-            // granite 4.2 trims the text it kept from a truncated TOOL-CALL
-            // turn (`"<think></think>" ~ c | trim`, the filter binding to c);
-            // Nemotron 3.5's copy of that line has no trim, and a truncated
-            // turn without calls is trimmed as a whole, seed first, by both.
-            // Only the caller's text is trimmed: it is unmarked, so the walk
-            // stops at the first mark, which leaves the template's own
-            // newline before the first call (`c ~ '\n'`) and the call's
-            // marks in place.
-            if (tmpl == TMPL_GRANITE42 && i < last_user && trim_right(b, end) - b >= 12 &&
-                !strncmp(trim_right(b, end) - 12, "</tool_call>", 12))
-                while (b < end && strchr(" \t\n\r\f\v", *b) && *b) b++;
-            const char *e = trim_right(b, end);
-            off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
-                           seed ? "<think></think>" : "", NULL);   // the seed is the template's
-            off = emit_n(out, cap, off, b, (size_t)(e - b));
-            // a tool-call turn ends `</tool_call>\n` before <|im_end|>
-            // (chat_template.jinja:118); the trim above took that newline
-            if (e - b >= 12 && !strncmp(e - 12, "</tool_call>", 12))
-                off = emit(out, cap, off, "\n", NULL, NULL);
-            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-        }
-        if (add_assistant)   // emit_raw: the block is the template's (see qwen38)
-            off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
-                           thinking == THINK_OFF ? "<think></think>" : "<think>\n",
-                           NULL);
-        break;
-    }
-    case TMPL_HERMES4: {
-        // NousResearch/Hermes-4-14B chat_template (2026-10-02). The system
-        // turn is always written: the caller's first message when it is a
-        // system one, else the standard prompt, or the thinking prompt when
-        // the request asks for reasoning (the template's `thinking`, false
-        // by default). The tools preamble is appended to it.
-        static const char standard[] = "You are Hermes, created by Nous Research.";
-        static const char deep[] = "You are a deep thinking AI, you may use extremely long chains of thought to deeply consider the problem and deliberate with yourself via systematic reasoning processes to help come to a correct solution prior to answering. You should enclose your thoughts and internal monologue inside <think> </think> tags, and then provide your solution or response to the problem.";
-        bool think = (thinking & THINK_MODE_MASK) == THINK_ON;
-        bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
-        bool sys0 = n_msgs > 0 && !strcmp(msgs[0].role, "system");
-        off = emit(out, cap, off, "<|im_start|>system\n%s",
-                   sys0 ? msgs[0].content : think ? deep : standard, NULL);
-        if (have_tools) {
-            sbuf decl = {0};
-            tools_render_for(tmpl, tools, &decl);
-            if (decl.failed) { free(decl.s); return SIZE_MAX; }
-            off = emit(out, cap, off, "%s", decl.s, NULL);
-            free(decl.s);
-        }
-        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-        for (int i = sys0 ? 1 : 0; i < n_msgs; i++) {
-            const char *role = msgs[i].role;
-            if (!strcmp(role, "tool")) {
-                bool prev_tool = i > 0 && !strcmp(msgs[i - 1].role, "tool");
-                bool next_tool = i + 1 < n_msgs &&
-                                 !strcmp(msgs[i + 1].role, "tool");
-                if (!prev_tool)
-                    off = emit(out, cap, off, "<|im_start|>user", NULL, NULL);
-                off = emit(out, cap, off,
-                           "\n<tool_response>\n%s\n</tool_response>",
-                           msgs[i].content, NULL);
-                if (!next_tool)
-                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-            } else if (!strcmp(role, "assistant")) {
-                // The reference writes the header, then "\n" + content when
-                // there is content, then "\n<tool_call>..." per call, and
-                // closes the turn only when it wrote one of the two. The
-                // flattened turn here is content followed by the calls, each
-                // already led by its newline (assistant_calls_render).
-                const char *c = skip_marks(msgs[i].content);
-                off = emit(out, cap, off, "<|im_start|>assistant", NULL, NULL);
-                if (!c[0]) continue;
-                // (the builder marks its literals one by one, so the newline
-                // and the tag are separated by marks)
-                bool calls_first = c[0] == '\n' &&
-                    !strncmp(skip_marks(c + 1), "<tool_call>", 11);
-                if (!calls_first)
-                    off = emit(out, cap, off, "\n", NULL, NULL);
-                off = emit(out, cap, off, "%s<|im_end|>\n", msgs[i].content, NULL);
-            } else {
-                off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
-                           role, msgs[i].content);
-            }
-        }
-        if (add_assistant)
-            off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
-        break;
-    }
+    case TMPL_NEMOTRON35:
+        return render_granite42(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+    case TMPL_HERMES4:
+        return render_hermes4(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_CHATML:
-    case TMPL_CHATML_THINK: {
-        bool qwen_tools = tools && tools->type == J_ARR && tools->n > 0;
-        int first = 0;
-        int last_user = -1;
-        for (int i = 0; i < n_msgs; i++)
-            if (!strcmp(msgs[i].role, "user")) last_user = i;
-        if (qwen_tools) {
-            off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
-            if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
-                off = emit(out, cap, off, "%s\n\n", msgs[0].content, NULL);
-                first = 1;
-            }
-            sbuf decl = {0};
-            tools_render_for(tmpl, tools, &decl);
-            off = emit(out, cap, off, "%s<|im_end|>\n",
-                       decl.s ? decl.s : "", NULL);
-            free(decl.s);
-        }
-        for (int i = first; i < n_msgs; i++) {
-            // A tool result is not a `tool` turn in this family: every ChatML
-            // reference -- Qwen2.5, Qwen3 and ornith alike -- renders it as a
-            // USER turn carrying a <tool_response> block, and folds
-            // consecutive results into one turn. Runner already did exactly
-            // this on its ORNITH path; emitting `<|im_start|>tool` here sent
-            // the model a role header its own template never produces.
-            if (!strcmp(msgs[i].role, "tool")) {
-                bool prev_tool = i > 0 && !strcmp(msgs[i - 1].role, "tool");
-                bool next_tool = i + 1 < n_msgs &&
-                                 !strcmp(msgs[i + 1].role, "tool");
-                if (!prev_tool)
-                    off = emit(out, cap, off, "<|im_start|>user", NULL, NULL);
-                off = emit(out, cap, off,
-                           "\n<tool_response>\n%s\n</tool_response>",
-                           msgs[i].content, NULL);
-                if (!next_tool)
-                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-                continue;
-            }
-            bool qwen3_empty_think =
-                tmpl == TMPL_CHATML_THINK && i == n_msgs - 1 &&
-                i > last_user && !strcmp(msgs[i].role, "assistant") &&
-                !content_starts(msgs[i].content, "<think>");
-            off = emit(out, cap, off, "<|im_start|>%s\n", msgs[i].role,
-                       NULL);
-            if (qwen3_empty_think)
-                off = emit(out, cap, off, "<think>\n\n</think>\n\n",
-                           NULL, NULL);
-            off = emit(out, cap, off, "%s<|im_end|>\n", msgs[i].content,
-                       NULL);
-        }
-        if (add_assistant) {
-            off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
-            // Qwen3's enable_thinking=false branch, verbatim from
-            // Qwen/Qwen3-* tokenizer_config.json: an already-closed thought
-            // block, which is how the family is asked not to reason. Its
-            // reference defaults thinking ON, so this is emitted only when a
-            // caller explicitly turns it off -- never for THINK_DEFAULT.
-            if (tmpl == TMPL_CHATML_THINK && thinking == THINK_OFF)
-                off = emit(out, cap, off, "<think>\n\n</think>\n\n",
-                           NULL, NULL);
-        }
-        break;
-    }
+    case TMPL_CHATML_THINK:
+        return render_chatml(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_LLAMA3:
         for (int i = 0; i < n_msgs; i++)
             off = emit(out, cap, off,
@@ -2151,821 +3067,41 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         else
             off = emit(out, cap, off, "<|endoftext|>", NULL, NULL);
         break;
-    case TMPL_APERTUS: {
-        // apertus (reference: swiss-ai/Apertus-8B-Instruct-2509
-        // chat_template.jinja): <|role_start|>CONTENT<|role_end|> per turn,
-        // with a native system role that must come first.
-        //
-        // Between the system turn and the first real turn the reference always
-        // emits a developer block carrying two switches. Runner does not
-        // expose Apertus thinking, but declared tools use the reference's
-        // render_tools TypeScript rather than the generic protocol.
-        //
-        // Two deliberate omissions, both matching decisions already made for
-        // other families: when there is no system message the reference
-        // substitutes a default one containing strftime_now('%Y-%m-%d'), and
-        // runner does not embed a live date in a prompt (as with Llama-3.2's
-        // "Cutting Knowledge Date" header); and BOS is added by the tokenizer,
-        // not spelled into the template.
-        const char *sys = NULL;
-        int first = 0;
-        if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
-            sys = msgs[0].content;
-            first = 1;
-        }
-        if (sys)
-            off = emit(out, cap, off, "<|system_start|>%s<|system_end|>", sys, NULL);
-        off = emit(out, cap, off,
-                   "<|developer_start|>Deliberation: disabled\n"
-                   "Tool Capabilities:", NULL, NULL);
-        if (tools && tools->type == J_ARR && tools->n) {
-            sbuf defs = {0};
-            apertus_render_tools(tools, &defs);
-            off = emit(out, cap, off, "\n%s", defs.s ? defs.s : "", NULL);
-            free(defs.s);
-        } else {
-            off = emit(out, cap, off, " disabled", NULL, NULL);
-        }
-        off = emit(out, cap, off, "<|developer_end|>", NULL, NULL);
-        // The reference's ns.in_assistant/ns.in_tool state keeps consecutive
-        // assistant messages, their calls, and following tool results in ONE
-        // assistant turn. Results are raw values inside one bracketed list;
-        // no role marker or family-generic wrapper exists. An assistant reply
-        // after those results therefore continues the same turn -- the marked
-        // direct-adjacency limitation is discharged now that the tool turn is
-        // conformant.
-        bool in_assistant = false, in_tool = false, waiting_for_outputs = false;
-        for (int i = first; i < n_msgs; i++) {
-            const char *role = msgs[i].role;
-            if (!strcmp(role, "user")) {
-                if (in_tool) {
-                    off = emit(out, cap, off, "]", NULL, NULL);
-                    in_tool = false;
-                }
-                if (in_assistant) {
-                    off = emit(out, cap, off, "<|assistant_end|>", NULL, NULL);
-                    in_assistant = false;
-                }
-                off = emit(out, cap, off, "<|user_start|>%s<|user_end|>",
-                           msgs[i].content, NULL);
-            } else if (!strcmp(role, "assistant")) {
-                if (!in_assistant) {
-                    off = emit(out, cap, off, "<|assistant_start|>", NULL, NULL);
-                    in_assistant = true;
-                }
-                if (in_tool) {
-                    off = emit(out, cap, off, "]", NULL, NULL);
-                    in_tool = false;
-                }
-                off = emit(out, cap, off, "%s", msgs[i].content, NULL);
-                if (strstr(msgs[i].content, "<|tools_prefix|>"))
-                    waiting_for_outputs = true;
-            } else if (!strcmp(role, "tool")) {
-                // The reference rejects an orphan tool message. The renderer
-                // has no error channel, so it drops that invalid role rather
-                // than inventing a prompt token for it.
-                if (!in_assistant) continue;
-                off = emit(out, cap, off, in_tool ? ", " : "[", NULL, NULL);
-                in_tool = true;
-                waiting_for_outputs = false;
-                off = emit(out, cap, off, "%s", msgs[i].content, NULL);
-            } else {
-                off = emit_raw(out, cap, off, "<|%s_start|>", role, NULL);
-                off = emit(out, cap, off, "%s", msgs[i].content, NULL);
-                off = emit_raw(out, cap, off, "<|%s_end|>", role, NULL);
-            }
-        }
-        if (in_tool) off = emit(out, cap, off, "]", NULL, NULL);
-        if (in_assistant && !waiting_for_outputs)
-            off = emit(out, cap, off, "<|assistant_end|>", NULL, NULL);
-        if (add_assistant)
-            off = emit(out, cap, off, "<|assistant_start|>", NULL, NULL);
-        break;
-    }
-    case TMPL_HARMONY: {
-        // gpt-oss / OpenAI Harmony. Reference: the model's OWN
-        // tokenizer.chat_template in the official GGUF. Turn framing is
-        // <|start|>ROLE<|message|>CONTENT<|end|>; the assistant additionally
-        // names a channel, <|channel|>analysis for reasoning and
-        // <|channel|>final for the answer, and closes its final message with
-        // <|return|> when generating.
-        //
-        // The system turn is the format's own preamble (identity, reasoning
-        // effort, channel declaration) — NOT the caller's system message. A
-        // caller system message is a DEVELOPER turn in Harmony, which is the
-        // one structural thing that surprises people porting from ChatML.
-        //
-        // The preamble carries the knowledge cutoff but NOT the current date.
-        // The reference emits both, adjacent, which makes them look like one
-        // decision; they are two. `Current date:` is strftime_now() — a live
-        // wall-clock value, so the prompt prefix would change at midnight and
-        // evict the whole prefix cache for no gain (the same call llama3,
-        // apertus and muse make). The cutoff is a FROZEN literal: byte-
-        // identical on every render, nothing to interpolate, no cache cost, and
-        // it is a fact the model is trained to have. Omitting it was a
-        // side-effect of omitting the date, not a decision.
-        bool have_tools = tools && tools->type == J_ARR && tools->n;
-        sbuf system = {0};
-        pl_lit(&system, "<|start|>system<|message|>You are ChatGPT, a large "
-                        "language model trained by OpenAI.\n"
-                        "Knowledge cutoff: 2024-06\n\nReasoning: medium");
-        // The channel list is a CONSTANT in the reference, not a function of
-        // the declared tools: SystemContent::default() (openai-harmony
-        // abd677f7, chat.rs) always requires analysis, commentary, final, and
-        // the model's own GGUF jinja template writes the same three as a
-        // literal. commentary is where the model puts a user-visible preamble
-        // before a tool call, so it is legal even with nothing to call.
-        pl_lit(&system, "\n\n# Valid channels: analysis, commentary, final. "
-                        "Channel must be included for every message.");
-        // Declared function tools add one routing line to the SYSTEM turn.
-        // The reference gates it on the CONVERSATION carrying a developer
-        // `functions` namespace with at least one tool, not on the system
-        // turn's own contents (encoding.rs:175-194 feeds
-        // RenderOptions::conversation_has_function_tools, consumed at :996).
-        if (have_tools)
-            pl_lit(&system, "\nCalls to these tools must go to the commentary "
-                            "channel: 'functions'.");
-        pl_lit(&system, "<|end|>");
-        if (system.failed) {
-            free(system.s);
-            return SIZE_MAX;
-        }
-        off = emit(out, cap, off, "%s", system.s, NULL);
-        free(system.s);
-
-        // The DEVELOPER turn carries the caller's instructions and the tool
-        // namespace, in that order, separated by a blank line, and it sits
-        // immediately after the system preamble. Both halves are optional and
-        // the turn exists if either does — the reference builds it from
-        // DeveloperContent's two fields and joins the present ones with "\n\n"
-        // (openai-harmony abd677f7, encoding.rs:1012-1037), and the model's own
-        // GGUF jinja gates the whole turn on `developer_message or tools`.
-        //
-        // The namespace goes HERE, not in the system turn. openai-harmony has a
-        // second slot that renders identical bytes into the system turn
-        // (SystemContent::with_tools), but that one is for the model's BUILT-IN
-        // tools; OpenAI function tools, which is all Runner ever declares, are
-        // developer content. Only the position differs, so a golden taken from
-        // the wrong slot looks perfect and is wrong.
-        sbuf dev = {0};
-        for (int i = 0; i < n_msgs; i++) {
-            if (strcmp(msgs[i].role, "system")) continue;
-            // fold every system message into one instructions block, in order
-            sb_lit(&dev, dev.n ? "\n\n" : "# Instructions\n\n");
-            pl_fmt(&dev, "%s", msgs[i].content);
-        }
-        if (have_tools) {
-            if (dev.n) pl_lit(&dev, "\n\n");
-            harmony_render_tool_defs(tools, &dev);
-        }
-        if (dev.failed) {
-            free(dev.s);
-            return SIZE_MAX;
-        }
-        if (dev.n) {
-            off = emit(out, cap, off, "<|start|>developer<|message|>",
-                       NULL, NULL);
-            off = emit(out, cap, off, "%s<|end|>", dev.s, NULL);
-        }
-        free(dev.s);
-
-        for (int i = 0; i < n_msgs; i++) {
-            const chat_msg *mm = &msgs[i];
-            if (!strcmp(mm->role, "system")) continue;  // already in developer
-            if (!strcmp(mm->role, "assistant") && mm->name && mm->name[0]) {
-                const char *prefix = !strncmp(mm->name, "functions.", 10)
-                                   ? "" : "functions.";
-                off = emit(out, cap, off, "<|start|>assistant to=%s%s",
-                           prefix, mm->name);
-                off = emit(out, cap, off,
-                           "<|channel|>commentary <|constrain|>json<|message|>%s"
-                           "<|call|>", mm->content, NULL);
-            } else if (!strcmp(mm->role, "tool") && mm->name && mm->name[0]) {
-                const char *prefix = !strncmp(mm->name, "functions.", 10)
-                                   ? "" : "functions.";
-                // ` to=assistant` is load-bearing, not decoration. The
-                // reference resolves the author token BEFORE it consumes the
-                // channel, and a namespaced author ("functions.NAME") matches
-                // no known role; it is accepted as Role::Tool only via the
-                // recipient fallback branch. Drop the recipient and the whole
-                // prompt fails to parse with "Unknown role: functions.NAME".
-                off = emit(out, cap, off,
-                           "<|start|>%s%s to=assistant<|channel|>commentary",
-                           prefix, mm->name);
-                off = emit(out, cap, off, "<|message|>%s<|end|>",
-                           mm->content, NULL);
-            } else if (!strcmp(mm->role, "assistant") && mm->channel &&
-                       (!strcmp(mm->channel, "analysis") ||
-                        !strcmp(mm->channel, "commentary"))) {
-                off = emit(out, cap, off,
-                           "<|start|>assistant<|channel|>%s<|message|>",
-                           mm->channel, NULL);
-                off = emit(out, cap, off, "%s<|end|>", mm->content, NULL);
-            } else if (!strcmp(mm->role, "assistant")) {
-                // history carries answers only: a past turn's analysis is not
-                // replayed, which is what the reference template does too
-                off = emit(out, cap, off,
-                           "<|start|>assistant<|channel|>final<|message|>",
-                           NULL, NULL);
-                off = emit(out, cap, off, "%s<|end|>", mm->content, NULL);
-            } else {
-                off = emit(out, cap, off, "<|start|>%s<|message|>",
-                           mm->role, NULL);
-                off = emit(out, cap, off, "%s<|end|>", mm->content, NULL);
-            }
-        }
-        // Generation prompt. The bare header lets the model pick its own
-        // channel, which is what it is trained to do and what the splitter
-        // expects by default; THINK_ON/THINK_OFF prime a channel explicitly,
-        // the same lever muse pulls with ` to=self` / ` to=user`.
-        if (add_assistant) {
-            // Unlike muse, the DEFAULT primes the analysis channel rather
-            // than leaving the header bare. Two reasons, both practical: the
-            // model opens analysis on its own anyway (it is a reasoning
-            // model), and the decoded open marker is the bare word
-            // "analysis", which is far too common to hunt for in a free
-            // stream. Priming lets the splitter start already inside
-            // reasoning and never search for it. THINK_OFF primes final and
-            // gets no reasoning at all.
-            const char *head = have_tools
-                    ? "<|start|>assistant"
-                : thinking == THINK_OFF
-                    ? "<|start|>assistant<|channel|>final<|message|>"
-                    : "<|start|>assistant<|channel|>analysis<|message|>";
-            off = emit_raw(out, cap, off, "%s", head, NULL);
-        }
-        break;
-    }
-    case TMPL_MUSE: {
-        // muse-glimmer (reference: the model's OWN tokenizer.chat_template,
-        // read from the official meta-models GGUF, not a summary):
-        // <|start|>ROLE<|message|>CONTENT<|eot|> per turn; assistant turns
-        // carry a recipient — ` to=user` for answers, ` to=self` for
-        // reasoning turns, which is what the think_open/close pair splits.
-        // When no system message is present the reference injects a default
-        // one whose constant parts are reproduced here. Its current-date line
-        // is omitted for one reason only: a live wall-clock date changes the
-        // prompt prefix at midnight and evicts the prefix cache, which is the
-        // same call llama3, apertus and harmony make. It is NOT omitted
-        // because the reference makes it optional — an earlier version of this
-        // comment claimed the template gates it on `current_date is defined`,
-        // which is false: that branch falls through to `elif strftime_now is
-        // defined`, so under transformers the line always renders.
-        // Structured tools are rendered below with the model's native atem
-        // declaration macro; the legacy wrapper passes NULL and stays plain.
-        // `reasoning_strength` is a template kwarg in the reference
-        // (`render_reasoning`: the word verbatim, 'high' when absent); it
-        // arrives here as the THINK_EFFORT bits, xhigh (the absent value)
-        // reading as the reference's default "high". A caller's own system
-        // prompt may carry the directive itself: the reference normalises
-        // "reasoning effort" to "reasoning strength" (four casings) and
-        // then skips its line when the text already has one.
-        int effort_bits = thinking & THINK_EFFORT_MASK;
-        const char *strength = effort_bits == THINK_EFFORT_LOW ? "low"
-                             : effort_bits == THINK_EFFORT_MEDIUM ? "medium"
-                             : "high";
-        sbuf muse_line = {0};
-        pl_lit(&muse_line, "\n\nReasoning strength: ");
-        pl_lit(&muse_line, strength);
-        pl_lit(&muse_line, ".");
-        sbuf muse_tail = {0};
-        if (tools && tools->type == J_ARR && tools->n) {
-            pl_lit(&muse_tail, "\n\n");
-            muse_render_tool_defs(tools, &muse_tail);
-        }
-        pl_lit(&muse_tail, "\n\n# Valid recipients: \"self\"");
-        if (tools && tools->type == J_ARR) {
-            bool bare_mode = (thinking & THINK_BARE_RECIPIENTS) ? true
-                           : (thinking & THINK_NS_RECIPIENTS)   ? false
-                           : g_bare_recipients;
-            muse_render_recipients(tools, &muse_tail, bare_mode);
-        }
-        pl_lit(&muse_tail, ", \"user\".<|eot|>");
-        bool has_system = false;
-        for (int i = 0; i < n_msgs; i++)
-            if (!strcmp(msgs[i].role, "system")) has_system = true;
-        if (!has_system) {
-            off = emit(out, cap, off,
-                       "<|start|>system<|message|>You are a helpful AI "
-                       "assistant.\nKnowledge cutoff: 2026-01-04.", NULL, NULL);
-            off = emit(out, cap, off, "%s", muse_line.s, NULL);
-            off = emit(out, cap, off, "%s", muse_tail.s, NULL);
-        }
-        for (int i = 0; i < n_msgs; i++) {
-            const chat_msg *mm = &msgs[i];
-            if (!strcmp(mm->role, "system")) {
-                char *sys_text = muse_normalise_reasoning(mm->content);
-                const char *st = sys_text ? sys_text : mm->content;
-                off = emit(out, cap, off, "<|start|>system<|message|>%s",
-                           st, NULL);
-                if (!muse_has_reasoning_strength(st))
-                    off = emit(out, cap, off, "%s", muse_line.s, NULL);
-                free(sys_text);
-                off = emit(out, cap, off, "%s", muse_tail.s, NULL);
-            } else if (!strcmp(mm->role, "assistant") && mm->channel &&
-                       !strcmp(mm->channel, "analysis")) {
-                // the reference replays an assistant message's reasoning_content
-                // as its own turn: `<|start|>assistant to=self<|message|>` the
-                // reasoning `<|eom|>`, before the answer or call it led to
-                off = emit(out, cap, off, "<|start|>assistant to=self<|message|>%s<|eom|>",
-                           mm->content, NULL);
-            } else if (!strcmp(mm->role, "assistant")) {
-                off = emit(out, cap, off, "<|start|>assistant to=%s<|message|>",
-                           mm->name ? mm->name : "user", NULL);
-                off = emit(out, cap, off, "%s<|eot|>", mm->content, NULL);
-            } else if (!strcmp(mm->role, "tool") && mm->name) {
-                off = emit(out, cap, off, "<|start|>tool %s<|message|>",
-                           mm->name, NULL);
-                off = emit(out, cap, off, "<tool_output name=\"%s\">\n",
-                           mm->name, NULL);
-                off = emit(out, cap, off, "%s\n</tool_output><|eot|>",
-                           mm->content, NULL);
-            } else {
-                // user and anything else (a tool result arrives as its own
-                // named role in the reference) render as a plain named turn
-                off = emit(out, cap, off, "<|start|>%s<|message|>",
-                           mm->role, NULL);
-                off = emit(out, cap, off, "%s<|eot|>", mm->content, NULL);
-            }
-        }
-        // The reference generation prompt is the bare header: the model then
-        // chooses its recipient, opening ` to=self` when it wants a reasoning
-        // turn. An explicit THINK_ON starts that self-addressed turn in the
-        // prompt, which makes reasoning-before-tool deterministic. With tools,
-        // THINK_OFF still leaves the recipient to the constrained header (it
-        // cannot pin `user`, because a required tool must remain reachable).
-        if (add_assistant) {
-            bool have_tools = tools && tools->type == J_ARR && tools->n;
-            int mode = thinking & THINK_MODE_MASK;   // effort bits ride above
-            const char *head = mode == THINK_ON
-                         ? "<|start|>assistant to=self<|message|>"
-                         : mode == THINK_OFF && !have_tools
-                         ? "<|start|>assistant to=user<|message|>"
-                         : "<|start|>assistant";
-            off = emit_raw(out, cap, off, "%s", head, NULL);
-        }
-        free(muse_line.s);
-        free(muse_tail.s);
-        break;
-    }
+    case TMPL_APERTUS:
+        return render_apertus(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+    case TMPL_HARMONY:
+        return render_harmony(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+    case TMPL_MUSE:
+        return render_muse(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_GRANITE:
-    case TMPL_GRANITE4: {
-        // granite (reference: the model's OWN tokenizer.chat_template):
-        // <|start_of_role|>ROLE<|end_of_role|>CONTENT<|end_of_text|>\n per
-        // turn, assistant included. Granite 3.x defines another tool
-        // protocol that is not rendered; its tools ride the generic
-        // envelope, whose teaching turn arrives here as a system message.
-        //
-        // The 4.0-H / 4.1 templates (TMPL_GRANITE4) also define tools: the
-        // declarations join the system turn (after the caller's text and a
-        // blank line, or alone), a call is the Hermes JSON block the caller
-        // already folded into the assistant content, and consecutive tool
-        // results share one user turn of <tool_response> blocks.
-        bool have_tools = tmpl == TMPL_GRANITE4 && tools &&
-                          tools->type == J_ARR && tools->n > 0;
-        int first = 0;
-        if (have_tools) {
-            sbuf decl = {0};
-            tools_render_for(tmpl, tools, &decl);
-            if (decl.failed) { free(decl.s); return SIZE_MAX; }
-            off = emit(out, cap, off, "<|start_of_role|>system<|end_of_role|>",
-                       NULL, NULL);
-            if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
-                off = emit(out, cap, off, "%s\n\n", msgs[0].content, NULL);
-                first = 1;
-            }
-            off = emit(out, cap, off, "%s<|end_of_text|>\n", decl.s, NULL);
-            free(decl.s);
-        }
-        for (int i = first; i < n_msgs; i++) {
-            if (tmpl == TMPL_GRANITE4 && !strcmp(msgs[i].role, "tool")) {
-                bool prev_tool = i > 0 && !strcmp(msgs[i - 1].role, "tool");
-                bool next_tool = i + 1 < n_msgs &&
-                                 !strcmp(msgs[i + 1].role, "tool");
-                if (!prev_tool)
-                    off = emit(out, cap, off,
-                               "<|start_of_role|>user<|end_of_role|>", NULL, NULL);
-                off = emit(out, cap, off,
-                           "\n<tool_response>\n%s\n</tool_response>",
-                           msgs[i].content, NULL);
-                if (!next_tool)
-                    off = emit(out, cap, off, "<|end_of_text|>\n", NULL, NULL);
-                continue;
-            }
-            off = emit(out, cap, off, "<|start_of_role|>%s<|end_of_role|>",
-                       msgs[i].role, NULL);
-            off = emit(out, cap, off, "%s<|end_of_text|>\n",
-                       msgs[i].content, NULL);
-        }
-        if (add_assistant)
-            off = emit(out, cap, off, "<|start_of_role|>assistant<|end_of_role|>",
-                       NULL, NULL);
-        break;
-    }
+    case TMPL_GRANITE4:
+        return render_granite(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_GEMMA4_MAINLINE:
-    case TMPL_GEMMA4: {
-        // gemma4 (reference: llama.cpp models/templates/google-gemma-4-31B-it
-        // .jinja): <|turn>role\n CONTENT <turn|>\n per turn, a native system
-        // role (unlike gemma1-3), assistant role named "model"
-        // Thinking is selected in the FIRST SYSTEM TURN, not at the
-        // generation prompt: the model's own template (read from
-        // tokenizer.chat_template on gemma-4-E2B, 2026-08-12) opens that turn
-        // when `enable_thinking or tools or messages[0] is system/developer`
-        // and injects `<|think|>` at the very top of it, above any system
-        // text. `<|think|>` is a real token in that vocabulary. With no
-        // system message the turn is created anyway, carrying only the
-        // marker — which is why this cannot be folded into the loop below.
-        // (A `developer` first message is rendered as its own turn here, as
-        // it always has been; the template folds it into the system turn.
-        // That divergence predates this path and is untouched by it.)
-        //
-        // TOOLS open that same turn, on the same `or`, and their declarations
-        // go inside it: after the system text, before <turn|>. That is why
-        // this block also runs with thinking off -- with tools declared and no
-        // thinking, the reference still emits one system turn and runner used
-        // to emit a SEPARATE prepended turn carrying its generic JSON envelope
-        // instead (+88 tokens on every gemma4 tool prompt, and a protocol the
-        // model was never trained on). With no tools and no thinking the turn
-        // is left to the loop below, which renders it identically.
-        bool g4_tools = tools && tools->type == J_ARR && tools->n;
-        int g4_first = 0;
-        if (thinking == THINK_ON || g4_tools) {
-            off = emit(out, cap, off, "<|turn>system\n", NULL, NULL);
-            if (thinking == THINK_ON)
-                off = emit(out, cap, off, "<|think|>\n", NULL, NULL);
-            if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
-                off = emit(out, cap, off, "%s", msgs[0].content, NULL);
-                g4_first = 1;
-            }
-            if (g4_tools) {
-                sbuf decls = {0};
-                g4_render_tool_defs(tools, &decls);
-                if (decls.s) off = emit(out, cap, off, "%s", decls.s, NULL);
-                free(decls.s);
-            }
-            off = emit(out, cap, off, "<turn|>\n", NULL, NULL);
-        }
-        // Consecutive assistant messages are ONE model turn, not two. The
-        // reference suppresses BOTH ends of the framing:
-        //
-        //   {%- set continue_same_model_turn =
-        //         (role == 'model' and ns.prev_non_tool_role == 'assistant') -%}
-        //   {%- if not continue_same_model_turn -%}
-        //       {{- '<|turn>' + role + '\n' }}
-        //   {%- endif -%}
-        //   ... {%- set continues_into_next = (role == 'model'
-        //         and next_nt.role == 'assistant' and ...) -%}
-        //
-        // so the contents are concatenated with NO separator. Emitting
-        // <turn|>\n<|turn>model\n between them handed the model a turn
-        // boundary its own template never produces, and cost 5 extra tokens
-        // on gemma-4-E2B's vocabulary.
-        //
-        // The continuation is for the MODEL role only -- the reference gates it
-        // on `role == 'model'` -- so consecutive USER turns still get one
-        // <|turn>user each.
-        //
-        // Adjacency is the reference's PREVIOUS NON-TOOL role, not msgs[i-1].
-        // It was direct adjacency until 2026-08-14, because runner rendered a
-        // `tool` message as its own <|turn>tool turn and skipping over one
-        // would have left that turn unbalanced. The tool result is now a
-        // <|tool_response> block inside the open model turn, which is what the
-        // reference does, so the reason for the narrower rule is gone and the
-        // merge widens to match:
-        //
-        //   {%- set continue_same_model_turn =
-        //         (role == 'model' and ns.prev_non_tool_role == 'assistant') -%}
-        //   ...
-        //   {%- set ns.prev_non_tool_role = message['role'] -%}   (non-tool only)
-        //
-        // Without the widening, the answer that follows a tool result opened a
-        // second model turn where the reference continues the first.
-        //
-        // `tool` messages are not iterated at all. The reference's loop body is
-        // wrapped in `{%- if message['role'] != 'tool' -%}`, and it renders the
-        // results by forward-scanning from the assistant turn that made the
-        // calls (below). A tool message no such turn claims is therefore
-        // DROPPED, exactly as the reference drops it.
-        //
-        // g4_prev is the reference's ns.prev_message_type, which the generation
-        // prompt reads: 0 = neither, 1 = 'tool_call', 2 = 'tool_response'.
-        int g4_prev = 0;
-        const char *prev_non_tool = NULL;
-        for (int i = g4_first; i < n_msgs; i++) {
-            if (!strcmp(msgs[i].role, "tool")) continue;
-            g4_prev = 0;
-            bool asst = !strcmp(msgs[i].role, "assistant");
-            const char *role = asst ? "model" : msgs[i].role;
-            bool merge_prev = asst && prev_non_tool &&
-                              !strcmp(prev_non_tool, "assistant");
-            if (!merge_prev)
-                off = emit(out, cap, off, "<|turn>%s\n", role, NULL);
-            // calls first, then the results they collected, then the text
-            const char *calls_end = g4_calls_end(msgs[i].content);
-            const char *text = calls_end ? calls_end : msgs[i].content;
-            if (calls_end) {
-                off = emit_n(out, cap, off, msgs[i].content,
-                             (size_t)(calls_end - msgs[i].content));
-                g4_prev = 1;
-            }
-            bool tr = false;
-            for (int k = i + 1; calls_end && k < n_msgs &&
-                                !strcmp(msgs[k].role, "tool"); k++) {
-                off = emit(out, cap, off,
-                           "<|tool_response>response:%s{value:<|\"|>",
-                           msgs[k].name ? msgs[k].name : "unknown", NULL);
-                off = emit(out, cap, off, "%s<|\"|>}<tool_response|>",
-                           msgs[k].content, NULL);
-                tr = true;
-                g4_prev = 2;
-            }
-            off = emit(out, cap, off, "%s", text, NULL);
-            // the reference's three-way close, in its own order
-            const char *next_non_tool = NULL;
-            for (int k = i + 1; k < n_msgs; k++)
-                if (strcmp(msgs[k].role, "tool")) {
-                    next_non_tool = msgs[k].role;
-                    break;
-                }
-            bool continues = asst && next_non_tool &&
-                             !strcmp(next_non_tool, "assistant") &&
-                             (!calls_end || tr);
-            if (g4_prev == 1 && !tr)
-                off = emit(out, cap, off, "<|tool_response>", NULL, NULL);
-            else if (continues)
-                ;  // the next assistant message continues this turn
-            else if (!(tr && !g4_has_text(text) && !next_non_tool))
-                off = emit(out, cap, off, "<turn|>\n", NULL, NULL);
-            prev_non_tool = msgs[i].role;
-        }
-        // Generation prompt, read from the MODEL'S OWN chat template
-        // (gguf tokenizer.chat_template on gemma-4-E2B), not from a summary
-        // of llama.cpp's copy:
-        //
-        //   {%- if add_generation_prompt -%}
-        //     {%- if ns.prev_message_type != 'tool_response'
-        //            and ns.prev_message_type != 'tool_call' -%}
-        //         {{- '<|turn>model\n' -}}
-        //     {%- elif ns.prev_message_type == 'tool_response'
-        //              and enable_thinking -%}
-        //         {{- '<|channel>thought\n' -}}
-        //     {%- endif -%}
-        //   {%- endif -%}
-        //
-        // There is NO empty-thought-block pre-seed here, in either thinking
-        // mode. On 2026-08-08 this code grew one — `<|channel>thought\n`
-        // immediately closed by `<channel|>` — from a web summary of the
-        // llama.cpp template rather than the model's own. That construct
-        // exists in the real template only when re-rendering a PRIOR
-        // assistant message that actually contained thinking text; handing it
-        // to the model as an empty block at generation time is a state it was
-        // never trained on. Measured cost: gemma-4-E2B's planning score fell
-        // 0.575 -> 0.300 and it emitted raw reasoning prose as its visible
-        // answer. The original unconditional `<|turn>model\n` was right.
-        //
-        // Thinking is not selected HERE for this family — it was selected in
-        // the first system turn above, which is where the template puts it.
-        if (add_assistant) {
-            // g4_prev is ns.prev_message_type, so the three branches are the
-            // template's three branches. It used to be approximated by "the
-            // last message is a `tool` message", which is a different question:
-            // it answered yes for a tool message no assistant turn claims (the
-            // reference drops those and emits the ordinary header) and no for
-            // an assistant turn whose calls have no results yet (the reference
-            // leaves prev_message_type == 'tool_call' and emits nothing).
-            if (g4_prev == 0) {
-                off = emit(out, cap, off, "<|turn>model\n", NULL, NULL);
-                // The ONE mainline/E-series divergence. The mainline template
-                // follows the header with `{%- if not enable_thinking -%}
-                // {{- '<|channel>thought\n<channel|>' -}}{%- endif -%}`, and
-                // enable_thinking defaults false -- so THINK_DEFAULT and
-                // THINK_OFF both pre-seed the empty CLOSED thought block,
-                // THINK_ON does not. The block is closed, so the model starts
-                // OUTSIDE reasoning (completion.c's primed-think probe keys on
-                // the OPEN form and correctly does not fire here). The E-series
-                // omits this entirely: emitting it there cost E2B planning
-                // 0.650 -> 0.250 (reasoning-leak), verified 2026-08-19 against
-                // all three real templates.
-                if (tmpl == TMPL_GEMMA4_MAINLINE && thinking != THINK_ON)
-                    off = emit(out, cap, off, "<|channel>thought\n<channel|>",
-                               NULL, NULL);
-            }
-            else if (g4_prev == 2 && thinking == THINK_ON)
-                off = emit(out, cap, off, "<|channel>thought\n", NULL, NULL);
-            // prev was a tool response and thinking is off, or a call still
-            // awaiting its result: emit nothing, which is what the template
-            // does and what the unconditional header used to get wrong.
-        }
-        break;
-    }
-    case TMPL_GEMMA: {
-        // gemma has no system role: fold a system message into the first
-        // user turn; the assistant role is named "model"
-        const char *gsys = NULL;
-        int g_lead; bool g_oom;
-        char *g_joined = leading_system_join(msgs, n_msgs, &g_lead, &g_oom);
-        if (g_oom) return SIZE_MAX;
-        for (int i = 0; i < n_msgs; i++) {
-            const chat_msg *m = &msgs[i];
-            if (!strcmp(m->role, "system")) {
-                gsys = i < g_lead && g_joined ? g_joined : m->content;
-                continue;
-            }
-            const char *role = !strcmp(m->role, "assistant") ? "model" : m->role;
-            if (gsys && !strcmp(m->role, "user")) {
-                off = emit(out, cap, off, "<start_of_turn>%s\n%s\n\n", role, gsys);
-                off = emit(out, cap, off, "%s<end_of_turn>\n", m->content, NULL);
-                gsys = NULL;
-            } else {
-                off = emit(out, cap, off, "<start_of_turn>%s\n", role, NULL);
-                off = emit(out, cap, off, "%s<end_of_turn>\n", m->content, NULL);
-            }
-        }
-        if (add_assistant)
-            off = emit(out, cap, off, "<start_of_turn>model\n", NULL, NULL);
-        free(g_joined);
-        break;
-    }
+    case TMPL_GEMMA4:
+        return render_gemma4(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+    case TMPL_GEMMA:
+        return render_gemma(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_LLAMA2:
-    case TMPL_LLAMA2_FALLBACK: {
-        // Reference (unsloth/llama-2-7b-chat tokenizer_config.json):
-        //   user      bos_token + '[INST] ' + content.strip() + ' [/INST]'
-        //   assistant ' ' + content.strip() + ' ' + eos_token
-        // with an initial system message folded into the FIRST user turn as
-        // '<<SYS>>\n' + system + '\n<</SYS>>\n\n' + content, before the strip.
-        //
-        // Two things runner got wrong until 2026-08-15, both measured by the
-        // conformance gate:
-        //
-        //   * `.strip()` was not applied. With an empty user turn the folded
-        //     content kept its trailing "\n\n", so `<</SYS>>\n\n [/INST]`
-        //     went out where the reference writes `<</SYS>> [/INST]` -- two
-        //     tokens the model never saw there.
-        //   * BOS is on EVERY user turn, not just the first. The leading one
-        //     comes from the tokenizer (hence the gate's strip-bos
-        //     allowlist), but turns 2+ begin without the sequence-restart
-        //     token the model was trained to see at each instruction
-        //     boundary. So a multi-turn Llama-2 prompt reads `</s><s>[INST]`
-        //     in the reference and `</s>[INST]` here.
-        //
-        // The literal `<s>` is emitted ONLY for a recognised Llama-2.
-        // tok_encode matches specials at any offset, so mid-prompt it becomes
-        // the BOS id -- but in a vocabulary that has no `<s>` special it would
-        // tokenize as the characters `<`, `s`, `>`, which is worse than the
-        // token being absent. TMPL_LLAMA2_FALLBACK is the id every
-        // unrecognised model lands on, and it renders the same markup without
-        // that literal.
-        const bool real_llama2 = tmpl == TMPL_LLAMA2;
-        const char *sys = NULL;
-        int user_turns = 0;
-        int l_lead; bool l_oom;
-        char *l_joined = leading_system_join(msgs, n_msgs, &l_lead, &l_oom);
-        if (l_oom) return SIZE_MAX;
-        for (int i = 0; i < n_msgs; i++) {
-            const chat_msg *m = &msgs[i];
-            if (!strcmp(m->role, "system")) {
-                sys = i < l_lead && l_joined ? l_joined : m->content;
-                continue;
-            }
-            if (!strcmp(m->role, "user")) {
-                sbuf c = {0};
-                if (sys) {
-                    sb_lit(&c, "<<SYS>>\n");    // text in this vocabulary; the turn is trimmed after assembly
-                    sb_put(&c, sys, strlen(sys));
-                    sb_lit(&c, "\n<</SYS>>\n\n");
-                    sys = NULL;
-                }
-                sb_put(&c, m->content, strlen(m->content));
-                const char *b = c.s ? c.s : "";
-                const char *e = b + (c.s ? c.n : 0);
-                b = trim_left(b, e);
-                e = trim_right(b, e);
-                if (real_llama2 && user_turns) off = emit(out, cap, off, "<s>", NULL, NULL);
-                user_turns++;
-                off = emit(out, cap, off, "[INST] ", NULL, NULL);
-                off = emit_n(out, cap, off, b, (size_t)(e - b));
-                off = emit(out, cap, off, " [/INST]", NULL, NULL);
-                free(c.s);
-            } else { // assistant
-                const char *b = m->content, *e = b + strlen(b);
-                b = trim_left(b, e);
-                e = trim_right(b, e);
-                off = emit(out, cap, off, " ", NULL, NULL);
-                off = emit_n(out, cap, off, b, (size_t)(e - b));
-                off = emit(out, cap, off, " </s>", NULL, NULL);
-            }
-        }
-        free(l_joined);
-        break;
-    }
+    case TMPL_LLAMA2_FALLBACK:
+        return render_llama2(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_MISTRAL:
     case TMPL_MISTRAL_V1:
-    case TMPL_MISTRAL_NEMO: {
-        // Three framings, one loop. Until 2026-08-14 there was no loop at all
-        // for Mistral: it fell through llama-2's case with the <<SYS>> block
-        // swapped out, which produced a FOURTH framing matching no Mistral
-        // checkpoint (see template.h). Each of the three below is the bytes
-        // its own checkpoint's chat_template renders, verified by running that
-        // template through jinja rather than by reading runner's output back.
-        //
-        //   v0.1 / v0.2      ' [INST] ' sys '\n\n' user ' [/INST]'  first turn
-        //                    ' ' assistant '</s>'
-        //   v0.3 / Small     '[INST] '  ... user '[/INST]'          LAST turn
-        //                    ' ' trim(assistant) '</s>'
-        //   Nemo-2407        '[INST]'   ... user '[/INST]'          LAST turn
-        //                    assistant '</s>'
-        //
-        // The v0.3 assistant turn is `" " + content|trim + eos_token`; the
-        // other two do not trim. That is the reference's own filter, not a
-        // tidy-up added here.
-        const bool v1   = tmpl == TMPL_MISTRAL_V1;
-        const bool nemo = tmpl == TMPL_MISTRAL_NEMO;
-        const char *open  = v1 ? " [INST] " : nemo ? "[INST]" : "[INST] ";
-        const char *close = v1 ? " [/INST]" : "[/INST]";
-
-        // Which user turn carries the system text. v0.1/v0.2 put it on the
-        // first user turn after the system message; v0.3 and Nemo on the last.
-        //
-        // DELIBERATE DEVIATION, and the only one: the v0.3 and Nemo references
-        // fold on `loop.last`, so they attach the system text only when the
-        // final message is a user turn -- a conversation ending in a tool
-        // result or an assistant turn (a prefill or continuation) renders
-        // with the caller's system prompt silently dropped. Runner attaches it
-        // to the last USER turn instead, as mistral-common's own encoder does.
-        // Every conversation that ends with a user turn renders
-        // byte-identically to the reference; the tool-result and prefill
-        // shapes differ by keeping a system prompt the caller sent rather
-        // than discarding it.
-        const char *sys = NULL;
-        int sys_at = -1, fold_at = -1;
-        for (int i = 0; i < n_msgs; i++)
-            if (!strcmp(msgs[i].role, "system")) {
-                sys = msgs[i].content;
-                sys_at = i;
-            }
-        int m_lead; bool m_oom;
-        char *m_joined = leading_system_join(msgs, n_msgs, &m_lead, &m_oom);
-        if (m_oom) return SIZE_MAX;
-        if (m_joined && sys_at == m_lead - 1) sys = m_joined;
-        for (int i = sys_at + 1; sys && i < n_msgs; i++)
-            if (!strcmp(msgs[i].role, "user")) {
-                fold_at = i;
-                if (v1) break;
-            }
-        // v0.3 and Nemo declare tools in a block right before the LAST user
-        // turn (the reference's `message == user_messages[-1]`).
-        int last_user = -1;
-        for (int i = 0; i < n_msgs; i++)
-            if (!strcmp(msgs[i].role, "user")) last_user = i;
-        sbuf decl = {0};
-        if (!v1 && tools && tools->type == J_ARR && tools->n > 0) {
-            tools_render_for(tmpl, tools, &decl);
-            if (decl.failed) { free(decl.s); free(m_joined); return SIZE_MAX; }
-        }
-
-        for (int i = 0; i < n_msgs; i++) {
-            const chat_msg *m = &msgs[i];
-            if (!strcmp(m->role, "system")) continue;
-            if (!v1 && (builder_starts(m->content, "[TOOL_CALLS]") ||
-                        builder_starts(m->content, "[TOOL_RESULTS]"))) {
-                // a native call turn (assistant_calls_render) or result
-                // block (tool_result_wrap): no leading space, no trim; a
-                // call turn ends with the eos
-                off = emit(out, cap, off, "%s", m->content, NULL);
-                if (builder_starts(m->content, "[TOOL_CALLS]"))
-                    off = emit_raw(out, cap, off, "</s>", NULL, NULL);
-                continue;
-            }
-            if (!strcmp(m->role, "user")) {
-                if (i == last_user && decl.s)
-                    off = emit(out, cap, off, "%s", decl.s, NULL);
-                if (i == fold_at) {
-                    // no <<SYS>> block anywhere in this family: its template
-                    // accepts only user and assistant, so the system text
-                    // leads the turn's content
-                    off = emit_raw(out, cap, off, "%s", open, NULL);
-                    off = emit(out, cap, off, "%s", sys, NULL);
-                    off = emit(out, cap, off, "\n\n%s", m->content, NULL);
-                } else {
-                    off = emit_raw(out, cap, off, "%s", open, NULL);
-                    off = emit(out, cap, off, "%s", m->content, NULL);
-                }
-                off = emit_raw(out, cap, off, "%s", close, NULL);
-            } else { // assistant
-                off = emit_trimmed(out, cap, off, nemo ? "" : " ", m->content,
-                                   tmpl == TMPL_MISTRAL, "</s>");
-            }
-        }
-        free(decl.s);
-        free(m_joined);
-        break;
-    }
+    case TMPL_MISTRAL_NEMO:
+        return render_mistral(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     default: // TMPL_RAW: concatenate contents
         for (int i = 0; i < n_msgs; i++)
             off = emit(out, cap, off, "%s", msgs[i].content, NULL);
         break;
     }
     return off;
+}
+
+size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
+                                  bool add_assistant, int thinking,
+                                  const jv *tools,
+                                  char *out, size_t cap) {
+    return render_messages_state(tmpl, msgs, n_msgs, add_assistant, thinking,
+                                 tools, out, cap, NULL);
 }
 
 size_t render_messages(int tmpl, const chat_msg *msgs, int n_msgs,

@@ -80,8 +80,8 @@ static int   g_prompt_calls;    // how many times it got that far
 static bool  g_addgen = true;   // the case's add_generation_prompt
 
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
-                    jv *req, const tool_envelope *env) {
-    (void)s; (void)fd; (void)api; (void)req; (void)env;
+                    jv *req, const tool_envelope *env, const render_state *rs) {
+    (void)s; (void)fd; (void)api; (void)req; (void)env; (void)rs;
     free(g_prompt);
     g_prompt = prompt ? strdup(prompt) : NULL;
     g_prompt_calls++;
@@ -130,23 +130,26 @@ void handle_count_tokens(slot_t *s, sock_t fd, jv *req) {
 // The add_generation_prompt substitution described at the top of this file.
 // template.h is already included above, so the #define below rewrites only
 // server.c's CALL, not the declaration -- and the forwarding definition after
-// the #undef reaches the real function in template.c.
-size_t conf_render_messages_with_tools(int tmpl, const chat_msg *msgs,
-                                       int n_msgs, bool add_assistant,
-                                       int thinking, const jv *tools,
-                                       char *out, size_t cap);
+// the #undef reaches the real function in template.c. The call it rewrites is
+// render_messages_state(), the one server.c's render_prompt_state_alloc()
+// makes; a substitution of a function server.c no longer calls would leave
+// every no-generation-prompt case rendered with handle_chat's `true`.
+size_t conf_render_messages_state(int tmpl, const chat_msg *msgs,
+                                  int n_msgs, bool add_assistant,
+                                  int thinking, const jv *tools,
+                                  char *out, size_t cap, render_state *st);
 
-#define render_messages_with_tools conf_render_messages_with_tools
+#define render_messages_state conf_render_messages_state
 #include "../src/server.c"
-#undef render_messages_with_tools
+#undef render_messages_state
 
-size_t conf_render_messages_with_tools(int tmpl, const chat_msg *msgs,
-                                       int n_msgs, bool add_assistant,
-                                       int thinking, const jv *tools,
-                                       char *out, size_t cap) {
+size_t conf_render_messages_state(int tmpl, const chat_msg *msgs,
+                                  int n_msgs, bool add_assistant,
+                                  int thinking, const jv *tools,
+                                  char *out, size_t cap, render_state *st) {
     (void)add_assistant;   // always true from handle_chat; see the header note
-    return render_messages_with_tools(tmpl, msgs, n_msgs, g_addgen, thinking,
-                                      tools, out, cap);
+    return render_messages_state(tmpl, msgs, n_msgs, g_addgen, thinking,
+                                 tools, out, cap, st);
 }
 
 // ------------------------------------------------------------------- input

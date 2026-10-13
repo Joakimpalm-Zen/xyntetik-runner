@@ -337,6 +337,7 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
     free((void *)e->smp->script);
     e->smp->script = NULL;
     e->smp->script_n = e->smp->script_at = 0;
+    e->smp->script_fault = false;
     e->emit_think_prelude = false;
     e->constraint_includes_prelude = false;
     e->render_special = false;
@@ -1750,6 +1751,22 @@ static bool generation_faulted(const char *finish) {
     return !strcmp(finish, "error") || !strcmp(finish, "envelope_error");
 }
 
+// Why a Responses turn did not complete, or NULL when it did: the one
+// decision behind both the buffered body and the streamed terminator. A
+// generation fault is incomplete with a reason that names it ("error" is
+// e->oom's spelling, run_completion), never "completed" and never
+// "max_output_tokens", which would send the caller retrying with a bigger
+// budget forever. A turn cut by its budget, the reasoning cap or the loop
+// guard is max_output_tokens.
+static const char *responses_incomplete_reason(const char *finish) {
+    if (!strcmp(finish, "envelope_error")) return "envelope_unmapped";
+    if (!strcmp(finish, "error"))          return "out_of_memory";
+    if (!strcmp(finish, "length") || !strcmp(finish, "reasoning_limit") ||
+        !strcmp(finish, "loop"))
+        return "max_output_tokens";
+    return NULL;
+}
+
 // Anthropic's vocabulary has no member for a generation fault, and it is not
 // an oversight: the API draws the line the other way round from OpenAI's, in
 // its own words — "Unlike errors, which indicate failures in processing your
@@ -2028,10 +2045,22 @@ static int stop_feed(gen_ctx *g, const char *bytes, int n) {
 // any calls to tc. Returns the number of tool calls (parallel turns map several
 // at once), 0 for a plain answer, or -1 when the document could not be mapped.
 static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
-                                 bool truncated, bool *fault) {
+                                 bool truncated, const char *opener, bool *fault) {
     sbuf mapped = {0};
     sbuf mapped_reason = {0};
     *fault = false;
+    // The turn as the demultiplexer reads it: the opener the prompt wrote
+    // (render_state), when it left a channel open, then the output.
+    sbuf turn = {0};
+    const char *doc = g->out.s ? g->out.s : "";
+    size_t doc_n = g->out.n;
+    if (opener) {
+        sb_put(&turn, opener, strlen(opener));
+        sb_put(&turn, doc, doc_n);
+        if (turn.failed) { free(turn.s); return -1; }
+        doc = turn.s;
+        doc_n = turn.n;
+    }
     if (env->parse_only) {
         // The demultiplexer IS the parser here, run over the finished turn,
         // so the buffered response carries exactly the calls a streamed one
@@ -2039,8 +2068,9 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
         // void the turn: the valid calls and the prose are the model's real
         // output and are kept; the finish reason names the fault.
         int n_calls = 0;
-        int rc = tool_stream_map(env, g->out.s ? g->out.s : "", g->out.n,
+        int rc = tool_stream_map(env, doc, doc_n,
                                  truncated, &mapped, tc, &n_calls);
+        free(turn.s);
         if (mapped.failed || tc->failed) { free(mapped.s); return -1; }
         *fault = rc < 0;
         free(g->out.s);
@@ -2048,7 +2078,8 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
         return n_calls;
     }
     int rc = tool_envelope_map_channels(
-        env, g->out.s ? g->out.s : "", g->out.n, &mapped_reason, &mapped, tc);
+        env, doc, doc_n, &mapped_reason, &mapped, tc);
+    free(turn.s);
     if (rc >= 0 && mapped_reason.n) {
         free(g->reason.s);
         g->reason = mapped_reason;
@@ -2269,10 +2300,23 @@ static const char *unsupported_completion_field(jv *req, int api) {
 // in production can rely on it by accident. Returns the field's text (not
 // owned) or NULL when absent; *bad is set when the field is present and not
 // admissible, with the reason already answered on fd.
-static const char *scripted_reply(sock_t fd, jv *req, bool *bad) {
+// `runner_test_fault: true`, admitted under the same environment variable and
+// only beside a reply, ends the scripted reply in an allocation failure
+// instead of a clean stop (sample.h): the one way a test reaches the
+// generation-fault framing, which a streamed reply hits after its 200 and
+// headers are already on the wire.
+static const char *scripted_reply(sock_t fd, jv *req, bool *bad, bool *fault) {
     *bad = false;
+    *fault = false;
     jv *v = jv_get(req, "runner_test_reply");
-    if (absent(v)) return NULL;
+    jv *f = jv_get(req, "runner_test_fault");
+    if (absent(v)) {
+        if (!absent(f)) {
+            send_error(fd, 400, "runner_test_fault needs runner_test_reply");
+            *bad = true;
+        }
+        return NULL;
+    }
     static int on = -1;
     if (on < 0) {
         const char *env = getenv("RUNNER_TEST_SCRIPTED_REPLY");
@@ -2288,6 +2332,14 @@ static const char *scripted_reply(sock_t fd, jv *req, bool *bad) {
         send_error(fd, 400, "runner_test_reply must be a string");
         *bad = true;
         return NULL;
+    }
+    if (!absent(f)) {
+        if (f->type != J_BOOL) {
+            send_error(fd, 400, "runner_test_fault must be a boolean");
+            *bad = true;
+            return NULL;
+        }
+        *fault = jv_bool(f, false);
     }
     return v->str;
 }
@@ -2642,6 +2694,7 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
 typedef struct {
     bool cache_prompt, share_prefix;
     const char *script_text;          // runner_test_reply, when given
+    bool script_fault;                // runner_test_fault: end it in a fault
     double req_deadline;              // 0: none
     double temp, top_p, min_p, top_k, seed, repeat_penalty;
     int max_tokens;
@@ -2681,10 +2734,14 @@ typedef struct {
 // buffer); false when the request was refused.
 static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
                             const tool_envelope *env, bool chat,
-                            bool muse_forced_think, bool gemma4_primed_think,
-                            completion_req *q) {
+                            const render_state *rs, completion_req *q) {
     model_t *m = s->m;
     engine *e = &s->e;
+    // the turn's start as rendered: the grammars open where the prompt left
+    // the model and read the mode it was rendered under (a raw prompt keeps
+    // the request's own enable_thinking)
+    bool reasoning_open = rs && rs->reasoning_open;
+    int think_mode = rs ? rs->think_mode : req_thinking_mode(req);
     const char *unsupported = unsupported_completion_field(req, api);
     if (unsupported) {
         char msg[128];
@@ -2692,8 +2749,8 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
         send_error(fd, 400, msg);
         return false;
     }
-    bool script_bad = false;
-    const char *script_text = scripted_reply(fd, req, &script_bad);
+    bool script_bad = false, script_fault = false;
+    const char *script_text = scripted_reply(fd, req, &script_bad, &script_fault);
     if (script_bad) return false;
     bool cache_prompt = true;
     bool share_prefix = true;
@@ -3341,7 +3398,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
             schema = schema_compile_harmony_turn(
                 env->tools, env->kind == TCH_AUTO, only,
                 env->kind == TCH_AUTO ? request_schema(req) : NULL,
-                req_thinking_mode(req) != THINK_OFF, serr, sizeof(serr));
+                think_mode != THINK_OFF, serr, sizeof(serr));
         } else if (env->proto == TP_GEMMA4) {
             const char *only = env->kind == TCH_NAMED ? env->named : NULL;
             schema = env->parallel && env->kind != TCH_AUTO
@@ -3350,8 +3407,8 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
                        : schema_compile_gemma4_turn(
                              env->tools, env->kind == TCH_AUTO, only,
                              env->kind == TCH_AUTO ? request_schema(req) : NULL,
-                             req_thinking_mode(req) != THINK_OFF,
-                             gemma4_primed_think, serr, sizeof(serr));
+                             think_mode != THINK_OFF,
+                             reasoning_open, serr, sizeof(serr));
         } else if (env->proto == TP_QWEN_XML) {
             schema = schema_compile_qwen_xml_turn(
                 env->tools, env->kind == TCH_AUTO,
@@ -3366,7 +3423,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
                        : schema_compile_qwen_turn(
                              env->tools, env->kind == TCH_AUTO, only,
                              env->kind == TCH_AUTO ? request_schema(req) : NULL,
-                             req_thinking_mode(req) != THINK_OFF,
+                             think_mode != THINK_OFF,
                              env->parallel, serr, sizeof(serr));
         } else if (env->proto == TP_NEMOTRON) {
             // an auto turn is parse-only (tool_decl_native), so only a
@@ -3387,7 +3444,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
                        ? schema_compile_atem_turn(
                              env->tools, true, only, final, ATEM_TURN_EITHER,
                              serr, sizeof(serr))
-                       : muse_forced_think
+                       : reasoning_open
                        ? schema_compile_atem_turn(
                              env->tools, env->kind == TCH_AUTO, only, NULL,
                              ATEM_TURN_AFTER_REASONING,
@@ -3430,6 +3487,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
     q->cache_prompt = cache_prompt;
     q->share_prefix = share_prefix;
     q->script_text = script_text;
+    q->script_fault = script_fault;
     q->req_deadline = req_deadline;
     q->top_p = top_p;
     q->min_p = min_p;
@@ -3770,6 +3828,7 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
         s->smp.script = ids;
         s->smp.script_n = n;
         s->smp.script_at = 0;
+        s->smp.script_fault = q->script_fault;
     }
     p->toks = toks;
     p->n_prompt = n_prompt;
@@ -3780,63 +3839,606 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
     return true;
 }
 
+// A stream's opening events, before any token exists (Step 10): the chat
+// role delta, the Responses object created and in progress, the Messages
+// shell. The driver has sent the headers.
+static void respond_stream_open(gen_ctx *g, int api, const slot_t *s, jv *req,
+                                const completion_prep *prep) {
+    // OpenAI opens a chat stream with a role-only delta. Emitting it up
+    // front rather than folding the role into whatever the first text
+    // delta happens to be keeps the contract independent of what the
+    // model generates — including generating nothing at all.
+    if (api == API_CHAT) {
+        sbuf c = {0};
+        chunk_open(g, &c);
+        sb_lit(&c, "\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}");
+        g->role_sent = true;
+        chunk_send(g, &c);
+    } else if (api == API_RESPONSES) {
+        // A Responses stream opens with the response object twice: created,
+        // then in_progress. Both carry an empty output — the items are
+        // announced as they start — so they are emitted before any token
+        // exists, which is exactly what makes a client able to render the
+        // turn's identity immediately.
+        resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .status = "in_progress", .req = req };
+        for (int i = 0; i < 2 && !g->dead; i++) {
+            sbuf f = {0};
+            sb_lit(&f, ",\"response\":");
+            responses_body(&f, g, &d);
+            resp_send(g, i == 0 ? "response.created"
+                                : "response.in_progress", &f);
+        }
+    } else if (api == API_MESSAGES) {
+        // An Anthropic stream opens with the whole Message object minus
+        // its content: the id, model and input token count are known
+        // before a token exists, and a client renders the turn's identity
+        // from them immediately. stop_reason is null until message_delta.
+        resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .n_prompt = prep->n_prompt, .req = req };
+        sbuf f = {0};
+        sb_lit(&f, ",\"message\":");
+        anth_body(&f, g, &d);
+        anth_send(g, "message_start", &f);
+    }
+}
+
+// What a finished generation hands the surface that frames it (Step 10): the
+// request and the slot it ran on, and the outcome every surface reports. The
+// generation driver in run_completion() fills it once; the framers below
+// only render it.
+typedef struct {
+    slot_t *s;
+    engine *e;
+    sock_t fd;
+    int api;
+    bool chat;                     // chat-shaped surface (thinking channels, tools)
+    jv *req;
+    const char *prompt;            // as fed (the completions echo)
+    const completion_req *q;       // what the request asked for
+    completion_prep *prep;         // what preparing it found (diagnostics)
+    gen_ctx *g;                    // the generation's state and output
+    turn_shape *shape;             // the receipt's account of the turn
+    const char *finish;            // why generation stopped
+    const char *cut_detail;        // what cut a turn short, when something did
+    int n_gen, keep;               // tokens generated; prompt tokens reused
+    double gtime;                  // generation seconds
+    bool spec_used;                // speculative decoding ran
+    uint64_t faults_at_start;      // page faults before the turn (telemetry)
+    prefix_reuse reuse;            // how the prompt's prefix was reused
+} turn_result;
+
+// The Responses stream's close: the last item done, then response.completed
+// or response.incomplete carrying the whole response.
+static void respond_stream_responses(const turn_result *t) {
+    slot_t *s = t->s;
+    engine *e = t->e;
+    int api = t->api;
+    jv *req = t->req;
+    const char *finish = t->finish;
+    int n_gen = t->n_gen;
+    int keep = t->keep;
+    double gtime = t->gtime;
+    bool spec_used = t->spec_used;
+    uint64_t faults_at_start = t->faults_at_start;
+    prefix_reuse reuse = t->reuse;
+    gen_ctx *g = t->g;
+    completion_prep *prep = t->prep;
+    const completion_req *q = t->q;
+    // whatever item was still streaming is closed first: an item announced
+    // with output_item.added must always reach output_item.done, including
+    // when generation stopped mid-item
+    bool cut = strcmp(finish, "length") == 0 ||
+               strcmp(finish, "reasoning_limit") == 0 ||
+               strcmp(finish, "loop") == 0;
+    // A faulted turn (a document nothing could read, or an allocation
+    // failure mid-generation) did not complete, and the reason is neither
+    // of the two standard ones. "max_output_tokens" would be the closest
+    // lie, and a lie a client can act on: it retries with a larger budget
+    // forever. An unrecognised reason string is inert by comparison, and
+    // true (responses_incomplete_reason).
+    bool failed = generation_faulted(finish);
+    // a tool call that was truncated is still an executable call — the
+    // envelope schema closed it to a legal document — so only a message
+    // is reported as unfinished
+    if ((cut || failed) && resp_shape_of(g->item_kind) == &RESP_MESSAGE)
+        g->close_status = "incomplete";
+    resp_close_item(g);
+    if (!g->dead && g->out_items.n) {
+        // R4.12.19 from the items the stream already delivered
+        sbuf a = {0};
+        sb_lit(&a, "[");
+        sb_put(&a, g->out_items.s, g->out_items.n);
+        sb_lit(&a, "]");
+        jv *em = a.failed ? NULL : json_parse(a.s, a.n);
+        free(a.s);
+        g->repeat_json = repeated_calls_json(req, api, em);
+        jv_free(em);
+    }
+    if (!g->dead) {
+        const char *why = responses_incomplete_reason(finish);
+        bool truncated = why != NULL;
+        resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .status = truncated ? "incomplete" : "completed",
+                       .incomplete = why,
+                       .output_json = g->out_items.s ? g->out_items.s : "",
+                       .output_n = g->out_items.n,
+                       .output_text = g->out_text.s,
+                       .output_text_n = g->out_text.n,
+                       .with_usage = true,
+                       .n_prompt = prep->n_prompt, .n_gen = n_gen, .cached = keep,
+                       .forked = reuse.forked, .saved_s = reuse.saved_s,
+                       .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
+                       .schema = q->schema != NULL,
+                       .json_mode = e->json_mode, .spec = spec_used,
+                       SPEC_DOC_FIELDS(e), .diag = &prep->diag,
+                       .req = req,
+                       .repeated_calls = g->repeat_json };
+        sbuf f = {0};
+        sb_lit(&f, ",\"response\":");
+        size_t body_at = f.n;
+        responses_body(&f, g, &d);
+        if (!f.failed)
+            responses_store_keep(req, g->id, f.s + body_at, f.n - body_at);
+        resp_send(g, truncated ? "response.incomplete"
+                                : "response.completed", &f);
+    }
+}
+
+// A streamed Messages turn that faulted after its headers: the error event.
+static void respond_stream_messages_fault(const turn_result *t) {
+    const char *finish = t->finish;
+    gen_ctx *g = t->g;
+    // The 200 and the headers went out before a token existed, so there is
+    // no status code left to correct — and Anthropic's SSE protocol has a
+    // terminator for exactly this case, documented alongside
+    // overloaded_error. The stream ends on `error`.
+    //
+    // Deliberately NOT message_delta + message_stop: message_delta must
+    // carry one of the seven stop_reasons, all of which describe a turn
+    // that completed, and message_stop asserts a Message that finished.
+    // Sending either would be the buffered end_turn lie in streamed form.
+    // Terminating at all is not optional though — a stream left hanging is
+    // the failure fixed on the OpenAI surfaces in 6c4dfc2, and this is the
+    // Anthropic spelling of the same terminal chunk.
+    //
+    // Nothing synthesises a closing content_block_stop for a block the
+    // fault interrupted. An error may arrive at any point in this protocol
+    // by construction, an SDK accumulator discards the message on it, and
+    // closing a block would be the one gesture that suggested the content
+    // before it was a usable partial answer.
+    if (!g->dead) {
+        sbuf f = {0};
+        sb_lit(&f, ",");
+        anth_error_json(&f, finish);
+        anth_send(g, "error", &f);
+    }
+}
+
+// The Messages stream's close: the open block stopped, message_delta with the
+// stop reason and usage, message_stop.
+static void respond_stream_messages(const turn_result *t) {
+    int api = t->api;
+    jv *req = t->req;
+    const char *finish = t->finish;
+    int n_gen = t->n_gen;
+    gen_ctx *g = t->g;
+    completion_prep *prep = t->prep;
+    // A turn that generated nothing at all still has to describe itself
+    // the way the buffered body would, which always carries at least one
+    // block. Opening an empty text block here is what keeps "the streamed
+    // and buffered turns agree" true even in the degenerate case.
+    if (!g->item_open && g->output_index == 0) anth_open_block(g, "text");
+    // whatever block was still streaming is closed first: a block
+    // announced with content_block_start must always reach
+    // content_block_stop, including when generation stopped mid-block
+    anth_close_block(g);
+    if (!g->dead) {
+        sbuf f = {0};
+        sb_fmt(&f, ",\"delta\":{\"stop_reason\":\"%s\",\"stop_sequence\":",
+               anth_stop_reason(finish, g->stop_hit != NULL));
+        if (g->stop_hit) {
+            sb_lit(&f, "\"");
+            sb_esc(&f, g->stop_hit, strlen(g->stop_hit));
+            sb_lit(&f, "\"");
+        } else {
+            sb_lit(&f, "null");
+        }
+        // message_delta carries the *cumulative* output token count, which
+        // is the only place a streamed turn reports it
+        sb_fmt(&f, "},\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d}",
+               prep->n_prompt, n_gen);
+        // R4.12.19: present only when a delivered call repeats one the
+        // conversation already holds, so an ordinary stream is unchanged
+        g->repeat_json = repeated_calls_streamed(g, req, api);
+        if (g->repeat_json)
+            sb_fmt(&f, ",\"runner_telemetry\":{\"repeated_tool_calls\":%s}",
+                   g->repeat_json);
+        if (!anth_send(g, "message_delta", &f)) {
+            sbuf s2 = {0};
+            anth_send(g, "message_stop", &s2);
+        }
+    }
+}
+
+// The chat and completions stream's close: the finish chunk, usage, [DONE].
+static void respond_stream_openai(const turn_result *t) {
+    slot_t *s = t->s;
+    engine *e = t->e;
+    sock_t fd = t->fd;
+    int api = t->api;
+    bool chat = t->chat;
+    jv *req = t->req;
+    const char *finish = t->finish;
+    const char *cut_detail = t->cut_detail;
+    int n_gen = t->n_gen;
+    int keep = t->keep;
+    gen_ctx *g = t->g;
+    completion_prep *prep = t->prep;
+    const completion_req *q = t->q;
+    if (!g->dead) {
+        if (chat && e->lp_count > 0) {
+            sbuf lp = {0};
+            chunk_open(g, &lp);
+            sb_lit(&lp, "\"delta\":{},");
+            append_chat_logprobs(&lp, s, e);
+            sb_lit(&lp, ",\"finish_reason\":null}]}");
+            chunk_send(g, &lp);
+        } else if (!chat && e->lp_count > 0) {
+            sbuf lp = {0};
+            chunk_open(g, &lp);
+            sb_lit(&lp, "\"text\":\"\",");
+            append_text_logprobs(&lp, s, e, NULL, 0);
+            sb_lit(&lp, ",\"finish_reason\":null}]}");
+            chunk_send(g, &lp);
+        }
+        sbuf c = {0};
+        chunk_open(g, &c);
+        sb_fmt(&c, "%s,\"finish_reason\":\"%s\"",
+               chat ? "\"delta\":{}" : "\"text\":\"\"",
+               openai_finish(finish));
+        append_stop_token(&c, s, e);
+        sb_lit(&c, "}]");
+        // RI-4 (the 2026-08-08 deferral reversed by the owner on
+        // 2026-10-02): the finish chunk carries the turn's whole
+        // runner_telemetry, the same object a buffered reply carries, so
+        // a streaming client gets the effective sampling, the closure,
+        // the decision summary and the receipt without opting into
+        // include_usage. The reason widened away by openai_finish()
+        // survives as finish_detail on the same object.
+        const char *sdet = finish_detail_of(finish);
+        if (!sdet) sdet = cut_detail;
+        // R4.12.19: a repeated call, on the same chunk
+        if (chat) g->repeat_json = repeated_calls_streamed(g, req, api);
+        sb_fmt(&c, ",\"runner_telemetry\":{\"prompt_cached_tokens\":%d", keep);
+        if (sdet) sb_fmt(&c, ",\"finish_detail\":\"%s\"", sdet);
+        if (g->repeat_json)
+            sb_fmt(&c, ",\"repeated_tool_calls\":%s", g->repeat_json);
+        diag_json(&c, &prep->diag);
+        sb_lit(&c, "}");
+        sb_lit(&c, "}");
+        bool ok = chunk_send(g, &c) == 0;
+        // OpenAI stream_options {"include_usage": true}: one extra chunk
+        // with empty choices and the request's token accounting — AI-SDK
+        // clients (Cline et al.) request this on every stream
+        if (ok && q->include_usage) {
+            sbuf u = {0};
+            sb_fmt(&u, "{\"id\":\"%s\",\"object\":\"%s\",\"created\":%ld,"
+                       "\"model\":\"", g->id,
+                   chat ? "chat.completion.chunk" : "text_completion",
+                   g->created);
+            sb_esc(&u, SV.model_name, strlen(SV.model_name));
+            sb_lit(&u, "\",\"choices\":[],");
+            openai_usage_json(&u, prep->n_prompt, n_gen, keep);
+            // the one terminal chunk a stream opts into is also where
+            // its effective sampling and protocol can be read back
+            sb_lit(&u, ",\"runner_telemetry\":{\"prompt_cached_tokens\":");
+            sb_fmt(&u, "%d", keep);
+            diag_json(&u, &prep->diag);
+            sb_lit(&u, "}}");
+            ok = chunk_send(g, &u) == 0;
+        }
+        if (ok) send_all(fd, "data: [DONE]\n\n", 14);
+    }
+}
+
+// A buffered Messages turn: the Message, or the error object for a fault.
+static void respond_buffered_messages(const turn_result *t, sbuf *tc, int n_tc) {
+    slot_t *s = t->s;
+    engine *e = t->e;
+    sock_t fd = t->fd;
+    jv *req = t->req;
+    const char *finish = t->finish;
+    int n_gen = t->n_gen;
+    int keep = t->keep;
+    double gtime = t->gtime;
+    bool spec_used = t->spec_used;
+    uint64_t faults_at_start = t->faults_at_start;
+    prefix_reuse reuse = t->reuse;
+    gen_ctx *g = t->g;
+    completion_prep *prep = t->prep;
+    const completion_req *q = t->q;
+    // A fault is an error object here, not a Message. Anthropic's
+    // seven stop_reason values all describe a turn that COMPLETED, so
+    // there is no member to report this with — end_turn, which this
+    // used to send, told the caller the model finished normally over
+    // an empty content[].
+    //
+    // The partial content question, answered deliberately: a turn that
+    // faulted midway may already have produced text, and the analogous
+    // truncation case (stop_reason "max_tokens" WITH the partial in
+    // the body) is not available to borrow. Truncation is a completion
+    // with a known boundary — the budget ran out, and every byte before
+    // it is the model's finished intent up to that point. A mapping
+    // failure has no boundary and no intent: under a strict envelope
+    // the buffer is not a partial answer at all, it is protocol
+    // framing, and envelope_map_buffered has already dropped it for
+    // that reason. So there is nothing to preserve on this path even in
+    // principle. For the oom fault there IS real text, and it is still
+    // dropped: shipping it would require a stop_reason, and every one
+    // of the seven would be a false statement about why generation
+    // stopped. It survives where it belongs — the server log, and the
+    // OpenAI surfaces, which have an "error" finish_reason to carry it
+    // honestly alongside the content.
+    if (generation_faulted(finish)) {
+        sbuf r = {0};
+        sb_lit(&r, "{\"type\":\"error\",");
+        anth_error_json(&r, finish);
+        sb_lit(&r, "}");
+        if (r.failed) send_error(fd, 500, "out of memory building "
+                                          "response");
+        else send_response(fd, 500, "application/json", r.s, r.n);
+        free(r.s);
+        free(tc->s);
+        return;
+    }
+    // Same canonical mapping the Responses branch below uses: the
+    // chat dialect's tool_calls array is where a turn's calls are
+    // extracted once, and each surface only renders them in its own
+    // vocabulary.
+    jv *call = tool_calls_array(tc, n_tc);
+    resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .with_output = true,
+                   .stop_reason = anth_stop_reason(finish,
+                                                   g->stop_hit != NULL),
+                   .stop_seq = g->stop_hit,
+                   .calls = call,
+                   .text = g->out.s, .text_n = g->out.n,
+                   .reason = g->reason.s, .reason_n = g->reason.n,
+                   .reason_tokens = g->reason_tokens,
+                   .with_usage = true,
+                   .n_prompt = prep->n_prompt, .n_gen = n_gen, .cached = keep,
+                   .forked = reuse.forked, .saved_s = reuse.saved_s,
+                   .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
+                   .schema = q->schema != NULL,
+                   .json_mode = e->json_mode, .spec = spec_used,
+                   SPEC_DOC_FIELDS(e), .diag = &prep->diag,
+                   .req = req,
+                   .repeated_calls = g->repeat_json };
+    sbuf r = {0};
+    anth_body(&r, g, &d);
+    send_built(fd, &r);
+    free(r.s);
+    jv_free(call);
+    free(tc->s);
+    return;
+}
+
+// A buffered Responses turn: the response object.
+static void respond_buffered_responses(const turn_result *t, sbuf *tc, int n_tc) {
+    slot_t *s = t->s;
+    engine *e = t->e;
+    sock_t fd = t->fd;
+    jv *req = t->req;
+    const char *finish = t->finish;
+    int n_gen = t->n_gen;
+    int keep = t->keep;
+    double gtime = t->gtime;
+    bool spec_used = t->spec_used;
+    uint64_t faults_at_start = t->faults_at_start;
+    prefix_reuse reuse = t->reuse;
+    gen_ctx *g = t->g;
+    completion_prep *prep = t->prep;
+    const completion_req *q = t->q;
+    // The chat dialect's tool_calls array is the canonical mapping, so
+    // the Responses items are derived from it rather than re-extracted
+    // from the envelope: one mapping, two renderings.
+    jv *call = tool_calls_array(tc, n_tc);
+    // every reason the turn was cut short, as the streamed branch
+    // counts them: a loop-guard stop came back "completed" here and
+    // "incomplete" streamed, on identical text (external review,
+    // 2026-09-27)
+    // the streamed branch above reports the same reasons the same way
+    // (responses_incomplete_reason): a faulted turn did not complete
+    const char *why = responses_incomplete_reason(finish);
+    bool truncated = why != NULL;
+    resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .status = truncated ? "incomplete" : "completed",
+                   .incomplete = why,
+                   .with_output = true,
+                   .calls = call,
+                   .text = g->out.s, .text_n = g->out.n,
+                   .reason = g->reason.s, .reason_n = g->reason.n,
+                   .reason_tokens = g->reason_tokens,
+                   .with_usage = true,
+                   .n_prompt = prep->n_prompt, .n_gen = n_gen, .cached = keep,
+                   .forked = reuse.forked, .saved_s = reuse.saved_s,
+                   .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
+                   .schema = q->schema != NULL,
+                   .json_mode = e->json_mode, .spec = spec_used,
+                   SPEC_DOC_FIELDS(e), .diag = &prep->diag,
+                   .req = req,
+                   .repeated_calls = g->repeat_json };
+    sbuf r = {0};
+    responses_body(&r, g, &d);
+    if (!r.failed) responses_store_keep(req, g->id, r.s, r.n);
+    send_built(fd, &r);
+    free(r.s);
+    jv_free(call);
+    free(tc->s);
+    return;
+}
+
+// A buffered chat or completions turn: the completion object.
+static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
+    slot_t *s = t->s;
+    engine *e = t->e;
+    sock_t fd = t->fd;
+    bool chat = t->chat;
+    const char *prompt = t->prompt;
+    const char *finish = t->finish;
+    const char *cut_detail = t->cut_detail;
+    int n_gen = t->n_gen;
+    int keep = t->keep;
+    double gtime = t->gtime;
+    bool spec_used = t->spec_used;
+    uint64_t faults_at_start = t->faults_at_start;
+    prefix_reuse reuse = t->reuse;
+    gen_ctx *g = t->g;
+    completion_prep *prep = t->prep;
+    const completion_req *q = t->q;
+    sbuf r = {0};
+    sb_fmt(&r, "{\"id\":\"%s\",\"object\":\"%s\",\"created\":%ld,\"model\":\"", g->id,
+           chat ? "chat.completion" : "text_completion",
+           (long)time(NULL));
+    sb_esc(&r, SV.model_name, strlen(SV.model_name));
+    sb_lit(&r, "\",\"choices\":[{\"index\":0,");
+    if (chat) sb_lit(&r, "\"message\":{\"role\":\"assistant\",\"content\":\"");
+    else      sb_lit(&r, "\"text\":\"");
+    if (!chat && q->echo) sb_esc(&r, prompt, strlen(prompt));   // R4.8
+    sb_esc(&r, g->out.s ? g->out.s : "", g->out.n);
+    sb_lit(&r, "\"");
+    if (n_tc) {
+        sb_lit(&r, ",\"tool_calls\":[");
+        if (tc->failed) r.failed = true;
+        else sb_put(&r, tc->s, tc->n);
+        sb_lit(&r, "]");
+    }
+    free(tc->s);
+    if (chat && g->reason.n > 0) {
+        sb_lit(&r, ",\"reasoning_content\":\"");
+        sb_esc(&r, g->reason.s, g->reason.n);
+        sb_lit(&r, "\"");
+    }
+    if (chat) sb_lit(&r, "},");
+    else      sb_lit(&r, ",");
+    if (chat && e->lp_count > 0) {
+        char tb[512];
+        sb_lit(&r, "\"logprobs\":{\"content\":[");
+        for (int i = 0; i < e->lp_count; i++) {
+            if (i) sb_lit(&r, ",");
+            int tn = lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
+            sb_lit(&r, "{\"token\":\"");
+            sb_esc(&r, tb, tn);
+            sb_fmt(&r, "\",\"logprob\":%.6f,\"top_logprobs\":[", e->lp_chosen[i]);
+            for (int j = 0; j < e->lp_n; j++) {
+                const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
+                if (a->id < 0) break;
+                if (j) sb_lit(&r, ",");
+                tn = lp_piece(s, e, a->id, tb, sizeof(tb));
+                sb_lit(&r, "{\"token\":\"");
+                sb_esc(&r, tb, tn);
+                sb_fmt(&r, "\",\"logprob\":%.6f}", a->lp);
+            }
+            sb_lit(&r, "]}");
+        }
+        sb_lit(&r, "]},");
+    } else if (!chat && q->echo && q->want_lp && g->ptoks) {
+        // echo: the prompt's teacher-forced entries, then the generated
+        append_text_logprobs(&r, s, e, g, q->lp_n);
+        sb_lit(&r, ",");
+    } else if (!chat && e->lp_count > 0) {
+        // same body as the non-streaming path, ids included
+        append_text_logprobs(&r, s, e, NULL, 0);
+        sb_lit(&r, ",");
+    }
+    if (!chat && q->plp >= 0 && g->ptoks) {
+        // vLLM's prompt_logprobs: per prompt position, the actual token
+        // and the top `plp` alternatives, each with its 1-based rank
+        char tb[512];
+        const prompt_scores *ps = &g->ps;
+        sb_lit(&r, "\"prompt_logprobs\":[null");
+        for (int i = 1; i < ps->n; i++) {
+            const lp_alt *row = &ps->top[(size_t)i * ps->top_n];
+            int want = g->ptoks[i];
+            int tn = lp_piece(s, e, want, tb, sizeof(tb));
+            sb_fmt(&r, ",{\"%d\":{\"logprob\":%.9g,\"rank\":%d,"
+                       "\"decoded_token\":\"", want, (double)ps->lp[i],
+                   ps->rank[i]);
+            sb_esc(&r, tb, tn);
+            sb_lit(&r, "\"}");
+            for (int j = 0; j < q->plp && row && row[j].id >= 0; j++) {
+                if (row[j].id == want) continue;
+                // everything above row[j] is listed before it, so its
+                // rank counts only the strictly better entries there
+                int rank = 1;
+                for (int k = 0; k < j; k++) rank += row[k].lp > row[j].lp;
+                tn = lp_piece(s, e, row[j].id, tb, sizeof(tb));
+                sb_fmt(&r, ",\"%d\":{\"logprob\":%.9g,\"rank\":%d,"
+                           "\"decoded_token\":\"", row[j].id,
+                       (double)row[j].lp, rank);
+                sb_esc(&r, tb, tn);
+                sb_lit(&r, "\"}");
+            }
+            sb_lit(&r, "}");
+        }
+        sb_lit(&r, "],");
+    }
+    // JC-R1 constrained-choice posteriors: one entry per decision point
+    // (a constrained step where >= 2 probed candidates were legal),
+    // shared shape across the chat and text surfaces.
+    if (q->cl_render && e->cl_count > 0) {
+        char tb[512];
+        sb_lit(&r, "\"choice_logprobs\":[");
+        for (int i = 0; i < e->cl_count; i++) {
+            const cl_rec *c = &e->cl_recs[i];
+            if (i) sb_lit(&r, ",");
+            sb_fmt(&r, "{\"index\":%d,\"n_legal\":%d,\"n_probed\":%d,"
+                       "\"coverage\":%.6f,\"alternatives\":[",
+                   c->pos, c->n_legal, c->n_probed, c->coverage);
+            int stored = c->n_legal < CL_MAX_ALT ? c->n_legal : CL_MAX_ALT;
+            for (int j = 0; j < stored; j++) {
+                if (j) sb_lit(&r, ",");
+                int tn = lp_piece(s, e, c->ids[j], tb, sizeof(tb));
+                sb_lit(&r, "{\"token\":\"");
+                sb_esc(&r, tb, tn);
+                sb_fmt(&r, "\",\"id\":%d,\"prob\":%.6f,"
+                           "\"logprob\":%.6f}",
+                       c->ids[j], c->prob[j], c->raw_lp[j]);
+            }
+            sb_lit(&r, "]}");
+        }
+        sb_lit(&r, "],");
+    }
+    sb_fmt(&r, "\"finish_reason\":\"%s\"", openai_finish(finish));
+    append_stop_token(&r, s, e);
+    sb_lit(&r, "}],");
+    openai_usage_json(&r, prep->n_prompt, n_gen, keep);
+    sb_lit(&r, ",");
+    resp_doc td = { .n_prompt = prep->n_prompt, .n_gen = n_gen, .cached = keep,
+                    .forked = reuse.forked, .saved_s = reuse.saved_s,
+                    .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
+                       .schema = q->schema != NULL,
+                    .finish_detail = finish_detail_of(finish)
+                                   ? finish_detail_of(finish) : cut_detail,
+                    .json_mode = e->json_mode, .spec = spec_used,
+                    SPEC_DOC_FIELDS(e), .diag = &prep->diag,
+                    .repeated_calls = g->repeat_json };
+    telemetry_json(&r, &td);
+    sb_lit(&r, "}");
+    send_built(fd, &r);
+    free(r.s);
+}
+
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
-                           jv *req, const tool_envelope *env) {
+                           jv *req, const tool_envelope *env,
+                           const render_state *rs) {
     bool chat = api != API_TEXT; // chat-shaped: thinking channels, tools
     model_t *m = s->m;
     engine *e = &s->e;
-    bool muse_forced_think = chat && s->tmpl == TMPL_MUSE &&
-                             req_thinking_mode(req) == THINK_ON;
-    // Harmony primes the analysis channel in the prompt for every mode except
-    // THINK_OFF (see the generation-prompt comment in template.c), so the
-    // stream starts INSIDE reasoning and the splitter must too — the same
-    // reason ornith always does and muse does when forced. Getting this wrong
-    // is silent: the split simply never fires and the model's analysis is
-    // served as content, which is what the first live run did.
-    bool harmony_primed_think = chat && s->tmpl == TMPL_HARMONY &&
-                                !(env && env->proto == TP_HARMONY) &&
-                                req_thinking_mode(req) != THINK_OFF;
-    // granite 4.2's, Qwen 3.8's and ornith's generation prompts open
-    // `<think>\n` in every mode but THINK_OFF, where the block is already
-    // closed and the stream starts in content (template.c, TMPL_GRANITE42 /
-    // TMPL_QWEN38 / TMPL_ORNITH). Ornith used to prime the splitter in every
-    // mode, so a caller who turned thinking off had the answer served as
-    // reasoning_content.
-    // Qwen 3.5-0.8B inverts the default: its prompt opens the block only
-    // for an explicit THINK_ON.
-    // Nemotron Nano decides from the conversation's own /think and
-    // /no_think strings, so the question is asked of the rendered prompt.
-    bool nemotron_primed_think = false;
-    if (chat && s->tmpl == TMPL_NEMOTRON && prompt) {
-        static const char open[] = "<think>\n";
-        size_t e = strlen(prompt), k = sizeof(open) - 1;
-        while (k && e) {
-            char c = prompt[e - 1];
-            if (c == PROMPT_RAW_OPEN || c == PROMPT_RAW_CLOSE) { e--; continue; }
-            if (c != open[k - 1]) break;
-            e--; k--;
-        }
-        nemotron_primed_think = k == 0;
-    }
-    bool granite42_primed_think = chat &&
-                                  (tmpl_granite42_like(s->tmpl) ||
-                                   s->tmpl == TMPL_QWEN38 ||
-                                   tmpl_ornith_like(s->tmpl)) &&
-                                  (s->tmpl == TMPL_QWEN35_NOTHINK
-                                       ? req_thinking_mode(req) == THINK_ON
-                                       : req_thinking_mode(req) != THINK_OFF);
-    granite42_primed_think = granite42_primed_think || nemotron_primed_think;
-    // gemma4's thought block is opened BY THE PROMPT on a tool-result
-    // continuation with thinking on (template.c's g4_prev == 2 branch), so the
-    // grammar must start inside it. Asked of the prompt itself rather than
-    // re-derived from the message list: the renderer owns that decision, and a
-    // second copy of the condition is a second thing to keep in step.
-    size_t prompt_n = prompt ? strlen(prompt) : 0;
-    static const char G4_THOUGHT_OPEN[] = "<|channel>thought\n";
-    bool gemma4_primed_think =
-        chat && is_gemma4(s->tmpl) && prompt_n >= sizeof(G4_THOUGHT_OPEN) - 1 &&
-        !memcmp(prompt + prompt_n - (sizeof(G4_THOUGHT_OPEN) - 1),
-                G4_THOUGHT_OPEN, sizeof(G4_THOUGHT_OPEN) - 1);
+    // Where generation starts is the renderer's report (template.h,
+    // render_state): the prompt it wrote leaves the model inside a reasoning
+    // segment, or it does not. It used to be reconstructed here from the
+    // family, the request's enable_thinking and two prompt-suffix probes --
+    // a second copy of the renderer's decision that missed every other
+    // spelling of the mode (Messages' `thinking` object rendered one start
+    // and split from another). A raw prompt has no report and no split.
+    bool reasoning_open = chat && rs && rs->reasoning_open;
     // Major faults are page-ins that went to disk, so the delta across a
     // request IS the paging stall rather than an inference from wall-clock: a
     // slow request that took no major faults was slow for some other reason.
@@ -3853,8 +4455,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
              atomic_fetch_add(&SV.req_counter, 1));
 
     completion_req q;
-    if (!completion_read(s, fd, api, req, env, chat, muse_forced_think,
-                         gemma4_primed_think, &q))
+    if (!completion_read(s, fd, api, req, env, chat, chat ? rs : NULL, &q))
         return;
     completion_apply(s, &q, prompt, chat, env);
 
@@ -3999,14 +4600,23 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                               "context_length_exceeded");
         return;
     }
-    if (muse_forced_think || harmony_primed_think || granite42_primed_think)
+    // A protocol whose own demultiplexer follows the channels (the Harmony
+    // and Gemma 4 envelopes) starts the splitter cold and owns that state;
+    // any other turn starts where its prompt left it.
+    bool demux_channels = env && (env->proto == TP_HARMONY || env->proto == TP_GEMMA4);
+    bool primed = reasoning_open && !demux_channels;
+    // ...and that demultiplexer, streamed and buffered, reads the turn from
+    // the opener the prompt wrote, as the model does: a Gemma 4 continuation
+    // whose prompt opened the thought channel is reasoning until it closes.
+    const char *demux_opener = demux_channels && reasoning_open ? rs->opener : NULL;
+    if (primed)
         engine_think_started(e);
 
     tool_envelope muse_plain_env = {.proto = TP_MUSE_PLAIN};
     // split thinking channels out of chat responses; raw completions stay raw
-    if (env && (env->proto == TP_HARMONY || env->proto == TP_GEMMA4))
+    if (demux_channels)
         think_init(&g.ts, NULL, NULL);
-    else if (muse_forced_think || harmony_primed_think || granite42_primed_think)
+    else if (primed)
         think_init_reasoning(&g.ts, m->think_open, m->think_close);
     else
         think_init(&g.ts, chat ? m->think_open : NULL, m->think_close);
@@ -4018,6 +4628,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                                   sink_call_args, sink_call_end };
         tool_stream_init(&g.tsx, stream_env, &sink);
         g.tsx_on = true;
+        if (demux_opener && stream_env == env)
+            tool_stream_feed(&g.tsx, demux_opener, (int)strlen(demux_opener));
     }
 
     if (q.stream) {
@@ -4027,41 +4639,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             completion_cleanup(e, q.schema, &g);
             return;
         }
-        // OpenAI opens a chat stream with a role-only delta. Emitting it up
-        // front rather than folding the role into whatever the first text
-        // delta happens to be keeps the contract independent of what the
-        // model generates — including generating nothing at all.
-        if (api == API_CHAT) {
-            sbuf c = {0};
-            chunk_open(&g, &c);
-            sb_lit(&c, "\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}");
-            g.role_sent = true;
-            chunk_send(&g, &c);
-        } else if (api == API_RESPONSES) {
-            // A Responses stream opens with the response object twice: created,
-            // then in_progress. Both carry an empty output — the items are
-            // announced as they start — so they are emitted before any token
-            // exists, which is exactly what makes a client able to render the
-            // turn's identity immediately.
-            resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .status = "in_progress", .req = req };
-            for (int i = 0; i < 2 && !g.dead; i++) {
-                sbuf f = {0};
-                sb_lit(&f, ",\"response\":");
-                responses_body(&f, &g, &d);
-                resp_send(&g, i == 0 ? "response.created"
-                                     : "response.in_progress", &f);
-            }
-        } else if (api == API_MESSAGES) {
-            // An Anthropic stream opens with the whole Message object minus
-            // its content: the id, model and input token count are known
-            // before a token exists, and a client renders the turn's identity
-            // from them immediately. stop_reason is null until message_delta.
-            resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .n_prompt = prep.n_prompt, .req = req };
-            sbuf f = {0};
-            sb_lit(&f, ",\"message\":");
-            anth_body(&f, &g, &d);
-            anth_send(&g, "message_start", &f);
-        }
+        respond_stream_open(&g, api, s, req, &prep);
     }
 
     // A configured draft is not proof that this request speculated. Logprob
@@ -4237,196 +4815,30 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     if (g.tsx_on && tool_stream_called(&g.tsx) && !strcmp(finish, "stop"))
         finish = "tool_calls";
 
-    if (q.stream && api == API_RESPONSES) {
-        // whatever item was still streaming is closed first: an item announced
-        // with output_item.added must always reach output_item.done, including
-        // when generation stopped mid-item
-        bool cut = strcmp(finish, "length") == 0 ||
-                   strcmp(finish, "reasoning_limit") == 0 ||
-                   strcmp(finish, "loop") == 0;
-        // The turn produced a document nothing could read, so it did not
-        // complete — and the reason is neither of the two standard ones.
-        // "max_output_tokens" would be the closest lie, and a lie a client can
-        // act on: it retries with a larger budget forever. An unrecognised
-        // reason string is inert by comparison, and true.
-        bool failed = strcmp(finish, "envelope_error") == 0;
-        // a tool call that was truncated is still an executable call — the
-        // envelope schema closed it to a legal document — so only a message
-        // is reported as unfinished
-        if ((cut || failed) && resp_shape_of(g.item_kind) == &RESP_MESSAGE)
-            g.close_status = "incomplete";
-        resp_close_item(&g);
-        if (!g.dead && g.out_items.n) {
-            // R4.12.19 from the items the stream already delivered
-            sbuf a = {0};
-            sb_lit(&a, "[");
-            sb_put(&a, g.out_items.s, g.out_items.n);
-            sb_lit(&a, "]");
-            jv *em = a.failed ? NULL : json_parse(a.s, a.n);
-            free(a.s);
-            g.repeat_json = repeated_calls_json(req, api, em);
-            jv_free(em);
-        }
-        if (!g.dead) {
-            bool truncated = cut || failed;
-            resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .status = truncated ? "incomplete" : "completed",
-                           .incomplete = failed ? "envelope_unmapped"
-                                       : cut   ? "max_output_tokens" : NULL,
-                           .output_json = g.out_items.s ? g.out_items.s : "",
-                           .output_n = g.out_items.n,
-                           .output_text = g.out_text.s,
-                           .output_text_n = g.out_text.n,
-                           .with_usage = true,
-                           .n_prompt = prep.n_prompt, .n_gen = n_gen, .cached = keep,
-                           .forked = reuse.forked, .saved_s = reuse.saved_s,
-                           .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
-                           .schema = q.schema != NULL,
-                           .json_mode = e->json_mode, .spec = spec_used,
-                           SPEC_DOC_FIELDS(e), .diag = &prep.diag,
-                           .req = req,
-                           .repeated_calls = g.repeat_json };
-            sbuf f = {0};
-            sb_lit(&f, ",\"response\":");
-            size_t body_at = f.n;
-            responses_body(&f, &g, &d);
-            if (!f.failed)
-                responses_store_keep(req, g.id, f.s + body_at, f.n - body_at);
-            resp_send(&g, truncated ? "response.incomplete"
-                                    : "response.completed", &f);
-        }
-    } else if (q.stream && api == API_MESSAGES && generation_faulted(finish)) {
-        // The 200 and the headers went out before a token existed, so there is
-        // no status code left to correct — and Anthropic's SSE protocol has a
-        // terminator for exactly this case, documented alongside
-        // overloaded_error. The stream ends on `error`.
-        //
-        // Deliberately NOT message_delta + message_stop: message_delta must
-        // carry one of the seven stop_reasons, all of which describe a turn
-        // that completed, and message_stop asserts a Message that finished.
-        // Sending either would be the buffered end_turn lie in streamed form.
-        // Terminating at all is not optional though — a stream left hanging is
-        // the failure fixed on the OpenAI surfaces in 6c4dfc2, and this is the
-        // Anthropic spelling of the same terminal chunk.
-        //
-        // Nothing synthesises a closing content_block_stop for a block the
-        // fault interrupted. An error may arrive at any point in this protocol
-        // by construction, an SDK accumulator discards the message on it, and
-        // closing a block would be the one gesture that suggested the content
-        // before it was a usable partial answer.
-        if (!g.dead) {
-            sbuf f = {0};
-            sb_lit(&f, ",");
-            anth_error_json(&f, finish);
-            anth_send(&g, "error", &f);
-        }
-    } else if (q.stream && api == API_MESSAGES) {
-        // A turn that generated nothing at all still has to describe itself
-        // the way the buffered body would, which always carries at least one
-        // block. Opening an empty text block here is what keeps "the streamed
-        // and buffered turns agree" true even in the degenerate case.
-        if (!g.item_open && g.output_index == 0) anth_open_block(&g, "text");
-        // whatever block was still streaming is closed first: a block
-        // announced with content_block_start must always reach
-        // content_block_stop, including when generation stopped mid-block
-        anth_close_block(&g);
-        if (!g.dead) {
-            sbuf f = {0};
-            sb_fmt(&f, ",\"delta\":{\"stop_reason\":\"%s\",\"stop_sequence\":",
-                   anth_stop_reason(finish, g.stop_hit != NULL));
-            if (g.stop_hit) {
-                sb_lit(&f, "\"");
-                sb_esc(&f, g.stop_hit, strlen(g.stop_hit));
-                sb_lit(&f, "\"");
-            } else {
-                sb_lit(&f, "null");
-            }
-            // message_delta carries the *cumulative* output token count, which
-            // is the only place a streamed turn reports it
-            sb_fmt(&f, "},\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d}",
-                   prep.n_prompt, n_gen);
-            // R4.12.19: present only when a delivered call repeats one the
-            // conversation already holds, so an ordinary stream is unchanged
-            g.repeat_json = repeated_calls_streamed(&g, req, api);
-            if (g.repeat_json)
-                sb_fmt(&f, ",\"runner_telemetry\":{\"repeated_tool_calls\":%s}",
-                       g.repeat_json);
-            if (!anth_send(&g, "message_delta", &f)) {
-                sbuf s2 = {0};
-                anth_send(&g, "message_stop", &s2);
-            }
-        }
-    } else if (q.stream) {
-        if (!g.dead) {
-            if (chat && e->lp_count > 0) {
-                sbuf lp = {0};
-                chunk_open(&g, &lp);
-                sb_lit(&lp, "\"delta\":{},");
-                append_chat_logprobs(&lp, s, e);
-                sb_lit(&lp, ",\"finish_reason\":null}]}");
-                chunk_send(&g, &lp);
-            } else if (!chat && e->lp_count > 0) {
-                sbuf lp = {0};
-                chunk_open(&g, &lp);
-                sb_lit(&lp, "\"text\":\"\",");
-                append_text_logprobs(&lp, s, e, NULL, 0);
-                sb_lit(&lp, ",\"finish_reason\":null}]}");
-                chunk_send(&g, &lp);
-            }
-            sbuf c = {0};
-            chunk_open(&g, &c);
-            sb_fmt(&c, "%s,\"finish_reason\":\"%s\"",
-                   chat ? "\"delta\":{}" : "\"text\":\"\"",
-                   openai_finish(finish));
-            append_stop_token(&c, s, e);
-            sb_lit(&c, "}]");
-            // RI-4 (the 2026-08-08 deferral reversed by the owner on
-            // 2026-10-02): the finish chunk carries the turn's whole
-            // runner_telemetry, the same object a buffered reply carries, so
-            // a streaming client gets the effective sampling, the closure,
-            // the decision summary and the receipt without opting into
-            // include_usage. The reason widened away by openai_finish()
-            // survives as finish_detail on the same object.
-            const char *sdet = finish_detail_of(finish);
-            if (!sdet) sdet = cut_detail;
-            // R4.12.19: a repeated call, on the same chunk
-            if (chat) g.repeat_json = repeated_calls_streamed(&g, req, api);
-            sb_fmt(&c, ",\"runner_telemetry\":{\"prompt_cached_tokens\":%d", keep);
-            if (sdet) sb_fmt(&c, ",\"finish_detail\":\"%s\"", sdet);
-            if (g.repeat_json)
-                sb_fmt(&c, ",\"repeated_tool_calls\":%s", g.repeat_json);
-            diag_json(&c, &prep.diag);
-            sb_lit(&c, "}");
-            sb_lit(&c, "}");
-            bool ok = chunk_send(&g, &c) == 0;
-            // OpenAI stream_options {"include_usage": true}: one extra chunk
-            // with empty choices and the request's token accounting — AI-SDK
-            // clients (Cline et al.) request this on every stream
-            if (ok && q.include_usage) {
-                sbuf u = {0};
-                sb_fmt(&u, "{\"id\":\"%s\",\"object\":\"%s\",\"created\":%ld,"
-                           "\"model\":\"", g.id,
-                       chat ? "chat.completion.chunk" : "text_completion",
-                       g.created);
-                sb_esc(&u, SV.model_name, strlen(SV.model_name));
-                sb_lit(&u, "\",\"choices\":[],");
-                openai_usage_json(&u, prep.n_prompt, n_gen, keep);
-                // the one terminal chunk a stream opts into is also where
-                // its effective sampling and protocol can be read back
-                sb_lit(&u, ",\"runner_telemetry\":{\"prompt_cached_tokens\":");
-                sb_fmt(&u, "%d", keep);
-                diag_json(&u, &prep.diag);
-                sb_lit(&u, "}}");
-                ok = chunk_send(&g, &u) == 0;
-            }
-            if (ok) send_all(fd, "data: [DONE]\n\n", 14);
-        }
-    } else {
+    // The turn as every surface reports it: the generation above produced
+    // it, and one framer per surface renders it in that surface's dialect.
+    turn_result t = {
+        .s = s, .e = e, .fd = fd, .api = api, .chat = chat, .req = req,
+        .prompt = prompt, .q = &q, .prep = &prep, .g = &g, .shape = &shape,
+        .finish = finish, .cut_detail = cut_detail, .n_gen = n_gen,
+        .keep = keep, .gtime = gtime, .spec_used = spec_used,
+        .faults_at_start = faults_at_start, .reuse = reuse,
+    };
+    if (q.stream && api == API_RESPONSES)
+        respond_stream_responses(&t);
+    else if (q.stream && api == API_MESSAGES && generation_faulted(finish))
+        respond_stream_messages_fault(&t);
+    else if (q.stream && api == API_MESSAGES)
+        respond_stream_messages(&t);
+    else if (q.stream)
+        respond_stream_openai(&t);
+    else {
         sbuf tc = {0};
         int n_tc = 0;
         if (env) {
             bool fault = false;
             n_tc = envelope_map_buffered(env, &g, &tc, turn_cut,
-                                         &fault);
+                                         demux_opener, &fault);
             if (n_tc >= 1 && !strcmp(finish, "stop")) finish = "tool_calls";
             // The document was dropped, so the turn has no answer to report.
             // Saying "stop" over the resulting empty content would claim the
@@ -4465,246 +4877,11 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             jv_free(em);
         }
         WRITE_RECEIPT();
-        if (api == API_MESSAGES) {
-            // A fault is an error object here, not a Message. Anthropic's
-            // seven stop_reason values all describe a turn that COMPLETED, so
-            // there is no member to report this with — end_turn, which this
-            // used to send, told the caller the model finished normally over
-            // an empty content[].
-            //
-            // The partial content question, answered deliberately: a turn that
-            // faulted midway may already have produced text, and the analogous
-            // truncation case (stop_reason "max_tokens" WITH the partial in
-            // the body) is not available to borrow. Truncation is a completion
-            // with a known boundary — the budget ran out, and every byte before
-            // it is the model's finished intent up to that point. A mapping
-            // failure has no boundary and no intent: under a strict envelope
-            // the buffer is not a partial answer at all, it is protocol
-            // framing, and envelope_map_buffered has already dropped it for
-            // that reason. So there is nothing to preserve on this path even in
-            // principle. For the oom fault there IS real text, and it is still
-            // dropped: shipping it would require a stop_reason, and every one
-            // of the seven would be a false statement about why generation
-            // stopped. It survives where it belongs — the server log, and the
-            // OpenAI surfaces, which have an "error" finish_reason to carry it
-            // honestly alongside the content.
-            if (generation_faulted(finish)) {
-                sbuf r = {0};
-                sb_lit(&r, "{\"type\":\"error\",");
-                anth_error_json(&r, finish);
-                sb_lit(&r, "}");
-                if (r.failed) send_error(fd, 500, "out of memory building "
-                                                  "response");
-                else send_response(fd, 500, "application/json", r.s, r.n);
-                free(r.s);
-                free(tc.s);
-                goto done;
-            }
-            // Same canonical mapping the Responses branch below uses: the
-            // chat dialect's tool_calls array is where a turn's calls are
-            // extracted once, and each surface only renders them in its own
-            // vocabulary.
-            jv *call = tool_calls_array(&tc, n_tc);
-            resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .with_output = true,
-                           .stop_reason = anth_stop_reason(finish,
-                                                           g.stop_hit != NULL),
-                           .stop_seq = g.stop_hit,
-                           .calls = call,
-                           .text = g.out.s, .text_n = g.out.n,
-                           .reason = g.reason.s, .reason_n = g.reason.n,
-                           .reason_tokens = g.reason_tokens,
-                           .with_usage = true,
-                           .n_prompt = prep.n_prompt, .n_gen = n_gen, .cached = keep,
-                           .forked = reuse.forked, .saved_s = reuse.saved_s,
-                           .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
-                           .schema = q.schema != NULL,
-                           .json_mode = e->json_mode, .spec = spec_used,
-                           SPEC_DOC_FIELDS(e), .diag = &prep.diag,
-                           .req = req,
-                           .repeated_calls = g.repeat_json };
-            sbuf r = {0};
-            anth_body(&r, &g, &d);
-            send_built(fd, &r);
-            free(r.s);
-            jv_free(call);
-            free(tc.s);
-            goto done;
-        }
-        if (api == API_RESPONSES) {
-            // The chat dialect's tool_calls array is the canonical mapping, so
-            // the Responses items are derived from it rather than re-extracted
-            // from the envelope: one mapping, two renderings.
-            jv *call = tool_calls_array(&tc, n_tc);
-            // every reason the turn was cut short, as the streamed branch
-            // counts them: a loop-guard stop came back "completed" here and
-            // "incomplete" streamed, on identical text (external review,
-            // 2026-09-27)
-            bool cut    = strcmp(finish, "length") == 0 ||
-                          strcmp(finish, "reasoning_limit") == 0 ||
-                          strcmp(finish, "loop") == 0;
-            // the streamed branch above reports the same fault the same way:
-            // a turn whose document could not be mapped did not complete, and
-            // "max_output_tokens" would send the caller retrying with a bigger
-            // budget forever
-            bool failed = strcmp(finish, "envelope_error") == 0;
-            bool truncated = cut || failed;
-            resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .status = truncated ? "incomplete" : "completed",
-                           .incomplete = failed ? "envelope_unmapped"
-                                       : cut   ? "max_output_tokens" : NULL,
-                           .with_output = true,
-                           .calls = call,
-                           .text = g.out.s, .text_n = g.out.n,
-                           .reason = g.reason.s, .reason_n = g.reason.n,
-                           .reason_tokens = g.reason_tokens,
-                           .with_usage = true,
-                           .n_prompt = prep.n_prompt, .n_gen = n_gen, .cached = keep,
-                           .forked = reuse.forked, .saved_s = reuse.saved_s,
-                           .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
-                           .schema = q.schema != NULL,
-                           .json_mode = e->json_mode, .spec = spec_used,
-                           SPEC_DOC_FIELDS(e), .diag = &prep.diag,
-                           .req = req,
-                           .repeated_calls = g.repeat_json };
-            sbuf r = {0};
-            responses_body(&r, &g, &d);
-            if (!r.failed) responses_store_keep(req, g.id, r.s, r.n);
-            send_built(fd, &r);
-            free(r.s);
-            jv_free(call);
-            free(tc.s);
-            goto done;
-        }
-        sbuf r = {0};
-        sb_fmt(&r, "{\"id\":\"%s\",\"object\":\"%s\",\"created\":%ld,\"model\":\"", g.id,
-               chat ? "chat.completion" : "text_completion",
-               (long)time(NULL));
-        sb_esc(&r, SV.model_name, strlen(SV.model_name));
-        sb_lit(&r, "\",\"choices\":[{\"index\":0,");
-        if (chat) sb_lit(&r, "\"message\":{\"role\":\"assistant\",\"content\":\"");
-        else      sb_lit(&r, "\"text\":\"");
-        if (!chat && q.echo) sb_esc(&r, prompt, strlen(prompt));   // R4.8
-        sb_esc(&r, g.out.s ? g.out.s : "", g.out.n);
-        sb_lit(&r, "\"");
-        if (n_tc) {
-            sb_lit(&r, ",\"tool_calls\":[");
-            if (tc.failed) r.failed = true;
-            else sb_put(&r, tc.s, tc.n);
-            sb_lit(&r, "]");
-        }
-        free(tc.s);
-        if (chat && g.reason.n > 0) {
-            sb_lit(&r, ",\"reasoning_content\":\"");
-            sb_esc(&r, g.reason.s, g.reason.n);
-            sb_lit(&r, "\"");
-        }
-        if (chat) sb_lit(&r, "},");
-        else      sb_lit(&r, ",");
-        if (chat && e->lp_count > 0) {
-            char tb[512];
-            sb_lit(&r, "\"logprobs\":{\"content\":[");
-            for (int i = 0; i < e->lp_count; i++) {
-                if (i) sb_lit(&r, ",");
-                int tn = lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
-                sb_lit(&r, "{\"token\":\"");
-                sb_esc(&r, tb, tn);
-                sb_fmt(&r, "\",\"logprob\":%.6f,\"top_logprobs\":[", e->lp_chosen[i]);
-                for (int j = 0; j < e->lp_n; j++) {
-                    const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
-                    if (a->id < 0) break;
-                    if (j) sb_lit(&r, ",");
-                    tn = lp_piece(s, e, a->id, tb, sizeof(tb));
-                    sb_lit(&r, "{\"token\":\"");
-                    sb_esc(&r, tb, tn);
-                    sb_fmt(&r, "\",\"logprob\":%.6f}", a->lp);
-                }
-                sb_lit(&r, "]}");
-            }
-            sb_lit(&r, "]},");
-        } else if (!chat && q.echo && q.want_lp && g.ptoks) {
-            // echo: the prompt's teacher-forced entries, then the generated
-            append_text_logprobs(&r, s, e, &g, q.lp_n);
-            sb_lit(&r, ",");
-        } else if (!chat && e->lp_count > 0) {
-            // same body as the non-streaming path, ids included
-            append_text_logprobs(&r, s, e, NULL, 0);
-            sb_lit(&r, ",");
-        }
-        if (!chat && q.plp >= 0 && g.ptoks) {
-            // vLLM's prompt_logprobs: per prompt position, the actual token
-            // and the top `plp` alternatives, each with its 1-based rank
-            char tb[512];
-            const prompt_scores *ps = &g.ps;
-            sb_lit(&r, "\"prompt_logprobs\":[null");
-            for (int i = 1; i < ps->n; i++) {
-                const lp_alt *row = &ps->top[(size_t)i * ps->top_n];
-                int want = g.ptoks[i];
-                int tn = lp_piece(s, e, want, tb, sizeof(tb));
-                sb_fmt(&r, ",{\"%d\":{\"logprob\":%.9g,\"rank\":%d,"
-                           "\"decoded_token\":\"", want, (double)ps->lp[i],
-                       ps->rank[i]);
-                sb_esc(&r, tb, tn);
-                sb_lit(&r, "\"}");
-                for (int j = 0; j < q.plp && row && row[j].id >= 0; j++) {
-                    if (row[j].id == want) continue;
-                    // everything above row[j] is listed before it, so its
-                    // rank counts only the strictly better entries there
-                    int rank = 1;
-                    for (int k = 0; k < j; k++) rank += row[k].lp > row[j].lp;
-                    tn = lp_piece(s, e, row[j].id, tb, sizeof(tb));
-                    sb_fmt(&r, ",\"%d\":{\"logprob\":%.9g,\"rank\":%d,"
-                               "\"decoded_token\":\"", row[j].id,
-                           (double)row[j].lp, rank);
-                    sb_esc(&r, tb, tn);
-                    sb_lit(&r, "\"}");
-                }
-                sb_lit(&r, "}");
-            }
-            sb_lit(&r, "],");
-        }
-        // JC-R1 constrained-choice posteriors: one entry per decision point
-        // (a constrained step where >= 2 probed candidates were legal),
-        // shared shape across the chat and text surfaces.
-        if (q.cl_render && e->cl_count > 0) {
-            char tb[512];
-            sb_lit(&r, "\"choice_logprobs\":[");
-            for (int i = 0; i < e->cl_count; i++) {
-                const cl_rec *c = &e->cl_recs[i];
-                if (i) sb_lit(&r, ",");
-                sb_fmt(&r, "{\"index\":%d,\"n_legal\":%d,\"n_probed\":%d,"
-                           "\"coverage\":%.6f,\"alternatives\":[",
-                       c->pos, c->n_legal, c->n_probed, c->coverage);
-                int stored = c->n_legal < CL_MAX_ALT ? c->n_legal : CL_MAX_ALT;
-                for (int j = 0; j < stored; j++) {
-                    if (j) sb_lit(&r, ",");
-                    int tn = lp_piece(s, e, c->ids[j], tb, sizeof(tb));
-                    sb_lit(&r, "{\"token\":\"");
-                    sb_esc(&r, tb, tn);
-                    sb_fmt(&r, "\",\"id\":%d,\"prob\":%.6f,"
-                               "\"logprob\":%.6f}",
-                           c->ids[j], c->prob[j], c->raw_lp[j]);
-                }
-                sb_lit(&r, "]}");
-            }
-            sb_lit(&r, "],");
-        }
-        sb_fmt(&r, "\"finish_reason\":\"%s\"", openai_finish(finish));
-        append_stop_token(&r, s, e);
-        sb_lit(&r, "}],");
-        openai_usage_json(&r, prep.n_prompt, n_gen, keep);
-        sb_lit(&r, ",");
-        resp_doc td = { .n_prompt = prep.n_prompt, .n_gen = n_gen, .cached = keep,
-                        .forked = reuse.forked, .saved_s = reuse.saved_s,
-                        .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
-                           .schema = q.schema != NULL,
-                        .finish_detail = finish_detail_of(finish)
-                                       ? finish_detail_of(finish) : cut_detail,
-                        .json_mode = e->json_mode, .spec = spec_used,
-                        SPEC_DOC_FIELDS(e), .diag = &prep.diag,
-                        .repeated_calls = g.repeat_json };
-        telemetry_json(&r, &td);
-        sb_lit(&r, "}");
-        send_built(fd, &r);
-        free(r.s);
+        // the shared mapping above may have settled the finish as tool_calls
+        t.finish = finish;
+        if (api == API_MESSAGES) respond_buffered_messages(&t, &tc, n_tc);
+        else if (api == API_RESPONSES) respond_buffered_responses(&t, &tc, n_tc);
+        else respond_buffered_openai(&t, &tc, n_tc);
     }
 done: ;
 #undef WRITE_RECEIPT
