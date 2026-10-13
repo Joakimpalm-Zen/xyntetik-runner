@@ -2131,6 +2131,102 @@ static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_APERTUS.
+static size_t render_apertus(int tmpl, const chat_msg *msgs, int n_msgs,
+                             bool add_assistant, int thinking, const jv *tools,
+                             char *out, size_t cap) {
+    size_t off = 0;
+    // apertus (reference: swiss-ai/Apertus-8B-Instruct-2509
+    // chat_template.jinja): <|role_start|>CONTENT<|role_end|> per turn,
+    // with a native system role that must come first.
+    //
+    // Between the system turn and the first real turn the reference always
+    // emits a developer block carrying two switches. Runner does not
+    // expose Apertus thinking, but declared tools use the reference's
+    // render_tools TypeScript rather than the generic protocol.
+    //
+    // Two deliberate omissions, both matching decisions already made for
+    // other families: when there is no system message the reference
+    // substitutes a default one containing strftime_now('%Y-%m-%d'), and
+    // runner does not embed a live date in a prompt (as with Llama-3.2's
+    // "Cutting Knowledge Date" header); and BOS is added by the tokenizer,
+    // not spelled into the template.
+    const char *sys = NULL;
+    int first = 0;
+    if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
+        sys = msgs[0].content;
+        first = 1;
+    }
+    if (sys)
+        off = emit(out, cap, off, "<|system_start|>%s<|system_end|>", sys, NULL);
+    off = emit(out, cap, off,
+               "<|developer_start|>Deliberation: disabled\n"
+               "Tool Capabilities:", NULL, NULL);
+    if (tools && tools->type == J_ARR && tools->n) {
+        sbuf defs = {0};
+        apertus_render_tools(tools, &defs);
+        off = emit(out, cap, off, "\n%s", defs.s ? defs.s : "", NULL);
+        free(defs.s);
+    } else {
+        off = emit(out, cap, off, " disabled", NULL, NULL);
+    }
+    off = emit(out, cap, off, "<|developer_end|>", NULL, NULL);
+    // The reference's ns.in_assistant/ns.in_tool state keeps consecutive
+    // assistant messages, their calls, and following tool results in ONE
+    // assistant turn. Results are raw values inside one bracketed list;
+    // no role marker or family-generic wrapper exists. An assistant reply
+    // after those results therefore continues the same turn -- the marked
+    // direct-adjacency limitation is discharged now that the tool turn is
+    // conformant.
+    bool in_assistant = false, in_tool = false, waiting_for_outputs = false;
+    for (int i = first; i < n_msgs; i++) {
+        const char *role = msgs[i].role;
+        if (!strcmp(role, "user")) {
+            if (in_tool) {
+                off = emit(out, cap, off, "]", NULL, NULL);
+                in_tool = false;
+            }
+            if (in_assistant) {
+                off = emit(out, cap, off, "<|assistant_end|>", NULL, NULL);
+                in_assistant = false;
+            }
+            off = emit(out, cap, off, "<|user_start|>%s<|user_end|>",
+                       msgs[i].content, NULL);
+        } else if (!strcmp(role, "assistant")) {
+            if (!in_assistant) {
+                off = emit(out, cap, off, "<|assistant_start|>", NULL, NULL);
+                in_assistant = true;
+            }
+            if (in_tool) {
+                off = emit(out, cap, off, "]", NULL, NULL);
+                in_tool = false;
+            }
+            off = emit(out, cap, off, "%s", msgs[i].content, NULL);
+            if (strstr(msgs[i].content, "<|tools_prefix|>"))
+                waiting_for_outputs = true;
+        } else if (!strcmp(role, "tool")) {
+            // The reference rejects an orphan tool message. The renderer
+            // has no error channel, so it drops that invalid role rather
+            // than inventing a prompt token for it.
+            if (!in_assistant) continue;
+            off = emit(out, cap, off, in_tool ? ", " : "[", NULL, NULL);
+            in_tool = true;
+            waiting_for_outputs = false;
+            off = emit(out, cap, off, "%s", msgs[i].content, NULL);
+        } else {
+            off = emit_raw(out, cap, off, "<|%s_start|>", role, NULL);
+            off = emit(out, cap, off, "%s", msgs[i].content, NULL);
+            off = emit_raw(out, cap, off, "<|%s_end|>", role, NULL);
+        }
+    }
+    if (in_tool) off = emit(out, cap, off, "]", NULL, NULL);
+    if (in_assistant && !waiting_for_outputs)
+        off = emit(out, cap, off, "<|assistant_end|>", NULL, NULL);
+    if (add_assistant)
+        off = emit(out, cap, off, "<|assistant_start|>", NULL, NULL);
+    return off;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -2201,97 +2297,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         else
             off = emit(out, cap, off, "<|endoftext|>", NULL, NULL);
         break;
-    case TMPL_APERTUS: {
-        // apertus (reference: swiss-ai/Apertus-8B-Instruct-2509
-        // chat_template.jinja): <|role_start|>CONTENT<|role_end|> per turn,
-        // with a native system role that must come first.
-        //
-        // Between the system turn and the first real turn the reference always
-        // emits a developer block carrying two switches. Runner does not
-        // expose Apertus thinking, but declared tools use the reference's
-        // render_tools TypeScript rather than the generic protocol.
-        //
-        // Two deliberate omissions, both matching decisions already made for
-        // other families: when there is no system message the reference
-        // substitutes a default one containing strftime_now('%Y-%m-%d'), and
-        // runner does not embed a live date in a prompt (as with Llama-3.2's
-        // "Cutting Knowledge Date" header); and BOS is added by the tokenizer,
-        // not spelled into the template.
-        const char *sys = NULL;
-        int first = 0;
-        if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
-            sys = msgs[0].content;
-            first = 1;
-        }
-        if (sys)
-            off = emit(out, cap, off, "<|system_start|>%s<|system_end|>", sys, NULL);
-        off = emit(out, cap, off,
-                   "<|developer_start|>Deliberation: disabled\n"
-                   "Tool Capabilities:", NULL, NULL);
-        if (tools && tools->type == J_ARR && tools->n) {
-            sbuf defs = {0};
-            apertus_render_tools(tools, &defs);
-            off = emit(out, cap, off, "\n%s", defs.s ? defs.s : "", NULL);
-            free(defs.s);
-        } else {
-            off = emit(out, cap, off, " disabled", NULL, NULL);
-        }
-        off = emit(out, cap, off, "<|developer_end|>", NULL, NULL);
-        // The reference's ns.in_assistant/ns.in_tool state keeps consecutive
-        // assistant messages, their calls, and following tool results in ONE
-        // assistant turn. Results are raw values inside one bracketed list;
-        // no role marker or family-generic wrapper exists. An assistant reply
-        // after those results therefore continues the same turn -- the marked
-        // direct-adjacency limitation is discharged now that the tool turn is
-        // conformant.
-        bool in_assistant = false, in_tool = false, waiting_for_outputs = false;
-        for (int i = first; i < n_msgs; i++) {
-            const char *role = msgs[i].role;
-            if (!strcmp(role, "user")) {
-                if (in_tool) {
-                    off = emit(out, cap, off, "]", NULL, NULL);
-                    in_tool = false;
-                }
-                if (in_assistant) {
-                    off = emit(out, cap, off, "<|assistant_end|>", NULL, NULL);
-                    in_assistant = false;
-                }
-                off = emit(out, cap, off, "<|user_start|>%s<|user_end|>",
-                           msgs[i].content, NULL);
-            } else if (!strcmp(role, "assistant")) {
-                if (!in_assistant) {
-                    off = emit(out, cap, off, "<|assistant_start|>", NULL, NULL);
-                    in_assistant = true;
-                }
-                if (in_tool) {
-                    off = emit(out, cap, off, "]", NULL, NULL);
-                    in_tool = false;
-                }
-                off = emit(out, cap, off, "%s", msgs[i].content, NULL);
-                if (strstr(msgs[i].content, "<|tools_prefix|>"))
-                    waiting_for_outputs = true;
-            } else if (!strcmp(role, "tool")) {
-                // The reference rejects an orphan tool message. The renderer
-                // has no error channel, so it drops that invalid role rather
-                // than inventing a prompt token for it.
-                if (!in_assistant) continue;
-                off = emit(out, cap, off, in_tool ? ", " : "[", NULL, NULL);
-                in_tool = true;
-                waiting_for_outputs = false;
-                off = emit(out, cap, off, "%s", msgs[i].content, NULL);
-            } else {
-                off = emit_raw(out, cap, off, "<|%s_start|>", role, NULL);
-                off = emit(out, cap, off, "%s", msgs[i].content, NULL);
-                off = emit_raw(out, cap, off, "<|%s_end|>", role, NULL);
-            }
-        }
-        if (in_tool) off = emit(out, cap, off, "]", NULL, NULL);
-        if (in_assistant && !waiting_for_outputs)
-            off = emit(out, cap, off, "<|assistant_end|>", NULL, NULL);
-        if (add_assistant)
-            off = emit(out, cap, off, "<|assistant_start|>", NULL, NULL);
-        break;
-    }
+    case TMPL_APERTUS:
+        return render_apertus(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_HARMONY: {
         // gpt-oss / OpenAI Harmony. Reference: the model's OWN
         // tokenizer.chat_template in the official GGUF. Turn framing is
