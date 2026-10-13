@@ -2503,6 +2503,64 @@ static size_t render_muse(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_GRANITE and TMPL_GRANITE4.
+static size_t render_granite(int tmpl, const chat_msg *msgs, int n_msgs,
+                             bool add_assistant, int thinking, const jv *tools,
+                             char *out, size_t cap) {
+    size_t off = 0;
+    // granite (reference: the model's OWN tokenizer.chat_template):
+    // <|start_of_role|>ROLE<|end_of_role|>CONTENT<|end_of_text|>\n per
+    // turn, assistant included. Granite 3.x defines another tool
+    // protocol that is not rendered; its tools ride the generic
+    // envelope, whose teaching turn arrives here as a system message.
+    //
+    // The 4.0-H / 4.1 templates (TMPL_GRANITE4) also define tools: the
+    // declarations join the system turn (after the caller's text and a
+    // blank line, or alone), a call is the Hermes JSON block the caller
+    // already folded into the assistant content, and consecutive tool
+    // results share one user turn of <tool_response> blocks.
+    bool have_tools = tmpl == TMPL_GRANITE4 && tools &&
+                      tools->type == J_ARR && tools->n > 0;
+    int first = 0;
+    if (have_tools) {
+        sbuf decl = {0};
+        tools_render_for(tmpl, tools, &decl);
+        if (decl.failed) { free(decl.s); return SIZE_MAX; }
+        off = emit(out, cap, off, "<|start_of_role|>system<|end_of_role|>",
+                   NULL, NULL);
+        if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
+            off = emit(out, cap, off, "%s\n\n", msgs[0].content, NULL);
+            first = 1;
+        }
+        off = emit(out, cap, off, "%s<|end_of_text|>\n", decl.s, NULL);
+        free(decl.s);
+    }
+    for (int i = first; i < n_msgs; i++) {
+        if (tmpl == TMPL_GRANITE4 && !strcmp(msgs[i].role, "tool")) {
+            bool prev_tool = i > 0 && !strcmp(msgs[i - 1].role, "tool");
+            bool next_tool = i + 1 < n_msgs &&
+                             !strcmp(msgs[i + 1].role, "tool");
+            if (!prev_tool)
+                off = emit(out, cap, off,
+                           "<|start_of_role|>user<|end_of_role|>", NULL, NULL);
+            off = emit(out, cap, off,
+                       "\n<tool_response>\n%s\n</tool_response>",
+                       msgs[i].content, NULL);
+            if (!next_tool)
+                off = emit(out, cap, off, "<|end_of_text|>\n", NULL, NULL);
+            continue;
+        }
+        off = emit(out, cap, off, "<|start_of_role|>%s<|end_of_role|>",
+                   msgs[i].role, NULL);
+        off = emit(out, cap, off, "%s<|end_of_text|>\n",
+                   msgs[i].content, NULL);
+    }
+    if (add_assistant)
+        off = emit(out, cap, off, "<|start_of_role|>assistant<|end_of_role|>",
+                   NULL, NULL);
+    return off;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -2580,59 +2638,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_MUSE:
         return render_muse(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_GRANITE:
-    case TMPL_GRANITE4: {
-        // granite (reference: the model's OWN tokenizer.chat_template):
-        // <|start_of_role|>ROLE<|end_of_role|>CONTENT<|end_of_text|>\n per
-        // turn, assistant included. Granite 3.x defines another tool
-        // protocol that is not rendered; its tools ride the generic
-        // envelope, whose teaching turn arrives here as a system message.
-        //
-        // The 4.0-H / 4.1 templates (TMPL_GRANITE4) also define tools: the
-        // declarations join the system turn (after the caller's text and a
-        // blank line, or alone), a call is the Hermes JSON block the caller
-        // already folded into the assistant content, and consecutive tool
-        // results share one user turn of <tool_response> blocks.
-        bool have_tools = tmpl == TMPL_GRANITE4 && tools &&
-                          tools->type == J_ARR && tools->n > 0;
-        int first = 0;
-        if (have_tools) {
-            sbuf decl = {0};
-            tools_render_for(tmpl, tools, &decl);
-            if (decl.failed) { free(decl.s); return SIZE_MAX; }
-            off = emit(out, cap, off, "<|start_of_role|>system<|end_of_role|>",
-                       NULL, NULL);
-            if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
-                off = emit(out, cap, off, "%s\n\n", msgs[0].content, NULL);
-                first = 1;
-            }
-            off = emit(out, cap, off, "%s<|end_of_text|>\n", decl.s, NULL);
-            free(decl.s);
-        }
-        for (int i = first; i < n_msgs; i++) {
-            if (tmpl == TMPL_GRANITE4 && !strcmp(msgs[i].role, "tool")) {
-                bool prev_tool = i > 0 && !strcmp(msgs[i - 1].role, "tool");
-                bool next_tool = i + 1 < n_msgs &&
-                                 !strcmp(msgs[i + 1].role, "tool");
-                if (!prev_tool)
-                    off = emit(out, cap, off,
-                               "<|start_of_role|>user<|end_of_role|>", NULL, NULL);
-                off = emit(out, cap, off,
-                           "\n<tool_response>\n%s\n</tool_response>",
-                           msgs[i].content, NULL);
-                if (!next_tool)
-                    off = emit(out, cap, off, "<|end_of_text|>\n", NULL, NULL);
-                continue;
-            }
-            off = emit(out, cap, off, "<|start_of_role|>%s<|end_of_role|>",
-                       msgs[i].role, NULL);
-            off = emit(out, cap, off, "%s<|end_of_text|>\n",
-                       msgs[i].content, NULL);
-        }
-        if (add_assistant)
-            off = emit(out, cap, off, "<|start_of_role|>assistant<|end_of_role|>",
-                       NULL, NULL);
-        break;
-    }
+    case TMPL_GRANITE4:
+        return render_granite(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_GEMMA4_MAINLINE:
     case TMPL_GEMMA4: {
         // gemma4 (reference: llama.cpp models/templates/google-gemma-4-31B-it
