@@ -2870,6 +2870,111 @@ static size_t render_llama2(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_MISTRAL, TMPL_MISTRAL_V1 and TMPL_MISTRAL_NEMO.
+static size_t render_mistral(int tmpl, const chat_msg *msgs, int n_msgs,
+                             bool add_assistant, int thinking, const jv *tools,
+                             char *out, size_t cap) {
+    size_t off = 0;
+    // Three framings, one loop. Until 2026-08-14 there was no loop at all
+    // for Mistral: it fell through llama-2's case with the <<SYS>> block
+    // swapped out, which produced a FOURTH framing matching no Mistral
+    // checkpoint (see template.h). Each of the three below is the bytes
+    // its own checkpoint's chat_template renders, verified by running that
+    // template through jinja rather than by reading runner's output back.
+    //
+    //   v0.1 / v0.2      ' [INST] ' sys '\n\n' user ' [/INST]'  first turn
+    //                    ' ' assistant '</s>'
+    //   v0.3 / Small     '[INST] '  ... user '[/INST]'          LAST turn
+    //                    ' ' trim(assistant) '</s>'
+    //   Nemo-2407        '[INST]'   ... user '[/INST]'          LAST turn
+    //                    assistant '</s>'
+    //
+    // The v0.3 assistant turn is `" " + content|trim + eos_token`; the
+    // other two do not trim. That is the reference's own filter, not a
+    // tidy-up added here.
+    const bool v1   = tmpl == TMPL_MISTRAL_V1;
+    const bool nemo = tmpl == TMPL_MISTRAL_NEMO;
+    const char *open  = v1 ? " [INST] " : nemo ? "[INST]" : "[INST] ";
+    const char *close = v1 ? " [/INST]" : "[/INST]";
+
+    // Which user turn carries the system text. v0.1/v0.2 put it on the
+    // first user turn after the system message; v0.3 and Nemo on the last.
+    //
+    // DELIBERATE DEVIATION, and the only one: the v0.3 and Nemo references
+    // fold on `loop.last`, so they attach the system text only when the
+    // final message is a user turn -- a conversation ending in a tool
+    // result or an assistant turn (a prefill or continuation) renders
+    // with the caller's system prompt silently dropped. Runner attaches it
+    // to the last USER turn instead, as mistral-common's own encoder does.
+    // Every conversation that ends with a user turn renders
+    // byte-identically to the reference; the tool-result and prefill
+    // shapes differ by keeping a system prompt the caller sent rather
+    // than discarding it.
+    const char *sys = NULL;
+    int sys_at = -1, fold_at = -1;
+    for (int i = 0; i < n_msgs; i++)
+        if (!strcmp(msgs[i].role, "system")) {
+            sys = msgs[i].content;
+            sys_at = i;
+        }
+    int m_lead; bool m_oom;
+    char *m_joined = leading_system_join(msgs, n_msgs, &m_lead, &m_oom);
+    if (m_oom) return SIZE_MAX;
+    if (m_joined && sys_at == m_lead - 1) sys = m_joined;
+    for (int i = sys_at + 1; sys && i < n_msgs; i++)
+        if (!strcmp(msgs[i].role, "user")) {
+            fold_at = i;
+            if (v1) break;
+        }
+    // v0.3 and Nemo declare tools in a block right before the LAST user
+    // turn (the reference's `message == user_messages[-1]`).
+    int last_user = -1;
+    for (int i = 0; i < n_msgs; i++)
+        if (!strcmp(msgs[i].role, "user")) last_user = i;
+    sbuf decl = {0};
+    if (!v1 && tools && tools->type == J_ARR && tools->n > 0) {
+        tools_render_for(tmpl, tools, &decl);
+        if (decl.failed) { free(decl.s); free(m_joined); return SIZE_MAX; }
+    }
+
+    for (int i = 0; i < n_msgs; i++) {
+        const chat_msg *m = &msgs[i];
+        if (!strcmp(m->role, "system")) continue;
+        if (!v1 && (builder_starts(m->content, "[TOOL_CALLS]") ||
+                    builder_starts(m->content, "[TOOL_RESULTS]"))) {
+            // a native call turn (assistant_calls_render) or result
+            // block (tool_result_wrap): no leading space, no trim; a
+            // call turn ends with the eos
+            off = emit(out, cap, off, "%s", m->content, NULL);
+            if (builder_starts(m->content, "[TOOL_CALLS]"))
+                off = emit_raw(out, cap, off, "</s>", NULL, NULL);
+            continue;
+        }
+        if (!strcmp(m->role, "user")) {
+            if (i == last_user && decl.s)
+                off = emit(out, cap, off, "%s", decl.s, NULL);
+            if (i == fold_at) {
+                // no <<SYS>> block anywhere in this family: its template
+                // accepts only user and assistant, so the system text
+                // leads the turn's content
+                off = emit_raw(out, cap, off, "%s", open, NULL);
+                off = emit(out, cap, off, "%s", sys, NULL);
+                off = emit(out, cap, off, "\n\n%s", m->content, NULL);
+            } else {
+                off = emit_raw(out, cap, off, "%s", open, NULL);
+                off = emit(out, cap, off, "%s", m->content, NULL);
+            }
+            off = emit_raw(out, cap, off, "%s", close, NULL);
+        } else { // assistant
+            off = emit_trimmed(out, cap, off, nemo ? "" : " ", m->content,
+                               tmpl == TMPL_MISTRAL, "</s>");
+        }
+    }
+    free(decl.s);
+    free(m_joined);
+    return off;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -2959,106 +3064,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         return render_llama2(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_MISTRAL:
     case TMPL_MISTRAL_V1:
-    case TMPL_MISTRAL_NEMO: {
-        // Three framings, one loop. Until 2026-08-14 there was no loop at all
-        // for Mistral: it fell through llama-2's case with the <<SYS>> block
-        // swapped out, which produced a FOURTH framing matching no Mistral
-        // checkpoint (see template.h). Each of the three below is the bytes
-        // its own checkpoint's chat_template renders, verified by running that
-        // template through jinja rather than by reading runner's output back.
-        //
-        //   v0.1 / v0.2      ' [INST] ' sys '\n\n' user ' [/INST]'  first turn
-        //                    ' ' assistant '</s>'
-        //   v0.3 / Small     '[INST] '  ... user '[/INST]'          LAST turn
-        //                    ' ' trim(assistant) '</s>'
-        //   Nemo-2407        '[INST]'   ... user '[/INST]'          LAST turn
-        //                    assistant '</s>'
-        //
-        // The v0.3 assistant turn is `" " + content|trim + eos_token`; the
-        // other two do not trim. That is the reference's own filter, not a
-        // tidy-up added here.
-        const bool v1   = tmpl == TMPL_MISTRAL_V1;
-        const bool nemo = tmpl == TMPL_MISTRAL_NEMO;
-        const char *open  = v1 ? " [INST] " : nemo ? "[INST]" : "[INST] ";
-        const char *close = v1 ? " [/INST]" : "[/INST]";
-
-        // Which user turn carries the system text. v0.1/v0.2 put it on the
-        // first user turn after the system message; v0.3 and Nemo on the last.
-        //
-        // DELIBERATE DEVIATION, and the only one: the v0.3 and Nemo references
-        // fold on `loop.last`, so they attach the system text only when the
-        // final message is a user turn -- a conversation ending in a tool
-        // result or an assistant turn (a prefill or continuation) renders
-        // with the caller's system prompt silently dropped. Runner attaches it
-        // to the last USER turn instead, as mistral-common's own encoder does.
-        // Every conversation that ends with a user turn renders
-        // byte-identically to the reference; the tool-result and prefill
-        // shapes differ by keeping a system prompt the caller sent rather
-        // than discarding it.
-        const char *sys = NULL;
-        int sys_at = -1, fold_at = -1;
-        for (int i = 0; i < n_msgs; i++)
-            if (!strcmp(msgs[i].role, "system")) {
-                sys = msgs[i].content;
-                sys_at = i;
-            }
-        int m_lead; bool m_oom;
-        char *m_joined = leading_system_join(msgs, n_msgs, &m_lead, &m_oom);
-        if (m_oom) return SIZE_MAX;
-        if (m_joined && sys_at == m_lead - 1) sys = m_joined;
-        for (int i = sys_at + 1; sys && i < n_msgs; i++)
-            if (!strcmp(msgs[i].role, "user")) {
-                fold_at = i;
-                if (v1) break;
-            }
-        // v0.3 and Nemo declare tools in a block right before the LAST user
-        // turn (the reference's `message == user_messages[-1]`).
-        int last_user = -1;
-        for (int i = 0; i < n_msgs; i++)
-            if (!strcmp(msgs[i].role, "user")) last_user = i;
-        sbuf decl = {0};
-        if (!v1 && tools && tools->type == J_ARR && tools->n > 0) {
-            tools_render_for(tmpl, tools, &decl);
-            if (decl.failed) { free(decl.s); free(m_joined); return SIZE_MAX; }
-        }
-
-        for (int i = 0; i < n_msgs; i++) {
-            const chat_msg *m = &msgs[i];
-            if (!strcmp(m->role, "system")) continue;
-            if (!v1 && (builder_starts(m->content, "[TOOL_CALLS]") ||
-                        builder_starts(m->content, "[TOOL_RESULTS]"))) {
-                // a native call turn (assistant_calls_render) or result
-                // block (tool_result_wrap): no leading space, no trim; a
-                // call turn ends with the eos
-                off = emit(out, cap, off, "%s", m->content, NULL);
-                if (builder_starts(m->content, "[TOOL_CALLS]"))
-                    off = emit_raw(out, cap, off, "</s>", NULL, NULL);
-                continue;
-            }
-            if (!strcmp(m->role, "user")) {
-                if (i == last_user && decl.s)
-                    off = emit(out, cap, off, "%s", decl.s, NULL);
-                if (i == fold_at) {
-                    // no <<SYS>> block anywhere in this family: its template
-                    // accepts only user and assistant, so the system text
-                    // leads the turn's content
-                    off = emit_raw(out, cap, off, "%s", open, NULL);
-                    off = emit(out, cap, off, "%s", sys, NULL);
-                    off = emit(out, cap, off, "\n\n%s", m->content, NULL);
-                } else {
-                    off = emit_raw(out, cap, off, "%s", open, NULL);
-                    off = emit(out, cap, off, "%s", m->content, NULL);
-                }
-                off = emit_raw(out, cap, off, "%s", close, NULL);
-            } else { // assistant
-                off = emit_trimmed(out, cap, off, nemo ? "" : " ", m->content,
-                                   tmpl == TMPL_MISTRAL, "</s>");
-            }
-        }
-        free(decl.s);
-        free(m_joined);
-        break;
-    }
+    case TMPL_MISTRAL_NEMO:
+        return render_mistral(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     default: // TMPL_RAW: concatenate contents
         for (int i = 0; i < n_msgs; i++)
             off = emit(out, cap, off, "%s", msgs[i].content, NULL);
