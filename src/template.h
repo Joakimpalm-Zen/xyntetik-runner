@@ -336,6 +336,29 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   const struct jv *tools,
                                   char *out, size_t cap);
 
+// Where the turn a render opens starts, decided by the same code that wrote
+// the prompt: the completion path, the CLI chat and the tool grammars read
+// this instead of reconstructing it from the family, the request and the
+// prompt's tail.
+typedef struct {
+    // The generation prompt leaves the model inside a reasoning segment, so
+    // its first token is reasoning: a `<think>` the prompt opened (Granite
+    // 4.2, Nemotron 3.5, Qwen 3.8, Qwen 3.5, Ornith, Nemotron Nano),
+    // Harmony's analysis channel, Muse's self-addressed turn, or Gemma 4's
+    // thought channel after a tool result.
+    bool reasoning_open;
+    // The thinking mode the prompt was rendered under: THINK_DEFAULT,
+    // THINK_ON or THINK_OFF, whichever spelling the request used for it.
+    int think_mode;
+} render_state;
+
+// render_messages_with_tools() that also reports the render's state. `st`
+// may be NULL; when given it describes the last call's prompt.
+size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
+                             bool add_assistant, int thinking,
+                             const struct jv *tools,
+                             char *out, size_t cap, render_state *st);
+
 // chat tool-call convention (template.c; sbuf/jv live in json.h)
 struct sbuf;
 struct jv;

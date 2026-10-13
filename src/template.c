@@ -1582,7 +1582,7 @@ static char *nemotron_clean(const char *s, bool ctl) {
 // NVIDIA Nemotron Nano (TMPL_NEMOTRON).
 static size_t render_nemotron_nano(int tmpl, const chat_msg *msgs, int n_msgs,
                                    bool add_assistant, int thinking, const jv *tools,
-                                   char *out, size_t cap) {
+                                   char *out, size_t cap, render_state *st) {
     size_t off = 0;
     // The last `/think` or `/no_think` in a system or user turn decides
     // (`/think` wins inside one turn); thinking is on when neither
@@ -1668,6 +1668,7 @@ static size_t render_nemotron_nano(int tmpl, const chat_msg *msgs, int n_msgs,
         off = emit_raw(out, cap, off, "<SPECIAL_11>Assistant\n", NULL, NULL);
         off = emit_raw(out, cap, off, think ? "<think>\n" : "<think></think>",
                        NULL, NULL);
+        st->reasoning_open = think && add_assistant && !(held && held[0]);
         if (held && held[0]) off = emit(out, cap, off, "%s", held, NULL);
         if (!add_assistant)
             off = emit_raw(out, cap, off, "\n<SPECIAL_12>\n", NULL, NULL);
@@ -1679,7 +1680,7 @@ static size_t render_nemotron_nano(int tmpl, const chat_msg *msgs, int n_msgs,
 // TMPL_ORNITH, TMPL_QWEN35 and TMPL_QWEN35_NOTHINK.
 static size_t render_qwen35(int tmpl, const chat_msg *msgs, int n_msgs,
                             bool add_assistant, int thinking, const jv *tools,
-                            char *out, size_t cap) {
+                            char *out, size_t cap, render_state *st) {
     size_t off = 0;
     for (int i = 0; i < n_msgs; i++) {
         bool tool_response =
@@ -1719,6 +1720,7 @@ static size_t render_qwen35(int tmpl, const chat_msg *msgs, int n_msgs,
         off = emit(out, cap, off,
                    closed ? "<think>\n\n</think>\n\n" : "<think>\n",
                    NULL, NULL);
+        st->reasoning_open = !closed;
     }
     return off;
 }
@@ -1726,7 +1728,7 @@ static size_t render_qwen35(int tmpl, const chat_msg *msgs, int n_msgs,
 // TMPL_QWEN3_CODER.
 static size_t render_qwen3_coder(int tmpl, const chat_msg *msgs, int n_msgs,
                                  bool add_assistant, int thinking, const jv *tools,
-                                 char *out, size_t cap) {
+                                 char *out, size_t cap, render_state *st) {
     size_t off = 0;
     // Qwen/Qwen3-Coder-30B-A3B-Instruct tokenizer_config.json.
     bool have_tools = tools && tools->type == J_ARR && tools->n;
@@ -1762,7 +1764,7 @@ static size_t render_qwen3_coder(int tmpl, const chat_msg *msgs, int n_msgs,
 // TMPL_QWEN38.
 static size_t render_qwen38(int tmpl, const chat_msg *msgs, int n_msgs,
                             bool add_assistant, int thinking, const jv *tools,
-                            char *out, size_t cap) {
+                            char *out, size_t cap, render_state *st) {
     size_t off = 0;
     // Qwen/Qwen3.8-27B chat_template.jinja (2026-09-06), see the enum
     // comment. Every content the reference renders goes through
@@ -1895,17 +1897,19 @@ static size_t render_qwen38(int tmpl, const chat_msg *msgs, int n_msgs,
     // which left `<think>` to tokenize as `<th` `ink` `>` on every
     // thinking-enabled turn (found on Qwen 3.8, 2026-09-15; gated in
     // tests/test_prompt_marks.c).
-    if (add_assistant)
+    if (add_assistant) {
         off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
                        mode == THINK_OFF ? "<think>\n\n</think>\n\n"
                                          : "<think>\n", NULL);
+        st->reasoning_open = mode != THINK_OFF;
+    }
     return off;
 }
 
 // TMPL_GRANITE42 and TMPL_NEMOTRON35.
 static size_t render_granite42(int tmpl, const chat_msg *msgs, int n_msgs,
                                bool add_assistant, int thinking, const jv *tools,
-                               char *out, size_t cap) {
+                               char *out, size_t cap, render_state *st) {
     size_t off = 0;
     // ibm-granite/granite-4.2-3b chat_template.jinja (2026-09-06), see
     // the enum comment. Line references below are into that file.
@@ -1992,18 +1996,19 @@ static size_t render_granite42(int tmpl, const chat_msg *msgs, int n_msgs,
             off = emit(out, cap, off, "\n", NULL, NULL);
         off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
     }
-    if (add_assistant)   // emit_raw: the block is the template's (see qwen38)
+    if (add_assistant) {   // emit_raw: the block is the template's (see qwen38)
+        bool open = (thinking & THINK_MODE_MASK) != THINK_OFF;
         off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
-                       (thinking & THINK_MODE_MASK) == THINK_OFF
-                           ? "<think></think>" : "<think>\n",
-                       NULL);
+                       open ? "<think>\n" : "<think></think>", NULL);
+        st->reasoning_open = open;
+    }
     return off;
 }
 
 // TMPL_HERMES4.
 static size_t render_hermes4(int tmpl, const chat_msg *msgs, int n_msgs,
                              bool add_assistant, int thinking, const jv *tools,
-                             char *out, size_t cap) {
+                             char *out, size_t cap, render_state *st) {
     size_t off = 0;
     // NousResearch/Hermes-4-14B chat_template (2026-10-02). The system
     // turn is always written: the caller's first message when it is a
@@ -2067,7 +2072,7 @@ static size_t render_hermes4(int tmpl, const chat_msg *msgs, int n_msgs,
 // TMPL_CHATML and TMPL_CHATML_THINK.
 static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
                             bool add_assistant, int thinking, const jv *tools,
-                            char *out, size_t cap) {
+                            char *out, size_t cap, render_state *st) {
     size_t off = 0;
     bool qwen_tools = tools && tools->type == J_ARR && tools->n > 0;
     int first = 0;
@@ -2135,7 +2140,7 @@ static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
 // TMPL_APERTUS.
 static size_t render_apertus(int tmpl, const chat_msg *msgs, int n_msgs,
                              bool add_assistant, int thinking, const jv *tools,
-                             char *out, size_t cap) {
+                             char *out, size_t cap, render_state *st) {
     size_t off = 0;
     // apertus (reference: swiss-ai/Apertus-8B-Instruct-2509
     // chat_template.jinja): <|role_start|>CONTENT<|role_end|> per turn,
@@ -2231,7 +2236,7 @@ static size_t render_apertus(int tmpl, const chat_msg *msgs, int n_msgs,
 // TMPL_HARMONY.
 static size_t render_harmony(int tmpl, const chat_msg *msgs, int n_msgs,
                              bool add_assistant, int thinking, const jv *tools,
-                             char *out, size_t cap) {
+                             char *out, size_t cap, render_state *st) {
     size_t off = 0;
     // gpt-oss / OpenAI Harmony. Reference: the model's OWN
     // tokenizer.chat_template in the official GGUF. Turn framing is
@@ -2383,6 +2388,7 @@ static size_t render_harmony(int tmpl, const chat_msg *msgs, int n_msgs,
                 ? "<|start|>assistant<|channel|>final<|message|>"
                 : "<|start|>assistant<|channel|>analysis<|message|>";
         off = emit_raw(out, cap, off, "%s", head, NULL);
+        st->reasoning_open = !have_tools && (thinking & THINK_MODE_MASK) != THINK_OFF;
     }
     return off;
 }
@@ -2390,7 +2396,7 @@ static size_t render_harmony(int tmpl, const chat_msg *msgs, int n_msgs,
 // TMPL_MUSE.
 static size_t render_muse(int tmpl, const chat_msg *msgs, int n_msgs,
                           bool add_assistant, int thinking, const jv *tools,
-                          char *out, size_t cap) {
+                          char *out, size_t cap, render_state *st) {
     size_t off = 0;
     // muse-glimmer (reference: the model's OWN tokenizer.chat_template,
     // read from the official meta-models GGUF, not a summary):
@@ -2498,6 +2504,7 @@ static size_t render_muse(int tmpl, const chat_msg *msgs, int n_msgs,
                      ? "<|start|>assistant to=user<|message|>"
                      : "<|start|>assistant";
         off = emit_raw(out, cap, off, "%s", head, NULL);
+        st->reasoning_open = mode == THINK_ON;
     }
     free(muse_line.s);
     free(muse_tail.s);
@@ -2507,7 +2514,7 @@ static size_t render_muse(int tmpl, const chat_msg *msgs, int n_msgs,
 // TMPL_GRANITE and TMPL_GRANITE4.
 static size_t render_granite(int tmpl, const chat_msg *msgs, int n_msgs,
                              bool add_assistant, int thinking, const jv *tools,
-                             char *out, size_t cap) {
+                             char *out, size_t cap, render_state *st) {
     size_t off = 0;
     // granite (reference: the model's OWN tokenizer.chat_template):
     // <|start_of_role|>ROLE<|end_of_role|>CONTENT<|end_of_text|>\n per
@@ -2565,7 +2572,7 @@ static size_t render_granite(int tmpl, const chat_msg *msgs, int n_msgs,
 // TMPL_GEMMA4_MAINLINE and TMPL_GEMMA4.
 static size_t render_gemma4(int tmpl, const chat_msg *msgs, int n_msgs,
                             bool add_assistant, int thinking, const jv *tools,
-                            char *out, size_t cap) {
+                            char *out, size_t cap, render_state *st) {
     size_t off = 0;
     // gemma4 (reference: llama.cpp models/templates/google-gemma-4-31B-it
     // .jinja): <|turn>role\n CONTENT <turn|>\n per turn, a native system
@@ -2754,8 +2761,10 @@ static size_t render_gemma4(int tmpl, const chat_msg *msgs, int n_msgs,
                 off = emit(out, cap, off, "<|channel>thought\n<channel|>",
                            NULL, NULL);
         }
-        else if (g4_prev == 2 && g4_think)
+        else if (g4_prev == 2 && g4_think) {
             off = emit(out, cap, off, "<|channel>thought\n", NULL, NULL);
+            st->reasoning_open = true;
+        }
         // prev was a tool response and thinking is off, or a call still
         // awaiting its result: emit nothing, which is what the template
         // does and what the unconditional header used to get wrong.
@@ -2766,7 +2775,7 @@ static size_t render_gemma4(int tmpl, const chat_msg *msgs, int n_msgs,
 // TMPL_GEMMA.
 static size_t render_gemma(int tmpl, const chat_msg *msgs, int n_msgs,
                            bool add_assistant, int thinking, const jv *tools,
-                           char *out, size_t cap) {
+                           char *out, size_t cap, render_state *st) {
     size_t off = 0;
     // gemma has no system role: fold a system message into the first
     // user turn; the assistant role is named "model"
@@ -2799,7 +2808,7 @@ static size_t render_gemma(int tmpl, const chat_msg *msgs, int n_msgs,
 // TMPL_LLAMA2 and TMPL_LLAMA2_FALLBACK.
 static size_t render_llama2(int tmpl, const chat_msg *msgs, int n_msgs,
                             bool add_assistant, int thinking, const jv *tools,
-                            char *out, size_t cap) {
+                            char *out, size_t cap, render_state *st) {
     size_t off = 0;
     // Reference (unsloth/llama-2-7b-chat tokenizer_config.json):
     //   user      bos_token + '[INST] ' + content.strip() + ' [/INST]'
@@ -2875,7 +2884,7 @@ static size_t render_llama2(int tmpl, const chat_msg *msgs, int n_msgs,
 // TMPL_MISTRAL, TMPL_MISTRAL_V1 and TMPL_MISTRAL_NEMO.
 static size_t render_mistral(int tmpl, const chat_msg *msgs, int n_msgs,
                              bool add_assistant, int thinking, const jv *tools,
-                             char *out, size_t cap) {
+                             char *out, size_t cap, render_state *st) {
     size_t off = 0;
     // Three framings, one loop. Until 2026-08-14 there was no loop at all
     // for Mistral: it fell through llama-2's case with the <<SYS>> block
@@ -2977,31 +2986,35 @@ static size_t render_mistral(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
-size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
-                                  bool add_assistant, int thinking,
-                                  const jv *tools,
-                                  char *out, size_t cap) {
+size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
+                             bool add_assistant, int thinking,
+                             const jv *tools,
+                             char *out, size_t cap, render_state *st) {
+    render_state unused;
+    if (!st) st = &unused;
+    *st = (render_state){ .reasoning_open = false,
+                          .think_mode = thinking & THINK_MODE_MASK };
     size_t off = 0;
     out[0] = 0;
     switch (tmpl) {
     case TMPL_NEMOTRON:
-        return render_nemotron_nano(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
+        return render_nemotron_nano(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_ORNITH:
     case TMPL_QWEN35:
     case TMPL_QWEN35_NOTHINK:
-        return render_qwen35(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
+        return render_qwen35(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_QWEN3_CODER:
-        return render_qwen3_coder(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
+        return render_qwen3_coder(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_QWEN38:
-        return render_qwen38(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
+        return render_qwen38(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_GRANITE42:
     case TMPL_NEMOTRON35:
-        return render_granite42(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
+        return render_granite42(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_HERMES4:
-        return render_hermes4(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
+        return render_hermes4(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_CHATML:
     case TMPL_CHATML_THINK:
-        return render_chatml(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
+        return render_chatml(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_LLAMA3:
         for (int i = 0; i < n_msgs; i++)
             off = emit(out, cap, off,
@@ -3048,32 +3061,40 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
             off = emit(out, cap, off, "<|endoftext|>", NULL, NULL);
         break;
     case TMPL_APERTUS:
-        return render_apertus(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
+        return render_apertus(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_HARMONY:
-        return render_harmony(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
+        return render_harmony(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_MUSE:
-        return render_muse(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
+        return render_muse(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_GRANITE:
     case TMPL_GRANITE4:
-        return render_granite(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
+        return render_granite(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_GEMMA4_MAINLINE:
     case TMPL_GEMMA4:
-        return render_gemma4(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
+        return render_gemma4(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_GEMMA:
-        return render_gemma(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
+        return render_gemma(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_LLAMA2:
     case TMPL_LLAMA2_FALLBACK:
-        return render_llama2(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
+        return render_llama2(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_MISTRAL:
     case TMPL_MISTRAL_V1:
     case TMPL_MISTRAL_NEMO:
-        return render_mistral(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
+        return render_mistral(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     default: // TMPL_RAW: concatenate contents
         for (int i = 0; i < n_msgs; i++)
             off = emit(out, cap, off, "%s", msgs[i].content, NULL);
         break;
     }
     return off;
+}
+
+size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
+                                  bool add_assistant, int thinking,
+                                  const jv *tools,
+                                  char *out, size_t cap) {
+    return render_messages_state(tmpl, msgs, n_msgs, add_assistant, thinking,
+                                 tools, out, cap, NULL);
 }
 
 size_t render_messages(int tmpl, const chat_msg *msgs, int n_msgs,

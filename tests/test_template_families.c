@@ -29,6 +29,7 @@
 
 #include "json.h"
 #include "template.h"
+#include "tokenizer.h"
 
 static int fails, checks;
 
@@ -220,6 +221,69 @@ static void mode_bits_are_ignored(int t, const jv *tools) {
     conv_free(&c);
 }
 
+// The opener each family can leave a turn inside, as bytes. An independent
+// reading of the prompt's tail (marks removed), against which the render's
+// own report is checked: render_state.reasoning_open must say exactly what
+// the bytes say.
+static const char *opener(int t) {
+    switch (t) {
+    case TMPL_GRANITE42: case TMPL_NEMOTRON35: case TMPL_QWEN38:
+    case TMPL_ORNITH: case TMPL_QWEN35: case TMPL_QWEN35_NOTHINK:
+    case TMPL_NEMOTRON:
+        return "<think>\n";
+    case TMPL_HARMONY: return "<|start|>assistant<|channel|>analysis<|message|>";
+    case TMPL_MUSE: return "<|start|>assistant to=self<|message|>";
+    case TMPL_GEMMA4: case TMPL_GEMMA4_MAINLINE: return "<|channel>thought\n";
+    default: return NULL;
+    }
+}
+
+static bool tail_opens(int t, const char *prompt) {
+    const char *o = opener(t);
+    if (!o) return false;
+    size_t n = 0;
+    static char bare[1 << 16];
+    for (const char *p = prompt; *p && n + 1 < sizeof bare; p++)
+        if (*p != PROMPT_RAW_OPEN && *p != PROMPT_RAW_CLOSE) bare[n++] = *p;
+    bare[n] = 0;
+    size_t k = strlen(o);
+    return n >= k && !memcmp(bare + n - k, o, k);
+}
+
+static void state_matches_the_prompt(int t, const jv *tools) {
+    const char *name = FAMILY[t].name;
+    static const int MODES[] = { THINK_DEFAULT, THINK_ON, THINK_OFF };
+    conv c;
+    conv_build(&c, t);
+    chat_msg user[1] = { { .role = "user", .content = "Hello" } };
+    chat_msg cont[2] = { { .role = "user", .content = "Hello" },
+                         { .role = "assistant", .content = "Partial answer" } };
+    bool opened = false;
+    for (int k = 0; k < 3; k++) {
+        const chat_msg *m = k == 0 ? user : k == 1 ? c.m : cont;
+        int n = k == 0 ? 1 : k == 1 ? c.n - 2 : 2;  // k == 1: ends on the tool results
+        for (int gen = 0; gen < 2; gen++)
+            for (size_t i = 0; i < sizeof MODES / sizeof *MODES; i++) {
+                render_state st = { .reasoning_open = true, .think_mode = -1 };
+                render_messages_state(t, m, n, gen, MODES[i] | THINK_NS_RECIPIENTS * (t != TMPL_MUSE),
+                                      tools, A, sizeof A, &st);
+                CHECK(st.reasoning_open == tail_opens(t, A),
+                      "%s: reasoning_open %d but the prompt %s (mode 0x%x, %s, gen %d)",
+                      name, st.reasoning_open, tail_opens(t, A) ? "opens one" : "does not",
+                      MODES[i], k == 0 ? "one user turn" : k == 1 ? "after tool results" : "continuation", gen);
+                CHECK(st.think_mode == MODES[i], "%s: think_mode %d, rendered under %d",
+                      name, st.think_mode, MODES[i]);
+                opened |= st.reasoning_open;
+            }
+    }
+    // not a vacuous match: a family that has an opener opens it somewhere
+    // here (Harmony and Muse only without tools: with tools their header is
+    // bare and the constrained turn picks the channel)
+    bool expect = opener(t) && !(tools && (t == TMPL_HARMONY));
+    if (expect) CHECK(opened, "%s: never reported an open reasoning segment", name);
+    conv_free(&c);
+}
+
 int main(void) {
     CHECK(N_FAMILY == TMPL_LLAMA2_FALLBACK + 1,
           "the table has %d rows for %d template ids", N_FAMILY, TMPL_LLAMA2_FALLBACK + 1);
@@ -261,6 +325,8 @@ int main(void) {
         capacity_sweep(t, tools);
         mode_bits_are_ignored(t, NULL);
         mode_bits_are_ignored(t, tools);
+        state_matches_the_prompt(t, NULL);
+        state_matches_the_prompt(t, tools);
     }
     jv_free(tools);
     if (fails) {
