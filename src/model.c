@@ -10706,15 +10706,12 @@ void model_mtp_reset(model_t *m, int pos) {
     }
 }
 
-// Run n pairs (h rows, tokens) through the head at positions pos..pos+n-1,
-// writing their KV slots; want_logits computes the last row's head output.
-static bool mtp_run(model_t *m, const float *h, size_t h_stride,
-                    const int32_t *tok, int n, int pos, bool want_logits) {
+// The head's input rows: per token, S rows (one, or one per hyper-connection
+// stream) of [enorm(embed(tok)) ; hnorm_c(h_c)], projected by the one
+// eh_proj into the block's own residual rows (mtp_res).
+NUM_STAGE void mtp_inputs(model_t *m, const float *h, size_t h_stride,
+                          const int32_t *tok, int n) {
     const int E = m->n_embd;
-    if (n < 1 || n > m->n_batch || pos < 0 || pos + n > m->n_ctx) return false;
-    double dt_m0 = dbg_time_on() ? dt_now() : 0;
-    // S input rows per token: one, or one per hyper-connection stream, each
-    // [enorm(e) ; hnorm_c(h_c)] projected by the same eh_proj into stream c
     const int S = m->hyper_conn ? m->hc_count : 1;
     for (int b = 0; b < n; b++) {
         float *cat = m->mtp_cat + (size_t)b * S * 2 * E;
@@ -10727,22 +10724,34 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
             rmsnorm(cat + (size_t)c * 2 * E + E, hb + (size_t)c * E,
                     m->mtp_hnorm_w + (size_t)c * E, E, m->rms_eps);
     }
+    float *res = m->mtp_res;   // [n][S*E]
+    matvec_b(m->tp, res, E, m->mtp_eh_proj, m->mtp_cat, 2 * E, 2 * E, E,
+             NULL, n * S);
+}
+
+// The predictor block (index n_layer) as an ordinary layer over its own KV
+// region and its own residual rows.
+static void mtp_block(model_t *m, int n, int pos) {
+    float *res = m->mtp_res;
     // the block runs over its own residual rows: a drain can happen in the
     // middle of the engine's note/feed walk over a fresh batch (the queue
     // fills at n_batch), and the trunk's rows it still has to note must stay
     // intact. forward_layer reads the residual through m->x_hc / m->x, so
     // those pointers are swapped for the duration (head_norm_row's trick).
-    float *res = m->mtp_res;   // [n][S*E]
-    matvec_b(m->tp, res, E, m->mtp_eh_proj, m->mtp_cat, 2 * E, 2 * E, E,
-             NULL, n * S);
     float *save_x = m->x, *save_xhc = m->x_hc;
     if (m->hyper_conn) m->x_hc = res; else m->x = res;
     forward_layer(m, m->n_layer, n, pos, 0);
     m->x = save_x; m->x_hc = save_xhc;
-    if (!want_logits) {
-        if (dbg_time_on()) { dt_mtp_t += dt_now() - dt_m0; dt_mtp_n++; dt_mtp_rows += n; }
-        return true;
-    }
+}
+
+// The head over the last row: its norm (the shared head norm, or the
+// backbone's output norm; on hyper-connections the block's own stream mix),
+// then the LM head into mtp_logits. mtp_hid keeps the row the next chained
+// step reads.
+NUM_STAGE void mtp_head(model_t *m, int n) {
+    const int E = m->n_embd;
+    const int S = m->hyper_conn ? m->hc_count : 1;
+    const float *res = m->mtp_res;
     const float *last = res + (size_t)(n - 1) * S * E;
     if (m->hyper_conn) {
         // the next chained step reads the wide residual; the head reads it
@@ -10761,7 +10770,20 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
         matvec_b(m->tp, m->mtp_logits, m->n_vocab, m->mtp_head, m->mtp_hid, E, E,
                  m->n_vocab, NULL, 1);
     }
-    m->mtp_logits_pos = pos + n;
+}
+
+// Run n pairs (h rows, tokens) through the head at positions pos..pos+n-1,
+// writing their KV slots; want_logits computes the last row's head output.
+static bool mtp_run(model_t *m, const float *h, size_t h_stride,
+                    const int32_t *tok, int n, int pos, bool want_logits) {
+    if (n < 1 || n > m->n_batch || pos < 0 || pos + n > m->n_ctx) return false;
+    double dt_m0 = dbg_time_on() ? dt_now() : 0;
+    mtp_inputs(m, h, h_stride, tok, n);
+    mtp_block(m, n, pos);
+    if (want_logits) {
+        mtp_head(m, n);
+        m->mtp_logits_pos = pos + n;
+    }
     if (dbg_time_on()) { dt_mtp_t += dt_now() - dt_m0; dt_mtp_n++; dt_mtp_rows += n; }
     return true;
 }
