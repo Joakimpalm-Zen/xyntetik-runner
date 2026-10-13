@@ -3152,50 +3152,9 @@ static bool bind_validate_geometry(model_t *m, gguf_file *g, const char *arch, b
     return true;
 }
 
-static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
-    if (!gguf_open(&m->gf, path)) return false;
-    gguf_file *g = &m->gf;
-    if (!bind_agent_profile(m, g)) return false;
-    // kept for the backend's shared-weight registry: two instances of the same
-    // file are what let `--parallel N` upload the weights once
-    size_t plen = strlen(path) + 1;
-    m->path = malloc(plen);
-    if (!m->path) return false;
-    memcpy(m->path, path, plen);
-    model_record_file_id(m, path);
-
-    const char *arch = gguf_get_str(g, "general.architecture", "?");
-    if (!bind_admit_architecture(m, arch)) return false;
-    char key[128];
-    // The hybrid families type their blocks with zeros in the per-layer
-    // arrays (nemotron_h: head_count_kv / feed_forward_length; granitehybrid:
-    // head_count_kv). Their own blocks below read those arrays; the removal
-    // reading of a zero (this block's sublayer was dropped from the file)
-    // applies to every other architecture.
-    const bool hybrid_typed = strcmp(arch, "nemotron_h") == 0 ||
-                              strcmp(arch, "nemotron_h_moe") == 0 ||
-                              strcmp(arch, "granitehybrid") == 0;
-
-    if (!bind_hparams(m, g, arch, hybrid_typed)) return false;
-    if (strcmp(arch, "gemma3") == 0 && !bind_meta_gemma3(m, g, arch)) return false;
-    if (strcmp(arch, "gpt-oss") == 0 && !bind_meta_gptoss(m, g, arch)) return false;
-    if (strcmp(arch, "afmoe") == 0 && !bind_meta_afmoe(m, g, arch)) return false;
-    if ((strcmp(arch, "qwen3") == 0 || strcmp(arch, "qwen3moe") == 0) && !bind_meta_qwen3(m, g, arch)) return false;
-    if (!bind_mtp_layers(m, g, arch, p)) return false;
-    if (!m->l_is_swa && !bind_swa_default(m, g, arch)) return false;
-    if ((strcmp(arch, "qwen35") == 0 || strcmp(arch, "qwen4exp") == 0) && !bind_meta_qwen35(m, g, arch)) return false;
-    m->ple4_layer = -1;
-    if (strcmp(arch, "qwen4exp") == 0 && !bind_meta_qwen4exp(m, g, arch)) return false;
-    if (strcmp(arch, "apertus") == 0 && !bind_meta_apertus(m, g, arch)) return false;
-    if (strcmp(arch, "gemma4") == 0 && !bind_meta_gemma4(m, g, arch)) return false;
-    if (strcmp(arch, "granite") == 0 && !bind_meta_granite(m, g, arch)) return false;
-    if (strcmp(arch, "granitehybrid") == 0 && !bind_meta_granitehybrid(m, g, arch)) return false;
-    if ((strcmp(arch, "nemotron_h") == 0 || strcmp(arch, "nemotron_h_moe") == 0) && !bind_meta_nemotron_h(m, g, arch)) return false;
-    if (strcmp(arch, "muse-glimmer") == 0 && !bind_meta_muse(m, g, arch)) return false;
-    if (!bind_resolve_defaults(m, g, arch)) return false;
-    if (!bind_meta_moe(m, g, arch)) return false;
-    if (!bind_validate_geometry(m, g, arch, hybrid_typed)) return false;
-
+// The tensors outside the blocks: token embedding and vocabulary, output norm
+// and head, the hyper-connection head and the per-layer embedding tables.
+static bool bind_global_tensors(model_t *m, gguf_file *g) {
     bool ok = true;
     m->tok_embd = need_tensor(g, "token_embd.weight", 0, &ok);
     if (!ok) return false;
@@ -3306,6 +3265,55 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         m->ple_proj_norm = tensor_to_f32(pn, m->n_embd_ple, &ok);
         if (!ok) return false;
     }
+    return true;
+}
+
+static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
+    if (!gguf_open(&m->gf, path)) return false;
+    gguf_file *g = &m->gf;
+    if (!bind_agent_profile(m, g)) return false;
+    // kept for the backend's shared-weight registry: two instances of the same
+    // file are what let `--parallel N` upload the weights once
+    size_t plen = strlen(path) + 1;
+    m->path = malloc(plen);
+    if (!m->path) return false;
+    memcpy(m->path, path, plen);
+    model_record_file_id(m, path);
+
+    const char *arch = gguf_get_str(g, "general.architecture", "?");
+    if (!bind_admit_architecture(m, arch)) return false;
+    char key[128];
+    // The hybrid families type their blocks with zeros in the per-layer
+    // arrays (nemotron_h: head_count_kv / feed_forward_length; granitehybrid:
+    // head_count_kv). Their own blocks below read those arrays; the removal
+    // reading of a zero (this block's sublayer was dropped from the file)
+    // applies to every other architecture.
+    const bool hybrid_typed = strcmp(arch, "nemotron_h") == 0 ||
+                              strcmp(arch, "nemotron_h_moe") == 0 ||
+                              strcmp(arch, "granitehybrid") == 0;
+
+    if (!bind_hparams(m, g, arch, hybrid_typed)) return false;
+    if (strcmp(arch, "gemma3") == 0 && !bind_meta_gemma3(m, g, arch)) return false;
+    if (strcmp(arch, "gpt-oss") == 0 && !bind_meta_gptoss(m, g, arch)) return false;
+    if (strcmp(arch, "afmoe") == 0 && !bind_meta_afmoe(m, g, arch)) return false;
+    if ((strcmp(arch, "qwen3") == 0 || strcmp(arch, "qwen3moe") == 0) && !bind_meta_qwen3(m, g, arch)) return false;
+    if (!bind_mtp_layers(m, g, arch, p)) return false;
+    if (!m->l_is_swa && !bind_swa_default(m, g, arch)) return false;
+    if ((strcmp(arch, "qwen35") == 0 || strcmp(arch, "qwen4exp") == 0) && !bind_meta_qwen35(m, g, arch)) return false;
+    m->ple4_layer = -1;
+    if (strcmp(arch, "qwen4exp") == 0 && !bind_meta_qwen4exp(m, g, arch)) return false;
+    if (strcmp(arch, "apertus") == 0 && !bind_meta_apertus(m, g, arch)) return false;
+    if (strcmp(arch, "gemma4") == 0 && !bind_meta_gemma4(m, g, arch)) return false;
+    if (strcmp(arch, "granite") == 0 && !bind_meta_granite(m, g, arch)) return false;
+    if (strcmp(arch, "granitehybrid") == 0 && !bind_meta_granitehybrid(m, g, arch)) return false;
+    if ((strcmp(arch, "nemotron_h") == 0 || strcmp(arch, "nemotron_h_moe") == 0) && !bind_meta_nemotron_h(m, g, arch)) return false;
+    if (strcmp(arch, "muse-glimmer") == 0 && !bind_meta_muse(m, g, arch)) return false;
+    if (!bind_resolve_defaults(m, g, arch)) return false;
+    if (!bind_meta_moe(m, g, arch)) return false;
+    if (!bind_validate_geometry(m, g, arch, hybrid_typed)) return false;
+
+    if (!bind_global_tensors(m, g)) return false;
+    bool ok = true;
 
     // one spare slot: block n_layer is the NextN/MTP head when consumed
     m->layers = calloc(m->n_layer + 1, sizeof(layer_t));
