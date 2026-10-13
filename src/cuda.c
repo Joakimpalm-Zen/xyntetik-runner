@@ -1445,8 +1445,16 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         // decide how many *leading* layers fit — accumulate each layer's weight
         // bytes plus its KV bytes until the budget runs out; the CPU runs the
         // rest (partial offload)
-        int G = 0;
-        size_t used = fixed;
+        // The decisions are model.c's gpu_plan_* (the same ones --fit makes
+        // from a header); this measures what each layer costs on this device.
+        uint64_t *cost = calloc((size_t)m->n_layer, sizeof(uint64_t));
+        uint64_t *bank = calloc((size_t)m->n_layer, sizeof(uint64_t));
+        bool *is_moe = calloc((size_t)m->n_layer, sizeof(bool));
+        if (!cost || !bank || !is_moe) {
+            free(cost); free(bank); free(is_moe);
+            fprintf(stderr, "gpu: CUDA split plan allocation failed — using CPU\n");
+            goto fail_quiet;
+        }
         for (int l = 0; l < m->n_layer; l++) {
             layer_t *ly = &m->layers[l];
             size_t wb = layer_weight_bytes(ly, m->n_expert, moe_on_host(m, l), m->cpu_moe);
@@ -1459,10 +1467,12 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             // n_ctx rows left most of a 24 GB card idle under RUNNER_KV_RING.
             size_t kv = model_kv_boundary_bytes_sum(m, l + 1) -
                         model_kv_boundary_bytes_sum(m, l);
-            if (used + wb + kv > vram_budget) break;
-            used += wb + kv;
-            G = l + 1;
+            cost[l] = wb + kv;
+            is_moe[l] = ly->is_moe;
+            bank[l] = ly->is_moe ? expert_plan_bytes(ly, m->n_expert, true) : 0;
         }
+        uint64_t used = fixed;
+        int G = gpu_plan_prefix(cost, m->n_layer, 0, vram_budget, &used);
         // Partial expert offload: the pass above placed attention (and any
         // dense FFN) for the layers that fit. Whatever budget survives is
         // spent on whole expert banks, shallowest first, so a card with room
@@ -1485,41 +1495,28 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             size_t owed = G == m->n_layer
                         ? (m->cpu_moe ? 0 : m->tok_embd->nbytes) + m->output->nbytes
                         : 0;
-            int placed = 0;
-            for (int l = 0; l < G; l++) {
-                layer_t *ly = &m->layers[l];
-                if (!ly->is_moe) continue;
-                size_t eb = expert_plan_bytes(ly, m->n_expert, true);
-                if (used + eb + owed > vram_budget) break;
-                used += eb;
-                m->moe_host[l] = false;
-                placed++;
-            }
-            // a retry after an out-of-memory init holds back the deepest
+            // A retry after an out-of-memory init holds back the deepest
             // banks: the plan is an estimate (on a 24 GB MIG slice it
             // undercounted the device by ~2 GB, so a smaller KV that bought a
             // 20th bank failed its recurrent-state allocation and the whole
-            // run fell back to the CPU at half speed, 2026-10-08)
-            for (int l = G - 1; l >= 0 && m->moe_auto_trim > 0 && placed > 0; l--) {
-                if (!m->layers[l].is_moe || m->moe_host[l]) continue;
-                if (placed <= m->moe_auto_placed - m->moe_auto_trim) break;
-                m->moe_host[l] = true;
-                used -= expert_plan_bytes(&m->layers[l], m->n_expert, true);
-                placed--;
-            }
+            // run fell back to the CPU at half speed, 2026-10-08).
+            int placed = gpu_plan_expert_banks(is_moe, bank, G, owed, vram_budget,
+                                               &used, m->moe_host, m->moe_auto_trim,
+                                               m->moe_auto_placed);
             if (m->moe_auto_trim == 0) m->moe_auto_placed = placed;
         }
-        // a full split also needs token_embd + output weights resident
-        bool full = G == m->n_layer &&
-                    used + (m->cpu_moe ? 0 : m->tok_embd->nbytes) +
-                    m->output->nbytes <= vram_budget;
+        free(cost); free(bank); free(is_moe);
+        // a full split also needs token_embd + output weights resident.
         // Invariant, belt and braces: "the device owns every layer" and "the
         // device owns the output projection" must agree, because the forward
         // reads only the first and the upload honours only the second. If the
         // reserve above could not be met, hand the last layer back to the CPU
         // so the split is honestly partial rather than internally inconsistent.
-        if (G == m->n_layer && !full && G > 1) {
-            G--;
+        bool gave_back = false;
+        bool full = gpu_plan_full_split(&G, m->n_layer, used,
+                                        (m->cpu_moe ? 0 : m->tok_embd->nbytes) +
+                                        m->output->nbytes, vram_budget, &gave_back);
+        if (gave_back) {
             fprintf(stderr, "gpu: output weights do not fit alongside the "
                             "layer split — running the last layer on the CPU "
                             "so the boundary is consistent\n");
