@@ -402,6 +402,7 @@ def test_second_signal_exits_immediately():
         srv.stop()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signal contract")
 def test_stalled_request_read_does_not_pin_the_drain():
     """A client that sent half a request has been admitted to nothing, so it
     must not hold the shutdown. Its slot used to wait out the whole 10 s

@@ -2201,6 +2201,24 @@ else
 	@echo "metal SWA smoke skipped: macOS-only backend"
 endif
 
+# The Metal gates of `make test`, as one named target: every backend check
+# that needs an Apple GPU, in the order `make test` runs them. On any other
+# platform each self-skips with a printed reason. CI runs this target on the
+# hosted macOS runner for every pull request, where the whole suite would
+# take half an hour; `make test` runs it on the merge and on a lab Mac.
+.PHONY: test-metal
+test-metal:
+	$(MAKE) --no-print-directory test-metal-shader-gate
+	$(MAKE) --no-print-directory test-metal-fallback PYTHON="$(PYTHON)"
+	$(MAKE) --no-print-directory test-metal-kquant
+	$(MAKE) --no-print-directory test-metal-decode-only
+	$(MAKE) --no-print-directory test-metal-split
+	$(MAKE) --no-print-directory test-metal-bind-failure
+	$(MAKE) --no-print-directory test-metal-multibuf
+	$(MAKE) --no-print-directory test-metal-moe-em
+	$(MAKE) --no-print-directory test-metal-moe-mm
+	$(MAKE) --no-print-directory test-metal-fuse
+
 test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_DPO_GRAD) $(TEST_MVT) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) \
@@ -2407,16 +2425,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(MAKE) --no-print-directory test-bare-invocation
 	$(MAKE) --no-print-directory test-help-interface
 	$(MAKE) --no-print-directory test-shader-embed
-	$(MAKE) --no-print-directory test-metal-shader-gate
-	$(MAKE) --no-print-directory test-metal-fallback PYTHON="$(PYTHON)"
-	$(MAKE) --no-print-directory test-metal-kquant
-	$(MAKE) --no-print-directory test-metal-decode-only
-	$(MAKE) --no-print-directory test-metal-split
-	$(MAKE) --no-print-directory test-metal-bind-failure
-	$(MAKE) --no-print-directory test-metal-multibuf
-	$(MAKE) --no-print-directory test-metal-moe-em
-	$(MAKE) --no-print-directory test-metal-moe-mm
-	$(MAKE) --no-print-directory test-metal-fuse
+	$(MAKE) --no-print-directory test-metal PYTHON="$(PYTHON)"
 	./$(TEST_BATCH_ID) test.gguf
 	$(MAKE) --no-print-directory test-attn-split
 	$(PYTHON) scripts/check-generated.py

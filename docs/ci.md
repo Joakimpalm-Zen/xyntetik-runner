@@ -1,11 +1,15 @@
 # CI coverage and execution
 
-`make test` is the aggregate engine gate, and CI runs it on Linux and on
-Apple Silicon for every pull request. Windows gets the build, its
-platform-only steps and the server conformance suite on the pull request,
-and the whole suite (`windows-suite`) on every engine push to main, on the
-daily schedule and on dispatch, because it takes twenty minutes there. No
-numerical test or tolerance is removed to shorten the PR path.
+`make test` is the aggregate engine gate, and CI runs it on Linux for every
+pull request. The hosted Mac and Windows runners take twenty to thirty
+minutes for the whole suite, so on a pull request they run what is specific
+to them: macOS runs the Metal gates of `make test` as the one named target
+`make test-metal`, the client tests, the server conformance suite and the
+command-line smokes; Windows runs the build, its platform-only steps, the
+client tests and the server conformance suite. The whole suite runs on both
+(`macos-suite`, `windows-suite`) on every engine push to main, on the daily
+schedule and on dispatch. No numerical test or tolerance is removed to
+shorten the PR path.
 
 Until 2026-10-13 a `unix` job carried some 450 lines of shell smokes beside
 `make test`, repeated by hand for Windows and drifting from that copy. Those

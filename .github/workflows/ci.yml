@@ -101,30 +101,26 @@ jobs:
           path: .build/tested/
           retention-days: 30
 
-  # The `make test` baseline on Linux and on Apple Silicon. Deliberately
-  # boring: one build, one target, so that ADDING A CHECK TO `make test` IS
-  # ENOUGH TO PUT IT IN CI; scripts/check-ci-roster.py refuses a root test
-  # that is wired nowhere. Until 2026-10-13 a `unix` job beside this one
-  # carried some 450 lines of hand-written shell smokes, repeated by hand for
-  # Windows and drifting from that copy; those smokes are tests now
+  # The `make test` baseline. Deliberately boring: one Linux runner, one
+  # build, one target, so that ADDING A CHECK TO `make test` IS ENOUGH TO PUT
+  # IT IN CI; scripts/check-ci-roster.py refuses a root test that is wired
+  # nowhere. Until 2026-10-13 a `unix` job beside this one carried some 450
+  # lines of hand-written shell smokes, repeated by hand for Windows and
+  # drifting from that copy; those smokes are tests now
   # (tests/test_cli_smokes.py, tests/conformance/test_server_smokes.py, the
   # torture-harness unit tests) and run wherever the suite runs. What stays a
   # step here is what `make test` cannot own: the strict client type check.
   #
-  # No GPU on either image: the CUDA gates report "skipped: no GPU"; the Metal
-  # gates run on the macOS leg against the hosted device, and a gate the hosted
-  # toolchain cannot compile skips with its reason (tests/test_metal_tensor.m).
-  # Nothing here downloads a model: `make test` builds its own fixtures.
+  # CPU-only by construction: the runner image has no GPU, so the Metal
+  # targets self-skip as macOS-only and the CUDA-linked tolerance gates report
+  # "skipped: no GPU" instead of failing. Nothing here downloads a model:
+  # `make test` builds its own fixtures with scripts/make-test-model.py.
 
   make-test:
     needs: changes
     if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - name: pip download cache
@@ -154,12 +150,55 @@ jobs:
       - name: make test
         # -j: the test binaries are independent builds and the Makefile's
         # object layer makes each one a link; the recipe body (the gates
-        # themselves) still runs in order inside the one `test` rule. The
-        # hosted macOS image has fewer cores and a slower disk: -j3 there.
+        # themselves) still runs in order inside the one `test` rule
+        run: .venv/bin/python scripts/ci-run.py --timeout 2400 make-test -- make -j"$(nproc)" test PYTHON=.venv/bin/python
+
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
+  # Apple Silicon on every pull request: the build, the Metal gates of `make
+  # test` as the one named target `make test-metal`, the client tests and the
+  # server conformance suite against the hosted Metal device. Not the whole
+  # suite: the hosted Mac runs `make test` in about 29 minutes against the
+  # Linux leg's 10, and the root pytest half is platform-neutral; the whole
+  # suite runs there in macos-suite on every engine push to main.
+  macos:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: pip download cache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: pip-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/**/requirements*.txt', 'python/pyproject.toml') }}
+      # PEP 668: the macOS runner's Homebrew python is externally managed and
+      # refuses a bare pip install, so install into a venv instead
+      - name: install pytest and mypy
         run: |
-          jobs=$(nproc 2>/dev/null || sysctl -n hw.ncpu)
-          [ "${{ runner.os }}" = macOS ] && jobs=3
-          .venv/bin/python scripts/ci-run.py --timeout 3000 make-test -- make -j"$jobs" test PYTHON=.venv/bin/python
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --quiet -r tests/ci/requirements.txt mypy
+      - name: build
+        run: make
+      - name: python client type check and tests
+        run: |
+          MYPYPATH=python/src .venv/bin/python -m mypy --strict -p xyntetik_runner
+          PYTHONPATH=python/src .venv/bin/python -m pytest python/tests/
+      - name: make test model
+        run: python3 scripts/make-test-model.py test.gguf
+      - name: Metal gates (make test-metal)
+        run: .venv/bin/python scripts/ci-run.py --timeout 1500 metal -- make test-metal PYTHON=.venv/bin/python
+      - name: agent-protocol conformance harness
+        run: PYTHON=.venv/bin/python ./scripts/conformance.sh --junitxml=.build/ci/conformance.xml
+      - name: command-line smokes
+        run: .venv/bin/python -m pytest -q tests/test_cli_smokes.py
 
       - name: CI timing and test reports
         if: always()
@@ -685,8 +724,7 @@ jobs:
   # had never named accumulated Windows-only defects (os.pread, Unix-only mmap
   # arguments, os.killpg, a CRLF hash, an env replacement that dropped
   # SystemRoot) and nothing could see them, because the only machine that runs
-  # this suite on Windows was a desk in the lab. macOS needs no such job: the
-  # make-test matrix runs the whole suite there on every pull request.
+  # this suite on Windows was a desk in the lab.
   #
   # Off the pull-request path on purpose: it is minutes, not seconds, and the
   # value is "main is never red", not "every PR waits". It runs on every
@@ -771,4 +809,27 @@ jobs:
         if: always()
         with:
           name: t3-report
+          path: .build/ci/
+
+  # The whole suite on hosted Apple Silicon, same policy as windows-suite.
+  # The hosted image trails the lab Macs by a macOS release, so a gate that
+  # needs the newest Metal toolchain must skip with a reason here, as
+  # tests/test_metal_tensor.m does, rather than fail a lane nobody reads.
+  macos-suite:
+    needs: changes
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.changes.outputs.engine == 'true')
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: install pytest
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -r tests/ci/requirements.txt
+      - name: full suite
+        run: .venv/bin/python scripts/ci-run.py --timeout 5100 macos-suite -- make -j3 test PYTHON=.venv/bin/python
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: macos-suite-report
           path: .build/ci/
