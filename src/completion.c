@@ -2045,10 +2045,22 @@ static int stop_feed(gen_ctx *g, const char *bytes, int n) {
 // any calls to tc. Returns the number of tool calls (parallel turns map several
 // at once), 0 for a plain answer, or -1 when the document could not be mapped.
 static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
-                                 bool truncated, bool *fault) {
+                                 bool truncated, const char *opener, bool *fault) {
     sbuf mapped = {0};
     sbuf mapped_reason = {0};
     *fault = false;
+    // The turn as the demultiplexer reads it: the opener the prompt wrote
+    // (render_state), when it left a channel open, then the output.
+    sbuf turn = {0};
+    const char *doc = g->out.s ? g->out.s : "";
+    size_t doc_n = g->out.n;
+    if (opener) {
+        sb_put(&turn, opener, strlen(opener));
+        sb_put(&turn, doc, doc_n);
+        if (turn.failed) { free(turn.s); return -1; }
+        doc = turn.s;
+        doc_n = turn.n;
+    }
     if (env->parse_only) {
         // The demultiplexer IS the parser here, run over the finished turn,
         // so the buffered response carries exactly the calls a streamed one
@@ -2056,8 +2068,9 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
         // void the turn: the valid calls and the prose are the model's real
         // output and are kept; the finish reason names the fault.
         int n_calls = 0;
-        int rc = tool_stream_map(env, g->out.s ? g->out.s : "", g->out.n,
+        int rc = tool_stream_map(env, doc, doc_n,
                                  truncated, &mapped, tc, &n_calls);
+        free(turn.s);
         if (mapped.failed || tc->failed) { free(mapped.s); return -1; }
         *fault = rc < 0;
         free(g->out.s);
@@ -2065,7 +2078,8 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
         return n_calls;
     }
     int rc = tool_envelope_map_channels(
-        env, g->out.s ? g->out.s : "", g->out.n, &mapped_reason, &mapped, tc);
+        env, doc, doc_n, &mapped_reason, &mapped, tc);
+    free(turn.s);
     if (rc >= 0 && mapped_reason.n) {
         free(g->reason.s);
         g->reason = mapped_reason;
@@ -3394,11 +3408,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
                              env->tools, env->kind == TCH_AUTO, only,
                              env->kind == TCH_AUTO ? request_schema(req) : NULL,
                              think_mode != THINK_OFF,
-                             // as before: the prompt-suffix probe this
-                             // replaces never matched a marked prompt, so
-                             // the grammar has always started outside the
-                             // thought a continuation opens (the next change)
-                             false, serr, sizeof(serr));
+                             reasoning_open, serr, sizeof(serr));
         } else if (env->proto == TP_QWEN_XML) {
             schema = schema_compile_qwen_xml_turn(
                 env->tools, env->kind == TCH_AUTO,
@@ -4009,6 +4019,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // any other turn starts where its prompt left it.
     bool demux_channels = env && (env->proto == TP_HARMONY || env->proto == TP_GEMMA4);
     bool primed = reasoning_open && !demux_channels;
+    // ...and that demultiplexer, streamed and buffered, reads the turn from
+    // the opener the prompt wrote, as the model does: a Gemma 4 continuation
+    // whose prompt opened the thought channel is reasoning until it closes.
+    const char *demux_opener = demux_channels && reasoning_open ? rs->opener : NULL;
     if (primed)
         engine_think_started(e);
 
@@ -4028,6 +4042,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                                   sink_call_args, sink_call_end };
         tool_stream_init(&g.tsx, stream_env, &sink);
         g.tsx_on = true;
+        if (demux_opener && stream_env == env)
+            tool_stream_feed(&g.tsx, demux_opener, (int)strlen(demux_opener));
     }
 
     if (q.stream) {
@@ -4437,7 +4453,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         if (env) {
             bool fault = false;
             n_tc = envelope_map_buffered(env, &g, &tc, turn_cut,
-                                         &fault);
+                                         demux_opener, &fault);
             if (n_tc >= 1 && !strcmp(finish, "stop")) finish = "tool_calls";
             // The document was dropped, so the turn has no answer to report.
             // Saying "stop" over the resulting empty content would claim the

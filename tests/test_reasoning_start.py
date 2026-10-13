@@ -190,3 +190,56 @@ def test_messages_thinking_object_decides_where_generation_starts(exe, model, fa
             want = ["thinking"] if primed else ["text"]
             assert blocks == want, (family, extra, blocks)
             assert stream_block_types(srv, body) == want, (family, extra, "streamed")
+
+
+G4_TOOLS = [{"type": "function", "function": {"name": "get_weather", "parameters": {
+    "type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}]
+G4_CONTINUATION = [
+    {"role": "user", "content": "Weather in Oslo, then Bergen?"},
+    {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "type": "function",
+     "function": {"name": "get_weather", "arguments": "{\"city\":\"Oslo\"}"}}]},
+    {"role": "tool", "tool_call_id": "call_1", "content": "{\"temp\":12}"}]
+# what the model writes after a prompt that opened its thought channel: the
+# thought, the channel's close, then the next call
+G4_REPLY = "Oslo is done; now Bergen.<channel|><|tool_call>call:get_weather{city:<|\"|>Bergen<|\"|>}<tool_call|>"
+
+
+@pytest.mark.parametrize("family", ["gemma4", "gemma4-mainline"])
+def test_gemma4_continuation_reads_the_thought_its_prompt_opened(exe, model, family):
+    """With thinking on, a Gemma 4 prompt that continues after a tool result
+    ends by opening the thought channel. The grammar, the stream
+    demultiplexer and the buffered mapper all start inside it, so the model's
+    thought is reasoning and the call after it is a call, buffered and
+    streamed alike."""
+    with RunnerServer(exe, model, ctx=4096, parallel=1,
+                      extra_args=["--gpu", "off", "-t", "2", "-s", "42", "--chat-template", family],
+                      env={"RUNNER_TEST_SCRIPTED_REPLY": "1"}) as srv:
+        body = {"messages": G4_CONTINUATION, "tools": G4_TOOLS, "enable_thinking": True,
+                "max_tokens": 96, "temperature": 0, "runner_test_reply": G4_REPLY}
+        status, doc = post(srv, "/v1/chat/completions", body)
+        assert status == 200, doc
+        msg = doc["choices"][0]["message"]
+        assert msg.get("reasoning_content") == "Oslo is done; now Bergen.", msg
+        calls = msg.get("tool_calls") or []
+        assert [c["function"]["name"] for c in calls] == ["get_weather"], msg
+        assert json.loads(calls[0]["function"]["arguments"]) == {"city": "Bergen"}, calls
+        assert not (msg.get("content") or "").strip(), msg
+        # streamed: the same reasoning and the same call
+        req = urllib.request.Request(srv.base_url + "/v1/chat/completions",
+                                     data=json.dumps(dict(body, stream=True)).encode(),
+                                     headers={"Content-Type": "application/json"})
+        reasoning, names, args = "", [], ""
+        with urllib.request.urlopen(req, timeout=120) as r:
+            for line in r:
+                line = line.strip()
+                if not line.startswith(b"data:") or line == b"data: [DONE]":
+                    continue
+                for ch in json.loads(line[5:]).get("choices") or []:
+                    d = ch.get("delta") or {}
+                    reasoning += d.get("reasoning_content") or ""
+                    for tc in d.get("tool_calls") or []:
+                        fn = tc.get("function") or {}
+                        if fn.get("name"): names.append(fn["name"])
+                        args += fn.get("arguments") or ""
+        assert reasoning == "Oslo is done; now Bergen.", reasoning
+        assert names == ["get_weather"] and json.loads(args) == {"city": "Bergen"}, (names, args)

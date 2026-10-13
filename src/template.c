@@ -1669,6 +1669,7 @@ static size_t render_nemotron_nano(int tmpl, const chat_msg *msgs, int n_msgs,
         off = emit_raw(out, cap, off, think ? "<think>\n" : "<think></think>",
                        NULL, NULL);
         st->reasoning_open = think && add_assistant && !(held && held[0]);
+        st->opener = st->reasoning_open ? "<think>\n" : NULL;
         if (held && held[0]) off = emit(out, cap, off, "%s", held, NULL);
         if (!add_assistant)
             off = emit_raw(out, cap, off, "\n<SPECIAL_12>\n", NULL, NULL);
@@ -1721,6 +1722,7 @@ static size_t render_qwen35(int tmpl, const chat_msg *msgs, int n_msgs,
                    closed ? "<think>\n\n</think>\n\n" : "<think>\n",
                    NULL, NULL);
         st->reasoning_open = !closed;
+        st->opener = closed ? NULL : "<think>\n";
     }
     return off;
 }
@@ -1902,6 +1904,7 @@ static size_t render_qwen38(int tmpl, const chat_msg *msgs, int n_msgs,
                        mode == THINK_OFF ? "<think>\n\n</think>\n\n"
                                          : "<think>\n", NULL);
         st->reasoning_open = mode != THINK_OFF;
+        st->opener = mode != THINK_OFF ? "<think>\n" : NULL;
     }
     return off;
 }
@@ -2001,6 +2004,7 @@ static size_t render_granite42(int tmpl, const chat_msg *msgs, int n_msgs,
         off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
                        open ? "<think>\n" : "<think></think>", NULL);
         st->reasoning_open = open;
+        st->opener = open ? "<think>\n" : NULL;
     }
     return off;
 }
@@ -2389,6 +2393,7 @@ static size_t render_harmony(int tmpl, const chat_msg *msgs, int n_msgs,
                 : "<|start|>assistant<|channel|>analysis<|message|>";
         off = emit_raw(out, cap, off, "%s", head, NULL);
         st->reasoning_open = !have_tools && (thinking & THINK_MODE_MASK) != THINK_OFF;
+        st->opener = st->reasoning_open ? "<|channel|>analysis<|message|>" : NULL;
     }
     return off;
 }
@@ -2505,6 +2510,7 @@ static size_t render_muse(int tmpl, const chat_msg *msgs, int n_msgs,
                      : "<|start|>assistant";
         off = emit_raw(out, cap, off, "%s", head, NULL);
         st->reasoning_open = mode == THINK_ON;
+        st->opener = mode == THINK_ON ? " to=self<|message|>" : NULL;
     }
     free(muse_line.s);
     free(muse_tail.s);
@@ -2764,6 +2770,7 @@ static size_t render_gemma4(int tmpl, const chat_msg *msgs, int n_msgs,
         else if (g4_prev == 2 && g4_think) {
             off = emit(out, cap, off, "<|channel>thought\n", NULL, NULL);
             st->reasoning_open = true;
+            st->opener = "<|channel>thought\n";
         }
         // prev was a tool response and thinking is off, or a call still
         // awaiting its result: emit nothing, which is what the template
@@ -2992,7 +2999,7 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
                              char *out, size_t cap, render_state *st) {
     render_state unused;
     if (!st) st = &unused;
-    *st = (render_state){ .reasoning_open = false,
+    *st = (render_state){ .reasoning_open = false, .opener = NULL,
                           .think_mode = thinking & THINK_MODE_MASK };
     size_t off = 0;
     out[0] = 0;

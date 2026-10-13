@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A Gemma 4 turn that continues after a tool result with thinking on is
+  read from the thought its prompt opened.** The prompt ends by opening
+  `<|channel>thought`, so the model's first words are its thought. The
+  check meant to notice that compared the raw prompt's last bytes, which
+  end in an ownership mark, and never matched. The tool grammar therefore
+  started outside the thought, and the stream demultiplexer and the
+  buffered mapper waited for an opener that would never come, so a
+  continuation's thought and its next call could not be read as reasoning
+  and a call. All three now start inside the thought the prompt opened.
+
 - **A Messages request's `thinking` object now decides where its reply
   starts.** The prompt was rendered under Anthropic's own `thinking: {"type":
   "enabled" | "disabled"}`, but where the reply starts, inside a thought

@@ -347,6 +347,11 @@ typedef struct {
     // Harmony's analysis channel, Muse's self-addressed turn, or Gemma 4's
     // thought channel after a tool result.
     bool reasoning_open;
+    // With reasoning_open, the bytes that opened the segment, as the model
+    // would have written them (`<think>\n`, `<|channel>thought\n`, ...); the
+    // prompt ends with them, marks aside. A demultiplexer that follows the
+    // channels reads the turn from here. NULL otherwise.
+    const char *opener;
     // The thinking mode the prompt was rendered under: THINK_DEFAULT,
     // THINK_ON or THINK_OFF, whichever spelling the request used for it.
     int think_mode;

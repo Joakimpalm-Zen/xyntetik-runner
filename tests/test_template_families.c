@@ -264,9 +264,21 @@ static void state_matches_the_prompt(int t, const jv *tools) {
         int n = k == 0 ? 1 : k == 1 ? c.n - 2 : 2;  // k == 1: ends on the tool results
         for (int gen = 0; gen < 2; gen++)
             for (size_t i = 0; i < sizeof MODES / sizeof *MODES; i++) {
-                render_state st = { .reasoning_open = true, .think_mode = -1 };
+                render_state st = { .reasoning_open = true, .opener = "x", .think_mode = -1 };
                 render_messages_state(t, m, n, gen, MODES[i] | THINK_NS_RECIPIENTS * (t != TMPL_MUSE),
                                       tools, A, sizeof A, &st);
+                if (st.reasoning_open) {
+                    // the reported opener is exactly the prompt's tail
+                    size_t on = st.opener ? strlen(st.opener) : 0;
+                    static char bare[1 << 16];
+                    size_t bn = 0;
+                    for (const char *q = A; *q && bn + 1 < sizeof bare; q++)
+                        if (*q != PROMPT_RAW_OPEN && *q != PROMPT_RAW_CLOSE) bare[bn++] = *q;
+                    CHECK(on && bn >= on && !memcmp(bare + bn - on, st.opener, on),
+                          "%s: reported opener is not the prompt's tail (mode 0x%x)", name, MODES[i]);
+                } else {
+                    CHECK(st.opener == NULL, "%s: an opener with nothing open", name);
+                }
                 CHECK(st.reasoning_open == tail_opens(t, A),
                       "%s: reasoning_open %d but the prompt %s (mode 0x%x, %s, gen %d)",
                       name, st.reasoning_open, tail_opens(t, A) ? "opens one" : "does not",
