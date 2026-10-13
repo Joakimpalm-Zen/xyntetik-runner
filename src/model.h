@@ -332,7 +332,11 @@ typedef struct {
     bool      ffn_var;       // per-layer FFN widths differ (gemma-4 E2B):
                              // CPU sizes per layer; device backends refuse
     int       full_attn_interval;
-    int       ssm_conv_kernel, ssm_inner, ssm_state, ssm_v_heads, ssm_groups;
+    // The recurrent mixer's geometry, set by the bind phase for the families
+    // that have one (Gated DeltaNet: qwen35, qwen4exp; Mamba-2: granitehybrid,
+    // nemotron_h) and zero on every other: the conv kernel width, the inner
+    // (value) width, the state size, the value heads and the groups.
+    struct { int conv_kernel, inner, state, v_heads, groups; } ssm;
     float     logit_softcap; // final logits = c*tanh(x/c) when > 0
     float     logit_scale;   // final logits *= this BEFORE the softcap
                              // (muse-glimmer <arch>.logit_scale; 1 = off)

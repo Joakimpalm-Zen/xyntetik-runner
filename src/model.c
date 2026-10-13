@@ -1591,8 +1591,8 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
         // ---- recurrent (Mamba-2) block: mixer only, no FFN ----
         l->recurrent = true;
         l->skip_ffn  = true;
-        int nh = m->ssm_v_heads, ds = m->ssm_state, ng = m->ssm_groups;
-        int inner = m->ssm_inner;
+        int nh = m->ssm.v_heads, ds = m->ssm.state, ng = m->ssm.groups;
+        int inner = m->ssm.inner;
         int conv_dim  = inner + 2 * ng * ds;
         int d_in_proj = 2 * inner + 2 * ng * ds + nh;
         l->ssm_in   = need_tensor(g, "blk.%d.ssm_in.weight", i, &ok);
@@ -1608,7 +1608,7 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
         // both flatten to `inner` contiguous floats the grouped RMS norm reads,
         // group g's weights at offset g*(inner/n_group).
         if (!check_shape(l->ssm_in, m->n_embd, d_in_proj, "ssm_in", i) ||
-            !check_shape(l->ssm_conv, m->ssm_conv_kernel, conv_dim, "ssm_conv1d", i) ||
+            !check_shape(l->ssm_conv, m->ssm.conv_kernel, conv_dim, "ssm_conv1d", i) ||
             !check_shape(sconvb, conv_dim, 1, "ssm_conv1d.bias", i) ||
             !check_shape(sdtb, nh, 1, "ssm_dt.bias", i) ||
             !check_shape(sa, 1, nh, "ssm_a", i) ||
@@ -2185,27 +2185,27 @@ static bool bind_meta_qwen35(model_t *m, gguf_file *g, const char *arch) {
     m->think_open        = "<think>";
     m->think_close       = "</think>";
     m->full_attn_interval = (int)gguf_get_u32(g, AK("full_attention_interval"), 4);
-    m->ssm_conv_kernel   = (int)gguf_get_u32(g, AK("ssm.conv_kernel"), 0);
-    m->ssm_inner         = (int)gguf_get_u32(g, AK("ssm.inner_size"), 0);
-    m->ssm_state         = (int)gguf_get_u32(g, AK("ssm.state_size"), 0);
-    m->ssm_v_heads       = (int)gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
-    m->ssm_groups        = (int)gguf_get_u32(g, AK("ssm.group_count"), 0);
+    m->ssm.conv_kernel   = (int)gguf_get_u32(g, AK("ssm.conv_kernel"), 0);
+    m->ssm.inner         = (int)gguf_get_u32(g, AK("ssm.inner_size"), 0);
+    m->ssm.state         = (int)gguf_get_u32(g, AK("ssm.state_size"), 0);
+    m->ssm.v_heads       = (int)gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
+    m->ssm.groups        = (int)gguf_get_u32(g, AK("ssm.group_count"), 0);
     // The ratio tests below say the fields agree with each other; the
     // range tests say they fit the `int` arithmetic that carries them.
     // Both sibling Mamba-style gates (granitehybrid, nemotron_h) have had
     // these ceilings all along and this one did not, so a file could
     // satisfy every ratio with values whose conv_dim
-    // (2 * ssm_state * ssm_groups + ssm_inner) overflows a signed int --
+    // (2 * ssm.state * ssm.groups + ssm.inner) overflows a signed int --
     // UB, and a negative conv_dim then makes check_shape's row test
     // vacuous, admitting attn_qkv and ssm_conv1d at any row count.
     if (m->full_attn_interval <= 0 ||
-        m->ssm_conv_kernel <= 0 || m->ssm_conv_kernel > 8 ||
-        m->ssm_inner <= 0 || m->ssm_inner > MDL_DIM_MAX ||
-        m->ssm_state <= 0 || m->ssm_state > MDL_DIM_MAX ||
-        m->ssm_v_heads <= 0 || m->ssm_groups <= 0 ||
-        m->ssm_inner % m->ssm_v_heads != 0 ||
-        m->ssm_inner / m->ssm_v_heads != m->ssm_state ||
-        m->ssm_v_heads % m->ssm_groups != 0) {
+        m->ssm.conv_kernel <= 0 || m->ssm.conv_kernel > 8 ||
+        m->ssm.inner <= 0 || m->ssm.inner > MDL_DIM_MAX ||
+        m->ssm.state <= 0 || m->ssm.state > MDL_DIM_MAX ||
+        m->ssm.v_heads <= 0 || m->ssm.groups <= 0 ||
+        m->ssm.inner % m->ssm.v_heads != 0 ||
+        m->ssm.inner / m->ssm.v_heads != m->ssm.state ||
+        m->ssm.v_heads % m->ssm.groups != 0) {
         fprintf(stderr, "error: invalid qwen35 Gated DeltaNet geometry\n");
         return false;
     }
@@ -2578,23 +2578,23 @@ static bool bind_meta_granitehybrid(model_t *m, gguf_file *g, const char *arch) 
     // Mamba-2 geometry (NOT the Gated DeltaNet ratios qwen35 checks):
     // inner = 2*n_embd = n_head * head_dim, groups partition the heads and
     // evenly divide the inner dim.
-    m->ssm_conv_kernel = (int)gguf_get_u32(g, AK("ssm.conv_kernel"), 0);
-    m->ssm_inner       = (int)gguf_get_u32(g, AK("ssm.inner_size"), 0);
-    m->ssm_state       = (int)gguf_get_u32(g, AK("ssm.state_size"), 0);
-    m->ssm_v_heads     = (int)gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
-    m->ssm_groups      = (int)gguf_get_u32(g, AK("ssm.group_count"), 0);
-    if (m->ssm_conv_kernel <= 0 || m->ssm_conv_kernel > 8 ||
-        m->ssm_inner <= 0 || m->ssm_inner > MDL_DIM_MAX ||
-        m->ssm_state <= 0 || m->ssm_state > MDL_DIM_MAX ||
-        m->ssm_v_heads <= 0 || m->ssm_groups <= 0 ||
-        m->ssm_inner % m->ssm_v_heads != 0 ||
-        m->ssm_v_heads % m->ssm_groups != 0 ||
-        m->ssm_inner % m->ssm_groups != 0 ||
-        m->ssm_inner != 2 * m->n_embd) {
+    m->ssm.conv_kernel = (int)gguf_get_u32(g, AK("ssm.conv_kernel"), 0);
+    m->ssm.inner       = (int)gguf_get_u32(g, AK("ssm.inner_size"), 0);
+    m->ssm.state       = (int)gguf_get_u32(g, AK("ssm.state_size"), 0);
+    m->ssm.v_heads     = (int)gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
+    m->ssm.groups      = (int)gguf_get_u32(g, AK("ssm.group_count"), 0);
+    if (m->ssm.conv_kernel <= 0 || m->ssm.conv_kernel > 8 ||
+        m->ssm.inner <= 0 || m->ssm.inner > MDL_DIM_MAX ||
+        m->ssm.state <= 0 || m->ssm.state > MDL_DIM_MAX ||
+        m->ssm.v_heads <= 0 || m->ssm.groups <= 0 ||
+        m->ssm.inner % m->ssm.v_heads != 0 ||
+        m->ssm.v_heads % m->ssm.groups != 0 ||
+        m->ssm.inner % m->ssm.groups != 0 ||
+        m->ssm.inner != 2 * m->n_embd) {
         fprintf(stderr, "error: invalid granitehybrid Mamba-2 geometry "
                 "(conv_kernel=%d inner=%d state=%d heads=%d groups=%d, "
-                "n_embd=%d)\n", m->ssm_conv_kernel, m->ssm_inner,
-                m->ssm_state, m->ssm_v_heads, m->ssm_groups, m->n_embd);
+                "n_embd=%d)\n", m->ssm.conv_kernel, m->ssm.inner,
+                m->ssm.state, m->ssm.v_heads, m->ssm.groups, m->n_embd);
         return false;
     }
     // Per-layer attention typing from the head_count_kv ARRAY. Recurrent
@@ -2684,22 +2684,22 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
     // Mamba-2 geometry. NOTE: nemotron does NOT satisfy granite's
     // inner==2*n_embd (Nano-9B-v2: inner=10240, n_embd=4480), so that
     // assertion is deliberately absent here.
-    m->ssm_conv_kernel = (int)gguf_get_u32(g, AK("ssm.conv_kernel"), 0);
-    m->ssm_inner       = (int)gguf_get_u32(g, AK("ssm.inner_size"), 0);
-    m->ssm_state       = (int)gguf_get_u32(g, AK("ssm.state_size"), 0);
-    m->ssm_v_heads     = (int)gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
-    m->ssm_groups      = (int)gguf_get_u32(g, AK("ssm.group_count"), 0);
-    if (m->ssm_conv_kernel <= 0 || m->ssm_conv_kernel > 8 ||
-        m->ssm_inner <= 0 || m->ssm_inner > MDL_DIM_MAX ||
-        m->ssm_state <= 0 || m->ssm_state > MDL_DIM_MAX ||
-        m->ssm_v_heads <= 0 || m->ssm_groups <= 0 ||
-        m->ssm_inner % m->ssm_v_heads != 0 ||
-        m->ssm_v_heads % m->ssm_groups != 0 ||
-        m->ssm_inner % m->ssm_groups != 0) {
+    m->ssm.conv_kernel = (int)gguf_get_u32(g, AK("ssm.conv_kernel"), 0);
+    m->ssm.inner       = (int)gguf_get_u32(g, AK("ssm.inner_size"), 0);
+    m->ssm.state       = (int)gguf_get_u32(g, AK("ssm.state_size"), 0);
+    m->ssm.v_heads     = (int)gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
+    m->ssm.groups      = (int)gguf_get_u32(g, AK("ssm.group_count"), 0);
+    if (m->ssm.conv_kernel <= 0 || m->ssm.conv_kernel > 8 ||
+        m->ssm.inner <= 0 || m->ssm.inner > MDL_DIM_MAX ||
+        m->ssm.state <= 0 || m->ssm.state > MDL_DIM_MAX ||
+        m->ssm.v_heads <= 0 || m->ssm.groups <= 0 ||
+        m->ssm.inner % m->ssm.v_heads != 0 ||
+        m->ssm.v_heads % m->ssm.groups != 0 ||
+        m->ssm.inner % m->ssm.groups != 0) {
         fprintf(stderr, "error: invalid nemotron_h Mamba-2 geometry "
                 "(conv_kernel=%d inner=%d state=%d heads=%d groups=%d)\n",
-                m->ssm_conv_kernel, m->ssm_inner, m->ssm_state,
-                m->ssm_v_heads, m->ssm_groups);
+                m->ssm.conv_kernel, m->ssm.inner, m->ssm.state,
+                m->ssm.v_heads, m->ssm.groups);
         return false;
     }
     // nemotron_h_moe (Nemotron-3.5 Lightning): the MLP blocks are a gate-less
@@ -2783,14 +2783,14 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
         fprintf(stderr, "nemotron_h_moe: Mamba-2 hybrid (%d recurrent + %d "
                 "attention + %d MoE layers, n_group=%d grouped scan) — %d/%d "
                 "gate-less squared-ReLU experts + always-on shared expert, "
-                "NoPE attention\n", n_rec, n_attn, n_mlp, m->ssm_groups,
+                "NoPE attention\n", n_rec, n_attn, n_mlp, m->ssm.groups,
                 m->n_expert_used, m->n_expert);
     else
         fprintf(stderr, "nemotron_h: Mamba-2 hybrid (%d recurrent + %d attention "
                 "+ %d MLP layers, n_group=%d grouped scan) — NON-MoE, NoPE "
                 "attention, gate-less squared-ReLU MLP; greedy output verified "
                 "against llama.cpp b10353 on Nemotron-Nano-9B-v2 Q8_0\n",
-                n_rec, n_attn, n_mlp, m->ssm_groups);
+                n_rec, n_attn, n_mlp, m->ssm.groups);
     return true;
 }
 
@@ -3281,8 +3281,8 @@ static bool bind_mamba2_mixer(model_t *m, gguf_file *g, layer_t *l, int i, bool 
     // continue — it binds only the mixer and falls through to the
     // shared FFN/MoE binding. Tensor shapes per llama.cpp b10353
     // granite-hybrid.cpp::load_arch_tensors.
-    int nh = m->ssm_v_heads, ds = m->ssm_state, ng = m->ssm_groups;
-    int inner = m->ssm_inner;
+    int nh = m->ssm.v_heads, ds = m->ssm.state, ng = m->ssm.groups;
+    int inner = m->ssm.inner;
     int conv_dim  = inner + 2 * ng * ds;
     int d_in_proj = 2 * inner + 2 * ng * ds + nh;
     l->ssm_in   = need_tensor(g, "blk.%d.ssm_in.weight", i, &ok);
@@ -3298,7 +3298,7 @@ static bool bind_mamba2_mixer(model_t *m, gguf_file *g, layer_t *l, int i, bool 
     // truncated hybrid fails closed here, not by reading past the map
     // in the scan (the hostile-GGUF discipline the admission stub kept).
     if (!check_shape(l->ssm_in, m->n_embd, d_in_proj, "ssm_in", i) ||
-        !check_shape(l->ssm_conv, m->ssm_conv_kernel, conv_dim,
+        !check_shape(l->ssm_conv, m->ssm.conv_kernel, conv_dim,
                      "ssm_conv1d", i) ||
         !check_shape(sconvb, conv_dim, 1, "ssm_conv1d.bias", i) ||
         !check_shape(sdtb, nh, 1, "ssm_dt.bias", i) ||
@@ -3438,23 +3438,23 @@ static bool bind_deltanet_mixer(model_t *m, gguf_file *g, layer_t *l, int i,
     // convolution or more heads than its own tensors hold and the
     // recurrence would read past them.
     {
-        int keydim  = m->ssm_state * m->ssm_groups;
-        int convdim = 2 * keydim + m->ssm_inner;
-        int hv      = m->ssm_inner / m->ssm_v_heads;
+        int keydim  = m->ssm.state * m->ssm.groups;
+        int convdim = 2 * keydim + m->ssm.inner;
+        int hv      = m->ssm.inner / m->ssm.v_heads;
         if (!check_shape(l->wqkv, m->n_embd, convdim, "attn_qkv", i) ||
-            !check_shape(l->wq_gate, m->n_embd, m->ssm_inner,
+            !check_shape(l->wq_gate, m->n_embd, m->ssm.inner,
                          "attn_gate", i) ||
             // read as convdim rows of conv_kernel, one per channel
-            !check_shape(l->ssm_conv, m->ssm_conv_kernel, convdim,
+            !check_shape(l->ssm_conv, m->ssm.conv_kernel, convdim,
                          "ssm_conv1d", i) ||
-            !check_shape(l->ssm_beta, m->n_embd, m->ssm_v_heads,
+            !check_shape(l->ssm_beta, m->n_embd, m->ssm.v_heads,
                          "ssm_beta", i) ||
-            !check_shape(l->ssm_alpha, m->n_embd, m->ssm_v_heads,
+            !check_shape(l->ssm_alpha, m->n_embd, m->ssm.v_heads,
                          "ssm_alpha", i) ||
-            !check_shape(l->ssm_out, m->ssm_inner, m->n_embd,
+            !check_shape(l->ssm_out, m->ssm.inner, m->n_embd,
                          "ssm_out", i) ||
-            !check_shape(dt, m->ssm_v_heads, 1, "ssm_dt", i) ||
-            !check_shape(sa, m->ssm_v_heads, 1, "ssm_a", i) ||
+            !check_shape(dt, m->ssm.v_heads, 1, "ssm_dt", i) ||
+            !check_shape(sa, m->ssm.v_heads, 1, "ssm_a", i) ||
             !check_shape(sn, hv, 1, "ssm_norm", i) ||
             (dense_ffn &&
              (!check_shape(l->w_gate, m->n_embd, l->n_ff, "ffn_gate", i) ||
@@ -3462,16 +3462,16 @@ static bool bind_deltanet_mixer(model_t *m, gguf_file *g, layer_t *l, int i,
               !check_shape(l->w_down, l->n_ff, m->n_embd, "ffn_down", i))))
             return false;
     }
-    l->ssm_dt     = tensor_to_f32(dt, m->ssm_v_heads, &ok);
-    l->ssm_a      = tensor_to_f32(sa, m->ssm_v_heads, &ok);
-    l->ssm_norm_w = tensor_to_f32(sn, m->ssm_inner / m->ssm_v_heads, &ok);
+    l->ssm_dt     = tensor_to_f32(dt, m->ssm.v_heads, &ok);
+    l->ssm_a      = tensor_to_f32(sa, m->ssm.v_heads, &ok);
+    l->ssm_norm_w = tensor_to_f32(sn, m->ssm.inner / m->ssm.v_heads, &ok);
     if (!ok) return false;
     {
         // the depthwise conv taps, dequantized once: the per-token
         // path used to dequantize every channel's kernel row on
         // every token (10,240 small calls a layer on Qwen3.8)
-        int K = m->ssm_conv_kernel;
-        int cd = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
+        int K = m->ssm.conv_kernel;
+        int cd = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
         l->ssm_conv_w = malloc(sizeof(float) * (size_t)cd * K);
         if (!l->ssm_conv_w) return false;
         size_t wrs = ggml_row_size(l->ssm_conv->type, K);
@@ -4452,12 +4452,12 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         if (!m->q_gate) return false;
     }
     if (m->qwen35) {
-        int conv_dim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
-        int hv = m->ssm_inner / m->ssm_v_heads;
+        int conv_dim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
+        int hv = m->ssm.inner / m->ssm.v_heads;
         // q_gate is shared the same way ssm_qkv is below: full-attention layers
         // write q_dim floats per token (the attention output gate), recurrent
-        // ones write ssm_v_heads (the DeltaNet beta). Nothing relates the two.
-        int gate_dim = q_dim > m->ssm_v_heads ? q_dim : m->ssm_v_heads;
+        // ones write ssm.v_heads (the DeltaNet beta). Nothing relates the two.
+        int gate_dim = q_dim > m->ssm.v_heads ? q_dim : m->ssm.v_heads;
         m->q_gate = malloc(sizeof(float) * (size_t)B * gate_dim);
         // ssm_qkv is shared by two uses: recurrent layers write conv_dim floats
         // per token, but full-attention layers write the fused Q/gate with stride
@@ -4466,26 +4466,26 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         // overflows the buffer.
         int qkv_dim = conv_dim > 2 * q_dim ? conv_dim : 2 * q_dim;
         m->ssm_qkv = malloc(sizeof(float) * (size_t)B * qkv_dim);
-        m->ssm_z = malloc(sizeof(float) * (size_t)B * m->ssm_inner);
+        m->ssm_z = malloc(sizeof(float) * (size_t)B * m->ssm.inner);
         m->ssm_aux = malloc(sizeof(float) * (size_t)B *
-                            (conv_dim + m->ssm_v_heads));
+                            (conv_dim + m->ssm.v_heads));
         m->ssm_conv_state = calloc((size_t)m->n_layer *
-                                   (m->ssm_conv_kernel - 1) * conv_dim,
+                                   (m->ssm.conv_kernel - 1) * conv_dim,
                                    sizeof(float));
-        m->ssm_state_mem = calloc((size_t)m->n_layer * m->ssm_v_heads *
+        m->ssm_state_mem = calloc((size_t)m->n_layer * m->ssm.v_heads *
                                   hv * hv, sizeof(float));
         // recurrent-state snapshot (tracer 4): same shape as the live buffers
         m->ssm_conv_snap = calloc((size_t)m->n_layer *
-                                  (m->ssm_conv_kernel - 1) * conv_dim,
+                                  (m->ssm.conv_kernel - 1) * conv_dim,
                                   sizeof(float));
-        m->ssm_state_snap = calloc((size_t)m->n_layer * m->ssm_v_heads *
+        m->ssm_state_snap = calloc((size_t)m->n_layer * m->ssm.v_heads *
                                    hv * hv, sizeof(float));
         m->ssm_snap_pos = -1;
         m->ssm_mark_pos = -1;
         // one dequantized conv-kernel row, reused every conv step (the forward
         // pass is single-threaded here, so one buffer suffices) — preallocated
         // so the hot path never mallocs and an OOM fails the load, not a token
-        m->ssm_cw = malloc(sizeof(float) * m->ssm_conv_kernel);
+        m->ssm_cw = malloc(sizeof(float) * m->ssm.conv_kernel);
     }
     if (m->granite_hybrid || m->nemotron_h) {
         // Mamba-2 recurrent scratch. Per token: the in_proj output zxBCdt
@@ -4493,27 +4493,27 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         // and the gated+normed inner y (ssm_z, inner). Per layer, held across
         // the whole sequence (no cache seam yet): the conv ring and the SSD
         // state. ssm_cw holds one dequantized conv-kernel row.
-        int nh = m->ssm_v_heads, ds = m->ssm_state, ng = m->ssm_groups;
-        int inner = m->ssm_inner, hd = inner / nh;
+        int nh = m->ssm.v_heads, ds = m->ssm.state, ng = m->ssm.groups;
+        int inner = m->ssm.inner, hd = inner / nh;
         int conv_dim  = inner + 2 * ng * ds;
         int d_in_proj = 2 * inner + 2 * ng * ds + nh;
         m->ssm_qkv = malloc(sizeof(float) * (size_t)B * d_in_proj);
         m->ssm_aux = malloc(sizeof(float) * (size_t)B * conv_dim);
         m->ssm_z   = malloc(sizeof(float) * (size_t)B * inner);
         m->ssm_conv_state = calloc((size_t)m->n_layer *
-                                   (m->ssm_conv_kernel - 1) * conv_dim,
+                                   (m->ssm.conv_kernel - 1) * conv_dim,
                                    sizeof(float));
         m->ssm_state_mem = calloc((size_t)m->n_layer * nh * hd * ds,
                                   sizeof(float));
         // recurrent-state snapshot (tracer 4): same shape as the live buffers
         m->ssm_conv_snap = calloc((size_t)m->n_layer *
-                                  (m->ssm_conv_kernel - 1) * conv_dim,
+                                  (m->ssm.conv_kernel - 1) * conv_dim,
                                   sizeof(float));
         m->ssm_state_snap = calloc((size_t)m->n_layer * nh * hd * ds,
                                    sizeof(float));
         m->ssm_snap_pos = -1;
         m->ssm_mark_pos = -1;
-        m->ssm_cw = malloc(sizeof(float) * m->ssm_conv_kernel);
+        m->ssm_cw = malloc(sizeof(float) * m->ssm.conv_kernel);
         if (!m->ssm_qkv || !m->ssm_aux || !m->ssm_z ||
             !m->ssm_conv_state || !m->ssm_state_mem || !m->ssm_cw ||
             !m->ssm_conv_snap || !m->ssm_state_snap)
@@ -5825,18 +5825,18 @@ static int ssm_force_serial(void) {
 SSM_PRECISE_ATTR
 static void mamba2_ssd_core_serial(model_t *m, layer_t *ly, int layer, int n) {
     SSM_PRECISE_SCOPE
-    int nh = m->ssm_v_heads;                 // n_ssm_head
-    int inner = m->ssm_inner, hd = inner / nh; // head_dim = inner / n_head
-    int ds = m->ssm_state, ng = m->ssm_groups;
+    int nh = m->ssm.v_heads;                 // n_ssm_head
+    int inner = m->ssm.inner, hd = inner / nh; // head_dim = inner / n_head
+    int ds = m->ssm.state, ng = m->ssm.groups;
     int gsz = nh / ng;                       // heads per group (repeat_interleave)
     int conv_dim  = inner + 2 * ng * ds;
     int d_in_proj = 2 * inner + 2 * ng * ds + nh;
-    int histn = m->ssm_conv_kernel - 1;
+    int histn = m->ssm.conv_kernel - 1;
 
     float *convstate = m->ssm_conv_state +
                        (size_t)layer * histn * conv_dim;
     float *states = m->ssm_state_mem + (size_t)layer * nh * hd * ds;
-    size_t wrs = ggml_row_size(ly->ssm_conv->type, m->ssm_conv_kernel);
+    size_t wrs = ggml_row_size(ly->ssm_conv->type, m->ssm.conv_kernel);
     float *cw = m->ssm_cw;                    // one dequantized conv row, reused
 
     for (int b = 0; b < n; b++) {
@@ -5851,7 +5851,7 @@ static void mamba2_ssd_core_serial(model_t *m, layer_t *ly, int layer, int n) {
         for (int c = 0; c < conv_dim; c++) {
             dequant_row(ly->ssm_conv->type,
                         (const uint8_t *)ly->ssm_conv->data + (size_t)c * wrs,
-                        cw, m->ssm_conv_kernel);
+                        cw, m->ssm.conv_kernel);
             float sum = ly->ssm_conv1d_b[c] + cw[histn] * xBC0[c];
             for (int k = 0; k < histn; k++)
                 sum += cw[k] * convstate[(size_t)k * conv_dim + c];
@@ -6027,20 +6027,20 @@ static void ssm_gate_norm_worker(void *vp, int b0, int b1) {
 SSM_PRECISE_ATTR
 static void mamba2_ssd_core_chunked(model_t *m, layer_t *ly, int layer, int n) {
     SSM_PRECISE_SCOPE
-    int nh = m->ssm_v_heads;
-    int inner = m->ssm_inner, hd = inner / nh;
-    int ds = m->ssm_state, ng = m->ssm_groups, gsz = nh / ng;
+    int nh = m->ssm.v_heads;
+    int inner = m->ssm.inner, hd = inner / nh;
+    int ds = m->ssm.state, ng = m->ssm.groups, gsz = nh / ng;
     int conv_dim = inner + 2 * ng * ds;
     int d_in_proj = 2 * inner + 2 * ng * ds + nh;
-    int histn = m->ssm_conv_kernel - 1;
+    int histn = m->ssm.conv_kernel - 1;
     float *convstate = m->ssm_conv_state + (size_t)layer * histn * conv_dim;
     float *states = m->ssm_state_mem + (size_t)layer * nh * hd * ds;
 
     // phase 1: conv1d for all tokens (thread over conv rows), reading the
     // initial ring for the first histn taps of the leading tokens.
     ssm_conv_job cj = { m, ly, n, inner, conv_dim, d_in_proj, histn,
-                        m->ssm_conv_kernel,
-                        ggml_row_size(ly->ssm_conv->type, m->ssm_conv_kernel),
+                        m->ssm.conv_kernel,
+                        ggml_row_size(ly->ssm_conv->type, m->ssm.conv_kernel),
                         convstate };
     tpool_run(m->tp, ssm_conv1d_worker, &cj, conv_dim);
 
@@ -6085,15 +6085,15 @@ static void mamba2_ssd_core_chunked(model_t *m, layer_t *ly, int layer, int n) {
 // Dispatcher: in_proj (batched), the mixer core (chunked prefill or serial),
 // then out_proj (batched). Decode (n==1) and XR_SSM_SERIAL take the serial core.
 static void mamba2_ssd_step(model_t *m, layer_t *ly, int layer, int n, int xdim) {
-    int nh = m->ssm_v_heads, inner = m->ssm_inner, ng = m->ssm_groups;
-    int d_in_proj = 2 * inner + 2 * ng * m->ssm_state + nh;
+    int nh = m->ssm.v_heads, inner = m->ssm.inner, ng = m->ssm.groups;
+    int d_in_proj = 2 * inner + 2 * ng * m->ssm.state + nh;
 
     // in_proj: normed input (m->xb) -> zxBCdt (m->ssm_qkv)
     matvec_b(m->tp, m->ssm_qkv, d_in_proj, ly->ssm_in,
              m->xb, xdim, m->n_embd, d_in_proj, NULL, n);
 
     if (n > 1 && !ssm_force_serial() &&
-        m->ssm_conv_kernel <= SSM_MAX_CONV_KERNEL)
+        m->ssm.conv_kernel <= SSM_MAX_CONV_KERNEL)
         mamba2_ssd_core_chunked(m, ly, layer, n);
     else
         mamba2_ssd_core_serial(m, ly, layer, n);
@@ -6162,10 +6162,10 @@ static void q35_heads_worker(void *vp, int h0, int h1) {
 static size_t recurrent_conv_bytes(const model_t *m);
 static size_t recurrent_state_bytes(const model_t *m);
 static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
-    int sk = m->ssm_state, ng = m->ssm_groups, nh = m->ssm_v_heads;
-    int inner = m->ssm_inner, hv = inner / nh;
+    int sk = m->ssm.state, ng = m->ssm.groups, nh = m->ssm.v_heads;
+    int inner = m->ssm.inner, hv = inner / nh;
     int keydim = sk * ng, convdim = 2 * keydim + inner;
-    int histn = m->ssm_conv_kernel - 1;
+    int histn = m->ssm.conv_kernel - 1;
 
     matvec_b(m->tp, m->ssm_qkv, convdim, ly->wqkv,
              m->xb, xdim, m->n_embd, convdim, NULL, n);
@@ -6193,7 +6193,7 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
     }
     if (!m->ssm_conv_keep) keep = false;
     m->ssm_keep_n = keep ? n : 0;
-    const int K = m->ssm_conv_kernel;
+    const int K = m->ssm.conv_kernel;
     for (int b = 0; b < n; b++) {
         float *mix = m->ssm_qkv + (size_t)b * convdim;
         // Causal depthwise convolution over the persistent history and input.
@@ -6972,9 +6972,9 @@ bool model_ple4_block_host(model_t *m, int layer, const int32_t *tokens, int n, 
 // Mamba-2 (granite/nemotron) keeps an [hd x ds] state (hd == hv). These match
 // the two calloc sites in model_alloc_buffers exactly.
 static size_t recurrent_conv_bytes(const model_t *m) {
-    int conv_dim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
+    int conv_dim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
     return sizeof(float) * (size_t)m->n_layer *
-           (size_t)(m->ssm_conv_kernel - 1) * (size_t)conv_dim;
+           (size_t)(m->ssm.conv_kernel - 1) * (size_t)conv_dim;
 }
 // qwen4exp: the PLE block's dilated causal conv reads the (K-1)*ngram rows
 // before the current one, kept in ple4_conv_hist across forwards. That window
@@ -6989,11 +6989,11 @@ static size_t recurrent_ple_bytes(const model_t *m) {
            (size_t)m->hc_count * (size_t)m->n_embd;
 }
 static size_t recurrent_state_bytes(const model_t *m) {
-    int hv = m->ssm_inner / m->ssm_v_heads;
+    int hv = m->ssm.inner / m->ssm.v_heads;
     size_t per_head = m->qwen35 ? (size_t)hv * (size_t)hv
-                                : (size_t)hv * (size_t)m->ssm_state;
+                                : (size_t)hv * (size_t)m->ssm.state;
     return sizeof(float) * (size_t)m->n_layer *
-           (size_t)m->ssm_v_heads * per_head;
+           (size_t)m->ssm.v_heads * per_head;
 }
 
 bool model_has_recurrent(const model_t *m) {
