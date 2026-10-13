@@ -2386,6 +2386,123 @@ static size_t render_harmony(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_MUSE.
+static size_t render_muse(int tmpl, const chat_msg *msgs, int n_msgs,
+                          bool add_assistant, int thinking, const jv *tools,
+                          char *out, size_t cap) {
+    size_t off = 0;
+    // muse-glimmer (reference: the model's OWN tokenizer.chat_template,
+    // read from the official meta-models GGUF, not a summary):
+    // <|start|>ROLE<|message|>CONTENT<|eot|> per turn; assistant turns
+    // carry a recipient — ` to=user` for answers, ` to=self` for
+    // reasoning turns, which is what the think_open/close pair splits.
+    // When no system message is present the reference injects a default
+    // one whose constant parts are reproduced here. Its current-date line
+    // is omitted for one reason only: a live wall-clock date changes the
+    // prompt prefix at midnight and evicts the prefix cache, which is the
+    // same call llama3, apertus and harmony make. It is NOT omitted
+    // because the reference makes it optional — an earlier version of this
+    // comment claimed the template gates it on `current_date is defined`,
+    // which is false: that branch falls through to `elif strftime_now is
+    // defined`, so under transformers the line always renders.
+    // Structured tools are rendered below with the model's native atem
+    // declaration macro; the legacy wrapper passes NULL and stays plain.
+    // `reasoning_strength` is a template kwarg in the reference
+    // (`render_reasoning`: the word verbatim, 'high' when absent); it
+    // arrives here as the THINK_EFFORT bits, xhigh (the absent value)
+    // reading as the reference's default "high". A caller's own system
+    // prompt may carry the directive itself: the reference normalises
+    // "reasoning effort" to "reasoning strength" (four casings) and
+    // then skips its line when the text already has one.
+    int effort_bits = thinking & THINK_EFFORT_MASK;
+    const char *strength = effort_bits == THINK_EFFORT_LOW ? "low"
+                         : effort_bits == THINK_EFFORT_MEDIUM ? "medium"
+                         : "high";
+    sbuf muse_line = {0};
+    pl_lit(&muse_line, "\n\nReasoning strength: ");
+    pl_lit(&muse_line, strength);
+    pl_lit(&muse_line, ".");
+    sbuf muse_tail = {0};
+    if (tools && tools->type == J_ARR && tools->n) {
+        pl_lit(&muse_tail, "\n\n");
+        muse_render_tool_defs(tools, &muse_tail);
+    }
+    pl_lit(&muse_tail, "\n\n# Valid recipients: \"self\"");
+    if (tools && tools->type == J_ARR) {
+        bool bare_mode = (thinking & THINK_BARE_RECIPIENTS) ? true
+                       : (thinking & THINK_NS_RECIPIENTS)   ? false
+                       : g_bare_recipients;
+        muse_render_recipients(tools, &muse_tail, bare_mode);
+    }
+    pl_lit(&muse_tail, ", \"user\".<|eot|>");
+    bool has_system = false;
+    for (int i = 0; i < n_msgs; i++)
+        if (!strcmp(msgs[i].role, "system")) has_system = true;
+    if (!has_system) {
+        off = emit(out, cap, off,
+                   "<|start|>system<|message|>You are a helpful AI "
+                   "assistant.\nKnowledge cutoff: 2026-01-04.", NULL, NULL);
+        off = emit(out, cap, off, "%s", muse_line.s, NULL);
+        off = emit(out, cap, off, "%s", muse_tail.s, NULL);
+    }
+    for (int i = 0; i < n_msgs; i++) {
+        const chat_msg *mm = &msgs[i];
+        if (!strcmp(mm->role, "system")) {
+            char *sys_text = muse_normalise_reasoning(mm->content);
+            const char *st = sys_text ? sys_text : mm->content;
+            off = emit(out, cap, off, "<|start|>system<|message|>%s",
+                       st, NULL);
+            if (!muse_has_reasoning_strength(st))
+                off = emit(out, cap, off, "%s", muse_line.s, NULL);
+            free(sys_text);
+            off = emit(out, cap, off, "%s", muse_tail.s, NULL);
+        } else if (!strcmp(mm->role, "assistant") && mm->channel &&
+                   !strcmp(mm->channel, "analysis")) {
+            // the reference replays an assistant message's reasoning_content
+            // as its own turn: `<|start|>assistant to=self<|message|>` the
+            // reasoning `<|eom|>`, before the answer or call it led to
+            off = emit(out, cap, off, "<|start|>assistant to=self<|message|>%s<|eom|>",
+                       mm->content, NULL);
+        } else if (!strcmp(mm->role, "assistant")) {
+            off = emit(out, cap, off, "<|start|>assistant to=%s<|message|>",
+                       mm->name ? mm->name : "user", NULL);
+            off = emit(out, cap, off, "%s<|eot|>", mm->content, NULL);
+        } else if (!strcmp(mm->role, "tool") && mm->name) {
+            off = emit(out, cap, off, "<|start|>tool %s<|message|>",
+                       mm->name, NULL);
+            off = emit(out, cap, off, "<tool_output name=\"%s\">\n",
+                       mm->name, NULL);
+            off = emit(out, cap, off, "%s\n</tool_output><|eot|>",
+                       mm->content, NULL);
+        } else {
+            // user and anything else (a tool result arrives as its own
+            // named role in the reference) render as a plain named turn
+            off = emit(out, cap, off, "<|start|>%s<|message|>",
+                       mm->role, NULL);
+            off = emit(out, cap, off, "%s<|eot|>", mm->content, NULL);
+        }
+    }
+    // The reference generation prompt is the bare header: the model then
+    // chooses its recipient, opening ` to=self` when it wants a reasoning
+    // turn. An explicit THINK_ON starts that self-addressed turn in the
+    // prompt, which makes reasoning-before-tool deterministic. With tools,
+    // THINK_OFF still leaves the recipient to the constrained header (it
+    // cannot pin `user`, because a required tool must remain reachable).
+    if (add_assistant) {
+        bool have_tools = tools && tools->type == J_ARR && tools->n;
+        int mode = thinking & THINK_MODE_MASK;   // effort bits ride above
+        const char *head = mode == THINK_ON
+                     ? "<|start|>assistant to=self<|message|>"
+                     : mode == THINK_OFF && !have_tools
+                     ? "<|start|>assistant to=user<|message|>"
+                     : "<|start|>assistant";
+        off = emit_raw(out, cap, off, "%s", head, NULL);
+    }
+    free(muse_line.s);
+    free(muse_tail.s);
+    return off;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -2460,118 +2577,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         return render_apertus(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_HARMONY:
         return render_harmony(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
-    case TMPL_MUSE: {
-        // muse-glimmer (reference: the model's OWN tokenizer.chat_template,
-        // read from the official meta-models GGUF, not a summary):
-        // <|start|>ROLE<|message|>CONTENT<|eot|> per turn; assistant turns
-        // carry a recipient — ` to=user` for answers, ` to=self` for
-        // reasoning turns, which is what the think_open/close pair splits.
-        // When no system message is present the reference injects a default
-        // one whose constant parts are reproduced here. Its current-date line
-        // is omitted for one reason only: a live wall-clock date changes the
-        // prompt prefix at midnight and evicts the prefix cache, which is the
-        // same call llama3, apertus and harmony make. It is NOT omitted
-        // because the reference makes it optional — an earlier version of this
-        // comment claimed the template gates it on `current_date is defined`,
-        // which is false: that branch falls through to `elif strftime_now is
-        // defined`, so under transformers the line always renders.
-        // Structured tools are rendered below with the model's native atem
-        // declaration macro; the legacy wrapper passes NULL and stays plain.
-        // `reasoning_strength` is a template kwarg in the reference
-        // (`render_reasoning`: the word verbatim, 'high' when absent); it
-        // arrives here as the THINK_EFFORT bits, xhigh (the absent value)
-        // reading as the reference's default "high". A caller's own system
-        // prompt may carry the directive itself: the reference normalises
-        // "reasoning effort" to "reasoning strength" (four casings) and
-        // then skips its line when the text already has one.
-        int effort_bits = thinking & THINK_EFFORT_MASK;
-        const char *strength = effort_bits == THINK_EFFORT_LOW ? "low"
-                             : effort_bits == THINK_EFFORT_MEDIUM ? "medium"
-                             : "high";
-        sbuf muse_line = {0};
-        pl_lit(&muse_line, "\n\nReasoning strength: ");
-        pl_lit(&muse_line, strength);
-        pl_lit(&muse_line, ".");
-        sbuf muse_tail = {0};
-        if (tools && tools->type == J_ARR && tools->n) {
-            pl_lit(&muse_tail, "\n\n");
-            muse_render_tool_defs(tools, &muse_tail);
-        }
-        pl_lit(&muse_tail, "\n\n# Valid recipients: \"self\"");
-        if (tools && tools->type == J_ARR) {
-            bool bare_mode = (thinking & THINK_BARE_RECIPIENTS) ? true
-                           : (thinking & THINK_NS_RECIPIENTS)   ? false
-                           : g_bare_recipients;
-            muse_render_recipients(tools, &muse_tail, bare_mode);
-        }
-        pl_lit(&muse_tail, ", \"user\".<|eot|>");
-        bool has_system = false;
-        for (int i = 0; i < n_msgs; i++)
-            if (!strcmp(msgs[i].role, "system")) has_system = true;
-        if (!has_system) {
-            off = emit(out, cap, off,
-                       "<|start|>system<|message|>You are a helpful AI "
-                       "assistant.\nKnowledge cutoff: 2026-01-04.", NULL, NULL);
-            off = emit(out, cap, off, "%s", muse_line.s, NULL);
-            off = emit(out, cap, off, "%s", muse_tail.s, NULL);
-        }
-        for (int i = 0; i < n_msgs; i++) {
-            const chat_msg *mm = &msgs[i];
-            if (!strcmp(mm->role, "system")) {
-                char *sys_text = muse_normalise_reasoning(mm->content);
-                const char *st = sys_text ? sys_text : mm->content;
-                off = emit(out, cap, off, "<|start|>system<|message|>%s",
-                           st, NULL);
-                if (!muse_has_reasoning_strength(st))
-                    off = emit(out, cap, off, "%s", muse_line.s, NULL);
-                free(sys_text);
-                off = emit(out, cap, off, "%s", muse_tail.s, NULL);
-            } else if (!strcmp(mm->role, "assistant") && mm->channel &&
-                       !strcmp(mm->channel, "analysis")) {
-                // the reference replays an assistant message's reasoning_content
-                // as its own turn: `<|start|>assistant to=self<|message|>` the
-                // reasoning `<|eom|>`, before the answer or call it led to
-                off = emit(out, cap, off, "<|start|>assistant to=self<|message|>%s<|eom|>",
-                           mm->content, NULL);
-            } else if (!strcmp(mm->role, "assistant")) {
-                off = emit(out, cap, off, "<|start|>assistant to=%s<|message|>",
-                           mm->name ? mm->name : "user", NULL);
-                off = emit(out, cap, off, "%s<|eot|>", mm->content, NULL);
-            } else if (!strcmp(mm->role, "tool") && mm->name) {
-                off = emit(out, cap, off, "<|start|>tool %s<|message|>",
-                           mm->name, NULL);
-                off = emit(out, cap, off, "<tool_output name=\"%s\">\n",
-                           mm->name, NULL);
-                off = emit(out, cap, off, "%s\n</tool_output><|eot|>",
-                           mm->content, NULL);
-            } else {
-                // user and anything else (a tool result arrives as its own
-                // named role in the reference) render as a plain named turn
-                off = emit(out, cap, off, "<|start|>%s<|message|>",
-                           mm->role, NULL);
-                off = emit(out, cap, off, "%s<|eot|>", mm->content, NULL);
-            }
-        }
-        // The reference generation prompt is the bare header: the model then
-        // chooses its recipient, opening ` to=self` when it wants a reasoning
-        // turn. An explicit THINK_ON starts that self-addressed turn in the
-        // prompt, which makes reasoning-before-tool deterministic. With tools,
-        // THINK_OFF still leaves the recipient to the constrained header (it
-        // cannot pin `user`, because a required tool must remain reachable).
-        if (add_assistant) {
-            bool have_tools = tools && tools->type == J_ARR && tools->n;
-            int mode = thinking & THINK_MODE_MASK;   // effort bits ride above
-            const char *head = mode == THINK_ON
-                         ? "<|start|>assistant to=self<|message|>"
-                         : mode == THINK_OFF && !have_tools
-                         ? "<|start|>assistant to=user<|message|>"
-                         : "<|start|>assistant";
-            off = emit_raw(out, cap, off, "%s", head, NULL);
-        }
-        free(muse_line.s);
-        free(muse_tail.s);
-        break;
-    }
+    case TMPL_MUSE:
+        return render_muse(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_GRANITE:
     case TMPL_GRANITE4: {
         // granite (reference: the model's OWN tokenizer.chat_template):
