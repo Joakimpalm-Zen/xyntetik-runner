@@ -83,7 +83,7 @@ PROMPTS = [
 # Extended to dense models by the owner on 2026-10-02 (R4.25): gemma-4 E4B
 # failed dense-strict on the RTX 3070 on a flip whose margins were 0.00056 and
 # 0.00016 nats, with a per-position CPU/CUDA delta the size of the gemma-3
-# control that passes (mean 2.3e-4; docs/device-runs-2026-10-02/). A dense
+# control that passes (mean 2.3e-4; the 2026-10-02 device runs, archived in Shade). A dense
 # model's reductions differ in order across backends just as a router's do,
 # so the same two-sided band applies; a confident divergence still fails, and
 # the report says the model is dense. --dense-strict restores the old rule.

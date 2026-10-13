@@ -1302,7 +1302,7 @@
         "chat",
         "tool"
       ],
-      "notes": "The 2026-09-14 Windows report's first artifact (the runner's own published quant). CUDA since v0.5.3 (PR #92, docs/cuda-iquants-2026-09-14.md: CPU vs CUDA 9/9 greedy identical). Tool protocol at shipped defaults 2026-09-14/15 on the the Linux CUDA host: 6/6 report cases with the parse-only XML routing (0/6 streamed on v0.5.3's routing, the report's finding), tool_choice required 2/2 under the XML grammar; OpenCode 1.18.31 completed a Read loop against it. Metal: UNSUPPORTED (qwen35 has no Metal path).",
+      "notes": "The 2026-09-14 Windows report's first artifact (the runner's own published quant). CUDA since v0.5.3 (PR #92; CPU vs CUDA 9/9 greedy identical, record archived in Shade under research/runner-engine/archive/runner-docs-2026-10-13b/). Tool protocol at shipped defaults 2026-09-14/15 on the the Linux CUDA host: 6/6 report cases with the parse-only XML routing (0/6 streamed on v0.5.3's routing, the report's finding), tool_choice required 2/2 under the XML grammar; OpenCode 1.18.31 completed a Read loop against it. Metal: UNSUPPORTED (qwen35 has no Metal path).",
       "check_params": {
         "tool": {
           "gate": "scripts/tool-protocol-check.py",

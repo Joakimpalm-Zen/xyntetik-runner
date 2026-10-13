@@ -1,5 +1,6 @@
-// The cooperative-KV attention read (arc B; the fix implied by
-// docs/metal-decode-kv-traffic-2026-08-15.md).
+// The cooperative-KV attention read (arc B; the fix implied by the
+// 2026-08-15 decode KV-traffic measurement, archived in Shade under
+// research/runner-engine/archive/runner-docs-2026-10-13b/).
 //
 // That measurement found decode's KV read running at 1.52 GB/s, ~18x worse per
 // byte than the weight read in the same forward, because k_attn gives each
