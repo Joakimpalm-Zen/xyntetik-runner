@@ -1759,6 +1759,149 @@ static size_t render_qwen3_coder(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_QWEN38.
+static size_t render_qwen38(int tmpl, const chat_msg *msgs, int n_msgs,
+                            bool add_assistant, int thinking, const jv *tools,
+                            char *out, size_t cap) {
+    size_t off = 0;
+    // Qwen/Qwen3.8-27B chat_template.jinja (2026-09-06), see the enum
+    // comment. Every content the reference renders goes through
+    // `|trim`; the reasoning preamble depends on the effort bits.
+    int mode = thinking & THINK_MODE_MASK;
+    int effort = thinking & THINK_EFFORT_MASK;
+    const char *instr = NULL;
+    if (mode != THINK_OFF) {
+        if (effort == THINK_EFFORT_LOW)
+            instr = "Reasoning effort is set to low. Keep your thinking "
+                    "brief and focused, moving directly to the conclusion "
+                    "without unnecessary elaboration.";
+        else if (effort != THINK_EFFORT_MEDIUM)
+            instr = "Reasoning effort is set to xhigh. Please think "
+                    "carefully through the task, validate key "
+                    "assumptions, consider plausible alternatives, and "
+                    "prioritize correctness, consistency, and clarity in "
+                    "the final answer.";
+    }
+    bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
+    int first = n_msgs > 0 && !strcmp(msgs[0].role, "system") ? 1 : 0;
+    const char *sc = first ? msgs[0].content : "";
+    const char *sc_e = trim_right(sc, sc + strlen(sc));
+    const char *sc_b = trim_left(sc, sc_e);
+    if (have_tools) {
+        // preamble, declarations, then the caller's system text
+        off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
+        if (instr) off = emit_raw(out, cap, off, "%s\n\n", instr, NULL);
+        sbuf decl = {0};
+        tools_render_for(tmpl, tools, &decl);
+        off = emit(out, cap, off, "%s", decl.s, NULL);
+        free(decl.s);
+        if (sc_e > sc_b) {
+            off = emit(out, cap, off, "\n\n", NULL, NULL);
+            off = emit_n(out, cap, off, sc_b, (size_t)(sc_e - sc_b));
+        }
+        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+    } else if (sc_e > sc_b) {
+        off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
+        if (instr) off = emit_raw(out, cap, off, "%s\n\n", instr, NULL);
+        off = emit_n(out, cap, off, sc_b, (size_t)(sc_e - sc_b));
+        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+    } else if (instr) {
+        off = emit_raw(out, cap, off, "<|im_start|>system\n%s<|im_end|>\n",
+                       instr, NULL);
+    }
+    for (int i = first; i < n_msgs; i++) {
+        const char *role = msgs[i].role;
+        const char *c = msgs[i].content;
+        const char *e = trim_right(c, c + strlen(c));
+        const char *b = trim_left(c, e);
+        if (!strcmp(role, "tool")) {
+            bool prev_tool = i > first && !strcmp(msgs[i - 1].role, "tool");
+            bool next_tool = i + 1 < n_msgs &&
+                             !strcmp(msgs[i + 1].role, "tool");
+            if (!prev_tool)
+                off = emit(out, cap, off, "<|im_start|>user", NULL, NULL);
+            off = emit(out, cap, off, "\n<tool_response>\n", NULL, NULL);
+            off = emit_n(out, cap, off, b, (size_t)(e - b));
+            off = emit(out, cap, off, "\n</tool_response>", NULL, NULL);
+            if (!next_tool)
+                off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+            continue;
+        }
+        if (strcmp(role, "assistant")) {
+            off = emit(out, cap, off, "<|im_start|>%s\n", role, NULL);
+            off = emit_n(out, cap, off, b, (size_t)(e - b));
+            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+            continue;
+        }
+        // Every assistant turn carries its thought block
+        // (preserve_thinking defaults true): `<think>\n` reasoning
+        // `\n</think>\n\n` then the trimmed content and its calls. A
+        // caller that composed the block already (the chat surface
+        // does, from reasoning_content) is passed through with the
+        // reasoning and the content each trimmed; one that did not gets
+        // the empty block the reference writes for no reasoning.
+        off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+        // The chat surface composes the block with its framing marked
+        // (server.c message_text, prompt_lit), so the parse looks past
+        // the marks and re-emits the framing as its own literals.
+        const char *rest = c;
+        const char *c0 = skip_marks(c);
+        if (!strncmp(c0, "<think>\n", 8)) {
+            const char *close = strstr(c0 + 8, "\n</think>\n\n");
+            if (close) {
+                const char *rb0 = skip_marks(c0 + 8);
+                const char *re = trim_right(rb0, unmark_end(rb0, close));
+                const char *rb = trim_left(rb0, re);
+                off = emit(out, cap, off, "<think>\n", NULL, NULL);
+                off = emit_n(out, cap, off, rb, (size_t)(re - rb));
+                off = emit(out, cap, off, "\n</think>\n\n", NULL, NULL);
+                // past the framing's own CLOSE only: an OPEN right after
+                // it begins the calls' framing and must stay with them
+                rest = close + 11;
+                while (*rest == PROMPT_RAW_CLOSE) rest++;
+            } else {
+                rest = NULL;   // an open block: replay verbatim
+            }
+        } else {
+            off = emit(out, cap, off, "<think>\n\n</think>\n\n", NULL, NULL);
+        }
+        if (!rest) {
+            off = emit(out, cap, off, "%s", c, NULL);
+        } else {
+            // the calls a turn carries end in `</tool_call>` and are
+            // not trimmed away with the content's own whitespace
+            const char *xe = rest + strlen(rest);
+            const char *tc = strstr(rest, "<tool_call>");
+            // The calls were framed by tool_history_render_for with the
+            // marks around their scaffolding; the first `<tool_call>` sits
+            // right after its OPEN mark, and the replay must carry that
+            // mark or the tokenizer reads the block as text.
+            while (tc && tc > rest && is_mark(tc[-1])) tc--;
+            const char *ce = tc ? tc : xe;
+            const char *cend = trim_right(rest, ce);
+            const char *cb = trim_left(rest, cend);
+            off = emit_n(out, cap, off, cb, (size_t)(cend - cb));
+            if (tc) {
+                // chat_template.jinja:140-147: the first call follows
+                // spoken text after a blank line, nothing otherwise
+                if (cend > cb) off = emit(out, cap, off, "\n\n", NULL, NULL);
+                off = emit(out, cap, off, "%s", tc, NULL);
+            }
+        }
+        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+    }
+    // emit_raw, not emit: the thought block is the template's own
+    // bytes, and emit() treats a %s argument as caller text (unmarked),
+    // which left `<think>` to tokenize as `<th` `ink` `>` on every
+    // thinking-enabled turn (found on Qwen 3.8, 2026-09-15; gated in
+    // tests/test_prompt_marks.c).
+    if (add_assistant)
+        off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
+                       mode == THINK_OFF ? "<think>\n\n</think>\n\n"
+                                         : "<think>\n", NULL);
+    return off;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -1774,144 +1917,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         return render_qwen35(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_QWEN3_CODER:
         return render_qwen3_coder(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
-    case TMPL_QWEN38: {
-        // Qwen/Qwen3.8-27B chat_template.jinja (2026-09-06), see the enum
-        // comment. Every content the reference renders goes through
-        // `|trim`; the reasoning preamble depends on the effort bits.
-        int mode = thinking & THINK_MODE_MASK;
-        int effort = thinking & THINK_EFFORT_MASK;
-        const char *instr = NULL;
-        if (mode != THINK_OFF) {
-            if (effort == THINK_EFFORT_LOW)
-                instr = "Reasoning effort is set to low. Keep your thinking "
-                        "brief and focused, moving directly to the conclusion "
-                        "without unnecessary elaboration.";
-            else if (effort != THINK_EFFORT_MEDIUM)
-                instr = "Reasoning effort is set to xhigh. Please think "
-                        "carefully through the task, validate key "
-                        "assumptions, consider plausible alternatives, and "
-                        "prioritize correctness, consistency, and clarity in "
-                        "the final answer.";
-        }
-        bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
-        int first = n_msgs > 0 && !strcmp(msgs[0].role, "system") ? 1 : 0;
-        const char *sc = first ? msgs[0].content : "";
-        const char *sc_e = trim_right(sc, sc + strlen(sc));
-        const char *sc_b = trim_left(sc, sc_e);
-        if (have_tools) {
-            // preamble, declarations, then the caller's system text
-            off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
-            if (instr) off = emit_raw(out, cap, off, "%s\n\n", instr, NULL);
-            sbuf decl = {0};
-            tools_render_for(tmpl, tools, &decl);
-            off = emit(out, cap, off, "%s", decl.s, NULL);
-            free(decl.s);
-            if (sc_e > sc_b) {
-                off = emit(out, cap, off, "\n\n", NULL, NULL);
-                off = emit_n(out, cap, off, sc_b, (size_t)(sc_e - sc_b));
-            }
-            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-        } else if (sc_e > sc_b) {
-            off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
-            if (instr) off = emit_raw(out, cap, off, "%s\n\n", instr, NULL);
-            off = emit_n(out, cap, off, sc_b, (size_t)(sc_e - sc_b));
-            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-        } else if (instr) {
-            off = emit_raw(out, cap, off, "<|im_start|>system\n%s<|im_end|>\n",
-                           instr, NULL);
-        }
-        for (int i = first; i < n_msgs; i++) {
-            const char *role = msgs[i].role;
-            const char *c = msgs[i].content;
-            const char *e = trim_right(c, c + strlen(c));
-            const char *b = trim_left(c, e);
-            if (!strcmp(role, "tool")) {
-                bool prev_tool = i > first && !strcmp(msgs[i - 1].role, "tool");
-                bool next_tool = i + 1 < n_msgs &&
-                                 !strcmp(msgs[i + 1].role, "tool");
-                if (!prev_tool)
-                    off = emit(out, cap, off, "<|im_start|>user", NULL, NULL);
-                off = emit(out, cap, off, "\n<tool_response>\n", NULL, NULL);
-                off = emit_n(out, cap, off, b, (size_t)(e - b));
-                off = emit(out, cap, off, "\n</tool_response>", NULL, NULL);
-                if (!next_tool)
-                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-                continue;
-            }
-            if (strcmp(role, "assistant")) {
-                off = emit(out, cap, off, "<|im_start|>%s\n", role, NULL);
-                off = emit_n(out, cap, off, b, (size_t)(e - b));
-                off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-                continue;
-            }
-            // Every assistant turn carries its thought block
-            // (preserve_thinking defaults true): `<think>\n` reasoning
-            // `\n</think>\n\n` then the trimmed content and its calls. A
-            // caller that composed the block already (the chat surface
-            // does, from reasoning_content) is passed through with the
-            // reasoning and the content each trimmed; one that did not gets
-            // the empty block the reference writes for no reasoning.
-            off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
-            // The chat surface composes the block with its framing marked
-            // (server.c message_text, prompt_lit), so the parse looks past
-            // the marks and re-emits the framing as its own literals.
-            const char *rest = c;
-            const char *c0 = skip_marks(c);
-            if (!strncmp(c0, "<think>\n", 8)) {
-                const char *close = strstr(c0 + 8, "\n</think>\n\n");
-                if (close) {
-                    const char *rb0 = skip_marks(c0 + 8);
-                    const char *re = trim_right(rb0, unmark_end(rb0, close));
-                    const char *rb = trim_left(rb0, re);
-                    off = emit(out, cap, off, "<think>\n", NULL, NULL);
-                    off = emit_n(out, cap, off, rb, (size_t)(re - rb));
-                    off = emit(out, cap, off, "\n</think>\n\n", NULL, NULL);
-                    // past the framing's own CLOSE only: an OPEN right after
-                    // it begins the calls' framing and must stay with them
-                    rest = close + 11;
-                    while (*rest == PROMPT_RAW_CLOSE) rest++;
-                } else {
-                    rest = NULL;   // an open block: replay verbatim
-                }
-            } else {
-                off = emit(out, cap, off, "<think>\n\n</think>\n\n", NULL, NULL);
-            }
-            if (!rest) {
-                off = emit(out, cap, off, "%s", c, NULL);
-            } else {
-                // the calls a turn carries end in `</tool_call>` and are
-                // not trimmed away with the content's own whitespace
-                const char *xe = rest + strlen(rest);
-                const char *tc = strstr(rest, "<tool_call>");
-                // The calls were framed by tool_history_render_for with the
-                // marks around their scaffolding; the first `<tool_call>` sits
-                // right after its OPEN mark, and the replay must carry that
-                // mark or the tokenizer reads the block as text.
-                while (tc && tc > rest && is_mark(tc[-1])) tc--;
-                const char *ce = tc ? tc : xe;
-                const char *cend = trim_right(rest, ce);
-                const char *cb = trim_left(rest, cend);
-                off = emit_n(out, cap, off, cb, (size_t)(cend - cb));
-                if (tc) {
-                    // chat_template.jinja:140-147: the first call follows
-                    // spoken text after a blank line, nothing otherwise
-                    if (cend > cb) off = emit(out, cap, off, "\n\n", NULL, NULL);
-                    off = emit(out, cap, off, "%s", tc, NULL);
-                }
-            }
-            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-        }
-        // emit_raw, not emit: the thought block is the template's own
-        // bytes, and emit() treats a %s argument as caller text (unmarked),
-        // which left `<think>` to tokenize as `<th` `ink` `>` on every
-        // thinking-enabled turn (found on Qwen 3.8, 2026-09-15; gated in
-        // tests/test_prompt_marks.c).
-        if (add_assistant)
-            off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
-                           mode == THINK_OFF ? "<think>\n\n</think>\n\n"
-                                             : "<think>\n", NULL);
-        break;
-    }
+    case TMPL_QWEN38:
+        return render_qwen38(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_GRANITE42:
     case TMPL_NEMOTRON35: {
         // ibm-granite/granite-4.2-3b chat_template.jinja (2026-09-06), see
