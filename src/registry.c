@@ -459,9 +459,18 @@ static void *ttl_reaper(void *arg) {
     // so a test that waits for an expiry does not spend 5 s per reload on
     // this sleep -- 32 such tests were 3.8 of make test's 4.5 pytest minutes.
     double poll = env_f64("RUNNER_TTL_POLL_S", 0.05, 3600.0, 5.0);
-    struct timespec ts = { (time_t)poll, (long)((poll - (double)(time_t)poll) * 1e9) };
     while (!atomic_load(&SV.shutdown)) {
-        nanosleep(&ts, NULL);
+        // The poll is slept in slices of at most 100 ms, each checking for a
+        // stop: shutdown joins this thread, so one whole-poll sleep held
+        // every stop (SIGTERM, Ctrl-C, the end of a test) for up to 5 s.
+        // Thirty root tests paid exactly that, 152 s of a 449 s pytest run
+        // (2026-10-13); users paid it on every Ctrl-C.
+        for (double slept = 0; slept < poll && !atomic_load(&SV.shutdown); slept += 0.1) {
+            double step = poll - slept < 0.1 ? poll - slept : 0.1;
+            struct timespec ts = { (time_t)step, (long)((step - (double)(time_t)step) * 1e9) };
+            nanosleep(&ts, NULL);
+        }
+        if (atomic_load(&SV.shutdown)) break;
         if (resident_load() < 0 || atomic_load(&SV.active_requests)) continue;
         if (pthread_mutex_trylock(&SV.swap_mu) != 0) continue;
         int idx = resident_load();
