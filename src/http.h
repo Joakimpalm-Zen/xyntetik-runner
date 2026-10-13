@@ -42,6 +42,9 @@ int  sock_peek(sock_t fd, char *buf, size_t n);
 // and every error (including would-block) mean "not proven closed".
 bool sock_peer_closed(sock_t fd);
 void sock_close(sock_t fd);
+// Close after a reply on a connection whose request may be unread: half-close,
+// drain (bounded), close, so the reply leaves as FIN, never RST (see http.c).
+void sock_close_drained(sock_t fd);
 // The reason a socket call failed, from the platform's own error channel.
 const char *sock_errstr(void);
 // Did the last failed receive end on its SO_RCVTIMEO rather than an error?

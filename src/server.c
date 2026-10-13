@@ -2712,7 +2712,9 @@ static void *slot_worker(void *arg) {
         s->queue_wait_s = waited;
         s->req_t0 = now_s();
         handle_conn(s, fd);
-        sock_close(fd);
+        // a refusal before the body was read leaves bytes in the receive
+        // buffer; drain them so the reply leaves as FIN, never RST
+        sock_close_drained(fd);
     }
 }
 

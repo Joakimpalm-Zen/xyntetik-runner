@@ -31,6 +31,7 @@ bool sock_peer_closed(sock_t fd) {
     return recv(fd, &byte, 1, MSG_PEEK) == 0;
 }
 void sock_close(sock_t fd) { closesocket(fd); }
+#define SOCK_SHUT_WR SD_SEND
 bool sock_timed_out(void) { return WSAGetLastError() == WSAETIMEDOUT; }
 // Winsock reports through WSAGetLastError, NOT errno — strerror(errno) here
 // prints "Success" (or a stale unrelated error) for a genuine bind failure,
@@ -77,6 +78,7 @@ bool sock_peer_closed(sock_t fd) {
     return recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT) == 0;
 }
 void sock_close(sock_t fd) { close(fd); }
+#define SOCK_SHUT_WR SHUT_WR
 bool sock_timed_out(void) { return errno == EAGAIN || errno == EWOULDBLOCK; }
 const char *sock_errstr(void) { return strerror(errno); }
 void sock_recv_timeout(sock_t fd, double s) {
@@ -279,6 +281,29 @@ const char *reason_phrase(int code) {
         case 507: return "Insufficient Storage";
         default:  return "Internal Server Error";
     }
+}
+
+// Close a connection whose request may still be unread, after the reply has
+// been written: a refusal from the accept thread (queue full, shutting down)
+// never reads the request, and some slot refusals answer before the body.
+// Closing with unread bytes in the receive buffer sends RST instead of FIN,
+// and a Windows client's stack then discards the reply it has not read yet:
+// the conformance run on the hosted Windows runner saw WinError 10054 with
+// no bytes where the 503 should have been (2026-10-13). So: half-close the
+// write side (the client sees EOF right after the reply), drain what the
+// client sent, bounded in bytes and time, then close. A client that has
+// already read the reply and closed makes the drain return at once.
+void sock_close_drained(sock_t fd) {
+    shutdown(fd, SOCK_SHUT_WR);
+    sock_recv_timeout(fd, 0.05);
+    char sink[4096];
+    size_t total = 0;
+    while (total < (size_t)1 << 20) {
+        int r = sock_recv(fd, sink, sizeof sink);
+        if (r <= 0) break;
+        total += (size_t)r;
+    }
+    sock_close(fd);
 }
 
 void send_response(sock_t fd, int code, const char *ctype, const char *body,

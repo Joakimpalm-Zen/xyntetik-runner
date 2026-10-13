@@ -250,9 +250,24 @@ def test_503_status_line_uses_service_unavailable_reason():
             queued.sendall(chat_request())
             time.sleep(0.2)
 
-            response = raw_request(srv, chat_request())
-            assert status(response) == 503
-            assert status_line(response) == b"HTTP/1.1 503 Service Unavailable"
+            # The refusal is written by the accept thread, which never reads
+            # the request. Closing with those bytes unread sends RST, and a
+            # Windows client's stack then discards the reply it has not read
+            # yet. The sleep lets the server close first, so the read below
+            # proves the reply survives that close rather than winning a race.
+            with contextlib.closing(socket.create_connection(
+                    ("127.0.0.1", srv.port), timeout=5)) as sock:
+                sock.settimeout(5)
+                sock.sendall(chat_request())
+                time.sleep(0.2)
+                response = bytearray()
+                while True:
+                    part = sock.recv(65536)  # a reset propagates and fails the test
+                    if not part:
+                        break
+                    response += part
+            assert status(bytes(response)) == 503
+            assert status_line(bytes(response)) == b"HTTP/1.1 503 Service Unavailable"
     finally:
         if stalled is not None:
             stalled.close()
