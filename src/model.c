@@ -1710,9 +1710,13 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
     return true;
 }
 
-static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
-    if (!gguf_open(&m->gf, path)) return false;
-    gguf_file *g = &m->gf;
+// `{arch}.KEY`, spelled into the caller's `key` buffer: the metadata key
+// every binding stage below reads its architecture's values through.
+#define AK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
+
+// The opt-in agent profile: atomic and fail-closed once any of its keys is
+// present.
+static bool bind_agent_profile(model_t *m, gguf_file *g) {
     // A profile is opt-in metadata: legacy/dense GGUFs remain admitted exactly
     // as before. Once any profile key is present, however, the contract is
     // atomic and fail-closed. Validate it before path/state/tensor allocation.
@@ -1786,15 +1790,12 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         m->agent_required_features = rf->arr_str;
         m->n_agent_required_features = rf->arr_n;
     }
-    // kept for the backend's shared-weight registry: two instances of the same
-    // file are what let `--parallel N` upload the weights once
-    size_t plen = strlen(path) + 1;
-    m->path = malloc(plen);
-    if (!m->path) return false;
-    memcpy(m->path, path, plen);
-    model_record_file_id(m, path);
+    return true;
+}
 
-    const char *arch = gguf_get_str(g, "general.architecture", "?");
+// Admission by architecture: refused families, the allowlist and the
+// experimental override.
+static bool bind_admit_architecture(model_t *m, const char *arch) {
     // m->arch is what every message below prints; `arch` is what they compare.
     meta_printable(m->arch, sizeof(m->arch), arch);
     // architectures whose weights load fine llama-style but whose math is
@@ -1830,9 +1831,13 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                 "RUNNER_ALLOW_UNKNOWN_ARCH is set — attempting llama-style "
                 "load, output may be silently wrong\n", m->arch);
     }
-    char key[128];
-    #define AK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
+    return true;
+}
 
+// The geometry and numerics every architecture shares, with their defaults and
+// bounds.
+static bool bind_hparams(model_t *m, gguf_file *g, const char *arch, bool hybrid_typed) {
+    char key[128];
     m->n_layer     = (int)gguf_get_u32(g, AK("block_count"), 0);
     // Bounded HERE, not at the general geometry gate below: the architecture
     // blocks between the two allocate n_layer-length arrays (SWA patterns,
@@ -1848,14 +1853,6 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     // "every layer owns its KV" is the default; only gemma4 E-series lowers it
     m->kv_from_start = m->n_layer;
     m->n_embd      = (int)gguf_get_u32(g, AK("embedding_length"), 0);
-    // The hybrid families type their blocks with zeros in the per-layer
-    // arrays (nemotron_h: head_count_kv / feed_forward_length; granitehybrid:
-    // head_count_kv). Their own blocks below read those arrays; the removal
-    // reading of a zero (this block's sublayer was dropped from the file)
-    // applies to every other architecture.
-    const bool hybrid_typed = strcmp(arch, "nemotron_h") == 0 ||
-                              strcmp(arch, "nemotron_h_moe") == 0 ||
-                              strcmp(arch, "granitehybrid") == 0;
     // attention.head_count: a scalar in every export, or the per-layer
     // array llama.cpp's own Nemotron-51B ("deci") files use, where a 0
     // entry means "this block has no attention" (--remove-sublayer writes
@@ -1982,6 +1979,34 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     m->logit_scale = 1.0f;
     m->resid_scale = 1.0f;
     m->rope_dim_local = m->rope_dim;
+    return true;
+}
+
+static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
+    if (!gguf_open(&m->gf, path)) return false;
+    gguf_file *g = &m->gf;
+    if (!bind_agent_profile(m, g)) return false;
+    // kept for the backend's shared-weight registry: two instances of the same
+    // file are what let `--parallel N` upload the weights once
+    size_t plen = strlen(path) + 1;
+    m->path = malloc(plen);
+    if (!m->path) return false;
+    memcpy(m->path, path, plen);
+    model_record_file_id(m, path);
+
+    const char *arch = gguf_get_str(g, "general.architecture", "?");
+    if (!bind_admit_architecture(m, arch)) return false;
+    char key[128];
+    // The hybrid families type their blocks with zeros in the per-layer
+    // arrays (nemotron_h: head_count_kv / feed_forward_length; granitehybrid:
+    // head_count_kv). Their own blocks below read those arrays; the removal
+    // reading of a zero (this block's sublayer was dropped from the file)
+    // applies to every other architecture.
+    const bool hybrid_typed = strcmp(arch, "nemotron_h") == 0 ||
+                              strcmp(arch, "nemotron_h_moe") == 0 ||
+                              strcmp(arch, "granitehybrid") == 0;
+
+    if (!bind_hparams(m, g, arch, hybrid_typed)) return false;
     if (strcmp(arch, "gemma3") == 0) {
         // gemma3: scaled embeddings, GELU ffn, sliding-window attention on 5
         // of every 6 layers (the 6th is global), locals rope at their own base
