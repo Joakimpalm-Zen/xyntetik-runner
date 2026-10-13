@@ -2227,6 +2227,165 @@ static size_t render_apertus(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_HARMONY.
+static size_t render_harmony(int tmpl, const chat_msg *msgs, int n_msgs,
+                             bool add_assistant, int thinking, const jv *tools,
+                             char *out, size_t cap) {
+    size_t off = 0;
+    // gpt-oss / OpenAI Harmony. Reference: the model's OWN
+    // tokenizer.chat_template in the official GGUF. Turn framing is
+    // <|start|>ROLE<|message|>CONTENT<|end|>; the assistant additionally
+    // names a channel, <|channel|>analysis for reasoning and
+    // <|channel|>final for the answer, and closes its final message with
+    // <|return|> when generating.
+    //
+    // The system turn is the format's own preamble (identity, reasoning
+    // effort, channel declaration) — NOT the caller's system message. A
+    // caller system message is a DEVELOPER turn in Harmony, which is the
+    // one structural thing that surprises people porting from ChatML.
+    //
+    // The preamble carries the knowledge cutoff but NOT the current date.
+    // The reference emits both, adjacent, which makes them look like one
+    // decision; they are two. `Current date:` is strftime_now() — a live
+    // wall-clock value, so the prompt prefix would change at midnight and
+    // evict the whole prefix cache for no gain (the same call llama3,
+    // apertus and muse make). The cutoff is a FROZEN literal: byte-
+    // identical on every render, nothing to interpolate, no cache cost, and
+    // it is a fact the model is trained to have. Omitting it was a
+    // side-effect of omitting the date, not a decision.
+    bool have_tools = tools && tools->type == J_ARR && tools->n;
+    sbuf system = {0};
+    pl_lit(&system, "<|start|>system<|message|>You are ChatGPT, a large "
+                    "language model trained by OpenAI.\n"
+                    "Knowledge cutoff: 2024-06\n\nReasoning: medium");
+    // The channel list is a CONSTANT in the reference, not a function of
+    // the declared tools: SystemContent::default() (openai-harmony
+    // abd677f7, chat.rs) always requires analysis, commentary, final, and
+    // the model's own GGUF jinja template writes the same three as a
+    // literal. commentary is where the model puts a user-visible preamble
+    // before a tool call, so it is legal even with nothing to call.
+    pl_lit(&system, "\n\n# Valid channels: analysis, commentary, final. "
+                    "Channel must be included for every message.");
+    // Declared function tools add one routing line to the SYSTEM turn.
+    // The reference gates it on the CONVERSATION carrying a developer
+    // `functions` namespace with at least one tool, not on the system
+    // turn's own contents (encoding.rs:175-194 feeds
+    // RenderOptions::conversation_has_function_tools, consumed at :996).
+    if (have_tools)
+        pl_lit(&system, "\nCalls to these tools must go to the commentary "
+                        "channel: 'functions'.");
+    pl_lit(&system, "<|end|>");
+    if (system.failed) {
+        free(system.s);
+        return SIZE_MAX;
+    }
+    off = emit(out, cap, off, "%s", system.s, NULL);
+    free(system.s);
+
+    // The DEVELOPER turn carries the caller's instructions and the tool
+    // namespace, in that order, separated by a blank line, and it sits
+    // immediately after the system preamble. Both halves are optional and
+    // the turn exists if either does — the reference builds it from
+    // DeveloperContent's two fields and joins the present ones with "\n\n"
+    // (openai-harmony abd677f7, encoding.rs:1012-1037), and the model's own
+    // GGUF jinja gates the whole turn on `developer_message or tools`.
+    //
+    // The namespace goes HERE, not in the system turn. openai-harmony has a
+    // second slot that renders identical bytes into the system turn
+    // (SystemContent::with_tools), but that one is for the model's BUILT-IN
+    // tools; OpenAI function tools, which is all Runner ever declares, are
+    // developer content. Only the position differs, so a golden taken from
+    // the wrong slot looks perfect and is wrong.
+    sbuf dev = {0};
+    for (int i = 0; i < n_msgs; i++) {
+        if (strcmp(msgs[i].role, "system")) continue;
+        // fold every system message into one instructions block, in order
+        sb_lit(&dev, dev.n ? "\n\n" : "# Instructions\n\n");
+        pl_fmt(&dev, "%s", msgs[i].content);
+    }
+    if (have_tools) {
+        if (dev.n) pl_lit(&dev, "\n\n");
+        harmony_render_tool_defs(tools, &dev);
+    }
+    if (dev.failed) {
+        free(dev.s);
+        return SIZE_MAX;
+    }
+    if (dev.n) {
+        off = emit(out, cap, off, "<|start|>developer<|message|>",
+                   NULL, NULL);
+        off = emit(out, cap, off, "%s<|end|>", dev.s, NULL);
+    }
+    free(dev.s);
+
+    for (int i = 0; i < n_msgs; i++) {
+        const chat_msg *mm = &msgs[i];
+        if (!strcmp(mm->role, "system")) continue;  // already in developer
+        if (!strcmp(mm->role, "assistant") && mm->name && mm->name[0]) {
+            const char *prefix = !strncmp(mm->name, "functions.", 10)
+                               ? "" : "functions.";
+            off = emit(out, cap, off, "<|start|>assistant to=%s%s",
+                       prefix, mm->name);
+            off = emit(out, cap, off,
+                       "<|channel|>commentary <|constrain|>json<|message|>%s"
+                       "<|call|>", mm->content, NULL);
+        } else if (!strcmp(mm->role, "tool") && mm->name && mm->name[0]) {
+            const char *prefix = !strncmp(mm->name, "functions.", 10)
+                               ? "" : "functions.";
+            // ` to=assistant` is load-bearing, not decoration. The
+            // reference resolves the author token BEFORE it consumes the
+            // channel, and a namespaced author ("functions.NAME") matches
+            // no known role; it is accepted as Role::Tool only via the
+            // recipient fallback branch. Drop the recipient and the whole
+            // prompt fails to parse with "Unknown role: functions.NAME".
+            off = emit(out, cap, off,
+                       "<|start|>%s%s to=assistant<|channel|>commentary",
+                       prefix, mm->name);
+            off = emit(out, cap, off, "<|message|>%s<|end|>",
+                       mm->content, NULL);
+        } else if (!strcmp(mm->role, "assistant") && mm->channel &&
+                   (!strcmp(mm->channel, "analysis") ||
+                    !strcmp(mm->channel, "commentary"))) {
+            off = emit(out, cap, off,
+                       "<|start|>assistant<|channel|>%s<|message|>",
+                       mm->channel, NULL);
+            off = emit(out, cap, off, "%s<|end|>", mm->content, NULL);
+        } else if (!strcmp(mm->role, "assistant")) {
+            // history carries answers only: a past turn's analysis is not
+            // replayed, which is what the reference template does too
+            off = emit(out, cap, off,
+                       "<|start|>assistant<|channel|>final<|message|>",
+                       NULL, NULL);
+            off = emit(out, cap, off, "%s<|end|>", mm->content, NULL);
+        } else {
+            off = emit(out, cap, off, "<|start|>%s<|message|>",
+                       mm->role, NULL);
+            off = emit(out, cap, off, "%s<|end|>", mm->content, NULL);
+        }
+    }
+    // Generation prompt. The bare header lets the model pick its own
+    // channel, which is what it is trained to do and what the splitter
+    // expects by default; THINK_ON/THINK_OFF prime a channel explicitly,
+    // the same lever muse pulls with ` to=self` / ` to=user`.
+    if (add_assistant) {
+        // Unlike muse, the DEFAULT primes the analysis channel rather
+        // than leaving the header bare. Two reasons, both practical: the
+        // model opens analysis on its own anyway (it is a reasoning
+        // model), and the decoded open marker is the bare word
+        // "analysis", which is far too common to hunt for in a free
+        // stream. Priming lets the splitter start already inside
+        // reasoning and never search for it. THINK_OFF primes final and
+        // gets no reasoning at all.
+        const char *head = have_tools
+                ? "<|start|>assistant"
+            : thinking == THINK_OFF
+                ? "<|start|>assistant<|channel|>final<|message|>"
+                : "<|start|>assistant<|channel|>analysis<|message|>";
+        off = emit_raw(out, cap, off, "%s", head, NULL);
+    }
+    return off;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -2299,160 +2458,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         break;
     case TMPL_APERTUS:
         return render_apertus(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
-    case TMPL_HARMONY: {
-        // gpt-oss / OpenAI Harmony. Reference: the model's OWN
-        // tokenizer.chat_template in the official GGUF. Turn framing is
-        // <|start|>ROLE<|message|>CONTENT<|end|>; the assistant additionally
-        // names a channel, <|channel|>analysis for reasoning and
-        // <|channel|>final for the answer, and closes its final message with
-        // <|return|> when generating.
-        //
-        // The system turn is the format's own preamble (identity, reasoning
-        // effort, channel declaration) — NOT the caller's system message. A
-        // caller system message is a DEVELOPER turn in Harmony, which is the
-        // one structural thing that surprises people porting from ChatML.
-        //
-        // The preamble carries the knowledge cutoff but NOT the current date.
-        // The reference emits both, adjacent, which makes them look like one
-        // decision; they are two. `Current date:` is strftime_now() — a live
-        // wall-clock value, so the prompt prefix would change at midnight and
-        // evict the whole prefix cache for no gain (the same call llama3,
-        // apertus and muse make). The cutoff is a FROZEN literal: byte-
-        // identical on every render, nothing to interpolate, no cache cost, and
-        // it is a fact the model is trained to have. Omitting it was a
-        // side-effect of omitting the date, not a decision.
-        bool have_tools = tools && tools->type == J_ARR && tools->n;
-        sbuf system = {0};
-        pl_lit(&system, "<|start|>system<|message|>You are ChatGPT, a large "
-                        "language model trained by OpenAI.\n"
-                        "Knowledge cutoff: 2024-06\n\nReasoning: medium");
-        // The channel list is a CONSTANT in the reference, not a function of
-        // the declared tools: SystemContent::default() (openai-harmony
-        // abd677f7, chat.rs) always requires analysis, commentary, final, and
-        // the model's own GGUF jinja template writes the same three as a
-        // literal. commentary is where the model puts a user-visible preamble
-        // before a tool call, so it is legal even with nothing to call.
-        pl_lit(&system, "\n\n# Valid channels: analysis, commentary, final. "
-                        "Channel must be included for every message.");
-        // Declared function tools add one routing line to the SYSTEM turn.
-        // The reference gates it on the CONVERSATION carrying a developer
-        // `functions` namespace with at least one tool, not on the system
-        // turn's own contents (encoding.rs:175-194 feeds
-        // RenderOptions::conversation_has_function_tools, consumed at :996).
-        if (have_tools)
-            pl_lit(&system, "\nCalls to these tools must go to the commentary "
-                            "channel: 'functions'.");
-        pl_lit(&system, "<|end|>");
-        if (system.failed) {
-            free(system.s);
-            return SIZE_MAX;
-        }
-        off = emit(out, cap, off, "%s", system.s, NULL);
-        free(system.s);
-
-        // The DEVELOPER turn carries the caller's instructions and the tool
-        // namespace, in that order, separated by a blank line, and it sits
-        // immediately after the system preamble. Both halves are optional and
-        // the turn exists if either does — the reference builds it from
-        // DeveloperContent's two fields and joins the present ones with "\n\n"
-        // (openai-harmony abd677f7, encoding.rs:1012-1037), and the model's own
-        // GGUF jinja gates the whole turn on `developer_message or tools`.
-        //
-        // The namespace goes HERE, not in the system turn. openai-harmony has a
-        // second slot that renders identical bytes into the system turn
-        // (SystemContent::with_tools), but that one is for the model's BUILT-IN
-        // tools; OpenAI function tools, which is all Runner ever declares, are
-        // developer content. Only the position differs, so a golden taken from
-        // the wrong slot looks perfect and is wrong.
-        sbuf dev = {0};
-        for (int i = 0; i < n_msgs; i++) {
-            if (strcmp(msgs[i].role, "system")) continue;
-            // fold every system message into one instructions block, in order
-            sb_lit(&dev, dev.n ? "\n\n" : "# Instructions\n\n");
-            pl_fmt(&dev, "%s", msgs[i].content);
-        }
-        if (have_tools) {
-            if (dev.n) pl_lit(&dev, "\n\n");
-            harmony_render_tool_defs(tools, &dev);
-        }
-        if (dev.failed) {
-            free(dev.s);
-            return SIZE_MAX;
-        }
-        if (dev.n) {
-            off = emit(out, cap, off, "<|start|>developer<|message|>",
-                       NULL, NULL);
-            off = emit(out, cap, off, "%s<|end|>", dev.s, NULL);
-        }
-        free(dev.s);
-
-        for (int i = 0; i < n_msgs; i++) {
-            const chat_msg *mm = &msgs[i];
-            if (!strcmp(mm->role, "system")) continue;  // already in developer
-            if (!strcmp(mm->role, "assistant") && mm->name && mm->name[0]) {
-                const char *prefix = !strncmp(mm->name, "functions.", 10)
-                                   ? "" : "functions.";
-                off = emit(out, cap, off, "<|start|>assistant to=%s%s",
-                           prefix, mm->name);
-                off = emit(out, cap, off,
-                           "<|channel|>commentary <|constrain|>json<|message|>%s"
-                           "<|call|>", mm->content, NULL);
-            } else if (!strcmp(mm->role, "tool") && mm->name && mm->name[0]) {
-                const char *prefix = !strncmp(mm->name, "functions.", 10)
-                                   ? "" : "functions.";
-                // ` to=assistant` is load-bearing, not decoration. The
-                // reference resolves the author token BEFORE it consumes the
-                // channel, and a namespaced author ("functions.NAME") matches
-                // no known role; it is accepted as Role::Tool only via the
-                // recipient fallback branch. Drop the recipient and the whole
-                // prompt fails to parse with "Unknown role: functions.NAME".
-                off = emit(out, cap, off,
-                           "<|start|>%s%s to=assistant<|channel|>commentary",
-                           prefix, mm->name);
-                off = emit(out, cap, off, "<|message|>%s<|end|>",
-                           mm->content, NULL);
-            } else if (!strcmp(mm->role, "assistant") && mm->channel &&
-                       (!strcmp(mm->channel, "analysis") ||
-                        !strcmp(mm->channel, "commentary"))) {
-                off = emit(out, cap, off,
-                           "<|start|>assistant<|channel|>%s<|message|>",
-                           mm->channel, NULL);
-                off = emit(out, cap, off, "%s<|end|>", mm->content, NULL);
-            } else if (!strcmp(mm->role, "assistant")) {
-                // history carries answers only: a past turn's analysis is not
-                // replayed, which is what the reference template does too
-                off = emit(out, cap, off,
-                           "<|start|>assistant<|channel|>final<|message|>",
-                           NULL, NULL);
-                off = emit(out, cap, off, "%s<|end|>", mm->content, NULL);
-            } else {
-                off = emit(out, cap, off, "<|start|>%s<|message|>",
-                           mm->role, NULL);
-                off = emit(out, cap, off, "%s<|end|>", mm->content, NULL);
-            }
-        }
-        // Generation prompt. The bare header lets the model pick its own
-        // channel, which is what it is trained to do and what the splitter
-        // expects by default; THINK_ON/THINK_OFF prime a channel explicitly,
-        // the same lever muse pulls with ` to=self` / ` to=user`.
-        if (add_assistant) {
-            // Unlike muse, the DEFAULT primes the analysis channel rather
-            // than leaving the header bare. Two reasons, both practical: the
-            // model opens analysis on its own anyway (it is a reasoning
-            // model), and the decoded open marker is the bare word
-            // "analysis", which is far too common to hunt for in a free
-            // stream. Priming lets the splitter start already inside
-            // reasoning and never search for it. THINK_OFF primes final and
-            // gets no reasoning at all.
-            const char *head = have_tools
-                    ? "<|start|>assistant"
-                : thinking == THINK_OFF
-                    ? "<|start|>assistant<|channel|>final<|message|>"
-                    : "<|start|>assistant<|channel|>analysis<|message|>";
-            off = emit_raw(out, cap, off, "%s", head, NULL);
-        }
-        break;
-    }
+    case TMPL_HARMONY:
+        return render_harmony(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_MUSE: {
         // muse-glimmer (reference: the model's OWN tokenizer.chat_template,
         // read from the official meta-models GGUF, not a summary):
