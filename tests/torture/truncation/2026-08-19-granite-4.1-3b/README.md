@@ -16,7 +16,7 @@ recipe, and the full serve flags are in
 
 `report.json` in each subdirectory is the raw probe output: per-rung
 `finish_reason`, `tool_calls` presence, JSON-parseability, `content` leakage,
-and the base64 of every HTTP response body. SGLang was blocked on the Blackwell
+and the base64 of every HTTP response body. SGLang was blocked on the Linux CUDA host
 MIG slice (like the note below) and so was measured on a *different box* — the
 Windows RTX 3070 under WSL2 — on the same Qwen3-1.7B substitute; its
 `sglang/report.json` is that run.
@@ -46,7 +46,7 @@ same Hermes-style `qwen` parser family). SGLang also needs `enable_thinking:
 false`, but — unlike TRT-LLM — it **accepts `tool_choice: "required"` (HTTP 200)**,
 so its column is measured with `required`, matching the granite/vLLM/Runner
 columns; the `"auto"` run gives byte-identical per-rung verdicts. Full rationale
-and the two-attempt history (Blackwell MIG blocked → RTX 3070/WSL2 measured) are
+and the two-attempt history (datacenter MIG slice blocked → RTX 3070/WSL2 measured) are
 in [`docs/truncation-benchmark.md`](../../../../docs/truncation-benchmark.md) and
 in `sglang/report.json`'s `notes` field.
 
@@ -116,8 +116,8 @@ are all parseable calls.
   TRT-LLM, not a crippled configuration — but they are more caveats than the four
   granite columns carry, so the TRT-LLM cell is read as "measured, same Outcome A,
   on a substitute model" rather than as an identical granite run.
-- **SGLang, measured on a second box after the Blackwell MIG blocked it.** SGLang
-  0.5.17 could not be kept alive on the Blackwell MIG 1g.24gb slice the other GPU
+- **SGLang, measured on a second box after the datacenter MIG slice blocked it.** SGLang
+  0.5.17 could not be kept alive on the datacenter MIG 1g.24gb slice the other GPU
   engines used: torch's caching allocator NVML-asserts (`NVML_SUCCESS == r INTERNAL
   ASSERT FAILED`, `avail mem=2.83 GB` on a 24 GB idle slice) and
   `PYTORCH_NO_CUDA_MEMORY_CACHING=1` clears the assert but OOMs, across

@@ -9,7 +9,7 @@ alongside the winning ones.
 
 | | |
 |---|---|
-| GPU | NVIDIA RTX PRO 6000 Blackwell Max-Q, **MIG 1g.24gb slice** (not the full card) |
+| GPU | NVIDIA RTX PRO 6000 Max-Q, **MIG 1g.24gb slice** (not the full card) |
 | CPU | AMD Ryzen Threadripper (128 threads available; runner used its defaults) |
 | Runner | `94ce01f` (2026-07-29), built `-O3 -march=native`, CUDA via `sm_75` PTX, JIT to `compute 12.0` |
 | llama.cpp | build `ea12b27` (CUDA), same GGUF files |

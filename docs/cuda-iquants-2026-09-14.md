@@ -20,7 +20,7 @@ refusal even when the normal type table has a kernel.
 ## Scoped device evidence
 
 Measured 2026-09-14 on the Qwen3.8-27B GSQ-RCO IQ3_S artifact: nine prompts,
-128 generated tokens, scalar pin, 40 of 64 layers on the Blackwell device:
+128 generated tokens, scalar pin, 40 of 64 layers on the datacenter GPU:
 **9/9 exact**, with the split recorded in
 [the CPU/CUDA report](cuda-iquants-evidence/cpu_cuda-qwen38-27b-gsq-rco-iq3s-blackwell.json).
 On the RTX 3070, 28 of 64 layers and 32 generated tokens also read 9/9 exact;

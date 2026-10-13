@@ -1,6 +1,6 @@
 {
  "gate": "tool-protocol-check",
- "label": "Blackwell MIG 1g.24gb, gemma-4-12b-it-qat-q4_0, branch xml, shipped defaults",
+ "label": "the Linux CUDA host MIG 1g.24gb, gemma-4-12b-it-qat-q4_0, branch xml, shipped defaults",
  "started": "2026-09-15T07:04:52+0200",
  "host": "bfff3786ea4e",
  "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",

@@ -13,7 +13,7 @@ resolution 2 x half-width; the lab's gate is resolution <= 0.10.
     python scripts/aa-pilot.py --runner runner.exe --model Qwen3-4B-Q4_K_M.gguf \
         --out docs/benchmarks-raw/aa-pilot-rtx3070-2026-10-07.json [--pairs 8] [--requests 20]
 
-Written for the ERASE feasibility question (Blackwell lab, 2026-10-06): a
+Written for the ERASE feasibility question (lab, 2026-10-06): a
 pilot, not a G0-I result. Nothing here quiets the box; the report says so.
 """
 import argparse, json, math, os, platform, subprocess, sys, time, urllib.request

@@ -113,7 +113,7 @@ Results contain:
 
 1. **Rates are properties of this set only.** The 150 hand-written prompts are a fixed benchmark, not a representative sample of any traffic. Results do not transfer to other sets without re-measurement.
 
-2. **Two x86 hosts, no Apple host.** ZEN-GAMING (Windows) and the lab box (Linux); the M1 run paged and was abandoned. The two retrained adapters are the published recipe's adapters, not byte copies of the lost originals.
+2. **Two x86 hosts, no Apple host.** the Windows CUDA host and the lab box (Linux); the M1 run paged and was abandoned. The two retrained adapters are the published recipe's adapters, not byte copies of the lost originals.
 
 3. **Greedy and constraint sampling are different instruments.** Raw leg (greedy decoding) and native leg (constrained tool_choice) measure different model behaviors. Both should be reported; neither alone is sufficient.
 
@@ -125,7 +125,7 @@ the adapters and the adapters differ somewhere, the instrument works. Where
 they are indistinguishable, the set needs redesign; a gate that cannot fail
 is not a gate.
 
-## Real Run Results (2026-09-23, ZEN-GAMING, CPU)
+## Real Run Results (2026-09-23, the Windows CUDA host, CPU)
 
 Host: Windows 11, 8 threads, runner 0.5.6, `--gpu off`, greedy. Base:
 bartowski/Qwen_Qwen3-4B-Q4_K_M (sha256 fbe1d5ed...), the study base. Four
@@ -276,7 +276,7 @@ four records below were re-derived from their stored outputs with
 `--rescore` (each changed on exactly the two rows the defects touched;
 `rescored_with` says so in the record).
 
-### Run (2026-09-24, ZEN-GAMING, CUDA path)
+### Run (2026-09-24, the Windows CUDA host, CUDA path)
 
 Host: Windows 11, RTX 3070, runner 0.5.6 built from the branch, `--gpu
 auto` (the 4B fits on the card; the adapter served on the device, R8.7.2),

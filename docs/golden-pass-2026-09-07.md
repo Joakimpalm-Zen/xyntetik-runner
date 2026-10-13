@@ -7,7 +7,7 @@ the llama.cpp yardstick and therefore carries the same two blind spots: a
 chat template that is not the publisher's, and a numerical reading both
 engines could have copied from each other.
 
-Two phases, both on the Blackwell against runner `golden-pass`:
+Two phases, both on the Linux CUDA host against runner `golden-pass`:
 
 - **Phase A**, template conformance: every family's renderer against the
   publisher's own template (or, where the publisher's page is gated, the
@@ -161,7 +161,7 @@ question, not as a renderer defect.
 
 ## Phase B: against the publishers' own implementations
 
-Transformers 5.16, float32, eager attention, on the Blackwell's CPUs,
+Transformers 5.16, float32, eager attention, on the Linux CUDA host's CPUs,
 from each publisher's safetensors. llama.cpp 73a43d1 with flash attention
 off is scored on the same file beside the runner. 100 corpus positions.
 
@@ -339,7 +339,7 @@ tables suggested.
    gap it appears to show. 1,000 positions reaches 0.54 and 2,000 reaches
    0.88 for a lopsided true effect, less for a moderate one. **2,000
    positions is the floor for a comparative claim** and is a few hours of
-   Blackwell time, not a research program. Filed as R6.7.9, **done the
+   GPU time, not a research program. Filed as R6.7.9, **done the
    same day, and the next section is what it found. Conclusions 1 and 2
    above did not survive it. This one did.**
 

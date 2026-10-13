@@ -335,7 +335,7 @@ static bool metal_moe_em_on(void) {
 // into single dispatches. Every fused kernel reproduces the unfused
 // arithmetic element for element, so the contract is BYTE IDENTITY against
 // RUNNER_METAL_FUSE=0, held by test-metal-fuse. Justified by the measured
-// dispatch budget (686/token, 3.4-4.8 us chain cost each on M5 Max), not by
+// dispatch budget (686/token, 3.4-4.8 us chain cost each on 128 GB Apple Silicon Mac), not by
 // any other engine's shape.
 static bool metal_fuse_on(void) {
     const char *v = getenv("RUNNER_METAL_FUSE");

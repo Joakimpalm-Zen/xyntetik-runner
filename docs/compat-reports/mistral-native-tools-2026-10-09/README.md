@@ -1,7 +1,7 @@
 # Mistral v0.3 and Nemo native tools: agent-torture, generic envelope against native protocol
 
 2026-10-09, `scripts/agent-torture.py --cases 40` against a Runner server on the
-Blackwell host's CPUs (16 threads, CUDA hidden, other tenants' load present),
+Linux CUDA host's CPUs (16 threads, CUDA hidden, other tenants' load present),
 run by the runner session overnight (suite R2.4.3). Each model is the same file
 on both arms.
 

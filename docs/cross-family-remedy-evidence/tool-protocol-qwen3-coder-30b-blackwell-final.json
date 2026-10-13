@@ -1,6 +1,6 @@
 {
  "gate": "tool-protocol-check",
- "label": "Blackwell MIG 1g.24gb, Qwen3-Coder-30B-A3B-Instruct Q4_K_M (the report's artifact), parse-only auto turn, qwen3-coder preset with repeat_penalty 1.0, shipped defaults",
+ "label": "the Linux CUDA host MIG 1g.24gb, Qwen3-Coder-30B-A3B-Instruct Q4_K_M (the report's artifact), parse-only auto turn, qwen3-coder preset with repeat_penalty 1.0, shipped defaults",
  "started": "2026-09-15T08:34:57+0200",
  "host": "bfff3786ea4e",
  "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",

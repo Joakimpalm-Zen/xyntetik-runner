@@ -36,7 +36,7 @@ day (R4.25): dense rows get the MoE rule's two-sided 0.5-nat band, so this
 row reads `pass_margin_qualified`, and `scripts/cpu_cuda_check.py
 --dense-strict` keeps the old reading.
 
-## The Linux CUDA box (Blackwell, MIG 1g.24gb slice)
+## The Linux CUDA box (Linux CUDA host, MIG 1g.24gb slice)
 
 Run on 2026-10-02 in a window the lab gave this work, on the unreleased
 branch `backlog-batch-3` (`06d7d07`) unless noted. Records in `blackwell/`.

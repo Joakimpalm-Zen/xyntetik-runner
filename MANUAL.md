@@ -456,7 +456,7 @@ seeded, replayable reinforcement fine-tuning. `--train-dpo` trains from
 (no second model copy: the adapter is bypassed for the reference pass),
 gated on the gradient's identity with two weighted cross-entropy backwards
 and on a directional derivative against central differences; on the
-Blackwell box a 14B pair of about 4,000 tokens is a step of just under an
+the Linux CUDA host a 14B pair of about 4,000 tokens is a step of just under an
 hour, so read the measured cost before starting a run. Design, gates,
 failure modes and every number above: [docs/adaptation-engine.md](docs/adaptation-engine.md).
 
@@ -1597,10 +1597,9 @@ Q4_K, Q8_0, and Q4_0 prefill into a separately compiled Metal 4 MPP tensor
 GEMM. Admission runs a hand-computable 256-wide matrix self-test per type
 before any model dispatch; compile, pipeline, or numeric failure falls back
 to the established simdgroup GEMM for that type. The path is deliberately
-not the default: on the M5 Max gate every admitted type was numerically
+not the default: on the admission gate every admitted type was numerically
 sound but only matched, rather than beating by the required 1.2x, the
-existing kernel (Q8_0 measured 261 vs 265 tok/s prefill on a 30B, Q4_0
-parity on a 70B). M1-M4 never compile or dispatch it and retain the same
+existing kernel. M1-M4 never compile or dispatch it and retain the same
 default path and performance. `RUNNER_METAL_TENSOR=0` is the explicit pin.
 
 **CUDA:** Linux and Windows use the dynamically loaded driver API and embedded
@@ -1771,7 +1770,7 @@ Vulkan is not implemented; AMD and Intel GPUs use the CPU path.
   attention K bias puts single channels far above their block), k8v4 0.04
   and inside the bar. Per model, measured, never assumed. Needs head_dim
   divisible by 32 and both q8 and fp4 kernels on the backend. The
-  Muse-Glimmer-30B rows were also taken on CUDA (one RTX PRO 6000 Blackwell
+  Muse-Glimmer-30B rows were also taken on CUDA (one RTX PRO 6000
   MIG slice against a CPU f16 reference): k8v4 0.0036, fp4 0.0209, the
   backend alone 2.0e-07, published on the
   [recovered-scales card](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-6p34-Q4_K-recovered-GGUF)
@@ -1933,7 +1932,7 @@ flags into unrelated feature sections.
 
 Independent inference slots for a single-model server, default `1`. On CUDA and (since
 2026-09-01) Metal, ready slots decode as one microbatch sharing a single weight sweep
-per step — measured 1.45-1.47x aggregate decode at 4-8 slots on Metal/M5 Max, and
+per step, measured faster in aggregate at 4-8 slots on Metal, and
 **bit-identical to sequential decode** by twin-kernel construction, gated in `make test`
 (`test-batch-identity`). Dense models only; MoE/recurrent families decode sequentially.
 `RUNNER_METAL_BATCH=0` restores sequential on Metal.
@@ -2060,11 +2059,11 @@ serve mode. A draft is refused at load on a vocabulary mismatch, a discrete-VRAM
 fully-offloaded target or CUDA-resident recurrent state (the verify walk needs
 host-readable hidden work; unified-memory Metal full offload qualifies since 2026-09-01
 and speculates correctly, target-exact and gated byte-identical against the plain path —
-but measure before relying on it there: on an M5 Max the batched verify costs roughly a
+but measure before relying on it there: on Apple Silicon the batched verify costs roughly a
 full decode step per column, because the dequant ALU that hides under the bandwidth
-floor at batch 1 becomes the critical path with columns added, and the measured 70B+1B
-pair decoded SLOWER speculative than plain despite 62-70% acceptance; the root-cause
-numbers are in docs/metal-decode-dispatch-budget-2026-09-01.md), or out of memory, and
+floor at batch 1 becomes the critical path with columns added, and a measured large
+dense target with a small draft decoded slower speculative than plain despite a good
+acceptance rate; the root cause is in docs/metal-decode-dispatch-budget-2026-09-01.md), or out of memory, and
 is dropped in swap mode; the run continues without it. In serve mode `GET
 /v1/capabilities` reports whether the draft is actually `active`, so a harness never
 measures the fallback as speculative decoding.
@@ -2909,7 +2908,7 @@ switches:
 | `RUNNER_VRAM_REGISTRY_DIR` | the platform runtime dir | Where the cross-process VRAM ledger files live, one per GPU. Point every cooperating runner at the same directory when the default runtime directory is not shared between them (containers, service accounts); the tests use it to isolate a ledger. |
 | `RUNNER_KV_RING` | unset | Give sliding-window layers only the KV rows they can read, indexed modulo that count, instead of a full `n_ctx` rows each. A local layer never attends past its window, so the rest of its cache is written once and never read: on gemma-3-4b at `-c 32768` this takes the cache from 4563 MB to 800 MB, within 1% of the theoretical floor. Output is unchanged - the ring holds exactly the rows the flat allocation would have been read from, gated as bit-identical `--score` logprobs against the default path. Works on the CPU, CUDA and (since 2026-09-01) Metal paths: CUDA resolves every device cache address through `kv_slot()` (verified bit-identical on an RTX 3070 at a partial split and a full offload, 2121 scored positions each, max |Δlogprob| exactly 0), and Metal resolves the same modulo through `kv_row_off` in its store and attention kernels — gated bit-identical teacher-forced logprobs against the flat allocation across many ring wraps (`tests/test_kv_ring.py`, mutation-proven). **It is opt-in because it costs something:** the prefix cache and partial rewind also address KV as flat absolute rows, so both are refused while a ring is active and a server loses shared-prompt reuse. Worth it when context length is the binding constraint, not otherwise. Dense and full-attention-only models ignore it. |
 | `RUNNER_TIEDV` | unset | Stop storing K rows for layers that ship no `attn_v.weight` (gemma-4's full-attention globals: V is the raw K projection, so K = rope(V·w) can be derived from the stored V at read time). On gemma-4-31B at `-c 32768` the K cache drops from 14.76 GB to 13.42 GB. This is a compute-for-memory trade and it is **not byte-identical**: the derived row replays the store path's arithmetic against the f16-rounded stored V, measured on the 31B as 100% f16 row agreement at short context (worst row 99.95%), teacher-forced mean \|Δlogprob\| 1.3e-3 with `nll_mean` moving 8.7e-5 and no top-1 change over 297 positions. CPU-only and f16-KV-only: a GPU run and a q8 cache both refuse loudly (the device kernels read stored K rows; a q8 cache would re-quantize the derived row), `--lora` refuses the combination (a K-side adapter delta would bypass the derived rows), and like `RUNNER_KV_RING` the asymmetric layout disables the shared prefix cache. Layers that carry a real `attn_v.weight` are untouched; models with no V-less layers ignore it. Gate: `tests/test_tiedv.py`; diagnostic: `RUNNER_TIEDV_CHECK=1` prints per-row derived-vs-stored K agreement while the flat cache still stores real K. |
-| `RUNNER_PREFETCH` | unset/off | Opt-in: on load, hint the whole weight mapping to the OS (`madvise(MADV_WILLNEED)` / `PrefetchVirtualMemory`) when the model fits in available RAM. **Off by default because the measurement said so**: on an M5 Max the sweep made the cold 63 GB gpt-oss-120b load 60% *slower* than plain demand faulting (11.5 s vs 18.4 s, interleaved with eviction between arms) — macOS demand paging outruns its own WILLNEED readahead. Linux and Windows have prior art the other way (batched readahead, `PrefetchVirtualMemory`) and can measure on their own hardware before flipping it on. Pages stay fully evictable either way; suppressed under `--mlock` and for oversubscribed models. |
+| `RUNNER_PREFETCH` | unset/off | Opt-in: on load, hint the whole weight mapping to the OS (`madvise(MADV_WILLNEED)` / `PrefetchVirtualMemory`) when the model fits in available RAM. **Off by default because the measurement said so**: on a 128 GB Apple Silicon Mac the sweep made the cold 63 GB gpt-oss-120b load 60% *slower* than plain demand faulting (11.5 s vs 18.4 s, interleaved with eviction between arms) — macOS demand paging outruns its own WILLNEED readahead. Linux and Windows have prior art the other way (batched readahead, `PrefetchVirtualMemory`) and can measure on their own hardware before flipping it on. Pages stay fully evictable either way; suppressed under `--mlock` and for oversubscribed models. |
 | `RUNNER_METAL_FUSE` | on | Decode-path kernel fusion, up to the attention-front megakernel: norm + Q/K/V (Q8_0/Q4_0/Q4_K/Q6_K rosters) + qk-norm + rope + KV-store as ONE dispatch, whole heads per threadgroup, the normed row staged in threadgroup memory; plus rope+store, residual-add+rmsnorm and MoE gate+up+activation fusions on the paths the megakernel does not cover. −52% dispatches per token; +5–6% decode on the 120B and 30B, byte-identical. The post-FFN residual add rides the MoE expert sum on layers where it isn't already deferred into the next norm. The megakernel admits MoE models only — it recovers dispatch-chain latency, and a fast dense model is matvec-bound and measured slower under it (`RUNNER_METAL_FRONT=all` lifts that for tests; `RUNNER_METAL_FRONT=0` disables just the megakernel while keeping the other fusions, the isolation lever the q4_0 contraction hunt was run with). Every fused kernel reproduces the unfused arithmetic element for element — **byte-identical**, gated across a six-architecture roster in `make test` (`test-metal-fuse`). q8 KV, NoPE layers, sandwich norms and the gemma dual branch keep the unfused path automatically; `0` restores it everywhere. |
 | `RUNNER_METAL_MOE_MM` | on | Grouped simdgroup-MMA MoE prefill (default since 2026-09-01): per-expert GEMM tiles over gathered token columns, float-staged operands, +21-31% measured prefill on 30B/120B-class MoE, decode untouched. Judged by the house fidelity bar (`test-moe-mm-ab`), not byte identity — top-k routing flips near-ties under any reassociation, so `0` restores the matvec path and is pinned by every byte-identity gate; `half` selects the half-staged comparison arm. Dense models unaffected. |
 | `RUNNER_METAL_TENSOR` | unset/off | On M5+ with macOS 26.2+, opt Q4_K, Q8_0, and Q4_0 prefill into the separately admitted Metal 4 MPP tensor GEMM (per-type self-test; a failing type falls back alone). Experimental and not promoted: every admitted type passes its correctness gate but measured only parity with the simdgroup GEMM on M5, short of the 1.2x default-promotion bar. Ignored on M1-M4. |
@@ -3338,7 +3337,7 @@ holds that every control spelling a template writes, live or replayed
 and thinking mode, and `scripts/template-conformance.py` compares the
 reference's tokens against the ids the server actually feeds (prompt-mode
 encoding of the marked render) rather than against the stripped text
-re-encoded: on the Blackwell with the real vocabularies, Qwen 3.8, Granite
+re-encoded: on the Linux CUDA host with the real vocabularies, Qwen 3.8, Granite
 4.2, Ornith, Qwen3-Coder and chatml-think are token-identical to their
 references on every case, tool replays included.
 
@@ -3728,7 +3727,7 @@ documented `event: error` mid-stream. See [Structured output](#structured-output
 
 Client compatibility is a dated executable observation, not something inferred
 from an API name. The 2026-09-15 sweep (`scripts/agent-client-sweep.py`, a
-per-run sentinel in a fixture directory, Qwen3-4B Q4_K_M on a Blackwell MIG
+per-run sentinel in a fixture directory, Qwen3-4B Q4_K_M on a datacenter MIG slice
 slice, record in `docs/cross-family-remedy-evidence/agent-client-sweep-qwen3-4b-blackwell-2026-09-15.json`)
 recorded complete tool -> execution -> result -> answer loops for OpenCode
 1.18.31, Claude Code 2.1.272, Codex CLI 0.154.0 (hosted web search disabled,
@@ -3881,7 +3880,7 @@ engine that wires down half your RAM and ticks 160 times a second while idle
 is the reason people kill it every time, and the reason Runner does not need
 killing.
 
-The same lifecycle measured on a 128 GB M5 Max with gpt-oss-120b (63 GB)
+The same lifecycle measured on a 128 GB Apple Silicon Mac with gpt-oss-120b (63 GB)
 says abundance does not dissolve the difference, it scales it: loaded idle,
 llama-server (`010be968`) wires **+60.8 GB**, half the machine held by an
 idle process, against Runner's **+35 MB**, and `/unload` hands everything

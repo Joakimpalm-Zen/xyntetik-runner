@@ -113,7 +113,7 @@ static void test_clamp(void) {
 
 // The KV-evicts-weights trade note. Same class of blindness: it fires only on a
 // partial GPU split that the KV cache caused, which needs a model bigger than
-// the card. It is observable in the Blackwell stress-context artifacts under
+// the card. It is observable in the Linux CUDA host stress-context artifacts under
 // tests/compatibility/out/ but nothing gated the threshold, so a regression
 // would have shown up as the note quietly never appearing again.
 static void test_kv_trade_note(void) {
@@ -164,7 +164,7 @@ static void test_kv_ring_rows(void) {
 // spend on weights and KV. The 2026-09-14 Windows report: on a 12 GB card
 // the fit filled VRAM to 11.7 GB from the driver's free-memory view and WDDM
 // then paged the process over PCIe (GPU 100% busy, a 300-token request not
-// finished in 15 minutes), and on the Blackwell slice the same fit left
+// finished in 15 minutes), and on the datacenter MIG slice the same fit left
 // 0.02 GB of slack and the recurrent state buffers, allocated last, were
 // refused by the device allocator. The budget now respects the OS video
 // memory budget for the process where the OS publishes one (WDDM,

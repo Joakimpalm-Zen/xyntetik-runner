@@ -1,6 +1,6 @@
 {
  "schema_version": "xyntetik.runner.aa-pilot.v1",
- "box": "Zen-Gaming",
+ "box": "windows-cuda-host",
  "platform": "Windows-11-10.0.26100-SP0",
  "runner": "~/cuda-smoke\\runner.exe",
  "runner_version": "1.0.2",

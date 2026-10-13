@@ -50,7 +50,7 @@ def served_model_ids(endpoint, timeout=20):
 
 def require_served(endpoint, name, label):
     """Fail at once, naming the served ids, rather than 404 on every position
-    (found on the Blackwell 2026-09-22: a label instead of the served id gave a
+    (found on the Linux CUDA host 2026-09-22: a label instead of the served id gave a
     full run with nothing scored)."""
     ids = served_model_ids(endpoint)
     if ids is None:

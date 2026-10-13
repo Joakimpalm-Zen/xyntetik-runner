@@ -2,7 +2,7 @@
 
 Date: 2026-07-24
 Runner: v1.2.1 (core support plus the follow-ups at the end of this doc)
-Hardware: NVIDIA RTX PRO 6000 Blackwell, **24 GB MIG slice** (`MIG 1g.24gb`),
+Hardware: NVIDIA RTX PRO 6000, **24 GB MIG slice** (`MIG 1g.24gb`),
 CPU fallback on the same host (64 threads).
 
 ## Summary
@@ -12,7 +12,7 @@ converges on for modest-VRAM hardware — on CPU, fully on the GPU, and with
 **partial CPU offload for cards smaller than the model** (8–16 GB). Headline
 results: **Qwen3-30B-A3B (Q4_K_M, 128 experts, top-8) loads in 18.6 GB, fits a
 24 GB MIG slice with 6 GB free, and generates at ~55 tok/s on an NVIDIA RTX PRO
-6000 Blackwell**, token-identical to Runner's CPU path on the same quantized
+6000**, token-identical to Runner's CPU path on the same quantized
 GGUF. That number is a hardware-specific measurement, not a representative
 claim for every 24 GB consumer GPU. On simulated 8/12/16 GB budgets it
 partially offloads (19/29/39 of 48 layers on GPU) with identical output. Both
@@ -220,7 +220,7 @@ python3 scripts/compare_llamacpp.py \
 
 The real comparison was run on 2026-07-28 with model SHA256
 `0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5`.
-Runner CPU and Blackwell GPU output remained byte-identical for the full
+Runner CPU and GPU output remained byte-identical for the full
 128-token prompt. Independent greedy output is not required to remain byte-identical:
 both pinned llama.cpp `b10076` (`305ba519a`, CPU reference) and a newer
 `91d2fc3` GPU build diverged late in the continuation after an identical
@@ -235,7 +235,7 @@ implementation-specific reduction order rather than model correctness.
 The committed raw evidence is in
 `tests/compatibility/out/qwen3-30b-a3b-runner-vs-b10076-cpu-reference/` and
 `tests/compatibility/out/qwen3-30b-a3b-runner-vs-91d2fc3-gpu/`. The latter is
-the comparable Blackwell performance run; the pinned CPU-reference run is for
+the comparable CUDA performance run; the pinned CPU-reference run is for
 correctness only and its throughput numbers must not be compared to Runner's
 GPU numbers. CI continues to exercise the harness with fixtures.
 
@@ -250,7 +250,7 @@ GPU numbers. CI continues to exercise the harness with fixtures.
   prompt (~5.6x the per-token rate).
 - **Q3_K GPU kernel — DONE.** `k_mv_q3_K` / `k_mv_q3_K_b` (warp-per-row, dequant
   fused into the dot). **Mixtral-8x7B-Instruct Q3_K_M (20.4 GB) now loads fully
-  on the Blackwell 24 GB MIG slice and runs on the GPU**, token-identical to
+  on the datacenter 24 GB MIG slice and runs on the GPU**, token-identical to
   the CPU reference.
 - **MXFP4 read — DONE.** OCP microscaling FP4 (GGML type 39) — the gpt-oss
   expert-tensor format — is read and dequantized (E8M0 block scale × E2M1 code),

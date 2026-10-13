@@ -488,7 +488,7 @@ def test_distribution_label_matching_prediction_is_calibrated():
 
 def test_unknown_model_name_is_refused_before_any_request(tmp_path, make_server):
     # a wrong --model-name is a one-line error naming the served ids, not a
-    # full-length run of 404s with an empty report (Blackwell, 2026-09-22)
+    # full-length run of 404s with an empty report (Linux CUDA host, 2026-09-22)
     server = make_server(hash_scorer)
     qfile = tmp_path / "questions.jsonl"
     write_jsonl(qfile, ROWS)

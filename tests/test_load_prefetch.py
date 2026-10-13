@@ -1,6 +1,6 @@
 """The load-time WILLNEED sweep is OPT-IN, and its guards hold.
 
-Measured on the M5 Max (gpt-oss-120b, 63 GB, evicted between arms): the
+Measured on the 128 GB Apple Silicon Mac (gpt-oss-120b, 63 GB, evicted between arms): the
 sweep made the cold load 60% SLOWER than plain demand faulting, so it ships
 opt-in for the platforms whose prior art says it batches (Linux readahead,
 Windows PrefetchVirtualMemory) to measure for themselves. The decision
@@ -42,7 +42,7 @@ def run(runner_bin, *extra, env_extra=None):
 
 
 def test_default_is_off(runner_bin):
-    # measured 60% SLOWER cold on macOS (M5 Max, 120B) — the sweep is opt-in
+    # measured 60% SLOWER cold on macOS (128 GB Apple Silicon, 120B) — the sweep is opt-in
     assert LINE not in run(runner_bin)
 
 

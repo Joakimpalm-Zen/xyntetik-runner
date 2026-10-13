@@ -1,6 +1,6 @@
-# Timing A/A pilot, RTX 3070 (ZEN-GAMING), 2026-10-07 03:18-03:20
+# Timing A/A pilot, RTX 3070 (the Windows CUDA host), 2026-10-07 03:18-03:20
 
-Feasibility evidence for the Blackwell lab's ERASE question (can a box
+Feasibility evidence for the lab's ERASE question (can a box
 resolve a ~5% effect on the GPU path?), not a G0-I result. Driver:
 `scripts/aa-pilot.py`. Runner 1.0.2 release binary (sha256 28de83aa...),
 Qwen/Qwen3-4B-GGUF Q4_K_M (sha256 7485fe6f..., byte-identical to the file

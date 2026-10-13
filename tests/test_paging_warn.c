@@ -102,7 +102,7 @@ int main(int argc, char **argv) {
        !strstr(buf, "sparse MoE"),
        "hot == file falls back to the dense wording");
 
-    // Found on the M5 Max wiring 85.7 GB: mlock succeeded over the whole map
+    // Found on the 128 GB Apple Silicon Mac wiring 85.7 GB: mlock succeeded over the whole map
     // and the warning still predicted evictions and cold-expert disk reads —
     // both impossible for wired pages. A successful lock is also proof the
     // memory existed, whatever the instantaneous "available" figure said.

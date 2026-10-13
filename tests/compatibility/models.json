@@ -1142,7 +1142,7 @@
         "cpu_cuda",
         "chat"
       ],
-      "notes": "Official IBM GGUF. Granite 4.2 is the granite arch with the muP scales at 1.0, pre-tokenizer granite-docling (the GPT-2 rule with the regex's letter class) and its own granite42 template (ChatML, <think>, function-XML tools; 22/22 conformance). Blackwell 2026-09-06 vs 73a43d1: tokenizer 0/721, cpu_cuda 9/9 exact at 128 tokens, chat clean; greedy 3/5 at 8 tokens and 0/6 on the six-prompt cert set (the certified granite-4.1-3b Q4_K_M control reads 3/6 there today), the 16-prompt divergence gate reading 5 identical / 6 ties / 5 past the 0.25-nat bar, which the certified granite-4.1-3b Q4_K_M control reproduces on the same gate (8 / 4 / 4); same-file kld-raw margin-qualified top-1 100%, max per-position KLD 0.098 (the 4.1-3b control: 0.212). Evidence in docs/granite-42-qwen38-cert-2026-09-06.md.",
+      "notes": "Official IBM GGUF. Granite 4.2 is the granite arch with the muP scales at 1.0, pre-tokenizer granite-docling (the GPT-2 rule with the regex's letter class) and its own granite42 template (ChatML, <think>, function-XML tools; 22/22 conformance). the Linux CUDA host 2026-09-06 vs 73a43d1: tokenizer 0/721, cpu_cuda 9/9 exact at 128 tokens, chat clean; greedy 3/5 at 8 tokens and 0/6 on the six-prompt cert set (the certified granite-4.1-3b Q4_K_M control reads 3/6 there today), the 16-prompt divergence gate reading 5 identical / 6 ties / 5 past the 0.25-nat bar, which the certified granite-4.1-3b Q4_K_M control reproduces on the same gate (8 / 4 / 4); same-file kld-raw margin-qualified top-1 100%, max per-position KLD 0.098 (the 4.1-3b control: 0.212). Evidence in docs/granite-42-qwen38-cert-2026-09-06.md.",
       "check_params": {
         "cpu_cuda": {
           "pins": {
@@ -1184,7 +1184,7 @@
         "cpu_cuda",
         "chat"
       ],
-      "notes": "Official IBM GGUF. See granite-4.2-3b-q4_k_m for the 4.2 header. Blackwell 2026-09-06 vs 73a43d1: tokenizer 0/721, greedy 5/5 at 8 tokens, chat clean, cpu_cuda 8/9 with the one flip at token 27 on a 0.0019-nat tie (dense rows are strict, so the row records a fail); token-divergence gate on 16 prompts x 32 tokens: 7 identical, 0 real of 9 divergences, max 0.187 nats. Q4_K_M vs Q8_0 bar PASS (400 positions, mean KLD 0.0036, top-1 99.75%). Evidence in docs/granite-42-qwen38-cert-2026-09-06.md.",
+      "notes": "Official IBM GGUF. See granite-4.2-3b-q4_k_m for the 4.2 header. the Linux CUDA host 2026-09-06 vs 73a43d1: tokenizer 0/721, greedy 5/5 at 8 tokens, chat clean, cpu_cuda 8/9 with the one flip at token 27 on a 0.0019-nat tie (dense rows are strict, so the row records a fail); token-divergence gate on 16 prompts x 32 tokens: 7 identical, 0 real of 9 divergences, max 0.187 nats. Q4_K_M vs Q8_0 bar PASS (400 positions, mean KLD 0.0036, top-1 99.75%). Evidence in docs/granite-42-qwen38-cert-2026-09-06.md.",
       "check_params": {
         "cpu_cuda": {
           "pins": {
@@ -1226,7 +1226,7 @@
         "cpu_cuda",
         "chat"
       ],
-      "notes": "Unsloth UD-Q4_K_M of Qwen/Qwen3.8-27B: the qwen35 layout (48 Gated DeltaNet + 16 full-attention blocks, one NextN/MTP block declared and excluded from the backbone; --mtp drafts from it). Pre-tokenizer qwen35 with [\\p{L}\\p{M}]+ runs; its own qwen38 chat template (reasoning-effort preamble, preserved thinking, function-XML tools; 21/21 conformance, token-identical). CUDA: this dynamic quant carries 4 IQ3_S tensors, a codebook type supported on CPU and CUDA; placement still depends on file geometry and the available device budget; the qwen35 CUDA path was measured on the pure Q8_0 and plain Q4_K_M siblings instead (see the evidence document). Blackwell 2026-09-06 vs 73a43d1 (the matrix row's own cpu_cuda check not_executed, full residency asked of a held slice): tokenizer 0/721, greedy 5/5 at 8 tokens (4/6 on the six-prompt cert set, the two 256-token runs part late), chat clean; UD-Q4_K_M vs Q8_0 bar PASS (100 positions, mean KLD 0.0016, top-1 100%). Evidence in docs/granite-42-qwen38-cert-2026-09-06.md.",
+      "notes": "Unsloth UD-Q4_K_M of Qwen/Qwen3.8-27B: the qwen35 layout (48 Gated DeltaNet + 16 full-attention blocks, one NextN/MTP block declared and excluded from the backbone; --mtp drafts from it). Pre-tokenizer qwen35 with [\\p{L}\\p{M}]+ runs; its own qwen38 chat template (reasoning-effort preamble, preserved thinking, function-XML tools; 21/21 conformance, token-identical). CUDA: this dynamic quant carries 4 IQ3_S tensors, a codebook type supported on CPU and CUDA; placement still depends on file geometry and the available device budget; the qwen35 CUDA path was measured on the pure Q8_0 and plain Q4_K_M siblings instead (see the evidence document). the Linux CUDA host 2026-09-06 vs 73a43d1 (the matrix row's own cpu_cuda check not_executed, full residency asked of a held slice): tokenizer 0/721, greedy 5/5 at 8 tokens (4/6 on the six-prompt cert set, the two 256-token runs part late), chat clean; UD-Q4_K_M vs Q8_0 bar PASS (100 positions, mean KLD 0.0016, top-1 100%). Evidence in docs/granite-42-qwen38-cert-2026-09-06.md.",
       "check_params": {
         "cpu_cuda": {
           "pins": {
@@ -1266,7 +1266,7 @@
         "chat",
         "tool"
       ],
-      "notes": "The 2026-09-14 Windows report's third artifact, re-tested 2026-09-15 on the Blackwell MIG slice at shipped defaults with scripts/tool-protocol-check.py: 6/6 report cases buffered and streamed once its auto turn was parsed unconstrained and the preset's repeat penalty read 1.0 (the config's 1.05 read 0 of 8 well-formed calls; evidence docs/cross-family-remedy-evidence/qwen3-coder-30b-repeat-penalty-ab-blackwell.txt). No llama.cpp reference row taken here: the tool gate anchors on the family's own protocol, the greedy/tokenizer rows are the sibling qwen3-30b-a3b-q4_k_m's. Backends: CUDA (Blackwell, full residency), CPU (case A at temperature 0); Metal NOT RUN.",
+      "notes": "The 2026-09-14 Windows report's third artifact, re-tested 2026-09-15 on the the Linux CUDA host MIG slice at shipped defaults with scripts/tool-protocol-check.py: 6/6 report cases buffered and streamed once its auto turn was parsed unconstrained and the preset's repeat penalty read 1.0 (the config's 1.05 read 0 of 8 well-formed calls; evidence docs/cross-family-remedy-evidence/qwen3-coder-30b-repeat-penalty-ab-blackwell.txt). No llama.cpp reference row taken here: the tool gate anchors on the family's own protocol, the greedy/tokenizer rows are the sibling qwen3-30b-a3b-q4_k_m's. Backends: CUDA (the Linux CUDA host, full residency), CPU (case A at temperature 0); Metal NOT RUN.",
       "check_params": {
         "tool": {
           "gate": "scripts/tool-protocol-check.py",
@@ -1302,7 +1302,7 @@
         "chat",
         "tool"
       ],
-      "notes": "The 2026-09-14 Windows report's first artifact (the runner's own published quant). CUDA since v0.5.3 (PR #92, docs/cuda-iquants-2026-09-14.md: CPU vs CUDA 9/9 greedy identical). Tool protocol at shipped defaults 2026-09-14/15 on the Blackwell: 6/6 report cases with the parse-only XML routing (0/6 streamed on v0.5.3's routing, the report's finding), tool_choice required 2/2 under the XML grammar; OpenCode 1.18.31 completed a Read loop against it. Metal: UNSUPPORTED (qwen35 has no Metal path).",
+      "notes": "The 2026-09-14 Windows report's first artifact (the runner's own published quant). CUDA since v0.5.3 (PR #92, docs/cuda-iquants-2026-09-14.md: CPU vs CUDA 9/9 greedy identical). Tool protocol at shipped defaults 2026-09-14/15 on the the Linux CUDA host: 6/6 report cases with the parse-only XML routing (0/6 streamed on v0.5.3's routing, the report's finding), tool_choice required 2/2 under the XML grammar; OpenCode 1.18.31 completed a Read loop against it. Metal: UNSUPPORTED (qwen35 has no Metal path).",
       "check_params": {
         "tool": {
           "gate": "scripts/tool-protocol-check.py",
@@ -1338,7 +1338,7 @@
         "chat",
         "tool"
       ],
-      "notes": "The 2026-09-14 Windows report's second artifact. Tool protocol at shipped defaults 2026-09-15 on the Blackwell: report cases A and B 4/4 under the gemma4 preset (repeat penalty 1.0), 0/6 under the previous gemma3 preset's 1.10 with the same binary (the report's finding); case C (prose then call) FAIL on both, an open item (Gemma 4's own format is call-first; docs/cross-family-remedy-2026-09-14.md). Not a substitute for the gemma-4-12b-it-q4_k_m row: different quantization, different behaviour at the family's temperature.",
+      "notes": "The 2026-09-14 Windows report's second artifact. Tool protocol at shipped defaults 2026-09-15 on the the Linux CUDA host: report cases A and B 4/4 under the gemma4 preset (repeat penalty 1.0), 0/6 under the previous gemma3 preset's 1.10 with the same binary (the report's finding); case C (prose then call) FAIL on both, an open item (Gemma 4's own format is call-first; docs/cross-family-remedy-2026-09-14.md). Not a substitute for the gemma-4-12b-it-q4_k_m row: different quantization, different behaviour at the family's temperature.",
       "check_params": {
         "tool": {
           "gate": "scripts/tool-protocol-check.py",

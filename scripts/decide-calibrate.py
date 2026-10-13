@@ -190,7 +190,7 @@ def served_model_ids(endpoint, timeout=20):
     """The ids the endpoint serves (GET /v1/models), or None if the endpoint
     does not answer. One request at startup turns a wrong --model-name into a
     one-line error instead of a full-length run of 404s (found on the
-    Blackwell 2026-09-22: 25 minutes, 1,303 failures, exit 0)."""
+    the Linux CUDA host 2026-09-22: 25 minutes, 1,303 failures, exit 0)."""
     url = endpoint.rstrip("/") + "/v1/models"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:

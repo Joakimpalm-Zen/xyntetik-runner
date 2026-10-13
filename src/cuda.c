@@ -813,7 +813,7 @@ static bool moe_fused_eligible(const model_t *m) {
 static bool moe_grouped_eligible(const model_t *m) {
     // Default OFF as of 2026-07-29: at MVB=16 tiles (~1-2 tokens/expert) the
     // grouped path loses to the P1 fused prefill on BOTH boxes — 3070:
-    // 55.4 ms vs 33.5 ms GPU-busy per tile; Blackwell MIG full-offload
+    // 55.4 ms vs 33.5 ms GPU-busy per tile; datacenter MIG full-offload
     // end-to-end: qwen3-30b prefill 125.4 tok/s grouped vs 194.3 fused
     // (TC-on-grouped is worse still, 86.5 — the 16-column TC tile wastes
     // more than it amortizes at these expert token counts). Grouping only
@@ -2255,7 +2255,7 @@ static gpu_weights *shared_acquire(model_t *m, size_t act_bytes, int max_hd) {
     // on a 2-part Qwen3.8-Flash-Next with --cpu-moe auto the first slot
     // filled the slice and the second fell to the CPU, and the two slots
     // then answered the same request with different logits (the hazard
-    // split_guard describes; --parallel 2 on the Blackwell, 2026-10-07).
+    // split_guard describes; --parallel 2 on the Linux CUDA host, 2026-10-07).
     bool have_id = file_id(m->path, &fsize, &fino, &fmtime);
     gpu_weights *w = NULL;
     pthread_mutex_lock(&g_shared_mu);
@@ -2886,7 +2886,7 @@ unsigned long gpu_attn_gqa_dispatches(void) { return 0; }
 void gpu_moe_eager_force(int on) { g_moe_eager_force = on < 0 ? -1 : (on != 0); }
 
 // Promoted (type, arch) combos — every row measured by test_tc_tol on real
-// weights (Blackwell MIG, 2026-07-29; table in the TC spec). Dense archs
+// weights (datacenter MIG slice, 2026-07-29; table in the TC spec). Dense archs
 // only, and only those with a gate row: llama 0.003% of range / phi3 0.004%
 // / gemma4 0.012% / qwen3 dense, mistral, gemma3, smollm per the same run —
 // all 0 top-1 flips in 64 teacher-forced positions. qwen3moe PASSED its
@@ -2967,12 +2967,12 @@ static bool tc_promoted(const model_t *m, int type) {
     // 0 flips unless noted, every free-running arm token-identical:
     //
     //   granite-4.2-3b requantized to each of the nine formats, all layers
-    //   on the device, Blackwell slice: IQ4_XS 4e-5 of range, IQ4_NL 5e-5,
+    //   on the device, datacenter MIG slice: IQ4_XS 4e-5 of range, IQ4_NL 5e-5,
     //   IQ3_XXS 6e-5, IQ3_S 9e-5, IQ2_S recipe (IQ2_XS+IQ3_S) 1.1e-4 with one
     //   near-tie, IQ2_XS 1.2e-4, IQ2_XXS 1.3e-4, IQ1_M 3.4e-4, IQ1_S 9.0e-4
     //   with two near-ties; IQ3_S, IQ3_XXS, IQ2_XXS and IQ1_M the same on an
     //   RTX 3070.
-    //   IQ3_S on every other arch of the list, same protocol, Blackwell:
+    //   IQ3_S on every other arch of the list, same protocol, the Linux CUDA host:
     //   llama 9e-5, qwen3 2.4e-4, smollm 3e-5, mistral 4e-5, phi3 2.4e-4
     //   (two near-ties; this is the model whose activations overflow fp16
     //   without the column scaling), gemma3 6e-5, gemma4 9e-5; IQ2_XXS on
@@ -3016,7 +3016,7 @@ static bool tc_promoted(const model_t *m, int type) {
     // The promotion survives; the evidence behind it did not.
     //
     // qwen35 PROMOTED 2026-08-21 on four rows across two checkpoints and both
-    // promoted types (Blackwell, N_BATCH=64, all 0/64 flips, free-running
+    // promoted types (Linux CUDA host, N_BATCH=64, all 0/64 flips, free-running
     // batch-64 greedy token-identical):
     //
     //   Qwen3.5-4B    Q4_K_M  mean|dlogit| 0.000518 = 2e-5 of range
@@ -3030,7 +3030,7 @@ static bool tc_promoted(const model_t *m, int type) {
     // is inside the measured envelope; the scan kernels themselves have no
     // GEMM shape and are untouched.
     // muse-glimmer and qwen2 joined 2026-10-02, each on its own test_tc_tol
-    // rows (the Blackwell MIG, real weights, 64 teacher-forced positions, 0
+    // rows (the datacenter MIG slice, real weights, 64 teacher-forced positions, 0
     // top-1 flips and a token-identical free-running arm on every row):
     //
     //   muse-glimmer  Muse-Glimmer-30B IQ3_XXS   IQ3_XXS/IQ3_S/Q4_K/Q6_K  0.00005 of range

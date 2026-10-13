@@ -2156,7 +2156,7 @@ static float dot_q2_0_avx2(const block_q2_0 *b, const float *x, int n) {
 // but the 16 signed codes go straight into the FMAs instead of through a
 // 256-float scratch row (vec_dot's default path dequantizes a block, then
 // dots it: two passes over the row and a store/reload per value). The
-// routed experts of Qwen3.8-Flash-Next are IQ3_XXS gate/up; on the Blackwell
+// routed experts of Qwen3.8-Flash-Next are IQ3_XXS gate/up; on the Linux CUDA host
 // CPUs they were 45% of the token through the default path.
 static float dot_iq3_xxs_avx2(const block_iq3_xxs *b, const float *x, int n) {
     __m256 acc = _mm256_setzero_ps();
@@ -3328,7 +3328,7 @@ bool i8_dot_ok(int type, int n) {
 // tolerance-gated fast route on this engine is 0/64 and it is not widened to
 // fit a lever. `RUNNER_CPU_I8=1` opts in; test-i8-tol is the gate.
 //
-// 2026-10-08, IQ3_S and IQ2_S added to the route (clang 22, Blackwell host,
+// 2026-10-08, IQ3_S and IQ2_S added to the route (clang 22, Linux CUDA host,
 // taskset on fixed cores, p512, CPU only):
 //
 //   model                        gate (0/64 flips)   decode gain

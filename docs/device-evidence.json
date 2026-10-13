@@ -11,7 +11,7 @@
       "id": "windows-x86_64-cuda",
       "claimed_by": "README platform table, row 3: Windows x86_64, MinGW-w64 via MSYS2, CUDA on Turing or newer",
       "covers": "the MinGW build, every Windows-only path in the harness, and the only display-attached NVIDIA card in the lab, which is a test surface a headless datacenter GPU does not have (v0.4.2 reported every desktop card as unified memory and a headless box would have passed it)",
-      "host": "ZEN-GAMING, RTX 3070 8 GB, CUDA 13.3, MSYS2 UCRT64",
+      "host": "the Windows CUDA host, RTX 3070 8 GB, CUDA 13.3, MSYS2 UCRT64",
       "max_age_days": 30,
       "expect": {
         "os": "windows",
@@ -21,7 +21,7 @@
       "last_verified": {
         "date": "2026-10-13",
         "commit": "fd6d0989d5e8dbc051df6c3cab0a25bd4dfe681e",
-        "ran": "build121.sh on ZEN-GAMING: make OS=Windows_NT -j8 runner from release-1.2.1; tests/test_native_xml_routing.py 28/28; scripts/cuda-smoke-remote.sh 13/13; the OpenCode clean-setup walkthrough on the candidate binary before the tag (docs/compat-reports/clean-setup-1.2.1-2026-10-13-rtx3070.md)",
+        "ran": "build121.sh on the Windows CUDA host: make OS=Windows_NT -j8 runner from release-1.2.1; tests/test_native_xml_routing.py 28/28; scripts/cuda-smoke-remote.sh 13/13; the OpenCode clean-setup walkthrough on the candidate binary before the tag (docs/compat-reports/clean-setup-1.2.1-2026-10-13-rtx3070.md)",
         "result": "pass",
         "caps": {
           "version": "1.2.1",
@@ -38,7 +38,7 @@
       "id": "linux-x86_64-cuda",
       "claimed_by": "README platform table, row 1: Linux x86_64, CUDA on Turing or newer",
       "covers": "the datacenter CUDA path: large models, MIG slices, the compatibility ledger and the KLD/divergence runs that need more VRAM than a consumer card has",
-      "host": "the Blackwell measurement box (RTX PRO 6000, MIG)",
+      "host": "the Linux CUDA host (RTX PRO 6000, MIG slice)",
       "max_age_days": 45,
       "expect": {
         "os": "linux",
@@ -56,7 +56,7 @@
           "arch": "x86_64",
           "cpu_cores": 128,
           "gpu_backend": "cuda",
-          "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          "gpu_name": "NVIDIA RTX PRO 6000 the Linux CUDA host Max-Q Workstation Edition MIG 1g.24gb"
         },
         "evidence": "docs/device-runs-2026-10-13/blackwell/cuda-gate-20261013T053323Z.json"
       }

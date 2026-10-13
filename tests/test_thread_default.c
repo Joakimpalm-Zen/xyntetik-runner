@@ -76,7 +76,7 @@ int main(void) {
     //
     // Two independent sweeps found decode PEAKS at 32 threads and regresses
     // above it: tpbench on a 64-core Zen 5 box (2026-08-13, 65us handoff per
-    // run at 32 threads against 138us at 64) and the Blackwell 128-core sweep
+    // run at 32 threads against 138us at 64) and the 128-core Linux host sweep
     // (2026-08-29, both models peaking at t=32; the old default of 64 cost
     // -41.0% decode and -55.3% prefill on the smaller of them).
     ck(plat_thread_default_for(128) == 32, "128 logical CPUs -> 32, not 64");

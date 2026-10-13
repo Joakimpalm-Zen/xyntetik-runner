@@ -1,7 +1,7 @@
 # Granite 4.2 and Qwen 3.8 admission, 2026-09-06
 
 Environment: runner branch `granite42-qwen38` (this document's commit),
-llama.cpp reference **master 73a43d1 (2026-09-06)**, built on the Blackwell
+llama.cpp reference **master 73a43d1 (2026-09-06)**, built on the Linux CUDA host
 box with `-DGGML_OPENMP=OFF -DBUILD_SHARED_LIBS=OFF`. The tokenizer reference
 is each model's own Hugging Face tokenizer through the `tokenizers` library.
 Raw gate outputs are in `docs/granite-42-qwen38-evidence/`, the compat-matrix
@@ -59,7 +59,7 @@ slice was held by another project's job for the whole window, so the
 | cross-engine logits, same file (kld-raw, 100+ positions) | mean 0.0146, top-1 90.5%, margin-qualified 100% | mean 0.012, top-1 94.5%, margin-qualified 100% | mean 0.012, top-1 94%, margin-qualified 100% |
 | quant bar vs Q8_0 (top-1 >= 97%, mean KLD <= 0.05) | not run | **PASS**: 400 positions, mean KLD 0.0036, top-1 99.75%, top-8 overlap 0.921 | **PASS**: 100 positions, mean KLD 0.0016, top-1 100%, top-8 overlap 0.835 |
 | chat template conformance (jinja2 reference) | **22/22 text and token identical** | same template | **21/21 text and token identical** under the new `qwen38` family (its own template, not Qwen3's; see below) |
-| compat-matrix row (Blackwell) | load, tokenizer, **cpu_cuda 9/9**, chat pass; greedy 3/5 at 8 tokens (both partings at ties) | load, tokenizer, **greedy 5/5**, chat pass; cpu_cuda 8/9, one flip at token 27 on a 0.0019-nat tie | load, tokenizer, **greedy 5/5**, chat pass; cpu_cuda not executed (insufficient VRAM) |
+| compat-matrix row (Linux CUDA host) | load, tokenizer, **cpu_cuda 9/9**, chat pass; greedy 3/5 at 8 tokens (both partings at ties) | load, tokenizer, **greedy 5/5**, chat pass; cpu_cuda 8/9, one flip at token 27 on a 0.0019-nat tie | load, tokenizer, **greedy 5/5**, chat pass; cpu_cuda not executed (insufficient VRAM) |
 
 For scale, the certified granite-4.1-3b measured on the same kld-raw gate
 today reads mean 0.017, top-1 93%, margin-qualified 99%: the 4.2 numbers
@@ -182,7 +182,7 @@ identical code reading 0 real of 9.
 Every identity number above compares the runner with llama.cpp, and
 llama.cpp is a second implementation, not the truth. Two things were
 measured on the 3B to say what the strict counts are counting
-(`docs/granite-42-qwen38-evidence/`, all on the Blackwell, 2026-09-06).
+(`docs/granite-42-qwen38-evidence/`, all on the Linux CUDA host, 2026-09-06).
 
 **The reference's flash attention.** llama.cpp's CPU flash-attention
 kernel (ggml-cpu/ops.cpp at 73a43d1, `flash_attn_ext_f16_one_chunk`)
@@ -292,9 +292,9 @@ own numerical floor, with the floor measured rather than assumed.
 
 | model | CPU vs CUDA | CPU vs Metal |
 |---|---|---|
-| granite-4.2-3b Q4_K_M | **9/9 exact** at 128 tokens, Blackwell MIG slice, all 40 layers on the device | **8/9** at 128 tokens on an Apple M1 (8 GB), the one flip at token 15 on a 0.0008 / 0.0005-nat tie (`know` against `compute`; dense rows are strict, so the row records a fail), every layer resident, decode fusion on (`cpu_metal-granite-4.2-3b-m1.json`). The `granite` Metal path is 4.1's, certified 2026-08-11, and 4.2 changes no tensor or operation. |
-| granite-4.2-8b Q4_K_M | 8/9 on the Blackwell, the flip at token 27 on a 0.0019-nat tie; **9/9 exact** on an RTX 3070 (ZEN-GAMING, this branch built there, 40 of 40 layers and the output projection on the device, `cpu_cuda-granite-4.2-8b-rtx3070.json`), a second CUDA device family | not run; the `granite` Metal path is 4.1's, certified 2026-08-11 |
-| Qwen3.8-27B UD-Q4_K_M | **not measurable on this file**: Unsloth's dynamic quant carries 4 IQ3_S tensors and the runner has no CUDA kernel for IQ3_S, so the whole model falls back to the CPU on a CUDA box (`gpu: tensor blk.11.ffn_gate.weight uses IQ3_S, which has no CUDA kernel`); a run that reported 9/9 was CPU against CPU and is not counted. The `qwen35` CUDA path was measured on the pure Q8_0 sibling instead: **9/9 exact** at 128 tokens with 10 of 64 layers (6.8 GB) on the Blackwell slice and the CPU running the rest, `RUNNER_CUDA_TC=0` (`cpu_cuda-qwen38-27b-q8_0.json`, its device log beside it). The plain **Q4_0** sibling (`unsloth/Qwen3.8-27B-GGUF`, sha ede16c7b, Q4_0/Q4_1/Q5_K only) reads **9/9 exact** with 22 of 64 layers (6.6 GB) on the device (`cpu_cuda-qwen38-27b-q4_0.json`). Both splits are real: the split line and the device log are kept beside each report. | no Metal path: the `qwen35` hybrid runs on the CPU on Apple silicon by design (`gpu: qwen35 hybrid path is not on the metal backend yet`) |
+| granite-4.2-3b Q4_K_M | **9/9 exact** at 128 tokens, datacenter MIG slice, all 40 layers on the device | **8/9** at 128 tokens on an Apple M1 (8 GB), the one flip at token 15 on a 0.0008 / 0.0005-nat tie (`know` against `compute`; dense rows are strict, so the row records a fail), every layer resident, decode fusion on (`cpu_metal-granite-4.2-3b-m1.json`). The `granite` Metal path is 4.1's, certified 2026-08-11, and 4.2 changes no tensor or operation. |
+| granite-4.2-8b Q4_K_M | 8/9 on the Linux CUDA host, the flip at token 27 on a 0.0019-nat tie; **9/9 exact** on an RTX 3070 (the Windows CUDA host, this branch built there, 40 of 40 layers and the output projection on the device, `cpu_cuda-granite-4.2-8b-rtx3070.json`), a second CUDA device family | not run; the `granite` Metal path is 4.1's, certified 2026-08-11 |
+| Qwen3.8-27B UD-Q4_K_M | **not measurable on this file**: Unsloth's dynamic quant carries 4 IQ3_S tensors and the runner has no CUDA kernel for IQ3_S, so the whole model falls back to the CPU on a CUDA box (`gpu: tensor blk.11.ffn_gate.weight uses IQ3_S, which has no CUDA kernel`); a run that reported 9/9 was CPU against CPU and is not counted. The `qwen35` CUDA path was measured on the pure Q8_0 sibling instead: **9/9 exact** at 128 tokens with 10 of 64 layers (6.8 GB) on the datacenter MIG slice and the CPU running the rest, `RUNNER_CUDA_TC=0` (`cpu_cuda-qwen38-27b-q8_0.json`, its device log beside it). The plain **Q4_0** sibling (`unsloth/Qwen3.8-27B-GGUF`, sha ede16c7b, Q4_0/Q4_1/Q5_K only) reads **9/9 exact** with 22 of 64 layers (6.6 GB) on the device (`cpu_cuda-qwen38-27b-q4_0.json`). Both splits are real: the split line and the device log are kept beside each report. | no Metal path: the `qwen35` hybrid runs on the CPU on Apple silicon by design (`gpu: qwen35 hybrid path is not on the metal backend yet`) |
 
 The Qwen 3.8 CUDA rows needed a runner fix to run at all: the VRAM
 registry's ask estimated a full offload whatever `--gpu-layers` said, so
