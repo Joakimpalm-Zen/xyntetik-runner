@@ -2634,97 +2634,76 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
     return ok ? NULL : "the receipt could not be written (see server log)";
 }
 
-void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
-                           jv *req, const tool_envelope *env) {
-    bool chat = api != API_TEXT; // chat-shaped: thinking channels, tools
+// One request's settings, read and checked before the slot takes any of them
+// (completion_read), then installed on the slot's sampler and engine
+// (completion_apply). A request refused while it is read leaves the slot as it
+// found it. Pointers borrow from the request JSON, which outlives the request;
+// schema is compiled here and owned by the engine once applied.
+typedef struct {
+    bool cache_prompt, share_prefix;
+    const char *script_text;          // runner_test_reply, when given
+    double req_deadline;              // 0: none
+    double temp, top_p, min_p, top_k, seed, repeat_penalty;
+    int max_tokens;
+    bool stream, include_usage;
+    bool want_lp;
+    int lp_n;
+    bool special_tokens;
+    bool cl_on, cl_render;
+    double cl_probe_d, confirm_below;
+    bool echo;
+    int plp;                          // -1 = prompt_logprobs absent or null
+    const char *ctx_id;
+    const char *stops[4];
+    int n_stops;
+    int req_stops[8];
+    int n_req_stops;
+    bool constrain;                   // tools under a grammar
+    jv *sch;                          // the request's own schema, when no envelope constrains
+    snode *schema;
+    // what completion_apply installs on the engine
+    int think_budget;
+    bool think_smp;
+    float think_temp, think_top_p, think_min_p;
+    int think_top_k;
+    bool loop_guard, loop_all;
+    int loop_span, loop_repeats, loop_window, loop_max_closes;
+    int32_t think_msg[sizeof(((engine *)0)->think_msg) / sizeof(int32_t)];
+    int think_msg_n;
+    bool hints;                       // draft hints tokenized into s->hint_buf
+    int hint_len;
+    bool json_mode;
+} completion_req;
+
+// Reads and checks every field of a request, in the order the refusals have
+// always come in, and answers the first one it refuses. Nothing on the slot
+// or its engine changes here (the draft hints use the slot's scratch
+// buffer); false when the request was refused.
+static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
+                            const tool_envelope *env, bool chat,
+                            bool muse_forced_think, bool gemma4_primed_think,
+                            completion_req *q) {
     model_t *m = s->m;
     engine *e = &s->e;
-    bool muse_forced_think = chat && s->tmpl == TMPL_MUSE &&
-                             req_thinking_mode(req) == THINK_ON;
-    // Harmony primes the analysis channel in the prompt for every mode except
-    // THINK_OFF (see the generation-prompt comment in template.c), so the
-    // stream starts INSIDE reasoning and the splitter must too — the same
-    // reason ornith always does and muse does when forced. Getting this wrong
-    // is silent: the split simply never fires and the model's analysis is
-    // served as content, which is what the first live run did.
-    bool harmony_primed_think = chat && s->tmpl == TMPL_HARMONY &&
-                                !(env && env->proto == TP_HARMONY) &&
-                                req_thinking_mode(req) != THINK_OFF;
-    // granite 4.2's, Qwen 3.8's and ornith's generation prompts open
-    // `<think>\n` in every mode but THINK_OFF, where the block is already
-    // closed and the stream starts in content (template.c, TMPL_GRANITE42 /
-    // TMPL_QWEN38 / TMPL_ORNITH). Ornith used to prime the splitter in every
-    // mode, so a caller who turned thinking off had the answer served as
-    // reasoning_content.
-    // Qwen 3.5-0.8B inverts the default: its prompt opens the block only
-    // for an explicit THINK_ON.
-    // Nemotron Nano decides from the conversation's own /think and
-    // /no_think strings, so the question is asked of the rendered prompt.
-    bool nemotron_primed_think = false;
-    if (chat && s->tmpl == TMPL_NEMOTRON && prompt) {
-        static const char open[] = "<think>\n";
-        size_t e = strlen(prompt), k = sizeof(open) - 1;
-        while (k && e) {
-            char c = prompt[e - 1];
-            if (c == PROMPT_RAW_OPEN || c == PROMPT_RAW_CLOSE) { e--; continue; }
-            if (c != open[k - 1]) break;
-            e--; k--;
-        }
-        nemotron_primed_think = k == 0;
-    }
-    bool granite42_primed_think = chat &&
-                                  (tmpl_granite42_like(s->tmpl) ||
-                                   s->tmpl == TMPL_QWEN38 ||
-                                   tmpl_ornith_like(s->tmpl)) &&
-                                  (s->tmpl == TMPL_QWEN35_NOTHINK
-                                       ? req_thinking_mode(req) == THINK_ON
-                                       : req_thinking_mode(req) != THINK_OFF);
-    granite42_primed_think = granite42_primed_think || nemotron_primed_think;
-    // gemma4's thought block is opened BY THE PROMPT on a tool-result
-    // continuation with thinking on (template.c's g4_prev == 2 branch), so the
-    // grammar must start inside it. Asked of the prompt itself rather than
-    // re-derived from the message list: the renderer owns that decision, and a
-    // second copy of the condition is a second thing to keep in step.
-    size_t prompt_n = prompt ? strlen(prompt) : 0;
-    static const char G4_THOUGHT_OPEN[] = "<|channel>thought\n";
-    bool gemma4_primed_think =
-        chat && is_gemma4(s->tmpl) && prompt_n >= sizeof(G4_THOUGHT_OPEN) - 1 &&
-        !memcmp(prompt + prompt_n - (sizeof(G4_THOUGHT_OPEN) - 1),
-                G4_THOUGHT_OPEN, sizeof(G4_THOUGHT_OPEN) - 1);
-    // Major faults are page-ins that went to disk, so the delta across a
-    // request IS the paging stall rather than an inference from wall-clock: a
-    // slow request that took no major faults was slow for some other reason.
-    // Without this, a machine whose weights have been evicted reports a
-    // cheerful tok/s while a five-token reply takes a minute.
-    uint64_t faults_at_start = plat_major_faults();
-    // Allocated here rather than beside the response struct, so the start line
-    // below and the completion line share one name.
-    char req_id[48];
-    snprintf(req_id, sizeof(req_id), "%s%d",
-             api == API_RESPONSES ? "resp_" : api == API_MESSAGES ? "msg_"
-                                            : api == API_CHAT ? "chatcmpl-"
-                                                              : "cmpl-",
-             atomic_fetch_add(&SV.req_counter, 1));
-
     const char *unsupported = unsupported_completion_field(req, api);
     if (unsupported) {
         char msg[128];
         snprintf(msg, sizeof(msg), "%s has unsupported semantics", unsupported);
         send_error(fd, 400, msg);
-        return;
+        return false;
     }
     bool script_bad = false;
     const char *script_text = scripted_reply(fd, req, &script_bad);
-    if (script_bad) return;
+    if (script_bad) return false;
     bool cache_prompt = true;
     bool share_prefix = true;
     if (!request_bool(req, "cache_prompt", true, &cache_prompt)) {
         send_error(fd, 400, "cache_prompt must be a boolean");
-        return;
+        return false;
     }
     if (!request_bool(req, "prefix_cache", true, &share_prefix)) {
         send_error(fd, 400, "prefix_cache must be a boolean");
-        return;
+        return false;
     }
 
     // Per-request deadline. A wall-clock bound is what a batching server owes
@@ -2738,7 +2717,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     double rt;
     if (!request_number(req, "timeout", req_timeout, 0, 86400.0, &rt)) {
         send_error(fd, 400, "timeout out of range");
-        return;
+        return false;
     }
     req_timeout = rt;
     double req_deadline = req_timeout > 0 ? now_s() + req_timeout : 0;
@@ -2764,7 +2743,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                          &repeat_penalty) ||
         !sampling_number(fd, req, "seed", 0, 0, SEED_MAX,
                          "between 0 and 18446744073709549568", &seed))
-        return;   // sampling_number already answered, naming the field
+        return false;   // sampling_number already answered, naming the field
     // top_k and seed are held as integer engine state, so accepting 2.5 and
     // truncating it to 2 would run the request with settings the caller did
     // not ask for. Not "out of range": 2.5 is inside every bound top_k has,
@@ -2774,12 +2753,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     if (!whole_number(top_k)) {
         send_error_detail(fd, 400, "top_k must be a whole number",
                           "top_k", "invalid_value");
-        return;
+        return false;
     }
     if (!whole_number(seed)) {
         send_error_detail(fd, 400, "seed must be a whole number",
                           "seed", "invalid_value");
-        return;
+        return false;
     }
     // An explicit seed:0 asks for a REPRODUCIBLE run and does not get one:
     // the sampler's xorshift64 has a fixed point at state 0, so `seed > 0`
@@ -2795,50 +2774,27 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                           "state 0 is a fixed point, so the run would not be "
                           "reproducible. Use any other value, or omit seed.",
                           "seed", "invalid_value");
-        return;
+        return false;
     }
-    // smp_base is the request-visible defaults, captured before engine_init
-    // installed the stop-token exemptions into the live sampler; restoring it
-    // wholesale dropped them, so over HTTP a repeat penalty could punish the
-    // model's own turn terminator (prompt </s>, top-k 1, penalty 100: the CLI
-    // stopped at once, the server ran to max_tokens). The RNG and the
-    // exemptions are engine state, not request defaults: both survive.
-    uint64_t rng_state = s->smp.rng;
-    int32_t no_penalty[sizeof(s->smp.no_penalty) / sizeof(*s->smp.no_penalty)];
-    int n_no_penalty = s->smp.n_no_penalty;
-    memcpy(no_penalty, s->smp.no_penalty, sizeof(no_penalty));
-    s->smp = s->smp_base;
-    s->smp.rng = rng_state;
-    memcpy(s->smp.no_penalty, no_penalty, sizeof(no_penalty));
-    s->smp.n_no_penalty = n_no_penalty;
-    s->smp.temp = (float)temp;
-    s->smp.top_p = (float)top_p;
-    s->smp.min_p = (float)min_p;
-    s->smp.top_k = (int)top_k;
-    s->smp.repeat_penalty = (float)repeat_penalty;
-    // An explicit seed is installed where generation begins, below: the RNG
-    // is the one sampler field that outlives a request, and every refusal
-    // between here and there would otherwise leave the slot reseeded by a
-    // request that generated nothing.
     int max_tokens = request_max_tokens(req, SV.n_predict_cap);
     if (max_tokens == MT_NON_FINITE) {
         send_error(fd, 400, "max_tokens out of range");
-        return;
+        return false;
     }
     if (max_tokens == MT_BAD_TYPE) {
         send_error(fd, 400, "max_tokens must be a number");
-        return;
+        return false;
     }
     // Distinct from MT_BAD_TYPE on purpose: 1.5 *is* a number, so telling a
     // caller it is not sends them looking for a type bug they do not have.
     // Name the actual rule.
     if (max_tokens == MT_FRACTIONAL) {
         send_error(fd, 400, "max_tokens must be a whole number");
-        return;
+        return false;
     }
     if (max_tokens == MT_NEGATIVE) {
         send_error(fd, 400, "max_tokens must be non-negative");
-        return;
+        return false;
     }
     // R4.12.16 reasoning budget: cap the tokens a turn may spend INSIDE its
     // reasoning channel, leaving the answer's budget untouched. The request
@@ -2855,17 +2811,17 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             !whole_number(rbv)) {
             send_error(fd, 400, "reasoning_max_tokens must be a whole number "
                                 "of tokens, zero or more");
-            return;
+            return false;
         }
         reason_budget = (int)rbv;
         if (reason_budget > 0 && e->think_end_id < 0) {
             send_error(fd, 400, "reasoning_max_tokens needs a model whose "
                                 "reasoning turn ends on a single token; this "
                                 "model declares none");
-            return;
+            return false;
         }
     }
-    e->think_budget = e->think_end_id >= 0 ? reason_budget : 0;
+    q->think_budget = e->think_end_id >= 0 ? reason_budget : 0;
     // The sentence the forced close writes before the close token. A bare
     // terminator drops the model mid sentence and costs accuracy on the
     // answer that follows (llama.cpp's budget PR measured HumanEval 93%
@@ -2882,7 +2838,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // only while the turn is a reasoning turn. Absent, nothing changes: a
     // greedy request stays greedy everywhere, which is what the gate
     // harnesses and the KLD tooling rely on.
-    e->think_smp = false;
+    q->think_smp = false;
     {
         jv *rt = jv_get(req, "reasoning_temperature");
         bool any = !absent(rt) || SV.reasoning_temp_set;
@@ -2893,7 +2849,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                                 0, 2, &rtemp)) {
                 refuse_field(fd, req, "reasoning_temperature", J_NUM,
                              "reasoning_temperature must be a number in 0..2");
-                return;
+                return false;
             }
             const char *bad = NULL;
             if (!request_number(req, "reasoning_top_p", top_p, 0, 1, &rtop_p))
@@ -2908,7 +2864,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                              "reasoning_top_p, reasoning_min_p and "
                              "reasoning_top_k must be in range "
                              "(0..1, 0..1, 0..1000 whole)");
-                return;
+                return false;
             }
             // Refused rather than ignored on a model with no reasoning
             // channel: a knob that silently does nothing has the caller
@@ -2918,26 +2874,26 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                                   "with a reasoning channel; this model "
                                   "declares none", "reasoning_temperature",
                                   "unsupported_parameter");
-                return;
+                return false;
             }
-            e->think_smp = true;
-            e->think_temp = (float)rtemp;
-            e->think_top_p = (float)rtop_p;
-            e->think_min_p = (float)rmin_p;
-            e->think_top_k = (int)rtop_k;
+            q->think_smp = true;
+            q->think_temp = (float)rtemp;
+            q->think_top_p = (float)rtop_p;
+            q->think_min_p = (float)rmin_p;
+            q->think_top_k = (int)rtop_k;
         }
     }
     // R4.12.18 loop guard (detect and force-close). Off unless asked for.
     // Reasoning-only by default: every measured runaway is a reasoning turn,
     // and a repeated span in an ANSWER is often a legitimate table or list,
     // so the widening is a deliberate request rather than the default.
-    e->loop_guard = false;
+    q->loop_guard = false;
     {
         bool want = SV.loop_guard;
         if (!request_bool(req, "loop_guard", want, &want)) {
             refuse_field(fd, req, "loop_guard", J_BOOL,
                          "loop_guard must be a boolean");
-            return;
+            return false;
         }
         if (want) {
             double span = 8, reps = 3, win = 256;
@@ -2957,7 +2913,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                              "loop_guard_span (2..128), loop_guard_repeats "
                              "(2..16) and loop_guard_window (16..4096) must "
                              "be whole numbers in range");
-                return;
+                return false;
             }
             double closes = 3;
             if (!request_number(req, "loop_guard_max_closes", 3, 1, 16, &closes) ||
@@ -2965,12 +2921,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                 refuse_field(fd, req, "loop_guard_max_closes", J_NUM,
                              "loop_guard_max_closes must be a whole "
                              "number in 1..16");
-                return;
+                return false;
             }
             if (!request_bool(req, "loop_guard_everywhere", false, &all)) {
                 refuse_field(fd, req, "loop_guard_everywhere", J_BOOL,
                              "loop_guard_everywhere must be a boolean");
-                return;
+                return false;
             }
             // Each value is in its own range here; it is the window that has
             // to be wide enough to hold the repetition asked for.
@@ -2979,7 +2935,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                                   "loop_guard_repeats must fit inside "
                                   "loop_guard_window", "loop_guard_window",
                                   "invalid_value");
-                return;
+                return false;
             }
             // Refused rather than ignored where it could never fire: without a
             // reasoning channel and without the widening there is no region to
@@ -2989,39 +2945,25 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                                   "channel; this model declares none. Set "
                                   "loop_guard_everywhere to watch the whole "
                                   "turn", "loop_guard", "unsupported_parameter");
-                return;
+                return false;
             }
-            e->loop_guard = true;
-            e->loop_all = all;
-            e->loop_span = (int)span;
-            e->loop_repeats = (int)reps;
-            e->loop_window = (int)win;
-            e->loop_max_closes = (int)closes;
+            q->loop_guard = true;
+            q->loop_all = all;
+            q->loop_span = (int)span;
+            q->loop_repeats = (int)reps;
+            q->loop_window = (int)win;
+            q->loop_max_closes = (int)closes;
         }
     }
-    // A prompt can already be inside the reasoning turn (a raw completion
-    // resuming ` to=self`, which is how a gate harness drives one); the
-    // budget has to count from the first generated token there.
-    //
-    // The reset is not housekeeping. think_on survives engine_gen_begin on
-    // purpose (a chat request primes the turn BEFORE generation starts, via
-    // engine_think_started), so the slot would otherwise carry a still-open
-    // reasoning turn into the NEXT request -- which happens whenever a turn
-    // runs out of max_tokens mid-reasoning. Measured on the muse fixture:
-    // a request whose forced close did not fit left the slot open, and the
-    // next request, whose prompt held no reasoning turn at all, was capped
-    // from its first token.
-    e->think_on = false;
-    engine_think_prime(e, prompt);
-    e->think_msg_n = 0;
-    if (e->think_budget > 0) {
+    q->think_msg_n = 0;
+    if (q->think_budget > 0) {
         const char *msg = REASON_BUDGET_MESSAGE;
         bool msg_is_default = true;
         jv *rm = jv_get(req, "reasoning_budget_message");
         if (!absent(rm)) {
             if (rm->type != J_STR) {
                 send_error(fd, 400, "reasoning_budget_message must be a string");
-                return;
+                return false;
             }
             msg = rm->str;
             msg_is_default = false;
@@ -3034,23 +2976,23 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // rest, so a long sentence would come back looking like a fitting
             // one. tok_encode_fit sizes the buffer to the text and returns the
             // TRUE count, which is what a fit decision needs.
-            int cap = (int)(sizeof(e->think_msg) / sizeof(*e->think_msg));
+            int cap = (int)(sizeof(q->think_msg) / sizeof(*q->think_msg));
             int32_t *enc = NULL;
             int n = tok_encode_fit(s->tok, msg, false, TOK_TEXT, 0, &enc);
             bool fits = n > 0 && n <= cap;
-            if (fits) memcpy(e->think_msg, enc, sizeof(int32_t) * (size_t)n);
+            if (fits) memcpy(q->think_msg, enc, sizeof(int32_t) * (size_t)n);
             free(enc);
             if (!fits && !msg_is_default) {
                 // the caller chose these words; truncating them would put
                 // half a sentence in the model's voice
                 send_error(fd, 400, "reasoning_budget_message does not fit the "
                                     "forced close; use a shorter sentence");
-                return;
+                return false;
             }
             // the built-in line on a vocabulary that spells it too expensively
             // (byte fallback): close bare rather than refuse a request the
             // caller never asked to carry a sentence at all
-            e->think_msg_n = fits ? n : 0;
+            q->think_msg_n = fits ? n : 0;
         }
     }
     // "stream":"true" used to read as false and answer with a buffered
@@ -3059,20 +3001,20 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     bool stream = false;
     if (!request_bool(req, "stream", false, &stream)) {
         send_error(fd, 400, "stream must be a boolean");
-        return;
+        return false;
     }
     bool include_usage = false;
     jv *stream_options = jv_get(req, "stream_options");
     if (!absent(stream_options)) {
         if (stream_options->type != J_OBJ) {
             send_error(fd, 400, "stream_options must be an object");
-            return;
+            return false;
         }
         if (!request_bool(stream_options, "include_usage", false,
                           &include_usage)) {
             send_error(fd, 400,
                        "stream_options.include_usage must be a boolean");
-            return;
+            return false;
         }
     }
     // OpenAI logprobs. Chat uses a boolean plus top_logprobs; legacy text
@@ -3083,14 +3025,14 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     bool lp_on = false;
     if (api == API_CHAT && !request_bool(req, "logprobs", false, &lp_on)) {
         send_error(fd, 400, "logprobs must be a boolean");
-        return;
+        return false;
     }
     double lp_num = 0;
     if (api == API_TEXT &&
         (!request_number(req, "logprobs", 0, 0, 20, &lp_num) ||
          !whole_number(lp_num))) {
         send_error(fd, 400, "logprobs out of range");
-        return;
+        return false;
     }
     bool want_lp = (api == API_CHAT && lp_on) ||
                    (api == API_TEXT && lp_num > 0);
@@ -3098,7 +3040,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         (!request_number(req, "top_logprobs", 0, 0, 20, &lp_num) ||
          !whole_number(lp_num))) {
         send_error(fd, 400, "top_logprobs out of range");
-        return;
+        return false;
     }
     int lp_n = (int)lp_num;
     if (lp_n < 0) lp_n = 0;
@@ -3108,13 +3050,13 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     bool special_tokens = false;
     if (!request_bool(req, "special_tokens", false, &special_tokens)) {
         send_error(fd, 400, "special_tokens must be a boolean");
-        return;
+        return false;
     }
     if (special_tokens && api != API_TEXT) {
         send_error(fd, 400, "special_tokens is a /v1/completions extension: "
                             "the chat, Responses and Messages surfaces render "
                             "the protocol into their own fields");
-        return;
+        return false;
     }
     if (lp_n > 20) lp_n = 20;
     // JC-R1 constrained-choice posteriors (suite judgment-coprocessor plan):
@@ -3124,7 +3066,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     bool cl_on = false;
     if (!request_bool(req, "choice_logprobs", false, &cl_on)) {
         send_error(fd, 400, "choice_logprobs must be a boolean");
-        return;
+        return false;
     }
     double cl_probe_d = 32;
     // the probe width serves confirm_below's decisions too (below)
@@ -3133,12 +3075,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                                   &cl_probe_d) ||
                   !whole_number(cl_probe_d))) {
         send_error(fd, 400, "choice_logprobs_probe out of range (8..64)");
-        return;
+        return false;
     }
     if (cl_on && stream) {
         send_error(fd, 400, "choice_logprobs is buffered-only; "
                             "set stream to false");
-        return;
+        return false;
     }
     // R2.1.3: ask for a confirmation answer. A probability in (0, 1): the
     // turn needs confirmation when any constrained decision chose a token
@@ -3152,13 +3094,13 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             send_error_detail(fd, 400, "confirm_below must be a probability "
                               "strictly between 0 and 1", "confirm_below",
                               "invalid_value");
-            return;
+            return false;
         }
         if (stream) {
             send_error_detail(fd, 400, "confirm_below is buffered-only: the "
                               "answer covers the whole turn; set stream to "
                               "false", "confirm_below", "invalid_value");
-            return;
+            return false;
         }
         confirm_below = cbv->num;
     }
@@ -3171,7 +3113,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     bool echo = false;
     if (api == API_TEXT && !request_bool(req, "echo", false, &echo)) {
         send_error(fd, 400, "echo must be a boolean");
-        return;
+        return false;
     }
     int plp = -1;   // -1 = prompt_logprobs absent or null
     if (api == API_TEXT && !absent(jv_get(req, "prompt_logprobs"))) {
@@ -3182,14 +3124,13 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             !whole_number(v)) {
             send_error(fd, 400, "prompt_logprobs must be a whole number "
                                 "from 0 to 20");
-            return;
+            return false;
         }
         plp = (int)v;
     }
     // R10.4: a request may name the context its prompt builds on; checked
     // against the prompt's tokens once they exist, below
     const char *ctx_id = NULL;
-    int ctx_tokens = 0;
     {
         jv *cv = jv_get(req, "context_id");
         if (!absent(cv)) {
@@ -3197,7 +3138,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                 send_error_detail(fd, 400, "context_id must be 1 to 64 "
                                   "characters of [A-Za-z0-9._:-]",
                                   "context_id", "invalid_value");
-                return;
+                return false;
             }
             ctx_id = cv->str;
         }
@@ -3206,7 +3147,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         send_error(fd, 400, echo ? "echo is buffered-only; set stream to false"
                                  : "prompt_logprobs is buffered-only; set "
                                    "stream to false");
-        return;
+        return false;
     }
     // OpenAI "stop": a string or an array of up to 4 non-empty strings.
     // Pointers borrow from req, which outlives the whole request.
@@ -3234,7 +3175,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         if (bad) {
             send_error(fd, 400,
                        "stop must be a string or an array of up to 4 non-empty strings");
-            return;
+            return false;
         }
     }
     // A stop sequence is a rule about the model's VISIBLE text — that is the
@@ -3295,7 +3236,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         if (bad) {
             send_error(fd, 400, "stop_token_ids must be an array of up to 8 token ids "
                                 "within the model's vocabulary");
-            return;
+            return false;
         }
     }
     if ((n_stops > 0 || n_req_stops > 0) && env) {
@@ -3303,14 +3244,16 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                    "stop and stop_token_ids are not supported with tool calling: "
                    "the sequences would be matched against the tool-call protocol "
                    "the model generates, not the text you receive");
-        return;
+        return false;
     }
-    engine_set_request_stops(e, req_stops, n_req_stops);
     // draft_hints (R3.7.4): strings the caller expects to be echoed. Drafts
     // only: every proposed token is verified by the target, so a hint can
     // make a turn faster and cannot change it.
-    e->hint = NULL;
-    e->hint_len = 0;
+    // the hints are tokenized into the slot's scratch buffer here, where a
+    // failure is answered in its place among the refusals; the engine is
+    // pointed at them only once the request is accepted
+    q->hints = false;
+    q->hint_len = 0;
     jv *dh = jv_get(req, "draft_hints");
     if (!absent(dh)) {
         bool bad = dh->type != J_ARR || dh->n > 16;
@@ -3323,19 +3266,19 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         if (bad || bytes > 262144) {
             send_error(fd, 400, "draft_hints must be an array of up to 16 "
                                 "strings, 256 KiB in total");
-            return;
+            return false;
         }
         if (!e->lookup_on) {
             send_error(fd, 400, "draft_hints needs a server started with "
                                 "--draft-lookup: hints are proposed through "
                                 "the lookup draft's verify walk");
-            return;
+            return false;
         }
         // one token per byte is the upper bound, plus a separator per hint
         size_t need = bytes + (size_t)dh->n + 1;
         if (need > (size_t)s->hint_cap) {
             int32_t *nb = realloc(s->hint_buf, sizeof(int32_t) * need);
-            if (!nb) { send_error(fd, 500, "out of memory tokenizing draft_hints"); return; }
+            if (!nb) { send_error(fd, 500, "out of memory tokenizing draft_hints"); return false; }
             s->hint_buf = nb;
             s->hint_cap = (int)need;
         }
@@ -3343,12 +3286,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         for (int i = 0; i < dh->n; i++) {
             int n = tok_encode(s->tok, dh->items[i]->str, s->hint_buf + hn,
                                s->hint_cap - hn - 1, false, false);
-            if (n < 0) { send_error(fd, 500, "out of memory tokenizing draft_hints"); return; }
+            if (n < 0) { send_error(fd, 500, "out of memory tokenizing draft_hints"); return false; }
             hn += n;
             s->hint_buf[hn++] = -1;
         }
-        e->hint = s->hint_buf;
-        e->hint_len = hn;
+        q->hints = true;
+        q->hint_len = hn;
     }
     jv *rf = jv_get(req, "response_format");
     if (rf && rf->type != J_NULL) {   // null reads as absent, as everywhere else
@@ -3357,42 +3300,31 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         // for guaranteed structure silently got none.
         if (rf->type != J_OBJ) {
             send_error(fd, 400, "response_format must be an object");
-            return;
+            return false;
         }
         const char *rft = jv_str(jv_get(rf, "type"), "");
         if (strcmp(rft, "json_object") != 0 && strcmp(rft, "json_schema") != 0 &&
             strcmp(rft, "text") != 0) {
             send_error(fd, 400,
                        "response_format.type must be text, json_object or json_schema");
-            return;
+            return false;
         }
         if (strcmp(rft, "json_schema") == 0) {
             jv *js = jv_get(rf, "json_schema");
             if (!js || js->type != J_OBJ) {
                 send_error(fd, 400,
                            "response_format.json_schema must be an object");
-                return;
+                return false;
             }
             jv *inner = jv_get(js, "schema");
             if (inner && inner->type != J_OBJ) {
                 send_error(fd, 400,
                            "response_format.json_schema.schema must be an object");
-                return;
+                return false;
             }
         }
     }
-    e->json_mode = request_json_mode(req);
-    // R1.8.1: every sampled turn is marked when the server has a key; the
-    // hook reads the context from this slot's history at each pick
-    if (SV.wm_on) {
-        s->wm.key = &SV.wm_key;
-        s->wm.marked = s->wm.repeats = 0;
-        e->wm_prepare = wm_prepare;
-        e->wm_ud = &s->wm;
-    } else {
-        e->wm_prepare = NULL;
-        e->wm_ud = NULL;
-    }
+    q->json_mode = request_json_mode(req);
     // Constrained decoding. The tool envelope wins when present: it already
     // contains the caller's response_format schema as its `final` branch, so
     // compiling that separately would drop the tool branches.
@@ -3479,7 +3411,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             char msg[256];
             snprintf(msg, sizeof(msg), "unsupported tool schema: %s", serr);
             send_error(fd, 400, msg);
-            return;
+            return false;
         }
     } else if (sch) {
         char serr[128];
@@ -3490,16 +3422,211 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             char msg[192];
             snprintf(msg, sizeof(msg), "unsupported json schema: %s", serr);
             send_error(fd, 400, msg);
-            return;
+            return false;
         }
     }
-    e->schema = schema;
-    e->constraint_includes_prelude = constrain && env->proto == TP_HARMONY;
+
+    // accepted: hand everything read above to the caller
+    q->cache_prompt = cache_prompt;
+    q->share_prefix = share_prefix;
+    q->script_text = script_text;
+    q->req_deadline = req_deadline;
+    q->top_p = top_p;
+    q->min_p = min_p;
+    q->top_k = top_k;
+    q->seed = seed;
+    q->repeat_penalty = repeat_penalty;
+    q->temp = temp;
+    q->max_tokens = max_tokens;
+    q->stream = stream;
+    q->include_usage = include_usage;
+    q->want_lp = want_lp;
+    q->lp_n = lp_n;
+    q->special_tokens = special_tokens;
+    q->cl_on = cl_on;
+    q->cl_render = cl_render;
+    q->cl_probe_d = cl_probe_d;
+    q->confirm_below = confirm_below;
+    q->echo = echo;
+    q->plp = plp;
+    q->ctx_id = ctx_id;
+    q->n_stops = n_stops;
+    q->n_req_stops = n_req_stops;
+    q->constrain = constrain;
+    q->sch = sch;
+    q->schema = schema;
+    memcpy(q->stops, stops, sizeof q->stops);
+    memcpy(q->req_stops, req_stops, sizeof q->req_stops);
+    return true;
+}
+
+// Installs an accepted request's settings on the slot, in the order they
+// were always installed: the sampler, the reasoning budget, the reasoning
+// channel's sampling and the loop guard (which reasoning-turn priming
+// reads), the budget sentence, the stops, the draft hints, JSON mode, the
+// watermark hook and the constraint.
+static void completion_apply(slot_t *s, const completion_req *q, const char *prompt,
+                             bool chat, const tool_envelope *env) {
+    model_t *m = s->m;
+    engine *e = &s->e;
+    // smp_base is the request-visible defaults, captured before engine_init
+    // installed the stop-token exemptions into the live sampler; restoring it
+    // wholesale dropped them, so over HTTP a repeat penalty could punish the
+    // model's own turn terminator (prompt </s>, top-k 1, penalty 100: the CLI
+    // stopped at once, the server ran to max_tokens). The RNG and the
+    // exemptions are engine state, not request defaults: both survive.
+    uint64_t rng_state = s->smp.rng;
+    int32_t no_penalty[sizeof(s->smp.no_penalty) / sizeof(*s->smp.no_penalty)];
+    int n_no_penalty = s->smp.n_no_penalty;
+    memcpy(no_penalty, s->smp.no_penalty, sizeof(no_penalty));
+    s->smp = s->smp_base;
+    s->smp.rng = rng_state;
+    memcpy(s->smp.no_penalty, no_penalty, sizeof(no_penalty));
+    s->smp.n_no_penalty = n_no_penalty;
+    s->smp.temp = (float)q->temp;
+    s->smp.top_p = (float)q->top_p;
+    s->smp.min_p = (float)q->min_p;
+    s->smp.top_k = (int)q->top_k;
+    s->smp.repeat_penalty = (float)q->repeat_penalty;
+    // An explicit seed is not installed here but where generation begins
+    // (run_completion): the RNG is the one sampler field that outlives a
+    // request, and a refusal while the prompt is prepared would otherwise
+    // leave the slot reseeded by a request that generated nothing.
+    e->think_budget = q->think_budget;
+    e->think_smp = q->think_smp;
+    if (q->think_smp) {
+        e->think_temp = q->think_temp;
+        e->think_top_p = q->think_top_p;
+        e->think_min_p = q->think_min_p;
+        e->think_top_k = q->think_top_k;
+    }
+    e->loop_guard = q->loop_guard;
+    if (q->loop_guard) {
+        e->loop_all = q->loop_all;
+        e->loop_span = q->loop_span;
+        e->loop_repeats = q->loop_repeats;
+        e->loop_window = q->loop_window;
+        e->loop_max_closes = q->loop_max_closes;
+    }
+    // A prompt can already be inside the reasoning turn (a raw completion
+    // resuming ` to=self`, which is how a gate harness drives one); the
+    // budget has to count from the first generated token there.
+    //
+    // The reset is not housekeeping. think_on survives engine_gen_begin on
+    // purpose (a chat request primes the turn BEFORE generation starts, via
+    // engine_think_started), so the slot would otherwise carry a still-open
+    // reasoning turn into the NEXT request -- which happens whenever a turn
+    // runs out of max_tokens mid-reasoning. Measured on the muse fixture:
+    // a request whose forced close did not fit left the slot open, and the
+    // next request, whose prompt held no reasoning turn at all, was capped
+    // from its first token.
+    e->think_on = false;
+    engine_think_prime(e, prompt);
+    e->think_msg_n = q->think_msg_n;
+    if (q->think_msg_n)
+        memcpy(e->think_msg, q->think_msg, sizeof(int32_t) * (size_t)q->think_msg_n);
+    engine_set_request_stops(e, q->req_stops, q->n_req_stops);
+    e->hint = q->hints ? s->hint_buf : NULL;
+    e->hint_len = q->hints ? q->hint_len : 0;
+    e->json_mode = q->json_mode;
+    // R1.8.1: every sampled turn is marked when the server has a key; the
+    // hook reads the context from this slot's history at each pick
+    if (SV.wm_on) {
+        s->wm.key = &SV.wm_key;
+        s->wm.marked = s->wm.repeats = 0;
+        e->wm_prepare = wm_prepare;
+        e->wm_ud = &s->wm;
+    } else {
+        e->wm_prepare = NULL;
+        e->wm_ud = NULL;
+    }
+    e->schema = q->schema;
+    e->constraint_includes_prelude = q->constrain && env->proto == TP_HARMONY;
     // chat responses split a thinking prelude into the reasoning channel;
     // constrained generation forwards it only when asked (raw completions
     // keep the payload-only contract)
     e->emit_think_prelude = chat && m->think_open != NULL &&
                             !(env && env->proto == TP_HARMONY);
+}
+
+void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
+                           jv *req, const tool_envelope *env) {
+    bool chat = api != API_TEXT; // chat-shaped: thinking channels, tools
+    model_t *m = s->m;
+    engine *e = &s->e;
+    bool muse_forced_think = chat && s->tmpl == TMPL_MUSE &&
+                             req_thinking_mode(req) == THINK_ON;
+    // Harmony primes the analysis channel in the prompt for every mode except
+    // THINK_OFF (see the generation-prompt comment in template.c), so the
+    // stream starts INSIDE reasoning and the splitter must too — the same
+    // reason ornith always does and muse does when forced. Getting this wrong
+    // is silent: the split simply never fires and the model's analysis is
+    // served as content, which is what the first live run did.
+    bool harmony_primed_think = chat && s->tmpl == TMPL_HARMONY &&
+                                !(env && env->proto == TP_HARMONY) &&
+                                req_thinking_mode(req) != THINK_OFF;
+    // granite 4.2's, Qwen 3.8's and ornith's generation prompts open
+    // `<think>\n` in every mode but THINK_OFF, where the block is already
+    // closed and the stream starts in content (template.c, TMPL_GRANITE42 /
+    // TMPL_QWEN38 / TMPL_ORNITH). Ornith used to prime the splitter in every
+    // mode, so a caller who turned thinking off had the answer served as
+    // reasoning_content.
+    // Qwen 3.5-0.8B inverts the default: its prompt opens the block only
+    // for an explicit THINK_ON.
+    // Nemotron Nano decides from the conversation's own /think and
+    // /no_think strings, so the question is asked of the rendered prompt.
+    bool nemotron_primed_think = false;
+    if (chat && s->tmpl == TMPL_NEMOTRON && prompt) {
+        static const char open[] = "<think>\n";
+        size_t e = strlen(prompt), k = sizeof(open) - 1;
+        while (k && e) {
+            char c = prompt[e - 1];
+            if (c == PROMPT_RAW_OPEN || c == PROMPT_RAW_CLOSE) { e--; continue; }
+            if (c != open[k - 1]) break;
+            e--; k--;
+        }
+        nemotron_primed_think = k == 0;
+    }
+    bool granite42_primed_think = chat &&
+                                  (tmpl_granite42_like(s->tmpl) ||
+                                   s->tmpl == TMPL_QWEN38 ||
+                                   tmpl_ornith_like(s->tmpl)) &&
+                                  (s->tmpl == TMPL_QWEN35_NOTHINK
+                                       ? req_thinking_mode(req) == THINK_ON
+                                       : req_thinking_mode(req) != THINK_OFF);
+    granite42_primed_think = granite42_primed_think || nemotron_primed_think;
+    // gemma4's thought block is opened BY THE PROMPT on a tool-result
+    // continuation with thinking on (template.c's g4_prev == 2 branch), so the
+    // grammar must start inside it. Asked of the prompt itself rather than
+    // re-derived from the message list: the renderer owns that decision, and a
+    // second copy of the condition is a second thing to keep in step.
+    size_t prompt_n = prompt ? strlen(prompt) : 0;
+    static const char G4_THOUGHT_OPEN[] = "<|channel>thought\n";
+    bool gemma4_primed_think =
+        chat && is_gemma4(s->tmpl) && prompt_n >= sizeof(G4_THOUGHT_OPEN) - 1 &&
+        !memcmp(prompt + prompt_n - (sizeof(G4_THOUGHT_OPEN) - 1),
+                G4_THOUGHT_OPEN, sizeof(G4_THOUGHT_OPEN) - 1);
+    // Major faults are page-ins that went to disk, so the delta across a
+    // request IS the paging stall rather than an inference from wall-clock: a
+    // slow request that took no major faults was slow for some other reason.
+    // Without this, a machine whose weights have been evicted reports a
+    // cheerful tok/s while a five-token reply takes a minute.
+    uint64_t faults_at_start = plat_major_faults();
+    // Allocated here rather than beside the response struct, so the start line
+    // below and the completion line share one name.
+    char req_id[48];
+    snprintf(req_id, sizeof(req_id), "%s%d",
+             api == API_RESPONSES ? "resp_" : api == API_MESSAGES ? "msg_"
+                                            : api == API_CHAT ? "chatcmpl-"
+                                                              : "cmpl-",
+             atomic_fetch_add(&SV.req_counter, 1));
+
+    completion_req q;
+    if (!completion_read(s, fd, api, req, env, chat, muse_forced_think,
+                         gemma4_primed_think, &q))
+        return;
+    completion_apply(s, &q, prompt, chat, env);
+    int ctx_tokens = 0;
 
     // -1 is an allocation failure (a dropped segment, or no buffer): a 500,
     // never a prompt silently short by the missing piece. The buffer is
@@ -3525,13 +3652,13 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     double tokenize_s = now_s() - tokenize_t0;
     if (n_prompt < 0) {
         free(toks);
-        completion_cleanup(e, schema, NULL);
+        completion_cleanup(e, q.schema, NULL);
         send_error(fd, 500, "out of memory tokenizing prompt");
         return;
     }
     if (n_prompt == 0 || n_prompt >= m->n_ctx) {
         free(toks);
-        completion_cleanup(e, schema, NULL);
+        completion_cleanup(e, q.schema, NULL);
         if (n_prompt == 0) send_error(fd, 400, "empty prompt");
         else send_error_detail(fd, 400, "prompt exceeds context window",
                                api == API_TEXT ? "prompt" :
@@ -3539,35 +3666,35 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                                "context_length_exceeded");
         return;
     }
-    if (ctx_id) {
+    if (q.ctx_id) {
         // The context is only worth naming if it is what this prompt starts
         // with; a caller whose system prompt changed must hear it, not be
         // served cold under a name that promised a warm prefix.
-        const char *why = !cache_prompt || !share_prefix
+        const char *why = !q.cache_prompt || !q.share_prefix
                 ? "context_id needs the prefix cache (cache_prompt and "
                   "prefix_cache must not be false)"
-            : echo || plp >= 0
+            : q.echo || q.plp >= 0
                 ? "context_id cannot be combined with echo or prompt_logprobs, "
                   "which score the whole prompt from position 0"
             : NULL;
         if (why) {
             free(toks);
-            completion_cleanup(e, schema, NULL);
+            completion_cleanup(e, q.schema, NULL);
             send_error_detail(fd, 400, why, "context_id", "invalid_value");
             return;
         }
         int at = -1;
-        int cn = prefix_context_check(e, ctx_id, toks, n_prompt, &at);
+        int cn = prefix_context_check(e, q.ctx_id, toks, n_prompt, &at);
         if (cn < 0) {
             free(toks);
-            completion_cleanup(e, schema, NULL);
+            completion_cleanup(e, q.schema, NULL);
             char msg[256];
             if (cn == PFX_CTX_UNKNOWN)
                 snprintf(msg, sizeof msg, "no context \"%s\" is pinned for "
-                         "this model (POST /v1/runner/contexts)", ctx_id);
+                         "this model (POST /v1/runner/contexts)", q.ctx_id);
             else
                 snprintf(msg, sizeof msg, "the prompt does not start with "
-                         "context \"%s\": it differs at token %d", ctx_id, at);
+                         "context \"%s\": it differs at token %d", q.ctx_id, at);
             send_error_detail(fd, cn == PFX_CTX_UNKNOWN ? 404 : 409, msg,
                               "context_id", cn == PFX_CTX_UNKNOWN
                               ? "context_not_found" : "context_mismatch");
@@ -3576,13 +3703,13 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         ctx_tokens = cn;
     }
     int remaining_ctx = m->n_ctx - n_prompt;
-    if (max_tokens < 0 || max_tokens > remaining_ctx) max_tokens = remaining_ctx;
+    if (q.max_tokens < 0 || q.max_tokens > remaining_ctx) q.max_tokens = remaining_ctx;
 
-    if (cl_on) {
-        if (!schema && !e->json_mode) {
+    if (q.cl_on) {
+        if (!q.schema && !e->json_mode) {
             free(toks);
-            completion_cleanup(e, schema, NULL);
-            send_error(fd, 400, confirm_below > 0
+            completion_cleanup(e, q.schema, NULL);
+            send_error(fd, 400, q.confirm_below > 0
                        ? "confirm_below needs a constrained turn: a json_schema "
                          "response_format, tools under a grammar, or JSON mode "
                          "(a native protocol's auto turn is parsed, not "
@@ -3593,46 +3720,46 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         }
         if (e->dm) {
             free(toks);
-            completion_cleanup(e, schema, NULL);
+            completion_cleanup(e, q.schema, NULL);
             send_error(fd, 400, "choice_logprobs is not supported with "
                                 "speculative decoding");
             return;
         }
-        if (max_tokens > 0) {
-            e->cl_recs  = malloc(sizeof(cl_rec) * (size_t)max_tokens);
+        if (q.max_tokens > 0) {
+            e->cl_recs  = malloc(sizeof(cl_rec) * (size_t)q.max_tokens);
             if (!e->cl_recs) {
                 free(toks);
-                completion_cleanup(e, schema, NULL);
+                completion_cleanup(e, q.schema, NULL);
                 send_error(fd, 500,
                            "out of memory allocating choice_logprobs buffer");
                 return;
             }
-            e->cl_cap   = max_tokens;
+            e->cl_cap   = q.max_tokens;
             e->cl_count = 0;
-            e->cl_probe = (int)cl_probe_d;
+            e->cl_probe = (int)q.cl_probe_d;
         }
     }
-    if (special_tokens && (schema || e->json_mode)) {
+    if (q.special_tokens && (q.schema || e->json_mode)) {
         free(toks);
-        completion_cleanup(e, schema, NULL);
+        completion_cleanup(e, q.schema, NULL);
         send_error(fd, 400, "special_tokens cannot be combined with "
                             "response_format: a constrained payload is "
                             "validated on decoded bytes");
         return;
     }
-    e->render_special = special_tokens;
-    if (want_lp && max_tokens > 0) {
-        e->lp_cap    = max_tokens;
-        e->lp_n      = lp_n;
-        e->lp_chosen = malloc(sizeof(float) * max_tokens);
-        e->lp_ids    = malloc(sizeof(int32_t) * max_tokens);
-        e->lp_top    = lp_n ? malloc(sizeof(lp_alt) * (size_t)max_tokens * lp_n) : NULL;
+    e->render_special = q.special_tokens;
+    if (q.want_lp && q.max_tokens > 0) {
+        e->lp_cap    = q.max_tokens;
+        e->lp_n      = q.lp_n;
+        e->lp_chosen = malloc(sizeof(float) * q.max_tokens);
+        e->lp_ids    = malloc(sizeof(int32_t) * q.max_tokens);
+        e->lp_top    = q.lp_n ? malloc(sizeof(lp_alt) * (size_t)q.max_tokens * q.lp_n) : NULL;
         // These scale with max_tokens * top_logprobs (tens of MB): a NULL here
         // would be dereferenced while collecting logprobs. Fail the request
         // cleanly instead. completion_cleanup frees whatever did allocate.
-        if (!e->lp_chosen || !e->lp_ids || (lp_n && !e->lp_top)) {
+        if (!e->lp_chosen || !e->lp_ids || (q.lp_n && !e->lp_top)) {
             free(toks);
-            completion_cleanup(e, schema, NULL);
+            completion_cleanup(e, q.schema, NULL);
             send_error(fd, 500, "out of memory allocating logprobs buffers");
             return;
         }
@@ -3677,7 +3804,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                    : SV.ov.has_top_k ? "cli" : sfile.has_top_k ? "file" : "preset",
         .src_repeat = !absent(jv_get(req, "repeat_penalty")) ? "request"
                     : SV.ov.has_repeat_penalty ? "cli" : "preset",
-        .seed = seed > 0 ? (uint64_t)seed : 0,
+        .seed = q.seed > 0 ? (uint64_t)q.seed : 0,
         .template_name = template_name(s->tmpl),
         // with tools declared, the protocol this request actually runs
         // under (a fallback to the generic envelope is reported as such);
@@ -3686,18 +3813,18 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                        : env ? tool_envelope_protocol_name(env)
                        : tool_protocol_name(s->tmpl, &native_tp),
         .tools = env != NULL,
-        .constrained = env != NULL && schema != NULL,
+        .constrained = env != NULL && q.schema != NULL,
         .parse_only = env != NULL && env->parse_only,
-        .context_id = ctx_id, .context_tokens = ctx_tokens,
+        .context_id = q.ctx_id, .context_tokens = ctx_tokens,
         .adapter_name = s->adapter >= 0 ? SV.adapters[s->adapter].name : NULL,
         .adapter_sha256 = s->adapter >= 0 ? SV.adapters[s->adapter].sha256 : NULL,
     };
-    if (script_text) {
+    if (q.script_text) {
         int32_t *ids = NULL;
-        int n = scripted_reply_tokens(s->tok, script_text, &ids);
+        int n = scripted_reply_tokens(s->tok, q.script_text, &ids);
         if (n < 0) {
             free(toks);
-            completion_cleanup(e, schema, NULL);
+            completion_cleanup(e, q.schema, NULL);
             if (n == -2)
                 send_error(fd, 400, "runner_test_reply cannot be spelled in "
                                     "this model's vocabulary");
@@ -3709,12 +3836,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         s->smp.script_n = n;
         s->smp.script_at = 0;
     }
-    gen_ctx g = { .out = {0}, .fd = fd, .stream = stream, .api = api,
+    gen_ctx g = { .out = {0}, .fd = fd, .stream = q.stream, .api = api,
                   .omit_reasoning = omit_reasoning,
-                  .stop_strs = stops, .n_stop = n_stops, .eng = e,
+                  .stop_strs = q.stops, .n_stop = q.n_stops, .eng = e,
                   .created = (long)time(NULL) };
     client_stop stop = { .fd = fd, .dead = &g.dead,
-                         .deadline = req_deadline };
+                         .deadline = q.req_deadline };
     snprintf(g.id, sizeof(g.id), "%s", req_id);
     // Prefill is scheduled apart from decode: different kernel shape, and it
     // is this slot's own model_forward_batch, so it must not overlap a
@@ -3735,23 +3862,23 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     diag.first_visible_s = -1;
     // Scoring the prompt reads every position's logits, so no prefix is
     // reused: the whole prompt is fed, one solo forward per token.
-    bool score_prompt = (echo && want_lp) || plp >= 0;
+    bool score_prompt = (q.echo && q.want_lp) || q.plp >= 0;
     if (score_prompt)
         engine_reset(e);
-    else if (cache_prompt && share_prefix)
+    else if (q.cache_prompt && q.share_prefix)
         reuse = engine_prefix_reuse(e, toks, n_prompt);
-    else if (cache_prompt)
+    else if (q.cache_prompt)
         reuse.keep = engine_rewind(e, toks, n_prompt);
     else
         engine_reset(e);
     int keep = reuse.keep;
-    if (ctx_id && keep < ctx_tokens) {
+    if (q.ctx_id && keep < ctx_tokens) {
         // The context passed the prefix check and still was not what the
         // prompt was built on (released between the check and here, or a
         // model that cannot fork one): the request named a warm prefix, so
         // it is refused rather than served cold under that name.
         free(toks);
-        completion_cleanup(e, schema, NULL);
+        completion_cleanup(e, q.schema, NULL);
         send_error_detail(fd, 409, "the named context could not be forked for "
                           "this request; pin it again or drop context_id",
                           "context_id", "context_unavailable");
@@ -3788,12 +3915,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     int mark_at = n_prompt - 1;
     if (score_prompt) {
         g.ptoks = malloc(sizeof(int32_t) * (size_t)n_prompt);
-        int top_n = plp > lp_n ? plp : lp_n;
+        int top_n = q.plp > q.lp_n ? q.plp : q.lp_n;
         if (g.ptoks) {
             memcpy(g.ptoks, toks, sizeof(int32_t) * (size_t)n_prompt);
             logits = engine_score_prompt(e, toks, n_prompt, top_n, &g.ps);
         }
-    } else if (cache_prompt && n_prompt > 1 && model_has_recurrent(e->m)) {
+    } else if (q.cache_prompt && n_prompt > 1 && model_has_recurrent(e->m)) {
         bool ok = mark_at == keep ||   // resumed at the mark: nothing before it to feed
                   engine_feed(e, toks + keep, mark_at - keep) != NULL;
         if (ok) engine_mark_turn(e);
@@ -3809,11 +3936,11 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     engine_set_prefill_yield(e, NULL, NULL);
     // Publish outside the device turn: it is a host-memory copy, and this
     // sequence is the only writer of its own KV between prefill and decode.
-    if (logits && cache_prompt && share_prefix)
+    if (logits && q.cache_prompt && q.share_prefix)
         engine_prefix_publish(e, toks, n_prompt, n_prompt - keep, prefill_s);
     free(toks);
     if (!logits) {
-        completion_cleanup(e, schema, &g);
+        completion_cleanup(e, q.schema, &g);
         // Three ways to get here and they are not the same answer. The
         // deadline is checked first: it is the only one where the caller is
         // still on the connection AND the prompt was fine, so reporting it as
@@ -3848,20 +3975,20 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     else
         think_init(&g.ts, chat ? m->think_open : NULL, m->think_close);
     const tool_envelope *stream_env = env ? env
-        : stream && chat && s->tmpl == TMPL_MUSE && schema
+        : q.stream && chat && s->tmpl == TMPL_MUSE && q.schema
         ? &muse_plain_env : NULL;
-    if (stream && stream_env) {
+    if (q.stream && stream_env) {
         tool_stream_sink sink = { &g, sink_reasoning, sink_content, sink_call_begin,
                                   sink_call_args, sink_call_end };
         tool_stream_init(&g.tsx, stream_env, &sink);
         g.tsx_on = true;
     }
 
-    if (stream) {
+    if (q.stream) {
         const char *hdr = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
                           "Cache-Control: no-cache\r\nConnection: close\r\n\r\n";
         if (!send_all(fd, hdr, strlen(hdr))) {
-            completion_cleanup(e, schema, &g);
+            completion_cleanup(e, q.schema, &g);
             return;
         }
         // OpenAI opens a chat stream with a role-only delta. Emitting it up
@@ -3911,16 +4038,16 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     double gtime;
     // Past the last refusal: the request's seed takes the slot's RNG now.
     // Nothing above draws from it (prefill and prompt scoring do not sample).
-    if (seed > 0) s->smp.rng = (uint64_t)seed;
+    if (q.seed > 0) s->smp.rng = (uint64_t)q.seed;
     // R1.2.2: the sampler's state as generation starts is the receipt's seed
     uint64_t gen_rng = s->smp.rng;
     g.raw_on = receipts_enabled();
     // only a streamed chat-shaped turn with a history can repeat a call
-    g.calls_on = stream && (api == API_CHAT || api == API_MESSAGES);
+    g.calls_on = q.stream && (api == API_CHAT || api == API_MESSAGES);
     g.doc_on = e->schema || e->json_mode;
     g.close_at = -1;
-    int n_gen = sched_generate(s, logits, max_tokens, gen_collect, &g, &gtime,
-                               req_deadline);
+    int n_gen = sched_generate(s, logits, q.max_tokens, gen_collect, &g, &gtime,
+                               q.req_deadline);
     if (g.doc_on) {
         diag.closure_json = closure_json(g.doc.s, g.doc.n, g.close_at);
         free(g.doc.s);
@@ -3928,9 +4055,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     }
     diag.wm_on = SV.wm_on;
     diag.wm_marked = s->wm.marked;
-    if (confirm_below > 0) {
+    if (q.confirm_below > 0) {
         diag.confirm_on = true;
-        diag.confirm_below = confirm_below;
+        diag.confirm_below = q.confirm_below;
         diag.min_chosen_p = 1.0;
         diag.min_margin = 1.0;
         for (int i = 0; i < e->cl_count; i++) {
@@ -3982,12 +4109,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     char receipt_file[64] = "", receipt_chain[65] = "";
     turn_shape shape = {0};
     if (g.raw_on)
-        turn_shape_of(&shape, req, e, env, constrain, sch, stops, n_stops,
-                      req_stops, n_req_stops, script_text != NULL);
+        turn_shape_of(&shape, req, e, env, q.constrain, q.sch, q.stops, q.n_stops,
+                      q.req_stops, q.n_req_stops, q.script_text != NULL);
 #define WRITE_RECEIPT() do {                                                  \
         if (g.raw_on && !g.dead && !receipt_file[0] && !diag.receipt_error) { \
             diag.receipt_error = serve_receipt(                               \
-                s, e, &g, prompt, api, chat, gen_rng, max_tokens, n_prompt,   \
+                s, e, &g, prompt, api, chat, gen_rng, q.max_tokens, n_prompt,   \
                 n_gen, keep, diag.prompt_reuse, spec_used, &shape,            \
                 diag.context_id, receipt_file, receipt_chain);                \
             if (!diag.receipt_error) {                                        \
@@ -4037,7 +4164,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         if (fin == -1)     unmapped = true;
         else if (fin != 0) g.dead = true;
     }
-    if (stream) WRITE_RECEIPT();
+    if (q.stream) WRITE_RECEIPT();
     // Anything still held for a multi-byte character the model never finished
     // goes out now rather than disappearing. It is genuinely truncated, so it
     // renders as U+FFFD — but silently dropping bytes would make the streamed
@@ -4074,7 +4201,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     if (g.tsx_on && tool_stream_called(&g.tsx) && !strcmp(finish, "stop"))
         finish = "tool_calls";
 
-    if (stream && api == API_RESPONSES) {
+    if (q.stream && api == API_RESPONSES) {
         // whatever item was still streaming is closed first: an item announced
         // with output_item.added must always reach output_item.done, including
         // when generation stopped mid-item
@@ -4117,7 +4244,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .n_prompt = n_prompt, .n_gen = n_gen, .cached = keep,
                            .forked = reuse.forked, .saved_s = reuse.saved_s,
                            .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
-                           .schema = schema != NULL,
+                           .schema = q.schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
                            SPEC_DOC_FIELDS(e), .diag = &diag,
                            .req = req,
@@ -4131,7 +4258,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             resp_send(&g, truncated ? "response.incomplete"
                                     : "response.completed", &f);
         }
-    } else if (stream && api == API_MESSAGES && generation_faulted(finish)) {
+    } else if (q.stream && api == API_MESSAGES && generation_faulted(finish)) {
         // The 200 and the headers went out before a token existed, so there is
         // no status code left to correct — and Anthropic's SSE protocol has a
         // terminator for exactly this case, documented alongside
@@ -4156,7 +4283,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             anth_error_json(&f, finish);
             anth_send(&g, "error", &f);
         }
-    } else if (stream && api == API_MESSAGES) {
+    } else if (q.stream && api == API_MESSAGES) {
         // A turn that generated nothing at all still has to describe itself
         // the way the buffered body would, which always carries at least one
         // block. Opening an empty text block here is what keeps "the streamed
@@ -4192,7 +4319,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                 anth_send(&g, "message_stop", &s2);
             }
         }
-    } else if (stream) {
+    } else if (q.stream) {
         if (!g.dead) {
             if (chat && e->lp_count > 0) {
                 sbuf lp = {0};
@@ -4238,7 +4365,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // OpenAI stream_options {"include_usage": true}: one extra chunk
             // with empty choices and the request's token accounting — AI-SDK
             // clients (Cline et al.) request this on every stream
-            if (ok && include_usage) {
+            if (ok && q.include_usage) {
                 sbuf u = {0};
                 sb_fmt(&u, "{\"id\":\"%s\",\"object\":\"%s\",\"created\":%ld,"
                            "\"model\":\"", g.id,
@@ -4273,7 +4400,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // a parse-only fault keeps what was valid and says what went wrong
             if (fault) finish = "envelope_error";
         } else if (chat) {
-            if (s->tmpl == TMPL_MUSE && schema)
+            if (s->tmpl == TMPL_MUSE && q.schema)
                 muse_user_payload_strip(&g.out);
             n_tc = tool_calls_parse_for(s->tmpl, &g.out, &tc);
             if (n_tc) {
@@ -4354,7 +4481,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .n_prompt = n_prompt, .n_gen = n_gen, .cached = keep,
                            .forked = reuse.forked, .saved_s = reuse.saved_s,
                            .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
-                           .schema = schema != NULL,
+                           .schema = q.schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
                            SPEC_DOC_FIELDS(e), .diag = &diag,
                            .req = req,
@@ -4397,7 +4524,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .n_prompt = n_prompt, .n_gen = n_gen, .cached = keep,
                            .forked = reuse.forked, .saved_s = reuse.saved_s,
                            .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
-                           .schema = schema != NULL,
+                           .schema = q.schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
                            SPEC_DOC_FIELDS(e), .diag = &diag,
                            .req = req,
@@ -4419,7 +4546,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         sb_lit(&r, "\",\"choices\":[{\"index\":0,");
         if (chat) sb_lit(&r, "\"message\":{\"role\":\"assistant\",\"content\":\"");
         else      sb_lit(&r, "\"text\":\"");
-        if (!chat && echo) sb_esc(&r, prompt, strlen(prompt));   // R4.8
+        if (!chat && q.echo) sb_esc(&r, prompt, strlen(prompt));   // R4.8
         sb_esc(&r, g.out.s ? g.out.s : "", g.out.n);
         sb_lit(&r, "\"");
         if (n_tc) {
@@ -4457,16 +4584,16 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                 sb_lit(&r, "]}");
             }
             sb_lit(&r, "]},");
-        } else if (!chat && echo && want_lp && g.ptoks) {
+        } else if (!chat && q.echo && q.want_lp && g.ptoks) {
             // echo: the prompt's teacher-forced entries, then the generated
-            append_text_logprobs(&r, s, e, &g, lp_n);
+            append_text_logprobs(&r, s, e, &g, q.lp_n);
             sb_lit(&r, ",");
         } else if (!chat && e->lp_count > 0) {
             // same body as the non-streaming path, ids included
             append_text_logprobs(&r, s, e, NULL, 0);
             sb_lit(&r, ",");
         }
-        if (!chat && plp >= 0 && g.ptoks) {
+        if (!chat && q.plp >= 0 && g.ptoks) {
             // vLLM's prompt_logprobs: per prompt position, the actual token
             // and the top `plp` alternatives, each with its 1-based rank
             char tb[512];
@@ -4481,7 +4608,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                        ps->rank[i]);
                 sb_esc(&r, tb, tn);
                 sb_lit(&r, "\"}");
-                for (int j = 0; j < plp && row && row[j].id >= 0; j++) {
+                for (int j = 0; j < q.plp && row && row[j].id >= 0; j++) {
                     if (row[j].id == want) continue;
                     // everything above row[j] is listed before it, so its
                     // rank counts only the strictly better entries there
@@ -4501,7 +4628,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         // JC-R1 constrained-choice posteriors: one entry per decision point
         // (a constrained step where >= 2 probed candidates were legal),
         // shared shape across the chat and text surfaces.
-        if (cl_render && e->cl_count > 0) {
+        if (q.cl_render && e->cl_count > 0) {
             char tb[512];
             sb_lit(&r, "\"choice_logprobs\":[");
             for (int i = 0; i < e->cl_count; i++) {
@@ -4532,7 +4659,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         resp_doc td = { .n_prompt = n_prompt, .n_gen = n_gen, .cached = keep,
                         .forked = reuse.forked, .saved_s = reuse.saved_s,
                         .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
-                           .schema = schema != NULL,
+                           .schema = q.schema != NULL,
                         .finish_detail = finish_detail_of(finish)
                                        ? finish_detail_of(finish) : cut_detail,
                         .json_mode = e->json_mode, .spec = spec_used,
@@ -4561,11 +4688,11 @@ done: ;
     fprintf(stderr, "[slot %d] %s: %d prompt (%d cached) + %d gen tok (%.1f tok/s)%s%s%s\n",
             s->id, g.id, n_prompt, keep, n_gen,
             n_gen / (gtime > 0 ? gtime : 1e-9),
-            schema ? " [schema]" : e->json_mode ? " [json]" : spec_used ? " [spec]" : "",
+            q.schema ? " [schema]" : e->json_mode ? " [json]" : spec_used ? " [spec]" : "",
             // "[client gone]" is an accusation, and it used to be made about a
             // client that never left: an unmappable envelope set the same flag.
             // The two are named apart so a log line means what it says.
             g.dead ? " [client gone]"
                    : unmapped ? " [envelope unmapped]" : "", paging);
-    completion_cleanup(e, schema, &g);
+    completion_cleanup(e, q.schema, &g);
 }
