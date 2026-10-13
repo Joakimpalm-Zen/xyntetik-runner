@@ -2859,46 +2859,10 @@ static bool bind_meta_muse(model_t *m, gguf_file *g, const char *arch) {
     return true;
 }
 
-static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
-    if (!gguf_open(&m->gf, path)) return false;
-    gguf_file *g = &m->gf;
-    if (!bind_agent_profile(m, g)) return false;
-    // kept for the backend's shared-weight registry: two instances of the same
-    // file are what let `--parallel N` upload the weights once
-    size_t plen = strlen(path) + 1;
-    m->path = malloc(plen);
-    if (!m->path) return false;
-    memcpy(m->path, path, plen);
-    model_record_file_id(m, path);
-
-    const char *arch = gguf_get_str(g, "general.architecture", "?");
-    if (!bind_admit_architecture(m, arch)) return false;
+// Defaults settled once every architecture block has run: the sandwich-norm
+// epsilon, sliding consistency and the Llama-4 attention knobs.
+static bool bind_resolve_defaults(model_t *m, gguf_file *g, const char *arch) {
     char key[128];
-    // The hybrid families type their blocks with zeros in the per-layer
-    // arrays (nemotron_h: head_count_kv / feed_forward_length; granitehybrid:
-    // head_count_kv). Their own blocks below read those arrays; the removal
-    // reading of a zero (this block's sublayer was dropped from the file)
-    // applies to every other architecture.
-    const bool hybrid_typed = strcmp(arch, "nemotron_h") == 0 ||
-                              strcmp(arch, "nemotron_h_moe") == 0 ||
-                              strcmp(arch, "granitehybrid") == 0;
-
-    if (!bind_hparams(m, g, arch, hybrid_typed)) return false;
-    if (strcmp(arch, "gemma3") == 0 && !bind_meta_gemma3(m, g, arch)) return false;
-    if (strcmp(arch, "gpt-oss") == 0 && !bind_meta_gptoss(m, g, arch)) return false;
-    if (strcmp(arch, "afmoe") == 0 && !bind_meta_afmoe(m, g, arch)) return false;
-    if ((strcmp(arch, "qwen3") == 0 || strcmp(arch, "qwen3moe") == 0) && !bind_meta_qwen3(m, g, arch)) return false;
-    if (!bind_mtp_layers(m, g, arch, p)) return false;
-    if (!m->l_is_swa && !bind_swa_default(m, g, arch)) return false;
-    if ((strcmp(arch, "qwen35") == 0 || strcmp(arch, "qwen4exp") == 0) && !bind_meta_qwen35(m, g, arch)) return false;
-    m->ple4_layer = -1;
-    if (strcmp(arch, "qwen4exp") == 0 && !bind_meta_qwen4exp(m, g, arch)) return false;
-    if (strcmp(arch, "apertus") == 0 && !bind_meta_apertus(m, g, arch)) return false;
-    if (strcmp(arch, "gemma4") == 0 && !bind_meta_gemma4(m, g, arch)) return false;
-    if (strcmp(arch, "granite") == 0 && !bind_meta_granite(m, g, arch)) return false;
-    if (strcmp(arch, "granitehybrid") == 0 && !bind_meta_granitehybrid(m, g, arch)) return false;
-    if ((strcmp(arch, "nemotron_h") == 0 || strcmp(arch, "nemotron_h_moe") == 0) && !bind_meta_nemotron_h(m, g, arch)) return false;
-    if (strcmp(arch, "muse-glimmer") == 0 && !bind_meta_muse(m, g, arch)) return false;
     // The sandwich norms run at rms_eps everywhere except where an arch block
     // above pinned them (muse-glimmer's fixed 1e-8); resolve the default after
     // every block that can still change rms_eps has run.
@@ -2931,6 +2895,13 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         fprintf(stderr, "error: negative no_rope_layer_step\n");
         return false;
     }
+    return true;
+}
+
+// Routed experts: their count, routing, gating, grouping and shared-expert
+// metadata, and the activations that refuse them.
+static bool bind_meta_moe(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
     // Bounded as a u32, before the cast: above INT_MAX this lands negative,
     // and a negative count is neither "> 0" (so the MoE block is skipped) nor
     // "== 0" (so the dense FFN is skipped too) — the layer then loaded no FFN
@@ -3053,6 +3024,14 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
             return false;
         }
     }
+    return true;
+}
+
+// The last metadata gates before any tensor: unsupported hybrids, removed
+// sublayers (admitted on the dense path, with the per-layer KV-head table they
+// need), missing or out-of-range geometry.
+static bool bind_validate_geometry(model_t *m, gguf_file *g, const char *arch, bool hybrid_typed) {
+    char key[128];
     if (!m->qwen35 && !m->granite_hybrid && !m->nemotron_h &&
         gguf_get(g, AK("ssm.conv_kernel"))) {
         fprintf(stderr, "error: '%s' is a hybrid SSM/attention architecture — "
@@ -3170,6 +3149,52 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                 m->n_embd, m->n_ff, m->n_layer);
         return false;
     }
+    return true;
+}
+
+static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
+    if (!gguf_open(&m->gf, path)) return false;
+    gguf_file *g = &m->gf;
+    if (!bind_agent_profile(m, g)) return false;
+    // kept for the backend's shared-weight registry: two instances of the same
+    // file are what let `--parallel N` upload the weights once
+    size_t plen = strlen(path) + 1;
+    m->path = malloc(plen);
+    if (!m->path) return false;
+    memcpy(m->path, path, plen);
+    model_record_file_id(m, path);
+
+    const char *arch = gguf_get_str(g, "general.architecture", "?");
+    if (!bind_admit_architecture(m, arch)) return false;
+    char key[128];
+    // The hybrid families type their blocks with zeros in the per-layer
+    // arrays (nemotron_h: head_count_kv / feed_forward_length; granitehybrid:
+    // head_count_kv). Their own blocks below read those arrays; the removal
+    // reading of a zero (this block's sublayer was dropped from the file)
+    // applies to every other architecture.
+    const bool hybrid_typed = strcmp(arch, "nemotron_h") == 0 ||
+                              strcmp(arch, "nemotron_h_moe") == 0 ||
+                              strcmp(arch, "granitehybrid") == 0;
+
+    if (!bind_hparams(m, g, arch, hybrid_typed)) return false;
+    if (strcmp(arch, "gemma3") == 0 && !bind_meta_gemma3(m, g, arch)) return false;
+    if (strcmp(arch, "gpt-oss") == 0 && !bind_meta_gptoss(m, g, arch)) return false;
+    if (strcmp(arch, "afmoe") == 0 && !bind_meta_afmoe(m, g, arch)) return false;
+    if ((strcmp(arch, "qwen3") == 0 || strcmp(arch, "qwen3moe") == 0) && !bind_meta_qwen3(m, g, arch)) return false;
+    if (!bind_mtp_layers(m, g, arch, p)) return false;
+    if (!m->l_is_swa && !bind_swa_default(m, g, arch)) return false;
+    if ((strcmp(arch, "qwen35") == 0 || strcmp(arch, "qwen4exp") == 0) && !bind_meta_qwen35(m, g, arch)) return false;
+    m->ple4_layer = -1;
+    if (strcmp(arch, "qwen4exp") == 0 && !bind_meta_qwen4exp(m, g, arch)) return false;
+    if (strcmp(arch, "apertus") == 0 && !bind_meta_apertus(m, g, arch)) return false;
+    if (strcmp(arch, "gemma4") == 0 && !bind_meta_gemma4(m, g, arch)) return false;
+    if (strcmp(arch, "granite") == 0 && !bind_meta_granite(m, g, arch)) return false;
+    if (strcmp(arch, "granitehybrid") == 0 && !bind_meta_granitehybrid(m, g, arch)) return false;
+    if ((strcmp(arch, "nemotron_h") == 0 || strcmp(arch, "nemotron_h_moe") == 0) && !bind_meta_nemotron_h(m, g, arch)) return false;
+    if (strcmp(arch, "muse-glimmer") == 0 && !bind_meta_muse(m, g, arch)) return false;
+    if (!bind_resolve_defaults(m, g, arch)) return false;
+    if (!bind_meta_moe(m, g, arch)) return false;
+    if (!bind_validate_geometry(m, g, arch, hybrid_typed)) return false;
 
     bool ok = true;
     m->tok_embd = need_tensor(g, "token_embd.weight", 0, &ok);
