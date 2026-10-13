@@ -1676,6 +1676,53 @@ static size_t render_nemotron_nano(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_ORNITH, TMPL_QWEN35 and TMPL_QWEN35_NOTHINK.
+static size_t render_qwen35(int tmpl, const chat_msg *msgs, int n_msgs,
+                            bool add_assistant, int thinking, const jv *tools,
+                            char *out, size_t cap) {
+    size_t off = 0;
+    for (int i = 0; i < n_msgs; i++) {
+        bool tool_response =
+            !strcmp(msgs[i].role, "user") &&
+            content_starts(msgs[i].content, "<tool_response>");
+        bool prev_tool_response = i > 0 &&
+            !strcmp(msgs[i - 1].role, "user") &&
+            content_starts(msgs[i - 1].content, "<tool_response>");
+        bool next_tool_response = i + 1 < n_msgs &&
+            !strcmp(msgs[i + 1].role, "user") &&
+            content_starts(msgs[i + 1].content, "<tool_response>");
+        if (tool_response) {
+            if (!prev_tool_response)
+                off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
+            else
+                off = emit(out, cap, off, "\n", NULL, NULL);
+            off = emit(out, cap, off, "%s", msgs[i].content, NULL);
+            if (!next_tool_response)
+                off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+        } else {
+            off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
+                       msgs[i].role, msgs[i].content);
+        }
+    }
+    if (add_assistant) {
+        off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+        // ornith's reference branches on enable_thinking exactly the way
+        // Qwen3's does below: `false` means an ALREADY-CLOSED thought
+        // block, everything else (including undefined) means an OPEN one.
+        // Emitting the open block for THINK_OFF handed a caller who asked
+        // for no reasoning the one construct that starts it.
+        // Qwen 3.5-0.8B inverts the default: only an explicit `true`
+        // opens the block (chat_template.jinja:149).
+        int mode = thinking & THINK_MODE_MASK;
+        bool closed = tmpl == TMPL_QWEN35_NOTHINK ? mode != THINK_ON
+                                                  : mode == THINK_OFF;
+        off = emit(out, cap, off,
+                   closed ? "<think>\n\n</think>\n\n" : "<think>\n",
+                   NULL, NULL);
+    }
+    return off;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -1688,46 +1735,7 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_ORNITH:
     case TMPL_QWEN35:
     case TMPL_QWEN35_NOTHINK:
-        for (int i = 0; i < n_msgs; i++) {
-            bool tool_response =
-                !strcmp(msgs[i].role, "user") &&
-                content_starts(msgs[i].content, "<tool_response>");
-            bool prev_tool_response = i > 0 &&
-                !strcmp(msgs[i - 1].role, "user") &&
-                content_starts(msgs[i - 1].content, "<tool_response>");
-            bool next_tool_response = i + 1 < n_msgs &&
-                !strcmp(msgs[i + 1].role, "user") &&
-                content_starts(msgs[i + 1].content, "<tool_response>");
-            if (tool_response) {
-                if (!prev_tool_response)
-                    off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
-                else
-                    off = emit(out, cap, off, "\n", NULL, NULL);
-                off = emit(out, cap, off, "%s", msgs[i].content, NULL);
-                if (!next_tool_response)
-                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-            } else {
-                off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
-                           msgs[i].role, msgs[i].content);
-            }
-        }
-        if (add_assistant) {
-            off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
-            // ornith's reference branches on enable_thinking exactly the way
-            // Qwen3's does below: `false` means an ALREADY-CLOSED thought
-            // block, everything else (including undefined) means an OPEN one.
-            // Emitting the open block for THINK_OFF handed a caller who asked
-            // for no reasoning the one construct that starts it.
-            // Qwen 3.5-0.8B inverts the default: only an explicit `true`
-            // opens the block (chat_template.jinja:149).
-            int mode = thinking & THINK_MODE_MASK;
-            bool closed = tmpl == TMPL_QWEN35_NOTHINK ? mode != THINK_ON
-                                                      : mode == THINK_OFF;
-            off = emit(out, cap, off,
-                       closed ? "<think>\n\n</think>\n\n" : "<think>\n",
-                       NULL, NULL);
-        }
-        break;
+        return render_qwen35(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_QWEN3_CODER: {
         // Qwen/Qwen3-Coder-30B-A3B-Instruct tokenizer_config.json.
         bool have_tools = tools && tools->type == J_ARR && tools->n;
