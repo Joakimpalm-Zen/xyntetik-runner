@@ -8192,6 +8192,9 @@ static double lbw_prof[4];   // R recompute / B1 sites / B1 attn / B2+B3
 
 // One layer's reverse sweep, shared by its phases: the shapes resolved once,
 // every buffer the phases read and write, and the profile clock.
+// Every phase is a NUM_STAGE: compiled on its own, a phase changed the
+// trained adapter's bytes in the default build (on the Gemma families with
+// clang on arm64, on the MoE adapters with clang on x86-64).
 typedef struct {
     bool lprof;
     double lt;
@@ -8278,7 +8281,7 @@ typedef struct {
 
 // The sweep's shapes and buffers, and the layer output scale applied to dx;
 // false when an allocation failed (the phases then do nothing).
-static bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s) {
+NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s) {
     bool lprof = getenv("RUNNER_TRAIN_PROF") != NULL;
     double lt = lprof ? plat_now() : 0;
     layer_t *ly = &m->layers[l];
@@ -8476,7 +8479,7 @@ static bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s) {
 
 // Phase R: the layer's forward internals recomputed from the tape, attention
 // through the production worker.
-static void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
     bool lprof = s->lprof;
     double lt = s->lt;
     layer_t *ly = s->ly;
@@ -8637,7 +8640,7 @@ static void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, boo
 }
 
 // Phase P: the per-layer embedding branch's adjoint on the post-FFN residual.
-static void lbw_ple_branch(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+NUM_STAGE void lbw_ple_branch(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
     layer_t *ly = s->ly;
     int E = s->E;
     int nff = s->nff;
@@ -8699,8 +8702,6 @@ static void lbw_ple_branch(model_t *m, int l, int T, float *dx, lbw_state *s, bo
 
 // Phase B1, first half: the FFN backward site by site across the window, then
 // the attention output projection and its gate.
-// A NUM_STAGE: compiled on its own, it changed the trained adapter's bytes
-// on the Gemma families in the default build.
 NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
     bool lprof = s->lprof;
     double lt = s->lt;
@@ -8885,7 +8886,7 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
 
 // Phase B1, second half: the score and softmax backward over KV-head groups,
 // and the shared-KV deposits.
-static void lbw_attention(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+NUM_STAGE void lbw_attention(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
     bool lprof = s->lprof;
     double lt = s->lt;
     int hd = s->hd;
@@ -8945,8 +8946,6 @@ static void lbw_attention(model_t *m, int l, int T, float *dx, lbw_state *s, boo
 }
 
 // Phase B2: the projection backwards once dK and dV are complete.
-// A NUM_STAGE: compiled on its own, it changed the trained adapter's bytes
-// on the Gemma families in the default build.
 NUM_STAGE void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
     layer_t *ly = s->ly;
     int E = s->E;
@@ -9038,7 +9037,7 @@ NUM_STAGE void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s
 }
 
 // Phase B3: the attention norm's backward and both residual paths into the layer input's gradient.
-static void lbw_input_grad(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+NUM_STAGE void lbw_input_grad(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
     bool lprof = s->lprof;
     double lt = s->lt;
     layer_t *ly = s->ly;
@@ -9164,7 +9163,7 @@ static bool lora_backward_admit(model_t *m, int T) {
 // The taped forward: the inference forward, solo per position, with every
 // layer's input kept on the tape, and the window's (weighted) next-token
 // loss. A failure leaves the tape for the caller to free.
-static bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
+NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
                                const float *pos_w, double *loss_out) {
     int E = m->n_embd, V = m->n_vocab, L = m->n_layer;
     double loss = 0.0;
@@ -9198,7 +9197,7 @@ static bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
 // rather than being stored: memory over speed, the reference trade — the
 // chunk bounds the probs plane to HEAD_CHUNK * V floats.
 enum { HEAD_CHUNK = 16 };
-static bool lora_head_bw(model_t *m, const int32_t *toks, int T,
+NUM_STAGE bool lora_head_bw(model_t *m, const int32_t *toks, int T,
                          const float *pos_w, float *dx) {
     int E = m->n_embd, V = m->n_vocab, L = m->n_layer;
     float *probs  = malloc(sizeof(float) * (size_t)HEAD_CHUNK * V);
