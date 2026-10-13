@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`runner -i` shows a reasoning model's thinking as thinking.** The chat
+  loop started its reasoning split inside the thought only for Harmony,
+  whatever the thinking mode. Qwen 3.5 and 3.8, Granite 4.2, Nemotron and
+  Ornith, whose prompts open `<think>` themselves, printed their reasoning
+  as the answer, and Harmony under `--no-think` started primed. The chat
+  loop now reads where the rendered prompt left the turn, as the server
+  does.
+
 - **A Gemma 4 turn that continues after a tool result with thinking on is
   read from the thought its prompt opened.** The prompt ends by opening
   `<|channel>thought`, so the model's first words are its thought. The

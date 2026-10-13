@@ -243,3 +243,30 @@ def test_gemma4_continuation_reads_the_thought_its_prompt_opened(exe, model, fam
                         args += fn.get("arguments") or ""
         assert reasoning == "Oslo is done; now Bergen.", reasoning
         assert names == ["get_weather"] and json.loads(args) == {"city": "Bergen"}, (names, args)
+
+
+@pytest.fixture(scope="module")
+def qwen3_model(tmp_path_factory):
+    """A qwen3-architecture fixture: the architecture gives it `<think>` tags,
+    which the CLI chat splits on (model.c); the default fixture has none."""
+    m = tmp_path_factory.mktemp("rs-q3") / "q3.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--arch", "qwen3",
+                    "--qk-norm", str(m)], check=True, stdout=subprocess.DEVNULL)
+    return m
+
+
+@pytest.mark.parametrize("family,flag,primed", [
+    ("qwen38", None, True), ("qwen38", "--no-think", False), ("qwen38", "--think", True),
+    ("qwen35-nothink", None, False), ("qwen35-nothink", "--think", True),
+    ("granite42", None, True), ("granite42", "--no-think", False),
+    ("chatml", None, False), ("chatml", "--think", False),
+])
+def test_cli_chat_starts_where_its_prompt_left_the_turn(exe, qwen3_model, family, flag, primed):
+    """`runner -i` reads the same render_state as the server: a prompt that
+    opened the thought block shows its first tokens as [thinking], one that
+    did not shows them as the answer."""
+    argv = [str(exe), "-m", str(qwen3_model), "--chat-template", family, "-i", "-n", "8",
+            "--temp", "0", "--no-tray", "-c", "2048"] + ([flag] if flag else [])
+    p = subprocess.run(argv, input=b"Hello\n", capture_output=True, timeout=120)
+    assert p.returncode == 0, p.stderr[-400:]
+    assert (b"[thinking]" in p.stdout) == primed, (family, flag, p.stdout[-200:])
