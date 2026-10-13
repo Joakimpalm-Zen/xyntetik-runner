@@ -1877,37 +1877,10 @@ static void cli_opts_init(cli_opts *o) {
 }
 
 
-int main(int argc, char **argv) {
-    char *owned_prompt = NULL;
-    // the measured-envelope verdict the one-shot model loaded under, for its
-    // transcript (R1.1.5); unknown on paths that never ran the gate
-    int cli_env_state = ENV_UNCLASSIFIED;
-    bool cli_env_known = false;
-    session_image simg;
-    memset(&simg, 0, sizeof simg);
-    receipt_sig_state v_rsig = RSIG_NONE;   // --verify: the record's signature state
-    char v_rec_pub[SIGN_PUBHEX_CAP] = "";
-    char v_prev[65] = "";
-    int tmpl = -1;
-    char doctor_sampling[256] = ""; // the effective sampler, as the load line says
-    double doctor_load_s = 0;
-    cli_opts opts;
-    cli_opts_init(&opts);
-    cli_opts *o = &opts;
-
-    // A bare `runner` — double-clicked, or typed with no arguments — starts
-    // the tray on the platforms that have one. The conditions are deliberately
-    // narrow: literally zero arguments (so no scripted invocation can ever be
-    // affected — scripts always pass something), a real terminal on both
-    // stdin and stdout (so pipes and CI probes still get usage text), and a
-    // platform with a tray backend (Linux keeps printing usage). --no-tray is
-    // the standing opt-out: it suppresses this launch and nothing else, for
-    // wrappers that want bare-invocation behavior guaranteed text-only.
-#if defined(__APPLE__) || defined(_WIN32)
-    if (argc == 1 && RUNNER_TTY(stdin) && RUNNER_TTY(stdout))
-        return tray_main();
-#endif
-
+// The flags, in order. Parsing stops where an early exit stands (--version,
+// --help, --tray), so a flag after one is never read; *rc is the process exit
+// status whenever this returns false.
+static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         #define NEXT (i + 1 < argc ? argv[++i] : (usage(argv[0]), exit(1), (char*)0))
@@ -1927,7 +1900,7 @@ int main(int argc, char **argv) {
         // reference template; --think opts into the thinking shape
         else if (!strcmp(a, "--think")) o->thinking = THINK_ON;
         else if (!strcmp(a, "--no-think")) o->thinking = THINK_OFF;
-        else if (!strcmp(a, "--tray")) return tray_main();
+        else if (!strcmp(a, "--tray")) { *rc = tray_main(); return false; }
         // The standing opt-out, and no longer a no-op: it suppresses both the
         // bare-invocation launch above and the tray that otherwise follows a
         // --serve or -i session below.
@@ -1964,7 +1937,8 @@ int main(int argc, char **argv) {
             if (o->n_pack_attach == PACK_MAX_ATTACH) {
                 fprintf(stderr, "error: --pack-attach: at most %d files\n",
                         PACK_MAX_ATTACH);
-                return 1;
+                *rc = 1;
+                return false;
             }
             o->pack_attach[o->n_pack_attach++] = f;
         }
@@ -2013,7 +1987,7 @@ int main(int argc, char **argv) {
             const char *v = NEXT;
             if (!strcmp(v, "auto")) o->mp.gpu_mode = GPU_AUTO;
             else if (!strcmp(v, "off")) o->mp.gpu_mode = GPU_OFF;
-            else { fprintf(stderr, "error: --gpu expects auto or off\n"); return 1; }
+            else { fprintf(stderr, "error: --gpu expects auto or off\n"); *rc = 1; return false; }
         }
         else if (!strcmp(a, "--kv")) {
             const char *v = NEXT;
@@ -2022,7 +1996,7 @@ int main(int argc, char **argv) {
             if (!strcmp(v, "q8")) o->mp.kv_q8 = true;
             else if (!strcmp(v, "fp4")) o->mp.kv_fp4 = true;
             else if (!strcmp(v, "k8v4")) o->mp.kv_split = true;
-            else if (strcmp(v, "f16")) { fprintf(stderr, "error: --kv expects f16, q8, k8v4 or fp4\n"); return 1; }
+            else if (strcmp(v, "f16")) { fprintf(stderr, "error: --kv expects f16, q8, k8v4 or fp4\n"); *rc = 1; return false; }
         }
         else if (!strcmp(a, "--mlock")) o->mp.mlock = true;
         else if (!strcmp(a, "--moe-prefetch")) {
@@ -2030,7 +2004,7 @@ int main(int argc, char **argv) {
             if (!strcmp(v, "on")) o->mp.moe_prefetch = 1;
             else if (!strcmp(v, "off")) o->mp.moe_prefetch = -1;
             else if (!strcmp(v, "auto")) o->mp.moe_prefetch = 0;
-            else { fprintf(stderr, "error: --moe-prefetch expects on, off or auto\n"); return 1; }
+            else { fprintf(stderr, "error: --moe-prefetch expects on, off or auto\n"); *rc = 1; return false; }
         }
         else if (!strcmp(a, "--draft"))   o->draft_path = NEXT;
         else if (!strcmp(a, "--draft-required")) o->draft_required = true;
@@ -2058,7 +2032,8 @@ int main(int argc, char **argv) {
             char *eq = spec ? strchr(spec, '=') : NULL;
             if (!eq || eq == spec || !eq[1]) {
                 fprintf(stderr, "error: --adapter wants NAME=PATH\n");
-                return 1;
+                *rc = 1;
+                return false;
             }
             *eq = 0;
             bool name_ok = strlen(spec) < 64;
@@ -2069,11 +2044,13 @@ int main(int argc, char **argv) {
             if (!name_ok) {
                 fprintf(stderr, "error: --adapter NAME must be 1 to 63 "
                         "characters of [A-Za-z0-9._-]\n");
-                return 1;
+                *rc = 1;
+                return false;
             }
             if (o->n_adapters >= 16) {
                 fprintf(stderr, "error: at most 16 --adapter\n");
-                return 1;
+                *rc = 1;
+                return false;
             }
             o->adapter_names[o->n_adapters] = spec;   // lives for the process
             o->adapter_paths[o->n_adapters++] = eq + 1;
@@ -2152,13 +2129,53 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--fit")) o->fit_path = NEXT;
         else if (!strcmp(a, "--version")) {
             printf("runner %s%s\n", RUNNER_VERSION, RUNNER_BUILD_FLAVOR ? " (" RUNNER_BUILD_FLAVOR_STR ")" : "");
-            return 0;
+            *rc = 0;
+            return false;
         }
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
             usage_to(stdout, argv[0]);
-            return 0;
+            *rc = 0;
+            return false;
         }
-        else { fprintf(stderr, "unknown option %s\n", a); usage(argv[0]); return 1; }
+        else { fprintf(stderr, "unknown option %s\n", a); usage(argv[0]); *rc = 1; return false; }
+    }
+    return true;
+}
+
+int main(int argc, char **argv) {
+    char *owned_prompt = NULL;
+    // the measured-envelope verdict the one-shot model loaded under, for its
+    // transcript (R1.1.5); unknown on paths that never ran the gate
+    int cli_env_state = ENV_UNCLASSIFIED;
+    bool cli_env_known = false;
+    session_image simg;
+    memset(&simg, 0, sizeof simg);
+    receipt_sig_state v_rsig = RSIG_NONE;   // --verify: the record's signature state
+    char v_rec_pub[SIGN_PUBHEX_CAP] = "";
+    char v_prev[65] = "";
+    int tmpl = -1;
+    char doctor_sampling[256] = ""; // the effective sampler, as the load line says
+    double doctor_load_s = 0;
+    cli_opts opts;
+    cli_opts_init(&opts);
+    cli_opts *o = &opts;
+
+    // A bare `runner` — double-clicked, or typed with no arguments — starts
+    // the tray on the platforms that have one. The conditions are deliberately
+    // narrow: literally zero arguments (so no scripted invocation can ever be
+    // affected — scripts always pass something), a real terminal on both
+    // stdin and stdout (so pipes and CI probes still get usage text), and a
+    // platform with a tray backend (Linux keeps printing usage). --no-tray is
+    // the standing opt-out: it suppresses this launch and nothing else, for
+    // wrappers that want bare-invocation behavior guaranteed text-only.
+#if defined(__APPLE__) || defined(_WIN32)
+    if (argc == 1 && RUNNER_TTY(stdin) && RUNNER_TTY(stdout))
+        return tray_main();
+#endif
+
+    {
+        int rc;
+        if (!cli_parse(o, argc, argv, &rc)) return rc;
     }
 
     // These options shape render_messages() in the stateful chat loop below.
