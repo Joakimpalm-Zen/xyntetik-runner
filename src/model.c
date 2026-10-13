@@ -10317,8 +10317,35 @@ bool model_moe_ffn_cpu_premixed(model_t *m, int layer, int n) {
     return true;
 }
 
-float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
-                           bool want_logits) {
+// One token's row of an embedding table: dequantized, at the table's scale.
+// The id is untrusted (prompt ids, a corrupt cache, a mismatched tokenizer):
+// an id outside [0, n_vocab) would index the table out of its mapped rows, so
+// it is clamped to 0 and a bad id degrades output rather than reading past the
+// mapping. (The speculative path guards its drafted ids separately in
+// engine.c.) Shared by the backbone's inputs and the NextN/MTP head.
+static void embed_row(const model_t *m, const gguf_tensor *t, int32_t id,
+                      float *out, int E) {
+    if (id < 0 || id >= m->n_vocab) id = 0;
+    dequant_row(t->type, (const uint8_t *)t->data + (size_t)id * ggml_row_size(t->type, E),
+                out, E);
+    if (t->scale != 1.0f)
+        for (int i = 0; i < E; i++) out[i] *= t->scale;
+}
+
+// The backbone's input rows in m->x: the token embeddings, transformed as the
+// architecture scales them.
+static void embed_rows(model_t *m, const int32_t *tokens, int n) {
+    int n_embd = m->n_embd;
+    for (int b = 0; b < n; b++) {
+        embed_row(m, m->tok_embd, tokens[b], m->x + (size_t)b * n_embd, n_embd);
+        model_embd_transform(m, m->x + (size_t)b * n_embd);
+    }
+}
+
+// A forward's start: the position, the MoE probe's ring, the recurrent
+// reset at position 0, and the RUNNER_DEBUG_ACT pass accounting. Returns
+// whether this pass is the one being dumped.
+static int forward_begin(model_t *m, int n, int pos) {
     m->fwd_pos = pos;
     m->moe_probe_depth = 0;   // the ring is scoped to one top-to-bottom layer
                               // pass, not carried across forward() calls
@@ -10329,11 +10356,6 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     // recurrent arches — including nemotron_h, which the per-arch blocks missed
     // — reset identically.
     if (pos == 0) model_recurrent_reset(m);
-    // GPU handles the leading gpu_layers. A full split (gpu_layers == n_layer)
-    // returns logits directly; a partial split runs [0, gpu_layers) on the GPU,
-    // leaves the boundary activation in the host x buffer + the offloaded
-    // layers' KV in the host cache, and the CPU loop below finishes the rest.
-    int start = 0;
     // RUNNER_DEBUG_ACT=N dumps the N-th forward pass (1-based): =1 keeps the
     // historical dump-the-first-pass behavior; =3 reaches the second DECODE
     // step — the first pass that reads KV a previous decode step wrote, which
@@ -10347,7 +10369,12 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                 n, pos, m->arch, m->embd_scale, m->rms_eps, m->attn_scale,
                 m->logit_softcap, (int)m->v_rmsnorm, (int)m->kv_q8, (int)m->kv_fp4,
                 (int)m->kv_split, m->n_suppress);
-    int n_embd = m->n_embd;
+    return dbg;
+}
+
+// The E-series per-layer embedding table, built before a partial split's
+// device pass overwrites the embeddings it is made from.
+static void forward_ple_before_split(model_t *m, const int32_t *tokens, int n) {
     // gemma-4 E-series: a partial GPU split hands off to the CPU loop below
     // starting at layer `gpu_layers`, and that hand-off overwrites m->x with
     // the boundary hidden state -- by the time the loop reads m->ple the raw
@@ -10361,25 +10388,28 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     // fed the CPU-continued layers a stale/zero per-layer-embedding table.
     if (m->n_embd_ple > 0 && m->gpu && m->gpu_layers > 0 &&
         m->gpu_layers < m->n_layer) {
-        size_t ers = ggml_row_size(m->tok_embd->type, n_embd);
-        for (int b = 0; b < n; b++) {
-            int32_t id = tokens[b];
-            if (id < 0 || id >= m->n_vocab) id = 0;
-            dequant_row(m->tok_embd->type,
-                        (uint8_t *)m->tok_embd->data + (size_t)id * ers,
-                        m->x + (size_t)b * n_embd, n_embd);
-            if (m->tok_embd->scale != 1.0f)
-                for (int i = 0; i < n_embd; i++)
-                    m->x[(size_t)b * n_embd + i] *= m->tok_embd->scale;
-            model_embd_transform(m, m->x + (size_t)b * n_embd);
-        }
+        embed_rows(m, tokens, n);
         model_ple_prepass(m, tokens, n, m->x, m->ple, m->ple_tmp);
     }
+}
+
+// GPU handles the leading gpu_layers. A full split (gpu_layers == n_layer)
+// returns logits directly; a partial split runs [0, gpu_layers) on the GPU,
+// leaves the boundary activation in the host x buffer + the offloaded
+// layers' KV in the host cache, and the CPU loop below finishes the rest.
+// Returns the device's logits when it ran the whole stack (*done), else
+// NULL with *start at the first layer the host runs.
+static float *forward_gpu_leading(model_t *m, const int32_t *tokens, int n,
+                                  int pos, bool want_logits, int *start,
+                                  bool *done) {
+    *start = 0;
+    *done = false;
     if (m->gpu) {
         if (m->gpu_layers >= m->n_layer) {
             float *lg = NULL;
             if (gpu_forward_batch(m, tokens, n, pos, want_logits, &lg)) {
                 apply_head_transforms(m, lg);
+                *done = true;
                 return lg;
             }
             // GPU failed at runtime: fall back to CPU permanently. Release the
@@ -10392,56 +10422,38 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                     "backend, continuing on CPU\n");
             gpu_disable(m);
         } else if (gpu_forward_batch(m, tokens, n, pos, false, NULL)) {
-            start = m->gpu_layers;
+            *start = m->gpu_layers;
         } else {
             fprintf(stderr, "gpu: forward failed at runtime — releasing the "
                     "backend, continuing on CPU\n");
             gpu_disable(m);
         }
     }
-    int xdim = m->xdim;   // cached at load (RNC-3)
+    return NULL;
+}
 
-    if (start == 0) {
-        size_t ers = ggml_row_size(m->tok_embd->type, n_embd);
-        for (int b = 0; b < n; b++) {
-            // tokens[] is untrusted here (prompt ids, a corrupt cache, a
-            // mismatched tokenizer): an id outside [0, n_vocab) would index the
-            // embedding table out of its mapped rows. Clamp to 0 so a bad id
-            // degrades output rather than reading past the mapping. (The
-            // speculative path guards its drafted ids separately in engine.c.)
-            int32_t id = tokens[b];
-            if (id < 0 || id >= m->n_vocab) id = 0;
-            dequant_row(m->tok_embd->type,
-                        (uint8_t *)m->tok_embd->data + (size_t)id * ers,
-                        m->x + (size_t)b * n_embd, n_embd);
-            if (m->tok_embd->scale != 1.0f)
-                for (int i = 0; i < n_embd; i++)
-                    m->x[(size_t)b * n_embd + i] *= m->tok_embd->scale;
-            model_embd_transform(m, m->x + (size_t)b * n_embd);
-        }
-        if (dbg) dbg_stat("post-embd", -1, m->x + (size_t)(n - 1) * n_embd, n_embd);
-        if (m->n_embd_ple > 0)
-            model_ple_prepass(m, tokens, n, m->x, m->ple, m->ple_tmp);
-        if (m->hyper_conn) {
-            // the wide residual starts as hc identical copies of the embedding
-            int hcd = m->hc_count * n_embd;
-            for (int b = 0; b < n; b++)
-                for (int c = 0; c < m->hc_count; c++)
-                    memcpy(m->x_hc + (size_t)b * hcd + (size_t)c * n_embd,
-                           m->x + (size_t)b * n_embd, sizeof(float) * (size_t)n_embd);
-        }
+// The host's input rows when it runs the stack from layer 0: embeddings,
+// the per-layer embedding table, and on hyper-connections the wide residual.
+static void forward_inputs(model_t *m, const int32_t *tokens, int n, int dbg) {
+    int n_embd = m->n_embd;
+    embed_rows(m, tokens, n);
+    if (dbg) dbg_stat("post-embd", -1, m->x + (size_t)(n - 1) * n_embd, n_embd);
+    if (m->n_embd_ple > 0)
+        model_ple_prepass(m, tokens, n, m->x, m->ple, m->ple_tmp);
+    if (m->hyper_conn) {
+        // the wide residual starts as hc identical copies of the embedding
+        int hcd = m->hc_count * n_embd;
+        for (int b = 0; b < n; b++)
+            for (int c = 0; c < m->hc_count; c++)
+                memcpy(m->x_hc + (size_t)b * hcd + (size_t)c * n_embd,
+                       m->x + (size_t)b * n_embd, sizeof(float) * (size_t)n_embd);
     }
-    m->fwd_tokens = tokens;   // the PLE block hashes the batch's own ids
+}
 
-    double dt_f0 = dbg_time_on() ? dt_now() : 0;
-    for (int l = start; l < m->n_layer; l++)
-        forward_layer(m, l, n, pos, dbg);
-    if (dbg_time_on()) { int k = n > 1; dt_fwd_t[k] += dt_now() - dt_f0; dt_fwd_n[k]++; dt_fwd_rows[k] += n; }
-
-    if (m->tape && n == 1 && pos < m->tape_T)
-        memcpy(m->tape + ((size_t)m->n_layer * m->tape_T + pos) * m->n_embd,
-               m->x, sizeof(float) * (size_t)m->n_embd);
-    if (!want_logits) return NULL;
+// The LM head over the last row: the final norm, the output projection and
+// the head transforms (scale, softcap, suppress).
+static float *forward_head(model_t *m, int n, int dbg) {
+    int n_embd = m->n_embd, xdim = m->xdim;   // cached at load (RNC-3)
     DT_BEGIN;
     head_norm_row(m, n - 1);
     if (dbg) dbg_stat("final-norm", m->n_layer, m->xb, n_embd);
@@ -10457,6 +10469,30 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
         fprintf(stderr, "ACT top1 token=%d logit=%.5f\n", am, m->logits[am]);
     }
     return m->logits;
+}
+
+float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
+                           bool want_logits) {
+    int dbg = forward_begin(m, n, pos);
+    forward_ple_before_split(m, tokens, n);
+    int start;
+    bool done;
+    float *lg = forward_gpu_leading(m, tokens, n, pos, want_logits, &start, &done);
+    if (done) return lg;
+    if (start == 0) forward_inputs(m, tokens, n, dbg);
+    m->fwd_tokens = tokens;   // the PLE block hashes the batch's own ids
+
+    double dt_f0 = dbg_time_on() ? dt_now() : 0;
+    for (int l = start; l < m->n_layer; l++)
+        forward_layer(m, l, n, pos, dbg);
+    if (dbg_time_on()) { int k = n > 1; dt_fwd_t[k] += dt_now() - dt_f0; dt_fwd_n[k]++; dt_fwd_rows[k] += n; }
+
+    // the tape's last row: the final pre-norm hidden
+    if (m->tape && n == 1 && pos < m->tape_T)
+        memcpy(m->tape + ((size_t)m->n_layer * m->tape_T + pos) * m->n_embd,
+               m->x, sizeof(float) * (size_t)m->n_embd);
+    if (!want_logits) return NULL;
+    return forward_head(m, n, dbg);
 }
 
 // forward a small batch keeping every row's hidden state in x (speculative
@@ -10643,18 +10679,12 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
     const int E = m->n_embd;
     if (n < 1 || n > m->n_batch || pos < 0 || pos + n > m->n_ctx) return false;
     double dt_m0 = dbg_time_on() ? dt_now() : 0;
-    const size_t ers = ggml_row_size(m->mtp_embd->type, E);
     // S input rows per token: one, or one per hyper-connection stream, each
     // [enorm(e) ; hnorm_c(h_c)] projected by the same eh_proj into stream c
     const int S = m->hyper_conn ? m->hc_count : 1;
     for (int b = 0; b < n; b++) {
         float *cat = m->mtp_cat + (size_t)b * S * 2 * E;
-        int32_t id = tok[b];
-        if (id < 0 || id >= m->n_vocab) id = 0;
-        dequant_row(m->mtp_embd->type,
-                    (const uint8_t *)m->mtp_embd->data + (size_t)id * ers, cat, E);
-        if (m->mtp_embd->scale != 1.0f)
-            for (int i = 0; i < E; i++) cat[i] *= m->mtp_embd->scale;
+        embed_row(m, m->mtp_embd, tok[b], cat, E);
         rmsnorm(cat, cat, m->mtp_enorm_w, E, m->rms_eps);
         for (int c = 1; c < S; c++)
             memcpy(cat + (size_t)c * 2 * E, cat, sizeof(float) * (size_t)E);
