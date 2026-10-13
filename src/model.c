@@ -5592,7 +5592,17 @@ static int dbg_act_mode(void) {
 }
 // RUNNER_DEBUG_TIME=1: wall-clock per block stage, summed over every
 // forward pass and printed by model_debug_time_report at the end of a run.
-// Off by default; one cached getenv and a predictable branch per stage.
+// Off by default; one cached getenv and a predictable branch per stage. The
+// stages mean the same on every block (plan P1): ple, qwen4exp's PLE block;
+// hc_mix, a branch's input, the norm or the hyper-connection stream mix;
+// attention and deltanet/ssm, the mixer through its post-norm and residual
+// scale; moe_route, experts and shared_expert, a MoE FFN (the experts'
+// share includes its post-norm and scale); dense_ffn, a dense FFN through
+// its post-norm and scale; hc_combine, adding a branch's output into the
+// residual or scattering it into the streams; head, the final norm, the LM
+// head and its transforms. CPU wall time; the CUDA and Metal phase
+// profilers are the backends' own. Shade's evaluation scripts read the
+// "TIME forward", "TIME mtp" and "TIME experts" lines.
 enum { DT_PLE, DT_MIX, DT_ATTN, DT_RECUR, DT_COMBINE, DT_ROUTE, DT_EXPERTS,
        DT_SHEXP, DT_DENSE_FFN, DT_HEAD, DT_N };
 static const char *const dt_names[DT_N] = {
@@ -9940,10 +9950,12 @@ NUM_STAGE void layer_mixer_input(model_t *m, fwd_layer *c) {
         hc_mix(m, ly->hc_attn_norm, ly->hc_attn_down, ly->hc_attn_up,
                ly->hc_attn_inject, m->xb, xdim, n);
         DT_MARK_AT(c->dt_t0, DT_MIX);
-    } else
-    for (int b = 0; b < n; b++)
-        xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
-              ly->attn_norm_w, ly->attn_norm_b, n_embd, m->rms_eps);
+    } else {
+        for (int b = 0; b < n; b++)
+            xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
+                  ly->attn_norm_w, ly->attn_norm_b, n_embd, m->rms_eps);
+        DT_MARK_AT(c->dt_t0, DT_MIX);
+    }
     if (c->dbg) trace_layer_cfg(m, c);
 }
 
@@ -10528,6 +10540,29 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     if (!want_logits) return NULL;
     return forward_head(m, n, dbg);
 }
+
+// ---- speculative verification: the state a verify round reads (plan P6)
+// The quantities stay apart in name and in data. n_batch is the activation
+// rows one forward can take (a prompt chunk); spec_batch is the widest
+// verification a round can ask for, the rows all_logits and the recurrent
+// keep rows hold; the n of model_forward_batch_keep() is this round's width
+// (draft count + 1), at most both. Concurrent requests are separate model_t
+// instances and never share these buffers.
+// Row b of a keep-forward is position pos + b: its hidden state is
+// model_hidden_row(m, b), and its logits are computed on demand by
+// model_spec_row_logits(m, b) into all_logits row b (on a unified-memory full
+// offload, the backend's own row), valid until the next forward.
+// Rollback pairs a checkpoint with each way a round can end. On the host:
+// model_recurrent_snapshot() before the round and model_recurrent_restore()
+// on partial acceptance, then the accepted rows are folded again; where the
+// keep-forward filed per-row states (ssm_keep_n, ple4_keep_n, a device's
+// checkpoints) model_recurrent_restore_row() lands on row r without that
+// re-fold. KV rows past the accepted position are simply overwritten by the
+// next forward. The prompt-boundary mark (model_recurrent_mark) is the
+// separate checkpoint a slot's prompt reuse returns to. The draft, verify,
+// accept and commit counts and the drafting policy are the engine's
+// (engine.c); a future policy must pay for its drafts with accepted tokens
+// measured on these same primitives, and today's is unchanged.
 
 // forward a small batch keeping every row's hidden state in x (speculative
 // verify). Full GPU offload keeps hidden states on-device. A partial CUDA split
