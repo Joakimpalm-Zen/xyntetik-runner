@@ -3236,6 +3236,228 @@ static bool cli_require_eval_ok(const cli_opts *o, const char *load_path) {
     return true;
 }
 
+// --tool-info: one JSON line naming this model's native tool-call
+// protocol, resolved from its chat template exactly as the chat surface
+// would (honouring --chat-template). stdout is JSON-only.
+static int run_tool_info(const cli_opts *o, cli_run *rt, int tmpl_override) {
+    int ti_tmpl = tmpl_override >= 0 ? tmpl_override
+                : template_detect(gguf_get_str(&rt->m.gf,
+                                  "tokenizer.chat_template", NULL), &rt->tok);
+    bool native = false;
+    const char *fam = tool_family_for(ti_tmpl, &native);
+    // The template family is named too: which renderer the chat
+    // surface would use is the first question a golden pass asks of
+    // a file, and a fallback is a finding, not a default. So is the
+    // sampling preset a request without sampling fields is served
+    // with (resolved as the load does; --temp and friends aside).
+    char ti_ident[256];
+    sampler_ident(gguf_get_str(&rt->m.gf, "general.name", NULL), rt->m.path,
+                  ti_ident, sizeof(ti_ident));
+    printf("{\"tool_family\":\"%s\",\"native_tool_protocol\":%s,"
+           "\"template\":\"%s\",\"sampling_preset\":\"%s\"}\n",
+           fam, native ? "true" : "false", template_name(ti_tmpl),
+           sampler_preset_for(rt->m.arch, ti_ident, ti_tmpl)->name);
+    cli_cleanup(NULL, NULL, &rt->tok, &rt->m);
+    return 0;
+}
+
+// --adapt-info (R8.9.1): inference, serving an adapter and training
+// one are three capabilities with three admission lists. One JSON
+// line says which of the last two this file has and, when not, the
+// sentence the real operation would refuse with. stdout is JSON-only.
+static int run_adapt_info(cli_run *rt) {
+    char why_s[256] = "", why_t[256] = "";
+    bool can_s = model_lora_serve_supported(&rt->m, why_s, sizeof why_s);
+    bool can_t = model_lora_train_supported(&rt->m, why_t, sizeof why_t);
+    char gname[128] = "";
+    bool gpu_there = gpu_available(gname, (int)sizeof gname);
+    sbuf r = {0};
+    sb_lit(&r, "{\"architecture\":\"");
+    sb_esc(&r, rt->m.arch, strlen(rt->m.arch));
+    sb_fmt(&r, "\",\"adapter_serving\":{\"supported\":%s,\"reason\":",
+           can_s ? "true" : "false");
+    if (can_s) sb_lit(&r, "null");
+    else { sb_lit(&r, "\""); sb_esc(&r, why_s, strlen(why_s)); sb_lit(&r, "\""); }
+    // the device applies the adapter on its own blocks where the
+    // backend has the kernels; otherwise serving means --gpu off
+    sb_fmt(&r, ",\"device_kernels\":%s},\"training\":{\"supported\":%s,\"reason\":",
+           !can_s || !gpu_there ? "null"
+#ifdef __APPLE__
+           : "\"metal\"",
+#else
+           : "\"cuda\"",
+#endif
+           can_t ? "true" : "false");
+    if (can_t) sb_lit(&r, "null");
+    else { sb_lit(&r, "\""); sb_esc(&r, why_t, strlen(why_t)); sb_lit(&r, "\""); }
+    sb_lit(&r, ",\"host\":\"cpu\"}}\n");
+    if (r.failed) { free(r.s); cli_cleanup(NULL, NULL, &rt->tok, &rt->m); return 1; }
+    fwrite(r.s, 1, r.n, stdout);
+    free(r.s);
+    cli_cleanup(NULL, NULL, &rt->tok, &rt->m);
+    return 0;
+}
+
+// The load: the model (with its signature, and the adapter's), its tokenizer,
+// the modes that answer from the loaded file alone (--tool-info,
+// --adapt-info), the measured-envelope gate, the instance registry and
+// the sampler the model's family and file resolve to. A swap-mode server
+// loads nothing here and resolves the sampler per model later.
+//
+// A reservation is a budget for the whole server, so the -c 0 auto-fit has
+// to know how many slots will divide it. Set before the FIRST load, not
+// just for the slots server_run creates: slot 0 is this model, and a slot 0
+// that sized itself alone would both over-commit and — because the CUDA
+// shared-weight registry keys on context — disagree with its peers and
+// force a second upload of the same weights.
+//
+// True when the process exits with *rc (a refusal, or one of the two modes).
+static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool registry,
+                           int tmpl_override, const oms_policy *signing, int *rc) {
+    if (o->train_path) o->mp.gpu_mode = GPU_OFF;   // --train is the CPU path (v1)
+    // --adapt-info answers for the model, not for where it happened to load:
+    // training is CPU-hosted, and the device half is named separately
+    if (o->adapt_info) o->mp.gpu_mode = GPU_OFF;
+    if (o->serve) o->mp.n_seq = o->parallel;
+    o->mp.lora_path = o->lora_path;
+    o->mp.lora_sig = o->lora_sig;
+    o->mp.lora_scale = o->lora_scale;
+    if (!registry) {
+        double t1 = now_s();
+        if (!model_load(&rt->m, load_path, &o->mp)) { *rc = 1; return true; }
+        oms_result osr;
+        if (!oms_check_model(load_path, signing, &osr)) { *rc = 1; return true; }
+        if (osr.status[0])
+            oms_result_json(&osr, rt->model_sig_json, sizeof rt->model_sig_json);
+        // R1.2.3: an adapter changes what is served, so the same trusted key
+        // and the same "required" apply to it, with its own bundle
+        oms_result aosr;
+        memset(&aosr, 0, sizeof aosr);
+        if (o->lora_path) {
+            oms_policy apol = { o->lora_sig, o->model_pubkey, o->require_signed_model };
+            if (!oms_check_artifact(o->lora_path, &apol, "adapter", &aosr)) {
+                *rc = 1;
+                return true;
+            }
+            if (aosr.status[0])
+                oms_result_json(&aosr, rt->adapter_sig_json, sizeof rt->adapter_sig_json);
+        }
+        if (!tokenizer_init(&rt->tok, &rt->m.gf)) { *rc = 1; return true; }
+        // serve mode: the registry model's own pool is one thread by design
+        // (slots create their pools), so the honest number here is the count
+        // the slots divide, not the placeholder pool (the lab read "1 threads"
+        // as a CPU fallback at one thread, 2026-09-23)
+        fprintf(stderr, "loaded %s | %s | %d layers | ctx %d | %d threads%s | %.2fs\n",
+                load_path, rt->m.arch, rt->m.n_layer, rt->m.n_ctx,
+                o->serve ? o->n_threads : tpool_size(rt->m.tp),
+                o->serve ? " (divided across slots)" : "",
+                now_s() - t1);
+        if (o->tool_info) {
+            *rc = run_tool_info(o, rt, tmpl_override);
+            return true;
+        }
+        if (o->adapt_info) {
+            *rc = run_adapt_info(rt);
+            return true;
+        }
+        // Measured-envelope sidecar, if one sits next to the model: the
+        // load-time three-state gate. Certified/experimental print a banner and
+        // load; an OUTSIDE-envelope verdict REFUSES the load with the measured
+        // reason unless --force-uncertified is given. Silent when there is no
+        // manifest.
+        {
+            // Resolve against the kernels this model actually loaded. A GPU
+            // may be available while --gpu off (or a model-specific fallback)
+            // leaves m.gpu NULL; classifying that CPU run as Metal/CUDA would
+            // apply a verdict measured for a backend that did no work here.
+#ifdef __APPLE__
+            const char *env_backend = rt->m.gpu ? "metal" : "cpu";
+#else
+            const char *env_backend = rt->m.gpu ? "cuda" : "cpu";
+#endif
+            char env_line[256];
+            int env_state = ENV_UNCLASSIFIED;
+            bool ok = envelope_gate(load_path, RUNNER_VERSION, env_backend,
+                                    o->force_uncertified, env_line,
+                                    (int)sizeof env_line, &env_state);
+            rt->env_state = env_state;
+            rt->env_known = true;
+            if (env_line[0]) fprintf(stderr, "%s\n", env_line);
+            if (!ok) {
+                cli_cleanup(NULL, NULL, &rt->tok, &rt->m);
+                *rc = 1;
+                return true;
+            }
+            // The server's /v1/runner/provenance reports the verdicts THIS
+            // load ran under, so they are recorded here, where they were made.
+            if (o->serve)
+                provenance_note_load(&(provenance_load){
+                    .model_path = load_path,
+                    .adapter_path = o->lora_path, .adapter_scale = o->lora_scale,
+                    .signature = &osr, .adapter_signature = &aosr,
+                    .envelope_state = env_state, .envelope_detail = env_line });
+        }
+        // Discovery registry: run modes announce themselves so the tray (or
+        // any controller) can list every live runner. Best-effort — failure
+        // never affects the run. Utility modes (--quantize/--caps/--bench)
+        // stay unregistered.
+        if (!o->bench_json && !o->quant_out) {
+            const char *bn = strrchr(load_path, '/');
+#ifdef _WIN32
+            const char *bn2 = strrchr(load_path, '\\');
+            if (bn2 && (!bn || bn2 > bn)) bn = bn2;
+#endif
+            bn = bn ? bn + 1 : load_path;
+            const char *const names[] = { bn };
+            const char *const paths[] = { load_path };
+            instances_register(o->serve ? "serve" : "cli", o->serve ? o->port : 0,
+                               names, paths, 1);
+            atexit(instances_unregister);
+        }
+        if (rt->m.mtp_layers)
+            fprintf(stderr, "mtp: %d predictor block(s) declared, excluded from "
+                    "the backbone; %s\n", rt->m.mtp_layers,
+                    rt->m.mtp_ready ? "bound as the draft head (--mtp)"
+                                : "not consumed (pass --mtp to draft from it)");
+        if (rt->m.agent_profile)
+            fprintf(stderr, "agent-profile: protocol=%u tokenizer=%u schema=%s digest=%s features=%llu\n",
+                    rt->m.agent_protocol_version, rt->m.agent_tokenizer_version,
+                    rt->m.agent_schema_id, rt->m.agent_schema_digest,
+                    (unsigned long long)rt->m.n_agent_required_features);
+        char ident[256];
+        sampler_ident(gguf_get_str(&rt->m.gf, "general.name", NULL), rt->m.path,
+                      ident, sizeof(ident));
+        int preset_tmpl = tmpl_override >= 0 ? tmpl_override
+                        : template_detect(gguf_get_str(&rt->m.gf,
+                                          "tokenizer.chat_template", NULL), NULL);
+        sampler_file sfile;
+        model_sampling_file(&rt->m.gf, &sfile);
+        const sampler_preset *sp = sampler_resolve_file(&o->smp, rt->m.arch, ident,
+                                                        preset_tmpl, &sfile, &o->ov);
+        char sdesc[256];
+        sampler_describe(&o->smp, sp, sdesc, sizeof(sdesc));
+        fprintf(stderr, "sampling: %s\n", sdesc);
+        {
+            char fdesc[160];
+            sampler_file_describe(&sfile, fdesc, sizeof fdesc);
+            if (fdesc[0]) fprintf(stderr, "sampling: %s\n", fdesc);
+        }
+        snprintf(rt->sampling, sizeof rt->sampling, "%s", sdesc);
+        rt->load_s = now_s() - t1;
+        // An operator who set a reasoning-channel default must see it here:
+        // the line above describes the sampler for calls and answers, and
+        // silence about the reasoning turn reads as "there is only one".
+        if (o->reasoning_temp >= 0.0f)
+            fprintf(stderr, "reasoning: temp %.2f (top_p, min_p, top_k "
+                            "inherited from the request or the preset)\n",
+                    (double)o->reasoning_temp);
+    } else {
+        // swap mode: no model yet, so the preset is chosen per model at load
+        sampler_resolve(&o->smp, NULL, NULL, -1, &o->ov);
+    }
+    return false;
+}
+
 int main(int argc, char **argv) {
     char *owned_prompt = NULL;
     // the model, tokenizer and engine the modes run on, and what the load
@@ -3338,201 +3560,10 @@ int main(int argc, char **argv) {
     if (!cli_require_eval_ok(o, load_path)) return 1;
 
     oms_policy signing = { o->model_sig, o->model_pubkey, o->require_signed_model };
-    // A reservation is a budget for the whole server, so the -c 0 auto-fit has
-    // to know how many slots will divide it. Set before the FIRST load, not
-    // just for the slots server_run creates: slot 0 is this model, and a slot 0
-    // that sized itself alone would both over-commit and — because the CUDA
-    // shared-weight registry keys on context — disagree with its peers and
-    // force a second upload of the same weights.
-    if (o->train_path) o->mp.gpu_mode = GPU_OFF;   // --train is the CPU path (v1)
-    // --adapt-info answers for the model, not for where it happened to load:
-    // training is CPU-hosted, and the device half is named separately
-    if (o->adapt_info) o->mp.gpu_mode = GPU_OFF;
-    if (o->serve) o->mp.n_seq = o->parallel;
-    o->mp.lora_path = o->lora_path;
-    o->mp.lora_sig = o->lora_sig;
-    o->mp.lora_scale = o->lora_scale;
-    if (!registry) {
-        double t1 = now_s();
-        if (!model_load(&rt->m, load_path, &o->mp)) return 1;
-        oms_result osr;
-        if (!oms_check_model(load_path, &signing, &osr)) return 1;
-        if (osr.status[0])
-            oms_result_json(&osr, rt->model_sig_json, sizeof rt->model_sig_json);
-        // R1.2.3: an adapter changes what is served, so the same trusted key
-        // and the same "required" apply to it, with its own bundle
-        oms_result aosr;
-        memset(&aosr, 0, sizeof aosr);
-        if (o->lora_path) {
-            oms_policy apol = { o->lora_sig, o->model_pubkey, o->require_signed_model };
-            if (!oms_check_artifact(o->lora_path, &apol, "adapter", &aosr))
-                return 1;
-            if (aosr.status[0])
-                oms_result_json(&aosr, rt->adapter_sig_json, sizeof rt->adapter_sig_json);
-        }
-        if (!tokenizer_init(&rt->tok, &rt->m.gf)) return 1;
-        // serve mode: the registry model's own pool is one thread by design
-        // (slots create their pools), so the honest number here is the count
-        // the slots divide, not the placeholder pool (the lab read "1 threads"
-        // as a CPU fallback at one thread, 2026-09-23)
-        fprintf(stderr, "loaded %s | %s | %d layers | ctx %d | %d threads%s | %.2fs\n",
-                load_path, rt->m.arch, rt->m.n_layer, rt->m.n_ctx,
-                o->serve ? o->n_threads : tpool_size(rt->m.tp),
-                o->serve ? " (divided across slots)" : "",
-                now_s() - t1);
-        // --tool-info: one JSON line naming this model's native tool-call
-        // protocol, resolved from its chat template exactly as the chat surface
-        // would (honouring --chat-template). stdout is JSON-only.
-        if (o->tool_info) {
-            int ti_tmpl = tmpl_override >= 0 ? tmpl_override
-                        : template_detect(gguf_get_str(&rt->m.gf,
-                                          "tokenizer.chat_template", NULL), &rt->tok);
-            bool native = false;
-            const char *fam = tool_family_for(ti_tmpl, &native);
-            // The template family is named too: which renderer the chat
-            // surface would use is the first question a golden pass asks of
-            // a file, and a fallback is a finding, not a default. So is the
-            // sampling preset a request without sampling fields is served
-            // with (resolved as the load does; --temp and friends aside).
-            char ti_ident[256];
-            sampler_ident(gguf_get_str(&rt->m.gf, "general.name", NULL), rt->m.path,
-                          ti_ident, sizeof(ti_ident));
-            printf("{\"tool_family\":\"%s\",\"native_tool_protocol\":%s,"
-                   "\"template\":\"%s\",\"sampling_preset\":\"%s\"}\n",
-                   fam, native ? "true" : "false", template_name(ti_tmpl),
-                   sampler_preset_for(rt->m.arch, ti_ident, ti_tmpl)->name);
-            cli_cleanup(NULL, NULL, &rt->tok, &rt->m);
-            return 0;
-        }
-        // --adapt-info (R8.9.1): inference, serving an adapter and training
-        // one are three capabilities with three admission lists. One JSON
-        // line says which of the last two this file has and, when not, the
-        // sentence the real operation would refuse with. stdout is JSON-only.
-        if (o->adapt_info) {
-            char why_s[256] = "", why_t[256] = "";
-            bool can_s = model_lora_serve_supported(&rt->m, why_s, sizeof why_s);
-            bool can_t = model_lora_train_supported(&rt->m, why_t, sizeof why_t);
-            char gname[128] = "";
-            bool gpu_there = gpu_available(gname, (int)sizeof gname);
-            sbuf r = {0};
-            sb_lit(&r, "{\"architecture\":\"");
-            sb_esc(&r, rt->m.arch, strlen(rt->m.arch));
-            sb_fmt(&r, "\",\"adapter_serving\":{\"supported\":%s,\"reason\":",
-                   can_s ? "true" : "false");
-            if (can_s) sb_lit(&r, "null");
-            else { sb_lit(&r, "\""); sb_esc(&r, why_s, strlen(why_s)); sb_lit(&r, "\""); }
-            // the device applies the adapter on its own blocks where the
-            // backend has the kernels; otherwise serving means --gpu off
-            sb_fmt(&r, ",\"device_kernels\":%s},\"training\":{\"supported\":%s,\"reason\":",
-                   !can_s || !gpu_there ? "null"
-#ifdef __APPLE__
-                   : "\"metal\"",
-#else
-                   : "\"cuda\"",
-#endif
-                   can_t ? "true" : "false");
-            if (can_t) sb_lit(&r, "null");
-            else { sb_lit(&r, "\""); sb_esc(&r, why_t, strlen(why_t)); sb_lit(&r, "\""); }
-            sb_lit(&r, ",\"host\":\"cpu\"}}\n");
-            if (r.failed) { free(r.s); cli_cleanup(NULL, NULL, &rt->tok, &rt->m); return 1; }
-            fwrite(r.s, 1, r.n, stdout);
-            free(r.s);
-            cli_cleanup(NULL, NULL, &rt->tok, &rt->m);
-            return 0;
-        }
-        // Measured-envelope sidecar, if one sits next to the model: the
-        // load-time three-state gate. Certified/experimental print a banner and
-        // load; an OUTSIDE-envelope verdict REFUSES the load with the measured
-        // reason unless --force-uncertified is given. Silent when there is no
-        // manifest.
-        {
-            // Resolve against the kernels this model actually loaded. A GPU
-            // may be available while --gpu off (or a model-specific fallback)
-            // leaves m.gpu NULL; classifying that CPU run as Metal/CUDA would
-            // apply a verdict measured for a backend that did no work here.
-#ifdef __APPLE__
-            const char *env_backend = rt->m.gpu ? "metal" : "cpu";
-#else
-            const char *env_backend = rt->m.gpu ? "cuda" : "cpu";
-#endif
-            char env_line[256];
-            int env_state = ENV_UNCLASSIFIED;
-            bool ok = envelope_gate(load_path, RUNNER_VERSION, env_backend,
-                                    o->force_uncertified, env_line,
-                                    (int)sizeof env_line, &env_state);
-            rt->env_state = env_state;
-            rt->env_known = true;
-            if (env_line[0]) fprintf(stderr, "%s\n", env_line);
-            if (!ok) {
-                cli_cleanup(NULL, NULL, &rt->tok, &rt->m);
-                return 1;
-            }
-            // The server's /v1/runner/provenance reports the verdicts THIS
-            // load ran under, so they are recorded here, where they were made.
-            if (o->serve)
-                provenance_note_load(&(provenance_load){
-                    .model_path = load_path,
-                    .adapter_path = o->lora_path, .adapter_scale = o->lora_scale,
-                    .signature = &osr, .adapter_signature = &aosr,
-                    .envelope_state = env_state, .envelope_detail = env_line });
-        }
-        // Discovery registry: run modes announce themselves so the tray (or
-        // any controller) can list every live runner. Best-effort — failure
-        // never affects the run. Utility modes (--quantize/--caps/--bench)
-        // stay unregistered.
-        if (!o->bench_json && !o->quant_out) {
-            const char *bn = strrchr(load_path, '/');
-#ifdef _WIN32
-            const char *bn2 = strrchr(load_path, '\\');
-            if (bn2 && (!bn || bn2 > bn)) bn = bn2;
-#endif
-            bn = bn ? bn + 1 : load_path;
-            const char *const names[] = { bn };
-            const char *const paths[] = { load_path };
-            instances_register(o->serve ? "serve" : "cli", o->serve ? o->port : 0,
-                               names, paths, 1);
-            atexit(instances_unregister);
-        }
-        if (rt->m.mtp_layers)
-            fprintf(stderr, "mtp: %d predictor block(s) declared, excluded from "
-                    "the backbone; %s\n", rt->m.mtp_layers,
-                    rt->m.mtp_ready ? "bound as the draft head (--mtp)"
-                                : "not consumed (pass --mtp to draft from it)");
-        if (rt->m.agent_profile)
-            fprintf(stderr, "agent-profile: protocol=%u tokenizer=%u schema=%s digest=%s features=%llu\n",
-                    rt->m.agent_protocol_version, rt->m.agent_tokenizer_version,
-                    rt->m.agent_schema_id, rt->m.agent_schema_digest,
-                    (unsigned long long)rt->m.n_agent_required_features);
-        char ident[256];
-        sampler_ident(gguf_get_str(&rt->m.gf, "general.name", NULL), rt->m.path,
-                      ident, sizeof(ident));
-        int preset_tmpl = tmpl_override >= 0 ? tmpl_override
-                        : template_detect(gguf_get_str(&rt->m.gf,
-                                          "tokenizer.chat_template", NULL), NULL);
-        sampler_file sfile;
-        model_sampling_file(&rt->m.gf, &sfile);
-        const sampler_preset *sp = sampler_resolve_file(&o->smp, rt->m.arch, ident,
-                                                        preset_tmpl, &sfile, &o->ov);
-        char sdesc[256];
-        sampler_describe(&o->smp, sp, sdesc, sizeof(sdesc));
-        fprintf(stderr, "sampling: %s\n", sdesc);
-        {
-            char fdesc[160];
-            sampler_file_describe(&sfile, fdesc, sizeof fdesc);
-            if (fdesc[0]) fprintf(stderr, "sampling: %s\n", fdesc);
-        }
-        snprintf(rt->sampling, sizeof rt->sampling, "%s", sdesc);
-        rt->load_s = now_s() - t1;
-        // An operator who set a reasoning-channel default must see it here:
-        // the line above describes the sampler for calls and answers, and
-        // silence about the reasoning turn reads as "there is only one".
-        if (o->reasoning_temp >= 0.0f)
-            fprintf(stderr, "reasoning: temp %.2f (top_p, min_p, top_k "
-                            "inherited from the request or the preset)\n",
-                    (double)o->reasoning_temp);
-    } else {
-        // swap mode: no model yet, so the preset is chosen per model at load
-        sampler_resolve(&o->smp, NULL, NULL, -1, &o->ov);
+    {
+        int rc;
+        if (cli_load_model(o, rt, load_path, registry, tmpl_override, &signing, &rc))
+            return rc;
     }
 
     if (o->serve) {
