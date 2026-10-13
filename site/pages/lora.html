@@ -18,7 +18,12 @@ nav: runner
       <p class="eyebrow">Why this is unusual, and why it matters</p>
       <h2>Two numerical paths is one too many.</h2>
     </div>
-    <div class="grid-3">
+    <figure class="fig">
+      <img class="mark-light" src="/assets/readme-train-light.svg" alt="The usual path trains a 16-bit copy in a Python stack, merges, quantizes and ships a different file; Runner trains an adapter through the 4-bit file it serves and serves or merges it on that file" width="640" height="300" loading="lazy">
+      <img class="mark-dark" src="/assets/readme-train-dark.svg" alt="" width="640" height="300" loading="lazy" aria-hidden="true">
+      <figcaption>The usual pipeline and Runner's, side by side. The adapter is trained on the exact weights it will run on, and it is served or merged on that same file.</figcaption>
+    </figure>
+    <div class="grid-3 mt-2">
       <div class="card">
         <h3>The usual pipeline</h3>
         <p>Fine-tune through a 16-bit copy in a Python framework. Quantize the result to a 4-bit file. Serve that file in a different engine. Three tools, two numerical paths, and the thing you trained is never exactly the thing you sampled from in production.</p>
