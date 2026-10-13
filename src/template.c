@@ -1723,6 +1723,42 @@ static size_t render_qwen35(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_QWEN3_CODER.
+static size_t render_qwen3_coder(int tmpl, const chat_msg *msgs, int n_msgs,
+                                 bool add_assistant, int thinking, const jv *tools,
+                                 char *out, size_t cap) {
+    size_t off = 0;
+    // Qwen/Qwen3-Coder-30B-A3B-Instruct tokenizer_config.json.
+    bool have_tools = tools && tools->type == J_ARR && tools->n;
+    int first = n_msgs && !strcmp(msgs[0].role, "system") ? 1 : 0;
+    if (first || have_tools) {
+        off = emit(out, cap, off, "<|im_start|>system\n%s",
+                   first ? msgs[0].content : "You are Qwen, a helpful AI assistant that can interact with a computer to solve tasks.", NULL);
+        if (have_tools) {
+            sbuf decl = {0};
+            tools_render_for(tmpl, tools, &decl);
+            if (decl.failed) { free(decl.s); return SIZE_MAX; }
+            off = emit(out, cap, off, "\n\n%s", decl.s, NULL);
+            free(decl.s);
+        }
+        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+    }
+    for (int i = first; i < n_msgs; i++) {
+        if (!strcmp(msgs[i].role, "tool")) {
+            if (i > first && strcmp(msgs[i-1].role, "tool"))
+                off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
+            off = emit(out, cap, off, "<tool_response>\n%s\n</tool_response>\n", msgs[i].content, NULL);
+            if (i+1 == n_msgs || strcmp(msgs[i+1].role, "tool"))
+                off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+        } else {
+            off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n", msgs[i].role, msgs[i].content);
+        }
+    }
+    if (add_assistant)
+        off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+    return off;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -1736,37 +1772,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_QWEN35:
     case TMPL_QWEN35_NOTHINK:
         return render_qwen35(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
-    case TMPL_QWEN3_CODER: {
-        // Qwen/Qwen3-Coder-30B-A3B-Instruct tokenizer_config.json.
-        bool have_tools = tools && tools->type == J_ARR && tools->n;
-        int first = n_msgs && !strcmp(msgs[0].role, "system") ? 1 : 0;
-        if (first || have_tools) {
-            off = emit(out, cap, off, "<|im_start|>system\n%s",
-                       first ? msgs[0].content : "You are Qwen, a helpful AI assistant that can interact with a computer to solve tasks.", NULL);
-            if (have_tools) {
-                sbuf decl = {0};
-                tools_render_for(tmpl, tools, &decl);
-                if (decl.failed) { free(decl.s); return SIZE_MAX; }
-                off = emit(out, cap, off, "\n\n%s", decl.s, NULL);
-                free(decl.s);
-            }
-            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-        }
-        for (int i = first; i < n_msgs; i++) {
-            if (!strcmp(msgs[i].role, "tool")) {
-                if (i > first && strcmp(msgs[i-1].role, "tool"))
-                    off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
-                off = emit(out, cap, off, "<tool_response>\n%s\n</tool_response>\n", msgs[i].content, NULL);
-                if (i+1 == n_msgs || strcmp(msgs[i+1].role, "tool"))
-                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-            } else {
-                off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n", msgs[i].role, msgs[i].content);
-            }
-        }
-        if (add_assistant)
-            off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
-        break;
-    }
+    case TMPL_QWEN3_CODER:
+        return render_qwen3_coder(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_QWEN38: {
         // Qwen/Qwen3.8-27B chat_template.jinja (2026-09-06), see the enum
         // comment. Every content the reference renders goes through
