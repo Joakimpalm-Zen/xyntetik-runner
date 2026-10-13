@@ -448,24 +448,26 @@ jobs:
       - name: smoke test (parent-pid watch)
         # the runner must exit when the process named by --parent-pid dies
         run: |
+          # the parent proves the server is up before it dies (a runner that
+          # never served proves nothing), then the shell polls for it to go
+          # away within 20 s; one fixed 6 s wait failed twice on 2026-10-08
+          # on the Windows pool
           python3 - <<'PYEOF'
-          import os, subprocess, sys, time
+          import os, subprocess, sys, time, urllib.request
           exe = "./runner.exe" if os.name == "nt" else "./runner"
           p = subprocess.Popen([exe, "-m", "test.gguf", "--serve", "--port", "8127",
                                 "--parent-pid", str(os.getpid())])
-          time.sleep(2)
-          if p.poll() is not None: sys.exit("runner died early")
+          for i in range(40):
+              if p.poll() is not None: sys.exit("runner died early")
+              try:
+                  urllib.request.urlopen("http://127.0.0.1:8127/health", timeout=2).read()
+                  break
+              except OSError:
+                  time.sleep(0.5)
+          else:
+              sys.exit("runner never answered /health")
           os._exit(0)  # abrupt parent death, no cleanup
           PYEOF
-          # the server must have been up (a runner that never served proves
-          # nothing), then must go away within 20 s of the parent's death;
-          # one fixed 6 s wait failed twice on 2026-10-08 on the Windows pool
-          up=
-          for i in $(seq 20); do
-            if curl --connect-timeout 2 --max-time 5 -sf -o /dev/null http://127.0.0.1:8127/health; then up=1; break; fi
-            sleep 0.5
-          done
-          [ -n "$up" ] || { echo "runner never answered /health"; exit 1; }
           for i in $(seq 40); do
             if ! curl --connect-timeout 2 --max-time 5 -s -o /dev/null http://127.0.0.1:8127/health; then
               echo "parent-pid ok (runner gone after $i polls)"; exit 0
@@ -927,24 +929,26 @@ jobs:
       - name: smoke test (parent-pid watch)
         # the runner must exit when the process named by --parent-pid dies
         run: |
+          # the parent proves the server is up before it dies (a runner that
+          # never served proves nothing), then the shell polls for it to go
+          # away within 20 s; one fixed 6 s wait failed twice on 2026-10-08
+          # on the Windows pool
           python3 - <<'PYEOF'
-          import os, subprocess, sys, time
+          import os, subprocess, sys, time, urllib.request
           exe = "./runner.exe" if os.name == "nt" else "./runner"
           p = subprocess.Popen([exe, "-m", "test.gguf", "--serve", "--port", "8127",
                                 "--parent-pid", str(os.getpid())])
-          time.sleep(2)
-          if p.poll() is not None: sys.exit("runner died early")
+          for i in range(40):
+              if p.poll() is not None: sys.exit("runner died early")
+              try:
+                  urllib.request.urlopen("http://127.0.0.1:8127/health", timeout=2).read()
+                  break
+              except OSError:
+                  time.sleep(0.5)
+          else:
+              sys.exit("runner never answered /health")
           os._exit(0)  # abrupt parent death, no cleanup
           PYEOF
-          # the server must have been up (a runner that never served proves
-          # nothing), then must go away within 20 s of the parent's death;
-          # one fixed 6 s wait failed twice on 2026-10-08 on the Windows pool
-          up=
-          for i in $(seq 20); do
-            if curl --connect-timeout 2 --max-time 5 -sf -o /dev/null http://127.0.0.1:8127/health; then up=1; break; fi
-            sleep 0.5
-          done
-          [ -n "$up" ] || { echo "runner never answered /health"; exit 1; }
           for i in $(seq 40); do
             if ! curl --connect-timeout 2 --max-time 5 -s -o /dev/null http://127.0.0.1:8127/health; then
               echo "parent-pid ok (runner gone after $i polls)"; exit 0
