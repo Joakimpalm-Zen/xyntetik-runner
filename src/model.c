@@ -4793,17 +4793,10 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     return true;
 }
 
-void model_free(model_t *m) {
-    gpu_free(m); // nulls kcache/vcache if the GPU owned them
-    gpu_train_free(m);
-    model_lora_free(m);
-    free(m->moe_host);
-    m->moe_host = NULL;
-    // Deregister on the clean path. The unclean paths (SIGKILL, crash) are
-    // covered by dead-pid reaping in the next runner's claim, which is how the
-    // orphans that motivated the registry would have been cleared.
-    vram_release(m->vram);
-    m->vram = NULL;
+// The per-instance half's release, model_alloc_runtime()'s pair: the buffers
+// its stages allocated and the ones the forward paths add lazily on first use
+// (all_logits, the MTP queue, the recurrent and PLE keep rows, the MoE probe).
+static void runtime_free(model_t *m) {
     // ---- the per-instance half. Everything below belongs to this sequence
     // alone and is freed unconditionally; the weights are refcounted at the
     // bottom. The rope tables are per-instance and not shared: YaRN
@@ -4846,6 +4839,20 @@ void model_free(model_t *m) {
     free(m->moe_selw); free(m->moe_trace_norms); free(m->moe_gidx); free(m->moe_gw);
     free(m->moe_probe_hist);
     tpool_destroy(m->tp);
+}
+
+void model_free(model_t *m) {
+    gpu_free(m); // nulls kcache/vcache if the GPU owned them
+    gpu_train_free(m);
+    model_lora_free(m);
+    free(m->moe_host);
+    m->moe_host = NULL;
+    // Deregister on the clean path. The unclean paths (SIGKILL, crash) are
+    // covered by dead-pid reaping in the next runner's claim, which is how the
+    // orphans that motivated the registry would have been cleared.
+    vram_release(m->vram);
+    m->vram = NULL;
+    runtime_free(m);
     // ---- the shared half. A published load hands its reference back and the
     // last holder frees the buffers; an unpublished one (stat failed, or the
     // load failed inside the bind phase) owns them outright and frees them
