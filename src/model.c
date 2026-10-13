@@ -5613,7 +5613,8 @@ static inline double dt_now(void) {
     return (double)ts.tv_sec + 1e-9 * (double)ts.tv_nsec;
 }
 #define DT_BEGIN double dt_t0 = dbg_time_on() ? dt_now() : 0
-#define DT_MARK(k) do { if (dbg_time_on()) { double dt_t1 = dt_now(); dt_acc[k] += dt_t1 - dt_t0; dt_t0 = dt_t1; } } while (0)
+#define DT_MARK_AT(t0, k) do { if (dbg_time_on()) { double dt_t1 = dt_now(); dt_acc[k] += dt_t1 - (t0); (t0) = dt_t1; } } while (0)
+#define DT_MARK(k) DT_MARK_AT(dt_t0, k)
 void model_debug_time_report(void) {
     if (!dbg_time_on()) return;
     double tot = 0; for (int k = 0; k < DT_N; k++) tot += dt_acc[k];
@@ -7235,6 +7236,15 @@ void model_recurrent_mark_drop(model_t *m) {
     if (m) m->ssm_mark_pos = -1;
 }
 
+// A numerical stage of a hot or byte-pinned routine: split out to be read,
+// forced back into its caller to be compiled. Under the default build's
+// -ffast-math the compiler may contract and reassociate a loop differently
+// once it stands in a function of its own, and then the output's bytes move
+// with the code's layout (the GELU loop of a dense FFN did, on the Gemma
+// families; the portable T3 build is exact either way). Inlined, every stage
+// compiles in its caller's context, as the single function did.
+#define NUM_STAGE static inline __attribute__((always_inline))
+
 // ------------------------------------------------ LoRA adapters (adaptation D2)
 // Frozen quantized base + small f32 low-rank deltas, applied on the CPU dense
 // projections as y += scale * B(Ax) right after each base matvec — the base
@@ -8700,11 +8710,9 @@ static void lbw_ple_branch(model_t *m, int l, int T, float *dx, lbw_state *s, bo
 }
 
 // Phase B1, first half: the FFN backward site by site across the window, then the attention output projection and its gate.
-// Inlined into lora_layer_bw on purpose: compiled as its own function, the
-// default build's -ffast-math contracts its loops differently and the
-// trained adapter's bytes change on the Gemma families (the portable T3
-// build is exact either way). Inlined, the bytes are the single function's.
-static inline __attribute__((always_inline)) void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+// A NUM_STAGE: compiled on its own, it changed the trained adapter's bytes
+// on the Gemma families in the default build.
+NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
     bool lprof = s->lprof;
     double lt = s->lt;
     layer_t *ly = s->ly;
@@ -8947,11 +8955,9 @@ static void lbw_attention(model_t *m, int l, int T, float *dx, lbw_state *s, boo
 }
 
 // Phase B2: the projection backwards once dK and dV are complete.
-// Inlined into lora_layer_bw on purpose: compiled as its own function, the
-// default build's -ffast-math contracts its loops differently and the
-// trained adapter's bytes change on the Gemma families (the portable T3
-// build is exact either way). Inlined, the bytes are the single function's.
-static inline __attribute__((always_inline)) void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+// A NUM_STAGE: compiled on its own, it changed the trained adapter's bytes
+// on the Gemma families in the default build.
+NUM_STAGE void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
     layer_t *ly = s->ly;
     int E = s->E;
     int n_head = s->n_head;
@@ -9795,28 +9801,67 @@ static void ple4_block(model_t *m, const layer_t *ly, const int32_t *tokens,
     memmove(histbuf, histbuf + (size_t)n * hcd, sizeof(float) * (size_t)hist * hcd);
 }
 
-static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
-    const int n_embd = m->n_embd;
-    const int xdim = m->xdim;
+// One block's facts for a forward over n rows at positions pos..pos+n-1,
+// resolved once and read by every stage of forward_layer().
+typedef struct {
+    layer_t *ly;
+    int      l, n, pos, dbg;
+    int      n_embd, xdim;
+    bool     local;           // a sliding-window layer
+    int      hd, n_kv, q_dim, kv_dim;
+    float    scale;
+    // gemma4 E-series shared-KV layers project Q as usual but compute no
+    // K/V at all: they attend over the cache an earlier layer already
+    // filled (kc_l/vc_l resolve to that layer's rows). Their wk/wv are
+    // never read: the current exports do not ship them at all (the loader
+    // binds them optionally on these layers, so both are NULL), and an older
+    // full-form file's copies are bound and then simply ignored.
+    bool     owns_kv;
+    uint8_t *kc_l, *vc_l;
+    size_t   k_row_b, v_row_b;
+    double   dt_t0;           // RUNNER_DEBUG_TIME's stage clock
+} fwd_layer;
+
+static void fwd_layer_facts(model_t *m, int l, int n, int pos, int dbg,
+                            fwd_layer *c) {
+    c->ly      = &m->layers[l];
+    c->l = l; c->n = n; c->pos = pos; c->dbg = dbg;
+    c->n_embd  = m->n_embd;
+    c->xdim    = m->xdim;
+    c->local   = model_is_swa(m, l);
+    c->hd      = model_head_dim(m, l);
+    c->n_kv    = model_n_head_kv(m, l);
+    c->q_dim   = model_q_dim(m, l);
+    c->kv_dim  = model_kv_dim(m, l);
+    c->scale   = model_attn_scale(m, l);
+    c->owns_kv = model_kv_owner(m, l) == l;
+    c->kc_l    = (uint8_t *)m->kcache + model_k_byte_off(m, l);
+    c->vc_l    = (uint8_t *)m->vcache + model_v_byte_off(m, l);
+    c->k_row_b = model_k_row_bytes(m, l);
+    c->v_row_b = model_v_row_bytes(m, l);
+}
+
+// ---- forward_layer's diagnostics and tape, each behind one call that
+// reads the stream without changing what the stages compute
+
+static void fwd_tape_record(model_t *m, int l, int n, int pos) {
     // adaptation D3 tape: record the residual stream entering each layer
     // (solo forwards only; the backward pass recomputes everything else
     // from these checkpoints plus the KV cache)
     if (m->tape && n == 1 && pos < m->tape_T && l < m->n_layer)
         memcpy(m->tape + ((size_t)l * m->tape_T + pos) * m->n_embd,
                m->x, sizeof(float) * (size_t)m->n_embd);
-    layer_t *ly = &m->layers[l];
-    bool local   = model_is_swa(m, l);
-    int hd       = model_head_dim(m, l);
-    int n_kv     = model_n_head_kv(m, l);
-    int q_dim    = model_q_dim(m, l);
-    int kv_dim   = model_kv_dim(m, l);
-    float scale  = model_attn_scale(m, l);
-    // RUNNER_LAYER_SIM=1: per-layer input/output cosine over the residual
-    // stream (ShortGPT-style block influence is 1 - cos). Diagnostic in
-    // the RUNNER_ACT family: measurement the depth-prune planning needs,
-    // printed per forward, aggregated by whoever is reading stderr.
-    static float *sim_snap;
-    static size_t sim_cap;
+}
+
+static float *sim_snap;   // RUNNER_LAYER_SIM: the layer's input rows
+static size_t sim_cap;
+
+// RUNNER_LAYER_SIM=1: per-layer input/output cosine over the residual
+// stream (ShortGPT-style block influence is 1 - cos). Diagnostic in
+// the RUNNER_ACT family: measurement the depth-prune planning needs,
+// printed per forward, aggregated by whoever is reading stderr.
+static bool layer_sim_begin(model_t *m, int n) {
+    const int n_embd = m->n_embd;
     bool sim = getenv("RUNNER_LAYER_SIM") != NULL;
     if (sim) {
         size_t need = (size_t)n * n_embd;
@@ -9830,50 +9875,118 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
         else
             sim = false;
     }
-    uint8_t *kc_l = (uint8_t *)m->kcache + model_k_byte_off(m, l);
-    uint8_t *vc_l = (uint8_t *)m->vcache + model_v_byte_off(m, l);
-    size_t k_row_b = model_k_row_bytes(m, l), v_row_b = model_v_row_bytes(m, l);
+    return sim;
+}
 
-    // No mixer at all (a nemotron_h MLP-only block, or an attention
-    // removed by --remove-sublayer): the residual passes straight to the
-    // FFN. The whole branch is omitted, not computed as zero and added.
-    DT_BEGIN;
-    if (ly->skip_mixer) goto nemo_ffn;
+static void layer_sim_end(const model_t *m, int l, int n) {
+    const int n_embd = m->n_embd;
+    double cs = 0;
+    for (int b = 0; b < n; b++) {
+        const float *pre = sim_snap + (size_t)b * n_embd;
+        const float *post = m->x + (size_t)b * n_embd;
+        double dp = 0, na = 0, nb2 = 0;
+        for (int i = 0; i < n_embd; i++) {
+            dp += (double)pre[i] * post[i];
+            na += (double)pre[i] * pre[i];
+            nb2 += (double)post[i] * post[i];
+        }
+        if (na > 0 && nb2 > 0) cs += dp / (sqrt(na) * sqrt(nb2));
+    }
+    fprintf(stderr, "LAYERSIM l=%d n=%d cos=%.6f\n", l, n, cs / n);
+}
 
-    // attention
+static void trace_layer_cfg(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim;
+    const int hd = c->hd, n_kv = c->n_kv, q_dim = c->q_dim, kv_dim = c->kv_dim;
+    const bool local = c->local;
+    const float scale = c->scale;
+    fprintf(stderr, "ACT L%-3d cfg swa=%d hd=%d n_kv=%d q_dim=%d kv_dim=%d "
+            "scale=%.5f out_scale=%.6f wv=%d qn=%d kn=%d pan=%d pfn=%d "
+            "anorm[absmax]=", l, (int)local, hd, n_kv, q_dim, kv_dim, scale,
+            ly->out_scale, ly->wv != NULL, ly->qnorm_w != NULL,
+            ly->knorm_w != NULL, ly->post_attn_norm_w != NULL,
+            ly->post_ffn_norm_w != NULL);
+    float a = 0;
+    for (int i = 0; ly->attn_norm_w && i < n_embd; i++) {
+        float t = ly->attn_norm_w[i] < 0 ? -ly->attn_norm_w[i] : ly->attn_norm_w[i];
+        if (t > a) a = t;
+    }
+    fprintf(stderr, "%.4g\n", a);
+    dbg_stat("post-attn-norm", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
+}
+
+static void tiedv_check_row(model_t *m, const fwd_layer *c, int b) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, pos = c->pos, hd = c->hd, n_kv = c->n_kv, kv_dim = c->kv_dim;
+    // TIED-V CHECK (RUNNER_TIEDV_CHECK=1, diagnostic only), placed
+    // AFTER rope so both sides are the post-rope rows the cache
+    // actually stores: the derived rope(V*w) against the K the store
+    // path computed. Prints per-row f32/f16 agreement so a real model
+    // can certify the derivation before RUNNER_TIEDV trusts it.
+    if (!ly->wv && ly->knorm_w && m->v_rmsnorm && tiedv_check()
+        && kv_dim <= 8192) {
+        const float *V = m->v_tmp + (size_t)b * kv_dim;
+        const float *K = m->k_tmp + (size_t)b * kv_dim;   // post-rope
+        float drv[8192];
+        for (int i = 0; i < kv_dim; i++)
+            drv[i] = V[i] * ly->knorm_w[i % hd];          // = K1
+        if (model_layer_ropes(m, l))
+            rope_apply(m, drv, n_kv, pos + b, l);         // = rope(V*w)
+        double worst = 0; long same16 = 0, exact32 = 0;
+        for (int i = 0; i < kv_dim; i++) {
+            if (drv[i] == K[i]) exact32++;
+            if (f32_to_f16(drv[i]) == f32_to_f16(K[i])) same16++;
+            double d = fabs((double)drv[i] - (double)K[i]);
+            double den = fabs((double)K[i]);
+            double rel = den > 0 ? d / den : d;
+            if (rel > worst) worst = rel;
+        }
+        fprintf(stderr, "tiedv L%-2d pos%-5d: f32 %ld/%d exact, worst "
+                "rel %.3e | f16 rows agree %ld/%d (%.4f%%)\n",
+                l, pos + b, exact32, kv_dim, worst, same16, kv_dim,
+                100.0 * (double)same16 / kv_dim);
+    }
+}
+
+// ---- forward_layer's stages
+
+// The mixer's input: the attention norm, or on hyper-connections the PLE
+// block and the stream mix.
+NUM_STAGE void layer_mixer_input(model_t *m, fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int n = c->n, pos = c->pos, n_embd = c->n_embd, xdim = c->xdim;
     if (m->hyper_conn) {
         // qwen4exp: the PLE block folds its n-gram rows into the wide
         // residual first, then the first mixer replaces the pre-norm
         if (ly->ple4) ple4_block(m, ly, m->fwd_tokens, n, pos);
-        DT_MARK(DT_PLE);
+        DT_MARK_AT(c->dt_t0, DT_PLE);
         hc_mix(m, ly->hc_attn_norm, ly->hc_attn_down, ly->hc_attn_up,
                ly->hc_attn_inject, m->xb, xdim, n);
-        DT_MARK(DT_MIX);
+        DT_MARK_AT(c->dt_t0, DT_MIX);
     } else
     for (int b = 0; b < n; b++)
         xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
               ly->attn_norm_w, ly->attn_norm_b, n_embd, m->rms_eps);
-    if (dbg) {
-        fprintf(stderr, "ACT L%-3d cfg swa=%d hd=%d n_kv=%d q_dim=%d kv_dim=%d "
-                "scale=%.5f out_scale=%.6f wv=%d qn=%d kn=%d pan=%d pfn=%d "
-                "anorm[absmax]=", l, (int)local, hd, n_kv, q_dim, kv_dim, scale,
-                ly->out_scale, ly->wv != NULL, ly->qnorm_w != NULL,
-                ly->knorm_w != NULL, ly->post_attn_norm_w != NULL,
-                ly->post_ffn_norm_w != NULL);
-        float a = 0;
-        for (int i = 0; ly->attn_norm_w && i < n_embd; i++) {
-            float t = ly->attn_norm_w[i] < 0 ? -ly->attn_norm_w[i] : ly->attn_norm_w[i];
-            if (t > a) a = t;
-        }
-        fprintf(stderr, "%.4g\n", a);
-        dbg_stat("post-attn-norm", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
-    }
-    if (ly->recurrent) {
-        if (m->granite_hybrid || m->nemotron_h)
-                               mamba2_ssd_step(m, ly, l, n, xdim);
-        else                   qwen35_linear(m, ly, l, n, xdim);
-        DT_MARK(DT_RECUR);
-    } else {
+    if (c->dbg) trace_layer_cfg(m, c);
+}
+
+NUM_STAGE void layer_recurrent(model_t *m, fwd_layer *c) {
+    layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, xdim = c->xdim;
+    if (m->granite_hybrid || m->nemotron_h)
+                           mamba2_ssd_step(m, ly, l, n, xdim);
+    else                   qwen35_linear(m, ly, l, n, xdim);
+    DT_MARK_AT(c->dt_t0, DT_RECUR);
+}
+
+// Q (and the output gate), K and V for every row, with their adapter deltas.
+NUM_STAGE void attn_project(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim;
+    const int hd = c->hd, q_dim = c->q_dim, kv_dim = c->kv_dim;
+    const bool owns_kv = c->owns_kv;
+    const int dbg = c->dbg;
     if (m->qwen35) {
         matvec_b(m->tp, m->ssm_qkv, 2 * q_dim, ly->wq,
                  m->xb, xdim, n_embd, 2 * q_dim, ly->bq, n);
@@ -9887,13 +10000,6 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
                        sizeof(float) * hd);
             }
     }
-    // gemma4 E-series shared-KV layers project Q as usual but compute no
-    // K/V at all: they attend over the cache an earlier layer already
-    // filled (kc_l/vc_l above resolve to that layer's rows). Their wk/wv are
-    // never read: the current exports do not ship them at all (the loader
-    // binds them optionally on these layers, so both are NULL), and an older
-    // full-form file's copies are bound and then simply ignored.
-    bool owns_kv = model_kv_owner(m, l) == l;
     if (!m->qwen35) {
         // Q, the afmoe output gate (projected from the SAME normed input as
         // Q, consumed after attn_heads by the shared q_gate multiply below),
@@ -9933,6 +10039,18 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
             fprintf(stderr, "ACT L%-3d shared-kv src=%d\n", l, model_kv_owner(m, l));
         }
     }
+}
+
+// Per row: Q's norm and rotation (or the NoPE temperature), then on a layer
+// that owns its KV, K and V normed, rotated and stored in the cache.
+NUM_STAGE void attn_rope_store(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, pos = c->pos;
+    const int hd = c->hd, n_kv = c->n_kv, q_dim = c->q_dim, kv_dim = c->kv_dim;
+    const bool owns_kv = c->owns_kv;
+    const int dbg = c->dbg;
+    uint8_t *kc_l = c->kc_l, *vc_l = c->vc_l;
+    const size_t k_row_b = c->k_row_b, v_row_b = c->v_row_b;
     for (int b = 0; b < n; b++) {
         if (ly->qnorm_w)
             qk_norm(m->q + (size_t)b * q_dim, ly->qnorm_w, m->n_head,
@@ -9957,34 +10075,7 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
                     hd, m->rms_eps);
         if (model_layer_ropes(m, l))
             rope_apply(m, m->k_tmp + (size_t)b * kv_dim, n_kv, pos + b, l);
-        // TIED-V CHECK (RUNNER_TIEDV_CHECK=1, diagnostic only), placed
-        // AFTER rope so both sides are the post-rope rows the cache
-        // actually stores: the derived rope(V*w) against the K the store
-        // path computed. Prints per-row f32/f16 agreement so a real model
-        // can certify the derivation before RUNNER_TIEDV trusts it.
-        if (!ly->wv && ly->knorm_w && m->v_rmsnorm && tiedv_check()
-            && kv_dim <= 8192) {
-            const float *V = m->v_tmp + (size_t)b * kv_dim;
-            const float *K = m->k_tmp + (size_t)b * kv_dim;   // post-rope
-            float drv[8192];
-            for (int i = 0; i < kv_dim; i++)
-                drv[i] = V[i] * ly->knorm_w[i % hd];          // = K1
-            if (model_layer_ropes(m, l))
-                rope_apply(m, drv, n_kv, pos + b, l);         // = rope(V*w)
-            double worst = 0; long same16 = 0, exact32 = 0;
-            for (int i = 0; i < kv_dim; i++) {
-                if (drv[i] == K[i]) exact32++;
-                if (f32_to_f16(drv[i]) == f32_to_f16(K[i])) same16++;
-                double d = fabs((double)drv[i] - (double)K[i]);
-                double den = fabs((double)K[i]);
-                double rel = den > 0 ? d / den : d;
-                if (rel > worst) worst = rel;
-            }
-            fprintf(stderr, "tiedv L%-2d pos%-5d: f32 %ld/%d exact, worst "
-                    "rel %.3e | f16 rows agree %ld/%d (%.4f%%)\n",
-                    l, pos + b, exact32, kv_dim, worst, same16, kv_dim,
-                    100.0 * (double)same16 / kv_dim);
-        }
+        tiedv_check_row(m, c, b);
         size_t slot = (size_t)model_kv_row_at(m, l, pos + b);
         uint8_t *kc = kc_l + slot * k_row_b;
         uint8_t *vc = vc_l + slot * v_row_b;
@@ -10016,6 +10107,17 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
                     (const f16_t *)(vc_l + dslot * v_row_b), kv_dim);
         }
     }
+}
+
+NUM_STAGE void attn_rows(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, pos = c->pos, xdim = c->xdim;
+    const int hd = c->hd, q_dim = c->q_dim, kv_dim = c->kv_dim;
+    const bool local = c->local;
+    const float scale = c->scale;
+    const int dbg = c->dbg;
+    uint8_t *kc_l = c->kc_l, *vc_l = c->vc_l;
+    const size_t k_row_b = c->k_row_b, v_row_b = c->v_row_b;
     for (int b = 0; b < n; b++) {
         int p = pos + b;
         int t0 = local && p - m->swa_window + 1 > 0 ? p - m->swa_window + 1 : 0;
@@ -10032,58 +10134,61 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
             }
     }
     if (dbg) dbg_stat("attn-out", l, m->xb2 + (size_t)(n - 1) * xdim, q_dim);
+}
+
+NUM_STAGE void attn_output(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim, q_dim = c->q_dim;
     matvec_b(m->tp, m->xb, xdim, ly->wo, m->xb2, xdim, q_dim, n_embd, ly->bo, n);
     LORA_HOOK(LW_O, m->xb, xdim, m->xb2, xdim, q_dim, n_embd, n);
-    }
-    if (dbg) dbg_stat("wo-out", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
-    if (ly->post_attn_norm_w)
+}
+
+// A branch's output into the residual: its post-norm and the residual
+// scale (timed as the branch), then the add, or on hyper-connections the
+// scatter into every stream (timed as the combine). Shared by the mixer
+// and the FFN.
+NUM_STAGE void layer_branch_out(model_t *m, fwd_layer *c, const float *post_norm_w,
+                             int dt_branch) {
+    const int n = c->n, n_embd = c->n_embd, xdim = c->xdim;
+    if (post_norm_w)
         for (int b = 0; b < n; b++)
             rmsnorm(m->xb + (size_t)b * xdim, m->xb + (size_t)b * xdim,
-                    ly->post_attn_norm_w, n_embd, m->post_norm_eps);
+                    post_norm_w, n_embd, m->post_norm_eps);
     if (m->resid_scale != 1.0f)
         for (int b = 0; b < n; b++)
             for (int i = 0; i < n_embd; i++)
                 m->xb[(size_t)b * xdim + i] *= m->resid_scale;
-    DT_MARK(DT_ATTN);
+    DT_MARK_AT(c->dt_t0, dt_branch);
     if (m->hyper_conn) hc_combine(m, m->xb, xdim, n);   // scatter into every stream
     else
     for (int b = 0; b < n; b++)
         for (int i = 0; i < n_embd; i++)
             m->x[(size_t)b * n_embd + i] += m->xb[(size_t)b * xdim + i];
-    DT_MARK(DT_COMBINE);
-    if (dbg) {
-        dbg_stat("post-attn-res", l, m->x + (size_t)(n - 1) * n_embd, n_embd);
-    }
+    DT_MARK_AT(c->dt_t0, DT_COMBINE);
+}
 
-    // feed-forward (gated: silu for llama-family, gelu for gemma). MoE
-    // layers route each token to a few experts instead of one dense FFN.
-    // gemma-4 MoE is a dual branch that does its own norms off m->x directly.
-nemo_ffn:
-    if (ly->skip_ffn) goto nemo_layer_end;   // nemotron_h SSM/attention block
-    if (ly->moe_gemma) {
-        gemma_moe_ffn(m, ly, n, xdim);  // reads m->x, writes dense⊕routed to m->xb
-        goto ffn_done;
-    }
-    if (m->hyper_conn)
-        hc_mix(m, ly->hc_ffn_norm, ly->hc_ffn_down, ly->hc_ffn_up,
-               ly->hc_ffn_inject, m->xb, xdim, n);
-    else
-    for (int b = 0; b < n; b++)
-        xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
-              ly->ffn_norm_w, ly->ffn_norm_b, n_embd, m->rms_eps);
-    DT_MARK(DT_MIX);
-    if (ly->is_moe) {
-        if (ly->w_up_shexp)
-            for (int b = 0; b < n; b++)
-                memcpy(m->shexp_in + (size_t)b * n_embd,
-                       m->xb + (size_t)b * xdim,
-                       sizeof(float) * (size_t)n_embd);
-        moe_ffn(m, ly, n, xdim);   // reads normed m->xb, writes FFN out to m->xb
-        DT_MARK(DT_EXPERTS);
-        shexp_add(m, ly, m->shexp_in, n, xdim);
-        DT_MARK(DT_SHEXP);
-    } else {
-    {
+// A sparse MoE FFN: the routed experts, then the shared expert over the
+// same normed input.
+NUM_STAGE void layer_moe_ffn(model_t *m, fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int n = c->n, n_embd = c->n_embd, xdim = c->xdim;
+    if (ly->w_up_shexp)
+        for (int b = 0; b < n; b++)
+            memcpy(m->shexp_in + (size_t)b * n_embd,
+                   m->xb + (size_t)b * xdim,
+                   sizeof(float) * (size_t)n_embd);
+    moe_ffn(m, ly, n, xdim);   // reads normed m->xb, writes FFN out to m->xb
+    DT_MARK_AT(c->dt_t0, DT_EXPERTS);
+    shexp_add(m, ly, m->shexp_in, n, xdim);
+    DT_MARK_AT(c->dt_t0, DT_SHEXP);
+}
+
+// A dense FFN: gated (one dispatch for gate and up), or ungated with
+// nemotron_h's squared ReLU or Apertus' xIELU.
+NUM_STAGE void layer_dense_ffn(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim;
+    const int dbg = c->dbg;
     int nff = ly->n_ff;   // per-layer width (gemma-4 E2B varies it)
     if (!ly->w_gate) {
         // ungated MLP: up -> activation -> down, no gate branch
@@ -10116,53 +10221,68 @@ nemo_ffn:
     if (dbg) dbg_stat("ffn-act", l, m->hb + (size_t)(n - 1) * nff, nff);
     matvec_b(m->tp, m->xb, xdim, ly->w_down, m->hb, nff, nff, n_embd, NULL, n);
     LORA_HOOK(LW_DOWN, m->xb, xdim, m->hb, nff, nff, n_embd, n);
-    }
-    }
-    ffn_done:
-    DT_MARK(ly->is_moe ? DT_EXPERTS : DT_DENSE_FFN);
-    if (dbg) dbg_stat("ffn-down", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
-    if (ly->post_ffn_norm_w)
+}
+
+// feed-forward (gated: silu for llama-family, gelu for gemma). MoE
+// layers route each token to a few experts instead of one dense FFN.
+// gemma-4 MoE is a dual branch that does its own norms off m->x directly.
+NUM_STAGE void layer_ffn(model_t *m, fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim;
+    if (ly->moe_gemma) {
+        gemma_moe_ffn(m, ly, n, xdim);  // reads m->x, writes dense⊕routed to m->xb
+    } else {
+        if (m->hyper_conn)
+            hc_mix(m, ly->hc_ffn_norm, ly->hc_ffn_down, ly->hc_ffn_up,
+                   ly->hc_ffn_inject, m->xb, xdim, n);
+        else
         for (int b = 0; b < n; b++)
-            rmsnorm(m->xb + (size_t)b * xdim, m->xb + (size_t)b * xdim,
-                    ly->post_ffn_norm_w, n_embd, m->post_norm_eps);
-    if (m->resid_scale != 1.0f)
-        for (int b = 0; b < n; b++)
-            for (int i = 0; i < n_embd; i++)
-                m->xb[(size_t)b * xdim + i] *= m->resid_scale;
-    if (m->hyper_conn) hc_combine(m, m->xb, xdim, n);
-    else
-    for (int b = 0; b < n; b++)
+            xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
+                  ly->ffn_norm_w, ly->ffn_norm_b, n_embd, m->rms_eps);
+        DT_MARK_AT(c->dt_t0, DT_MIX);
+        if (ly->is_moe) layer_moe_ffn(m, c);
+        else            layer_dense_ffn(m, c);
+    }
+    if (c->dbg) dbg_stat("ffn-down", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
+    layer_branch_out(m, c, ly->post_ffn_norm_w,
+                     ly->is_moe ? DT_EXPERTS : DT_DENSE_FFN);
+}
+
+// Per-layer embedding branch (E-series). Runs on the post-FFN residual
+// and before the layer output scale, matching gemma4.cpp's ordering.
+// ple_tmp is free once the pre-pass is done, and xb once the FFN output
+// has been added into x just above.
+NUM_STAGE void layer_ple_branch(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim;
+    const int dbg = c->dbg;
+    int P = m->n_embd_ple;
+    size_t per_tok = (size_t)m->n_layer * P;
+    matvec_b(m->tp, m->ple_tmp, P, ly->ple_gate, m->x, n_embd,
+             n_embd, P, NULL, n);
+    for (int b = 0; b < n; b++) {
+        const float *slice = m->ple + (size_t)b * per_tok + (size_t)l * P;
+        float *g = m->ple_tmp + (size_t)b * P;
+        for (int i = 0; i < P; i++)
+            g[i] = gated_act(ACT_GELU, g[i], slice[i]);
+    }
+    matvec_b(m->tp, m->xb, xdim, ly->ple_proj, m->ple_tmp, P,
+             P, n_embd, NULL, n);
+    for (int b = 0; b < n; b++) {
+        float *u = m->xb + (size_t)b * xdim;
+        rmsnorm(u, u, ly->ple_post_norm, n_embd, m->rms_eps);
         for (int i = 0; i < n_embd; i++)
-            m->x[(size_t)b * n_embd + i] += m->xb[(size_t)b * xdim + i];
-    DT_MARK(DT_COMBINE);
-
-nemo_layer_end:;   // nemotron_h SSM/attention blocks land here (no FFN)
-    // Per-layer embedding branch (E-series). Runs on the post-FFN residual
-    // and before the layer output scale, matching gemma4.cpp's ordering.
-    // ple_tmp is free once the pre-pass is done, and xb once the FFN output
-    // has been added into x just above.
-    if (ly->ple_gate) {
-        int P = m->n_embd_ple;
-        size_t per_tok = (size_t)m->n_layer * P;
-        matvec_b(m->tp, m->ple_tmp, P, ly->ple_gate, m->x, n_embd,
-                 n_embd, P, NULL, n);
-        for (int b = 0; b < n; b++) {
-            const float *slice = m->ple + (size_t)b * per_tok + (size_t)l * P;
-            float *g = m->ple_tmp + (size_t)b * P;
-            for (int i = 0; i < P; i++)
-                g[i] = gated_act(ACT_GELU, g[i], slice[i]);
-        }
-        matvec_b(m->tp, m->xb, xdim, ly->ple_proj, m->ple_tmp, P,
-                 P, n_embd, NULL, n);
-        for (int b = 0; b < n; b++) {
-            float *u = m->xb + (size_t)b * xdim;
-            rmsnorm(u, u, ly->ple_post_norm, n_embd, m->rms_eps);
-            for (int i = 0; i < n_embd; i++)
-                m->x[(size_t)b * n_embd + i] += u[i];
-        }
-        if (dbg) dbg_stat("ple-out", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
+            m->x[(size_t)b * n_embd + i] += u[i];
     }
+    if (dbg) dbg_stat("ple-out", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
+}
 
+// The layer's output: gemma4's whole-layer scalar, and on hyper-connections
+// the single-stream view the diagnostics read.
+NUM_STAGE void layer_output(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, n_embd = c->n_embd;
+    const int dbg = c->dbg;
     if (ly->out_scale != 1.0f && ly->out_scale != 0.0f)
         // gemma4: whole-layer output scalar, applied after both residuals
         for (int b = 0; b < n; b++)
@@ -10177,27 +10297,43 @@ nemo_layer_end:;   // nemotron_h SSM/attention blocks land here (no FFN)
             float *xo = m->x + (size_t)b * n_embd;
             for (int i = 0; i < n_embd; i++) {
                 float acc = 0.0f;
-                for (int c = 0; c < hc; c++) acc += xs[(size_t)c * n_embd + i];
+                for (int st = 0; st < hc; st++) acc += xs[(size_t)st * n_embd + i];
                 xo[i] = acc / (float)hc;
             }
         }
     }
     if (dbg) dbg_stat("layer-out", l, m->x + (size_t)(n - 1) * n_embd, n_embd);
-    if (sim) {
-        double cs = 0;
-        for (int b = 0; b < n; b++) {
-            const float *pre = sim_snap + (size_t)b * n_embd;
-            const float *post = m->x + (size_t)b * n_embd;
-            double dp = 0, na = 0, nb2 = 0;
-            for (int i = 0; i < n_embd; i++) {
-                dp += (double)pre[i] * post[i];
-                na += (double)pre[i] * pre[i];
-                nb2 += (double)post[i] * post[i];
-            }
-            if (na > 0 && nb2 > 0) cs += dp / (sqrt(na) * sqrt(nb2));
+}
+
+static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
+    fwd_tape_record(m, l, n, pos);
+    fwd_layer c;
+    fwd_layer_facts(m, l, n, pos, dbg, &c);
+    const layer_t *ly = c.ly;
+    const int n_embd = c.n_embd, xdim = c.xdim;
+    bool sim = layer_sim_begin(m, n);
+    c.dt_t0 = dbg_time_on() ? dt_now() : 0;
+    // No mixer at all (a nemotron_h MLP-only block, or an attention
+    // removed by --remove-sublayer): the residual passes straight to the
+    // FFN. The whole branch is omitted, not computed as zero and added.
+    if (!ly->skip_mixer) {
+        layer_mixer_input(m, &c);
+        if (ly->recurrent) {
+            layer_recurrent(m, &c);
+        } else {
+            attn_project(m, &c);
+            attn_rope_store(m, &c);
+            attn_rows(m, &c);
+            attn_output(m, &c);
         }
-        fprintf(stderr, "LAYERSIM l=%d n=%d cos=%.6f\n", l, n, cs / n);
+        if (dbg) dbg_stat("wo-out", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
+        layer_branch_out(m, &c, ly->post_attn_norm_w, DT_ATTN);
+        if (dbg) dbg_stat("post-attn-res", l, m->x + (size_t)(n - 1) * n_embd, n_embd);
     }
+    if (!ly->skip_ffn) layer_ffn(m, &c);   // skipped: a nemotron_h SSM/attention block
+    if (ly->ple_gate) layer_ple_branch(m, &c);
+    layer_output(m, &c);
+    if (sim) layer_sim_end(m, l, n);
 }
 
 float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
