@@ -22,6 +22,14 @@ Current release and unreleased changes. Compatibility follows the
   the 721-string corpus is unchanged. Token ids change for text containing
   these characters on every byte-level BPE model.
 
+- **A refused request no longer reseeds its slot.** A request that carried a
+  `seed` and was then refused with a 400 (a bad `max_tokens`, `stream` or
+  `stop`, an unknown `response_format`, a prompt longer than the context)
+  had already installed that seed in the slot's sampler, so the next
+  unseeded request on the slot drew exactly the refused request's stream
+  instead of continuing its own. The seed is now installed where generation
+  starts, after the last refusal.
+
 ## v1.2.1 - 2026-10-13
 
 - **A client stalled mid-request no longer holds the server's shutdown.**

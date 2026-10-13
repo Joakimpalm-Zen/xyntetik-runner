@@ -2816,7 +2816,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     s->smp.min_p = (float)min_p;
     s->smp.top_k = (int)top_k;
     s->smp.repeat_penalty = (float)repeat_penalty;
-    if (seed > 0) s->smp.rng = (uint64_t)seed;
+    // An explicit seed is installed where generation begins, below: the RNG
+    // is the one sampler field that outlives a request, and every refusal
+    // between here and there would otherwise leave the slot reseeded by a
+    // request that generated nothing.
     int max_tokens = request_max_tokens(req, SV.n_predict_cap);
     if (max_tokens == MT_NON_FINITE) {
         send_error(fd, 400, "max_tokens out of range");
@@ -3906,6 +3909,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // that logger reads initialized before that first possible jump.
     bool unmapped = false;
     double gtime;
+    // Past the last refusal: the request's seed takes the slot's RNG now.
+    // Nothing above draws from it (prefill and prompt scoring do not sample).
+    if (seed > 0) s->smp.rng = (uint64_t)seed;
     // R1.2.2: the sampler's state as generation starts is the receipt's seed
     uint64_t gen_rng = s->smp.rng;
     g.raw_on = receipts_enabled();

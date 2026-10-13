@@ -223,3 +223,23 @@ def test_a_vanished_stream_leaves_the_slot_serving(exe, model):
         s.recv(256)          # the stream has started
         s.close()
         assert text(post(srv, "/v1/completions", GREEDY)) == fresh
+
+
+@pytest.mark.parametrize("path,refused", [
+    ("/v1/completions", dict(SAMPLED, seed=5, max_tokens="x")),
+    ("/v1/completions", dict(SAMPLED, seed=5, stream="yes")),
+    ("/v1/completions", dict(SAMPLED, seed=5, stop="")),
+    ("/v1/completions", dict(SAMPLED, seed=5, response_format={"type": "bogus"})),
+    ("/v1/completions", dict(SAMPLED, seed=5, prompt="x" * 4000)),
+    ("/v1/chat/completions", dict(CHAT, seed=5, logprobs="yes")),
+], ids=["max_tokens", "stream", "stop", "response_format", "prompt_too_long", "chat"])
+def test_a_refused_request_does_not_reseed_the_slot(exe, model, path, refused):
+    """The RNG is the one piece of sampler state meant to carry over, and a
+    request refused with a 400 generated nothing: the next unseeded request
+    draws exactly what it would have drawn had the refused one never come."""
+    fresh = served(exe, model, SAMPLED)
+    with server(exe, model) as srv:
+        status, body = post(srv, path, refused)
+        assert status == 400, body
+        after = post(srv, "/v1/completions", SAMPLED)
+    assert text(after) == text(fresh[0])
