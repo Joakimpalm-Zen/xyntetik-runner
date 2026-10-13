@@ -3129,7 +3129,7 @@ static void test_coder_constrained_turn(void) {
 
 // Qwen3-Coder-30B-A3B at its own temperature 0.7 closes a raw string
 // parameter with ` </parameter>` and `\n\n </parameter>` as often as with
-// the reference's `\n</parameter>` (traced on the Blackwell, 2026-09-15).
+// the reference's `\n</parameter>` (traced on the Linux CUDA host, 2026-09-15).
 // The raw string's sentinel was `\n</parameter>`, so those closes did not
 // close: the value ran on through the closing tags and a whole second call
 // until a bare `\n</parameter>` happened, and the turn mapped to nothing.

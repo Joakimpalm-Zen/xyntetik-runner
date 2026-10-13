@@ -607,7 +607,7 @@ static const sampler_preset PRESETS[] = {
 
     // Qwen/Qwen3-Coder-30B-A3B-Instruct generation_config.json: temperature
     // 0.7, top_p 0.8, top_k 20, repetition_penalty 1.05. The penalty is NOT
-    // taken: measured on the Blackwell 2026-09-15 with the 30B-A3B Q4_K_M,
+    // taken: measured on the Linux CUDA host 2026-09-15 with the 30B-A3B Q4_K_M,
     // the report's own case A at the config's temperature, this sampler's
     // 1.05 read 0 of 8 well-formed calls (`<function=bash}` where the
     // protocol needs `>`, then an OpenAI-shaped JSON array as prose) and 1.0

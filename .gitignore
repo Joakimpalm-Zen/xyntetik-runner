@@ -282,3 +282,4 @@ evals/tooluse-shifted/results/*.json
 # Local compatibility runs; pinned inputs and curated public evidence live elsewhere.
 tests/compatibility/out/**
 !tests/compatibility/out/README.md
+tests/conformance/out-sanitized/

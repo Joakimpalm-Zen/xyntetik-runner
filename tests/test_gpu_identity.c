@@ -65,10 +65,10 @@ static int g_n_batch = N_BATCH;
 // Mean |dlogit| as a fraction of the mean logit range. Measured residue:
 // Metal/M1 2.3e-8 (F32 toy), 1.9e-7 (llama-4 temperature fixture), 5.4e-5
 // (SmolLM2 Q8_0 -- quantized weights dequantize slightly differently on the
-// two sides, which dominates). CUDA/Blackwell measures 8.02e-4 on the
+// two sides, which dominates). CUDA on the datacenter MIG slice measures 8.02e-4 on the
 // k_temp_live fixture -- its reductions round differently again -- which a
 // 5e-4 bound calibrated on Metal wrongly failed (found by the 2026-08-16
-// Blackwell run; the gate blocked that box's `make test` on untouched code).
+// Linux CUDA host run; the gate blocked that box's `make test` on untouched code).
 // The bound is one cross-backend constant on purpose, sized ~2.5x above the
 // worst measured honest residue and still 10x BELOW the smallest real
 // mistake: dropping the attention temperature measures 2.05e-2.

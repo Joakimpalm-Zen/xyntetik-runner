@@ -722,7 +722,7 @@ def test_chat_smoke_follows_a_cpu_only_matrix(monkeypatch, tmp_path):
 
 def test_python_children_get_a_utf8_console(monkeypatch, tmp_path):
     """A Windows pipe is cp1252 by default; the identity check died printing
-    granite's greedy text on ZEN-GAMING (2026-09-22) and was recorded as a
+    granite's greedy text on the Windows CUDA host (2026-09-22) and was recorded as a
     cpu_cuda fail that was never a CPU-vs-CUDA fact. Every python child the
     matrix spawns is told to speak UTF-8."""
     module = load_module()

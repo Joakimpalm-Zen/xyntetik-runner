@@ -43,7 +43,7 @@ int         plat_cpu_count(void);
 // The halving rule below approximates physical cores on an SMT machine and is
 // unmeasured; this ceiling is the measured part. Two independent sweeps found
 // decode PEAKS at 32 threads and regresses above it - tpbench on a 64-core
-// Zen 5 box (2026-08-13) and the Blackwell 128-core sweep (2026-08-29), where
+// Zen 5 box (2026-08-13) and the 128-core Linux host sweep (2026-08-29), where
 // both models peaked at t=32 and the previous default of 64 cost -41.0%
 // decode and -55.3% prefill on the smaller one. The heuristic was not wrong,
 // it lacked a ceiling.

@@ -1,4 +1,4 @@
-# Idle coexistence at 120B — M5 Max, 2026-09-01
+# Idle coexistence at 120B — 128 GB Apple Silicon Mac, 2026-09-01
 
 The README's designed-to-stay-on measurement was made on an 8 GB M1 with a
 3.6 GB model, where llama-server's resident set was 47% of the machine. The

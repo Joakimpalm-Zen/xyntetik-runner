@@ -171,7 +171,7 @@ For the suite plan's first target — granite-4.1-8b, 15 official quants in
 one IBM repo — that is 16 total passes (2 for zero-point + 14 additional
 variants, since the reference's own row reuses the zero-point check run) at
 whatever `--cases`/`--kld-positions` the run budget allows. This is sized
-for the Blackwell box, not the shared 8 GB M1: the smoke run in this commit
+for the Linux CUDA host, not the shared 8 GB M1: the smoke run in this commit
 intentionally used small budgets (16 cases, 20 KLD positions) to fit the
 memory-constrained box it validated on.
 
@@ -187,7 +187,7 @@ needs, beyond what is already built:
 - a larger `--cases`/`--kld-positions` budget than the smoke defaults (the
   suite plan's statistics-honesty note: 15 requests/category is thin for
   small deltas),
-- the Blackwell box's toolchain/measurement conventions (this harness
+- the Linux CUDA host's toolchain/measurement conventions (this harness
   builds and runs Runner the same way `kld-compare-raw.py` and
   `compat_matrix.py` already do — no new build step is required),
 - a decision on how many `--variant` entries to run in one invocation vs.

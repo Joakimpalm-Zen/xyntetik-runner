@@ -915,7 +915,7 @@ bool model_residency_warning(uint64_t need, uint64_t hot, uint64_t have,
     // Wired weights cannot be evicted, so every prediction below is
     // impossible for a locked model — and a successful mlock over the whole
     // map is itself proof the memory existed, whatever the instantaneous
-    // "available" figure said (measured on an M5 Max: 85.7 GB wired while
+    // "available" figure said (measured on a 128 GB Apple Silicon Mac: 85.7 GB wired while
     // plat_ram_available_bytes reported 43.9 GB free).
     if (!need || !have || need <= have || locked) return false;
     const char *fix = " --mlock pins them; a smaller model is the other fix.";
@@ -1538,7 +1538,7 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
                 "(--moe-prefetch off disables)\n");
     // Whole-mapping WILLNEED sweep for a model that FITS — OPT-IN
     // (RUNNER_PREFETCH=1), and the measurement that made it opt-in is the
-    // point: on the M5 Max the sweep made the cold 63 GB gpt-oss-120b load
+    // point: on the 128 GB Apple Silicon Mac the sweep made the cold 63 GB gpt-oss-120b load
     // 60% SLOWER (11.5 s demand-faulted vs 18.4 s swept, interleaved,
     // evicted between arms) — macOS demand paging already outruns its own
     // WILLNEED readahead, the same shape as the 2026-08-31 mmap-vs-pread
@@ -3940,7 +3940,7 @@ uint64_t model_gpu_budget(uint64_t driver_free, uint64_t driver_total,
     // the plan missed ~2 GB (hyper-connection mixers, per-binding rounding)
     // and the 1.57 GB headroom was what absorbed it. With the plan counting
     // both (RUNNER_DEBUG_VRAM, 2026-10-08) it is within 0.1 GB of the
-    // device's own figure on the RTX 3070 and the Blackwell slice, module
+    // device's own figure on the RTX 3070 and the datacenter MIG slice, module
     // load and JIT cost 3 MB on either, and a sixteenth was margin on top of
     // margin: a pinned --cpu-moe 30 on Qwen3.8-Flash-Next lost its full split.
     uint64_t hr = budget / 32;
@@ -6238,7 +6238,7 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
     // Every selected expert's projections go out as a few pool dispatches
     // rather than three per expert: with ten experts a layer and 48 layers
     // that was 1,440 fork/join barriers a token on matrices that take
-    // microseconds (Qwen3.8-Flash-Next on the Blackwell CPUs: the experts
+    // microseconds (Qwen3.8-Flash-Next on the Linux CUDA host's CPUs: the experts
     // were 49% of the token at 5.9 tok/s). Each row still runs exactly the
     // dot matvec_b gives it, the per-expert math and the ascending-expert
     // accumulation are unchanged, so the output is byte-identical to the
@@ -7496,7 +7496,7 @@ static float silu_f(float g) {
 }
 // sigmoid with the same cutoff: under -ffast-math (finite-math-only) the
 // compiler may not keep 1/(1+inf) == 0, and the qwen4exp hyper-connection
-// gate reaches -95 on the release file (layer 42, Blackwell, 2026-10-06),
+// gate reaches -95 on the release file (layer 42, the Linux CUDA host, 2026-10-06),
 // where the unguarded form turned the whole block into NaN.
 static float sigmoid_f(float g) {
     return g < -80.0f ? 0.0f : g > 80.0f ? 1.0f : 1.0f / (1.0f + expf(-g));

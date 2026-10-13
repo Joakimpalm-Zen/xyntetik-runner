@@ -23,9 +23,9 @@ re-certify a later build or every family.
 
 | Artifact / check | Recorded result | Evidence |
 | --- | --- | --- |
-| Qwen 3.8 GSQ-RCO IQ3_S, corrected prompt, Blackwell | 6/6 report cases, buffered/streamed | [protocol record](cross-family-remedy-evidence/tool-protocol-qwen38-gsq-iq3s-blackwell-marked-think.json) |
-| Qwen3-Coder 30B, corrected preset, Blackwell | 6/6 report cases | [protocol record](cross-family-remedy-evidence/tool-protocol-qwen3-coder-30b-blackwell-final.json) |
-| Gemma 4 12B QAT, native preset, Blackwell | A/B cases pass; prose-beside-call case has its recorded model limitation | [protocol record](cross-family-remedy-evidence/tool-protocol-gemma4-12b-qat-q4_0-blackwell-gemma4-preset.json) |
+| Qwen 3.8 GSQ-RCO IQ3_S, corrected prompt, Linux CUDA host | 6/6 report cases, buffered/streamed | [protocol record](cross-family-remedy-evidence/tool-protocol-qwen38-gsq-iq3s-blackwell-marked-think.json) |
+| Qwen3-Coder 30B, corrected preset, Linux CUDA host | 6/6 report cases | [protocol record](cross-family-remedy-evidence/tool-protocol-qwen3-coder-30b-blackwell-final.json) |
+| Gemma 4 12B QAT, native preset, Linux CUDA host | A/B cases pass; prose-beside-call case has its recorded model limitation | [protocol record](cross-family-remedy-evidence/tool-protocol-gemma4-12b-qat-q4_0-blackwell-gemma4-preset.json) |
 | Granite 4.2 8B, corrected prompt, Windows CUDA | A/B results and the reasoning/content case are recorded separately | [protocol record](cross-family-remedy-evidence/tool-protocol-granite42-8b-q4_k_m-rtx3070-marked-think-1500.json) |
 | Installed clients against Qwen3-4B | Named client/version/scope results | [client sweep](cross-family-remedy-evidence/agent-client-sweep-qwen3-4b-blackwell-2026-09-15.json) |
 | Installed clients against Granite 4.2, Windows | Continue/OpenCode loop scope | [client sweep](cross-family-remedy-evidence/agent-client-sweep-granite42-8b-windows-rtx3070-2026-09-15.json) |

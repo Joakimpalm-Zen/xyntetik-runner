@@ -3,7 +3,7 @@
 Reproducible greedy-identity comparison of the two supported Mamba-2 hybrid
 architectures against llama.cpp, via the committed
 `scripts/reference_compare.py` (both engines served, exact generated UTF-8 text
-from `/v1/completions` at temperature 0). Run on an RTX PRO 6000 Blackwell host,
+from `/v1/completions` at temperature 0). Run on an RTX PRO 6000 Linux CUDA host,
 CPU path (the hybrids are CPU-only), 5 prompts × 32 tokens.
 
 - **runner** 0.1.20-alpha, **reference** llama.cpp `ea12b27`.

@@ -1,8 +1,8 @@
 {
  "gate": "tool-protocol-check",
- "label": "ZEN-GAMING RTX 3070 8GB, Windows 11, CUDA, xml-native-routing branch, shipped defaults",
+ "label": "Windows CUDA host, RTX 3070 8GB, Windows 11, CUDA, xml-native-routing branch, shipped defaults",
  "started": "2026-09-15T06:45:55+0200",
- "host": "Zen-Gaming",
+ "host": "windows-cuda-host",
  "platform": "Windows-11-10.0.26100-SP0",
  "base_url": "http://127.0.0.1:8095",
  "model": "granite-4.2-8b-Q4_K_M.gguf",

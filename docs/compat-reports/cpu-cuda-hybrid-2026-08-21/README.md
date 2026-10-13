@@ -15,7 +15,7 @@ shared-weights build pushed every hybrid model to the CPU, silently:
    nemotron_h model still failed.
 
 Both fallbacks printed nothing. Measured before the fix on an RTX PRO 6000
-Blackwell: granite-4.0-h-micro Q4_K_M decoded at 11.9 tok/s, Nemotron-Nano-9B
+Linux CUDA host: granite-4.0-h-micro Q4_K_M decoded at 11.9 tok/s, Nemotron-Nano-9B
 Q4_K_M at 1.8 tok/s — CPU speeds, behind a "gpu-split ... full=1" banner.
 After: h-micro 114.5 tok/s; Nano's CUDA backend initializes (6.5 GB in VRAM).
 

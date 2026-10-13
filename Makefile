@@ -2074,7 +2074,7 @@ endif
 
 # Multi-buffer wrap at real-checkpoint size. test-metal-multibuf forces the
 # split on sub-GB fixtures; this arm forces multi-GB buffers on a real model,
-# because the M5 Max measurement (2026-09-01) showed no on-disk artifact
+# because the 128 GB Apple Silicon measurement (2026-09-01) showed no on-disk artifact
 # crosses the real ceiling naturally: maxBufferLength there is 80.6 GiB and
 # the largest single file is 79.8 GiB. A 16 GiB forced cap on a 17 GB+ model
 # is the closest honest exercise: several real multi-GB wraps, cuts on real

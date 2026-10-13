@@ -16,7 +16,7 @@ state ownership, and fallback explicit.
 
 ## Scoped measurement
 
-Measured 2026-09-01 on an M5 Max, interleaved warm runs, 714-token prompt,
+Measured 2026-09-01 on a 128 GB Apple Silicon Mac, interleaved warm runs, 714-token prompt,
 batch 512. The FLOAT-staged route measured Qwen3-30B-A3B Q8_0 prefill
 170 to 225 tok/s (+31%) and gpt-oss-120b MXFP4 about 72 to 87 tok/s (+21%);
 decode was unchanged. These are those measured configurations, not fresh

@@ -7,7 +7,7 @@ A version refresh of the competitor comparison. The published competitor rows
 identical hardware with each runtime at its **current upstream release**, so the
 freshness ledger reads current again and every number comes from a real run.
 
-- **Box:** the Blackwell box — NVIDIA RTX PRO 6000 Blackwell workstation GPU
+- **Box:** the Linux CUDA host — NVIDIA RTX PRO 6000 workstation GPU
   (vLLM served on a 24 GB MIG slice of it). Runner and llama.cpp ran on the
   128-core CPU (see the throughput caveat below).
 - **Matrix:** v3, 120 cases, eight families, `temperature 0`, deterministic

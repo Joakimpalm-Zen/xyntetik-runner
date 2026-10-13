@@ -1,6 +1,6 @@
 # Clean-setup run: Runner 1.2.1 candidate on Windows, RTX 3070
 
-2026-10-13, ZEN-GAMING (Windows 11, RTX 3070 8 GB, i7-7700K), OpenCode. The
+2026-10-13, the Windows CUDA host (Windows 11, RTX 3070 8 GB, i7-7700K), OpenCode. The
 candidate binary built from the `release-1.2.1` branch at its final commit
 before the tag, the steps of
 [docs/workflow-opencode.md](../workflow-opencode.md) as written on that

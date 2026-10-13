@@ -1,6 +1,6 @@
 # `--fit` capture: Runner 1.0.2 on Windows, RTX 3070
 
-2026-10-06, ZEN-GAMING (Windows 11, RTX 3070 8 GB, i7-7700K), nothing else
+2026-10-06, the Windows CUDA host (Windows 11, RTX 3070 8 GB, i7-7700K), nothing else
 using the GPU. The released `runner-windows-x86_64.exe` from the v1.0.2
 GitHub release. The first 16 MiB of IBM's Granite 4.2 8B Q4_K_M file were
 fetched with a ranged read and saved under the model's own file name, so the

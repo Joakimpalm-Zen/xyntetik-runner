@@ -11,8 +11,8 @@
 #   scripts/cuda-smoke-remote.sh \
 #       --binary C:/runner-check/runner.exe \
 #       --model  C:/models/model.gguf \
-#       --expect-version 1.2.0 \
-#       --report docs/compat-reports/cuda-smoke-1.2.0-2026-10-09-rtx3070.json
+#       --expect-version 1.2.1 \
+#       --report docs/compat-reports/cuda-smoke-1.2.1-2026-10-13-rtx3070.json
 #
 # Exit 0 means the gate passed on real hardware.
 set -eu

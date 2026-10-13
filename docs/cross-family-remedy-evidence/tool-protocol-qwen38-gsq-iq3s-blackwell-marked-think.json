@@ -1,6 +1,6 @@
 {
  "gate": "tool-protocol-check",
- "label": "Blackwell MIG 1g.24gb, recurrent-turn-mark branch (marked think block, turn mark), Qwen3.8-27B GSQ IQ3_S on CUDA, shipped defaults",
+ "label": "the Linux CUDA host MIG 1g.24gb, recurrent-turn-mark branch (marked think block, turn mark), Qwen3.8-27B GSQ IQ3_S on CUDA, shipped defaults",
  "started": "2026-09-15T10:02:22+0200",
  "host": "bfff3786ea4e",
  "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",

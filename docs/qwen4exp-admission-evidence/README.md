@@ -41,7 +41,7 @@ zeroing one component's output projection on both engines
 Not covered here: QSA (the toy declares no compress ratio, both engines
 run dense attention), CUDA, Metal, quantized tensors, the real file.
 
-## The release file (Blackwell, CPU only, 2026-10-06)
+## The release file (Linux CUDA host, CPU only, 2026-10-06)
 
 `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S` (two parts, 83.6 GB; part 1 sha256
 4c1eb2ce..., part 2 316b46f3...), runner at `c127504`, 16 threads on
@@ -60,11 +60,11 @@ CPUs 40-55/104-119, `--gpu off -c 4096 --temp 0`:
   decode 5.7 tok/s (generic dequantize-per-block dot, no Q2_0 SIMD kernel).
 
 The 200-position p512 anchor and the 64-token greedy comparison on this
-file wait for a lane G gap on the Blackwell (filed with the lab queue,
+file wait for a lane G gap on the Linux CUDA host (filed with the lab queue,
 2026-10-06 11:40); the fp32 publisher reference stays R4.26.3's primary
 anchor.
 
-## Release file, anchor rows (Blackwell, 2026-10-06 13:41-14:00)
+## Release file, anchor rows (Linux CUDA host, 2026-10-06 13:41-14:00)
 
 Runner at `3eb67982` CPU-only on CPUs 40-55/104-119 (`-t 24`); llama.cpp
 b11433 `llama-server --fit on -c 8192 -ctk f32 -ctv f32 -t 16` on the MIG
@@ -92,7 +92,7 @@ the same file. The gaps are of the size two kernel sets give a 3-bit 125B
 model, and nothing here says which engine is closer to the publisher's fp32
 forward; that is R4.26.4, the primary anchor, still pending.
 
-## CUDA path, window A (Blackwell MIG 1g.24gb, 2026-10-06 17:15-17:46)
+## CUDA path, window A (datacenter MIG slice 1g.24gb, 2026-10-06 17:15-17:46)
 
 Branch `qwen4exp-cuda` at `c438e876`: the device path for the family (hc
 mixer and combine kernels, grouped norm, Qwen3.8's DeltaNet gate, the PLE

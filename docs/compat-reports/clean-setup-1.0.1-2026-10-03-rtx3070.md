@@ -1,6 +1,6 @@
 # Clean-setup run: Runner 1.0.1 on Windows, RTX 3070
 
-2026-10-03, ZEN-GAMING (Windows 11, RTX 3070 8 GB, driver 596.36,
+2026-10-03, the Windows CUDA host (Windows 11, RTX 3070 8 GB, driver 596.36,
 i7-7700K), OpenCode 1.18.31. The released `runner-windows-x86_64.exe` from
 the v1.0.1 GitHub release, the steps of
 [docs/workflow-opencode.md](../workflow-opencode.md) exactly as written at

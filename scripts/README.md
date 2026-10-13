@@ -8,7 +8,6 @@ runner; several are load-bearing gates for changing it.
 - **`kernel-verify.py`** - demands **token-identical** greedy output between a
   baseline and a candidate binary on 5 prompts. A faster binary that changes
   tokens is a regression, not a win.
-- **`kernel-bench.py`** - prefill/decode tok/s as JSON for one binary+model.
 - **`template-conformance.py`** - byte-exact comparison of runner's native C
   chat renderer against each family's upstream jinja template, the gate whose
   absence let five families drift unnoticed. `make template-conformance`.
@@ -99,11 +98,6 @@ runner; several are load-bearing gates for changing it.
 - **`cert-greedy-identity.py`** - six-prompt greedy-identity gate against a
   pinned llama.cpp reference (four domains at 64 tokens, two repeated at 256,
   pure-greedy sampler and `cache_prompt:false` on the reference side).
-- **`afmoe-cert-gate3.py`** - the same identity protocol as originally written
-  for the afmoe certification against llama.cpp b10280, kept replayable.
-- **`claude-code-e2e.sh`** - the real Claude Code binary pointed at Runner with
-  `ANTHROPIC_BASE_URL`, completing a built-in `Read` tool loop. Turns the
-  README's Claude Code compatibility claim into something that can be re-run.
 - **`competitor-freshness.py`** - checks the runtime versions in published
   torture results against upstream releases. Metadata-only registry requests;
   a network failure is a skip. The weekly workflow reports drift in its run
@@ -121,7 +115,6 @@ runner; several are load-bearing gates for changing it.
 
 - **`batch-bench.py`** - concurrent-serving throughput + single-request latency
   against a running server (the numbers behind the batching phase work).
-- **`bench.sh`** - thin wrapper for repeated `--bench-json` runs.
 - **`agent-torture.py` / `torture-compare.py`** - the adversarial tool-call
   matrix and its cross-runtime report comparator (see `docs/agent-torture.md`).
 - **`truncation-benchmark.py`** - the token-ladder probe behind the "tool calls
@@ -159,10 +152,9 @@ Nothing here gates a merge; these are how a claim gets a number behind it.
   calling a cross-engine gap a bug.
 - **`gen-quality-metrics.py`** - collapse detection over generated text:
   n-gram repetition runs, blank fraction, length distribution. Stdlib only.
-- **`make-tooluse-data.py` / `eval-tooluse.py`** - the deterministic
-  tool-calling adaptation dataset (four tools, combinatorial requests, refusal
-  cases) and its greedy held-out eval (JSON parses / right tool / schema-shaped
-  args / exact call), the pair behind the published precision study.
+- **`make-tooluse-data.py`** - the deterministic tool-calling adaptation
+  dataset (four tools, combinatorial requests, refusal cases) behind the
+  published precision study; its held-out eval is archived in Shade.
 - **`train-grpo-lite.py`** - GRPO-lite reinforcement fine-tuning with zero
   train/infer mismatch: sample K completions per prompt from the runner
   itself, score them, turn group-relative advantages into weighted `--train`
@@ -209,15 +201,6 @@ Nothing here gates a merge; these are how a claim gets a number behind it.
 - **`gguf-depth-slice.py`** - drop whole transformer layers and keep everything
   else: surviving layers keep their on-disk bytes, `blk.N` is renumbered
   densely, and per-layer metadata arrays are filtered to the survivors.
-- **`gguf-drop-shared-kv.py`** - rewrite a Gemma-4 E-series GGUF in the compact
-  shared-KV form: the layers at or past `block_count - shared_kv_layers`
-  compute no K/V, so their `attn_k`/`attn_v`/`attn_k_norm` are dropped (E4B:
-  666 tensors instead of 720, the shape every quantized export already ships).
-  The layer set comes from the file's own metadata, not from the command line,
-  and everything else is copied through byte for byte - so a correct engine
-  must score the two files identically.
-- **`make-bf16-fixture.py`** - rewrite a GGUF's F16 tensors as BF16 in place to
-  get a valid BF16 fixture; both types are 2 bytes, so every offset stays put.
 
 ## Fixtures and codegen
 
@@ -250,8 +233,4 @@ Nothing here gates a merge; these are how a claim gets a number behind it.
   source, the sibling of `embed-metal.py`; `check-generated.py` guards both.
 - **`repro-startup-signal.py`** - reproducer for the once-reported
   SIGTERM-during-startup race that `test_signal_during_startup` chases.
-- **`bench.sh`** - three greedy decode runs, median tok/s plus output md5s that
-  must match the baseline. **`conformance.sh`** - the agent-protocol
-  conformance harness in one command. **`claude-code-e2e.sh`** - Claude Code
-  against a served runner end to end, the executable form of the README's
-  compatibility claim.
+- **`conformance.sh`** - the agent-protocol conformance harness in one command.

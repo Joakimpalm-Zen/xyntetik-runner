@@ -60,7 +60,7 @@ on the GPU. A fifth engine, **TensorRT-LLM**, is measured on a *substitute
 model* (`†` below) because granite-4.1-3b is not in its model registry — see the
 dedicated note after the table. A sixth, **SGLang** (`†` too), is measured on a
 *different box* — the Windows RTX 3070 (sm_86 Ampere, 8 GB) under WSL2 — on the
-same Qwen3-1.7B substitute, because it could not be stood up on the Blackwell MIG
+same Qwen3-1.7B substitute, because it could not be stood up on the datacenter MIG slice
 slice the other GPU engines used (that first attempt, and why the 3070 was the
 fallback, are in the note after the table). The verdict is tool-call survival,
 not throughput, so the backend and box splits do not move it — but they are
@@ -118,7 +118,7 @@ None of the five closes the document.
 
 ### `†` TensorRT-LLM: measured on a substitute model, and why
 
-TensorRT-LLM 1.2.1 was stood up on the same Blackwell sm_120 MIG 1g.24gb slice as
+TensorRT-LLM 1.2.1 was stood up on the same sm_120 MIG 1g.24gb slice as
 vLLM (pip `tensorrt-llm==1.2.1`; version pinned). It could **not** serve
 granite-4.1-3b: `GraniteForCausalLM` is absent from its PyTorch-backend model
 registry (`Unknown architecture for AutoModelForCausalLM: GraniteForCausalLM`).
@@ -162,10 +162,10 @@ yields (or tries to yield) a `tool_calls` object once the closing framing has be
 generated, so a budget that ends before that leaves the call partial. That is the
 mechanism the headline is about.
 
-### `†` SGLang: measured on the RTX 3070 / WSL2, after the Blackwell MIG blocked it
+### `†` SGLang: measured on the RTX 3070 / WSL2, after the datacenter MIG slice blocked it
 
 SGLang's cell was empty in the first pass because it **could not be kept alive on
-the Blackwell MIG 1g.24gb slice** the other GPU engines used — torch's caching
+the datacenter MIG 1g.24gb slice** the other GPU engines used — torch's caching
 allocator NVML-asserts (`NVML_SUCCESS == r INTERNAL ASSERT FAILED`,
 `avail mem=2.83 GB` on a 24 GB idle slice), and `PYTORCH_NO_CUDA_MEMORY_CACHING=1`
 clears the assert but OOMs, across `--mem-fraction-static` 0.45/0.55/0.70,
@@ -214,7 +214,7 @@ granite-4.1-3b-Q4_K_M.gguf --serve --port <p> -c 1024 --parallel 1 --gpu off`.
 
 ### vLLM (HF safetensors of the same model)
 
-vLLM 0.27.1 in a conda env with xgrammar 0.2.3. On an sm_120 (Blackwell) MIG
+vLLM 0.27.1 in a conda env with xgrammar 0.2.3. On an sm_120 MIG
 slice the working flags were:
 
 ```sh
@@ -278,7 +278,7 @@ python3 scripts/truncation-benchmark.py \
 
 ### TensorRT-LLM (`†` Qwen3-1.7B HF safetensors — substitute model)
 
-TensorRT-LLM 1.2.1 on the Blackwell sm_120 MIG 1g.24gb slice (`pip install
+TensorRT-LLM 1.2.1 on the sm_120 MIG 1g.24gb slice (`pip install
 tensorrt-llm==1.2.1 --extra-index-url https://pypi.nvidia.com`). Standing it up
 needed three environment fixes, recorded so it reproduces:
 
