@@ -2142,6 +2142,253 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
     return true;
 }
 
+// These options shape render_messages() in the stateful chat loop below.
+// A one-shot -p is deliberately raw, while server callers select thinking
+// per request; accepting the process flags in either mode would promise a
+// prompt change and then silently discard it. Validate before any model or
+// fit-check I/O so the caller gets the actionable error they caused.
+static bool cli_chat_flags_ok(const cli_opts *o) {
+    if (o->system_prompt && (!o->interactive || o->serve)) {
+        fprintf(stderr, "error: --system is only valid with interactive chat"
+                        " (-i), without --serve\n");
+        return false;
+    }
+    if (o->thinking != THINK_DEFAULT && (!o->interactive || o->serve)) {
+        const char *flag = o->thinking == THINK_ON ? "--think" : "--no-think";
+        fprintf(stderr, "error: %s is only valid with interactive chat (-i);"
+                        " server requests use enable_thinking\n", flag);
+        return false;
+    }
+    return true;
+}
+
+// The record and signing utilities need files, never a model, and answer
+// before anything else on the command line is considered. True when one
+// ran (or refused) and the process exits with *rc.
+static bool run_record_utility(const cli_opts *o, int *rc) {
+    if (o->sign_record) {
+        if (!o->sign_key) {
+            fprintf(stderr, "error: --sign-record needs --sign-key FILE\n");
+            *rc = 1;
+            return true;
+        }
+        *rc = record_sign(o->sign_record, o->sign_key, o->record_prev) ? 0 : 1;
+        return true;
+    }
+    if (o->check_record) { *rc = record_check(o->check_record, o->trust_key); return true; }
+    if (o->lineage_path) { *rc = lineage_walk(o->lineage_path, o->trust_key); return true; }
+    if (o->check_bundle) { *rc = bundle_check(o->check_bundle, o->trust_key); return true; }
+    if (o->check_pack) { *rc = pack_check(o->check_pack, o->trust_key); return true; }
+    if (o->export_pack || o->pack_out) {
+        if (!o->export_pack || !o->pack_out) {
+            fprintf(stderr, "error: --export-pack RECEIPTS_DIR and --pack-out "
+                    "DIR go together\n");
+            *rc = 1;
+            return true;
+        }
+        pack_opts po = { .receipts_dir = o->export_pack, .out_dir = o->pack_out,
+                         .model_sig = o->model_sig, .model_pubkey = o->model_pubkey,
+                         .envelope = o->pack_envelope, .n_attach = o->n_pack_attach,
+                         .sign_key = o->sign_key };
+        for (int i = 0; i < o->n_pack_attach; i++) po.attach[i] = o->pack_attach[i];
+        *rc = pack_export(&po);
+        return true;
+    }
+    if ((o->pack_envelope || o->n_pack_attach) && !o->export_pack) {
+        fprintf(stderr, "error: --pack-envelope and --pack-attach go with "
+                "--export-pack\n");
+        *rc = 1;
+        return true;
+    }
+    if (o->sign_model || o->model_key) {
+        if (!o->sign_model || !o->model_key) {
+            fprintf(stderr, "error: --sign-model MODEL and --model-key KEY.pem go "
+                    "together\n");
+            *rc = 1;
+            return true;
+        }
+        char def[4096];
+        const char *out = o->model_sig;
+        if (!out) {
+            if (strlen(o->sign_model) + 5 > sizeof def) {
+                fprintf(stderr, "error: --sign-model: path too long\n");
+                *rc = 1;
+                return true;
+            }
+            snprintf(def, sizeof def, "%s.sig", o->sign_model);
+            out = def;
+        }
+        oms_sign_info si;
+        if (!oms_sign_file(o->sign_model, o->model_key, out, &si)) { *rc = 1; return true; }
+        printf("signed: %s (%s/%s, %d file%s, subject sha256 %s, key hint %s)\n",
+               out, si.curve, si.hash, si.n_resources,
+               si.n_resources == 1 ? "" : "s", si.subject_digest, si.key_hint);
+        *rc = 0;
+        return true;
+    }
+    if (o->export_bundle || o->bundle_out) {
+        if (!o->export_bundle || !o->bundle_out) {
+            fprintf(stderr, "error: --export-bundle RECEIPT and --bundle-out "
+                    "DIR go together\n");
+            *rc = 1;
+            return true;
+        }
+        bundle_opts bo = { .receipt = o->export_bundle, .out_dir = o->bundle_out,
+                           .model_sig = o->model_sig, .model_pubkey = o->model_pubkey,
+                           .sign_key = o->sign_key };
+        *rc = bundle_export(&bo);
+        return true;
+    }
+    if (o->watermark_keygen) {
+        uint8_t key[32];
+        char id[17];
+        if (!os_random(key, sizeof key)) {
+            fprintf(stderr, "error: --watermark-keygen: the OS random generator "
+                    "is unavailable\n");
+            *rc = 1;
+            return true;
+        }
+        bool ok = wm_key_write(o->watermark_keygen, key, id);
+        memset(key, 0, sizeof key);
+        if (!ok) {
+            fprintf(stderr, "error: --watermark-keygen: cannot create %s (an "
+                    "existing key is never overwritten)\n", o->watermark_keygen);
+            *rc = 1;
+            return true;
+        }
+        printf("{\"schema_version\":\"xyntetik.runner.watermark_key.v1\","
+               "\"key_id\":\"%s\"}\n", id);
+        fprintf(stderr, "watermark key -> %s (keep it private; receipts name it "
+                "by its id %s)\n", o->watermark_keygen, id);
+        *rc = 0;
+        return true;
+    }
+    return false;
+}
+
+// --watermark loads the key everything this process marks, replays or
+// scores with. --detect-watermark over a transcript record is answered
+// here from the record's own token ids; over plain text it needs the
+// model's tokenizer, so *detect_text keeps the text for after the load.
+// True when the process exits with *rc.
+static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
+                                char **detect_text, int *rc) {
+    if (o->watermark_path) {
+        char werr[256];
+        if (!wm_key_load(o->watermark_path, wmk, werr, sizeof werr)) {
+            fprintf(stderr, "error: --watermark: %s\n", werr);
+            *rc = 1;
+            return true;
+        }
+        *wm_on = true;
+    }
+    if (o->detect_path) {
+        if (!*wm_on) {
+            fprintf(stderr, "error: --detect-watermark needs --watermark KEY\n");
+            *rc = 1;
+            return true;
+        }
+        size_t dn = 0;
+        char *dbuf = read_file(o->detect_path, &dn);
+        if (!dbuf) {
+            fprintf(stderr, "error: --detect-watermark: cannot read %s\n", o->detect_path);
+            *rc = 1;
+            return true;
+        }
+        jv *dj = json_parse(dbuf, dn);
+        if (dj && !strcmp(jv_str(jv_get(dj, "schema_version"), ""),
+                          "xyntetik.runner.transcript.v1")) {
+            // a record carries its own token ids and the prompt as context:
+            // no tokenizer, no model
+            int np = 0, no = 0;
+            int32_t *pt = json_token_ids(jv_get(jv_get(dj, "prompt"), "tokens"), &np);
+            int32_t *ot = json_token_ids(jv_get(jv_get(dj, "output"), "tokens"), &no);
+            int32_t *all = pt && ot ? malloc(sizeof *all * (size_t)(np + no + 1)) : NULL;
+            int drc = 3;
+            if (!all) {
+                fprintf(stderr, "error: --detect-watermark: %s has malformed token "
+                        "arrays\n", o->detect_path);
+            } else {
+                memcpy(all, pt, sizeof *all * (size_t)np);
+                memcpy(all + np, ot, sizeof *all * (size_t)no);
+                jv *rw = jv_get(dj, "watermark");
+                drc = wm_report(wmk, all, np + no, np, "record",
+                                rw ? jv_str(jv_get(rw, "key_id"), "") : NULL);
+            }
+            free(pt); free(ot); free(all);
+            jv_free(dj);
+            free(dbuf);
+            *rc = drc;
+            return true;
+        }
+        jv_free(dj);
+        if (!o->model_path) {
+            free(dbuf);
+            fprintf(stderr, "error: --detect-watermark: %s is not a transcript "
+                    "record; scoring a text needs -m MODEL (its tokenizer)\n",
+                    o->detect_path);
+            *rc = 1;
+            return true;
+        }
+        *detect_text = dbuf;   // tokenized once the model is loaded
+    }
+    return false;
+}
+
+// --keygen writes a signing key and prints its public half.
+static int run_keygen(const cli_opts *o) {
+    uint8_t seed[32];
+    char pub[SIGN_PUBHEX_CAP];
+    if (!sign_algo_known(o->keygen_algo)) {
+        fprintf(stderr, "error: --keygen-algo: unknown algorithm %s (ed25519 or "
+                "ml-dsa-44)\n", o->keygen_algo);
+        return 1;
+    }
+    if (!os_random(seed, sizeof seed)) {
+        fprintf(stderr, "error: --keygen: the OS random generator is unavailable\n");
+        return 1;
+    }
+    if (!signkey_write(o->keygen_path, o->keygen_algo, seed, pub)) {
+        fprintf(stderr, "error: --keygen: cannot write %s\n", o->keygen_path);
+        return 1;
+    }
+    memset(seed, 0, sizeof seed);
+    printf("{\"schema_version\":\"xyntetik.runner.signkey.v1\",\"algo\":\"%s\","
+           "\"public_key\":\"%s\"}\n", o->keygen_algo, pub);
+    fprintf(stderr, "signing key -> %s (keep it private; the %s public key is %s)\n",
+            o->keygen_path, o->keygen_algo, pub);
+    return 0;
+}
+
+// A refused draft drops to plain decoding by design, and local CLI modes
+// have no machine-readable channel to say so: the note goes to stderr
+// beside a zero exit, so a harness collecting stdout records the
+// unaccelerated baseline and labels it speculative decoding.
+// --draft-required makes that a failed run instead. Serve mode already
+// answers the question over the wire, so the flag is refused there rather
+// than accepted with no effect.
+static bool cli_draft_flags_ok(const cli_opts *o) {
+    if (o->draft_required && !o->draft_path) {
+        fprintf(stderr, "error: --draft-required needs --draft PATH\n");
+        return false;
+    }
+    if (o->draft_required && o->serve) {
+        fprintf(stderr, "error: --draft-required is a local CLI guard; in serve"
+                        " mode read draft.active from GET /v1/capabilities\n");
+        return false;
+    }
+    // One draft source per run. The walk takes one proposal per round and
+    // the counters attribute it to one source; a second source would either
+    // be silently ignored (the accepted-then-ignored shape this project
+    // refuses) or need a composition rule nobody has measured.
+    if (o->draft_lookup && (o->draft_path || o->mtp_on)) {
+        fprintf(stderr, "error: --draft-lookup: one draft source per run; drop "
+                        "--draft/--mtp to draft from the context\n");
+        return false;
+    }
+    return true;
+}
+
 int main(int argc, char **argv) {
     char *owned_prompt = NULL;
     // the measured-envelope verdict the one-shot model loaded under, for its
@@ -2178,213 +2425,22 @@ int main(int argc, char **argv) {
         if (!cli_parse(o, argc, argv, &rc)) return rc;
     }
 
-    // These options shape render_messages() in the stateful chat loop below.
-    // A one-shot -p is deliberately raw, while server callers select thinking
-    // per request; accepting the process flags in either mode would promise a
-    // prompt change and then silently discard it. Validate before any model or
-    // fit-check I/O so the caller gets the actionable error they caused.
-    if (o->system_prompt && (!o->interactive || o->serve)) {
-        fprintf(stderr, "error: --system is only valid with interactive chat"
-                        " (-i), without --serve\n");
-        return 1;
-    }
-    if (o->thinking != THINK_DEFAULT && (!o->interactive || o->serve)) {
-        const char *flag = o->thinking == THINK_ON ? "--think" : "--no-think";
-        fprintf(stderr, "error: %s is only valid with interactive chat (-i);"
-                        " server requests use enable_thinking\n", flag);
-        return 1;
-    }
-    // A refused draft drops to plain decoding by design, and local CLI modes
-    // have no machine-readable channel to say so: the note goes to stderr
-    // beside a zero exit, so a harness collecting stdout records the
-    // unaccelerated baseline and labels it speculative decoding.
-    // --draft-required makes that a failed run instead. Serve mode already
-    // answers the question over the wire, so the flag is refused there rather
-    // than accepted with no effect.
-    if (o->sign_record) {
-        if (!o->sign_key) {
-            fprintf(stderr, "error: --sign-record needs --sign-key FILE\n");
-            return 1;
-        }
-        return record_sign(o->sign_record, o->sign_key, o->record_prev) ? 0 : 1;
-    }
-    if (o->check_record) return record_check(o->check_record, o->trust_key);
-    if (o->lineage_path) return lineage_walk(o->lineage_path, o->trust_key);
-    if (o->check_bundle) return bundle_check(o->check_bundle, o->trust_key);
-    if (o->check_pack) return pack_check(o->check_pack, o->trust_key);
-    if (o->export_pack || o->pack_out) {
-        if (!o->export_pack || !o->pack_out) {
-            fprintf(stderr, "error: --export-pack RECEIPTS_DIR and --pack-out "
-                    "DIR go together\n");
-            return 1;
-        }
-        pack_opts po = { .receipts_dir = o->export_pack, .out_dir = o->pack_out,
-                         .model_sig = o->model_sig, .model_pubkey = o->model_pubkey,
-                         .envelope = o->pack_envelope, .n_attach = o->n_pack_attach,
-                         .sign_key = o->sign_key };
-        for (int i = 0; i < o->n_pack_attach; i++) po.attach[i] = o->pack_attach[i];
-        return pack_export(&po);
-    }
-    if ((o->pack_envelope || o->n_pack_attach) && !o->export_pack) {
-        fprintf(stderr, "error: --pack-envelope and --pack-attach go with "
-                "--export-pack\n");
-        return 1;
-    }
-    if (o->sign_model || o->model_key) {
-        if (!o->sign_model || !o->model_key) {
-            fprintf(stderr, "error: --sign-model MODEL and --model-key KEY.pem go "
-                    "together\n");
-            return 1;
-        }
-        char def[4096];
-        const char *out = o->model_sig;
-        if (!out) {
-            if (strlen(o->sign_model) + 5 > sizeof def) {
-                fprintf(stderr, "error: --sign-model: path too long\n");
-                return 1;
-            }
-            snprintf(def, sizeof def, "%s.sig", o->sign_model);
-            out = def;
-        }
-        oms_sign_info si;
-        if (!oms_sign_file(o->sign_model, o->model_key, out, &si)) return 1;
-        printf("signed: %s (%s/%s, %d file%s, subject sha256 %s, key hint %s)\n",
-               out, si.curve, si.hash, si.n_resources,
-               si.n_resources == 1 ? "" : "s", si.subject_digest, si.key_hint);
-        return 0;
-    }
-    if (o->export_bundle || o->bundle_out) {
-        if (!o->export_bundle || !o->bundle_out) {
-            fprintf(stderr, "error: --export-bundle RECEIPT and --bundle-out "
-                    "DIR go together\n");
-            return 1;
-        }
-        bundle_opts bo = { .receipt = o->export_bundle, .out_dir = o->bundle_out,
-                           .model_sig = o->model_sig, .model_pubkey = o->model_pubkey,
-                           .sign_key = o->sign_key };
-        return bundle_export(&bo);
-    }
-    if (o->watermark_keygen) {
-        uint8_t key[32];
-        char id[17];
-        if (!os_random(key, sizeof key)) {
-            fprintf(stderr, "error: --watermark-keygen: the OS random generator "
-                    "is unavailable\n");
-            return 1;
-        }
-        bool ok = wm_key_write(o->watermark_keygen, key, id);
-        memset(key, 0, sizeof key);
-        if (!ok) {
-            fprintf(stderr, "error: --watermark-keygen: cannot create %s (an "
-                    "existing key is never overwritten)\n", o->watermark_keygen);
-            return 1;
-        }
-        printf("{\"schema_version\":\"xyntetik.runner.watermark_key.v1\","
-               "\"key_id\":\"%s\"}\n", id);
-        fprintf(stderr, "watermark key -> %s (keep it private; receipts name it "
-                "by its id %s)\n", o->watermark_keygen, id);
-        return 0;
+    if (!cli_chat_flags_ok(o)) return 1;
+    {
+        int rc;
+        if (run_record_utility(o, &rc)) return rc;
     }
     // R1.8.1: one key for everything this process marks, replays or scores
     wm_key wmk;
     memset(&wmk, 0, sizeof wmk);
     bool wm_on = false;
-    if (o->watermark_path) {
-        char werr[256];
-        if (!wm_key_load(o->watermark_path, &wmk, werr, sizeof werr)) {
-            fprintf(stderr, "error: --watermark: %s\n", werr);
-            return 1;
-        }
-        wm_on = true;
-    }
     char *detect_text = NULL;
-    if (o->detect_path) {
-        if (!wm_on) {
-            fprintf(stderr, "error: --detect-watermark needs --watermark KEY\n");
-            return 1;
-        }
-        size_t dn = 0;
-        char *dbuf = read_file(o->detect_path, &dn);
-        if (!dbuf) {
-            fprintf(stderr, "error: --detect-watermark: cannot read %s\n", o->detect_path);
-            return 1;
-        }
-        jv *dj = json_parse(dbuf, dn);
-        if (dj && !strcmp(jv_str(jv_get(dj, "schema_version"), ""),
-                          "xyntetik.runner.transcript.v1")) {
-            // a record carries its own token ids and the prompt as context:
-            // no tokenizer, no model
-            int np = 0, no = 0;
-            int32_t *pt = json_token_ids(jv_get(jv_get(dj, "prompt"), "tokens"), &np);
-            int32_t *ot = json_token_ids(jv_get(jv_get(dj, "output"), "tokens"), &no);
-            int32_t *all = pt && ot ? malloc(sizeof *all * (size_t)(np + no + 1)) : NULL;
-            int rc = 3;
-            if (!all) {
-                fprintf(stderr, "error: --detect-watermark: %s has malformed token "
-                        "arrays\n", o->detect_path);
-            } else {
-                memcpy(all, pt, sizeof *all * (size_t)np);
-                memcpy(all + np, ot, sizeof *all * (size_t)no);
-                jv *rw = jv_get(dj, "watermark");
-                rc = wm_report(&wmk, all, np + no, np, "record",
-                               rw ? jv_str(jv_get(rw, "key_id"), "") : NULL);
-            }
-            free(pt); free(ot); free(all);
-            jv_free(dj);
-            free(dbuf);
-            return rc;
-        }
-        jv_free(dj);
-        if (!o->model_path) {
-            free(dbuf);
-            fprintf(stderr, "error: --detect-watermark: %s is not a transcript "
-                    "record; scoring a text needs -m MODEL (its tokenizer)\n",
-                    o->detect_path);
-            return 1;
-        }
-        detect_text = dbuf;   // tokenized once the model is loaded
+    {
+        int rc;
+        if (cli_watermark_setup(o, &wmk, &wm_on, &detect_text, &rc)) return rc;
     }
-    if (o->keygen_path) {
-        uint8_t seed[32];
-        char pub[SIGN_PUBHEX_CAP];
-        if (!sign_algo_known(o->keygen_algo)) {
-            fprintf(stderr, "error: --keygen-algo: unknown algorithm %s (ed25519 or "
-                    "ml-dsa-44)\n", o->keygen_algo);
-            return 1;
-        }
-        if (!os_random(seed, sizeof seed)) {
-            fprintf(stderr, "error: --keygen: the OS random generator is unavailable\n");
-            return 1;
-        }
-        if (!signkey_write(o->keygen_path, o->keygen_algo, seed, pub)) {
-            fprintf(stderr, "error: --keygen: cannot write %s\n", o->keygen_path);
-            return 1;
-        }
-        memset(seed, 0, sizeof seed);
-        printf("{\"schema_version\":\"xyntetik.runner.signkey.v1\",\"algo\":\"%s\","
-               "\"public_key\":\"%s\"}\n", o->keygen_algo, pub);
-        fprintf(stderr, "signing key -> %s (keep it private; the %s public key is %s)\n",
-                o->keygen_path, o->keygen_algo, pub);
-        return 0;
-    }
-    if (o->draft_required && !o->draft_path) {
-        fprintf(stderr, "error: --draft-required needs --draft PATH\n");
-        return 1;
-    }
-    if (o->draft_required && o->serve) {
-        fprintf(stderr, "error: --draft-required is a local CLI guard; in serve"
-                        " mode read draft.active from GET /v1/capabilities\n");
-        return 1;
-    }
-    // One draft source per run. The walk takes one proposal per round and
-    // the counters attribute it to one source; a second source would either
-    // be silently ignored (the accepted-then-ignored shape this project
-    // refuses) or need a composition rule nobody has measured.
-    if (o->draft_lookup && (o->draft_path || o->mtp_on)) {
-        fprintf(stderr, "error: --draft-lookup: one draft source per run; drop "
-                        "--draft/--mtp to draft from the context\n");
-        return 1;
-    }
+    if (o->keygen_path) return run_keygen(o);
+    if (!cli_draft_flags_ok(o)) return 1;
     plat_parent_watch(o->parent_pid);
     if (o->n_threads <= 0 && o->reserve_cpu_pct > 0) {
         o->n_threads = plat_cpu_count() * o->reserve_cpu_pct / 100;
