@@ -2761,6 +2761,39 @@ static size_t render_gemma4(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_GEMMA.
+static size_t render_gemma(int tmpl, const chat_msg *msgs, int n_msgs,
+                           bool add_assistant, int thinking, const jv *tools,
+                           char *out, size_t cap) {
+    size_t off = 0;
+    // gemma has no system role: fold a system message into the first
+    // user turn; the assistant role is named "model"
+    const char *gsys = NULL;
+    int g_lead; bool g_oom;
+    char *g_joined = leading_system_join(msgs, n_msgs, &g_lead, &g_oom);
+    if (g_oom) return SIZE_MAX;
+    for (int i = 0; i < n_msgs; i++) {
+        const chat_msg *m = &msgs[i];
+        if (!strcmp(m->role, "system")) {
+            gsys = i < g_lead && g_joined ? g_joined : m->content;
+            continue;
+        }
+        const char *role = !strcmp(m->role, "assistant") ? "model" : m->role;
+        if (gsys && !strcmp(m->role, "user")) {
+            off = emit(out, cap, off, "<start_of_turn>%s\n%s\n\n", role, gsys);
+            off = emit(out, cap, off, "%s<end_of_turn>\n", m->content, NULL);
+            gsys = NULL;
+        } else {
+            off = emit(out, cap, off, "<start_of_turn>%s\n", role, NULL);
+            off = emit(out, cap, off, "%s<end_of_turn>\n", m->content, NULL);
+        }
+    }
+    if (add_assistant)
+        off = emit(out, cap, off, "<start_of_turn>model\n", NULL, NULL);
+    free(g_joined);
+    return off;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -2843,34 +2876,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_GEMMA4_MAINLINE:
     case TMPL_GEMMA4:
         return render_gemma4(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
-    case TMPL_GEMMA: {
-        // gemma has no system role: fold a system message into the first
-        // user turn; the assistant role is named "model"
-        const char *gsys = NULL;
-        int g_lead; bool g_oom;
-        char *g_joined = leading_system_join(msgs, n_msgs, &g_lead, &g_oom);
-        if (g_oom) return SIZE_MAX;
-        for (int i = 0; i < n_msgs; i++) {
-            const chat_msg *m = &msgs[i];
-            if (!strcmp(m->role, "system")) {
-                gsys = i < g_lead && g_joined ? g_joined : m->content;
-                continue;
-            }
-            const char *role = !strcmp(m->role, "assistant") ? "model" : m->role;
-            if (gsys && !strcmp(m->role, "user")) {
-                off = emit(out, cap, off, "<start_of_turn>%s\n%s\n\n", role, gsys);
-                off = emit(out, cap, off, "%s<end_of_turn>\n", m->content, NULL);
-                gsys = NULL;
-            } else {
-                off = emit(out, cap, off, "<start_of_turn>%s\n", role, NULL);
-                off = emit(out, cap, off, "%s<end_of_turn>\n", m->content, NULL);
-            }
-        }
-        if (add_assistant)
-            off = emit(out, cap, off, "<start_of_turn>model\n", NULL, NULL);
-        free(g_joined);
-        break;
-    }
+    case TMPL_GEMMA:
+        return render_gemma(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_LLAMA2:
     case TMPL_LLAMA2_FALLBACK: {
         // Reference (unsloth/llama-2-7b-chat tokenizer_config.json):
