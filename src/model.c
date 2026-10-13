@@ -3271,197 +3271,227 @@ static bool bind_global_tensors(model_t *m, gguf_file *g) {
 // One block: its mixer (attention, a recurrent mixer, or none where the
 // sublayer was removed), its FFN (dense, routed or removed), its norms and
 // biases. Block n_layer is the NextN/MTP head when one is consumed.
-static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
-                       bool fused_qkv) {
-    bool ok = true;
-    char key[128];
-    layer_t *l = &m->layers[i];
-    if (m->nemotron_h) {
-        // Nemotron-H blocks are three mutually-exclusive kinds with a single
-        // norm and no ffn_norm tensor; bind each fully and skip the shared
-        // recurrent/attention/FFN binding below.
-        if (!nemotron_bind_layer(m, g, l, i)) return false;
-        return true;
-    }
-    // Removed sublayers (declared by the per-layer arrays, admitted at the
-    // geometry gate): the branch's tensors are absent from the file and
-    // its node is omitted from the forward pass. Norms stay in the file
-    // (kilobytes; they keep the residual plumbing identical to the
-    // zeroed form) and are bound as usual.
-    const bool no_attn = m->l_no_attn && i < m->n_layer && m->l_no_attn[i];
-    const bool no_ffn  = m->l_no_ffn  && i < m->n_layer && m->l_no_ffn[i];
-    l->skip_mixer = no_attn;
-    l->skip_ffn   = no_ffn;
-    if ((no_attn || no_ffn) && fused_qkv) {
-        fprintf(stderr, "error: blk.%d declares a removed sublayer, but "
-                "fused-QKV families are not supported for removal\n", i);
+// A Granite hybrid recurrent block: the Mamba-2 mixer, its shapes and f32
+// vectors, and the dense FFN of a leading layer.
+static bool bind_mamba2_mixer(model_t *m, gguf_file *g, layer_t *l, int i, bool *okp) {
+    bool ok = *okp;
+    // Granite-4 h-series Mamba-2 mixer. attn_norm (an) is bound above;
+    // ffn_norm (fn) is this layer's MoE input norm and is converted in
+    // the shared norm tail below, so this branch deliberately does NOT
+    // continue — it binds only the mixer and falls through to the
+    // shared FFN/MoE binding. Tensor shapes per llama.cpp b10353
+    // granite-hybrid.cpp::load_arch_tensors.
+    int nh = m->ssm_v_heads, ds = m->ssm_state, ng = m->ssm_groups;
+    int inner = m->ssm_inner;
+    int conv_dim  = inner + 2 * ng * ds;
+    int d_in_proj = 2 * inner + 2 * ng * ds + nh;
+    l->ssm_in   = need_tensor(g, "blk.%d.ssm_in.weight", i, &ok);
+    l->ssm_conv = need_tensor(g, "blk.%d.ssm_conv1d.weight", i, &ok);
+    gguf_tensor *sconvb = need_tensor(g, "blk.%d.ssm_conv1d.bias", i, &ok);
+    gguf_tensor *sdtb   = need_tensor(g, "blk.%d.ssm_dt.bias", i, &ok);
+    gguf_tensor *sa2    = need_tensor(g, "blk.%d.ssm_a", i, &ok);
+    gguf_tensor *sd2    = need_tensor(g, "blk.%d.ssm_d", i, &ok);
+    gguf_tensor *sn2    = need_tensor(g, "blk.%d.ssm_norm.weight", i, &ok);
+    l->ssm_out  = need_tensor(g, "blk.%d.ssm_out.weight", i, &ok);
+    if (!ok) return false;
+    // Tie every mixer tensor to the ssm.* geometry so a mislabelled or
+    // truncated hybrid fails closed here, not by reading past the map
+    // in the scan (the hostile-GGUF discipline the admission stub kept).
+    if (!check_shape(l->ssm_in, m->n_embd, d_in_proj, "ssm_in", i) ||
+        !check_shape(l->ssm_conv, m->ssm_conv_kernel, conv_dim,
+                     "ssm_conv1d", i) ||
+        !check_shape(sconvb, conv_dim, 1, "ssm_conv1d.bias", i) ||
+        !check_shape(sdtb, nh, 1, "ssm_dt.bias", i) ||
+        !check_shape(sa2, 1, nh, "ssm_a", i) ||
+        !check_shape(sd2, 1, nh, "ssm_d", i) ||
+        !check_shape(sn2, inner, 1, "ssm_norm", i) ||
+        !check_shape(l->ssm_out, inner, m->n_embd, "ssm_out", i))
         return false;
-    }
-    // per-layer FFN width: the ARRAY form answers per index, the scalar
-    // form (every other export) answers every index with m->n_ff
-    l->n_ff = no_ffn ? m->n_ff
-            : (int)gguf_get_u32_idx(g, AK("feed_forward_length"),
-                                    (uint64_t)i, (uint32_t)m->n_ff);
-    if (l->n_ff <= 0 || l->n_ff > m->n_ff) {
-        fprintf(stderr, "error: layer %d FFN width %d outside (0, %d]\n",
-                i, l->n_ff, m->n_ff);
-        return false;
-    }
-    // qwen4exp has no pre-norms: the hyper-connection mixers replace
-    // them (bound by bind_hc_block below), so both reads are optional
-    // there and tensor_to_f32(NULL) leaves the norm pointers NULL.
-    gguf_tensor *an = m->hyper_conn ? opt_tensor(g, "blk.%d.attn_norm.weight", i)
-                                    : need_tensor(g, "blk.%d.attn_norm.weight", i, &ok);
-    // gpt-oss shares qwen35's shape here: post_attention_norm IS the FFN
-    // input norm and there is no ffn_norm tensor at all.
-    gguf_tensor *fn = m->hyper_conn ? opt_tensor(g, "blk.%d.post_attention_norm.weight", i)
-                    : (m->qwen35 || m->gptoss)
-        ? need_tensor(g, "blk.%d.post_attention_norm.weight", i, &ok)
-        : need_tensor(g, "blk.%d.ffn_norm.weight", i, &ok);
-    if (m->hyper_conn && !bind_hc_block(m, g, l, i)) return false;
-    if (m->gptoss && !no_attn)
-        l->attn_sinks = tensor_to_f32(
-            need_tensor(g, "blk.%d.attn_sinks.weight", i, &ok),
-            m->n_head, &ok);
-    l->recurrent = m->qwen35 ? (i < m->n_layer &&
-                                (i + 1) % m->full_attn_interval != 0)
-                 : m->granite_hybrid ? (m->l_head_kv && m->l_head_kv[i] == 0)
-                 : false;
-    if (l->recurrent && m->qwen35) {
-        l->wqkv      = need_tensor(g, "blk.%d.attn_qkv.weight", i, &ok);
-        l->wq_gate   = need_tensor(g, "blk.%d.attn_gate.weight", i, &ok);
-        l->ssm_conv  = need_tensor(g, "blk.%d.ssm_conv1d.weight", i, &ok);
-        l->ssm_beta  = need_tensor(g, "blk.%d.ssm_beta.weight", i, &ok);
-        l->ssm_alpha = need_tensor(g, "blk.%d.ssm_alpha.weight", i, &ok);
-        l->ssm_out   = need_tensor(g, "blk.%d.ssm_out.weight", i, &ok);
-        // llama.cpp-era Ornith exports used `ssm_dt`; current Qwen3.5
-        // GGUFs use `ssm_dt.bias`. They carry the same per-head vector.
-        gguf_tensor *dt = opt_tensor(g, "blk.%d.ssm_dt.bias", i);
-        if (!dt) dt = need_tensor(g, "blk.%d.ssm_dt", i, &ok);
-        gguf_tensor *sa = need_tensor(g, "blk.%d.ssm_a", i, &ok);
-        gguf_tensor *sn = need_tensor(g, "blk.%d.ssm_norm.weight", i, &ok);
-        // a dense Qwen3.5 block carries its FFN here; a qwen4exp block
-        // routes experts instead and takes the shared MoE binding below
-        bool dense_ffn = m->n_expert == 0;
-        if (dense_ffn) {
-            l->w_gate = need_tensor(g, "blk.%d.ffn_gate.weight", i, &ok);
-            l->w_up   = need_tensor(g, "blk.%d.ffn_up.weight", i, &ok);
-            l->w_down = need_tensor(g, "blk.%d.ffn_down.weight", i, &ok);
-        }
+    l->ssm_conv1d_b = tensor_to_f32(sconvb, conv_dim, &ok);
+    l->ssm_dt       = tensor_to_f32(sdtb, nh, &ok);
+    l->ssm_a        = tensor_to_f32(sa2, nh, &ok);
+    l->ssm_d        = tensor_to_f32(sd2, nh, &ok);
+    l->ssm_norm_w   = tensor_to_f32(sn2, inner, &ok);
+    if (!ok) return false;
+    l->out_scale = 1.0f;
+    // Dense h-models (granite-4.0-h-micro: expert_count 0) carry a
+    // gated MLP on every recurrent layer, and no MoE binding below
+    // will reach this layer — bind gate/up here or the FFN falls into
+    // the ungated branch with NULL weights. MoE h-models (h-small)
+    // still take the shared MoE binding, exactly as certified.
+    if (m->n_expert == 0 || i < m->n_dense_lead) {
+        l->w_gate = need_tensor(g, "blk.%d.ffn_gate.weight", i, &ok);
+        l->w_up   = need_tensor(g, "blk.%d.ffn_up.weight", i, &ok);
         if (!ok) return false;
-        // The DeltaNet geometry keys index every tensor above, and until
-        // this check nothing tied the two together: ssm.inner_size,
-        // state_size, group_count and time_step_rank passed only an
-        // internal ratio test, so a file could declare a wider
-        // convolution or more heads than its own tensors hold and the
-        // recurrence would read past them.
-        {
-            int keydim  = m->ssm_state * m->ssm_groups;
-            int convdim = 2 * keydim + m->ssm_inner;
-            int hv      = m->ssm_inner / m->ssm_v_heads;
-            if (!check_shape(l->wqkv, m->n_embd, convdim, "attn_qkv", i) ||
-                !check_shape(l->wq_gate, m->n_embd, m->ssm_inner,
-                             "attn_gate", i) ||
-                // read as convdim rows of conv_kernel, one per channel
-                !check_shape(l->ssm_conv, m->ssm_conv_kernel, convdim,
-                             "ssm_conv1d", i) ||
-                !check_shape(l->ssm_beta, m->n_embd, m->ssm_v_heads,
-                             "ssm_beta", i) ||
-                !check_shape(l->ssm_alpha, m->n_embd, m->ssm_v_heads,
-                             "ssm_alpha", i) ||
-                !check_shape(l->ssm_out, m->ssm_inner, m->n_embd,
-                             "ssm_out", i) ||
-                !check_shape(dt, m->ssm_v_heads, 1, "ssm_dt", i) ||
-                !check_shape(sa, m->ssm_v_heads, 1, "ssm_a", i) ||
-                !check_shape(sn, hv, 1, "ssm_norm", i) ||
-                (dense_ffn &&
-                 (!check_shape(l->w_gate, m->n_embd, l->n_ff, "ffn_gate", i) ||
-                  !check_shape(l->w_up, m->n_embd, l->n_ff, "ffn_up", i) ||
-                  !check_shape(l->w_down, l->n_ff, m->n_embd, "ffn_down", i))))
-                return false;
-        }
-        l->ssm_dt     = tensor_to_f32(dt, m->ssm_v_heads, &ok);
-        l->ssm_a      = tensor_to_f32(sa, m->ssm_v_heads, &ok);
-        l->ssm_norm_w = tensor_to_f32(sn, m->ssm_inner / m->ssm_v_heads, &ok);
-        if (!ok) return false;
-        {
-            // the depthwise conv taps, dequantized once: the per-token
-            // path used to dequantize every channel's kernel row on
-            // every token (10,240 small calls a layer on Qwen3.8)
-            int K = m->ssm_conv_kernel;
-            int cd = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
-            l->ssm_conv_w = malloc(sizeof(float) * (size_t)cd * K);
-            if (!l->ssm_conv_w) return false;
-            size_t wrs = ggml_row_size(l->ssm_conv->type, K);
-            for (int c = 0; c < cd; c++)
-                dequant_row(l->ssm_conv->type,
-                            (const uint8_t *)l->ssm_conv->data + (size_t)c * wrs,
-                            l->ssm_conv_w + (size_t)c * K, K);
-        }
-        l->attn_norm_w = tensor_to_f32(an, m->n_embd, &ok);
-        l->ffn_norm_w = tensor_to_f32(fn, m->n_embd, &ok);
-        if (!ok) return false;
-        l->out_scale = 1.0f;
-        if (dense_ffn) return true;
-        // qwen4exp recurrent block: falls through to the shared MoE
-        // binding below; every attention read there is behind
-        // !l->recurrent already
-    }
-    if (l->recurrent && m->granite_hybrid) {
-        // Granite-4 h-series Mamba-2 mixer. attn_norm (an) is bound above;
-        // ffn_norm (fn) is this layer's MoE input norm and is converted in
-        // the shared norm tail below, so this branch deliberately does NOT
-        // continue — it binds only the mixer and falls through to the
-        // shared FFN/MoE binding. Tensor shapes per llama.cpp b10353
-        // granite-hybrid.cpp::load_arch_tensors.
-        int nh = m->ssm_v_heads, ds = m->ssm_state, ng = m->ssm_groups;
-        int inner = m->ssm_inner;
-        int conv_dim  = inner + 2 * ng * ds;
-        int d_in_proj = 2 * inner + 2 * ng * ds + nh;
-        l->ssm_in   = need_tensor(g, "blk.%d.ssm_in.weight", i, &ok);
-        l->ssm_conv = need_tensor(g, "blk.%d.ssm_conv1d.weight", i, &ok);
-        gguf_tensor *sconvb = need_tensor(g, "blk.%d.ssm_conv1d.bias", i, &ok);
-        gguf_tensor *sdtb   = need_tensor(g, "blk.%d.ssm_dt.bias", i, &ok);
-        gguf_tensor *sa2    = need_tensor(g, "blk.%d.ssm_a", i, &ok);
-        gguf_tensor *sd2    = need_tensor(g, "blk.%d.ssm_d", i, &ok);
-        gguf_tensor *sn2    = need_tensor(g, "blk.%d.ssm_norm.weight", i, &ok);
-        l->ssm_out  = need_tensor(g, "blk.%d.ssm_out.weight", i, &ok);
-        if (!ok) return false;
-        // Tie every mixer tensor to the ssm.* geometry so a mislabelled or
-        // truncated hybrid fails closed here, not by reading past the map
-        // in the scan (the hostile-GGUF discipline the admission stub kept).
-        if (!check_shape(l->ssm_in, m->n_embd, d_in_proj, "ssm_in", i) ||
-            !check_shape(l->ssm_conv, m->ssm_conv_kernel, conv_dim,
-                         "ssm_conv1d", i) ||
-            !check_shape(sconvb, conv_dim, 1, "ssm_conv1d.bias", i) ||
-            !check_shape(sdtb, nh, 1, "ssm_dt.bias", i) ||
-            !check_shape(sa2, 1, nh, "ssm_a", i) ||
-            !check_shape(sd2, 1, nh, "ssm_d", i) ||
-            !check_shape(sn2, inner, 1, "ssm_norm", i) ||
-            !check_shape(l->ssm_out, inner, m->n_embd, "ssm_out", i))
+        if (!check_shape(l->w_gate, m->n_embd, l->n_ff, "ffn_gate", i) ||
+            !check_shape(l->w_up,   m->n_embd, l->n_ff, "ffn_up",   i))
             return false;
-        l->ssm_conv1d_b = tensor_to_f32(sconvb, conv_dim, &ok);
-        l->ssm_dt       = tensor_to_f32(sdtb, nh, &ok);
-        l->ssm_a        = tensor_to_f32(sa2, nh, &ok);
-        l->ssm_d        = tensor_to_f32(sd2, nh, &ok);
-        l->ssm_norm_w   = tensor_to_f32(sn2, inner, &ok);
-        if (!ok) return false;
-        l->out_scale = 1.0f;
-        // Dense h-models (granite-4.0-h-micro: expert_count 0) carry a
-        // gated MLP on every recurrent layer, and no MoE binding below
-        // will reach this layer — bind gate/up here or the FFN falls into
-        // the ungated branch with NULL weights. MoE h-models (h-small)
-        // still take the shared MoE binding, exactly as certified.
-        if (m->n_expert == 0 || i < m->n_dense_lead) {
-            l->w_gate = need_tensor(g, "blk.%d.ffn_gate.weight", i, &ok);
-            l->w_up   = need_tensor(g, "blk.%d.ffn_up.weight", i, &ok);
-            if (!ok) return false;
-            if (!check_shape(l->w_gate, m->n_embd, l->n_ff, "ffn_gate", i) ||
-                !check_shape(l->w_up,   m->n_embd, l->n_ff, "ffn_up",   i))
-                return false;
+    }
+    *okp = ok;
+    return true;
+}
+
+// A block whose attention was removed must carry none of its tensors.
+static bool bind_removed_mixer(model_t *m, gguf_file *g, int i) {
+    // Declared absent: the file must not carry the branch it says it
+    // dropped. A projection that is present would run on the zeroed
+    // reading of the declaration (nothing) while the bytes say
+    // otherwise — refuse the contradiction by name.
+    static const char *const attn_names[] = {
+        "attn_q.weight", "attn_k.weight", "attn_v.weight",
+        "attn_output.weight", "attn_qkv.weight",
+    };
+    for (size_t k = 0; k < sizeof(attn_names) / sizeof(*attn_names); k++) {
+        char nm[128];
+        snprintf(nm, sizeof nm, "blk.%d.%s", i, attn_names[k]);
+        if (gguf_find_tensor(g, nm)) {
+            fprintf(stderr, "error: blk.%d is declared without attention "
+                    "(attention.head_count 0) but the file carries %s\n",
+                    i, nm);
+            return false;
         }
     }
-    if (!l->recurrent && !no_attn) {
+    return true;
+}
+
+// A block whose FFN was removed must carry none of its tensors.
+static bool bind_removed_ffn(model_t *m, gguf_file *g, int i) {
+    static const char *const ffn_names[] = {
+        "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight",
+        "ffn_gate_inp.weight", "ffn_gate_exps.weight",
+        "ffn_up_exps.weight", "ffn_down_exps.weight",
+        "ffn_gate_up_exps.weight",
+    };
+    for (size_t k = 0; k < sizeof(ffn_names) / sizeof(*ffn_names); k++) {
+        char nm[128];
+        snprintf(nm, sizeof nm, "blk.%d.%s", i, ffn_names[k]);
+        if (gguf_find_tensor(g, nm)) {
+            fprintf(stderr, "error: blk.%d is declared without an FFN "
+                    "(feed_forward_length 0) but the file carries %s\n",
+                    i, nm);
+            return false;
+        }
+    }
+    if (m->n_expert > 0 && i >= m->n_dense_lead) {
+        fprintf(stderr, "error: blk.%d declares its FFN removed, but "
+                "MoE blocks are not supported for removal\n", i);
+        return false;
+    }
+    return true;
+}
+
+// The Gemma 4 E-series per-layer embedding: this block's gate, projection and
+// norm.
+static bool bind_layer_ple(model_t *m, gguf_file *g, layer_t *l, int i, bool *okp) {
+    bool ok = *okp;
+    // blk.N.post_norm is the PLE branch's own norm — attention and FFN
+    // carry post_attention_norm / post_ffw_norm separately.
+    l->ple_gate = need_tensor(g, "blk.%d.inp_gate.weight", i, &ok);
+    l->ple_proj = need_tensor(g, "blk.%d.proj.weight", i, &ok);
+    gguf_tensor *pn = need_tensor(g, "blk.%d.post_norm.weight", i, &ok);
+    if (!ok) return false;
+    // check_shape prints "tensor <what> in blk.<n>", so `what` is the
+    // bare role, not a name template — passing the format string put a
+    // literal "blk.%d." in the error text.
+    if (!check_shape(l->ple_gate, m->n_embd, m->n_embd_ple,
+                     "inp_gate", i) ||
+        !check_shape(l->ple_proj, m->n_embd_ple, m->n_embd,
+                     "proj", i) ||
+        !check_shape(pn, m->n_embd, 1, "post_norm", i))
+        return false;
+    l->ple_post_norm = tensor_to_f32(pn, m->n_embd, &ok);
+    if (!ok) return false;
+    *okp = ok;
+    return true;
+}
+
+// A Qwen 3.5 or qwen4exp recurrent block: the Gated DeltaNet mixer, its
+// shapes and f32 vectors, its norms, and a dense block's FFN.
+static bool bind_deltanet_mixer(model_t *m, gguf_file *g, layer_t *l, int i,
+                                gguf_tensor *an, gguf_tensor *fn, bool *okp) {
+    bool ok = *okp;
+    l->wqkv      = need_tensor(g, "blk.%d.attn_qkv.weight", i, &ok);
+    l->wq_gate   = need_tensor(g, "blk.%d.attn_gate.weight", i, &ok);
+    l->ssm_conv  = need_tensor(g, "blk.%d.ssm_conv1d.weight", i, &ok);
+    l->ssm_beta  = need_tensor(g, "blk.%d.ssm_beta.weight", i, &ok);
+    l->ssm_alpha = need_tensor(g, "blk.%d.ssm_alpha.weight", i, &ok);
+    l->ssm_out   = need_tensor(g, "blk.%d.ssm_out.weight", i, &ok);
+    // llama.cpp-era Ornith exports used `ssm_dt`; current Qwen3.5
+    // GGUFs use `ssm_dt.bias`. They carry the same per-head vector.
+    gguf_tensor *dt = opt_tensor(g, "blk.%d.ssm_dt.bias", i);
+    if (!dt) dt = need_tensor(g, "blk.%d.ssm_dt", i, &ok);
+    gguf_tensor *sa = need_tensor(g, "blk.%d.ssm_a", i, &ok);
+    gguf_tensor *sn = need_tensor(g, "blk.%d.ssm_norm.weight", i, &ok);
+    // a dense Qwen3.5 block carries its FFN here; a qwen4exp block
+    // routes experts instead and takes the shared MoE binding below
+    bool dense_ffn = m->n_expert == 0;
+    if (dense_ffn) {
+        l->w_gate = need_tensor(g, "blk.%d.ffn_gate.weight", i, &ok);
+        l->w_up   = need_tensor(g, "blk.%d.ffn_up.weight", i, &ok);
+        l->w_down = need_tensor(g, "blk.%d.ffn_down.weight", i, &ok);
+    }
+    if (!ok) return false;
+    // The DeltaNet geometry keys index every tensor above, and until
+    // this check nothing tied the two together: ssm.inner_size,
+    // state_size, group_count and time_step_rank passed only an
+    // internal ratio test, so a file could declare a wider
+    // convolution or more heads than its own tensors hold and the
+    // recurrence would read past them.
+    {
+        int keydim  = m->ssm_state * m->ssm_groups;
+        int convdim = 2 * keydim + m->ssm_inner;
+        int hv      = m->ssm_inner / m->ssm_v_heads;
+        if (!check_shape(l->wqkv, m->n_embd, convdim, "attn_qkv", i) ||
+            !check_shape(l->wq_gate, m->n_embd, m->ssm_inner,
+                         "attn_gate", i) ||
+            // read as convdim rows of conv_kernel, one per channel
+            !check_shape(l->ssm_conv, m->ssm_conv_kernel, convdim,
+                         "ssm_conv1d", i) ||
+            !check_shape(l->ssm_beta, m->n_embd, m->ssm_v_heads,
+                         "ssm_beta", i) ||
+            !check_shape(l->ssm_alpha, m->n_embd, m->ssm_v_heads,
+                         "ssm_alpha", i) ||
+            !check_shape(l->ssm_out, m->ssm_inner, m->n_embd,
+                         "ssm_out", i) ||
+            !check_shape(dt, m->ssm_v_heads, 1, "ssm_dt", i) ||
+            !check_shape(sa, m->ssm_v_heads, 1, "ssm_a", i) ||
+            !check_shape(sn, hv, 1, "ssm_norm", i) ||
+            (dense_ffn &&
+             (!check_shape(l->w_gate, m->n_embd, l->n_ff, "ffn_gate", i) ||
+              !check_shape(l->w_up, m->n_embd, l->n_ff, "ffn_up", i) ||
+              !check_shape(l->w_down, l->n_ff, m->n_embd, "ffn_down", i))))
+            return false;
+    }
+    l->ssm_dt     = tensor_to_f32(dt, m->ssm_v_heads, &ok);
+    l->ssm_a      = tensor_to_f32(sa, m->ssm_v_heads, &ok);
+    l->ssm_norm_w = tensor_to_f32(sn, m->ssm_inner / m->ssm_v_heads, &ok);
+    if (!ok) return false;
+    {
+        // the depthwise conv taps, dequantized once: the per-token
+        // path used to dequantize every channel's kernel row on
+        // every token (10,240 small calls a layer on Qwen3.8)
+        int K = m->ssm_conv_kernel;
+        int cd = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
+        l->ssm_conv_w = malloc(sizeof(float) * (size_t)cd * K);
+        if (!l->ssm_conv_w) return false;
+        size_t wrs = ggml_row_size(l->ssm_conv->type, K);
+        for (int c = 0; c < cd; c++)
+            dequant_row(l->ssm_conv->type,
+                        (const uint8_t *)l->ssm_conv->data + (size_t)c * wrs,
+                        l->ssm_conv_w + (size_t)c * K, K);
+    }
+    l->attn_norm_w = tensor_to_f32(an, m->n_embd, &ok);
+    l->ffn_norm_w = tensor_to_f32(fn, m->n_embd, &ok);
+    if (!ok) return false;
+    *okp = ok;
+    return true;
+}
+
+// A block's attention projections: fused Q/K/V (phi3) or separate, the
+// output projection and its gate.
+static bool bind_attention(model_t *m, gguf_file *g, layer_t *l, int i,
+                           bool fused_qkv, bool *okp) {
+    bool ok = *okp;
     if (fused_qkv) {
         // phi3: [Q rows | K rows | V rows] in attn_qkv, and the FFN's
         // gate and up halves stacked in ffn_up (HF's gate_up_proj)
@@ -3519,285 +3549,242 @@ static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
             ok = false;
         }
     }
-    }  // end !l->recurrent attention binding
-    if (no_attn) {
-        // Declared absent: the file must not carry the branch it says it
-        // dropped. A projection that is present would run on the zeroed
-        // reading of the declaration (nothing) while the bytes say
-        // otherwise — refuse the contradiction by name.
-        static const char *const attn_names[] = {
-            "attn_q.weight", "attn_k.weight", "attn_v.weight",
-            "attn_output.weight", "attn_qkv.weight",
-        };
-        for (size_t k = 0; k < sizeof(attn_names) / sizeof(*attn_names); k++) {
+    *okp = ok;
+    return true;
+}
+
+// A block's routed experts: router, expert banks (stacked or split),
+// their biases and scales, the shared expert, and their shapes.
+static bool bind_layer_moe(model_t *m, gguf_file *g, layer_t *l, int i, bool *okp) {
+    bool ok = *okp;
+    // sparse-MoE FFN: a router plus fused 3D expert tensors replace the
+    // dense gate/up/down for this layer
+    l->is_moe = true;
+    if (m->n_ff_shexp > 0) {
+        l->w_gate_shexp = need_tensor(g, "blk.%d.ffn_gate_shexp.weight", i, &ok);
+        l->w_up_shexp   = need_tensor(g, "blk.%d.ffn_up_shexp.weight", i, &ok);
+        l->w_down_shexp = need_tensor(g, "blk.%d.ffn_down_shexp.weight", i, &ok);
+        // optional: Qwen2-MoE gates the branch, DeepSeek does not
+        l->ffn_gate_inp_shexp =
+            opt_tensor(g, "blk.%d.ffn_gate_inp_shexp.weight", i);
+    }
+    l->ffn_gate_inp  = need_tensor(g, "blk.%d.ffn_gate_inp.weight", i, &ok);
+    if (!ok) return false;
+    // THIS layer's expert count, resolved here because every
+    // per-expert vector below is indexed with it and must therefore
+    // state it. It comes from the layer's own router rather than the
+    // model-wide expert_count: --prune-experts writes a shorter router
+    // (and shorter expert tensors) for a pruned layer — same names,
+    // same widths, fewer blocks.
+    if ((int64_t)l->ffn_gate_inp->ne[0] != m->n_embd) {
+        fprintf(stderr, "error: ffn_gate_inp in blk.%d has ne[0]=%llu, "
+                "expected %d\n", i,
+                (unsigned long long)l->ffn_gate_inp->ne[0], m->n_embd);
+        return false;
+    }
+    l->n_expert = (int)l->ffn_gate_inp->ne[1];
+    if (!declared_layer_experts_ok(g, i, l->n_expert)) return false;
+    if (l->n_expert < m->n_expert_used || l->n_expert > m->n_expert) {
+        fprintf(stderr, "error: blk.%d declares %d experts via "
+                "ffn_gate_inp, outside [n_expert_used=%d, "
+                "expert_count=%d]\n", i, l->n_expert,
+                m->n_expert_used, m->n_expert);
+        return false;
+    }
+    // Optional selection-only bias; absent on every arch certified so
+    // far. DeepSeek exports name it .weight; afmoe's converter renames
+    // expert_bias so the GGUF carries a .bias suffix.
+    gguf_tensor *epb = opt_tensor(g, "blk.%d.exp_probs_b.weight", i);
+    if (!epb) epb = opt_tensor(g, "blk.%d.exp_probs_b.bias", i);
+    l->exp_probs_b = tensor_to_f32(epb, l->n_expert, &ok);
+    l->ffn_gate_up_exps = opt_tensor(g, "blk.%d.ffn_gate_up_exps.weight", i);
+    if (l->ffn_gate_up_exps) {
+        // gemma-4 dual-branch MoE: gate+up fused in one 3D tensor, a
+        // per-expert down scale, and — every MoE layer ALSO runs a dense
+        // GELU FFN as a shared expert, plus two branch sandwich norms.
+        l->moe_gemma = true;
+        m->moe_gemma = true;   // dual-branch: dense shared FFN + routed experts
+        l->ffn_down_exps   = need_tensor(g, "blk.%d.ffn_down_exps.weight", i, &ok);
+        l->down_exps_scale = tensor_to_f32(opt_tensor(g, "blk.%d.ffn_down_exps.scale", i),
+                                           l->n_expert, &ok);
+        l->gate_inp_scale  = tensor_to_f32(opt_tensor(g, "blk.%d.ffn_gate_inp.scale", i),
+                                           m->n_embd, &ok);
+        l->w_gate = need_tensor(g, "blk.%d.ffn_gate.weight", i, &ok);
+        l->w_up   = need_tensor(g, "blk.%d.ffn_up.weight",   i, &ok);
+        l->w_down = need_tensor(g, "blk.%d.ffn_down.weight", i, &ok);
+        l->ffn_post_norm1_w = tensor_to_f32(opt_tensor(g, "blk.%d.post_ffw_norm_1.weight", i),
+                                            m->n_embd, &ok);
+        l->ffn_pre_norm2_w  = tensor_to_f32(opt_tensor(g, "blk.%d.pre_ffw_norm_2.weight",  i),
+                                            m->n_embd, &ok);
+        l->ffn_post_norm2_w = tensor_to_f32(opt_tensor(g, "blk.%d.post_ffw_norm_2.weight", i),
+                                            m->n_embd, &ok);
+    } else if ((l->ffn_gate_exps = opt_tensor(g, "blk.%d.ffn_gate_exps.weight", i))) {
+        // modern fused 3D expert tensors
+        l->ffn_up_exps   = need_tensor(g, "blk.%d.ffn_up_exps.weight", i, &ok);
+        l->ffn_down_exps = need_tensor(g, "blk.%d.ffn_down_exps.weight", i, &ok);
+        if (m->gptoss) {
+            // gpt-oss router + per-expert FFN biases (all F32). The
+            // expert biases are indexed as [expert][width], so they
+            // must cover the whole rectangle, not just one expert.
+            int64_t ne_l = l->n_expert;
+            l->ffn_gate_inp_b  = tensor_to_f32(
+                need_tensor(g, "blk.%d.ffn_gate_inp.bias", i, &ok),
+                ne_l, &ok);
+            l->ffn_gate_exps_b = tensor_to_f32(
+                need_tensor(g, "blk.%d.ffn_gate_exps.bias", i, &ok),
+                ne_l * m->n_ff_exp, &ok);
+            l->ffn_up_exps_b   = tensor_to_f32(
+                need_tensor(g, "blk.%d.ffn_up_exps.bias", i, &ok),
+                ne_l * m->n_ff_exp, &ok);
+            l->ffn_down_exps_b = tensor_to_f32(
+                need_tensor(g, "blk.%d.ffn_down_exps.bias", i, &ok),
+                ne_l * m->n_embd, &ok);
+        }
+    } else {
+        // legacy split layout: one 2D tensor per expert (older Mixtral)
+        l->moe_split = true;
+        // This layout has no pruned form: the loop below wires exactly
+        // expert_count tensors, so the router must have that many rows.
+        if (l->n_expert != m->n_expert) {
+            fprintf(stderr, "error: blk.%d has the split expert layout "
+                    "with a %d-row router, but expert_count is %d\n",
+                    i, l->n_expert, m->n_expert);
+            return false;
+        }
+        l->moe_g = calloc((size_t)m->n_expert, sizeof(gguf_tensor *));
+        l->moe_u = calloc((size_t)m->n_expert, sizeof(gguf_tensor *));
+        l->moe_d = calloc((size_t)m->n_expert, sizeof(gguf_tensor *));
+        if (!l->moe_g || !l->moe_u || !l->moe_d) return false;
+        for (int e = 0; e < m->n_expert; e++) {
             char nm[128];
-            snprintf(nm, sizeof nm, "blk.%d.%s", i, attn_names[k]);
-            if (gguf_find_tensor(g, nm)) {
-                fprintf(stderr, "error: blk.%d is declared without attention "
-                        "(attention.head_count 0) but the file carries %s\n",
-                        i, nm);
+            snprintf(nm, sizeof(nm), "blk.%d.ffn_gate.%d.weight", i, e);
+            l->moe_g[e] = gguf_find_tensor(g, nm);
+            snprintf(nm, sizeof(nm), "blk.%d.ffn_up.%d.weight", i, e);
+            l->moe_u[e] = gguf_find_tensor(g, nm);
+            snprintf(nm, sizeof(nm), "blk.%d.ffn_down.%d.weight", i, e);
+            l->moe_d[e] = gguf_find_tensor(g, nm);
+            if (!l->moe_g[e] || !l->moe_u[e] || !l->moe_d[e]) {
+                fprintf(stderr, "error: missing MoE expert tensor "
+                        "(neither fused ffn_gate_exps nor split "
+                        "ffn_gate.%d) in blk.%d\n", e, i);
                 return false;
             }
         }
     }
-    if (!l->recurrent && !fused_qkv && !no_ffn &&
-        (m->n_expert == 0 || i < m->n_dense_lead)) {
-        // Apertus has no ffn_gate: its MLP is up -> xielu -> down.
-        // Every other dense arch here is gated, so the tensor stays
-        // required unless the activation is the ungated one.
-        l->w_gate = m->ffn_act == ACT_XIELU
-                    ? opt_tensor(g, "blk.%d.ffn_gate.weight", i)
-                    : need_tensor(g, "blk.%d.ffn_gate.weight", i, &ok);
-        l->w_up   = need_tensor(g, "blk.%d.ffn_up.weight", i, &ok);
+    *okp = ok;
+    return true;
+}
+
+// The projection weights against the geometry the forward pass drives
+// them with: attention, dense FFN and expert banks.
+static bool bind_check_projections(const model_t *m, const layer_t *l, int i,
+                                   bool fused_qkv) {
+    int qd = model_q_dim(m, i);    // n_head * head_dim (per layer)
+    int kd = model_kv_dim(m, i);   // n_head_kv * head_dim (per layer)
+    // Recurrent (Mamba-2) layers carry no attention projections; their
+    // mixer tensors were shape-checked at bind time. Only the MoE
+    // checks below apply to them.
+    if (!l->recurrent) {
+    if (!check_shape(l->wo, qd, m->n_embd, "attn_output", i))
+        return false;
+    if (!fused_qkv && !m->qwen35) {
+        if (!check_shape(l->wq, m->n_embd, qd, "attn_q", i) ||
+            !check_shape(l->wk, m->n_embd, kd, "attn_k", i) ||
+            !check_shape(l->wv, m->n_embd, kd, "attn_v", i))
+            return false;
+        if (!l->is_moe &&
+            (!check_shape(l->w_gate, m->n_embd, l->n_ff, "ffn_gate", i) ||
+             !check_shape(l->w_up,   m->n_embd, l->n_ff, "ffn_up",   i)))
+            return false;
     }
-    if (no_ffn) {
-        static const char *const ffn_names[] = {
-            "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight",
-            "ffn_gate_inp.weight", "ffn_gate_exps.weight",
-            "ffn_up_exps.weight", "ffn_down_exps.weight",
-            "ffn_gate_up_exps.weight",
-        };
-        for (size_t k = 0; k < sizeof(ffn_names) / sizeof(*ffn_names); k++) {
-            char nm[128];
-            snprintf(nm, sizeof nm, "blk.%d.%s", i, ffn_names[k]);
-            if (gguf_find_tensor(g, nm)) {
-                fprintf(stderr, "error: blk.%d is declared without an FFN "
-                        "(feed_forward_length 0) but the file carries %s\n",
-                        i, nm);
+    // qwen35's full-attention layers are the same layout with Q and its
+    // output gate fused into one tensor of 2*q_dim rows — a different
+    // width, not an unvalidated one.
+    if (m->qwen35 &&
+        (!check_shape(l->wq, m->n_embd, 2 * qd, "attn_q", i) ||
+         !check_shape(l->wk, m->n_embd, kd, "attn_k", i) ||
+         !check_shape(l->wv, m->n_embd, kd, "attn_v", i)))
+        return false;
+    }  // end !l->recurrent attention shape checks
+    if (!l->is_moe &&
+        !check_shape(l->w_down, l->n_ff, m->n_embd, "ffn_down", i))
+        return false;
+    if (l->is_moe) {
+        // The MoE forward path slices each expert from the fused 3D
+        // tensors (or the array of 2D split tensors) using offsets
+        // computed from n_embd/n_ff_exp/n_expert metadata, NOT the
+        // tensors' own ne[]. Validate that geometry here so the offsets
+        // stay in bounds (RNC-1). The router reads n_expert rows of
+        // length n_embd; each expert's gate/up is {n_embd, n_ff_exp}
+        // and down is {n_ff_exp, n_embd}.
+        //
+        // l->n_expert is THIS layer's real count, resolved from its own
+        // router tensor when it was loaded (above) rather than assumed
+        // to equal the model-wide m->n_expert: --prune-experts writes a
+        // shorter router (and shorter fused expert tensors) for a
+        // pruned layer, same names, same n_embd/n_ff_exp, fewer expert
+        // blocks. Every expert tensor in the layer must agree on this
+        // count exactly (check_shape3 below requires ne[2] ==
+        // l->n_expert, not merely >=).
+        // The always-on shared branch is driven by n_ff_shexp, which
+        // is metadata (expert_shared_feed_forward_length, else the
+        // routed width times expert_shared_count) and decides how many
+        // rows of gate/up the FFN reads and how long a down row is.
+        // Nothing tied it to the tensors it indexes, so a width past
+        // them read off the end of the mapping.
+        if (m->n_ff_shexp > 0 &&
+            (!check_shape(l->w_gate_shexp, m->n_embd, m->n_ff_shexp,
+                          "ffn_gate_shexp", i) ||
+             !check_shape(l->w_up_shexp, m->n_embd, m->n_ff_shexp,
+                          "ffn_up_shexp", i) ||
+             !check_shape(l->w_down_shexp, m->n_ff_shexp, m->n_embd,
+                          "ffn_down_shexp", i) ||
+             !check_shape(l->ffn_gate_inp_shexp, m->n_embd, 1,
+                          "ffn_gate_inp_shexp", i)))
+            return false;
+        if (l->moe_gemma) {
+            // gate and up are fused: {n_embd, 2*n_ff_exp, n_expert}.
+            // The dual branch also runs an ORDINARY dense FFN at this
+            // layer's feed_forward_length, and the dense shape checks
+            // below are guarded by !is_moe — which this layer is not —
+            // so its three tensors state their geometry here instead.
+            if (!check_shape3(l->ffn_gate_up_exps, m->n_embd,
+                              2 * m->n_ff_exp, l->n_expert,
+                              "ffn_gate_up_exps", i) ||
+                !check_shape3(l->ffn_down_exps, m->n_ff_exp, m->n_embd,
+                              l->n_expert, "ffn_down_exps", i) ||
+                !check_shape(l->w_gate, m->n_embd, l->n_ff, "ffn_gate", i) ||
+                !check_shape(l->w_up, m->n_embd, l->n_ff, "ffn_up", i) ||
+                !check_shape(l->w_down, l->n_ff, m->n_embd, "ffn_down", i))
                 return false;
-            }
-        }
-        if (m->n_expert > 0 && i >= m->n_dense_lead) {
-            fprintf(stderr, "error: blk.%d declares its FFN removed, but "
-                    "MoE blocks are not supported for removal\n", i);
-            return false;
-        }
-    }
-    if (m->n_expert > 0 && i >= m->n_dense_lead) {
-        // sparse-MoE FFN: a router plus fused 3D expert tensors replace the
-        // dense gate/up/down for this layer
-        l->is_moe = true;
-        if (m->n_ff_shexp > 0) {
-            l->w_gate_shexp = need_tensor(g, "blk.%d.ffn_gate_shexp.weight", i, &ok);
-            l->w_up_shexp   = need_tensor(g, "blk.%d.ffn_up_shexp.weight", i, &ok);
-            l->w_down_shexp = need_tensor(g, "blk.%d.ffn_down_shexp.weight", i, &ok);
-            // optional: Qwen2-MoE gates the branch, DeepSeek does not
-            l->ffn_gate_inp_shexp =
-                opt_tensor(g, "blk.%d.ffn_gate_inp_shexp.weight", i);
-        }
-        l->ffn_gate_inp  = need_tensor(g, "blk.%d.ffn_gate_inp.weight", i, &ok);
-        if (!ok) return false;
-        // THIS layer's expert count, resolved here because every
-        // per-expert vector below is indexed with it and must therefore
-        // state it. It comes from the layer's own router rather than the
-        // model-wide expert_count: --prune-experts writes a shorter router
-        // (and shorter expert tensors) for a pruned layer — same names,
-        // same widths, fewer blocks.
-        if ((int64_t)l->ffn_gate_inp->ne[0] != m->n_embd) {
-            fprintf(stderr, "error: ffn_gate_inp in blk.%d has ne[0]=%llu, "
-                    "expected %d\n", i,
-                    (unsigned long long)l->ffn_gate_inp->ne[0], m->n_embd);
-            return false;
-        }
-        l->n_expert = (int)l->ffn_gate_inp->ne[1];
-        if (!declared_layer_experts_ok(g, i, l->n_expert)) return false;
-        if (l->n_expert < m->n_expert_used || l->n_expert > m->n_expert) {
-            fprintf(stderr, "error: blk.%d declares %d experts via "
-                    "ffn_gate_inp, outside [n_expert_used=%d, "
-                    "expert_count=%d]\n", i, l->n_expert,
-                    m->n_expert_used, m->n_expert);
-            return false;
-        }
-        // Optional selection-only bias; absent on every arch certified so
-        // far. DeepSeek exports name it .weight; afmoe's converter renames
-        // expert_bias so the GGUF carries a .bias suffix.
-        gguf_tensor *epb = opt_tensor(g, "blk.%d.exp_probs_b.weight", i);
-        if (!epb) epb = opt_tensor(g, "blk.%d.exp_probs_b.bias", i);
-        l->exp_probs_b = tensor_to_f32(epb, l->n_expert, &ok);
-        l->ffn_gate_up_exps = opt_tensor(g, "blk.%d.ffn_gate_up_exps.weight", i);
-        if (l->ffn_gate_up_exps) {
-            // gemma-4 dual-branch MoE: gate+up fused in one 3D tensor, a
-            // per-expert down scale, and — every MoE layer ALSO runs a dense
-            // GELU FFN as a shared expert, plus two branch sandwich norms.
-            l->moe_gemma = true;
-            m->moe_gemma = true;   // dual-branch: dense shared FFN + routed experts
-            l->ffn_down_exps   = need_tensor(g, "blk.%d.ffn_down_exps.weight", i, &ok);
-            l->down_exps_scale = tensor_to_f32(opt_tensor(g, "blk.%d.ffn_down_exps.scale", i),
-                                               l->n_expert, &ok);
-            l->gate_inp_scale  = tensor_to_f32(opt_tensor(g, "blk.%d.ffn_gate_inp.scale", i),
-                                               m->n_embd, &ok);
-            l->w_gate = need_tensor(g, "blk.%d.ffn_gate.weight", i, &ok);
-            l->w_up   = need_tensor(g, "blk.%d.ffn_up.weight",   i, &ok);
-            l->w_down = need_tensor(g, "blk.%d.ffn_down.weight", i, &ok);
-            l->ffn_post_norm1_w = tensor_to_f32(opt_tensor(g, "blk.%d.post_ffw_norm_1.weight", i),
-                                                m->n_embd, &ok);
-            l->ffn_pre_norm2_w  = tensor_to_f32(opt_tensor(g, "blk.%d.pre_ffw_norm_2.weight",  i),
-                                                m->n_embd, &ok);
-            l->ffn_post_norm2_w = tensor_to_f32(opt_tensor(g, "blk.%d.post_ffw_norm_2.weight", i),
-                                                m->n_embd, &ok);
-        } else if ((l->ffn_gate_exps = opt_tensor(g, "blk.%d.ffn_gate_exps.weight", i))) {
-            // modern fused 3D expert tensors
-            l->ffn_up_exps   = need_tensor(g, "blk.%d.ffn_up_exps.weight", i, &ok);
-            l->ffn_down_exps = need_tensor(g, "blk.%d.ffn_down_exps.weight", i, &ok);
-            if (m->gptoss) {
-                // gpt-oss router + per-expert FFN biases (all F32). The
-                // expert biases are indexed as [expert][width], so they
-                // must cover the whole rectangle, not just one expert.
-                int64_t ne_l = l->n_expert;
-                l->ffn_gate_inp_b  = tensor_to_f32(
-                    need_tensor(g, "blk.%d.ffn_gate_inp.bias", i, &ok),
-                    ne_l, &ok);
-                l->ffn_gate_exps_b = tensor_to_f32(
-                    need_tensor(g, "blk.%d.ffn_gate_exps.bias", i, &ok),
-                    ne_l * m->n_ff_exp, &ok);
-                l->ffn_up_exps_b   = tensor_to_f32(
-                    need_tensor(g, "blk.%d.ffn_up_exps.bias", i, &ok),
-                    ne_l * m->n_ff_exp, &ok);
-                l->ffn_down_exps_b = tensor_to_f32(
-                    need_tensor(g, "blk.%d.ffn_down_exps.bias", i, &ok),
-                    ne_l * m->n_embd, &ok);
+        } else if (l->moe_split) {
+            for (int e = 0; e < m->n_expert; e++) {
+                if (!check_shape(l->moe_g[e], m->n_embd, m->n_ff_exp,
+                                 "ffn_gate.<e>", i) ||
+                    !check_shape(l->moe_u[e], m->n_embd, m->n_ff_exp,
+                                 "ffn_up.<e>", i) ||
+                    !check_shape(l->moe_d[e], m->n_ff_exp, m->n_embd,
+                                 "ffn_down.<e>", i))
+                    return false;
             }
         } else {
-            // legacy split layout: one 2D tensor per expert (older Mixtral)
-            l->moe_split = true;
-            // This layout has no pruned form: the loop below wires exactly
-            // expert_count tensors, so the router must have that many rows.
-            if (l->n_expert != m->n_expert) {
-                fprintf(stderr, "error: blk.%d has the split expert layout "
-                        "with a %d-row router, but expert_count is %d\n",
-                        i, l->n_expert, m->n_expert);
+            if (!check_shape3(l->ffn_gate_exps, m->n_embd, m->n_ff_exp,
+                              l->n_expert, "ffn_gate_exps", i) ||
+                !check_shape3(l->ffn_up_exps, m->n_embd, m->n_ff_exp,
+                              l->n_expert, "ffn_up_exps", i) ||
+                !check_shape3(l->ffn_down_exps, m->n_ff_exp, m->n_embd,
+                              l->n_expert, "ffn_down_exps", i))
                 return false;
-            }
-            l->moe_g = calloc((size_t)m->n_expert, sizeof(gguf_tensor *));
-            l->moe_u = calloc((size_t)m->n_expert, sizeof(gguf_tensor *));
-            l->moe_d = calloc((size_t)m->n_expert, sizeof(gguf_tensor *));
-            if (!l->moe_g || !l->moe_u || !l->moe_d) return false;
-            for (int e = 0; e < m->n_expert; e++) {
-                char nm[128];
-                snprintf(nm, sizeof(nm), "blk.%d.ffn_gate.%d.weight", i, e);
-                l->moe_g[e] = gguf_find_tensor(g, nm);
-                snprintf(nm, sizeof(nm), "blk.%d.ffn_up.%d.weight", i, e);
-                l->moe_u[e] = gguf_find_tensor(g, nm);
-                snprintf(nm, sizeof(nm), "blk.%d.ffn_down.%d.weight", i, e);
-                l->moe_d[e] = gguf_find_tensor(g, nm);
-                if (!l->moe_g[e] || !l->moe_u[e] || !l->moe_d[e]) {
-                    fprintf(stderr, "error: missing MoE expert tensor "
-                            "(neither fused ffn_gate_exps nor split "
-                            "ffn_gate.%d) in blk.%d\n", e, i);
-                    return false;
-                }
-            }
-        }
-    } else if (!no_ffn) {
-        l->w_down = need_tensor(g, "blk.%d.ffn_down.weight", i, &ok);
-    }
-    if (!ok) return false;
-    // Validate the projection weights against the geometry the forward pass
-    // will drive them with, so a tensor smaller than the declared shape is
-    // rejected here rather than read past at decode time. attn_output and
-    // ffn_down share their layout across every dense variant; Q/K/V and
-    // gate/up are fused for phi3 (validated above) or doubled for qwen35,
-    // so shape-check those only for the plain llama-family layout.
-    {
-        int qd = model_q_dim(m, i);    // n_head * head_dim (per layer)
-        int kd = model_kv_dim(m, i);   // n_head_kv * head_dim (per layer)
-        // Recurrent (Mamba-2) layers carry no attention projections; their
-        // mixer tensors were shape-checked at bind time. Only the MoE
-        // checks below apply to them.
-        if (!l->recurrent) {
-        if (!check_shape(l->wo, qd, m->n_embd, "attn_output", i))
-            return false;
-        if (!fused_qkv && !m->qwen35) {
-            if (!check_shape(l->wq, m->n_embd, qd, "attn_q", i) ||
-                !check_shape(l->wk, m->n_embd, kd, "attn_k", i) ||
-                !check_shape(l->wv, m->n_embd, kd, "attn_v", i))
-                return false;
-            if (!l->is_moe &&
-                (!check_shape(l->w_gate, m->n_embd, l->n_ff, "ffn_gate", i) ||
-                 !check_shape(l->w_up,   m->n_embd, l->n_ff, "ffn_up",   i)))
-                return false;
-        }
-        // qwen35's full-attention layers are the same layout with Q and its
-        // output gate fused into one tensor of 2*q_dim rows — a different
-        // width, not an unvalidated one.
-        if (m->qwen35 &&
-            (!check_shape(l->wq, m->n_embd, 2 * qd, "attn_q", i) ||
-             !check_shape(l->wk, m->n_embd, kd, "attn_k", i) ||
-             !check_shape(l->wv, m->n_embd, kd, "attn_v", i)))
-            return false;
-        }  // end !l->recurrent attention shape checks
-        if (!l->is_moe &&
-            !check_shape(l->w_down, l->n_ff, m->n_embd, "ffn_down", i))
-            return false;
-        if (l->is_moe) {
-            // The MoE forward path slices each expert from the fused 3D
-            // tensors (or the array of 2D split tensors) using offsets
-            // computed from n_embd/n_ff_exp/n_expert metadata, NOT the
-            // tensors' own ne[]. Validate that geometry here so the offsets
-            // stay in bounds (RNC-1). The router reads n_expert rows of
-            // length n_embd; each expert's gate/up is {n_embd, n_ff_exp}
-            // and down is {n_ff_exp, n_embd}.
-            //
-            // l->n_expert is THIS layer's real count, resolved from its own
-            // router tensor when it was loaded (above) rather than assumed
-            // to equal the model-wide m->n_expert: --prune-experts writes a
-            // shorter router (and shorter fused expert tensors) for a
-            // pruned layer, same names, same n_embd/n_ff_exp, fewer expert
-            // blocks. Every expert tensor in the layer must agree on this
-            // count exactly (check_shape3 below requires ne[2] ==
-            // l->n_expert, not merely >=).
-            // The always-on shared branch is driven by n_ff_shexp, which
-            // is metadata (expert_shared_feed_forward_length, else the
-            // routed width times expert_shared_count) and decides how many
-            // rows of gate/up the FFN reads and how long a down row is.
-            // Nothing tied it to the tensors it indexes, so a width past
-            // them read off the end of the mapping.
-            if (m->n_ff_shexp > 0 &&
-                (!check_shape(l->w_gate_shexp, m->n_embd, m->n_ff_shexp,
-                              "ffn_gate_shexp", i) ||
-                 !check_shape(l->w_up_shexp, m->n_embd, m->n_ff_shexp,
-                              "ffn_up_shexp", i) ||
-                 !check_shape(l->w_down_shexp, m->n_ff_shexp, m->n_embd,
-                              "ffn_down_shexp", i) ||
-                 !check_shape(l->ffn_gate_inp_shexp, m->n_embd, 1,
-                              "ffn_gate_inp_shexp", i)))
-                return false;
-            if (l->moe_gemma) {
-                // gate and up are fused: {n_embd, 2*n_ff_exp, n_expert}.
-                // The dual branch also runs an ORDINARY dense FFN at this
-                // layer's feed_forward_length, and the dense shape checks
-                // below are guarded by !is_moe — which this layer is not —
-                // so its three tensors state their geometry here instead.
-                if (!check_shape3(l->ffn_gate_up_exps, m->n_embd,
-                                  2 * m->n_ff_exp, l->n_expert,
-                                  "ffn_gate_up_exps", i) ||
-                    !check_shape3(l->ffn_down_exps, m->n_ff_exp, m->n_embd,
-                                  l->n_expert, "ffn_down_exps", i) ||
-                    !check_shape(l->w_gate, m->n_embd, l->n_ff, "ffn_gate", i) ||
-                    !check_shape(l->w_up, m->n_embd, l->n_ff, "ffn_up", i) ||
-                    !check_shape(l->w_down, l->n_ff, m->n_embd, "ffn_down", i))
-                    return false;
-            } else if (l->moe_split) {
-                for (int e = 0; e < m->n_expert; e++) {
-                    if (!check_shape(l->moe_g[e], m->n_embd, m->n_ff_exp,
-                                     "ffn_gate.<e>", i) ||
-                        !check_shape(l->moe_u[e], m->n_embd, m->n_ff_exp,
-                                     "ffn_up.<e>", i) ||
-                        !check_shape(l->moe_d[e], m->n_ff_exp, m->n_embd,
-                                     "ffn_down.<e>", i))
-                        return false;
-                }
-            } else {
-                if (!check_shape3(l->ffn_gate_exps, m->n_embd, m->n_ff_exp,
-                                  l->n_expert, "ffn_gate_exps", i) ||
-                    !check_shape3(l->ffn_up_exps, m->n_embd, m->n_ff_exp,
-                                  l->n_expert, "ffn_up_exps", i) ||
-                    !check_shape3(l->ffn_down_exps, m->n_ff_exp, m->n_embd,
-                                  l->n_expert, "ffn_down_exps", i))
-                    return false;
-            }
         }
     }
+    return true;
+}
+
+// A block's norms and projection biases, read at the counts the geometry
+// fixes.
+static bool bind_layer_norms(model_t *m, gguf_file *g, layer_t *l, int i,
+                             gguf_tensor *an, gguf_tensor *fn, bool *okp) {
+    bool ok = *okp;
     // Each of these is read at a count the geometry fixes, not at its
     // own length: the norms over n_embd or one head, the projection biases
     // over the rows of the matvec they ride (qwen35's Q bias covers the
@@ -3833,25 +3820,105 @@ static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
                         m->n_embd, &ok);
     l->post_ffn_norm_w  = tensor_to_f32(opt_tensor(g, "blk.%d.post_ffw_norm.weight", i),
                                         m->n_embd, &ok);
-    if (m->n_embd_ple > 0) {
-        // blk.N.post_norm is the PLE branch's own norm — attention and FFN
-        // carry post_attention_norm / post_ffw_norm separately.
-        l->ple_gate = need_tensor(g, "blk.%d.inp_gate.weight", i, &ok);
-        l->ple_proj = need_tensor(g, "blk.%d.proj.weight", i, &ok);
-        gguf_tensor *pn = need_tensor(g, "blk.%d.post_norm.weight", i, &ok);
-        if (!ok) return false;
-        // check_shape prints "tensor <what> in blk.<n>", so `what` is the
-        // bare role, not a name template — passing the format string put a
-        // literal "blk.%d." in the error text.
-        if (!check_shape(l->ple_gate, m->n_embd, m->n_embd_ple,
-                         "inp_gate", i) ||
-            !check_shape(l->ple_proj, m->n_embd_ple, m->n_embd,
-                         "proj", i) ||
-            !check_shape(pn, m->n_embd, 1, "post_norm", i))
-            return false;
-        l->ple_post_norm = tensor_to_f32(pn, m->n_embd, &ok);
-        if (!ok) return false;
+    *okp = ok;
+    return true;
+}
+
+static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
+                       bool fused_qkv) {
+    bool ok = true;
+    char key[128];
+    layer_t *l = &m->layers[i];
+    if (m->nemotron_h) {
+        // Nemotron-H blocks are three mutually-exclusive kinds with a single
+        // norm and no ffn_norm tensor; bind each fully and skip the shared
+        // recurrent/attention/FFN binding below.
+        if (!nemotron_bind_layer(m, g, l, i)) return false;
+        return true;
     }
+    // Removed sublayers (declared by the per-layer arrays, admitted at the
+    // geometry gate): the branch's tensors are absent from the file and
+    // its node is omitted from the forward pass. Norms stay in the file
+    // (kilobytes; they keep the residual plumbing identical to the
+    // zeroed form) and are bound as usual.
+    const bool no_attn = m->l_no_attn && i < m->n_layer && m->l_no_attn[i];
+    const bool no_ffn  = m->l_no_ffn  && i < m->n_layer && m->l_no_ffn[i];
+    l->skip_mixer = no_attn;
+    l->skip_ffn   = no_ffn;
+    if ((no_attn || no_ffn) && fused_qkv) {
+        fprintf(stderr, "error: blk.%d declares a removed sublayer, but "
+                "fused-QKV families are not supported for removal\n", i);
+        return false;
+    }
+    // per-layer FFN width: the ARRAY form answers per index, the scalar
+    // form (every other export) answers every index with m->n_ff
+    l->n_ff = no_ffn ? m->n_ff
+            : (int)gguf_get_u32_idx(g, AK("feed_forward_length"),
+                                    (uint64_t)i, (uint32_t)m->n_ff);
+    if (l->n_ff <= 0 || l->n_ff > m->n_ff) {
+        fprintf(stderr, "error: layer %d FFN width %d outside (0, %d]\n",
+                i, l->n_ff, m->n_ff);
+        return false;
+    }
+    // qwen4exp has no pre-norms: the hyper-connection mixers replace
+    // them (bound by bind_hc_block below), so both reads are optional
+    // there and tensor_to_f32(NULL) leaves the norm pointers NULL.
+    gguf_tensor *an = m->hyper_conn ? opt_tensor(g, "blk.%d.attn_norm.weight", i)
+                                    : need_tensor(g, "blk.%d.attn_norm.weight", i, &ok);
+    // gpt-oss shares qwen35's shape here: post_attention_norm IS the FFN
+    // input norm and there is no ffn_norm tensor at all.
+    gguf_tensor *fn = m->hyper_conn ? opt_tensor(g, "blk.%d.post_attention_norm.weight", i)
+                    : (m->qwen35 || m->gptoss)
+        ? need_tensor(g, "blk.%d.post_attention_norm.weight", i, &ok)
+        : need_tensor(g, "blk.%d.ffn_norm.weight", i, &ok);
+    if (m->hyper_conn && !bind_hc_block(m, g, l, i)) return false;
+    if (m->gptoss && !no_attn)
+        l->attn_sinks = tensor_to_f32(
+            need_tensor(g, "blk.%d.attn_sinks.weight", i, &ok),
+            m->n_head, &ok);
+    l->recurrent = m->qwen35 ? (i < m->n_layer &&
+                                (i + 1) % m->full_attn_interval != 0)
+                 : m->granite_hybrid ? (m->l_head_kv && m->l_head_kv[i] == 0)
+                 : false;
+    if (l->recurrent && m->qwen35) {
+        if (!bind_deltanet_mixer(m, g, l, i, an, fn, &ok)) return false;
+        l->out_scale = 1.0f;
+        // a dense Qwen 3.5 block bound its FFN with the mixer
+        if (m->n_expert == 0) return true;
+        // qwen4exp recurrent block: falls through to the shared MoE
+        // binding below; every attention read there is behind
+        // !l->recurrent already
+    }
+    if (l->recurrent && m->granite_hybrid && !bind_mamba2_mixer(m, g, l, i, &ok)) return false;
+    if (!l->recurrent && !no_attn && !bind_attention(m, g, l, i, fused_qkv, &ok))
+        return false;
+    if (no_attn && !bind_removed_mixer(m, g, i)) return false;
+    if (!l->recurrent && !fused_qkv && !no_ffn &&
+        (m->n_expert == 0 || i < m->n_dense_lead)) {
+        // Apertus has no ffn_gate: its MLP is up -> xielu -> down.
+        // Every other dense arch here is gated, so the tensor stays
+        // required unless the activation is the ungated one.
+        l->w_gate = m->ffn_act == ACT_XIELU
+                    ? opt_tensor(g, "blk.%d.ffn_gate.weight", i)
+                    : need_tensor(g, "blk.%d.ffn_gate.weight", i, &ok);
+        l->w_up   = need_tensor(g, "blk.%d.ffn_up.weight", i, &ok);
+    }
+    if (no_ffn && !bind_removed_ffn(m, g, i)) return false;
+    if (m->n_expert > 0 && i >= m->n_dense_lead) {
+        if (!bind_layer_moe(m, g, l, i, &ok)) return false;
+    } else if (!no_ffn) {
+        l->w_down = need_tensor(g, "blk.%d.ffn_down.weight", i, &ok);
+    }
+    if (!ok) return false;
+    // Validate the projection weights against the geometry the forward pass
+    // will drive them with, so a tensor smaller than the declared shape is
+    // rejected here rather than read past at decode time. attn_output and
+    // ffn_down share their layout across every dense variant; Q/K/V and
+    // gate/up are fused for phi3 (validated above) or doubled for qwen35,
+    // so shape-check those only for the plain llama-family layout.
+    if (!bind_check_projections(m, l, i, fused_qkv)) return false;
+    if (!bind_layer_norms(m, g, l, i, an, fn, &ok)) return false;
+    if (m->n_embd_ple > 0 && !bind_layer_ple(m, g, l, i, &ok)) return false;
     l->out_scale = 1.0f;
     gguf_tensor *osc = opt_tensor(g, "blk.%d.layer_output_scale.weight", i);
     if (osc && osc->type == T_F32 && osc->ne[0] >= 1)
