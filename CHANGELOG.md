@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--cpu-moe` on CUDA runs a Granite 4 hybrid or Nemotron-H MoE layer's
+  FFN as the CPU forward does.** With the experts on the host, the device
+  hands each MoE layer's residual to a host function that runs the FFN and
+  its tail. That function was a copy of the forward's FFN, made when only
+  gpt-oss-style families took this path, and two later families' rules never
+  reached it: Granite 4 hybrid MoE layers (granite-4.0-h-tiny, h-small) were
+  added to the residual without the model's residual multiplier, and on
+  Nemotron-H MoE (`nemotron_h_moe`) the gate-less shared expert read an input
+  buffer nothing had written. The host path now runs the forward's own FFN
+  stages, and `tests/test_moe_host_bridge.c` holds it equal, bit for bit, to
+  the CPU forward on every MoE layer of the fixtures.
+
 - **`runner -i` shows a reasoning model's thinking as thinking.** The chat
   loop started its reasoning split inside the thought only for Harmony,
   whatever the thinking mode. Qwen 3.5 and 3.8, Granite 4.2, Nemotron and

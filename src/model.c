@@ -6972,65 +6972,7 @@ static void moe_ffn(model_t *m, const layer_t *ly, int n, int xdim) {
     moe_ffn_grouped(m, ly, n, xdim);
 }
 
-bool model_moe_ffn_cpu(model_t *m, int layer, int n) {
-    if (!m || layer < 0 || layer > m->n_layer || (layer == m->n_layer && !m->mtp_ready) ||
-        n < 1 || n > m->n_batch)
-        return false;
-    layer_t *ly = &m->layers[layer];
-    if (!ly->is_moe) return false;
-    int ne = m->n_embd, xs = m->xdim;
-    if (ly->moe_gemma) {
-        // Gemma's validated MoE is a coupled dense+routed branch with its own
-        // sandwich norms, so the correctness boundary is the whole FFN.
-        gemma_moe_ffn(m, ly, n, xs);
-    } else {
-        for (int b = 0; b < n; b++)
-            rmsnorm(m->xb + (size_t)b * xs,
-                    m->x + (size_t)b * ne,
-                    ly->ffn_norm_w, ne, m->rms_eps);
-        if (ly->w_gate_shexp)
-            for (int b = 0; b < n; b++)
-                memcpy(m->shexp_in + (size_t)b * ne,
-                       m->xb + (size_t)b * xs, sizeof(float) * (size_t)ne);
-        moe_ffn(m, ly, n, xs);
-        shexp_add(m, ly, m->shexp_in, n, xs);
-    }
-    if (ly->post_ffn_norm_w)
-        for (int b = 0; b < n; b++)
-            rmsnorm(m->xb + (size_t)b * xs,
-                    m->xb + (size_t)b * xs,
-                    ly->post_ffn_norm_w, ne, m->post_norm_eps);
-    for (int b = 0; b < n; b++)
-        for (int i = 0; i < ne; i++)
-            m->x[(size_t)b * ne + i] += m->xb[(size_t)b * xs + i];
-    if (ly->out_scale != 1.0f && ly->out_scale != 0.0f)
-        for (int b = 0; b < n; b++)
-            for (int i = 0; i < ne; i++)
-                m->x[(size_t)b * ne + i] *= ly->out_scale;
-    return true;
-}
-
 static void ple4_block(model_t *m, const layer_t *ly, const int32_t *tokens, int n, int pos);
-
-// qwen4exp device boundary: the device has already run the hyper-connection
-// mixer, so the FFN input (n rows, stride xdim) sits in m->xb; run the routed
-// and shared experts on the host and leave the FFN OUTPUT in m->xb for the
-// device's hc_combine. No norm, no residual add here.
-bool model_moe_ffn_cpu_premixed(model_t *m, int layer, int n) {
-    if (!m || layer < 0 || layer > m->n_layer || (layer == m->n_layer && !m->mtp_ready) ||
-        n < 1 || n > m->n_batch)
-        return false;
-    layer_t *ly = &m->layers[layer];
-    if (!ly->is_moe || ly->moe_gemma) return false;
-    int ne = m->n_embd, xs = m->xdim;
-    if (ly->w_gate_shexp)
-        for (int b = 0; b < n; b++)
-            memcpy(m->shexp_in + (size_t)b * ne,
-                   m->xb + (size_t)b * xs, sizeof(float) * (size_t)ne);
-    moe_ffn(m, ly, n, xs);
-    shexp_add(m, ly, m->shexp_in, n, xs);
-    return true;
-}
 
 // qwen4exp device boundary: the PLE block on the host, over the wide
 // residual rows the device copied into m->x_hc (n rows of hc * n_embd).
@@ -10334,6 +10276,45 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
     if (ly->ple_gate) layer_ple_branch(m, &c);
     layer_output(m, &c);
     if (sim) layer_sim_end(m, l, n);
+}
+
+// The host half of --cpu-moe's tensor-role placement on CUDA: the device ran
+// the mixer and resumes at the next layer, so everything after the mixer is
+// this call's, and it is the forward's own FFN half (the norm, the routed and
+// shared experts, the branch's post-norm and residual scale, the add, the
+// per-layer embedding branch, the layer's output scale). A hyper-connection
+// model's FFN tile is mixed and scattered on the device: the premixed form
+// below serves it.
+bool model_moe_ffn_cpu(model_t *m, int layer, int n) {
+    if (!m || layer < 0 || layer > m->n_layer || (layer == m->n_layer && !m->mtp_ready) ||
+        n < 1 || n > m->n_batch || m->hyper_conn)
+        return false;
+    layer_t *ly = &m->layers[layer];
+    if (!ly->is_moe) return false;
+    fwd_layer c;
+    fwd_layer_facts(m, layer, n, 0, 0, &c);
+    c.dt_t0 = dbg_time_on() ? dt_now() : 0;
+    layer_ffn(m, &c);
+    if (ly->ple_gate) layer_ple_branch(m, &c);
+    layer_output(m, &c);
+    return true;
+}
+
+// qwen4exp device boundary: the device has already run the hyper-connection
+// mixer, so the FFN input (n rows, stride xdim) sits in m->xb; run the routed
+// and shared experts on the host and leave the FFN OUTPUT in m->xb for the
+// device's hc_combine. No norm, no residual add here.
+bool model_moe_ffn_cpu_premixed(model_t *m, int layer, int n) {
+    if (!m || layer < 0 || layer > m->n_layer || (layer == m->n_layer && !m->mtp_ready) ||
+        n < 1 || n > m->n_batch)
+        return false;
+    layer_t *ly = &m->layers[layer];
+    if (!ly->is_moe || ly->moe_gemma) return false;
+    fwd_layer c;
+    fwd_layer_facts(m, layer, n, 0, 0, &c);
+    c.dt_t0 = dbg_time_on() ? dt_now() : 0;
+    layer_moe_ffn(m, &c);
+    return true;
 }
 
 float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
