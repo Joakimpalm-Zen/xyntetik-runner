@@ -617,6 +617,32 @@ def test_reproduction_can_fail_while_reconstruction_succeeds(tmp_path: Path) -> 
     assert rep[0]["recorded_verdict"] == "passed" and rep[0]["replay_verdict"] == "failed"
 
 
+def test_reproduction_runs_in_the_recorded_directory_whatever_the_login_profile_does(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The replay's shell is a login shell, and a login shell's startup files can
+    change directory before the command runs: MSYS2's login hook moves to $HOME
+    whenever SHLVL is at most 1, which is every shell started from cmd,
+    PowerShell or make. The recorded directory has to hold anyway. A profile
+    that leaves the directory is the same mechanism on every platform."""
+    from xyntetik_runner.shadow import capture_report as R
+    r = _repo(tmp_path)
+    home = tmp_path / "home"
+    (r / "check.sh").write_text("#!/bin/sh\ngrep -q SENTINEL pkg/a.py\n", newline="\n")
+    (r / "pkg" / "a.py").write_text("SENTINEL = 1\n", newline="\n")
+    _fire(home, r, "prompt", {"prompt": "add the sentinel", "session_id": "s1"})
+    v = C.verification_record(command="sh check.sh", exit_code=0, output_tail="",
+                              manifest_sha256=C.snapshot_all(r, home)["combined_sha256"], cwd=str(r))
+    _fire(home, r, "verify", {"session_id": "s1", "_verification": v})
+    login_home = tmp_path / "login-home"
+    login_home.mkdir()
+    (login_home / ".bash_profile").write_text('cd "$HOME"\n', newline="\n")
+    monkeypatch.setenv("HOME", str(login_home))
+    monkeypatch.setenv("SHLVL", "0")
+    th = R.threads(R.load(home / C.CAPTURE2_FILE))
+    rep = R.reproduce_verification(home, th[next(k for k in th if k)])
+    assert rep[0]["outcome"] == "reproduced", (rep[0].get("replay_exit_code"), rep[0].get("replay_tail"))
+
+
 def test_the_binding_names_which_state_and_flags_a_mismatch(tmp_path: Path) -> None:
     from xyntetik_runner.shadow import capture_report as R
     r = _repo(tmp_path)
