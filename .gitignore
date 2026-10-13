@@ -42,6 +42,8 @@ test-tokenizer-classes
 test-tokenizer-classes.exe
 test-template-oom
 test-template-oom.exe
+test-template-families
+test-template-families.exe
 test-sampler
 test-sampler.exe
 test-shared-weights
@@ -217,6 +219,7 @@ test-envelope
 test-envelope.exe
 test-template.dSYM/
 test-template-oom.dSYM/
+test-template-families.dSYM/
 test-lora.*
 test-lora-grad
 test-mvcanon

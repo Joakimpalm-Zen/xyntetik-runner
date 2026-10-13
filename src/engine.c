@@ -147,6 +147,7 @@ void engine_request_defaults(engine *e) {
         free((void *)e->smp->script);
         e->smp->script = NULL;
         e->smp->script_n = e->smp->script_at = 0;
+        e->smp->script_fault = false;
     }
 }
 

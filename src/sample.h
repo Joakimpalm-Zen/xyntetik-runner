@@ -28,6 +28,11 @@ typedef struct {
     // preset; a constraint still refuses a scripted id it would not admit.
     const int32_t *script;
     int script_n, script_at;
+    // With the script: once it is spent, report an allocation failure (-2)
+    // instead of a clean stop, so a protocol test reaches the generation-
+    // fault path (`runner_test_fault`, the same gate) after the headers of a
+    // streamed reply have gone out.
+    bool script_fault;
     // A reweighting of the filtered candidates just before the draw, or NULL:
     // the tournament watermark (watermark.h, R1.8.1), installed per pick by
     // the engine's hook so this file never links it. It receives the

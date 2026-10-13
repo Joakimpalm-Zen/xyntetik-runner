@@ -337,6 +337,7 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
     free((void *)e->smp->script);
     e->smp->script = NULL;
     e->smp->script_n = e->smp->script_at = 0;
+    e->smp->script_fault = false;
     e->emit_think_prelude = false;
     e->constraint_includes_prelude = false;
     e->render_special = false;
@@ -2269,10 +2270,23 @@ static const char *unsupported_completion_field(jv *req, int api) {
 // in production can rely on it by accident. Returns the field's text (not
 // owned) or NULL when absent; *bad is set when the field is present and not
 // admissible, with the reason already answered on fd.
-static const char *scripted_reply(sock_t fd, jv *req, bool *bad) {
+// `runner_test_fault: true`, admitted under the same environment variable and
+// only beside a reply, ends the scripted reply in an allocation failure
+// instead of a clean stop (sample.h): the one way a test reaches the
+// generation-fault framing, which a streamed reply hits after its 200 and
+// headers are already on the wire.
+static const char *scripted_reply(sock_t fd, jv *req, bool *bad, bool *fault) {
     *bad = false;
+    *fault = false;
     jv *v = jv_get(req, "runner_test_reply");
-    if (absent(v)) return NULL;
+    jv *f = jv_get(req, "runner_test_fault");
+    if (absent(v)) {
+        if (!absent(f)) {
+            send_error(fd, 400, "runner_test_fault needs runner_test_reply");
+            *bad = true;
+        }
+        return NULL;
+    }
     static int on = -1;
     if (on < 0) {
         const char *env = getenv("RUNNER_TEST_SCRIPTED_REPLY");
@@ -2288,6 +2302,14 @@ static const char *scripted_reply(sock_t fd, jv *req, bool *bad) {
         send_error(fd, 400, "runner_test_reply must be a string");
         *bad = true;
         return NULL;
+    }
+    if (!absent(f)) {
+        if (f->type != J_BOOL) {
+            send_error(fd, 400, "runner_test_fault must be a boolean");
+            *bad = true;
+            return NULL;
+        }
+        *fault = jv_bool(f, false);
     }
     return v->str;
 }
@@ -2642,6 +2664,7 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
 typedef struct {
     bool cache_prompt, share_prefix;
     const char *script_text;          // runner_test_reply, when given
+    bool script_fault;                // runner_test_fault: end it in a fault
     double req_deadline;              // 0: none
     double temp, top_p, min_p, top_k, seed, repeat_penalty;
     int max_tokens;
@@ -2692,8 +2715,8 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
         send_error(fd, 400, msg);
         return false;
     }
-    bool script_bad = false;
-    const char *script_text = scripted_reply(fd, req, &script_bad);
+    bool script_bad = false, script_fault = false;
+    const char *script_text = scripted_reply(fd, req, &script_bad, &script_fault);
     if (script_bad) return false;
     bool cache_prompt = true;
     bool share_prefix = true;
@@ -3430,6 +3453,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
     q->cache_prompt = cache_prompt;
     q->share_prefix = share_prefix;
     q->script_text = script_text;
+    q->script_fault = script_fault;
     q->req_deadline = req_deadline;
     q->top_p = top_p;
     q->min_p = min_p;
@@ -3770,6 +3794,7 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
         s->smp.script = ids;
         s->smp.script_n = n;
         s->smp.script_at = 0;
+        s->smp.script_fault = q->script_fault;
     }
     p->toks = toks;
     p->n_prompt = n_prompt;
