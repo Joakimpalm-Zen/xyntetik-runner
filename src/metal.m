@@ -1489,9 +1489,14 @@ static int metal_fit_layers(model_t *m, uint64_t budget, int cap,
         for (int i = 1; i <= m->n_layer; i++)
             if (end_of[i] < end_of[i - 1]) end_of[i] = end_of[i - 1];
         *layout_ok = true;
-        int top = (cap > 0 && cap < m->n_layer) ? cap : m->n_layer;
-        for (int i = 1; i <= top; i++)
-            if (end_of[i] <= budget) { K = i; *wrap_end = end_of[i]; } else break;
+        // the leading-layer fit the other backends make (gpu_plan_prefix):
+        // the prologue is what the wrap holds whatever the split, and a
+        // layer costs how far it moves the wrap's end; end_of holds those
+        // costs from here (each entry is read before it is overwritten)
+        uint64_t used = end_of[0];
+        for (int i = 0; i < m->n_layer; i++) end_of[i] = end_of[i + 1] - end_of[i];
+        K = gpu_plan_prefix(end_of, m->n_layer, cap, budget, &used);
+        if (K > 0) *wrap_end = used;
     }
     free(end_of);
     return K;
