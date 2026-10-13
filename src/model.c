@@ -8161,8 +8161,93 @@ static void attn_bw_worker(void *ctx, int g0, int g1) {
 // spine, so plain globals are race-free)
 static double lbw_prof[4];   // R recompute / B1 sites / B1 attn / B2+B3
 
-static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
-                          float *dx) {
+// One layer's reverse sweep, shared by its phases: the shapes resolved once, every buffer the phases read and write, and the profile clock.
+typedef struct {
+    bool lprof;
+    double lt;
+    layer_t *ly;
+    int E;
+    int hd;
+    int n_head;
+    int q_dim;
+    int kv_dim;
+    int n_kv;
+    int kv_mul;
+    int nff;
+    bool moe;
+    int ne_x;
+    int used;
+    int nfe;
+    float scale;
+    const uint8_t *kc_l;
+    const uint8_t *vc_l;
+    size_t k_row_b;
+    size_t v_row_b;
+    const float *tape_x;
+    int hd_l;
+    int owner_l;
+    bool owns;
+    bool vnorm;
+    bool vfromk;
+    bool need_kpre;
+    bool ple;
+    int P;
+    float *qpre;
+    float *kpre;
+    float *vpre;
+    float *dvn;
+    float *xpost;
+    float *ptt;
+    float *pga;
+    float *puu;
+    float *pdu;
+    float *pdg;
+    float *pdx;
+    float *xn1;
+    float *xa;
+    float *xn2;
+    float *q;
+    float *ao;
+    float *g;
+    float *u;
+    float *dxn1;
+    float *dxa;
+    float *dq;
+    float *dk;
+    float *dv;
+    float *hact;
+    float *dhact;
+    float *dgu;
+    float *dxn2;
+    float *dao;
+    float *tmpE;
+    float *p;
+    bool gate;
+    float rs;
+    int swa;
+    float *gpre;
+    float *aopre;
+    float *dg;
+    float *dxg;
+    float *opre;
+    float *fpre;
+    int *msel;
+    float *mselw;
+    float *mprob;
+    float *mg;
+    float *mu;
+    float *mh;
+    float *mdh;
+    float *mdg;
+    float *mdu;
+    float *md;
+    float *mdr;
+    float *dbr;
+    float *dyb;
+} lbw_state;
+
+// The sweep's shapes and buffers, and the layer output scale applied to dx; false when an allocation failed (the phases then do nothing).
+static bool lbw_state_init(model_t *m, int l, const int32_t *toks, int T, float *dx, lbw_state *s) {
     (void)toks;
     bool lprof = getenv("RUNNER_TRAIN_PROF") != NULL;
     double lt = lprof ? plat_now() : 0;
@@ -8275,7 +8360,138 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     // the layer, so every gradient inside the layer carries it
     if (ok && os != 1.0f)
         for (size_t i = 0; i < (size_t)T * E; i++) dx[i] *= os;
+    s->lprof = lprof;
+    s->lt = lt;
+    s->ly = ly;
+    s->E = E;
+    s->hd = hd;
+    s->n_head = n_head;
+    s->q_dim = q_dim;
+    s->kv_dim = kv_dim;
+    s->n_kv = n_kv;
+    s->kv_mul = kv_mul;
+    s->nff = nff;
+    s->moe = moe;
+    s->ne_x = ne_x;
+    s->used = used;
+    s->nfe = nfe;
+    s->scale = scale;
+    s->kc_l = kc_l;
+    s->vc_l = vc_l;
+    s->k_row_b = k_row_b;
+    s->v_row_b = v_row_b;
+    s->tape_x = tape_x;
+    s->hd_l = hd_l;
+    s->owner_l = owner_l;
+    s->owns = owns;
+    s->vnorm = vnorm;
+    s->vfromk = vfromk;
+    s->need_kpre = need_kpre;
+    s->ple = ple;
+    s->P = P;
+    s->qpre = qpre;
+    s->kpre = kpre;
+    s->vpre = vpre;
+    s->dvn = dvn;
+    s->xpost = xpost;
+    s->ptt = ptt;
+    s->pga = pga;
+    s->puu = puu;
+    s->pdu = pdu;
+    s->pdg = pdg;
+    s->pdx = pdx;
+    s->xn1 = xn1;
+    s->xa = xa;
+    s->xn2 = xn2;
+    s->q = q;
+    s->ao = ao;
+    s->g = g;
+    s->u = u;
+    s->dxn1 = dxn1;
+    s->dxa = dxa;
+    s->dq = dq;
+    s->dk = dk;
+    s->dv = dv;
+    s->hact = hact;
+    s->dhact = dhact;
+    s->dgu = dgu;
+    s->dxn2 = dxn2;
+    s->dao = dao;
+    s->tmpE = tmpE;
+    s->p = p;
+    s->gate = gate;
+    s->rs = rs;
+    s->swa = swa;
+    s->gpre = gpre;
+    s->aopre = aopre;
+    s->dg = dg;
+    s->dxg = dxg;
+    s->opre = opre;
+    s->fpre = fpre;
+    s->msel = msel;
+    s->mselw = mselw;
+    s->mprob = mprob;
+    s->mg = mg;
+    s->mu = mu;
+    s->mh = mh;
+    s->mdh = mdh;
+    s->mdg = mdg;
+    s->mdu = mdu;
+    s->md = md;
+    s->mdr = mdr;
+    s->dbr = dbr;
+    s->dyb = dyb;
+    return ok;
+}
 
+// Phase R: the layer's forward internals recomputed from the tape, attention through the production worker.
+static void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+    bool lprof = s->lprof;
+    double lt = s->lt;
+    layer_t *ly = s->ly;
+    int E = s->E;
+    int hd = s->hd;
+    int n_head = s->n_head;
+    int q_dim = s->q_dim;
+    int kv_dim = s->kv_dim;
+    int nff = s->nff;
+    bool moe = s->moe;
+    int ne_x = s->ne_x;
+    int used = s->used;
+    int nfe = s->nfe;
+    float scale = s->scale;
+    const uint8_t *kc_l = s->kc_l;
+    const uint8_t *vc_l = s->vc_l;
+    size_t k_row_b = s->k_row_b;
+    size_t v_row_b = s->v_row_b;
+    const float *tape_x = s->tape_x;
+    int hd_l = s->hd_l;
+    bool vnorm = s->vnorm;
+    bool need_kpre = s->need_kpre;
+    float *qpre = s->qpre;
+    float *kpre = s->kpre;
+    float *vpre = s->vpre;
+    float *xn1 = s->xn1;
+    float *xa = s->xa;
+    float *xn2 = s->xn2;
+    float *q = s->q;
+    float *ao = s->ao;
+    float *g = s->g;
+    float *u = s->u;
+    float *hact = s->hact;
+    float *tmpE = s->tmpE;
+    bool gate = s->gate;
+    float rs = s->rs;
+    int swa = s->swa;
+    float *gpre = s->gpre;
+    float *aopre = s->aopre;
+    float *opre = s->opre;
+    int *msel = s->msel;
+    float *mselw = s->mselw;
+    float *mprob = s->mprob;
+    float *mg = s->mg;
+    float *mu = s->mu;
+    bool ok = *okp;
     // ---- phase R: recompute forward internals from the tape
     for (int t = 0; ok && t < T; t++) {
         const float *xt = tape_x + (size_t)t * E;
@@ -8385,6 +8601,28 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         // the tape's recomputed forward is bit-identical to serving's
         for (int i = 0; i < nff; i++) ht[i] = gated_act(m->ffn_act, gt[i], ut[i]);
     }
+    *okp = ok;
+    s->lt = lt;
+}
+
+// Phase P: the per-layer embedding branch's adjoint on the post-FFN residual.
+static void lbw_ple_branch(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+    layer_t *ly = s->ly;
+    int E = s->E;
+    int nff = s->nff;
+    bool ple = s->ple;
+    int P = s->P;
+    float *xpost = s->xpost;
+    float *ptt = s->ptt;
+    float *pga = s->pga;
+    float *puu = s->puu;
+    float *pdu = s->pdu;
+    float *pdg = s->pdg;
+    float *pdx = s->pdx;
+    float *xa = s->xa;
+    float *hact = s->hact;
+    float rs = s->rs;
+    bool ok = *okp;
     // ---- phase P (R8.9.6): the per-layer embedding branch. The forward
     // runs it on the post-FFN residual, before the layer output scale:
     //   y = x_post + rmsnorm(proj(gelu(gate x_post) * slice), w_post)
@@ -8425,6 +8663,59 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         ok = ok && matvec_t(m, ly->ple_gate, pdg, pdx, E, P, T);
         for (size_t i = 0; ok && i < (size_t)T * E; i++) dx[i] += pdx[i];
     }
+    *okp = ok;
+}
+
+// Phase B1, first half: the FFN backward site by site across the window, then the attention output projection and its gate.
+// Inlined into lora_layer_bw on purpose: compiled as its own function, the
+// default build's -ffast-math contracts its loops differently and the
+// trained adapter's bytes change on the Gemma families (the portable T3
+// build is exact either way). Inlined, the bytes are the single function's.
+static inline __attribute__((always_inline)) void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+    bool lprof = s->lprof;
+    double lt = s->lt;
+    layer_t *ly = s->ly;
+    int E = s->E;
+    int q_dim = s->q_dim;
+    int nff = s->nff;
+    bool moe = s->moe;
+    int ne_x = s->ne_x;
+    int used = s->used;
+    int nfe = s->nfe;
+    float *xa = s->xa;
+    float *xn2 = s->xn2;
+    float *ao = s->ao;
+    float *g = s->g;
+    float *u = s->u;
+    float *dxn1 = s->dxn1;
+    float *dxa = s->dxa;
+    float *hact = s->hact;
+    float *dhact = s->dhact;
+    float *dgu = s->dgu;
+    float *dxn2 = s->dxn2;
+    float *dao = s->dao;
+    bool gate = s->gate;
+    float rs = s->rs;
+    float *gpre = s->gpre;
+    float *aopre = s->aopre;
+    float *dg = s->dg;
+    float *dxg = s->dxg;
+    float *opre = s->opre;
+    float *fpre = s->fpre;
+    int *msel = s->msel;
+    float *mselw = s->mselw;
+    float *mprob = s->mprob;
+    float *mg = s->mg;
+    float *mu = s->mu;
+    float *mh = s->mh;
+    float *mdh = s->mdh;
+    float *mdg = s->mdg;
+    float *mdu = s->mdu;
+    float *md = s->md;
+    float *mdr = s->mdr;
+    float *dbr = s->dbr;
+    float *dyb = s->dyb;
+    bool ok = *okp;
     // ---- phase B1: FFN backward site-major across the window, then the
     // attention-internal backward per position. Positions are independent
     // through every step here except the dK/dV accumulation, which keeps
@@ -8558,6 +8849,35 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         for (size_t i = 0; ok && i < (size_t)T * E; i++) dxn1[i] += dxg[i];
     }
     if (lprof) { double n2 = plat_now(); lbw_prof[1] += n2 - lt; lt = n2; }
+    *okp = ok;
+    s->lt = lt;
+}
+
+// Phase B1, second half: the score and softmax backward over KV-head groups, and the shared-KV deposits.
+static void lbw_attention(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+    bool lprof = s->lprof;
+    double lt = s->lt;
+    int hd = s->hd;
+    int n_head = s->n_head;
+    int q_dim = s->q_dim;
+    int kv_dim = s->kv_dim;
+    int n_kv = s->n_kv;
+    int kv_mul = s->kv_mul;
+    float scale = s->scale;
+    const uint8_t *kc_l = s->kc_l;
+    const uint8_t *vc_l = s->vc_l;
+    size_t k_row_b = s->k_row_b;
+    size_t v_row_b = s->v_row_b;
+    int owner_l = s->owner_l;
+    bool owns = s->owns;
+    float *q = s->q;
+    float *dq = s->dq;
+    float *dk = s->dk;
+    float *dv = s->dv;
+    float *dao = s->dao;
+    float *p = s->p;
+    int swa = s->swa;
+    bool ok = *okp;
     // score/softmax backward, threaded over KV-HEAD GROUPS (slice 3): each
     // dq element belongs to one (t,h) and each dk/dv element to one
     // (s,kvh), so a worker that owns whole kvh groups touches a disjoint
@@ -8589,6 +8909,36 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     }
 
     if (lprof) { double n2 = plat_now(); lbw_prof[2] += n2 - lt; lt = n2; }
+    *okp = ok;
+    s->lt = lt;
+}
+
+// Phase B2: the projection backwards once dK and dV are complete.
+// Inlined into lora_layer_bw on purpose: compiled as its own function, the
+// default build's -ffast-math contracts its loops differently and the
+// trained adapter's bytes change on the Gemma families (the portable T3
+// build is exact either way). Inlined, the bytes are the single function's.
+static inline __attribute__((always_inline)) void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+    layer_t *ly = s->ly;
+    int E = s->E;
+    int n_head = s->n_head;
+    int q_dim = s->q_dim;
+    int kv_dim = s->kv_dim;
+    int n_kv = s->n_kv;
+    int hd_l = s->hd_l;
+    bool owns = s->owns;
+    bool vnorm = s->vnorm;
+    bool vfromk = s->vfromk;
+    float *qpre = s->qpre;
+    float *kpre = s->kpre;
+    float *vpre = s->vpre;
+    float *dvn = s->dvn;
+    float *xn1 = s->xn1;
+    float *dxn1 = s->dxn1;
+    float *dq = s->dq;
+    float *dk = s->dk;
+    float *dv = s->dv;
+    bool ok = *okp;
     // ---- phase B2: projection backwards now that dK/dV are complete
     for (int t = 0; ok && t < T; t++) {
         if (model_layer_ropes(m, l)) {
@@ -8655,7 +9005,19 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
             ok = ok && lora_site_bw(m, l, LW_V, ly->wv, xn1, vnorm ? dvn : dv,
                                     dxn1, E, kv_dim, T);
     }
+    *okp = ok;
+}
 
+// Phase B3: the attention norm's backward and both residual paths into the layer input's gradient.
+static void lbw_input_grad(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+    bool lprof = s->lprof;
+    double lt = s->lt;
+    layer_t *ly = s->ly;
+    int E = s->E;
+    const float *tape_x = s->tape_x;
+    float *dxn1 = s->dxn1;
+    float *dxa = s->dxa;
+    bool ok = *okp;
     // ---- phase B3: attn-norm backward + both residual paths -> layer input
     for (int t = 0; ok && t < T; t++) {
         float *out = dx + (size_t)t * E;
@@ -8665,6 +9027,60 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     }
 
     if (lprof) lbw_prof[3] += plat_now() - lt;
+    *okp = ok;
+}
+
+// Every buffer lbw_state_init allocated.
+static void lbw_state_free(lbw_state *s) {
+    float *qpre = s->qpre;
+    float *kpre = s->kpre;
+    float *vpre = s->vpre;
+    float *dvn = s->dvn;
+    float *xpost = s->xpost;
+    float *ptt = s->ptt;
+    float *pga = s->pga;
+    float *puu = s->puu;
+    float *pdu = s->pdu;
+    float *pdg = s->pdg;
+    float *pdx = s->pdx;
+    float *xn1 = s->xn1;
+    float *xa = s->xa;
+    float *xn2 = s->xn2;
+    float *q = s->q;
+    float *ao = s->ao;
+    float *g = s->g;
+    float *u = s->u;
+    float *dxn1 = s->dxn1;
+    float *dxa = s->dxa;
+    float *dq = s->dq;
+    float *dk = s->dk;
+    float *dv = s->dv;
+    float *hact = s->hact;
+    float *dhact = s->dhact;
+    float *dgu = s->dgu;
+    float *dxn2 = s->dxn2;
+    float *dao = s->dao;
+    float *tmpE = s->tmpE;
+    float *p = s->p;
+    float *gpre = s->gpre;
+    float *aopre = s->aopre;
+    float *dg = s->dg;
+    float *dxg = s->dxg;
+    float *opre = s->opre;
+    float *fpre = s->fpre;
+    int *msel = s->msel;
+    float *mselw = s->mselw;
+    float *mprob = s->mprob;
+    float *mg = s->mg;
+    float *mu = s->mu;
+    float *mh = s->mh;
+    float *mdh = s->mdh;
+    float *mdg = s->mdg;
+    float *mdu = s->mdu;
+    float *md = s->md;
+    float *mdr = s->mdr;
+    float *dbr = s->dbr;
+    float *dyb = s->dyb;
     free(qpre); free(kpre);
     free(xn1); free(xa); free(xn2); free(q); free(ao); free(g); free(u);
     free(dxn1); free(dxa); free(dq); free(dk); free(dv); free(hact);
@@ -8675,6 +9091,19 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     free(pdu); free(pdg); free(pdx);
     free(msel); free(mselw); free(mprob); free(mg); free(mu); free(mh);
     free(mdh); free(mdg); free(mdu); free(md); free(mdr);
+}
+
+static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
+                          float *dx) {
+    lbw_state s;
+    bool ok = lbw_state_init(m, l, toks, T, dx, &s);
+    lbw_recompute(m, l, T, dx, &s, &ok);
+    lbw_ple_branch(m, l, T, dx, &s, &ok);
+    lbw_ffn_and_output(m, l, T, dx, &s, &ok);
+    lbw_attention(m, l, T, dx, &s, &ok);
+    lbw_projections(m, l, T, dx, &s, &ok);
+    lbw_input_grad(m, l, T, dx, &s, &ok);
+    lbw_state_free(&s);
     return ok;
 }
 
