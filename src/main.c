@@ -1864,6 +1864,25 @@ typedef struct {
     char prev[65];
 } cli_verify;
 
+// What a mode runs on once the model is loaded: the model and its tokenizer,
+// the engine over them and the prompt token buffer, which cli_cleanup frees
+// together, and the facts the load decided that records and reports name.
+typedef struct {
+    model_t m;
+    tokenizer tok;
+    engine e;
+    int32_t *toks;
+    size_t tok_cap;
+    char model_sig_json[512];     // load-time OMS verdict for the receipt
+    char adapter_sig_json[512];   // and the adapter's (R1.2.3)
+    // the measured-envelope verdict the one-shot model loaded under, for its
+    // transcript (R1.1.5); unknown on paths that never ran the gate
+    int env_state;
+    bool env_known;
+    char sampling[256];           // the effective sampler, as the load line says
+    double load_s;
+} cli_run;
+
 static void cli_opts_init(cli_opts *o) {
     memset(o, 0, sizeof *o);
     o->keygen_algo = SIGN_ALGO_ED25519;
@@ -3219,16 +3238,16 @@ static bool cli_require_eval_ok(const cli_opts *o, const char *load_path) {
 
 int main(int argc, char **argv) {
     char *owned_prompt = NULL;
-    // the measured-envelope verdict the one-shot model loaded under, for its
-    // transcript (R1.1.5); unknown on paths that never ran the gate
-    int cli_env_state = ENV_UNCLASSIFIED;
-    bool cli_env_known = false;
+    // the model, tokenizer and engine the modes run on, and what the load
+    // decided about them; cli_cleanup frees them on every exit after the load
+    cli_run rt_state;
+    memset(&rt_state, 0, sizeof rt_state);
+    rt_state.env_state = ENV_UNCLASSIFIED;
+    cli_run *rt = &rt_state;
     session_image simg;
     memset(&simg, 0, sizeof simg);
     cli_verify vr = { .rec = NULL, .rsig = RSIG_NONE };
     int tmpl = -1;
-    char doctor_sampling[256] = ""; // the effective sampler, as the load line says
-    double doctor_load_s = 0;
     cli_opts opts;
     cli_opts_init(&opts);
     cli_opts *o = &opts;
@@ -3318,11 +3337,7 @@ int main(int argc, char **argv) {
 
     if (!cli_require_eval_ok(o, load_path)) return 1;
 
-    model_t m;
-    tokenizer tok;
     oms_policy signing = { o->model_sig, o->model_pubkey, o->require_signed_model };
-    char model_sig_json[512] = "";   // load-time OMS verdict for the receipt
-    char adapter_sig_json[512] = ""; // and the adapter's (R1.2.3)
     // A reservation is a budget for the whole server, so the -c 0 auto-fit has
     // to know how many slots will divide it. Set before the FIRST load, not
     // just for the slots server_run creates: slot 0 is this model, and a slot 0
@@ -3339,11 +3354,11 @@ int main(int argc, char **argv) {
     o->mp.lora_scale = o->lora_scale;
     if (!registry) {
         double t1 = now_s();
-        if (!model_load(&m, load_path, &o->mp)) return 1;
+        if (!model_load(&rt->m, load_path, &o->mp)) return 1;
         oms_result osr;
         if (!oms_check_model(load_path, &signing, &osr)) return 1;
         if (osr.status[0])
-            oms_result_json(&osr, model_sig_json, sizeof model_sig_json);
+            oms_result_json(&osr, rt->model_sig_json, sizeof rt->model_sig_json);
         // R1.2.3: an adapter changes what is served, so the same trusted key
         // and the same "required" apply to it, with its own bundle
         oms_result aosr;
@@ -3353,16 +3368,16 @@ int main(int argc, char **argv) {
             if (!oms_check_artifact(o->lora_path, &apol, "adapter", &aosr))
                 return 1;
             if (aosr.status[0])
-                oms_result_json(&aosr, adapter_sig_json, sizeof adapter_sig_json);
+                oms_result_json(&aosr, rt->adapter_sig_json, sizeof rt->adapter_sig_json);
         }
-        if (!tokenizer_init(&tok, &m.gf)) return 1;
+        if (!tokenizer_init(&rt->tok, &rt->m.gf)) return 1;
         // serve mode: the registry model's own pool is one thread by design
         // (slots create their pools), so the honest number here is the count
         // the slots divide, not the placeholder pool (the lab read "1 threads"
         // as a CPU fallback at one thread, 2026-09-23)
         fprintf(stderr, "loaded %s | %s | %d layers | ctx %d | %d threads%s | %.2fs\n",
-                load_path, m.arch, m.n_layer, m.n_ctx,
-                o->serve ? o->n_threads : tpool_size(m.tp),
+                load_path, rt->m.arch, rt->m.n_layer, rt->m.n_ctx,
+                o->serve ? o->n_threads : tpool_size(rt->m.tp),
                 o->serve ? " (divided across slots)" : "",
                 now_s() - t1);
         // --tool-info: one JSON line naming this model's native tool-call
@@ -3370,8 +3385,8 @@ int main(int argc, char **argv) {
         // would (honouring --chat-template). stdout is JSON-only.
         if (o->tool_info) {
             int ti_tmpl = tmpl_override >= 0 ? tmpl_override
-                        : template_detect(gguf_get_str(&m.gf,
-                                          "tokenizer.chat_template", NULL), &tok);
+                        : template_detect(gguf_get_str(&rt->m.gf,
+                                          "tokenizer.chat_template", NULL), &rt->tok);
             bool native = false;
             const char *fam = tool_family_for(ti_tmpl, &native);
             // The template family is named too: which renderer the chat
@@ -3380,13 +3395,13 @@ int main(int argc, char **argv) {
             // sampling preset a request without sampling fields is served
             // with (resolved as the load does; --temp and friends aside).
             char ti_ident[256];
-            sampler_ident(gguf_get_str(&m.gf, "general.name", NULL), m.path,
+            sampler_ident(gguf_get_str(&rt->m.gf, "general.name", NULL), rt->m.path,
                           ti_ident, sizeof(ti_ident));
             printf("{\"tool_family\":\"%s\",\"native_tool_protocol\":%s,"
                    "\"template\":\"%s\",\"sampling_preset\":\"%s\"}\n",
                    fam, native ? "true" : "false", template_name(ti_tmpl),
-                   sampler_preset_for(m.arch, ti_ident, ti_tmpl)->name);
-            cli_cleanup(NULL, NULL, &tok, &m);
+                   sampler_preset_for(rt->m.arch, ti_ident, ti_tmpl)->name);
+            cli_cleanup(NULL, NULL, &rt->tok, &rt->m);
             return 0;
         }
         // --adapt-info (R8.9.1): inference, serving an adapter and training
@@ -3395,13 +3410,13 @@ int main(int argc, char **argv) {
         // sentence the real operation would refuse with. stdout is JSON-only.
         if (o->adapt_info) {
             char why_s[256] = "", why_t[256] = "";
-            bool can_s = model_lora_serve_supported(&m, why_s, sizeof why_s);
-            bool can_t = model_lora_train_supported(&m, why_t, sizeof why_t);
+            bool can_s = model_lora_serve_supported(&rt->m, why_s, sizeof why_s);
+            bool can_t = model_lora_train_supported(&rt->m, why_t, sizeof why_t);
             char gname[128] = "";
             bool gpu_there = gpu_available(gname, (int)sizeof gname);
             sbuf r = {0};
             sb_lit(&r, "{\"architecture\":\"");
-            sb_esc(&r, m.arch, strlen(m.arch));
+            sb_esc(&r, rt->m.arch, strlen(rt->m.arch));
             sb_fmt(&r, "\",\"adapter_serving\":{\"supported\":%s,\"reason\":",
                    can_s ? "true" : "false");
             if (can_s) sb_lit(&r, "null");
@@ -3419,10 +3434,10 @@ int main(int argc, char **argv) {
             if (can_t) sb_lit(&r, "null");
             else { sb_lit(&r, "\""); sb_esc(&r, why_t, strlen(why_t)); sb_lit(&r, "\""); }
             sb_lit(&r, ",\"host\":\"cpu\"}}\n");
-            if (r.failed) { free(r.s); cli_cleanup(NULL, NULL, &tok, &m); return 1; }
+            if (r.failed) { free(r.s); cli_cleanup(NULL, NULL, &rt->tok, &rt->m); return 1; }
             fwrite(r.s, 1, r.n, stdout);
             free(r.s);
-            cli_cleanup(NULL, NULL, &tok, &m);
+            cli_cleanup(NULL, NULL, &rt->tok, &rt->m);
             return 0;
         }
         // Measured-envelope sidecar, if one sits next to the model: the
@@ -3436,20 +3451,20 @@ int main(int argc, char **argv) {
             // leaves m.gpu NULL; classifying that CPU run as Metal/CUDA would
             // apply a verdict measured for a backend that did no work here.
 #ifdef __APPLE__
-            const char *env_backend = m.gpu ? "metal" : "cpu";
+            const char *env_backend = rt->m.gpu ? "metal" : "cpu";
 #else
-            const char *env_backend = m.gpu ? "cuda" : "cpu";
+            const char *env_backend = rt->m.gpu ? "cuda" : "cpu";
 #endif
             char env_line[256];
             int env_state = ENV_UNCLASSIFIED;
             bool ok = envelope_gate(load_path, RUNNER_VERSION, env_backend,
                                     o->force_uncertified, env_line,
                                     (int)sizeof env_line, &env_state);
-            cli_env_state = env_state;
-            cli_env_known = true;
+            rt->env_state = env_state;
+            rt->env_known = true;
             if (env_line[0]) fprintf(stderr, "%s\n", env_line);
             if (!ok) {
-                cli_cleanup(NULL, NULL, &tok, &m);
+                cli_cleanup(NULL, NULL, &rt->tok, &rt->m);
                 return 1;
             }
             // The server's /v1/runner/provenance reports the verdicts THIS
@@ -3478,25 +3493,25 @@ int main(int argc, char **argv) {
                                names, paths, 1);
             atexit(instances_unregister);
         }
-        if (m.mtp_layers)
+        if (rt->m.mtp_layers)
             fprintf(stderr, "mtp: %d predictor block(s) declared, excluded from "
-                    "the backbone; %s\n", m.mtp_layers,
-                    m.mtp_ready ? "bound as the draft head (--mtp)"
+                    "the backbone; %s\n", rt->m.mtp_layers,
+                    rt->m.mtp_ready ? "bound as the draft head (--mtp)"
                                 : "not consumed (pass --mtp to draft from it)");
-        if (m.agent_profile)
+        if (rt->m.agent_profile)
             fprintf(stderr, "agent-profile: protocol=%u tokenizer=%u schema=%s digest=%s features=%llu\n",
-                    m.agent_protocol_version, m.agent_tokenizer_version,
-                    m.agent_schema_id, m.agent_schema_digest,
-                    (unsigned long long)m.n_agent_required_features);
+                    rt->m.agent_protocol_version, rt->m.agent_tokenizer_version,
+                    rt->m.agent_schema_id, rt->m.agent_schema_digest,
+                    (unsigned long long)rt->m.n_agent_required_features);
         char ident[256];
-        sampler_ident(gguf_get_str(&m.gf, "general.name", NULL), m.path,
+        sampler_ident(gguf_get_str(&rt->m.gf, "general.name", NULL), rt->m.path,
                       ident, sizeof(ident));
         int preset_tmpl = tmpl_override >= 0 ? tmpl_override
-                        : template_detect(gguf_get_str(&m.gf,
+                        : template_detect(gguf_get_str(&rt->m.gf,
                                           "tokenizer.chat_template", NULL), NULL);
         sampler_file sfile;
-        model_sampling_file(&m.gf, &sfile);
-        const sampler_preset *sp = sampler_resolve_file(&o->smp, m.arch, ident,
+        model_sampling_file(&rt->m.gf, &sfile);
+        const sampler_preset *sp = sampler_resolve_file(&o->smp, rt->m.arch, ident,
                                                         preset_tmpl, &sfile, &o->ov);
         char sdesc[256];
         sampler_describe(&o->smp, sp, sdesc, sizeof(sdesc));
@@ -3506,8 +3521,8 @@ int main(int argc, char **argv) {
             sampler_file_describe(&sfile, fdesc, sizeof fdesc);
             if (fdesc[0]) fprintf(stderr, "sampling: %s\n", fdesc);
         }
-        snprintf(doctor_sampling, sizeof doctor_sampling, "%s", sdesc);
-        doctor_load_s = now_s() - t1;
+        snprintf(rt->sampling, sizeof rt->sampling, "%s", sdesc);
+        rt->load_s = now_s() - t1;
         // An operator who set a reasoning-channel default must see it here:
         // the line above describes the sampler for calls and answers, and
         // silence about the reasoning turn reads as "there is only one".
@@ -3530,7 +3545,7 @@ int main(int argc, char **argv) {
             instances_register("serve", o->port, NULL, NULL, 0);
             atexit(instances_unregister);
         }
-        int rc = server_run(registry ? NULL : &m, registry ? NULL : &tok,
+        int rc = server_run(registry ? NULL : &rt->m, registry ? NULL : &rt->tok,
                             o->model_path, &o->mp, o->smp, &o->ov, o->port, o->parallel, o->n_threads,
                             o->ttl, o->draft_path, o->draft_k, o->draft_lookup,
                             o->reasoning_budget, o->reasoning_budget_message,
@@ -3540,33 +3555,31 @@ int main(int argc, char **argv) {
         return rc;
     }
 
-    engine e = {0};
-    int32_t *toks = NULL;
     // Every failure from here on frees what the success paths free. Written
     // once so a new error return cannot forget it, and so `make debug` is the
     // leak gate the comment on cli_cleanup claims it is: measured under
     // LeakSanitizer on Linux before this, an unreadable --json-schema leaked
     // 237,668 bytes in 19 allocations and an over-long prompt 30,186 in 21,
     // while the successful run was clean.
-#define CLI_FAIL do { cli_cleanup(&e, toks, &tok, &m); \
+#define CLI_FAIL do { cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m); \
                       free(owned_prompt); return 1; } while (0)
-    if (!engine_init(&e, &m, &tok, &o->smp)) { // e zero-initialized at declaration
+    if (!engine_init(&rt->e, &rt->m, &rt->tok, &o->smp)) { // rt->e zeroed with rt_state
         fprintf(stderr, "error: out of memory initializing engine\n");
         CLI_FAIL;
     }
-    e.ignore_eos = o->ignore_eos;
-    e.json_mode = o->json_mode;
-    e.progress = true;
+    rt->e.ignore_eos = o->ignore_eos;
+    rt->e.json_mode = o->json_mode;
+    rt->e.progress = true;
     wm_state cli_wm = { .key = wm_on ? &wmk : NULL };
     if (wm_on) {
-        e.wm_prepare = wm_prepare;
-        e.wm_ud = &cli_wm;
+        rt->e.wm_prepare = wm_prepare;
+        rt->e.wm_ud = &cli_wm;
     }
     if (o->draft_path) {
-        e.dm = spec_draft_load(o->draft_path, &m, &o->mp);
-        if (e.dm) {
+        rt->e.dm = spec_draft_load(o->draft_path, &rt->m, &o->mp);
+        if (rt->e.dm) {
             fprintf(stderr, "draft: %s (%d tokens per round)\n", o->draft_path, o->draft_k);
-            e.draft_k = o->draft_k;
+            rt->e.draft_k = o->draft_k;
         } else if (o->draft_required) {
             fprintf(stderr, "error: --draft-required: %s was refused above and"
                             " the run would have decoded without it\n",
@@ -3575,24 +3588,24 @@ int main(int argc, char **argv) {
         }
     }
     if (o->mtp_on) {
-        if (!model_mtp_ready(&m)) {
+        if (!model_mtp_ready(&rt->m)) {
             fprintf(stderr, "error: --mtp: the head is bound but drafts need "
                             "the CPU path (rerun with --gpu off)\n");
             CLI_FAIL;
         }
-        e.mtp_on = true;
-        e.draft_k = o->draft_k;
+        rt->e.mtp_on = true;
+        rt->e.draft_k = o->draft_k;
         fprintf(stderr, "mtp: drafting from the model's NextN head "
                 "(%d tokens per round)\n", o->draft_k);
     }
     if (o->draft_lookup) {
-        if (!model_spec_verify_ok(&m)) {
+        if (!model_spec_verify_ok(&rt->m)) {
             fprintf(stderr, "error: --draft-lookup: the verify walk needs "
                             "host-readable hidden work (rerun with --gpu off)\n");
             CLI_FAIL;
         }
-        e.lookup_on = true;
-        e.draft_k = o->draft_k;
+        rt->e.lookup_on = true;
+        rt->e.draft_k = o->draft_k;
         fprintf(stderr, "lookup: drafting from the context (n-grams of %d..%d "
                 "tokens, up to %d per round)\n", ENGINE_LOOKUP_N_MIN,
                 ENGINE_LOOKUP_N_MAX, o->draft_k);
@@ -3605,17 +3618,17 @@ int main(int argc, char **argv) {
         free(sbuf);
         if (!sj) { fprintf(stderr, "error: %s is not valid JSON\n", o->schema_file); CLI_FAIL; }
         char serr[128];
-        e.schema = schema_compile(sj, serr, sizeof(serr));
+        rt->e.schema = schema_compile(sj, serr, sizeof(serr));
         jv_free(sj);
-        if (!e.schema) { fprintf(stderr, "error: unsupported schema: %s\n", serr); CLI_FAIL; }
-        sval_init(&e.sv, e.schema);
+        if (!rt->e.schema) { fprintf(stderr, "error: unsupported schema: %s\n", serr); CLI_FAIL; }
+        sval_init(&rt->e.sv, rt->e.schema);
     }
 
-    size_t tok_cap = (o->prompt ? strlen(o->prompt) : 0) + (size_t)m.n_ctx + 32;
+    rt->tok_cap = (o->prompt ? strlen(o->prompt) : 0) + (size_t)rt->m.n_ctx + 32;
     // tok_encode narrows the capacity to int, so keep it representable
-    if (tok_cap > INT_MAX) tok_cap = INT_MAX;
-    toks = malloc(sizeof(int32_t) * tok_cap);
-    if (!toks) { fprintf(stderr, "error: out of memory\n"); CLI_FAIL; }
+    if (rt->tok_cap > INT_MAX) rt->tok_cap = INT_MAX;
+    rt->toks = malloc(sizeof(int32_t) * rt->tok_cap);
+    if (!rt->toks) { fprintf(stderr, "error: out of memory\n"); CLI_FAIL; }
     double ptime, gtime, t0;
     int n_prompt, n_gen;
 
@@ -3633,7 +3646,7 @@ int main(int argc, char **argv) {
         // default: fixed init seed unless -s is given, fixed data order, and
         // the whole compute path is the byte-deterministic D3 backward — same
         // data + same seed -> byte-identical adapter file.
-        if (m.gpu) {
+        if (rt->m.gpu) {
             // v1 trains on the CPU path only (D8 is CUDA training); refuse
             // loudly rather than train a model whose forward the backward
             // cannot see.
@@ -3641,9 +3654,9 @@ int main(int argc, char **argv) {
                     "--gpu off\n");
             CLI_FAIL;
         }
-        if (!m.lora) {
+        if (!rt->m.lora) {
             uint64_t iseed = o->seed_given ? o->smp.rng : 0;
-            if (!model_lora_train_init(&m, o->lora_rank,
+            if (!model_lora_train_init(&rt->m, o->lora_rank,
                                        2.0f * (float)o->lora_rank, iseed))
                 CLI_FAIL;
             fprintf(stderr, "train: fresh rank-%d adapters on every "
@@ -3657,7 +3670,7 @@ int main(int argc, char **argv) {
         // (no CUDA) just stays on the CPU without a word beyond this one.
         {
             const char *tg = getenv("RUNNER_TRAIN_GPU");
-            if (tg && *tg && strcmp(tg, "0") != 0 && !gpu_train_init(&m))
+            if (tg && *tg && strcmp(tg, "0") != 0 && !gpu_train_init(&rt->m))
                 fprintf(stderr, "train-gpu: no usable CUDA device — "
                         "training on the CPU\n");
         }
@@ -3665,14 +3678,14 @@ int main(int argc, char **argv) {
         int n_ex = 0;
         dpo_pair *pairs = NULL;
         int n_pair = 0;
-        int wctx = o->train_ctx < m.n_ctx ? o->train_ctx : m.n_ctx;
+        int wctx = o->train_ctx < rt->m.n_ctx ? o->train_ctx : rt->m.n_ctx;
         int train_tmpl = tmpl_override >= 0 ? tmpl_override
-                         : template_detect(gguf_get_str(&m.gf, "tokenizer.chat_template", NULL), &tok);
-        int eot_id = train_eot_id(&tok, train_tmpl);
+                         : template_detect(gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL), &rt->tok);
+        int eot_id = train_eot_id(&rt->tok, train_tmpl);
         if (o->dpo_path) {
-            if (!dpo_pairs_load(&tok, o->dpo_path, o->no_bos, wctx, eot_id, o->train_eot,
+            if (!dpo_pairs_load(&rt->tok, o->dpo_path, o->no_bos, wctx, eot_id, o->train_eot,
                                 &pairs, &n_pair)) CLI_FAIL;
-        } else if (!train_examples_load(&tok, o->train_path, o->no_bos, wctx, eot_id, o->train_eot,
+        } else if (!train_examples_load(&rt->tok, o->train_path, o->no_bos, wctx, eot_id, o->train_eot,
                                         &exs, &n_ex)) CLI_FAIL;
 #define TRAIN_FAIL do { train_examples_free(exs, n_ex); \
                         dpo_pairs_free(pairs, n_pair); CLI_FAIL; } while (0)
@@ -3696,12 +3709,12 @@ int main(int argc, char **argv) {
                 dpo_pair *q = &pairs[(step - 1) % n_pair];
                 double step_t0 = plat_now();
                 dpo_step d;
-                if (!dpo_accumulate(&m, (double)o->dpo_beta, q->tw, q->nw, q->mw,
+                if (!dpo_accumulate(&rt->m, (double)o->dpo_beta, q->tw, q->nw, q->mw,
                                     q->tl, q->nl, q->ml, &d)) {
                     fprintf(stderr, "error: DPO step failed\n");
                     TRAIN_FAIL;
                 }
-                if (!model_lora_adam_step(&m, o->train_lr, 0.9f, 0.999f, 1e-8f,
+                if (!model_lora_adam_step(&rt->m, o->train_lr, 0.9f, 0.999f, 1e-8f,
                                           0.01f, step)) {
                     fprintf(stderr, "error: cannot allocate optimizer state\n");
                     TRAIN_FAIL;
@@ -3725,7 +3738,7 @@ int main(int argc, char **argv) {
                        d.logp_w, d.logp_l, d.logp_ref_w, d.logp_ref_l, step_s);
                 fflush(stdout);
                 if (o->save_every > 0 && step % o->save_every == 0 &&
-                    !model_lora_save(&m, o->train_out))
+                    !model_lora_save(&rt->m, o->train_out))
                     TRAIN_FAIL;
             }
             fprintf(stderr, "train-dpo: mean margin %.6f, accuracy %.3f over "
@@ -3739,10 +3752,10 @@ int main(int argc, char **argv) {
             train_ex *ex = &exs[(step - 1) % n_ex];
             double loss = 0;
             double step_t0 = plat_now();
-            model_lora_grad_zero(&m);
-            if (!model_lora_backward_w(&m, ex->t, ex->n, ex->w, &loss))
+            model_lora_grad_zero(&rt->m);
+            if (!model_lora_backward_w(&rt->m, ex->t, ex->n, ex->w, &loss))
                 TRAIN_FAIL;
-            if (!model_lora_adam_step(&m, o->train_lr, 0.9f, 0.999f, 1e-8f,
+            if (!model_lora_adam_step(&rt->m, o->train_lr, 0.9f, 0.999f, 1e-8f,
                                       0.01f, step)) {
                 fprintf(stderr, "error: cannot allocate optimizer state\n");
                 TRAIN_FAIL;
@@ -3776,11 +3789,11 @@ int main(int argc, char **argv) {
                    step_s > 0 ? (double)ex->n / step_s : 0.0);
             fflush(stdout);
             if (o->save_every > 0 && step % o->save_every == 0 &&
-                !model_lora_save(&m, o->train_out))
+                !model_lora_save(&rt->m, o->train_out))
                 TRAIN_FAIL;
         }
         }
-        if (!model_lora_save(&m, o->train_out)) TRAIN_FAIL;
+        if (!model_lora_save(&rt->m, o->train_out)) TRAIN_FAIL;
         {
             // D7: the provenance record, written beside every adapter — the
             // reproducibility claim in checkable form. Two runs with the same
@@ -3846,7 +3859,7 @@ int main(int argc, char **argv) {
                     "\"loss_first\":%.6f,\"loss_last\":%.6f,"
                     "\"adapter\":{\"path\":\"",
                     (unsigned long long)(o->seed_given ? o->smp.rng : 0),
-                    o->lora_rank, (double)m.lora_alpha, (double)o->train_lr,
+                    o->lora_rank, (double)rt->m.lora_alpha, (double)o->train_lr,
                     o->train_steps, wctx, o->train_eot ? "true" : "false", eot_id,
                     first_loss, last_loss);
             sb_esc(&rec, o->train_out, strlen(o->train_out));
@@ -3863,7 +3876,7 @@ int main(int argc, char **argv) {
         train_examples_free(exs, n_ex);
         dpo_pairs_free(pairs, n_pair);
 #undef TRAIN_FAIL
-        cli_cleanup(&e, toks, &tok, &m);
+        cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
         free(owned_prompt);
         return 0;
     }
@@ -3881,14 +3894,14 @@ int main(int argc, char **argv) {
         bool expected_split = strcmp(jv_str(jv_get(vprof, "kv"), ""), "k8v4") == 0;
         jv *expected_layers_v = jv_get(vprof, "gpu_layers");
         int expected_layers = (int)jv_num(expected_layers_v, -1);
-        if (m.n_ctx != expected_ctx || m.n_batch != expected_batch ||
-            tpool_size(m.tp) != expected_threads || m.kv_q8 != expected_q8 ||
-            m.kv_fp4 != expected_fp4 || m.kv_split != expected_split ||
-            (m.gpu != NULL) != expected_gpu ||
-            (expected_layers_v && m.gpu_layers != expected_layers)) {
+        if (rt->m.n_ctx != expected_ctx || rt->m.n_batch != expected_batch ||
+            tpool_size(rt->m.tp) != expected_threads || rt->m.kv_q8 != expected_q8 ||
+            rt->m.kv_fp4 != expected_fp4 || rt->m.kv_split != expected_split ||
+            (rt->m.gpu != NULL) != expected_gpu ||
+            (expected_layers_v && rt->m.gpu_layers != expected_layers)) {
             fprintf(stderr, "UNVERIFIABLE: runtime could not reproduce the "
                     "recorded execution profile\n");
-            jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
+            jv_free(vr.rec); cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
             free(owned_prompt); return 3;
         }
         char sha[65] = "";
@@ -3897,7 +3910,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "UNVERIFIABLE: -m %s sha256 %s does not match "
                     "the record's %s\n", load_path, sha,
                     jv_str(jv_get(vm, "sha256"), "?"));
-            jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
+            jv_free(vr.rec); cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
             free(owned_prompt); return 3;
         }
         if (va && va->type != J_NULL) {
@@ -3905,7 +3918,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "UNVERIFIABLE: the record used an adapter "
                         "(sha %s) — pass it with --lora\n",
                         jv_str(jv_get(va, "sha256"), "?"));
-                jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
+                jv_free(vr.rec); cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
                 free(owned_prompt); return 3;
             }
             char asha[65] = "";
@@ -3913,13 +3926,13 @@ int main(int argc, char **argv) {
             if (strcmp(asha, jv_str(jv_get(va, "sha256"), "")) != 0) {
                 fprintf(stderr, "UNVERIFIABLE: --lora sha256 does not match "
                         "the record's adapter\n");
-                jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
+                jv_free(vr.rec); cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
                 free(owned_prompt); return 3;
             }
         } else if (o->lora_path) {
             fprintf(stderr, "UNVERIFIABLE: --lora given but the record ran "
                     "without an adapter\n");
-            jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
+            jv_free(vr.rec); cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
             free(owned_prompt); return 3;
         }
         jv *jp = jv_get(jv_get(vr.rec, "prompt"), "tokens");
@@ -3931,50 +3944,50 @@ int main(int argc, char **argv) {
         size_t expected_bytes_n = 0;
         bool has_exact_bytes = expected_hex_v != NULL;
         if (!jp || jp->type != J_ARR || !jo || jo->type != J_ARR ||
-            !expected_text || jp->n < 1 || jp->n >= m.n_ctx ||
-            (size_t)jp->n >= tok_cap) {
+            !expected_text || jp->n < 1 || jp->n >= rt->m.n_ctx ||
+            (size_t)jp->n >= rt->tok_cap) {
             fprintf(stderr, "UNVERIFIABLE: malformed token arrays\n");
-            jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
+            jv_free(vr.rec); cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
             free(owned_prompt); return 3;
         }
         if (has_exact_bytes &&
             !record_hex(expected_hex_v, &expected_hex, &expected_bytes_n)) {
             fprintf(stderr, "UNVERIFIABLE: malformed output.bytes_hex\n");
-            jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
+            jv_free(vr.rec); cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
             free(owned_prompt); return 3;
         }
         for (int i = 0; i < jp->n; i++) {
-            if (!record_token(jp->items[i], m.n_vocab, &toks[i])) {
+            if (!record_token(jp->items[i], rt->m.n_vocab, &rt->toks[i])) {
                 fprintf(stderr, "UNVERIFIABLE: invalid prompt token at %d\n",
                         i);
-                jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
+                jv_free(vr.rec); cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
                 free(owned_prompt); return 3;
             }
         }
         for (int i = 0; i < jo->n; i++) {
             int32_t ignored;
-            if (!record_token(jo->items[i], m.n_vocab, &ignored)) {
+            if (!record_token(jo->items[i], rt->m.n_vocab, &ignored)) {
                 fprintf(stderr, "UNVERIFIABLE: invalid output token at %d\n",
                         i);
-                jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
+                jv_free(vr.rec); cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
                 free(owned_prompt); return 3;
             }
         }
         double vt0 = now_s();
-        float *logits = engine_feed(&e, toks, jp->n);
+        float *logits = engine_feed(&rt->e, rt->toks, jp->n);
         if (!logits) {
             fprintf(stderr, "UNVERIFIABLE: prompt exceeds context\n");
-            jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
+            jv_free(vr.rec); cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
             free(owned_prompt); return 3;
         }
         double gt = 0;
         outcap_t replay_out = {0};
-        int n_gen = engine_generate(&e, logits, o->n_predict, outcap_cb,
+        int n_gen = engine_generate(&rt->e, logits, o->n_predict, outcap_cb,
                                     &replay_out, &gt);
         if (replay_out.failed) {
             fprintf(stderr, "UNVERIFIABLE: out of memory capturing replay\n");
             free(replay_out.buf); jv_free(vr.rec);
-            cli_cleanup(&e, toks, &tok, &m);
+            cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
             free(owned_prompt); return 3;
         }
         (void)vt0;
@@ -3990,7 +4003,7 @@ int main(int argc, char **argv) {
         int cmp_n = n_gen < jo->n ? n_gen : jo->n;
         int div_at = -1;
         for (int i = 0; i < cmp_n; i++)
-            if ((int32_t)jv_num(jo->items[i], -1) != e.hist[jp->n + i]) {
+            if ((int32_t)jv_num(jo->items[i], -1) != rt->e.hist[jp->n + i]) {
                 div_at = i;
                 break;
             }
@@ -4025,7 +4038,7 @@ int main(int argc, char **argv) {
         } else if (div_at >= 0) {
             int want = div_at < jo->n ? (int)jv_num(jo->items[div_at], -1)
                                       : -1;
-            int got = div_at < n_gen ? (int)e.hist[jp->n + div_at] : -1;
+            int got = div_at < n_gen ? (int)rt->e.hist[jp->n + div_at] : -1;
             printf("{\"schema_version\":\"xyntetik.runner.verify.v1\","
                    "\"verdict\":\"DIVERGED\",\"unit\":\"token\","
                    "\"at\":%d,"
@@ -4053,7 +4066,7 @@ int main(int argc, char **argv) {
         }
         free(replay_out.buf);
         jv_free(vr.rec);
-        cli_cleanup(&e, toks, &tok, &m);
+        cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
         free(owned_prompt);
         return rc;
     }
@@ -4063,13 +4076,13 @@ int main(int argc, char **argv) {
         // tokenizer, scored from the first position with a full context
         size_t cap = strlen(detect_text) + 16;
         int32_t *dt = cap <= (size_t)INT_MAX ? malloc(sizeof *dt * cap) : NULL;
-        int nt = dt ? tok_encode(&tok, detect_text, dt, (int)cap, false, false) : -1;
+        int nt = dt ? tok_encode(&rt->tok, detect_text, dt, (int)cap, false, false) : -1;
         int rc = 3;
         if (nt < 0) fprintf(stderr, "error: --detect-watermark: out of memory\n");
         else rc = wm_report(&wmk, dt, nt, WM_CONTEXT, "text", NULL);
         free(dt);
         free(detect_text);
-        cli_cleanup(&e, toks, &tok, &m);
+        cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
         free(owned_prompt);
         return rc;
     }
@@ -4096,7 +4109,7 @@ int main(int argc, char **argv) {
                 jv *req = json_parse(line, len);
                 sbuf r = {0};
                 const char *derr = NULL;
-                int st = req ? decide_handle(&e, req, label, &r, &derr) : 400;
+                int st = req ? decide_handle(&rt->e, req, label, &r, &derr) : 400;
                 if (!req) derr = "invalid JSON";
                 if (st == 200) printf("%s\n", r.s);
                 else { printf("{\"error\":{\"line\":%d,\"status\":%d,\"message\":\"%s\"}}\n", lineno, st, derr ? derr : "decide failed"); rc = 1; }
@@ -4109,7 +4122,7 @@ int main(int argc, char **argv) {
         }
         free(line);
         if (df != stdin) fclose(df);
-        cli_cleanup(&e, toks, &tok, &m);
+        cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
         free(owned_prompt);
         return rc;
     }
@@ -4129,7 +4142,7 @@ int main(int argc, char **argv) {
             CLI_FAIL;
         }
         char *p = unescape(o->prompt);
-        n_prompt = tok_encode(&tok, p, toks, (int)tok_cap, !o->no_bos, true);
+        n_prompt = tok_encode(&rt->tok, p, rt->toks, (int)rt->tok_cap, !o->no_bos, true);
         free(p);
         if (n_prompt < 0) {
             fprintf(stderr, "error: out of memory tokenizing prompt\n");
@@ -4140,9 +4153,9 @@ int main(int argc, char **argv) {
                     "a transition (got %d)\n", n_prompt);
             CLI_FAIL;
         }
-        if (n_prompt > m.n_ctx) {
+        if (n_prompt > rt->m.n_ctx) {
             fprintf(stderr, "error: --score prompt is %d tokens, context is "
-                    "%d\n", n_prompt, m.n_ctx);
+                    "%d\n", n_prompt, rt->m.n_ctx);
             CLI_FAIL;
         }
         const char *ch_env = getenv("RUNNER_SCORE_CHUNKED");
@@ -4151,7 +4164,7 @@ int main(int argc, char **argv) {
                "\"n_tokens\":%d,\"n_scored\":%d,\"tokens\":[", n_prompt,
                n_prompt - 1);
         for (int i = 0; i < n_prompt; i++)
-            printf("%s%d", i ? "," : "", toks[i]);
+            printf("%s%d", i ? "," : "", rt->toks[i]);
         printf("],\"logprobs\":[");
         double total = 0;
         int pos = 0, emitted = 0, fail = 0, top1 = 0;
@@ -4159,36 +4172,36 @@ int main(int argc, char **argv) {
         if (!argmaxes) CLI_FAIL;
         while (pos < n_prompt - 1 && !fail) {
             int k = n_prompt - 1 - pos;
-            int cap = m.spec_batch < m.n_batch ? m.spec_batch : m.n_batch;
+            int cap = rt->m.spec_batch < rt->m.n_batch ? rt->m.spec_batch : rt->m.n_batch;
             if (k > cap) k = cap;
             if (!solo && k > 1 &&
-                model_forward_batch_keep(&m, toks + pos, k, pos)) {
+                model_forward_batch_keep(&rt->m, rt->toks + pos, k, pos)) {
                 for (int b = 0; b < k; b++) {
-                    float *lg = model_spec_row_logits(&m, b);
+                    float *lg = model_spec_row_logits(&rt->m, b);
                     // raw-logit log-softmax through the one normalizer every
                     // reported logprob uses (engine_logsumexp, engine.h)
                     int arg = 0;
-                    for (int i = 1; i < m.n_vocab; i++)
+                    for (int i = 1; i < rt->m.n_vocab; i++)
                         if (lg[i] > lg[arg]) arg = i;
-                    float lp = lg[toks[pos + b + 1]] -
-                               engine_logsumexp(lg, m.n_vocab);
+                    float lp = lg[rt->toks[pos + b + 1]] -
+                               engine_logsumexp(lg, rt->m.n_vocab);
                     argmaxes[emitted] = arg;
                     printf("%s%.9g", emitted++ ? "," : "", (double)lp);
                     total += lp;
-                    if (arg == toks[pos + b + 1]) top1++;
+                    if (arg == rt->toks[pos + b + 1]) top1++;
                 }
                 pos += k;
             } else {
-                float *lg = model_forward(&m, toks[pos], pos);
+                float *lg = model_forward(&rt->m, rt->toks[pos], pos);
                 if (!lg) { fail = 1; break; }
                 int arg = 0;
-                for (int i = 1; i < m.n_vocab; i++)
+                for (int i = 1; i < rt->m.n_vocab; i++)
                     if (lg[i] > lg[arg]) arg = i;
-                float lp = lg[toks[pos + 1]] - engine_logsumexp(lg, m.n_vocab);
+                float lp = lg[rt->toks[pos + 1]] - engine_logsumexp(lg, rt->m.n_vocab);
                 argmaxes[emitted] = arg;
                 printf("%s%.9g", emitted++ ? "," : "", (double)lp);
                 total += lp;
-                if (arg == toks[pos + 1]) top1++;
+                if (arg == rt->toks[pos + 1]) top1++;
                 pos += 1;
             }
         }
@@ -4213,9 +4226,9 @@ int main(int argc, char **argv) {
         free(argmaxes);
         printf("],\"n_vocab\":%d,\"top1\":%d,\"top1_rate\":%.9g,"
                "\"nll_total\":%.9g,\"nll_mean\":%.9g,\"ppl\":%.9g}\n",
-               m.n_vocab, top1, (double)top1 / (n_prompt - 1),
+               rt->m.n_vocab, top1, (double)top1 / (n_prompt - 1),
                nll, mean, exp(mean));
-        cli_cleanup(&e, toks, &tok, &m);
+        cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
         free(owned_prompt);
         return 0;
     }
@@ -4230,11 +4243,11 @@ int main(int argc, char **argv) {
         // step. No content leaves the machine and none is recorded unless
         // --doctor-include-text asks for it.
         int dt = tmpl_override >= 0 ? tmpl_override
-               : template_detect(gguf_get_str(&m.gf, "tokenizer.chat_template", NULL), &tok);
-        bool have_tmpl_text = gguf_get_str(&m.gf, "tokenizer.chat_template", NULL) != NULL;
+               : template_detect(gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL), &rt->tok);
+        bool have_tmpl_text = gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL) != NULL;
         bool native = false;
         const char *fam = tool_family_for(dt, &native);
-        template_bind_think_tags(dt, &m.think_open, &m.think_close);
+        template_bind_think_tags(dt, &rt->m.think_open, &rt->m.think_close);
         static const char question[] = "What is 2+2? Answer with just the number.";
         chat_msg dmsg[1] = { { .role = "user", .content = question } };
         char *rendered = render_prompt_alloc(dt, dmsg, 1, true, THINK_OFF, NULL,
@@ -4243,7 +4256,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "error: out of memory rendering the probe\n");
             CLI_FAIL;
         }
-        n_prompt = tok_encode_prompt(&tok, rendered, toks, (int)tok_cap, !o->no_bos);
+        n_prompt = tok_encode_prompt(&rt->tok, rendered, rt->toks, (int)rt->tok_cap, !o->no_bos);
         free(rendered);
         bool probe_ran = false, probe_stop = false, probe_has4 = false;
         bool probe_leak = false, probe_empty = true;
@@ -4251,15 +4264,15 @@ int main(int argc, char **argv) {
         int d_gen = 0;
         outcap_t dout = {0};
         enum { DOCTOR_TOKENS = 48 };
-        if (n_prompt > 0 && n_prompt + DOCTOR_TOKENS < m.n_ctx) {
+        if (n_prompt > 0 && n_prompt + DOCTOR_TOKENS < rt->m.n_ctx) {
             t0 = now_s();
-            float *logits = engine_feed(&e, toks, n_prompt);
+            float *logits = engine_feed(&rt->e, rt->toks, n_prompt);
             d_ptime = now_s() - t0;
             if (logits) {
-                d_gen = engine_generate(&e, logits, DOCTOR_TOKENS, outcap_cb,
+                d_gen = engine_generate(&rt->e, logits, DOCTOR_TOKENS, outcap_cb,
                                         &dout, &d_gtime);
                 probe_ran = !dout.failed;
-                probe_stop = e.hit_stop;
+                probe_stop = rt->e.hit_stop;
             }
         }
         if (probe_ran && dout.buf) {
@@ -4281,9 +4294,9 @@ int main(int argc, char **argv) {
         bool asked_gpu = o->mp.gpu_mode != GPU_OFF;
         const char *backend =
 #ifdef __APPLE__
-            m.gpu ? "metal" : "cpu";
+            rt->m.gpu ? "metal" : "cpu";
 #else
-            m.gpu ? "cuda" : "cpu";
+            rt->m.gpu ? "cuda" : "cpu";
 #endif
         sbuf r = {0};
         sb_lit(&r, "{\"schema\":\"xyntetik.runner.doctor.v1\",\"runner\":{\"version\":\"" RUNNER_VERSION "\"},");
@@ -4296,35 +4309,35 @@ int main(int argc, char **argv) {
         bn = bn ? bn + 1 : o->model_path;
         sb_lit(&r, "\"model\":{\"file\":\"");
         sb_esc(&r, bn, strlen(bn));
-        sb_fmt(&r, "\",\"bytes\":%llu,\"architecture\":\"", (unsigned long long)m.file_size);
-        sb_esc(&r, m.arch, strlen(m.arch));
-        const char *gn = gguf_get_str(&m.gf, "general.name", "");
+        sb_fmt(&r, "\",\"bytes\":%llu,\"architecture\":\"", (unsigned long long)rt->m.file_size);
+        sb_esc(&r, rt->m.arch, strlen(rt->m.arch));
+        const char *gn = gguf_get_str(&rt->m.gf, "general.name", "");
         sb_lit(&r, "\",\"name\":\"");
         sb_esc(&r, gn, strlen(gn));
         sb_fmt(&r, "\",\"layers\":%d,\"trained_context\":%d,\"adapter\":%s},",
-               m.n_layer, m.n_ctx_train, o->lora_path ? "true" : "false");
+               rt->m.n_layer, rt->m.n_ctx_train, o->lora_path ? "true" : "false");
         sb_fmt(&r, "\"placement\":{\"requested\":\"%s\",\"backend\":\"%s\","
                    "\"gpu_layers\":%d,\"layers\":%d,\"device\":\"",
-               asked_gpu ? "auto" : "off", backend, m.gpu ? m.gpu_layers : 0,
-               m.n_layer);
+               asked_gpu ? "auto" : "off", backend, rt->m.gpu ? rt->m.gpu_layers : 0,
+               rt->m.n_layer);
         sb_esc(&r, gname, strlen(gname));
         sb_lit(&r, "\"");
         if (vram_ok)
             sb_fmt(&r, ",\"vram_total_bytes\":%llu,\"vram_free_bytes\":%llu",
                    (unsigned long long)vtotal, (unsigned long long)vfree);
-        sb_fmt(&r, "},\"context\":{\"tokens\":%d,\"kv\":\"%s\"},", m.n_ctx,
-               m.kv_fp4 ? "fp4" : m.kv_split ? "k8v4" : m.kv_q8 ? "q8" : "f16");
+        sb_fmt(&r, "},\"context\":{\"tokens\":%d,\"kv\":\"%s\"},", rt->m.n_ctx,
+               rt->m.kv_fp4 ? "fp4" : rt->m.kv_split ? "k8v4" : rt->m.kv_q8 ? "q8" : "f16");
         sb_fmt(&r, "\"template\":{\"name\":\"%s\",\"recognised\":%s,"
                    "\"from_file\":%s,\"tool_family\":\"%s\",\"native_tool_protocol\":%s},",
                template_name(dt), dt == TMPL_LLAMA2_FALLBACK ? "false" : "true",
                have_tmpl_text ? "true" : "false", fam, native ? "true" : "false");
         sb_lit(&r, "\"sampling\":\"");
-        sb_esc(&r, doctor_sampling, strlen(doctor_sampling));
+        sb_esc(&r, rt->sampling, strlen(rt->sampling));
         sb_fmt(&r, "\",\"memory\":{\"ram_total_bytes\":%llu,\"ram_available_bytes\":%llu},",
                (unsigned long long)plat_ram_bytes(),
                (unsigned long long)plat_ram_available_bytes());
-        sb_fmt(&r, "\"timings\":{\"load_s\":%.3f,\"threads\":%d", doctor_load_s,
-               tpool_size(m.tp));
+        sb_fmt(&r, "\"timings\":{\"load_s\":%.3f,\"threads\":%d", rt->load_s,
+               tpool_size(rt->m.tp));
         if (probe_ran)
             sb_fmt(&r, ",\"prompt_tokens\":%d,\"prompt_s\":%.3f,\"prompt_tok_s\":%.2f,"
                        "\"generated_tokens\":%d,\"gen_s\":%.3f,\"gen_tok_s\":%.2f",
@@ -4353,11 +4366,11 @@ int main(int argc, char **argv) {
             FINDING(2, "template_not_recognised",
                     "the model's chat template is not one this build renders; llama-2 markup is used, which the model was not trained on",
                     "pass --chat-template NAME for a supported family, or report the model so its template can be added");
-        if (asked_gpu && gpu_there && !m.gpu)
+        if (asked_gpu && gpu_there && !rt->m.gpu)
             FINDING(1, "gpu_not_used",
                     "a GPU is present and was not used for this model; the load output above the report names the reason",
                     "read the load lines for the refusal; a quantization or architecture without a device kernel runs on the CPU");
-        else if (m.gpu && m.gpu_layers < m.n_layer)
+        else if (rt->m.gpu && rt->m.gpu_layers < rt->m.n_layer)
             FINDING(1, "partial_offload",
                     "only some layers are on the GPU, so every token crosses between device and host",
                     "use a smaller quantization or a shorter -c so the whole model fits, or accept the split");
@@ -4391,7 +4404,7 @@ int main(int argc, char **argv) {
                         "generation is under one token per second",
                         "check available RAM against the model size with --fit; a model larger than RAM pages from disk");
         }
-        if (plat_ram_available_bytes() && m.file_size > plat_ram_available_bytes() && !m.gpu)
+        if (plat_ram_available_bytes() && rt->m.file_size > plat_ram_available_bytes() && !rt->m.gpu)
             FINDING(1, "file_larger_than_available_ram",
                     "the model file is larger than the RAM available right now",
                     "close other programs, pick a smaller quantization, or run --fit for the exact numbers");
@@ -4408,7 +4421,7 @@ int main(int argc, char **argv) {
         fwrite(r.s, 1, r.n, stdout);
         free(r.s);
         free(dout.buf);
-        cli_cleanup(&e, toks, &tok, &m);
+        cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
         free(owned_prompt);
         return worst == 2 ? 2 : 0;
     }
@@ -4417,7 +4430,7 @@ int main(int argc, char **argv) {
         // A bench that stops at EOS measures the model's chattiness, not the
         // engine: instruct models that answer a bare prompt with instant EOS
         // reported "0.0 tok/s". Decode every requested token.
-        e.ignore_eos = true;
+        rt->e.ignore_eos = true;
         // A ten-token default measured nothing that matters: on the first
         // outside install this bench looked healthy while a real 2,100-token
         // prompt took 89 s to reach its first word, because prefill — not
@@ -4445,7 +4458,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "error: out of memory building benchmark prompt\n");
             CLI_FAIL;
         }
-        n_prompt = tok_encode(&tok, p, toks, (int)tok_cap, !o->no_bos, true);
+        n_prompt = tok_encode(&rt->tok, p, rt->toks, (int)rt->tok_cap, !o->no_bos, true);
         if (n_prompt < 0) {
             fprintf(stderr, "error: out of memory tokenizing benchmark prompt\n");
             free(p);
@@ -4457,25 +4470,25 @@ int main(int argc, char **argv) {
             int want = BENCH_PROMPT_TOKENS;
             // leave the decode phase its tokens, or the rate it reports is
             // measured over a couple of steps on a small-context model
-            int room = m.n_ctx - (o->n_predict > 0 ? o->n_predict : 0) - 1;
-            if (room < 1) room = m.n_ctx - 1;
+            int room = rt->m.n_ctx - (o->n_predict > 0 ? o->n_predict : 0) - 1;
+            if (room < 1) room = rt->m.n_ctx - 1;
             if (want > room) want = room;
             if (n_prompt > want) n_prompt = want;
         }
-        if (n_prompt == 0 || n_prompt >= m.n_ctx) {
+        if (n_prompt == 0 || n_prompt >= rt->m.n_ctx) {
             fprintf(stderr, "error: benchmark prompt does not fit context\n");
             free(p);
             CLI_FAIL;
         }
         t0 = now_s();
-        float *logits = engine_feed(&e, toks, n_prompt);
+        float *logits = engine_feed(&rt->e, rt->toks, n_prompt);
         ptime = now_s() - t0;
         if (!logits) {
             fprintf(stderr, "error: benchmark prompt exceeds context\n");
             free(p);
             CLI_FAIL;
         }
-        n_gen = engine_generate(&e, logits, o->n_predict, discard_cb, NULL, &gtime);
+        n_gen = engine_generate(&rt->e, logits, o->n_predict, discard_cb, NULL, &gtime);
         char esc_model[1024];
         json_escape(o->model_path, strlen(o->model_path), esc_model, sizeof(esc_model));
         // prompt_s is time-to-first-token for this prompt length: the number
@@ -4485,12 +4498,12 @@ int main(int argc, char **argv) {
                "\"gpu_layers\":%d,\"layers\":%d,\"prompt_tokens\":%d,"
                "\"generated_tokens\":%d,\"prompt_tok_s\":%.3f,"
                "\"gen_tok_s\":%.3f,\"prompt_s\":%.3f,\"gen_s\":%.3f}\n",
-               esc_model, m.arch, m.n_ctx, m.gpu_layers, m.n_layer,
+               esc_model, rt->m.arch, rt->m.n_ctx, rt->m.gpu_layers, rt->m.n_layer,
                n_prompt, n_gen,
                n_prompt / (ptime > 0 ? ptime : 1e-9),
                n_gen / (gtime > 0 ? gtime : 1e-9), ptime, gtime);
         free(p);
-        cli_cleanup(&e, toks, &tok, &m);
+        cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
         free(owned_prompt);
         return 0;
     }
@@ -4502,13 +4515,13 @@ int main(int argc, char **argv) {
         const char *why = NULL;
         if (!envelope_file_sha256(load_path, have) || strcmp(have, sm->model_sha256))
             why = "-m is not the model the image was made with (model sha256)";
-        else if (e.model_key != sm->model_key)
+        else if (rt->e.model_key != sm->model_key)
             why = "this engine's model key (context, KV type, geometry) is not the "
                   "image's";
-        else if (simg.n_vocab != m.n_vocab ||
-                 simg.state_n != prefix_cache_entry_bytes(&m, sm->n_tokens))
+        else if (simg.n_vocab != rt->m.n_vocab ||
+                 simg.state_n != prefix_cache_entry_bytes(&rt->m, sm->n_tokens))
             why = "the image's state does not fit this model";
-        if (!why && !engine_state_load(&e, simg.tokens, sm->n_tokens, simg.state))
+        if (!why && !engine_state_load(&rt->e, simg.tokens, sm->n_tokens, simg.state))
             why = "this model's KV layout (a ring or tied-V cache) cannot be resumed";
         if (why) {
             fprintf(stderr, "error: --resume %s: %s\n", o->resume_path, why);
@@ -4522,21 +4535,21 @@ int main(int argc, char **argv) {
         if (strcmp(bsha, sm->binary_sha256) != 0)
             fprintf(stderr, "session: resumed by another binary than the one that "
                     "suspended it; the continuation is exact only on that one\n");
-        engine_gen_resume(&e, sm->max_new, sm->n_prompt, sm->generated);
-        float *lg = malloc(sizeof(float) * (size_t)m.n_vocab);
+        engine_gen_resume(&rt->e, sm->max_new, sm->n_prompt, sm->generated);
+        float *lg = malloc(sizeof(float) * (size_t)rt->m.n_vocab);
         if (!lg) { session_image_free(&simg); CLI_FAIL; }
-        memcpy(lg, simg.logits, sizeof(float) * (size_t)m.n_vocab);
+        memcpy(lg, simg.logits, sizeof(float) * (size_t)rt->m.n_vocab);
         fprintf(stderr, "resumed %s: %d tokens, %d of %d generated%s\n",
                 o->resume_path, sm->n_tokens, sm->generated, sm->max_new,
                 o->fork_seed_given ? " (forked: new rng seed)" : "");
         double st0 = now_s();
         const float *last = NULL;
-        bool live = session_steps(&e, lg, o->suspend_after, stdout_cb, NULL, &last);
-        bool suspended = live && e.gen_count < e.gen_max;
+        bool live = session_steps(&rt->e, lg, o->suspend_after, stdout_cb, NULL, &last);
+        bool suspended = live && rt->e.gen_count < rt->e.gen_max;
         int rc = 0;
         if (o->session_out) {
             if (live) {
-                if (!session_image_out(o->session_out, &e, load_path, last,
+                if (!session_image_out(o->session_out, &rt->e, load_path, last,
                                        sm->n_prompt, sm->max_new, o->json_mode,
                                        o->ignore_eos, o->schema_file))
                     rc = 1;
@@ -4546,16 +4559,16 @@ int main(int argc, char **argv) {
                 rc = 1;
             }
         }
-        if (!suspended) engine_gen_end(&e, stdout_cb, NULL, NULL);
+        if (!suspended) engine_gen_end(&rt->e, stdout_cb, NULL, NULL);
         printf("\n");
         double gt = now_s() - st0;
-        int n_new = e.gen_count - sm->generated;
-        if (e.hit_stop && !o->json_mode) fprintf(stderr, "[end of text]\n");
+        int n_new = rt->e.gen_count - sm->generated;
+        if (rt->e.hit_stop && !o->json_mode) fprintf(stderr, "[end of text]\n");
         fprintf(stderr, "\nresumed gen: %d tok, %.2f tok/s\n", n_new,
                 n_new / (gt > 0 ? gt : 1e-9));
         free(lg);
         session_image_free(&simg);
-        cli_cleanup(&e, toks, &tok, &m);
+        cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
         free(owned_prompt);
         return rc;
     }
@@ -4563,23 +4576,23 @@ int main(int argc, char **argv) {
     if (!o->interactive) {
         // one-shot completion
         char *p = unescape(o->prompt);
-        n_prompt = tok_encode(&tok, p, toks, (int)tok_cap, !o->no_bos, true);
+        n_prompt = tok_encode(&rt->tok, p, rt->toks, (int)rt->tok_cap, !o->no_bos, true);
         if (n_prompt < 0) { fprintf(stderr, "error: out of memory tokenizing prompt\n"); free(p); CLI_FAIL; }
         if (n_prompt == 0) { fprintf(stderr, "error: empty prompt\n"); free(p); CLI_FAIL; }
-        if (n_prompt >= m.n_ctx) {
+        if (n_prompt >= rt->m.n_ctx) {
             fprintf(stderr, "error: prompt is %d tokens but context is %d — "
-                    "rerun with -c %d or larger\n", n_prompt, m.n_ctx,
+                    "rerun with -c %d or larger\n", n_prompt, rt->m.n_ctx,
                     (n_prompt + o->n_predict + 1023) / 1024 * 1024);
             free(p);
             CLI_FAIL;
         }
         if (o->verbose) {
             fprintf(stderr, "prompt tokens (%d):", n_prompt);
-            for (int i = 0; i < n_prompt && i < 64; i++) fprintf(stderr, " %d", toks[i]);
+            for (int i = 0; i < n_prompt && i < 64; i++) fprintf(stderr, " %d", rt->toks[i]);
             fprintf(stderr, "\n");
         }
         t0 = now_s();
-        float *logits = engine_feed(&e, toks, n_prompt);
+        float *logits = engine_feed(&rt->e, rt->toks, n_prompt);
         ptime = now_s() - t0;
         if (!logits) { fprintf(stderr, "error: prompt exceeds context\n"); free(p); CLI_FAIL; }
 
@@ -4596,12 +4609,12 @@ int main(int argc, char **argv) {
             // R1.3: the step loop, stopped at --suspend-after or the budget,
             // and imaged there while the generation is live
             double st0 = now_s();
-            engine_gen_begin(&e, o->n_predict);
+            engine_gen_begin(&rt->e, o->n_predict);
             const float *last = NULL;
-            bool live = session_steps(&e, logits, o->suspend_after, stdout_cb, NULL, &last);
-            bool suspended = live && e.gen_count < e.gen_max;
+            bool live = session_steps(&rt->e, logits, o->suspend_after, stdout_cb, NULL, &last);
+            bool suspended = live && rt->e.gen_count < rt->e.gen_max;
             if (live) {
-                if (!session_image_out(o->session_out, &e, load_path, last, n_prompt,
+                if (!session_image_out(o->session_out, &rt->e, load_path, last, n_prompt,
                                        o->n_predict, o->json_mode, o->ignore_eos, o->schema_file))
                     s_rc = 1;
             } else {
@@ -4613,15 +4626,15 @@ int main(int argc, char **argv) {
             }
             // a suspended document stays open: closing it is the resumed
             // run's business, at its own end
-            n_gen = suspended ? e.gen_count : engine_gen_end(&e, stdout_cb, NULL, NULL);
+            n_gen = suspended ? rt->e.gen_count : engine_gen_end(&rt->e, stdout_cb, NULL, NULL);
             gtime = now_s() - st0;
         } else {
-            n_gen = engine_generate(&e, logits, o->n_predict,
+            n_gen = engine_generate(&rt->e, logits, o->n_predict,
                                     o->transcript_path ? outcap_cb : stdout_cb,
                                     o->transcript_path ? &ocap : NULL, &gtime);
         }
         printf("\n");
-        if (e.hit_stop && !o->json_mode) fprintf(stderr, "[end of text]\n");
+        if (rt->e.hit_stop && !o->json_mode) fprintf(stderr, "[end of text]\n");
         fprintf(stderr, "\nprompt: %d tok, %.2f tok/s | gen: %d tok, %.2f tok/s\n",
                 n_prompt, n_prompt / (ptime > 0 ? ptime : 1e-9),
                 n_gen, n_gen / (gtime > 0 ? gtime : 1e-9));
@@ -4636,7 +4649,7 @@ int main(int argc, char **argv) {
                 o->transcript_path = NULL;   // do not write an unlinked receipt
             }
             char gname[128] = "";
-            if (m.gpu) gpu_available(gname, sizeof gname);
+            if (rt->m.gpu) gpu_available(gname, sizeof gname);
             // R1.1.2: what shaped the output beyond the sampler, so --verify
             // replays it under the same constraints or refuses it
             char cons[256] = "", schema_sha[65] = "";
@@ -4676,40 +4689,40 @@ int main(int argc, char **argv) {
                 .os = "linux",
 #endif
                 .arch = RUNNER_BUILD_ARCH,
-                .device = m.gpu ? gname : "cpu",
-                .gpu = m.gpu != NULL,
-                .gpu_layers = m.gpu_layers,
-                .threads = tpool_size(m.tp), .n_ctx = m.n_ctx,
-                .n_batch = m.n_batch, .kv_q8 = m.kv_q8, .kv_fp4 = m.kv_fp4,
-                .kv_split = m.kv_split,
+                .device = rt->m.gpu ? gname : "cpu",
+                .gpu = rt->m.gpu != NULL,
+                .gpu_layers = rt->m.gpu_layers,
+                .threads = tpool_size(rt->m.tp), .n_ctx = rt->m.n_ctx,
+                .n_batch = rt->m.n_batch, .kv_q8 = rt->m.kv_q8, .kv_fp4 = rt->m.kv_fp4,
+                .kv_split = rt->m.kv_split,
                 .model_path = load_path,
                 .adapter_path = o->lora_path, .adapter_scale = o->lora_scale,
                 .seed = t_seed,
-                .temp = e.smp->temp, .top_p = e.smp->top_p,
-                .min_p = e.smp->min_p,
-                .repeat_penalty = e.smp->repeat_penalty,
-                .top_k = e.smp->top_k, .n_predict = o->n_predict,
+                .temp = rt->e.smp->temp, .top_p = rt->e.smp->top_p,
+                .min_p = rt->e.smp->min_p,
+                .repeat_penalty = rt->e.smp->repeat_penalty,
+                .top_k = rt->e.smp->top_k, .n_predict = o->n_predict,
                 .bos = !o->no_bos,
                 .prompt_text = p,
-                .prompt_tokens = toks, .n_prompt = n_prompt,
+                .prompt_tokens = rt->toks, .n_prompt = n_prompt,
                 .output_text = ocap.buf, .output_text_len = ocap.n,
-                .output_tokens = e.hist + n_prompt, .n_output = n_gen,
-                .hit_stop = e.hit_stop,
+                .output_tokens = rt->e.hist + n_prompt, .n_output = n_gen,
+                .hit_stop = rt->e.hit_stop,
                 .prev_hash = prev_hash[0] ? prev_hash : NULL,
                 .sign_key_path = o->sign_key,
-                .spec_source = e.dm ? "model" : e.mtp_on ? "mtp"
-                             : e.lookup_on ? "lookup" : NULL,
-                .spec_rounds = e.spec_st.rounds,
-                .spec_drafted = e.spec_st.drafted,
-                .spec_accepted = e.spec_st.accepted,
-                .spec_lk_drafted = e.spec_st.lk_drafted,
-                .spec_lk_accepted = e.spec_st.lk_accepted,
-                .model_sig_json = model_sig_json[0] ? model_sig_json : NULL,
-                .adapter_sig_json = adapter_sig_json[0] ? adapter_sig_json : NULL,
+                .spec_source = rt->e.dm ? "model" : rt->e.mtp_on ? "mtp"
+                             : rt->e.lookup_on ? "lookup" : NULL,
+                .spec_rounds = rt->e.spec_st.rounds,
+                .spec_drafted = rt->e.spec_st.drafted,
+                .spec_accepted = rt->e.spec_st.accepted,
+                .spec_lk_drafted = rt->e.spec_st.lk_drafted,
+                .spec_lk_accepted = rt->e.spec_st.lk_accepted,
+                .model_sig_json = rt->model_sig_json[0] ? rt->model_sig_json : NULL,
+                .adapter_sig_json = rt->adapter_sig_json[0] ? rt->adapter_sig_json : NULL,
                 .constraints_json = cons_json[0] ? cons_json : NULL,
                 .watermark_json = wm_json[0] ? wm_json : NULL,
-                .envelope_known = cli_env_known,
-                .envelope_state = cli_env_state,
+                .envelope_known = rt->env_known,
+                .envelope_state = rt->env_state,
             };
             if (ocap.failed) {
                 fprintf(stderr, "error: transcript: out of memory capturing "
@@ -4723,7 +4736,7 @@ int main(int argc, char **argv) {
             free(ocap.buf);
         }
         free(p);
-        cli_cleanup(&e, toks, &tok, &m);
+        cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
         free(owned_prompt);
         return t_rc | s_rc;
     }
@@ -4732,11 +4745,11 @@ int main(int argc, char **argv) {
     // resolved and validated up with the serve checks, so it is a TMPL_* here
     if (tmpl_override >= 0) tmpl = tmpl_override;
     if (tmpl < 0)
-        tmpl = template_detect(gguf_get_str(&m.gf, "tokenizer.chat_template", NULL), &tok);
-    template_bind_think_tags(tmpl, &m.think_open, &m.think_close);
+        tmpl = template_detect(gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL), &rt->tok);
+    template_bind_think_tags(tmpl, &rt->m.think_open, &rt->m.think_close);
     if (!o->system_prompt)
         o->system_prompt = template_default_system(
-            tmpl, gguf_get_str(&m.gf, "tokenizer.chat_template", NULL));
+            tmpl, gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL));
     if (!o->system_prompt) o->system_prompt = "You are a helpful assistant.";
     fprintf(stderr, "chat mode (template: %s) — Ctrl-D or /exit to quit\n\n",
             template_name(tmpl));
@@ -4772,7 +4785,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[out of memory rendering the prompt — turn skipped]\n");
             continue;
         }
-        n_prompt = tok_encode_prompt(&tok, rendered, toks, (int)tok_cap,
+        n_prompt = tok_encode_prompt(&rt->tok, rendered, rt->toks, (int)rt->tok_cap,
                                      first_turn && !o->no_bos);
         free(rendered);
         first_turn = false;
@@ -4781,14 +4794,14 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[out of memory tokenizing input — turn skipped]\n");
             continue;
         }
-        if (e.pos + n_prompt >= m.n_ctx) {
+        if (rt->e.pos + n_prompt >= rt->m.n_ctx) {
             fprintf(stderr, "[context full — restart to continue]\n");
             break;
         }
-        float *logits = engine_feed(&e, toks, n_prompt);
+        float *logits = engine_feed(&rt->e, rt->toks, n_prompt);
         if (!logits) { fprintf(stderr, "[context full]\n"); break; }
 
-        jsonv_init(&e.jv); // fresh JSON constraint per turn
+        jsonv_init(&rt->e.jv); // fresh JSON constraint per turn
         chat_out co = { .in_think = false };
         // Harmony primes the analysis channel in the generation prompt, so the
         // stream starts INSIDE reasoning; a content-first split would never
@@ -4796,10 +4809,10 @@ int main(int argc, char **argv) {
         // "assistantfinal" handoff) as the answer. Same seam the server uses
         // for this template — see harmony_primed_think in completion.c.
         if (tmpl == TMPL_HARMONY)
-            think_init_reasoning(&co.ts, m.think_open, m.think_close);
+            think_init_reasoning(&co.ts, rt->m.think_open, rt->m.think_close);
         else
-            think_init(&co.ts, m.think_open, m.think_close);
-        n_gen = engine_generate(&e, logits, o->n_predict, chat_cb, &co, &gtime);
+            think_init(&co.ts, rt->m.think_open, rt->m.think_close);
+        n_gen = engine_generate(&rt->e, logits, o->n_predict, chat_cb, &co, &gtime);
         think_finish(&co.ts, chat_emit, &co);
         if (co.in_think) fputs("\n[/thinking]", stdout);
         think_free(&co.ts);
@@ -4807,7 +4820,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[%d tok, %.1f tok/s]\n",
                 n_gen, n_gen / (gtime > 0 ? gtime : 1e-9));
     }
-    cli_cleanup(&e, toks, &tok, &m);
+    cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
     free(owned_prompt);
     return 0;
 #undef CLI_FAIL
