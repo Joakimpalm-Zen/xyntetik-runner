@@ -1778,101 +1778,122 @@ static int run_caps(void) {
     return 0;
 }
 
+// Everything the command line sets, each with its default, before any
+// resource exists. Preparation further down overwrites some of it the way a
+// flag would (--resume and --verify take their settings from the image or the
+// record); the model, tokenizer, engine and loaded records live in main().
+typedef struct {
+    // what to run on, and the prompt
+    const char *model_path, *hf_spec, *prompt, *prompt_file, *system_prompt;
+    const char *tmpl_arg, *schema_file;
+    int n_predict, n_threads, reserve_cpu_pct, thinking;
+    bool n_given, kv_given, seed_given;
+    bool interactive, verbose, no_bos, ignore_eos, json_mode;
+    // modes that answer without generating
+    bool serve, caps, tool_info, bench_json, score, shadow_mode, shadow_yes;
+    bool adapt_info;    // --adapt-info: adapter eligibility as JSON
+    bool doctor;        // --doctor: one diagnostic report, then exit
+    bool doctor_text;   // --doctor-include-text: keep the probe's text
+    const char *decide_path;   // --decide FILE (jsonl of /v1/decide requests)
+    const char *fit_path;
+    // serving
+    int port, parallel, ttl;
+    long parent_pid;
+    bool no_tray, force_uncertified;
+    // R1.2.2: per-request receipts in serve mode
+    const char *receipts_dir;
+    int receipts_keep;
+    const char *kv_snapshots;
+    const char *sessions_path;   // --sessions DIR (R1.3.5)
+    // R8.6: --adapter NAME=PATH, repeatable; served per request as "<model>:NAME"
+    const char *adapter_names[16], *adapter_paths[16];
+    int n_adapters;
+    // speculation and reasoning controls
+    const char *draft_path;
+    bool draft_required, mtp_on, draft_lookup, loop_guard;
+    int draft_k;
+    // R4.12.16: server-side default reasoning budget in tokens (0 = off); a
+    // request's reasoning_max_tokens overrides it either way.
+    int reasoning_budget;
+    const char *reasoning_budget_message;   // NULL = the built-in line
+    float reasoning_temp;                    // < 0 = off
+    // loop_guard: R4.12.18, off by default
+    // file transformations
+    const char *quant_out, *quant_type, *prune_experts, *remove_sublayer;
+    const char *type_plan, *merge_out, *context_out;
+    bool type_plan_strict, merge_allow_erased;
+    // adapters and training
+    const char *lora_path;
+    const char *lora_sig;   // R1.2.3: the adapter's OMS bundle
+    float lora_scale;
+    const char *train_path, *train_out, *dpo_path;
+    int train_steps, train_ctx, lora_rank, save_every;
+    bool train_eot;
+    float train_lr, dpo_beta;
+    // records, signing, verification, watermarks, session images
+    const char *transcript_path, *transcript_prev, *sign_key, *keygen_path;
+    const char *keygen_algo, *lineage_path, *require_eval;
+    const char *sign_record, *record_prev, *check_record;
+    // R1.2.1: receipt bundles
+    const char *export_bundle, *bundle_out, *check_bundle;
+    const char *export_pack, *pack_out, *check_pack, *pack_envelope;
+    const char *pack_attach[PACK_MAX_ATTACH];
+    int n_pack_attach;
+    const char *trust_key, *model_sig, *model_pubkey, *sign_model, *model_key;
+    bool require_signed, require_signed_model;
+    const char *watermark_path, *watermark_keygen, *detect_path;
+    const char *verify_path, *session_out, *resume_path;
+    int suspend_after;
+    bool fork_seed_given;
+    uint64_t fork_seed;
+    model_params mp;
+    // The four sampling knobs are filled in from the model's family preset
+    // once the model is known; anything named on the command line is recorded
+    // in ov and wins over the preset. smp holds the seed until then.
+    sampler smp;
+    sampler_override ov;
+} cli_opts;
+
+static void cli_opts_init(cli_opts *o) {
+    memset(o, 0, sizeof *o);
+    o->keygen_algo = SIGN_ALGO_ED25519;
+    o->n_predict = 256;
+    o->port = 8080;
+    o->parallel = 1;
+    o->ttl = -1;   // -1: 300 for swap mode, never for single
+    o->draft_k = 4;
+    o->reasoning_temp = -1.0f;
+    o->thinking = THINK_DEFAULT;
+    o->lora_scale = 1.0f;
+    o->train_out = "adapter-out.gguf";
+    o->train_steps = 100;
+    o->train_ctx = 128;
+    o->lora_rank = 8;
+    o->train_lr = 1e-4f;
+    o->dpo_beta = 0.1f;
+    // RUNNER_VRAM_PRIORITY sets the baseline; --vram-priority (parsed below)
+    // overrides it, same precedence as every other env/flag pair in runner.
+    o->mp.vram_priority = (int)env_i64("RUNNER_VRAM_PRIORITY", -1000, 1000, 0);
+}
+
+
 int main(int argc, char **argv) {
-    const char *model_path = NULL, *prompt = NULL, *system_prompt = NULL;
-    const char *decide_path = NULL;   // --decide FILE (jsonl of /v1/decide requests)
-    const char *hf_spec = NULL;
     char *owned_prompt = NULL;
-    const char *tmpl_arg = NULL, *prompt_file = NULL, *schema_file = NULL;
-    const char *quant_out = NULL, *quant_type = NULL, *prune_experts = NULL;
-    const char *remove_sublayer = NULL;
     // the measured-envelope verdict the one-shot model loaded under, for its
     // transcript (R1.1.5); unknown on paths that never ran the gate
     int cli_env_state = ENV_UNCLASSIFIED;
     bool cli_env_known = false;
-    const char *type_plan = NULL, *merge_out = NULL, *context_out = NULL;
-    bool type_plan_strict = false, merge_allow_erased = false;
-    const char *transcript_path = NULL;
-    const char *transcript_prev = NULL, *sign_key = NULL, *keygen_path = NULL;
-    const char *lineage_path = NULL, *require_eval = NULL;
-    const char *sign_record = NULL, *record_prev = NULL, *check_record = NULL;
-    // R1.2.1: receipt bundles
-    const char *export_bundle = NULL, *bundle_out = NULL, *check_bundle = NULL;
-    const char *export_pack = NULL, *pack_out = NULL, *check_pack = NULL,
-               *pack_envelope = NULL;
-    const char *pack_attach[PACK_MAX_ATTACH];
-    int n_pack_attach = 0;
-    // R1.2.2: per-request receipts in serve mode
-    const char *receipts_dir = NULL;
-    int receipts_keep = 0;
-    const char *keygen_algo = SIGN_ALGO_ED25519;
-    const char *trust_key = NULL, *model_sig = NULL, *model_pubkey = NULL;
-    const char *sign_model = NULL, *model_key = NULL;
-    const char *watermark_path = NULL, *watermark_keygen = NULL;
-    const char *detect_path = NULL;
-    const char *kv_snapshots = NULL;
-    const char *sessions_path = NULL;   // --sessions DIR (R1.3.5)
-    const char *session_out = NULL, *resume_path = NULL;
-    int suspend_after = 0;
-    bool fork_seed_given = false, n_given = false, kv_given = false;
-    uint64_t fork_seed = 0;
     session_image simg;
     memset(&simg, 0, sizeof simg);
-    bool require_signed = false, require_signed_model = false;
     receipt_sig_state v_rsig = RSIG_NONE;   // --verify: the record's signature state
     char v_rec_pub[SIGN_PUBHEX_CAP] = "";
     char v_prev[65] = "";
-    const char *verify_path = NULL;
-    int n_predict = 256, n_threads = 0, tmpl = -1, reserve_cpu_pct = 0;
-    int port = 8080, parallel = 1, ttl = -1; // -1: 300 for swap mode, never for single
-    long parent_pid = 0;
-    const char *draft_path = NULL;
-    bool draft_required = false;
-    int draft_k = 4;
-    // R4.12.16: server-side default reasoning budget in tokens (0 = off); a
-    // request's reasoning_max_tokens overrides it either way.
-    int reasoning_budget = 0;
-    const char *reasoning_budget_message = NULL;   // NULL = the built-in line
-    float reasoning_temp = -1.0f;                  // < 0 = off
-    bool loop_guard = false;                       // R4.12.18, off by default
-    bool mtp_on = false, draft_lookup = false;
-    bool interactive = false, verbose = false, no_bos = false;
-    bool seed_given = false;
-    bool ignore_eos = false, json_mode = false, serve = false, caps = false;
-    bool tool_info = false;
-    bool adapt_info = false;   // --adapt-info: adapter eligibility as JSON
-    bool shadow_mode = false, shadow_yes = false;
-    const char *fit_path = NULL;
-    bool no_tray = false;
-    bool force_uncertified = false;
-    int thinking = THINK_DEFAULT;
-    bool bench_json = false;
-    bool doctor = false;            // --doctor: one diagnostic report, then exit
-    bool doctor_text = false;       // --doctor-include-text: keep the probe's text
+    int tmpl = -1;
     char doctor_sampling[256] = ""; // the effective sampler, as the load line says
     double doctor_load_s = 0;
-    bool score = false;
-    const char *lora_path = NULL;
-    const char *lora_sig = NULL;   // R1.2.3: the adapter's OMS bundle
-    // R8.6: --adapter NAME=PATH, repeatable; served per request as "<model>:NAME"
-    const char *adapter_names[16], *adapter_paths[16];
-    int n_adapters = 0;
-    float lora_scale = 1.0f;
-    const char *train_path = NULL, *train_out = "adapter-out.gguf";
-    const char *dpo_path = NULL;
-    int train_steps = 100, train_ctx = 128, lora_rank = 8, save_every = 0;
-    bool train_eot = false;
-    float train_lr = 1e-4f;
-    float dpo_beta = 0.1f;
-    model_params mp = {0};
-    // RUNNER_VRAM_PRIORITY sets the baseline; --vram-priority (parsed below)
-    // overrides it, same precedence as every other env/flag pair in runner.
-    mp.vram_priority = (int)env_i64("RUNNER_VRAM_PRIORITY", -1000, 1000, 0);
-    // The four sampling knobs are filled in from the model's family preset
-    // once the model is known; anything named on the command line is recorded
-    // here and wins over the preset.
-    sampler smp = { .rng = 0 };
-    sampler_override ov = {0};
+    cli_opts opts;
+    cli_opts_init(&opts);
+    cli_opts *o = &opts;
 
     // A bare `runner` — double-clicked, or typed with no arguments — starts
     // the tray on the platforms that have one. The conditions are deliberately
@@ -1890,148 +1911,148 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         #define NEXT (i + 1 < argc ? argv[++i] : (usage(argv[0]), exit(1), (char*)0))
-        if      (!strcmp(a, "-m")) model_path = NEXT;
-        else if (!strcmp(a, "-hf") || !strcmp(a, "--hf")) hf_spec = NEXT;
-        else if (!strcmp(a, "-p")) prompt = NEXT;
-        else if (!strcmp(a, "-f")) prompt_file = NEXT;
-        else if (!strcmp(a, "-n")) { n_predict = (int)int_arg(a, NEXT, -1, INT_MAX); n_given = true; }
-        else if (!strcmp(a, "-c")) mp.n_ctx = (int)int_arg(a, NEXT, 0, INT_MAX);
-        else if (!strcmp(a, "-b")) mp.n_batch = (int)int_arg(a, NEXT, 0, INT_MAX);
-        else if (!strcmp(a, "-t")) n_threads = (int)int_arg(a, NEXT, 0, INT_MAX);
-        else if (!strcmp(a, "-s")) { smp.rng = u64_arg(a, NEXT); seed_given = true; }
-        else if (!strcmp(a, "-i")) interactive = true;
-        else if (!strcmp(a, "-v")) verbose = true;
-        else if (!strcmp(a, "--serve")) serve = true;
+        if      (!strcmp(a, "-m")) o->model_path = NEXT;
+        else if (!strcmp(a, "-hf") || !strcmp(a, "--hf")) o->hf_spec = NEXT;
+        else if (!strcmp(a, "-p")) o->prompt = NEXT;
+        else if (!strcmp(a, "-f")) o->prompt_file = NEXT;
+        else if (!strcmp(a, "-n")) { o->n_predict = (int)int_arg(a, NEXT, -1, INT_MAX); o->n_given = true; }
+        else if (!strcmp(a, "-c")) o->mp.n_ctx = (int)int_arg(a, NEXT, 0, INT_MAX);
+        else if (!strcmp(a, "-b")) o->mp.n_batch = (int)int_arg(a, NEXT, 0, INT_MAX);
+        else if (!strcmp(a, "-t")) o->n_threads = (int)int_arg(a, NEXT, 0, INT_MAX);
+        else if (!strcmp(a, "-s")) { o->smp.rng = u64_arg(a, NEXT); o->seed_given = true; }
+        else if (!strcmp(a, "-i")) o->interactive = true;
+        else if (!strcmp(a, "-v")) o->verbose = true;
+        else if (!strcmp(a, "--serve")) o->serve = true;
         // gemma-4 renders a non-thinking prompt by default, matching its
         // reference template; --think opts into the thinking shape
-        else if (!strcmp(a, "--think")) thinking = THINK_ON;
-        else if (!strcmp(a, "--no-think")) thinking = THINK_OFF;
+        else if (!strcmp(a, "--think")) o->thinking = THINK_ON;
+        else if (!strcmp(a, "--no-think")) o->thinking = THINK_OFF;
         else if (!strcmp(a, "--tray")) return tray_main();
         // The standing opt-out, and no longer a no-op: it suppresses both the
         // bare-invocation launch above and the tray that otherwise follows a
         // --serve or -i session below.
-        else if (!strcmp(a, "--no-tray")) no_tray = true;
-        else if (!strcmp(a, "--force-uncertified")) force_uncertified = true;
-        else if (!strcmp(a, "--port")) port = (int)int_arg(a, NEXT, 1, 65535);
-        else if (!strcmp(a, "--parallel")) parallel = (int)int_arg(a, NEXT, 1, 16);
-        else if (!strcmp(a, "--ttl")) ttl = (int)int_arg(a, NEXT, -1, INT_MAX);
-        else if (!strcmp(a, "--json")) json_mode = true;
-        else if (!strcmp(a, "--json-schema")) schema_file = NEXT;
-        else if (!strcmp(a, "--quantize")) quant_out = NEXT;
-        else if (!strcmp(a, "--context-surgery")) context_out = NEXT;
-        else if (!strcmp(a, "--merge-lora")) merge_out = NEXT;
-        else if (!strcmp(a, "--merge-allow-erased")) merge_allow_erased = true;
-        else if (!strcmp(a, "--transcript")) transcript_path = NEXT;
-        else if (!strcmp(a, "--verify")) verify_path = NEXT;
-        else if (!strcmp(a, "--transcript-prev")) transcript_prev = NEXT;
-        else if (!strcmp(a, "--sign-key")) sign_key = NEXT;
-        else if (!strcmp(a, "--lineage")) lineage_path = NEXT;
-        else if (!strcmp(a, "--require-eval")) require_eval = NEXT;
-        else if (!strcmp(a, "--keygen")) keygen_path = NEXT;
-        else if (!strcmp(a, "--sign-record")) sign_record = NEXT;
-        else if (!strcmp(a, "--record-prev")) record_prev = NEXT;
-        else if (!strcmp(a, "--check-record")) check_record = NEXT;
-        else if (!strcmp(a, "--export-bundle")) export_bundle = NEXT;
-        else if (!strcmp(a, "--bundle-out")) bundle_out = NEXT;
-        else if (!strcmp(a, "--check-bundle")) check_bundle = NEXT;
-        else if (!strcmp(a, "--export-pack")) export_pack = NEXT;
-        else if (!strcmp(a, "--pack-out")) pack_out = NEXT;
-        else if (!strcmp(a, "--pack-envelope")) pack_envelope = NEXT;
-        else if (!strcmp(a, "--check-pack")) check_pack = NEXT;
+        else if (!strcmp(a, "--no-tray")) o->no_tray = true;
+        else if (!strcmp(a, "--force-uncertified")) o->force_uncertified = true;
+        else if (!strcmp(a, "--port")) o->port = (int)int_arg(a, NEXT, 1, 65535);
+        else if (!strcmp(a, "--parallel")) o->parallel = (int)int_arg(a, NEXT, 1, 16);
+        else if (!strcmp(a, "--ttl")) o->ttl = (int)int_arg(a, NEXT, -1, INT_MAX);
+        else if (!strcmp(a, "--json")) o->json_mode = true;
+        else if (!strcmp(a, "--json-schema")) o->schema_file = NEXT;
+        else if (!strcmp(a, "--quantize")) o->quant_out = NEXT;
+        else if (!strcmp(a, "--context-surgery")) o->context_out = NEXT;
+        else if (!strcmp(a, "--merge-lora")) o->merge_out = NEXT;
+        else if (!strcmp(a, "--merge-allow-erased")) o->merge_allow_erased = true;
+        else if (!strcmp(a, "--transcript")) o->transcript_path = NEXT;
+        else if (!strcmp(a, "--verify")) o->verify_path = NEXT;
+        else if (!strcmp(a, "--transcript-prev")) o->transcript_prev = NEXT;
+        else if (!strcmp(a, "--sign-key")) o->sign_key = NEXT;
+        else if (!strcmp(a, "--lineage")) o->lineage_path = NEXT;
+        else if (!strcmp(a, "--require-eval")) o->require_eval = NEXT;
+        else if (!strcmp(a, "--keygen")) o->keygen_path = NEXT;
+        else if (!strcmp(a, "--sign-record")) o->sign_record = NEXT;
+        else if (!strcmp(a, "--record-prev")) o->record_prev = NEXT;
+        else if (!strcmp(a, "--check-record")) o->check_record = NEXT;
+        else if (!strcmp(a, "--export-bundle")) o->export_bundle = NEXT;
+        else if (!strcmp(a, "--bundle-out")) o->bundle_out = NEXT;
+        else if (!strcmp(a, "--check-bundle")) o->check_bundle = NEXT;
+        else if (!strcmp(a, "--export-pack")) o->export_pack = NEXT;
+        else if (!strcmp(a, "--pack-out")) o->pack_out = NEXT;
+        else if (!strcmp(a, "--pack-envelope")) o->pack_envelope = NEXT;
+        else if (!strcmp(a, "--check-pack")) o->check_pack = NEXT;
         else if (!strcmp(a, "--pack-attach")) {
             const char *f = NEXT;
-            if (n_pack_attach == PACK_MAX_ATTACH) {
+            if (o->n_pack_attach == PACK_MAX_ATTACH) {
                 fprintf(stderr, "error: --pack-attach: at most %d files\n",
                         PACK_MAX_ATTACH);
                 return 1;
             }
-            pack_attach[n_pack_attach++] = f;
+            o->pack_attach[o->n_pack_attach++] = f;
         }
-        else if (!strcmp(a, "--receipts")) receipts_dir = NEXT;
+        else if (!strcmp(a, "--receipts")) o->receipts_dir = NEXT;
         else if (!strcmp(a, "--receipts-keep"))
-            receipts_keep = (int)int_arg(a, NEXT, 0, 100000000);
-        else if (!strcmp(a, "--keygen-algo")) keygen_algo = NEXT;
-        else if (!strcmp(a, "--require-signed")) require_signed = true;
-        else if (!strcmp(a, "--trust-key")) trust_key = NEXT;
-        else if (!strcmp(a, "--model-sig")) model_sig = NEXT;
-        else if (!strcmp(a, "--model-pubkey")) model_pubkey = NEXT;
-        else if (!strcmp(a, "--sign-model")) sign_model = NEXT;
-        else if (!strcmp(a, "--model-key")) model_key = NEXT;
-        else if (!strcmp(a, "--watermark")) watermark_path = NEXT;
-        else if (!strcmp(a, "--watermark-keygen")) watermark_keygen = NEXT;
-        else if (!strcmp(a, "--detect-watermark")) detect_path = NEXT;
-        else if (!strcmp(a, "--kv-snapshots")) kv_snapshots = NEXT;
-        else if (!strcmp(a, "--sessions")) sessions_path = NEXT;
-        else if (!strcmp(a, "--session-out")) session_out = NEXT;
-        else if (!strcmp(a, "--resume")) resume_path = NEXT;
+            o->receipts_keep = (int)int_arg(a, NEXT, 0, 100000000);
+        else if (!strcmp(a, "--keygen-algo")) o->keygen_algo = NEXT;
+        else if (!strcmp(a, "--require-signed")) o->require_signed = true;
+        else if (!strcmp(a, "--trust-key")) o->trust_key = NEXT;
+        else if (!strcmp(a, "--model-sig")) o->model_sig = NEXT;
+        else if (!strcmp(a, "--model-pubkey")) o->model_pubkey = NEXT;
+        else if (!strcmp(a, "--sign-model")) o->sign_model = NEXT;
+        else if (!strcmp(a, "--model-key")) o->model_key = NEXT;
+        else if (!strcmp(a, "--watermark")) o->watermark_path = NEXT;
+        else if (!strcmp(a, "--watermark-keygen")) o->watermark_keygen = NEXT;
+        else if (!strcmp(a, "--detect-watermark")) o->detect_path = NEXT;
+        else if (!strcmp(a, "--kv-snapshots")) o->kv_snapshots = NEXT;
+        else if (!strcmp(a, "--sessions")) o->sessions_path = NEXT;
+        else if (!strcmp(a, "--session-out")) o->session_out = NEXT;
+        else if (!strcmp(a, "--resume")) o->resume_path = NEXT;
         else if (!strcmp(a, "--suspend-after"))
-            suspend_after = (int)int_arg(a, NEXT, 1, INT_MAX);
+            o->suspend_after = (int)int_arg(a, NEXT, 1, INT_MAX);
         else if (!strcmp(a, "--fork-seed")) {
-            fork_seed = u64_arg(a, NEXT);
-            fork_seed_given = true;
+            o->fork_seed = u64_arg(a, NEXT);
+            o->fork_seed_given = true;
         }
-        else if (!strcmp(a, "--require-signed-model")) require_signed_model = true;
-        else if (!strcmp(a, "--quant")) quant_type = NEXT;
-        else if (!strcmp(a, "--prune-experts")) prune_experts = NEXT;
-        else if (!strcmp(a, "--remove-sublayer")) remove_sublayer = NEXT;
-        else if (!strcmp(a, "--type-plan")) type_plan = NEXT;
-        else if (!strcmp(a, "--type-plan-strict")) type_plan_strict = true;
-        else if (!strcmp(a, "--temp")) { ov.temp = (float)float_arg(a, NEXT, 0, FLT_MAX); ov.has_temp = true; }
-        else if (!strcmp(a, "--top-k")) { ov.top_k = (int)int_arg(a, NEXT, 0, INT_MAX); ov.has_top_k = true; }
-        else if (!strcmp(a, "--top-p")) { ov.top_p = (float)float_arg(a, NEXT, 0, 1); ov.has_top_p = true; }
-        else if (!strcmp(a, "--min-p")) { ov.min_p = (float)float_arg(a, NEXT, 0, 1); ov.has_min_p = true; }
-        else if (!strcmp(a, "--repeat-penalty")) { ov.repeat_penalty = (float)float_arg(a, NEXT, FLT_MIN, FLT_MAX); ov.has_repeat_penalty = true; }
-        else if (!strcmp(a, "--rope-scale")) mp.rope_scale = (float)float_arg(a, NEXT, 0, FLT_MAX);
-        else if (!strcmp(a, "--yarn-factor")) mp.yarn_factor = (float)float_arg(a, NEXT, 1, FLT_MAX);
-        else if (!strcmp(a, "--rope-base")) mp.rope_base = (float)float_arg(a, NEXT, 0, FLT_MAX);
-        else if (!strcmp(a, "--system")) system_prompt = NEXT;
-        else if (!strcmp(a, "--chat-template")) tmpl_arg = NEXT;
-        else if (!strcmp(a, "--no-bos")) no_bos = true;
-        else if (!strcmp(a, "--ignore-eos")) ignore_eos = true;
+        else if (!strcmp(a, "--require-signed-model")) o->require_signed_model = true;
+        else if (!strcmp(a, "--quant")) o->quant_type = NEXT;
+        else if (!strcmp(a, "--prune-experts")) o->prune_experts = NEXT;
+        else if (!strcmp(a, "--remove-sublayer")) o->remove_sublayer = NEXT;
+        else if (!strcmp(a, "--type-plan")) o->type_plan = NEXT;
+        else if (!strcmp(a, "--type-plan-strict")) o->type_plan_strict = true;
+        else if (!strcmp(a, "--temp")) { o->ov.temp = (float)float_arg(a, NEXT, 0, FLT_MAX); o->ov.has_temp = true; }
+        else if (!strcmp(a, "--top-k")) { o->ov.top_k = (int)int_arg(a, NEXT, 0, INT_MAX); o->ov.has_top_k = true; }
+        else if (!strcmp(a, "--top-p")) { o->ov.top_p = (float)float_arg(a, NEXT, 0, 1); o->ov.has_top_p = true; }
+        else if (!strcmp(a, "--min-p")) { o->ov.min_p = (float)float_arg(a, NEXT, 0, 1); o->ov.has_min_p = true; }
+        else if (!strcmp(a, "--repeat-penalty")) { o->ov.repeat_penalty = (float)float_arg(a, NEXT, FLT_MIN, FLT_MAX); o->ov.has_repeat_penalty = true; }
+        else if (!strcmp(a, "--rope-scale")) o->mp.rope_scale = (float)float_arg(a, NEXT, 0, FLT_MAX);
+        else if (!strcmp(a, "--yarn-factor")) o->mp.yarn_factor = (float)float_arg(a, NEXT, 1, FLT_MAX);
+        else if (!strcmp(a, "--rope-base")) o->mp.rope_base = (float)float_arg(a, NEXT, 0, FLT_MAX);
+        else if (!strcmp(a, "--system")) o->system_prompt = NEXT;
+        else if (!strcmp(a, "--chat-template")) o->tmpl_arg = NEXT;
+        else if (!strcmp(a, "--no-bos")) o->no_bos = true;
+        else if (!strcmp(a, "--ignore-eos")) o->ignore_eos = true;
         else if (!strcmp(a, "--gpu")) {
             const char *v = NEXT;
-            if (!strcmp(v, "auto")) mp.gpu_mode = GPU_AUTO;
-            else if (!strcmp(v, "off")) mp.gpu_mode = GPU_OFF;
+            if (!strcmp(v, "auto")) o->mp.gpu_mode = GPU_AUTO;
+            else if (!strcmp(v, "off")) o->mp.gpu_mode = GPU_OFF;
             else { fprintf(stderr, "error: --gpu expects auto or off\n"); return 1; }
         }
         else if (!strcmp(a, "--kv")) {
             const char *v = NEXT;
-            kv_given = true;
-            mp.kv_q8 = mp.kv_fp4 = mp.kv_split = false;
-            if (!strcmp(v, "q8")) mp.kv_q8 = true;
-            else if (!strcmp(v, "fp4")) mp.kv_fp4 = true;
-            else if (!strcmp(v, "k8v4")) mp.kv_split = true;
+            o->kv_given = true;
+            o->mp.kv_q8 = o->mp.kv_fp4 = o->mp.kv_split = false;
+            if (!strcmp(v, "q8")) o->mp.kv_q8 = true;
+            else if (!strcmp(v, "fp4")) o->mp.kv_fp4 = true;
+            else if (!strcmp(v, "k8v4")) o->mp.kv_split = true;
             else if (strcmp(v, "f16")) { fprintf(stderr, "error: --kv expects f16, q8, k8v4 or fp4\n"); return 1; }
         }
-        else if (!strcmp(a, "--mlock")) mp.mlock = true;
+        else if (!strcmp(a, "--mlock")) o->mp.mlock = true;
         else if (!strcmp(a, "--moe-prefetch")) {
             const char *v = NEXT;
-            if (!strcmp(v, "on")) mp.moe_prefetch = 1;
-            else if (!strcmp(v, "off")) mp.moe_prefetch = -1;
-            else if (!strcmp(v, "auto")) mp.moe_prefetch = 0;
+            if (!strcmp(v, "on")) o->mp.moe_prefetch = 1;
+            else if (!strcmp(v, "off")) o->mp.moe_prefetch = -1;
+            else if (!strcmp(v, "auto")) o->mp.moe_prefetch = 0;
             else { fprintf(stderr, "error: --moe-prefetch expects on, off or auto\n"); return 1; }
         }
-        else if (!strcmp(a, "--draft"))   draft_path = NEXT;
-        else if (!strcmp(a, "--draft-required")) draft_required = true;
-        else if (!strcmp(a, "--draft-k")) draft_k = (int)int_arg(a, NEXT, 1, 15);
-        else if (!strcmp(a, "--mtp"))     { mp.mtp = true; mtp_on = true; }
-        else if (!strcmp(a, "--mtp-file")) { mp.mtp_path = NEXT; mp.mtp = true; mtp_on = true; }
-        else if (!strcmp(a, "--draft-lookup")) draft_lookup = true;
+        else if (!strcmp(a, "--draft"))   o->draft_path = NEXT;
+        else if (!strcmp(a, "--draft-required")) o->draft_required = true;
+        else if (!strcmp(a, "--draft-k")) o->draft_k = (int)int_arg(a, NEXT, 1, 15);
+        else if (!strcmp(a, "--mtp"))     { o->mp.mtp = true; o->mtp_on = true; }
+        else if (!strcmp(a, "--mtp-file")) { o->mp.mtp_path = NEXT; o->mp.mtp = true; o->mtp_on = true; }
+        else if (!strcmp(a, "--draft-lookup")) o->draft_lookup = true;
         else if (!strcmp(a, "--reasoning-budget"))
-            reasoning_budget = (int)int_arg(a, NEXT, 0, INT_MAX);
+            o->reasoning_budget = (int)int_arg(a, NEXT, 0, INT_MAX);
         else if (!strcmp(a, "--reasoning-budget-message"))
-            reasoning_budget_message = NEXT;
-        else if (!strcmp(a, "--loop-guard")) loop_guard = true;
+            o->reasoning_budget_message = NEXT;
+        else if (!strcmp(a, "--loop-guard")) o->loop_guard = true;
         else if (!strcmp(a, "--bare-recipients")) template_set_bare_recipients(true);
         else if (!strcmp(a, "--reasoning-temp"))
-            reasoning_temp = (float)float_arg(a, NEXT, 0, 2);
-        else if (!strcmp(a, "--bench-json")) bench_json = true;
-        else if (!strcmp(a, "--doctor")) doctor = true;
-        else if (!strcmp(a, "--doctor-include-text")) doctor = doctor_text = true;
-        else if (!strcmp(a, "--score")) score = true;
-        else if (!strcmp(a, "--decide")) decide_path = NEXT;
-        else if (!strcmp(a, "--lora")) lora_path = NEXT;
-        else if (!strcmp(a, "--lora-sig")) lora_sig = NEXT;
+            o->reasoning_temp = (float)float_arg(a, NEXT, 0, 2);
+        else if (!strcmp(a, "--bench-json")) o->bench_json = true;
+        else if (!strcmp(a, "--doctor")) o->doctor = true;
+        else if (!strcmp(a, "--doctor-include-text")) o->doctor = o->doctor_text = true;
+        else if (!strcmp(a, "--score")) o->score = true;
+        else if (!strcmp(a, "--decide")) o->decide_path = NEXT;
+        else if (!strcmp(a, "--lora")) o->lora_path = NEXT;
+        else if (!strcmp(a, "--lora-sig")) o->lora_sig = NEXT;
         else if (!strcmp(a, "--adapter")) {
             char *spec = strdup(NEXT);
             char *eq = spec ? strchr(spec, '=') : NULL;
@@ -2050,33 +2071,33 @@ int main(int argc, char **argv) {
                         "characters of [A-Za-z0-9._-]\n");
                 return 1;
             }
-            if (n_adapters >= 16) {
+            if (o->n_adapters >= 16) {
                 fprintf(stderr, "error: at most 16 --adapter\n");
                 return 1;
             }
-            adapter_names[n_adapters] = spec;   // lives for the process
-            adapter_paths[n_adapters++] = eq + 1;
+            o->adapter_names[o->n_adapters] = spec;   // lives for the process
+            o->adapter_paths[o->n_adapters++] = eq + 1;
         }
         else if (!strcmp(a, "--lora-scale"))
-            lora_scale = (float)float_arg(a, NEXT, 0, FLT_MAX);
-        else if (!strcmp(a, "--train")) train_path = NEXT;
-        else if (!strcmp(a, "--train-dpo")) dpo_path = NEXT;
+            o->lora_scale = (float)float_arg(a, NEXT, 0, FLT_MAX);
+        else if (!strcmp(a, "--train")) o->train_path = NEXT;
+        else if (!strcmp(a, "--train-dpo")) o->dpo_path = NEXT;
         else if (!strcmp(a, "--dpo-beta"))
-            dpo_beta = (float)float_arg(a, NEXT, 0, FLT_MAX);
-        else if (!strcmp(a, "--train-eot")) train_eot = true;
+            o->dpo_beta = (float)float_arg(a, NEXT, 0, FLT_MAX);
+        else if (!strcmp(a, "--train-eot")) o->train_eot = true;
         else if (!strcmp(a, "--train-steps"))
-            train_steps = (int)int_arg(a, NEXT, 1, INT_MAX);
-        else if (!strcmp(a, "--train-out")) train_out = NEXT;
+            o->train_steps = (int)int_arg(a, NEXT, 1, INT_MAX);
+        else if (!strcmp(a, "--train-out")) o->train_out = NEXT;
         else if (!strcmp(a, "--train-ctx"))
-            train_ctx = (int)int_arg(a, NEXT, 2, INT_MAX);
+            o->train_ctx = (int)int_arg(a, NEXT, 2, INT_MAX);
         else if (!strcmp(a, "--lr"))
-            train_lr = (float)float_arg(a, NEXT, 0, 1);
+            o->train_lr = (float)float_arg(a, NEXT, 0, 1);
         else if (!strcmp(a, "--lora-rank"))
-            lora_rank = (int)int_arg(a, NEXT, 1, 512);
+            o->lora_rank = (int)int_arg(a, NEXT, 1, 512);
         else if (!strcmp(a, "--save-every"))
-            save_every = (int)int_arg(a, NEXT, 0, INT_MAX);
-        else if (!strcmp(a, "--reserve")) mp.reserve_vram_pct = mp.reserve_ram_pct = (int)int_arg(a, NEXT, 0, 100);
-        else if (!strcmp(a, "--reserve-vram")) mp.reserve_vram_pct = (int)int_arg(a, NEXT, 0, 100);
+            o->save_every = (int)int_arg(a, NEXT, 0, INT_MAX);
+        else if (!strcmp(a, "--reserve")) o->mp.reserve_vram_pct = o->mp.reserve_ram_pct = (int)int_arg(a, NEXT, 0, 100);
+        else if (!strcmp(a, "--reserve-vram")) o->mp.reserve_vram_pct = (int)int_arg(a, NEXT, 0, 100);
         else if (!strcmp(a, "--gpu-layers")) {
             // An explicit 0 means what it says: no layers on the GPU. It used
             // to be the "auto-fit" sentinel, which read as CPU but silently
@@ -2084,51 +2105,51 @@ int main(int argc, char **argv) {
             // CPU-vs-GPU certification evidence (GPU compared with GPU).
             // Auto-fit is the default; omit the flag to get it.
             int n = (int)int_arg(a, NEXT, 0, 100000);
-            if (n == 0) mp.gpu_mode = GPU_OFF;
-            else mp.gpu_layers_override = n;
+            if (n == 0) o->mp.gpu_mode = GPU_OFF;
+            else o->mp.gpu_layers_override = n;
         }
         else if (!strcmp(a, "--cpu-moe")) {
             // Optional argument: a layer count or "auto". A bare --cpu-moe
             // keeps every expert FFN on the host (the original behaviour), so
             // the argument is only consumed when it is unmistakably ours —
             // every other CLI token starts with '-' or is a flag's operand.
-            mp.cpu_moe = true;
-            mp.cpu_moe_layers = CPU_MOE_ALL;
+            o->mp.cpu_moe = true;
+            o->mp.cpu_moe_layers = CPU_MOE_ALL;
             const char *nx = i + 1 < argc ? argv[i + 1] : NULL;
             if (nx && !strcmp(nx, "auto")) {
-                mp.cpu_moe_layers = CPU_MOE_AUTO;
+                o->mp.cpu_moe_layers = CPU_MOE_AUTO;
                 i++;
             } else if (nx && nx[0] >= '0' && nx[0] <= '9') {
-                mp.cpu_moe_layers = (int)int_arg(a, argv[++i], 0, INT_MAX);
+                o->mp.cpu_moe_layers = (int)int_arg(a, argv[++i], 0, INT_MAX);
             }
         }
-        else if (!strcmp(a, "--reserve-ram")) mp.reserve_ram_pct = (int)int_arg(a, NEXT, 0, 100);
-        else if (!strcmp(a, "--reserve-cpu")) reserve_cpu_pct = (int)int_arg(a, NEXT, 0, 100);
+        else if (!strcmp(a, "--reserve-ram")) o->mp.reserve_ram_pct = (int)int_arg(a, NEXT, 0, 100);
+        else if (!strcmp(a, "--reserve-cpu")) o->reserve_cpu_pct = (int)int_arg(a, NEXT, 0, 100);
         else if (!strcmp(a, "--wait-for-vram")) {
             // optional argument: a bare --wait-for-vram waits the default, and
             // anything that is not a number is left for the next iteration to
             // parse as its own flag
-            mp.vram_wait_secs = 300;
+            o->mp.vram_wait_secs = 300;
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
-                mp.vram_wait_secs = (int)int_arg(a, argv[++i], 1, 86400);
+                o->mp.vram_wait_secs = (int)int_arg(a, argv[++i], 1, 86400);
         }
         else if (!strcmp(a, "--vram-priority"))
-            mp.vram_priority = (int)int_arg(a, NEXT, -1000, 1000);
-        else if (!strcmp(a, "--yield-on-request")) mp.yield_on_request = true;
-        else if (!strcmp(a, "--parent-pid")) parent_pid = (long)int_arg(a, NEXT, 1, LONG_MAX);
-        else if (!strcmp(a, "--caps")) caps = true;
+            o->mp.vram_priority = (int)int_arg(a, NEXT, -1000, 1000);
+        else if (!strcmp(a, "--yield-on-request")) o->mp.yield_on_request = true;
+        else if (!strcmp(a, "--parent-pid")) o->parent_pid = (long)int_arg(a, NEXT, 1, LONG_MAX);
+        else if (!strcmp(a, "--caps")) o->caps = true;
         // --shadow-mode: hand off to the Python client's `shadow install`
         // (confirmation, hooks, the /shadow skill and prompt, the model to
         // serve for offloading). The client ships beside the binary in the
         // release archive and in the source tree; nothing is downloaded.
-        else if (!strcmp(a, "--shadow-mode")) shadow_mode = true;
-        else if (!strcmp(a, "--yes")) shadow_yes = true;
+        else if (!strcmp(a, "--shadow-mode")) o->shadow_mode = true;
+        else if (!strcmp(a, "--yes")) o->shadow_yes = true;
         // Per-MODEL evidence: the native tool-call protocol resolved from this
         // model's chat template (a build property --caps cannot carry). Loads
         // the model, prints one JSON line, exits.
-        else if (!strcmp(a, "--tool-info")) tool_info = true;
-        else if (!strcmp(a, "--adapt-info")) adapt_info = true;
-        else if (!strcmp(a, "--fit")) fit_path = NEXT;
+        else if (!strcmp(a, "--tool-info")) o->tool_info = true;
+        else if (!strcmp(a, "--adapt-info")) o->adapt_info = true;
+        else if (!strcmp(a, "--fit")) o->fit_path = NEXT;
         else if (!strcmp(a, "--version")) {
             printf("runner %s%s\n", RUNNER_VERSION, RUNNER_BUILD_FLAVOR ? " (" RUNNER_BUILD_FLAVOR_STR ")" : "");
             return 0;
@@ -2145,13 +2166,13 @@ int main(int argc, char **argv) {
     // per request; accepting the process flags in either mode would promise a
     // prompt change and then silently discard it. Validate before any model or
     // fit-check I/O so the caller gets the actionable error they caused.
-    if (system_prompt && (!interactive || serve)) {
+    if (o->system_prompt && (!o->interactive || o->serve)) {
         fprintf(stderr, "error: --system is only valid with interactive chat"
                         " (-i), without --serve\n");
         return 1;
     }
-    if (thinking != THINK_DEFAULT && (!interactive || serve)) {
-        const char *flag = thinking == THINK_ON ? "--think" : "--no-think";
+    if (o->thinking != THINK_DEFAULT && (!o->interactive || o->serve)) {
+        const char *flag = o->thinking == THINK_ON ? "--think" : "--no-think";
         fprintf(stderr, "error: %s is only valid with interactive chat (-i);"
                         " server requests use enable_thinking\n", flag);
         return 1;
@@ -2163,70 +2184,70 @@ int main(int argc, char **argv) {
     // --draft-required makes that a failed run instead. Serve mode already
     // answers the question over the wire, so the flag is refused there rather
     // than accepted with no effect.
-    if (sign_record) {
-        if (!sign_key) {
+    if (o->sign_record) {
+        if (!o->sign_key) {
             fprintf(stderr, "error: --sign-record needs --sign-key FILE\n");
             return 1;
         }
-        return record_sign(sign_record, sign_key, record_prev) ? 0 : 1;
+        return record_sign(o->sign_record, o->sign_key, o->record_prev) ? 0 : 1;
     }
-    if (check_record) return record_check(check_record, trust_key);
-    if (lineage_path) return lineage_walk(lineage_path, trust_key);
-    if (check_bundle) return bundle_check(check_bundle, trust_key);
-    if (check_pack) return pack_check(check_pack, trust_key);
-    if (export_pack || pack_out) {
-        if (!export_pack || !pack_out) {
+    if (o->check_record) return record_check(o->check_record, o->trust_key);
+    if (o->lineage_path) return lineage_walk(o->lineage_path, o->trust_key);
+    if (o->check_bundle) return bundle_check(o->check_bundle, o->trust_key);
+    if (o->check_pack) return pack_check(o->check_pack, o->trust_key);
+    if (o->export_pack || o->pack_out) {
+        if (!o->export_pack || !o->pack_out) {
             fprintf(stderr, "error: --export-pack RECEIPTS_DIR and --pack-out "
                     "DIR go together\n");
             return 1;
         }
-        pack_opts po = { .receipts_dir = export_pack, .out_dir = pack_out,
-                         .model_sig = model_sig, .model_pubkey = model_pubkey,
-                         .envelope = pack_envelope, .n_attach = n_pack_attach,
-                         .sign_key = sign_key };
-        for (int i = 0; i < n_pack_attach; i++) po.attach[i] = pack_attach[i];
+        pack_opts po = { .receipts_dir = o->export_pack, .out_dir = o->pack_out,
+                         .model_sig = o->model_sig, .model_pubkey = o->model_pubkey,
+                         .envelope = o->pack_envelope, .n_attach = o->n_pack_attach,
+                         .sign_key = o->sign_key };
+        for (int i = 0; i < o->n_pack_attach; i++) po.attach[i] = o->pack_attach[i];
         return pack_export(&po);
     }
-    if ((pack_envelope || n_pack_attach) && !export_pack) {
+    if ((o->pack_envelope || o->n_pack_attach) && !o->export_pack) {
         fprintf(stderr, "error: --pack-envelope and --pack-attach go with "
                 "--export-pack\n");
         return 1;
     }
-    if (sign_model || model_key) {
-        if (!sign_model || !model_key) {
+    if (o->sign_model || o->model_key) {
+        if (!o->sign_model || !o->model_key) {
             fprintf(stderr, "error: --sign-model MODEL and --model-key KEY.pem go "
                     "together\n");
             return 1;
         }
         char def[4096];
-        const char *out = model_sig;
+        const char *out = o->model_sig;
         if (!out) {
-            if (strlen(sign_model) + 5 > sizeof def) {
+            if (strlen(o->sign_model) + 5 > sizeof def) {
                 fprintf(stderr, "error: --sign-model: path too long\n");
                 return 1;
             }
-            snprintf(def, sizeof def, "%s.sig", sign_model);
+            snprintf(def, sizeof def, "%s.sig", o->sign_model);
             out = def;
         }
         oms_sign_info si;
-        if (!oms_sign_file(sign_model, model_key, out, &si)) return 1;
+        if (!oms_sign_file(o->sign_model, o->model_key, out, &si)) return 1;
         printf("signed: %s (%s/%s, %d file%s, subject sha256 %s, key hint %s)\n",
                out, si.curve, si.hash, si.n_resources,
                si.n_resources == 1 ? "" : "s", si.subject_digest, si.key_hint);
         return 0;
     }
-    if (export_bundle || bundle_out) {
-        if (!export_bundle || !bundle_out) {
+    if (o->export_bundle || o->bundle_out) {
+        if (!o->export_bundle || !o->bundle_out) {
             fprintf(stderr, "error: --export-bundle RECEIPT and --bundle-out "
                     "DIR go together\n");
             return 1;
         }
-        bundle_opts bo = { .receipt = export_bundle, .out_dir = bundle_out,
-                           .model_sig = model_sig, .model_pubkey = model_pubkey,
-                           .sign_key = sign_key };
+        bundle_opts bo = { .receipt = o->export_bundle, .out_dir = o->bundle_out,
+                           .model_sig = o->model_sig, .model_pubkey = o->model_pubkey,
+                           .sign_key = o->sign_key };
         return bundle_export(&bo);
     }
-    if (watermark_keygen) {
+    if (o->watermark_keygen) {
         uint8_t key[32];
         char id[17];
         if (!os_random(key, sizeof key)) {
@@ -2234,41 +2255,41 @@ int main(int argc, char **argv) {
                     "is unavailable\n");
             return 1;
         }
-        bool ok = wm_key_write(watermark_keygen, key, id);
+        bool ok = wm_key_write(o->watermark_keygen, key, id);
         memset(key, 0, sizeof key);
         if (!ok) {
             fprintf(stderr, "error: --watermark-keygen: cannot create %s (an "
-                    "existing key is never overwritten)\n", watermark_keygen);
+                    "existing key is never overwritten)\n", o->watermark_keygen);
             return 1;
         }
         printf("{\"schema_version\":\"xyntetik.runner.watermark_key.v1\","
                "\"key_id\":\"%s\"}\n", id);
         fprintf(stderr, "watermark key -> %s (keep it private; receipts name it "
-                "by its id %s)\n", watermark_keygen, id);
+                "by its id %s)\n", o->watermark_keygen, id);
         return 0;
     }
     // R1.8.1: one key for everything this process marks, replays or scores
     wm_key wmk;
     memset(&wmk, 0, sizeof wmk);
     bool wm_on = false;
-    if (watermark_path) {
+    if (o->watermark_path) {
         char werr[256];
-        if (!wm_key_load(watermark_path, &wmk, werr, sizeof werr)) {
+        if (!wm_key_load(o->watermark_path, &wmk, werr, sizeof werr)) {
             fprintf(stderr, "error: --watermark: %s\n", werr);
             return 1;
         }
         wm_on = true;
     }
     char *detect_text = NULL;
-    if (detect_path) {
+    if (o->detect_path) {
         if (!wm_on) {
             fprintf(stderr, "error: --detect-watermark needs --watermark KEY\n");
             return 1;
         }
         size_t dn = 0;
-        char *dbuf = read_file(detect_path, &dn);
+        char *dbuf = read_file(o->detect_path, &dn);
         if (!dbuf) {
-            fprintf(stderr, "error: --detect-watermark: cannot read %s\n", detect_path);
+            fprintf(stderr, "error: --detect-watermark: cannot read %s\n", o->detect_path);
             return 1;
         }
         jv *dj = json_parse(dbuf, dn);
@@ -2283,7 +2304,7 @@ int main(int argc, char **argv) {
             int rc = 3;
             if (!all) {
                 fprintf(stderr, "error: --detect-watermark: %s has malformed token "
-                        "arrays\n", detect_path);
+                        "arrays\n", o->detect_path);
             } else {
                 memcpy(all, pt, sizeof *all * (size_t)np);
                 memcpy(all + np, ot, sizeof *all * (size_t)no);
@@ -2297,43 +2318,43 @@ int main(int argc, char **argv) {
             return rc;
         }
         jv_free(dj);
-        if (!model_path) {
+        if (!o->model_path) {
             free(dbuf);
             fprintf(stderr, "error: --detect-watermark: %s is not a transcript "
                     "record; scoring a text needs -m MODEL (its tokenizer)\n",
-                    detect_path);
+                    o->detect_path);
             return 1;
         }
         detect_text = dbuf;   // tokenized once the model is loaded
     }
-    if (keygen_path) {
+    if (o->keygen_path) {
         uint8_t seed[32];
         char pub[SIGN_PUBHEX_CAP];
-        if (!sign_algo_known(keygen_algo)) {
+        if (!sign_algo_known(o->keygen_algo)) {
             fprintf(stderr, "error: --keygen-algo: unknown algorithm %s (ed25519 or "
-                    "ml-dsa-44)\n", keygen_algo);
+                    "ml-dsa-44)\n", o->keygen_algo);
             return 1;
         }
         if (!os_random(seed, sizeof seed)) {
             fprintf(stderr, "error: --keygen: the OS random generator is unavailable\n");
             return 1;
         }
-        if (!signkey_write(keygen_path, keygen_algo, seed, pub)) {
-            fprintf(stderr, "error: --keygen: cannot write %s\n", keygen_path);
+        if (!signkey_write(o->keygen_path, o->keygen_algo, seed, pub)) {
+            fprintf(stderr, "error: --keygen: cannot write %s\n", o->keygen_path);
             return 1;
         }
         memset(seed, 0, sizeof seed);
         printf("{\"schema_version\":\"xyntetik.runner.signkey.v1\",\"algo\":\"%s\","
-               "\"public_key\":\"%s\"}\n", keygen_algo, pub);
+               "\"public_key\":\"%s\"}\n", o->keygen_algo, pub);
         fprintf(stderr, "signing key -> %s (keep it private; the %s public key is %s)\n",
-                keygen_path, keygen_algo, pub);
+                o->keygen_path, o->keygen_algo, pub);
         return 0;
     }
-    if (draft_required && !draft_path) {
+    if (o->draft_required && !o->draft_path) {
         fprintf(stderr, "error: --draft-required needs --draft PATH\n");
         return 1;
     }
-    if (draft_required && serve) {
+    if (o->draft_required && o->serve) {
         fprintf(stderr, "error: --draft-required is a local CLI guard; in serve"
                         " mode read draft.active from GET /v1/capabilities\n");
         return 1;
@@ -2342,42 +2363,42 @@ int main(int argc, char **argv) {
     // the counters attribute it to one source; a second source would either
     // be silently ignored (the accepted-then-ignored shape this project
     // refuses) or need a composition rule nobody has measured.
-    if (draft_lookup && (draft_path || mtp_on)) {
+    if (o->draft_lookup && (o->draft_path || o->mtp_on)) {
         fprintf(stderr, "error: --draft-lookup: one draft source per run; drop "
                         "--draft/--mtp to draft from the context\n");
         return 1;
     }
-    plat_parent_watch(parent_pid);
-    if (n_threads <= 0 && reserve_cpu_pct > 0) {
-        n_threads = plat_cpu_count() * reserve_cpu_pct / 100;
-        if (n_threads < 1) n_threads = 1;
+    plat_parent_watch(o->parent_pid);
+    if (o->n_threads <= 0 && o->reserve_cpu_pct > 0) {
+        o->n_threads = plat_cpu_count() * o->reserve_cpu_pct / 100;
+        if (o->n_threads < 1) o->n_threads = 1;
     }
-    if (fit_path) return run_fit_check(fit_path, mp.n_ctx, &mp);
+    if (o->fit_path) return run_fit_check(o->fit_path, o->mp.n_ctx, &o->mp);
 
-    if (shadow_mode) return run_shadow_mode(model_path, shadow_yes);
-    if (caps) return run_caps();
+    if (o->shadow_mode) return run_shadow_mode(o->model_path, o->shadow_yes);
+    if (o->caps) return run_caps();
     // -hf resolves to a cached local file before anything reads model_path,
     // so every mode (-p, -i, --serve, --score, ...) sees a plain path
-    if (hf_spec) {
-        if (model_path) {
+    if (o->hf_spec) {
+        if (o->model_path) {
             fprintf(stderr, "error: use -m or -hf, not both\n");
             return 1;
         }
         char herr[1024];
-        char *fetched = hf_fetch(hf_spec, herr, sizeof herr);
+        char *fetched = hf_fetch(o->hf_spec, herr, sizeof herr);
         if (!fetched) {
-            fprintf(stderr, "error: -hf %s: %s\n", hf_spec, herr);
+            fprintf(stderr, "error: -hf %s: %s\n", o->hf_spec, herr);
             return 1;
         }
-        fprintf(stderr, "hf: %s -> %s\n", hf_spec, fetched);
-        model_path = fetched;   // lives for the process
+        fprintf(stderr, "hf: %s -> %s\n", o->hf_spec, fetched);
+        o->model_path = fetched;   // lives for the process
     }
-    if (!model_path) { usage(argv[0]); return 1; }
-    if (prompt_file) {
+    if (!o->model_path) { usage(argv[0]); return 1; }
+    if (o->prompt_file) {
         size_t flen = 0;
-        char *fdata = read_file(prompt_file, &flen);
-        if (!fdata) { fprintf(stderr, "error: cannot read %s\n", prompt_file); return 1; }
-        size_t plen = prompt ? strlen(prompt) : 0;
+        char *fdata = read_file(o->prompt_file, &flen);
+        if (!fdata) { fprintf(stderr, "error: cannot read %s\n", o->prompt_file); return 1; }
+        size_t plen = o->prompt ? strlen(o->prompt) : 0;
         if (flen > SIZE_MAX - plen - 1) {   // checked concat length
             fprintf(stderr, "error: prompt is too large\n");
             free(fdata);
@@ -2385,16 +2406,16 @@ int main(int argc, char **argv) {
         }
         char *fbuf = malloc(plen + flen + 1);
         if (!fbuf) { free(fdata); fprintf(stderr, "error: out of memory\n"); return 1; }
-        if (prompt) memcpy(fbuf, prompt, plen);
+        if (o->prompt) memcpy(fbuf, o->prompt, plen);
         memcpy(fbuf + plen, fdata, flen);
         fbuf[plen + flen] = 0;
         free(fdata);
-        prompt = owned_prompt = fbuf;
+        o->prompt = owned_prompt = fbuf;
     }
-    if (!prompt && !interactive && !serve && !quant_out && !merge_out &&
-        !context_out &&
-        !bench_json && !doctor && !tool_info && !adapt_info && !train_path && !dpo_path && !verify_path &&
-        !decide_path && !detect_text && !resume_path) {
+    if (!o->prompt && !o->interactive && !o->serve && !o->quant_out && !o->merge_out &&
+        !o->context_out &&
+        !o->bench_json && !o->doctor && !o->tool_info && !o->adapt_info && !o->train_path && !o->dpo_path && !o->verify_path &&
+        !o->decide_path && !detect_text && !o->resume_path) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
         usage(argv[0]);
         return 1;
@@ -2406,120 +2427,120 @@ int main(int argc, char **argv) {
     // random one with nothing on stderr. Only an absent -s takes the clock
     // now; an explicit 0 is refused, because the one thing that must not
     // happen is running it as if it had been honoured.
-    if (seed_given && smp.rng == 0) {
+    if (o->seed_given && o->smp.rng == 0) {
         fprintf(stderr, "error: -s 0 is not a usable seed — the sampler's RNG "
                         "state 0 is a fixed point. Use any other value.\n");
         return 1;
     }
-    if (!seed_given) smp.rng = (uint64_t)time(NULL) ^ 0x9E3779B97F4A7C15ull;
+    if (!o->seed_given) o->smp.rng = (uint64_t)time(NULL) ^ 0x9E3779B97F4A7C15ull;
     // R1.3 session images: suspend (--suspend-after N with --session-out),
     // resume (--resume), fork (--resume with --fork-seed). They image the
     // host KV cache and the solo step loop, so they run on the CPU, without
     // speculation, and outside serve / interactive / verify.
-    if (session_out || suspend_after || resume_path || fork_seed_given) {
+    if (o->session_out || o->suspend_after || o->resume_path || o->fork_seed_given) {
         const char *why = NULL;
-        if (suspend_after && !session_out)
+        if (o->suspend_after && !o->session_out)
             why = "--suspend-after N needs --session-out FILE";
-        else if (fork_seed_given && !resume_path)
+        else if (o->fork_seed_given && !o->resume_path)
             why = "--fork-seed forks a session and needs --resume FILE";
-        else if (resume_path && prompt)
+        else if (o->resume_path && o->prompt)
             why = "--resume continues an image's prompt; give no -p";
-        else if (serve || interactive || verify_path || transcript_path)
+        else if (o->serve || o->interactive || o->verify_path || o->transcript_path)
             why = "session images are for one-shot runs (not --serve, -i, "
                   "--verify or --transcript)";
-        else if (draft_path || mtp_on || draft_lookup)
+        else if (o->draft_path || o->mtp_on || o->draft_lookup)
             why = "session images run the solo step loop: no --draft, --mtp or "
                   "--draft-lookup";
-        else if (watermark_path)
+        else if (o->watermark_path)
             why = "an image does not carry a watermark key, so a resume could not "
                   "continue a marked generation: no --watermark";
-        else if (!resume_path && n_predict < 1)
+        else if (!o->resume_path && o->n_predict < 1)
             why = "session images need a finite generation budget (-n N, N >= 1)";
-        else if (!resume_path && suspend_after >= n_predict)
+        else if (!o->resume_path && o->suspend_after >= o->n_predict)
             why = "--suspend-after N must stop before the -n budget is spent";
-        if (!why && session_out) {
+        if (!why && o->session_out) {
             // refused before the load and the generation, not after them;
             // session_write's O_EXCL still closes the race
-            FILE *ex = fopen(session_out, "rb");
+            FILE *ex = fopen(o->session_out, "rb");
             if (ex) {
                 fclose(ex);
                 fprintf(stderr, "error: --session-out %s already exists; an "
-                        "image is never overwritten\n", session_out);
+                        "image is never overwritten\n", o->session_out);
                 return 1;
             }
         }
         if (why) { fprintf(stderr, "error: %s\n", why); return 1; }
-        mp.gpu_mode = GPU_OFF;
+        o->mp.gpu_mode = GPU_OFF;
     }
-    if (resume_path) {
+    if (o->resume_path) {
         // the image fixes everything that shapes the continuation; a flag
         // that would change it is refused, not silently overridden
-        const char *fixed = seed_given ? "-s" : n_given ? "-n" : mp.n_ctx ? "-c"
-            : kv_given ? "--kv"
-            : ov.has_temp ? "--temp" : ov.has_top_k ? "--top-k"
-            : ov.has_top_p ? "--top-p" : ov.has_min_p ? "--min-p"
-            : ov.has_repeat_penalty ? "--repeat-penalty" : NULL;
+        const char *fixed = o->seed_given ? "-s" : o->n_given ? "-n" : o->mp.n_ctx ? "-c"
+            : o->kv_given ? "--kv"
+            : o->ov.has_temp ? "--temp" : o->ov.has_top_k ? "--top-k"
+            : o->ov.has_top_p ? "--top-p" : o->ov.has_min_p ? "--min-p"
+            : o->ov.has_repeat_penalty ? "--repeat-penalty" : NULL;
         if (fixed) {
             fprintf(stderr, "error: --resume continues under the image's own "
                     "settings; %s would change them%s\n", fixed,
-                    seed_given ? " (a different continuation is --fork-seed N)" : "");
+                    o->seed_given ? " (a different continuation is --fork-seed N)" : "");
             return 1;
         }
-        if (!session_read(resume_path, &simg)) return 1;
+        if (!session_read(o->resume_path, &simg)) return 1;
         const session_meta *sm = &simg.meta;
         // the image's shape and sampler, as a replay takes a record's
-        mp.n_ctx = sm->n_ctx;
-        mp.kv_q8 = !strcmp(sm->kv_type, "q8");
-        mp.kv_fp4 = !strcmp(sm->kv_type, "fp4");
-        mp.kv_split = !strcmp(sm->kv_type, "k8v4");
-        ov.temp = sm->temp;                     ov.has_temp = true;
-        ov.top_k = sm->top_k;                   ov.has_top_k = true;
-        ov.top_p = sm->top_p;                   ov.has_top_p = true;
-        ov.min_p = sm->min_p;                   ov.has_min_p = true;
-        ov.repeat_penalty = sm->repeat_penalty; ov.has_repeat_penalty = true;
-        if (fork_seed_given && fork_seed == 0) {
+        o->mp.n_ctx = sm->n_ctx;
+        o->mp.kv_q8 = !strcmp(sm->kv_type, "q8");
+        o->mp.kv_fp4 = !strcmp(sm->kv_type, "fp4");
+        o->mp.kv_split = !strcmp(sm->kv_type, "k8v4");
+        o->ov.temp = sm->temp;                     o->ov.has_temp = true;
+        o->ov.top_k = sm->top_k;                   o->ov.has_top_k = true;
+        o->ov.top_p = sm->top_p;                   o->ov.has_top_p = true;
+        o->ov.min_p = sm->min_p;                   o->ov.has_min_p = true;
+        o->ov.repeat_penalty = sm->repeat_penalty; o->ov.has_repeat_penalty = true;
+        if (o->fork_seed_given && o->fork_seed == 0) {
             fprintf(stderr, "error: --fork-seed must be nonzero\n");
             return 1;
         }
-        if (!fork_seed_given && sm->rng == 0 && sm->temp > 0) {
+        if (!o->fork_seed_given && sm->rng == 0 && sm->temp > 0) {
             fprintf(stderr, "error: --resume %s: a sampled image without an rng "
-                    "state\n", resume_path);
+                    "state\n", o->resume_path);
             return 1;
         }
         // a greedy image records no rng (it is never drawn from); the sampler
         // still wants a nonzero state
-        smp.rng = fork_seed_given ? fork_seed : sm->rng ? sm->rng : 1;
-        if ((json_mode && !sm->json_mode) || (ignore_eos && !sm->ignore_eos)) {
+        o->smp.rng = o->fork_seed_given ? o->fork_seed : sm->rng ? sm->rng : 1;
+        if ((o->json_mode && !sm->json_mode) || (o->ignore_eos && !sm->ignore_eos)) {
             fprintf(stderr, "error: --resume: the image was not generated under "
-                    "%s\n", json_mode && !sm->json_mode ? "--json" : "--ignore-eos");
+                    "%s\n", o->json_mode && !sm->json_mode ? "--json" : "--ignore-eos");
             session_image_free(&simg);
             return 1;
         }
-        json_mode = sm->json_mode;
-        ignore_eos = sm->ignore_eos;
-        n_predict = sm->max_new;
+        o->json_mode = sm->json_mode;
+        o->ignore_eos = sm->ignore_eos;
+        o->n_predict = sm->max_new;
         if (sm->schema_sha256[0]) {
             char have[65];
-            if (!schema_file || !schema_file_digest(schema_file, have) ||
+            if (!o->schema_file || !schema_file_digest(o->schema_file, have) ||
                 strcmp(have, sm->schema_sha256) != 0) {
                 fprintf(stderr, "error: --resume: the image was generated under a "
                         "JSON schema (sha256 %s); give --json-schema naming that "
                         "schema\n", sm->schema_sha256);
                 return 1;
             }
-        } else if (schema_file) {
+        } else if (o->schema_file) {
             fprintf(stderr, "error: --resume: the image was not generated under "
                     "a schema; --json-schema would change what it continues\n");
             return 1;
         }
-        if (suspend_after && suspend_after <= sm->generated) {
+        if (o->suspend_after && o->suspend_after <= sm->generated) {
             fprintf(stderr, "error: --suspend-after %d: the image has already "
-                    "generated %d tokens\n", suspend_after, sm->generated);
+                    "generated %d tokens\n", o->suspend_after, sm->generated);
             return 1;
         }
-        if (suspend_after >= sm->max_new) {
+        if (o->suspend_after >= sm->max_new) {
             fprintf(stderr, "error: --suspend-after %d must stop before the "
-                    "image's budget of %d tokens is spent\n", suspend_after,
+                    "image's budget of %d tokens is spent\n", o->suspend_after,
                     sm->max_new);
             return 1;
         }
@@ -2531,11 +2552,11 @@ int main(int argc, char **argv) {
     // chain hash must re-verify from the raw bytes, or nothing else in the
     // file is worth believing (UNVERIFIABLE, exit 3).
     jv *vrec = NULL;
-    if (verify_path) {
+    if (o->verify_path) {
         size_t vlen = 0;
-        char *vbuf = read_file(verify_path, &vlen);
+        char *vbuf = read_file(o->verify_path, &vlen);
         if (!vbuf) {
-            fprintf(stderr, "UNVERIFIABLE: cannot read %s\n", verify_path);
+            fprintf(stderr, "UNVERIFIABLE: cannot read %s\n", o->verify_path);
             return 3;
         }
         char *cpos = strstr(vbuf, ",\"chain\"");
@@ -2566,7 +2587,7 @@ int main(int argc, char **argv) {
                     : "malformed signature object");
             jv_free(vrec); return 3;
         }
-        if (require_signed && v_rsig != RSIG_OK) {
+        if (o->require_signed && v_rsig != RSIG_OK) {
             fprintf(stderr, "UNVERIFIABLE: --require-signed: the record carries "
                     "no signature\n");
             jv_free(vrec); return 3;
@@ -2575,8 +2596,8 @@ int main(int argc, char **argv) {
         // SHA-256 of the key bytes (an ML-DSA-44 key is 2624 hex characters;
         // its digest is what fits in a policy file or a command line)
         bool trusted = v_rsig == RSIG_OK;
-        if (trusted && trust_key) {
-            if (strncmp(trust_key, "sha256:", 7) == 0) {
+        if (trusted && o->trust_key) {
+            if (strncmp(o->trust_key, "sha256:", 7) == 0) {
                 uint8_t pkb[SIGN_PK_MAX];
                 size_t hn = strlen(v_rec_pub);
                 char digest[65] = "";
@@ -2586,28 +2607,28 @@ int main(int argc, char **argv) {
                     pkb[i] = (uint8_t)v;
                 }
                 envelope_data_sha256(pkb, hn / 2, digest);
-                trusted = hex_eq_nocase(trust_key + 7, digest);
+                trusted = hex_eq_nocase(o->trust_key + 7, digest);
             } else {
-                trusted = hex_eq_nocase(trust_key, v_rec_pub);
+                trusted = hex_eq_nocase(o->trust_key, v_rec_pub);
             }
         }
-        if (trust_key && !trusted) {
+        if (o->trust_key && !trusted) {
             fprintf(stderr, "UNVERIFIABLE: --trust-key: the record is %s\n",
                     v_rsig == RSIG_OK ? "signed by a different key" : "unsigned");
             jv_free(vrec); return 3;
         }
         snprintf(v_prev, sizeof v_prev, "%s",
                  jv_str(jv_get(jv_get(vrec, "chain"), "prev"), ""));
-        if (transcript_prev) {
+        if (o->transcript_prev) {
             char ph[65];
-            if (!receipt_chain_hash(transcript_prev, ph)) {
+            if (!receipt_chain_hash(o->transcript_prev, ph)) {
                 fprintf(stderr, "UNVERIFIABLE: cannot read the chain hash of %s\n",
-                        transcript_prev);
+                        o->transcript_prev);
                 jv_free(vrec); return 3;
             }
             if (strcmp(ph, v_prev) != 0) {
                 fprintf(stderr, "UNVERIFIABLE: chain link broken: the record's prev "
-                        "is not the chain hash of %s\n", transcript_prev);
+                        "is not the chain hash of %s\n", o->transcript_prev);
                 jv_free(vrec); return 3;
             }
         }
@@ -2644,7 +2665,7 @@ int main(int argc, char **argv) {
         }
         {
             char why[512];
-            if (!replay_constraints_ok(vrec, json_mode, schema_file, ignore_eos,
+            if (!replay_constraints_ok(vrec, o->json_mode, o->schema_file, o->ignore_eos,
                                        why, sizeof why)) {
                 fprintf(stderr, "UNVERIFIABLE: %s\n", why);
                 jv_free(vrec);
@@ -2676,15 +2697,15 @@ int main(int argc, char **argv) {
             jv_free(vrec);
             return 3;
         }
-        mp.n_ctx = (int)ctx_d;
-        mp.n_batch = (int)batch_d;
-        n_threads = (int)threads_d;
-        mp.kv_q8 = strcmp(kv, "q8") == 0;
-        mp.kv_fp4 = strcmp(kv, "fp4") == 0;
-        mp.kv_split = strcmp(kv, "k8v4") == 0;
-        mp.gpu_mode = gpu_v->b ? GPU_AUTO : GPU_OFF;
+        o->mp.n_ctx = (int)ctx_d;
+        o->mp.n_batch = (int)batch_d;
+        o->n_threads = (int)threads_d;
+        o->mp.kv_q8 = strcmp(kv, "q8") == 0;
+        o->mp.kv_fp4 = strcmp(kv, "fp4") == 0;
+        o->mp.kv_split = strcmp(kv, "k8v4") == 0;
+        o->mp.gpu_mode = gpu_v->b ? GPU_AUTO : GPU_OFF;
         if (gpu_layers_v && gpu_layers_d > 0)
-            mp.gpu_layers_override = (int)gpu_layers_d;
+            o->mp.gpu_layers_override = (int)gpu_layers_d;
         jv *record_adapter = jv_get(vrec, "adapter");
         if (record_adapter && record_adapter->type != J_NULL) {
             jv *scale_v = record_adapter->type == J_OBJ
@@ -2696,7 +2717,7 @@ int main(int argc, char **argv) {
                 jv_free(vrec);
                 return 3;
             }
-            lora_scale = (float)scale;
+            o->lora_scale = (float)scale;
         } else if (!record_adapter) {
             fprintf(stderr, "UNVERIFIABLE: missing adapter profile\n");
             jv_free(vrec);
@@ -2724,7 +2745,7 @@ int main(int argc, char **argv) {
             jv_free(vrec);
             return 3;
         }
-        smp.rng = replay_seed;
+        o->smp.rng = replay_seed;
         // The record's sampling config rides the CLI-override mechanism so
         // it survives sampler_resolve's per-model presets. Apply the same
         // finite/range/integrality rules as the CLI before any narrowing.
@@ -2742,16 +2763,16 @@ int main(int argc, char **argv) {
             jv_free(vrec);
             return 3;
         }
-        ov.temp = (float)temp;                         ov.has_temp = true;
-        ov.top_k = top_k;                              ov.has_top_k = true;
-        ov.top_p = (float)top_p;                       ov.has_top_p = true;
-        ov.min_p = (float)min_p;                       ov.has_min_p = true;
-        ov.repeat_penalty = (float)repeat_penalty;
-        ov.has_repeat_penalty = true;
-        n_predict = replay_n_predict;
+        o->ov.temp = (float)temp;                         o->ov.has_temp = true;
+        o->ov.top_k = top_k;                              o->ov.has_top_k = true;
+        o->ov.top_p = (float)top_p;                       o->ov.has_top_p = true;
+        o->ov.min_p = (float)min_p;                       o->ov.has_min_p = true;
+        o->ov.repeat_penalty = (float)repeat_penalty;
+        o->ov.has_repeat_penalty = true;
+        o->n_predict = replay_n_predict;
     }
 
-    if (n_threads <= 0) {
+    if (o->n_threads <= 0) {
         // Default to a physical-core proxy (nc/2 under the near-universal 2-way
         // SMT of the many-core x86 boxes this targets), capped so a very large
         // box does not over-spawn. SMT siblings add nothing to a compute-bound
@@ -2762,15 +2783,15 @@ int main(int argc, char **argv) {
         // with --reserve-cpu, or pin exactly with -t. On Apple Silicon the
         // platform layer returns the performance-core count instead of the
         // logical/2 proxy, because asymmetric cores are not SMT siblings.
-        n_threads = plat_default_thread_count();
+        o->n_threads = plat_default_thread_count();
         // If the model turns out to be CPU-forced (recurrent qwen3.5 path),
         // model_load may raise a defaulted count to this cap; a pinned -t
         // or CPU reservation leaves it 0 and is never overridden.
         int cap = plat_default_thread_count();
-        mp.cpu_fallback_threads = cap > n_threads ? cap : n_threads;
+        o->mp.cpu_fallback_threads = cap > o->n_threads ? cap : o->n_threads;
     }
-    mp.verbose = verbose;
-    mp.n_threads = serve ? 1 : n_threads; // server slots create their own pools
+    o->mp.verbose = o->verbose;
+    o->mp.n_threads = o->serve ? 1 : o->n_threads; // server slots create their own pools
 
     f16_init();
 
@@ -2780,17 +2801,17 @@ int main(int argc, char **argv) {
     // keeps their slots and gives up /unload and --ttl instead. server_run
     // still receives the name=path form and keeps the name for /v1/models;
     // what has to happen HERE is the preload, which needs the bare path.
-    const char *eq_one = strchr(model_path, '=');
-    bool one_named = serve && parallel > 1 && eq_one && eq_one != model_path &&
-                     eq_one[1] && !strchr(model_path, ',');
-    const char *load_path = one_named ? eq_one + 1 : model_path;
-    bool registry = serve && eq_one != NULL && !one_named;
+    const char *eq_one = strchr(o->model_path, '=');
+    bool one_named = o->serve && o->parallel > 1 && eq_one && eq_one != o->model_path &&
+                     eq_one[1] && !strchr(o->model_path, ',');
+    const char *load_path = one_named ? eq_one + 1 : o->model_path;
+    bool registry = o->serve && eq_one != NULL && !one_named;
 
-    if (mp.yarn_factor > 0 && mp.yarn_factor <= 1.0f) {
+    if (o->mp.yarn_factor > 0 && o->mp.yarn_factor <= 1.0f) {
         fprintf(stderr, "error: --yarn-factor must be greater than 1\n");
         return 1;
     }
-    if (mp.yarn_factor > 0 && mp.rope_scale > 0) {
+    if (o->mp.yarn_factor > 0 && o->mp.rope_scale > 0) {
         fprintf(stderr, "error: --yarn-factor and --rope-scale cannot be "
                         "used together\n");
         return 1;
@@ -2802,13 +2823,13 @@ int main(int argc, char **argv) {
     // discarded on the path most callers take: forcing a template under
     // --serve produced a byte-identical prompt to auto-detection.
     int tmpl_override = -1;
-    if (tmpl_arg) {
-        tmpl_override = template_from_name(tmpl_arg);
+    if (o->tmpl_arg) {
+        tmpl_override = template_from_name(o->tmpl_arg);
         if (tmpl_override < 0) {
             // previously this fell back to auto-detection without a word,
             // which is the same discard in a smaller place
             fprintf(stderr, "error: unknown --chat-template '%s'; see --help "
-                            "for the accepted names\n", tmpl_arg);
+                            "for the accepted names\n", o->tmpl_arg);
             return 1;
         }
         // A multi-model swap set cannot honour one global template; server_run
@@ -2839,32 +2860,32 @@ int main(int argc, char **argv) {
     // one, because moving past that would delay the icon by a whole model
     // load for every run that works (suite plan R8.7.6).
 #if defined(__APPLE__) || defined(_WIN32)
-    if (!no_tray && (serve || interactive) &&
+    if (!o->no_tray && (o->serve || o->interactive) &&
         (RUNNER_TTY(stdin) || RUNNER_TTY(stdout)))
         tray_ensure_running();
 #else
-    (void)no_tray;
+    (void)o->no_tray;
 #endif
 
-    if (context_out) {
-        if (quant_out || merge_out || prune_experts || type_plan || quant_type ||
-            remove_sublayer) {
+    if (o->context_out) {
+        if (o->quant_out || o->merge_out || o->prune_experts || o->type_plan || o->quant_type ||
+            o->remove_sublayer) {
             fprintf(stderr, "error: --context-surgery does not combine with "
                     "quantize, merge, prune, or type-plan operations\n");
             return 1;
         }
-        if (mp.n_ctx <= 0 || mp.yarn_factor <= 1.0f) {
+        if (o->mp.n_ctx <= 0 || o->mp.yarn_factor <= 1.0f) {
             fprintf(stderr, "error: --context-surgery requires -c TARGET and "
                     "--yarn-factor FACTOR\n");
             return 1;
         }
         context_surgery_result sr;
-        int rc = context_surgery_gguf(load_path, context_out,
-                                      (uint32_t)mp.n_ctx, mp.yarn_factor, &sr);
+        int rc = context_surgery_gguf(load_path, o->context_out,
+                                      (uint32_t)o->mp.n_ctx, o->mp.yarn_factor, &sr);
         if (rc != 0) return rc;
         char bsha[65] = "", osha[65] = "";
         if (!envelope_file_sha256(load_path, bsha) ||
-            !envelope_file_sha256(context_out, osha)) {
+            !envelope_file_sha256(o->context_out, osha)) {
             fprintf(stderr, "error: cannot hash context-surgery artifacts "
                     "for the provenance record\n");
             return 1;
@@ -2880,49 +2901,49 @@ int main(int argc, char **argv) {
                sr.source_context, sr.original_context,
                (double)sr.source_factor);
         sb_fmt(&rec, "\"target\":{\"path\":\"");
-        sb_esc(&rec, context_out, strlen(context_out));
+        sb_esc(&rec, o->context_out, strlen(o->context_out));
         sb_fmt(&rec, "\",\"sha256\":\"%s\",\"context_length\":%d,"
                        "\"original_context_length\":%u,\"yarn_factor\":%.9g},",
-               osha, mp.n_ctx, sr.original_context, (double)mp.yarn_factor);
+               osha, o->mp.n_ctx, sr.original_context, (double)o->mp.yarn_factor);
         sb_fmt(&rec, "\"tensor_payloads_byte_identical\":%s}\n",
                sr.tensors_byte_identical ? "true" : "false");
-        bool wrote = write_record(context_out, ".context.json",
-                                  "context-surgery", &rec, sign_key);
+        bool wrote = write_record(o->context_out, ".context.json",
+                                  "context-surgery", &rec, o->sign_key);
         free(rec.s);
         return wrote ? 0 : 1;
     }
 
-    if (merge_out) {
-        if (!lora_path) {
+    if (o->merge_out) {
+        if (!o->lora_path) {
             fprintf(stderr, "error: --merge-lora requires --lora ADAPTER\n");
             return 1;
         }
-        if (quant_out || prune_experts || type_plan || remove_sublayer) {
+        if (o->quant_out || o->prune_experts || o->type_plan || o->remove_sublayer) {
             fprintf(stderr, "error: --merge-lora does not combine with "
                     "--quantize, --prune-experts or --type-plan\n");
             return 1;
         }
         // default keep: the merged artifact mirrors the base's own
         // per-tensor precision unless a different output type is asked for
-        int tt = quant_type ? quantize_type_from_name(quant_type) : T_KEEP;
+        int tt = o->quant_type ? quantize_type_from_name(o->quant_type) : T_KEEP;
         if (tt == -2) {
             fprintf(stderr, "error: --quant '%s' is not a writable type\n",
-                    quant_type);
+                    o->quant_type);
             return 1;
         }
         merge_survival sv = {0};
-        int rc = merge_lora_gguf(model_path, lora_path, lora_scale,
-                                 merge_out, tt,
-                                 merge_allow_erased ? -1.0f : MERGE_MIN_RETAINED,
+        int rc = merge_lora_gguf(o->model_path, o->lora_path, o->lora_scale,
+                                 o->merge_out, tt,
+                                 o->merge_allow_erased ? -1.0f : MERGE_MIN_RETAINED,
                                  &sv);
         if (rc == 0) {
             // the D7 discipline extended to merged artifacts: the standalone
             // blob stays auditable — base sha + adapter sha + config ->
             // merged sha, machine-written beside the file
             char bsha[65] = "", asha[65] = "", osha[65] = "";
-            if (!envelope_file_sha256(model_path, bsha) ||
-                !envelope_file_sha256(lora_path, asha) ||
-                !envelope_file_sha256(merge_out, osha)) {
+            if (!envelope_file_sha256(o->model_path, bsha) ||
+                !envelope_file_sha256(o->lora_path, asha) ||
+                !envelope_file_sha256(o->merge_out, osha)) {
                 fprintf(stderr, "error: cannot hash every merge artifact for "
                         "the provenance record\n");
                 return 1;
@@ -2932,15 +2953,15 @@ int main(int argc, char **argv) {
                          "\"runner\":\"");
             sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
             sb_lit(&rec, "\",\"base\":");
-            lineage_put_input(&rec, model_path, bsha);
+            lineage_put_input(&rec, o->model_path, bsha);
             sb_lit(&rec, ",\"adapter\":");
-            lineage_put_input(&rec, lora_path, asha);
+            lineage_put_input(&rec, o->lora_path, asha);
             sb_fmt(&rec, ",\"lora_scale\":%g,\"target\":\"",
-                   (double)lora_scale);
-            const char *target = quant_type ? quant_type : "keep";
+                   (double)o->lora_scale);
+            const char *target = o->quant_type ? o->quant_type : "keep";
             sb_esc(&rec, target, strlen(target));
             sb_lit(&rec, "\",\"merged\":{\"path\":\"");
-            sb_esc(&rec, merge_out, strlen(merge_out));
+            sb_esc(&rec, o->merge_out, strlen(o->merge_out));
             sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
             sb_lit(&rec, "\"}");
             // what the output grid kept of the delta (quants.h
@@ -2952,48 +2973,48 @@ int main(int argc, char **argv) {
                        (unsigned long long)sv.bytes,
                        (unsigned long long)sv.bytes_changed,
                        sv.ret_num / sv.ret_den,
-                       merge_allow_erased ? "null" : MERGE_MIN_RETAINED_STR);
+                       o->merge_allow_erased ? "null" : MERGE_MIN_RETAINED_STR);
             sb_lit(&rec, "}\n");
-            if (!write_record(merge_out, ".merge.json", "merge", &rec, sign_key))
+            if (!write_record(o->merge_out, ".merge.json", "merge", &rec, o->sign_key))
                 rc = 1;
             free(rec.s);
         }
         return rc;
     }
-    if (quant_out) {
+    if (o->quant_out) {
         int tt;
         // --type-plan decides the type PER TENSOR, so a whole-file --quant
         // alongside it is an instruction with nowhere to go: the plan branch
         // in quantize_gguf_plan never reads it, and the summary line then
         // named a type nothing had been written in. Refused rather than
         // dropped, the same call --merge-lora + --type-plan already makes.
-        if (type_plan_strict && !type_plan) {
+        if (o->type_plan_strict && !o->type_plan) {
             fprintf(stderr, "error: --type-plan-strict needs --type-plan\n");
             return 1;
         }
-        quantize_set_type_plan_strict(type_plan_strict);
-        if (quant_type && type_plan) {
+        quantize_set_type_plan_strict(o->type_plan_strict);
+        if (o->quant_type && o->type_plan) {
             fprintf(stderr, "error: --quant and --type-plan cannot be used "
                     "together: the plan decides every tensor's type, so "
                     "--quant would be silently ignored. Put the whole-file "
                     "type in the plan's \"default\".\n");
             return 1;
         }
-        if (quant_type) {
-            tt = quantize_type_from_name(quant_type);
+        if (o->quant_type) {
+            tt = quantize_type_from_name(o->quant_type);
             if (tt == -2) {
                 fprintf(stderr, "error: --quant '%s' is not a writable "
-                        "type\n", quant_type);
+                        "type\n", o->quant_type);
                 return 1;
             }
         } else {
             // No --quant given: --prune-experts alone means "just prune,
             // don't touch anyone's precision" (T_KEEP); with neither flag
             // this is plain --quantize, whose long-standing default is q4_0.
-            tt = (prune_experts || remove_sublayer) ? T_KEEP : T_Q4_0;
+            tt = (o->prune_experts || o->remove_sublayer) ? T_KEEP : T_Q4_0;
         }
-        int qrc = quantize_gguf_plan(model_path, quant_out, tt, prune_experts,
-                                     type_plan, remove_sublayer);
+        int qrc = quantize_gguf_plan(o->model_path, o->quant_out, tt, o->prune_experts,
+                                     o->type_plan, o->remove_sublayer);
         if (qrc != 0) return qrc;
         // R17.1: the rewrite leaves its record like merge and training do --
         // the input and output by sha256, every option that shaped the
@@ -3001,8 +3022,8 @@ int main(int argc, char **argv) {
         // walked back (--lineage)
         char bsha[65] = "", osha[65] = "", xsha[65] = "";
         char *exe_path = plat_executable_path();
-        bool hash_ok = envelope_file_sha256(model_path, bsha) &&
-                       envelope_file_sha256(quant_out, osha) &&
+        bool hash_ok = envelope_file_sha256(o->model_path, bsha) &&
+                       envelope_file_sha256(o->quant_out, osha) &&
                        exe_path && envelope_file_sha256(exe_path, xsha);
         free(exe_path);
         if (!hash_ok) {
@@ -3010,9 +3031,9 @@ int main(int argc, char **argv) {
                     "provenance record\n");
             return 1;
         }
-        const char *target = quant_type ? quant_type
-                           : type_plan ? "plan"
-                           : (prune_experts || remove_sublayer) ? "keep" : "q4_0";
+        const char *target = o->quant_type ? o->quant_type
+                           : o->type_plan ? "plan"
+                           : (o->prune_experts || o->remove_sublayer) ? "keep" : "q4_0";
         sbuf rec = {0};
         sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.quant.v1\","
                      "\"runner\":\"");
@@ -3020,28 +3041,28 @@ int main(int argc, char **argv) {
         sb_lit(&rec, "\",\"build\":{\"binary_sha256\":\"");
         sb_lit(&rec, xsha);
         sb_lit(&rec, "\"},\"base\":");
-        lineage_put_input(&rec, model_path, bsha);
+        lineage_put_input(&rec, o->model_path, bsha);
         sb_lit(&rec, ",\"target\":\"");
         sb_esc(&rec, target, strlen(target));
         sb_lit(&rec, "\"");
-        if (prune_experts) {
+        if (o->prune_experts) {
             sb_lit(&rec, ",\"prune_experts\":");
-            lineage_put_input(&rec, prune_experts, NULL);
+            lineage_put_input(&rec, o->prune_experts, NULL);
         }
-        if (type_plan) {
+        if (o->type_plan) {
             sb_lit(&rec, ",\"type_plan\":");
-            lineage_put_input(&rec, type_plan, NULL);
+            lineage_put_input(&rec, o->type_plan, NULL);
         }
-        if (remove_sublayer) {
+        if (o->remove_sublayer) {
             sb_lit(&rec, ",\"remove_sublayer\":\"");
-            sb_esc(&rec, remove_sublayer, strlen(remove_sublayer));
+            sb_esc(&rec, o->remove_sublayer, strlen(o->remove_sublayer));
             sb_lit(&rec, "\"");
         }
         sb_lit(&rec, ",\"output\":{\"path\":\"");
-        sb_esc(&rec, quant_out, strlen(quant_out));
+        sb_esc(&rec, o->quant_out, strlen(o->quant_out));
         sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
         sb_lit(&rec, "\"}}\n");
-        bool wrote = write_record(quant_out, ".quant.json", "quantize", &rec, sign_key);
+        bool wrote = write_record(o->quant_out, ".quant.json", "quantize", &rec, o->sign_key);
         free(rec.s);
         return wrote ? 0 : 1;
     }
@@ -3050,73 +3071,73 @@ int main(int argc, char **argv) {
     // reader, so any of them is an instruction that would otherwise be
     // silently dropped — the same discard --chat-template was fixed for, in a
     // place where the user believes they asked for a different file on disk.
-    if (receipts_dir && !serve) {
+    if (o->receipts_dir && !o->serve) {
         fprintf(stderr, "error: --receipts writes one receipt per served "
                 "request and needs --serve (use --transcript for a one-shot "
                 "run)\n");
         return 1;
     }
-    if (receipts_keep && !receipts_dir) {
+    if (o->receipts_keep && !o->receipts_dir) {
         fprintf(stderr, "error: --receipts-keep needs --receipts DIR\n");
         return 1;
     }
-    if (receipts_dir) {
-        receipts_cfg rcfg = { .dir = receipts_dir, .keep = receipts_keep,
-                              .sign_key = sign_key };
+    if (o->receipts_dir) {
+        receipts_cfg rcfg = { .dir = o->receipts_dir, .keep = o->receipts_keep,
+                              .sign_key = o->sign_key };
         if (!receipts_configure(&rcfg)) return 1;
     }
-    if (kv_snapshots && !serve) {
+    if (o->kv_snapshots && !o->serve) {
         fprintf(stderr, "error: --kv-snapshots saves and loads named contexts "
                 "and needs --serve\n");
         return 1;
     }
-    if (kv_snapshots && !kvsnap_configure(kv_snapshots, sign_key, trust_key)) return 1;
-    if (sessions_path && !serve) {
+    if (o->kv_snapshots && !kvsnap_configure(o->kv_snapshots, o->sign_key, o->trust_key)) return 1;
+    if (o->sessions_path && !o->serve) {
         fprintf(stderr, "error: --sessions keeps the server's session images "
                 "and needs --serve (the CLI uses --session-out / --resume)\n");
         return 1;
     }
-    if (sessions_path && !sessions_configure(sessions_path)) return 1;
-    if (n_adapters && !serve) {
+    if (o->sessions_path && !sessions_configure(o->sessions_path)) return 1;
+    if (o->n_adapters && !o->serve) {
         fprintf(stderr, "error: --adapter routes adapters per request and "
                 "needs --serve (use --lora for a one-shot run)\n");
         return 1;
     }
-    if (n_adapters && lora_path) {
+    if (o->n_adapters && o->lora_path) {
         fprintf(stderr, "error: --adapter and --lora are exclusive: --lora "
                 "installs one adapter for every request; serve it as --adapter "
                 "NAME=PATH and name it per request instead\n");
         return 1;
     }
-    const char *orphan = prune_experts ? "--prune-experts"
-                       : remove_sublayer ? "--remove-sublayer"
-                       : type_plan     ? "--type-plan"
-                       : quant_type    ? "--quant"
+    const char *orphan = o->prune_experts ? "--prune-experts"
+                       : o->remove_sublayer ? "--remove-sublayer"
+                       : o->type_plan     ? "--type-plan"
+                       : o->quant_type    ? "--quant"
                        : NULL;
     if (orphan) {
         fprintf(stderr, "error: %s requires --quantize OUT (or "
                 "--merge-lora OUT for --quant)\n", orphan);
         return 1;
     }
-    if (merge_allow_erased) {
+    if (o->merge_allow_erased) {
         fprintf(stderr, "error: --merge-allow-erased requires --merge-lora OUT\n");
         return 1;
     }
 
     // R17.2: refuse a model that carries no passing evaluation of the asked
     // kind, made for this very file (scripts/eval-record.py writes them)
-    if (require_eval) {
+    if (o->require_eval) {
         char why[512];
-        if (!lineage_require_eval(load_path, require_eval, trust_key, why, sizeof why)) {
-            fprintf(stderr, "error: --require-eval %s: %s\n", require_eval, why);
+        if (!lineage_require_eval(load_path, o->require_eval, o->trust_key, why, sizeof why)) {
+            fprintf(stderr, "error: --require-eval %s: %s\n", o->require_eval, why);
             return 1;
         }
-        fprintf(stderr, "eval: %s.eval.%s.json passes for this file\n", load_path, require_eval);
+        fprintf(stderr, "eval: %s.eval.%s.json passes for this file\n", load_path, o->require_eval);
     }
 
     model_t m;
     tokenizer tok;
-    oms_policy signing = { model_sig, model_pubkey, require_signed_model };
+    oms_policy signing = { o->model_sig, o->model_pubkey, o->require_signed_model };
     char model_sig_json[512] = "";   // load-time OMS verdict for the receipt
     char adapter_sig_json[512] = ""; // and the adapter's (R1.2.3)
     // A reservation is a budget for the whole server, so the -c 0 auto-fit has
@@ -3125,17 +3146,17 @@ int main(int argc, char **argv) {
     // that sized itself alone would both over-commit and — because the CUDA
     // shared-weight registry keys on context — disagree with its peers and
     // force a second upload of the same weights.
-    if (train_path) mp.gpu_mode = GPU_OFF;   // --train is the CPU path (v1)
+    if (o->train_path) o->mp.gpu_mode = GPU_OFF;   // --train is the CPU path (v1)
     // --adapt-info answers for the model, not for where it happened to load:
     // training is CPU-hosted, and the device half is named separately
-    if (adapt_info) mp.gpu_mode = GPU_OFF;
-    if (serve) mp.n_seq = parallel;
-    mp.lora_path = lora_path;
-    mp.lora_sig = lora_sig;
-    mp.lora_scale = lora_scale;
+    if (o->adapt_info) o->mp.gpu_mode = GPU_OFF;
+    if (o->serve) o->mp.n_seq = o->parallel;
+    o->mp.lora_path = o->lora_path;
+    o->mp.lora_sig = o->lora_sig;
+    o->mp.lora_scale = o->lora_scale;
     if (!registry) {
         double t1 = now_s();
-        if (!model_load(&m, load_path, &mp)) return 1;
+        if (!model_load(&m, load_path, &o->mp)) return 1;
         oms_result osr;
         if (!oms_check_model(load_path, &signing, &osr)) return 1;
         if (osr.status[0])
@@ -3144,9 +3165,9 @@ int main(int argc, char **argv) {
         // and the same "required" apply to it, with its own bundle
         oms_result aosr;
         memset(&aosr, 0, sizeof aosr);
-        if (lora_path) {
-            oms_policy apol = { lora_sig, model_pubkey, require_signed_model };
-            if (!oms_check_artifact(lora_path, &apol, "adapter", &aosr))
+        if (o->lora_path) {
+            oms_policy apol = { o->lora_sig, o->model_pubkey, o->require_signed_model };
+            if (!oms_check_artifact(o->lora_path, &apol, "adapter", &aosr))
                 return 1;
             if (aosr.status[0])
                 oms_result_json(&aosr, adapter_sig_json, sizeof adapter_sig_json);
@@ -3158,13 +3179,13 @@ int main(int argc, char **argv) {
         // as a CPU fallback at one thread, 2026-09-23)
         fprintf(stderr, "loaded %s | %s | %d layers | ctx %d | %d threads%s | %.2fs\n",
                 load_path, m.arch, m.n_layer, m.n_ctx,
-                serve ? n_threads : tpool_size(m.tp),
-                serve ? " (divided across slots)" : "",
+                o->serve ? o->n_threads : tpool_size(m.tp),
+                o->serve ? " (divided across slots)" : "",
                 now_s() - t1);
         // --tool-info: one JSON line naming this model's native tool-call
         // protocol, resolved from its chat template exactly as the chat surface
         // would (honouring --chat-template). stdout is JSON-only.
-        if (tool_info) {
+        if (o->tool_info) {
             int ti_tmpl = tmpl_override >= 0 ? tmpl_override
                         : template_detect(gguf_get_str(&m.gf,
                                           "tokenizer.chat_template", NULL), &tok);
@@ -3189,7 +3210,7 @@ int main(int argc, char **argv) {
         // one are three capabilities with three admission lists. One JSON
         // line says which of the last two this file has and, when not, the
         // sentence the real operation would refuse with. stdout is JSON-only.
-        if (adapt_info) {
+        if (o->adapt_info) {
             char why_s[256] = "", why_t[256] = "";
             bool can_s = model_lora_serve_supported(&m, why_s, sizeof why_s);
             bool can_t = model_lora_train_supported(&m, why_t, sizeof why_t);
@@ -3239,7 +3260,7 @@ int main(int argc, char **argv) {
             char env_line[256];
             int env_state = ENV_UNCLASSIFIED;
             bool ok = envelope_gate(load_path, RUNNER_VERSION, env_backend,
-                                    force_uncertified, env_line,
+                                    o->force_uncertified, env_line,
                                     (int)sizeof env_line, &env_state);
             cli_env_state = env_state;
             cli_env_known = true;
@@ -3250,10 +3271,10 @@ int main(int argc, char **argv) {
             }
             // The server's /v1/runner/provenance reports the verdicts THIS
             // load ran under, so they are recorded here, where they were made.
-            if (serve)
+            if (o->serve)
                 provenance_note_load(&(provenance_load){
                     .model_path = load_path,
-                    .adapter_path = lora_path, .adapter_scale = lora_scale,
+                    .adapter_path = o->lora_path, .adapter_scale = o->lora_scale,
                     .signature = &osr, .adapter_signature = &aosr,
                     .envelope_state = env_state, .envelope_detail = env_line });
         }
@@ -3261,7 +3282,7 @@ int main(int argc, char **argv) {
         // any controller) can list every live runner. Best-effort — failure
         // never affects the run. Utility modes (--quantize/--caps/--bench)
         // stay unregistered.
-        if (!bench_json && !quant_out) {
+        if (!o->bench_json && !o->quant_out) {
             const char *bn = strrchr(load_path, '/');
 #ifdef _WIN32
             const char *bn2 = strrchr(load_path, '\\');
@@ -3270,7 +3291,7 @@ int main(int argc, char **argv) {
             bn = bn ? bn + 1 : load_path;
             const char *const names[] = { bn };
             const char *const paths[] = { load_path };
-            instances_register(serve ? "serve" : "cli", serve ? port : 0,
+            instances_register(o->serve ? "serve" : "cli", o->serve ? o->port : 0,
                                names, paths, 1);
             atexit(instances_unregister);
         }
@@ -3292,10 +3313,10 @@ int main(int argc, char **argv) {
                                           "tokenizer.chat_template", NULL), NULL);
         sampler_file sfile;
         model_sampling_file(&m.gf, &sfile);
-        const sampler_preset *sp = sampler_resolve_file(&smp, m.arch, ident,
-                                                        preset_tmpl, &sfile, &ov);
+        const sampler_preset *sp = sampler_resolve_file(&o->smp, m.arch, ident,
+                                                        preset_tmpl, &sfile, &o->ov);
         char sdesc[256];
-        sampler_describe(&smp, sp, sdesc, sizeof(sdesc));
+        sampler_describe(&o->smp, sp, sdesc, sizeof(sdesc));
         fprintf(stderr, "sampling: %s\n", sdesc);
         {
             char fdesc[160];
@@ -3307,31 +3328,31 @@ int main(int argc, char **argv) {
         // An operator who set a reasoning-channel default must see it here:
         // the line above describes the sampler for calls and answers, and
         // silence about the reasoning turn reads as "there is only one".
-        if (reasoning_temp >= 0.0f)
+        if (o->reasoning_temp >= 0.0f)
             fprintf(stderr, "reasoning: temp %.2f (top_p, min_p, top_k "
                             "inherited from the request or the preset)\n",
-                    (double)reasoning_temp);
+                    (double)o->reasoning_temp);
     } else {
         // swap mode: no model yet, so the preset is chosen per model at load
-        sampler_resolve(&smp, NULL, NULL, -1, &ov);
+        sampler_resolve(&o->smp, NULL, NULL, -1, &o->ov);
     }
 
-    if (serve) {
+    if (o->serve) {
         if (wm_on) server_set_watermark(&wmk);
-        if (n_adapters) server_set_adapters(adapter_names, adapter_paths,
-                                            n_adapters, lora_scale);
+        if (o->n_adapters) server_set_adapters(o->adapter_names, o->adapter_paths,
+                                            o->n_adapters, o->lora_scale);
         if (registry) {
             // swap-mode server: models come and go at runtime; the record
             // carries none and readers ask /v1/models live
-            instances_register("serve", port, NULL, NULL, 0);
+            instances_register("serve", o->port, NULL, NULL, 0);
             atexit(instances_unregister);
         }
         int rc = server_run(registry ? NULL : &m, registry ? NULL : &tok,
-                            model_path, &mp, smp, &ov, port, parallel, n_threads,
-                            ttl, draft_path, draft_k, draft_lookup,
-                            reasoning_budget, reasoning_budget_message,
-                            reasoning_temp, loop_guard, ignore_eos,
-                            tmpl_override, force_uncertified, &signing);
+                            o->model_path, &o->mp, o->smp, &o->ov, o->port, o->parallel, o->n_threads,
+                            o->ttl, o->draft_path, o->draft_k, o->draft_lookup,
+                            o->reasoning_budget, o->reasoning_budget_message,
+                            o->reasoning_temp, o->loop_guard, o->ignore_eos,
+                            tmpl_override, o->force_uncertified, &signing);
         free(owned_prompt);
         return rc;
     }
@@ -3346,60 +3367,60 @@ int main(int argc, char **argv) {
     // while the successful run was clean.
 #define CLI_FAIL do { cli_cleanup(&e, toks, &tok, &m); \
                       free(owned_prompt); return 1; } while (0)
-    if (!engine_init(&e, &m, &tok, &smp)) { // e zero-initialized at declaration
+    if (!engine_init(&e, &m, &tok, &o->smp)) { // e zero-initialized at declaration
         fprintf(stderr, "error: out of memory initializing engine\n");
         CLI_FAIL;
     }
-    e.ignore_eos = ignore_eos;
-    e.json_mode = json_mode;
+    e.ignore_eos = o->ignore_eos;
+    e.json_mode = o->json_mode;
     e.progress = true;
     wm_state cli_wm = { .key = wm_on ? &wmk : NULL };
     if (wm_on) {
         e.wm_prepare = wm_prepare;
         e.wm_ud = &cli_wm;
     }
-    if (draft_path) {
-        e.dm = spec_draft_load(draft_path, &m, &mp);
+    if (o->draft_path) {
+        e.dm = spec_draft_load(o->draft_path, &m, &o->mp);
         if (e.dm) {
-            fprintf(stderr, "draft: %s (%d tokens per round)\n", draft_path, draft_k);
-            e.draft_k = draft_k;
-        } else if (draft_required) {
+            fprintf(stderr, "draft: %s (%d tokens per round)\n", o->draft_path, o->draft_k);
+            e.draft_k = o->draft_k;
+        } else if (o->draft_required) {
             fprintf(stderr, "error: --draft-required: %s was refused above and"
                             " the run would have decoded without it\n",
-                    draft_path);
+                    o->draft_path);
             CLI_FAIL;
         }
     }
-    if (mtp_on) {
+    if (o->mtp_on) {
         if (!model_mtp_ready(&m)) {
             fprintf(stderr, "error: --mtp: the head is bound but drafts need "
                             "the CPU path (rerun with --gpu off)\n");
             CLI_FAIL;
         }
         e.mtp_on = true;
-        e.draft_k = draft_k;
+        e.draft_k = o->draft_k;
         fprintf(stderr, "mtp: drafting from the model's NextN head "
-                "(%d tokens per round)\n", draft_k);
+                "(%d tokens per round)\n", o->draft_k);
     }
-    if (draft_lookup) {
+    if (o->draft_lookup) {
         if (!model_spec_verify_ok(&m)) {
             fprintf(stderr, "error: --draft-lookup: the verify walk needs "
                             "host-readable hidden work (rerun with --gpu off)\n");
             CLI_FAIL;
         }
         e.lookup_on = true;
-        e.draft_k = draft_k;
+        e.draft_k = o->draft_k;
         fprintf(stderr, "lookup: drafting from the context (n-grams of %d..%d "
                 "tokens, up to %d per round)\n", ENGINE_LOOKUP_N_MIN,
-                ENGINE_LOOKUP_N_MAX, draft_k);
+                ENGINE_LOOKUP_N_MAX, o->draft_k);
     }
-    if (schema_file) {
+    if (o->schema_file) {
         size_t ssz = 0;
-        char *sbuf = read_file(schema_file, &ssz);
-        if (!sbuf) { fprintf(stderr, "error: cannot read %s\n", schema_file); CLI_FAIL; }
+        char *sbuf = read_file(o->schema_file, &ssz);
+        if (!sbuf) { fprintf(stderr, "error: cannot read %s\n", o->schema_file); CLI_FAIL; }
         struct jv *sj = json_parse(sbuf, ssz);
         free(sbuf);
-        if (!sj) { fprintf(stderr, "error: %s is not valid JSON\n", schema_file); CLI_FAIL; }
+        if (!sj) { fprintf(stderr, "error: %s is not valid JSON\n", o->schema_file); CLI_FAIL; }
         char serr[128];
         e.schema = schema_compile(sj, serr, sizeof(serr));
         jv_free(sj);
@@ -3407,7 +3428,7 @@ int main(int argc, char **argv) {
         sval_init(&e.sv, e.schema);
     }
 
-    size_t tok_cap = (prompt ? strlen(prompt) : 0) + (size_t)m.n_ctx + 32;
+    size_t tok_cap = (o->prompt ? strlen(o->prompt) : 0) + (size_t)m.n_ctx + 32;
     // tok_encode narrows the capacity to int, so keep it representable
     if (tok_cap > INT_MAX) tok_cap = INT_MAX;
     toks = malloc(sizeof(int32_t) * tok_cap);
@@ -3415,12 +3436,12 @@ int main(int argc, char **argv) {
     double ptime, gtime, t0;
     int n_prompt, n_gen;
 
-    if (train_path && dpo_path) {
+    if (o->train_path && o->dpo_path) {
         fprintf(stderr, "error: --train and --train-dpo are different "
                 "objectives; pass one\n");
         CLI_FAIL;
     }
-    if (train_path || dpo_path) {
+    if (o->train_path || o->dpo_path) {
         // --train (adaptation D4): AdamW LoRA training in the serving binary,
         // CPU reference. Two data modes: plain text (tokenize, fixed windows,
         // cycle) and .jsonl lines {"prompt","completion","weight"} — prompt
@@ -3438,13 +3459,13 @@ int main(int argc, char **argv) {
             CLI_FAIL;
         }
         if (!m.lora) {
-            uint64_t iseed = seed_given ? smp.rng : 0;
-            if (!model_lora_train_init(&m, lora_rank,
-                                       2.0f * (float)lora_rank, iseed))
+            uint64_t iseed = o->seed_given ? o->smp.rng : 0;
+            if (!model_lora_train_init(&m, o->lora_rank,
+                                       2.0f * (float)o->lora_rank, iseed))
                 CLI_FAIL;
             fprintf(stderr, "train: fresh rank-%d adapters on every "
-                    "projection (alpha %g)\n", lora_rank,
-                    (double)(2.0f * lora_rank));
+                    "projection (alpha %g)\n", o->lora_rank,
+                    (double)(2.0f * o->lora_rank));
         }
         // D8 slice 2, opt-in: run the backward's transposed matvec on the
         // device with the weights cached there. The kernel is gated
@@ -3461,19 +3482,19 @@ int main(int argc, char **argv) {
         int n_ex = 0;
         dpo_pair *pairs = NULL;
         int n_pair = 0;
-        int wctx = train_ctx < m.n_ctx ? train_ctx : m.n_ctx;
+        int wctx = o->train_ctx < m.n_ctx ? o->train_ctx : m.n_ctx;
         int train_tmpl = tmpl_override >= 0 ? tmpl_override
                          : template_detect(gguf_get_str(&m.gf, "tokenizer.chat_template", NULL), &tok);
         int eot_id = train_eot_id(&tok, train_tmpl);
-        if (dpo_path) {
-            if (!dpo_pairs_load(&tok, dpo_path, no_bos, wctx, eot_id, train_eot,
+        if (o->dpo_path) {
+            if (!dpo_pairs_load(&tok, o->dpo_path, o->no_bos, wctx, eot_id, o->train_eot,
                                 &pairs, &n_pair)) CLI_FAIL;
-        } else if (!train_examples_load(&tok, train_path, no_bos, wctx, eot_id, train_eot,
+        } else if (!train_examples_load(&tok, o->train_path, o->no_bos, wctx, eot_id, o->train_eot,
                                         &exs, &n_ex)) CLI_FAIL;
 #define TRAIN_FAIL do { train_examples_free(exs, n_ex); \
                         dpo_pairs_free(pairs, n_pair); CLI_FAIL; } while (0)
         double first_loss = 0, last_loss = 0;
-        if (dpo_path) {
+        if (o->dpo_path) {
             // DPO (arXiv 2305.18290 eq. 7). pi_ref is this same model with the
             // adapter bypassed, so the reference costs no second copy of the
             // weights; see src/dpo.c for why the gradient is a scalar multiple
@@ -3485,19 +3506,19 @@ int main(int argc, char **argv) {
             // unchecked loss that merely descends is indistinguishable from a
             // checked one until the adapter is useless.
             fprintf(stderr, "train-dpo: %d pair%s, %d steps, lr %g, beta %g, ctx %d\n",
-                    n_pair, n_pair == 1 ? "" : "s", train_steps, (double)train_lr,
-                    (double)dpo_beta, wctx);
+                    n_pair, n_pair == 1 ? "" : "s", o->train_steps, (double)o->train_lr,
+                    (double)o->dpo_beta, wctx);
             double acc_sum = 0, margin_sum = 0;
-            for (int step = 1; step <= train_steps; step++) {
+            for (int step = 1; step <= o->train_steps; step++) {
                 dpo_pair *q = &pairs[(step - 1) % n_pair];
                 double step_t0 = plat_now();
                 dpo_step d;
-                if (!dpo_accumulate(&m, (double)dpo_beta, q->tw, q->nw, q->mw,
+                if (!dpo_accumulate(&m, (double)o->dpo_beta, q->tw, q->nw, q->mw,
                                     q->tl, q->nl, q->ml, &d)) {
                     fprintf(stderr, "error: DPO step failed\n");
                     TRAIN_FAIL;
                 }
-                if (!model_lora_adam_step(&m, train_lr, 0.9f, 0.999f, 1e-8f,
+                if (!model_lora_adam_step(&m, o->train_lr, 0.9f, 0.999f, 1e-8f,
                                           0.01f, step)) {
                     fprintf(stderr, "error: cannot allocate optimizer state\n");
                     TRAIN_FAIL;
@@ -3520,25 +3541,25 @@ int main(int argc, char **argv) {
                        d.loss, d.margin, d.acc, d.coeff,
                        d.logp_w, d.logp_l, d.logp_ref_w, d.logp_ref_l, step_s);
                 fflush(stdout);
-                if (save_every > 0 && step % save_every == 0 &&
-                    !model_lora_save(&m, train_out))
+                if (o->save_every > 0 && step % o->save_every == 0 &&
+                    !model_lora_save(&m, o->train_out))
                     TRAIN_FAIL;
             }
             fprintf(stderr, "train-dpo: mean margin %.6f, accuracy %.3f over "
-                    "%d steps\n", margin_sum / train_steps,
-                    acc_sum / train_steps, train_steps);
+                    "%d steps\n", margin_sum / o->train_steps,
+                    acc_sum / o->train_steps, o->train_steps);
         } else {
         fprintf(stderr, "train: %d example%s, %d steps, lr %g, ctx %d\n",
-                n_ex, n_ex == 1 ? "" : "s", train_steps, (double)train_lr,
+                n_ex, n_ex == 1 ? "" : "s", o->train_steps, (double)o->train_lr,
                 wctx);
-        for (int step = 1; step <= train_steps; step++) {
+        for (int step = 1; step <= o->train_steps; step++) {
             train_ex *ex = &exs[(step - 1) % n_ex];
             double loss = 0;
             double step_t0 = plat_now();
             model_lora_grad_zero(&m);
             if (!model_lora_backward_w(&m, ex->t, ex->n, ex->w, &loss))
                 TRAIN_FAIL;
-            if (!model_lora_adam_step(&m, train_lr, 0.9f, 0.999f, 1e-8f,
+            if (!model_lora_adam_step(&m, o->train_lr, 0.9f, 0.999f, 1e-8f,
                                       0.01f, step)) {
                 fprintf(stderr, "error: cannot allocate optimizer state\n");
                 TRAIN_FAIL;
@@ -3571,21 +3592,21 @@ int main(int argc, char **argv) {
                    step, (step - 1) % n_ex, ex->n, ml, step_s,
                    step_s > 0 ? (double)ex->n / step_s : 0.0);
             fflush(stdout);
-            if (save_every > 0 && step % save_every == 0 &&
-                !model_lora_save(&m, train_out))
+            if (o->save_every > 0 && step % o->save_every == 0 &&
+                !model_lora_save(&m, o->train_out))
                 TRAIN_FAIL;
         }
         }
-        if (!model_lora_save(&m, train_out)) TRAIN_FAIL;
+        if (!model_lora_save(&m, o->train_out)) TRAIN_FAIL;
         {
             // D7: the provenance record, written beside every adapter — the
             // reproducibility claim in checkable form. Two runs with the same
             // base/data/seed/config must produce the same adapter_sha256.
             char bsha[65] = "", dsha[65] = "", asha[65] = "", xsha[65] = "";
-            const char *data_path = dpo_path ? dpo_path : train_path;
+            const char *data_path = o->dpo_path ? o->dpo_path : o->train_path;
             bool hash_ok = envelope_file_sha256(load_path, bsha) &&
                            envelope_file_sha256(data_path, dsha) &&
-                           envelope_file_sha256(train_out, asha);
+                           envelope_file_sha256(o->train_out, asha);
             // The running binary's own hash + build identity, so a
             // reproduction report can distinguish "same executable" from
             // "same source" mechanically. The determinism contract is
@@ -3628,8 +3649,8 @@ int main(int argc, char **argv) {
             sb_lit(&rec, "\"},\"base\":");
             lineage_put_input(&rec, load_path, bsha);
             sb_lit(&rec, ",\"objective\":\"");
-            sb_lit(&rec, dpo_path ? "dpo" : "weighted-cross-entropy");
-            if (dpo_path) sb_fmt(&rec, "\",\"dpo_beta\":%g", (double)dpo_beta);
+            sb_lit(&rec, o->dpo_path ? "dpo" : "weighted-cross-entropy");
+            if (o->dpo_path) sb_fmt(&rec, "\",\"dpo_beta\":%g", (double)o->dpo_beta);
             else sb_lit(&rec, "\"");
             sb_lit(&rec, ",\"data\":");
             lineage_put_input(&rec, data_path, dsha);
@@ -3641,21 +3662,21 @@ int main(int argc, char **argv) {
                     "\"eps\":1e-8,\"weight_decay\":0.01},"
                     "\"loss_first\":%.6f,\"loss_last\":%.6f,"
                     "\"adapter\":{\"path\":\"",
-                    (unsigned long long)(seed_given ? smp.rng : 0),
-                    lora_rank, (double)m.lora_alpha, (double)train_lr,
-                    train_steps, wctx, train_eot ? "true" : "false", eot_id,
+                    (unsigned long long)(o->seed_given ? o->smp.rng : 0),
+                    o->lora_rank, (double)m.lora_alpha, (double)o->train_lr,
+                    o->train_steps, wctx, o->train_eot ? "true" : "false", eot_id,
                     first_loss, last_loss);
-            sb_esc(&rec, train_out, strlen(train_out));
+            sb_esc(&rec, o->train_out, strlen(o->train_out));
             sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, asha);
             sb_lit(&rec, "\"}}\n");
-            if (!write_record(train_out, ".train.json", "train", &rec, sign_key)) {
+            if (!write_record(o->train_out, ".train.json", "train", &rec, o->sign_key)) {
                 free(rec.s);
                 TRAIN_FAIL;
             }
             free(rec.s);
         }
         fprintf(stderr, "train: done — first-step loss %.4f, last-step "
-                "%.4f, adapter -> %s\n", first_loss, last_loss, train_out);
+                "%.4f, adapter -> %s\n", first_loss, last_loss, o->train_out);
         train_examples_free(exs, n_ex);
         dpo_pairs_free(pairs, n_pair);
 #undef TRAIN_FAIL
@@ -3665,7 +3686,7 @@ int main(int argc, char **argv) {
     }
 
     // ---- notarized inference D2: the replay
-    if (verify_path) {
+    if (o->verify_path) {
         jv *vm = jv_get(vrec, "model"), *va = jv_get(vrec, "adapter");
         jv *vprof = jv_get(vrec, "profile");
         int expected_ctx = (int)jv_num(jv_get(vprof, "ctx"), -1);
@@ -3697,7 +3718,7 @@ int main(int argc, char **argv) {
             free(owned_prompt); return 3;
         }
         if (va && va->type != J_NULL) {
-            if (!lora_path) {
+            if (!o->lora_path) {
                 fprintf(stderr, "UNVERIFIABLE: the record used an adapter "
                         "(sha %s) — pass it with --lora\n",
                         jv_str(jv_get(va, "sha256"), "?"));
@@ -3705,14 +3726,14 @@ int main(int argc, char **argv) {
                 free(owned_prompt); return 3;
             }
             char asha[65] = "";
-            envelope_file_sha256(lora_path, asha);
+            envelope_file_sha256(o->lora_path, asha);
             if (strcmp(asha, jv_str(jv_get(va, "sha256"), "")) != 0) {
                 fprintf(stderr, "UNVERIFIABLE: --lora sha256 does not match "
                         "the record's adapter\n");
                 jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
                 free(owned_prompt); return 3;
             }
-        } else if (lora_path) {
+        } else if (o->lora_path) {
             fprintf(stderr, "UNVERIFIABLE: --lora given but the record ran "
                     "without an adapter\n");
             jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
@@ -3765,7 +3786,7 @@ int main(int argc, char **argv) {
         }
         double gt = 0;
         outcap_t replay_out = {0};
-        int n_gen = engine_generate(&e, logits, n_predict, outcap_cb,
+        int n_gen = engine_generate(&e, logits, o->n_predict, outcap_cb,
                                     &replay_out, &gt);
         if (replay_out.failed) {
             fprintf(stderr, "UNVERIFIABLE: out of memory capturing replay\n");
@@ -3869,16 +3890,16 @@ int main(int argc, char **argv) {
         free(owned_prompt);
         return rc;
     }
-    if (decide_path) {
+    if (o->decide_path) {
         // Typed decisions (R13.10): the same handler the server route uses,
         // one request per line, one response per line; a bad line is an
         // {"error":...} object on its line and the exit code is 1 at the end
-        FILE *df = strcmp(decide_path, "-") ? fopen(decide_path, "rb") : stdin;
-        if (!df) { fprintf(stderr, "error: cannot open %s\n", decide_path); CLI_FAIL; }
+        FILE *df = strcmp(o->decide_path, "-") ? fopen(o->decide_path, "rb") : stdin;
+        if (!df) { fprintf(stderr, "error: cannot open %s\n", o->decide_path); CLI_FAIL; }
         size_t cap = 1 << 16, len = 0; char *line = malloc(cap);
         if (!line) { if (df != stdin) fclose(df); CLI_FAIL; }
         int rc = 0, lineno = 0, c;
-        const char *label = strrchr(model_path, '/') ? strrchr(model_path, '/') + 1 : model_path;
+        const char *label = strrchr(o->model_path, '/') ? strrchr(o->model_path, '/') + 1 : o->model_path;
         for (;;) {
             c = fgetc(df);
             if (c != EOF && c != '\n') {
@@ -3909,7 +3930,7 @@ int main(int argc, char **argv) {
         free(owned_prompt);
         return rc;
     }
-    if (score) {
+    if (o->score) {
         // Teacher-forced scoring (adaptation D1): per-position
         // log P(token | prefix) over the RAW prompt bytes — no template, no
         // sampling, no gradients. DEFAULT IS THE SOLO PATH: one forward per
@@ -3920,12 +3941,12 @@ int main(int argc, char **argv) {
         // mismatch this mode exists to abolish. RUNNER_SCORE_CHUNKED=1 opts
         // into the ~10x-faster batched path with that measured envelope;
         // tests/test_score.py pins the delta and the solo determinism.
-        if (!prompt || !*prompt) {
+        if (!o->prompt || !*o->prompt) {
             fprintf(stderr, "error: --score needs a prompt (-p or -f)\n");
             CLI_FAIL;
         }
-        char *p = unescape(prompt);
-        n_prompt = tok_encode(&tok, p, toks, (int)tok_cap, !no_bos, true);
+        char *p = unescape(o->prompt);
+        n_prompt = tok_encode(&tok, p, toks, (int)tok_cap, !o->no_bos, true);
         free(p);
         if (n_prompt < 0) {
             fprintf(stderr, "error: out of memory tokenizing prompt\n");
@@ -4016,7 +4037,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    if (doctor) {
+    if (o->doctor) {
         // R16.6.2: one explicitly invoked report a user can attach to a
         // question about slowness, nonsense or broken tool calls. It states
         // what this process actually did -- which backend took how many
@@ -4039,7 +4060,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "error: out of memory rendering the probe\n");
             CLI_FAIL;
         }
-        n_prompt = tok_encode_prompt(&tok, rendered, toks, (int)tok_cap, !no_bos);
+        n_prompt = tok_encode_prompt(&tok, rendered, toks, (int)tok_cap, !o->no_bos);
         free(rendered);
         bool probe_ran = false, probe_stop = false, probe_has4 = false;
         bool probe_leak = false, probe_empty = true;
@@ -4074,7 +4095,7 @@ int main(int argc, char **argv) {
         bool gpu_there = gpu_available(gname, (int)sizeof gname);
         size_t vfree = 0, vtotal = 0;
         bool vram_ok = gpu_there && gpu_mem_info(&vfree, &vtotal);
-        bool asked_gpu = mp.gpu_mode != GPU_OFF;
+        bool asked_gpu = o->mp.gpu_mode != GPU_OFF;
         const char *backend =
 #ifdef __APPLE__
             m.gpu ? "metal" : "cpu";
@@ -4084,12 +4105,12 @@ int main(int argc, char **argv) {
         sbuf r = {0};
         sb_lit(&r, "{\"schema\":\"xyntetik.runner.doctor.v1\",\"runner\":{\"version\":\"" RUNNER_VERSION "\"},");
         // identity: what the file says it is, never where it lives
-        const char *bn = strrchr(model_path, '/');
+        const char *bn = strrchr(o->model_path, '/');
 #ifdef _WIN32
-        const char *bn2 = strrchr(model_path, '\\');
+        const char *bn2 = strrchr(o->model_path, '\\');
         if (bn2 && (!bn || bn2 > bn)) bn = bn2;
 #endif
-        bn = bn ? bn + 1 : model_path;
+        bn = bn ? bn + 1 : o->model_path;
         sb_lit(&r, "\"model\":{\"file\":\"");
         sb_esc(&r, bn, strlen(bn));
         sb_fmt(&r, "\",\"bytes\":%llu,\"architecture\":\"", (unsigned long long)m.file_size);
@@ -4098,7 +4119,7 @@ int main(int argc, char **argv) {
         sb_lit(&r, "\",\"name\":\"");
         sb_esc(&r, gn, strlen(gn));
         sb_fmt(&r, "\",\"layers\":%d,\"trained_context\":%d,\"adapter\":%s},",
-               m.n_layer, m.n_ctx_train, lora_path ? "true" : "false");
+               m.n_layer, m.n_ctx_train, o->lora_path ? "true" : "false");
         sb_fmt(&r, "\"placement\":{\"requested\":\"%s\",\"backend\":\"%s\","
                    "\"gpu_layers\":%d,\"layers\":%d,\"device\":\"",
                asked_gpu ? "auto" : "off", backend, m.gpu ? m.gpu_layers : 0,
@@ -4131,7 +4152,7 @@ int main(int argc, char **argv) {
                probe_ran ? "true" : "false", probe_stop ? "true" : "false",
                probe_has4 ? "true" : "false", probe_empty ? "true" : "false",
                probe_leak ? "true" : "false");
-        if (doctor_text && probe_ran && dout.buf) {
+        if (o->doctor_text && probe_ran && dout.buf) {
             sb_lit(&r, ",\"question\":\"");
             sb_esc(&r, question, sizeof question - 1);
             sb_lit(&r, "\",\"reply\":\"");
@@ -4194,7 +4215,7 @@ int main(int argc, char **argv) {
 #undef FINDING
         sb_fmt(&r, "],\"verdict\":\"%s\",\"shareable\":\"%s\"}\n",
                worst == 2 ? "broken" : worst == 1 ? "degraded" : "ok",
-               doctor_text ? "contains the probe question and the model's reply; read before sharing"
+               o->doctor_text ? "contains the probe question and the model's reply; read before sharing"
                            : "no prompt or reply text; file name and machine sizes only");
         if (r.failed) {
             free(r.s); free(dout.buf);
@@ -4209,7 +4230,7 @@ int main(int argc, char **argv) {
         return worst == 2 ? 2 : 0;
     }
 
-    if (bench_json) {
+    if (o->bench_json) {
         // A bench that stops at EOS measures the model's chattiness, not the
         // engine: instruct models that answer a bare prompt with instant EOS
         // reported "0.0 tok/s". Decode every requested token.
@@ -4221,8 +4242,8 @@ int main(int argc, char **argv) {
         // realistic prefill instead, clamped to whatever context exists.
         enum { BENCH_PROMPT_TOKENS = 512 };
         char *p = NULL;
-        if (prompt) {
-            p = unescape(prompt);
+        if (o->prompt) {
+            p = unescape(o->prompt);
         } else {
             static const char para[] =
                 "The lighthouse keeper recorded the weather every morning: "
@@ -4241,19 +4262,19 @@ int main(int argc, char **argv) {
             fprintf(stderr, "error: out of memory building benchmark prompt\n");
             CLI_FAIL;
         }
-        n_prompt = tok_encode(&tok, p, toks, (int)tok_cap, !no_bos, true);
+        n_prompt = tok_encode(&tok, p, toks, (int)tok_cap, !o->no_bos, true);
         if (n_prompt < 0) {
             fprintf(stderr, "error: out of memory tokenizing benchmark prompt\n");
             free(p);
             CLI_FAIL;
         }
-        if (!prompt) {
+        if (!o->prompt) {
             // Truncating the synthesized prompt is safe (it is filler) and is
             // what keeps the default runnable on a small context.
             int want = BENCH_PROMPT_TOKENS;
             // leave the decode phase its tokens, or the rate it reports is
             // measured over a couple of steps on a small-context model
-            int room = m.n_ctx - (n_predict > 0 ? n_predict : 0) - 1;
+            int room = m.n_ctx - (o->n_predict > 0 ? o->n_predict : 0) - 1;
             if (room < 1) room = m.n_ctx - 1;
             if (want > room) want = room;
             if (n_prompt > want) n_prompt = want;
@@ -4271,9 +4292,9 @@ int main(int argc, char **argv) {
             free(p);
             CLI_FAIL;
         }
-        n_gen = engine_generate(&e, logits, n_predict, discard_cb, NULL, &gtime);
+        n_gen = engine_generate(&e, logits, o->n_predict, discard_cb, NULL, &gtime);
         char esc_model[1024];
-        json_escape(model_path, strlen(model_path), esc_model, sizeof(esc_model));
+        json_escape(o->model_path, strlen(o->model_path), esc_model, sizeof(esc_model));
         // prompt_s is time-to-first-token for this prompt length: the number
         // an editor-assistant user actually waits on, and the one a rate alone
         // hides. Both phases report seconds beside their rates.
@@ -4291,7 +4312,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    if (resume_path) {
+    if (o->resume_path) {
         // R1.3: continue a suspended generation from its image, exactly
         const session_meta *sm = &simg.meta;
         char have[65];
@@ -4307,7 +4328,7 @@ int main(int argc, char **argv) {
         if (!why && !engine_state_load(&e, simg.tokens, sm->n_tokens, simg.state))
             why = "this model's KV layout (a ring or tied-V cache) cannot be resumed";
         if (why) {
-            fprintf(stderr, "error: --resume %s: %s\n", resume_path, why);
+            fprintf(stderr, "error: --resume %s: %s\n", o->resume_path, why);
             session_image_free(&simg);
             CLI_FAIL;
         }
@@ -4323,18 +4344,18 @@ int main(int argc, char **argv) {
         if (!lg) { session_image_free(&simg); CLI_FAIL; }
         memcpy(lg, simg.logits, sizeof(float) * (size_t)m.n_vocab);
         fprintf(stderr, "resumed %s: %d tokens, %d of %d generated%s\n",
-                resume_path, sm->n_tokens, sm->generated, sm->max_new,
-                fork_seed_given ? " (forked: new rng seed)" : "");
+                o->resume_path, sm->n_tokens, sm->generated, sm->max_new,
+                o->fork_seed_given ? " (forked: new rng seed)" : "");
         double st0 = now_s();
         const float *last = NULL;
-        bool live = session_steps(&e, lg, suspend_after, stdout_cb, NULL, &last);
+        bool live = session_steps(&e, lg, o->suspend_after, stdout_cb, NULL, &last);
         bool suspended = live && e.gen_count < e.gen_max;
         int rc = 0;
-        if (session_out) {
+        if (o->session_out) {
             if (live) {
-                if (!session_image_out(session_out, &e, load_path, last,
-                                       sm->n_prompt, sm->max_new, json_mode,
-                                       ignore_eos, schema_file))
+                if (!session_image_out(o->session_out, &e, load_path, last,
+                                       sm->n_prompt, sm->max_new, o->json_mode,
+                                       o->ignore_eos, o->schema_file))
                     rc = 1;
             } else {
                 fprintf(stderr, "error: session: the generation ended before the "
@@ -4346,7 +4367,7 @@ int main(int argc, char **argv) {
         printf("\n");
         double gt = now_s() - st0;
         int n_new = e.gen_count - sm->generated;
-        if (e.hit_stop && !json_mode) fprintf(stderr, "[end of text]\n");
+        if (e.hit_stop && !o->json_mode) fprintf(stderr, "[end of text]\n");
         fprintf(stderr, "\nresumed gen: %d tok, %.2f tok/s\n", n_new,
                 n_new / (gt > 0 ? gt : 1e-9));
         free(lg);
@@ -4356,20 +4377,20 @@ int main(int argc, char **argv) {
         return rc;
     }
 
-    if (!interactive) {
+    if (!o->interactive) {
         // one-shot completion
-        char *p = unescape(prompt);
-        n_prompt = tok_encode(&tok, p, toks, (int)tok_cap, !no_bos, true);
+        char *p = unescape(o->prompt);
+        n_prompt = tok_encode(&tok, p, toks, (int)tok_cap, !o->no_bos, true);
         if (n_prompt < 0) { fprintf(stderr, "error: out of memory tokenizing prompt\n"); free(p); CLI_FAIL; }
         if (n_prompt == 0) { fprintf(stderr, "error: empty prompt\n"); free(p); CLI_FAIL; }
         if (n_prompt >= m.n_ctx) {
             fprintf(stderr, "error: prompt is %d tokens but context is %d — "
                     "rerun with -c %d or larger\n", n_prompt, m.n_ctx,
-                    (n_prompt + n_predict + 1023) / 1024 * 1024);
+                    (n_prompt + o->n_predict + 1023) / 1024 * 1024);
             free(p);
             CLI_FAIL;
         }
-        if (verbose) {
+        if (o->verbose) {
             fprintf(stderr, "prompt tokens (%d):", n_prompt);
             for (int i = 0; i < n_prompt && i < 64; i++) fprintf(stderr, " %d", toks[i]);
             fprintf(stderr, "\n");
@@ -4379,26 +4400,26 @@ int main(int argc, char **argv) {
         ptime = now_s() - t0;
         if (!logits) { fprintf(stderr, "error: prompt exceeds context\n"); free(p); CLI_FAIL; }
 
-        if (!prompt_file && !json_mode && !schema_file)
+        if (!o->prompt_file && !o->json_mode && !o->schema_file)
             printf("%s", p); // don't echo file/json/schema prompts
         fflush(stdout);
         // --transcript: the seed recorded is the value the sampler STARTS
         // from (it mutates as it draws), and the output bytes are captured
         // verbatim as they stream
-        uint64_t t_seed = smp.rng;
+        uint64_t t_seed = o->smp.rng;
         outcap_t ocap = { .echo = true };
         int s_rc = 0;
-        if (session_out) {
+        if (o->session_out) {
             // R1.3: the step loop, stopped at --suspend-after or the budget,
             // and imaged there while the generation is live
             double st0 = now_s();
-            engine_gen_begin(&e, n_predict);
+            engine_gen_begin(&e, o->n_predict);
             const float *last = NULL;
-            bool live = session_steps(&e, logits, suspend_after, stdout_cb, NULL, &last);
+            bool live = session_steps(&e, logits, o->suspend_after, stdout_cb, NULL, &last);
             bool suspended = live && e.gen_count < e.gen_max;
             if (live) {
-                if (!session_image_out(session_out, &e, load_path, last, n_prompt,
-                                       n_predict, json_mode, ignore_eos, schema_file))
+                if (!session_image_out(o->session_out, &e, load_path, last, n_prompt,
+                                       o->n_predict, o->json_mode, o->ignore_eos, o->schema_file))
                     s_rc = 1;
             } else {
                 // an ended generation has nothing left to resume; asked for an
@@ -4412,24 +4433,24 @@ int main(int argc, char **argv) {
             n_gen = suspended ? e.gen_count : engine_gen_end(&e, stdout_cb, NULL, NULL);
             gtime = now_s() - st0;
         } else {
-            n_gen = engine_generate(&e, logits, n_predict,
-                                    transcript_path ? outcap_cb : stdout_cb,
-                                    transcript_path ? &ocap : NULL, &gtime);
+            n_gen = engine_generate(&e, logits, o->n_predict,
+                                    o->transcript_path ? outcap_cb : stdout_cb,
+                                    o->transcript_path ? &ocap : NULL, &gtime);
         }
         printf("\n");
-        if (e.hit_stop && !json_mode) fprintf(stderr, "[end of text]\n");
+        if (e.hit_stop && !o->json_mode) fprintf(stderr, "[end of text]\n");
         fprintf(stderr, "\nprompt: %d tok, %.2f tok/s | gen: %d tok, %.2f tok/s\n",
                 n_prompt, n_prompt / (ptime > 0 ? ptime : 1e-9),
                 n_gen, n_gen / (gtime > 0 ? gtime : 1e-9));
         model_debug_time_report();
         int t_rc = 0;
-        if (transcript_path) {
+        if (o->transcript_path) {
             char prev_hash[65] = "";
-            if (transcript_prev && !receipt_chain_hash(transcript_prev, prev_hash)) {
+            if (o->transcript_prev && !receipt_chain_hash(o->transcript_prev, prev_hash)) {
                 fprintf(stderr, "error: --transcript-prev: cannot read the chain "
-                                "hash of %s\n", transcript_prev);
+                                "hash of %s\n", o->transcript_prev);
                 t_rc = 1;
-                transcript_path = NULL;   // do not write an unlinked receipt
+                o->transcript_path = NULL;   // do not write an unlinked receipt
             }
             char gname[128] = "";
             if (m.gpu) gpu_available(gname, sizeof gname);
@@ -4437,16 +4458,16 @@ int main(int argc, char **argv) {
             // replays it under the same constraints or refuses it
             char cons[256] = "", schema_sha[65] = "";
             size_t cn = 0;
-            if (schema_file && !schema_file_digest(schema_file, schema_sha))
+            if (o->schema_file && !schema_file_digest(o->schema_file, schema_sha))
                 snprintf(schema_sha, sizeof schema_sha, "unknown");
-            if (schema_file)
+            if (o->schema_file)
                 cn += (size_t)snprintf(cons + cn, sizeof cons - cn,
                                        "{\"kind\":\"json_schema\",\"sha256\":\"%s\"}",
                                        schema_sha);
-            if (json_mode)
+            if (o->json_mode)
                 cn += (size_t)snprintf(cons + cn, sizeof cons - cn,
                                        "%s{\"kind\":\"json_mode\"}", cn ? "," : "");
-            if (ignore_eos)
+            if (o->ignore_eos)
                 cn += (size_t)snprintf(cons + cn, sizeof cons - cn,
                                        "%s{\"kind\":\"ignore_eos\"}", cn ? "," : "");
             char cons_json[260] = "";
@@ -4459,7 +4480,7 @@ int main(int argc, char **argv) {
                          wmk.id, WM_LAYERS, WM_CONTEXT, cli_wm.marked);
             char *transcript_exe = plat_executable_path();
             transcript_info ti = {
-                .out_path = transcript_path,
+                .out_path = o->transcript_path,
                 .runner_version = RUNNER_VERSION,
                 .executable_path = transcript_exe,
                 .compiler = __VERSION__,
@@ -4479,20 +4500,20 @@ int main(int argc, char **argv) {
                 .n_batch = m.n_batch, .kv_q8 = m.kv_q8, .kv_fp4 = m.kv_fp4,
                 .kv_split = m.kv_split,
                 .model_path = load_path,
-                .adapter_path = lora_path, .adapter_scale = lora_scale,
+                .adapter_path = o->lora_path, .adapter_scale = o->lora_scale,
                 .seed = t_seed,
                 .temp = e.smp->temp, .top_p = e.smp->top_p,
                 .min_p = e.smp->min_p,
                 .repeat_penalty = e.smp->repeat_penalty,
-                .top_k = e.smp->top_k, .n_predict = n_predict,
-                .bos = !no_bos,
+                .top_k = e.smp->top_k, .n_predict = o->n_predict,
+                .bos = !o->no_bos,
                 .prompt_text = p,
                 .prompt_tokens = toks, .n_prompt = n_prompt,
                 .output_text = ocap.buf, .output_text_len = ocap.n,
                 .output_tokens = e.hist + n_prompt, .n_output = n_gen,
                 .hit_stop = e.hit_stop,
                 .prev_hash = prev_hash[0] ? prev_hash : NULL,
-                .sign_key_path = sign_key,
+                .sign_key_path = o->sign_key,
                 .spec_source = e.dm ? "model" : e.mtp_on ? "mtp"
                              : e.lookup_on ? "lookup" : NULL,
                 .spec_rounds = e.spec_st.rounds,
@@ -4512,7 +4533,7 @@ int main(int argc, char **argv) {
                         "output\n");
                 t_rc = 1;
             } else if (transcript_write(&ti))
-                fprintf(stderr, "transcript -> %s\n", transcript_path);
+                fprintf(stderr, "transcript -> %s\n", o->transcript_path);
             else
                 t_rc = 1;
             free(transcript_exe);
@@ -4530,10 +4551,10 @@ int main(int argc, char **argv) {
     if (tmpl < 0)
         tmpl = template_detect(gguf_get_str(&m.gf, "tokenizer.chat_template", NULL), &tok);
     template_bind_think_tags(tmpl, &m.think_open, &m.think_close);
-    if (!system_prompt)
-        system_prompt = template_default_system(
+    if (!o->system_prompt)
+        o->system_prompt = template_default_system(
             tmpl, gguf_get_str(&m.gf, "tokenizer.chat_template", NULL));
-    if (!system_prompt) system_prompt = "You are a helpful assistant.";
+    if (!o->system_prompt) o->system_prompt = "You are a helpful assistant.";
     fprintf(stderr, "chat mode (template: %s) — Ctrl-D or /exit to quit\n\n",
             template_name(tmpl));
 
@@ -4551,25 +4572,25 @@ int main(int argc, char **argv) {
 
         chat_msg msgs[2];
         int n_msgs = 0;
-        if (first_turn && system_prompt[0])
+        if (first_turn && o->system_prompt[0])
             msgs[n_msgs++] = (chat_msg){
-                .role = "system", .content = system_prompt,
+                .role = "system", .content = o->system_prompt,
             };
         msgs[n_msgs++] = (chat_msg){ .role = "user", .content = line };
         // Measured, never estimated — the same rule the server holds itself
         // to. render_messages truncates the TAIL, so a fixed buffer that a
         // long --system overruns does not fail the turn, it deletes the
         // question and the generation header and asks something else.
-        char *rendered = render_prompt_alloc(tmpl, msgs, n_msgs, true, thinking,
+        char *rendered = render_prompt_alloc(tmpl, msgs, n_msgs, true, o->thinking,
                                              NULL, strlen(line) +
-                                             strlen(system_prompt) + 1024);
+                                             strlen(o->system_prompt) + 1024);
         free(line);   // the render is the only reader; every path below is safe
         if (!rendered) {
             fprintf(stderr, "[out of memory rendering the prompt — turn skipped]\n");
             continue;
         }
         n_prompt = tok_encode_prompt(&tok, rendered, toks, (int)tok_cap,
-                                     first_turn && !no_bos);
+                                     first_turn && !o->no_bos);
         free(rendered);
         first_turn = false;
 
@@ -4595,7 +4616,7 @@ int main(int argc, char **argv) {
             think_init_reasoning(&co.ts, m.think_open, m.think_close);
         else
             think_init(&co.ts, m.think_open, m.think_close);
-        n_gen = engine_generate(&e, logits, n_predict, chat_cb, &co, &gtime);
+        n_gen = engine_generate(&e, logits, o->n_predict, chat_cb, &co, &gtime);
         think_finish(&co.ts, chat_emit, &co);
         if (co.in_think) fputs("\n[/thinking]", stdout);
         think_free(&co.ts);
