@@ -388,10 +388,10 @@ def kv_bool(k, v): return s(k) + struct.pack("<IB", GGUF_BOOL, 1 if v else 0)
 
 
 def kv_arr_str(k, items):
-    out = s(k) + struct.pack("<IIQ", GGUF_ARR, GGUF_STR, len(items))
-    for it in items:
-        out += s(it)
-    return out
+    # one join, not repeated bytes concatenation: a 250k-entry special list
+    # (the quadratic-sort regression fixture) took 12 s to write that way
+    return (s(k) + struct.pack("<IIQ", GGUF_ARR, GGUF_STR, len(items)) +
+            b"".join(s(it) for it in items))
 
 
 def kv_arr_f32(k, items):
