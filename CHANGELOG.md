@@ -3,7 +3,7 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.2.1 - 2026-10-13
 
 - **A client stalled mid-request no longer holds the server's shutdown.**
   A connection that had sent half a request kept its slot reading until the
