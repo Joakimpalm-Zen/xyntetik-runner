@@ -2212,6 +2212,653 @@ static bool bind_meta_qwen35(model_t *m, gguf_file *g, const char *arch) {
     return true;
 }
 
+// qwen4exp: its hyper-connections and the per-layer n-gram embedding (PLE4)
+// geometry.
+static bool bind_meta_qwen4exp(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    m->hyper_conn  = true;
+    m->hc_count    = (int)gguf_get_u32(g, AK("hyper_connection.count"), 0);
+    m->hc_low_rank = (int)gguf_get_u32(g, AK("hyper_connection.low_rank"), 0);
+    if (m->hc_count < 2 || m->hc_count > 8 || m->hc_low_rank <= 0 ||
+        m->hc_low_rank > MDL_DIM_MAX) {
+        fprintf(stderr, "error: invalid qwen4exp hyper-connection geometry "
+                "(count %d, low rank %d)\n", m->hc_count, m->hc_low_rank);
+        return false;
+    }
+    // The sparse-attention indexer (QSA) scores blocks of compress_ratio
+    // cells and attends the top indexer.top_k of them. Below top_k cells
+    // every cell is kept, so attention is exactly dense there; this
+    // admission runs dense and caps the context at top_k until the
+    // indexer is implemented (R4.26.2). Stated at load, refused above.
+    {
+        uint32_t topk = gguf_get_u32(g, AK("attention.indexer.top_k"), 0);
+        if (topk > 0 && (uint32_t)m->n_ctx > topk) {
+            fprintf(stderr, "error: qwen4exp sparse attention (indexer top_k "
+                    "%u) is not implemented; this build runs it dense and "
+                    "admits contexts up to %u tokens (asked %d)\n",
+                    topk, topk, m->n_ctx);
+            return false;
+        }
+    }
+    // PLE n-gram block: optional, at most one, must be a recurrent block
+    gguf_kv *pl = gguf_get(g, AK("ple.layers"));
+    if (pl) {
+        if (pl->type != GGUF_T_ARR || pl->arr_n != 1) {
+            fprintf(stderr, "error: qwen4exp ple.layers must name exactly one block\n");
+            return false;
+        }
+        int li = (int)gguf_get_u32_idx(g, AK("ple.layers"), 0, 0);
+        m->ple4_ngram          = (int)gguf_get_u32(g, AK("ple.ngram_size"), 0);
+        m->ple4_heads_per_gram = (int)gguf_get_u32(g, AK("ple.heads_per_ngram"), 0);
+        m->ple4_conv_kernel    = (int)gguf_get_u32(g, AK("ple.conv_kernel"), 0);
+        m->ple4_head_dim       = (int)gguf_get_u32(g, AK("embedding_length_per_layer_input"), 0);
+        m->ple4_eos            = (int32_t)gguf_get_u32(g, AK("ple.eos_token_id"), 0);
+        m->ple4_n_heads = (m->ple4_ngram - 1) * m->ple4_heads_per_gram;
+        if (li < 0 || li >= m->n_layer || m->ple4_ngram < 2 || m->ple4_ngram > 8 ||
+            m->ple4_heads_per_gram <= 0 || m->ple4_n_heads > 64 ||
+            m->ple4_conv_kernel <= 0 || m->ple4_conv_kernel > 8 ||
+            m->ple4_head_dim <= 0 || m->ple4_head_dim > MDL_DIM_MAX) {
+            fprintf(stderr, "error: invalid qwen4exp PLE geometry\n");
+            return false;
+        }
+        gguf_kv *mu = gguf_get(g, AK("ple.layer_multipliers"));
+        gguf_kv *of = gguf_get(g, AK("ple.head_offsets"));
+        gguf_kv *vs = gguf_get(g, AK("ple.head_vocab_sizes"));
+        if (!mu || mu->type != GGUF_T_ARR || mu->arr_n != (uint64_t)m->ple4_ngram ||
+            !of || of->type != GGUF_T_ARR || of->arr_n != (uint64_t)m->ple4_n_heads ||
+            !vs || vs->type != GGUF_T_ARR || vs->arr_n != (uint64_t)m->ple4_n_heads) {
+            fprintf(stderr, "error: qwen4exp PLE hash arrays are missing or the wrong length\n");
+            return false;
+        }
+        for (int k = 0; k < m->ple4_ngram; k++)
+            m->ple4_mult[k] = gguf_get_u64_idx(g, AK("ple.layer_multipliers"), (uint64_t)k, 0);
+        for (int h = 0; h < m->ple4_n_heads; h++) {
+            uint64_t o = gguf_get_u64_idx(g, AK("ple.head_offsets"), (uint64_t)h, 0);
+            uint64_t v = gguf_get_u64_idx(g, AK("ple.head_vocab_sizes"), (uint64_t)h, 0);
+            if (v == 0 || o > INT32_MAX || v > INT32_MAX || o + v > INT32_MAX) {
+                fprintf(stderr, "error: qwen4exp PLE head %d range does not fit\n", h);
+                return false;
+            }
+            m->ple4_off[h] = (uint32_t)o; m->ple4_vocab[h] = (uint32_t)v;
+        }
+        m->ple4_layer = li;
+    }
+    return true;
+}
+
+// Apertus: the xIELU activation parameters, per layer.
+static bool bind_meta_apertus(model_t *m, gguf_file *g, const char *arch) {
+    // Apertus: ungated MLP (no ffn_gate) with the xIELU activation, whose
+    // four parameters are published per layer.
+    m->ffn_act = ACT_XIELU;
+    if (m->n_layer < 1 || m->n_layer > 100000) {
+        fprintf(stderr, "error: apertus block_count %d out of range\n", m->n_layer);
+        return false;
+    }
+    size_t nl = (size_t)(unsigned)m->n_layer;
+    m->xielu_an  = malloc(sizeof(float) * nl);
+    m->xielu_ap  = malloc(sizeof(float) * nl);
+    m->xielu_b   = malloc(sizeof(float) * nl);
+    m->xielu_eps = malloc(sizeof(float) * nl);
+    if (!m->xielu_an || !m->xielu_ap || !m->xielu_b || !m->xielu_eps)
+        return false;
+    // The keys are NOT architecture-prefixed (llama.cpp spells them
+    // "xielu.alpha_n", not "apertus.xielu.alpha_n") and may be a scalar
+    // shared by every layer or a per-layer array.
+    static const struct { const char *key; size_t off; float dflt; } XK[] = {
+        { "xielu.alpha_n", 0, 0.8f }, { "xielu.alpha_p", 1, 0.8f },
+        { "xielu.beta",    2, 0.5f }, { "xielu.eps",     3, -1e-6f },
+    };
+    float *dst[4] = { m->xielu_an, m->xielu_ap, m->xielu_b, m->xielu_eps };
+    for (int k = 0; k < 4; k++) {
+        gguf_kv *a = gguf_get(g, XK[k].key);
+        float scalar = gguf_get_f32(g, XK[k].key, XK[k].dflt);
+        for (int i = 0; i < m->n_layer; i++) {
+            float v = scalar;
+            // same alignment rule as every other array read here: the
+            // elements are packed at the file's offset, not the type's
+            if (a && a->arr_raw && a->arr_type == GGUF_T_F32 &&
+                (uint64_t)i < a->arr_n)
+                memcpy(&v, (const uint8_t *)a->arr_raw + (size_t)i * 4, 4);
+            dst[XK[k].off][i] = v;
+        }
+    }
+    // The file's alpha_n and alpha_p are NOT what the activation consumes.
+    // ggml_xielu transforms them when it builds the node — alpha_p becomes
+    // softplus(alpha_p) and alpha_n becomes beta + softplus(alpha_n) —
+    // and only then does op_xielu see them. Transcribing op_xielu without
+    // that step, which is what runner did, feeds the raw values straight
+    // in. It is invisible wherever the raw value is large, because
+    // softplus saturates to the identity above ~20 and most of Apertus-8B's
+    // alphas are in the tens or hundreds; it is catastrophic in the middle
+    // layers, where layer 15 has alpha_n 0.00296 against an effective
+    // 1.19463 — a factor of 403. The model generated fluent-looking
+    // gibberish.
+    //
+    // Folded here rather than in xielu() so the hot path is unchanged and
+    // the transform happens once per layer instead of once per element.
+    for (int i = 0; i < m->n_layer; i++) {
+        m->xielu_ap[i] = softplus_f32(m->xielu_ap[i]);
+        m->xielu_an[i] = m->xielu_b[i] + softplus_f32(m->xielu_an[i]);
+    }
+    return true;
+}
+
+// Gemma 4: per-layer head geometry, sliding layers, shared KV, the E-series
+// embedding and the thought channel.
+static bool bind_meta_gemma4(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    // gemma4 (reference: llama.cpp src/models/gemma4.cpp): heterogeneous
+    // layers — per-layer kv heads and head dims (global 512 / sliding
+    // 256), global layers may have no V projection (V reuses the raw K
+    // projection), every V gets a weightless per-head RMS norm, attention
+    // scale is fixed 1.0, each layer's output is scaled by a per-layer
+    // scalar, and final logits are softcapped. Verified against llama.cpp
+    // b9964: greedy raw completions are token-identical on the official
+    // ggml-org gemma-4-12B-it Q4_K_M, and chat-formatted prompts answer
+    // correctly. Note the model is thinking-tuned: raw untemplated
+    // completions are legitimately degenerate, and llama.cpp additionally
+    // biases tokenizer.ggml.suppress_tokens to -inf (not done here).
+    // The general geometry validation runs after the arch blocks, but this
+    // one sizes several per-layer arrays from block_count first.
+    if (m->n_layer < 1 || m->n_layer > 100000) {
+        fprintf(stderr, "error: gemma4 block_count %d out of range\n", m->n_layer);
+        return false;
+    }
+    int shared_kv = (int)gguf_get_u32(g, AK("attention.shared_kv_layers"), 0);
+    // Same rule as expert_count: above INT_MAX this lands negative, and a
+    // negative width reads as "no per-layer embeddings" — the E-series
+    // branch is skipped, its tensors are ignored, and the model answers as
+    // a different architecture without saying so.
+    uint32_t ple_raw = gguf_get_u32(g, AK("embedding_length_per_layer_input"), 0);
+    if (ple_raw > MDL_DIM_MAX) {
+        fprintf(stderr, "error: gemma4 per-layer embedding size %u is out "
+                "of range\n", ple_raw);
+        return false;
+    }
+    m->n_embd_ple    = (int)ple_raw;
+    m->kv_from_start = m->n_layer;
+    if (shared_kv > 0) {
+        // llama-model.cpp's reuse callback: layers at or past
+        // n_layer - shared_kv_layers own no cache and read the LAST KV
+        // layer of their own sliding/full type, which is
+        // (kv_from_start - 2) for sliding and (kv_from_start - 1) for full.
+        m->kv_from_start = m->n_layer - shared_kv;
+        if (m->kv_from_start < 2) {
+            fprintf(stderr, "error: gemma4 shared_kv_layers=%d leaves no "
+                    "KV-owning layers\n", shared_kv);
+            return false;
+        }
+    }
+    if (m->n_embd_ple > 0 || m->kv_from_start < m->n_layer)
+        // E-series: per-layer embeddings and/or shared-KV layers. Verified
+        // against llama.cpp b10076 on gemma-4-E4B-it Q4_K_M — greedy
+        // agreement is at the quantisation noise floor (the same profile a
+        // long-verified dense model shows), not exact token identity.
+        // CPU and CUDA, byte-identical to each other.
+        fprintf(stderr, "gemma4: E-series (per-layer embeddings%s) — "
+                "verified against llama.cpp at the Q4_K noise floor "
+                "rather than token-identically\n",
+                m->kv_from_start < m->n_layer ? " + shared KV" : "");
+    else
+        fprintf(stderr, "gemma4: dense variant verified against llama.cpp (token-identical greedy output on the official ggml-org GGUF); unofficial dequant conversions may still produce garbage — prefer official files\n");
+    m->embd_scale    = sqrtf((float)m->n_embd);
+    m->ffn_act       = ACT_GELU;
+    m->v_rmsnorm     = true;
+    m->attn_scale    = 1.0f;
+    // thinking-tuned: responses interleave <|channel>thought ... <channel|>
+    // reasoning blocks with the answer text (split out by think_feed)
+    m->think_open    = "<|channel>thought";
+    m->think_close   = "<channel|>";
+    m->logit_softcap = gguf_get_f32(g, AK("final_logit_softcapping"), 0.0f);
+    m->swa_window    = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
+    m->rms_eps       = gguf_get_f32(g, AK("attention.layer_norm_rms_epsilon"), 1e-6f);
+    m->rope_base     = gguf_get_f32(g, AK("rope.freq_base"), 1000000.0f);
+    m->head_dim      = (int)gguf_get_u32(g, AK("attention.key_length"), 512);
+    m->rope_dim      = (int)gguf_get_u32(g, AK("rope.dimension_count"), m->head_dim);
+    m->rope_dim_local = (int)gguf_get_u32(g, AK("rope.dimension_count_swa"), m->rope_dim);
+    int hd_swa       = (int)gguf_get_u32(g, AK("attention.key_length_swa"), m->head_dim);
+    // The generic sliding-window block above already built a table from
+    // the same keys; this branch rebuilds it with the family's rules, so
+    // the first one is released rather than stranded (one leak per load,
+    // including every swap reload in --serve).
+    free(m->l_is_swa);
+    m->l_is_swa   = calloc(m->n_layer, sizeof(bool));
+    m->l_head_kv  = calloc(m->n_layer, sizeof(int));
+    m->l_head_dim = calloc(m->n_layer, sizeof(int));
+    m->l_rope_dim = calloc(m->n_layer, sizeof(int));
+    if (!m->l_is_swa || !m->l_head_kv || !m->l_head_dim || !m->l_rope_dim)
+        return false;
+    gguf_kv *swa_arr = gguf_get(g, AK("attention.sliding_window_pattern"));
+    // per-layer arrays must have the element width we index with — a
+    // converter that writes e.g. I32 booleans would misparse every layer.
+    // (head_count_kv goes through gguf_get_u32_idx below, which does its
+    // own type validation and reads elements without assuming alignment.)
+    if (swa_arr && swa_arr->arr_type != GGUF_T_BOOL &&
+        swa_arr->arr_type != GGUF_T_U8 && swa_arr->arr_type != GGUF_T_I8)
+        swa_arr = NULL;
+    for (int i = 0; i < m->n_layer; i++) {
+        bool swa = swa_arr && swa_arr->arr_raw && (uint64_t)i < swa_arr->arr_n
+                   ? ((const uint8_t *)swa_arr->arr_raw)[i] != 0 : false;
+        m->l_is_swa[i]   = swa && m->swa_window > 0;
+        m->l_head_dim[i] = swa ? hd_swa : m->head_dim;
+        // The rotated-dim count must come from the SAME choice that picks
+        // the frequency table: rope_apply reads rope_inv_freq_local only
+        // for a layer model_is_swa() says is sliding, and that predicate
+        // is window-gated. Selecting on the raw pattern bit instead would
+        // pair the local dim count with the global table on a file that
+        // declares a sliding pattern and no window.
+        m->l_rope_dim[i] = m->l_is_swa[i] ? m->rope_dim_local : m->rope_dim;
+        // A GGUF array is packed at whatever offset it landed on, so it
+        // is NOT aligned for the element type: casting arr_raw to
+        // uint32_t* and indexing it is a misaligned load (UBSan flagged
+        // exactly this on the committed gemma4-hetero fixture). The
+        // per-index getter reads elements with memcpy and validates the
+        // element type and range in one place, which is where that
+        // knowledge belongs.
+        m->l_head_kv[i]  = (int)gguf_get_u32_idx(
+            g, AK("attention.head_count_kv"), (uint64_t)i,
+            (uint32_t)m->n_head_kv);
+        // Per-layer kv-head / head-dim / rope-dim come from untrusted
+        // per-layer keys and feed the same attention divisors and index
+        // arithmetic as the scalar path (kv_dim / hd, n_head / n_head_kv,
+        // and the pair index inside a head). A zero or non-dividing value
+        // would divide-by-zero on the first token; rope rotates
+        // rope_dim/2 PAIRS inside each head, so a rope dim wider than the
+        // head runs off the end of the last head's q/k row (the scalar
+        // gate below bounds rope_dim against head_dim, but never saw
+        // rope.dimension_count_swa against key_length_swa) — reject at
+        // load instead.
+        // A removed attention (head_count 0 at this block) legitimately
+        // has head_count_kv 0 too; the removal gate below checks that
+        // pairing. Every other zero is the malformed geometry this
+        // rejects.
+        bool attn_gone = m->l_no_attn && m->l_no_attn[i] && m->l_head_kv[i] == 0;
+        if (!attn_gone &&
+           (m->l_head_dim[i] < 1 || m->l_head_kv[i] < 1 ||
+            m->n_head < 1 || m->l_head_kv[i] > m->n_head ||
+            m->n_head % m->l_head_kv[i] != 0 ||
+            m->l_rope_dim[i] < 0 || m->l_rope_dim[i] > m->l_head_dim[i] ||
+            (int64_t)m->n_head * m->l_head_dim[i] > MDL_DIM_MAX)) {
+            fprintf(stderr, "error: invalid gemma4 per-layer geometry at "
+                    "blk.%d (head_dim=%d head_count_kv=%d rope_dim=%d, "
+                    "n_head=%d)\n",
+                    i, m->l_head_dim[i], m->l_head_kv[i], m->l_rope_dim[i],
+                    m->n_head);
+            return false;
+        }
+    }
+    // Shared-KV map. Identity for the layers that own a cache; every
+    // later layer points at the last KV-owning layer of its own type.
+    // n_layer is bounded above; the local keeps that range visible to the
+    // allocator call across the intervening stores to *m.
+    size_t nl = (size_t)(unsigned)m->n_layer;
+    m->kv_src = calloc(nl ? nl : 1, sizeof(int));
+    if (!m->kv_src) return false;
+    for (int i = 0; i < m->n_layer; i++) {
+        m->kv_src[i] = i;
+        if (i < m->kv_from_start) continue;
+        int src = m->kv_from_start - (m->l_is_swa[i] ? 2 : 1);
+        if (src < 0 || m->l_head_dim[src] != m->l_head_dim[i] ||
+            m->l_head_kv[src] != m->l_head_kv[i]) {
+            // a source whose KV geometry differs would be read with the
+            // wrong row stride — refuse rather than reinterpret bytes
+            fprintf(stderr, "error: gemma4 shared-KV layer %d maps to %d "
+                    "with mismatched KV geometry\n", i, src);
+            return false;
+        }
+        m->kv_src[i] = src;
+    }
+    return true;
+}
+
+// Granite: its embedding, residual, attention and logit multipliers.
+static bool bind_meta_granite(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    // granite (IBM Granite dense, 3.x/4.1; reference: llama.cpp b10353
+    // src/models/granite.cpp + build_inp_embd). The four muP scalars are
+    // the whole family quirk — and running the arch llama-style without
+    // them is exactly why it sat on the wrong-math refusal list:
+    //   * embeddings x embedding_scale (build_inp_embd);
+    //   * kq_scale is the FIXED attention.scale value, not 1/sqrt(hd);
+    //   * BOTH branch outputs x residual_scale before their residual
+    //     adds (granite.cpp:241/301);
+    //   * final logits x 1/logit_scale — llama.cpp DIVIDES where the
+    //     runner's knob multiplies, so store the reciprocal.
+    // Rope is adjacent-pair (LLAMA_ROPE_TYPE_NORM, like llama), gated by
+    // rope.scaling.finetuned which defaults ON; a NoPE granite export is
+    // refused rather than mis-rotated. granitemoe/granitehybrid are
+    // different arch ids and stay unadmitted.
+    m->rope_neox   = false;
+    m->embd_scale  = gguf_get_f32(g, AK("embedding_scale"), 1.0f);
+    m->attn_scale  = gguf_get_f32(g, AK("attention.scale"), 0.0f);
+    m->resid_scale = gguf_get_f32(g, AK("residual_scale"), 1.0f);
+    float ls = gguf_get_f32(g, AK("logit_scale"), 0.0f);
+    if (ls > 0.0f) m->logit_scale = 1.0f / ls;
+    if (!gguf_get_bool(g, AK("rope.scaling.finetuned"), true)) {
+        fprintf(stderr, "error: granite export disables rope "
+                "(rope.scaling.finetuned=false) — unsupported layout\n");
+        return false;
+    }
+    return true;
+}
+
+// Granite hybrid: the Granite multipliers, the Mamba-2 geometry and which
+// blocks are recurrent.
+static bool bind_meta_granitehybrid(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    // Granite-4 h-series (granitehybrid): Mamba-2 recurrent layers
+    // interleaved with GQA attention, per-layer typed off the
+    // attention.head_count_kv ARRAY (0 => recurrent). Reference: llama.cpp
+    // b10353 src/models/granite-hybrid.cpp + mamba-base.cpp
+    // build_mamba2_layer + ggml_ssm_scan (scalar-per-head branch). The four
+    // granite muP scalars apply exactly as the dense arch
+    // (embedding/attention/residual/logit); the MoE FFN (softmax top-k over
+    // fused experts + an always-on shared expert) is configured by the
+    // generic MoE block below. Rope is gated by rope.scaling.finetuned —
+    // NoPE when false, which the certified granite-4.0-h-small sets; when
+    // true the attention layers rope adjacent-pair like dense granite.
+    m->granite_hybrid = true;
+    m->rope_neox   = false;
+    m->embd_scale  = gguf_get_f32(g, AK("embedding_scale"), 1.0f);
+    m->attn_scale  = gguf_get_f32(g, AK("attention.scale"), 0.0f);
+    m->resid_scale = gguf_get_f32(g, AK("residual_scale"), 1.0f);
+    float ls = gguf_get_f32(g, AK("logit_scale"), 0.0f);
+    if (ls > 0.0f) m->logit_scale = 1.0f / ls;
+    // rope gate: llama.cpp builds no positions and applies no rope when
+    // rope.scaling.finetuned is false (granite-4.0-h sets it false, so its
+    // four attention layers are NoPE — position comes from the Mamba
+    // layers). Express that with the NoPE-every-layer knob; attention
+    // temperature stays off (attn_temp_scale == 0), so model_layer_ropes
+    // returning false is the whole effect. Set AFTER a value the generic
+    // Llama-4 no_rope read below would otherwise clobber (that read now
+    // defaults to the current value, preserving this — see its comment).
+    if (!gguf_get_bool(g, AK("rope.scaling.finetuned"), true))
+        m->no_rope_layer_step = 1;
+    // Mamba-2 geometry (NOT the Gated DeltaNet ratios qwen35 checks):
+    // inner = 2*n_embd = n_head * head_dim, groups partition the heads and
+    // evenly divide the inner dim.
+    m->ssm_conv_kernel = (int)gguf_get_u32(g, AK("ssm.conv_kernel"), 0);
+    m->ssm_inner       = (int)gguf_get_u32(g, AK("ssm.inner_size"), 0);
+    m->ssm_state       = (int)gguf_get_u32(g, AK("ssm.state_size"), 0);
+    m->ssm_v_heads     = (int)gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
+    m->ssm_groups      = (int)gguf_get_u32(g, AK("ssm.group_count"), 0);
+    if (m->ssm_conv_kernel <= 0 || m->ssm_conv_kernel > 8 ||
+        m->ssm_inner <= 0 || m->ssm_inner > MDL_DIM_MAX ||
+        m->ssm_state <= 0 || m->ssm_state > MDL_DIM_MAX ||
+        m->ssm_v_heads <= 0 || m->ssm_groups <= 0 ||
+        m->ssm_inner % m->ssm_v_heads != 0 ||
+        m->ssm_v_heads % m->ssm_groups != 0 ||
+        m->ssm_inner % m->ssm_groups != 0 ||
+        m->ssm_inner != 2 * m->n_embd) {
+        fprintf(stderr, "error: invalid granitehybrid Mamba-2 geometry "
+                "(conv_kernel=%d inner=%d state=%d heads=%d groups=%d, "
+                "n_embd=%d)\n", m->ssm_conv_kernel, m->ssm_inner,
+                m->ssm_state, m->ssm_v_heads, m->ssm_groups, m->n_embd);
+        return false;
+    }
+    // Per-layer attention typing from the head_count_kv ARRAY. Recurrent
+    // layers publish 0 (no KV rows); attention layers a real GQA count.
+    // Build the per-layer geometry the KV allocator and attention path read
+    // (identity head_dim, no shared KV), and set the scalar n_head_kv to a
+    // representative attention value so the general geometry gate (which
+    // predates the per-layer arrays) still passes.
+    size_t nl = (size_t)(unsigned)m->n_layer;
+    m->l_head_kv  = calloc(nl, sizeof(int));
+    m->l_head_dim = calloc(nl, sizeof(int));
+    m->l_rope_dim = calloc(nl, sizeof(int));
+    if (!m->l_head_kv || !m->l_head_dim || !m->l_rope_dim) return false;
+    int attn_kv = 0;
+    for (int i = 0; i < m->n_layer; i++) {
+        int kv = (int)gguf_get_u32_idx(g, AK("attention.head_count_kv"),
+                                       (uint64_t)i, 0);
+        m->l_head_kv[i]  = kv;
+        m->l_head_dim[i] = m->head_dim;
+        m->l_rope_dim[i] = m->rope_dim;
+        if (kv > 0) {
+            if (kv > m->n_head || m->n_head % kv != 0) {
+                fprintf(stderr, "error: granitehybrid blk.%d head_count_kv "
+                        "%d does not divide n_head %d\n", i, kv, m->n_head);
+                return false;
+            }
+            if (attn_kv == 0) attn_kv = kv;
+            else if (kv != attn_kv) {
+                fprintf(stderr, "error: granitehybrid attention layers "
+                        "disagree on head_count_kv (%d vs %d)\n",
+                        attn_kv, kv);
+                return false;
+            }
+        }
+    }
+    if (attn_kv == 0) {
+        fprintf(stderr, "error: granitehybrid has no attention layers "
+                "(every attention.head_count_kv entry is 0)\n");
+        return false;
+    }
+    m->n_head_kv = attn_kv;
+    int n_attn = 0;
+    for (int i = 0; i < m->n_layer; i++) if (m->l_head_kv[i] > 0) n_attn++;
+    fprintf(stderr, "granitehybrid: Mamba-2 hybrid (%d recurrent + %d "
+            "attention layers) — greedy output verified against llama.cpp "
+            "b10353 on granite-4.0-h-small at Q4_K and Q8_0: token-"
+            "identical on high-confidence prompts, diverging only at "
+            "genuine near-ties (a ~0.03-nat argmax coin-flip at Q8_0; "
+            "runner and oracle rank the same top-2 — math verified)\n",
+            m->n_layer - n_attn, n_attn);
+    return true;
+}
+
+// Nemotron-H, dense and MoE: the Mamba-2 geometry, the block types and the
+// expert routing.
+static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    bool nh_moe = strcmp(arch, "nemotron_h_moe") == 0;
+    // Nemotron-H (NVIDIA Nemotron-Nano-9B-v2): a Mamba-2 / attention / MLP
+    // hybrid. Each block is EXACTLY ONE of three kinds (mutually exclusive,
+    // one pre-norm + one residual), typed off two per-layer arrays:
+    //   recurrent (SSM) : head_count_kv[i] == 0 && feed_forward_length[i] == 0
+    //   attention       : head_count_kv[i]  > 0  (feed_forward_length 0)
+    //   MLP             : feed_forward_length[i] > 0
+    // Unlike granitehybrid this family is NON-MoE (dense gate-less
+    // squared-ReLU MLP) and carries NO muP scalars — embedding/attention/
+    // residual/logit scales stay at their off defaults; attention kq_scale
+    // is the plain 1/sqrt(head_dim). Reference: llama.cpp b10353
+    // src/models/nemotron-h.cpp + mamba-base.cpp — the SAME ggml_ssm_scan
+    // the granite path certifies, here exercising the n_group>1 grouped
+    // B/C broadcast (Nano: n_group=8), which mamba2_ssd_step already
+    // implements (g = h / (n_head/n_group)).
+    m->nemotron_h = true;
+    m->ffn_relu2  = true;      // gate-less MLP: down(relu(up(x))^2)
+    m->rope_neox  = false;
+    // NoPE: nemotron-h.cpp applies no rope to its attention layers (position
+    // comes from the Mamba layers), and the export marks this with
+    // rope.scaling.finetuned=false — the SAME gate llama.cpp's granite path
+    // uses. A finetuned-rope export would rope the attention layers, a
+    // layout this tracer has not certified: refuse rather than mis-rotate.
+    if (gguf_get_bool(g, AK("rope.scaling.finetuned"), false)) {
+        fprintf(stderr, "error: nemotron_h with rope.scaling.finetuned=true "
+                "(rope on attention layers) is not certified\n");
+        return false;
+    }
+    m->no_rope_layer_step = 1;   // NoPE every layer
+    // Mamba-2 geometry. NOTE: nemotron does NOT satisfy granite's
+    // inner==2*n_embd (Nano-9B-v2: inner=10240, n_embd=4480), so that
+    // assertion is deliberately absent here.
+    m->ssm_conv_kernel = (int)gguf_get_u32(g, AK("ssm.conv_kernel"), 0);
+    m->ssm_inner       = (int)gguf_get_u32(g, AK("ssm.inner_size"), 0);
+    m->ssm_state       = (int)gguf_get_u32(g, AK("ssm.state_size"), 0);
+    m->ssm_v_heads     = (int)gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
+    m->ssm_groups      = (int)gguf_get_u32(g, AK("ssm.group_count"), 0);
+    if (m->ssm_conv_kernel <= 0 || m->ssm_conv_kernel > 8 ||
+        m->ssm_inner <= 0 || m->ssm_inner > MDL_DIM_MAX ||
+        m->ssm_state <= 0 || m->ssm_state > MDL_DIM_MAX ||
+        m->ssm_v_heads <= 0 || m->ssm_groups <= 0 ||
+        m->ssm_inner % m->ssm_v_heads != 0 ||
+        m->ssm_v_heads % m->ssm_groups != 0 ||
+        m->ssm_inner % m->ssm_groups != 0) {
+        fprintf(stderr, "error: invalid nemotron_h Mamba-2 geometry "
+                "(conv_kernel=%d inner=%d state=%d heads=%d groups=%d)\n",
+                m->ssm_conv_kernel, m->ssm_inner, m->ssm_state,
+                m->ssm_v_heads, m->ssm_groups);
+        return false;
+    }
+    // nemotron_h_moe (Nemotron-3.5 Lightning): the MLP blocks are a gate-less
+    // squared-ReLU MoE — a router, gate-less routed experts (relu(up)^2, no
+    // gate branch), and an always-on gate-less shared expert. Routing reuses
+    // the general moe_route (group/scale/norm); only the activation differs.
+    if (nh_moe) {
+        m->n_expert        = (int)gguf_get_u32(g, AK("expert_count"), 0);
+        m->n_expert_used   = (int)gguf_get_u32(g, AK("expert_used_count"), 0);
+        m->n_ff_exp        = (int)gguf_get_u32(g, AK("expert_feed_forward_length"), 0);
+        m->n_ff_shexp      = (int)gguf_get_u32(g, AK("expert_shared_feed_forward_length"), 0);
+        m->n_expert_groups = (int)gguf_get_u32(g, AK("expert_group_count"), 1);
+        m->n_group_used    = (int)gguf_get_u32(g, AK("expert_group_used_count"), 1);
+        m->expert_gating   = (int)gguf_get_u32(g, AK("expert_gating_func"),
+                                               EXPERT_GATE_SOFTMAX);
+        if (m->expert_gating == EXPERT_GATE_NONE)
+            m->expert_gating = EXPERT_GATE_SOFTMAX;
+        m->expert_w_scale  = gguf_get_f32(g, AK("expert_weights_scale"), 1.0f);
+        m->expert_norm_w   = gguf_get_bool(g, AK("expert_weights_norm"), true);
+        if (m->n_expert <= 0 || m->n_expert > 256 ||
+            m->n_expert_used <= 0 || m->n_expert_used > m->n_expert ||
+            m->n_ff_exp <= 0 || m->n_ff_exp > MDL_DIM_MAX ||
+            m->n_ff_shexp < 0 || m->n_ff_shexp > MDL_DIM_MAX ||
+            m->expert_gating < EXPERT_GATE_NONE ||
+            m->expert_gating > EXPERT_GATE_SQRT_SOFTPLUS) {
+            fprintf(stderr, "error: invalid nemotron_h_moe expert config "
+                    "(count=%d used=%d exp_ff=%d shexp_ff=%d gating=%d)\n",
+                    m->n_expert, m->n_expert_used, m->n_ff_exp,
+                    m->n_ff_shexp, m->expert_gating);
+            return false;
+        }
+    }
+    // Per-layer typing off the head_count_kv ARRAY (0 => not attention).
+    size_t nl = (size_t)(unsigned)m->n_layer;
+    m->l_head_kv  = calloc(nl, sizeof(int));
+    m->l_head_dim = calloc(nl, sizeof(int));
+    m->l_rope_dim = calloc(nl, sizeof(int));
+    if (!m->l_head_kv || !m->l_head_dim || !m->l_rope_dim) return false;
+    int attn_kv = 0, n_attn = 0, n_rec = 0, n_mlp = 0, max_ff = 0;
+    for (int i = 0; i < m->n_layer; i++) {
+        int kv = (int)gguf_get_u32_idx(g, AK("attention.head_count_kv"),
+                                       (uint64_t)i, 0);
+        int ff = (int)gguf_get_u32_idx(g, AK("feed_forward_length"),
+                                       (uint64_t)i, 0);
+        m->l_head_kv[i]  = kv;
+        m->l_head_dim[i] = m->head_dim;
+        m->l_rope_dim[i] = m->rope_dim;
+        if (kv > 0) {
+            if (kv > m->n_head || m->n_head % kv != 0) {
+                fprintf(stderr, "error: nemotron_h blk.%d head_count_kv %d "
+                        "does not divide n_head %d\n", i, kv, m->n_head);
+                return false;
+            }
+            if (attn_kv == 0) attn_kv = kv;
+            else if (kv != attn_kv) {
+                fprintf(stderr, "error: nemotron_h attention layers disagree "
+                        "on head_count_kv (%d vs %d)\n", attn_kv, kv);
+                return false;
+            }
+            n_attn++;
+        } else if (ff > 0) { n_mlp++; if (ff > max_ff) max_ff = ff; }
+        else n_rec++;
+    }
+    // feed_forward_length is a per-layer array with 0 on the SSM/attention
+    // blocks; the generic array-max fallback bails on any 0 entry, so set
+    // the model-wide FFN width (buffer sizing + the >0 hyperparam gate)
+    // from the max over the MLP blocks here.
+    m->n_ff = max_ff;
+    m->ffn_var = true;
+    if (attn_kv == 0) {
+        fprintf(stderr, "error: nemotron_h has no attention layers\n");
+        return false;
+    }
+    if (n_rec == 0) {
+        fprintf(stderr, "error: nemotron_h has no recurrent (Mamba-2) "
+                "layers — not a hybrid\n");
+        return false;
+    }
+    m->n_head_kv = attn_kv;
+    if (nh_moe)
+        fprintf(stderr, "nemotron_h_moe: Mamba-2 hybrid (%d recurrent + %d "
+                "attention + %d MoE layers, n_group=%d grouped scan) — %d/%d "
+                "gate-less squared-ReLU experts + always-on shared expert, "
+                "NoPE attention\n", n_rec, n_attn, n_mlp, m->ssm_groups,
+                m->n_expert_used, m->n_expert);
+    else
+        fprintf(stderr, "nemotron_h: Mamba-2 hybrid (%d recurrent + %d attention "
+                "+ %d MLP layers, n_group=%d grouped scan) — NON-MoE, NoPE "
+                "attention, gate-less squared-ReLU MLP; greedy output verified "
+                "against llama.cpp b10353 on Nemotron-Nano-9B-v2 Q8_0\n",
+                n_rec, n_attn, n_mlp, m->ssm_groups);
+    return true;
+}
+
+// Muse-Glimmer: its norms, gates, sliding layers and the self-addressed
+// reasoning turn.
+static bool bind_meta_muse(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    // muse-glimmer (Meta Muse Glimmer 30B). Transcribed from llama.cpp
+    // b10353 src/models/muse-glimmer.cpp, not inferred:
+    //   * weightless RMS norm on the embedding row, no embedding scale;
+    //   * afmoe's output-gated attention (blk.N.attn_gate, sigmoid
+    //     between SDPA out and o_proj) plus qwen3-style per-head QK
+    //     norms (conversion folds qk_scale_factor into attn_q_norm and
+    //     ships attn_k_norm as identity);
+    //   * sandwich norms at a FIXED 1e-8 eps (llama.cpp hardcodes
+    //     post_norm_eps) while the pre-norms keep the declared epsilon;
+    //   * SWA with a per-layer bool pattern array (30B: 3 local : 1
+    //     global); rope runs ONLY on the sliding layers — llama.cpp maps
+    //     this arch to LLAMA_ROPE_TYPE_NORM, i.e. adjacent-pair like
+    //     llama — at freq_base_swa, seeded from the MAIN base exactly
+    //     like gpt-oss; the full-attention layers are NoPE;
+    //   * final logits: x logit_scale (a required key), then softcap.
+    m->attn_out_gate = true;
+    m->nope_on_full  = true;
+    m->embd_norm     = true;
+    m->rope_neox     = false;
+    m->post_norm_eps = 1e-8f;
+    m->logit_softcap = gguf_get_f32(g, AK("final_logit_softcapping"), 0.0f);
+    m->logit_scale   = gguf_get_f32(g, AK("logit_scale"), 0.0f);
+    if (m->logit_scale <= 0.0f) {
+        // llama.cpp reads the key as required; a build that silently
+        // defaulted it would emit uncapped-scale logits on every token
+        fprintf(stderr, "error: muse-glimmer requires %s\n",
+                AK("logit_scale"));
+        return false;
+    }
+    m->swa_window = (int)gguf_get_u32(g, AK("attention.sliding_window"), 2048);
+    int period = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 4);
+    if (period < 1) period = 4;
+    free(m->l_is_swa);   // the generic block's table, rebuilt here (see gemma4)
+    m->l_is_swa = calloc(m->n_layer, sizeof(bool));
+    if (!m->l_is_swa) return false;
+    if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
+                           m->l_is_swa, m->n_layer))
+        for (int i = 0; i < m->n_layer; i++)
+            m->l_is_swa[i] = m->swa_window > 0 && ((i + 1) % period) != 0;
+    // sliding layers share the global rope regime unless the export
+    // declares a genuinely different local base
+    float sbase = gguf_get_f32(g, AK("rope.freq_base_swa"), 0.0f);
+    m->swa_rope_global = sbase <= 0.0f || sbase == m->rope_base;
+    // Reasoning is a separate assistant turn addressed to the model
+    // itself: ` to=self<|message|>THINKING<|eom|><|start|>assistant
+    // to=RECIPIENT<|message|>ANSWER`. `<|eom|>`, `<|start|>` and
+    // `<|message|>` decode to no bytes, so on an unconstrained byte
+    // stream the pair below is exactly what brackets the thinking text
+    // and nothing else marks where the answer begins. Narrowing the
+    // close to ` to=` (to make tool recipients closable) leaked the
+    // recipient word into content and `assistant` into reasoning on
+    // plain thinking chats — measured live, content came back "user391".
+    // Constrained runs never wait for these bytes: engine.c recognizes
+    // the <|eom|> control id and feeds this close to the splitter
+    // itself (constraint_finish_think), then the recipient-turn
+    // automaton owns everything that follows.
+    m->think_open  = " to=self";
+    m->think_close = "assistant to=user";
+    return true;
+}
+
 static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
     if (!gguf_open(&m->gf, path)) return false;
     gguf_file *g = &m->gf;
@@ -2245,621 +2892,13 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     if (!m->l_is_swa && !bind_swa_default(m, g, arch)) return false;
     if ((strcmp(arch, "qwen35") == 0 || strcmp(arch, "qwen4exp") == 0) && !bind_meta_qwen35(m, g, arch)) return false;
     m->ple4_layer = -1;
-    if (strcmp(arch, "qwen4exp") == 0) {
-        m->hyper_conn  = true;
-        m->hc_count    = (int)gguf_get_u32(g, AK("hyper_connection.count"), 0);
-        m->hc_low_rank = (int)gguf_get_u32(g, AK("hyper_connection.low_rank"), 0);
-        if (m->hc_count < 2 || m->hc_count > 8 || m->hc_low_rank <= 0 ||
-            m->hc_low_rank > MDL_DIM_MAX) {
-            fprintf(stderr, "error: invalid qwen4exp hyper-connection geometry "
-                    "(count %d, low rank %d)\n", m->hc_count, m->hc_low_rank);
-            return false;
-        }
-        // The sparse-attention indexer (QSA) scores blocks of compress_ratio
-        // cells and attends the top indexer.top_k of them. Below top_k cells
-        // every cell is kept, so attention is exactly dense there; this
-        // admission runs dense and caps the context at top_k until the
-        // indexer is implemented (R4.26.2). Stated at load, refused above.
-        {
-            uint32_t topk = gguf_get_u32(g, AK("attention.indexer.top_k"), 0);
-            if (topk > 0 && (uint32_t)m->n_ctx > topk) {
-                fprintf(stderr, "error: qwen4exp sparse attention (indexer top_k "
-                        "%u) is not implemented; this build runs it dense and "
-                        "admits contexts up to %u tokens (asked %d)\n",
-                        topk, topk, m->n_ctx);
-                return false;
-            }
-        }
-        // PLE n-gram block: optional, at most one, must be a recurrent block
-        gguf_kv *pl = gguf_get(g, AK("ple.layers"));
-        if (pl) {
-            if (pl->type != GGUF_T_ARR || pl->arr_n != 1) {
-                fprintf(stderr, "error: qwen4exp ple.layers must name exactly one block\n");
-                return false;
-            }
-            int li = (int)gguf_get_u32_idx(g, AK("ple.layers"), 0, 0);
-            m->ple4_ngram          = (int)gguf_get_u32(g, AK("ple.ngram_size"), 0);
-            m->ple4_heads_per_gram = (int)gguf_get_u32(g, AK("ple.heads_per_ngram"), 0);
-            m->ple4_conv_kernel    = (int)gguf_get_u32(g, AK("ple.conv_kernel"), 0);
-            m->ple4_head_dim       = (int)gguf_get_u32(g, AK("embedding_length_per_layer_input"), 0);
-            m->ple4_eos            = (int32_t)gguf_get_u32(g, AK("ple.eos_token_id"), 0);
-            m->ple4_n_heads = (m->ple4_ngram - 1) * m->ple4_heads_per_gram;
-            if (li < 0 || li >= m->n_layer || m->ple4_ngram < 2 || m->ple4_ngram > 8 ||
-                m->ple4_heads_per_gram <= 0 || m->ple4_n_heads > 64 ||
-                m->ple4_conv_kernel <= 0 || m->ple4_conv_kernel > 8 ||
-                m->ple4_head_dim <= 0 || m->ple4_head_dim > MDL_DIM_MAX) {
-                fprintf(stderr, "error: invalid qwen4exp PLE geometry\n");
-                return false;
-            }
-            gguf_kv *mu = gguf_get(g, AK("ple.layer_multipliers"));
-            gguf_kv *of = gguf_get(g, AK("ple.head_offsets"));
-            gguf_kv *vs = gguf_get(g, AK("ple.head_vocab_sizes"));
-            if (!mu || mu->type != GGUF_T_ARR || mu->arr_n != (uint64_t)m->ple4_ngram ||
-                !of || of->type != GGUF_T_ARR || of->arr_n != (uint64_t)m->ple4_n_heads ||
-                !vs || vs->type != GGUF_T_ARR || vs->arr_n != (uint64_t)m->ple4_n_heads) {
-                fprintf(stderr, "error: qwen4exp PLE hash arrays are missing or the wrong length\n");
-                return false;
-            }
-            for (int k = 0; k < m->ple4_ngram; k++)
-                m->ple4_mult[k] = gguf_get_u64_idx(g, AK("ple.layer_multipliers"), (uint64_t)k, 0);
-            for (int h = 0; h < m->ple4_n_heads; h++) {
-                uint64_t o = gguf_get_u64_idx(g, AK("ple.head_offsets"), (uint64_t)h, 0);
-                uint64_t v = gguf_get_u64_idx(g, AK("ple.head_vocab_sizes"), (uint64_t)h, 0);
-                if (v == 0 || o > INT32_MAX || v > INT32_MAX || o + v > INT32_MAX) {
-                    fprintf(stderr, "error: qwen4exp PLE head %d range does not fit\n", h);
-                    return false;
-                }
-                m->ple4_off[h] = (uint32_t)o; m->ple4_vocab[h] = (uint32_t)v;
-            }
-            m->ple4_layer = li;
-        }
-    }
-    if (strcmp(arch, "apertus") == 0) {
-        // Apertus: ungated MLP (no ffn_gate) with the xIELU activation, whose
-        // four parameters are published per layer.
-        m->ffn_act = ACT_XIELU;
-        if (m->n_layer < 1 || m->n_layer > 100000) {
-            fprintf(stderr, "error: apertus block_count %d out of range\n", m->n_layer);
-            return false;
-        }
-        size_t nl = (size_t)(unsigned)m->n_layer;
-        m->xielu_an  = malloc(sizeof(float) * nl);
-        m->xielu_ap  = malloc(sizeof(float) * nl);
-        m->xielu_b   = malloc(sizeof(float) * nl);
-        m->xielu_eps = malloc(sizeof(float) * nl);
-        if (!m->xielu_an || !m->xielu_ap || !m->xielu_b || !m->xielu_eps)
-            return false;
-        // The keys are NOT architecture-prefixed (llama.cpp spells them
-        // "xielu.alpha_n", not "apertus.xielu.alpha_n") and may be a scalar
-        // shared by every layer or a per-layer array.
-        static const struct { const char *key; size_t off; float dflt; } XK[] = {
-            { "xielu.alpha_n", 0, 0.8f }, { "xielu.alpha_p", 1, 0.8f },
-            { "xielu.beta",    2, 0.5f }, { "xielu.eps",     3, -1e-6f },
-        };
-        float *dst[4] = { m->xielu_an, m->xielu_ap, m->xielu_b, m->xielu_eps };
-        for (int k = 0; k < 4; k++) {
-            gguf_kv *a = gguf_get(g, XK[k].key);
-            float scalar = gguf_get_f32(g, XK[k].key, XK[k].dflt);
-            for (int i = 0; i < m->n_layer; i++) {
-                float v = scalar;
-                // same alignment rule as every other array read here: the
-                // elements are packed at the file's offset, not the type's
-                if (a && a->arr_raw && a->arr_type == GGUF_T_F32 &&
-                    (uint64_t)i < a->arr_n)
-                    memcpy(&v, (const uint8_t *)a->arr_raw + (size_t)i * 4, 4);
-                dst[XK[k].off][i] = v;
-            }
-        }
-        // The file's alpha_n and alpha_p are NOT what the activation consumes.
-        // ggml_xielu transforms them when it builds the node — alpha_p becomes
-        // softplus(alpha_p) and alpha_n becomes beta + softplus(alpha_n) —
-        // and only then does op_xielu see them. Transcribing op_xielu without
-        // that step, which is what runner did, feeds the raw values straight
-        // in. It is invisible wherever the raw value is large, because
-        // softplus saturates to the identity above ~20 and most of Apertus-8B's
-        // alphas are in the tens or hundreds; it is catastrophic in the middle
-        // layers, where layer 15 has alpha_n 0.00296 against an effective
-        // 1.19463 — a factor of 403. The model generated fluent-looking
-        // gibberish.
-        //
-        // Folded here rather than in xielu() so the hot path is unchanged and
-        // the transform happens once per layer instead of once per element.
-        for (int i = 0; i < m->n_layer; i++) {
-            m->xielu_ap[i] = softplus_f32(m->xielu_ap[i]);
-            m->xielu_an[i] = m->xielu_b[i] + softplus_f32(m->xielu_an[i]);
-        }
-    }
-    if (strcmp(arch, "gemma4") == 0) {
-        // gemma4 (reference: llama.cpp src/models/gemma4.cpp): heterogeneous
-        // layers — per-layer kv heads and head dims (global 512 / sliding
-        // 256), global layers may have no V projection (V reuses the raw K
-        // projection), every V gets a weightless per-head RMS norm, attention
-        // scale is fixed 1.0, each layer's output is scaled by a per-layer
-        // scalar, and final logits are softcapped. Verified against llama.cpp
-        // b9964: greedy raw completions are token-identical on the official
-        // ggml-org gemma-4-12B-it Q4_K_M, and chat-formatted prompts answer
-        // correctly. Note the model is thinking-tuned: raw untemplated
-        // completions are legitimately degenerate, and llama.cpp additionally
-        // biases tokenizer.ggml.suppress_tokens to -inf (not done here).
-        // The general geometry validation runs after the arch blocks, but this
-        // one sizes several per-layer arrays from block_count first.
-        if (m->n_layer < 1 || m->n_layer > 100000) {
-            fprintf(stderr, "error: gemma4 block_count %d out of range\n", m->n_layer);
-            return false;
-        }
-        int shared_kv = (int)gguf_get_u32(g, AK("attention.shared_kv_layers"), 0);
-        // Same rule as expert_count: above INT_MAX this lands negative, and a
-        // negative width reads as "no per-layer embeddings" — the E-series
-        // branch is skipped, its tensors are ignored, and the model answers as
-        // a different architecture without saying so.
-        uint32_t ple_raw = gguf_get_u32(g, AK("embedding_length_per_layer_input"), 0);
-        if (ple_raw > MDL_DIM_MAX) {
-            fprintf(stderr, "error: gemma4 per-layer embedding size %u is out "
-                    "of range\n", ple_raw);
-            return false;
-        }
-        m->n_embd_ple    = (int)ple_raw;
-        m->kv_from_start = m->n_layer;
-        if (shared_kv > 0) {
-            // llama-model.cpp's reuse callback: layers at or past
-            // n_layer - shared_kv_layers own no cache and read the LAST KV
-            // layer of their own sliding/full type, which is
-            // (kv_from_start - 2) for sliding and (kv_from_start - 1) for full.
-            m->kv_from_start = m->n_layer - shared_kv;
-            if (m->kv_from_start < 2) {
-                fprintf(stderr, "error: gemma4 shared_kv_layers=%d leaves no "
-                        "KV-owning layers\n", shared_kv);
-                return false;
-            }
-        }
-        if (m->n_embd_ple > 0 || m->kv_from_start < m->n_layer)
-            // E-series: per-layer embeddings and/or shared-KV layers. Verified
-            // against llama.cpp b10076 on gemma-4-E4B-it Q4_K_M — greedy
-            // agreement is at the quantisation noise floor (the same profile a
-            // long-verified dense model shows), not exact token identity.
-            // CPU and CUDA, byte-identical to each other.
-            fprintf(stderr, "gemma4: E-series (per-layer embeddings%s) — "
-                    "verified against llama.cpp at the Q4_K noise floor "
-                    "rather than token-identically\n",
-                    m->kv_from_start < m->n_layer ? " + shared KV" : "");
-        else
-            fprintf(stderr, "gemma4: dense variant verified against llama.cpp (token-identical greedy output on the official ggml-org GGUF); unofficial dequant conversions may still produce garbage — prefer official files\n");
-        m->embd_scale    = sqrtf((float)m->n_embd);
-        m->ffn_act       = ACT_GELU;
-        m->v_rmsnorm     = true;
-        m->attn_scale    = 1.0f;
-        // thinking-tuned: responses interleave <|channel>thought ... <channel|>
-        // reasoning blocks with the answer text (split out by think_feed)
-        m->think_open    = "<|channel>thought";
-        m->think_close   = "<channel|>";
-        m->logit_softcap = gguf_get_f32(g, AK("final_logit_softcapping"), 0.0f);
-        m->swa_window    = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
-        m->rms_eps       = gguf_get_f32(g, AK("attention.layer_norm_rms_epsilon"), 1e-6f);
-        m->rope_base     = gguf_get_f32(g, AK("rope.freq_base"), 1000000.0f);
-        m->head_dim      = (int)gguf_get_u32(g, AK("attention.key_length"), 512);
-        m->rope_dim      = (int)gguf_get_u32(g, AK("rope.dimension_count"), m->head_dim);
-        m->rope_dim_local = (int)gguf_get_u32(g, AK("rope.dimension_count_swa"), m->rope_dim);
-        int hd_swa       = (int)gguf_get_u32(g, AK("attention.key_length_swa"), m->head_dim);
-        // The generic sliding-window block above already built a table from
-        // the same keys; this branch rebuilds it with the family's rules, so
-        // the first one is released rather than stranded (one leak per load,
-        // including every swap reload in --serve).
-        free(m->l_is_swa);
-        m->l_is_swa   = calloc(m->n_layer, sizeof(bool));
-        m->l_head_kv  = calloc(m->n_layer, sizeof(int));
-        m->l_head_dim = calloc(m->n_layer, sizeof(int));
-        m->l_rope_dim = calloc(m->n_layer, sizeof(int));
-        if (!m->l_is_swa || !m->l_head_kv || !m->l_head_dim || !m->l_rope_dim)
-            return false;
-        gguf_kv *swa_arr = gguf_get(g, AK("attention.sliding_window_pattern"));
-        // per-layer arrays must have the element width we index with — a
-        // converter that writes e.g. I32 booleans would misparse every layer.
-        // (head_count_kv goes through gguf_get_u32_idx below, which does its
-        // own type validation and reads elements without assuming alignment.)
-        if (swa_arr && swa_arr->arr_type != GGUF_T_BOOL &&
-            swa_arr->arr_type != GGUF_T_U8 && swa_arr->arr_type != GGUF_T_I8)
-            swa_arr = NULL;
-        for (int i = 0; i < m->n_layer; i++) {
-            bool swa = swa_arr && swa_arr->arr_raw && (uint64_t)i < swa_arr->arr_n
-                       ? ((const uint8_t *)swa_arr->arr_raw)[i] != 0 : false;
-            m->l_is_swa[i]   = swa && m->swa_window > 0;
-            m->l_head_dim[i] = swa ? hd_swa : m->head_dim;
-            // The rotated-dim count must come from the SAME choice that picks
-            // the frequency table: rope_apply reads rope_inv_freq_local only
-            // for a layer model_is_swa() says is sliding, and that predicate
-            // is window-gated. Selecting on the raw pattern bit instead would
-            // pair the local dim count with the global table on a file that
-            // declares a sliding pattern and no window.
-            m->l_rope_dim[i] = m->l_is_swa[i] ? m->rope_dim_local : m->rope_dim;
-            // A GGUF array is packed at whatever offset it landed on, so it
-            // is NOT aligned for the element type: casting arr_raw to
-            // uint32_t* and indexing it is a misaligned load (UBSan flagged
-            // exactly this on the committed gemma4-hetero fixture). The
-            // per-index getter reads elements with memcpy and validates the
-            // element type and range in one place, which is where that
-            // knowledge belongs.
-            m->l_head_kv[i]  = (int)gguf_get_u32_idx(
-                g, AK("attention.head_count_kv"), (uint64_t)i,
-                (uint32_t)m->n_head_kv);
-            // Per-layer kv-head / head-dim / rope-dim come from untrusted
-            // per-layer keys and feed the same attention divisors and index
-            // arithmetic as the scalar path (kv_dim / hd, n_head / n_head_kv,
-            // and the pair index inside a head). A zero or non-dividing value
-            // would divide-by-zero on the first token; rope rotates
-            // rope_dim/2 PAIRS inside each head, so a rope dim wider than the
-            // head runs off the end of the last head's q/k row (the scalar
-            // gate below bounds rope_dim against head_dim, but never saw
-            // rope.dimension_count_swa against key_length_swa) — reject at
-            // load instead.
-            // A removed attention (head_count 0 at this block) legitimately
-            // has head_count_kv 0 too; the removal gate below checks that
-            // pairing. Every other zero is the malformed geometry this
-            // rejects.
-            bool attn_gone = m->l_no_attn && m->l_no_attn[i] && m->l_head_kv[i] == 0;
-            if (!attn_gone &&
-               (m->l_head_dim[i] < 1 || m->l_head_kv[i] < 1 ||
-                m->n_head < 1 || m->l_head_kv[i] > m->n_head ||
-                m->n_head % m->l_head_kv[i] != 0 ||
-                m->l_rope_dim[i] < 0 || m->l_rope_dim[i] > m->l_head_dim[i] ||
-                (int64_t)m->n_head * m->l_head_dim[i] > MDL_DIM_MAX)) {
-                fprintf(stderr, "error: invalid gemma4 per-layer geometry at "
-                        "blk.%d (head_dim=%d head_count_kv=%d rope_dim=%d, "
-                        "n_head=%d)\n",
-                        i, m->l_head_dim[i], m->l_head_kv[i], m->l_rope_dim[i],
-                        m->n_head);
-                return false;
-            }
-        }
-        // Shared-KV map. Identity for the layers that own a cache; every
-        // later layer points at the last KV-owning layer of its own type.
-        // n_layer is bounded above; the local keeps that range visible to the
-        // allocator call across the intervening stores to *m.
-        size_t nl = (size_t)(unsigned)m->n_layer;
-        m->kv_src = calloc(nl ? nl : 1, sizeof(int));
-        if (!m->kv_src) return false;
-        for (int i = 0; i < m->n_layer; i++) {
-            m->kv_src[i] = i;
-            if (i < m->kv_from_start) continue;
-            int src = m->kv_from_start - (m->l_is_swa[i] ? 2 : 1);
-            if (src < 0 || m->l_head_dim[src] != m->l_head_dim[i] ||
-                m->l_head_kv[src] != m->l_head_kv[i]) {
-                // a source whose KV geometry differs would be read with the
-                // wrong row stride — refuse rather than reinterpret bytes
-                fprintf(stderr, "error: gemma4 shared-KV layer %d maps to %d "
-                        "with mismatched KV geometry\n", i, src);
-                return false;
-            }
-            m->kv_src[i] = src;
-        }
-    }
-    if (strcmp(arch, "granite") == 0) {
-        // granite (IBM Granite dense, 3.x/4.1; reference: llama.cpp b10353
-        // src/models/granite.cpp + build_inp_embd). The four muP scalars are
-        // the whole family quirk — and running the arch llama-style without
-        // them is exactly why it sat on the wrong-math refusal list:
-        //   * embeddings x embedding_scale (build_inp_embd);
-        //   * kq_scale is the FIXED attention.scale value, not 1/sqrt(hd);
-        //   * BOTH branch outputs x residual_scale before their residual
-        //     adds (granite.cpp:241/301);
-        //   * final logits x 1/logit_scale — llama.cpp DIVIDES where the
-        //     runner's knob multiplies, so store the reciprocal.
-        // Rope is adjacent-pair (LLAMA_ROPE_TYPE_NORM, like llama), gated by
-        // rope.scaling.finetuned which defaults ON; a NoPE granite export is
-        // refused rather than mis-rotated. granitemoe/granitehybrid are
-        // different arch ids and stay unadmitted.
-        m->rope_neox   = false;
-        m->embd_scale  = gguf_get_f32(g, AK("embedding_scale"), 1.0f);
-        m->attn_scale  = gguf_get_f32(g, AK("attention.scale"), 0.0f);
-        m->resid_scale = gguf_get_f32(g, AK("residual_scale"), 1.0f);
-        float ls = gguf_get_f32(g, AK("logit_scale"), 0.0f);
-        if (ls > 0.0f) m->logit_scale = 1.0f / ls;
-        if (!gguf_get_bool(g, AK("rope.scaling.finetuned"), true)) {
-            fprintf(stderr, "error: granite export disables rope "
-                    "(rope.scaling.finetuned=false) — unsupported layout\n");
-            return false;
-        }
-    }
-    if (strcmp(arch, "granitehybrid") == 0) {
-        // Granite-4 h-series (granitehybrid): Mamba-2 recurrent layers
-        // interleaved with GQA attention, per-layer typed off the
-        // attention.head_count_kv ARRAY (0 => recurrent). Reference: llama.cpp
-        // b10353 src/models/granite-hybrid.cpp + mamba-base.cpp
-        // build_mamba2_layer + ggml_ssm_scan (scalar-per-head branch). The four
-        // granite muP scalars apply exactly as the dense arch
-        // (embedding/attention/residual/logit); the MoE FFN (softmax top-k over
-        // fused experts + an always-on shared expert) is configured by the
-        // generic MoE block below. Rope is gated by rope.scaling.finetuned —
-        // NoPE when false, which the certified granite-4.0-h-small sets; when
-        // true the attention layers rope adjacent-pair like dense granite.
-        m->granite_hybrid = true;
-        m->rope_neox   = false;
-        m->embd_scale  = gguf_get_f32(g, AK("embedding_scale"), 1.0f);
-        m->attn_scale  = gguf_get_f32(g, AK("attention.scale"), 0.0f);
-        m->resid_scale = gguf_get_f32(g, AK("residual_scale"), 1.0f);
-        float ls = gguf_get_f32(g, AK("logit_scale"), 0.0f);
-        if (ls > 0.0f) m->logit_scale = 1.0f / ls;
-        // rope gate: llama.cpp builds no positions and applies no rope when
-        // rope.scaling.finetuned is false (granite-4.0-h sets it false, so its
-        // four attention layers are NoPE — position comes from the Mamba
-        // layers). Express that with the NoPE-every-layer knob; attention
-        // temperature stays off (attn_temp_scale == 0), so model_layer_ropes
-        // returning false is the whole effect. Set AFTER a value the generic
-        // Llama-4 no_rope read below would otherwise clobber (that read now
-        // defaults to the current value, preserving this — see its comment).
-        if (!gguf_get_bool(g, AK("rope.scaling.finetuned"), true))
-            m->no_rope_layer_step = 1;
-        // Mamba-2 geometry (NOT the Gated DeltaNet ratios qwen35 checks):
-        // inner = 2*n_embd = n_head * head_dim, groups partition the heads and
-        // evenly divide the inner dim.
-        m->ssm_conv_kernel = (int)gguf_get_u32(g, AK("ssm.conv_kernel"), 0);
-        m->ssm_inner       = (int)gguf_get_u32(g, AK("ssm.inner_size"), 0);
-        m->ssm_state       = (int)gguf_get_u32(g, AK("ssm.state_size"), 0);
-        m->ssm_v_heads     = (int)gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
-        m->ssm_groups      = (int)gguf_get_u32(g, AK("ssm.group_count"), 0);
-        if (m->ssm_conv_kernel <= 0 || m->ssm_conv_kernel > 8 ||
-            m->ssm_inner <= 0 || m->ssm_inner > MDL_DIM_MAX ||
-            m->ssm_state <= 0 || m->ssm_state > MDL_DIM_MAX ||
-            m->ssm_v_heads <= 0 || m->ssm_groups <= 0 ||
-            m->ssm_inner % m->ssm_v_heads != 0 ||
-            m->ssm_v_heads % m->ssm_groups != 0 ||
-            m->ssm_inner % m->ssm_groups != 0 ||
-            m->ssm_inner != 2 * m->n_embd) {
-            fprintf(stderr, "error: invalid granitehybrid Mamba-2 geometry "
-                    "(conv_kernel=%d inner=%d state=%d heads=%d groups=%d, "
-                    "n_embd=%d)\n", m->ssm_conv_kernel, m->ssm_inner,
-                    m->ssm_state, m->ssm_v_heads, m->ssm_groups, m->n_embd);
-            return false;
-        }
-        // Per-layer attention typing from the head_count_kv ARRAY. Recurrent
-        // layers publish 0 (no KV rows); attention layers a real GQA count.
-        // Build the per-layer geometry the KV allocator and attention path read
-        // (identity head_dim, no shared KV), and set the scalar n_head_kv to a
-        // representative attention value so the general geometry gate (which
-        // predates the per-layer arrays) still passes.
-        size_t nl = (size_t)(unsigned)m->n_layer;
-        m->l_head_kv  = calloc(nl, sizeof(int));
-        m->l_head_dim = calloc(nl, sizeof(int));
-        m->l_rope_dim = calloc(nl, sizeof(int));
-        if (!m->l_head_kv || !m->l_head_dim || !m->l_rope_dim) return false;
-        int attn_kv = 0;
-        for (int i = 0; i < m->n_layer; i++) {
-            int kv = (int)gguf_get_u32_idx(g, AK("attention.head_count_kv"),
-                                           (uint64_t)i, 0);
-            m->l_head_kv[i]  = kv;
-            m->l_head_dim[i] = m->head_dim;
-            m->l_rope_dim[i] = m->rope_dim;
-            if (kv > 0) {
-                if (kv > m->n_head || m->n_head % kv != 0) {
-                    fprintf(stderr, "error: granitehybrid blk.%d head_count_kv "
-                            "%d does not divide n_head %d\n", i, kv, m->n_head);
-                    return false;
-                }
-                if (attn_kv == 0) attn_kv = kv;
-                else if (kv != attn_kv) {
-                    fprintf(stderr, "error: granitehybrid attention layers "
-                            "disagree on head_count_kv (%d vs %d)\n",
-                            attn_kv, kv);
-                    return false;
-                }
-            }
-        }
-        if (attn_kv == 0) {
-            fprintf(stderr, "error: granitehybrid has no attention layers "
-                    "(every attention.head_count_kv entry is 0)\n");
-            return false;
-        }
-        m->n_head_kv = attn_kv;
-        int n_attn = 0;
-        for (int i = 0; i < m->n_layer; i++) if (m->l_head_kv[i] > 0) n_attn++;
-        fprintf(stderr, "granitehybrid: Mamba-2 hybrid (%d recurrent + %d "
-                "attention layers) — greedy output verified against llama.cpp "
-                "b10353 on granite-4.0-h-small at Q4_K and Q8_0: token-"
-                "identical on high-confidence prompts, diverging only at "
-                "genuine near-ties (a ~0.03-nat argmax coin-flip at Q8_0; "
-                "runner and oracle rank the same top-2 — math verified)\n",
-                m->n_layer - n_attn, n_attn);
-    }
-    if (strcmp(arch, "nemotron_h") == 0 || strcmp(arch, "nemotron_h_moe") == 0) {
-        bool nh_moe = strcmp(arch, "nemotron_h_moe") == 0;
-        // Nemotron-H (NVIDIA Nemotron-Nano-9B-v2): a Mamba-2 / attention / MLP
-        // hybrid. Each block is EXACTLY ONE of three kinds (mutually exclusive,
-        // one pre-norm + one residual), typed off two per-layer arrays:
-        //   recurrent (SSM) : head_count_kv[i] == 0 && feed_forward_length[i] == 0
-        //   attention       : head_count_kv[i]  > 0  (feed_forward_length 0)
-        //   MLP             : feed_forward_length[i] > 0
-        // Unlike granitehybrid this family is NON-MoE (dense gate-less
-        // squared-ReLU MLP) and carries NO muP scalars — embedding/attention/
-        // residual/logit scales stay at their off defaults; attention kq_scale
-        // is the plain 1/sqrt(head_dim). Reference: llama.cpp b10353
-        // src/models/nemotron-h.cpp + mamba-base.cpp — the SAME ggml_ssm_scan
-        // the granite path certifies, here exercising the n_group>1 grouped
-        // B/C broadcast (Nano: n_group=8), which mamba2_ssd_step already
-        // implements (g = h / (n_head/n_group)).
-        m->nemotron_h = true;
-        m->ffn_relu2  = true;      // gate-less MLP: down(relu(up(x))^2)
-        m->rope_neox  = false;
-        // NoPE: nemotron-h.cpp applies no rope to its attention layers (position
-        // comes from the Mamba layers), and the export marks this with
-        // rope.scaling.finetuned=false — the SAME gate llama.cpp's granite path
-        // uses. A finetuned-rope export would rope the attention layers, a
-        // layout this tracer has not certified: refuse rather than mis-rotate.
-        if (gguf_get_bool(g, AK("rope.scaling.finetuned"), false)) {
-            fprintf(stderr, "error: nemotron_h with rope.scaling.finetuned=true "
-                    "(rope on attention layers) is not certified\n");
-            return false;
-        }
-        m->no_rope_layer_step = 1;   // NoPE every layer
-        // Mamba-2 geometry. NOTE: nemotron does NOT satisfy granite's
-        // inner==2*n_embd (Nano-9B-v2: inner=10240, n_embd=4480), so that
-        // assertion is deliberately absent here.
-        m->ssm_conv_kernel = (int)gguf_get_u32(g, AK("ssm.conv_kernel"), 0);
-        m->ssm_inner       = (int)gguf_get_u32(g, AK("ssm.inner_size"), 0);
-        m->ssm_state       = (int)gguf_get_u32(g, AK("ssm.state_size"), 0);
-        m->ssm_v_heads     = (int)gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
-        m->ssm_groups      = (int)gguf_get_u32(g, AK("ssm.group_count"), 0);
-        if (m->ssm_conv_kernel <= 0 || m->ssm_conv_kernel > 8 ||
-            m->ssm_inner <= 0 || m->ssm_inner > MDL_DIM_MAX ||
-            m->ssm_state <= 0 || m->ssm_state > MDL_DIM_MAX ||
-            m->ssm_v_heads <= 0 || m->ssm_groups <= 0 ||
-            m->ssm_inner % m->ssm_v_heads != 0 ||
-            m->ssm_v_heads % m->ssm_groups != 0 ||
-            m->ssm_inner % m->ssm_groups != 0) {
-            fprintf(stderr, "error: invalid nemotron_h Mamba-2 geometry "
-                    "(conv_kernel=%d inner=%d state=%d heads=%d groups=%d)\n",
-                    m->ssm_conv_kernel, m->ssm_inner, m->ssm_state,
-                    m->ssm_v_heads, m->ssm_groups);
-            return false;
-        }
-        // nemotron_h_moe (Nemotron-3.5 Lightning): the MLP blocks are a gate-less
-        // squared-ReLU MoE — a router, gate-less routed experts (relu(up)^2, no
-        // gate branch), and an always-on gate-less shared expert. Routing reuses
-        // the general moe_route (group/scale/norm); only the activation differs.
-        if (nh_moe) {
-            m->n_expert        = (int)gguf_get_u32(g, AK("expert_count"), 0);
-            m->n_expert_used   = (int)gguf_get_u32(g, AK("expert_used_count"), 0);
-            m->n_ff_exp        = (int)gguf_get_u32(g, AK("expert_feed_forward_length"), 0);
-            m->n_ff_shexp      = (int)gguf_get_u32(g, AK("expert_shared_feed_forward_length"), 0);
-            m->n_expert_groups = (int)gguf_get_u32(g, AK("expert_group_count"), 1);
-            m->n_group_used    = (int)gguf_get_u32(g, AK("expert_group_used_count"), 1);
-            m->expert_gating   = (int)gguf_get_u32(g, AK("expert_gating_func"),
-                                                   EXPERT_GATE_SOFTMAX);
-            if (m->expert_gating == EXPERT_GATE_NONE)
-                m->expert_gating = EXPERT_GATE_SOFTMAX;
-            m->expert_w_scale  = gguf_get_f32(g, AK("expert_weights_scale"), 1.0f);
-            m->expert_norm_w   = gguf_get_bool(g, AK("expert_weights_norm"), true);
-            if (m->n_expert <= 0 || m->n_expert > 256 ||
-                m->n_expert_used <= 0 || m->n_expert_used > m->n_expert ||
-                m->n_ff_exp <= 0 || m->n_ff_exp > MDL_DIM_MAX ||
-                m->n_ff_shexp < 0 || m->n_ff_shexp > MDL_DIM_MAX ||
-                m->expert_gating < EXPERT_GATE_NONE ||
-                m->expert_gating > EXPERT_GATE_SQRT_SOFTPLUS) {
-                fprintf(stderr, "error: invalid nemotron_h_moe expert config "
-                        "(count=%d used=%d exp_ff=%d shexp_ff=%d gating=%d)\n",
-                        m->n_expert, m->n_expert_used, m->n_ff_exp,
-                        m->n_ff_shexp, m->expert_gating);
-                return false;
-            }
-        }
-        // Per-layer typing off the head_count_kv ARRAY (0 => not attention).
-        size_t nl = (size_t)(unsigned)m->n_layer;
-        m->l_head_kv  = calloc(nl, sizeof(int));
-        m->l_head_dim = calloc(nl, sizeof(int));
-        m->l_rope_dim = calloc(nl, sizeof(int));
-        if (!m->l_head_kv || !m->l_head_dim || !m->l_rope_dim) return false;
-        int attn_kv = 0, n_attn = 0, n_rec = 0, n_mlp = 0, max_ff = 0;
-        for (int i = 0; i < m->n_layer; i++) {
-            int kv = (int)gguf_get_u32_idx(g, AK("attention.head_count_kv"),
-                                           (uint64_t)i, 0);
-            int ff = (int)gguf_get_u32_idx(g, AK("feed_forward_length"),
-                                           (uint64_t)i, 0);
-            m->l_head_kv[i]  = kv;
-            m->l_head_dim[i] = m->head_dim;
-            m->l_rope_dim[i] = m->rope_dim;
-            if (kv > 0) {
-                if (kv > m->n_head || m->n_head % kv != 0) {
-                    fprintf(stderr, "error: nemotron_h blk.%d head_count_kv %d "
-                            "does not divide n_head %d\n", i, kv, m->n_head);
-                    return false;
-                }
-                if (attn_kv == 0) attn_kv = kv;
-                else if (kv != attn_kv) {
-                    fprintf(stderr, "error: nemotron_h attention layers disagree "
-                            "on head_count_kv (%d vs %d)\n", attn_kv, kv);
-                    return false;
-                }
-                n_attn++;
-            } else if (ff > 0) { n_mlp++; if (ff > max_ff) max_ff = ff; }
-            else n_rec++;
-        }
-        // feed_forward_length is a per-layer array with 0 on the SSM/attention
-        // blocks; the generic array-max fallback bails on any 0 entry, so set
-        // the model-wide FFN width (buffer sizing + the >0 hyperparam gate)
-        // from the max over the MLP blocks here.
-        m->n_ff = max_ff;
-        m->ffn_var = true;
-        if (attn_kv == 0) {
-            fprintf(stderr, "error: nemotron_h has no attention layers\n");
-            return false;
-        }
-        if (n_rec == 0) {
-            fprintf(stderr, "error: nemotron_h has no recurrent (Mamba-2) "
-                    "layers — not a hybrid\n");
-            return false;
-        }
-        m->n_head_kv = attn_kv;
-        if (nh_moe)
-            fprintf(stderr, "nemotron_h_moe: Mamba-2 hybrid (%d recurrent + %d "
-                    "attention + %d MoE layers, n_group=%d grouped scan) — %d/%d "
-                    "gate-less squared-ReLU experts + always-on shared expert, "
-                    "NoPE attention\n", n_rec, n_attn, n_mlp, m->ssm_groups,
-                    m->n_expert_used, m->n_expert);
-        else
-            fprintf(stderr, "nemotron_h: Mamba-2 hybrid (%d recurrent + %d attention "
-                    "+ %d MLP layers, n_group=%d grouped scan) — NON-MoE, NoPE "
-                    "attention, gate-less squared-ReLU MLP; greedy output verified "
-                    "against llama.cpp b10353 on Nemotron-Nano-9B-v2 Q8_0\n",
-                    n_rec, n_attn, n_mlp, m->ssm_groups);
-    }
-    if (strcmp(arch, "muse-glimmer") == 0) {
-        // muse-glimmer (Meta Muse Glimmer 30B). Transcribed from llama.cpp
-        // b10353 src/models/muse-glimmer.cpp, not inferred:
-        //   * weightless RMS norm on the embedding row, no embedding scale;
-        //   * afmoe's output-gated attention (blk.N.attn_gate, sigmoid
-        //     between SDPA out and o_proj) plus qwen3-style per-head QK
-        //     norms (conversion folds qk_scale_factor into attn_q_norm and
-        //     ships attn_k_norm as identity);
-        //   * sandwich norms at a FIXED 1e-8 eps (llama.cpp hardcodes
-        //     post_norm_eps) while the pre-norms keep the declared epsilon;
-        //   * SWA with a per-layer bool pattern array (30B: 3 local : 1
-        //     global); rope runs ONLY on the sliding layers — llama.cpp maps
-        //     this arch to LLAMA_ROPE_TYPE_NORM, i.e. adjacent-pair like
-        //     llama — at freq_base_swa, seeded from the MAIN base exactly
-        //     like gpt-oss; the full-attention layers are NoPE;
-        //   * final logits: x logit_scale (a required key), then softcap.
-        m->attn_out_gate = true;
-        m->nope_on_full  = true;
-        m->embd_norm     = true;
-        m->rope_neox     = false;
-        m->post_norm_eps = 1e-8f;
-        m->logit_softcap = gguf_get_f32(g, AK("final_logit_softcapping"), 0.0f);
-        m->logit_scale   = gguf_get_f32(g, AK("logit_scale"), 0.0f);
-        if (m->logit_scale <= 0.0f) {
-            // llama.cpp reads the key as required; a build that silently
-            // defaulted it would emit uncapped-scale logits on every token
-            fprintf(stderr, "error: muse-glimmer requires %s\n",
-                    AK("logit_scale"));
-            return false;
-        }
-        m->swa_window = (int)gguf_get_u32(g, AK("attention.sliding_window"), 2048);
-        int period = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 4);
-        if (period < 1) period = 4;
-        free(m->l_is_swa);   // the generic block's table, rebuilt here (see gemma4)
-        m->l_is_swa = calloc(m->n_layer, sizeof(bool));
-        if (!m->l_is_swa) return false;
-        if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
-                               m->l_is_swa, m->n_layer))
-            for (int i = 0; i < m->n_layer; i++)
-                m->l_is_swa[i] = m->swa_window > 0 && ((i + 1) % period) != 0;
-        // sliding layers share the global rope regime unless the export
-        // declares a genuinely different local base
-        float sbase = gguf_get_f32(g, AK("rope.freq_base_swa"), 0.0f);
-        m->swa_rope_global = sbase <= 0.0f || sbase == m->rope_base;
-        // Reasoning is a separate assistant turn addressed to the model
-        // itself: ` to=self<|message|>THINKING<|eom|><|start|>assistant
-        // to=RECIPIENT<|message|>ANSWER`. `<|eom|>`, `<|start|>` and
-        // `<|message|>` decode to no bytes, so on an unconstrained byte
-        // stream the pair below is exactly what brackets the thinking text
-        // and nothing else marks where the answer begins. Narrowing the
-        // close to ` to=` (to make tool recipients closable) leaked the
-        // recipient word into content and `assistant` into reasoning on
-        // plain thinking chats — measured live, content came back "user391".
-        // Constrained runs never wait for these bytes: engine.c recognizes
-        // the <|eom|> control id and feeds this close to the splitter
-        // itself (constraint_finish_think), then the recipient-turn
-        // automaton owns everything that follows.
-        m->think_open  = " to=self";
-        m->think_close = "assistant to=user";
-    }
+    if (strcmp(arch, "qwen4exp") == 0 && !bind_meta_qwen4exp(m, g, arch)) return false;
+    if (strcmp(arch, "apertus") == 0 && !bind_meta_apertus(m, g, arch)) return false;
+    if (strcmp(arch, "gemma4") == 0 && !bind_meta_gemma4(m, g, arch)) return false;
+    if (strcmp(arch, "granite") == 0 && !bind_meta_granite(m, g, arch)) return false;
+    if (strcmp(arch, "granitehybrid") == 0 && !bind_meta_granitehybrid(m, g, arch)) return false;
+    if ((strcmp(arch, "nemotron_h") == 0 || strcmp(arch, "nemotron_h_moe") == 0) && !bind_meta_nemotron_h(m, g, arch)) return false;
+    if (strcmp(arch, "muse-glimmer") == 0 && !bind_meta_muse(m, g, arch)) return false;
     // The sandwich norms run at rms_eps everywhere except where an arch block
     // above pinned them (muse-glimmer's fixed 1e-8); resolve the default after
     // every block that can still change rms_eps has run.
