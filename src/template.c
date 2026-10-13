@@ -2794,6 +2794,82 @@ static size_t render_gemma(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_LLAMA2 and TMPL_LLAMA2_FALLBACK.
+static size_t render_llama2(int tmpl, const chat_msg *msgs, int n_msgs,
+                            bool add_assistant, int thinking, const jv *tools,
+                            char *out, size_t cap) {
+    size_t off = 0;
+    // Reference (unsloth/llama-2-7b-chat tokenizer_config.json):
+    //   user      bos_token + '[INST] ' + content.strip() + ' [/INST]'
+    //   assistant ' ' + content.strip() + ' ' + eos_token
+    // with an initial system message folded into the FIRST user turn as
+    // '<<SYS>>\n' + system + '\n<</SYS>>\n\n' + content, before the strip.
+    //
+    // Two things runner got wrong until 2026-08-15, both measured by the
+    // conformance gate:
+    //
+    //   * `.strip()` was not applied. With an empty user turn the folded
+    //     content kept its trailing "\n\n", so `<</SYS>>\n\n [/INST]`
+    //     went out where the reference writes `<</SYS>> [/INST]` -- two
+    //     tokens the model never saw there.
+    //   * BOS is on EVERY user turn, not just the first. The leading one
+    //     comes from the tokenizer (hence the gate's strip-bos
+    //     allowlist), but turns 2+ begin without the sequence-restart
+    //     token the model was trained to see at each instruction
+    //     boundary. So a multi-turn Llama-2 prompt reads `</s><s>[INST]`
+    //     in the reference and `</s>[INST]` here.
+    //
+    // The literal `<s>` is emitted ONLY for a recognised Llama-2.
+    // tok_encode matches specials at any offset, so mid-prompt it becomes
+    // the BOS id -- but in a vocabulary that has no `<s>` special it would
+    // tokenize as the characters `<`, `s`, `>`, which is worse than the
+    // token being absent. TMPL_LLAMA2_FALLBACK is the id every
+    // unrecognised model lands on, and it renders the same markup without
+    // that literal.
+    const bool real_llama2 = tmpl == TMPL_LLAMA2;
+    const char *sys = NULL;
+    int user_turns = 0;
+    int l_lead; bool l_oom;
+    char *l_joined = leading_system_join(msgs, n_msgs, &l_lead, &l_oom);
+    if (l_oom) return SIZE_MAX;
+    for (int i = 0; i < n_msgs; i++) {
+        const chat_msg *m = &msgs[i];
+        if (!strcmp(m->role, "system")) {
+            sys = i < l_lead && l_joined ? l_joined : m->content;
+            continue;
+        }
+        if (!strcmp(m->role, "user")) {
+            sbuf c = {0};
+            if (sys) {
+                sb_lit(&c, "<<SYS>>\n");    // text in this vocabulary; the turn is trimmed after assembly
+                sb_put(&c, sys, strlen(sys));
+                sb_lit(&c, "\n<</SYS>>\n\n");
+                sys = NULL;
+            }
+            sb_put(&c, m->content, strlen(m->content));
+            const char *b = c.s ? c.s : "";
+            const char *e = b + (c.s ? c.n : 0);
+            b = trim_left(b, e);
+            e = trim_right(b, e);
+            if (real_llama2 && user_turns) off = emit(out, cap, off, "<s>", NULL, NULL);
+            user_turns++;
+            off = emit(out, cap, off, "[INST] ", NULL, NULL);
+            off = emit_n(out, cap, off, b, (size_t)(e - b));
+            off = emit(out, cap, off, " [/INST]", NULL, NULL);
+            free(c.s);
+        } else { // assistant
+            const char *b = m->content, *e = b + strlen(b);
+            b = trim_left(b, e);
+            e = trim_right(b, e);
+            off = emit(out, cap, off, " ", NULL, NULL);
+            off = emit_n(out, cap, off, b, (size_t)(e - b));
+            off = emit(out, cap, off, " </s>", NULL, NULL);
+        }
+    }
+    free(l_joined);
+    return off;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -2879,77 +2955,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_GEMMA:
         return render_gemma(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_LLAMA2:
-    case TMPL_LLAMA2_FALLBACK: {
-        // Reference (unsloth/llama-2-7b-chat tokenizer_config.json):
-        //   user      bos_token + '[INST] ' + content.strip() + ' [/INST]'
-        //   assistant ' ' + content.strip() + ' ' + eos_token
-        // with an initial system message folded into the FIRST user turn as
-        // '<<SYS>>\n' + system + '\n<</SYS>>\n\n' + content, before the strip.
-        //
-        // Two things runner got wrong until 2026-08-15, both measured by the
-        // conformance gate:
-        //
-        //   * `.strip()` was not applied. With an empty user turn the folded
-        //     content kept its trailing "\n\n", so `<</SYS>>\n\n [/INST]`
-        //     went out where the reference writes `<</SYS>> [/INST]` -- two
-        //     tokens the model never saw there.
-        //   * BOS is on EVERY user turn, not just the first. The leading one
-        //     comes from the tokenizer (hence the gate's strip-bos
-        //     allowlist), but turns 2+ begin without the sequence-restart
-        //     token the model was trained to see at each instruction
-        //     boundary. So a multi-turn Llama-2 prompt reads `</s><s>[INST]`
-        //     in the reference and `</s>[INST]` here.
-        //
-        // The literal `<s>` is emitted ONLY for a recognised Llama-2.
-        // tok_encode matches specials at any offset, so mid-prompt it becomes
-        // the BOS id -- but in a vocabulary that has no `<s>` special it would
-        // tokenize as the characters `<`, `s`, `>`, which is worse than the
-        // token being absent. TMPL_LLAMA2_FALLBACK is the id every
-        // unrecognised model lands on, and it renders the same markup without
-        // that literal.
-        const bool real_llama2 = tmpl == TMPL_LLAMA2;
-        const char *sys = NULL;
-        int user_turns = 0;
-        int l_lead; bool l_oom;
-        char *l_joined = leading_system_join(msgs, n_msgs, &l_lead, &l_oom);
-        if (l_oom) return SIZE_MAX;
-        for (int i = 0; i < n_msgs; i++) {
-            const chat_msg *m = &msgs[i];
-            if (!strcmp(m->role, "system")) {
-                sys = i < l_lead && l_joined ? l_joined : m->content;
-                continue;
-            }
-            if (!strcmp(m->role, "user")) {
-                sbuf c = {0};
-                if (sys) {
-                    sb_lit(&c, "<<SYS>>\n");    // text in this vocabulary; the turn is trimmed after assembly
-                    sb_put(&c, sys, strlen(sys));
-                    sb_lit(&c, "\n<</SYS>>\n\n");
-                    sys = NULL;
-                }
-                sb_put(&c, m->content, strlen(m->content));
-                const char *b = c.s ? c.s : "";
-                const char *e = b + (c.s ? c.n : 0);
-                b = trim_left(b, e);
-                e = trim_right(b, e);
-                if (real_llama2 && user_turns) off = emit(out, cap, off, "<s>", NULL, NULL);
-                user_turns++;
-                off = emit(out, cap, off, "[INST] ", NULL, NULL);
-                off = emit_n(out, cap, off, b, (size_t)(e - b));
-                off = emit(out, cap, off, " [/INST]", NULL, NULL);
-                free(c.s);
-            } else { // assistant
-                const char *b = m->content, *e = b + strlen(b);
-                b = trim_left(b, e);
-                e = trim_right(b, e);
-                off = emit(out, cap, off, " ", NULL, NULL);
-                off = emit_n(out, cap, off, b, (size_t)(e - b));
-                off = emit(out, cap, off, " </s>", NULL, NULL);
-            }
-        }
-        free(l_joined);
-        break;
-    }
+    case TMPL_LLAMA2_FALLBACK:
+        return render_llama2(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_MISTRAL:
     case TMPL_MISTRAL_V1:
     case TMPL_MISTRAL_NEMO: {
