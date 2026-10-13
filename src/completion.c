@@ -1751,6 +1751,22 @@ static bool generation_faulted(const char *finish) {
     return !strcmp(finish, "error") || !strcmp(finish, "envelope_error");
 }
 
+// Why a Responses turn did not complete, or NULL when it did: the one
+// decision behind both the buffered body and the streamed terminator. A
+// generation fault is incomplete with a reason that names it ("error" is
+// e->oom's spelling, run_completion), never "completed" and never
+// "max_output_tokens", which would send the caller retrying with a bigger
+// budget forever. A turn cut by its budget, the reasoning cap or the loop
+// guard is max_output_tokens.
+static const char *responses_incomplete_reason(const char *finish) {
+    if (!strcmp(finish, "envelope_error")) return "envelope_unmapped";
+    if (!strcmp(finish, "error"))          return "out_of_memory";
+    if (!strcmp(finish, "length") || !strcmp(finish, "reasoning_limit") ||
+        !strcmp(finish, "loop"))
+        return "max_output_tokens";
+    return NULL;
+}
+
 // Anthropic's vocabulary has no member for a generation fault, and it is not
 // an oversight: the API draws the line the other way round from OpenAI's, in
 // its own words — "Unlike errors, which indicate failures in processing your
@@ -4269,12 +4285,13 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         bool cut = strcmp(finish, "length") == 0 ||
                    strcmp(finish, "reasoning_limit") == 0 ||
                    strcmp(finish, "loop") == 0;
-        // The turn produced a document nothing could read, so it did not
-        // complete — and the reason is neither of the two standard ones.
-        // "max_output_tokens" would be the closest lie, and a lie a client can
-        // act on: it retries with a larger budget forever. An unrecognised
-        // reason string is inert by comparison, and true.
-        bool failed = strcmp(finish, "envelope_error") == 0;
+        // A faulted turn (a document nothing could read, or an allocation
+        // failure mid-generation) did not complete, and the reason is neither
+        // of the two standard ones. "max_output_tokens" would be the closest
+        // lie, and a lie a client can act on: it retries with a larger budget
+        // forever. An unrecognised reason string is inert by comparison, and
+        // true (responses_incomplete_reason).
+        bool failed = generation_faulted(finish);
         // a tool call that was truncated is still an executable call — the
         // envelope schema closed it to a legal document — so only a message
         // is reported as unfinished
@@ -4293,10 +4310,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             jv_free(em);
         }
         if (!g.dead) {
-            bool truncated = cut || failed;
+            const char *why = responses_incomplete_reason(finish);
+            bool truncated = why != NULL;
             resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .status = truncated ? "incomplete" : "completed",
-                           .incomplete = failed ? "envelope_unmapped"
-                                       : cut   ? "max_output_tokens" : NULL,
+                           .incomplete = why,
                            .output_json = g.out_items.s ? g.out_items.s : "",
                            .output_n = g.out_items.n,
                            .output_text = g.out_text.s,
@@ -4564,18 +4581,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // counts them: a loop-guard stop came back "completed" here and
             // "incomplete" streamed, on identical text (external review,
             // 2026-09-27)
-            bool cut    = strcmp(finish, "length") == 0 ||
-                          strcmp(finish, "reasoning_limit") == 0 ||
-                          strcmp(finish, "loop") == 0;
-            // the streamed branch above reports the same fault the same way:
-            // a turn whose document could not be mapped did not complete, and
-            // "max_output_tokens" would send the caller retrying with a bigger
-            // budget forever
-            bool failed = strcmp(finish, "envelope_error") == 0;
-            bool truncated = cut || failed;
+            // the streamed branch above reports the same reasons the same way
+            // (responses_incomplete_reason): a faulted turn did not complete
+            const char *why = responses_incomplete_reason(finish);
+            bool truncated = why != NULL;
             resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .status = truncated ? "incomplete" : "completed",
-                           .incomplete = failed ? "envelope_unmapped"
-                                       : cut   ? "max_output_tokens" : NULL,
+                           .incomplete = why,
                            .with_output = true,
                            .calls = call,
                            .text = g.out.s, .text_n = g.out.n,

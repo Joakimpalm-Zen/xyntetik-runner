@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A Responses turn that hit an allocation failure no longer reports
+  `completed`.** A generation fault is a turn with nothing usable behind it,
+  and chat (`finish_reason: "error"`) and Messages (an `error` object, or
+  the `error` event on a stream) already said so. Responses only treated an
+  unmappable tool envelope as a fault, so an allocation failure
+  mid-generation came back `status: "completed"`, and on a stream the turn
+  ended on `response.completed`. Both faults now report `status:
+  "incomplete"` with `incomplete_details.reason` naming the fault
+  (`envelope_unmapped` or `out_of_memory`), the message item is
+  `incomplete`, and a stream ends on `response.incomplete`.
+
 - **A refused `--serve` no longer leaves a tray behind.** The tray is
   raised only after every argument check a serve or interactive run can
   still fail, which is what the code already said, but the serving

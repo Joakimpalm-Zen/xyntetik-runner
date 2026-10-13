@@ -131,3 +131,32 @@ def test_the_fault_hook_is_refused_on_a_server_without_the_hook(exe, model):
                       extra_args=["--gpu", "off", "-t", "2", "--chat-template", "chatml"]) as s:
         status, raw = post(s, "/v1/chat/completions", dict(CHAT, **FAULT))
         assert status == 400 and "test hook" in raw, raw
+
+
+def test_responses_reports_the_fault_as_incomplete_not_completed(srv):
+    """A faulted turn did not complete. Responses says so the way it already
+    says it for an unmappable envelope: incomplete, with a reason naming the
+    fault, never "completed" and never "max_output_tokens"."""
+    status, raw = post(srv, "/v1/responses", {"input": "Hello", "max_output_tokens": 32,
+                                              "temperature": 0, **FAULT})
+    assert status == 200, raw
+    doc = json.loads(raw)
+    assert doc["status"] == "incomplete", doc["status"]
+    assert doc["incomplete_details"] == {"reason": "out_of_memory"}, doc["incomplete_details"]
+    messages = [o for o in doc["output"] if o.get("type") == "message"]
+    assert messages and all(m["status"] == "incomplete" for m in messages), doc["output"]
+
+
+def test_streamed_responses_end_on_response_incomplete_after_the_headers(srv):
+    status, raw = post(srv, "/v1/responses", {"input": "Hello", "max_output_tokens": 32,
+                                              "temperature": 0, "stream": True, **FAULT})
+    assert status == 200, raw   # the headers went out before the fault
+    events = sse(raw)
+    names = [e for e, _ in events]
+    assert names[0] == "response.created" and "response.output_text.delta" in names, names
+    assert names[-1] == "response.incomplete" and "response.completed" not in names, names
+    final = json.loads(events[-1][1])["response"]
+    assert final["status"] == "incomplete", final["status"]
+    assert final["incomplete_details"] == {"reason": "out_of_memory"}, final["incomplete_details"]
+    done = [json.loads(d)["item"] for e, d in events if e == "response.output_item.done"]
+    assert done and done[-1]["status"] == "incomplete", done
