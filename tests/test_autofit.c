@@ -270,6 +270,179 @@ static void test_fit_gpu(const char *fixture) {
     gguf_close(&g);
 }
 
+// The split's boundaries, to the byte. The fit is the loader's leading-layer
+// placement read off the header: a fixed charge (embedding, scratch,
+// headroom), then whole layers, each its weights plus its KV, while they fit;
+// a split that took every layer also owes the output projection and charges
+// the embedding a second time, as the loader does, else the last layer goes
+// back. These cases rebuild each figure from the header the way the fit does
+// and check the decision one byte either side of every boundary, so a change
+// to the placement arithmetic (the CUDA and Metal loaders keep their own
+// copies of it) shows up as a moved boundary, not a vague "fits".
+static void test_fit_gpu_boundaries(const char *fixture) {
+    gguf_file g;
+    if (!fixture || !gguf_open_header(&g, fixture)) {
+        ck(0, "fit gpu boundaries: the test.gguf header opens");
+        return;
+    }
+    model_fit base;
+    ck(model_fit_report(&g, 512, &base), "fit gpu boundaries: report");
+    int nl = base.n_layer;
+    uint64_t lb[64] = {0}, tok = 0, out = 0;
+    ck(nl > 1 && nl <= 64, "fit gpu boundaries: a multi-layer fixture");
+    if (nl <= 1 || nl > 64) { gguf_close(&g); return; }
+    for (uint64_t i = 0; i < g.n_tensors; i++) {
+        const gguf_tensor *t = &g.tensors[i];
+        int l = -1, n = 0;
+        if (sscanf(t->name, "blk.%d.%n", &l, &n) == 1 && n > 0 && l >= 0 && l < nl)
+            lb[l] += t->nbytes;
+        else if (!strcmp(t->name, "token_embd.weight")) tok = t->nbytes;
+        else if (!strcmp(t->name, "output.weight")) out = t->nbytes;
+    }
+    if (!out) out = tok;
+    const uint64_t kvl = base.kv_f16_per_tok / (uint64_t)nl * (uint64_t)base.n_ctx;
+    model_fit f = base;
+    model_fit_gpu(&g, &f, 1ull << 40, 0, 0);
+    const uint64_t fixed = f.gpu_fixed;
+    uint64_t all = fixed;
+    for (int l = 0; l < nl; l++) all += lb[l] + kvl;
+    const int K = FIT_KV_F16;
+
+    f = base; model_fit_gpu(&g, &f, fixed - 1, 0, 0);
+    ck(f.gpu_layers[K] == 0 && f.gpu_used[K] == 0,
+       "fit gpu boundaries: below the fixed charge nothing is on the device");
+    f = base; model_fit_gpu(&g, &f, fixed, 0, 0);
+    ck(f.gpu_layers[K] == 0 && f.gpu_used[K] == fixed,
+       "fit gpu boundaries: the fixed charge alone holds no layer");
+    f = base; model_fit_gpu(&g, &f, fixed + lb[0] + kvl - 1, 0, 0);
+    ck(f.gpu_layers[K] == 0, "fit gpu boundaries: a byte short of the first layer");
+    f = base; model_fit_gpu(&g, &f, fixed + lb[0] + kvl, 0, 0);
+    ck(f.gpu_layers[K] == 1 && f.gpu_used[K] == fixed + lb[0] + kvl,
+       "fit gpu boundaries: exactly the first layer");
+    // every layer fits but the full split's charge does not: the last layer
+    // goes back to the host
+    f = base; model_fit_gpu(&g, &f, all, 0, 0);
+    ck(f.gpu_layers[K] == nl - 1 && f.gpu_used[K] == all - lb[nl - 1] - kvl,
+       "fit gpu boundaries: all layers without the output charge give one back");
+    f = base; model_fit_gpu(&g, &f, all + tok + out - 1, 0, 0);
+    ck(f.gpu_layers[K] == nl - 1,
+       "fit gpu boundaries: a byte short of the full split (embedding charged twice)");
+    f = base; model_fit_gpu(&g, &f, all + tok + out, 0, 0);
+    ck(f.gpu_layers[K] == nl && f.gpu_used[K] == all + out,
+       "fit gpu boundaries: exactly the full split, output included");
+    // --gpu-layers below the natural split caps it; at or above, changes nothing
+    f = base; model_fit_gpu(&g, &f, all + tok + out, 0, nl - 1);
+    ck(f.gpu_layers[K] == nl - 1, "fit gpu boundaries: max_layers caps a full split");
+    f = base; model_fit_gpu(&g, &f, fixed + lb[0] + kvl, 0, nl);
+    ck(f.gpu_layers[K] == 1, "fit gpu boundaries: a cap above the split changes nothing");
+    // the headroom is part of the fixed charge, byte for byte
+    f = base; model_fit_gpu(&g, &f, 1ull << 40, 4096, 0);
+    ck(f.gpu_fixed == fixed + 4096, "fit gpu boundaries: headroom joins the fixed charge");
+    gguf_close(&g);
+}
+
+// The split's decisions as the backends now share them (gpu_plan_*), on
+// numbers worked by hand: every boundary one unit either side.
+static void test_gpu_plan(void) {
+    const uint64_t cost[4] = { 10, 20, 30, 40 };
+    uint64_t used = 5;
+    ck(gpu_plan_prefix(cost, 4, 0, 35, &used) == 2 && used == 35,
+       "plan prefix: exactly two layers (5 + 10 + 20 = 35)");
+    used = 5;
+    ck(gpu_plan_prefix(cost, 4, 0, 34, &used) == 1 && used == 15,
+       "plan prefix: one unit short of the second layer");
+    used = 5;
+    ck(gpu_plan_prefix(cost, 4, 0, 105, &used) == 4 && used == 105,
+       "plan prefix: every layer, exactly");
+    used = 5;
+    ck(gpu_plan_prefix(cost, 4, 2, 1000, &used) == 2 && used == 35,
+       "plan prefix: the cap stops a split that would fit");
+    used = 5;
+    ck(gpu_plan_prefix(cost, 4, 9, 1000, &used) == 4,
+       "plan prefix: a cap above the layer count changes nothing");
+    used = 5;
+    ck(gpu_plan_prefix(cost, 4, 0, 14, &used) == 0 && used == 5,
+       "plan prefix: the first layer short leaves the fixed charge alone");
+    used = 0;
+    ck(gpu_plan_prefix(cost, 4, 0, 0, &used) == 0, "plan prefix: a zero budget takes nothing");
+    used = 6;
+    ck(gpu_plan_prefix(cost, 4, 0, 5, &used) == 0 && used == 6,
+       "plan prefix: a fixed charge over the budget takes nothing");
+    const uint64_t first_small[3] = { 10, 50, 1 };
+    used = 0;
+    ck(gpu_plan_prefix(first_small, 3, 0, 20, &used) == 1,
+       "plan prefix: the first layer that does not fit ends the run");
+    const uint64_t huge[2] = { UINT64_MAX - 10, 100 };
+    used = 20;
+    ck(gpu_plan_prefix(huge, 2, 0, UINT64_MAX, &used) == 0 && used == 20,
+       "plan prefix: a sum past 64 bits refuses rather than wraps");
+    used = 0;
+    ck(gpu_plan_prefix(huge, 2, 0, UINT64_MAX, &used) == 1 && used == UINT64_MAX - 10,
+       "plan prefix: up to the last representable byte");
+
+    bool back = true;
+    int G = 4;
+    ck(gpu_plan_full_split(&G, 4, 90, 10, 100, &back) && G == 4 && !back,
+       "plan full: the tail fits exactly");
+    G = 4;
+    ck(!gpu_plan_full_split(&G, 4, 90, 11, 100, &back) && G == 3 && back,
+       "plan full: one unit short hands the last layer back");
+    G = 3;
+    ck(!gpu_plan_full_split(&G, 4, 10, 1, 100, &back) && G == 3 && !back,
+       "plan full: a partial split is left as it is");
+    G = 1;
+    ck(!gpu_plan_full_split(&G, 1, 99, 2, 100, &back) && G == 1 && !back,
+       "plan full: a one-layer model keeps its layer");
+    G = 2;
+    ck(!gpu_plan_full_split(&G, 2, 101, 0, 100, &back) && G == 1 && back,
+       "plan full: an over-budget total is not full, never a wrapped subtraction");
+
+    // banks: layers 0 and 2 dense, 1, 3 and 4 routed
+    const bool moe[5] = { false, true, false, true, true };
+    const uint64_t bank[5] = { 0, 30, 0, 30, 30 };
+    bool host[5] = { false, true, false, true, true };
+    used = 10;
+    int placed = gpu_plan_expert_banks(moe, bank, 5, 5, 75, &used, host, 0, 0);
+    ck(placed == 2 && used == 70 && !host[1] && !host[3] && host[4],
+       "plan banks: shallowest first while each fits with the reserve held back");
+    bool host2[5] = { false, true, false, true, true };
+    used = 10;
+    ck(gpu_plan_expert_banks(moe, bank, 5, 6, 75, &used, host2, 0, 0) == 1 &&
+       used == 40 && !host2[1] && host2[3],
+       "plan banks: one unit of reserve more and the second bank stays home");
+    bool host3[5] = { false, true, false, true, true };
+    used = 10;
+    ck(gpu_plan_expert_banks(moe, bank, 3, 0, 1000, &used, host3, 0, 0) == 1 &&
+       host3[3] && host3[4],
+       "plan banks: only the device layers' banks are candidates");
+    bool host4[5] = { false, true, false, true, true };
+    used = 10;
+    placed = gpu_plan_expert_banks(moe, bank, 5, 0, 1000, &used, host4, 1, 3);
+    ck(placed == 2 && used == 70 && !host4[1] && !host4[3] && host4[4],
+       "plan banks: a retry hands back the deepest bank of the first attempt's three");
+    bool host5[5] = { false, true, false, true, true };
+    used = 10;
+    placed = gpu_plan_expert_banks(moe, bank, 5, 0, 1000, &used, host5, 4, 3);
+    ck(placed == 0 && used == 10 && host5[1] && host5[3] && host5[4],
+       "plan banks: a trim past the first attempt's count hands back every bank");
+
+    // the device's own rules: allocation rounding of a bound tensor, and the
+    // RAM cap of an integrated device
+    const uint64_t MiB = 1ull << 20;
+    ck(gpu_plan_binding_bytes(0, true) == 0, "plan binding: an empty tensor costs nothing");
+    ck(gpu_plan_binding_bytes(1, true) == 2 * MiB, "plan binding: one byte bound is one granule");
+    ck(gpu_plan_binding_bytes(2 * MiB, true) == 2 * MiB, "plan binding: a whole granule stays one");
+    ck(gpu_plan_binding_bytes(2 * MiB + 1, true) == 4 * MiB, "plan binding: one byte over is two");
+    ck(gpu_plan_binding_bytes(2 * MiB + 1, false) == 2 * MiB + 1,
+       "plan binding: inside one upload a tensor costs its own bytes");
+    ck(gpu_plan_unified_cap(24ull << 30, 0) == 24ull << 30,
+       "plan unified: an unknown RAM figure leaves the budget");
+    ck(gpu_plan_unified_cap(24ull << 30, 10ull << 30) == 10ull << 30,
+       "plan unified: available RAM below the driver's view caps it");
+    ck(gpu_plan_unified_cap(8ull << 30, 10ull << 30) == 8ull << 30,
+       "plan unified: more RAM than the driver's view changes nothing");
+}
+
 int main(int argc, char **argv) {
     test_gpu_budget();
     test_multislot_is_not_billed_once();
@@ -279,6 +452,8 @@ int main(int argc, char **argv) {
     test_kv_trade_note();
     test_kv_ring_rows();
     test_fit_gpu(argc > 1 ? argv[1] : NULL);
+    test_fit_gpu_boundaries(argc > 1 ? argv[1] : NULL);
+    test_gpu_plan();
     if (g_fail) { fprintf(stderr, "test-autofit FAILED\n"); return 1; }
     fprintf(stderr, "test-autofit: all checks passed\n");
     return 0;

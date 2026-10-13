@@ -184,11 +184,39 @@ gguf_tensor moe_expert_weight(const layer_t *ly, int which, int e,
 //   PER-SEQUENCE (state side) — written by every forward pass. Never share:
 //   two sequences writing one KV cache is silent cross-contamination.
 //
-// The struct is still one type, but the OWNERSHIP is split: everything in the
-// immutable section belongs to a refcounted `model_weights` record shared by
-// every instance loaded from the same file with the same weight-side
-// parameters, and the pointers here alias into it. Keeping one struct is what
-// let that happen without touching a single field access in the backends.
+// The struct is still one type, but the OWNERSHIP is split, and the release
+// functions are its authority (model_free calls them in this order). Fields
+// were added by feature, so the two section markers below say where each
+// half began, not where every field sits.
+//
+//   backend       gpu and gpu_owner (gpu_free), train_gpu (gpu_train_free);
+//                 kcache/vcache too while kv_owner says a backend holds them
+//   adapter       lora (model_lora_free); lora_borrowed marks a request's
+//                 table, which is not this instance's to free
+//   placement     moe_host, --cpu-moe's per-layer expert placement
+//   VRAM lease    vram (vram_release), this instance's cross-process claim
+//   per-instance  what runtime_free() releases: the KV caches and offsets,
+//                 activations, every family's scratch and recurrent state,
+//                 the rope tables and the worker pool, allocated by
+//                 model_alloc_runtime()'s stages, and the buffers the forward
+//                 paths add on first use (all_logits, the MTP queue, the
+//                 recurrent and PLE keep rows, the MoE probe). Never shared.
+//   shared        the bind phase's output, held by a refcounted
+//                 `model_weights` record (one per file and weight-side
+//                 parameters) and released by its last holder
+//                 (model_free_weights): the mapping and parse (gf, path), the
+//                 layer array and every f32 norm and bias conversion in it,
+//                 the per-layer geometry tables (l_*, kv_src), suppress,
+//                 fused_splits, the output, hyper-connection and MTP norms.
+//                 Tensor pointers point into the shared mapping, strings into
+//                 the parse or at literals; scalars set by the bind phase are
+//                 copied with the record and not written again.
+//   transient     the training tape and backward scratch (tape, bw_*) live
+//                 inside one training step; fwd_tokens is the caller's ids
+//                 for one forward.
+//
+// Every instance's copy of a shared pointer aliases the record's, which is
+// what kept this split from touching a field access in the backends.
 typedef struct {
     // ---- immutable: file and geometry ----
     gguf_file gf;
@@ -304,7 +332,11 @@ typedef struct {
     bool      ffn_var;       // per-layer FFN widths differ (gemma-4 E2B):
                              // CPU sizes per layer; device backends refuse
     int       full_attn_interval;
-    int       ssm_conv_kernel, ssm_inner, ssm_state, ssm_v_heads, ssm_groups;
+    // The recurrent mixer's geometry, set by the bind phase for the families
+    // that have one (Gated DeltaNet: qwen35, qwen4exp; Mamba-2: granitehybrid,
+    // nemotron_h) and zero on every other: the conv kernel width, the inner
+    // (value) width, the state size, the value heads and the groups.
+    struct { int conv_kernel, inner, state, v_heads, groups; } ssm;
     float     logit_softcap; // final logits = c*tanh(x/c) when > 0
     float     logit_scale;   // final logits *= this BEFORE the softcap
                              // (muse-glimmer <arch>.logit_scale; 1 = off)
@@ -673,6 +705,23 @@ long long model_autofit_tokens(uint64_t budget, uint64_t weights,
                                uint64_t head_per_seq, uint64_t kv_per_tok,
                                int n_seq);
 int       model_autofit_clamp(long long best, int n_ctx_train);
+// The GPU split's decisions as pure arithmetic, shared by the CUDA loader,
+// the Metal wrap and --fit (see model.c): the leading-layer fit, the full
+// split's output charge, and --cpu-moe auto's expert banks with the retry
+// trim. Public so every boundary is gated without a device.
+// The device-side rules a plan prices with: a separately uploaded tensor's
+// allocation rounding, and an integrated device's RAM cap.
+#define GPU_PLAN_GRAN ((uint64_t)2 << 20)
+uint64_t  gpu_plan_binding_bytes(uint64_t nbytes, bool bound);
+uint64_t  gpu_plan_unified_cap(uint64_t budget, uint64_t ram_available);
+int       gpu_plan_prefix(const uint64_t *cost, int n, int cap, uint64_t budget,
+                          uint64_t *used);
+bool      gpu_plan_full_split(int *layers, int n_layer, uint64_t used,
+                              uint64_t tail, uint64_t budget, bool *gave_back);
+int       gpu_plan_expert_banks(const bool *is_moe, const uint64_t *bank,
+                                int layers, uint64_t owed, uint64_t budget,
+                                uint64_t *used, bool *host, int trim,
+                                int placed_before);
 // The device offload budget the layer fit may spend, from the driver's free
 // memory view bounded by the OS video-memory budget for this process where
 // the OS publishes one (WDDM), capped by --reserve-vram; *headroom is what

@@ -375,7 +375,7 @@ typedef struct gpu_weights {
     CUdeviceptr *gib, *geb, *ueb, *deb;
     CUdeviceptr *ssm_dt, *ssm_a, *ssm_norm;
     // Mamba-2 (granitehybrid/nemotron_h): D skip, conv1d bias, gated RMS
-    // norm weight (length ssm_inner, unlike qwen35's ssm_norm at ssm_state)
+    // norm weight (length ssm.inner, unlike qwen35's ssm_norm at ssm.state)
     CUdeviceptr *ssm_D, *ssm_conv_b, *ssm_gnorm;
 } gpu_weights;
 
@@ -1118,21 +1118,18 @@ static void shared_release(gpu_weights *w) {
 // dense FFN and a sparse-MoE layer (router + every expert, fused or split).
 // The dense w_gate/w_up/w_down are NULL on a MoE layer, so accounting only
 // those undercounts a MoE layer by ~all of its weight (the experts).
-// A tensor's device bytes in the plan. Per-tensor uploads (bound: every
-// --cpu-moe split) are separate allocations, which the driver rounds up to
-// its 2 MB granularity; on Qwen3.8-Flash-Next's 707 bindings that was 0.66 GB
-// the plan never saw (RUNNER_DEBUG_VRAM, 2026-10-08).
-#define PLAN_GRAN ((size_t)2 << 20)
+// A tensor's device bytes in the plan (gpu_plan_binding_bytes: a per-tensor
+// upload is rounded to the driver's allocation granularity).
 static size_t plan_bytes(const gguf_tensor *t, bool bound) {
     if (!t) return 0;
-    return bound ? (t->nbytes + PLAN_GRAN - 1) / PLAN_GRAN * PLAN_GRAN : t->nbytes;
+    return (size_t)gpu_plan_binding_bytes(t->nbytes, bound);
 }
 
 // an expert bank as uploaded: its bytes plus, bound, the rounding of its
 // (at most nine) tensors: router, routed gate/up/down or fused gate_up,
 // shared gate/up/down and the shared-expert gate
 static size_t expert_plan_bytes(const layer_t *ly, int n_expert, bool bound) {
-    return model_layer_expert_bytes(ly, n_expert) + (bound ? 9 * PLAN_GRAN : 0);
+    return model_layer_expert_bytes(ly, n_expert) + (bound ? 9 * GPU_PLAN_GRAN : 0);
 }
 
 static size_t layer_weight_bytes(const layer_t *ly, int n_expert,
@@ -1357,8 +1354,8 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         // of one pool, and taking the CUDA view alone over-promises when
         // the OS is holding memory the driver cannot see committed.
         if (cu_dev_integrated(w->dev)) {
-            size_t avail = plat_ram_available_bytes();
-            if (avail && avail < vram_budget) vram_budget = avail;
+            vram_budget = (size_t)gpu_plan_unified_cap(vram_budget,
+                                                       plat_ram_available_bytes());
             fprintf(stderr, "gpu: unified memory — CPU and GPU share one "
                     "pool; offload budget capped at available RAM "
                     "(%.1f GiB)\n", (double)vram_budget / (1u << 30));
@@ -1406,17 +1403,17 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             // in the plan; on Qwen3.8-Flash-Next IQ2_XS the planner filled the
             // slice to 1.6 GB of headroom with expert layers and the state
             // allocation then failed (2026-10-07, decode fell to 2 tok/s).
-            int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
+            int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
             size_t fold = sizeof(float) * (size_t)m->n_layer *
-                ((size_t)(m->ssm_conv_kernel - 1) * convdim +
-                 (size_t)m->ssm_v_heads * m->ssm_state * m->ssm_state);
+                ((size_t)(m->ssm.conv_kernel - 1) * convdim +
+                 (size_t)m->ssm.v_heads * m->ssm.state * m->ssm.state);
             // q35_mix (max(convdim, 2 q_dim)), cv (convdim), z (inner), beta +
             // alpha (heads each), gate (q_dim): the allocation below, in rows of MVB
             size_t qd = 0;
             for (int l = 0; l < m->n_layer; l++) if ((size_t)model_q_dim(m, l) > qd) qd = (size_t)model_q_dim(m, l);
             size_t mixd = (size_t)convdim > 2 * qd ? (size_t)convdim : 2 * qd;
             size_t scratch = sizeof(float) * (size_t)MVB *
-                (mixd + (size_t)convdim + (size_t)m->ssm_inner + 2 * (size_t)m->ssm_v_heads + qd);
+                (mixd + (size_t)convdim + (size_t)m->ssm.inner + 2 * (size_t)m->ssm.v_heads + qd);
             fixed += 2 * fold + scratch;
         }
         // the NextN/MTP block rides along with a full split: its attention,
@@ -1433,9 +1430,9 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             fixed += model_kv_boundary_bytes_sum(m, m->n_layer + 1) -
                      model_kv_boundary_bytes_sum(m, m->n_layer);
             if (m->qwen35) {   // per-row recurrent checkpoints of a verify tile
-                int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
+                int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
                 size_t per_row = sizeof(float) * (size_t)m->n_layer *
-                    ((size_t)(m->ssm_conv_kernel - 1) * convdim + (size_t)m->ssm_v_heads * m->ssm_state * m->ssm_state);
+                    ((size_t)(m->ssm.conv_kernel - 1) * convdim + (size_t)m->ssm.v_heads * m->ssm.state * m->ssm.state);
                 fixed += per_row * (size_t)(m->spec_batch < 8 ? m->spec_batch : 8);
             }
         }
@@ -1445,8 +1442,16 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         // decide how many *leading* layers fit — accumulate each layer's weight
         // bytes plus its KV bytes until the budget runs out; the CPU runs the
         // rest (partial offload)
-        int G = 0;
-        size_t used = fixed;
+        // The decisions are model.c's gpu_plan_* (the same ones --fit makes
+        // from a header); this measures what each layer costs on this device.
+        uint64_t *cost = calloc((size_t)m->n_layer, sizeof(uint64_t));
+        uint64_t *bank = calloc((size_t)m->n_layer, sizeof(uint64_t));
+        bool *is_moe = calloc((size_t)m->n_layer, sizeof(bool));
+        if (!cost || !bank || !is_moe) {
+            free(cost); free(bank); free(is_moe);
+            fprintf(stderr, "gpu: CUDA split plan allocation failed — using CPU\n");
+            goto fail_quiet;
+        }
         for (int l = 0; l < m->n_layer; l++) {
             layer_t *ly = &m->layers[l];
             size_t wb = layer_weight_bytes(ly, m->n_expert, moe_on_host(m, l), m->cpu_moe);
@@ -1459,10 +1464,12 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             // n_ctx rows left most of a 24 GB card idle under RUNNER_KV_RING.
             size_t kv = model_kv_boundary_bytes_sum(m, l + 1) -
                         model_kv_boundary_bytes_sum(m, l);
-            if (used + wb + kv > vram_budget) break;
-            used += wb + kv;
-            G = l + 1;
+            cost[l] = wb + kv;
+            is_moe[l] = ly->is_moe;
+            bank[l] = ly->is_moe ? expert_plan_bytes(ly, m->n_expert, true) : 0;
         }
+        uint64_t used = fixed;
+        int G = gpu_plan_prefix(cost, m->n_layer, 0, vram_budget, &used);
         // Partial expert offload: the pass above placed attention (and any
         // dense FFN) for the layers that fit. Whatever budget survives is
         // spent on whole expert banks, shallowest first, so a card with room
@@ -1485,41 +1492,28 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             size_t owed = G == m->n_layer
                         ? (m->cpu_moe ? 0 : m->tok_embd->nbytes) + m->output->nbytes
                         : 0;
-            int placed = 0;
-            for (int l = 0; l < G; l++) {
-                layer_t *ly = &m->layers[l];
-                if (!ly->is_moe) continue;
-                size_t eb = expert_plan_bytes(ly, m->n_expert, true);
-                if (used + eb + owed > vram_budget) break;
-                used += eb;
-                m->moe_host[l] = false;
-                placed++;
-            }
-            // a retry after an out-of-memory init holds back the deepest
+            // A retry after an out-of-memory init holds back the deepest
             // banks: the plan is an estimate (on a 24 GB MIG slice it
             // undercounted the device by ~2 GB, so a smaller KV that bought a
             // 20th bank failed its recurrent-state allocation and the whole
-            // run fell back to the CPU at half speed, 2026-10-08)
-            for (int l = G - 1; l >= 0 && m->moe_auto_trim > 0 && placed > 0; l--) {
-                if (!m->layers[l].is_moe || m->moe_host[l]) continue;
-                if (placed <= m->moe_auto_placed - m->moe_auto_trim) break;
-                m->moe_host[l] = true;
-                used -= expert_plan_bytes(&m->layers[l], m->n_expert, true);
-                placed--;
-            }
+            // run fell back to the CPU at half speed, 2026-10-08).
+            int placed = gpu_plan_expert_banks(is_moe, bank, G, owed, vram_budget,
+                                               &used, m->moe_host, m->moe_auto_trim,
+                                               m->moe_auto_placed);
             if (m->moe_auto_trim == 0) m->moe_auto_placed = placed;
         }
-        // a full split also needs token_embd + output weights resident
-        bool full = G == m->n_layer &&
-                    used + (m->cpu_moe ? 0 : m->tok_embd->nbytes) +
-                    m->output->nbytes <= vram_budget;
+        free(cost); free(bank); free(is_moe);
+        // a full split also needs token_embd + output weights resident.
         // Invariant, belt and braces: "the device owns every layer" and "the
         // device owns the output projection" must agree, because the forward
         // reads only the first and the upload honours only the second. If the
         // reserve above could not be met, hand the last layer back to the CPU
         // so the split is honestly partial rather than internally inconsistent.
-        if (G == m->n_layer && !full && G > 1) {
-            G--;
+        bool gave_back = false;
+        bool full = gpu_plan_full_split(&G, m->n_layer, used,
+                                        (m->cpu_moe ? 0 : m->tok_embd->nbytes) +
+                                        m->output->nbytes, vram_budget, &gave_back);
+        if (gave_back) {
             fprintf(stderr, "gpu: output weights do not fit alongside the "
                             "layer split — running the last layer on the CPU "
                             "so the boundary is consistent\n");
@@ -2104,20 +2098,20 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
                 w->ple_pn[l] = f32_dbuf(ly->ple_post_norm, m->n_embd,
                                         "per-layer embedding post-norm", l);
             if (ly->recurrent) {
-                w->ssm_dt[l] = f32_dbuf(ly->ssm_dt, m->ssm_v_heads,
+                w->ssm_dt[l] = f32_dbuf(ly->ssm_dt, m->ssm.v_heads,
                                         "SSM dt", l);
-                w->ssm_a[l] = f32_dbuf(ly->ssm_a, m->ssm_v_heads,
+                w->ssm_a[l] = f32_dbuf(ly->ssm_a, m->ssm.v_heads,
                                        "SSM A", l);
                 if (m->qwen35) {
-                    w->ssm_norm[l] = f32_dbuf(ly->ssm_norm_w, m->ssm_state,
+                    w->ssm_norm[l] = f32_dbuf(ly->ssm_norm_w, m->ssm.state,
                                               "SSM norm", l);
                 } else {   // Mamba-2 (granitehybrid/nemotron_h)
-                    int cd = m->ssm_inner + 2 * m->ssm_groups * m->ssm_state;
-                    w->ssm_D[l] = f32_dbuf(ly->ssm_d, m->ssm_v_heads,
+                    int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
+                    w->ssm_D[l] = f32_dbuf(ly->ssm_d, m->ssm.v_heads,
                                            "Mamba D", l);
                     w->ssm_conv_b[l] = f32_dbuf(ly->ssm_conv1d_b, cd,
                                                 "Mamba conv bias", l);
-                    w->ssm_gnorm[l] = f32_dbuf(ly->ssm_norm_w, m->ssm_inner,
+                    w->ssm_gnorm[l] = f32_dbuf(ly->ssm_norm_w, m->ssm.inner,
                                                "Mamba gated norm", l);
                 }
             }
@@ -2468,27 +2462,27 @@ bool gpu_init(model_t *m) {
         }
         int xdim = q_dim > m->n_embd ? q_dim : m->n_embd;
         int q35_convdim = m->qwen35
-                        ? 2 * m->ssm_state * m->ssm_groups + m->ssm_inner : 0;
+                        ? 2 * m->ssm.state * m->ssm.groups + m->ssm.inner : 0;
         int q35_mixdim = q35_convdim > 2 * q_dim ? q35_convdim : 2 * q_dim;
         size_t act_bytes = sizeof(float) * (MVB * ((size_t)m->n_embd + 3 * xdim +
                            q_dim + 2 * kv_dim + 2 * m->n_ff +
                            (size_t)m->n_head * m->n_ctx) + m->n_vocab);
         if (m->qwen35) {
             size_t q35_scratch = MVB * ((size_t)q35_mixdim + q35_convdim +
-                                 m->ssm_inner + 2 * m->ssm_v_heads + q_dim);
+                                 m->ssm.inner + 2 * m->ssm.v_heads + q_dim);
             size_t q35_persistent = (size_t)m->n_layer *
-                                    (m->ssm_conv_kernel - 1) * q35_convdim +
-                                    (size_t)m->n_layer * m->ssm_v_heads *
-                                    m->ssm_state * m->ssm_state;
+                                    (m->ssm.conv_kernel - 1) * q35_convdim +
+                                    (size_t)m->n_layer * m->ssm.v_heads *
+                                    m->ssm.state * m->ssm.state;
             act_bytes += sizeof(float) * (q35_scratch + 2 * q35_persistent);
         }
         if (m->granite_hybrid || m->nemotron_h) {
-            int cd = m->ssm_inner + 2 * m->ssm_groups * m->ssm_state;
-            int dip = 2 * m->ssm_inner + 2 * m->ssm_groups * m->ssm_state +
-                      m->ssm_v_heads;
-            size_t scr = MVB * ((size_t)dip + cd + m->ssm_inner);
-            size_t per = (size_t)m->n_layer * (m->ssm_conv_kernel - 1) * cd +
-                         (size_t)m->n_layer * m->ssm_inner * m->ssm_state;
+            int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
+            int dip = 2 * m->ssm.inner + 2 * m->ssm.groups * m->ssm.state +
+                      m->ssm.v_heads;
+            size_t scr = MVB * ((size_t)dip + cd + m->ssm.inner);
+            size_t per = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * cd +
+                         (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
             act_bytes += sizeof(float) * (scr + 2 * per);
         }
 
@@ -2536,9 +2530,9 @@ bool gpu_init(model_t *m) {
             CK(cu.MemAlloc(&g->mtp_rows,    sizeof(float) * (size_t)m->n_batch * hcd));
             CK(cu.MemsetD8(g->mtp_pending, 0, sizeof(float) * hcd));
             if (m->qwen35 && cu.MemcpyDtoDAsync) {
-                int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
-                size_t hist_l = (size_t)m->n_layer * (m->ssm_conv_kernel - 1) * convdim;
-                size_t state_l = (size_t)m->n_layer * m->ssm_v_heads * m->ssm_state * m->ssm_state;
+                int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
+                size_t hist_l = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * convdim;
+                size_t state_l = (size_t)m->n_layer * m->ssm.v_heads * m->ssm.state * m->ssm.state;
                 g->snap_rows = m->spec_batch < 8 ? m->spec_batch : 8;
                 CK(cu.MemAlloc(&g->snap_state, sizeof(float) * state_l * g->snap_rows));
                 CK(cu.MemAlloc(&g->snap_hist,  sizeof(float) * (hist_l ? hist_l : 1) * g->snap_rows));
@@ -2571,7 +2565,7 @@ bool gpu_init(model_t *m) {
             if (m->n_ff > mi) mi = m->n_ff;
             if (q35_mixdim > mi) mi = q35_mixdim;
             if (2 * m->n_embd > mi) mi = 2 * m->n_embd;
-            if (m->ssm_inner > mi) mi = m->ssm_inner;
+            if (m->ssm.inner > mi) mi = m->ssm.inner;
             g->q8x_cap = mi;
             CK(cu.MemAlloc(&g->q8x_q, (size_t)MVB * mi));
             CK(cu.MemAlloc(&g->q8x_d, sizeof(float) * (size_t)MVB * (mi / 32 + 1)));
@@ -2592,16 +2586,16 @@ bool gpu_init(model_t *m) {
         CK(cu.MemAlloc(&g->xsc,    sizeof(float) * TC_N));
         CK(cu.MemAlloc(&g->pos_dev, sizeof(int)));
         if (m->qwen35) {
-            size_t hist_elems = (size_t)m->n_layer * (m->ssm_conv_kernel - 1) *
+            size_t hist_elems = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) *
                                 q35_convdim;
             size_t hist_alloc = hist_elems ? hist_elems : 1;
-            size_t state_elems = (size_t)m->n_layer * m->ssm_v_heads *
-                                 m->ssm_state * m->ssm_state;
+            size_t state_elems = (size_t)m->n_layer * m->ssm.v_heads *
+                                 m->ssm.state * m->ssm.state;
             CK(cu.MemAlloc(&g->q35_mix, sizeof(float) * MVB * q35_mixdim));
             CK(cu.MemAlloc(&g->q35_cv, sizeof(float) * MVB * q35_convdim));
-            CK(cu.MemAlloc(&g->q35_z, sizeof(float) * MVB * m->ssm_inner));
-            CK(cu.MemAlloc(&g->q35_beta, sizeof(float) * MVB * m->ssm_v_heads));
-            CK(cu.MemAlloc(&g->q35_alpha, sizeof(float) * MVB * m->ssm_v_heads));
+            CK(cu.MemAlloc(&g->q35_z, sizeof(float) * MVB * m->ssm.inner));
+            CK(cu.MemAlloc(&g->q35_beta, sizeof(float) * MVB * m->ssm.v_heads));
+            CK(cu.MemAlloc(&g->q35_alpha, sizeof(float) * MVB * m->ssm.v_heads));
             CK(cu.MemAlloc(&g->q35_gate, sizeof(float) * MVB * q_dim));
             CK(cu.MemAlloc(&g->q35_hist, sizeof(float) * hist_alloc));
             CK(cu.MemAlloc(&g->q35_state, sizeof(float) * state_elems));
@@ -2613,15 +2607,15 @@ bool gpu_init(model_t *m) {
             CK(cu.MemsetD8(g->q35_state_prev, 0, sizeof(float) * state_elems));
         }
         if (m->granite_hybrid || m->nemotron_h) {
-            int cd = m->ssm_inner + 2 * m->ssm_groups * m->ssm_state;
-            int dip = 2 * m->ssm_inner + 2 * m->ssm_groups * m->ssm_state +
-                      m->ssm_v_heads;
-            size_t conv_elems = (size_t)m->n_layer * (m->ssm_conv_kernel - 1) * cd;
+            int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
+            int dip = 2 * m->ssm.inner + 2 * m->ssm.groups * m->ssm.state +
+                      m->ssm.v_heads;
+            size_t conv_elems = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * cd;
             size_t conv_alloc = conv_elems ? conv_elems : 1;
-            size_t state_elems = (size_t)m->n_layer * m->ssm_inner * m->ssm_state;
+            size_t state_elems = (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
             CK(cu.MemAlloc(&g->mamba_proj,  sizeof(float) * MVB * dip));
             CK(cu.MemAlloc(&g->mamba_xBC,   sizeof(float) * MVB * cd));
-            CK(cu.MemAlloc(&g->mamba_y,     sizeof(float) * MVB * m->ssm_inner));
+            CK(cu.MemAlloc(&g->mamba_y,     sizeof(float) * MVB * m->ssm.inner));
             CK(cu.MemAlloc(&g->mamba_conv,       sizeof(float) * conv_alloc));
             CK(cu.MemAlloc(&g->mamba_state,      sizeof(float) * state_elems));
             CK(cu.MemAlloc(&g->mamba_conv_prev,  sizeof(float) * conv_alloc));
@@ -3545,15 +3539,15 @@ static bool recurrent_xfer(gpu_t *g, model_t *m, bool to_host, bool prev) {
     CUdeviceptr dconv, dstate;
     size_t conv_layer, state_layer;
     if (m->qwen35) {
-        int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
-        conv_layer  = (size_t)(m->ssm_conv_kernel - 1) * convdim;
-        state_layer = (size_t)m->ssm_v_heads * m->ssm_state * m->ssm_state;
+        int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
+        conv_layer  = (size_t)(m->ssm.conv_kernel - 1) * convdim;
+        state_layer = (size_t)m->ssm.v_heads * m->ssm.state * m->ssm.state;
         dconv  = prev ? g->q35_hist_prev  : g->q35_hist;
         dstate = prev ? g->q35_state_prev : g->q35_state;
     } else if ((m->granite_hybrid || m->nemotron_h) && g->mamba_state) {
-        int cd = m->ssm_inner + 2 * m->ssm_groups * m->ssm_state;
-        conv_layer  = (size_t)(m->ssm_conv_kernel - 1) * cd;
-        state_layer = (size_t)m->ssm_inner * m->ssm_state;
+        int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
+        conv_layer  = (size_t)(m->ssm.conv_kernel - 1) * cd;
+        state_layer = (size_t)m->ssm.inner * m->ssm.state;
         dconv  = prev ? g->mamba_conv_prev  : g->mamba_conv;
         dstate = prev ? g->mamba_state_prev : g->mamba_state;
     } else {
@@ -3753,9 +3747,9 @@ bool gpu_recurrent_restore_row(model_t *m, int r) {
     gpu_t *g = m ? m->gpu : NULL;
     if (!g || !g->snap_rows || !m->qwen35 || r < 0 || r >= g->snap_valid) return false;
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
-    int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
-    size_t hb = sizeof(float) * (size_t)m->n_layer * (m->ssm_conv_kernel - 1) * convdim;
-    size_t sb = sizeof(float) * (size_t)m->n_layer * m->ssm_v_heads * m->ssm_state * m->ssm_state;
+    int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
+    size_t hb = sizeof(float) * (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * convdim;
+    size_t sb = sizeof(float) * (size_t)m->n_layer * m->ssm.v_heads * m->ssm.state * m->ssm.state;
     if (cu.StreamSynchronize(g->stream) != 0) return false;
     if ((hb && cu.MemcpyDtoD(g->q35_hist, g->snap_hist + (size_t)r * hb, hb) != 0) ||
         cu.MemcpyDtoD(g->q35_state, g->snap_state + (size_t)r * sb, sb) != 0)
@@ -3769,16 +3763,16 @@ bool gpu_recurrent_rollback(model_t *m) {
     if (!g || g->fwd_count != g->fwd_snap + 1) return false;
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
     if (m->qwen35) {
-        int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
-        size_t hist_bytes = sizeof(float) * (size_t)m->n_layer * (m->ssm_conv_kernel - 1) * convdim;
-        size_t state_bytes = sizeof(float) * (size_t)m->n_layer * m->ssm_v_heads * m->ssm_state * m->ssm_state;
+        int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
+        size_t hist_bytes = sizeof(float) * (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * convdim;
+        size_t state_bytes = sizeof(float) * (size_t)m->n_layer * m->ssm.v_heads * m->ssm.state * m->ssm.state;
         if ((hist_bytes && cu.MemcpyDtoD(g->q35_hist, g->q35_hist_prev, hist_bytes) != 0) ||
             cu.MemcpyDtoD(g->q35_state, g->q35_state_prev, state_bytes) != 0)
             return false;
     } else if ((m->granite_hybrid || m->nemotron_h) && g->mamba_state) {
-        int cd = m->ssm_inner + 2 * m->ssm_groups * m->ssm_state;
-        size_t conv_bytes = sizeof(float) * (size_t)m->n_layer * (m->ssm_conv_kernel - 1) * cd;
-        size_t state_bytes = sizeof(float) * (size_t)m->n_layer * m->ssm_inner * m->ssm_state;
+        int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
+        size_t conv_bytes = sizeof(float) * (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * cd;
+        size_t state_bytes = sizeof(float) * (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
         if (cu.MemcpyDtoD(g->mamba_conv, g->mamba_conv_prev, conv_bytes) != 0 ||
             cu.MemcpyDtoD(g->mamba_state, g->mamba_state_prev, state_bytes) != 0)
             return false;
@@ -4568,9 +4562,9 @@ static bool gpu_gemma_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int l,
 // advanced in order because both history and state are causal.
 static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
                               int tn, int xdim) {
-    int sk = m->ssm_state, ng = m->ssm_groups, nh = m->ssm_v_heads;
-    int inner = m->ssm_inner, convdim = 2 * sk * ng + inner;
-    int histn = m->ssm_conv_kernel - 1;
+    int sk = m->ssm.state, ng = m->ssm.groups, nh = m->ssm.v_heads;
+    int inner = m->ssm.inner, convdim = 2 * sk * ng + inner;
+    int histn = m->ssm.conv_kernel - 1;
     CUdeviceptr weight_base = 0;
     uint64_t weight_off = 0;
     if (!binding_find(g->sw, m, ly->ssm_conv, &weight_base, &weight_off))
@@ -4598,7 +4592,7 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
         CUdeviceptr beta = g->q35_beta + (size_t)t * nh * sizeof(float);
         CUdeviceptr alpha = g->q35_alpha + (size_t)t * nh * sizeof(float);
         CUdeviceptr out = g->xb2 + (size_t)t * xdim * sizeof(float);
-        int kernel = m->ssm_conv_kernel;
+        int kernel = m->ssm.conv_kernel;
         void *pc[] = { &mix, &cv, &conv_w, &hist, &convdim, &kernel };
         if (!launch(g, g->sw->f_q35_conv, (convdim + 255) / 256,
                     1, 1, 256, pc)) return false;
@@ -4630,11 +4624,11 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
 // causal. Recurrent layers force graph_bad, so this always runs eagerly.
 static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
                                  int l, int tn, int xdim) {
-    int nh = m->ssm_v_heads, ng = m->ssm_groups, ds = m->ssm_state;
-    int inner = m->ssm_inner, hd = inner / nh, gsz = nh / ng;
+    int nh = m->ssm.v_heads, ng = m->ssm.groups, ds = m->ssm.state;
+    int inner = m->ssm.inner, hd = inner / nh, gsz = nh / ng;
     int conv_dim = inner + 2 * ng * ds;
     int d_in_proj = 2 * inner + 2 * ng * ds + nh;
-    int histn = m->ssm_conv_kernel - 1, kk = m->ssm_conv_kernel;
+    int histn = m->ssm.conv_kernel - 1, kk = m->ssm.conv_kernel;
     int per_g = inner / ng;
     float eps = m->rms_eps;
     CUdeviceptr conv_base = 0; uint64_t conv_off = 0;
@@ -5931,21 +5925,21 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
 
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
     if (m->qwen35 && pos == 0) {
-        int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
-        size_t hist_elems = (size_t)m->n_layer * (m->ssm_conv_kernel - 1) * convdim;
-        size_t state_elems = (size_t)m->n_layer * m->ssm_v_heads *
-                             m->ssm_state * m->ssm_state;
+        int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
+        size_t hist_elems = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * convdim;
+        size_t state_elems = (size_t)m->n_layer * m->ssm.v_heads *
+                             m->ssm.state * m->ssm.state;
         if ((hist_elems && cu.MemsetD8(g->q35_hist, 0,
                                       hist_elems * sizeof(float)) != 0) ||
             cu.MemsetD8(g->q35_state, 0, state_elems * sizeof(float)) != 0)
             return false;
     }
     if (m->qwen35) {
-        int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
+        int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
         size_t hist_bytes = sizeof(float) * (size_t)m->n_layer *
-                            (m->ssm_conv_kernel - 1) * convdim;
+                            (m->ssm.conv_kernel - 1) * convdim;
         size_t state_bytes = sizeof(float) * (size_t)m->n_layer *
-                             m->ssm_v_heads * m->ssm_state * m->ssm_state;
+                             m->ssm.v_heads * m->ssm.state * m->ssm.state;
         if ((hist_bytes && cu.MemcpyDtoD(g->q35_hist_prev, g->q35_hist,
                                         hist_bytes) != 0) ||
             cu.MemcpyDtoD(g->q35_state_prev, g->q35_state, state_bytes) != 0)
@@ -5956,11 +5950,11 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     g->snap_on = g->snap_rows > 0 && m->spec_want_all >= n && n <= g->snap_rows && m->qwen35;
     g->snap_valid = 0;
     if ((m->granite_hybrid || m->nemotron_h) && g->mamba_state) {
-        int cd = m->ssm_inner + 2 * m->ssm_groups * m->ssm_state;
+        int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
         size_t conv_bytes = sizeof(float) * (size_t)m->n_layer *
-                            (m->ssm_conv_kernel - 1) * cd;
+                            (m->ssm.conv_kernel - 1) * cd;
         size_t state_bytes = sizeof(float) * (size_t)m->n_layer *
-                             m->ssm_inner * m->ssm_state;
+                             m->ssm.inner * m->ssm.state;
         if (pos == 0) {
             if ((conv_bytes && cu.MemsetD8(g->mamba_conv, 0, conv_bytes) != 0) ||
                 cu.MemsetD8(g->mamba_state, 0, state_bytes) != 0) return false;
