@@ -412,9 +412,13 @@ typedef struct {
     int    ssm_mark_pos;
     float *att, *logits;
     // --- LoRA adapter (adaptation D2): frozen base + low-rank f32 deltas,
-    // CPU dense projections. lora is [n_layer][LORA_SLOTS] or NULL; lora_id
+    // CPU dense projections. lora is [n_layer][LW_SLOTS] or NULL; lora_id
     // folds into the engine's model identity so cached prefixes can never
-    // cross an adapter boundary.
+    // cross an adapter boundary. Everything that changes what the hooks
+    // compute changes it: a load (the file's tensors, alpha and the user
+    // scale), model_lora_use (the set's id), train-init (seed and rank),
+    // every optimizer step, and a release (0). The DPO bypass is the one
+    // exception, and it never outlives the step that brackets it.
     struct lora_w *lora;
     bool     lora_borrowed;  // lora is a per-request adapter's table (R8.6)
     uint64_t lora_id;

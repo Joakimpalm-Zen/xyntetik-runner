@@ -7255,6 +7255,26 @@ static const char *const lora_slot_name[LW_SLOTS] = {
     "ffn_gate", "ffn_up", "ffn_down",
 };
 
+// Every buffer an adapter table can hold, then the table ([n_layer][LW_SLOTS];
+// the gradient and moment buffers stay NULL on a table that never trained).
+// The one release for owned, per-request and half-built tables alike.
+static void lora_tab_free(struct lora_w *tab, int n_layer) {
+    if (!tab) return;
+    for (int l = 0; l < n_layer; l++)
+        for (int s = 0; s < LW_SLOTS; s++) {
+            struct lora_w *lw = &tab[(size_t)l * LW_SLOTS + s];
+            free(lw->a);
+            free(lw->b);
+            free(lw->ga);
+            free(lw->gb);
+            free(lw->ma);
+            free(lw->va);
+            free(lw->mb);
+            free(lw->vb);
+        }
+    free(tab);
+}
+
 void model_lora_free(model_t *m) {
     if (m->gpu) gpu_lora_unbind(m);
     if (m->lora_borrowed) {
@@ -7265,20 +7285,19 @@ void model_lora_free(model_t *m) {
         return;
     }
     if (!m->lora) return;
-    for (int l = 0; l < m->n_layer; l++)
-        for (int s = 0; s < LW_SLOTS; s++) {
-            free(m->lora[(size_t)l * LW_SLOTS + s].a);
-            free(m->lora[(size_t)l * LW_SLOTS + s].b);
-            free(m->lora[(size_t)l * LW_SLOTS + s].ga);
-            free(m->lora[(size_t)l * LW_SLOTS + s].gb);
-            free(m->lora[(size_t)l * LW_SLOTS + s].ma);
-            free(m->lora[(size_t)l * LW_SLOTS + s].va);
-            free(m->lora[(size_t)l * LW_SLOTS + s].mb);
-            free(m->lora[(size_t)l * LW_SLOTS + s].vb);
-        }
-    free(m->lora);
+    lora_tab_free(m->lora, m->n_layer);
     m->lora = NULL;
     m->lora_id = 0;
+}
+
+// Attach an owned table as m's adapter, releasing whatever was attached
+// (owned or borrowed), under the identity the prefix cache keys on.
+static void lora_attach_owned(model_t *m, struct lora_w *tab, float alpha,
+                              uint64_t id) {
+    model_lora_free(m);
+    m->lora = tab;
+    m->lora_alpha = alpha;
+    m->lora_id = id;
 }
 
 // The low-rank delta for one projection: t = A x (r dots), y += scale * B t.
@@ -7349,10 +7368,6 @@ bool model_lora_slot(const model_t *m, int layer, int slot,
     return true;
 }
 
-// Parse an adapter GGUF against m's geometry: every refusal that makes an
-// adapter unservable on m, then the table. Returns the table (the caller's)
-// with its identity and alpha, or NULL having said why on stderr. Shared by
-// --lora (installed, owned) and --adapter (loaded once, borrowed per request).
 // Whether an adapter can be SERVED on this model at all, as a property of the
 // model and its configuration, before any adapter file is opened. v1 scope,
 // refused by property rather than allowed by accident: the hooks live on the
@@ -7389,6 +7404,137 @@ bool model_lora_serve_supported(const model_t *m, char *why, size_t cap) {
     return true;
 }
 
+// The adapter file's own declarations: a LoRA adapter GGUF, for m's
+// architecture, with a positive alpha.
+static bool lora_parse_header(const model_t *m, gguf_file *g, const char *path,
+                              float *alpha_out) {
+    const char *ftype = gguf_get_str(g, "general.type", "");
+    const char *atype = gguf_get_str(g, "adapter.type", "");
+    if (strcmp(ftype, "adapter") != 0 || strcmp(atype, "lora") != 0) {
+        fprintf(stderr, "error: %s is not a LoRA adapter GGUF "
+                "(general.type=%s adapter.type=%s)\n", path, ftype, atype);
+        return false;
+    }
+    const char *aarch = gguf_get_str(g, "general.architecture", "");
+    if (strcmp(aarch, m->arch) != 0) {
+        fprintf(stderr, "error: adapter architecture '%s' does not match "
+                "the model's '%s'\n", aarch, m->arch);
+        return false;
+    }
+    float alpha = gguf_get_f32(g, "adapter.lora.alpha", 0.0f);
+    if (!(alpha > 0.0f)) {
+        fprintf(stderr, "error: adapter.lora.alpha missing or not "
+                "positive\n");
+        return false;
+    }
+    *alpha_out = alpha;
+    return true;
+}
+
+// One adapter tensor onto its slot of tab: it names a hooked projection m
+// carries, is a float type, matches the base's geometry and agrees with its
+// pair's rank. Its values fold into the identity.
+static bool lora_parse_tensor(model_t *m, struct lora_w *tab, gguf_tensor *t,
+                              uint64_t *id) {
+    int l = -1;
+    char pname[64];
+    char side = 0;
+    if (sscanf(t->name, "blk.%d.%40[a-z_].weight.lora_%c", &l, pname,
+               &side) != 3 || (side != 'a' && side != 'b') ||
+        l < 0 || l >= m->n_layer) {
+        fprintf(stderr, "error: adapter tensor '%s' does not name a "
+                "hooked projection\n", t->name);
+        return false;
+    }
+    int s = -1;
+    for (int k = 0; k < LW_SLOTS; k++)
+        if (strcmp(pname, lora_slot_name[k]) == 0) { s = k; break; }
+    gguf_tensor *base = s >= 0 ? lora_slot_base(m, l, s) : NULL;
+    if (s < 0 || !base) {
+        fprintf(stderr, "error: adapter tensor '%s' targets a "
+                "projection this model/path does not carry\n", t->name);
+        return false;
+    }
+    struct lora_w *lw = &tab[(size_t)l * LW_SLOTS + s];
+    uint64_t n_in = base->ne[0], n_out = base->ne[1];
+    // our own writer emits F32; llama.cpp's convert_lora_to_gguf emits
+    // F16 by default, and community adapters ship that way (measured:
+    // the first third-party adapter tried was F16 and refused here).
+    // Any float format converts losslessly-deterministically through
+    // tensor_to_f32; quantized adapter tensors stay refused by name.
+    if (t->type != T_F32 && t->type != T_F16 && t->type != T_BF16) {
+        fprintf(stderr, "error: adapter tensor '%s' is %s — adapters "
+                "must be F32, F16 or BF16\n", t->name,
+                ggml_type_name(t->type));
+        return false;
+    }
+    uint64_t r = side == 'a' ? t->ne[1] : t->ne[0];
+    uint64_t want0 = side == 'a' ? n_in : r;
+    uint64_t want1 = side == 'a' ? r : n_out;
+    if (t->n_dims != 2 || r < 1 || r > LORA_R_MAX ||
+        t->ne[0] != want0 || t->ne[1] != want1) {
+        fprintf(stderr, "error: adapter tensor '%s' is %u-D "
+                "[%llu,%llu]; base '%s' is [%llu,%llu]\n", t->name,
+                t->n_dims, (unsigned long long)t->ne[0],
+                (unsigned long long)t->ne[1], base->name,
+                (unsigned long long)n_in, (unsigned long long)n_out);
+        return false;
+    }
+    if (lw->r && lw->r != (int)r) {
+        fprintf(stderr, "error: adapter '%s' rank %llu disagrees with "
+                "its pair (rank %d)\n", t->name,
+                (unsigned long long)r, lw->r);
+        return false;
+    }
+    lw->r = (int)r;
+    bool cok = true;
+    int64_t need = (int64_t)(side == 'a' ? r * n_in : r * n_out);
+    float *dat = tensor_to_f32(t, need, &cok);
+    if (!cok || !dat) {
+        fprintf(stderr, "error: adapter tensor '%s' failed to load\n",
+                t->name);
+        return false;
+    }
+    if (side == 'a') { free(lw->a); lw->a = dat; }
+    else             { free(lw->b); lw->b = dat; }
+    for (int64_t c = 0; c < need; c++) {
+        uint32_t bits;
+        memcpy(&bits, &dat[c], 4);
+        *id = (*id ^ bits) * 0x100000001B3ull;
+    }
+    return true;
+}
+
+// Every slot holds a whole pair or nothing, and at least one pair exists;
+// each pair's scale folds alpha, the rank and the user's scale. Returns the
+// pair count, or -1 having said why.
+static int lora_parse_pairs(const model_t *m, struct lora_w *tab, float alpha,
+                            float user_scale) {
+    int n_pairs = 0;
+    for (int l = 0; l < m->n_layer; l++)
+        for (int s = 0; s < LW_SLOTS; s++) {
+            struct lora_w *lw = &tab[(size_t)l * LW_SLOTS + s];
+            if (!lw->r) continue;
+            if (!lw->a || !lw->b) {
+                fprintf(stderr, "error: adapter has only half of the "
+                        "lora_a/lora_b pair for blk.%d.%s\n", l,
+                        lora_slot_name[s]);
+                return -1;
+            }
+            lw->scale = alpha / (float)lw->r * user_scale;
+            n_pairs++;
+        }
+    if (!n_pairs) {
+        fprintf(stderr, "error: adapter carries no lora_a/lora_b pairs\n");
+        return -1;
+    }
+    return n_pairs;
+}
+
+// Parse an adapter GGUF against m's geometry: every refusal that makes an
+// adapter unservable on m, then the table. Returns the table (the caller's)
+// with its identity and alpha, or NULL having said why on stderr. Shared by
+// --lora (installed, owned) and --adapter (loaded once, borrowed per request).
 static struct lora_w *lora_parse(model_t *m, const char *path, float user_scale,
                                  uint64_t *id_out, float *alpha_out,
                                  int *pairs_out) {
@@ -7405,25 +7551,8 @@ static struct lora_w *lora_parse(model_t *m, const char *path, float user_scale,
         return NULL;
     }
     struct lora_w *ok = NULL;
-    const char *ftype = gguf_get_str(&g, "general.type", "");
-    const char *atype = gguf_get_str(&g, "adapter.type", "");
-    if (strcmp(ftype, "adapter") != 0 || strcmp(atype, "lora") != 0) {
-        fprintf(stderr, "error: %s is not a LoRA adapter GGUF "
-                "(general.type=%s adapter.type=%s)\n", path, ftype, atype);
-        goto done;
-    }
-    const char *aarch = gguf_get_str(&g, "general.architecture", "");
-    if (strcmp(aarch, m->arch) != 0) {
-        fprintf(stderr, "error: adapter architecture '%s' does not match "
-                "the model's '%s'\n", aarch, m->arch);
-        goto done;
-    }
-    float alpha = gguf_get_f32(&g, "adapter.lora.alpha", 0.0f);
-    if (!(alpha > 0.0f)) {
-        fprintf(stderr, "error: adapter.lora.alpha missing or not "
-                "positive\n");
-        goto done;
-    }
+    float alpha = 0.0f;
+    if (!lora_parse_header(m, &g, path, &alpha)) goto done;
     struct lora_w *tab =
         calloc((size_t)m->n_layer * LW_SLOTS, sizeof(struct lora_w));
     if (!tab) goto done;
@@ -7434,93 +7563,10 @@ static struct lora_w *lora_parse(model_t *m, const char *path, float user_scale,
     // tensor's geometry — an unknown or misshapen tensor refuses the whole
     // adapter (the hostile-GGUF discipline; a silently skipped tensor would
     // serve a model that is not the one the adapter trained)
-    for (uint64_t ti = 0; ti < g.n_tensors; ti++) {
-        gguf_tensor *t = &g.tensors[ti];
-        int l = -1;
-        char pname[64];
-        char side = 0;
-        if (sscanf(t->name, "blk.%d.%40[a-z_].weight.lora_%c", &l, pname,
-                   &side) != 3 || (side != 'a' && side != 'b') ||
-            l < 0 || l >= m->n_layer) {
-            fprintf(stderr, "error: adapter tensor '%s' does not name a "
-                    "hooked projection\n", t->name);
-            goto fail_tab;
-        }
-        int s = -1;
-        for (int k = 0; k < LW_SLOTS; k++)
-            if (strcmp(pname, lora_slot_name[k]) == 0) { s = k; break; }
-        gguf_tensor *base = s >= 0 ? lora_slot_base(m, l, s) : NULL;
-        if (s < 0 || !base) {
-            fprintf(stderr, "error: adapter tensor '%s' targets a "
-                    "projection this model/path does not carry\n", t->name);
-            goto fail_tab;
-        }
-        struct lora_w *lw = &tab[(size_t)l * LW_SLOTS + s];
-        uint64_t n_in = base->ne[0], n_out = base->ne[1];
-        // our own writer emits F32; llama.cpp's convert_lora_to_gguf emits
-        // F16 by default, and community adapters ship that way (measured:
-        // the first third-party adapter tried was F16 and refused here).
-        // Any float format converts losslessly-deterministically through
-        // tensor_to_f32; quantized adapter tensors stay refused by name.
-        if (t->type != T_F32 && t->type != T_F16 && t->type != T_BF16) {
-            fprintf(stderr, "error: adapter tensor '%s' is %s — adapters "
-                    "must be F32, F16 or BF16\n", t->name,
-                    ggml_type_name(t->type));
-            goto fail_tab;
-        }
-        uint64_t r = side == 'a' ? t->ne[1] : t->ne[0];
-        uint64_t want0 = side == 'a' ? n_in : r;
-        uint64_t want1 = side == 'a' ? r : n_out;
-        if (t->n_dims != 2 || r < 1 || r > LORA_R_MAX ||
-            t->ne[0] != want0 || t->ne[1] != want1) {
-            fprintf(stderr, "error: adapter tensor '%s' is %u-D "
-                    "[%llu,%llu]; base '%s' is [%llu,%llu]\n", t->name,
-                    t->n_dims, (unsigned long long)t->ne[0],
-                    (unsigned long long)t->ne[1], base->name,
-                    (unsigned long long)n_in, (unsigned long long)n_out);
-            goto fail_tab;
-        }
-        if (lw->r && lw->r != (int)r) {
-            fprintf(stderr, "error: adapter '%s' rank %llu disagrees with "
-                    "its pair (rank %d)\n", t->name,
-                    (unsigned long long)r, lw->r);
-            goto fail_tab;
-        }
-        lw->r = (int)r;
-        bool cok = true;
-        int64_t need = (int64_t)(side == 'a' ? r * n_in : r * n_out);
-        float *dat = tensor_to_f32(t, need, &cok);
-        if (!cok || !dat) {
-            fprintf(stderr, "error: adapter tensor '%s' failed to load\n",
-                    t->name);
-            goto fail_tab;
-        }
-        if (side == 'a') { free(lw->a); lw->a = dat; }
-        else             { free(lw->b); lw->b = dat; }
-        for (int64_t c = 0; c < need; c++) {
-            uint32_t bits;
-            memcpy(&bits, &dat[c], 4);
-            id = (id ^ bits) * 0x100000001B3ull;
-        }
-    }
-    int n_pairs = 0;
-    for (int l = 0; l < m->n_layer; l++)
-        for (int s = 0; s < LW_SLOTS; s++) {
-            struct lora_w *lw = &tab[(size_t)l * LW_SLOTS + s];
-            if (!lw->r) continue;
-            if (!lw->a || !lw->b) {
-                fprintf(stderr, "error: adapter has only half of the "
-                        "lora_a/lora_b pair for blk.%d.%s\n", l,
-                        lora_slot_name[s]);
-                goto fail_tab;
-            }
-            lw->scale = alpha / (float)lw->r * user_scale;
-            n_pairs++;
-        }
-    if (!n_pairs) {
-        fprintf(stderr, "error: adapter carries no lora_a/lora_b pairs\n");
-        goto fail_tab;
-    }
+    for (uint64_t ti = 0; ti < g.n_tensors; ti++)
+        if (!lora_parse_tensor(m, tab, &g.tensors[ti], &id)) goto fail_tab;
+    int n_pairs = lora_parse_pairs(m, tab, alpha, user_scale);
+    if (n_pairs < 0) goto fail_tab;
     // alpha scales every delta, so two files that differ only in
     // adapter.lora.alpha are different adapters; without it in the id the
     // prefix cache served rows computed under the old alpha after a reload
@@ -7536,12 +7582,7 @@ static struct lora_w *lora_parse(model_t *m, const char *path, float user_scale,
     ok = tab;
     goto done;
 fail_tab:
-    for (int l = 0; l < m->n_layer; l++)
-        for (int s = 0; s < LW_SLOTS; s++) {
-            free(tab[(size_t)l * LW_SLOTS + s].a);
-            free(tab[(size_t)l * LW_SLOTS + s].b);
-        }
-    free(tab);
+    lora_tab_free(tab, m->n_layer);
 done:
     gguf_close(&g);
     return ok;
@@ -7553,10 +7594,7 @@ bool model_lora_load(model_t *m, const char *path, float user_scale) {
     int n_pairs = 0;
     struct lora_w *tab = lora_parse(m, path, user_scale, &id, &alpha, &n_pairs);
     if (!tab) return false;
-    model_lora_free(m);
-    m->lora = tab;
-    m->lora_alpha = alpha;
-    m->lora_id = id;
+    lora_attach_owned(m, tab, alpha, id);
     fprintf(stderr, "lora: %s — %d adapted projections, alpha %g, "
             "scale x%g\n", path, n_pairs, (double)alpha,
             (double)user_scale);
@@ -7594,12 +7632,7 @@ lora_set *model_lora_set_load(model_t *m, const char *path, float scale) {
 
 void model_lora_set_free(lora_set *ls) {
     if (!ls) return;
-    for (int l = 0; l < ls->n_layer; l++)
-        for (int s = 0; s < LW_SLOTS; s++) {
-            free(ls->tab[(size_t)l * LW_SLOTS + s].a);
-            free(ls->tab[(size_t)l * LW_SLOTS + s].b);
-        }
-    free(ls->tab);
+    lora_tab_free(ls->tab, ls->n_layer);
     free(ls);
 }
 
@@ -9337,10 +9370,7 @@ bool model_lora_train_init(model_t *m, int rank, float alpha, uint64_t seed) {
             lw->a = malloc(sizeof(float) * (size_t)rank * n_in);
             lw->b = calloc((size_t)n_out * rank, sizeof(float));
             if (!lw->a || !lw->b) {
-                for (int i = 0; i <= l * LW_SLOTS + s; i++) {
-                    free(tab[i].a); free(tab[i].b);
-                }
-                free(tab);
+                lora_tab_free(tab, m->n_layer);
                 return false;
             }
             // uniform in [-1,1)/sqrt(n_in): the standard small-A init,
@@ -9352,14 +9382,11 @@ bool model_lora_train_init(model_t *m, int rank, float alpha, uint64_t seed) {
                             / 2147483648.0f) * sc;
             }
         }
-    model_lora_free(m);
-    m->lora = tab;
-    m->lora_alpha = alpha;
     // identity: a fresh adapter is a distinct model identity even before the
     // first step (B==0 makes it behaviorally the base, but training mutates
     // it in place and cached prefixes must not straddle that)
-    m->lora_id = 0x11A0D000ull ^ (seed ? seed : 0x5EEDBA5Eull) ^
-                 ((uint64_t)rank << 32);
+    lora_attach_owned(m, tab, alpha, 0x11A0D000ull ^
+                      (seed ? seed : 0x5EEDBA5Eull) ^ ((uint64_t)rank << 32));
     return true;
 }
 
@@ -9449,25 +9476,10 @@ static int install_lora_file(const char *tmp_path, const char *path) {
 #endif
 }
 
-bool model_lora_save(model_t *m, const char *path) {
-    if (!m->lora) return false;
-    size_t pn = strlen(path);
-    if (pn > SIZE_MAX - sizeof(".partial")) {
-        fprintf(stderr, "error: adapter path is too long\n");
-        return false;
-    }
-    char *tmp_path = malloc(pn + sizeof(".partial"));
-    if (!tmp_path) {
-        fprintf(stderr, "error: cannot allocate adapter checkpoint path\n");
-        return false;
-    }
-    snprintf(tmp_path, pn + sizeof(".partial"), "%s.partial", path);
-    FILE *f = fopen(tmp_path, "wb");
-    if (!f) {
-        fprintf(stderr, "error: cannot write %s\n", tmp_path);
-        free(tmp_path);
-        return false;
-    }
+// The adapter's bytes into f: the header and tensor infos, then each live
+// pair's A and B, every section 32-byte aligned. False when the header's
+// end cannot be told (the stream's own errors are the caller's to read).
+static bool lora_write_gguf(model_t *m, FILE *f) {
     // collect live pairs
     int n_t = 0;
     for (int l = 0; l < m->n_layer; l++)
@@ -9521,7 +9533,29 @@ bool model_lora_save(model_t *m, const char *path) {
             fwrite(lw->b, 1, nb, f);
             fwrite(zeros, 1, (size_t)((-(long)nb) & 31), f);
         }
-    bool ok = hdr_end >= 0 && fflush(f) == 0 && !ferror(f);
+    return hdr_end >= 0;
+}
+
+bool model_lora_save(model_t *m, const char *path) {
+    if (!m->lora) return false;
+    size_t pn = strlen(path);
+    if (pn > SIZE_MAX - sizeof(".partial")) {
+        fprintf(stderr, "error: adapter path is too long\n");
+        return false;
+    }
+    char *tmp_path = malloc(pn + sizeof(".partial"));
+    if (!tmp_path) {
+        fprintf(stderr, "error: cannot allocate adapter checkpoint path\n");
+        return false;
+    }
+    snprintf(tmp_path, pn + sizeof(".partial"), "%s.partial", path);
+    FILE *f = fopen(tmp_path, "wb");
+    if (!f) {
+        fprintf(stderr, "error: cannot write %s\n", tmp_path);
+        free(tmp_path);
+        return false;
+    }
+    bool ok = lora_write_gguf(m, f) && fflush(f) == 0 && !ferror(f);
     if (fclose(f) != 0) ok = false;
     if (!ok) {
         remove(tmp_path);
