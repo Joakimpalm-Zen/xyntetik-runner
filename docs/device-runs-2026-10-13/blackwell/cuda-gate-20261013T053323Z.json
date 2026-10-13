@@ -1,0 +1,1 @@
+{"schema":"xyntetik.runner.cuda-gate.v1","stamp":"20261013T053323Z","class":"linux-x86_64-cuda","commit":"fd6d0989d5e8dbc051df6c3cab0a25bd4dfe681e","result":"pass","steps":[{"step":"caps","result":"pass","seconds":0},{"step":"tc-overflow","result":"pass","seconds":3},{"step":"iquants","result":"pass","seconds":53},{"step":"cpu-cuda","result":"pass","seconds":16}]}
