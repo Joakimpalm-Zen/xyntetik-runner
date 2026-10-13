@@ -1902,6 +1902,103 @@ static size_t render_qwen38(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_GRANITE42 and TMPL_NEMOTRON35.
+static size_t render_granite42(int tmpl, const chat_msg *msgs, int n_msgs,
+                               bool add_assistant, int thinking, const jv *tools,
+                               char *out, size_t cap) {
+    size_t off = 0;
+    // ibm-granite/granite-4.2-3b chat_template.jinja (2026-09-06), see
+    // the enum comment. Line references below are into that file.
+    bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
+    int first = n_msgs > 0 && !strcmp(msgs[0].role, "system") ? 1 : 0;
+    // The reference sets system_message to "" when messages[0] is not a
+    // system turn and then branches on `system_message is defined`,
+    // which is true either way: a system turn is ALWAYS emitted.
+    off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
+    if (first) off = emit(out, cap, off, "%s", msgs[0].content, NULL);
+    if (have_tools) {
+        if (first && msgs[0].content[0])
+            off = emit(out, cap, off, "\n\n", NULL, NULL);
+        sbuf decl = {0};
+        tools_render_for(tmpl, tools, &decl);
+        off = emit(out, cap, off, "%s", decl.s, NULL);
+        free(decl.s);
+    }
+    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+    // last_user_idx is computed over loop_messages, i.e. after the
+    // leading system turn was split off; `i` below is the same index.
+    int last_user = -1;
+    for (int i = first; i < n_msgs; i++)
+        if (!strcmp(msgs[i].role, "user")) last_user = i;
+    for (int i = first; i < n_msgs; i++) {
+        const char *role = msgs[i].role;
+        const char *c = msgs[i].content;
+        if (!strcmp(role, "tool")) {
+            // consecutive results share one user turn; every result
+            // block ends in its own newline, unlike ornith's
+            bool prev_tool = i > first && !strcmp(msgs[i - 1].role, "tool");
+            bool next_tool = i + 1 < n_msgs &&
+                             !strcmp(msgs[i + 1].role, "tool");
+            if (!prev_tool)
+                off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
+            off = emit(out, cap, off,
+                       "<tool_response>\n%s\n</tool_response>\n", c, NULL);
+            if (!next_tool)
+                off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+            continue;
+        }
+        if (strcmp(role, "assistant")) {
+            off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
+                       role, c);
+            continue;
+        }
+        // An assistant turn without a thought block is seeded with the
+        // closed one. A turn BEFORE the last user turn that carried a
+        // complete block keeps only what follows its last </think>,
+        // behind that same closed block (truncate_history_thinking,
+        // default true); the latest turn is replayed verbatim. Either
+        // way the result is `| trim`med as a whole, so a seeded body
+        // keeps its leading whitespace behind the seed.
+        const char *open = strstr(c, "<think>");
+        const char *close = strstr(c, "</think>");
+        const char *body = c;
+        bool seed = !open && !close;
+        if (i < last_user && open && close) {
+            const char *p = close, *q;
+            while ((q = strstr(p + 8, "</think>"))) p = q;
+            body = p + 8;
+            seed = true;
+        }
+        const char *end = body + strlen(body);
+        const char *b = seed ? body : trim_left(body, end);
+        // granite 4.2 trims the text it kept from a truncated TOOL-CALL
+        // turn (`"<think></think>" ~ c | trim`, the filter binding to c);
+        // Nemotron 3.5's copy of that line has no trim, and a truncated
+        // turn without calls is trimmed as a whole, seed first, by both.
+        // Only the caller's text is trimmed: it is unmarked, so the walk
+        // stops at the first mark, which leaves the template's own
+        // newline before the first call (`c ~ '\n'`) and the call's
+        // marks in place.
+        if (tmpl == TMPL_GRANITE42 && i < last_user && trim_right(b, end) - b >= 12 &&
+            !strncmp(trim_right(b, end) - 12, "</tool_call>", 12))
+            while (b < end && strchr(" \t\n\r\f\v", *b) && *b) b++;
+        const char *e = trim_right(b, end);
+        off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
+                       seed ? "<think></think>" : "", NULL);   // the seed is the template's
+        off = emit_n(out, cap, off, b, (size_t)(e - b));
+        // a tool-call turn ends `</tool_call>\n` before <|im_end|>
+        // (chat_template.jinja:118); the trim above took that newline
+        if (e - b >= 12 && !strncmp(e - 12, "</tool_call>", 12))
+            off = emit(out, cap, off, "\n", NULL, NULL);
+        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+    }
+    if (add_assistant)   // emit_raw: the block is the template's (see qwen38)
+        off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
+                       thinking == THINK_OFF ? "<think></think>" : "<think>\n",
+                       NULL);
+    return off;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -1920,98 +2017,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_QWEN38:
         return render_qwen38(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_GRANITE42:
-    case TMPL_NEMOTRON35: {
-        // ibm-granite/granite-4.2-3b chat_template.jinja (2026-09-06), see
-        // the enum comment. Line references below are into that file.
-        bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
-        int first = n_msgs > 0 && !strcmp(msgs[0].role, "system") ? 1 : 0;
-        // The reference sets system_message to "" when messages[0] is not a
-        // system turn and then branches on `system_message is defined`,
-        // which is true either way: a system turn is ALWAYS emitted.
-        off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
-        if (first) off = emit(out, cap, off, "%s", msgs[0].content, NULL);
-        if (have_tools) {
-            if (first && msgs[0].content[0])
-                off = emit(out, cap, off, "\n\n", NULL, NULL);
-            sbuf decl = {0};
-            tools_render_for(tmpl, tools, &decl);
-            off = emit(out, cap, off, "%s", decl.s, NULL);
-            free(decl.s);
-        }
-        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-        // last_user_idx is computed over loop_messages, i.e. after the
-        // leading system turn was split off; `i` below is the same index.
-        int last_user = -1;
-        for (int i = first; i < n_msgs; i++)
-            if (!strcmp(msgs[i].role, "user")) last_user = i;
-        for (int i = first; i < n_msgs; i++) {
-            const char *role = msgs[i].role;
-            const char *c = msgs[i].content;
-            if (!strcmp(role, "tool")) {
-                // consecutive results share one user turn; every result
-                // block ends in its own newline, unlike ornith's
-                bool prev_tool = i > first && !strcmp(msgs[i - 1].role, "tool");
-                bool next_tool = i + 1 < n_msgs &&
-                                 !strcmp(msgs[i + 1].role, "tool");
-                if (!prev_tool)
-                    off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
-                off = emit(out, cap, off,
-                           "<tool_response>\n%s\n</tool_response>\n", c, NULL);
-                if (!next_tool)
-                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-                continue;
-            }
-            if (strcmp(role, "assistant")) {
-                off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
-                           role, c);
-                continue;
-            }
-            // An assistant turn without a thought block is seeded with the
-            // closed one. A turn BEFORE the last user turn that carried a
-            // complete block keeps only what follows its last </think>,
-            // behind that same closed block (truncate_history_thinking,
-            // default true); the latest turn is replayed verbatim. Either
-            // way the result is `| trim`med as a whole, so a seeded body
-            // keeps its leading whitespace behind the seed.
-            const char *open = strstr(c, "<think>");
-            const char *close = strstr(c, "</think>");
-            const char *body = c;
-            bool seed = !open && !close;
-            if (i < last_user && open && close) {
-                const char *p = close, *q;
-                while ((q = strstr(p + 8, "</think>"))) p = q;
-                body = p + 8;
-                seed = true;
-            }
-            const char *end = body + strlen(body);
-            const char *b = seed ? body : trim_left(body, end);
-            // granite 4.2 trims the text it kept from a truncated TOOL-CALL
-            // turn (`"<think></think>" ~ c | trim`, the filter binding to c);
-            // Nemotron 3.5's copy of that line has no trim, and a truncated
-            // turn without calls is trimmed as a whole, seed first, by both.
-            // Only the caller's text is trimmed: it is unmarked, so the walk
-            // stops at the first mark, which leaves the template's own
-            // newline before the first call (`c ~ '\n'`) and the call's
-            // marks in place.
-            if (tmpl == TMPL_GRANITE42 && i < last_user && trim_right(b, end) - b >= 12 &&
-                !strncmp(trim_right(b, end) - 12, "</tool_call>", 12))
-                while (b < end && strchr(" \t\n\r\f\v", *b) && *b) b++;
-            const char *e = trim_right(b, end);
-            off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
-                           seed ? "<think></think>" : "", NULL);   // the seed is the template's
-            off = emit_n(out, cap, off, b, (size_t)(e - b));
-            // a tool-call turn ends `</tool_call>\n` before <|im_end|>
-            // (chat_template.jinja:118); the trim above took that newline
-            if (e - b >= 12 && !strncmp(e - 12, "</tool_call>", 12))
-                off = emit(out, cap, off, "\n", NULL, NULL);
-            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-        }
-        if (add_assistant)   // emit_raw: the block is the template's (see qwen38)
-            off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
-                           thinking == THINK_OFF ? "<think></think>" : "<think>\n",
-                           NULL);
-        break;
-    }
+    case TMPL_NEMOTRON35:
+        return render_granite42(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_HERMES4: {
         // NousResearch/Hermes-4-14B chat_template (2026-10-02). The system
         // turn is always written: the caller's first message when it is a
