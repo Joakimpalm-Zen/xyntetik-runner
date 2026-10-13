@@ -38,6 +38,8 @@ test-schema-oom
 test-schema-oom.exe
 test-tokenizer-oom
 test-tokenizer-oom.exe
+test-tokenizer-classes
+test-tokenizer-classes.exe
 test-template-oom
 test-template-oom.exe
 test-sampler

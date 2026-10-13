@@ -3,6 +3,25 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **Byte-level BPE tokenization matches the reference on Latin-1 symbols,
+  superscripts, currency and U+FFFD.** The pre-tokenizers read every code
+  point above U+007F as a letter unless it sat in a few symbol blocks, so
+  `°`, `±`, `§`, `«`, `¿`, `×`, `€`, `²`, the replacement character `�` and
+  their neighbours joined or split pre-tokens where every family's reference
+  regex does not: `°)` became two tokens on Kvist-14B and gpt-oss where the
+  reference emits one, and `.txt` after a `"�` became one where it emits
+  two. U+0080..U+00FF and U+2070..U+20FF are now classified from the Unicode
+  database (letters, numbers, whitespace, everything else) and the Specials
+  block (U+FFF0..U+FFFF) is a symbol range. Against the Hugging Face
+  reference tokenizers of seven families (Kvist-14B, gpt-oss-20b, Llama-3.2,
+  Qwen2.5, SmolLM2, Mistral Nemo, Granite 4.1): 24 to 36 divergences per
+  family on 1,642 strings over these characters before, none after; the 13
+  Kvist-14B requests of the typed-decisions study that differed now agree;
+  the 721-string corpus is unchanged. Token ids change for text containing
+  these characters on every byte-level BPE model.
+
 ## v1.2.1 - 2026-10-13
 
 - **A client stalled mid-request no longer holds the server's shutdown.**

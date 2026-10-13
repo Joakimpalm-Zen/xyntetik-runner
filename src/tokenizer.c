@@ -601,25 +601,53 @@ static int spm_encode_text(tokenizer *t, const char *text, size_t n,
 
 // ---------------------------------------------------------------- BPE encode
 
+// Latin-1 Supplement and Superscripts/Subscripts/Currency, class by class from
+// the Unicode Character Database (16.0): L letter, N number (\p{N}, so the
+// superscript digits and the vulgar fractions are numbers to every regex here),
+// Z whitespace, o anything else (controls, punctuation, symbols, unassigned).
+// Combining marks for symbols (U+20D0..U+20F0) are cp_mark's, and read o here.
+// These two blocks sit right beside letters in ordinary text: as letters, "°)"
+// was two pre-tokens where every \p{L} regex keeps it one (the reference emits
+// Kvist-14B's single "°)" token), and "€5", "x²" and "«word»" moved the same
+// way. tests/test_tokenizer_classes.c checks every code point of both blocks.
+static const char LATIN1_CLASS[129] =     // U+0080 .. U+00FF
+    "oooooZoooooooooooooooooooooooooo"    // 0080 C1 controls; 0085 NEL is White_Space
+    "ZoooooooooLoooooooNNoLoooNLoNNNo"    // 00A0 NBSP, ¡..¿ (ª µ º letters, ² ³ ¹ ¼ ½ ¾ numbers)
+    "LLLLLLLLLLLLLLLLLLLLLLLoLLLLLLLL"    // 00C0 À..ß, × is a symbol
+    "LLLLLLLLLLLLLLLLLLLLLLLoLLLLLLLL";   // 00E0 à..ÿ, ÷ is a symbol
+static const char SUPER_CURRENCY_CLASS[145] =   // U+2070 .. U+20FF
+    "NLooNNNNNNoooooLNNNNNNNNNNooooooLLLLLLLLLLLLLooo"    // 2070 ⁰ ⁱ ⁴..⁹ ⁺..⁾ ⁿ, ₀..₉ ₊..₎, ₐ..ₜ
+    "oooooooooooooooooooooooooooooooooooooooooooooooo"    // 20A0 currency symbols (€ ₹ ...)
+    "oooooooooooooooooooooooooooooooooooooooooooooooo";   // 20D0 combining marks for symbols (cp_mark)
+
+static int cp_class_table(char k) {
+    return k == 'L' ? 0 : k == 'N' ? 1 : k == 'Z' ? 3 : 2;
+}
+
 static int cp_class(uint32_t c) {
-    // 0 = letter, 1 = digit, 2 = other(punct/symbol), 3 = whitespace
+    // 0 = letter, 1 = digit (\p{N}), 2 = other(punct/symbol), 3 = whitespace
     if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0x0B || c == 0x0C ||
-        c == 0xA0 || (c >= 0x2000 && c <= 0x200A) || c == 0x2028 || c == 0x2029 ||
+        (c >= 0x2000 && c <= 0x200A) || c == 0x2028 || c == 0x2029 ||
         c == 0x202F || c == 0x205F || c == 0x3000)
         return 3;
     if (c >= '0' && c <= '9') return 1;
+    if (c >= 0x80 && c <= 0xFF) return cp_class_table(LATIN1_CLASS[c - 0x80]);
+    if (c >= 0x2070 && c <= 0x20FF) return cp_class_table(SUPER_CURRENCY_CLASS[c - 0x2070]);
     if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80) return 0;
     return 2;
 }
 
-// Codepoints >= 0x80 are treated as letters, which is right for scripts but
-// wrong for symbols. Only these ranges need excluding to match \p{L} on real
-// text: emoji and dingbats otherwise glue onto adjacent words and shift every
-// pre-token boundary after them. Full Unicode tables buy nothing beyond this.
+// Codepoints >= 0x80 outside the two tabulated blocks are treated as letters,
+// which is right for scripts but wrong for symbols. These ranges are excluded
+// to match \p{L} on real text: emoji and dingbats otherwise glue onto adjacent
+// words and shift every pre-token boundary after them, and U+FFFD, which a
+// lossy decode leaves in ordinary text, split the reference's `"\uFFFD.`
+// punctuation run so that `.txt` after it became one token instead of two.
 static bool cp_symbol(uint32_t c) {
     return (c >= 0x2000 && c <= 0x206F) || (c >= 0x2100 && c <= 0x2BFF) ||
            (c >= 0x2E00 && c <= 0x2E7F) || (c >= 0x3000 && c <= 0x303F) ||
-           (c >= 0xFE00 && c <= 0xFE0F) || (c >= 0x1F000 && c <= 0x1FAFF);
+           (c >= 0xFE00 && c <= 0xFE0F) || (c >= 0xFFF0 && c <= 0xFFFF) ||
+           (c >= 0x1F000 && c <= 0x1FAFF);   // FFF0: Specials, U+FFFD among them
 }
 
 // Combining marks are Unicode category M, not L. Treating every non-symbol
@@ -635,16 +663,17 @@ static bool cp_mark(uint32_t c) {
            (c >= 0x0962 && c <= 0x0963) ||
            c == 0x0E31 ||                  // Thai combining vowels/tones
            (c >= 0x0E34 && c <= 0x0E3A) ||
-           (c >= 0x0E47 && c <= 0x0E4E);
+           (c >= 0x0E47 && c <= 0x0E4E) ||
+           (c >= 0x20D0 && c <= 0x20F0);   // Combining Diacritical Marks for Symbols
 }
 
 static bool cp_letter(uint32_t c) {
-    if (cp_class(c) == 3) return false;
-    return ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-            (c >= 0x80 && !cp_symbol(c) && !cp_mark(c)));
+    if (cp_class(c) != 0) return false;
+    return c < 0x80 || (!cp_symbol(c) && !cp_mark(c));
 }
 
-static bool cp_digit(uint32_t c)  { return c >= '0' && c <= '9'; }
+// \p{N}: the ASCII digits and the tabulated numbers (superscripts, fractions)
+static bool cp_digit(uint32_t c)  { return cp_class(c) == 1; }
 static bool cp_space(uint32_t c)  { return cp_class(c) == 3; }
 // \p{L} and \p{N} both excluded, i.e. the regex's [^\s\p{L}\p{N}] class
 static bool cp_other(uint32_t c)  { return !cp_space(c) && !cp_letter(c) && !cp_digit(c); }
@@ -792,6 +821,7 @@ static bool cp_upper(uint32_t c) {
 static bool cp_lower(uint32_t c) {
     if (c >= 'a' && c <= 'z') return true;
     if (c < 0x80) return false;
+    if (c == 0xB5) return true;                            // MICRO SIGN is Ll
     if (c >= 0xDF && c <= 0xFF) return c != 0xF7;          // Latin-1, minus DIVISION SIGN
     if (c >= 0x100 && c <= 0x17F) return latin_ext_a_case(c) < 0;
     if (c >= 0x1E00 && c <= 0x1E9F) return (c & 1) == 1 || c >= 0x1E96;
