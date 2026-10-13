@@ -270,6 +270,77 @@ static void test_fit_gpu(const char *fixture) {
     gguf_close(&g);
 }
 
+// The split's boundaries, to the byte. The fit is the loader's leading-layer
+// placement read off the header: a fixed charge (embedding, scratch,
+// headroom), then whole layers, each its weights plus its KV, while they fit;
+// a split that took every layer also owes the output projection and charges
+// the embedding a second time, as the loader does, else the last layer goes
+// back. These cases rebuild each figure from the header the way the fit does
+// and check the decision one byte either side of every boundary, so a change
+// to the placement arithmetic (the CUDA and Metal loaders keep their own
+// copies of it) shows up as a moved boundary, not a vague "fits".
+static void test_fit_gpu_boundaries(const char *fixture) {
+    gguf_file g;
+    if (!fixture || !gguf_open_header(&g, fixture)) {
+        ck(0, "fit gpu boundaries: the test.gguf header opens");
+        return;
+    }
+    model_fit base;
+    ck(model_fit_report(&g, 512, &base), "fit gpu boundaries: report");
+    int nl = base.n_layer;
+    uint64_t lb[64] = {0}, tok = 0, out = 0;
+    ck(nl > 1 && nl <= 64, "fit gpu boundaries: a multi-layer fixture");
+    if (nl <= 1 || nl > 64) { gguf_close(&g); return; }
+    for (uint64_t i = 0; i < g.n_tensors; i++) {
+        const gguf_tensor *t = &g.tensors[i];
+        int l = -1, n = 0;
+        if (sscanf(t->name, "blk.%d.%n", &l, &n) == 1 && n > 0 && l >= 0 && l < nl)
+            lb[l] += t->nbytes;
+        else if (!strcmp(t->name, "token_embd.weight")) tok = t->nbytes;
+        else if (!strcmp(t->name, "output.weight")) out = t->nbytes;
+    }
+    if (!out) out = tok;
+    const uint64_t kvl = base.kv_f16_per_tok / (uint64_t)nl * (uint64_t)base.n_ctx;
+    model_fit f = base;
+    model_fit_gpu(&g, &f, 1ull << 40, 0, 0);
+    const uint64_t fixed = f.gpu_fixed;
+    uint64_t all = fixed;
+    for (int l = 0; l < nl; l++) all += lb[l] + kvl;
+    const int K = FIT_KV_F16;
+
+    f = base; model_fit_gpu(&g, &f, fixed - 1, 0, 0);
+    ck(f.gpu_layers[K] == 0 && f.gpu_used[K] == 0,
+       "fit gpu boundaries: below the fixed charge nothing is on the device");
+    f = base; model_fit_gpu(&g, &f, fixed, 0, 0);
+    ck(f.gpu_layers[K] == 0 && f.gpu_used[K] == fixed,
+       "fit gpu boundaries: the fixed charge alone holds no layer");
+    f = base; model_fit_gpu(&g, &f, fixed + lb[0] + kvl - 1, 0, 0);
+    ck(f.gpu_layers[K] == 0, "fit gpu boundaries: a byte short of the first layer");
+    f = base; model_fit_gpu(&g, &f, fixed + lb[0] + kvl, 0, 0);
+    ck(f.gpu_layers[K] == 1 && f.gpu_used[K] == fixed + lb[0] + kvl,
+       "fit gpu boundaries: exactly the first layer");
+    // every layer fits but the full split's charge does not: the last layer
+    // goes back to the host
+    f = base; model_fit_gpu(&g, &f, all, 0, 0);
+    ck(f.gpu_layers[K] == nl - 1 && f.gpu_used[K] == all - lb[nl - 1] - kvl,
+       "fit gpu boundaries: all layers without the output charge give one back");
+    f = base; model_fit_gpu(&g, &f, all + tok + out - 1, 0, 0);
+    ck(f.gpu_layers[K] == nl - 1,
+       "fit gpu boundaries: a byte short of the full split (embedding charged twice)");
+    f = base; model_fit_gpu(&g, &f, all + tok + out, 0, 0);
+    ck(f.gpu_layers[K] == nl && f.gpu_used[K] == all + out,
+       "fit gpu boundaries: exactly the full split, output included");
+    // --gpu-layers below the natural split caps it; at or above, changes nothing
+    f = base; model_fit_gpu(&g, &f, all + tok + out, 0, nl - 1);
+    ck(f.gpu_layers[K] == nl - 1, "fit gpu boundaries: max_layers caps a full split");
+    f = base; model_fit_gpu(&g, &f, fixed + lb[0] + kvl, 0, nl);
+    ck(f.gpu_layers[K] == 1, "fit gpu boundaries: a cap above the split changes nothing");
+    // the headroom is part of the fixed charge, byte for byte
+    f = base; model_fit_gpu(&g, &f, 1ull << 40, 4096, 0);
+    ck(f.gpu_fixed == fixed + 4096, "fit gpu boundaries: headroom joins the fixed charge");
+    gguf_close(&g);
+}
+
 int main(int argc, char **argv) {
     test_gpu_budget();
     test_multislot_is_not_billed_once();
@@ -279,6 +350,7 @@ int main(int argc, char **argv) {
     test_kv_trade_note();
     test_kv_ring_rows();
     test_fit_gpu(argc > 1 ? argv[1] : NULL);
+    test_fit_gpu_boundaries(argc > 1 ? argv[1] : NULL);
     if (g_fail) { fprintf(stderr, "test-autofit FAILED\n"); return 1; }
     fprintf(stderr, "test-autofit: all checks passed\n");
     return 0;

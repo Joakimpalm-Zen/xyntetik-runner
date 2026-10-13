@@ -234,6 +234,7 @@ TEST_METAL_OWNERSHIP = $(TEST_BATCH:test-batch%=test-metal-ownership%)
 TEST_METAL_SHADERS = $(TEST_BATCH:test-batch%=test-metal-shaders%)
 TEST_METAL_KQUANTS = $(TEST_BATCH:test-batch%=test-metal-kquants%)
 TEST_MODEL_LOAD_FAILURE = $(TEST_BATCH:test-batch%=test-model-load-failure%)
+TEST_MODEL_LOAD_OOM = $(TEST_BATCH:test-batch%=test-model-load-oom%)
 TEST_THREAD_DEFAULT = $(TEST_BATCH:test-batch%=test-thread-default%)
 
 # Every module header, so a change to any of them rebuilds. runner.h was one
@@ -1286,6 +1287,15 @@ TEST_MODEL_LOAD_FAILURE_SRC = tests/test_model_load_failure.c $(OBJDIR)/gguf.o \
 $(TEST_MODEL_LOAD_FAILURE): $(TEST_MODEL_LOAD_FAILURE_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MODEL_LOAD_FAILURE_SRC) -o $@ $(LDFLAGS)
 
+# Every allocation of a model load failed in turn (tests/test_model_load_oom.c):
+# model.c is compiled into the test with its allocators substituted, so it
+# links every other engine object model.o would, and not model.o itself.
+TEST_MODEL_LOAD_OOM_SRC = tests/test_model_load_oom.c $(OBJDIR)/gguf.o \
+                          $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                          $(OBJDIR)/vramreg.o $(GPU_OBJ)
+$(TEST_MODEL_LOAD_OOM): $(TEST_MODEL_LOAD_OOM_SRC) src/model.c $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_MODEL_LOAD_OOM_SRC) -o $@ $(LDFLAGS)
+
 # The CPU-only backend stub must be able to STAND IN for a real backend --
 # that is the entire claim in its own header comment ("CUDA (cuda.c) and Metal
 # (metal.m) implement this same interface"). It could not: gpu_max_working_set,
@@ -2247,10 +2257,11 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_QUANTIZE) \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) \
-      $(TEST_MODEL_LOAD_FAILURE) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
+      $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
       runner test.gguf test-q8.gguf test-bf16.gguf test-ornith.gguf test-ornith-draft.gguf test-yarn.gguf \
+      test-qk.gguf test-gemma3.gguf test-gemma4.gguf test-es.gguf test-muse.gguf test-granite.gguf \
       test-gemma3-62.gguf test-gemma3-26.gguf test-qwen4exp.gguf
 	./$(TEST_RECURRENT)
 	@# qwen4exp: chunked prefill must equal the single-shot prefill (the PLE
@@ -2443,6 +2454,26 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_WATERMARK)
 	./$(TEST_THREAD_DEFAULT)
 	./$(TEST_MODEL_LOAD_FAILURE)
+	@# a model load with each of its allocations failed in turn, alone and
+	@# beside an instance holding the shared weights, over one fixture per
+	@# binding shape: dense, qk-norm, sliding, Gemma 4 (plain, mixed heads,
+	@# E-series), Muse, Granite, the recurrent hybrids, PLE/MTP, three MoE
+	@# routings, a trunk MTP head, a removed sublayer, per-layer FFN widths
+	$(PYTHON) scripts/make-test-model.py --gemma4-hetero test-load-oom-g4h.gguf > /dev/null
+	$(PYTHON) scripts/make-test-model.py --mtp-layers 1 test-load-oom-mtp.gguf > /dev/null
+	$(PYTHON) scripts/make-test-model.py --ffn-widths 128,96 test-load-oom-ffw.gguf > /dev/null
+	$(PYTHON) scripts/make-test-moe.py test-load-oom-moe > /dev/null
+	$(PYTHON) scripts/make-test-hybrid.py test-load-oom-hybrid > /dev/null
+	$(PYTHON) scripts/make-test-nemotron.py test-load-oom-nemotron > /dev/null
+	./runner -m test.gguf --quantize test-load-oom-cut.gguf --remove-sublayer attn:1 > /dev/null 2>&1
+	./$(TEST_MODEL_LOAD_OOM) test.gguf test-qk.gguf test-gemma3.gguf test-gemma4.gguf \
+	    test-load-oom-g4h.gguf test-es.gguf test-muse.gguf test-granite.gguf \
+	    test-ornith.gguf test-qwen4exp.gguf test-load-oom-moe.gptoss-mxfp4.gguf \
+	    test-load-oom-moe.shexpg.gguf test-load-oom-moe.gemma4-moe.gguf \
+	    test-load-oom-hybrid.gguf test-load-oom-nemotron.gguf test-load-oom-mtp.gguf \
+	    test-load-oom-cut.gguf test-load-oom-ffw.gguf 2> test-model-load-oom.err || \
+	    { tail -40 test-model-load-oom.err; exit 1; }
+	@tail -1 test-model-load-oom.err
 	$(MAKE) --no-print-directory test-bare-invocation
 	$(MAKE) --no-print-directory test-help-interface
 	$(MAKE) --no-print-directory test-shader-embed
@@ -2663,7 +2694,7 @@ clean:
 	      $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
 	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
-	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) \
+	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
 	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \

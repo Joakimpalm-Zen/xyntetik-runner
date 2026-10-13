@@ -111,6 +111,9 @@ test-metal-ownership
 test-metal-ownership.exe
 test-model-load-failure
 test-model-load-failure.exe
+test-model-load-oom
+test-model-load-oom.exe
+test-model-load-oom.err
 # per-PID scratch registries left by tests/test_vram_registry.c
 vramreg-test-*/
 # the cross-process VRAM ledger, when plat_runtime_dir() resolves to "." —

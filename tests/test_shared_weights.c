@@ -165,6 +165,25 @@ int main(int argc, char **argv) {
            "freeing an unrelated record leaves the shared one intact");
     }
 
+    // The context belongs to the per-instance half: an instance asking for
+    // another n_ctx shares the parse and sizes its own runtime, and decoding
+    // in it leaves the first instance's answer exactly as it was.
+    {
+        model_params wider = p;
+        wider.n_ctx = p.n_ctx * 2;
+        model_t w;
+        ck(model_load(&w, g_path, &wider), "instance with another context loads");
+        ck(w.layers == a.layers, "another context still shares the parse");
+        ck(w.n_ctx == wider.n_ctx && a.n_ctx == p.n_ctx,
+           "each instance keeps the context it asked for");
+        ck(model_forward(&w, TOKENS[0], 0) != NULL, "the wider instance decodes");
+        float *la = model_forward(&a, TOKENS[0], 0);
+        int bad = 0;
+        for (int i = 0; la && i < n_vocab; i++) if (la[i] != want[0][i]) bad++;
+        ck(la && bad == 0, "the first instance's logits are untouched by the wider one");
+        model_free(&w);
+    }
+
     for (int t = 0; t < SEQ; t++) {
         // step a, then b, at the same position: if they shared KV rows or
         // activation scratch, the second write would poison the first's history
