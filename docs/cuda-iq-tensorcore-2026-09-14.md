@@ -27,10 +27,11 @@ and applicable shape/fallback guards define what runs.
 
 ## Retained evidence
 
-[The recorded device cases](cuda-iq-tensorcore-evidence/) preserve original
-commands, build/device/model identities, per-type engagement, overflow
-checks, numerical comparisons, and performance configurations from the
-September measurement campaign. They are evidence for those configurations,
+The 94 recorded device cases (original commands, build/device/model
+identities, per-type engagement, overflow checks, numerical comparisons and
+performance configurations from the September measurement campaign) are
+archived byte for byte in Shade under
+`research/runner-engine/archive/runner-docs-2026-10-13c/`. They are evidence for those configurations,
 not a new measurement of current hardware or a universal identity claim.
 The wide fixtures and real-model numerical/performance cases guard different
 properties; keep both where the route is affected.
