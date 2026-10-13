@@ -8190,7 +8190,8 @@ static void attn_bw_worker(void *ctx, int g0, int g1) {
 // spine, so plain globals are race-free)
 static double lbw_prof[4];   // R recompute / B1 sites / B1 attn / B2+B3
 
-// One layer's reverse sweep, shared by its phases: the shapes resolved once, every buffer the phases read and write, and the profile clock.
+// One layer's reverse sweep, shared by its phases: the shapes resolved once,
+// every buffer the phases read and write, and the profile clock.
 typedef struct {
     bool lprof;
     double lt;
@@ -8275,9 +8276,9 @@ typedef struct {
     float *dyb;
 } lbw_state;
 
-// The sweep's shapes and buffers, and the layer output scale applied to dx; false when an allocation failed (the phases then do nothing).
-static bool lbw_state_init(model_t *m, int l, const int32_t *toks, int T, float *dx, lbw_state *s) {
-    (void)toks;
+// The sweep's shapes and buffers, and the layer output scale applied to dx;
+// false when an allocation failed (the phases then do nothing).
+static bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s) {
     bool lprof = getenv("RUNNER_TRAIN_PROF") != NULL;
     double lt = lprof ? plat_now() : 0;
     layer_t *ly = &m->layers[l];
@@ -8473,7 +8474,8 @@ static bool lbw_state_init(model_t *m, int l, const int32_t *toks, int T, float 
     return ok;
 }
 
-// Phase R: the layer's forward internals recomputed from the tape, attention through the production worker.
+// Phase R: the layer's forward internals recomputed from the tape, attention
+// through the production worker.
 static void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
     bool lprof = s->lprof;
     double lt = s->lt;
@@ -8695,7 +8697,8 @@ static void lbw_ple_branch(model_t *m, int l, int T, float *dx, lbw_state *s, bo
     *okp = ok;
 }
 
-// Phase B1, first half: the FFN backward site by site across the window, then the attention output projection and its gate.
+// Phase B1, first half: the FFN backward site by site across the window, then
+// the attention output projection and its gate.
 // A NUM_STAGE: compiled on its own, it changed the trained adapter's bytes
 // on the Gemma families in the default build.
 NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
@@ -8880,7 +8883,8 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
     s->lt = lt;
 }
 
-// Phase B1, second half: the score and softmax backward over KV-head groups, and the shared-KV deposits.
+// Phase B1, second half: the score and softmax backward over KV-head groups,
+// and the shared-KV deposits.
 static void lbw_attention(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
     bool lprof = s->lprof;
     double lt = s->lt;
@@ -9121,7 +9125,7 @@ static void lbw_state_free(lbw_state *s) {
 static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
                           float *dx) {
     lbw_state s;
-    bool ok = lbw_state_init(m, l, toks, T, dx, &s);
+    bool ok = lbw_state_init(m, l, T, dx, &s);
     lbw_recompute(m, l, T, dx, &s, &ok);
     lbw_ple_branch(m, l, T, dx, &s, &ok);
     lbw_ffn_and_output(m, l, T, dx, &s, &ok);
