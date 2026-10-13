@@ -5615,6 +5615,15 @@ static inline double dt_now(void) {
 #define DT_BEGIN double dt_t0 = dbg_time_on() ? dt_now() : 0
 #define DT_MARK_AT(t0, k) do { if (dbg_time_on()) { double dt_t1 = dt_now(); dt_acc[k] += dt_t1 - (t0); (t0) = dt_t1; } } while (0)
 #define DT_MARK(k) DT_MARK_AT(dt_t0, k)
+
+// A numerical stage of a hot or byte-pinned routine: split out to be read,
+// forced back into its caller to be compiled. Under the default build's
+// -ffast-math the compiler may contract and reassociate a loop differently
+// once it stands in a function of its own, and then the output's bytes move
+// with the code's layout (the GELU loop of a dense FFN did, on the Gemma
+// families; the portable T3 build is exact either way). Inlined, every stage
+// compiles in its caller's context, as the single function did.
+#define NUM_STAGE static inline __attribute__((always_inline))
 void model_debug_time_report(void) {
     if (!dbg_time_on()) return;
     double tot = 0; for (int k = 0; k < DT_N; k++) tot += dt_acc[k];
@@ -6322,6 +6331,22 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
              inner, m->n_embd, NULL, n);
 }
 
+// Expert identity and placement (plan P4). moe_expert_weight() is the one
+// lookup between an expert's logical identity and its bytes: the CPU
+// executors (moe_token_experts, moe_grouped_expert), Gemma's dual branch, the
+// backward's recompute (lbw_recompute, lbw_ffn_and_output) and the CUDA
+// binding all take the view it returns and none computes an address. Today
+// the placement is static (a host view into the mapped file, or a split
+// export's own tensor). A per-expert cache, VRAM residency or host staging,
+// would resolve here, keyed by the identity the view stands for: the file's
+// identity (model_file_identity), the layer, e, the role (which), the tensor
+// type and layout, and the adapter where cached bytes depend on one. The
+// router's decision reaches the executors as explicit inputs (sel/selw per
+// row, in the router's order, which is also the order the outputs are
+// summed in), so a cache changes where the bytes come from, never which
+// experts run or how their outputs combine. Grouped staging would enter at
+// moe_grouped_prefetch(), the one point that knows a prefill's whole routing
+// before any expert runs.
 gguf_tensor moe_expert_weight(const layer_t *ly, int which, int e,
                               int n_embd, int n_ff_exp) {
     if (ly->moe_split) {
@@ -6565,37 +6590,57 @@ static void shexp_add(model_t *m, const layer_t *ly, const float *in,
     }
 }
 
-static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
+// RUNNER_MOE_PROBE's lookback: row b's router run again on the inputs of
+// one, two and three layers back (the probe's history), each choice printed
+// against the one this layer made (sel).
+static void moe_probe_replay(model_t *m, const layer_t *ly, int b, const int *sel) {
+    if (m->moe_probe_depth <= 0) return;
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
-    int nff = m->n_ff_exp;
-    bool probe = moe_probe_file() != NULL;
-    bool trace = moe_trace_file() != NULL;
     int layer_idx = (int)(ly - m->layers);
-    int   sel[256];
-    float selw[256];
-    float norms[MOE_EXPERTS_MAX];
-    DT_BEGIN;
-    moe_route(m, ly, xin, n_embd, ne, used, sel, selw, true);
-    model_moe_prefetch(m, ly, sel, used);
-    DT_MARK(DT_ROUTE);
-    // RUNNER_MOE_PROBE: same lookback replay as gemma_route's caller — see
-    // gemma_moe_ffn's comment. xin gets overwritten in place by this
-    // function's last line, so the push below must happen before that, and
-    // the probe's extra moe_route calls (reading history) must happen before
-    // xin's real content is touched at all — both hold here since neither
-    // occurs until after this block.
-    if (probe && m->moe_probe_depth > 0) {
-        size_t slotsz = (size_t)m->n_batch * n_embd;
-        int max_d = m->moe_probe_depth < 3 ? m->moe_probe_depth : 3;
-        for (int d = 1; d <= max_d; d++) {
-            const float *h_old = m->moe_probe_hist + (size_t)(d - 1) * slotsz;
-            int psel[256]; float pselw[256];
-            moe_route(m, ly, h_old, n_embd, ne, used, psel, pselw, false);
-            moe_probe_emit(m->fwd_pos, layer_idx, d, psel, sel, used);
-        }
+    size_t slotsz = (size_t)m->n_batch * n_embd;
+    int max_d = m->moe_probe_depth < 3 ? m->moe_probe_depth : 3;
+    for (int d = 1; d <= max_d; d++) {
+        const float *h_old = m->moe_probe_hist +
+                             (size_t)(d - 1) * slotsz + (size_t)b * n_embd;
+        int psel[256]; float pselw[256];
+        moe_route(m, ly, h_old, n_embd, ne, used, psel, pselw, false);
+        moe_probe_emit(m->fwd_pos + b, layer_idx, d, psel, sel, used);
     }
-    if (probe) moe_probe_push(m, xin, 1, n_embd, n_embd);
-    for (int i = 0; i < n_embd; i++) m->moe_out[i] = 0.0f;
+}
+
+// One expert row's activation into g (the down projection's input), from its
+// up row u and, when the experts are gated, its gate row g. nemotron_h_moe's
+// experts are gate-less: relu(up)^2, the shape its dense MLP uses. Otherwise
+// gpt-oss's per-expert biases are added to this expert's own gate and up
+// before the activation (its down bias comes later, before the routing
+// weight scales the output: llama.cpp adds down_exps_b, then multiplies by
+// the weights). Shared by the per-token and the grouped path.
+NUM_STAGE void moe_expert_act_row(const model_t *m, const layer_t *ly, int e,
+                                  float *g, float *u) {
+    int nff = m->n_ff_exp;
+    if (m->ffn_relu2) {
+        for (int j = 0; j < nff; j++) {
+            float r = u[j] > 0.0f ? u[j] : 0.0f;
+            g[j] = r * r;
+        }
+        return;
+    }
+    if (ly->ffn_gate_exps_b)
+        for (int j = 0; j < nff; j++)
+            g[j] += ly->ffn_gate_exps_b[(size_t)e * nff + j];
+    if (ly->ffn_up_exps_b)
+        for (int j = 0; j < nff; j++)
+            u[j] += ly->ffn_up_exps_b[(size_t)e * nff + j];
+    for (int j = 0; j < nff; j++)
+        g[j] = gated_act(m->ffn_act, g[j], u[j]);
+}
+
+// Every selected expert's gate, up and down for the one token in xin: the
+// down outputs land in moe_dexp's rows in the router's order.
+NUM_STAGE void moe_token_experts(model_t *m, const layer_t *ly, const float *xin,
+                                 const int *sel) {
+    int n_embd = m->n_embd, used = m->n_expert_used;
+    int nff = m->n_ff_exp;
     // Every selected expert's projections go out as a few pool dispatches
     // rather than three per expert: with ten experts a layer and 48 layers
     // that was 1,440 fork/join barriers a token on matrices that take
@@ -6628,27 +6673,7 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
     for (int t = 0; t < used; t++) {
         int e = sel[t];
         float *g = m->moe_gate + (size_t)t * nff, *u = m->moe_up + (size_t)t * nff;
-        if (m->ffn_relu2) {
-            // nemotron_h_moe: gate-less squared-ReLU experts, no gate branch —
-            // relu(up)^2 into moe_gate (the down-projection input), same shape
-            // the dense nemotron MLP uses.
-            for (int j = 0; j < nff; j++) {
-                float r = u[j] > 0.0f ? u[j] : 0.0f;
-                g[j] = r * r;
-            }
-        } else {
-        // gpt-oss per-expert biases: added to this expert's own gate/up before
-        // the activation, and to its down output BEFORE the routing weight
-        // scales it (llama.cpp adds down_exps_b, then multiplies by weights).
-        if (ly->ffn_gate_exps_b)
-            for (int j = 0; j < nff; j++)
-                g[j] += ly->ffn_gate_exps_b[(size_t)e * nff + j];
-        if (ly->ffn_up_exps_b)
-            for (int j = 0; j < nff; j++)
-                u[j] += ly->ffn_up_exps_b[(size_t)e * nff + j];
-        for (int j = 0; j < nff; j++)
-            g[j] = gated_act(m->ffn_act, g[j], u[j]);
-        }
+        moe_expert_act_row(m, ly, e, g, u);
     }
     // phase 2: every expert's down projection, each from its own gated vector
     {
@@ -6664,6 +6689,30 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
             }
         }
     }
+}
+
+static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
+    int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
+    bool probe = moe_probe_file() != NULL;
+    bool trace = moe_trace_file() != NULL;
+    int layer_idx = (int)(ly - m->layers);
+    int   sel[256];
+    float selw[256];
+    float norms[MOE_EXPERTS_MAX];
+    DT_BEGIN;
+    moe_route(m, ly, xin, n_embd, ne, used, sel, selw, true);
+    model_moe_prefetch(m, ly, sel, used);
+    DT_MARK(DT_ROUTE);
+    // RUNNER_MOE_PROBE: same lookback replay as gemma_route's caller — see
+    // gemma_moe_ffn's comment. xin gets overwritten in place by this
+    // function's last line, so the push below must happen before that, and
+    // the probe's extra moe_route calls (reading history) must happen before
+    // xin's real content is touched at all — both hold here since neither
+    // occurs until after this block.
+    if (probe) moe_probe_replay(m, ly, 0, sel);
+    if (probe) moe_probe_push(m, xin, 1, n_embd, n_embd);
+    for (int i = 0; i < n_embd; i++) m->moe_out[i] = 0.0f;
+    moe_token_experts(m, ly, xin, sel);
     for (int t = 0; t < used; t++) {
         int e = sel[t];
         float w = selw[t];
@@ -6682,50 +6731,31 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
     for (int i = 0; i < n_embd; i++) xin[i] = m->moe_out[i];
 }
 
-// Prefill path: route every token, then run each expert ONCE over all the
-// tokens routed to it as a single batched matmul (the weight rows dequantize
-// once and stream across every token) instead of one token at a time. Same
-// math as the per-token path — the router, SwiGLU, and weights are identical,
-// and each token sums its experts in the ROUTER's order (moe_dall holds the
-// per-expert outputs until the whole layer has run), exactly the per-token
-// accumulation. Below MV_SMALL_BATCH rows per expert the dots are the
-// per-token dots too, so a speculation verify batch (K+1 rows) is byte-equal
-// to decoding its rows one at a time; the ascending-expert order this path
-// used before was not (Qwen3.8-Flash-Next --draft-lookup changed the greedy
-// text, 2026-10-07). Big prefill throughput win; decode is untouched.
-static void moe_ffn_grouped(model_t *m, const layer_t *ly, int n, int xdim) {
+// Every row routed (and, under RUNNER_MOE_PROBE, replayed against the layers
+// before), its output row zeroed, and the probe's history pushed.
+NUM_STAGE void moe_grouped_route(model_t *m, const layer_t *ly, int n, int xdim,
+                                 bool probe) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
-    int nff = m->n_ff_exp;
-    bool probe = moe_probe_file() != NULL;
-    bool trace = moe_trace_file() != NULL;
-    int layer_idx = (int)(ly - m->layers);
     for (int b = 0; b < n; b++) {
         float *xin = m->xb + (size_t)b * xdim;
         moe_route(m, ly, xin, n_embd, ne, used,
                   m->moe_sel + (size_t)b * used, m->moe_selw + (size_t)b * used, true);
         // RUNNER_MOE_PROBE: replay against 1/2/3 layers back, before m->xb
         // is overwritten with this layer's FFN output further below.
-        if (probe && m->moe_probe_depth > 0) {
-            size_t slotsz = (size_t)m->n_batch * n_embd;
-            int max_d = m->moe_probe_depth < 3 ? m->moe_probe_depth : 3;
-            for (int d = 1; d <= max_d; d++) {
-                const float *h_old = m->moe_probe_hist +
-                                     (size_t)(d - 1) * slotsz + (size_t)b * n_embd;
-                int psel[256]; float pselw[256];
-                moe_route(m, ly, h_old, n_embd, ne, used, psel, pselw, false);
-                moe_probe_emit(m->fwd_pos + b, layer_idx, d, psel,
-                               m->moe_sel + (size_t)b * used, used);
-            }
-        }
+        if (probe) moe_probe_replay(m, ly, b, m->moe_sel + (size_t)b * used);
         float *out = m->moe_out_b + (size_t)b * n_embd;
         for (int i = 0; i < n_embd; i++) out[i] = 0.0f;
     }
     if (probe) moe_probe_push(m, m->xb, n, n_embd, xdim);
-    // Prefill knows the WHOLE batch's routing before any expert runs, so this
-    // is the one place the prefetch gets real lead time: hand the union of
-    // selected experts to the OS up front and the reads overlap the compute
-    // that follows. Decode has no such luxury — routing there is inherently
-    // just-in-time.
+}
+
+// Prefill knows the WHOLE batch's routing before any expert runs, so this
+// is the one place the prefetch gets real lead time: hand the union of
+// selected experts to the OS up front and the reads overlap the compute
+// that follows. Decode has no such luxury — routing there is inherently
+// just-in-time.
+static void moe_grouped_prefetch(model_t *m, const layer_t *ly, int n) {
+    int used = m->n_expert_used;
     if (m->moe_prefetch) {
         int un[256], nun = 0;
         for (int b = 0; b < n; b++) {
@@ -6738,88 +6768,80 @@ static void moe_ffn_grouped(model_t *m, const layer_t *ly, int n, int xdim) {
         }
         model_moe_prefetch(m, ly, un, nun);
     }
-    for (int e = 0; e < ne; e++) {
-        int cnt = 0;
-        for (int b = 0; b < n; b++) {
-            const int   *sel  = m->moe_sel  + (size_t)b * used;
-            const float *selw = m->moe_selw + (size_t)b * used;
-            for (int t = 0; t < used; t++) {
-                if (sel[t] != e) continue;
-                m->moe_gidx[cnt] = b;
-                m->moe_gw[cnt]   = selw[t];
-                memcpy(m->moe_gath + (size_t)cnt * n_embd,
-                       m->xb + (size_t)b * xdim, (size_t)n_embd * sizeof(float));
-                cnt++;
-                break;                                   // top-k experts are distinct
-            }
+}
+
+// Expert e over every row routed to it: the rows gathered, one batched
+// gate, up and down, the activation per row, and each row's output parked
+// in that row's router slot (moe_dall), so the sum below keeps the router's
+// order.
+NUM_STAGE void moe_grouped_expert(model_t *m, const layer_t *ly, int e, int n,
+                                  int xdim, bool trace) {
+    int n_embd = m->n_embd, used = m->n_expert_used;
+    int nff = m->n_ff_exp;
+    int cnt = 0;
+    for (int b = 0; b < n; b++) {
+        const int   *sel  = m->moe_sel  + (size_t)b * used;
+        const float *selw = m->moe_selw + (size_t)b * used;
+        for (int t = 0; t < used; t++) {
+            if (sel[t] != e) continue;
+            m->moe_gidx[cnt] = b;
+            m->moe_gw[cnt]   = selw[t];
+            memcpy(m->moe_gath + (size_t)cnt * n_embd,
+                   m->xb + (size_t)b * xdim, (size_t)n_embd * sizeof(float));
+            cnt++;
+            break;                                   // top-k experts are distinct
         }
-        if (cnt == 0) continue;
-        gguf_tensor uv = moe_expert_weight(ly, 1, e, n_embd, nff);
-        gguf_tensor dv = moe_expert_weight(ly, 2, e, n_embd, nff);
-        matvec_b(m->tp, m->moe_up_b,   nff, &uv, m->moe_gath,
-                 n_embd, n_embd, nff, NULL, cnt);
-        const float *db = ly->ffn_down_exps_b
-                            ? ly->ffn_down_exps_b + (size_t)e * n_embd : NULL;
-        if (m->ffn_relu2) {
-            // gate-less squared-ReLU experts (nemotron_h_moe): relu(up)^2 into
-            // moe_gate_b, no gate projection or per-expert gate/up biases.
-            for (int c = 0; c < cnt; c++) {
-                float *g = m->moe_gate_b + (size_t)c * nff;
-                float *u = m->moe_up_b + (size_t)c * nff;
-                for (int j = 0; j < nff; j++) {
-                    float r = u[j] > 0.0f ? u[j] : 0.0f;
-                    g[j] = r * r;
-                }
-            }
-        } else {
+    }
+    if (cnt == 0) return;
+    gguf_tensor uv = moe_expert_weight(ly, 1, e, n_embd, nff);
+    gguf_tensor dv = moe_expert_weight(ly, 2, e, n_embd, nff);
+    matvec_b(m->tp, m->moe_up_b,   nff, &uv, m->moe_gath,
+             n_embd, n_embd, nff, NULL, cnt);
+    const float *db = ly->ffn_down_exps_b
+                        ? ly->ffn_down_exps_b + (size_t)e * n_embd : NULL;
+    if (!m->ffn_relu2) {
         gguf_tensor gv = moe_expert_weight(ly, 0, e, n_embd, nff);
         matvec_b(m->tp, m->moe_gate_b, nff, &gv, m->moe_gath,
                  n_embd, n_embd, nff, NULL, cnt);
-        // per-expert biases, identical ordering to the per-token path above:
-        // gate/up before the activation, down before the routing weight
-        const float *gb = ly->ffn_gate_exps_b
-                            ? ly->ffn_gate_exps_b + (size_t)e * nff : NULL;
-        const float *ub = ly->ffn_up_exps_b
-                            ? ly->ffn_up_exps_b + (size_t)e * nff : NULL;
-        for (int c = 0; c < cnt; c++) {
-            float *g = m->moe_gate_b + (size_t)c * nff;
-            float *u = m->moe_up_b + (size_t)c * nff;
-            if (gb) for (int j = 0; j < nff; j++) g[j] += gb[j];
-            if (ub) for (int j = 0; j < nff; j++) u[j] += ub[j];
-            for (int j = 0; j < nff; j++)
-                g[j] = gated_act(m->ffn_act, g[j], u[j]);
+    }
+    for (int c = 0; c < cnt; c++)
+        moe_expert_act_row(m, ly, e, m->moe_gate_b + (size_t)c * nff,
+                           m->moe_up_b + (size_t)c * nff);
+    matvec_b(m->tp, m->moe_dexp_b, n_embd, &dv, m->moe_gate_b,
+             nff, nff, n_embd, NULL, cnt);
+    for (int c = 0; c < cnt; c++) {
+        int b = m->moe_gidx[c];
+        float *out = m->moe_out_b + (size_t)b * n_embd;
+        const float *dx = m->moe_dexp_b + (size_t)c * n_embd;
+        float w = m->moe_gw[c];
+        if (trace) {
+            float ss = 0.0f;
+            if (db) for (int i = 0; i < n_embd; i++) { float v = dx[i] + db[i]; ss += v * v; }
+            else    for (int i = 0; i < n_embd; i++) ss += dx[i] * dx[i];
+            // this expert is at whichever slot t routed token b picked it
+            // (sel[t]==e) — moe_route's slots are few, a linear search is
+            // cheap and only runs when tracing is already on
+            const int *sel = m->moe_sel + (size_t)b * used;
+            for (int t = 0; t < used; t++)
+                if (sel[t] == e) { m->moe_trace_norms[(size_t)b * used + t] = sqrtf(ss); break; }
         }
-        }
-        matvec_b(m->tp, m->moe_dexp_b, n_embd, &dv, m->moe_gate_b,
-                 nff, nff, n_embd, NULL, cnt);
-        for (int c = 0; c < cnt; c++) {
-            int b = m->moe_gidx[c];
-            float *out = m->moe_out_b + (size_t)b * n_embd;
-            const float *dx = m->moe_dexp_b + (size_t)c * n_embd;
-            float w = m->moe_gw[c];
-            if (trace) {
-                float ss = 0.0f;
-                if (db) for (int i = 0; i < n_embd; i++) { float v = dx[i] + db[i]; ss += v * v; }
-                else    for (int i = 0; i < n_embd; i++) ss += dx[i] * dx[i];
-                // this expert is at whichever slot t routed token b picked it
-                // (sel[t]==e) — moe_route's slots are few, a linear search is
-                // cheap and only runs when tracing is already on
-                const int *sel = m->moe_sel + (size_t)b * used;
-                for (int t = 0; t < used; t++)
-                    if (sel[t] == e) { m->moe_trace_norms[(size_t)b * used + t] = sqrtf(ss); break; }
-            }
-            (void)out; (void)w;
-            // park this expert's output in the token's router slot
-            {
-                const int *sel = m->moe_sel + (size_t)b * used;
-                int t = 0;
-                while (t < used - 1 && sel[t] != e) t++;
-                float *slot = m->moe_dall + ((size_t)b * used + t) * n_embd;
-                if (db) for (int i = 0; i < n_embd; i++) slot[i] = dx[i] + db[i];
-                else    memcpy(slot, dx, sizeof(float) * (size_t)n_embd);
-            }
+        (void)out; (void)w;
+        // park this expert's output in the token's router slot
+        {
+            const int *sel = m->moe_sel + (size_t)b * used;
+            int t = 0;
+            while (t < used - 1 && sel[t] != e) t++;
+            float *slot = m->moe_dall + ((size_t)b * used + t) * n_embd;
+            if (db) for (int i = 0; i < n_embd; i++) slot[i] = dx[i] + db[i];
+            else    memcpy(slot, dx, sizeof(float) * (size_t)n_embd);
         }
     }
+}
+
+NUM_STAGE void moe_grouped_sum(model_t *m, const layer_t *ly, int n, int xdim,
+                               bool trace) {
+    int n_embd = m->n_embd, used = m->n_expert_used;
+    int layer_idx = (int)(ly - m->layers);
     // per token, the experts in the router's order: the per-token path's sum
     for (int b = 0; b < n; b++) {
         float *out = m->moe_out_b + (size_t)b * n_embd;
@@ -6838,6 +6860,27 @@ static void moe_ffn_grouped(model_t *m, const layer_t *ly, int n, int xdim) {
     for (int b = 0; b < n; b++)
         memcpy(m->xb + (size_t)b * xdim, m->moe_out_b + (size_t)b * n_embd,
                (size_t)n_embd * sizeof(float));
+}
+
+// Prefill path: route every token, then run each expert ONCE over all the
+// tokens routed to it as a single batched matmul (the weight rows dequantize
+// once and stream across every token) instead of one token at a time. Same
+// math as the per-token path — the router, SwiGLU, and weights are identical,
+// and each token sums its experts in the ROUTER's order (moe_dall holds the
+// per-expert outputs until the whole layer has run), exactly the per-token
+// accumulation. Below MV_SMALL_BATCH rows per expert the dots are the
+// per-token dots too, so a speculation verify batch (K+1 rows) is byte-equal
+// to decoding its rows one at a time; the ascending-expert order this path
+// used before was not (Qwen3.8-Flash-Next --draft-lookup changed the greedy
+// text, 2026-10-07). Big prefill throughput win; decode is untouched.
+static void moe_ffn_grouped(model_t *m, const layer_t *ly, int n, int xdim) {
+    bool probe = moe_probe_file() != NULL;
+    bool trace = moe_trace_file() != NULL;
+    moe_grouped_route(m, ly, n, xdim, probe);
+    moe_grouped_prefetch(m, ly, n);
+    for (int e = 0; e < ly->n_expert; e++)
+        moe_grouped_expert(m, ly, e, n, xdim, trace);
+    moe_grouped_sum(m, ly, n, xdim, trace);
 }
 
 // gemma-4 fused gate_up expert slice for expert e: {n_embd, 2*n_ff_exp} (first
@@ -7177,15 +7220,6 @@ bool model_recurrent_restore_mark(model_t *m) {
 void model_recurrent_mark_drop(model_t *m) {
     if (m) m->ssm_mark_pos = -1;
 }
-
-// A numerical stage of a hot or byte-pinned routine: split out to be read,
-// forced back into its caller to be compiled. Under the default build's
-// -ffast-math the compiler may contract and reassociate a loop differently
-// once it stands in a function of its own, and then the output's bytes move
-// with the code's layout (the GELU loop of a dense FFN did, on the Gemma
-// families; the portable T3 build is exact either way). Inlined, every stage
-// compiles in its caller's context, as the single function did.
-#define NUM_STAGE static inline __attribute__((always_inline))
 
 // ------------------------------------------------ LoRA adapters (adaptation D2)
 // Frozen quantized base + small f32 low-rank deltas, applied on the CPU dense
