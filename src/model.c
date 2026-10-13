@@ -4223,13 +4223,9 @@ static int model_gpu_batch_default(void) {
     return model_batch_default_for(plat_ram_bytes());
 }
 
-static bool model_alloc_runtime(model_t *m, const model_params *p) {
-    // The gguf handle and the architecture name come off the model rather than
-    // out of the bind function's locals, because on a shared-weights hit the
-    // bind function never ran for this instance.
-    gguf_file *g = &m->gf;
-    const char *arch = m->arch;
-    // runtime buffers
+// What this instance asks of the GPU split: the VRAM cap, a forced layer
+// count, and the per-layer expert placement under --cpu-moe.
+static bool runtime_placement(model_t *m, const model_params *p) {
     m->reserve_vram_pct = p->reserve_vram_pct;
     m->gpu_layers_override = p->gpu_layers_override;
     m->cpu_moe = p->cpu_moe && m->n_expert > 0;
@@ -4244,6 +4240,12 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         model_moe_place_host(m, m->cpu_moe_layers);
         m->moe_host[m->n_layer] = true;   // the NextN/MTP block's experts, if any, stay on the host
     }
+    return true;
+}
+
+// The context and the prompt batch: the request's, or the reservation auto-fit
+// over the RAM and VRAM budgets, or the default; the batch never exceeds it.
+static void runtime_context(model_t *m, const model_params *p) {
     int n_ctx = p->n_ctx;
     if (n_ctx <= 0 && (p->reserve_vram_pct > 0 || p->reserve_ram_pct > 0)) {
         // Reservation auto-fit: size the context to fill whatever the
@@ -4301,7 +4303,11 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     int batch_default = p->gpu_mode == GPU_AUTO ? model_gpu_batch_default() : 64;
     m->n_batch = p->n_batch > 0 ? p->n_batch : batch_default;
     if (m->n_batch > n_ctx) m->n_batch = n_ctx;
+}
 
+// The KV cache's layout: the sliding-window ring (opt-in), every layer's
+// offset into the cache, the MTP head's region, and tied-V's K table (opt-in).
+static bool runtime_kv_layout(model_t *m, const model_params *p, int n_ctx) {
     // A sliding layer clamps its attention start to p - swa_window + 1, so rows
     // older than the window are written once and never read. RUNNER_KV_RING=1
     // gives those layers only the rows they can reach and indexes them modulo
@@ -4320,10 +4326,6 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     // build on the CPU path was bit-identical to flat. CUDA's kernels take the
     // ring through attn_args and kv_slot(); Metal's do not, so a Metal build
     // refuses rather than returning wrong numbers.
-    {
-        const char *e = getenv("RUNNER_ATTN_SPLIT");
-        m->attn_split = e && !strcmp(e, "0") ? -1 : 0;
-    }
     m->kv_ring = 0;
     if (m->swa_window > 0 && m->l_is_swa) {
         const char *e = getenv("RUNNER_KV_RING");
@@ -4337,15 +4339,6 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
             if (rows < n_ctx) m->kv_ring = rows;
         }
     }
-    int q_dim = 0, kv_dim = 0;
-    for (int l = 0; l < m->n_layer; l++) {
-        if (model_q_dim(m, l) > q_dim)   q_dim  = model_q_dim(m, l);
-        if (model_kv_dim(m, l) > kv_dim) kv_dim = model_kv_dim(m, l);
-    }
-    int xdim   = q_dim > m->n_embd ? q_dim : m->n_embd;
-    m->xdim    = xdim;   // cached so the forward paths reuse it (RNC-3)
-    int B      = m->n_batch;
-
     // per-layer element offsets into the (possibly heterogeneous) KV cache
     m->kv_off = malloc(sizeof(size_t) * (m->n_layer + 2));
     if (!m->kv_off) return false;
@@ -4409,11 +4402,13 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
             }
         }
     }
-    // the V table always spans the head's region too; the tied-V K table
-    // (kv_off_k, n_layer+1 entries) exists only when the head is refused
-    size_t kv_bytes = model_v_boundary_bytes(m, m->n_layer + 1);
-    size_t k_bytes  = m->kv_off_k ? model_k_boundary_bytes(m, m->n_layer)
-                                  : model_k_boundary_bytes(m, m->n_layer + 1);
+    return true;
+}
+
+// This instance's buffers: the KV caches, the activations, every family's
+// scratch and recurrent state, the expert scratch; refused together.
+static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
+                            int xdim, size_t kv_bytes, size_t k_bytes) {
     m->kcache = calloc(1, k_bytes ? k_bytes : 1);
     m->vcache = calloc(1, kv_bytes);
     m->kv_owner = KV_OWNER_MALLOC;
@@ -4593,7 +4588,13 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
                 n_ctx, 2.0 * kv_bytes / 1e6);
         return false; // model_load unwinds the partial allocation before returning
     }
+    return true;
+}
 
+// The worker pool, sized for the backend this model decodes on, and the
+// rope tables for this instance's context.
+static bool runtime_threads_rope(model_t *m, gguf_file *g, const char *arch,
+                                 const model_params *p) {
     int pool_threads = p->n_threads > 0 ? p->n_threads : 1;
     if (m->qwen35 && p->cpu_fallback_threads > pool_threads) {
         // This architecture decodes on the CPU alone (no recurrent GPU
@@ -4620,131 +4621,175 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     }
     if (!rope_setup(m, g, arch, p->rope_base, p->rope_scale,
                     p->yarn_factor)) return false;
+    return true;
+}
 
-    if (p->gpu_mode == GPU_AUTO) {
-        // Two kinds of model a GPU backend here would serve wrongly, so they
-        // never reach one. A removed sublayer is omitted by the CPU forward
-        // and the Metal walk, but the CUDA decode loops still drive every
-        // block's attention and FFN and would read a NULL weight. And every
-        // device norm kernel is an RMSNorm: a LayerNorm family offloaded onto
-        // one would centre nothing and drop its bias, the defect this arch
-        // carried on the CPU until 2026-09-07.
-        //
-        // Both used to end the run with an error, which made the DEFAULT
-        // command fail (--gpu auto is the default, and it is the only GPU
-        // setting there is): `runner -m stablelm.gguf` on any Mac or GPU box
-        // printed "rerun with --gpu off" and stopped. `auto` means "on the GPU
-        // where the GPU serves this model correctly", so they run on the CPU
-        // with a line saying why, as every backend gap reported by gpu_init
-        // already does.
-        char gname[128];
-        const char *cpu_why = NULL;
-        if (gpu_available(gname, sizeof(gname))) {
-            if (m->n_removed > 0 && !gpu_removed_sublayers_ok())
-                cpu_why = "this backend does not omit removed sublayers "
-                          "(--remove-sublayer) yet";
-            else if (m->norm_layernorm)
-                cpu_why = "this model normalises with LayerNorm and the GPU "
-                          "backends implement RMSNorm only";
-        }
-        if (cpu_why) {
-            fprintf(stderr, "gpu: %s — using CPU\n", cpu_why);
-            goto gpu_auto_done;
-        }
-        // Register the intended VRAM footprint before allocating any of it, so
-        // a concurrent runner sees this claim rather than discovering it as a
-        // mysteriously shrunken free figure. CPU-only runs never get here, so
-        // they are never accounted and never refused.
-        if (!model_vram_claim(m, p, kv_bytes)) return false;
-        size_t vfree_before = 0, vtotal_before = 0;
-        gpu_mem_info(&vfree_before, &vtotal_before);
-        gpu_init(m);                        // sets m->gpu on success
-        // --cpu-moe auto spends the budget on expert banks by an estimate; when
-        // the device then runs out of memory during init, hold back one more
-        // bank and try again before giving the model to the CPU
-        while (!m->gpu && m->cpu_moe && m->cpu_moe_layers == CPU_MOE_AUTO &&
-               m->moe_auto_trim < m->moe_auto_placed && m->moe_auto_trim < 4) {
-            m->moe_auto_trim++;
-            fprintf(stderr, "gpu: device init failed with %d expert layers on the GPU; "
-                            "retrying with %d (--cpu-moe auto)\n",
-                    m->moe_auto_placed - m->moe_auto_trim + 1,
-                    m->moe_auto_placed - m->moe_auto_trim);
-            gpu_init(m);
-        }
-        model_vram_commit(m, vfree_before);
-        // A context that FITS but evicts weights is the silent case. Refusing
-        // one that cannot fit is loud and correct — `-c 1000000` says it needs
-        // 131072 MB of KV cache and exits non-zero. But a context that merely
-        // costs layers is accepted without comment, and the bill arrives as
-        // throughput: `-c 32768` on an 8B model takes decode from 66.5 to
-        // 8.6 tok/s on an 8 GB card, because a 4.3 GB cache pushed layers onto
-        // the host. The split line already reports the placement; nothing
-        // connected it to the context that caused it.
-        //
-        // Only when the KV is actually a big share of what is on the device —
-        // a partial split for any other reason (a model simply larger than the
-        // card) is not a trade the user can take back by lowering -c.
-        if (m->gpu) {
-            size_t kv_dev = model_kv_boundary_bytes_sum(m, m->gpu_layers);
-            uint64_t wb = model_cuda_weight_estimate(m, p);
-            if (model_kv_trade_note(m->gpu_layers, m->n_layer, kv_dev, wb)) {
-                fprintf(stderr,
-                        "note: the KV cache for ctx %d is %.2f GB on the device"
-                        " and %d of %d layers ran out of room because of it —"
-                        " a smaller -c%s moves layers back\n",
-                        m->n_ctx, kv_dev / 1e9, m->n_layer - m->gpu_layers,
-                        m->n_layer, (m->kv_fp4 || m->kv_split) ? "" : m->kv_q8
-                            ? " or --kv k8v4 (about a quarter less)"
-                            : " or --kv q8 (about half)");
-            }
-        }
-    gpu_auto_done: ;
+// A GPU backend for this instance, where it serves the model correctly: the
+// VRAM claim, the device upload with --cpu-moe auto's retries, and the note
+// when the KV cache is what pushed layers off the device.
+static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_bytes) {
+    // Two kinds of model a GPU backend here would serve wrongly, so they
+    // never reach one. A removed sublayer is omitted by the CPU forward
+    // and the Metal walk, but the CUDA decode loops still drive every
+    // block's attention and FFN and would read a NULL weight. And every
+    // device norm kernel is an RMSNorm: a LayerNorm family offloaded onto
+    // one would centre nothing and drop its bias, the defect this arch
+    // carried on the CPU until 2026-09-07.
+    //
+    // Both used to end the run with an error, which made the DEFAULT
+    // command fail (--gpu auto is the default, and it is the only GPU
+    // setting there is): `runner -m stablelm.gguf` on any Mac or GPU box
+    // printed "rerun with --gpu off" and stopped. `auto` means "on the GPU
+    // where the GPU serves this model correctly", so they run on the CPU
+    // with a line saying why, as every backend gap reported by gpu_init
+    // already does.
+    char gname[128];
+    const char *cpu_why = NULL;
+    if (gpu_available(gname, sizeof(gname))) {
+        if (m->n_removed > 0 && !gpu_removed_sublayers_ok())
+            cpu_why = "this backend does not omit removed sublayers "
+                      "(--remove-sublayer) yet";
+        else if (m->norm_layernorm)
+            cpu_why = "this model normalises with LayerNorm and the GPU "
+                      "backends implement RMSNorm only";
     }
+    if (cpu_why) {
+        fprintf(stderr, "gpu: %s — using CPU\n", cpu_why);
+        return true;
+    }
+    // Register the intended VRAM footprint before allocating any of it, so
+    // a concurrent runner sees this claim rather than discovering it as a
+    // mysteriously shrunken free figure. CPU-only runs never get here, so
+    // they are never accounted and never refused.
+    if (!model_vram_claim(m, p, kv_bytes)) return false;
+    size_t vfree_before = 0, vtotal_before = 0;
+    gpu_mem_info(&vfree_before, &vtotal_before);
+    gpu_init(m);                        // sets m->gpu on success
+    // --cpu-moe auto spends the budget on expert banks by an estimate; when
+    // the device then runs out of memory during init, hold back one more
+    // bank and try again before giving the model to the CPU
+    while (!m->gpu && m->cpu_moe && m->cpu_moe_layers == CPU_MOE_AUTO &&
+           m->moe_auto_trim < m->moe_auto_placed && m->moe_auto_trim < 4) {
+        m->moe_auto_trim++;
+        fprintf(stderr, "gpu: device init failed with %d expert layers on the GPU; "
+                        "retrying with %d (--cpu-moe auto)\n",
+                m->moe_auto_placed - m->moe_auto_trim + 1,
+                m->moe_auto_placed - m->moe_auto_trim);
+        gpu_init(m);
+    }
+    model_vram_commit(m, vfree_before);
+    // A context that FITS but evicts weights is the silent case. Refusing
+    // one that cannot fit is loud and correct — `-c 1000000` says it needs
+    // 131072 MB of KV cache and exits non-zero. But a context that merely
+    // costs layers is accepted without comment, and the bill arrives as
+    // throughput: `-c 32768` on an 8B model takes decode from 66.5 to
+    // 8.6 tok/s on an 8 GB card, because a 4.3 GB cache pushed layers onto
+    // the host. The split line already reports the placement; nothing
+    // connected it to the context that caused it.
+    //
+    // Only when the KV is actually a big share of what is on the device —
+    // a partial split for any other reason (a model simply larger than the
+    // card) is not a trade the user can take back by lowering -c.
+    if (m->gpu) {
+        size_t kv_dev = model_kv_boundary_bytes_sum(m, m->gpu_layers);
+        uint64_t wb = model_cuda_weight_estimate(m, p);
+        if (model_kv_trade_note(m->gpu_layers, m->n_layer, kv_dev, wb)) {
+            fprintf(stderr,
+                    "note: the KV cache for ctx %d is %.2f GB on the device"
+                    " and %d of %d layers ran out of room because of it —"
+                    " a smaller -c%s moves layers back\n",
+                    m->n_ctx, kv_dev / 1e9, m->n_layer - m->gpu_layers,
+                    m->n_layer, (m->kv_fp4 || m->kv_split) ? "" : m->kv_q8
+                        ? " or --kv k8v4 (about a quarter less)"
+                        : " or --kv q8 (about half)");
+        }
+    }
+    return true;
+}
 
-    if (p->verbose) {
-        fprintf(stderr, "%-24s %s\n", "architecture", m->arch);
-        fprintf(stderr, "%-24s %d\n", "layers", m->n_layer);
-        fprintf(stderr, "%-24s %d\n", "embedding dim", m->n_embd);
-        fprintf(stderr, "%-24s %d (%d kv)\n", "heads", m->n_head, m->n_head_kv);
-        fprintf(stderr, "%-24s %d\n", "head dim", m->head_dim);
-        fprintf(stderr, "%-24s %d\n", "ffn dim", m->n_ff);
-        if (m->n_removed > 0) {
-            // which blocks run without which sublayer (attn:N / mlp:N, the
-            // --remove-sublayer spelling), so the banner says what the file is
-            fprintf(stderr, "%-24s ", "sublayers removed");
-            int shown = 0;
-            for (int l = 0; l < m->n_layer; l++) {
-                if (m->l_no_attn && m->l_no_attn[l])
-                    fprintf(stderr, "%sattn:%d", shown++ ? ", " : "", l);
-                if (m->l_no_ffn && m->l_no_ffn[l])
-                    fprintf(stderr, "%smlp:%d", shown++ ? ", " : "", l);
-            }
-            fprintf(stderr, " (CPU path; the removed attention reserves no KV rows)\n");
+// --verbose: the loaded geometry, the cache and the backend.
+static void runtime_report(const model_t *m, size_t kv_bytes, size_t k_bytes) {
+    fprintf(stderr, "%-24s %s\n", "architecture", m->arch);
+    fprintf(stderr, "%-24s %d\n", "layers", m->n_layer);
+    fprintf(stderr, "%-24s %d\n", "embedding dim", m->n_embd);
+    fprintf(stderr, "%-24s %d (%d kv)\n", "heads", m->n_head, m->n_head_kv);
+    fprintf(stderr, "%-24s %d\n", "head dim", m->head_dim);
+    fprintf(stderr, "%-24s %d\n", "ffn dim", m->n_ff);
+    if (m->n_removed > 0) {
+        // which blocks run without which sublayer (attn:N / mlp:N, the
+        // --remove-sublayer spelling), so the banner says what the file is
+        fprintf(stderr, "%-24s ", "sublayers removed");
+        int shown = 0;
+        for (int l = 0; l < m->n_layer; l++) {
+            if (m->l_no_attn && m->l_no_attn[l])
+                fprintf(stderr, "%sattn:%d", shown++ ? ", " : "", l);
+            if (m->l_no_ffn && m->l_no_ffn[l])
+                fprintf(stderr, "%smlp:%d", shown++ ? ", " : "", l);
         }
-        fprintf(stderr, "%-24s %d\n", "vocab", m->n_vocab);
-        fprintf(stderr, "%-24s %d (train %d)\n", "context", m->n_ctx, m->n_ctx_train);
-        fprintf(stderr, "%-24s %.1f MB (%s)\n", "kv cache", (kv_bytes + k_bytes) / 1e6,
-                m->kv_fp4 ? "fp4" : m->kv_split ? "q8_0 K, fp4 V"
-                : m->kv_q8 ? "q8_0" : "fp16");
-        int n_swa = model_kv_swa_layers(m);
-        size_t reach = model_kv_reachable_bytes(m);
-        // reach and the allocation both count K and V (per-side row bytes
-        // differ under --kv k8v4, so neither is "one side times two")
-        if (n_swa > 0 && reach < kv_bytes + k_bytes)
-            fprintf(stderr, "%-24s %.1f MB (%d of %d layers slide a %d-token "
-                    "window; the rest is written and never read back)\n",
-                    "kv reachable", reach / 1e6, n_swa, m->n_layer,
-                    m->swa_window);
-        if (model_kv_ring_active(m))
-            fprintf(stderr, "%-24s %d rows on %d sliding layers "
-                    "(no prefix cache, no partial rewind)\n",
-                    "kv ring", m->kv_ring, n_swa);
-        fprintf(stderr, "%-24s %d\n", "batch", m->n_batch);
-        gguf_tensor *w0 = m->layers[0].recurrent ? m->layers[0].wqkv
-                                                  : m->layers[0].wq;
-        fprintf(stderr, "%-24s %s\n", "weight type", ggml_type_name(w0->type));
-        fprintf(stderr, "%-24s %.1f\n", "rope base", m->rope_base);
+        fprintf(stderr, " (CPU path; the removed attention reserves no KV rows)\n");
     }
+    fprintf(stderr, "%-24s %d\n", "vocab", m->n_vocab);
+    fprintf(stderr, "%-24s %d (train %d)\n", "context", m->n_ctx, m->n_ctx_train);
+    fprintf(stderr, "%-24s %.1f MB (%s)\n", "kv cache", (kv_bytes + k_bytes) / 1e6,
+            m->kv_fp4 ? "fp4" : m->kv_split ? "q8_0 K, fp4 V"
+            : m->kv_q8 ? "q8_0" : "fp16");
+    int n_swa = model_kv_swa_layers(m);
+    size_t reach = model_kv_reachable_bytes(m);
+    // reach and the allocation both count K and V (per-side row bytes
+    // differ under --kv k8v4, so neither is "one side times two")
+    if (n_swa > 0 && reach < kv_bytes + k_bytes)
+        fprintf(stderr, "%-24s %.1f MB (%d of %d layers slide a %d-token "
+                "window; the rest is written and never read back)\n",
+                "kv reachable", reach / 1e6, n_swa, m->n_layer,
+                m->swa_window);
+    if (model_kv_ring_active(m))
+        fprintf(stderr, "%-24s %d rows on %d sliding layers "
+                "(no prefix cache, no partial rewind)\n",
+                "kv ring", m->kv_ring, n_swa);
+    fprintf(stderr, "%-24s %d\n", "batch", m->n_batch);
+    gguf_tensor *w0 = m->layers[0].recurrent ? m->layers[0].wqkv
+                                              : m->layers[0].wq;
+    fprintf(stderr, "%-24s %s\n", "weight type", ggml_type_name(w0->type));
+    fprintf(stderr, "%-24s %.1f\n", "rope base", m->rope_base);
+}
+
+static bool model_alloc_runtime(model_t *m, const model_params *p) {
+    // The gguf handle and the architecture name come off the model rather than
+    // out of the bind function's locals, because on a shared-weights hit the
+    // bind function never ran for this instance.
+    gguf_file *g = &m->gf;
+    const char *arch = m->arch;
+    // runtime buffers
+    if (!runtime_placement(m, p)) return false;
+    runtime_context(m, p);
+    int n_ctx = m->n_ctx;
+
+    {
+        const char *e = getenv("RUNNER_ATTN_SPLIT");
+        m->attn_split = e && !strcmp(e, "0") ? -1 : 0;
+    }
+    if (!runtime_kv_layout(m, p, n_ctx)) return false;
+    int q_dim = 0, kv_dim = 0;
+    for (int l = 0; l < m->n_layer; l++) {
+        if (model_q_dim(m, l) > q_dim)   q_dim  = model_q_dim(m, l);
+        if (model_kv_dim(m, l) > kv_dim) kv_dim = model_kv_dim(m, l);
+    }
+    int xdim   = q_dim > m->n_embd ? q_dim : m->n_embd;
+    m->xdim    = xdim;   // cached so the forward paths reuse it (RNC-3)
+    int B      = m->n_batch;
+    // the V table always spans the head's region too; the tied-V K table
+    // (kv_off_k, n_layer+1 entries) exists only when the head is refused
+    size_t kv_bytes = model_v_boundary_bytes(m, m->n_layer + 1);
+    size_t k_bytes  = m->kv_off_k ? model_k_boundary_bytes(m, m->n_layer)
+                                  : model_k_boundary_bytes(m, m->n_layer + 1);
+    if (!runtime_buffers(m, n_ctx, B, q_dim, kv_dim, xdim, kv_bytes, k_bytes))
+        return false;
+
+    if (!runtime_threads_rope(m, g, arch, p)) return false;
+
+    if (p->gpu_mode == GPU_AUTO && !runtime_gpu_admit(m, p, kv_bytes)) return false;
+
+    if (p->verbose) runtime_report(m, kv_bytes, k_bytes);
     return true;
 }
 
