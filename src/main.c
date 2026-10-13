@@ -1632,6 +1632,152 @@ static int run_shadow_mode(const char *model, bool yes) {
 #endif
 }
 
+// --caps: what this build and machine can do, as one JSON document, with no
+// model loaded. Every field comes from the build or a live query, never from
+// a flag, which is why it takes no options.
+static int run_caps(void) {
+    char gname[128];
+    bool has_gpu = gpu_available(gname, sizeof(gname));
+    printf("{\"version\":\"%s\",\"os\":\"%s\",\"arch\":\"%s\",\"cpu_cores\":%d,"
+           "\"ram_bytes\":%llu,\"ram_available_bytes\":%llu,\"gpu\":",
+           RUNNER_VERSION,
+#if defined(_WIN32)
+           "windows",
+#elif defined(__APPLE__)
+           "macos",
+#else
+           "linux",
+#endif
+           RUNNER_BUILD_ARCH,
+           plat_cpu_count(), (unsigned long long)plat_ram_bytes(),
+           // Not total RAM: "model file size <= RAM" is the test that
+           // passes right before a machine starts thrashing. A launcher
+           // needs to know what is actually free plus reclaimable, so it
+           // can refuse a model that will not stay resident.
+           (unsigned long long)plat_ram_available_bytes());
+    if (has_gpu) {
+        size_t vfree = 0, vtotal = 0;
+        bool vm = gpu_mem_info(&vfree, &vtotal);
+#ifdef __APPLE__
+        printf("{\"backend\":\"metal\",\"name\":\"%s\",\"unified_memory\":true",
+               gname);
+#else
+        // queried, not assumed: an integrated CUDA device (DGX Spark's
+        // GB10) shares one pool with the CPU, and the first field a
+        // launcher reads to decide whether RAM and VRAM are two budgets
+        // must not be a compile-time constant that says they are
+        printf("{\"backend\":\"cuda\",\"name\":\"%s\",\"unified_memory\":%s",
+               gname, gpu_unified_memory() ? "true" : "false");
+        printf(",\"min_compute_capability\":\"%s\",\"min_gpu\":\"%s\","
+               "\"ptx_target\":\"%s\"",
+               RUNNER_CUDA_MIN_CC, RUNNER_CUDA_MIN_GPU,
+               RUNNER_CUDA_PTX_TARGET);
+#endif
+        if (vm)
+            printf(",\"vram_bytes\":%llu,\"vram_free_bytes\":%llu",
+                   (unsigned long long)vtotal, (unsigned long long)vfree);
+        // Read this alongside gpu_quants. "This backend has a sparse-MoE
+        // path" and "this exact MoE variant's router/layout/activation is
+        // implemented" are different claims; gpu_init() still guards the
+        // latter at load.
+        printf(",\"moe\":%s", gpu_moe_ok() ? "true" : "false");
+        printf(",\"eseries\":%s", gpu_eseries_ok() ? "true" : "false");
+        printf(",\"kv_q8\":%s", gpu_kv_q8_ok() ? "true" : "false");
+        printf(",\"kv_fp4\":%s", gpu_kv_fp4_ok() ? "true" : "false");
+        // Metal only: a single allocation above this fails even when the
+        // file fits in RAM, so ram_available_bytes alone overstates what
+        // the GPU path can load. Same argument as moe/kv_q8: don't let a
+        // scheduler read capability across a capacity cliff.
+        // Proves the binary carries the kernels currently in the tree.
+        // make test-shader-embed compares this to a fresh hash of
+        // src/kernels.metal.
+        const char *ssha = gpu_shader_source_sha();
+        if (ssha) printf(",\"shader_source_sha256\":\"%s\"", ssha);
+        size_t mws = 0;
+        if (gpu_max_working_set(&mws))
+            printf(",\"max_working_set_bytes\":%llu",
+                   (unsigned long long)mws);
+        printf("}");
+    } else
+        printf("null");
+    // the preset table is a property of the build, not of any one model,
+    // so --caps can publish it without loading weights
+    printf(",\"sampling_presets\":[");
+    for (int i = 0; ; i++) {
+        const sampler_preset *sp = sampler_preset_at(i);
+        if (!sp) break;
+        char esc_src[512];
+        json_escape(sp->source, strlen(sp->source), esc_src, sizeof(esc_src));
+        printf("%s{\"name\":\"%s\",\"temperature\":%.2f,\"top_p\":%.2f,"
+               "\"top_k\":%d,\"min_p\":%.2f,\"repeat_penalty\":%.2f,"
+               "\"source\":\"%s\"}",
+               i ? "," : "", sp->name, (double)sp->temp, (double)sp->top_p,
+               sp->top_k, (double)sp->min_p, (double)sp->repeat_penalty,
+               esc_src);
+    }
+    printf("]");
+    // KV cache formats this build can store. Both are available on every
+    // backend (CPU and CUDA); q8 needs head_dim % 32 == 0, which is a
+    // per-model property and so is reported at load, not here. f16 is the
+    // default because q8 is lossy — it does not reproduce f16 output.
+    printf(",\"kv_types\":[\"f16\",\"q8\",\"k8v4\",\"fp4\"],\"kv_type_default\":\"f16\"");
+    // Placement modes controllers may safely request. cpu_moe means the
+    // CUDA backend can keep dense/attention tensors resident while sparse
+    // expert FFNs execute from system RAM.
+    // cpu_moe_partial advertises the optional layer count / auto fit, so a
+    // controller can size the expert split instead of guessing all-or-none.
+    printf(",\"tensor_placement\":{\"cpu_moe\":true,"
+           "\"cpu_moe_partial\":true}");
+    // the fixed -m swap-registry capacity, so a controller bounds the set of
+    // models it launches instead of overflowing it (see RUNNER_MAX_MODELS)
+    printf(",\"max_models\":%d", RUNNER_MAX_MODELS);
+    // One table, two consumers: `quants` is every format the engine can
+    // read, and `gpu_quants` is that same table filtered by the active
+    // backend's own admission test (gpu_quant_ok -> gpu_type_ok). These
+    // were two hand-kept literals under an #ifdef, each carrying a comment
+    // asking a human to keep it in step with a switch in another file.
+    // They drifted, and --caps advertised Metal kernels that did not
+    // exist. Sourcing the answer removes the class of bug, not just the
+    // instance: a new format needs one edit, in the backend, and both
+    // lists follow.
+    static const struct { const char *name; int type; } QUANTS[] = {
+        { "F32",    T_F32    }, { "F16",    T_F16    },
+        { "BF16",   T_BF16   }, { "Q8_0",   T_Q8_0   },
+        { "Q4_0",   T_Q4_0   }, { "Q4_1",   T_Q4_1   },
+        { "Q5_0",   T_Q5_0   }, { "Q5_1",   T_Q5_1   },
+        { "Q2_K",   T_Q2_K   }, { "Q3_K",   T_Q3_K   },
+        { "Q4_K",   T_Q4_K   }, { "Q5_K",   T_Q5_K   },
+        { "Q6_K",   T_Q6_K   }, { "IQ4_NL", T_IQ4_NL },
+        { "IQ4_XS", T_IQ4_XS }, { "MXFP4",  T_MXFP4  },
+        { "IQ1_S",  T_IQ1_S  }, { "IQ1_M",  T_IQ1_M  },
+        { "IQ2_XXS", T_IQ2_XXS }, { "IQ2_XS", T_IQ2_XS },
+        { "IQ2_S",  T_IQ2_S  },
+        { "IQ3_XXS", T_IQ3_XXS }, { "IQ3_S", T_IQ3_S },
+        { "NVFP4",  T_NVFP4  },
+    };
+    const size_t n_quants = sizeof QUANTS / sizeof *QUANTS;
+    printf(",\"quants\":[");
+    for (size_t qi = 0; qi < n_quants; qi++)
+        printf("%s\"%s\"", qi ? "," : "", QUANTS[qi].name);
+    // gpu_init() still refuses unsupported architectures and layouts; this
+    // is the tensor-format half only, which is what an advisor filters on.
+    printf("],\"gpu_quants\":[");
+    for (size_t qi = 0, shown_q = 0; qi < n_quants; qi++)
+        if (gpu_quant_ok(QUANTS[qi].type))
+            printf("%s\"%s\"", shown_q++ ? "," : "", QUANTS[qi].name);
+    printf("]");
+    // the architectures model_load will admit, so a catalog/advisor can
+    // filter unrunnable models by arch without shipping its own copy of the
+    // allowlist (single source of truth: model_supported_archs)
+    printf(",\"architectures\":[");
+    size_t n_arch;
+    const char *const *arches = model_supported_archs(&n_arch);
+    for (size_t i = 0; i < n_arch; i++)
+        printf("%s\"%s\"", i ? "," : "", arches[i]);
+    printf("]}\n");
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *model_path = NULL, *prompt = NULL, *system_prompt = NULL;
     const char *decide_path = NULL;   // --decide FILE (jsonl of /v1/decide requests)
@@ -2209,148 +2355,7 @@ int main(int argc, char **argv) {
     if (fit_path) return run_fit_check(fit_path, mp.n_ctx, &mp);
 
     if (shadow_mode) return run_shadow_mode(model_path, shadow_yes);
-    if (caps) {
-        char gname[128];
-        bool has_gpu = gpu_available(gname, sizeof(gname));
-        printf("{\"version\":\"%s\",\"os\":\"%s\",\"arch\":\"%s\",\"cpu_cores\":%d,"
-               "\"ram_bytes\":%llu,\"ram_available_bytes\":%llu,\"gpu\":",
-               RUNNER_VERSION,
-#if defined(_WIN32)
-               "windows",
-#elif defined(__APPLE__)
-               "macos",
-#else
-               "linux",
-#endif
-               RUNNER_BUILD_ARCH,
-               plat_cpu_count(), (unsigned long long)plat_ram_bytes(),
-               // Not total RAM: "model file size <= RAM" is the test that
-               // passes right before a machine starts thrashing. A launcher
-               // needs to know what is actually free plus reclaimable, so it
-               // can refuse a model that will not stay resident.
-               (unsigned long long)plat_ram_available_bytes());
-        if (has_gpu) {
-            size_t vfree = 0, vtotal = 0;
-            bool vm = gpu_mem_info(&vfree, &vtotal);
-#ifdef __APPLE__
-            printf("{\"backend\":\"metal\",\"name\":\"%s\",\"unified_memory\":true",
-                   gname);
-#else
-            // queried, not assumed: an integrated CUDA device (DGX Spark's
-            // GB10) shares one pool with the CPU, and the first field a
-            // launcher reads to decide whether RAM and VRAM are two budgets
-            // must not be a compile-time constant that says they are
-            printf("{\"backend\":\"cuda\",\"name\":\"%s\",\"unified_memory\":%s",
-                   gname, gpu_unified_memory() ? "true" : "false");
-            printf(",\"min_compute_capability\":\"%s\",\"min_gpu\":\"%s\","
-                   "\"ptx_target\":\"%s\"",
-                   RUNNER_CUDA_MIN_CC, RUNNER_CUDA_MIN_GPU,
-                   RUNNER_CUDA_PTX_TARGET);
-#endif
-            if (vm)
-                printf(",\"vram_bytes\":%llu,\"vram_free_bytes\":%llu",
-                       (unsigned long long)vtotal, (unsigned long long)vfree);
-            // Read this alongside gpu_quants. "This backend has a sparse-MoE
-            // path" and "this exact MoE variant's router/layout/activation is
-            // implemented" are different claims; gpu_init() still guards the
-            // latter at load.
-            printf(",\"moe\":%s", gpu_moe_ok() ? "true" : "false");
-            printf(",\"eseries\":%s", gpu_eseries_ok() ? "true" : "false");
-            printf(",\"kv_q8\":%s", gpu_kv_q8_ok() ? "true" : "false");
-            printf(",\"kv_fp4\":%s", gpu_kv_fp4_ok() ? "true" : "false");
-            // Metal only: a single allocation above this fails even when the
-            // file fits in RAM, so ram_available_bytes alone overstates what
-            // the GPU path can load. Same argument as moe/kv_q8: don't let a
-            // scheduler read capability across a capacity cliff.
-            // Proves the binary carries the kernels currently in the tree.
-            // make test-shader-embed compares this to a fresh hash of
-            // src/kernels.metal.
-            const char *ssha = gpu_shader_source_sha();
-            if (ssha) printf(",\"shader_source_sha256\":\"%s\"", ssha);
-            size_t mws = 0;
-            if (gpu_max_working_set(&mws))
-                printf(",\"max_working_set_bytes\":%llu",
-                       (unsigned long long)mws);
-            printf("}");
-        } else
-            printf("null");
-        // the preset table is a property of the build, not of any one model,
-        // so --caps can publish it without loading weights
-        printf(",\"sampling_presets\":[");
-        for (int i = 0; ; i++) {
-            const sampler_preset *sp = sampler_preset_at(i);
-            if (!sp) break;
-            char esc_src[512];
-            json_escape(sp->source, strlen(sp->source), esc_src, sizeof(esc_src));
-            printf("%s{\"name\":\"%s\",\"temperature\":%.2f,\"top_p\":%.2f,"
-                   "\"top_k\":%d,\"min_p\":%.2f,\"repeat_penalty\":%.2f,"
-                   "\"source\":\"%s\"}",
-                   i ? "," : "", sp->name, (double)sp->temp, (double)sp->top_p,
-                   sp->top_k, (double)sp->min_p, (double)sp->repeat_penalty,
-                   esc_src);
-        }
-        printf("]");
-        // KV cache formats this build can store. Both are available on every
-        // backend (CPU and CUDA); q8 needs head_dim % 32 == 0, which is a
-        // per-model property and so is reported at load, not here. f16 is the
-        // default because q8 is lossy — it does not reproduce f16 output.
-        printf(",\"kv_types\":[\"f16\",\"q8\",\"k8v4\",\"fp4\"],\"kv_type_default\":\"f16\"");
-        // Placement modes controllers may safely request. cpu_moe means the
-        // CUDA backend can keep dense/attention tensors resident while sparse
-        // expert FFNs execute from system RAM.
-        // cpu_moe_partial advertises the optional layer count / auto fit, so a
-        // controller can size the expert split instead of guessing all-or-none.
-        printf(",\"tensor_placement\":{\"cpu_moe\":true,"
-               "\"cpu_moe_partial\":true}");
-        // the fixed -m swap-registry capacity, so a controller bounds the set of
-        // models it launches instead of overflowing it (see RUNNER_MAX_MODELS)
-        printf(",\"max_models\":%d", RUNNER_MAX_MODELS);
-        // One table, two consumers: `quants` is every format the engine can
-        // read, and `gpu_quants` is that same table filtered by the active
-        // backend's own admission test (gpu_quant_ok -> gpu_type_ok). These
-        // were two hand-kept literals under an #ifdef, each carrying a comment
-        // asking a human to keep it in step with a switch in another file.
-        // They drifted, and --caps advertised Metal kernels that did not
-        // exist. Sourcing the answer removes the class of bug, not just the
-        // instance: a new format needs one edit, in the backend, and both
-        // lists follow.
-        static const struct { const char *name; int type; } QUANTS[] = {
-            { "F32",    T_F32    }, { "F16",    T_F16    },
-            { "BF16",   T_BF16   }, { "Q8_0",   T_Q8_0   },
-            { "Q4_0",   T_Q4_0   }, { "Q4_1",   T_Q4_1   },
-            { "Q5_0",   T_Q5_0   }, { "Q5_1",   T_Q5_1   },
-            { "Q2_K",   T_Q2_K   }, { "Q3_K",   T_Q3_K   },
-            { "Q4_K",   T_Q4_K   }, { "Q5_K",   T_Q5_K   },
-            { "Q6_K",   T_Q6_K   }, { "IQ4_NL", T_IQ4_NL },
-            { "IQ4_XS", T_IQ4_XS }, { "MXFP4",  T_MXFP4  },
-            { "IQ1_S",  T_IQ1_S  }, { "IQ1_M",  T_IQ1_M  },
-            { "IQ2_XXS", T_IQ2_XXS }, { "IQ2_XS", T_IQ2_XS },
-            { "IQ2_S",  T_IQ2_S  },
-            { "IQ3_XXS", T_IQ3_XXS }, { "IQ3_S", T_IQ3_S },
-            { "NVFP4",  T_NVFP4  },
-        };
-        const size_t n_quants = sizeof QUANTS / sizeof *QUANTS;
-        printf(",\"quants\":[");
-        for (size_t qi = 0; qi < n_quants; qi++)
-            printf("%s\"%s\"", qi ? "," : "", QUANTS[qi].name);
-        // gpu_init() still refuses unsupported architectures and layouts; this
-        // is the tensor-format half only, which is what an advisor filters on.
-        printf("],\"gpu_quants\":[");
-        for (size_t qi = 0, shown_q = 0; qi < n_quants; qi++)
-            if (gpu_quant_ok(QUANTS[qi].type))
-                printf("%s\"%s\"", shown_q++ ? "," : "", QUANTS[qi].name);
-        printf("]");
-        // the architectures model_load will admit, so a catalog/advisor can
-        // filter unrunnable models by arch without shipping its own copy of the
-        // allowlist (single source of truth: model_supported_archs)
-        printf(",\"architectures\":[");
-        size_t n_arch;
-        const char *const *arches = model_supported_archs(&n_arch);
-        for (size_t i = 0; i < n_arch; i++)
-            printf("%s\"%s\"", i ? "," : "", arches[i]);
-        printf("]}\n");
-        return 0;
-    }
+    if (caps) return run_caps();
     // -hf resolves to a cached local file before anything reads model_path,
     // so every mode (-p, -i, --serve, --score, ...) sees a plain path
     if (hf_spec) {
