@@ -299,15 +299,28 @@ TensorRT-LLM and SGLang.
 <a id="adaptation"></a>
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Train the model file you actually serve
 
-Two training runs wrote the same adapter, checksum for checksum,
-and an independent tester reproduced that on a Tesla T4. On Qwen3-4B at
-4 bits, exact tool calls on a held-out set went from 0.69 to 1.00, and stock
-llama.cpp scores the same adapter at the same 1.00.
+Runner trains a LoRA adapter through the quantized file you serve, in the
+same binary, with no Python stack. It is for small, targeted datasets, it
+runs at about a minute per step on a consumer GPU, and it covers dense
+models plus attention-only adapters on sparse-MoE models. On Qwen3-4B at
+4 bits, exact tool calls on a held-out set went from 0.69 to 1.00 in 316
+steps; two runs wrote the same adapter, checksum for checksum, an
+independent tester reproduced that on a Tesla T4, and stock llama.cpp
+scores the adapter at the same 1.00.
 
-**Why.** Teaching a model a new habit normally means training a large
-full-precision copy and compressing it afterwards, so the model you tested is
-not quite the one you ship. Runner trains a small add-on, a LoRA adapter,
-directly on the compressed file you already run, with no Python stack.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="site/assets/readme-train-dark.svg">
+    <img src="site/assets/readme-train-light.svg" alt="The usual path trains a 16-bit copy in a Python stack, merges, quantizes and ships a different file; Runner trains an adapter through the 4-bit file it serves and serves or merges it on that file" width="640">
+  </picture>
+</p>
+
+**Why.** Teaching a model a new habit normally means training a 16-bit copy
+in a Python framework, quantizing the result, and serving that in a third
+tool: three tools, two numerical paths, and the file you tested is not the
+file you ship. Runner's serving forward pass is its training forward pass,
+so the adapter is trained on the exact weights it will run on, and every
+adapter is written beside a record of what made it.
 
 **How.**
 
@@ -317,12 +330,13 @@ directly on the compressed file you already run, with no Python stack.
 ./runner -m base-Q4_K_M.gguf --lora adapter.gguf --serve
 ```
 
-It is built for small, targeted datasets on dense models (Llama, Mistral,
-Qwen2.5, Granite 4.x, Gemma 3 and 4). Serve the adapter with `--lora`, or
-merge it into a Q8_0 or F16 file; a merge whose output would round the
-fine-tune away is refused.
+Serve the adapter with `--lora`, or merge it into a Q8_0 or F16 file; a
+merge into a 4-bit grid rounds the fine-tune away (1.8% of it survived in
+the measured study, against 99.5% into Q8_0), so that merge is refused.
+Same data, seed and build write the same adapter bytes; a different build
+can change them, which is a stated limit, not a promise broken.
 [Walkthrough](docs/train-lora-on-quantized-gguf.md) ·
-[Supported architectures](MANUAL.md#adaptation)
+[What is covered and what is refused](MANUAL.md#adaptation)
 
 <a id="more"></a>
 ## Also in the box
