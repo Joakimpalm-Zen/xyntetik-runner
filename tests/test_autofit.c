@@ -425,6 +425,22 @@ static void test_gpu_plan(void) {
     placed = gpu_plan_expert_banks(moe, bank, 5, 0, 1000, &used, host5, 4, 3);
     ck(placed == 0 && used == 10 && host5[1] && host5[3] && host5[4],
        "plan banks: a trim past the first attempt's count hands back every bank");
+
+    // the device's own rules: allocation rounding of a bound tensor, and the
+    // RAM cap of an integrated device
+    const uint64_t MiB = 1ull << 20;
+    ck(gpu_plan_binding_bytes(0, true) == 0, "plan binding: an empty tensor costs nothing");
+    ck(gpu_plan_binding_bytes(1, true) == 2 * MiB, "plan binding: one byte bound is one granule");
+    ck(gpu_plan_binding_bytes(2 * MiB, true) == 2 * MiB, "plan binding: a whole granule stays one");
+    ck(gpu_plan_binding_bytes(2 * MiB + 1, true) == 4 * MiB, "plan binding: one byte over is two");
+    ck(gpu_plan_binding_bytes(2 * MiB + 1, false) == 2 * MiB + 1,
+       "plan binding: inside one upload a tensor costs its own bytes");
+    ck(gpu_plan_unified_cap(24ull << 30, 0) == 24ull << 30,
+       "plan unified: an unknown RAM figure leaves the budget");
+    ck(gpu_plan_unified_cap(24ull << 30, 10ull << 30) == 10ull << 30,
+       "plan unified: available RAM below the driver's view caps it");
+    ck(gpu_plan_unified_cap(8ull << 30, 10ull << 30) == 8ull << 30,
+       "plan unified: more RAM than the driver's view changes nothing");
 }
 
 int main(int argc, char **argv) {

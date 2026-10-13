@@ -1118,21 +1118,18 @@ static void shared_release(gpu_weights *w) {
 // dense FFN and a sparse-MoE layer (router + every expert, fused or split).
 // The dense w_gate/w_up/w_down are NULL on a MoE layer, so accounting only
 // those undercounts a MoE layer by ~all of its weight (the experts).
-// A tensor's device bytes in the plan. Per-tensor uploads (bound: every
-// --cpu-moe split) are separate allocations, which the driver rounds up to
-// its 2 MB granularity; on Qwen3.8-Flash-Next's 707 bindings that was 0.66 GB
-// the plan never saw (RUNNER_DEBUG_VRAM, 2026-10-08).
-#define PLAN_GRAN ((size_t)2 << 20)
+// A tensor's device bytes in the plan (gpu_plan_binding_bytes: a per-tensor
+// upload is rounded to the driver's allocation granularity).
 static size_t plan_bytes(const gguf_tensor *t, bool bound) {
     if (!t) return 0;
-    return bound ? (t->nbytes + PLAN_GRAN - 1) / PLAN_GRAN * PLAN_GRAN : t->nbytes;
+    return (size_t)gpu_plan_binding_bytes(t->nbytes, bound);
 }
 
 // an expert bank as uploaded: its bytes plus, bound, the rounding of its
 // (at most nine) tensors: router, routed gate/up/down or fused gate_up,
 // shared gate/up/down and the shared-expert gate
 static size_t expert_plan_bytes(const layer_t *ly, int n_expert, bool bound) {
-    return model_layer_expert_bytes(ly, n_expert) + (bound ? 9 * PLAN_GRAN : 0);
+    return model_layer_expert_bytes(ly, n_expert) + (bound ? 9 * GPU_PLAN_GRAN : 0);
 }
 
 static size_t layer_weight_bytes(const layer_t *ly, int n_expert,
@@ -1357,8 +1354,8 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         // of one pool, and taking the CUDA view alone over-promises when
         // the OS is holding memory the driver cannot see committed.
         if (cu_dev_integrated(w->dev)) {
-            size_t avail = plat_ram_available_bytes();
-            if (avail && avail < vram_budget) vram_budget = avail;
+            vram_budget = (size_t)gpu_plan_unified_cap(vram_budget,
+                                                       plat_ram_available_bytes());
             fprintf(stderr, "gpu: unified memory — CPU and GPU share one "
                     "pool; offload budget capped at available RAM "
                     "(%.1f GiB)\n", (double)vram_budget / (1u << 30));

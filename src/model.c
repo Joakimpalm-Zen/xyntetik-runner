@@ -4241,6 +4241,22 @@ int gpu_plan_expert_banks(const bool *is_moe, const uint64_t *bank, int layers,
     return placed;
 }
 
+// A tensor's device bytes in a plan. Uploaded on its own (bound: every
+// --cpu-moe split, every spread file) it is a separate allocation, which the
+// CUDA driver rounds up to its 2 MiB granularity; on Qwen3.8-Flash-Next's 707
+// bindings that was 0.66 GB the plan never saw (RUNNER_DEBUG_VRAM,
+// 2026-10-08). Inside one contiguous upload it costs its own bytes.
+uint64_t gpu_plan_binding_bytes(uint64_t nbytes, bool bound) {
+    return bound ? (nbytes + GPU_PLAN_GRAN - 1) / GPU_PLAN_GRAN * GPU_PLAN_GRAN
+                 : nbytes;
+}
+
+// An integrated device's "VRAM" is system RAM: its offload budget is also
+// bounded by what the OS says is available (0: the OS could not tell).
+uint64_t gpu_plan_unified_cap(uint64_t budget, uint64_t ram_available) {
+    return ram_available && ram_available < budget ? ram_available : budget;
+}
+
 int model_autofit_clamp(long long best, int n_ctx_train) {
     int n = best > (long long)n_ctx_train ? n_ctx_train : (int)best;
     if (n < 512) n = 512;   // a floor: below this the window is not usable
