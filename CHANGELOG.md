@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A refused `--serve` no longer leaves a tray behind.** The tray is
+  raised only after every argument check a serve or interactive run can
+  still fail, which is what the code already said, but the serving
+  configuration (`--receipts-keep` without `--receipts`, `--adapter` with
+  `--lora`, the `--kv-snapshots` and `--sessions` checks), the rewrite flags
+  and `--require-eval` were checked after the raise. A refused run on a
+  terminal left a detached tray running, holding the executable open
+  against the next relink. The raise now follows the last of them; a run
+  that fails later, when the model will not load, still raises one.
+
 - **Shadow's verification replay runs in the recorded directory on
   Windows.** `capture_report.reproduce_verification` ran the recorded
   command in a login shell and set the directory on the process, but
@@ -31,6 +41,14 @@ Current release and unreleased changes. Compatibility follows the
   Kvist-14B requests of the typed-decisions study that differed now agree;
   the 721-string corpus is unchanged. Token ids change for text containing
   these characters on every byte-level BPE model.
+
+- **A refused request no longer reseeds its slot.** A request that carried a
+  `seed` and was then refused with a 400 (a bad `max_tokens`, `stream` or
+  `stop`, an unknown `response_format`, a prompt longer than the context)
+  had already installed that seed in the slot's sampler, so the next
+  unseeded request on the slot drew exactly the refused request's stream
+  instead of continuing its own. The seed is now installed where generation
+  starts, after the last refusal.
 
 ## v1.2.1 - 2026-10-13
 
