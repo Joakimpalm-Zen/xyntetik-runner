@@ -1,6 +1,6 @@
 <!--meta
 title: Xyntetik Runner: lifecycle engine with inference you can prove
-description: Runner is a free, open engine that runs AI models on your own computer and replaces the guesswork with answers you can check. It tells you whether a model fits before you download it, shows what shrinking a model cost, gives memory back while idle, and can prove afterwards what the model said.
+description: Runner is a free, open engine that runs AI models on your own computer. It trains the compressed file you actually serve, returns a usable tool call when the model runs out of words, hands memory back while idle, and can prove afterwards what the model said. Every claim links to the measurement behind it.
 path: /
 nav: home
 bare: yes
@@ -8,268 +8,81 @@ bare: yes
 <section class="hero">
   <div class="wrap hero-grid">
     <div>
-      <p class="eyebrow">Xyntetik Runner 1.0, a Zenova AB product</p>
+      <p class="eyebrow">Xyntetik Runner, a Zenova AB product</p>
       <h1 style="max-width:19ch">Lifecycle engine with inference you can prove.</h1>
-      <p class="lede">Running an AI model yourself is mostly guesswork. Will it fit? Did shrinking it break it? Why is the laptop out of memory when nothing is running? Runner is a free, open engine that replaces those guesses with answers you can check.</p>
+      <p class="lede">One file that runs AI models on your own machine. It does four things no other engine measured does, and every number on this page links to how it was measured.</p>
       <div class="btn-row">
-        <a class="btn btn-primary" href="/runner/#sixty-seconds">Try it in a minute</a>
-        <a class="btn" href="#can-do">See what it can do</a>
-        <a class="btn" href="#new">New to this? Start here</a>
+        <a class="btn btn-primary" href="#start">Try it in a minute</a>
+        <a class="btn" href="/evidence/">The evidence</a>
         <a class="btn btn-support" href="https://buy.stripe.com/9B69AUddpdx9auHgP27N600" rel="noopener">Support this work</a>
       </div>
       <div class="hero-facts">
         <span>Free forever, Apache 2.0</span>
-        <span>One file, nothing to install</span>
-        <span>Mac, Windows and Linux</span>
-        <span>NVIDIA and Apple graphics, or none at all</span>
+        <span>Nothing to install</span>
+        <span>Mac, Windows and Linux, with or without a graphics card</span>
         <span>{{version}}, released {{release_date}}</span>
       </div>
     </div>
     <div class="hero-art">
       {{heromark:xyntetik}}
-      <p class="hero-note">The mark is an ensö, the Zen circle drawn in one stroke and often left open. One stroke: a single program with nothing hidden underneath. Left open: what is not yet claimed is written down as carefully as what is.</p>
     </div>
   </div>
 </section>
 
-<section class="section" style="padding-top:0" id="see">
-  <div class="wrap split rev">
-    <figure class="shot reveal">
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-fit-dark.svg">
-        <img src="/assets/readme-fit-light.svg" alt="Runner asked whether Granite 4.2 8B fits an RTX 3070: FITS, 35 of 40 layers on the GPU" width="640" height="282" loading="lazy">
-      </picture>
-      <figcaption class="measured">Real output, Runner on an RTX 3070 (October 2026), shortened to fit. <a href="{{repo}}/blob/main/docs/compat-reports/fit-capture-1.0.2-2026-10-06-rtx3070.md">Full capture</a></figcaption>
-    </figure>
-    <div class="reveal">
-      <p class="eyebrow">See it answer</p>
-      <h2>It read 16 MB of a 5 GB model and already knew.</h2>
-      <p>Before you download anything, Runner looks at the first few megabytes of a model file and tells you whether it will run on your machine, how much lands on the graphics card, and what each memory setting would buy you.</p>
-      <p>Checked against what really happened on load, it named the right split in 70 of 72 tests and was never too optimistic.</p>
-      <a class="more" href="/runner/#fit">How to ask before you download &rarr;</a>
-    </div>
-  </div>
-</section>
-
-<section class="section tint" id="new">
+<section class="section" style="padding-top:0" id="wedges">
   <div class="wrap">
     <div class="section-head reveal">
-      <p class="eyebrow">New to this?</p>
-      <h2>What an inference engine is, in three steps.</h2>
+      <p class="eyebrow">Four things you cannot get elsewhere</p>
+      <h2>Measured, not promised.</h2>
     </div>
-    <div class="grid-3">
-      <div class="card reveal">
-        <span class="step-n">1</span>
-        <h3>An AI model is a file.</h3>
-        <p>A few gigabytes of numbers that you download, the way you would download a film. On its own it does nothing.</p>
-      </div>
-      <div class="card reveal">
-        <span class="step-n">2</span>
-        <h3>An engine is the player.</h3>
-        <p>It opens the file and turns your question into an answer, on your own computer. Nothing you type is sent anywhere.</p>
-      </div>
-      <div class="card reveal">
-        <span class="step-n">3</span>
-        <h3>Runner is a player that shows its work.</h3>
-        <p>It tells you whether the file will fit, what was lost when someone shrank it, and it can prove later exactly what the model said.</p>
-      </div>
-    </div>
-    <div class="callout reveal">
-      <span class="t">Why run a model yourself at all?</span>
-      <p>Your documents never leave the building, there is no bill per question, and it keeps working without an internet connection.</p>
-    </div>
-  </div>
-</section>
-
-<section class="section" id="can-do">
-  <div class="wrap">
-    <div class="section-head reveal">
-      <p class="eyebrow">What it can do</p>
-      <h2>Six answers that are guesswork everywhere else.</h2>
-      <p>Each one is a measurement you can repeat, and each links to how it was made.</p>
-    </div>
-    <div class="grid-3">
-      <a class="card card-link accent reveal" href="/runner/#fit">
-        <span class="big">70 of 72</span>
-        <h3>Know whether a model fits before you download it.</h3>
-        <p>Runner reads the start of the file and predicts how it will run on your machine. It called the real result in 70 of 72 tests and was one step cautious in the other two.</p>
-        <span class="more">Ask before you download &rarr;</span>
-      </a>
-      <a class="card card-link accent reveal" href="/runner/#make">
-        <span class="big">Smaller and closer</span>
-        <h3>Shrink a model and see what it cost.</h3>
-        <p>One command and a one-line plan built a Qwen3-30B that is smaller than the official 4-bit file and closer to the original: 99.5% agreement where that file reads 94.75%.</p>
-        <span class="more">Make your own model file &rarr;</span>
-      </a>
-      <a class="card card-link accent reveal" href="/runner/#memory">
-        <span class="big">41%</span>
-        <h3>Read longer documents in the same memory.</h3>
-        <p>The notes a model keeps while it reads can outgrow your memory. Runner stores them in about 41% of the usual space, with full agreement on models from 4B to 30B.</p>
-        <span class="more">More context, less memory &rarr;</span>
-      </a>
-      <a class="card card-link accent reveal" href="/runner/#coexistence">
-        <span class="big">35 MB</span>
-        <h3>Leave it running.</h3>
-        <p>A 63 GB model sitting idle holds 35 MB of your memory under Runner. On the same Mac, llama-server holds 60.8 GB. Runner hands the rest back until you ask again.</p>
-        <span class="more">A server that gives memory back &rarr;</span>
+    <div class="grid-2">
+      <a class="card card-link accent reveal" href="/runner/train-lora-on-quantized-gguf/">
+        <span class="big">Same bytes, twice</span>
+        <h3>Train the compressed file you actually serve.</h3>
+        <p>The usual path trains a full-precision copy and ships a different file. Runner trains a small adapter through the 4-bit file you already run, with no Python stack. A Qwen3-4B went from 0.69 to 1.00 on held-out tool calls, two runs wrote the identical adapter, and an outside tester reproduced it on their own card.</p>
+        <figure class="fig">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-train-dark.svg">
+            <img src="/assets/readme-train-light.svg" alt="The usual fine-tuning path trains a full-precision copy and ships a different file; Runner trains an adapter through the quantized file it serves" width="640" height="300" loading="lazy">
+          </picture>
+        </figure>
+        <span class="measured">Qwen3-4B Q4_K_M, 316 steps, greedy held-out set of 29 prompts. Measured 2026-10-12.</span>
+        <span class="more">How training on the served file works &rarr;</span>
       </a>
       <a class="card card-link accent reveal" href="/runner/truncation-safe-tool-calling/">
         <span class="big">1 of 6</span>
         <h3>Tool calls that survive running out of words.</h3>
-        <p>Six engines were cut off in the middle of a tool call. Only Runner handed back something a program could still run, at every budget tested.</p>
+        <p>Six engines were cut off in the middle of a tool call by the token limit. Only Runner handed back something a program could still run, at every budget tested. The others returned nothing usable below the control budget.</p>
+        <figure class="fig">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-toolcalls-dark.svg">
+            <img src="/assets/readme-toolcalls-light.svg" alt="One truncated tool call across six engines: only Runner returns a usable call below the control budget" width="422" height="284" loading="lazy">
+          </picture>
+        </figure>
+        <span class="measured">Same machine, prompt and tool; budgets 1 to 64 tokens, last column the control. Measured 2026-08-19.</span>
         <span class="more">What six engines sent back &rarr;</span>
       </a>
-      <a class="card card-link accent reveal" href="/runner/train-lora-on-quantized-gguf/">
-        <span class="big">Same bytes, twice</span>
-        <h3>Teach the exact file you run.</h3>
-        <p>Runner trains a small add-on directly on the compressed model you already use. Two runs wrote the identical file, and an outside tester got the same result on their own hardware.</p>
-        <span class="more">Train what you serve &rarr;</span>
+      <a class="card card-link accent reveal" href="/runner/#coexistence">
+        <span class="big">35 MB</span>
+        <h3>A server that gives memory back.</h3>
+        <p>A 63 GB model sitting idle holds 35 MB of your memory under Runner. On the same Mac, llama-server holds 60.8 GB until the process dies. On an 8 GB laptop the pair is 8 MB against 3,819 MB. The cost is one reload on the next request.</p>
+        <figure class="fig">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-idle-dark.svg">
+            <img src="/assets/readme-idle-light.svg" alt="Wired memory with a 63 GB model loaded and idle: Runner 35 MB on a 0 to 40 MB scale, llama-server 60.8 GB off the scale" width="540" height="152" loading="lazy">
+          </picture>
+        </figure>
+        <span class="measured">gpt-oss-120b, 63 GB, loaded and idle on a 128 GB Apple Silicon Mac. Measured 2026-09-01.</span>
+        <span class="more">What a resident server does while it serves nothing &rarr;</span>
       </a>
-    </div>
-  </div>
-</section>
-
-<section class="section tint" id="proof">
-  <div class="wrap">
-    <div class="section-head reveal">
-      <p class="eyebrow">Do not take our word for it</p>
-      <h2>Two of those measurements, drawn.</h2>
-    </div>
-    <div class="grid-2">
-      <figure class="fig reveal">
-        <picture>
-          <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-idle-dark.svg">
-          <img src="/assets/readme-idle-light.svg" alt="Wired memory with a 63 GB model loaded and idle: Runner 35 MB on a 0 to 40 MB scale, llama-server 60.8 GB off the scale" width="540" height="152" loading="lazy">
-        </picture>
-        <figcaption><strong>Memory an idle model keeps from you.</strong> gpt-oss-120b, 63 GB, loaded and idle on a 128 GB Apple Silicon Mac; on an 8 GB M1 the same pair is 8 MB against 3,819 MB. Measured 2026-09-01. Source: <a href="{{repo}}/blob/main/docs/idle-coexistence-120b-m5max-2026-09-01.md">docs/idle-coexistence-120b-m5max-2026-09-01.md</a>.</figcaption>
-      </figure>
-      <figure class="fig reveal">
-        <picture>
-          <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-toolcalls-dark.svg">
-          <img src="/assets/readme-toolcalls-light.svg" alt="One truncated tool call across six engines: only Runner returns a usable call below the control budget" width="422" height="284" loading="lazy">
-        </picture>
-        <figcaption><strong>One tool call, cut short, on six engines.</strong> Same machine, same prompt and tool, token budgets from 1 to 64; the last column is the control where every engine completes. Measured 2026-08-19. Source: <a href="{{repo}}/blob/main/docs/truncation-benchmark.md">docs/truncation-benchmark.md</a>.</figcaption>
-      </figure>
-    </div>
-    <div class="btn-row">
-      <a class="btn" href="/evidence/">Every claim, with the measurement behind it</a>
-    </div>
-  </div>
-</section>
-
-<section class="section" id="for">
-  <div class="wrap">
-    <div class="section-head reveal">
-      <p class="eyebrow">Who it is for</p>
-      <h2>One engine, four reasons to care.</h2>
-    </div>
-    <div class="grid-4">
-      <a class="card card-link reveal" href="/runner/#sixty-seconds">
-        <p class="eyebrow">Curious</p>
-        <h3>I want to try AI that stays on my computer.</h3>
-        <p>Download one file, start a model, ask it something. It takes about a minute and nothing leaves your machine.</p>
-        <span class="more">Start here &rarr;</span>
-      </a>
-      <a class="card card-link reveal" href="/runner/#agents">
-        <p class="eyebrow">Building</p>
-        <h3>I want my tools to just connect.</h3>
-        <p>Runner speaks the OpenAI and Anthropic APIs, so Claude Code, Codex, OpenCode and your own apps point at it without changes.</p>
-        <span class="more">Connect a coding agent &rarr;</span>
-      </a>
-      <a class="card card-link reveal" href="/runner/reproducible-lora-training-receipts/">
-        <p class="eyebrow">Leading a team</p>
-        <h3>I have to answer for what the model did.</h3>
-        <p>Keep data in the building, know whether a model fits your machines before you commit to it, and hand a reviewer a signed record they can replay.</p>
+      <a class="card card-link accent reveal" href="/runner/reproducible-lora-training-receipts/">
+        <span class="big">VERIFIED</span>
+        <h3>Prove afterwards what the model said.</h3>
+        <p>Every served turn can be a signed record, and records chain. Someone else replays them on the same build and gets one of three verdicts: VERIFIED, DIVERGED or UNVERIFIABLE. One command gathers the records, the model's signature and the measured envelope into an evidence pack a reviewer checks offline.</p>
+        <p>The same discipline runs through the whole lifecycle: a model it does not know is refused by name, a training run records its seed and config, and a 4-bit merge that would erase the fine-tune is refused instead of written.</p>
+        <span class="measured">Replay and pack checks are gated in CI on every release. None of the engines measured claims this.</span>
         <span class="more">Records a reviewer can check &rarr;</span>
       </a>
-      <a class="card card-link reveal" href="/about/">
-        <p class="eyebrow">Backing</p>
-        <h3>I want to know what is behind it.</h3>
-        <p>An open engine, a research lab that publishes its failures, a measurement behind every claim, and a Swedish company that builds it.</p>
-        <span class="more">The company behind it &rarr;</span>
-      </a>
-    </div>
-  </div>
-</section>
-
-<section class="section tint" id="lab">
-  <div class="wrap">
-    <div class="section-head reveal">
-      <p class="eyebrow">The Xyntetik-Lab on Hugging Face</p>
-      <h2><img class="hf-logo" src="https://huggingface.co/front/assets/huggingface_logo-noborder.svg" width="38" height="35" alt="Hugging Face"> Everything the lab makes is published, failures included.</h2>
-      <p>Models, the measurements behind them and the experiments that did not work, all in the open.</p>
-    </div>
-    <div class="grid-2">
-      <a class="card card-link reveal" href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-kvist-distilled-agents-6ab9f930af19ca84df9ebf6b" rel="noopener">
-        <h3>Can a model half the size do its parent's job?</h3>
-        <p>Kvist-14B was distilled from a 30B model for one thing, tool-calling agents on a 24 GB card, and it solves 57 of the 60 held-out tasks its parent solves.</p>
-        <span class="more">Meet Kvist &rarr;</span>
-      </a>
-      <a class="card card-link reveal" href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-model-surgery-and-scale-recovery-6aa98bab0ecb9723f310c770" rel="noopener">
-        <h3>What survives when you cut pieces out of a 30B model?</h3>
-        <p>Nine preregistered surgeries on one frozen Muse-Glimmer-30B. Two of the results run with up to 6% of the decoder gone and still pass the fidelity bar.</p>
-        <span class="more">See the surgery &rarr;</span>
-      </a>
-      <a class="card card-link reveal" href="{{hf}}/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF" rel="noopener">
-        <h3>A 3-bit Qwen3.8-27B that fits a 16 GB card whole.</h3>
-        <p>Another lab's file with every block scale retrained against the original. It is the lab's most downloaded file so far, and its card shows it side by side with the source.</p>
-        <span class="more">Get the file &rarr;</span>
-      </a>
-      <a class="card card-link reveal" href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-genesis-6abcfa50b6707dec9bfee356" rel="noopener">
-        <h3>Can a model learn with no human text at all?</h3>
-        <p>GENESIS: eighteen preregistered experiments on tiny models that only ever saw programs they ran themselves. Read what survived, and everything that did not.</p>
-        <span class="more">Read the record &rarr;</span>
-      </a>
-    </div>
-    <div class="btn-row">
-      <a class="btn btn-primary" href="{{hf}}" rel="noopener">Step inside the lab</a>
-      <a class="btn" href="https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae" rel="noopener">Xyntetik-Runner releases</a>
-      <a class="btn" href="/evidence/#artifacts">The artifact ledger</a>
-    </div>
-  </div>
-</section>
-
-<section class="section" id="box">
-  <div class="wrap">
-    <div class="section-head reveal">
-      <p class="eyebrow">Also in the box</p>
-      <h2>Everything the one file does.</h2>
-    </div>
-    <div class="grid-3">
-      <a class="card card-link reveal" href="/runner/#support">
-        <h3>Serves your apps</h3>
-        <p>OpenAI and Anthropic APIs on your own machine, several requests at once, with a <code>/metrics</code> endpoint and models fetched and checked by one flag.</p>
-        <span class="more">What it serves &rarr;</span>
-      </a>
-      <a class="card card-link reveal" href="/runner/#more">
-        <h3>Answers in the shape you asked for</h3>
-        <p>JSON and JSON Schema are guaranteed, not hoped for, and the model can say how sure it was so unsure answers go to a person.</p>
-        <span class="more">Structured output &rarr;</span>
-      </a>
-      <a class="card card-link reveal" href="/runner/#more">
-        <h3>Long agent turns that finish</h3>
-        <p>A cap on how long a model thinks out loud and a guard that notices when it starts going round in circles.</p>
-        <span class="more">Keep agents on track &rarr;</span>
-      </a>
-      <a class="card card-link reveal" href="/runner/reproducible-lora-training-receipts/">
-        <h3>Proof of what was said</h3>
-        <p>Signed records that replay, evidence packs a reviewer checks offline, and a signature check on the model file itself.</p>
-        <span class="more">Receipts &rarr;</span>
-      </a>
-      <a class="card card-link reveal" href="/runner/#more">
-        <h3>One graphics card, several models</h3>
-        <p>Programs queue for the card instead of crashing each other, and an idle model unloads itself after a while.</p>
-        <span class="more">Share a GPU &rarr;</span>
-      </a>
-      <a class="card card-link reveal" href="/runner/shadow-mode/">
-        <h3>Shadow mode</h3>
-        <p>Keep the coding assistant you pay for. Shadow retries your own finished tasks with a local model under your own tests and keeps score.</p>
-        <span class="more">How shadow mode works &rarr;</span>
-      </a>
-    </div>
-    <div class="btn-row">
-      <a class="btn" href="/runner/">Everything Runner does</a>
-      <a class="btn" href="{{repo}}/blob/main/MANUAL.md#command-line-reference" rel="noopener">The complete list of commands</a>
     </div>
   </div>
 </section>
@@ -277,9 +90,9 @@ bare: yes
 <section class="section tint" id="compare">
   <div class="wrap">
     <div class="section-head reveal">
-      <p class="eyebrow">How it compares</p>
+      <p class="eyebrow">Why it is hard to copy</p>
       <h2>Measured side by side, on the same machine.</h2>
-      <p>Runner uses the same model files as llama.cpp, so trying it costs you nothing. These are the places where the measurements differ.</p>
+      <p>Runner uses the same model files as llama.cpp, so trying it costs nothing. What is not easily copied is the record behind it: twelve model families scored against their publishers' own implementations, every rejected experiment kept, and a verifier that checks the engine's own claims. These are the rows where the measurements differ.</p>
     </div>
     <div class="table-wrap reveal">
       <table class="data compare">
@@ -287,6 +100,11 @@ bare: yes
           <tr><th>Question</th><th>Runner</th><th>Others measured</th></tr>
         </thead>
         <tbody>
+          <tr>
+            <td>Can you train the compressed file you actually run, and get the same result twice?</td>
+            <td><span class="y win">Yes, byte for byte, with a provenance record</span></td>
+            <td><span class="y">The adapter Runner writes scores the same in stock llama.cpp, which itself trains only a full-precision model</span></td>
+          </tr>
           <tr>
             <td>A tool call is cut short by the token limit. What does the program get?</td>
             <td><span class="y win">A call it can run, at every budget from 1 to 16 tokens</span></td>
@@ -298,40 +116,109 @@ bare: yes
             <td><span class="n">llama-server: 60.8 GB and 3,819 MB on the same two machines</span></td>
           </tr>
           <tr>
-            <td>How close is the output to the model publisher's own implementation?</td>
-            <td><span class="y win">Closer than llama.cpp on 21 of 22 rows across twelve model families</span></td>
-            <td><span class="n">llama.cpp, given its stronger configuration at each size</span></td>
-          </tr>
-          <tr>
-            <td>Can you train the compressed file you actually run, and get the same result twice?</td>
-            <td><span class="y win">Yes, byte for byte, with a provenance record</span></td>
-            <td><span class="y">The adapter Runner writes scores the same in stock llama.cpp</span></td>
-          </tr>
-          <tr>
             <td>Can someone else verify what the model said?</td>
             <td><span class="y win">Signed, chained records that replay to VERIFIED, DIVERGED or UNVERIFIABLE</span></td>
             <td><span class="n">Not claimed by the engines measured</span></td>
           </tr>
+          <tr>
+            <td>How close is the output to the model publisher's own implementation?</td>
+            <td><span class="y win">Closer than llama.cpp on 21 of 22 rows across twelve model families</span></td>
+            <td><span class="n">llama.cpp, given its stronger configuration at each size</span></td>
+          </tr>
         </tbody>
       </table>
     </div>
-    <p class="small muted mt-1">Tool calls: 2026-08-19, <a href="{{repo}}/blob/main/docs/truncation-benchmark.md">docs/truncation-benchmark.md</a>. Idle memory: 2026-09-01 and the M1 measurement, <a href="{{repo}}/blob/main/docs/idle-coexistence-120b-m5max-2026-09-01.md">docs/idle-coexistence-120b-m5max-2026-09-01.md</a>. Publisher reference: 2026-09-07, <a href="{{repo}}/blob/main/docs/golden-pass-2026-09-07.md">docs/golden-pass-2026-09-07.md</a>. Speed tables and every other measurement are on the <a href="/evidence/">evidence page</a>.</p>
+    <p class="small muted mt-1">Training: <a href="{{repo}}/blob/main/docs/train-lora-on-quantized-gguf.md">docs/train-lora-on-quantized-gguf.md</a>. Tool calls: 2026-08-19, <a href="{{repo}}/blob/main/docs/truncation-benchmark.md">docs/truncation-benchmark.md</a>. Idle memory: 2026-09-01, <a href="{{repo}}/blob/main/docs/idle-coexistence-120b-m5max-2026-09-01.md">docs/idle-coexistence-120b-m5max-2026-09-01.md</a>. Publisher reference: 2026-09-07, <a href="{{repo}}/blob/main/docs/golden-pass-2026-09-07.md">docs/golden-pass-2026-09-07.md</a>. Speed tables and every other measurement are on the <a href="/evidence/">evidence page</a>.</p>
   </div>
 </section>
 
-<section class="section" id="about-teaser">
-  <div class="wrap grid-2">
-    <div class="card reveal">
-      <p class="eyebrow">About</p>
-      <h3>A Zenova AB product, built in Sweden</h3>
-      <p>Xyntetik is the program under which Zenova AB builds tools for running capable models on hardware you already own. Runner is the released engine, Suite is the testing and evidence layer around it, and Shade is the research lab that feeds both. The engine is free forever under Apache 2.0.</p>
-      <a class="more" href="/about/">Runner, Suite, Shade and the company behind them &rarr;</a>
+<section class="section" id="fit">
+  <div class="wrap split rev">
+    <figure class="shot reveal">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-fit-dark.svg">
+        <img src="/assets/readme-fit-light.svg" alt="Runner asked whether Granite 4.2 8B fits an RTX 3070: FITS, 35 of 40 layers on the GPU" width="640" height="282" loading="lazy">
+      </picture>
+      <figcaption class="measured">Real output, Runner on an RTX 3070 (October 2026), shortened to fit. <a href="{{repo}}/blob/main/docs/compat-reports/fit-capture-1.0.2-2026-10-06-rtx3070.md">Full capture</a></figcaption>
+    </figure>
+    <div class="reveal">
+      <p class="eyebrow">Before any of that</p>
+      <h2>It read 16 MB of a 5 GB model and already knew.</h2>
+      <p>Before you download anything, Runner looks at the first few megabytes of a model file and tells you whether it will run on your machine, how much lands on the graphics card, and what each memory setting would buy you. Checked against what really happened on load, it named the right split in 70 of 72 tests and was never too optimistic.</p>
+      <p>Once it fits, the same file can be shrunk with a one-line plan and the cost shown, and the notes a model keeps while it reads fit in about 41% of the usual memory with full agreement on models from 4B to 30B.</p>
+      <a class="more" href="/runner/#fit">Ask before you download &rarr;</a>
+      <div class="callout mt-2">
+        <span class="t">New to this?</span>
+        <p>An AI model is a file, a few gigabytes of numbers that do nothing on their own. An engine is the player that opens it and answers on your own computer, so nothing you type is sent anywhere. Runner is a player that shows its work.</p>
+      </div>
     </div>
-    <div class="card reveal">
-      <p class="eyebrow">Support the work</p>
-      <h3>Open infrastructure, funded in the open</h3>
-      <p>Runner is developed openly rather than around a subscription. Contributions pay for measurement time on real hardware, the thing every number on this site cost.</p>
-      <div class="btn-row"><a class="btn btn-support" href="https://buy.stripe.com/9B69AUddpdx9auHgP27N600" rel="noopener">Support this work</a><a class="btn" href="/support/">What contributions enable</a></div>
+  </div>
+</section>
+
+<section class="section tint" id="start">
+  <div class="wrap split">
+    <div class="sticky reveal">
+      <p class="eyebrow">Try it</p>
+      <h2>Sixty seconds to a served model.</h2>
+      <p>Download the binary and its checksum file, verify, fetch a model, serve. It speaks the OpenAI and Anthropic APIs, so Claude Code, Codex, OpenCode and your own apps point at it without changes.</p>
+      <p class="small muted">Linux and Windows assets, the macOS quarantine note, building from source and the container image are on the <a href="/runner/#sixty-seconds">Runner page</a>.</p>
     </div>
+    <div class="reveal">
+<pre><code>curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/runner-macos-arm64
+curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/SHA256SUMS
+shasum -a 256 --check --ignore-missing SHA256SUMS
+chmod +x runner-macos-arm64 &amp;&amp; mv runner-macos-arm64 runner
+curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/resolve/main/granite-4.1-3b-Q8_0.gguf
+./runner -m model.gguf --serve</code></pre>
+<pre><code>curl localhost:8080/v1/chat/completions \
+  -d '{"messages":[{"role":"user","content":"Say hello in one sentence."}]}'</code></pre>
+      <div class="btn-row">
+        <a class="btn" href="/runner/">Everything Runner does</a>
+        <a class="btn" href="{{repo}}/blob/main/MANUAL.md" rel="noopener">The manual</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="lab">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow">The Xyntetik-Lab on Hugging Face</p>
+      <h2><img class="hf-logo" src="https://huggingface.co/front/assets/huggingface_logo-noborder.svg" width="38" height="35" alt="Hugging Face"> Model files, with the measurements behind them.</h2>
+    </div>
+    <div class="grid-4">
+      <a class="card card-link reveal" href="{{hf}}/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF" rel="noopener">
+        <h3>A 3-bit Qwen3.8-27B that fits a 16 GB card whole</h3>
+        <p>Every block scale retrained against the original; the lab's most downloaded file, shown side by side with its source.</p>
+        <span class="more">Get the file &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-kvist-distilled-agents-6ab9f930af19ca84df9ebf6b" rel="noopener">
+        <h3>Kvist-14B, half the size of its parent</h3>
+        <p>Distilled from a 30B model for tool-calling agents on a 24 GB card; it solves 57 of the 60 held-out tasks its parent solves.</p>
+        <span class="more">Meet Kvist &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-model-surgery-and-scale-recovery-6aa98bab0ecb9723f310c770" rel="noopener">
+        <h3>What survives surgery on a 30B model</h3>
+        <p>Nine preregistered cuts on one frozen Muse-Glimmer-30B; two run with up to 6% of the decoder gone and still pass the fidelity bar.</p>
+        <span class="more">See the surgery &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-genesis-6abcfa50b6707dec9bfee356" rel="noopener">
+        <h3>GENESIS: learning with no human text</h3>
+        <p>Eighteen preregistered experiments on tiny models that only ever saw programs they ran themselves, failures included.</p>
+        <span class="more">Read the record &rarr;</span>
+      </a>
+    </div>
+    <div class="btn-row">
+      <a class="btn btn-primary" href="{{hf}}" rel="noopener">Step inside the lab</a>
+      <a class="btn" href="https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae" rel="noopener">Xyntetik-Runner releases</a>
+      <a class="btn" href="/evidence/#artifacts">The artifact ledger</a>
+    </div>
+  </div>
+</section>
+
+<section class="section tint" id="about-teaser">
+  <div class="wrap rows reveal">
+    <div><span>Who builds it</span><p>Zenova AB, in Sweden. Runner is the released engine, Suite the testing and evidence layer around it, Shade the research lab that feeds both. The engine is free forever under Apache 2.0, and your prompts never leave your machine. <a href="/about/">About Xyntetik</a>.</p></div>
+    <div><span>Funded in the open</span><p>Contributions pay for measurement time on real hardware, the thing every number on this page cost. <a href="https://buy.stripe.com/9B69AUddpdx9auHgP27N600" rel="noopener">Support this work</a> or read <a href="/support/">what contributions enable</a>.</p></div>
   </div>
 </section>
