@@ -1579,6 +1579,103 @@ static char *nemotron_clean(const char *s, bool ctl) {
     return o;
 }
 
+// NVIDIA Nemotron Nano (TMPL_NEMOTRON).
+static size_t render_nemotron_nano(int tmpl, const chat_msg *msgs, int n_msgs,
+                                   bool add_assistant, int thinking, const jv *tools,
+                                   char *out, size_t cap) {
+    size_t off = 0;
+    // The last `/think` or `/no_think` in a system or user turn decides
+    // (`/think` wins inside one turn); thinking is on when neither
+    // appears. An explicit request setting outranks the text.
+    bool think = true;
+    for (int i = 0; i < n_msgs; i++) {
+        if (strcmp(msgs[i].role, "user") && strcmp(msgs[i].role, "system"))
+            continue;
+        if (strstr(msgs[i].content, "/think")) think = true;
+        else if (strstr(msgs[i].content, "/no_think")) think = false;
+    }
+    int mode = thinking & THINK_MODE_MASK;
+    if (mode == THINK_ON) think = true;
+    if (mode == THINK_OFF) think = false;
+    // Every conversation opens with the system header. The reference
+    // reads one leading system turn; the generic tool envelope adds a
+    // second in front of the caller's, so every leading one is joined.
+    off = emit_raw(out, cap, off, "<SPECIAL_10>System\n", NULL, NULL);
+    int first = 0;
+    bool wrote = false;
+    while (first < n_msgs && !strcmp(msgs[first].role, "system")) {
+        char *c = nemotron_clean(msgs[first].content, true);
+        if (!c) return SIZE_MAX;
+        if (c[0]) {
+            off = emit(out, cap, off, wrote ? "\n\n%s" : "%s", c, NULL);
+            wrote = true;
+        }
+        free(c);
+        first++;
+    }
+    // native declarations follow the caller's system text, after a blank
+    // line when there was any (the reference's non_tool_system_content)
+    if (tools && tools->type == J_ARR && tools->n > 0) {
+        sbuf decl = {0};
+        tools_render_for(tmpl, tools, &decl);
+        if (decl.failed) { free(decl.s); return SIZE_MAX; }
+        off = emit(out, cap, off, wrote ? "\n\n%s" : "%s", decl.s, NULL);
+        free(decl.s);
+    }
+    off = emit(out, cap, off, "\n", NULL, NULL);
+    // A trailing assistant turn is held back and written after the
+    // generation prompt's thought tag: the reference's prefill.
+    int last = n_msgs;
+    char *held = NULL;
+    if (last > first && !strcmp(msgs[last - 1].role, "assistant")) {
+        held = nemotron_clean(msgs[last - 1].content, false);
+        if (!held) return SIZE_MAX;
+        last--;
+    }
+    for (int i = first; i < last; i++) {
+        const char *role = msgs[i].role;
+        if (!strcmp(role, "user")) {
+            char *c = nemotron_clean(msgs[i].content, true);
+            if (!c) { free(held); return SIZE_MAX; }
+            off = emit_raw(out, cap, off, "<SPECIAL_11>User\n", NULL, NULL);
+            off = emit(out, cap, off, "%s\n", c, NULL);
+            free(c);
+        } else if (!strcmp(role, "tool")) {
+            bool prev = i > first && !strcmp(msgs[i - 1].role, "tool");
+            bool next = i + 1 < last && !strcmp(msgs[i + 1].role, "tool");
+            if (!prev)
+                off = emit_raw(out, cap, off,
+                               "<SPECIAL_11>User\n<TOOL_RESPONSE>[", NULL, NULL);
+            off = emit(out, cap, off, next ? "%s, " : "%s",
+                       msgs[i].content, NULL);
+            if (!next)
+                off = emit_raw(out, cap, off, "]</TOOL_RESPONSE>\n", NULL, NULL);
+        } else if (!strcmp(role, "assistant")) {
+            const char *body = msgs[i].content;
+            const char *close = strstr(body, "</think>");
+            if (close) body = close + 8;
+            char *c = nemotron_clean(body, false);
+            if (!c) { free(held); return SIZE_MAX; }
+            off = emit_raw(out, cap, off, "<SPECIAL_11>Assistant\n", NULL, NULL);
+            off = emit(out, cap, off, "%s", c, NULL);
+            off = emit_raw(out, cap, off, "\n<SPECIAL_12>\n", NULL, NULL);
+            free(c);
+        }
+        // a system turn after the first, like any other role, has no
+        // branch in the reference and renders as nothing
+    }
+    if (add_assistant || (held && held[0])) {
+        off = emit_raw(out, cap, off, "<SPECIAL_11>Assistant\n", NULL, NULL);
+        off = emit_raw(out, cap, off, think ? "<think>\n" : "<think></think>",
+                       NULL, NULL);
+        if (held && held[0]) off = emit(out, cap, off, "%s", held, NULL);
+        if (!add_assistant)
+            off = emit_raw(out, cap, off, "\n<SPECIAL_12>\n", NULL, NULL);
+    }
+    free(held);
+    return off;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -1586,98 +1683,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
     size_t off = 0;
     out[0] = 0;
     switch (tmpl) {
-    case TMPL_NEMOTRON: {
-        // The last `/think` or `/no_think` in a system or user turn decides
-        // (`/think` wins inside one turn); thinking is on when neither
-        // appears. An explicit request setting outranks the text.
-        bool think = true;
-        for (int i = 0; i < n_msgs; i++) {
-            if (strcmp(msgs[i].role, "user") && strcmp(msgs[i].role, "system"))
-                continue;
-            if (strstr(msgs[i].content, "/think")) think = true;
-            else if (strstr(msgs[i].content, "/no_think")) think = false;
-        }
-        int mode = thinking & THINK_MODE_MASK;
-        if (mode == THINK_ON) think = true;
-        if (mode == THINK_OFF) think = false;
-        // Every conversation opens with the system header. The reference
-        // reads one leading system turn; the generic tool envelope adds a
-        // second in front of the caller's, so every leading one is joined.
-        off = emit_raw(out, cap, off, "<SPECIAL_10>System\n", NULL, NULL);
-        int first = 0;
-        bool wrote = false;
-        while (first < n_msgs && !strcmp(msgs[first].role, "system")) {
-            char *c = nemotron_clean(msgs[first].content, true);
-            if (!c) return SIZE_MAX;
-            if (c[0]) {
-                off = emit(out, cap, off, wrote ? "\n\n%s" : "%s", c, NULL);
-                wrote = true;
-            }
-            free(c);
-            first++;
-        }
-        // native declarations follow the caller's system text, after a blank
-        // line when there was any (the reference's non_tool_system_content)
-        if (tools && tools->type == J_ARR && tools->n > 0) {
-            sbuf decl = {0};
-            tools_render_for(tmpl, tools, &decl);
-            if (decl.failed) { free(decl.s); return SIZE_MAX; }
-            off = emit(out, cap, off, wrote ? "\n\n%s" : "%s", decl.s, NULL);
-            free(decl.s);
-        }
-        off = emit(out, cap, off, "\n", NULL, NULL);
-        // A trailing assistant turn is held back and written after the
-        // generation prompt's thought tag: the reference's prefill.
-        int last = n_msgs;
-        char *held = NULL;
-        if (last > first && !strcmp(msgs[last - 1].role, "assistant")) {
-            held = nemotron_clean(msgs[last - 1].content, false);
-            if (!held) return SIZE_MAX;
-            last--;
-        }
-        for (int i = first; i < last; i++) {
-            const char *role = msgs[i].role;
-            if (!strcmp(role, "user")) {
-                char *c = nemotron_clean(msgs[i].content, true);
-                if (!c) { free(held); return SIZE_MAX; }
-                off = emit_raw(out, cap, off, "<SPECIAL_11>User\n", NULL, NULL);
-                off = emit(out, cap, off, "%s\n", c, NULL);
-                free(c);
-            } else if (!strcmp(role, "tool")) {
-                bool prev = i > first && !strcmp(msgs[i - 1].role, "tool");
-                bool next = i + 1 < last && !strcmp(msgs[i + 1].role, "tool");
-                if (!prev)
-                    off = emit_raw(out, cap, off,
-                                   "<SPECIAL_11>User\n<TOOL_RESPONSE>[", NULL, NULL);
-                off = emit(out, cap, off, next ? "%s, " : "%s",
-                           msgs[i].content, NULL);
-                if (!next)
-                    off = emit_raw(out, cap, off, "]</TOOL_RESPONSE>\n", NULL, NULL);
-            } else if (!strcmp(role, "assistant")) {
-                const char *body = msgs[i].content;
-                const char *close = strstr(body, "</think>");
-                if (close) body = close + 8;
-                char *c = nemotron_clean(body, false);
-                if (!c) { free(held); return SIZE_MAX; }
-                off = emit_raw(out, cap, off, "<SPECIAL_11>Assistant\n", NULL, NULL);
-                off = emit(out, cap, off, "%s", c, NULL);
-                off = emit_raw(out, cap, off, "\n<SPECIAL_12>\n", NULL, NULL);
-                free(c);
-            }
-            // a system turn after the first, like any other role, has no
-            // branch in the reference and renders as nothing
-        }
-        if (add_assistant || (held && held[0])) {
-            off = emit_raw(out, cap, off, "<SPECIAL_11>Assistant\n", NULL, NULL);
-            off = emit_raw(out, cap, off, think ? "<think>\n" : "<think></think>",
-                           NULL, NULL);
-            if (held && held[0]) off = emit(out, cap, off, "%s", held, NULL);
-            if (!add_assistant)
-                off = emit_raw(out, cap, off, "\n<SPECIAL_12>\n", NULL, NULL);
-        }
-        free(held);
-        break;
-    }
+    case TMPL_NEMOTRON:
+        return render_nemotron_nano(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_ORNITH:
     case TMPL_QWEN35:
     case TMPL_QWEN35_NOTHINK:
