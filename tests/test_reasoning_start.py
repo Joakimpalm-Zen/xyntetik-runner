@@ -192,6 +192,43 @@ def test_messages_thinking_object_decides_where_generation_starts(exe, model, fa
             assert stream_block_types(srv, body) == want, (family, extra, "streamed")
 
 
+# Harmony and Muse mark reasoning by channel, not by think tags, so the
+# Messages endpoint admits `thinking` only on a model whose architecture has
+# that channel (gpt-oss, Muse-Glimmer): fixtures of those, under their own
+# template. Harmony primes its analysis channel unless thinking is off; Muse
+# opens the self-addressed reasoning turn only when thinking is forced on.
+CHANNEL_FAMILIES = {
+    "harmony": (["scripts/make-test-moe.py"], "moe.gptoss-mxfp4.gguf", ["--chat-template", "harmony"],
+                {"on": ["thinking"], "off": ["text"]}),
+    "muse": (["scripts/make-test-model.py", "--muse-glimmer",
+              "--control", "<|start|>,<|message|>,<|eom|>,<|eot|>"], "muse.gguf", [],
+             {"on": ["thinking"], "off": ["text"]}),
+}
+
+
+@pytest.mark.parametrize("family", sorted(CHANNEL_FAMILIES))
+def test_messages_thinking_object_on_channel_families(exe, tmp_path, family):
+    """The same question for the families whose reasoning is a channel. Here
+    the split was primed from `enable_thinking` alone too, so on gpt-oss
+    `thinking: {"type": "disabled"}` came back as a thinking block, and on
+    Muse `{"type": "enabled"}` came back as text."""
+    gen, name, args, want = CHANNEL_FAMILIES[family]
+    out = tmp_path / "moe" if gen[0].endswith("make-test-moe.py") else tmp_path / name
+    subprocess.run([sys.executable, ROOT / gen[0], *gen[1:], str(out)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    with RunnerServer(exe, tmp_path / name, ctx=2048, parallel=1,
+                      extra_args=["--gpu", "off", "-t", "2", "-s", "42", *args]) as srv:
+        mid = json.load(urllib.request.urlopen(srv.base_url + "/v1/models"))["data"][0]["id"]
+        for mode, extra in ANTHROPIC_THINKING.items():
+            body = {"model": mid, "max_tokens": 12, "temperature": 0,
+                    "messages": [{"role": "user", "content": "Hello"}], **extra}
+            status, doc = post(srv, "/v1/messages", body)
+            assert status == 200, doc
+            blocks = [b.get("type") for b in doc.get("content") or []]
+            assert blocks == want[mode], (family, extra, blocks)
+            assert stream_block_types(srv, body) == want[mode], (family, extra, "streamed")
+
+
 G4_TOOLS = [{"type": "function", "function": {"name": "get_weather", "parameters": {
     "type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}]
 G4_CONTINUATION = [

@@ -28,9 +28,9 @@ Current release and unreleased changes. Compatibility follows the
   "enabled" | "disabled"}`, but where the reply starts, inside a thought
   block or in content, was rebuilt from `enable_thinking` alone. So
   `thinking: {"type": "disabled"}` on Granite 4.2, Nemotron 3.5, Qwen 3.8,
-  Qwen 3.5 or Ornith rendered a closed block and returned the answer as a
-  `thinking` block, and `{"type": "enabled"}` on Qwen 3.5-0.8B opened one
-  and returned the reasoning as `text`. The renderer now reports the start
+  Qwen 3.5, Ornith or gpt-oss returned the answer as a `thinking` block,
+  and `{"type": "enabled"}` on Qwen 3.5-0.8B or Muse returned the
+  reasoning as `text`. The renderer now reports the start
   of the turn it wrote, and the reasoning split, the think budget and the
   tool grammars read that report on every surface. A Harmony turn whose
   tools are declared but not enforced starts in content, because its prompt
