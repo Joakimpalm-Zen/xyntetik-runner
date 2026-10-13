@@ -218,7 +218,7 @@ Current release and unreleased changes. Compatibility follows the
   `make-tooluse-data.py`, `tokenizer-corpus.py`) refuse an option where the
   output path goes (`--help` used to write a set of `--help.*` files).
   `docs/README.md` indexes every document and evidence folder by topic.
-  `scripts/outcome-table.py`, used only by the Strata comparison, is gone.
+  `scripts/outcome-table.py`, used only by the comparison with another engine, is gone.
 - **`--lineage FILE`: where a model file came from, checked (R17.1).**
   `--quantize` (and its prune, sublayer-removal and type-plan forms) now
   writes a provenance record beside its output, `OUT.gguf.quant.json`, as
