@@ -2561,6 +2561,206 @@ static size_t render_granite(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_GEMMA4_MAINLINE and TMPL_GEMMA4.
+static size_t render_gemma4(int tmpl, const chat_msg *msgs, int n_msgs,
+                            bool add_assistant, int thinking, const jv *tools,
+                            char *out, size_t cap) {
+    size_t off = 0;
+    // gemma4 (reference: llama.cpp models/templates/google-gemma-4-31B-it
+    // .jinja): <|turn>role\n CONTENT <turn|>\n per turn, a native system
+    // role (unlike gemma1-3), assistant role named "model"
+    // Thinking is selected in the FIRST SYSTEM TURN, not at the
+    // generation prompt: the model's own template (read from
+    // tokenizer.chat_template on gemma-4-E2B, 2026-08-12) opens that turn
+    // when `enable_thinking or tools or messages[0] is system/developer`
+    // and injects `<|think|>` at the very top of it, above any system
+    // text. `<|think|>` is a real token in that vocabulary. With no
+    // system message the turn is created anyway, carrying only the
+    // marker — which is why this cannot be folded into the loop below.
+    // (A `developer` first message is rendered as its own turn here, as
+    // it always has been; the template folds it into the system turn.
+    // That divergence predates this path and is untouched by it.)
+    //
+    // TOOLS open that same turn, on the same `or`, and their declarations
+    // go inside it: after the system text, before <turn|>. That is why
+    // this block also runs with thinking off -- with tools declared and no
+    // thinking, the reference still emits one system turn and runner used
+    // to emit a SEPARATE prepended turn carrying its generic JSON envelope
+    // instead (+88 tokens on every gemma4 tool prompt, and a protocol the
+    // model was never trained on). With no tools and no thinking the turn
+    // is left to the loop below, which renders it identically.
+    bool g4_tools = tools && tools->type == J_ARR && tools->n;
+    int g4_first = 0;
+    if (thinking == THINK_ON || g4_tools) {
+        off = emit(out, cap, off, "<|turn>system\n", NULL, NULL);
+        if (thinking == THINK_ON)
+            off = emit(out, cap, off, "<|think|>\n", NULL, NULL);
+        if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
+            off = emit(out, cap, off, "%s", msgs[0].content, NULL);
+            g4_first = 1;
+        }
+        if (g4_tools) {
+            sbuf decls = {0};
+            g4_render_tool_defs(tools, &decls);
+            if (decls.s) off = emit(out, cap, off, "%s", decls.s, NULL);
+            free(decls.s);
+        }
+        off = emit(out, cap, off, "<turn|>\n", NULL, NULL);
+    }
+    // Consecutive assistant messages are ONE model turn, not two. The
+    // reference suppresses BOTH ends of the framing:
+    //
+    //   {%- set continue_same_model_turn =
+    //         (role == 'model' and ns.prev_non_tool_role == 'assistant') -%}
+    //   {%- if not continue_same_model_turn -%}
+    //       {{- '<|turn>' + role + '\n' }}
+    //   {%- endif -%}
+    //   ... {%- set continues_into_next = (role == 'model'
+    //         and next_nt.role == 'assistant' and ...) -%}
+    //
+    // so the contents are concatenated with NO separator. Emitting
+    // <turn|>\n<|turn>model\n between them handed the model a turn
+    // boundary its own template never produces, and cost 5 extra tokens
+    // on gemma-4-E2B's vocabulary.
+    //
+    // The continuation is for the MODEL role only -- the reference gates it
+    // on `role == 'model'` -- so consecutive USER turns still get one
+    // <|turn>user each.
+    //
+    // Adjacency is the reference's PREVIOUS NON-TOOL role, not msgs[i-1].
+    // It was direct adjacency until 2026-08-14, because runner rendered a
+    // `tool` message as its own <|turn>tool turn and skipping over one
+    // would have left that turn unbalanced. The tool result is now a
+    // <|tool_response> block inside the open model turn, which is what the
+    // reference does, so the reason for the narrower rule is gone and the
+    // merge widens to match:
+    //
+    //   {%- set continue_same_model_turn =
+    //         (role == 'model' and ns.prev_non_tool_role == 'assistant') -%}
+    //   ...
+    //   {%- set ns.prev_non_tool_role = message['role'] -%}   (non-tool only)
+    //
+    // Without the widening, the answer that follows a tool result opened a
+    // second model turn where the reference continues the first.
+    //
+    // `tool` messages are not iterated at all. The reference's loop body is
+    // wrapped in `{%- if message['role'] != 'tool' -%}`, and it renders the
+    // results by forward-scanning from the assistant turn that made the
+    // calls (below). A tool message no such turn claims is therefore
+    // DROPPED, exactly as the reference drops it.
+    //
+    // g4_prev is the reference's ns.prev_message_type, which the generation
+    // prompt reads: 0 = neither, 1 = 'tool_call', 2 = 'tool_response'.
+    int g4_prev = 0;
+    const char *prev_non_tool = NULL;
+    for (int i = g4_first; i < n_msgs; i++) {
+        if (!strcmp(msgs[i].role, "tool")) continue;
+        g4_prev = 0;
+        bool asst = !strcmp(msgs[i].role, "assistant");
+        const char *role = asst ? "model" : msgs[i].role;
+        bool merge_prev = asst && prev_non_tool &&
+                          !strcmp(prev_non_tool, "assistant");
+        if (!merge_prev)
+            off = emit(out, cap, off, "<|turn>%s\n", role, NULL);
+        // calls first, then the results they collected, then the text
+        const char *calls_end = g4_calls_end(msgs[i].content);
+        const char *text = calls_end ? calls_end : msgs[i].content;
+        if (calls_end) {
+            off = emit_n(out, cap, off, msgs[i].content,
+                         (size_t)(calls_end - msgs[i].content));
+            g4_prev = 1;
+        }
+        bool tr = false;
+        for (int k = i + 1; calls_end && k < n_msgs &&
+                            !strcmp(msgs[k].role, "tool"); k++) {
+            off = emit(out, cap, off,
+                       "<|tool_response>response:%s{value:<|\"|>",
+                       msgs[k].name ? msgs[k].name : "unknown", NULL);
+            off = emit(out, cap, off, "%s<|\"|>}<tool_response|>",
+                       msgs[k].content, NULL);
+            tr = true;
+            g4_prev = 2;
+        }
+        off = emit(out, cap, off, "%s", text, NULL);
+        // the reference's three-way close, in its own order
+        const char *next_non_tool = NULL;
+        for (int k = i + 1; k < n_msgs; k++)
+            if (strcmp(msgs[k].role, "tool")) {
+                next_non_tool = msgs[k].role;
+                break;
+            }
+        bool continues = asst && next_non_tool &&
+                         !strcmp(next_non_tool, "assistant") &&
+                         (!calls_end || tr);
+        if (g4_prev == 1 && !tr)
+            off = emit(out, cap, off, "<|tool_response>", NULL, NULL);
+        else if (continues)
+            ;  // the next assistant message continues this turn
+        else if (!(tr && !g4_has_text(text) && !next_non_tool))
+            off = emit(out, cap, off, "<turn|>\n", NULL, NULL);
+        prev_non_tool = msgs[i].role;
+    }
+    // Generation prompt, read from the MODEL'S OWN chat template
+    // (gguf tokenizer.chat_template on gemma-4-E2B), not from a summary
+    // of llama.cpp's copy:
+    //
+    //   {%- if add_generation_prompt -%}
+    //     {%- if ns.prev_message_type != 'tool_response'
+    //            and ns.prev_message_type != 'tool_call' -%}
+    //         {{- '<|turn>model\n' -}}
+    //     {%- elif ns.prev_message_type == 'tool_response'
+    //              and enable_thinking -%}
+    //         {{- '<|channel>thought\n' -}}
+    //     {%- endif -%}
+    //   {%- endif -%}
+    //
+    // There is NO empty-thought-block pre-seed here, in either thinking
+    // mode. On 2026-08-08 this code grew one — `<|channel>thought\n`
+    // immediately closed by `<channel|>` — from a web summary of the
+    // llama.cpp template rather than the model's own. That construct
+    // exists in the real template only when re-rendering a PRIOR
+    // assistant message that actually contained thinking text; handing it
+    // to the model as an empty block at generation time is a state it was
+    // never trained on. Measured cost: gemma-4-E2B's planning score fell
+    // 0.575 -> 0.300 and it emitted raw reasoning prose as its visible
+    // answer. The original unconditional `<|turn>model\n` was right.
+    //
+    // Thinking is not selected HERE for this family — it was selected in
+    // the first system turn above, which is where the template puts it.
+    if (add_assistant) {
+        // g4_prev is ns.prev_message_type, so the three branches are the
+        // template's three branches. It used to be approximated by "the
+        // last message is a `tool` message", which is a different question:
+        // it answered yes for a tool message no assistant turn claims (the
+        // reference drops those and emits the ordinary header) and no for
+        // an assistant turn whose calls have no results yet (the reference
+        // leaves prev_message_type == 'tool_call' and emits nothing).
+        if (g4_prev == 0) {
+            off = emit(out, cap, off, "<|turn>model\n", NULL, NULL);
+            // The ONE mainline/E-series divergence. The mainline template
+            // follows the header with `{%- if not enable_thinking -%}
+            // {{- '<|channel>thought\n<channel|>' -}}{%- endif -%}`, and
+            // enable_thinking defaults false -- so THINK_DEFAULT and
+            // THINK_OFF both pre-seed the empty CLOSED thought block,
+            // THINK_ON does not. The block is closed, so the model starts
+            // OUTSIDE reasoning (completion.c's primed-think probe keys on
+            // the OPEN form and correctly does not fire here). The E-series
+            // omits this entirely: emitting it there cost E2B planning
+            // 0.650 -> 0.250 (reasoning-leak), verified 2026-08-19 against
+            // all three real templates.
+            if (tmpl == TMPL_GEMMA4_MAINLINE && thinking != THINK_ON)
+                off = emit(out, cap, off, "<|channel>thought\n<channel|>",
+                           NULL, NULL);
+        }
+        else if (g4_prev == 2 && thinking == THINK_ON)
+            off = emit(out, cap, off, "<|channel>thought\n", NULL, NULL);
+        // prev was a tool response and thinking is off, or a call still
+        // awaiting its result: emit nothing, which is what the template
+        // does and what the unconditional header used to get wrong.
+    }
+    return off;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -2641,201 +2841,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_GRANITE4:
         return render_granite(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_GEMMA4_MAINLINE:
-    case TMPL_GEMMA4: {
-        // gemma4 (reference: llama.cpp models/templates/google-gemma-4-31B-it
-        // .jinja): <|turn>role\n CONTENT <turn|>\n per turn, a native system
-        // role (unlike gemma1-3), assistant role named "model"
-        // Thinking is selected in the FIRST SYSTEM TURN, not at the
-        // generation prompt: the model's own template (read from
-        // tokenizer.chat_template on gemma-4-E2B, 2026-08-12) opens that turn
-        // when `enable_thinking or tools or messages[0] is system/developer`
-        // and injects `<|think|>` at the very top of it, above any system
-        // text. `<|think|>` is a real token in that vocabulary. With no
-        // system message the turn is created anyway, carrying only the
-        // marker — which is why this cannot be folded into the loop below.
-        // (A `developer` first message is rendered as its own turn here, as
-        // it always has been; the template folds it into the system turn.
-        // That divergence predates this path and is untouched by it.)
-        //
-        // TOOLS open that same turn, on the same `or`, and their declarations
-        // go inside it: after the system text, before <turn|>. That is why
-        // this block also runs with thinking off -- with tools declared and no
-        // thinking, the reference still emits one system turn and runner used
-        // to emit a SEPARATE prepended turn carrying its generic JSON envelope
-        // instead (+88 tokens on every gemma4 tool prompt, and a protocol the
-        // model was never trained on). With no tools and no thinking the turn
-        // is left to the loop below, which renders it identically.
-        bool g4_tools = tools && tools->type == J_ARR && tools->n;
-        int g4_first = 0;
-        if (thinking == THINK_ON || g4_tools) {
-            off = emit(out, cap, off, "<|turn>system\n", NULL, NULL);
-            if (thinking == THINK_ON)
-                off = emit(out, cap, off, "<|think|>\n", NULL, NULL);
-            if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
-                off = emit(out, cap, off, "%s", msgs[0].content, NULL);
-                g4_first = 1;
-            }
-            if (g4_tools) {
-                sbuf decls = {0};
-                g4_render_tool_defs(tools, &decls);
-                if (decls.s) off = emit(out, cap, off, "%s", decls.s, NULL);
-                free(decls.s);
-            }
-            off = emit(out, cap, off, "<turn|>\n", NULL, NULL);
-        }
-        // Consecutive assistant messages are ONE model turn, not two. The
-        // reference suppresses BOTH ends of the framing:
-        //
-        //   {%- set continue_same_model_turn =
-        //         (role == 'model' and ns.prev_non_tool_role == 'assistant') -%}
-        //   {%- if not continue_same_model_turn -%}
-        //       {{- '<|turn>' + role + '\n' }}
-        //   {%- endif -%}
-        //   ... {%- set continues_into_next = (role == 'model'
-        //         and next_nt.role == 'assistant' and ...) -%}
-        //
-        // so the contents are concatenated with NO separator. Emitting
-        // <turn|>\n<|turn>model\n between them handed the model a turn
-        // boundary its own template never produces, and cost 5 extra tokens
-        // on gemma-4-E2B's vocabulary.
-        //
-        // The continuation is for the MODEL role only -- the reference gates it
-        // on `role == 'model'` -- so consecutive USER turns still get one
-        // <|turn>user each.
-        //
-        // Adjacency is the reference's PREVIOUS NON-TOOL role, not msgs[i-1].
-        // It was direct adjacency until 2026-08-14, because runner rendered a
-        // `tool` message as its own <|turn>tool turn and skipping over one
-        // would have left that turn unbalanced. The tool result is now a
-        // <|tool_response> block inside the open model turn, which is what the
-        // reference does, so the reason for the narrower rule is gone and the
-        // merge widens to match:
-        //
-        //   {%- set continue_same_model_turn =
-        //         (role == 'model' and ns.prev_non_tool_role == 'assistant') -%}
-        //   ...
-        //   {%- set ns.prev_non_tool_role = message['role'] -%}   (non-tool only)
-        //
-        // Without the widening, the answer that follows a tool result opened a
-        // second model turn where the reference continues the first.
-        //
-        // `tool` messages are not iterated at all. The reference's loop body is
-        // wrapped in `{%- if message['role'] != 'tool' -%}`, and it renders the
-        // results by forward-scanning from the assistant turn that made the
-        // calls (below). A tool message no such turn claims is therefore
-        // DROPPED, exactly as the reference drops it.
-        //
-        // g4_prev is the reference's ns.prev_message_type, which the generation
-        // prompt reads: 0 = neither, 1 = 'tool_call', 2 = 'tool_response'.
-        int g4_prev = 0;
-        const char *prev_non_tool = NULL;
-        for (int i = g4_first; i < n_msgs; i++) {
-            if (!strcmp(msgs[i].role, "tool")) continue;
-            g4_prev = 0;
-            bool asst = !strcmp(msgs[i].role, "assistant");
-            const char *role = asst ? "model" : msgs[i].role;
-            bool merge_prev = asst && prev_non_tool &&
-                              !strcmp(prev_non_tool, "assistant");
-            if (!merge_prev)
-                off = emit(out, cap, off, "<|turn>%s\n", role, NULL);
-            // calls first, then the results they collected, then the text
-            const char *calls_end = g4_calls_end(msgs[i].content);
-            const char *text = calls_end ? calls_end : msgs[i].content;
-            if (calls_end) {
-                off = emit_n(out, cap, off, msgs[i].content,
-                             (size_t)(calls_end - msgs[i].content));
-                g4_prev = 1;
-            }
-            bool tr = false;
-            for (int k = i + 1; calls_end && k < n_msgs &&
-                                !strcmp(msgs[k].role, "tool"); k++) {
-                off = emit(out, cap, off,
-                           "<|tool_response>response:%s{value:<|\"|>",
-                           msgs[k].name ? msgs[k].name : "unknown", NULL);
-                off = emit(out, cap, off, "%s<|\"|>}<tool_response|>",
-                           msgs[k].content, NULL);
-                tr = true;
-                g4_prev = 2;
-            }
-            off = emit(out, cap, off, "%s", text, NULL);
-            // the reference's three-way close, in its own order
-            const char *next_non_tool = NULL;
-            for (int k = i + 1; k < n_msgs; k++)
-                if (strcmp(msgs[k].role, "tool")) {
-                    next_non_tool = msgs[k].role;
-                    break;
-                }
-            bool continues = asst && next_non_tool &&
-                             !strcmp(next_non_tool, "assistant") &&
-                             (!calls_end || tr);
-            if (g4_prev == 1 && !tr)
-                off = emit(out, cap, off, "<|tool_response>", NULL, NULL);
-            else if (continues)
-                ;  // the next assistant message continues this turn
-            else if (!(tr && !g4_has_text(text) && !next_non_tool))
-                off = emit(out, cap, off, "<turn|>\n", NULL, NULL);
-            prev_non_tool = msgs[i].role;
-        }
-        // Generation prompt, read from the MODEL'S OWN chat template
-        // (gguf tokenizer.chat_template on gemma-4-E2B), not from a summary
-        // of llama.cpp's copy:
-        //
-        //   {%- if add_generation_prompt -%}
-        //     {%- if ns.prev_message_type != 'tool_response'
-        //            and ns.prev_message_type != 'tool_call' -%}
-        //         {{- '<|turn>model\n' -}}
-        //     {%- elif ns.prev_message_type == 'tool_response'
-        //              and enable_thinking -%}
-        //         {{- '<|channel>thought\n' -}}
-        //     {%- endif -%}
-        //   {%- endif -%}
-        //
-        // There is NO empty-thought-block pre-seed here, in either thinking
-        // mode. On 2026-08-08 this code grew one — `<|channel>thought\n`
-        // immediately closed by `<channel|>` — from a web summary of the
-        // llama.cpp template rather than the model's own. That construct
-        // exists in the real template only when re-rendering a PRIOR
-        // assistant message that actually contained thinking text; handing it
-        // to the model as an empty block at generation time is a state it was
-        // never trained on. Measured cost: gemma-4-E2B's planning score fell
-        // 0.575 -> 0.300 and it emitted raw reasoning prose as its visible
-        // answer. The original unconditional `<|turn>model\n` was right.
-        //
-        // Thinking is not selected HERE for this family — it was selected in
-        // the first system turn above, which is where the template puts it.
-        if (add_assistant) {
-            // g4_prev is ns.prev_message_type, so the three branches are the
-            // template's three branches. It used to be approximated by "the
-            // last message is a `tool` message", which is a different question:
-            // it answered yes for a tool message no assistant turn claims (the
-            // reference drops those and emits the ordinary header) and no for
-            // an assistant turn whose calls have no results yet (the reference
-            // leaves prev_message_type == 'tool_call' and emits nothing).
-            if (g4_prev == 0) {
-                off = emit(out, cap, off, "<|turn>model\n", NULL, NULL);
-                // The ONE mainline/E-series divergence. The mainline template
-                // follows the header with `{%- if not enable_thinking -%}
-                // {{- '<|channel>thought\n<channel|>' -}}{%- endif -%}`, and
-                // enable_thinking defaults false -- so THINK_DEFAULT and
-                // THINK_OFF both pre-seed the empty CLOSED thought block,
-                // THINK_ON does not. The block is closed, so the model starts
-                // OUTSIDE reasoning (completion.c's primed-think probe keys on
-                // the OPEN form and correctly does not fire here). The E-series
-                // omits this entirely: emitting it there cost E2B planning
-                // 0.650 -> 0.250 (reasoning-leak), verified 2026-08-19 against
-                // all three real templates.
-                if (tmpl == TMPL_GEMMA4_MAINLINE && thinking != THINK_ON)
-                    off = emit(out, cap, off, "<|channel>thought\n<channel|>",
-                               NULL, NULL);
-            }
-            else if (g4_prev == 2 && thinking == THINK_ON)
-                off = emit(out, cap, off, "<|channel>thought\n", NULL, NULL);
-            // prev was a tool response and thinking is off, or a call still
-            // awaiting its result: emit nothing, which is what the template
-            // does and what the unconditional header used to get wrong.
-        }
-        break;
-    }
+    case TMPL_GEMMA4:
+        return render_gemma4(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_GEMMA: {
         // gemma has no system role: fold a system message into the first
         // user turn; the assistant role is named "model"
