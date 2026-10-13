@@ -1835,8 +1835,8 @@ endif
 # Big-model Metal identity. The fixture gates above prove the gemma4/gpt-oss
 # MoE wiring at sub-1 MiB geometry; they cannot prove the kernels at real
 # expert-bundle geometry. On 2026-08-31 a real artifact diverged on a host
-# where every fixture gate passed — see
-# docs/metal-gemma4-moe-divergence-2026-08-31.md. Opt-in by path, so a
+# where every fixture gate passed (the 2026-08-31 record is archived in Shade
+# under research/runner-engine/archive/runner-docs-2026-10-13b/). Opt-in by path, so a
 # checkout without weights stays green:
 #   make test-metal-bigmodel BIGMODEL=models/gpt-oss-20b-MXFP4.gguf
 # The prompt matters. A raw completion fed to an instruction-tuned model can
