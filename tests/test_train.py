@@ -144,6 +144,57 @@ def test_loss_falls_and_adapter_improves_score(runner_bin, base, tmp_path):
     assert tuned_nll < base_nll - 0.2, (base_nll, tuned_nll)
 
 
+# --train-dpo end to end: run_train's DPO step loop, its per-step fields, the
+# save and the record naming the objective. The objective and its gradient
+# are gated numerically by tests/test_dpo_grad.c; this pins the CLI around
+# them, which nothing else ran.
+DPO_FIELDS = ("step", "pair", "tokens", "loss", "margin", "acc", "coeff",
+              "logp_w", "logp_l", "logp_ref_w", "logp_ref_l")
+
+
+def _train_dpo(runner_bin, base_dir, data, out, steps=4):
+    cmd = [runner_bin, "-m", str(base_dir / "base.gguf"),
+           "--train-dpo", str(data), "--train-steps", str(steps),
+           "--lr", "3e-3", "--train-out", str(out), "-t", "2", "--gpu", "off"]
+    p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=600)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    return [json.loads(l) for l in p.stdout.splitlines() if l]
+
+
+def test_dpo_training_is_byte_deterministic_and_recorded(runner_bin, base, tmp_path):
+    data = tmp_path / "pairs.jsonl"
+    data.write_text(
+        json.dumps({"prompt": "the runner trains", "chosen": " the adapter",
+                    "rejected": " the corpus"}) + "\n" +
+        json.dumps({"prompt": "the adapter learns", "chosen": " the corpus",
+                    "rejected": " the runner"}) + "\n")
+    a1, a2 = tmp_path / "d1.gguf", tmp_path / "d2.gguf"
+    s1 = _train_dpo(runner_bin, base, data, a1)
+    s2 = _train_dpo(runner_bin, base, data, a2)
+    assert [{k: s[k] for k in DPO_FIELDS} for s in s1] == \
+        [{k: s[k] for k in DPO_FIELDS} for s in s2]
+    assert a1.read_bytes() == a2.read_bytes()
+    assert [s["step"] for s in s1] == [1, 2, 3, 4]
+    assert [s["pair"] for s in s1] == [0, 1, 0, 1]
+    # the first step's adapter is the base (B = 0): the policy is exactly
+    # the reference the bypass measures
+    assert s1[0]["margin"] == 0.0
+    assert s1[0]["logp_w"] == s1[0]["logp_ref_w"]
+    assert s1[0]["logp_l"] == s1[0]["logp_ref_l"]
+    rec = json.loads((tmp_path / "d1.gguf.train.json").read_text())
+    assert rec["objective"] == "dpo"
+    assert rec["dpo_beta"] == pytest.approx(0.1)
+    assert rec["steps"] == 4
+    assert rec["adamw"] == {"beta1": 0.9, "beta2": 0.999, "eps": 1e-8,
+                            "weight_decay": 0.01}
+    assert rec["loss_first"] == s1[0]["loss"]
+    assert rec["loss_last"] == s1[-1]["loss"]
+    assert rec["adapter"]["sha256"] == hashlib.sha256(a1.read_bytes()).hexdigest()
+    # and the adapter serves
+    _score(runner_bin, base, lora=a1)
+
+
 def test_jsonl_mode_trains_with_prompt_masking(runner_bin, base, tmp_path):
     out = tmp_path / "aj.gguf"
     losses = _train(runner_bin, base, out, data="data.jsonl", steps=12)
