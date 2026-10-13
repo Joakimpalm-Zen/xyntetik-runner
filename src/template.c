@@ -1994,7 +1994,8 @@ static size_t render_granite42(int tmpl, const chat_msg *msgs, int n_msgs,
     }
     if (add_assistant)   // emit_raw: the block is the template's (see qwen38)
         off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
-                       thinking == THINK_OFF ? "<think></think>" : "<think>\n",
+                       (thinking & THINK_MODE_MASK) == THINK_OFF
+                           ? "<think></think>" : "<think>\n",
                        NULL);
     return off;
 }
@@ -2124,7 +2125,7 @@ static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
         // block, which is how the family is asked not to reason. Its
         // reference defaults thinking ON, so this is emitted only when a
         // caller explicitly turns it off -- never for THINK_DEFAULT.
-        if (tmpl == TMPL_CHATML_THINK && thinking == THINK_OFF)
+        if (tmpl == TMPL_CHATML_THINK && (thinking & THINK_MODE_MASK) == THINK_OFF)
             off = emit(out, cap, off, "<think>\n\n</think>\n\n",
                        NULL, NULL);
     }
@@ -2378,7 +2379,7 @@ static size_t render_harmony(int tmpl, const chat_msg *msgs, int n_msgs,
         // gets no reasoning at all.
         const char *head = have_tools
                 ? "<|start|>assistant"
-            : thinking == THINK_OFF
+            : (thinking & THINK_MODE_MASK) == THINK_OFF
                 ? "<|start|>assistant<|channel|>final<|message|>"
                 : "<|start|>assistant<|channel|>analysis<|message|>";
         off = emit_raw(out, cap, off, "%s", head, NULL);
@@ -2591,9 +2592,10 @@ static size_t render_gemma4(int tmpl, const chat_msg *msgs, int n_msgs,
     // is left to the loop below, which renders it identically.
     bool g4_tools = tools && tools->type == J_ARR && tools->n;
     int g4_first = 0;
-    if (thinking == THINK_ON || g4_tools) {
+    bool g4_think = (thinking & THINK_MODE_MASK) == THINK_ON;
+    if (g4_think || g4_tools) {
         off = emit(out, cap, off, "<|turn>system\n", NULL, NULL);
-        if (thinking == THINK_ON)
+        if (g4_think)
             off = emit(out, cap, off, "<|think|>\n", NULL, NULL);
         if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
             off = emit(out, cap, off, "%s", msgs[0].content, NULL);
@@ -2748,11 +2750,11 @@ static size_t render_gemma4(int tmpl, const chat_msg *msgs, int n_msgs,
             // omits this entirely: emitting it there cost E2B planning
             // 0.650 -> 0.250 (reasoning-leak), verified 2026-08-19 against
             // all three real templates.
-            if (tmpl == TMPL_GEMMA4_MAINLINE && thinking != THINK_ON)
+            if (tmpl == TMPL_GEMMA4_MAINLINE && !g4_think)
                 off = emit(out, cap, off, "<|channel>thought\n<channel|>",
                            NULL, NULL);
         }
-        else if (g4_prev == 2 && thinking == THINK_ON)
+        else if (g4_prev == 2 && g4_think)
             off = emit(out, cap, off, "<|channel>thought\n", NULL, NULL);
         // prev was a tool response and thinking is off, or a call still
         // awaiting its result: emit nothing, which is what the template

@@ -188,6 +188,38 @@ static void capacity_sweep(int t, const jv *tools) {
     conv_free(&c);
 }
 
+// The thinking argument carries the mode in its low bits and, above them,
+// the effort bits (read by qwen38 and muse) and the recipient bits (read by
+// muse). A request may set either for any family -- the server ORs a
+// request's bare_recipients into every family's argument -- so a family
+// that reads neither must render exactly what the mode alone renders.
+static void mode_bits_are_ignored(int t, const jv *tools) {
+    const char *name = FAMILY[t].name;
+    bool reads_effort = t == TMPL_QWEN38 || t == TMPL_MUSE;
+    bool reads_recipients = t == TMPL_MUSE;
+    static const int MODES[] = { THINK_DEFAULT, THINK_ON, THINK_OFF };
+    static const int BITS[] = { THINK_EFFORT_MEDIUM, THINK_EFFORT_LOW,
+                                THINK_BARE_RECIPIENTS, THINK_NS_RECIPIENTS };
+    conv c;
+    conv_build(&c, t);
+    chat_msg user[1] = { { .role = "user", .content = "Hello" } };
+    for (int k = 0; k < 2; k++) {
+        const chat_msg *m = k ? c.m : user;
+        int n = k ? c.n : 1;
+        for (size_t i = 0; i < sizeof MODES / sizeof *MODES; i++)
+            for (size_t j = 0; j < sizeof BITS / sizeof *BITS; j++) {
+                bool effort = BITS[j] & THINK_EFFORT_MASK;
+                if ((effort && reads_effort) || (!effort && reads_recipients)) continue;
+                size_t a = render(t, m, n, true, MODES[i], tools, A, sizeof A);
+                size_t b = render(t, m, n, true, MODES[i] | BITS[j], tools, B, sizeof B);
+                CHECK(a == b && !strcmp(A, B),
+                      "%s: mode 0x%x renders differently with bits 0x%x it does not read (%s)",
+                      name, MODES[i], BITS[j], k ? "tool turn" : "one user turn");
+            }
+    }
+    conv_free(&c);
+}
+
 int main(void) {
     CHECK(N_FAMILY == TMPL_LLAMA2_FALLBACK + 1,
           "the table has %d rows for %d template ids", N_FAMILY, TMPL_LLAMA2_FALLBACK + 1);
@@ -227,6 +259,8 @@ int main(void) {
 
         capacity_sweep(t, NULL);
         capacity_sweep(t, tools);
+        mode_bits_are_ignored(t, NULL);
+        mode_bits_are_ignored(t, tools);
     }
     jv_free(tools);
     if (fails) {

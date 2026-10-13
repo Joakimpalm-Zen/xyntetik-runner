@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A request's recipient or effort bits no longer change another family's
+  thinking.** The thinking argument carries the mode with the effort bits
+  (read by Qwen 3.8 and Muse) and the recipient bits (read by Muse) above
+  it, and a request's `bare_recipients` is added for every family. Six
+  renderers compared the whole value with `THINK_OFF` or `THINK_ON`, so
+  `bare_recipients` with thinking off rendered an open thought block for
+  ChatML-think, Granite 4.2 and Nemotron 3.5 Lightning and primed Harmony's
+  analysis channel, and an effort bit with thinking on dropped Gemma 4's
+  `<|think|>`. They now compare the mode bits only; every render of a
+  family that does not read a bit is identical with and without it.
+
 - **A Responses turn that hit an allocation failure no longer reports
   `completed`.** A generation fault is a turn with nothing usable behind it,
   and chat (`finish_reason: "error"`) and Messages (an `error` object, or
