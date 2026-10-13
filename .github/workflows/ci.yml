@@ -824,3 +824,33 @@ jobs:
         with:
           name: macos-suite-report
           path: .build/ci/
+
+  # The one check branch protection requires for the engine matrix. A job
+  # that is skipped (docs-only change, or a tree a pull request already
+  # tested) still lets this pass; a job that failed or was cancelled fails
+  # it. Requiring the matrix jobs themselves does not work: a skipped
+  # matrix job reports under its unexpanded name ("fuzz-${{ matrix.group }}"),
+  # so the required fuzz-parsers and fuzz-files checks never appear and a
+  # docs-only pull request can never merge.
+  pr-gate:
+    name: pr-gate
+    needs: [changes, make-test, macos, simd-isa-levels, fuzz, windows, conformance,
+            conformance-sanitized, consumer-compatibility, template-conformance,
+            thread-sanitizer, t3]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: every needed job succeeded or was skipped
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["RESULTS"])
+          bad = {k: v["result"] for k, v in needs.items() if v["result"] not in ("success", "skipped")}
+          for k, v in sorted(needs.items()):
+              print(f"{k:24s} {v['result']}")
+          if bad:
+              print("blocked by:", bad); sys.exit(1)
+          PY
