@@ -9112,11 +9112,9 @@ bool model_lora_backward(model_t *m, const int32_t *toks, int T,
     return model_lora_backward_w(m, toks, T, NULL, loss_out);
 }
 
-// pos_w: per-transition weights (length T-1; transition t scores toks[t+1]).
-// NULL = all ones. A zero weight removes the position from loss AND gradient
-// (the prompt-masking / advantage-weighting hook GRPO-style training needs).
-bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
-                           const float *pos_w, double *loss_out) {
+// What a backward step needs before anything is allocated: an adapter, a
+// window of 2..n_ctx tokens, and a model the backward covers.
+static bool lora_backward_admit(model_t *m, int T) {
     char why[128];
     if (!m->lora) {
         fprintf(stderr, "error: backward needs a loaded adapter (--lora)\n");
@@ -9131,20 +9129,22 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
                 "%s\n", why);
         return false;
     }
+    return true;
+}
+
+// The taped forward: the inference forward, solo per position, with every
+// layer's input kept on the tape, and the window's (weighted) next-token
+// loss. A failure leaves the tape for the caller to free.
+static bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
+                               const float *pos_w, double *loss_out) {
     int E = m->n_embd, V = m->n_vocab, L = m->n_layer;
-    // RUNNER_TRAIN_PROF=1: per-step phase wall times on stderr — the dev
-    // knob the slice-3 optimization ran on (guessing at the profile cost a
-    // round of measurement; this line is cheaper than being wrong again)
-    bool prof = getenv("RUNNER_TRAIN_PROF") != NULL;
-    double pt0 = prof ? plat_now() : 0, pt_fw = 0, pt_head = 0;
-    // ---- taped forward: the inference forward, solo per position
+    double loss = 0.0;
     m->tape_T = T;
     m->tape = malloc(sizeof(float) * (size_t)(L + 1) * T * E);
     if (!m->tape) { m->tape_T = 0; return false; }
-    double loss = 0.0;
     for (int t = 0; t < T; t++) {
         float *lg = model_forward(m, toks[t], t);
-        if (!lg) goto fail;
+        if (!lg) return false;
         if (t < T - 1 && (!pos_w || pos_w[t] != 0.0f)) {
             float mx = lg[0];
             for (int i = 1; i < V; i++) if (lg[i] > mx) mx = lg[i];
@@ -9155,31 +9155,35 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
                          - (double)lg[toks[t + 1]]);
         }
     }
-    if (prof) { pt_fw = plat_now(); }
-    {
-    // ---- reverse sweep
-    // Head + out-norm, chunked (slice 3): the lm-head transposed matvec is
-    // the backward's single largest tensor, and running it per position
-    // re-decoded all V rows T times. Scored positions gather into chunks
-    // of HEAD_CHUNK probs rows and one batched call per chunk decodes each
-    // row once per chunk instead — per-position gradient chains unchanged
-    // (positions are independent through the head; the chunk boundary is a
-    // scheduling artifact). Logits still recompute from the tape rather
-    // than being stored: memory over speed, the reference trade — the
-    // chunk bounds the probs plane to HEAD_CHUNK * V floats.
-    enum { HEAD_CHUNK = 16 };
-    float *dx     = calloc((size_t)T * E, sizeof(float));
+    *loss_out = loss;
+    return true;
+}
+
+// The reverse sweep starts at the head: head + out-norm into dx, chunked
+// (slice 3). The lm-head transposed matvec is the backward's single largest
+// tensor, and running it per position re-decoded all V rows T times. Scored
+// positions gather into chunks of HEAD_CHUNK probs rows and one batched call
+// per chunk decodes each row once per chunk instead — per-position gradient
+// chains unchanged (positions are independent through the head; the chunk
+// boundary is a scheduling artifact). Logits still recompute from the tape
+// rather than being stored: memory over speed, the reference trade — the
+// chunk bounds the probs plane to HEAD_CHUNK * V floats.
+enum { HEAD_CHUNK = 16 };
+static bool lora_head_bw(model_t *m, const int32_t *toks, int T,
+                         const float *pos_w, float *dx) {
+    int E = m->n_embd, V = m->n_vocab, L = m->n_layer;
     float *probs  = malloc(sizeof(float) * (size_t)HEAD_CHUNK * V);
     float *hn     = malloc(sizeof(float) * (size_t)E);
     float *dhn    = malloc(sizeof(float) * (size_t)HEAD_CHUNK * E);
     // softcap adjoint needs tanh(z/c) per logit of the chunk
     float *thb    = m->logit_softcap > 0
                     ? malloc(sizeof(float) * (size_t)HEAD_CHUNK * V) : NULL;
-    int tmap[HEAD_CHUNK];
-    if (!dx || !probs || !hn || !dhn || (m->logit_softcap > 0 && !thb)) {
-        free(dx); free(probs); free(hn); free(dhn); free(thb);
-        goto fail;
+    if (!probs || !hn || !dhn || (m->logit_softcap > 0 && !thb)) {
+        free(probs); free(hn); free(dhn); free(thb);
+        return false;
     }
+    bool ok = true;
+    int tmap[HEAD_CHUNK];
     int nc = 0;
     for (int t = 0; t < T - 1; t++) {
         if (!pos_w || pos_w[t] != 0.0f) {
@@ -9217,7 +9221,8 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
         if (nc == HEAD_CHUNK || (t == T - 2 && nc > 0)) {
             memset(dhn, 0, sizeof(float) * (size_t)nc * E);
             if (!matvec_t(m, m->output, probs, dhn, E, V, nc)) {
-                free(dhn); free(dx); free(probs); free(hn); free(thb); goto fail;
+                ok = false;
+                break;
             }
             for (int c = 0; c < nc; c++) {
                 const float *hc = m->tape + ((size_t)L * T + tmap[c]) * E;
@@ -9227,8 +9232,14 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
             nc = 0;
         }
     }
-    free(dhn); free(thb);
-    if (prof) { pt_head = plat_now(); }
+    free(probs); free(hn); free(dhn); free(thb);
+    return ok;
+}
+
+// The layers in reverse, with the scratch they share: the shared-KV deposits
+// per owner layer and the window's per-layer embedding slices.
+static bool lora_layers_bw(model_t *m, const int32_t *toks, int T, float *dx) {
+    int L = m->n_layer;
     // R8.9.6 scratch: shared-KV deposits per owner layer, and the per-layer
     // embedding slices for the window, recomputed from the tape's layer-0
     // input (the scaled token embedding the forward's prepass consumed)
@@ -9255,23 +9266,42 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
         ok = lora_layer_bw(m, l, toks, T, dx);
     free(m->bw_dk_share); free(m->bw_dv_share); free(m->bw_ple);
     m->bw_dk_share = m->bw_dv_share = m->bw_ple = NULL;
-    if (prof) {
-        fprintf(stderr, "train-prof: fw %.2fs head %.2fs layers %.2fs "
-                "(R %.2f sites %.2f attn %.2f b2b3 %.2f)\n",
-                pt_fw - pt0, pt_head - pt_fw, plat_now() - pt_head,
-                lbw_prof[0], lbw_prof[1], lbw_prof[2], lbw_prof[3]);
-        memset(lbw_prof, 0, sizeof(lbw_prof));
-    }
-    free(probs); free(hn);
-    if (!ok) { free(dx); goto fail; }
-    free(dx);
+    return ok;
+}
+
+// pos_w: per-transition weights (length T-1; transition t scores toks[t+1]).
+// NULL = all ones. A zero weight removes the position from loss AND gradient
+// (the prompt-masking / advantage-weighting hook GRPO-style training needs).
+bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
+                           const float *pos_w, double *loss_out) {
+    if (!lora_backward_admit(m, T)) return false;
+    // RUNNER_TRAIN_PROF=1: per-step phase wall times on stderr — the dev
+    // knob the slice-3 optimization ran on (guessing at the profile cost a
+    // round of measurement; this line is cheaper than being wrong again)
+    bool prof = getenv("RUNNER_TRAIN_PROF") != NULL;
+    double pt0 = prof ? plat_now() : 0, pt_fw = 0, pt_head = 0;
+    double loss = 0.0;
+    bool ok = lora_taped_forward(m, toks, T, pos_w, &loss);
+    if (ok) {
+        if (prof) { pt_fw = plat_now(); }
+        float *dx = calloc((size_t)T * m->n_embd, sizeof(float));
+        ok = dx && lora_head_bw(m, toks, T, pos_w, dx);
+        if (ok) {
+            if (prof) { pt_head = plat_now(); }
+            ok = lora_layers_bw(m, toks, T, dx);
+            if (prof) {
+                fprintf(stderr, "train-prof: fw %.2fs head %.2fs layers %.2fs "
+                        "(R %.2f sites %.2f attn %.2f b2b3 %.2f)\n",
+                        pt_fw - pt0, pt_head - pt_fw, plat_now() - pt_head,
+                        lbw_prof[0], lbw_prof[1], lbw_prof[2], lbw_prof[3]);
+                memset(lbw_prof, 0, sizeof(lbw_prof));
+            }
+        }
+        free(dx);
     }
     free(m->tape); m->tape = NULL; m->tape_T = 0;
-    if (loss_out) *loss_out = loss;
-    return true;
-fail:
-    free(m->tape); m->tape = NULL; m->tape_T = 0;
-    return false;
+    if (ok && loss_out) *loss_out = loss;
+    return ok;
 }
 
 
