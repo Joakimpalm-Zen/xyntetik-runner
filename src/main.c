@@ -2926,8 +2926,9 @@ static bool cli_model_flags_ok(const cli_opts *o, int *tmpl_override) {
 // CI and pipes typically have neither and stay unaffected. --no-tray is the
 // explicit escape for a wrapper that wants the guarantee in writing.
 //
-// It sits HERE, after every argument check a serve or interactive run can
-// still fail, rather than up beside the mode guard where it used to.
+// main() calls it after every argument check a serve or interactive run can
+// still fail, the serving configuration, the rewrite flags and the eval
+// requirement included, rather than up beside the mode guard where it used to.
 // Raised earlier it outlived the process that raised it: `-s 0`, a
 // yarn-factor conflict and an unknown --chat-template all refuse AFTER
 // that point, and the detached tray they had already spawned held the
@@ -4813,8 +4814,6 @@ int main(int argc, char **argv) {
     int tmpl_override = -1;
     if (!cli_model_flags_ok(o, &tmpl_override)) return 1;
 
-    cli_tray_follow(o);
-
     if (o->context_out) return run_context_surgery(o, load_path);
     if (o->merge_out) return run_merge_lora(o);
     if (o->quant_out) return run_quantize(o);
@@ -4822,6 +4821,8 @@ int main(int argc, char **argv) {
     if (!cli_rewrite_flags_ok(o)) return 1;
 
     if (!cli_require_eval_ok(o, load_path)) return 1;
+
+    cli_tray_follow(o);
 
     oms_policy signing = { o->model_sig, o->model_pubkey, o->require_signed_model };
     if (cli_load_model(o, rt, load_path, registry, tmpl_override, &signing, &rc))

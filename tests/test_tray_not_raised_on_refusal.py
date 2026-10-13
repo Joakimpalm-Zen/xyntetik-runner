@@ -64,7 +64,20 @@ def _trays(instances_dir):
     return out
 
 
-def test_an_argument_refusal_raises_no_tray(runner_bin, registry, tmp_path):
+# One refusal from every check a serve or interactive run passes after the
+# mode guard and before the model loads: the seed, the serving configuration
+# (receipts, adapters), the rewrite flags and the eval requirement.
+REFUSALS = [
+    (["-i", "-s", "0"], b"not a usable seed"),
+    (["--serve", "--receipts-keep", "3"], b"--receipts-keep needs --receipts DIR"),
+    (["--serve", "--adapter", "a=a.gguf", "--lora", "a.gguf"], b"--adapter and --lora are exclusive"),
+    (["--serve", "--merge-allow-erased"], b"--merge-allow-erased requires --merge-lora OUT"),
+    (["--serve", "--require-eval", "fidelity"], b"--require-eval fidelity"),
+]
+
+
+@pytest.mark.parametrize("args,refusal", REFUSALS, ids=[" ".join(a) for a, _ in REFUSALS])
+def test_an_argument_refusal_raises_no_tray(runner_bin, registry, tmp_path, args, refusal):
     if sys.platform not in TRAY_PLATFORMS:
         pytest.skip("no tray backend on this platform (the call compiles out)")
     try:
@@ -76,10 +89,9 @@ def test_an_argument_refusal_raises_no_tray(runner_bin, registry, tmp_path):
     model = tmp_path / "m.gguf"
     model.write_bytes(b"not a model")
 
-    # -s 0 is refused AFTER the mode guard: it is one of the checks the raise
-    # used to sit above. -i makes it an interactive run, which is a session
-    # the tray would otherwise follow.
-    argv = [str(runner_bin), "-m", str(model), "-i", "-s", "0"]
+    # each is refused AFTER the mode guard, and -i or --serve makes it a
+    # session the tray would otherwise follow
+    argv = [str(runner_bin), "-m", str(model), *args]
     pid, fd = pty.fork()
     if pid == 0:                      # child: the pty IS its terminal
         os.execve(argv[0], argv, env)
@@ -99,7 +111,7 @@ def test_an_argument_refusal_raises_no_tray(runner_bin, registry, tmp_path):
         _, status = os.waitpid(pid, 0)
 
     assert status != 0, "the run was supposed to be refused"
-    assert b"not a usable seed" in output, output[-400:]
+    assert refusal in output, output[-400:]
 
     # a spawn is detached and registers itself asynchronously; give it room
     # to appear rather than racing it to a pass

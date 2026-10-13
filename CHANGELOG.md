@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A refused `--serve` no longer leaves a tray behind.** The tray is
+  raised only after every argument check a serve or interactive run can
+  still fail, which is what the code already said, but the serving
+  configuration (`--receipts-keep` without `--receipts`, `--adapter` with
+  `--lora`, the `--kv-snapshots` and `--sessions` checks), the rewrite flags
+  and `--require-eval` were checked after the raise. A refused run on a
+  terminal left a detached tray running, holding the executable open
+  against the next relink. The raise now follows the last of them; a run
+  that fails later, when the model will not load, still raises one.
+
 - **Byte-level BPE tokenization matches the reference on Latin-1 symbols,
   superscripts, currency and U+FFFD.** The pre-tokenizers read every code
   point above U+007F as a letter unless it sat in a few symbol blocks, so
