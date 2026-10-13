@@ -96,6 +96,45 @@ def test_training_is_byte_deterministic(runner_bin, base, tmp_path):
     assert r1["build"]["compiler"] and r1["build"]["os"] and r1["build"]["arch"]
 
 
+# Every family the trainer admits trains reproducibly, not only the plain
+# fixture above: the backward pass branches by family (qk-norm, Gemma's norms
+# and softcap, the E-series per-layer embedding, Muse, Granite's multipliers,
+# a quantized base, sparse-MoE attention adapters with and without router
+# renormalization), and a family whose two identical runs differ would make
+# every comparison of its adapters meaningless.
+TRAIN_FAMILIES = {
+    "qk-norm": ("make-test-model.py", ["--qk-norm"], None),
+    "gemma3": ("make-test-model.py", ["--gemma3"], None),
+    "gemma4": ("make-test-model.py", ["--arch", "gemma4"], None),
+    "e-series": ("make-test-model.py", ["--eseries", "3,8", "--drop-kv", "shared"], None),
+    "muse": ("make-test-model.py", ["--muse-glimmer"], None),
+    "granite": ("make-test-model.py", ["--granite"], None),
+    "q8_0": ("make-test-model.py", ["--quant", "q8_0"], None),
+    "moe-renorm": ("make-test-moe.py", [], "moe4-train"),
+    "moe-no-renorm": ("make-test-moe.py", [], "moe4-train-nonorm"),
+}
+
+
+@pytest.mark.parametrize("family", sorted(TRAIN_FAMILIES))
+def test_every_trainable_family_is_byte_deterministic(runner_bin, base, tmp_path, family):
+    gen, args, member = TRAIN_FAMILIES[family]
+    d = tmp_path / "fx"
+    d.mkdir()
+    if member:
+        subprocess.run([sys.executable, ROOT / "scripts" / gen, str(d / "m")],
+                       check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+        (d / f"m.{member}.gguf").rename(d / "base.gguf")
+    else:
+        subprocess.run([sys.executable, ROOT / "scripts" / gen, *args, str(d / "base.gguf")],
+                       check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    (d / "corpus.txt").write_text(CORPUS)
+    a1, a2 = tmp_path / "a1.gguf", tmp_path / "a2.gguf"
+    l1 = _train(runner_bin, d, a1, steps=4)
+    l2 = _train(runner_bin, d, a2, steps=4)
+    assert l1 == l2, (family, "loss trajectories differ between identical runs")
+    assert a1.read_bytes() == a2.read_bytes(), (family, "adapter files differ")
+
+
 def test_loss_falls_and_adapter_improves_score(runner_bin, base, tmp_path):
     out = tmp_path / "ad.gguf"
     losses = _train(runner_bin, base, out, steps=30)
