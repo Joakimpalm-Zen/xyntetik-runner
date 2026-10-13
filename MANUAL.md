@@ -379,13 +379,12 @@ adaptation as an auditable artifact, not a run that is merely repeatable
 
 What the backward covers is the dense gated transformer in its shapes:
 Llama, Mistral, Qwen2.5 and Granite 4.x dense (muP scalars, tied output),
-since 2026-09-08 the head transforms (logit scale, softcap, suppressed
-tokens), the afmoe and Muse-Glimmer attention output gate, the sandwich
-norms, the per-layer output scale and sliding-window attention, and since
-2026-09-22 the GELU gated FFN (Gemma 3) beside the SiLU one, and since
-2026-09-23 Gemma 4 in full: the weightless V norm, the V-less full-attention
-layers, the E-series shared KV and per-layer embeddings, and since
-2026-10-08 sparse-MoE models with Qwen3-MoE or Mixtral routing (softmax
+the head transforms (logit scale, softcap, suppressed tokens), the afmoe
+and Muse-Glimmer attention output gate, the sandwich norms, the per-layer
+output scale and sliding-window attention, the GELU gated FFN (Gemma 3)
+beside the SiLU one, Gemma 4 in full: the weightless V norm, the V-less
+full-attention layers, the E-series shared KV and per-layer embeddings, and
+sparse-MoE models with Qwen3-MoE or Mixtral routing (softmax
 router, top-k, with or without renormalization): the adapter goes on the
 attention projections and the backward runs through the frozen experts and
 the router's softmax weights, held per coordinate to 0.5% by a strict
@@ -1287,7 +1286,7 @@ reported beside it).
   outlived the learning subject) and GE-003 was inconclusive. Same
   collection.
 
-Since 2026-09-15 the account is organised for a reader who has never seen
+The account is organised for a reader who has never seen
 it: weightless reports are Hugging Face **Datasets** (the seven above, plus
 the [Qwen3-4B tool-use training record](https://huggingface.co/datasets/Joakimpalm-Zen/Qwen3-4B-ToolUse-LoRA-training-record)
 extracted from the adapter repository), every model card opens with a
@@ -1340,19 +1339,19 @@ merely dense matvec/matmul support.
 |---|---|
 | `llama`, `mistral`, `smollm`, `stablelm` | Llama-style dense families with family tokenizers/templates. |
 | `qwen2`, `qwen3` | QKV-bias and per-head-QK-norm variants. |
-| `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU and CUDA. Qwen3.8-27B admitted 2026-09-06 (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore (its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike, since 2026-09-15); a CUDA-resident recurrent layer runs speculative decode (per-row recurrent checkpoints restore a partially accepted round) and declines grammar fast-forward. |
+| `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU and CUDA. Qwen3.8-27B (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore (its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike); a CUDA-resident recurrent layer runs speculative decode (per-row recurrent checkpoints restore a partially accepted round) and declines grammar fast-forward. |
 | `qwen3moe` | Fused and legacy split sparse-MoE layouts on CPU/CUDA; supported fused layouts on Metal. |
-| `gemma3` | Regular and QAT layouts, sliding-window attention, sandwich norms. The 27B (62 blocks) scales attention by its config's `query_pre_attn_scalar`, which is n_embd / n_head (168), not its 128-wide heads; every other size uses the head width (since 2026-09-30, `tests/test_attn_scale.c`; before, the 27B ran 1.146x too sharp). |
+| `gemma3` | Regular and QAT layouts, sliding-window attention, sandwich norms. The 27B (62 blocks) scales attention by its config's `query_pre_attn_scalar`, which is n_embd / n_head (168), not its 128-wide heads; every other size uses the head width (`tests/test_attn_scale.c`). |
 | `gemma4` | Heterogeneous attention, thinking channels, E-series, supported dense/MoE layouts, and the family's native tool protocol. Both E-series export shapes load. A layer at or past `block_count - attention.shared_kv_layers` computes no K and no V (it attends over the cache an earlier layer filled), so the current quantized exports - the ggml-org Q4_0, Google's own QAT Q4_0 and the community QAT F16 - omit `attn_k.weight`, `attn_v.weight` and `attn_k_norm.weight` on exactly those layers: 666 tensors on E4B where the BF16 export has 720. Those three are optional on the shared-KV tail and still required on every KV-owning layer, where a missing one is refused by name. |
 | `phi3` | Fused QKV and gate/up tensors, LongRoPE factors. |
-| `gpt-oss` | Attention sinks, alpha-sigmoid GLU, expert biases, MXFP4 experts. The YaRN ramp follows OpenAI's reference, whose correction range is not rounded (`"truncate": false` in the model's config; transformers' default and llama.cpp round it), since 2026-09-30 (`tests/test_rope_yarn.c`, anchored on tables computed from the reference formula); the cross-engine figures in this row were measured before that change. Tokenizer exact (0/721 differential) and chat renders the real Harmony format (analysis channel as `reasoning_content`) as of 2026-08-14; cross-engine greedy identity remains inside the model's own measured KV-precision sensitivity envelope rather than certified. |
+| `gpt-oss` | Attention sinks, alpha-sigmoid GLU, expert biases, MXFP4 experts. The YaRN ramp follows OpenAI's reference, whose correction range is not rounded (`"truncate": false` in the model's config; transformers' default and llama.cpp round it; `tests/test_rope_yarn.c`, anchored on tables computed from the reference formula). The cross-engine figures in this row predate the ramp correction. Tokenizer exact (0/721 differential) and chat renders the real Harmony format (analysis channel as `reasoning_content`); cross-engine greedy identity remains inside the model's own measured KV-precision sensitivity envelope rather than certified. |
 | `apertus` | xIELU FFN; CPU and CUDA. |
 | `afmoe` | Arcee Trinity sparse MoE; CPU only. CUDA and Metal refuse it loudly as gated attention plus sparse MoE, rather than misreporting a quantization problem. Against Arcee's float32 reference (the golden pass of 2026-09-07 ([`docs/golden-pass-2026-09-07.md`](docs/golden-pass-2026-09-07.md)), Trinity Nano, 2,000 positions) the runner and llama.cpp BOTH sit about 0.045 of mean KL from the publisher at bf16, where every other measured family reads 0.0001 to 0.003: a shared reproduction gap, not yet explained. Margin-qualified top-1 there is 98.53% for the runner and 98.60% for llama.cpp, not a significant difference, so the 1-in-6 greedy identity against llama.cpp that failed this family's 2026-08-05 certification measured the distance between two engines equally far from the publisher, not a runner defect. |
 | `muse-glimmer` | Meta Muse Glimmer 30B, text path: gated attention, QK and sandwich norms, SWA with NoPE globals, softcapped logits. CPU, CUDA and Metal. Measured 2026-08-11; evidence in [the model reference](docs/model-evidence.md#muse-glimmer). No vision encoder. Native atem definitions/results, recipient-constrained generation, truncation recovery, multi-call mapping, and buffered/SSE parsing are implemented and selected automatically for tool requests. The reference template's `reasoning_strength` kwarg (low, medium, high; absent renders high) is honoured on the chat surface, `reasoning_effort` is accepted as the cross-family spelling, and a system prompt that carries the directive itself keeps it (the reference's normalisation of "reasoning effort" to "reasoning strength" and skip of its own line are reproduced). Bare tool names render as the reference's namespace patterns by default; `bare_recipients` / `--bare-recipients` selects the verbatim rendering of Meta's discussion #60 (see "Muse recipients line"). |
 | `granite` | IBM Granite dense (3.x/4.1/4.2): the four muP scalars (embedding, fixed attention, residual, divided logit), read from the header (4.2 ships them all at 1.0). CPU, CUDA and Metal. Measured 2026-08-11; evidence in `docs/model-evidence.md#granite`. Granite 4.2 (3B, 8B) admitted 2026-09-06 with its `granite-docling` pre-tokenizer and its own `granite42` chat template (ChatML, `<think>`, function-XML tools); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. granitemoe is a separate arch id and not admitted; granitehybrid is admitted separately, below. |
 | `granitehybrid` | Granite-4 h-series: a Mamba-2 selective-SSD recurrence (causal conv1d + the input-dependent state-space scan, with the gated RMS norm) interleaved with GQA attention, the layer type read per-layer from the `attention.head_count_kv` array (0 ⇒ recurrent); the attention layers are NoPE (`rope.scaling.finetuned=false`); the four granite muP scalars. Both published FFN layouts are supported: dense h-micro has a gated MLP on every layer and runs on CPU and CUDA; sparse h-small has a routed MoE FFN plus an always-on shared expert and currently runs on CPU because those two branches have no device path. The dense h-micro CUDA path is CPU-token-identical over 600/600 greedy tokens with per-run mean |Δlp| ≤ 0.000024 (max per-position 0.000422); evidence and raw probes are archived in Shade (`research/runner-engine/archive/runner-docs-2026-10-13b/`). Against IBM's float32 reference (the golden pass of 2026-09-07 ([`docs/golden-pass-2026-09-07.md`](docs/golden-pass-2026-09-07.md)), granite-4.0-h-micro, 2,000 positions) margin-qualified top-1 is 100.00% at bf16 and 94.36% at Q4_K_M (llama.cpp 100.00% and 93.67%, not a significant difference), and the runner is the closer engine on per-position KL at both tiers. Second column, llama.cpp: the sparse h-small CPU path was verified against llama.cpp b10353 at both Q4_K_M and Q8_0: greedy output is token-identical on deterministic prompts (a 256-token completion matches byte-for-byte) and holds at the quantisation noise floor elsewhere, where the divergences are synonymous-phrasing near-ties, not wrong math. Re-verified at higher precision (Q8_0, 2026-08-19): the sole non-empty divergence is a single-token near-tie whose top-2 candidates the runner and llama.cpp rank identically to within ~0.03-0.09 nats (an argmax coin-flip), with the runner's full top-5 logit distribution matching the oracle's - so the Mamba-2 math is correct and the Q4_K misses were pure noise floor, the same envelope noted for gpt-oss. Chunked-scan prefill: the token axis is tiled into chunks (~256), the per-head SSD recurrence runs in parallel across heads within a chunk and the SSD state + conv ring are carried across chunk boundaries - bit-identical to the serial per-token sweep (a pinned `make test` gate holds chunked == serial across chunk sizes) and ~1.8x faster prompt throughput on a long prompt (measured on granite-4.0-h-small Q8_0, 264 tokens). `XR_SSM_SERIAL=1` forces the serial reference path. The recurrent-state cache seam is wired: the fixed-size fold is snapshotted/restored on a rewind, and stored beside the KV in the prefix cache so an exact CPU prompt-prefix hit restores it in a memcpy rather than recomputing the recurrent layers. CPU speculative decode and grammar fast-forward use a per-round fold checkpoint; a CUDA split is admitted only while every recurrent layer remains host-resident. Metal has no SSM path. |
 | `nemotron_h` | NVIDIA Nemotron-H (Nemotron-Nano-9B-v2): a Mamba-2 selective-SSD recurrence interleaved with GQA attention and dense MLP blocks, where each block is EXACTLY ONE of three kinds (SSM \| attention \| MLP), typed per-layer off `attention.head_count_kv` (0) and `feed_forward_length` (0). NON-MoE and no muP scalars - unlike granitehybrid; the MLP is a gate-less squared-ReLU FFN (`down(relu(up(x))^2)`), attention is NoPE (`rope.scaling.finetuned=false`), and the SSM uses a GROUPED scan (`ssm.group_count=8`): B/C are shared across groups of heads and broadcast (group g covers heads [g·H/G, (g+1)·H/G)) - the same grouped scan `nemotron_h_moe` (Nemotron-3.5 Lightning) also uses - here first proven WITHOUT MoE, and admitted WITH MoE in the row below. CPU and **CUDA**: the Mamba-2 SSD scan, causal conv1d, gated RMS norm and squared-ReLU FFN all have device kernels, and full 56-layer offload is **greedy byte-identical to the CPU path** on the real Nano-9B-v2 Q8_0 (3 prompts x 48 decode steps plus an 88-token multi-tile prefill; re-verified independently post-merge at 32 tokens). Device prefill currently runs the per-token loop (correct, unoptimized); no Metal SSM path. Against NVIDIA's float32 reference (the golden pass of 2026-09-07 ([`docs/golden-pass-2026-09-07.md`](docs/golden-pass-2026-09-07.md)), 100 positions; the 2,000-position rerun did not finish) margin-qualified top-1 is 100% at bf16 and at Q8_0 for both engines, and the runner reads the lower mean KL at both (0.0027 and 0.0041 against llama.cpp's 0.0031 and 0.0054). Second column: verified against llama.cpp b10353 on the real Nemotron-Nano-9B-v2 at Q8_0 (same GGUF both engines, CPU): 5/6 greedy completions byte-identical (including both 256-token generations); the sole miss is a single-token near-tie where both engines share the same top-3 candidates and llama.cpp's own top-1/top-2 gap is ~0.075 nats (an FP-summation-order coin-flip), i.e. the quantisation noise floor, not wrong math. Chunked-scan prefill (the grouped scan tiled into chunks, parallel across heads within a chunk, SSD state + conv ring carried across chunk boundaries), bit-identical to the serial per-token sweep and pinned chunked == serial in `make test`; the recurrent-state cache seam is wired (fold snapshotted/restored on rewind, and stored beside the KV so an exact CPU prompt-prefix hit restores it in a memcpy). CPU speculative decode and grammar fast-forward use the per-round fold checkpoint; full GPU offload and partial splits with a CUDA-resident recurrent layer decline them. |
-| `nemotron_h_moe` | NVIDIA Nemotron-3.5-Lightning-30B-A3B: `nemotron_h` with the dense squared-ReLU MLP replaced by a gate-less squared-ReLU **MoE** (128 experts / 6 used, no gate branch) plus an always-on **gate-less shared expert**; the router reuses the general softmax/group/scale/norm path. Same three-way block typing, grouped scan (`n_group=8`), and NoPE attention as `nemotron_h`. Runs on CPU: the SSM scan has a device kernel, but this family's router (weight-normed, scaled) and gate-less shared expert have no device path, so the backend falls back to CPU there. No publisher reference has been measured: the family's smallest member is 30B, too large for a float32 reference on the measurement box, so llama.cpp is this row's only anchor and the figure below is agreement with another engine, not fidelity. Greedy vs llama.cpp `ea12b27` on the real Lightning-30B Q4_0 (CPU, 8 tok × 5 prompts): **4/5 byte-identical**, the one divergence a near-tie on an open-ended counting continuation (noise floor, not wrong math - the coherent `Paris. … Berlin.` completion matches exactly). Evidence archived in Shade (`research/runner-engine/archive/runner-docs-2026-10-13b/`). Chat template: its own `nemotron35` family (Granite 4.2's template with Qwen3-Coder's nested-XML tool declarations), conformant to the file's own template in 22 of 22 cases, text and tokens (2026-10-09); before that it was served as `granite42`, which declared tools as JSON. |
+| `nemotron_h_moe` | NVIDIA Nemotron-3.5-Lightning-30B-A3B: `nemotron_h` with the dense squared-ReLU MLP replaced by a gate-less squared-ReLU **MoE** (128 experts / 6 used, no gate branch) plus an always-on **gate-less shared expert**; the router reuses the general softmax/group/scale/norm path. Same three-way block typing, grouped scan (`n_group=8`), and NoPE attention as `nemotron_h`. Runs on CPU: the SSM scan has a device kernel, but this family's router (weight-normed, scaled) and gate-less shared expert have no device path, so the backend falls back to CPU there. No publisher reference has been measured: the family's smallest member is 30B, too large for a float32 reference on the measurement box, so llama.cpp is this row's only anchor and the figure below is agreement with another engine, not fidelity. Greedy vs llama.cpp `ea12b27` on the real Lightning-30B Q4_0 (CPU, 8 tok × 5 prompts): **4/5 byte-identical**, the one divergence a near-tie on an open-ended counting continuation (noise floor, not wrong math - the coherent `Paris. … Berlin.` completion matches exactly). Evidence archived in Shade (`research/runner-engine/archive/runner-docs-2026-10-13b/`). Chat template: its own `nemotron35` family (Granite 4.2's template with Qwen3-Coder's nested-XML tool declarations), conformant to the file's own template in 22 of 22 cases, text and tokens. |
 
 </details>
 
@@ -1619,7 +1618,7 @@ tolerance tests. CUDA currently promotes Q4_K/Q6_K/Q8_0 on the gated dense
 families and Q4_0 on Gemma 4; the latter was bit-identical over 820 tensor-core
 dispatches on the real 31B QAT artifact. The nine codebook i-quants (IQ1_S,
 IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_XS, IQ4_NL) are promoted
-on the same list since 2026-09-14, each measured as the forced path against
+on the same list, each measured as the forced path against
 the scalar one on Granite 4.2 3B requantized to the format with all layers
 on the device (at most a near-tie flip or two in 64 teacher-forced
 positions, free-running token-identical, at most 1.3e-4 of the logit
@@ -2057,7 +2056,7 @@ with `scripts/kld-compare-raw.py` against the same file's f16 cache. f16 is the 
 Same-vocabulary draft GGUF for speculative decoding in one-shot, chat, or single-model
 serve mode. A draft is refused at load on a vocabulary mismatch, a discrete-VRAM (CUDA)
 fully-offloaded target or CUDA-resident recurrent state (the verify walk needs
-host-readable hidden work; unified-memory Metal full offload qualifies since 2026-09-01
+host-readable hidden work; unified-memory Metal full offload qualifies
 and speculates correctly, target-exact and gated byte-identical against the plain path —
 but measure before relying on it there: on Apple Silicon the batched verify costs roughly a
 full decode step per column, because the dequant ALU that hides under the bandwidth
@@ -2566,9 +2565,7 @@ with 1.05; Granite 4.2: 1.0 / 0.95; the audit is in
 `docs/cross-family-remedy-2026-09-14.md`), and the model card's
 recommendation where only the card speaks (Qwen 3.5: 1.0 / 0.95 / 20, or
 1.0 / 1.0 / 20 on the 0.8B, whose thinking is off by default; Nemotron Nano
-9B v2: 0.6 / 0.95; Apertus: 0.8 / 0.9; all four since 2026-10-02, when a
-Qwen 3.5 file was still served at Qwen3's 0.6 and the other two at the
-generic preset). What every publisher says, per family and per mode, is
+9B v2: 0.6 / 0.95; Apertus: 0.8 / 0.9). What every publisher says, per family and per mode, is
 recorded in `docs/serving-guidance.json`; the envelope certifier sets it
 beside the served preset in each manifest and names the knobs that differ
 (`docs/envelope-manifests/README.md`). A GGUF that carries the publisher's
@@ -2581,19 +2578,16 @@ The file's repeat penalty is not read; the presets' penalty is calibration
 this sampler. Where a preset carries a value
 the publisher never stated, its source says so: the `repeat_penalty 1.10`
 of the llama3, mistral, smollm2, lucie and teuken presets is runner's own
-calibration, not the vendor's. Gemma 4 used to inherit Gemma 3's preset,
-which until 2026-09-14 carried that same 1.10 under the Gemma team's
-citation; at the family's temperature 1.0 the penalty turned every native
-tool call into special-token soup (the 2026-09-14 Windows report, 12B QAT
-Q4_0: 0 of 4 tool cases with it, 4 of 4 without). The penalty window holds
-the tokens the model generated, never the prompt (since 2026-09-15: a tool
-schema in a raw `/v1/completions` prompt held exactly the tokens a call
-must re-type, and the generic preset's penalty, 1.0 now where it was 1.10,
-turned every sampled call into schema-avoiding spellings while greedy
-stayed perfect; `tests/test_penalty_window.c`). The penalty applies once
-per distinct token in the window however often it recurs there, as
-transformers and llama.cpp apply it (until 2026-09-30 it compounded per
-occurrence; `tests/test_sampler.c`). A request can read back
+calibration, not the vendor's. Gemma 4 carries no repeat penalty: at the
+family's temperature 1.0 a penalty of 1.10 turned every native tool call
+into special-token soup (12B QAT Q4_0: 0 of 4 tool cases with it, 4 of 4
+without). The penalty window holds the tokens the model generated, never
+the prompt: a tool schema in a raw `/v1/completions` prompt holds exactly
+the tokens a call must re-type, and a penalty over the prompt turned every
+sampled call into schema-avoiding spellings while greedy stayed perfect
+(`tests/test_penalty_window.c`). The penalty applies once per distinct
+token in the window however often it recurs there, as transformers and
+llama.cpp apply it (`tests/test_sampler.c`). A request can read back
 what it was served with: `runner_telemetry.sampling` carries the preset,
 the five effective values, the seed and each value's source (`preset`,
 `file`, `cli` or `request`), and `runner_telemetry.tool_protocol` the template, the
@@ -2639,7 +2633,7 @@ non-loopback authorities.
 | `POST /v1/chat/completions` | OpenAI Chat Completions, including SSE, tools, structured output, logprobs, and stop strings. |
 | `POST /v1/responses` | OpenAI Responses translation over the same engine and tool envelope. |
 | `POST /v1/completions` | Legacy raw prompt completions; `prompt` is a string or an array of token ids. |
-| `POST /v1/embeddings` | L2-normalized embeddings, pooled as the GGUF declares in `{arch}.pooling_type`: the mean over every token (also when the key is absent, as on generative models), or the last token (embedding models such as Qwen3-Embedding), with the end token appended first when `tokenizer.ggml.add_eos_token` is set. A model declaring CLS or rank pooling is refused with 400 naming it (since 2026-09-30; before, every model was mean-pooled with no end token). |
+| `POST /v1/embeddings` | L2-normalized embeddings, pooled as the GGUF declares in `{arch}.pooling_type`: the mean over every token (also when the key is absent, as on generative models), or the last token (embedding models such as Qwen3-Embedding), with the end token appended first when `tokenizer.ggml.add_eos_token` is set. A model declaring CLS or rank pooling is refused with 400 naming it. |
 | `POST /v1/rerank` | Documents ranked against a `query` with no reranker model: each document is put to the served model as a question with exactly two answers (`yes`, `no`) and scored with `/v1/decide`'s exact in-context readout. `relevance_score` is P(yes) renormalized over the two answers, `logit` is log P(yes) - log P(no), and `margin` is the logit gap to the next-ranked document, so a client can tell a decisive order from a near tie. Accepts `documents` as strings or `{"text": ...}` objects, `top_n`, `return_documents`, an `instruction` replacing the default ("Judge whether the document answers the query. Answer yes or no."), and `rendering`: `chat-v1` (default; the model's own chat template, thinking off, refused for harmony's channel protocol) or `raw-v1` (`{instruction}\n\nQuery: {query}\nDocument: {document}\nRelevant:` with answers ` yes`/` no`, for base models). The `envelope` carries digests of the query, documents and instruction. The score is the served model's judgement, not a trained reranker's. |
 | `POST /v1/messages` | Anthropic Messages translation. |
 | `POST /v1/messages/count_tokens` | Token count for the matching Messages request. |
@@ -2667,7 +2661,7 @@ Chat Completions and Responses are text-only: image, file, and other
 unrenderable content parts receive HTTP 400 rather than being discarded while
 adjacent text is processed.
 
-Legacy Completions scores the prompt teacher-forced (since 2026-09-30).
+Legacy Completions scores the prompt teacher-forced.
 `echo: true` returns the prompt in front of the completion in `text`, and with
 `logprobs: N` the logprob arrays cover the prompt's tokens first, then the
 generated ones; the first prompt token has nothing before it, so its
@@ -2699,7 +2693,7 @@ reused/evaluated, generation timing, paging counters, and structured or
 speculative mode flags. `timing.prefill_seconds` and `timing.prefill_tokens`
 are the prefill measured over the tokens it actually evaluated (the cached
 prefix costs nothing), apart from `generation_seconds`, which has always been
-the decode; a client no longer needs wall minus generation to tell a slow
+the decode; a client does not need wall minus generation to tell a slow
 prompt from a slow decode. The stages around it are measured too:
 `timing.queue_seconds` (the wait on the accept queue for a free slot),
 `timing.tokenize_seconds` (the rendered prompt through the tokenizer),
@@ -2734,9 +2728,8 @@ When it is true a `speculation` object follows: the `source` (`model`, `mtp`,
 the prompt lookup's share as `lookup_drafted`/`lookup_accepted`, so a
 per-source acceptance rate is one division.
 A streamed chat or legacy completions turn carries the same
-`runner_telemetry` object on its `finish_reason` chunk (since 2026-10-02;
-before, only the opt-in `stream_options.include_usage` chunk had it, and it
-still does), so a streaming client reads what the turn was served with, its
+`runner_telemetry` object on its `finish_reason` chunk (the opt-in
+`stream_options.include_usage` chunk carries it too), so a streaming client reads what the turn was served with, its
 closure and its decision summary without opting in.
 `GET /v1/capabilities` reports `features.request_telemetry` as
 `{"buffered": true, "streamed": true}`. Set request field `"cache_prompt": false` to bypass prefix reuse. Streaming clients
@@ -2759,7 +2752,7 @@ hit would be. Expiry during PREFILL has no tokens to truncate and answers
 A recurrent or hybrid model (Qwen 3.5/3.8, Ornith, Granite-4 h-series,
 Nemotron-H) keeps a fold over its whole prefix rather than per-position
 rows, so a slot's own rewind can only resume where a checkpoint of that fold
-exists. Since 2026-09-15 every prefill leaves one at the prompt boundary (one
+exists. Every prefill leaves one at the prompt boundary (one
 token short of the end, so a verbatim replay resumes there too): an agent
 client's next request, which replays the prompt, the reply as the template
 re-renders it and a new turn, resumes at the mark and folds only what
@@ -2801,13 +2794,10 @@ served with the default `--parallel 1` joins the registry as a one-entry set,
 so all three work there exactly as they do for a swap set. The exception is a
 multi-slot single-model server (`--parallel N` with `N > 1`): its slots hold
 the model directly, with no registry to unload it from. There `POST /unload`
-**refuses** with `409` and an error naming the configuration - it used to
-answer `{"status":"ok"}` after freeing only the prefix cache, which told an
-operator reclaiming memory that weights and KV were gone while every byte
-stayed resident. A completion that carries a `keep_alive` field there is
+**refuses** with `409` and an error naming the configuration, rather than
+reporting success while every byte stays resident. A completion that carries a `keep_alive` field there is
 **refused** with `400` for the same reason: the field is well-formed but not
-satisfiable without a registry, and `keep_alive: 0` would free nothing - it
-used to be range-checked and then silently dropped. A completion with no
+satisfiable without a registry, and `keep_alive: 0` would free nothing. A completion with no
 `keep_alive` field is the normal case and is unaffected.
 `POST /v1/runner/prefix-cache/clear` works everywhere and is what both
 refusals point at; serve with `--parallel 1` if you need an unloadable
@@ -2906,11 +2896,11 @@ switches:
 | `RUNNER_ALLOW_UNKNOWN_ARCH` | unset | Admit a GGUF whose `general.architecture` this binary does not implement, running it through llama-style math. Unset, such a file is refused at load. Set, the load is attempted and a warning says the output may be silently wrong. Experimental, not a supported configuration. |
 | `RUNNER_VRAM_PRIORITY` | `0` | Baseline for `--vram-priority`; the flag overrides it. |
 | `RUNNER_VRAM_REGISTRY_DIR` | the platform runtime dir | Where the cross-process VRAM ledger files live, one per GPU. Point every cooperating runner at the same directory when the default runtime directory is not shared between them (containers, service accounts); the tests use it to isolate a ledger. |
-| `RUNNER_KV_RING` | unset | Give sliding-window layers only the KV rows they can read, indexed modulo that count, instead of a full `n_ctx` rows each. A local layer never attends past its window, so the rest of its cache is written once and never read: on gemma-3-4b at `-c 32768` this takes the cache from 4563 MB to 800 MB, within 1% of the theoretical floor. Output is unchanged - the ring holds exactly the rows the flat allocation would have been read from, gated as bit-identical `--score` logprobs against the default path. Works on the CPU, CUDA and (since 2026-09-01) Metal paths: CUDA resolves every device cache address through `kv_slot()` (verified bit-identical on an RTX 3070 at a partial split and a full offload, 2121 scored positions each, max |Δlogprob| exactly 0), and Metal resolves the same modulo through `kv_row_off` in its store and attention kernels — gated bit-identical teacher-forced logprobs against the flat allocation across many ring wraps (`tests/test_kv_ring.py`, mutation-proven). **It is opt-in because it costs something:** the prefix cache and partial rewind also address KV as flat absolute rows, so both are refused while a ring is active and a server loses shared-prompt reuse. Worth it when context length is the binding constraint, not otherwise. Dense and full-attention-only models ignore it. |
+| `RUNNER_KV_RING` | unset | Give sliding-window layers only the KV rows they can read, indexed modulo that count, instead of a full `n_ctx` rows each. A local layer never attends past its window, so the rest of its cache is written once and never read: on gemma-3-4b at `-c 32768` this takes the cache from 4563 MB to 800 MB, within 1% of the theoretical floor. Output is unchanged - the ring holds exactly the rows the flat allocation would have been read from, gated as bit-identical `--score` logprobs against the default path. Works on the CPU, CUDA and Metal paths: CUDA resolves every device cache address through `kv_slot()` (verified bit-identical on an RTX 3070 at a partial split and a full offload, 2121 scored positions each, max |Δlogprob| exactly 0), and Metal resolves the same modulo through `kv_row_off` in its store and attention kernels — gated bit-identical teacher-forced logprobs against the flat allocation across many ring wraps (`tests/test_kv_ring.py`, mutation-proven). **It is opt-in because it costs something:** the prefix cache and partial rewind also address KV as flat absolute rows, so both are refused while a ring is active and a server loses shared-prompt reuse. Worth it when context length is the binding constraint, not otherwise. Dense and full-attention-only models ignore it. |
 | `RUNNER_TIEDV` | unset | Stop storing K rows for layers that ship no `attn_v.weight` (gemma-4's full-attention globals: V is the raw K projection, so K = rope(V·w) can be derived from the stored V at read time). On gemma-4-31B at `-c 32768` the K cache drops from 14.76 GB to 13.42 GB. This is a compute-for-memory trade and it is **not byte-identical**: the derived row replays the store path's arithmetic against the f16-rounded stored V, measured on the 31B as 100% f16 row agreement at short context (worst row 99.95%), teacher-forced mean \|Δlogprob\| 1.3e-3 with `nll_mean` moving 8.7e-5 and no top-1 change over 297 positions. CPU-only and f16-KV-only: a GPU run and a q8 cache both refuse loudly (the device kernels read stored K rows; a q8 cache would re-quantize the derived row), `--lora` refuses the combination (a K-side adapter delta would bypass the derived rows), and like `RUNNER_KV_RING` the asymmetric layout disables the shared prefix cache. Layers that carry a real `attn_v.weight` are untouched; models with no V-less layers ignore it. Gate: `tests/test_tiedv.py`; diagnostic: `RUNNER_TIEDV_CHECK=1` prints per-row derived-vs-stored K agreement while the flat cache still stores real K. |
 | `RUNNER_PREFETCH` | unset/off | Opt-in: on load, hint the whole weight mapping to the OS (`madvise(MADV_WILLNEED)` / `PrefetchVirtualMemory`) when the model fits in available RAM. **Off by default because the measurement said so**: on a 128 GB Apple Silicon Mac the sweep made the cold 63 GB gpt-oss-120b load 60% *slower* than plain demand faulting (11.5 s vs 18.4 s, interleaved with eviction between arms) — macOS demand paging outruns its own WILLNEED readahead. Linux and Windows have prior art the other way (batched readahead, `PrefetchVirtualMemory`) and can measure on their own hardware before flipping it on. Pages stay fully evictable either way; suppressed under `--mlock` and for oversubscribed models. |
 | `RUNNER_METAL_FUSE` | on | Decode-path kernel fusion, up to the attention-front megakernel: norm + Q/K/V (Q8_0/Q4_0/Q4_K/Q6_K rosters) + qk-norm + rope + KV-store as ONE dispatch, whole heads per threadgroup, the normed row staged in threadgroup memory; plus rope+store, residual-add+rmsnorm and MoE gate+up+activation fusions on the paths the megakernel does not cover. −52% dispatches per token; +5–6% decode on the 120B and 30B, byte-identical. The post-FFN residual add rides the MoE expert sum on layers where it isn't already deferred into the next norm. The megakernel admits MoE models only — it recovers dispatch-chain latency, and a fast dense model is matvec-bound and measured slower under it (`RUNNER_METAL_FRONT=all` lifts that for tests; `RUNNER_METAL_FRONT=0` disables just the megakernel while keeping the other fusions, the isolation lever the q4_0 contraction hunt was run with). Every fused kernel reproduces the unfused arithmetic element for element — **byte-identical**, gated across a six-architecture roster in `make test` (`test-metal-fuse`). q8 KV, NoPE layers, sandwich norms and the gemma dual branch keep the unfused path automatically; `0` restores it everywhere. |
-| `RUNNER_METAL_MOE_MM` | on | Grouped simdgroup-MMA MoE prefill (default since 2026-09-01): per-expert GEMM tiles over gathered token columns, float-staged operands, +21-31% measured prefill on 30B/120B-class MoE, decode untouched. Judged by the house fidelity bar (`test-moe-mm-ab`), not byte identity — top-k routing flips near-ties under any reassociation, so `0` restores the matvec path and is pinned by every byte-identity gate; `half` selects the half-staged comparison arm. Dense models unaffected. |
+| `RUNNER_METAL_MOE_MM` | on | Grouped simdgroup-MMA MoE prefill (default): per-expert GEMM tiles over gathered token columns, float-staged operands, +21-31% measured prefill on 30B/120B-class MoE, decode untouched. Judged by the house fidelity bar (`test-moe-mm-ab`), not byte identity — top-k routing flips near-ties under any reassociation, so `0` restores the matvec path and is pinned by every byte-identity gate; `half` selects the half-staged comparison arm. Dense models unaffected. |
 | `RUNNER_METAL_TENSOR` | unset/off | On M5+ with macOS 26.2+, opt Q4_K, Q8_0, and Q4_0 prefill into the separately admitted Metal 4 MPP tensor GEMM (per-type self-test; a failing type falls back alone). Experimental and not promoted: every admitted type passes its correctness gate but measured only parity with the simdgroup GEMM on M5, short of the 1.2x default-promotion bar. Ignored on M1-M4. |
 
 Beyond these, the binary reads a number of development switches -
@@ -2967,7 +2957,7 @@ JSON `<tool_call>` blocks, or the generic envelope's own JSON syntax - and the c
 only the demultiplexed result. Matching stop strings against that document
 fires on framing nobody wrote (`["\n\n"]`, `["}"]` and `["<|"]` all hit).
 Runner refuses the request rather than ignoring the field. The refusal is a
-semantic one: a stop match no longer corrupts the document - under a plain
+semantic one: a stop match cannot corrupt the document - under a plain
 `response_format` it truncates the constraint validator with it, described
 under [structured output](#structured-output) - but a rule the caller wrote about visible text
 cannot be honoured against protocol the caller never sees.
@@ -2990,8 +2980,7 @@ prompt text is their decode. An empty array, an id outside the vocabulary,
 a non-integer, and a batch (strings or nested arrays) are refused.
 
 A request that leaves `parallel_tool_calls` out gets several calls per turn,
-as OpenAI's API does (since 1.2.0; before, an absent flag
-meant one call). On every native protocol a parallel turn is one to eight
+as OpenAI's API does. On every native protocol a parallel turn is one to eight
 calls, each followed by the model's own stop or the next call; Gemma 4 and
 Muse forced a fixed pair until after 1.2.0, and kept one call when the flag
 was absent. Gemma 4 ends a turn of calls with `<|tool_response>`, which
@@ -3255,9 +3244,7 @@ The list ends the turn at its `]` (v0.3 writes no end-of-turn after it).
 When the caller sends its own system prompt it is kept on the last user turn
 beside the declarations; the reference template drops it when the
 conversation ends in a tool result, mistral-common keeps it as Runner does.
-Before 2026-10-09 these families rode the generic envelope, whose teaching
-turn the Mistral renderer dropped whenever the caller also sent a system
-prompt; agent-torture on the real Q4_K_M files is 40 of 40 on both arms
+Agent-torture on the real Q4_K_M files is 40 of 40 on both arms
 ([evidence](docs/compat-reports/mistral-native-tools-2026-10-09/README.md)).
 The v0.1 framing (`mistral-v1`) has no tool protocol and stays generic.
 v0.3 files converted before the publisher replaced its template embed the
@@ -3276,26 +3263,23 @@ one to eight calls, each followed by either the model's own stop token or
 the next call, the same contract the Qwen JSON protocol keeps;
 `parallel_tool_calls:false` holds it to exactly one. The first call may
 follow up to two newlines, the blank line a reasoning model writes after
-`</think>`, and nothing else. Until 1.1.4 the
-parallel grammar was a fixed pair of calls, and until 1.2.0 a request that left the flag out got one call per turn: on the
-33-task agent bank (Qwen3.8-Flash-Next) none of Runner's 396 turns carried
-a second call where llama.cpp's carried several in 123 of 396 and Strata's
-in 103 of 375. A parameter value in this
+`</think>`, and nothing else. Parallel calls matter on agent work: on the
+33-task agent bank (Qwen3.8-Flash-Next), llama.cpp's turns carried several
+calls in 123 of 396 and Strata's in 103 of 375, which a one-call-per-turn
+rule would have lost. A parameter value in this
 syntax is raw text up to its closing tag, so the grammar cannot enforce a
 string's `minLength`, `maxLength` or `pattern`; a `required` or named
 request that declares one uses the generic JSON envelope instead, prompt and
-grammar switching together (until 2026-10-02 it was answered 400), and
+grammar switching together, and
 `runner_telemetry.tool_protocol.family` then reads `generic` for that
-request. Parsing does not depend on a grammar being active. Until 2026-09-14 it did, and the three families that
-had no grammar streamed their well-formed calls to the client as prose (the
-buffered turn parsed them; every agent client streams); Qwen3-Coder's auto
-turn stayed constrained until 2026-09-15, when the report's own artifact
-(30B-A3B Q4_K_M at its temperature 0.7) read 2 of 6 cases under the grammar,
-the model fighting the raw-string closers, and reads clean unconstrained.
+request. Parsing does not depend on a grammar being active, so a family
+without one still streams its calls as calls, not prose. Qwen3-Coder's auto
+turn is unconstrained: under the grammar the 30B-A3B Q4_K_M at its
+temperature 0.7 read 2 of 6 cases, the model fighting the raw-string
+closers, and reads clean unconstrained.
 Gemma 4's own format is call-first, but a turn asked for a word before
-acting writes the prose and then its native call, and until 2026-09-15 that
-call was served as content with the framing in it: the prose branch of its
-turn grammar now hands off to the call at `<|tool_call>call:` (the model's
+acting writes the prose and then its native call: the prose branch of its
+turn grammar hands off to the call at `<|tool_call>call:` (the model's
 own control token is admitted there), and the demultiplexer and the buffered
 map read a call after prose. Prose before, between and after calls is kept
 as content on every protocol, buffered turns included (the buffered turn used
@@ -3321,17 +3305,17 @@ on a request; the field is refused otherwise) so the whole path from
 sampler to wire runs on known bytes; `scripts/tool-protocol-check.py` is
 the report's own cases against a live server, at shipped defaults.
 
-The prompt these families read is also checked at the token level now,
+The prompt these families read is also checked at the token level,
 because a byte-identical render can still feed different tokens. A control
 token is recognised only inside the template's own bytes (the prompt marks,
-so `<|im_end|>` typed into a message stays text), and until 2026-09-15 the
-Qwen 3.8 and Granite 4.2 generation prompts passed their thought block
-through a format argument, which is caller text by contract: every
-thinking-enabled turn opened on `<th` `ink` `>` as three text tokens where
-the reference put one, and the block a replayed assistant turn carries (the
-server composes it from `reasoning_content`) was text too, so the next
-request on a slot could never match its history against the turn it had
-just generated. Both are template bytes now, `tests/test_prompt_marks.c`
+so `<|im_end|>` typed into a message stays text), and the Qwen 3.8 and
+Granite 4.2 generation prompts write their thought block as template bytes,
+never as a format argument, which would be caller text by contract: a
+thinking-enabled turn opens on one `<think>` token as the reference does,
+and the block a replayed assistant turn carries (the server composes it
+from `reasoning_content`) is template bytes too, so the next request on a
+slot matches its history against the turn it had just generated.
+`tests/test_prompt_marks.c`
 holds that every control spelling a template writes, live or replayed
 (thought block, calls, results), sits inside the marks for every family
 and thinking mode, and `scripts/template-conformance.py` compares the
@@ -3629,8 +3613,7 @@ sampling at temperature 0.6 (top_p 0.9, min_p 0.05, top_k 20) on that earlier
 checkpoint scored 49 and 47 of 60 across two seeds against 51 greedy, with
 termination 92% and 87% against 90%, and the two seeds broke two tasks in
 common, both becoming runaways; it is not recommended. The full filename is
-the served model id (a 68-character checkpoint name used to be cut at 63),
-and a `reasoning_strength` directive in the system prompt is honoured. The
+the served model id, and a `reasoning_strength` directive in the system prompt is honoured. The
 model card carries the gate numbers, the full guard measurement on the
 released checkpoint, and their disclosures; nothing here restates them.
 
@@ -3698,9 +3681,7 @@ every tool-choice form, stop sequences, sampling controls, metadata,
 thinking-channel blocks, and Anthropic SSE event ordering. `max_tokens` is
 required. Several `tool_use` blocks in one turn are allowed unless
 `tool_choice.disable_parallel_tool_use` is `true`, Anthropic's own default
-and the same rule `parallel_tool_calls` follows on the OpenAI surfaces;
-until 1.2.0
-an absent field meant one call per turn here.
+and the same rule `parallel_tool_calls` follows on the OpenAI surfaces.
 
 `thinking.type:"enabled"` requires `budget_tokens`; that field is rejected for
 `adaptive` and `disabled`. `thinking.display` accepts `summarized` or `omitted`
