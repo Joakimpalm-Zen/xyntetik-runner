@@ -550,7 +550,7 @@ void q_push(sock_t fd) {
     pthread_mutex_unlock(&SV.q.mu);
     if (!room) {
         send_error(fd, 503, "server queue full");
-        sock_close(fd);
+        sock_close_drained(fd);   // the request is unread: FIN, not RST
     }
 }
 
@@ -584,6 +584,6 @@ void queue_shutdown(void) {
     pthread_mutex_unlock(&SV.q.mu);
     for (int i = 0; i < n; i++) {
         send_error(pending[i], 503, "server shutting down");
-        sock_close(pending[i]);
+        sock_close_drained(pending[i]);
     }
 }
