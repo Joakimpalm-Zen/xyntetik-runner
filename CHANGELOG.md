@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Shadow's verification replay runs in the recorded directory on
+  Windows.** `capture_report.reproduce_verification` ran the recorded
+  command in a login shell and set the directory on the process, but
+  MSYS2's login hook moves to `$HOME` whenever `SHLVL` is at most 1, which
+  is every shell started from cmd, PowerShell or make. The command then ran
+  in the home directory, failed to find its files (exit 127) and was
+  reported as an instrument error instead of reproduced or not reproduced.
+  The shell now enters the recorded directory itself after its startup
+  files run, so no profile can move it.
+
 - **Byte-level BPE tokenization matches the reference on Latin-1 symbols,
   superscripts, currency and U+FFFD.** The pre-tokenizers read every code
   point above U+007F as a letter unless it sat in a few symbol blocks, so
