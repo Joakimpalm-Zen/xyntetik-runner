@@ -11,25 +11,13 @@ on:
     - cron: "23 4 * * *"
   push:
     branches: [main]
-    # metadata.yml checks documentation and evidence inputs on every PR;
-    # prose-only changes do not need the expensive engine gates. README.md and CHANGELOG.md joined the list on 2026-10-06: no job
-    # here reads the real files (the release check that does runs in
-    # release.yml at tag time, and its tests use temporary copies), and a day
-    # of README edits had queued two full runs per merge and held the site
-    # deploy behind them. MANUAL.md stays in scope because help-parity reads
-    # it, and SECURITY.md because it changes rarely and with code. A change
-    # that touches anything else still runs everything.
-    paths-ignore:
-      - "site/**"
-      - "docs/**"
-      - "README.md"
-      - "CHANGELOG.md"
   pull_request:
-    paths-ignore:
-      - "site/**"
-      - "docs/**"
-      - "README.md"
-      - "CHANGELOG.md"
+  # No path filter on the workflow: a workflow that never starts leaves its
+  # required checks pending and blocks the merge. The `changes` job below
+  # classifies the change instead, and every engine job skips on a prose-only
+  # change (site/**, docs/**, README.md, CHANGELOG.md); a skipped job satisfies
+  # a required check. MANUAL.md stays in scope because help-parity reads it,
+  # and SECURITY.md because it changes rarely and with code.
 
 # Cancel superseded PR work, but keep main/scheduled certification runs.
 concurrency:
@@ -45,7 +33,77 @@ env:
   UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1"
 
 jobs:
+  # Two questions every run asks first. (1) Did the change touch anything an
+  # engine job reads? A prose-only change skips them all in seconds. (2) On a
+  # push to main: was this exact tree already green on a pull request? The
+  # pull-request run tests the merge of the branch into main, so a merge made
+  # while main stood still produces the same tree; re-running the matrix on
+  # it proved nothing and cost ten minutes before every tag (37 such runs in
+  # the first twelve days of October). The pull-request run records the tree
+  # it tested as an empty artifact named after the tree hash; the push run
+  # looks for that artifact on a successful run of the merge's second parent.
+  # The full Windows and macOS suites never ran on the pull request, so they
+  # ignore `tested` and run on every engine push.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      engine: ${{ steps.classify.outputs.engine }}
+      tested: ${{ steps.classify.outputs.tested }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: classify the change and look for a green run of this tree
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          engine=true; tested=false
+          case "$EVENT" in
+            pull_request|push)
+              base=
+              if [ "$EVENT" = push ] && [ -n "$BEFORE" ] && ! printf '%s' "$BEFORE" | grep -q '^0*$' \
+                 && git fetch -q --depth=1 origin "$BEFORE" 2>/dev/null; then
+                base=$BEFORE
+              fi
+              [ -n "$base" ] || base=$(git rev-parse HEAD^1)
+              changed=$(git diff --name-only "$base" HEAD)
+              printf '%s\n' "$changed" | sed 's/^/  changed: /'
+              if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -v -E '^(site/|docs/|README\.md$|CHANGELOG\.md$)' | grep -q .; then
+                engine=false
+              fi
+              ;;
+          esac
+          tree=$(git rev-parse 'HEAD^{tree}')
+          mkdir -p .build/tested && : > ".build/tested/$tree"
+          if [ "$EVENT" = push ] && [ "$engine" = true ] && head2=$(git rev-parse -q --verify HEAD^2 2>/dev/null); then
+            for id in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=pull_request&status=success&head_sha=$head2&per_page=10" --jq '.workflow_runs[].id'); do
+              if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts?per_page=100" --jq '.artifacts[].name' | grep -qx "tested-tree-$tree"; then
+                echo "tree $tree was green on pull-request run $id; the engine jobs skip, the full suites still run"
+                tested=true; break
+              fi
+            done
+          fi
+          echo "engine=$engine tested=$tested tree=$tree"
+          { echo "engine=$engine"; echo "tested=$tested"; echo "tree=$tree"; } >> "$GITHUB_OUTPUT"
+      - name: record the tree this pull-request run tests
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tested-tree-${{ steps.classify.outputs.tree }}
+          path: .build/tested/
+          retention-days: 30
+
   unix:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -399,11 +457,22 @@ jobs:
           if p.poll() is not None: sys.exit("runner died early")
           os._exit(0)  # abrupt parent death, no cleanup
           PYEOF
-          sleep 6
-          if curl --connect-timeout 5 --max-time 90 -s -m 2 http://127.0.0.1:8127/health > /dev/null; then
-            echo "runner survived parent death"; exit 1
-          fi
-          echo "parent-pid ok"
+          # the server must have been up (a runner that never served proves
+          # nothing), then must go away within 20 s of the parent's death;
+          # one fixed 6 s wait failed twice on 2026-10-08 on the Windows pool
+          up=
+          for i in $(seq 20); do
+            if curl --connect-timeout 2 --max-time 5 -sf -o /dev/null http://127.0.0.1:8127/health; then up=1; break; fi
+            sleep 0.5
+          done
+          [ -n "$up" ] || { echo "runner never answered /health"; exit 1; }
+          for i in $(seq 40); do
+            if ! curl --connect-timeout 2 --max-time 5 -s -o /dev/null http://127.0.0.1:8127/health; then
+              echo "parent-pid ok (runner gone after $i polls)"; exit 0
+            fi
+            sleep 0.5
+          done
+          echo "runner survived parent death for 20 s"; exit 1
       - name: smoke test (json schema)
         run: |
           echo '{"type":"object","properties":{"a":{"type":"string","enum":["x","y"]},"b":{"type":"integer"}},"required":["a","b"]}' > ts.json
@@ -559,6 +628,8 @@ jobs:
   # `make test` builds its own fixtures with scripts/make-test-model.py.
 
   make-test:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -611,6 +682,8 @@ jobs:
   # line is printed so a failure carries the compiler and CPU it came from.
 
   simd-isa-levels:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -647,6 +720,9 @@ jobs:
   # of minutes, not a fuzzing campaign. Long soaks belong on a schedule.
 
   fuzz:
+    name: fuzz-${{ matrix.group }}
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 70
     strategy:
@@ -702,6 +778,8 @@ jobs:
           echo "$OUT" | grep -q 'skipped'
 
   windows:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -823,7 +901,7 @@ jobs:
         run: |
           trap 'pids=$(jobs -pr); if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; sleep 1; kill -KILL $pids 2>/dev/null || true; wait $pids 2>/dev/null || true; fi' EXIT
           ./runner.exe -m test.gguf --serve --port 8123 --parallel 2 &
-          sleep 3
+          for i in $(seq 60); do curl --connect-timeout 5 --max-time 90 -sf -o /dev/null http://127.0.0.1:8123/health && break; sleep 0.5; done
           curl --connect-timeout 5 --max-time 90 -sf http://127.0.0.1:8123/health
           curl --connect-timeout 5 --max-time 90 -sf http://127.0.0.1:8123/v1/capabilities | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['features']['json_schema']; print('capabilities ok')"
           # the family preset the server picked must be visible, and a client
@@ -842,7 +920,7 @@ jobs:
         run: |
           trap 'pids=$(jobs -pr); if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; sleep 1; kill -KILL $pids 2>/dev/null || true; wait $pids 2>/dev/null || true; fi' EXIT
           ./runner.exe -m "$(cygpath -w "$PWD")\\test.gguf" --serve --port 8125 &
-          sleep 3
+          for i in $(seq 60); do curl --connect-timeout 5 --max-time 90 -sf -o /dev/null http://127.0.0.1:8125/health && break; sleep 0.5; done
           curl --connect-timeout 5 --max-time 90 -sf -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":0}' \
             http://127.0.0.1:8125/v1/chat/completions | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['model'] == 'test.gguf', d['model']; print('windows path model field ok')"
           kill %1
@@ -858,11 +936,22 @@ jobs:
           if p.poll() is not None: sys.exit("runner died early")
           os._exit(0)  # abrupt parent death, no cleanup
           PYEOF
-          sleep 6
-          if curl --connect-timeout 5 --max-time 90 -s -m 2 http://127.0.0.1:8127/health > /dev/null; then
-            echo "runner survived parent death"; exit 1
-          fi
-          echo "parent-pid ok"
+          # the server must have been up (a runner that never served proves
+          # nothing), then must go away within 20 s of the parent's death;
+          # one fixed 6 s wait failed twice on 2026-10-08 on the Windows pool
+          up=
+          for i in $(seq 20); do
+            if curl --connect-timeout 2 --max-time 5 -sf -o /dev/null http://127.0.0.1:8127/health; then up=1; break; fi
+            sleep 0.5
+          done
+          [ -n "$up" ] || { echo "runner never answered /health"; exit 1; }
+          for i in $(seq 40); do
+            if ! curl --connect-timeout 2 --max-time 5 -s -o /dev/null http://127.0.0.1:8127/health; then
+              echo "parent-pid ok (runner gone after $i polls)"; exit 0
+            fi
+            sleep 0.5
+          done
+          echo "runner survived parent death for 20 s"; exit 1
 
       - name: CI timing and test reports
         if: always()
@@ -876,6 +965,8 @@ jobs:
   # test.gguf so it needs no model download and no GPU. Locally: scripts/conformance.sh
 
   conformance:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -952,6 +1043,8 @@ jobs:
   # fully instrumented lane; no optimized quantization object is linked.
 
   conformance-sanitized:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -1022,6 +1115,8 @@ jobs:
   # JSON fixtures cannot. Dependencies are pinned and isolated from Runner.
 
   consumer-compatibility:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -1102,6 +1197,8 @@ jobs:
   # stays recorded in scripts/template-conformance-baseline.json either way.
 
   template-conformance:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -1145,12 +1242,16 @@ jobs:
   # this suite on Windows is a desk in the lab.
   #
   # Off the pull-request path on purpose: it is minutes, not seconds, and the
-  # value is "main is never red for more than a day", not "every PR waits".
-  # No GPU here, so the CUDA gates self-skip; the device half is covered by
-  # docs/device-evidence.json and the release check that reads it.
+  # value is "main is never red", not "every PR waits". It runs on every
+  # engine push to main (a merge is the moment the suite's verdict matters,
+  # and the daily schedule alone fired hours late or not at all in October),
+  # on the schedule, and on dispatch. No GPU here, so the CUDA gates
+  # self-skip; the device half is covered by docs/device-evidence.json and
+  # the release check that reads it.
 
   windows-suite:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: changes
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.changes.outputs.engine == 'true')
     runs-on: windows-latest
     timeout-minutes: 90
     defaults:
@@ -1190,6 +1291,8 @@ jobs:
 
 
   thread-sanitizer:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -1203,6 +1306,8 @@ jobs:
           path: .build/ci/
 
   t3:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -1227,8 +1332,13 @@ jobs:
           name: t3-report
           path: .build/ci/
 
+  # The whole suite on hosted Apple Silicon, same policy as windows-suite.
+  # The hosted image trails the lab Macs by a macOS release, so a gate that
+  # needs the newest Metal toolchain must skip with a reason here, as
+  # tests/test_metal_tensor.m does, rather than fail a lane nobody reads.
   macos-suite:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: changes
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.changes.outputs.engine == 'true')
     runs-on: macos-latest
     timeout-minutes: 90
     steps:

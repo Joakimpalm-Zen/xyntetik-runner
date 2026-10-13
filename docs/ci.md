@@ -1,16 +1,39 @@
 # CI coverage and execution
 
 `make test` remains the aggregate engine gate. CI runs it on Linux for pull
-requests and on Windows/macOS through the scheduled or manually dispatched
-full suites. The smaller native platform smokes still run on pull requests.
-The full Windows/macOS lanes can be dispatched before merging a
-platform-sensitive change. No numerical test or tolerance is removed to
-shorten the PR path.
+requests and on Windows/macOS through the full suites, which run on every
+engine push to main, on the daily schedule and on dispatch. The smaller
+native platform smokes still run on pull requests. The full Windows/macOS
+lanes can be dispatched before merging a platform-sensitive change. No
+numerical test or tolerance is removed to shorten the PR path.
 
 Superseded PR runs are cancelled. Main and scheduled runs have distinct
 concurrency identities. Jobs and network smokes have explicit deadlines;
 failed shell smokes clean up their background servers. Tests that must
 demonstrate graceful shutdown fail if they escalate to a forced kill.
+
+## What a run decides first
+
+The `changes` job runs ahead of everything else and answers two questions.
+
+- **Did the change touch the engine?** A change confined to `site/`,
+  `docs/`, `README.md` and `CHANGELOG.md` skips every engine job in seconds.
+  This is a job-level skip, not a workflow path filter: a workflow that never
+  starts leaves its required checks pending and blocks the merge, while a
+  skipped job satisfies them. `metadata.yml` still checks the prose.
+- **Was this tree already green?** A pull-request run tests the merge of the
+  branch into main and records the tree it tested as an empty artifact named
+  `tested-tree-<hash>`. A push to main whose merge produced the same tree
+  (main did not move between the run and the merge) finds that artifact on a
+  successful run of the merge's second parent and skips the engine jobs; the
+  full Windows and macOS suites still run, because the pull request never ran
+  them. A direct push, or a merge after main moved, runs everything.
+
+`main` is protected: the pull-request checks are required, including
+`changes` itself (so a failure there blocks the merge rather than skipping
+the rest), the rules apply to administrators, and force pushes are refused.
+A red pull request cannot be merged; a docs-only one is merged on skipped
+checks.
 
 ## Timing and test execution
 
@@ -88,32 +111,17 @@ llvm-profdata and llvm-cov tools. AFL++ and additional persistent-artifact
 fuzz targets can supplement this set after coverage identifies useful gaps;
 they are not substitutes for the existing targets.
 
-## Controlled hardware verification
+## Device evidence
 
-`candidate hardware` is manual and accepts only a full SHA reachable from
-this repository's main history. It never executes pull-request code
-automatically on a lab machine. Provision dedicated `runner-ci` runners
-with the `blackwell`, `windows-cuda`, or `apple-metal` label, and configure
-reviewers for the `runner-hardware` environment before enabling dispatch.
-Windows needs a Bash/MSYS2 native build environment. The chosen runner
-needs the existing quantization fixtures/toolchain and a readable small
-real-model path in the `RUNNER_GATE_MODEL` environment variable (the
-environment/repository variable can supply a default).
-
-`scripts/hardware-evidence.py` refuses absent devices or CPU fallback and
-records the exact source, executable, gate and model digests with the
-executed checks. Additional backend regression gates remain required.
-These records complement the historical device-evidence ledger; an old
-ledger row is not an exact-candidate pass. Pre-merge device testing can use
-the same script in an explicitly approved clean task checkout without
-opening self-hosted PR execution.
-
-Blackwell also runs `scripts/check-ptx-source.py` with the nvcc version
-embedded in the committed header. It compares regenerated PTX after the
-existing version down-pin and comment/whitespace normalization. A compiler
-mismatch or changed instructions fails rather than silently regenerating
-shipped kernels. Reviewer-controlled device access and matching toolchains
-are external prerequisites, not resources provisioned by this repository.
+Hosted runners have no GPU. The device classes the README claims are
+verified on lab machines and recorded in `docs/device-evidence.json` by
+`scripts/device-evidence.py --record` from the runner's own `--caps` output;
+`scripts/check-release.py` refuses a tag while any class is stale, failing or
+never recorded (`docs/compatibility-program.md`). `scripts/cuda-gate.sh`
+is the CUDA gate a lab box runs from a fresh build, and
+`scripts/check-ptx-source.py` compares regenerated PTX against the committed
+header with the pinned nvcc; both are run by hand on the box and their
+records committed. There is no hosted or self-hosted device workflow.
 
 `metadata.yml` runs on documentation-only changes too, checking generated
 source/document agreement and the existence of referenced evidence files.
