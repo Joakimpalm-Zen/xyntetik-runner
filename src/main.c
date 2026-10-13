@@ -2835,6 +2835,388 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
     return false;
 }
 
+// The thread count: -t, else a share of the cores for --reserve-cpu (set
+// earlier), else the platform's default; the model's own thread settings
+// follow from it.
+static void cli_resolve_threads(cli_opts *o) {
+    if (o->n_threads <= 0) {
+        // Default to a physical-core proxy (nc/2 under the near-universal 2-way
+        // SMT of the many-core x86 boxes this targets), capped so a very large
+        // box does not over-spawn. SMT siblings add nothing to a compute-bound
+        // decode — measured: throughput plateaus at physical cores and SMT gives
+        // no gain. The old min(8,nc) default left big boxes badly underused
+        // (measured 32.2s -> 9.9s, a 3.2x speedup, at -t 64 vs -t 8 on a 3B Q4,
+        // 64-core box; token-identical across thread counts). Scope a shared box
+        // with --reserve-cpu, or pin exactly with -t. On Apple Silicon the
+        // platform layer returns the performance-core count instead of the
+        // logical/2 proxy, because asymmetric cores are not SMT siblings.
+        o->n_threads = plat_default_thread_count();
+        // If the model turns out to be CPU-forced (recurrent qwen3.5 path),
+        // model_load may raise a defaulted count to this cap; a pinned -t
+        // or CPU reservation leaves it 0 and is never overridden.
+        int cap = plat_default_thread_count();
+        o->mp.cpu_fallback_threads = cap > o->n_threads ? cap : o->n_threads;
+    }
+    o->mp.verbose = o->verbose;
+    o->mp.n_threads = o->serve ? 1 : o->n_threads; // server slots create their own pools
+}
+
+// Flags about the model that are refused before it is opened: a YaRN
+// factor that is not one, or one beside --rope-scale, and an unknown
+// --chat-template, which *tmpl_override receives as a TMPL_* id.
+static bool cli_model_flags_ok(const cli_opts *o, int *tmpl_override) {
+    if (o->mp.yarn_factor > 0 && o->mp.yarn_factor <= 1.0f) {
+        fprintf(stderr, "error: --yarn-factor must be greater than 1\n");
+        return false;
+    }
+    if (o->mp.yarn_factor > 0 && o->mp.rope_scale > 0) {
+        fprintf(stderr, "error: --yarn-factor and --rope-scale cannot be "
+                        "used together\n");
+        return false;
+    }
+
+    // --chat-template resolves HERE, not down in the interactive-chat block.
+    // It used to resolve only there, and server mode returns above it, so a
+    // documented public flag was accepted on the command line and silently
+    // discarded on the path most callers take: forcing a template under
+    // --serve produced a byte-identical prompt to auto-detection.
+    if (o->tmpl_arg) {
+        *tmpl_override = template_from_name(o->tmpl_arg);
+        if (*tmpl_override < 0) {
+            // previously this fell back to auto-detection without a word,
+            // which is the same discard in a smaller place
+            fprintf(stderr, "error: unknown --chat-template '%s'; see --help "
+                            "for the accepted names\n", o->tmpl_arg);
+            return false;
+        }
+        // A multi-model swap set cannot honour one global template; server_run
+        // refuses that combination, where the parsed entry count is known.
+    }
+    return true;
+}
+
+// The tray follows a session a person will sit with — a server or an
+// interactive chat — and is left running afterwards so the next model can
+// be loaded from it. One-shot -p runs and tooling modes (--caps,
+// --quantize, --bench-json) deliberately raise nothing: a two-second
+// process should not leave a menu-bar icon behind it.
+//
+// A terminal on EITHER stdin or stdout counts as "a person launched this".
+// Requiring both, the way the bare-invocation guard above does, would drop
+// the most ordinary case there is — `runner --serve > server.log` — while
+// CI and pipes typically have neither and stay unaffected. --no-tray is the
+// explicit escape for a wrapper that wants the guarantee in writing.
+//
+// It sits HERE, after every argument check a serve or interactive run can
+// still fail, rather than up beside the mode guard where it used to.
+// Raised earlier it outlived the process that raised it: `-s 0`, a
+// yarn-factor conflict and an unknown --chat-template all refuse AFTER
+// that point, and the detached tray they had already spawned held the
+// executable open against the next relink. That is the "two-second
+// process" the paragraph above says must not leave an icon behind, and it
+// was leaving one. The bound stops at argument checks on purpose: a run
+// that fails LATER, when a model or a draft will not load, still raises
+// one, because moving past that would delay the icon by a whole model
+// load for every run that works (suite plan R8.7.6).
+static void cli_tray_follow(const cli_opts *o) {
+#if defined(__APPLE__) || defined(_WIN32)
+    if (!o->no_tray && (o->serve || o->interactive) &&
+        (RUNNER_TTY(stdin) || RUNNER_TTY(stdout)))
+        tray_ensure_running();
+#else
+    (void)o->no_tray;
+#endif
+}
+
+// --context-surgery: rewrite the file's context metadata for a longer
+// context under YaRN, and write its provenance record.
+static int run_context_surgery(const cli_opts *o, const char *load_path) {
+    if (o->quant_out || o->merge_out || o->prune_experts || o->type_plan || o->quant_type ||
+        o->remove_sublayer) {
+        fprintf(stderr, "error: --context-surgery does not combine with "
+                "quantize, merge, prune, or type-plan operations\n");
+        return 1;
+    }
+    if (o->mp.n_ctx <= 0 || o->mp.yarn_factor <= 1.0f) {
+        fprintf(stderr, "error: --context-surgery requires -c TARGET and "
+                "--yarn-factor FACTOR\n");
+        return 1;
+    }
+    context_surgery_result sr;
+    int rc = context_surgery_gguf(load_path, o->context_out,
+                                  (uint32_t)o->mp.n_ctx, o->mp.yarn_factor, &sr);
+    if (rc != 0) return rc;
+    char bsha[65] = "", osha[65] = "";
+    if (!envelope_file_sha256(load_path, bsha) ||
+        !envelope_file_sha256(o->context_out, osha)) {
+        fprintf(stderr, "error: cannot hash context-surgery artifacts "
+                "for the provenance record\n");
+        return 1;
+    }
+    sbuf rec = {0};
+    sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.context-surgery.v1\","
+                 "\"runner\":\"");
+    sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
+    sb_lit(&rec, "\",\"base\":");
+    lineage_put_input(&rec, load_path, bsha);
+    sb_fmt(&rec, ",\"source\":{\"context_length\":%u,"
+                   "\"original_context_length\":%u,\"yarn_factor\":%.9g},",
+           sr.source_context, sr.original_context,
+           (double)sr.source_factor);
+    sb_fmt(&rec, "\"target\":{\"path\":\"");
+    sb_esc(&rec, o->context_out, strlen(o->context_out));
+    sb_fmt(&rec, "\",\"sha256\":\"%s\",\"context_length\":%d,"
+                   "\"original_context_length\":%u,\"yarn_factor\":%.9g},",
+           osha, o->mp.n_ctx, sr.original_context, (double)o->mp.yarn_factor);
+    sb_fmt(&rec, "\"tensor_payloads_byte_identical\":%s}\n",
+           sr.tensors_byte_identical ? "true" : "false");
+    bool wrote = write_record(o->context_out, ".context.json",
+                              "context-surgery", &rec, o->sign_key);
+    free(rec.s);
+    return wrote ? 0 : 1;
+}
+
+// --merge-lora: fold an adapter into the base weights at the requested
+// precision, refused when the output grid would erase the delta, and write
+// the provenance record with what survived.
+static int run_merge_lora(const cli_opts *o) {
+    if (!o->lora_path) {
+        fprintf(stderr, "error: --merge-lora requires --lora ADAPTER\n");
+        return 1;
+    }
+    if (o->quant_out || o->prune_experts || o->type_plan || o->remove_sublayer) {
+        fprintf(stderr, "error: --merge-lora does not combine with "
+                "--quantize, --prune-experts or --type-plan\n");
+        return 1;
+    }
+    // default keep: the merged artifact mirrors the base's own
+    // per-tensor precision unless a different output type is asked for
+    int tt = o->quant_type ? quantize_type_from_name(o->quant_type) : T_KEEP;
+    if (tt == -2) {
+        fprintf(stderr, "error: --quant '%s' is not a writable type\n",
+                o->quant_type);
+        return 1;
+    }
+    merge_survival sv = {0};
+    int rc = merge_lora_gguf(o->model_path, o->lora_path, o->lora_scale,
+                             o->merge_out, tt,
+                             o->merge_allow_erased ? -1.0f : MERGE_MIN_RETAINED,
+                             &sv);
+    if (rc == 0) {
+        // the D7 discipline extended to merged artifacts: the standalone
+        // blob stays auditable — base sha + adapter sha + config ->
+        // merged sha, machine-written beside the file
+        char bsha[65] = "", asha[65] = "", osha[65] = "";
+        if (!envelope_file_sha256(o->model_path, bsha) ||
+            !envelope_file_sha256(o->lora_path, asha) ||
+            !envelope_file_sha256(o->merge_out, osha)) {
+            fprintf(stderr, "error: cannot hash every merge artifact for "
+                    "the provenance record\n");
+            return 1;
+        }
+        sbuf rec = {0};
+        sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.merge.v1\","
+                     "\"runner\":\"");
+        sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
+        sb_lit(&rec, "\",\"base\":");
+        lineage_put_input(&rec, o->model_path, bsha);
+        sb_lit(&rec, ",\"adapter\":");
+        lineage_put_input(&rec, o->lora_path, asha);
+        sb_fmt(&rec, ",\"lora_scale\":%g,\"target\":\"",
+               (double)o->lora_scale);
+        const char *target = o->quant_type ? o->quant_type : "keep";
+        sb_esc(&rec, target, strlen(target));
+        sb_lit(&rec, "\",\"merged\":{\"path\":\"");
+        sb_esc(&rec, o->merge_out, strlen(o->merge_out));
+        sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
+        sb_lit(&rec, "\"}");
+        // what the output grid kept of the delta (quants.h
+        // merge_survival); absent when no adapted tensor was rewritten
+        if (sv.ret_den > 0)
+            sb_fmt(&rec, ",\"survival\":{\"adapted_bytes\":%llu,"
+                   "\"bytes_changed\":%llu,\"delta_retained\":%.6f,"
+                   "\"min_retained\":%s}",
+                   (unsigned long long)sv.bytes,
+                   (unsigned long long)sv.bytes_changed,
+                   sv.ret_num / sv.ret_den,
+                   o->merge_allow_erased ? "null" : MERGE_MIN_RETAINED_STR);
+        sb_lit(&rec, "}\n");
+        if (!write_record(o->merge_out, ".merge.json", "merge", &rec, o->sign_key))
+            rc = 1;
+        free(rec.s);
+    }
+    return rc;
+}
+
+// --quantize, with --quant, --type-plan, --prune-experts or
+// --remove-sublayer: rewrite the file and write its provenance record.
+static int run_quantize(const cli_opts *o) {
+    int tt;
+    // --type-plan decides the type PER TENSOR, so a whole-file --quant
+    // alongside it is an instruction with nowhere to go: the plan branch
+    // in quantize_gguf_plan never reads it, and the summary line then
+    // named a type nothing had been written in. Refused rather than
+    // dropped, the same call --merge-lora + --type-plan already makes.
+    if (o->type_plan_strict && !o->type_plan) {
+        fprintf(stderr, "error: --type-plan-strict needs --type-plan\n");
+        return 1;
+    }
+    quantize_set_type_plan_strict(o->type_plan_strict);
+    if (o->quant_type && o->type_plan) {
+        fprintf(stderr, "error: --quant and --type-plan cannot be used "
+                "together: the plan decides every tensor's type, so "
+                "--quant would be silently ignored. Put the whole-file "
+                "type in the plan's \"default\".\n");
+        return 1;
+    }
+    if (o->quant_type) {
+        tt = quantize_type_from_name(o->quant_type);
+        if (tt == -2) {
+            fprintf(stderr, "error: --quant '%s' is not a writable "
+                    "type\n", o->quant_type);
+            return 1;
+        }
+    } else {
+        // No --quant given: --prune-experts alone means "just prune,
+        // don't touch anyone's precision" (T_KEEP); with neither flag
+        // this is plain --quantize, whose long-standing default is q4_0.
+        tt = (o->prune_experts || o->remove_sublayer) ? T_KEEP : T_Q4_0;
+    }
+    int qrc = quantize_gguf_plan(o->model_path, o->quant_out, tt, o->prune_experts,
+                                 o->type_plan, o->remove_sublayer);
+    if (qrc != 0) return qrc;
+    // R17.1: the rewrite leaves its record like merge and training do --
+    // the input and output by sha256, every option that shaped the
+    // bytes, and the building binary -- so the file's lineage can be
+    // walked back (--lineage)
+    char bsha[65] = "", osha[65] = "", xsha[65] = "";
+    char *exe_path = plat_executable_path();
+    bool hash_ok = envelope_file_sha256(o->model_path, bsha) &&
+                   envelope_file_sha256(o->quant_out, osha) &&
+                   exe_path && envelope_file_sha256(exe_path, xsha);
+    free(exe_path);
+    if (!hash_ok) {
+        fprintf(stderr, "error: cannot hash the rewrite's files for the "
+                "provenance record\n");
+        return 1;
+    }
+    const char *target = o->quant_type ? o->quant_type
+                       : o->type_plan ? "plan"
+                       : (o->prune_experts || o->remove_sublayer) ? "keep" : "q4_0";
+    sbuf rec = {0};
+    sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.quant.v1\","
+                 "\"runner\":\"");
+    sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
+    sb_lit(&rec, "\",\"build\":{\"binary_sha256\":\"");
+    sb_lit(&rec, xsha);
+    sb_lit(&rec, "\"},\"base\":");
+    lineage_put_input(&rec, o->model_path, bsha);
+    sb_lit(&rec, ",\"target\":\"");
+    sb_esc(&rec, target, strlen(target));
+    sb_lit(&rec, "\"");
+    if (o->prune_experts) {
+        sb_lit(&rec, ",\"prune_experts\":");
+        lineage_put_input(&rec, o->prune_experts, NULL);
+    }
+    if (o->type_plan) {
+        sb_lit(&rec, ",\"type_plan\":");
+        lineage_put_input(&rec, o->type_plan, NULL);
+    }
+    if (o->remove_sublayer) {
+        sb_lit(&rec, ",\"remove_sublayer\":\"");
+        sb_esc(&rec, o->remove_sublayer, strlen(o->remove_sublayer));
+        sb_lit(&rec, "\"");
+    }
+    sb_lit(&rec, ",\"output\":{\"path\":\"");
+    sb_esc(&rec, o->quant_out, strlen(o->quant_out));
+    sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
+    sb_lit(&rec, "\"}}\n");
+    bool wrote = write_record(o->quant_out, ".quant.json", "quantize", &rec, o->sign_key);
+    free(rec.s);
+    return wrote ? 0 : 1;
+}
+
+// Serve-only flags refused without --serve, and the receipt, KV snapshot
+// and session stores configured when they are given.
+static bool cli_configure_serving(const cli_opts *o) {
+    if (o->receipts_dir && !o->serve) {
+        fprintf(stderr, "error: --receipts writes one receipt per served "
+                "request and needs --serve (use --transcript for a one-shot "
+                "run)\n");
+        return false;
+    }
+    if (o->receipts_keep && !o->receipts_dir) {
+        fprintf(stderr, "error: --receipts-keep needs --receipts DIR\n");
+        return false;
+    }
+    if (o->receipts_dir) {
+        receipts_cfg rcfg = { .dir = o->receipts_dir, .keep = o->receipts_keep,
+                              .sign_key = o->sign_key };
+        if (!receipts_configure(&rcfg)) return false;
+    }
+    if (o->kv_snapshots && !o->serve) {
+        fprintf(stderr, "error: --kv-snapshots saves and loads named contexts "
+                "and needs --serve\n");
+        return false;
+    }
+    if (o->kv_snapshots && !kvsnap_configure(o->kv_snapshots, o->sign_key, o->trust_key)) return false;
+    if (o->sessions_path && !o->serve) {
+        fprintf(stderr, "error: --sessions keeps the server's session images "
+                "and needs --serve (the CLI uses --session-out / --resume)\n");
+        return false;
+    }
+    if (o->sessions_path && !sessions_configure(o->sessions_path)) return false;
+    if (o->n_adapters && !o->serve) {
+        fprintf(stderr, "error: --adapter routes adapters per request and "
+                "needs --serve (use --lora for a one-shot run)\n");
+        return false;
+    }
+    if (o->n_adapters && o->lora_path) {
+        fprintf(stderr, "error: --adapter and --lora are exclusive: --lora "
+                "installs one adapter for every request; serve it as --adapter "
+                "NAME=PATH and name it per request instead\n");
+        return false;
+    }
+    return true;
+}
+
+// Every flag that only has meaning while rewriting a file. Reaching here
+// means --quantize was not given, and the block above is their only
+// reader, so any of them is an instruction that would otherwise be
+// silently dropped — the same discard --chat-template was fixed for, in a
+// place where the user believes they asked for a different file on disk.
+static bool cli_rewrite_flags_ok(const cli_opts *o) {
+    const char *orphan = o->prune_experts ? "--prune-experts"
+                       : o->remove_sublayer ? "--remove-sublayer"
+                       : o->type_plan     ? "--type-plan"
+                       : o->quant_type    ? "--quant"
+                       : NULL;
+    if (orphan) {
+        fprintf(stderr, "error: %s requires --quantize OUT (or "
+                "--merge-lora OUT for --quant)\n", orphan);
+        return false;
+    }
+    if (o->merge_allow_erased) {
+        fprintf(stderr, "error: --merge-allow-erased requires --merge-lora OUT\n");
+        return false;
+    }
+    return true;
+}
+
+// R17.2: refuse a model that carries no passing evaluation of the asked
+// kind, made for this very file (scripts/eval-record.py writes them)
+static bool cli_require_eval_ok(const cli_opts *o, const char *load_path) {
+    if (o->require_eval) {
+        char why[512];
+        if (!lineage_require_eval(load_path, o->require_eval, o->trust_key, why, sizeof why)) {
+            fprintf(stderr, "error: --require-eval %s: %s\n", o->require_eval, why);
+            return false;
+        }
+        fprintf(stderr, "eval: %s.eval.%s.json passes for this file\n", load_path, o->require_eval);
+    }
+    return true;
+}
+
 int main(int argc, char **argv) {
     char *owned_prompt = NULL;
     // the measured-envelope verdict the one-shot model loaded under, for its
@@ -2907,26 +3289,7 @@ int main(int argc, char **argv) {
         int rc;
         if (cli_prepare_verify(o, &wmk, wm_on, &vr, &rc)) return rc;
     }
-    if (o->n_threads <= 0) {
-        // Default to a physical-core proxy (nc/2 under the near-universal 2-way
-        // SMT of the many-core x86 boxes this targets), capped so a very large
-        // box does not over-spawn. SMT siblings add nothing to a compute-bound
-        // decode — measured: throughput plateaus at physical cores and SMT gives
-        // no gain. The old min(8,nc) default left big boxes badly underused
-        // (measured 32.2s -> 9.9s, a 3.2x speedup, at -t 64 vs -t 8 on a 3B Q4,
-        // 64-core box; token-identical across thread counts). Scope a shared box
-        // with --reserve-cpu, or pin exactly with -t. On Apple Silicon the
-        // platform layer returns the performance-core count instead of the
-        // logical/2 proxy, because asymmetric cores are not SMT siblings.
-        o->n_threads = plat_default_thread_count();
-        // If the model turns out to be CPU-forced (recurrent qwen3.5 path),
-        // model_load may raise a defaulted count to this cap; a pinned -t
-        // or CPU reservation leaves it 0 and is never overridden.
-        int cap = plat_default_thread_count();
-        o->mp.cpu_fallback_threads = cap > o->n_threads ? cap : o->n_threads;
-    }
-    o->mp.verbose = o->verbose;
-    o->mp.n_threads = o->serve ? 1 : o->n_threads; // server slots create their own pools
+    cli_resolve_threads(o);
 
     f16_init();
 
@@ -2942,333 +3305,18 @@ int main(int argc, char **argv) {
     const char *load_path = one_named ? eq_one + 1 : o->model_path;
     bool registry = o->serve && eq_one != NULL && !one_named;
 
-    if (o->mp.yarn_factor > 0 && o->mp.yarn_factor <= 1.0f) {
-        fprintf(stderr, "error: --yarn-factor must be greater than 1\n");
-        return 1;
-    }
-    if (o->mp.yarn_factor > 0 && o->mp.rope_scale > 0) {
-        fprintf(stderr, "error: --yarn-factor and --rope-scale cannot be "
-                        "used together\n");
-        return 1;
-    }
-
-    // --chat-template resolves HERE, not down in the interactive-chat block.
-    // It used to resolve only there, and server mode returns above it, so a
-    // documented public flag was accepted on the command line and silently
-    // discarded on the path most callers take: forcing a template under
-    // --serve produced a byte-identical prompt to auto-detection.
     int tmpl_override = -1;
-    if (o->tmpl_arg) {
-        tmpl_override = template_from_name(o->tmpl_arg);
-        if (tmpl_override < 0) {
-            // previously this fell back to auto-detection without a word,
-            // which is the same discard in a smaller place
-            fprintf(stderr, "error: unknown --chat-template '%s'; see --help "
-                            "for the accepted names\n", o->tmpl_arg);
-            return 1;
-        }
-        // A multi-model swap set cannot honour one global template; server_run
-        // refuses that combination, where the parsed entry count is known.
-    }
+    if (!cli_model_flags_ok(o, &tmpl_override)) return 1;
 
-    // The tray follows a session a person will sit with — a server or an
-    // interactive chat — and is left running afterwards so the next model can
-    // be loaded from it. One-shot -p runs and tooling modes (--caps,
-    // --quantize, --bench-json) deliberately raise nothing: a two-second
-    // process should not leave a menu-bar icon behind it.
-    //
-    // A terminal on EITHER stdin or stdout counts as "a person launched this".
-    // Requiring both, the way the bare-invocation guard above does, would drop
-    // the most ordinary case there is — `runner --serve > server.log` — while
-    // CI and pipes typically have neither and stay unaffected. --no-tray is the
-    // explicit escape for a wrapper that wants the guarantee in writing.
-    //
-    // It sits HERE, after every argument check a serve or interactive run can
-    // still fail, rather than up beside the mode guard where it used to.
-    // Raised earlier it outlived the process that raised it: `-s 0`, a
-    // yarn-factor conflict and an unknown --chat-template all refuse AFTER
-    // that point, and the detached tray they had already spawned held the
-    // executable open against the next relink. That is the "two-second
-    // process" the paragraph above says must not leave an icon behind, and it
-    // was leaving one. The bound stops at argument checks on purpose: a run
-    // that fails LATER, when a model or a draft will not load, still raises
-    // one, because moving past that would delay the icon by a whole model
-    // load for every run that works (suite plan R8.7.6).
-#if defined(__APPLE__) || defined(_WIN32)
-    if (!o->no_tray && (o->serve || o->interactive) &&
-        (RUNNER_TTY(stdin) || RUNNER_TTY(stdout)))
-        tray_ensure_running();
-#else
-    (void)o->no_tray;
-#endif
+    cli_tray_follow(o);
 
-    if (o->context_out) {
-        if (o->quant_out || o->merge_out || o->prune_experts || o->type_plan || o->quant_type ||
-            o->remove_sublayer) {
-            fprintf(stderr, "error: --context-surgery does not combine with "
-                    "quantize, merge, prune, or type-plan operations\n");
-            return 1;
-        }
-        if (o->mp.n_ctx <= 0 || o->mp.yarn_factor <= 1.0f) {
-            fprintf(stderr, "error: --context-surgery requires -c TARGET and "
-                    "--yarn-factor FACTOR\n");
-            return 1;
-        }
-        context_surgery_result sr;
-        int rc = context_surgery_gguf(load_path, o->context_out,
-                                      (uint32_t)o->mp.n_ctx, o->mp.yarn_factor, &sr);
-        if (rc != 0) return rc;
-        char bsha[65] = "", osha[65] = "";
-        if (!envelope_file_sha256(load_path, bsha) ||
-            !envelope_file_sha256(o->context_out, osha)) {
-            fprintf(stderr, "error: cannot hash context-surgery artifacts "
-                    "for the provenance record\n");
-            return 1;
-        }
-        sbuf rec = {0};
-        sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.context-surgery.v1\","
-                     "\"runner\":\"");
-        sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
-        sb_lit(&rec, "\",\"base\":");
-        lineage_put_input(&rec, load_path, bsha);
-        sb_fmt(&rec, ",\"source\":{\"context_length\":%u,"
-                       "\"original_context_length\":%u,\"yarn_factor\":%.9g},",
-               sr.source_context, sr.original_context,
-               (double)sr.source_factor);
-        sb_fmt(&rec, "\"target\":{\"path\":\"");
-        sb_esc(&rec, o->context_out, strlen(o->context_out));
-        sb_fmt(&rec, "\",\"sha256\":\"%s\",\"context_length\":%d,"
-                       "\"original_context_length\":%u,\"yarn_factor\":%.9g},",
-               osha, o->mp.n_ctx, sr.original_context, (double)o->mp.yarn_factor);
-        sb_fmt(&rec, "\"tensor_payloads_byte_identical\":%s}\n",
-               sr.tensors_byte_identical ? "true" : "false");
-        bool wrote = write_record(o->context_out, ".context.json",
-                                  "context-surgery", &rec, o->sign_key);
-        free(rec.s);
-        return wrote ? 0 : 1;
-    }
+    if (o->context_out) return run_context_surgery(o, load_path);
+    if (o->merge_out) return run_merge_lora(o);
+    if (o->quant_out) return run_quantize(o);
+    if (!cli_configure_serving(o)) return 1;
+    if (!cli_rewrite_flags_ok(o)) return 1;
 
-    if (o->merge_out) {
-        if (!o->lora_path) {
-            fprintf(stderr, "error: --merge-lora requires --lora ADAPTER\n");
-            return 1;
-        }
-        if (o->quant_out || o->prune_experts || o->type_plan || o->remove_sublayer) {
-            fprintf(stderr, "error: --merge-lora does not combine with "
-                    "--quantize, --prune-experts or --type-plan\n");
-            return 1;
-        }
-        // default keep: the merged artifact mirrors the base's own
-        // per-tensor precision unless a different output type is asked for
-        int tt = o->quant_type ? quantize_type_from_name(o->quant_type) : T_KEEP;
-        if (tt == -2) {
-            fprintf(stderr, "error: --quant '%s' is not a writable type\n",
-                    o->quant_type);
-            return 1;
-        }
-        merge_survival sv = {0};
-        int rc = merge_lora_gguf(o->model_path, o->lora_path, o->lora_scale,
-                                 o->merge_out, tt,
-                                 o->merge_allow_erased ? -1.0f : MERGE_MIN_RETAINED,
-                                 &sv);
-        if (rc == 0) {
-            // the D7 discipline extended to merged artifacts: the standalone
-            // blob stays auditable — base sha + adapter sha + config ->
-            // merged sha, machine-written beside the file
-            char bsha[65] = "", asha[65] = "", osha[65] = "";
-            if (!envelope_file_sha256(o->model_path, bsha) ||
-                !envelope_file_sha256(o->lora_path, asha) ||
-                !envelope_file_sha256(o->merge_out, osha)) {
-                fprintf(stderr, "error: cannot hash every merge artifact for "
-                        "the provenance record\n");
-                return 1;
-            }
-            sbuf rec = {0};
-            sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.merge.v1\","
-                         "\"runner\":\"");
-            sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
-            sb_lit(&rec, "\",\"base\":");
-            lineage_put_input(&rec, o->model_path, bsha);
-            sb_lit(&rec, ",\"adapter\":");
-            lineage_put_input(&rec, o->lora_path, asha);
-            sb_fmt(&rec, ",\"lora_scale\":%g,\"target\":\"",
-                   (double)o->lora_scale);
-            const char *target = o->quant_type ? o->quant_type : "keep";
-            sb_esc(&rec, target, strlen(target));
-            sb_lit(&rec, "\",\"merged\":{\"path\":\"");
-            sb_esc(&rec, o->merge_out, strlen(o->merge_out));
-            sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
-            sb_lit(&rec, "\"}");
-            // what the output grid kept of the delta (quants.h
-            // merge_survival); absent when no adapted tensor was rewritten
-            if (sv.ret_den > 0)
-                sb_fmt(&rec, ",\"survival\":{\"adapted_bytes\":%llu,"
-                       "\"bytes_changed\":%llu,\"delta_retained\":%.6f,"
-                       "\"min_retained\":%s}",
-                       (unsigned long long)sv.bytes,
-                       (unsigned long long)sv.bytes_changed,
-                       sv.ret_num / sv.ret_den,
-                       o->merge_allow_erased ? "null" : MERGE_MIN_RETAINED_STR);
-            sb_lit(&rec, "}\n");
-            if (!write_record(o->merge_out, ".merge.json", "merge", &rec, o->sign_key))
-                rc = 1;
-            free(rec.s);
-        }
-        return rc;
-    }
-    if (o->quant_out) {
-        int tt;
-        // --type-plan decides the type PER TENSOR, so a whole-file --quant
-        // alongside it is an instruction with nowhere to go: the plan branch
-        // in quantize_gguf_plan never reads it, and the summary line then
-        // named a type nothing had been written in. Refused rather than
-        // dropped, the same call --merge-lora + --type-plan already makes.
-        if (o->type_plan_strict && !o->type_plan) {
-            fprintf(stderr, "error: --type-plan-strict needs --type-plan\n");
-            return 1;
-        }
-        quantize_set_type_plan_strict(o->type_plan_strict);
-        if (o->quant_type && o->type_plan) {
-            fprintf(stderr, "error: --quant and --type-plan cannot be used "
-                    "together: the plan decides every tensor's type, so "
-                    "--quant would be silently ignored. Put the whole-file "
-                    "type in the plan's \"default\".\n");
-            return 1;
-        }
-        if (o->quant_type) {
-            tt = quantize_type_from_name(o->quant_type);
-            if (tt == -2) {
-                fprintf(stderr, "error: --quant '%s' is not a writable "
-                        "type\n", o->quant_type);
-                return 1;
-            }
-        } else {
-            // No --quant given: --prune-experts alone means "just prune,
-            // don't touch anyone's precision" (T_KEEP); with neither flag
-            // this is plain --quantize, whose long-standing default is q4_0.
-            tt = (o->prune_experts || o->remove_sublayer) ? T_KEEP : T_Q4_0;
-        }
-        int qrc = quantize_gguf_plan(o->model_path, o->quant_out, tt, o->prune_experts,
-                                     o->type_plan, o->remove_sublayer);
-        if (qrc != 0) return qrc;
-        // R17.1: the rewrite leaves its record like merge and training do --
-        // the input and output by sha256, every option that shaped the
-        // bytes, and the building binary -- so the file's lineage can be
-        // walked back (--lineage)
-        char bsha[65] = "", osha[65] = "", xsha[65] = "";
-        char *exe_path = plat_executable_path();
-        bool hash_ok = envelope_file_sha256(o->model_path, bsha) &&
-                       envelope_file_sha256(o->quant_out, osha) &&
-                       exe_path && envelope_file_sha256(exe_path, xsha);
-        free(exe_path);
-        if (!hash_ok) {
-            fprintf(stderr, "error: cannot hash the rewrite's files for the "
-                    "provenance record\n");
-            return 1;
-        }
-        const char *target = o->quant_type ? o->quant_type
-                           : o->type_plan ? "plan"
-                           : (o->prune_experts || o->remove_sublayer) ? "keep" : "q4_0";
-        sbuf rec = {0};
-        sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.quant.v1\","
-                     "\"runner\":\"");
-        sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
-        sb_lit(&rec, "\",\"build\":{\"binary_sha256\":\"");
-        sb_lit(&rec, xsha);
-        sb_lit(&rec, "\"},\"base\":");
-        lineage_put_input(&rec, o->model_path, bsha);
-        sb_lit(&rec, ",\"target\":\"");
-        sb_esc(&rec, target, strlen(target));
-        sb_lit(&rec, "\"");
-        if (o->prune_experts) {
-            sb_lit(&rec, ",\"prune_experts\":");
-            lineage_put_input(&rec, o->prune_experts, NULL);
-        }
-        if (o->type_plan) {
-            sb_lit(&rec, ",\"type_plan\":");
-            lineage_put_input(&rec, o->type_plan, NULL);
-        }
-        if (o->remove_sublayer) {
-            sb_lit(&rec, ",\"remove_sublayer\":\"");
-            sb_esc(&rec, o->remove_sublayer, strlen(o->remove_sublayer));
-            sb_lit(&rec, "\"");
-        }
-        sb_lit(&rec, ",\"output\":{\"path\":\"");
-        sb_esc(&rec, o->quant_out, strlen(o->quant_out));
-        sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
-        sb_lit(&rec, "\"}}\n");
-        bool wrote = write_record(o->quant_out, ".quant.json", "quantize", &rec, o->sign_key);
-        free(rec.s);
-        return wrote ? 0 : 1;
-    }
-    // Every flag that only has meaning while rewriting a file. Reaching here
-    // means --quantize was not given, and the block above is their only
-    // reader, so any of them is an instruction that would otherwise be
-    // silently dropped — the same discard --chat-template was fixed for, in a
-    // place where the user believes they asked for a different file on disk.
-    if (o->receipts_dir && !o->serve) {
-        fprintf(stderr, "error: --receipts writes one receipt per served "
-                "request and needs --serve (use --transcript for a one-shot "
-                "run)\n");
-        return 1;
-    }
-    if (o->receipts_keep && !o->receipts_dir) {
-        fprintf(stderr, "error: --receipts-keep needs --receipts DIR\n");
-        return 1;
-    }
-    if (o->receipts_dir) {
-        receipts_cfg rcfg = { .dir = o->receipts_dir, .keep = o->receipts_keep,
-                              .sign_key = o->sign_key };
-        if (!receipts_configure(&rcfg)) return 1;
-    }
-    if (o->kv_snapshots && !o->serve) {
-        fprintf(stderr, "error: --kv-snapshots saves and loads named contexts "
-                "and needs --serve\n");
-        return 1;
-    }
-    if (o->kv_snapshots && !kvsnap_configure(o->kv_snapshots, o->sign_key, o->trust_key)) return 1;
-    if (o->sessions_path && !o->serve) {
-        fprintf(stderr, "error: --sessions keeps the server's session images "
-                "and needs --serve (the CLI uses --session-out / --resume)\n");
-        return 1;
-    }
-    if (o->sessions_path && !sessions_configure(o->sessions_path)) return 1;
-    if (o->n_adapters && !o->serve) {
-        fprintf(stderr, "error: --adapter routes adapters per request and "
-                "needs --serve (use --lora for a one-shot run)\n");
-        return 1;
-    }
-    if (o->n_adapters && o->lora_path) {
-        fprintf(stderr, "error: --adapter and --lora are exclusive: --lora "
-                "installs one adapter for every request; serve it as --adapter "
-                "NAME=PATH and name it per request instead\n");
-        return 1;
-    }
-    const char *orphan = o->prune_experts ? "--prune-experts"
-                       : o->remove_sublayer ? "--remove-sublayer"
-                       : o->type_plan     ? "--type-plan"
-                       : o->quant_type    ? "--quant"
-                       : NULL;
-    if (orphan) {
-        fprintf(stderr, "error: %s requires --quantize OUT (or "
-                "--merge-lora OUT for --quant)\n", orphan);
-        return 1;
-    }
-    if (o->merge_allow_erased) {
-        fprintf(stderr, "error: --merge-allow-erased requires --merge-lora OUT\n");
-        return 1;
-    }
-
-    // R17.2: refuse a model that carries no passing evaluation of the asked
-    // kind, made for this very file (scripts/eval-record.py writes them)
-    if (o->require_eval) {
-        char why[512];
-        if (!lineage_require_eval(load_path, o->require_eval, o->trust_key, why, sizeof why)) {
-            fprintf(stderr, "error: --require-eval %s: %s\n", o->require_eval, why);
-            return 1;
-        }
-        fprintf(stderr, "eval: %s.eval.%s.json passes for this file\n", load_path, o->require_eval);
-    }
+    if (!cli_require_eval_ok(o, load_path)) return 1;
 
     model_t m;
     tokenizer tok;
