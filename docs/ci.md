@@ -3,9 +3,9 @@
 `make test` is the aggregate engine gate, and CI runs it on Linux for every
 pull request. The hosted Mac and Windows runners take twenty to thirty
 minutes for the whole suite, so on a pull request they run what is specific
-to them: macOS runs the Metal gates of `make test` as the one named target
-`make test-metal`, the client tests, the server conformance suite and the
-command-line smokes; Windows runs the build, its platform-only steps, the
+to them: macOS runs only what needs a Mac, the Metal gates of `make test`
+as the one named target `make test-metal` and the server conformance suite
+on the Metal path; Windows runs the build, its platform-only steps, the
 client tests and the server conformance suite. The whole suite runs on both
 (`macos-suite`, `windows-suite`) on every engine push to main, on the daily
 schedule and on dispatch. No numerical test or tolerance is removed to

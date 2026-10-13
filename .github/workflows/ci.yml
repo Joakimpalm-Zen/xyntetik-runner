@@ -161,44 +161,35 @@ jobs:
           path: .build/ci/
           if-no-files-found: ignore
 
-  # Apple Silicon on every pull request: the build, the Metal gates of `make
-  # test` as the one named target `make test-metal`, the client tests and the
-  # server conformance suite against the hosted Metal device. Not the whole
-  # suite: the hosted Mac runs `make test` in about 29 minutes against the
-  # Linux leg's 10, and the root pytest half is platform-neutral; the whole
-  # suite runs there in macos-suite on every engine push to main.
+  # Apple Silicon on every pull request, and only what needs a Mac: the
+  # build, the Metal gates of `make test` as the one named target `make
+  # test-metal`, and the server conformance suite on the Metal path (the
+  # gate that caught the 0.4.0 out-of-bounds read as a macOS SIGBUS while
+  # Linux stayed green). Everything platform-neutral (the root pytest, the
+  # client tests, the type check) runs in make-test; the hosted Mac is about
+  # three times slower per test, so the whole suite runs there only in
+  # macos-suite on the merge.
   macos:
     needs: changes
     if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - name: pip download cache
-        uses: actions/cache@v4
-        with:
-          path: ~/Library/Caches/pip
-          key: pip-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/**/requirements*.txt', 'python/pyproject.toml') }}
       # PEP 668: the macOS runner's Homebrew python is externally managed and
       # refuses a bare pip install, so install into a venv instead
-      - name: install pytest and mypy
+      - name: install pytest
         run: |
           python3 -m venv .venv
-          .venv/bin/python -m pip install --quiet -r tests/ci/requirements.txt mypy
+          .venv/bin/python -m pip install --quiet -r tests/ci/requirements.txt
       - name: build
         run: make
-      - name: python client type check and tests
-        run: |
-          MYPYPATH=python/src .venv/bin/python -m mypy --strict -p xyntetik_runner
-          PYTHONPATH=python/src .venv/bin/python -m pytest python/tests/
       - name: make test model
         run: python3 scripts/make-test-model.py test.gguf
       - name: Metal gates (make test-metal)
         run: .venv/bin/python scripts/ci-run.py --timeout 1500 metal -- make test-metal PYTHON=.venv/bin/python
-      - name: agent-protocol conformance harness
+      - name: agent-protocol conformance harness on the Metal path
         run: PYTHON=.venv/bin/python ./scripts/conformance.sh --junitxml=.build/ci/conformance.xml
-      - name: command-line smokes
-        run: .venv/bin/python -m pytest -q tests/test_cli_smokes.py
 
       - name: CI timing and test reports
         if: always()
