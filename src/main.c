@@ -1854,6 +1854,16 @@ typedef struct {
     sampler_override ov;
 } cli_opts;
 
+// What --verify read from its record before the load: the parsed record,
+// its signature state and public key, and the chain link it names. The
+// replay after the load reads all four.
+typedef struct {
+    jv *rec;
+    receipt_sig_state rsig;   // the record's signature state
+    char rec_pub[SIGN_PUBHEX_CAP];
+    char prev[65];
+} cli_verify;
+
 static void cli_opts_init(cli_opts *o) {
     memset(o, 0, sizeof *o);
     o->keygen_algo = SIGN_ALGO_ED25519;
@@ -2389,6 +2399,442 @@ static bool cli_draft_flags_ok(const cli_opts *o) {
     return true;
 }
 
+// Where the model comes from (-m, or -hf fetched to a cached path), the
+// prompt (-p, then -f appended into a buffer *owned_prompt owns), whether
+// there is anything to do at all, and the seed. True when the process
+// exits with *rc.
+static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_text,
+                               char **owned_prompt, int *rc) {
+    // -hf resolves to a cached local file before anything reads model_path,
+    // so every mode (-p, -i, --serve, --score, ...) sees a plain path
+    if (o->hf_spec) {
+        if (o->model_path) {
+            fprintf(stderr, "error: use -m or -hf, not both\n");
+            *rc = 1;
+            return true;
+        }
+        char herr[1024];
+        char *fetched = hf_fetch(o->hf_spec, herr, sizeof herr);
+        if (!fetched) {
+            fprintf(stderr, "error: -hf %s: %s\n", o->hf_spec, herr);
+            *rc = 1;
+            return true;
+        }
+        fprintf(stderr, "hf: %s -> %s\n", o->hf_spec, fetched);
+        o->model_path = fetched;   // lives for the process
+    }
+    if (!o->model_path) { usage(prog); *rc = 1; return true; }
+    if (o->prompt_file) {
+        size_t flen = 0;
+        char *fdata = read_file(o->prompt_file, &flen);
+        if (!fdata) { fprintf(stderr, "error: cannot read %s\n", o->prompt_file); *rc = 1; return true; }
+        size_t plen = o->prompt ? strlen(o->prompt) : 0;
+        if (flen > SIZE_MAX - plen - 1) {   // checked concat length
+            fprintf(stderr, "error: prompt is too large\n");
+            free(fdata);
+            *rc = 1;
+            return true;
+        }
+        char *fbuf = malloc(plen + flen + 1);
+        if (!fbuf) { free(fdata); fprintf(stderr, "error: out of memory\n"); *rc = 1; return true; }
+        if (o->prompt) memcpy(fbuf, o->prompt, plen);
+        memcpy(fbuf + plen, fdata, flen);
+        fbuf[plen + flen] = 0;
+        free(fdata);
+        o->prompt = *owned_prompt = fbuf;
+    }
+    if (!o->prompt && !o->interactive && !o->serve && !o->quant_out && !o->merge_out &&
+        !o->context_out &&
+        !o->bench_json && !o->doctor && !o->tool_info && !o->adapt_info && !o->train_path && !o->dpo_path && !o->verify_path &&
+        !o->decide_path && !have_detect_text && !o->resume_path) {
+        fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
+        usage(prog);
+        *rc = 1;
+        return true;
+    }
+    // The sampler's xorshift64 has a fixed point at state 0: it stays 0 and
+    // every draw comes back 0.0. So 0 is not a usable seed — but the old
+    // `if (rng == 0) rng = time(...)` said that by silently substituting the
+    // clock, which turned `-s 0`, a request for a REPRODUCIBLE run, into a
+    // random one with nothing on stderr. Only an absent -s takes the clock
+    // now; an explicit 0 is refused, because the one thing that must not
+    // happen is running it as if it had been honoured.
+    if (o->seed_given && o->smp.rng == 0) {
+        fprintf(stderr, "error: -s 0 is not a usable seed — the sampler's RNG "
+                        "state 0 is a fixed point. Use any other value.\n");
+        *rc = 1;
+        return true;
+    }
+    if (!o->seed_given) o->smp.rng = (uint64_t)time(NULL) ^ 0x9E3779B97F4A7C15ull;
+    return false;
+}
+
+static bool cli_prepare_session(cli_opts *o, session_image *simg, int *rc) {
+    // R1.3 session images: suspend (--suspend-after N with --session-out),
+    // resume (--resume), fork (--resume with --fork-seed). They image the
+    // host KV cache and the solo step loop, so they run on the CPU, without
+    // speculation, and outside serve / interactive / verify.
+    if (o->session_out || o->suspend_after || o->resume_path || o->fork_seed_given) {
+        const char *why = NULL;
+        if (o->suspend_after && !o->session_out)
+            why = "--suspend-after N needs --session-out FILE";
+        else if (o->fork_seed_given && !o->resume_path)
+            why = "--fork-seed forks a session and needs --resume FILE";
+        else if (o->resume_path && o->prompt)
+            why = "--resume continues an image's prompt; give no -p";
+        else if (o->serve || o->interactive || o->verify_path || o->transcript_path)
+            why = "session images are for one-shot runs (not --serve, -i, "
+                  "--verify or --transcript)";
+        else if (o->draft_path || o->mtp_on || o->draft_lookup)
+            why = "session images run the solo step loop: no --draft, --mtp or "
+                  "--draft-lookup";
+        else if (o->watermark_path)
+            why = "an image does not carry a watermark key, so a resume could not "
+                  "continue a marked generation: no --watermark";
+        else if (!o->resume_path && o->n_predict < 1)
+            why = "session images need a finite generation budget (-n N, N >= 1)";
+        else if (!o->resume_path && o->suspend_after >= o->n_predict)
+            why = "--suspend-after N must stop before the -n budget is spent";
+        if (!why && o->session_out) {
+            // refused before the load and the generation, not after them;
+            // session_write's O_EXCL still closes the race
+            FILE *ex = fopen(o->session_out, "rb");
+            if (ex) {
+                fclose(ex);
+                fprintf(stderr, "error: --session-out %s already exists; an "
+                        "image is never overwritten\n", o->session_out);
+                *rc = 1;
+                return true;
+            }
+        }
+        if (why) { fprintf(stderr, "error: %s\n", why); *rc = 1; return true; }
+        o->mp.gpu_mode = GPU_OFF;
+    }
+    if (o->resume_path) {
+        // the image fixes everything that shapes the continuation; a flag
+        // that would change it is refused, not silently overridden
+        const char *fixed = o->seed_given ? "-s" : o->n_given ? "-n" : o->mp.n_ctx ? "-c"
+            : o->kv_given ? "--kv"
+            : o->ov.has_temp ? "--temp" : o->ov.has_top_k ? "--top-k"
+            : o->ov.has_top_p ? "--top-p" : o->ov.has_min_p ? "--min-p"
+            : o->ov.has_repeat_penalty ? "--repeat-penalty" : NULL;
+        if (fixed) {
+            fprintf(stderr, "error: --resume continues under the image's own "
+                    "settings; %s would change them%s\n", fixed,
+                    o->seed_given ? " (a different continuation is --fork-seed N)" : "");
+            *rc = 1;
+            return true;
+        }
+        if (!session_read(o->resume_path, simg)) { *rc = 1; return true; }
+        const session_meta *sm = &simg->meta;
+        // the image's shape and sampler, as a replay takes a record's
+        o->mp.n_ctx = sm->n_ctx;
+        o->mp.kv_q8 = !strcmp(sm->kv_type, "q8");
+        o->mp.kv_fp4 = !strcmp(sm->kv_type, "fp4");
+        o->mp.kv_split = !strcmp(sm->kv_type, "k8v4");
+        o->ov.temp = sm->temp;                     o->ov.has_temp = true;
+        o->ov.top_k = sm->top_k;                   o->ov.has_top_k = true;
+        o->ov.top_p = sm->top_p;                   o->ov.has_top_p = true;
+        o->ov.min_p = sm->min_p;                   o->ov.has_min_p = true;
+        o->ov.repeat_penalty = sm->repeat_penalty; o->ov.has_repeat_penalty = true;
+        if (o->fork_seed_given && o->fork_seed == 0) {
+            fprintf(stderr, "error: --fork-seed must be nonzero\n");
+            *rc = 1;
+            return true;
+        }
+        if (!o->fork_seed_given && sm->rng == 0 && sm->temp > 0) {
+            fprintf(stderr, "error: --resume %s: a sampled image without an rng "
+                    "state\n", o->resume_path);
+            *rc = 1;
+            return true;
+        }
+        // a greedy image records no rng (it is never drawn from); the sampler
+        // still wants a nonzero state
+        o->smp.rng = o->fork_seed_given ? o->fork_seed : sm->rng ? sm->rng : 1;
+        if ((o->json_mode && !sm->json_mode) || (o->ignore_eos && !sm->ignore_eos)) {
+            fprintf(stderr, "error: --resume: the image was not generated under "
+                    "%s\n", o->json_mode && !sm->json_mode ? "--json" : "--ignore-eos");
+            session_image_free(simg);
+            *rc = 1;
+            return true;
+        }
+        o->json_mode = sm->json_mode;
+        o->ignore_eos = sm->ignore_eos;
+        o->n_predict = sm->max_new;
+        if (sm->schema_sha256[0]) {
+            char have[65];
+            if (!o->schema_file || !schema_file_digest(o->schema_file, have) ||
+                strcmp(have, sm->schema_sha256) != 0) {
+                fprintf(stderr, "error: --resume: the image was generated under a "
+                        "JSON schema (sha256 %s); give --json-schema naming that "
+                        "schema\n", sm->schema_sha256);
+                *rc = 1;
+                return true;
+            }
+        } else if (o->schema_file) {
+            fprintf(stderr, "error: --resume: the image was not generated under "
+                    "a schema; --json-schema would change what it continues\n");
+            *rc = 1;
+            return true;
+        }
+        if (o->suspend_after && o->suspend_after <= sm->generated) {
+            fprintf(stderr, "error: --suspend-after %d: the image has already "
+                    "generated %d tokens\n", o->suspend_after, sm->generated);
+            *rc = 1;
+            return true;
+        }
+        if (o->suspend_after >= sm->max_new) {
+            fprintf(stderr, "error: --suspend-after %d must stop before the "
+                    "image's budget of %d tokens is spent\n", o->suspend_after,
+                    sm->max_new);
+            *rc = 1;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// ---- notarized inference D2: parse the transcript BEFORE the load so
+// the record's profile (ctx, kv, gpu) and config (sampler, seed) shape
+// the replay exactly as they shaped the original. Integrity first: the
+// chain hash must re-verify from the raw bytes, or nothing else in the
+// file is worth believing (UNVERIFIABLE, exit 3).
+//
+// True when the record is refused and the process exits with *rc.
+static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
+                               cli_verify *vr, int *rc) {
+    if (o->verify_path) {
+        size_t vlen = 0;
+        char *vbuf = read_file(o->verify_path, &vlen);
+        if (!vbuf) {
+            fprintf(stderr, "UNVERIFIABLE: cannot read %s\n", o->verify_path);
+            *rc = 3;
+            return true;
+        }
+        char *cpos = strstr(vbuf, ",\"chain\"");
+        char *clast = cpos;
+        while (clast && (clast = strstr(clast + 1, ",\"chain\"")) != NULL) cpos = clast;
+        if (!cpos) { fprintf(stderr, "UNVERIFIABLE: no chain in record\n"); free(vbuf); *rc = 3; return true; }
+        char want[65];
+        envelope_data_sha256(vbuf, (size_t)(cpos - vbuf), want);
+        vr->rsig = receipt_signature_check(vbuf, vlen, vr->rec_pub);
+        vr->rec = json_parse(vbuf, vlen);
+        free(vbuf);
+        if (!vr->rec) { fprintf(stderr, "UNVERIFIABLE: malformed record\n"); *rc = 3; return true; }
+        const char *sv = jv_str(jv_get(vr->rec, "schema_version"), "");
+        const char *ch = jv_str(jv_get(jv_get(vr->rec, "chain"), "hash"), "");
+        if (strcmp(sv, "xyntetik.runner.transcript.v1") != 0) {
+            fprintf(stderr, "UNVERIFIABLE: schema %s\n", sv); jv_free(vr->rec); *rc = 3; return true;
+        }
+        if (strcmp(ch, want) != 0) {
+            fprintf(stderr, "UNVERIFIABLE: chain hash mismatch (record "
+                    "altered after writing)\n");
+            jv_free(vr->rec); *rc = 3; return true;
+        }
+        // Signature and chain link are checked before any replay: a forged
+        // or unsigned record must not even get the model loaded for it.
+        if (vr->rsig == RSIG_BAD || vr->rsig == RSIG_MALFORMED) {
+            fprintf(stderr, "UNVERIFIABLE: %s\n", vr->rsig == RSIG_BAD
+                    ? "signature does not verify (record altered or forged)"
+                    : "malformed signature object");
+            jv_free(vr->rec); *rc = 3; return true;
+        }
+        if (o->require_signed && vr->rsig != RSIG_OK) {
+            fprintf(stderr, "UNVERIFIABLE: --require-signed: the record carries "
+                    "no signature\n");
+            jv_free(vr->rec); *rc = 3; return true;
+        }
+        // --trust-key takes the public key as hex, or "sha256:" + the hex
+        // SHA-256 of the key bytes (an ML-DSA-44 key is 2624 hex characters;
+        // its digest is what fits in a policy file or a command line)
+        bool trusted = vr->rsig == RSIG_OK;
+        if (trusted && o->trust_key) {
+            if (strncmp(o->trust_key, "sha256:", 7) == 0) {
+                uint8_t pkb[SIGN_PK_MAX];
+                size_t hn = strlen(vr->rec_pub);
+                char digest[65] = "";
+                for (size_t i = 0; i < hn / 2; i++) {
+                    unsigned v = 0;
+                    sscanf(vr->rec_pub + 2 * i, "%2x", &v);
+                    pkb[i] = (uint8_t)v;
+                }
+                envelope_data_sha256(pkb, hn / 2, digest);
+                trusted = hex_eq_nocase(o->trust_key + 7, digest);
+            } else {
+                trusted = hex_eq_nocase(o->trust_key, vr->rec_pub);
+            }
+        }
+        if (o->trust_key && !trusted) {
+            fprintf(stderr, "UNVERIFIABLE: --trust-key: the record is %s\n",
+                    vr->rsig == RSIG_OK ? "signed by a different key" : "unsigned");
+            jv_free(vr->rec); *rc = 3; return true;
+        }
+        snprintf(vr->prev, sizeof vr->prev, "%s",
+                 jv_str(jv_get(jv_get(vr->rec, "chain"), "prev"), ""));
+        if (o->transcript_prev) {
+            char ph[65];
+            if (!receipt_chain_hash(o->transcript_prev, ph)) {
+                fprintf(stderr, "UNVERIFIABLE: cannot read the chain hash of %s\n",
+                        o->transcript_prev);
+                jv_free(vr->rec); *rc = 3; return true;
+            }
+            if (strcmp(ph, vr->prev) != 0) {
+                fprintf(stderr, "UNVERIFIABLE: chain link broken: the record's prev "
+                        "is not the chain hash of %s\n", o->transcript_prev);
+                jv_free(vr->rec); *rc = 3; return true;
+            }
+        }
+        {
+            // R1.8.2: a marked record replays only under its own key, and an
+            // unmarked one never under a key
+            jv *vw = jv_get(vr->rec, "watermark");
+            const char *rk = vw ? jv_str(jv_get(vw, "key_id"), "") : NULL;
+            const char *why = NULL;
+            char wbuf[256];
+            if (rk && strcmp(jv_str(jv_get(vw, "scheme"), ""), WM_SCHEME) != 0) {
+                snprintf(wbuf, sizeof wbuf, "the output was watermarked with scheme "
+                         "\"%.40s\", which this build does not replay",
+                         jv_str(jv_get(vw, "scheme"), ""));
+                why = wbuf;
+            } else if (rk && !wm_on) {
+                snprintf(wbuf, sizeof wbuf, "the output was watermarked (key id "
+                         "%.16s); replaying it needs that key: verify with "
+                         "--watermark naming it", rk);
+                why = wbuf;
+            } else if (rk && strcmp(rk, wmk->id) != 0) {
+                snprintf(wbuf, sizeof wbuf, "--watermark key id %s is not the "
+                         "record's watermark key id (%.16s)", wmk->id, rk);
+                why = wbuf;
+            } else if (!rk && wm_on) {
+                why = "--watermark given, but the record's output was not "
+                      "watermarked";
+            }
+            if (why) {
+                fprintf(stderr, "UNVERIFIABLE: %s\n", why);
+                jv_free(vr->rec);
+                *rc = 3;
+                return true;
+            }
+        }
+        {
+            char why[512];
+            if (!replay_constraints_ok(vr->rec, o->json_mode, o->schema_file, o->ignore_eos,
+                                       why, sizeof why)) {
+                fprintf(stderr, "UNVERIFIABLE: %s\n", why);
+                jv_free(vr->rec);
+                *rc = 3;
+                return true;
+            }
+        }
+        jv *prof = jv_get(vr->rec, "profile"), *cfg = jv_get(vr->rec, "config");
+        jv *ctx_v = jv_get(prof, "ctx"), *batch_v = jv_get(prof, "batch");
+        jv *threads_v = jv_get(prof, "threads"), *gpu_v = jv_get(prof, "gpu");
+        jv *gpu_layers_v = jv_get(prof, "gpu_layers");
+        const char *kv = jv_str(jv_get(prof, "kv"), NULL);
+        double ctx_d = jv_num(ctx_v, -1), batch_d = jv_num(batch_v, -1);
+        double threads_d = jv_num(threads_v, -1);
+        double gpu_layers_d = jv_num(gpu_layers_v, -1);
+        if (!prof || prof->type != J_OBJ || !cfg || cfg->type != J_OBJ ||
+            !ctx_v || ctx_v->type != J_NUM || ctx_d < 1 || ctx_d > INT_MAX ||
+            ctx_d != (double)(int)ctx_d || !batch_v || batch_v->type != J_NUM ||
+            batch_d < 1 || batch_d > ctx_d || batch_d != (double)(int)batch_d ||
+            !threads_v || threads_v->type != J_NUM || threads_d < 1 ||
+            threads_d > INT_MAX || threads_d != (double)(int)threads_d ||
+            !gpu_v || gpu_v->type != J_BOOL || !kv ||
+            (gpu_layers_v && (gpu_layers_v->type != J_NUM ||
+             gpu_layers_d < 0 || gpu_layers_d > INT_MAX ||
+             gpu_layers_d != (double)(int)gpu_layers_d ||
+             (gpu_v->b != (gpu_layers_d > 0)))) ||
+            (strcmp(kv, "f16") != 0 && strcmp(kv, "q8") != 0 &&
+             strcmp(kv, "fp4") != 0 && strcmp(kv, "k8v4") != 0)) {
+            fprintf(stderr, "UNVERIFIABLE: malformed execution profile\n");
+            jv_free(vr->rec);
+            *rc = 3;
+            return true;
+        }
+        o->mp.n_ctx = (int)ctx_d;
+        o->mp.n_batch = (int)batch_d;
+        o->n_threads = (int)threads_d;
+        o->mp.kv_q8 = strcmp(kv, "q8") == 0;
+        o->mp.kv_fp4 = strcmp(kv, "fp4") == 0;
+        o->mp.kv_split = strcmp(kv, "k8v4") == 0;
+        o->mp.gpu_mode = gpu_v->b ? GPU_AUTO : GPU_OFF;
+        if (gpu_layers_v && gpu_layers_d > 0)
+            o->mp.gpu_layers_override = (int)gpu_layers_d;
+        jv *record_adapter = jv_get(vr->rec, "adapter");
+        if (record_adapter && record_adapter->type != J_NULL) {
+            jv *scale_v = record_adapter->type == J_OBJ
+                            ? jv_get(record_adapter, "scale") : NULL;
+            double scale = jv_num(scale_v, -1);
+            if (!scale_v || scale_v->type != J_NUM || scale < 0 ||
+                scale > FLT_MAX) {
+                fprintf(stderr, "UNVERIFIABLE: malformed adapter scale\n");
+                jv_free(vr->rec);
+                *rc = 3;
+                return true;
+            }
+            o->lora_scale = (float)scale;
+        } else if (!record_adapter) {
+            fprintf(stderr, "UNVERIFIABLE: missing adapter profile\n");
+            jv_free(vr->rec);
+            *rc = 3;
+            return true;
+        }
+        // New v1 records carry an exact decimal spelling because this JSON
+        // parser stores numbers as doubles.  Keep low legacy seeds working,
+        // but refuse to round an older wide seed and call the later mismatch
+        // inference divergence: that record is not exactly replayable.
+        jv *seed_exact = jv_get(cfg, "seed_u64");
+        uint64_t replay_seed = 0;
+        bool seed_ok = false;
+        if (seed_exact && seed_exact->type == J_STR) {
+            seed_ok = parse_u64(seed_exact->str, 1, UINT64_MAX, &replay_seed);
+        } else {
+            double seed_num = jv_num(jv_get(cfg, "seed"), 0);
+            if (seed_num >= 1.0 && seed_num <= 9007199254740992.0) {
+                replay_seed = (uint64_t)seed_num;
+                seed_ok = seed_num == (double)replay_seed;
+            }
+        }
+        if (!seed_ok) {
+            fprintf(stderr, "UNVERIFIABLE: config.seed is not an exact "
+                    "nonzero uint64 (wide legacy seeds need seed_u64)\n");
+            jv_free(vr->rec);
+            *rc = 3;
+            return true;
+        }
+        o->smp.rng = replay_seed;
+        // The record's sampling config rides the CLI-override mechanism so
+        // it survives sampler_resolve's per-model presets. Apply the same
+        // finite/range/integrality rules as the CLI before any narrowing.
+        double temp, top_p, min_p, repeat_penalty;
+        int top_k, replay_n_predict;
+        if (!record_num(cfg, "temp", 0, FLT_MAX, &temp) ||
+            !record_int(cfg, "top_k", 0, INT_MAX, &top_k) ||
+            !record_num(cfg, "top_p", 0, 1, &top_p) ||
+            !record_num(cfg, "min_p", 0, 1, &min_p) ||
+            !record_num(cfg, "repeat_penalty", FLT_MIN, FLT_MAX,
+                        &repeat_penalty) ||
+            !record_int(cfg, "n_predict", -1, INT_MAX,
+                        &replay_n_predict)) {
+            fprintf(stderr, "UNVERIFIABLE: malformed sampling config\n");
+            jv_free(vr->rec);
+            *rc = 3;
+            return true;
+        }
+        o->ov.temp = (float)temp;                         o->ov.has_temp = true;
+        o->ov.top_k = top_k;                              o->ov.has_top_k = true;
+        o->ov.top_p = (float)top_p;                       o->ov.has_top_p = true;
+        o->ov.min_p = (float)min_p;                       o->ov.has_min_p = true;
+        o->ov.repeat_penalty = (float)repeat_penalty;
+        o->ov.has_repeat_penalty = true;
+        o->n_predict = replay_n_predict;
+    }
+
+    return false;
+}
+
 int main(int argc, char **argv) {
     char *owned_prompt = NULL;
     // the measured-envelope verdict the one-shot model loaded under, for its
@@ -2397,9 +2843,7 @@ int main(int argc, char **argv) {
     bool cli_env_known = false;
     session_image simg;
     memset(&simg, 0, sizeof simg);
-    receipt_sig_state v_rsig = RSIG_NONE;   // --verify: the record's signature state
-    char v_rec_pub[SIGN_PUBHEX_CAP] = "";
-    char v_prev[65] = "";
+    cli_verify vr = { .rec = NULL, .rsig = RSIG_NONE };
     int tmpl = -1;
     char doctor_sampling[256] = ""; // the effective sampler, as the load line says
     double doctor_load_s = 0;
@@ -2450,401 +2894,19 @@ int main(int argc, char **argv) {
 
     if (o->shadow_mode) return run_shadow_mode(o->model_path, o->shadow_yes);
     if (o->caps) return run_caps();
-    // -hf resolves to a cached local file before anything reads model_path,
-    // so every mode (-p, -i, --serve, --score, ...) sees a plain path
-    if (o->hf_spec) {
-        if (o->model_path) {
-            fprintf(stderr, "error: use -m or -hf, not both\n");
-            return 1;
-        }
-        char herr[1024];
-        char *fetched = hf_fetch(o->hf_spec, herr, sizeof herr);
-        if (!fetched) {
-            fprintf(stderr, "error: -hf %s: %s\n", o->hf_spec, herr);
-            return 1;
-        }
-        fprintf(stderr, "hf: %s -> %s\n", o->hf_spec, fetched);
-        o->model_path = fetched;   // lives for the process
+    {
+        int rc;
+        if (cli_resolve_inputs(o, argv[0], detect_text != NULL, &owned_prompt, &rc))
+            return rc;
     }
-    if (!o->model_path) { usage(argv[0]); return 1; }
-    if (o->prompt_file) {
-        size_t flen = 0;
-        char *fdata = read_file(o->prompt_file, &flen);
-        if (!fdata) { fprintf(stderr, "error: cannot read %s\n", o->prompt_file); return 1; }
-        size_t plen = o->prompt ? strlen(o->prompt) : 0;
-        if (flen > SIZE_MAX - plen - 1) {   // checked concat length
-            fprintf(stderr, "error: prompt is too large\n");
-            free(fdata);
-            return 1;
-        }
-        char *fbuf = malloc(plen + flen + 1);
-        if (!fbuf) { free(fdata); fprintf(stderr, "error: out of memory\n"); return 1; }
-        if (o->prompt) memcpy(fbuf, o->prompt, plen);
-        memcpy(fbuf + plen, fdata, flen);
-        fbuf[plen + flen] = 0;
-        free(fdata);
-        o->prompt = owned_prompt = fbuf;
+    {
+        int rc;
+        if (cli_prepare_session(o, &simg, &rc)) return rc;
     }
-    if (!o->prompt && !o->interactive && !o->serve && !o->quant_out && !o->merge_out &&
-        !o->context_out &&
-        !o->bench_json && !o->doctor && !o->tool_info && !o->adapt_info && !o->train_path && !o->dpo_path && !o->verify_path &&
-        !o->decide_path && !detect_text && !o->resume_path) {
-        fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
-        usage(argv[0]);
-        return 1;
+    {
+        int rc;
+        if (cli_prepare_verify(o, &wmk, wm_on, &vr, &rc)) return rc;
     }
-    // The sampler's xorshift64 has a fixed point at state 0: it stays 0 and
-    // every draw comes back 0.0. So 0 is not a usable seed — but the old
-    // `if (rng == 0) rng = time(...)` said that by silently substituting the
-    // clock, which turned `-s 0`, a request for a REPRODUCIBLE run, into a
-    // random one with nothing on stderr. Only an absent -s takes the clock
-    // now; an explicit 0 is refused, because the one thing that must not
-    // happen is running it as if it had been honoured.
-    if (o->seed_given && o->smp.rng == 0) {
-        fprintf(stderr, "error: -s 0 is not a usable seed — the sampler's RNG "
-                        "state 0 is a fixed point. Use any other value.\n");
-        return 1;
-    }
-    if (!o->seed_given) o->smp.rng = (uint64_t)time(NULL) ^ 0x9E3779B97F4A7C15ull;
-    // R1.3 session images: suspend (--suspend-after N with --session-out),
-    // resume (--resume), fork (--resume with --fork-seed). They image the
-    // host KV cache and the solo step loop, so they run on the CPU, without
-    // speculation, and outside serve / interactive / verify.
-    if (o->session_out || o->suspend_after || o->resume_path || o->fork_seed_given) {
-        const char *why = NULL;
-        if (o->suspend_after && !o->session_out)
-            why = "--suspend-after N needs --session-out FILE";
-        else if (o->fork_seed_given && !o->resume_path)
-            why = "--fork-seed forks a session and needs --resume FILE";
-        else if (o->resume_path && o->prompt)
-            why = "--resume continues an image's prompt; give no -p";
-        else if (o->serve || o->interactive || o->verify_path || o->transcript_path)
-            why = "session images are for one-shot runs (not --serve, -i, "
-                  "--verify or --transcript)";
-        else if (o->draft_path || o->mtp_on || o->draft_lookup)
-            why = "session images run the solo step loop: no --draft, --mtp or "
-                  "--draft-lookup";
-        else if (o->watermark_path)
-            why = "an image does not carry a watermark key, so a resume could not "
-                  "continue a marked generation: no --watermark";
-        else if (!o->resume_path && o->n_predict < 1)
-            why = "session images need a finite generation budget (-n N, N >= 1)";
-        else if (!o->resume_path && o->suspend_after >= o->n_predict)
-            why = "--suspend-after N must stop before the -n budget is spent";
-        if (!why && o->session_out) {
-            // refused before the load and the generation, not after them;
-            // session_write's O_EXCL still closes the race
-            FILE *ex = fopen(o->session_out, "rb");
-            if (ex) {
-                fclose(ex);
-                fprintf(stderr, "error: --session-out %s already exists; an "
-                        "image is never overwritten\n", o->session_out);
-                return 1;
-            }
-        }
-        if (why) { fprintf(stderr, "error: %s\n", why); return 1; }
-        o->mp.gpu_mode = GPU_OFF;
-    }
-    if (o->resume_path) {
-        // the image fixes everything that shapes the continuation; a flag
-        // that would change it is refused, not silently overridden
-        const char *fixed = o->seed_given ? "-s" : o->n_given ? "-n" : o->mp.n_ctx ? "-c"
-            : o->kv_given ? "--kv"
-            : o->ov.has_temp ? "--temp" : o->ov.has_top_k ? "--top-k"
-            : o->ov.has_top_p ? "--top-p" : o->ov.has_min_p ? "--min-p"
-            : o->ov.has_repeat_penalty ? "--repeat-penalty" : NULL;
-        if (fixed) {
-            fprintf(stderr, "error: --resume continues under the image's own "
-                    "settings; %s would change them%s\n", fixed,
-                    o->seed_given ? " (a different continuation is --fork-seed N)" : "");
-            return 1;
-        }
-        if (!session_read(o->resume_path, &simg)) return 1;
-        const session_meta *sm = &simg.meta;
-        // the image's shape and sampler, as a replay takes a record's
-        o->mp.n_ctx = sm->n_ctx;
-        o->mp.kv_q8 = !strcmp(sm->kv_type, "q8");
-        o->mp.kv_fp4 = !strcmp(sm->kv_type, "fp4");
-        o->mp.kv_split = !strcmp(sm->kv_type, "k8v4");
-        o->ov.temp = sm->temp;                     o->ov.has_temp = true;
-        o->ov.top_k = sm->top_k;                   o->ov.has_top_k = true;
-        o->ov.top_p = sm->top_p;                   o->ov.has_top_p = true;
-        o->ov.min_p = sm->min_p;                   o->ov.has_min_p = true;
-        o->ov.repeat_penalty = sm->repeat_penalty; o->ov.has_repeat_penalty = true;
-        if (o->fork_seed_given && o->fork_seed == 0) {
-            fprintf(stderr, "error: --fork-seed must be nonzero\n");
-            return 1;
-        }
-        if (!o->fork_seed_given && sm->rng == 0 && sm->temp > 0) {
-            fprintf(stderr, "error: --resume %s: a sampled image without an rng "
-                    "state\n", o->resume_path);
-            return 1;
-        }
-        // a greedy image records no rng (it is never drawn from); the sampler
-        // still wants a nonzero state
-        o->smp.rng = o->fork_seed_given ? o->fork_seed : sm->rng ? sm->rng : 1;
-        if ((o->json_mode && !sm->json_mode) || (o->ignore_eos && !sm->ignore_eos)) {
-            fprintf(stderr, "error: --resume: the image was not generated under "
-                    "%s\n", o->json_mode && !sm->json_mode ? "--json" : "--ignore-eos");
-            session_image_free(&simg);
-            return 1;
-        }
-        o->json_mode = sm->json_mode;
-        o->ignore_eos = sm->ignore_eos;
-        o->n_predict = sm->max_new;
-        if (sm->schema_sha256[0]) {
-            char have[65];
-            if (!o->schema_file || !schema_file_digest(o->schema_file, have) ||
-                strcmp(have, sm->schema_sha256) != 0) {
-                fprintf(stderr, "error: --resume: the image was generated under a "
-                        "JSON schema (sha256 %s); give --json-schema naming that "
-                        "schema\n", sm->schema_sha256);
-                return 1;
-            }
-        } else if (o->schema_file) {
-            fprintf(stderr, "error: --resume: the image was not generated under "
-                    "a schema; --json-schema would change what it continues\n");
-            return 1;
-        }
-        if (o->suspend_after && o->suspend_after <= sm->generated) {
-            fprintf(stderr, "error: --suspend-after %d: the image has already "
-                    "generated %d tokens\n", o->suspend_after, sm->generated);
-            return 1;
-        }
-        if (o->suspend_after >= sm->max_new) {
-            fprintf(stderr, "error: --suspend-after %d must stop before the "
-                    "image's budget of %d tokens is spent\n", o->suspend_after,
-                    sm->max_new);
-            return 1;
-        }
-    }
-
-    // ---- notarized inference D2: parse the transcript BEFORE the load so
-    // the record's profile (ctx, kv, gpu) and config (sampler, seed) shape
-    // the replay exactly as they shaped the original. Integrity first: the
-    // chain hash must re-verify from the raw bytes, or nothing else in the
-    // file is worth believing (UNVERIFIABLE, exit 3).
-    jv *vrec = NULL;
-    if (o->verify_path) {
-        size_t vlen = 0;
-        char *vbuf = read_file(o->verify_path, &vlen);
-        if (!vbuf) {
-            fprintf(stderr, "UNVERIFIABLE: cannot read %s\n", o->verify_path);
-            return 3;
-        }
-        char *cpos = strstr(vbuf, ",\"chain\"");
-        char *clast = cpos;
-        while (clast && (clast = strstr(clast + 1, ",\"chain\"")) != NULL) cpos = clast;
-        if (!cpos) { fprintf(stderr, "UNVERIFIABLE: no chain in record\n"); free(vbuf); return 3; }
-        char want[65];
-        envelope_data_sha256(vbuf, (size_t)(cpos - vbuf), want);
-        v_rsig = receipt_signature_check(vbuf, vlen, v_rec_pub);
-        vrec = json_parse(vbuf, vlen);
-        free(vbuf);
-        if (!vrec) { fprintf(stderr, "UNVERIFIABLE: malformed record\n"); return 3; }
-        const char *sv = jv_str(jv_get(vrec, "schema_version"), "");
-        const char *ch = jv_str(jv_get(jv_get(vrec, "chain"), "hash"), "");
-        if (strcmp(sv, "xyntetik.runner.transcript.v1") != 0) {
-            fprintf(stderr, "UNVERIFIABLE: schema %s\n", sv); jv_free(vrec); return 3;
-        }
-        if (strcmp(ch, want) != 0) {
-            fprintf(stderr, "UNVERIFIABLE: chain hash mismatch (record "
-                    "altered after writing)\n");
-            jv_free(vrec); return 3;
-        }
-        // Signature and chain link are checked before any replay: a forged
-        // or unsigned record must not even get the model loaded for it.
-        if (v_rsig == RSIG_BAD || v_rsig == RSIG_MALFORMED) {
-            fprintf(stderr, "UNVERIFIABLE: %s\n", v_rsig == RSIG_BAD
-                    ? "signature does not verify (record altered or forged)"
-                    : "malformed signature object");
-            jv_free(vrec); return 3;
-        }
-        if (o->require_signed && v_rsig != RSIG_OK) {
-            fprintf(stderr, "UNVERIFIABLE: --require-signed: the record carries "
-                    "no signature\n");
-            jv_free(vrec); return 3;
-        }
-        // --trust-key takes the public key as hex, or "sha256:" + the hex
-        // SHA-256 of the key bytes (an ML-DSA-44 key is 2624 hex characters;
-        // its digest is what fits in a policy file or a command line)
-        bool trusted = v_rsig == RSIG_OK;
-        if (trusted && o->trust_key) {
-            if (strncmp(o->trust_key, "sha256:", 7) == 0) {
-                uint8_t pkb[SIGN_PK_MAX];
-                size_t hn = strlen(v_rec_pub);
-                char digest[65] = "";
-                for (size_t i = 0; i < hn / 2; i++) {
-                    unsigned v = 0;
-                    sscanf(v_rec_pub + 2 * i, "%2x", &v);
-                    pkb[i] = (uint8_t)v;
-                }
-                envelope_data_sha256(pkb, hn / 2, digest);
-                trusted = hex_eq_nocase(o->trust_key + 7, digest);
-            } else {
-                trusted = hex_eq_nocase(o->trust_key, v_rec_pub);
-            }
-        }
-        if (o->trust_key && !trusted) {
-            fprintf(stderr, "UNVERIFIABLE: --trust-key: the record is %s\n",
-                    v_rsig == RSIG_OK ? "signed by a different key" : "unsigned");
-            jv_free(vrec); return 3;
-        }
-        snprintf(v_prev, sizeof v_prev, "%s",
-                 jv_str(jv_get(jv_get(vrec, "chain"), "prev"), ""));
-        if (o->transcript_prev) {
-            char ph[65];
-            if (!receipt_chain_hash(o->transcript_prev, ph)) {
-                fprintf(stderr, "UNVERIFIABLE: cannot read the chain hash of %s\n",
-                        o->transcript_prev);
-                jv_free(vrec); return 3;
-            }
-            if (strcmp(ph, v_prev) != 0) {
-                fprintf(stderr, "UNVERIFIABLE: chain link broken: the record's prev "
-                        "is not the chain hash of %s\n", o->transcript_prev);
-                jv_free(vrec); return 3;
-            }
-        }
-        {
-            // R1.8.2: a marked record replays only under its own key, and an
-            // unmarked one never under a key
-            jv *vw = jv_get(vrec, "watermark");
-            const char *rk = vw ? jv_str(jv_get(vw, "key_id"), "") : NULL;
-            const char *why = NULL;
-            char wbuf[256];
-            if (rk && strcmp(jv_str(jv_get(vw, "scheme"), ""), WM_SCHEME) != 0) {
-                snprintf(wbuf, sizeof wbuf, "the output was watermarked with scheme "
-                         "\"%.40s\", which this build does not replay",
-                         jv_str(jv_get(vw, "scheme"), ""));
-                why = wbuf;
-            } else if (rk && !wm_on) {
-                snprintf(wbuf, sizeof wbuf, "the output was watermarked (key id "
-                         "%.16s); replaying it needs that key: verify with "
-                         "--watermark naming it", rk);
-                why = wbuf;
-            } else if (rk && strcmp(rk, wmk.id) != 0) {
-                snprintf(wbuf, sizeof wbuf, "--watermark key id %s is not the "
-                         "record's watermark key id (%.16s)", wmk.id, rk);
-                why = wbuf;
-            } else if (!rk && wm_on) {
-                why = "--watermark given, but the record's output was not "
-                      "watermarked";
-            }
-            if (why) {
-                fprintf(stderr, "UNVERIFIABLE: %s\n", why);
-                jv_free(vrec);
-                return 3;
-            }
-        }
-        {
-            char why[512];
-            if (!replay_constraints_ok(vrec, o->json_mode, o->schema_file, o->ignore_eos,
-                                       why, sizeof why)) {
-                fprintf(stderr, "UNVERIFIABLE: %s\n", why);
-                jv_free(vrec);
-                return 3;
-            }
-        }
-        jv *prof = jv_get(vrec, "profile"), *cfg = jv_get(vrec, "config");
-        jv *ctx_v = jv_get(prof, "ctx"), *batch_v = jv_get(prof, "batch");
-        jv *threads_v = jv_get(prof, "threads"), *gpu_v = jv_get(prof, "gpu");
-        jv *gpu_layers_v = jv_get(prof, "gpu_layers");
-        const char *kv = jv_str(jv_get(prof, "kv"), NULL);
-        double ctx_d = jv_num(ctx_v, -1), batch_d = jv_num(batch_v, -1);
-        double threads_d = jv_num(threads_v, -1);
-        double gpu_layers_d = jv_num(gpu_layers_v, -1);
-        if (!prof || prof->type != J_OBJ || !cfg || cfg->type != J_OBJ ||
-            !ctx_v || ctx_v->type != J_NUM || ctx_d < 1 || ctx_d > INT_MAX ||
-            ctx_d != (double)(int)ctx_d || !batch_v || batch_v->type != J_NUM ||
-            batch_d < 1 || batch_d > ctx_d || batch_d != (double)(int)batch_d ||
-            !threads_v || threads_v->type != J_NUM || threads_d < 1 ||
-            threads_d > INT_MAX || threads_d != (double)(int)threads_d ||
-            !gpu_v || gpu_v->type != J_BOOL || !kv ||
-            (gpu_layers_v && (gpu_layers_v->type != J_NUM ||
-             gpu_layers_d < 0 || gpu_layers_d > INT_MAX ||
-             gpu_layers_d != (double)(int)gpu_layers_d ||
-             (gpu_v->b != (gpu_layers_d > 0)))) ||
-            (strcmp(kv, "f16") != 0 && strcmp(kv, "q8") != 0 &&
-             strcmp(kv, "fp4") != 0 && strcmp(kv, "k8v4") != 0)) {
-            fprintf(stderr, "UNVERIFIABLE: malformed execution profile\n");
-            jv_free(vrec);
-            return 3;
-        }
-        o->mp.n_ctx = (int)ctx_d;
-        o->mp.n_batch = (int)batch_d;
-        o->n_threads = (int)threads_d;
-        o->mp.kv_q8 = strcmp(kv, "q8") == 0;
-        o->mp.kv_fp4 = strcmp(kv, "fp4") == 0;
-        o->mp.kv_split = strcmp(kv, "k8v4") == 0;
-        o->mp.gpu_mode = gpu_v->b ? GPU_AUTO : GPU_OFF;
-        if (gpu_layers_v && gpu_layers_d > 0)
-            o->mp.gpu_layers_override = (int)gpu_layers_d;
-        jv *record_adapter = jv_get(vrec, "adapter");
-        if (record_adapter && record_adapter->type != J_NULL) {
-            jv *scale_v = record_adapter->type == J_OBJ
-                            ? jv_get(record_adapter, "scale") : NULL;
-            double scale = jv_num(scale_v, -1);
-            if (!scale_v || scale_v->type != J_NUM || scale < 0 ||
-                scale > FLT_MAX) {
-                fprintf(stderr, "UNVERIFIABLE: malformed adapter scale\n");
-                jv_free(vrec);
-                return 3;
-            }
-            o->lora_scale = (float)scale;
-        } else if (!record_adapter) {
-            fprintf(stderr, "UNVERIFIABLE: missing adapter profile\n");
-            jv_free(vrec);
-            return 3;
-        }
-        // New v1 records carry an exact decimal spelling because this JSON
-        // parser stores numbers as doubles.  Keep low legacy seeds working,
-        // but refuse to round an older wide seed and call the later mismatch
-        // inference divergence: that record is not exactly replayable.
-        jv *seed_exact = jv_get(cfg, "seed_u64");
-        uint64_t replay_seed = 0;
-        bool seed_ok = false;
-        if (seed_exact && seed_exact->type == J_STR) {
-            seed_ok = parse_u64(seed_exact->str, 1, UINT64_MAX, &replay_seed);
-        } else {
-            double seed_num = jv_num(jv_get(cfg, "seed"), 0);
-            if (seed_num >= 1.0 && seed_num <= 9007199254740992.0) {
-                replay_seed = (uint64_t)seed_num;
-                seed_ok = seed_num == (double)replay_seed;
-            }
-        }
-        if (!seed_ok) {
-            fprintf(stderr, "UNVERIFIABLE: config.seed is not an exact "
-                    "nonzero uint64 (wide legacy seeds need seed_u64)\n");
-            jv_free(vrec);
-            return 3;
-        }
-        o->smp.rng = replay_seed;
-        // The record's sampling config rides the CLI-override mechanism so
-        // it survives sampler_resolve's per-model presets. Apply the same
-        // finite/range/integrality rules as the CLI before any narrowing.
-        double temp, top_p, min_p, repeat_penalty;
-        int top_k, replay_n_predict;
-        if (!record_num(cfg, "temp", 0, FLT_MAX, &temp) ||
-            !record_int(cfg, "top_k", 0, INT_MAX, &top_k) ||
-            !record_num(cfg, "top_p", 0, 1, &top_p) ||
-            !record_num(cfg, "min_p", 0, 1, &min_p) ||
-            !record_num(cfg, "repeat_penalty", FLT_MIN, FLT_MAX,
-                        &repeat_penalty) ||
-            !record_int(cfg, "n_predict", -1, INT_MAX,
-                        &replay_n_predict)) {
-            fprintf(stderr, "UNVERIFIABLE: malformed sampling config\n");
-            jv_free(vrec);
-            return 3;
-        }
-        o->ov.temp = (float)temp;                         o->ov.has_temp = true;
-        o->ov.top_k = top_k;                              o->ov.has_top_k = true;
-        o->ov.top_p = (float)top_p;                       o->ov.has_top_p = true;
-        o->ov.min_p = (float)min_p;                       o->ov.has_min_p = true;
-        o->ov.repeat_penalty = (float)repeat_penalty;
-        o->ov.has_repeat_penalty = true;
-        o->n_predict = replay_n_predict;
-    }
-
     if (o->n_threads <= 0) {
         // Default to a physical-core proxy (nc/2 under the near-universal 2-way
         // SMT of the many-core x86 boxes this targets), capped so a very large
@@ -3760,8 +3822,8 @@ int main(int argc, char **argv) {
 
     // ---- notarized inference D2: the replay
     if (o->verify_path) {
-        jv *vm = jv_get(vrec, "model"), *va = jv_get(vrec, "adapter");
-        jv *vprof = jv_get(vrec, "profile");
+        jv *vm = jv_get(vr.rec, "model"), *va = jv_get(vr.rec, "adapter");
+        jv *vprof = jv_get(vr.rec, "profile");
         int expected_ctx = (int)jv_num(jv_get(vprof, "ctx"), -1);
         int expected_batch = (int)jv_num(jv_get(vprof, "batch"), -1);
         int expected_threads = (int)jv_num(jv_get(vprof, "threads"), -1);
@@ -3778,7 +3840,7 @@ int main(int argc, char **argv) {
             (expected_layers_v && m.gpu_layers != expected_layers)) {
             fprintf(stderr, "UNVERIFIABLE: runtime could not reproduce the "
                     "recorded execution profile\n");
-            jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+            jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
             free(owned_prompt); return 3;
         }
         char sha[65] = "";
@@ -3787,7 +3849,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "UNVERIFIABLE: -m %s sha256 %s does not match "
                     "the record's %s\n", load_path, sha,
                     jv_str(jv_get(vm, "sha256"), "?"));
-            jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+            jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
             free(owned_prompt); return 3;
         }
         if (va && va->type != J_NULL) {
@@ -3795,7 +3857,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "UNVERIFIABLE: the record used an adapter "
                         "(sha %s) — pass it with --lora\n",
                         jv_str(jv_get(va, "sha256"), "?"));
-                jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+                jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
                 free(owned_prompt); return 3;
             }
             char asha[65] = "";
@@ -3803,17 +3865,17 @@ int main(int argc, char **argv) {
             if (strcmp(asha, jv_str(jv_get(va, "sha256"), "")) != 0) {
                 fprintf(stderr, "UNVERIFIABLE: --lora sha256 does not match "
                         "the record's adapter\n");
-                jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+                jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
                 free(owned_prompt); return 3;
             }
         } else if (o->lora_path) {
             fprintf(stderr, "UNVERIFIABLE: --lora given but the record ran "
                     "without an adapter\n");
-            jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+            jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
             free(owned_prompt); return 3;
         }
-        jv *jp = jv_get(jv_get(vrec, "prompt"), "tokens");
-        jv *vout = jv_get(vrec, "output");
+        jv *jp = jv_get(jv_get(vr.rec, "prompt"), "tokens");
+        jv *vout = jv_get(vr.rec, "output");
         jv *jo = jv_get(vout, "tokens");
         const char *expected_text = jv_str(jv_get(vout, "text"), NULL);
         jv *expected_hex_v = jv_get(vout, "bytes_hex");
@@ -3824,20 +3886,20 @@ int main(int argc, char **argv) {
             !expected_text || jp->n < 1 || jp->n >= m.n_ctx ||
             (size_t)jp->n >= tok_cap) {
             fprintf(stderr, "UNVERIFIABLE: malformed token arrays\n");
-            jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+            jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
             free(owned_prompt); return 3;
         }
         if (has_exact_bytes &&
             !record_hex(expected_hex_v, &expected_hex, &expected_bytes_n)) {
             fprintf(stderr, "UNVERIFIABLE: malformed output.bytes_hex\n");
-            jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+            jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
             free(owned_prompt); return 3;
         }
         for (int i = 0; i < jp->n; i++) {
             if (!record_token(jp->items[i], m.n_vocab, &toks[i])) {
                 fprintf(stderr, "UNVERIFIABLE: invalid prompt token at %d\n",
                         i);
-                jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+                jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
                 free(owned_prompt); return 3;
             }
         }
@@ -3846,7 +3908,7 @@ int main(int argc, char **argv) {
             if (!record_token(jo->items[i], m.n_vocab, &ignored)) {
                 fprintf(stderr, "UNVERIFIABLE: invalid output token at %d\n",
                         i);
-                jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+                jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
                 free(owned_prompt); return 3;
             }
         }
@@ -3854,7 +3916,7 @@ int main(int argc, char **argv) {
         float *logits = engine_feed(&e, toks, jp->n);
         if (!logits) {
             fprintf(stderr, "UNVERIFIABLE: prompt exceeds context\n");
-            jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+            jv_free(vr.rec); cli_cleanup(&e, toks, &tok, &m);
             free(owned_prompt); return 3;
         }
         double gt = 0;
@@ -3863,7 +3925,7 @@ int main(int argc, char **argv) {
                                     &replay_out, &gt);
         if (replay_out.failed) {
             fprintf(stderr, "UNVERIFIABLE: out of memory capturing replay\n");
-            free(replay_out.buf); jv_free(vrec);
+            free(replay_out.buf); jv_free(vr.rec);
             cli_cleanup(&e, toks, &tok, &m);
             free(owned_prompt); return 3;
         }
@@ -3874,7 +3936,7 @@ int main(int argc, char **argv) {
         char *verify_exe = plat_executable_path();
         if (verify_exe) envelope_file_sha256(verify_exe, bsha);
         free(verify_exe);
-        const char *rbsha = jv_str(jv_get(jv_get(vrec, "build"),
+        const char *rbsha = jv_str(jv_get(jv_get(vr.rec, "build"),
                                           "binary_sha256"), "");
         const char *tier = (bsha[0] && strcmp(bsha, rbsha) == 0) ? "T1" : "T2";
         int cmp_n = n_gen < jo->n ? n_gen : jo->n;
@@ -3906,7 +3968,7 @@ int main(int argc, char **argv) {
                    "\"verdict\":\"VERIFIED\",\"tier\":\"%s\","
                    "\"tokens\":%d,\"signed\":%s,\"public_key\":\"%s\","
                    "\"prev\":\"%s\"}\n", tier, n_gen,
-                   v_rsig == RSIG_OK ? "true" : "false", v_rec_pub, v_prev);
+                   vr.rsig == RSIG_OK ? "true" : "false", vr.rec_pub, vr.prev);
             fprintf(stderr, "VERIFIED (%s %s): %d output tokens replayed "
                     "identically\n", tier,
                     strcmp(tier, "T1") == 0 ? "same-binary"
@@ -3921,7 +3983,7 @@ int main(int argc, char **argv) {
                    "\"at\":%d,"
                    "\"expected\":%d,\"got\":%d,\"signed\":%s,"
                    "\"public_key\":\"%s\"}\n", div_at, want, got,
-                   v_rsig == RSIG_OK ? "true" : "false", v_rec_pub);
+                   vr.rsig == RSIG_OK ? "true" : "false", vr.rec_pub);
             fprintf(stderr, "DIVERGED at token %d: record has %d, replay "
                     "produced %d\n", div_at, want, got);
             rc = 2;
@@ -3936,13 +3998,13 @@ int main(int argc, char **argv) {
                    "\"at\":%zu,\"expected\":%d,\"got\":%d,\"signed\":%s,"
                    "\"public_key\":\"%s\"}\n",
                    byte_div_at, want, got,
-                   v_rsig == RSIG_OK ? "true" : "false", v_rec_pub);
+                   vr.rsig == RSIG_OK ? "true" : "false", vr.rec_pub);
             fprintf(stderr, "DIVERGED at output byte %zu: record has %d, "
                     "replay produced %d\n", byte_div_at, want, got);
             rc = 2;
         }
         free(replay_out.buf);
-        jv_free(vrec);
+        jv_free(vr.rec);
         cli_cleanup(&e, toks, &tok, &m);
         free(owned_prompt);
         return rc;
