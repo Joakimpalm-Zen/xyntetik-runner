@@ -4754,6 +4754,7 @@ int main(int argc, char **argv) {
     cli_opts opts;
     cli_opts_init(&opts);
     cli_opts *o = &opts;
+    int rc;   // the exit status a step that ends the process hands back
 
     // A bare `runner` — double-clicked, or typed with no arguments — starts
     // the tray on the platforms that have one. The conditions are deliberately
@@ -4768,25 +4769,16 @@ int main(int argc, char **argv) {
         return tray_main();
 #endif
 
-    {
-        int rc;
-        if (!cli_parse(o, argc, argv, &rc)) return rc;
-    }
+    if (!cli_parse(o, argc, argv, &rc)) return rc;
 
     if (!cli_chat_flags_ok(o)) return 1;
-    {
-        int rc;
-        if (run_record_utility(o, &rc)) return rc;
-    }
+    if (run_record_utility(o, &rc)) return rc;
     // R1.8.1: one key for everything this process marks, replays or scores
     wm_key wmk;
     memset(&wmk, 0, sizeof wmk);
     bool wm_on = false;
     char *detect_text = NULL;
-    {
-        int rc;
-        if (cli_watermark_setup(o, &wmk, &wm_on, &detect_text, &rc)) return rc;
-    }
+    if (cli_watermark_setup(o, &wmk, &wm_on, &detect_text, &rc)) return rc;
     if (o->keygen_path) return run_keygen(o);
     if (!cli_draft_flags_ok(o)) return 1;
     plat_parent_watch(o->parent_pid);
@@ -4798,19 +4790,10 @@ int main(int argc, char **argv) {
 
     if (o->shadow_mode) return run_shadow_mode(o->model_path, o->shadow_yes);
     if (o->caps) return run_caps();
-    {
-        int rc;
-        if (cli_resolve_inputs(o, argv[0], detect_text != NULL, &owned_prompt, &rc))
-            return rc;
-    }
-    {
-        int rc;
-        if (cli_prepare_session(o, &simg, &rc)) return rc;
-    }
-    {
-        int rc;
-        if (cli_prepare_verify(o, &wmk, wm_on, &vr, &rc)) return rc;
-    }
+    if (cli_resolve_inputs(o, argv[0], detect_text != NULL, &owned_prompt, &rc))
+        return rc;
+    if (cli_prepare_session(o, &simg, &rc)) return rc;
+    if (cli_prepare_verify(o, &wmk, wm_on, &vr, &rc)) return rc;
     cli_resolve_threads(o);
 
     f16_init();
@@ -4841,21 +4824,17 @@ int main(int argc, char **argv) {
     if (!cli_require_eval_ok(o, load_path)) return 1;
 
     oms_policy signing = { o->model_sig, o->model_pubkey, o->require_signed_model };
-    {
-        int rc;
-        if (cli_load_model(o, rt, load_path, registry, tmpl_override, &signing, &rc))
-            return rc;
-    }
+    if (cli_load_model(o, rt, load_path, registry, tmpl_override, &signing, &rc))
+        return rc;
 
     if (o->serve) {
-        int rc = run_serve(o, rt, &wmk, wm_on, registry, tmpl_override, &signing);
+        rc = run_serve(o, rt, &wmk, wm_on, registry, tmpl_override, &signing);
         free(owned_prompt);
         return rc;
     }
 
     // cli_wm outlives the engine that points at it
     wm_state cli_wm = { .key = wm_on ? &wmk : NULL };
-    int rc;
     if (!cli_engine_setup(o, rt, wm_on, &cli_wm)) rc = 1;
     else if (o->train_path || o->dpo_path) rc = run_train(o, rt, tmpl_override, load_path);
     else if (o->verify_path) rc = run_verify_replay(o, rt, &vr, load_path);
