@@ -491,7 +491,7 @@ def runner_chat(post_json: Callable[..., dict[str, Any]], model: str, *, max_tok
         # blocks in the text and the runner rightly returned no tool call.
         # parallel_tool_calls is explicit: the runner reads an absent flag as
         # false, so every turn was held to ONE call, while llama.cpp and
-        # Strata answered the same requests with several (the 33-task bank,
+        # another engine answered the same requests with several (the 33-task bank,
         # 2026-10-07: 0 of 396 Runner turns carried a second call, 123 of 396
         # llama.cpp turns did). The loop executes every call a turn carries.
         payload = {"model": model, "messages": messages, "tools": tools,

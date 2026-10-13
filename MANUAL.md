@@ -3310,7 +3310,7 @@ the next call, the same contract the Qwen JSON protocol keeps;
 follow up to two newlines, the blank line a reasoning model writes after
 `</think>`, and nothing else. Parallel calls matter on agent work: on the
 33-task agent bank (Qwen3.8-Flash-Next), llama.cpp's turns carried several
-calls in 123 of 396 and Strata's in 103 of 375, which a one-call-per-turn
+calls in 123 of 396 and another engine's in 103 of 375, which a one-call-per-turn
 rule would have lost. A parameter value in this
 syntax is raw text up to its closing tag, so the grammar cannot enforce a
 string's `minLength`, `maxLength` or `pattern`; a `required` or named

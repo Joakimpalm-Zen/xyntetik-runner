@@ -325,7 +325,7 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
     Raises ``RuntimeError`` when the endpoint has no model or the fit probe
     is below the floor, so a caller can report and move on."""
     evidence = out / "evidence.jsonl"
-    # A foreign OpenAI-compatible server (llama-server, Strata) has no
+    # A foreign OpenAI-compatible server (llama-server, another engine) has no
     # /v1/capabilities; the replay is the same loop against it, so fall back
     # to /v1/models and record the backend as unknown rather than refuse.
     try:
