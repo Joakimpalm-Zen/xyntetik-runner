@@ -115,8 +115,7 @@ TRAIN_FAMILIES = {
 }
 
 
-@pytest.mark.parametrize("family", sorted(TRAIN_FAMILIES))
-def test_every_trainable_family_is_byte_deterministic(runner_bin, base, tmp_path, family):
+def _family_fixture(tmp_path, family):
     gen, args, member = TRAIN_FAMILIES[family]
     d = tmp_path / "fx"
     d.mkdir()
@@ -128,6 +127,12 @@ def test_every_trainable_family_is_byte_deterministic(runner_bin, base, tmp_path
         subprocess.run([sys.executable, ROOT / "scripts" / gen, *args, str(d / "base.gguf")],
                        check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
     (d / "corpus.txt").write_text(CORPUS)
+    return d
+
+
+@pytest.mark.parametrize("family", sorted(TRAIN_FAMILIES))
+def test_every_trainable_family_is_byte_deterministic(runner_bin, base, tmp_path, family):
+    d = _family_fixture(tmp_path, family)
     a1, a2 = tmp_path / "a1.gguf", tmp_path / "a2.gguf"
     l1 = _train(runner_bin, d, a1, steps=4)
     l2 = _train(runner_bin, d, a2, steps=4)
@@ -313,6 +318,31 @@ def test_gpu_training_matches_cpu_bytes(runner_bin, base, tmp_path):
         pytest.skip("no CUDA device engaged")
     assert a_cpu.read_bytes() == a_gpu.read_bytes(), \
         "GPU-assisted training changed the adapter bytes"
+
+
+# The MoE adapters' backward runs every routed expert's down projection
+# through the transposed matvec, each expert as a view of the fused expert
+# tensor. With RUNNER_TRAIN_GPU=1 those views go to the device, so the device
+# must tell one expert's bytes from another's: a cache that knew a tensor by
+# its descriptor's address reused the first expert's weights for every later
+# one, and the adapter came out different from the CPU's.
+@pytest.mark.parametrize("family", ["moe-renorm", "moe-no-renorm"])
+def test_gpu_training_matches_cpu_bytes_on_moe_experts(runner_bin, base, tmp_path, family):
+    import os
+    d = _family_fixture(tmp_path, family)
+    a_cpu, a_gpu = tmp_path / "cpu.gguf", tmp_path / "gpu.gguf"
+    _train(runner_bin, d, a_cpu, steps=3, extra=("--gpu", "off"))
+    env = dict(os.environ, RUNNER_TRAIN_GPU="1")
+    cmd = [runner_bin, "-m", str(d / "base.gguf"),
+           "--train", str(d / "corpus.txt"), "--train-steps", "3",
+           "--lr", "3e-3", "--train-out", str(a_gpu), "-t", "2", "--gpu", "off"]
+    p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=600, env=env)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    if b"train-gpu:" not in p.stderr or b"no usable CUDA" in p.stderr:
+        pytest.skip("no CUDA device engaged")
+    assert a_cpu.read_bytes() == a_gpu.read_bytes(), \
+        (family, "GPU-assisted training changed the MoE adapter's bytes")
 
 
 def test_seed_changes_the_adapter(runner_bin, base, tmp_path):

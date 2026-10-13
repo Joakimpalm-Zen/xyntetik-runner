@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`RUNNER_TRAIN_GPU=1` trains a MoE adapter to the CPU's bytes.** The
+  device side of the backward's transposed matvec caches each weight it
+  uploads, and it knew a weight by its descriptor's address. A routed
+  expert reaches the backward as a view of the fused expert tensor, built
+  for each call, so every expert of a layer arrived at the same address and
+  the first expert's weights served every later expert: the MoE adapters'
+  gradients through the expert down projections were wrong whenever the
+  CUDA assist was on (dense models were unaffected). The cache now knows a
+  weight by the bytes it holds, and the MoE adapter fixtures are held to the
+  CPU's bytes on CUDA hosts.
+
 - **`--cpu-moe` on CUDA runs a Granite 4 hybrid or Nemotron-H MoE layer's
   FFN as the CPU forward does.** With the experts on the host, the device
   hands each MoE layer's residual to a host function that runs the FFN and

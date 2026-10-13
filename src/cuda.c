@@ -5365,8 +5365,14 @@ bool gpu_mvt(model_t *m, const gguf_tensor *w, const float *dy, float *dx,
 // stays on the CPU path, which produces the SAME BYTES — mixing per tensor
 // is free because both paths are gated identical.
 
+// A cached upload is known by the bytes it holds, not by the descriptor
+// that pointed at them: a MoE expert reaches the backward as a view of the
+// fused expert tensor (moe_expert_weight), built per call, so every expert
+// of a layer arrives in a descriptor at the same address. Keyed by that
+// address, the first expert's weights served every later expert.
 typedef struct {
-    const gguf_tensor *w;
+    const void *data;
+    size_t      nbytes;
     CUdeviceptr dev;
 } tg_slot;
 
@@ -5461,7 +5467,10 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
     if (!t || !w || w->type >= KT_N || !t->f_mvt[w->type]) return false;
     CUdeviceptr weights = 0;
     for (int i = 0; i < t->n_cache; i++)
-        if (t->cache[i].w == w) { weights = t->cache[i].dev; break; }
+        if (t->cache[i].data == w->data && t->cache[i].nbytes == w->nbytes) {
+            weights = t->cache[i].dev;
+            break;
+        }
     if (cu.CtxSetCurrent(t->ctx) != 0) return false;
     if (!weights) {
         if (t->vram_used + w->nbytes > t->vram_budget) {
@@ -5487,7 +5496,8 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
             t->vram_budget = t->vram_used;
             return false;
         }
-        t->cache[t->n_cache].w = w;
+        t->cache[t->n_cache].data = w->data;
+        t->cache[t->n_cache].nbytes = w->nbytes;
         t->cache[t->n_cache].dev = weights;
         t->n_cache++;
         t->vram_used += w->nbytes;
