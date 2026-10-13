@@ -3839,6 +3839,48 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
     return true;
 }
 
+// A stream's opening events, before any token exists (Step 10): the chat
+// role delta, the Responses object created and in progress, the Messages
+// shell. The driver has sent the headers.
+static void respond_stream_open(gen_ctx *g, int api, const slot_t *s, jv *req,
+                                const completion_prep *prep) {
+    // OpenAI opens a chat stream with a role-only delta. Emitting it up
+    // front rather than folding the role into whatever the first text
+    // delta happens to be keeps the contract independent of what the
+    // model generates — including generating nothing at all.
+    if (api == API_CHAT) {
+        sbuf c = {0};
+        chunk_open(g, &c);
+        sb_lit(&c, "\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}");
+        g->role_sent = true;
+        chunk_send(g, &c);
+    } else if (api == API_RESPONSES) {
+        // A Responses stream opens with the response object twice: created,
+        // then in_progress. Both carry an empty output — the items are
+        // announced as they start — so they are emitted before any token
+        // exists, which is exactly what makes a client able to render the
+        // turn's identity immediately.
+        resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .status = "in_progress", .req = req };
+        for (int i = 0; i < 2 && !g->dead; i++) {
+            sbuf f = {0};
+            sb_lit(&f, ",\"response\":");
+            responses_body(&f, g, &d);
+            resp_send(g, i == 0 ? "response.created"
+                                : "response.in_progress", &f);
+        }
+    } else if (api == API_MESSAGES) {
+        // An Anthropic stream opens with the whole Message object minus
+        // its content: the id, model and input token count are known
+        // before a token exists, and a client renders the turn's identity
+        // from them immediately. stop_reason is null until message_delta.
+        resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .n_prompt = prep->n_prompt, .req = req };
+        sbuf f = {0};
+        sb_lit(&f, ",\"message\":");
+        anth_body(&f, g, &d);
+        anth_send(g, "message_start", &f);
+    }
+}
+
 // What a finished generation hands the surface that frames it (Step 10): the
 // request and the slot it ran on, and the outcome every surface reports. The
 // generation driver in run_completion() fills it once; the framers below
@@ -4597,41 +4639,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             completion_cleanup(e, q.schema, &g);
             return;
         }
-        // OpenAI opens a chat stream with a role-only delta. Emitting it up
-        // front rather than folding the role into whatever the first text
-        // delta happens to be keeps the contract independent of what the
-        // model generates — including generating nothing at all.
-        if (api == API_CHAT) {
-            sbuf c = {0};
-            chunk_open(&g, &c);
-            sb_lit(&c, "\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}");
-            g.role_sent = true;
-            chunk_send(&g, &c);
-        } else if (api == API_RESPONSES) {
-            // A Responses stream opens with the response object twice: created,
-            // then in_progress. Both carry an empty output — the items are
-            // announced as they start — so they are emitted before any token
-            // exists, which is exactly what makes a client able to render the
-            // turn's identity immediately.
-            resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .status = "in_progress", .req = req };
-            for (int i = 0; i < 2 && !g.dead; i++) {
-                sbuf f = {0};
-                sb_lit(&f, ",\"response\":");
-                responses_body(&f, &g, &d);
-                resp_send(&g, i == 0 ? "response.created"
-                                     : "response.in_progress", &f);
-            }
-        } else if (api == API_MESSAGES) {
-            // An Anthropic stream opens with the whole Message object minus
-            // its content: the id, model and input token count are known
-            // before a token exists, and a client renders the turn's identity
-            // from them immediately. stop_reason is null until message_delta.
-            resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .n_prompt = prep.n_prompt, .req = req };
-            sbuf f = {0};
-            sb_lit(&f, ",\"message\":");
-            anth_body(&f, &g, &d);
-            anth_send(&g, "message_start", &f);
-        }
+        respond_stream_open(&g, api, s, req, &prep);
     }
 
     // A configured draft is not proof that this request speculated. Logprob
