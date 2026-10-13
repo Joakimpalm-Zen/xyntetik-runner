@@ -705,6 +705,18 @@ long long model_autofit_tokens(uint64_t budget, uint64_t weights,
                                uint64_t head_per_seq, uint64_t kv_per_tok,
                                int n_seq);
 int       model_autofit_clamp(long long best, int n_ctx_train);
+// The GPU split's decisions as pure arithmetic, shared by the CUDA loader,
+// the Metal wrap and --fit (see model.c): the leading-layer fit, the full
+// split's output charge, and --cpu-moe auto's expert banks with the retry
+// trim. Public so every boundary is gated without a device.
+int       gpu_plan_prefix(const uint64_t *cost, int n, int cap, uint64_t budget,
+                          uint64_t *used);
+bool      gpu_plan_full_split(int *layers, int n_layer, uint64_t used,
+                              uint64_t tail, uint64_t budget, bool *gave_back);
+int       gpu_plan_expert_banks(const bool *is_moe, const uint64_t *bank,
+                                int layers, uint64_t owed, uint64_t budget,
+                                uint64_t *used, bool *host, int trim,
+                                int placed_before);
 // The device offload budget the layer fit may spend, from the driver's free
 // memory view bounded by the OS video-memory budget for this process where
 // the OS publishes one (WDDM), capped by --reserve-vram; *headroom is what

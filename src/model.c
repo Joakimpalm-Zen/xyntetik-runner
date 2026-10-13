@@ -788,7 +788,8 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     uint64_t n_ff      = gguf_get_u32(g, FK("feed_forward_length"), (uint32_t)(4 * n_embd));
     #undef FK
     uint64_t *lb = calloc((size_t)f->n_layer, sizeof(uint64_t));
-    if (!lb) return false;
+    uint64_t *cost = calloc((size_t)f->n_layer, sizeof(uint64_t));
+    if (!lb || !cost) { free(lb); free(cost); return false; }
     uint64_t tok = 0, out = 0, n_vocab = 0;
     for (uint64_t i = 0; i < g->n_tensors; i++) {
         const gguf_tensor *t = &g->tensors[i];
@@ -820,21 +821,19 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
         int G = 0;
         uint64_t used = f->gpu_fixed, dev_w = tok;
         if (used <= budget) {
-            for (int l = 0; l < f->n_layer; l++) {
-                if (max_layers > 0 && G >= max_layers) break;
-                if (used + lb[l] + kv_layer > budget) break;
-                used += lb[l] + kv_layer;
-                dev_w += lb[l];
-                G = l + 1;
-            }
+            for (int l = 0; l < f->n_layer; l++) cost[l] = lb[l] + kv_layer;
+            G = gpu_plan_prefix(cost, f->n_layer, max_layers, budget, &used);
+            for (int l = 0; l < G; l++) dev_w += lb[l];
             // The loader's full-split test is `used + token_embd + output`
             // with token_embd already inside `used` (it is in the fixed
             // charge): it charges the embedding twice. Mirrored, because
             // this must predict the split the loader makes; RTX 3070,
             // granite-4.2-8b, --kv q8 at 16k: 39 of 40, not 40.
-            if (G == f->n_layer) {
-                if (used + tok + out <= budget) { used += out; if (out != tok) dev_w += out; }
-                else if (G > 1) { G--; used -= lb[G] + kv_layer; dev_w -= lb[G]; }
+            bool gave_back;
+            if (gpu_plan_full_split(&G, f->n_layer, used, tok + out, budget, &gave_back)) {
+                used += out; if (out != tok) dev_w += out;
+            } else if (gave_back) {
+                used -= lb[G] + kv_layer; dev_w -= lb[G];
             }
         } else {
             used = 0; dev_w = 0;   // not even the fixed charge fits: all CPU
@@ -847,6 +846,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
         f->host_need[k] = host_w + kv_layer * (uint64_t)(f->n_layer - G);
     }
     free(lb);
+    free(cost);
     return true;
 }
 
@@ -4177,6 +4177,68 @@ uint64_t model_gpu_budget(uint64_t driver_free, uint64_t driver_total,
     if (hr < (512ull << 20)) hr = 512ull << 20;
     if (headroom) *headroom = hr;
     return budget;
+}
+
+// The leading-layer fit every GPU backend makes, and the header estimate
+// behind --fit with it: layers [0, K) go to the device in order while each
+// one's cost still fits the budget, and the first that does not ends the
+// run, so a later, smaller layer never jumps the queue. *used starts at what
+// the device holds whatever the split and ends at the total with K layers;
+// `cap` > 0 takes at most that many. The comparison is written so that a sum
+// past 64 bits refuses rather than wraps; below that it is `used + cost >
+// budget`, the test each backend made.
+int gpu_plan_prefix(const uint64_t *cost, int n, int cap, uint64_t budget,
+                    uint64_t *used) {
+    int top = cap > 0 && cap < n ? cap : n;
+    int k = 0;
+    for (; k < top; k++) {
+        if (*used > budget || cost[k] > budget - *used) break;
+        *used += cost[k];
+    }
+    return k;
+}
+
+// A split that took every layer also owes `tail` (the output projection and,
+// as the CUDA loader charges it, the token embedding a second time): it is
+// full only if that fits too. Otherwise the last layer goes back to the host,
+// so "the device holds every layer" and "the device holds the output" cannot
+// disagree; a one-layer model keeps its layer. Each caller does its own
+// accounting for the layer handed back.
+bool gpu_plan_full_split(int *layers, int n_layer, uint64_t used, uint64_t tail,
+                         uint64_t budget, bool *gave_back) {
+    *gave_back = false;
+    if (*layers != n_layer) return false;
+    if (used <= budget && tail <= budget - used) return true;
+    if (*layers > 1) { (*layers)--; *gave_back = true; }
+    return false;
+}
+
+// --cpu-moe auto: what survives the layer split buys whole expert banks,
+// shallowest first among the device layers, while each fits with `owed`
+// still held back; host[l] turns false for every bank placed. A retry after
+// an out-of-memory init (trim > 0) then hands back the deepest of them until
+// at most placed_before - trim stay. Returns the banks on the device; *used
+// is updated by what was placed and handed back.
+int gpu_plan_expert_banks(const bool *is_moe, const uint64_t *bank, int layers,
+                          uint64_t owed, uint64_t budget, uint64_t *used,
+                          bool *host, int trim, int placed_before) {
+    int placed = 0;
+    for (int l = 0; l < layers; l++) {
+        if (!is_moe[l]) continue;
+        if (*used > budget || bank[l] > budget - *used ||
+            owed > budget - *used - bank[l]) break;
+        *used += bank[l];
+        host[l] = false;
+        placed++;
+    }
+    for (int l = layers - 1; l >= 0 && trim > 0 && placed > 0; l--) {
+        if (!is_moe[l] || host[l]) continue;
+        if (placed <= placed_before - trim) break;
+        host[l] = true;
+        *used -= bank[l];
+        placed--;
+    }
+    return placed;
 }
 
 int model_autofit_clamp(long long best, int n_ctx_train) {

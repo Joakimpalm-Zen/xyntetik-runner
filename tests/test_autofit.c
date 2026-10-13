@@ -341,6 +341,92 @@ static void test_fit_gpu_boundaries(const char *fixture) {
     gguf_close(&g);
 }
 
+// The split's decisions as the backends now share them (gpu_plan_*), on
+// numbers worked by hand: every boundary one unit either side.
+static void test_gpu_plan(void) {
+    const uint64_t cost[4] = { 10, 20, 30, 40 };
+    uint64_t used = 5;
+    ck(gpu_plan_prefix(cost, 4, 0, 35, &used) == 2 && used == 35,
+       "plan prefix: exactly two layers (5 + 10 + 20 = 35)");
+    used = 5;
+    ck(gpu_plan_prefix(cost, 4, 0, 34, &used) == 1 && used == 15,
+       "plan prefix: one unit short of the second layer");
+    used = 5;
+    ck(gpu_plan_prefix(cost, 4, 0, 105, &used) == 4 && used == 105,
+       "plan prefix: every layer, exactly");
+    used = 5;
+    ck(gpu_plan_prefix(cost, 4, 2, 1000, &used) == 2 && used == 35,
+       "plan prefix: the cap stops a split that would fit");
+    used = 5;
+    ck(gpu_plan_prefix(cost, 4, 9, 1000, &used) == 4,
+       "plan prefix: a cap above the layer count changes nothing");
+    used = 5;
+    ck(gpu_plan_prefix(cost, 4, 0, 14, &used) == 0 && used == 5,
+       "plan prefix: the first layer short leaves the fixed charge alone");
+    used = 0;
+    ck(gpu_plan_prefix(cost, 4, 0, 0, &used) == 0, "plan prefix: a zero budget takes nothing");
+    used = 6;
+    ck(gpu_plan_prefix(cost, 4, 0, 5, &used) == 0 && used == 6,
+       "plan prefix: a fixed charge over the budget takes nothing");
+    const uint64_t first_small[3] = { 10, 50, 1 };
+    used = 0;
+    ck(gpu_plan_prefix(first_small, 3, 0, 20, &used) == 1,
+       "plan prefix: the first layer that does not fit ends the run");
+    const uint64_t huge[2] = { UINT64_MAX - 10, 100 };
+    used = 20;
+    ck(gpu_plan_prefix(huge, 2, 0, UINT64_MAX, &used) == 0 && used == 20,
+       "plan prefix: a sum past 64 bits refuses rather than wraps");
+    used = 0;
+    ck(gpu_plan_prefix(huge, 2, 0, UINT64_MAX, &used) == 1 && used == UINT64_MAX - 10,
+       "plan prefix: up to the last representable byte");
+
+    bool back = true;
+    int G = 4;
+    ck(gpu_plan_full_split(&G, 4, 90, 10, 100, &back) && G == 4 && !back,
+       "plan full: the tail fits exactly");
+    G = 4;
+    ck(!gpu_plan_full_split(&G, 4, 90, 11, 100, &back) && G == 3 && back,
+       "plan full: one unit short hands the last layer back");
+    G = 3;
+    ck(!gpu_plan_full_split(&G, 4, 10, 1, 100, &back) && G == 3 && !back,
+       "plan full: a partial split is left as it is");
+    G = 1;
+    ck(!gpu_plan_full_split(&G, 1, 99, 2, 100, &back) && G == 1 && !back,
+       "plan full: a one-layer model keeps its layer");
+    G = 2;
+    ck(!gpu_plan_full_split(&G, 2, 101, 0, 100, &back) && G == 1 && back,
+       "plan full: an over-budget total is not full, never a wrapped subtraction");
+
+    // banks: layers 0 and 2 dense, 1, 3 and 4 routed
+    const bool moe[5] = { false, true, false, true, true };
+    const uint64_t bank[5] = { 0, 30, 0, 30, 30 };
+    bool host[5] = { false, true, false, true, true };
+    used = 10;
+    int placed = gpu_plan_expert_banks(moe, bank, 5, 5, 75, &used, host, 0, 0);
+    ck(placed == 2 && used == 70 && !host[1] && !host[3] && host[4],
+       "plan banks: shallowest first while each fits with the reserve held back");
+    bool host2[5] = { false, true, false, true, true };
+    used = 10;
+    ck(gpu_plan_expert_banks(moe, bank, 5, 6, 75, &used, host2, 0, 0) == 1 &&
+       used == 40 && !host2[1] && host2[3],
+       "plan banks: one unit of reserve more and the second bank stays home");
+    bool host3[5] = { false, true, false, true, true };
+    used = 10;
+    ck(gpu_plan_expert_banks(moe, bank, 3, 0, 1000, &used, host3, 0, 0) == 1 &&
+       host3[3] && host3[4],
+       "plan banks: only the device layers' banks are candidates");
+    bool host4[5] = { false, true, false, true, true };
+    used = 10;
+    placed = gpu_plan_expert_banks(moe, bank, 5, 0, 1000, &used, host4, 1, 3);
+    ck(placed == 2 && used == 70 && !host4[1] && !host4[3] && host4[4],
+       "plan banks: a retry hands back the deepest bank of the first attempt's three");
+    bool host5[5] = { false, true, false, true, true };
+    used = 10;
+    placed = gpu_plan_expert_banks(moe, bank, 5, 0, 1000, &used, host5, 4, 3);
+    ck(placed == 0 && used == 10 && host5[1] && host5[3] && host5[4],
+       "plan banks: a trim past the first attempt's count hands back every bank");
+}
+
 int main(int argc, char **argv) {
     test_gpu_budget();
     test_multislot_is_not_billed_once();
@@ -351,6 +437,7 @@ int main(int argc, char **argv) {
     test_kv_ring_rows();
     test_fit_gpu(argc > 1 ? argv[1] : NULL);
     test_fit_gpu_boundaries(argc > 1 ? argv[1] : NULL);
+    test_gpu_plan();
     if (g_fail) { fprintf(stderr, "test-autofit FAILED\n"); return 1; }
     fprintf(stderr, "test-autofit: all checks passed\n");
     return 0;
