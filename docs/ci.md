@@ -1,11 +1,22 @@
 # CI coverage and execution
 
-`make test` remains the aggregate engine gate. CI runs it on Linux for pull
-requests and on Windows/macOS through the full suites, which run on every
-engine push to main, on the daily schedule and on dispatch. The smaller
-native platform smokes still run on pull requests. The full Windows/macOS
-lanes can be dispatched before merging a platform-sensitive change. No
+`make test` is the aggregate engine gate, and CI runs it on Linux and on
+Apple Silicon for every pull request. Windows gets the build, its
+platform-only steps and the server conformance suite on the pull request,
+and the whole suite (`windows-suite`) on every engine push to main, on the
+daily schedule and on dispatch, because it takes twenty minutes there. No
 numerical test or tolerance is removed to shorten the PR path.
+
+Until 2026-10-13 a `unix` job carried some 450 lines of shell smokes beside
+`make test`, repeated by hand for Windows and drifting from that copy. Those
+smokes are tests now: `tests/test_cli_smokes.py` (flag domains, malformed
+tensor metadata, suppression, JSON mode and schema refusals, the write
+failure), `tests/conformance/test_server_smokes.py` (control routes past a
+pinned slot, the 408 reaper, model swap, a self-drafting server against the
+plain one) and the torture-harness unit tests, all wired into `make test`.
+What stays a workflow step is what the suite cannot own: the strict client
+type check, the Windows tray menu and backslash path, the Windows parent-pid
+watch (the test skips there), and the sanitizer and ThreadSanitizer lanes.
 
 Superseded PR runs are cancelled. Main and scheduled runs have distinct
 concurrency identities. Jobs and network smokes have explicit deadlines;
@@ -68,11 +79,12 @@ builds compile every translation unit with their own flags.
 
 `make debug` instruments quantization as well as inference with ASan and
 fatal UBSan. `scripts/check-sanitizers.py` verifies both instruments against
-known invalid C operations. The CLI transformation/lifecycle lane uses
-that binary; the shared-ownership ASan gate exercises repeated release and
-reuse. Server conformance disables leak detection separately from the CPU
-CLI lane. TSan runs tokenizer, shared-pool and registry/shutdown tests in
-separate processes; it is not combined with ASan.
+known invalid C operations. One sanitized build serves the whole lane: the
+conformance suite (leak detection off, servers are killed), the CLI leak
+gate on three fixtures (leak detection on), the CLI transformation and
+lifecycle tests, the shared-ownership gate and the swap race. TSan runs the
+tokenizer, shared-pool and registry/shutdown races in its own job; it is not
+combined with ASan.
 
 The T3 lane builds the actual configured executable, checks its flavor,
 and tests generation records, training and session continuation. The
