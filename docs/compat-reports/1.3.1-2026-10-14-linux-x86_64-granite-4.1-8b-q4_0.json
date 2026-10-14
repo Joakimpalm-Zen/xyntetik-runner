@@ -1,0 +1,84 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-10-14T20:50:08Z",
+  "host": {
+    "os": "Linux",
+    "machine": "x86_64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 1.3.1"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "granite-4.1-8b-q4_0",
+      "architecture": "granite",
+      "file": "models/granite-4.1-8b-Q4_0.gguf",
+      "expected_sha256": "5adf9b6b78921093bd4a805e1060f85d7f744c3eafc14d1ca449364d1e721a1a",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 19144.1,
+          "stderr_tail": "loaded ~/workspace/models/granite-4.1-8b-Q4_0/granite-4.1-8b-Q4_0.gguf | granite | 40 layers | ctx 4096 | 8 threads | 2.03s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 0.20 tok/s | gen: 1 tok, 4.21 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 4751.9,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": ""
+        },
+        "cpu_cuda": {
+          "status": "not_executed",
+          "reason": "cpu_cuda_timeout"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 5155.57,
+          "prompt": "What is 2+2?",
+          "gpu": "off",
+          "failure_reasons": [],
+          "output_tail": "The answer to the mathematical expression 2 + 2 is 4.\n"
+        },
+        "greedy_reference": {
+          "status": "not_executed",
+          "reason": "reference_binary_not_provided"
+        }
+      },
+      "resolved_file": "models/granite-4.1-8b-Q4_0.gguf",
+      "actual_sha256": "5adf9b6b78921093bd4a805e1060f85d7f744c3eafc14d1ca449364d1e721a1a",
+      "file_status": "pass",
+      "complete": false
+    }
+  ],
+  "complete": false,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "pass": 1
+      },
+      "cpu_cuda": {
+        "not_executed": 1
+      },
+      "chat": {
+        "pass": 1
+      },
+      "greedy_reference": {
+        "not_executed": 1
+      }
+    }
+  }
+}

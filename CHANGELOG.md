@@ -3,6 +3,21 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## v1.3.1 - 2026-10-14
+
+- **`scripts/bench-corpus.py` measures at the context its record states.**
+  The corpus driver launched its calibration server with `-c` but every
+  `--bench-json` measurement without it, so each bench row ran at the
+  runner's default context (the model's trained length, at most 4096) while
+  the record said `"ctx": --ctx`. The KV allocation and the GPU split both
+  follow the context, so a context-sensitive comparison from 1.3.0's driver
+  measured something other than what it reported. One argument builder now
+  serves every launch, and a row whose own reported `context` differs from
+  `--ctx` is recorded as an error, not a measurement. The idle case's
+  command is quoted for the parser that reads it, so a path with a space
+  works. The engine is unchanged: 1.3.1 and 1.3.0 differ in this script,
+  its test and the version string.
+
 ## v1.3.0 - 2026-10-14
 
 - **A model on a CUDA GPU no longer stays resident in host RAM.** Loading
