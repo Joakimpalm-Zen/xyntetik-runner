@@ -82,7 +82,7 @@ CHART_DATA = {
         ("Base + adapter (--lora)", 1.00, "ok"),
         ("Merged into F16", 1.00, "ok"),
         ("Merged into Q8_0", 1.00, "ok"),
-        ("Merged into Q4_0", 0.69, "erased"),
+        ("Merged back into Q4_K", 0.69, "erased"),
     ],
     # docs/quant-fidelity.md: granite-4.1-3b 2026-08-14, Hermes-4-14B 2026-08-15
     "fidelity": {
