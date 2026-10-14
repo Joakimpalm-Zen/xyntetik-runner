@@ -1532,7 +1532,17 @@ typedef struct {
     bool *drop;               // tensors the removal does not write
     reauth_arr_t reauth[4];   // per-layer arrays the removal re-authors
     int n_reauth;
-    uint32_t *layer_counts;   // per-block expert counts after a prune
+    uint64_t n_dropped;       // tensors the removal drops
+    // Per-layer expert counts after the prune, authored into the header as
+    // <arch>.expert_count_per_layer (u32 per block, 0 for a non-MoE block).
+    // GGUF has one global expert_count; a non-uniform plan makes that key a
+    // ceiling rather than a description, and a consumer that trusts it
+    // mis-sizes the model. The array is what lets the file describe itself.
+    uint32_t *layer_counts;
+    uint64_t n_blocks;        // the length of layer_counts
+    char pl_key[128];         // <arch>.expert_count_per_layer
+    bool uniform_prune;       // every MoE layer pruned to one count
+    int uniform_count;
     char *tmp_path;           // OUT.partial
     bool tmp_created;         // OUT.partial exists and is not installed
     writer w;
@@ -1570,6 +1580,348 @@ static void quantize_job_release(quantize_job *J) {
     free(J->tmp_path); J->tmp_path = NULL;
 }
 
+// The plans parsed and the source open, every tensor in a type this file
+// can read.
+static bool quantize_job_open_source(quantize_job *J, const char *in_path,
+                                     const char *prune_path,
+                                     const char *type_plan_path,
+                                     const char *remove_spec) {
+    if (prune_path && !prune_plan_load(prune_path, &J->plan)) return false;
+    if (type_plan_path && !type_plan_load(type_plan_path, &J->tplan)) return false;
+    if (remove_spec && !rm_plan_parse(remove_spec, &J->rm)) return false;
+
+    if (!gguf_open(&J->g, in_path)) return false;
+    J->g_open = true;
+    for (uint64_t i = 0; i < J->g.n_tensors; i++) {
+        if (!ggml_type_supported(J->g.tensors[i].type)) {
+            fprintf(stderr, "error: tensor %s has unsupported type %s\n",
+                    J->g.tensors[i].name, ggml_type_name(J->g.tensors[i].type));
+            return false;
+        }
+    }
+    return true;
+}
+
+// Sublayer-removal pre-pass: decide every dropped tensor and every
+// re-authored per-layer array before a byte of output exists, so a bad
+// request fails clean. `drop[i]` marks a tensor that is not written.
+static bool quantize_job_remove_sublayers(quantize_job *J) {
+    const char *rarch = gguf_get_str(&J->g, "general.architecture", "");
+    char key[160];
+    snprintf(key, sizeof key, "%s.block_count", rarch);
+    uint64_t nb = gguf_get_u32(&J->g, key, 0);
+    const char *why = NULL;
+    if (!strcmp(rarch, "nemotron_h") || !strcmp(rarch, "nemotron_h_moe") ||
+        !strcmp(rarch, "granitehybrid") || !strcmp(rarch, "qwen35") ||
+        (snprintf(key, sizeof key, "%s.ssm.conv_kernel", rarch),
+         gguf_get(&J->g, key) != NULL))
+        why = "hybrid or recurrent block typing";
+    // gemma-4 exports carry both E-series keys on every model, with 0
+    // on the dense ones (the 31B has embedding_length_per_layer_input
+    // = 0); it is the VALUE that makes a file E-series, as in the loader.
+    else if ((snprintf(key, sizeof key, "%s.embedding_length_per_layer_input",
+                       rarch), gguf_get_u32(&J->g, key, 0) > 0) ||
+             (snprintf(key, sizeof key, "%s.attention.shared_kv_layers",
+                       rarch), gguf_get_u32(&J->g, key, 0) > 0))
+        why = "gemma-4 E-series per-layer embeddings or shared KV";
+    else if ((snprintf(key, sizeof key, "%s.nextn_predict_layers", rarch),
+              gguf_get_u32(&J->g, key, 0) > 0))
+        why = "a declared NextN/MTP head";
+    else if (nb == 0)
+        why = "no block_count";
+    if (why) {
+        fprintf(stderr, "error: --remove-sublayer does not support %s (%s)\n",
+                rarch, why);
+        return false;
+    }
+    J->drop = calloc(J->g.n_tensors ? J->g.n_tensors : 1, sizeof(bool));
+    if (!J->drop) return false;
+    char hc_key[160], hk_key[160], ff_key[160];
+    snprintf(hc_key, sizeof hc_key, "%s.attention.head_count", rarch);
+    snprintf(hk_key, sizeof hk_key, "%s.attention.head_count_kv", rarch);
+    snprintf(ff_key, sizeof ff_key, "%s.feed_forward_length", rarch);
+    uint32_t *hc = NULL, *hk = NULL, *ff = NULL;
+    bool bad = false;
+    for (int k = 0; k < J->rm.n && !bad; k++) {
+        int layer = J->rm.items[k].layer, part = J->rm.items[k].part;
+        const char *pname = part == RM_ATTN ? "attn" : "mlp";
+        if ((uint64_t)layer >= nb) {
+            fprintf(stderr, "error: --remove-sublayer %s:%d names block %d, "
+                    "but %s.block_count is %llu\n", pname, layer, layer,
+                    rarch, (unsigned long long)nb);
+            bad = true; break;
+        }
+        char nm[160];
+        if (part == RM_ATTN) {
+            if (!hc) {
+                hc = malloc(sizeof(uint32_t) * nb);
+                hk = malloc(sizeof(uint32_t) * nb);
+                uint32_t nh = gguf_get_u32(&J->g, hc_key, 0);
+                if (!hc || !hk || !reauth_fill(&J->g, hc_key, nb, nh, hc) ||
+                    !reauth_fill(&J->g, hk_key, nb, nh, hk)) { bad = true; break; }
+            }
+            if (hc[layer] == 0) {
+                fprintf(stderr, "error: --remove-sublayer attn:%d: block %d "
+                        "already has its attention removed\n", layer, layer);
+                bad = true; break;
+            }
+            snprintf(nm, sizeof nm, "blk.%d.attn_qkv.weight", layer);
+            if (gguf_find_tensor(&J->g, nm)) {
+                fprintf(stderr, "error: --remove-sublayer attn:%d: fused-QKV "
+                        "families are not supported\n", layer);
+                bad = true; break;
+            }
+            snprintf(nm, sizeof nm, "blk.%d.attn_output.weight", layer);
+            if (!gguf_find_tensor(&J->g, nm)) {
+                fprintf(stderr, "error: --remove-sublayer attn:%d: block %d "
+                        "has no attention tensors\n", layer, layer);
+                bad = true; break;
+            }
+            hc[layer] = 0;
+            hk[layer] = 0;
+        } else {
+            if (!ff) {
+                ff = malloc(sizeof(uint32_t) * nb);
+                uint32_t nf = gguf_get_u32(&J->g, ff_key, 0);
+                if (!ff || !reauth_fill(&J->g, ff_key, nb, nf, ff)) { bad = true; break; }
+            }
+            if (ff[layer] == 0) {
+                fprintf(stderr, "error: --remove-sublayer mlp:%d: block %d "
+                        "already has its FFN removed\n", layer, layer);
+                bad = true; break;
+            }
+            snprintf(nm, sizeof nm, "blk.%d.ffn_gate_inp.weight", layer);
+            bool moe = gguf_find_tensor(&J->g, nm) != NULL;
+            for (uint64_t i = 0; !moe && i < J->g.n_tensors; i++) {
+                int tl; const char *suf;
+                if (parse_blk_name(J->g.tensors[i].name, &tl, &suf) &&
+                    tl == layer && strncmp(suf, "ffn_", 4) == 0 &&
+                    strstr(suf, "_exps"))
+                    moe = true;
+            }
+            if (moe) {
+                fprintf(stderr, "error: --remove-sublayer mlp:%d: block %d is "
+                        "a MoE FFN, which is not supported for removal\n",
+                        layer, layer);
+                bad = true; break;
+            }
+            snprintf(nm, sizeof nm, "blk.%d.ffn_down.weight", layer);
+            if (!gguf_find_tensor(&J->g, nm)) {
+                fprintf(stderr, "error: --remove-sublayer mlp:%d: block %d "
+                        "has no dense FFN tensors\n", layer, layer);
+                bad = true; break;
+            }
+            ff[layer] = 0;
+        }
+        uint64_t n_t = 0, bytes = 0;
+        for (uint64_t i = 0; i < J->g.n_tensors; i++) {
+            int tl; const char *suf;
+            if (!parse_blk_name(J->g.tensors[i].name, &tl, &suf) || tl != layer ||
+                !rm_suffix_in_scope(part, suf) || J->drop[i])
+                continue;
+            J->drop[i] = true;
+            n_t++;
+            bytes += J->g.tensors[i].nbytes;
+        }
+        J->n_dropped += n_t;
+        fprintf(stderr, "remove-sublayer: %s:%d dropped %llu tensors, %llu "
+                "bytes of tensor data\n", pname, layer,
+                (unsigned long long)n_t, (unsigned long long)bytes);
+    }
+    // A file with no attention (or no FFN) left in ANY block is not a
+    // model the loader can run: it reads the head count (or FFN width)
+    // as the largest per-block entry, finds 0 and refuses the file. Say
+    // so here, before writing an artifact that cannot load. Counted
+    // over the whole array, so blocks the source already lacked count.
+    if (!bad) {
+        uint64_t attn_left = 0, ffn_left = 0;
+        for (uint64_t i = 0; i < nb; i++) {
+            if (hc && hc[i]) attn_left++;
+            if (ff && ff[i]) ffn_left++;
+        }
+        const char *none = hc && !attn_left ? "attention" :
+                           ff && !ffn_left  ? "FFN" : NULL;
+        if (none) {
+            fprintf(stderr, "error: --remove-sublayer would leave no %s in "
+                    "any of the %llu blocks; the loader cannot run such a "
+                    "file, so it is not written\n", none,
+                    (unsigned long long)nb);
+            bad = true;
+        }
+    }
+    if (bad) {
+        free(hc); free(hk); free(ff);
+        return false;
+    }
+    if (hc) {
+        snprintf(J->reauth[J->n_reauth].key, sizeof J->reauth[J->n_reauth].key, "%s", hc_key);
+        J->reauth[J->n_reauth++].vals = hc;
+        snprintf(J->reauth[J->n_reauth].key, sizeof J->reauth[J->n_reauth].key, "%s", hk_key);
+        J->reauth[J->n_reauth++].vals = hk;
+    }
+    if (ff) {
+        snprintf(J->reauth[J->n_reauth].key, sizeof J->reauth[J->n_reauth].key, "%s", ff_key);
+        J->reauth[J->n_reauth++].vals = ff;
+    }
+    return true;
+}
+
+// --context-surgery: the header's YaRN context and factor rewritten in
+// memory, after checking that the file declares native YaRN and that the
+// request only extends it and agrees with the original context.
+static bool quantize_job_context_surgery(quantize_job *J, uint32_t surgery_context,
+                                         float surgery_factor,
+                                         context_surgery_result *surgery_result) {
+    const char *arch = gguf_get_str(&J->g, "general.architecture", "");
+    char ctx_key[128], type_key[128], factor_key[128], orig_key[128];
+    snprintf(ctx_key, sizeof(ctx_key), "%s.context_length", arch);
+    snprintf(type_key, sizeof(type_key), "%s.rope.scaling.type", arch);
+    snprintf(factor_key, sizeof(factor_key), "%s.rope.scaling.factor", arch);
+    snprintf(orig_key, sizeof(orig_key),
+             "%s.rope.scaling.original_context_length", arch);
+    gguf_kv *ctx = gguf_get(&J->g, ctx_key);
+    gguf_kv *fac = gguf_get(&J->g, factor_key);
+    uint32_t source_context = gguf_get_u32(&J->g, ctx_key, 0);
+    uint32_t original_context = gguf_get_u32(&J->g, orig_key, 0);
+    float source_factor = gguf_get_f32(&J->g, factor_key, 0);
+    const char *scaling_type = gguf_get_str(&J->g, type_key, "");
+    double implied = (double)original_context * (double)surgery_factor;
+    uint64_t implied_context = implied >= 0.0 ? (uint64_t)(implied + 0.5) : 0;
+    bool valid = arch[0] && ctx && ctx->type == GGUF_T_U32 &&
+                 fac && fac->type == GGUF_T_F32 &&
+                 strcmp(scaling_type, "yarn") == 0 &&
+                 original_context > 0 && source_context > 0 &&
+                 source_factor > 1.0f;
+    if (!valid) {
+        fprintf(stderr, "error: --context-surgery requires complete native "
+                        "YaRN metadata with u32 context/original context "
+                        "and f32 factor\n");
+        return false;
+    }
+    if (surgery_context <= source_context ||
+        surgery_factor <= source_factor) {
+        fprintf(stderr, "error: --context-surgery only extends context "
+                        "(source %u/x%.9g, requested %u/x%.9g)\n",
+                source_context, (double)source_factor, surgery_context,
+                (double)surgery_factor);
+        return false;
+    }
+    if (implied_context != surgery_context ||
+        fabs(implied - (double)surgery_context) > 0.0001) {
+        fprintf(stderr, "error: --context-surgery target %u conflicts "
+                        "with original context %u x YaRN factor %.9g "
+                        "(implies %.9g)\n", surgery_context,
+                original_context, (double)surgery_factor, implied);
+        return false;
+    }
+    ctx->v.u64 = surgery_context;
+    uint32_t factor_bits;
+    memcpy(&factor_bits, &surgery_factor, sizeof(factor_bits));
+    fac->raw = factor_bits;
+    fac->v.f64 = surgery_factor;
+    if (surgery_result) {
+        surgery_result->source_context = source_context;
+        surgery_result->original_context = original_context;
+        surgery_result->source_factor = source_factor;
+        surgery_result->tensors_byte_identical = false;
+    }
+    fprintf(stderr, "context-surgery: %s %u -> %u; %s %.9g -> %.9g\n",
+            ctx_key, source_context, surgery_context, factor_key,
+            (double)source_factor, (double)surgery_factor);
+    return true;
+}
+
+// Prune-plan pre-pass: resolve every plan entry against its layer's own
+// router tensor (the one tensor every is_moe layer always has), validate
+// ids are in range, and decide whether the WHOLE model ends up with one
+// uniform post-prune expert count — the only case expert_count metadata
+// can honestly be rewritten to a single new value. Done before any
+// output is written so a bad plan fails clean, before touching the
+// destination file at all.
+static bool quantize_job_check_prune(quantize_job *J, const char *in_path) {
+    const char *parch = gguf_get_str(&J->g, "general.architecture", "");
+    char bc_key[128];
+    snprintf(bc_key, sizeof(bc_key), "%s.block_count", parch);
+    snprintf(J->pl_key, sizeof(J->pl_key), "%s.expert_count_per_layer", parch);
+    J->n_blocks = gguf_get_u32(&J->g, bc_key, 0);
+    J->layer_counts = calloc(J->n_blocks ? J->n_blocks : 1, sizeof(uint32_t));
+    if (!J->layer_counts) return false;
+    int n_moe_layers = 0, n_moe_seen = 0;
+    bool any_pruned = false, all_equal = true;
+    int first_count = -1;
+    for (uint64_t i = 0; i < J->g.n_tensors; i++) {
+        int layer; const char *suffix;
+        if (!parse_blk_name(J->g.tensors[i].name, &layer, &suffix)) continue;
+        if (strcmp(suffix, "ffn_gate_inp.weight") != 0) continue;
+        n_moe_layers++;
+        gguf_tensor *router = &J->g.tensors[i];
+        if (router->n_dims < 2) {
+            fprintf(stderr, "error: %s has %d dims, expected 2\n",
+                    router->name, router->n_dims);
+            return false;
+        }
+        int64_t orig_n = router->ne[router->n_dims - 1];
+        const prune_layer_t *pl = prune_plan_find(&J->plan, layer);
+        int final_count = (int)orig_n;
+        if (pl) {
+            n_moe_seen++;
+            for (int j = 0; j < pl->n_ids; j++)
+                if (pl->ids[j] >= orig_n) {
+                    fprintf(stderr, "error: prune-plan layer_%d lists "
+                            "expert %d, but blk.%d only has %lld experts\n",
+                            layer, pl->ids[j], layer, (long long)orig_n);
+                    return false;
+                }
+            // Every tensor resolve_prune() will slice must describe the
+            // same expert axis as this router. Validating ids against the
+            // router alone is insufficient: a shorter bias/bank would
+            // make the copy loop index beyond that tensor's declared
+            // data and produce an artifact that cannot load.
+            for (uint64_t j = 0; j < J->g.n_tensors; j++) {
+                int tensor_layer; const char *tensor_suffix;
+                gguf_tensor *et = &J->g.tensors[j];
+                if (!parse_blk_name(et->name, &tensor_layer,
+                                    &tensor_suffix) ||
+                    tensor_layer != layer ||
+                    !is_expert_tensor_suffix(tensor_suffix))
+                    continue;
+                int64_t tensor_n = et->ne[et->n_dims - 1];
+                if (tensor_n != orig_n) {
+                    fprintf(stderr, "error: %s expert axis has %lld "
+                            "entries, but the blk.%d router has %lld\n",
+                            et->name, (long long)tensor_n, layer,
+                            (long long)orig_n);
+                    return false;
+                }
+            }
+            final_count = pl->n_ids;
+            if (final_count < orig_n) any_pruned = true;
+        }
+        if (first_count < 0) first_count = final_count;
+        else if (final_count != first_count) all_equal = false;
+        if ((uint64_t)layer >= J->n_blocks) {
+            fprintf(stderr, "error: %s names block %d but %s.block_count is %llu\n",
+                    router->name, layer, parch, (unsigned long long)J->n_blocks);
+            return false;
+        }
+        J->layer_counts[layer] = (uint32_t)final_count;
+    }
+    if (n_moe_seen < J->plan.n) {
+        // at least one "layer_N" in the plan matched no MoE layer in
+        // this file at all — almost certainly the plan was built for a
+        // different model or has a typo'd layer index
+        fprintf(stderr, "error: --prune-experts lists %d layer(s) but "
+                "only %d matched an MoE layer in %s\n",
+                J->plan.n, n_moe_seen, in_path);
+        return false;
+    }
+    if (any_pruned && all_equal && n_moe_seen == n_moe_layers) {
+        J->uniform_prune = true;
+        J->uniform_count = first_count;
+    }
+    return true;
+}
+
 static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, int target,
                        const char *prune_path, const char *type_plan_path,
                        const char *remove_spec,
@@ -1584,346 +1936,23 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     memset(&job, 0, sizeof(job));
     quantize_job *J = &job;
     int rc = 1;
-    if (prune_path && !prune_plan_load(prune_path, &J->plan)) goto done;
-    if (type_plan_path && !type_plan_load(type_plan_path, &J->tplan)) goto done;
-    if (remove_spec && !rm_plan_parse(remove_spec, &J->rm)) goto done;
+    if (!quantize_job_open_source(J, in_path, prune_path, type_plan_path,
+                                  remove_spec))
+        goto done;
 
-    if (!gguf_open(&J->g, in_path)) goto done;
-    J->g_open = true;
-    for (uint64_t i = 0; i < J->g.n_tensors; i++) {
-        if (!ggml_type_supported(J->g.tensors[i].type)) {
-            fprintf(stderr, "error: tensor %s has unsupported type %s\n",
-                    J->g.tensors[i].name, ggml_type_name(J->g.tensors[i].type));
-            goto done;
-        }
-    }
-
-    // Sublayer-removal pre-pass: decide every dropped tensor and every
-    // re-authored per-layer array before a byte of output exists, so a bad
-    // request fails clean. `drop[i]` marks a tensor that is not written.
-    uint64_t n_dropped = 0;
-    if (J->rm.n > 0) {
-        const char *rarch = gguf_get_str(&J->g, "general.architecture", "");
-        char key[160];
-        snprintf(key, sizeof key, "%s.block_count", rarch);
-        uint64_t nb = gguf_get_u32(&J->g, key, 0);
-        const char *why = NULL;
-        if (!strcmp(rarch, "nemotron_h") || !strcmp(rarch, "nemotron_h_moe") ||
-            !strcmp(rarch, "granitehybrid") || !strcmp(rarch, "qwen35") ||
-            (snprintf(key, sizeof key, "%s.ssm.conv_kernel", rarch),
-             gguf_get(&J->g, key) != NULL))
-            why = "hybrid or recurrent block typing";
-        // gemma-4 exports carry both E-series keys on every model, with 0
-        // on the dense ones (the 31B has embedding_length_per_layer_input
-        // = 0); it is the VALUE that makes a file E-series, as in the loader.
-        else if ((snprintf(key, sizeof key, "%s.embedding_length_per_layer_input",
-                           rarch), gguf_get_u32(&J->g, key, 0) > 0) ||
-                 (snprintf(key, sizeof key, "%s.attention.shared_kv_layers",
-                           rarch), gguf_get_u32(&J->g, key, 0) > 0))
-            why = "gemma-4 E-series per-layer embeddings or shared KV";
-        else if ((snprintf(key, sizeof key, "%s.nextn_predict_layers", rarch),
-                  gguf_get_u32(&J->g, key, 0) > 0))
-            why = "a declared NextN/MTP head";
-        else if (nb == 0)
-            why = "no block_count";
-        if (why) {
-            fprintf(stderr, "error: --remove-sublayer does not support %s (%s)\n",
-                    rarch, why);
-            goto done;
-        }
-        J->drop = calloc(J->g.n_tensors ? J->g.n_tensors : 1, sizeof(bool));
-        if (!J->drop) goto done;
-        char hc_key[160], hk_key[160], ff_key[160];
-        snprintf(hc_key, sizeof hc_key, "%s.attention.head_count", rarch);
-        snprintf(hk_key, sizeof hk_key, "%s.attention.head_count_kv", rarch);
-        snprintf(ff_key, sizeof ff_key, "%s.feed_forward_length", rarch);
-        uint32_t *hc = NULL, *hk = NULL, *ff = NULL;
-        bool bad = false;
-        for (int k = 0; k < J->rm.n && !bad; k++) {
-            int layer = J->rm.items[k].layer, part = J->rm.items[k].part;
-            const char *pname = part == RM_ATTN ? "attn" : "mlp";
-            if ((uint64_t)layer >= nb) {
-                fprintf(stderr, "error: --remove-sublayer %s:%d names block %d, "
-                        "but %s.block_count is %llu\n", pname, layer, layer,
-                        rarch, (unsigned long long)nb);
-                bad = true; break;
-            }
-            char nm[160];
-            if (part == RM_ATTN) {
-                if (!hc) {
-                    hc = malloc(sizeof(uint32_t) * nb);
-                    hk = malloc(sizeof(uint32_t) * nb);
-                    uint32_t nh = gguf_get_u32(&J->g, hc_key, 0);
-                    if (!hc || !hk || !reauth_fill(&J->g, hc_key, nb, nh, hc) ||
-                        !reauth_fill(&J->g, hk_key, nb, nh, hk)) { bad = true; break; }
-                }
-                if (hc[layer] == 0) {
-                    fprintf(stderr, "error: --remove-sublayer attn:%d: block %d "
-                            "already has its attention removed\n", layer, layer);
-                    bad = true; break;
-                }
-                snprintf(nm, sizeof nm, "blk.%d.attn_qkv.weight", layer);
-                if (gguf_find_tensor(&J->g, nm)) {
-                    fprintf(stderr, "error: --remove-sublayer attn:%d: fused-QKV "
-                            "families are not supported\n", layer);
-                    bad = true; break;
-                }
-                snprintf(nm, sizeof nm, "blk.%d.attn_output.weight", layer);
-                if (!gguf_find_tensor(&J->g, nm)) {
-                    fprintf(stderr, "error: --remove-sublayer attn:%d: block %d "
-                            "has no attention tensors\n", layer, layer);
-                    bad = true; break;
-                }
-                hc[layer] = 0;
-                hk[layer] = 0;
-            } else {
-                if (!ff) {
-                    ff = malloc(sizeof(uint32_t) * nb);
-                    uint32_t nf = gguf_get_u32(&J->g, ff_key, 0);
-                    if (!ff || !reauth_fill(&J->g, ff_key, nb, nf, ff)) { bad = true; break; }
-                }
-                if (ff[layer] == 0) {
-                    fprintf(stderr, "error: --remove-sublayer mlp:%d: block %d "
-                            "already has its FFN removed\n", layer, layer);
-                    bad = true; break;
-                }
-                snprintf(nm, sizeof nm, "blk.%d.ffn_gate_inp.weight", layer);
-                bool moe = gguf_find_tensor(&J->g, nm) != NULL;
-                for (uint64_t i = 0; !moe && i < J->g.n_tensors; i++) {
-                    int tl; const char *suf;
-                    if (parse_blk_name(J->g.tensors[i].name, &tl, &suf) &&
-                        tl == layer && strncmp(suf, "ffn_", 4) == 0 &&
-                        strstr(suf, "_exps"))
-                        moe = true;
-                }
-                if (moe) {
-                    fprintf(stderr, "error: --remove-sublayer mlp:%d: block %d is "
-                            "a MoE FFN, which is not supported for removal\n",
-                            layer, layer);
-                    bad = true; break;
-                }
-                snprintf(nm, sizeof nm, "blk.%d.ffn_down.weight", layer);
-                if (!gguf_find_tensor(&J->g, nm)) {
-                    fprintf(stderr, "error: --remove-sublayer mlp:%d: block %d "
-                            "has no dense FFN tensors\n", layer, layer);
-                    bad = true; break;
-                }
-                ff[layer] = 0;
-            }
-            uint64_t n_t = 0, bytes = 0;
-            for (uint64_t i = 0; i < J->g.n_tensors; i++) {
-                int tl; const char *suf;
-                if (!parse_blk_name(J->g.tensors[i].name, &tl, &suf) || tl != layer ||
-                    !rm_suffix_in_scope(part, suf) || J->drop[i])
-                    continue;
-                J->drop[i] = true;
-                n_t++;
-                bytes += J->g.tensors[i].nbytes;
-            }
-            n_dropped += n_t;
-            fprintf(stderr, "remove-sublayer: %s:%d dropped %llu tensors, %llu "
-                    "bytes of tensor data\n", pname, layer,
-                    (unsigned long long)n_t, (unsigned long long)bytes);
-        }
-        // A file with no attention (or no FFN) left in ANY block is not a
-        // model the loader can run: it reads the head count (or FFN width)
-        // as the largest per-block entry, finds 0 and refuses the file. Say
-        // so here, before writing an artifact that cannot load. Counted
-        // over the whole array, so blocks the source already lacked count.
-        if (!bad) {
-            uint64_t attn_left = 0, ffn_left = 0;
-            for (uint64_t i = 0; i < nb; i++) {
-                if (hc && hc[i]) attn_left++;
-                if (ff && ff[i]) ffn_left++;
-            }
-            const char *none = hc && !attn_left ? "attention" :
-                               ff && !ffn_left  ? "FFN" : NULL;
-            if (none) {
-                fprintf(stderr, "error: --remove-sublayer would leave no %s in "
-                        "any of the %llu blocks; the loader cannot run such a "
-                        "file, so it is not written\n", none,
-                        (unsigned long long)nb);
-                bad = true;
-            }
-        }
-        if (bad) {
-            free(hc); free(hk); free(ff);
-            goto done;
-        }
-        if (hc) {
-            snprintf(J->reauth[J->n_reauth].key, sizeof J->reauth[J->n_reauth].key, "%s", hc_key);
-            J->reauth[J->n_reauth++].vals = hc;
-            snprintf(J->reauth[J->n_reauth].key, sizeof J->reauth[J->n_reauth].key, "%s", hk_key);
-            J->reauth[J->n_reauth++].vals = hk;
-        }
-        if (ff) {
-            snprintf(J->reauth[J->n_reauth].key, sizeof J->reauth[J->n_reauth].key, "%s", ff_key);
-            J->reauth[J->n_reauth++].vals = ff;
-        }
-    }
+    if (J->rm.n > 0 && !quantize_job_remove_sublayers(J)) goto done;
     if (ms && ms->n_base != J->g.n_tensors) {
         // the base changed between the resolve open and this one
         fprintf(stderr, "error: %s changed while merging\n", in_path);
         goto done;
     }
 
-    if (surgery_context) {
-        const char *arch = gguf_get_str(&J->g, "general.architecture", "");
-        char ctx_key[128], type_key[128], factor_key[128], orig_key[128];
-        snprintf(ctx_key, sizeof(ctx_key), "%s.context_length", arch);
-        snprintf(type_key, sizeof(type_key), "%s.rope.scaling.type", arch);
-        snprintf(factor_key, sizeof(factor_key), "%s.rope.scaling.factor", arch);
-        snprintf(orig_key, sizeof(orig_key),
-                 "%s.rope.scaling.original_context_length", arch);
-        gguf_kv *ctx = gguf_get(&J->g, ctx_key);
-        gguf_kv *fac = gguf_get(&J->g, factor_key);
-        uint32_t source_context = gguf_get_u32(&J->g, ctx_key, 0);
-        uint32_t original_context = gguf_get_u32(&J->g, orig_key, 0);
-        float source_factor = gguf_get_f32(&J->g, factor_key, 0);
-        const char *scaling_type = gguf_get_str(&J->g, type_key, "");
-        double implied = (double)original_context * (double)surgery_factor;
-        uint64_t implied_context = implied >= 0.0 ? (uint64_t)(implied + 0.5) : 0;
-        bool valid = arch[0] && ctx && ctx->type == GGUF_T_U32 &&
-                     fac && fac->type == GGUF_T_F32 &&
-                     strcmp(scaling_type, "yarn") == 0 &&
-                     original_context > 0 && source_context > 0 &&
-                     source_factor > 1.0f;
-        if (!valid) {
-            fprintf(stderr, "error: --context-surgery requires complete native "
-                            "YaRN metadata with u32 context/original context "
-                            "and f32 factor\n");
-            goto done;
-        }
-        if (surgery_context <= source_context ||
-            surgery_factor <= source_factor) {
-            fprintf(stderr, "error: --context-surgery only extends context "
-                            "(source %u/x%.9g, requested %u/x%.9g)\n",
-                    source_context, (double)source_factor, surgery_context,
-                    (double)surgery_factor);
-            goto done;
-        }
-        if (implied_context != surgery_context ||
-            fabs(implied - (double)surgery_context) > 0.0001) {
-            fprintf(stderr, "error: --context-surgery target %u conflicts "
-                            "with original context %u x YaRN factor %.9g "
-                            "(implies %.9g)\n", surgery_context,
-                    original_context, (double)surgery_factor, implied);
-            goto done;
-        }
-        ctx->v.u64 = surgery_context;
-        uint32_t factor_bits;
-        memcpy(&factor_bits, &surgery_factor, sizeof(factor_bits));
-        fac->raw = factor_bits;
-        fac->v.f64 = surgery_factor;
-        if (surgery_result) {
-            surgery_result->source_context = source_context;
-            surgery_result->original_context = original_context;
-            surgery_result->source_factor = source_factor;
-            surgery_result->tensors_byte_identical = false;
-        }
-        fprintf(stderr, "context-surgery: %s %u -> %u; %s %.9g -> %.9g\n",
-                ctx_key, source_context, surgery_context, factor_key,
-                (double)source_factor, (double)surgery_factor);
-    }
+    if (surgery_context &&
+        !quantize_job_context_surgery(J, surgery_context, surgery_factor,
+                                      surgery_result))
+        goto done;
 
-    // Prune-plan pre-pass: resolve every plan entry against its layer's own
-    // router tensor (the one tensor every is_moe layer always has), validate
-    // ids are in range, and decide whether the WHOLE model ends up with one
-    // uniform post-prune expert count — the only case expert_count metadata
-    // can honestly be rewritten to a single new value. Done before any
-    // output is written so a bad plan fails clean, before touching the
-    // destination file at all.
-    bool uniform_prune = false;
-    int uniform_count = 0;
-    // Per-layer expert counts after the prune, authored into the header as
-    // <arch>.expert_count_per_layer (u32 per block, 0 for a non-MoE block).
-    // GGUF has one global expert_count; a non-uniform plan makes that key a
-    // ceiling rather than a description, and a consumer that trusts it
-    // mis-sizes the model. The array is what lets the file describe itself.
-    char pl_key[128] = "";
-    uint64_t n_blocks = 0;
-    if (J->plan.n > 0) {
-        const char *parch = gguf_get_str(&J->g, "general.architecture", "");
-        char bc_key[128];
-        snprintf(bc_key, sizeof(bc_key), "%s.block_count", parch);
-        snprintf(pl_key, sizeof(pl_key), "%s.expert_count_per_layer", parch);
-        n_blocks = gguf_get_u32(&J->g, bc_key, 0);
-        J->layer_counts = calloc(n_blocks ? n_blocks : 1, sizeof(uint32_t));
-        if (!J->layer_counts) goto done;
-        int n_moe_layers = 0, n_moe_seen = 0;
-        bool any_pruned = false, all_equal = true;
-        int first_count = -1;
-        for (uint64_t i = 0; i < J->g.n_tensors; i++) {
-            int layer; const char *suffix;
-            if (!parse_blk_name(J->g.tensors[i].name, &layer, &suffix)) continue;
-            if (strcmp(suffix, "ffn_gate_inp.weight") != 0) continue;
-            n_moe_layers++;
-            gguf_tensor *router = &J->g.tensors[i];
-            if (router->n_dims < 2) {
-                fprintf(stderr, "error: %s has %d dims, expected 2\n",
-                        router->name, router->n_dims);
-                goto done;
-            }
-            int64_t orig_n = router->ne[router->n_dims - 1];
-            const prune_layer_t *pl = prune_plan_find(&J->plan, layer);
-            int final_count = (int)orig_n;
-            if (pl) {
-                n_moe_seen++;
-                for (int j = 0; j < pl->n_ids; j++)
-                    if (pl->ids[j] >= orig_n) {
-                        fprintf(stderr, "error: prune-plan layer_%d lists "
-                                "expert %d, but blk.%d only has %lld experts\n",
-                                layer, pl->ids[j], layer, (long long)orig_n);
-                        goto done;
-                    }
-                // Every tensor resolve_prune() will slice must describe the
-                // same expert axis as this router. Validating ids against the
-                // router alone is insufficient: a shorter bias/bank would
-                // make the copy loop index beyond that tensor's declared
-                // data and produce an artifact that cannot load.
-                for (uint64_t j = 0; j < J->g.n_tensors; j++) {
-                    int tensor_layer; const char *tensor_suffix;
-                    gguf_tensor *et = &J->g.tensors[j];
-                    if (!parse_blk_name(et->name, &tensor_layer,
-                                        &tensor_suffix) ||
-                        tensor_layer != layer ||
-                        !is_expert_tensor_suffix(tensor_suffix))
-                        continue;
-                    int64_t tensor_n = et->ne[et->n_dims - 1];
-                    if (tensor_n != orig_n) {
-                        fprintf(stderr, "error: %s expert axis has %lld "
-                                "entries, but the blk.%d router has %lld\n",
-                                et->name, (long long)tensor_n, layer,
-                                (long long)orig_n);
-                        goto done;
-                    }
-                }
-                final_count = pl->n_ids;
-                if (final_count < orig_n) any_pruned = true;
-            }
-            if (first_count < 0) first_count = final_count;
-            else if (final_count != first_count) all_equal = false;
-            if ((uint64_t)layer >= n_blocks) {
-                fprintf(stderr, "error: %s names block %d but %s.block_count is %llu\n",
-                        router->name, layer, parch, (unsigned long long)n_blocks);
-                goto done;
-            }
-            J->layer_counts[layer] = (uint32_t)final_count;
-        }
-        if (n_moe_seen < J->plan.n) {
-            // at least one "layer_N" in the plan matched no MoE layer in
-            // this file at all — almost certainly the plan was built for a
-            // different model or has a typo'd layer index
-            fprintf(stderr, "error: --prune-experts lists %d layer(s) but "
-                    "only %d matched an MoE layer in %s\n",
-                    J->plan.n, n_moe_seen, in_path);
-            goto done;
-        }
-        if (any_pruned && all_equal && n_moe_seen == n_moe_layers) {
-            uniform_prune = true;
-            uniform_count = first_count;
-        }
-    }
+    if (J->plan.n > 0 && !quantize_job_check_prune(J, in_path)) goto done;
 
     // Honor the file's declared data alignment. The reader derives every
     // tensor's data offset from general.alignment (gguf.c), and we copy that
@@ -1965,15 +1994,15 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     // so leaving the metadata at its original value there is correct, not
     // stale — it's still every layer's true ceiling, just no longer tight
     // for the pruned ones.
-    if (uniform_prune) {
+    if (J->uniform_prune) {
         const char *arch = gguf_get_str(&J->g, "general.architecture", "");
         char ec_key[128];
         snprintf(ec_key, sizeof(ec_key), "%s.expert_count", arch);
         gguf_kv *ec = gguf_get(&J->g, ec_key);
         if (ec && ec->type == GGUF_T_U32) {
             fprintf(stderr, "quantize: %s %llu -> %d (uniform prune)\n",
-                    ec_key, (unsigned long long)ec->v.u64, uniform_count);
-            ec->v.u64 = (uint64_t)uniform_count;
+                    ec_key, (unsigned long long)ec->v.u64, J->uniform_count);
+            ec->v.u64 = (uint64_t)J->uniform_count;
         }
     }
 
@@ -2211,7 +2240,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     uint64_t dropped_kv = 0;
     for (uint64_t i = 0; i < J->g.n_kv; i++) {
         bool re = kv_is_reauthored(J->g.kv[i].key) ||
-                  (J->layer_counts && !strcmp(J->g.kv[i].key, pl_key));
+                  (J->layer_counts && !strcmp(J->g.kv[i].key, J->pl_key));
         for (int k = 0; !re && k < J->n_reauth; k++)
             re = !strcmp(J->g.kv[i].key, J->reauth[k].key);
         if (re) dropped_kv++;
@@ -2219,11 +2248,11 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
 
     wr_u32(&J->w, 0x46554747);
     wr_u32(&J->w, 3);
-    wr_u64(&J->w, J->g.n_tensors - n_dropped);
+    wr_u64(&J->w, J->g.n_tensors - J->n_dropped);
     wr_u64(&J->w, J->g.n_kv - dropped_kv + 1 + (J->layer_counts ? 1 : 0) + (uint64_t)J->n_reauth);
     for (uint64_t i = 0; i < J->g.n_kv; i++) {
         bool re = kv_is_reauthored(J->g.kv[i].key) ||
-                  (J->layer_counts && !strcmp(J->g.kv[i].key, pl_key));
+                  (J->layer_counts && !strcmp(J->g.kv[i].key, J->pl_key));
         for (int k = 0; !re && k < J->n_reauth; k++)
             re = !strcmp(J->g.kv[i].key, J->reauth[k].key);
         if (re) continue;
@@ -2247,14 +2276,14 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     wr_u32(&J->w, 4);            // GGUF_T_U32
     wr_u32(&J->w, ftype_out);
     if (J->layer_counts) {
-        wr_str(&J->w, pl_key, strlen(pl_key));
+        wr_str(&J->w, J->pl_key, strlen(J->pl_key));
         wr_u32(&J->w, 9);        // GGUF_T_ARR
         wr_u32(&J->w, 4);        // of GGUF_T_U32
-        wr_u64(&J->w, n_blocks);
-        for (uint64_t i = 0; i < n_blocks; i++) wr_u32(&J->w, J->layer_counts[i]);
+        wr_u64(&J->w, J->n_blocks);
+        for (uint64_t i = 0; i < J->n_blocks; i++) wr_u32(&J->w, J->layer_counts[i]);
         fprintf(stderr, "quantize: %s written (%llu blocks; the global "
                 "expert_count stays the ceiling)\n",
-                pl_key, (unsigned long long)n_blocks);
+                J->pl_key, (unsigned long long)J->n_blocks);
     }
 
     // tensor table with new types/offsets (data alignment `align`)
