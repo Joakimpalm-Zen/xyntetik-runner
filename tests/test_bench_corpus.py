@@ -50,6 +50,10 @@ def test_the_driver_records_what_it_measured(tmp_path):
                     "--out", str(out)], check=True, timeout=600, cwd=ROOT)
     rec = json.loads(out.read_text())
     assert rec["model"]["size"] == model.stat().st_size and rec["runner"]["version"]
+    # every measurement ran alone: the calibration server was closed first and
+    # each served case had a server of its own; the cache state is stated
+    assert all(r.get("others_running") == 0 for r in rec["cases"] if "result" in r), rec["cases"]
+    assert rec["cache"].startswith("warm")
     rows = {(r["id"], r["attempt"]): r for r in rec["cases"]}
     assert ("decode-1row", "first") in rows and ("decode-1row", "repeat") in rows
     for (cid, _), r in rows.items():

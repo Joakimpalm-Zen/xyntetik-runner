@@ -12,9 +12,14 @@ tool-result cases, and scripts/idle_coexistence.py for the idle lifecycle
 
 A record says what it is a measurement of: the machine and the runner's
 --caps, the model's size and mtime (and sha256 with --hash), the threads,
-the P1 route the bench reported, and the attempt (the first run of a case
-reads its weights cold, a repeat warm). Prompts are built to the exact token
-count a case names, calibrated through the server's usage. There are no
+the P1 route the bench reported (every path its forwards took), and the
+attempt. Prompts are built to the exact token count a case names,
+calibrated through a server's usage before any measurement starts; that
+server is closed first, and every case then runs alone, a served case on a
+server of its own, so no measurement shares memory or a device with another
+copy of the model (each row records `others_running`, which is 0). The
+calibration reads the weights, so every measurement runs on a warm page
+cache: `cache` says so, and nothing here measures a cold load. There are no
 thresholds: compare two records of the same case on the same machine.
 Results are machine data; keep them out of the repository.
 """
@@ -24,6 +29,14 @@ import urllib.error, urllib.request
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # one token a word on every tokenizer the corpus has met: single letters
 WORDS = "a b c d e f g h i j k l m n o p q r s t u v w x y z".split()
+
+
+# every runner process the driver starts, so a row can prove it ran alone
+LIVE = []
+
+
+def others_running():
+    return sum(1 for p in LIVE if p.poll() is None)
 
 
 def free_port():
@@ -38,6 +51,7 @@ class Server:
 
     def __enter__(self):
         self.p = subprocess.Popen(self.args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        LIVE.append(self.p)
         for _ in range(600):
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=1).read()
@@ -53,6 +67,7 @@ class Server:
             self.p.wait(timeout=15)
         except subprocess.TimeoutExpired:
             self.p.kill()
+            self.p.wait(timeout=15)
 
     def post(self, path, body):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=json.dumps(body).encode(),
@@ -176,57 +191,59 @@ def main():
                 h.update(chunk)
         rec["model"]["sha256"] = h.hexdigest()
     gpu = bool(caps.get("gpu"))
-    with Server(args.runner, args.model, args.ctx, args.threads) as srv:
-        prompts = {}
-        n_layer = None
-        offset = None
-        for c in cases:
-            if c["kind"] != "bench":
-                continue
-            key = min(c["prompt_tokens"], args.ctx - c["n_predict"] - 8)
-            if offset is None:   # how the bench's count differs from the server's
-                probe, served = prompt_of(srv, 16)
-                offset = bench(args.runner, args.model, probe, {"n_predict": 1}, args.threads,
-                               None).get("prompt_tokens", served) - served
-            if key not in prompts:
+    rec["cache"] = ("warm: the calibration pass read the weights before the first "
+                    "measurement; first and repeat attempts both run on a warm page cache")
+    # calibration: the exact-length prompts, through a server that is closed
+    # before the first measurement (the probe bench beside it measures nothing)
+    keys = sorted({min(c["prompt_tokens"], args.ctx - c["n_predict"] - 8)
+                   for c in cases if c["kind"] == "bench"})
+    prompts = {}
+    if keys:
+        with Server(args.runner, args.model, args.ctx, args.threads) as srv:
+            probe, served = prompt_of(srv, 16)
+            offset = bench(args.runner, args.model, probe, {"n_predict": 1}, args.threads,
+                           None).get("prompt_tokens", served) - served
+            for key in keys:
                 prompts[key] = prompt_of(srv, key, offset)
-        for c in cases:
-            for attempt in range(args.repeat):
-                row = {"id": c["id"], "attempt": "first" if attempt == 0 else "repeat"}
-                if c["kind"] == "bench":
-                    gl = None
-                    if "gpu_layers" in c:
-                        if not gpu:
-                            row["skipped"] = "no GPU in this build"
-                            rec["cases"].append(row)
-                            break
-                        if n_layer is None:
-                            n_layer = bench(args.runner, args.model, "hi", {"n_predict": 1},
-                                            args.threads, None).get("layers")
-                        gl = n_layer // 2 if c["gpu_layers"] == "half" else n_layer
-                    text, _ = prompts[min(c["prompt_tokens"], args.ctx - c["n_predict"] - 8)]
-                    row["prompt_tokens_target"] = c["prompt_tokens"]
-                    row["result"] = bench(args.runner, args.model, text, c, args.threads, gl)
-                elif c["kind"] == "server":
-                    try:
-                        if c["requests"] == "tool_turn":
-                            row["result"] = tool_turn(srv, c)
-                        else:
-                            with Server(args.runner, args.model, args.ctx, args.threads,
-                                        parallel=max(1, c.get("concurrency", 1))) as s2:
-                                row["result"] = served_chat(s2, c)
-                    except urllib.error.HTTPError as e:
-                        row["result"] = {"error": f"HTTP {e.code}: {e.read()[:200].decode(errors='replace')}"}
-                elif c["kind"] == "idle":
-                    port = free_port()
-                    out = args.out + ".idle.json"
-                    subprocess.run([sys.executable, os.path.join(ROOT, c["tool"]), "--port", str(port),
-                                    "--cmd", f"{args.runner} --serve --port {port} -m {args.model} -c {args.ctx}",
-                                    "--out", out], capture_output=True, timeout=1200)
-                    row["result"] = json.load(open(out)) if os.path.exists(out) else {"error": "no report"}
-                    rec["cases"].append(row)
-                    break
+    n_layer = None
+    for c in cases:
+        for attempt in range(args.repeat):
+            row = {"id": c["id"], "attempt": "first" if attempt == 0 else "repeat"}
+            if c["kind"] == "bench":
+                gl = None
+                if "gpu_layers" in c:
+                    if not gpu:
+                        row["skipped"] = "no GPU in this build"
+                        rec["cases"].append(row)
+                        break
+                    if n_layer is None:
+                        n_layer = bench(args.runner, args.model, "hi", {"n_predict": 1},
+                                        args.threads, None).get("layers")
+                    gl = n_layer // 2 if c["gpu_layers"] == "half" else n_layer
+                text, _ = prompts[min(c["prompt_tokens"], args.ctx - c["n_predict"] - 8)]
+                row["prompt_tokens_target"] = c["prompt_tokens"]
+                row["others_running"] = others_running()
+                row["result"] = bench(args.runner, args.model, text, c, args.threads, gl)
+            elif c["kind"] == "server":
+                row["others_running"] = others_running()
+                try:
+                    with Server(args.runner, args.model, args.ctx, args.threads,
+                                parallel=max(1, c.get("concurrency", 1))) as s2:
+                        row["result"] = (tool_turn(s2, c) if c["requests"] == "tool_turn"
+                                         else served_chat(s2, c))
+                except urllib.error.HTTPError as e:
+                    row["result"] = {"error": f"HTTP {e.code}: {e.read()[:200].decode(errors='replace')}"}
+            elif c["kind"] == "idle":
+                port = free_port()
+                out = args.out + ".idle.json"
+                row["others_running"] = others_running()
+                subprocess.run([sys.executable, os.path.join(ROOT, c["tool"]), "--port", str(port),
+                                "--cmd", f"{args.runner} --serve --port {port} -m {args.model} -c {args.ctx}",
+                                "--out", out], capture_output=True, timeout=1200)
+                row["result"] = json.load(open(out)) if os.path.exists(out) else {"error": "no report"}
                 rec["cases"].append(row)
+                break
+            rec["cases"].append(row)
     json.dump(rec, open(args.out, "w"), indent=1)
     print(f"{len(rec['cases'])} results -> {args.out}", file=sys.stderr)
     return 0
