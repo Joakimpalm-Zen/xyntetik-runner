@@ -9,6 +9,9 @@
 #include "tpool.h"
 #include "sample.h"
 
+// the forward paths the route record counts (model.c route_path_name)
+#define MODEL_ROUTE_PATHS 5
+
 typedef enum {
     KV_OWNER_MALLOC = 0,
     KV_OWNER_GPU_BACKEND = 1,
@@ -379,6 +382,10 @@ typedef struct {
     // asked for ("" while it is not), and the last route line printed
     char     route_fallback[160];
     uint64_t route_last;
+    // the forward paths this instance ran (plan P1): solo, batch, keep, mtp,
+    // micro; how many forwards and the widest row count of each
+    uint32_t route_runs[MODEL_ROUTE_PATHS];
+    int      route_rows[MODEL_ROUTE_PATHS];
     f16_t *kcache, *vcache;  // [n_layer][n_ctx][kv_dim], fp16 (or q8_0 blocks
                              // when kv_q8 — treated as raw bytes then)
     kv_owner_t kv_owner;     // malloc on CPU/CUDA; backend-owned on Metal
@@ -1318,14 +1325,18 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
 // RUNNER_DEBUG_TIME=1 stage timing summary (stderr), no-op when unset
 void model_debug_time_report(void);
 
-// The route a forward actually took (plan P1): backend and device, the split
-// and where the experts run, the rows and the path (solo, batch, keep, mtp),
-// the KV cache type, the backend's own facts (gpu_route_detail), why it runs
-// on the CPU when a GPU was asked for, and the build. With RUNNER_DEBUG_ROUTE=1
-// model_route_note prints it to stderr whenever it differs from the last line
-// this instance printed; otherwise it is one cached getenv and a branch.
-// model_route_json writes the same record as a JSON object (--bench-json).
+// The route a forward actually took (plan P1), recorded after the forward on
+// whatever backend it ended on: backend and device, the split and where the
+// experts run, the rows and the path (solo, batch, keep, mtp, micro), the KV
+// type, the weight types by share, the CPU's activation (f32 or int8), the
+// backend's own facts (gpu_route_detail), why it runs on the CPU when a GPU
+// was asked for, the build and codegen flags, and every RUNNER_* switch set.
+// With RUNNER_DEBUG_ROUTE=1 model_route_note prints it to stderr whenever it
+// differs from the last line this instance printed; otherwise each forward
+// costs two stores and a compare. model_route_json writes the run's record as
+// a JSON object (--bench-json): every path taken with its forward count and
+// widest rows, the process's kernel counters and the compiler.
 void model_route_note(model_t *m, int rows, const char *path);
-void model_route_json(const model_t *m, int rows, const char *path, char *out, int cap);
+void model_route_json(const model_t *m, char *out, int cap);
 
 #endif // RUNNER_MODEL_H

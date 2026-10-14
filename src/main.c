@@ -4460,8 +4460,8 @@ static int run_bench(cli_opts *o, cli_run *rt) {
     // an editor-assistant user actually waits on, and the one a rate alone
     // hides. Both phases report seconds beside their rates.
     // the route the decode ran (plan P1): a rate means nothing without it
-    char route[1024];
-    model_route_json(&rt->m, 1, "solo", route, sizeof route);
+    char route[4096];
+    model_route_json(&rt->m, route, sizeof route);
     printf("{\"model\":\"%s\",\"arch\":\"%s\",\"context\":%d,"
            "\"gpu_layers\":%d,\"layers\":%d,\"prompt_tokens\":%d,"
            "\"generated_tokens\":%d,\"prompt_tok_s\":%.3f,"

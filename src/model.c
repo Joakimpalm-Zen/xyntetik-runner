@@ -5690,9 +5690,100 @@ static const char *route_build(void) {
 #endif
 }
 
+// The codegen flags this unit was compiled with that change which kernels
+// exist, read from the predefined macros (the CFLAGS string itself is not
+// in the binary). The compiler version is __VERSION__.
+static const char *route_codegen(void) {
+    return ""
+#ifdef __FAST_MATH__
+        "+fast-math"
+#endif
+#ifdef __AVX512F__
+        "+avx512f"
+#endif
+#ifdef __AVX512VNNI__
+        "+avx512vnni"
+#endif
+#ifdef __AVX2__
+        "+avx2"
+#endif
+#ifdef __FMA__
+        "+fma"
+#endif
+#ifdef __F16C__
+        "+f16c"
+#endif
+#ifdef __ARM_NEON
+        "+neon"
+#endif
+#ifdef __ARM_FEATURE_DOTPROD
+        "+dotprod"
+#endif
+        ;
+}
+
+#ifdef _WIN32
+#define ROUTE_ENVIRON _environ
+#else
+extern char **environ;
+#define ROUTE_ENVIRON environ
+#endif
+
+// Every RUNNER_* variable this process was started with, comma-joined: the
+// switches that select or pin a route (RUNNER_CUDA_TC=0, RUNNER_METAL_MM=0,
+// RUNNER_CPU_I8=1, ...) are all spelled that way, so reading the environment
+// is complete by construction where a list kept here would not be. A value
+// whose name says it might be a credential is reported as set, not shown.
+static void route_tuning(char *out, size_t cap) {
+    size_t n = 0;
+    out[0] = 0;
+    for (char **e = ROUTE_ENVIRON; e && *e && n + 1 < cap; e++) {
+        if (strncmp(*e, "RUNNER_", 7) != 0) continue;
+        const char *eq = strchr(*e, '=');
+        if (!eq) continue;
+        size_t kl = (size_t)(eq - *e);
+        bool secret = false;
+        static const char *const words[] = { "KEY", "TOKEN", "SECRET", "PASS" };
+        for (size_t w = 0; w < sizeof words / sizeof *words; w++) {
+            const char *f = strstr(*e, words[w]);
+            if (f && f < eq) secret = true;
+        }
+        int k = snprintf(out + n, cap - n, "%s%.*s=%.32s", n ? "," : "", (int)kl, *e,
+                         secret ? "(set)" : eq + 1);
+        if (k < 0 || (size_t)k >= cap - n) { out[n] = 0; break; }
+        n += (size_t)k;
+    }
+}
+
+// The weight types the matrices are stored in, by share of their bytes, at
+// most three: "Q4_K 78%,Q6_K 20%,F32 2%". Which kernels a forward runs follows
+// from these and from the backend's admission of each type.
+static void route_weights(const model_t *m, char *out, size_t cap) {
+    uint64_t bytes[64] = {0}, total = 0;
+    for (uint64_t i = 0; i < m->gf.n_tensors; i++) {
+        const gguf_tensor *t = &m->gf.tensors[i];
+        if (t->n_dims < 2 || t->type >= 64) continue;
+        bytes[t->type] += t->nbytes;
+        total += t->nbytes;
+    }
+    size_t n = 0;
+    out[0] = 0;
+    for (int k = 0; k < 3 && total; k++) {
+        int best = -1;
+        for (int t = 0; t < 64; t++)
+            if (bytes[t] && (best < 0 || bytes[t] > bytes[best])) best = t;
+        if (best < 0) break;
+        int w = snprintf(out + n, cap - n, "%s%s %d%%", n ? "," : "", ggml_type_name(best),
+                         (int)(100.0 * (double)bytes[best] / (double)total + 0.5));
+        if (w < 0 || (size_t)w >= cap - n) break;
+        n += (size_t)w;
+        bytes[best] = 0;
+    }
+}
+
 typedef struct {
-    const char *backend, *kv, *detail, *build;
-    char device[128];
+    const char *backend, *kv, *detail, *build, *codegen, *cpu_act;
+    char device[128], weights[96], tuning[512];
     int  gpu_layers, n_layer, moe_layers, moe_host;
 } route_facts;
 
@@ -5716,18 +5807,30 @@ static void route_collect(const model_t *m, route_facts *r) {
     r->kv = m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16";
     r->detail = m->gpu ? gpu_route_detail(m) : "";
     r->build = route_build();
+    r->codegen = route_codegen();
+    // the activation the CPU's matvecs dot against: f32, or int8 under the
+    // tolerance-gated RUNNER_CPU_I8 (a device path names its own in detail)
+    r->cpu_act = i8_dot_enabled() ? "int8" : "f32";
+    route_weights(m, r->weights, sizeof r->weights);
+    route_tuning(r->tuning, sizeof r->tuning);
 }
+
+enum { RP_SOLO, RP_BATCH, RP_KEEP, RP_MTP, RP_MICRO };
+static const char *const route_path_name[MODEL_ROUTE_PATHS] = {
+    "solo", "batch", "keep", "mtp", "micro" };
 
 void model_route_note(model_t *m, int rows, const char *path) {
     if (!route_enabled()) return;
     route_facts r;
     route_collect(m, &r);
-    char line[512];
+    char line[1280];
     snprintf(line, sizeof line,
              "route: backend=%s device=\"%s\" split=%d/%d experts_on_host=%d/%d "
-             "rows=%d path=%s kv=%s%s%s fallback=\"%s\" build=%s",
+             "rows=%d path=%s kv=%s weights=\"%s\" cpu_act=%s%s%s fallback=\"%s\" "
+             "build=%s%s tuning=\"%s\"",
              r.backend, r.device, r.gpu_layers, r.n_layer, r.moe_host, r.moe_layers,
-             rows, path, r.kv, r.detail[0] ? " " : "", r.detail, m->route_fallback, r.build);
+             rows, path, r.kv, r.weights, r.cpu_act, r.detail[0] ? " " : "", r.detail,
+             m->route_fallback, r.build, r.codegen, r.tuning);
     uint64_t h = 1469598103934665603ull;
     for (const char *p = line; *p; p++) { h ^= (unsigned char)*p; h *= 1099511628211ull; }
     if (h == m->route_last) return;
@@ -5735,8 +5838,19 @@ void model_route_note(model_t *m, int rows, const char *path) {
     fprintf(stderr, "%s\n", line);
 }
 
+// After every forward that ran, on whatever backend it ended on (a device
+// forward that failed has already moved this instance to the CPU, so the
+// line says where the rows were computed, not where they were sent first):
+// count the path and its widest row count for the record, and print the
+// line when RUNNER_DEBUG_ROUTE asks. Two stores and a compare otherwise.
+static void route_ran(model_t *m, int path, int rows) {
+    m->route_runs[path]++;
+    if (rows > m->route_rows[path]) m->route_rows[path] = rows;
+    if (route_enabled()) model_route_note(m, rows, route_path_name[path]);
+}
+
 // a JSON string body for a device name or a reason (model.c links without
-// json.c in the focused test binaries, so it escapes its own two strings)
+// json.c in the focused test binaries, so it escapes its own strings)
 static void route_escape(const char *s, char *out, size_t cap) {
     size_t n = 0;
     for (; *s && n + 7 < cap; s++) {
@@ -5748,18 +5862,58 @@ static void route_escape(const char *s, char *out, size_t cap) {
     out[n] = 0;
 }
 
-void model_route_json(const model_t *m, int rows, const char *path, char *out, int cap) {
+// The process's kernel counters, for the end-of-run record only (they move
+// every forward, so the debug line leaves them out): tensor-core or simdgroup
+// GEMM dispatches per weight type, and the counted special routes.
+static int route_kernels(char *out, int cap) {
+    int n = snprintf(out, (size_t)cap, "{\"gemm_by_type\":{");
+    bool first = true;
+    for (int t = 0; t < 64 && n < cap; t++) {
+        unsigned long c = gpu_tc_dispatches_type(t);
+        if (!c) continue;
+        n += snprintf(out + n, (size_t)(cap - n), "%s\"%s\":%lu", first ? "" : ",",
+                      ggml_type_name(t), c);
+        first = false;
+    }
+    if (n < cap)
+        n += snprintf(out + n, (size_t)(cap - n),
+                      "},\"cuda_splitk\":%lu,\"metal_fast_mv\":%lu,\"metal_attn_coop\":%lu,"
+                      "\"metal_attn_tile\":%lu,\"metal_attn_gqa\":%lu,\"cpu_dot_multi\":%lu}",
+                      gpu_splitk_dispatches(), gpu_mv_dispatches(), gpu_attn_coop_dispatches(),
+                      gpu_attn_tile_dispatches(), gpu_attn_gqa_dispatches(),
+                      vec_dot_multi_calls());
+    return n;
+}
+
+void model_route_json(const model_t *m, char *out, int cap) {
     route_facts r;
     route_collect(m, &r);
-    char dev[260], why[330];
+    char dev[260], why[330], wts[200], tun[1100], cc[200], kern[1024], paths[400];
     route_escape(r.device, dev, sizeof dev);
     route_escape(m->route_fallback, why, sizeof why);
+    route_escape(r.weights, wts, sizeof wts);
+    route_escape(r.tuning, tun, sizeof tun);
+    route_escape(__VERSION__, cc, sizeof cc);
+    route_kernels(kern, sizeof kern);
+    // every path the run's forwards took, with how often and how wide
+    int pn = snprintf(paths, sizeof paths, "{");
+    for (int p = 0, first = 1; p < MODEL_ROUTE_PATHS; p++) {
+        if (!m->route_runs[p]) continue;
+        pn += snprintf(paths + pn, sizeof paths - (size_t)pn,
+                       "%s\"%s\":{\"forwards\":%u,\"rows_max\":%d}", first ? "" : ",",
+                       route_path_name[p], m->route_runs[p], m->route_rows[p]);
+        first = 0;
+    }
+    snprintf(paths + pn, sizeof paths - (size_t)pn, "}");
     snprintf(out, cap,
              "{\"backend\":\"%s\",\"device\":\"%s\",\"gpu_layers\":%d,\"layers\":%d,"
-             "\"experts_on_host\":%d,\"moe_layers\":%d,\"rows\":%d,\"path\":\"%s\","
-             "\"kv\":\"%s\",\"backend_detail\":\"%s\",\"fallback\":\"%s\",\"build\":\"%s\"}",
-             r.backend, dev, r.gpu_layers, r.n_layer, r.moe_host, r.moe_layers, rows, path,
-             r.kv, r.detail, why, r.build);
+             "\"experts_on_host\":%d,\"moe_layers\":%d,\"paths\":%s,"
+             "\"kv\":\"%s\",\"weights\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\","
+             "\"kernels\":%s,\"fallback\":\"%s\",\"build\":\"%s\",\"codegen\":\"%s\","
+             "\"compiler\":\"%s\",\"tuning\":\"%s\"}",
+             r.backend, dev, r.gpu_layers, r.n_layer, r.moe_host, r.moe_layers, paths,
+             r.kv, wts, r.cpu_act, r.detail, kern, why, r.build,
+             r.codegen[0] == '+' ? r.codegen + 1 : r.codegen, cc, tun);
 }
 
 void model_debug_time_report(void) {
@@ -10652,9 +10806,8 @@ static float *forward_head(model_t *m, int n, int dbg) {
     return m->logits;
 }
 
-float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
-                           bool want_logits) {
-    if (route_enabled()) model_route_note(m, n, n == 1 ? "solo" : "batch");
+static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int pos,
+                                bool want_logits) {
     int dbg = forward_begin(m, n, pos);
     forward_ple_before_split(m, tokens, n);
     int start;
@@ -10675,6 +10828,16 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                m->x, sizeof(float) * (size_t)m->n_embd);
     if (!want_logits) return NULL;
     return forward_head(m, n, dbg);
+}
+
+// The forward, then its route record: the path is the verify walk's keep
+// when this forward is flagged to emit every row's head
+float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
+                           bool want_logits) {
+    int path = n > 0 && m->spec_want_all >= n ? RP_KEEP : n == 1 ? RP_SOLO : RP_BATCH;
+    float *lg = forward_batch_run(m, tokens, n, pos, want_logits);
+    route_ran(m, path, n);
+    return lg;
 }
 
 // ---- speculative verification: the state a verify round reads (plan P6)
@@ -10715,7 +10878,6 @@ bool model_spec_verify_ok(const model_t *m) {
 }
 
 bool model_forward_batch_keep(model_t *m, const int32_t *tokens, int n, int pos) {
-    if (route_enabled()) model_route_note(m, n, "keep");
     if (!model_spec_verify_ok(m)) return false;
     if (!m->all_logits)
         m->all_logits = malloc(sizeof(float) * (size_t)m->spec_batch * m->n_vocab);
@@ -11027,8 +11189,7 @@ float *model_mtp_draft_logits(model_t *m) {
     return lg;
 }
 
-float *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos) {
-    if (route_enabled()) model_route_note(m, 1, "mtp");
+static float *mtp_step_run(model_t *m, const float *h, int32_t tok, int pos) {
     if (!model_mtp_ready(m) || !h || m->mtp_qn != 0) return NULL;
     if (m->gpu && gpu_mtp_bound(m)) {
         // h is the device-resident chained hidden (model_mtp_hidden returns a
@@ -11041,6 +11202,12 @@ float *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos) {
     if (!mtp_run(m, h, 0, &tok, 1, pos, true)) return NULL;
     mtp_dump(m, m->mtp_logits, pos + 1, "step");
     return m->mtp_logits;
+}
+
+float *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos) {
+    float *lg = mtp_step_run(m, h, tok, pos);
+    if (lg) route_ran(m, RP_MTP, 1);
+    return lg;
 }
 
 const float *model_mtp_hidden(const model_t *m) { return m->mtp_hid; }
@@ -11123,6 +11290,7 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
             for (int i = done; i < done + take; i++) {
                 model_t *m = b->seqs[idx[i]];
                 apply_head_transforms(m, out[i]);
+                route_ran(m, RP_MICRO, take);
             }
             // The backend's logit rows live in ONE buffer per batch that the
             // next microbatch overwrites, and the caller reads out[] only

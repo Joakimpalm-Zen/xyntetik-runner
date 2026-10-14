@@ -5826,10 +5826,23 @@ bool gpu_spec_keep_ok(const model_t *m) {
     return g && m->gpu_layers >= m->n_layer && m->spec_batch <= MVB;
 }
 
+// The selections enc_mv and the MoE path make for this instance (plan P1;
+// docs/kernel-routes.md has each one's obligation): whether one-token decode
+// replays its graph, the tensor-core GEMM's mode (promoted per type and
+// architecture, forced on, or off), the int8-activation GEMVs, the
+// small-batch twins, and fused or eager MoE routing.
 const char *gpu_route_detail(const model_t *m) {
     const gpu_t *g = m ? m->gpu : NULL;
     if (!g) return "";
-    return g->graph_bad ? "graph=off" : g->gexec ? "graph=replay" : "graph=none";
+    static _Thread_local char buf[160];
+    if (g_tc_state == TC_ENV_UNSET) (void)tc_on(m, T_Q4_K);   // reads the env once
+    snprintf(buf, sizeof buf, "graph=%s tc=%s q8x=%s small_batch=%s%s%s",
+             g->graph_bad ? "off" : g->gexec ? "replay" : "none",
+             g_tc_state < 0 ? "promoted" : g_tc_state ? "forced" : "off",
+             gpu_q8x_on() ? "on" : "off", gpu_small_batch_on() ? "on" : "off",
+             m->n_expert > 0 ? " moe=" : "",
+             m->n_expert > 0 ? (g->moe_fused_ok ? "fused" : "eager") : "");
+    return buf;
 }
 float *gpu_spec_logits(model_t *m, int row) {
     gpu_t *g = m ? m->gpu : NULL;

@@ -2885,7 +2885,8 @@ test-makefile-sane:
 # split-order test went three weeks without a run.)
 CUDA_GATED_TESTS = tests/test_apertus.py tests/test_gpu_declines.py \
                    tests/test_gpu_split_order.py tests/test_hybrid_admission.py \
-                   tests/test_moe.py tests/test_ornith_cpu.py tests/test_train.py
+                   tests/test_moe.py tests/test_ornith_cpu.py tests/test_train.py \
+                   tests/test_bench_json.py
 test-cuda-gated: runner
 	@mkdir -p .build/ci
 	$(PYTHON) -m pytest -q -rs --junitxml=.build/ci/cuda-gated.xml $(CUDA_GATED_TESTS)

@@ -56,8 +56,15 @@ def test_the_driver_records_what_it_measured(tmp_path):
         res = r["result"]
         assert "error" not in res, (cid, res)
         if cid in ("decode-1row", "prefill-33", "verify-k3"):
-            assert res["route"]["path"] == "solo" and res["gen_tok_s"] > 0, (cid, res)
+            paths = res["route"]["paths"]
+            assert res["gen_tok_s"] > 0 and 1 < paths["batch"]["rows_max"], (cid, res)
             assert 0 < res["prompt_tokens"] <= r["prompt_tokens_target"], (cid, res)
+            if cid == "verify-k3":
+                # drafted decode runs as 4-row verify rounds, not one-row steps:
+                # the record says so instead of the "solo" it used to claim
+                assert paths["keep"]["rows_max"] == 4 and "solo" not in paths, paths
+            else:
+                assert paths["solo"]["rows_max"] == 1, paths
     # the model drafting for itself, greedy: every round verifies the full width
     spec = rows[("verify-k3", "first")]["result"]["spec"]
     assert re.search(r"\(4\.00 tok/round\)", spec), spec

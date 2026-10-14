@@ -4069,9 +4069,25 @@ bool gpu_spec_keep_ok(const model_t *m) {
     return true;
 }
 
+// The selections enc_mv_n, attention and the MoE prefill make (plan P1;
+// docs/kernel-routes.md has each one's obligation): decode fusion, the
+// simdgroup prefill GEMM, the fast or identity decode matvec, the
+// cooperative or identity attention read, grouped-MMA MoE prefill and its
+// staging, and whether the Metal 4 tensor GEMM admitted any type.
 const char *gpu_route_detail(const model_t *m) {
-    (void)m;
-    return metal_fuse_on() ? "fusion=on" : "fusion=off";
+    const gpu_t *g = m ? (const gpu_t *)m->gpu : NULL;
+    static _Thread_local char buf[160];
+    bool tensor = false;
+    for (int t = 0; g && t < METAL_TYPE_SLOTS; t++) if (g->p_tensor[t]) tensor = true;
+    int moe = metal_moe_mm_on();
+    snprintf(buf, sizeof buf, "fusion=%s mm=%s mv=%s attn=%s%s%s tensor=%s",
+             metal_fuse_on() ? "on" : "off", metal_mm_on() ? "on" : "off",
+             metal_mv_fast_on() ? "fast" : "identity",
+             metal_attn_coop_on() ? "coop" : "identity",
+             m && m->n_expert > 0 ? " moe_mm=" : "",
+             m && m->n_expert > 0 ? (moe == 2 ? "half" : moe ? "f32" : "off") : "",
+             tensor ? "on" : "off");
+    return buf;
 }
 
 float *gpu_spec_logits(model_t *mm, int row) {
