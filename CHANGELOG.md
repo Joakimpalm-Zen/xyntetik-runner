@@ -26,7 +26,11 @@ Current release and unreleased changes. Compatibility follows the
   Nemotron-H MoE (`nemotron_h_moe`) the gate-less shared expert read an input
   buffer nothing had written. The host path now runs the forward's own FFN
   stages, and `tests/test_moe_host_bridge.c` holds it equal, bit for bit, to
-  the CPU forward on every MoE layer of the fixtures.
+  the CPU forward on every MoE layer of the fixtures. On x86-64 the copy
+  also differed from the CPU forward in its last bits on every other MoE
+  family (it compiled differently), so `--cpu-moe` results on CUDA move
+  slightly there too: gpt-oss 20B's teacher-forced mean NLL by 3e-5 and
+  Qwen3 30B-A3B's by 1e-3 with every expert layer on the host.
 
 - **`runner -i` shows a reasoning model's thinking as thinking.** The chat
   loop started its reasoning split inside the thought only for Harmony,
