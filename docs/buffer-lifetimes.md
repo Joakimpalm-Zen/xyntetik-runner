@@ -22,6 +22,15 @@ staging ring that does not exist today.
 | Adapter tables | the instance, or a request when `lora_borrowed` is set | `--lora` load, or the request | `model_lora_free()`; a borrowed table is never freed by the model | a borrowed table is the request's |
 | Training tape and backward scratch | one training step | the step | the step | never |
 
+The weight mapping is read-only (`PROT_READ`, `MAP_PRIVATE` on POSIX; a
+read-only view on Windows). After a CUDA init succeeds,
+`cuda_release_host_weights()` hands back the host pages of every tensor the
+device now holds (the offloaded layers, the output on a full split) and of
+the token embedding, which the host reads one row per token. The mapping
+stays: a later CPU read of those tensors (a fallback forward, a training
+backward) faults the same bytes back in from the file. Before this, every
+page the upload copied stayed resident for the life of the process.
+
 On the CPU and CUDA, the instance's host KV is `malloc` memory
 (`KV_OWNER_MALLOC`). `gpu_owner` can outlive `m->gpu` so that a CPU fallback
 can keep reading backend-owned KV; clearing `m->gpu` never implies the

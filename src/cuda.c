@@ -2938,6 +2938,43 @@ static void cuda_report_init(model_t *m, gpu_t *g, size_t act_bytes) {
                 act_bytes / 1e9);
 }
 
+// The host pages of what the device now holds. Every upload copies its
+// tensors out of the read-only file mapping, and every page that copy
+// touched stayed in this process's resident set for its lifetime: a fully
+// offloaded Qwen2.5-7B Q4_K_M server held ~5 GB of host RSS for a 4.7 GB
+// file, against ~0.8 GB for llama.cpp on the same request (1.2.0 study,
+// R120-028), while --fit and docs/buffer-lifetimes.md bill the host only
+// for what the CPU runs. Same walk as the bound upload: the device layers'
+// mixers, their FFN unless the bank stays home, the output on a full split.
+// The token embedding too: the host reads it one row per token
+// (stage_x), so only the rows a conversation uses come back.
+// Nothing here changes a value. The map is PROT_READ + MAP_PRIVATE, so a
+// page a later CPU read does want (a fallback forward, a training backward)
+// faults back in with the file's bytes. --mlock locks the mapping after
+// the load returns (model_load), which wires every page back in: the
+// operator asked for exactly that. weights_locked is checked anyway, so a
+// lock that ever moves ahead of this cannot be undone by it (on Windows the
+// trim IS an unlock).
+static bool release_host_pages(gguf_tensor *t, void *ctx) {
+    (void)ctx;
+    if (t && t->data) plat_release_pages(t->data, t->nbytes);
+    return true;
+}
+
+static void cuda_release_host_weights(model_t *m) {
+    if (m->weights_locked) return;
+    for (int l = 0; l < m->gpu_layers && l < m->n_layer; l++) {
+        layer_t *ly = &m->layers[l];
+        gguf_tensor *mix[LAYER_MIXER_MAX];
+        int nmix = layer_mixer_tensors(ly, mix);
+        for (int i = 0; i < nmix; i++) release_host_pages(mix[i], NULL);
+        if (!(ly->is_moe && moe_on_host(m, l)))
+            layer_ffn_tensors_each(ly, m->n_expert, release_host_pages, NULL);
+    }
+    if (m->gpu_layers >= m->n_layer) release_host_pages(m->output, NULL);
+    release_host_pages(m->tok_embd, NULL);
+}
+
 bool gpu_init(model_t *m) {
     if (!cuda_admit(m) || !cuda_open_driver()) return false;
 
@@ -2968,6 +3005,8 @@ bool gpu_init(model_t *m) {
 
     vram_probe("after instance buffers");
     m->gpu = g;
+    // only now: a load that fails above runs on the CPU, from these pages
+    cuda_release_host_weights(m);
     return true;
 
 fail:

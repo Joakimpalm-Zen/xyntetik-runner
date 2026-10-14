@@ -81,6 +81,21 @@ void plat_willneed(const void *addr, size_t len) {
     (void)pvm(GetCurrentProcess(), 1, &r, 0);
 }
 
+// VirtualUnlock on pages that are NOT locked removes them from the working
+// set (documented behaviour; it then reports ERROR_NOT_LOCKED, which is the
+// expected answer here, so the return value carries nothing). A mapped view
+// cannot be decommitted in part, and this trim is what the memory manager
+// offers instead: the pages stay in the standby list and fault back in soft.
+void plat_release_pages(const void *addr, size_t len) {
+    if (!addr || !len) return;
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    uintptr_t psz = si.dwPageSize ? si.dwPageSize : 4096;
+    uintptr_t lo = ((uintptr_t)addr + psz - 1) & ~(psz - 1);
+    uintptr_t hi = ((uintptr_t)addr + len) & ~(psz - 1);
+    if (hi > lo) (void)VirtualUnlock((void *)lo, (SIZE_T)(hi - lo));
+}
+
 void plat_munmap(void *p, size_t size) {
     (void)size;
     if (p) UnmapViewOfFile(p);
@@ -508,6 +523,19 @@ void plat_willneed(const void *addr, size_t len) {
 }
 
 bool plat_willneed_available(void) { return true; }   // madvise is always there
+
+// MADV_DONTNEED on a PROT_READ, MAP_PRIVATE file mapping (plat_mmap_ro's)
+// drops the pages from this process; the next read maps the file's bytes
+// again. On a private mapping that had been WRITTEN it would discard the
+// writes, which is why this is only ever for plat_mmap_ro's read-only maps.
+void plat_release_pages(const void *addr, size_t len) {
+    long ps = sysconf(_SC_PAGESIZE);
+    if (!addr || !len || ps <= 0) return;
+    uintptr_t psz = (uintptr_t)ps;
+    uintptr_t lo = ((uintptr_t)addr + psz - 1) & ~(psz - 1);
+    uintptr_t hi = ((uintptr_t)addr + len) & ~(psz - 1);
+    if (hi > lo) (void)madvise((void *)lo, hi - lo, MADV_DONTNEED);
+}
 
 void plat_munmap(void *p, size_t size) {
     if (p) munmap(p, size);

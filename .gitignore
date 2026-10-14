@@ -18,6 +18,8 @@ runner-debug.dSYM/
 # families). That is why the gate is not wired into `make test`.
 .build/
 test-dot-route
+# test_residency's scratch file, removed unless the test dies mid-run
+test-residency-release.tmp
 test-dot-route.exe
 test-iq-decode
 test-iq-decode.exe

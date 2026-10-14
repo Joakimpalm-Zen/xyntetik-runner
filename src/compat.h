@@ -49,6 +49,14 @@ void   plat_willneed(const void *addr, size_t len);
 // already (the Metal shader library that failed to compile while --caps still
 // advertised the backend).
 bool   plat_willneed_available(void);
+// Hand the pages of a range of a READ-ONLY file mapping back to the OS: they
+// leave this process's resident set, and a later read faults them back in
+// from the file (normally the page cache) with the same bytes. Only whole
+// pages inside the range go, so a neighbour sharing a boundary page keeps
+// it. Advisory like plat_willneed: it changes residency, never a value.
+// Never on a locked range (--mlock): Linux refuses it there, and the Windows
+// call that trims the working set is the one that unlocks.
+void   plat_release_pages(const void *addr, size_t len);
 void   plat_munmap(void *p, size_t size);
 
 int         plat_cpu_count(void);
