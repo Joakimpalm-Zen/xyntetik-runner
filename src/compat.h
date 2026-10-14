@@ -127,6 +127,11 @@ void        plat_parent_watch(long pid);
 void        plat_sleep_ms(int ms);
 long        plat_pid_self(void);
 
+// Is file descriptor `fd` a terminal a person is at? On Windows a console,
+// not merely a character device: _isatty() is also true for NUL, which is
+// where services, process managers and subprocess.DEVNULL put stdin.
+bool        plat_is_terminal(int fd);
+
 // Is `pid` a process that still exists? Used to reap registry entries left by
 // runners that died without deregistering (SIGKILL, crash, OOM killer).
 bool        plat_pid_alive(long pid);

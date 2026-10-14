@@ -36,13 +36,14 @@
 
 // Bare-invocation tray launch needs to know whether a human is at the other
 // end: a piped/redirected probe (CI, scripts, `runner | head`) must get usage
-// text, never a GUI event loop.
+// text, never a GUI event loop. plat_is_terminal answers it per platform (on
+// Windows a console, not any character device: NUL is one).
 #ifdef _WIN32
 #include <io.h>
-#define RUNNER_TTY(f) _isatty(_fileno(f))
+#define RUNNER_TTY(f) plat_is_terminal(_fileno(f))
 #else
 #include <unistd.h>
-#define RUNNER_TTY(f) isatty(fileno(f))
+#define RUNNER_TTY(f) plat_is_terminal(fileno(f))
 #endif
 #include <sys/stat.h>
 

@@ -297,6 +297,14 @@ long plat_pid_self(void) {
     return (long)GetCurrentProcessId();
 }
 
+bool plat_is_terminal(int fd) {
+    // GetConsoleMode succeeds only on a console handle; NUL, a pipe and a
+    // file all fail it, which _isatty cannot tell apart for NUL
+    intptr_t h = _get_osfhandle(fd);
+    DWORD mode;
+    return h != -1 && GetConsoleMode((HANDLE)h, &mode) != 0;
+}
+
 bool plat_pid_alive(long pid) {
     if (pid <= 0) return false;
     HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid);
@@ -698,6 +706,10 @@ void plat_sleep_ms(int ms) {
 
 long plat_pid_self(void) {
     return (long)getpid();
+}
+
+bool plat_is_terminal(int fd) {
+    return isatty(fd) == 1;
 }
 
 bool plat_pid_alive(long pid) {
