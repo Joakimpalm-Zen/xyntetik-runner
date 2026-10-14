@@ -233,6 +233,37 @@ static snode *n_qwen_no_think(jv *t, jv *f, char *e, int c) {
 static snode *n_qwen_parallel(jv *t, jv *f, char *e, int c) {
     (void)f; return schema_compile_qwen_parallel(t, NULL, e, c);
 }
+static snode *n_qwen_named(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_qwen_turn(t, false, "add", NULL, false, false, e, c);
+}
+// Qwen3-Coder's function/parameter XML: the auto turn with a final schema,
+// the named call, and the parallel required turn.
+static snode *n_qwen_xml(jv *t, jv *f, char *e, int c) {
+    return schema_compile_qwen_xml_turn(t, true, NULL, f, false, e, c);
+}
+static snode *n_qwen_xml_named(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_qwen_xml_turn(t, false, "add", NULL, false, e, c);
+}
+static snode *n_qwen_xml_parallel(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_qwen_xml_turn(t, false, NULL, NULL, true, e, c);
+}
+// Nemotron Nano's <TOOLCALL> list: one entry, a named entry, and the
+// parallel list.
+static snode *n_nemotron(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_nemotron_turn(t, NULL, false, e, c);
+}
+static snode *n_nemotron_named(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_nemotron_turn(t, "add", false, e, c);
+}
+static snode *n_nemotron_parallel(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_nemotron_turn(t, NULL, true, e, c);
+}
+static snode *n_harmony_named(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_harmony_turn(t, false, "add", NULL, false, e, c);
+}
+static snode *n_gemma4_named(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_gemma4_turn(t, false, "add", NULL, false, false, e, c);
+}
 
 static const struct { const char *name; native_fn fn; } NATIVE[] = {
     { "atem_tools",       n_atem_tools },
@@ -248,6 +279,15 @@ static const struct { const char *name; native_fn fn; } NATIVE[] = {
     { "qwen",             n_qwen },
     { "qwen_no_think",    n_qwen_no_think },
     { "qwen_parallel",    n_qwen_parallel },
+    { "qwen_named",       n_qwen_named },
+    { "qwen_xml",         n_qwen_xml },
+    { "qwen_xml_named",   n_qwen_xml_named },
+    { "qwen_xml_parallel", n_qwen_xml_parallel },
+    { "nemotron",         n_nemotron },
+    { "nemotron_named",   n_nemotron_named },
+    { "nemotron_parallel", n_nemotron_parallel },
+    { "harmony_named",    n_harmony_named },
+    { "gemma4_named",     n_gemma4_named },
 };
 
 static void test_native_compilers_survive_allocation_failure(void) {
