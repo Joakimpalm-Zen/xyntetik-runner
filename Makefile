@@ -2836,7 +2836,20 @@ test-makefile-sane:
 
 
 .PHONY: template-conformance template-conformance-refresh template-conformance-baseline template-conformance-harmony-oracle
-.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-qwen4exp test-ts-client
+# The pytest cases that skip without a CUDA device, which hosted CI never has,
+# for a CUDA host: a case still skipped there for want of CUDA fails the
+# target. scripts/cuda-gate.sh runs it as a step. (Until it did, a failing
+# split-order test went three weeks without a run.)
+CUDA_GATED_TESTS = tests/test_apertus.py tests/test_gpu_declines.py \
+                   tests/test_gpu_split_order.py tests/test_hybrid_admission.py \
+                   tests/test_moe.py tests/test_ornith_cpu.py tests/test_train.py
+test-cuda-gated: runner
+	@mkdir -p .build/ci
+	$(PYTHON) -m pytest -q -rs --junitxml=.build/ci/cuda-gated.xml $(CUDA_GATED_TESTS)
+	$(PYTHON) scripts/check-junit.py --no-skips-matching '(?i)cuda|device|gpu' \
+	    --allow-skip 'CUDA runtime is available' .build/ci/cuda-gated.xml
+
+.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-qwen4exp test-ts-client test-cuda-gated
 .PHONY: test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # The TypeScript client (R10.7): type-checked with the pinned compiler and run

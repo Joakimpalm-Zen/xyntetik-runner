@@ -12,6 +12,8 @@
 #   caps         --caps reports a CUDA device
 #   tc-overflow  make test-tc-overflow (fp16 range of the tensor-core operands)
 #   iquants      make test-cuda-iquants (device codebook decoders vs the CPU)
+#   cuda-gated   make test-cuda-gated (the pytest cases that skip without CUDA,
+#                none of them allowed to skip here for want of it)
 #   cpu-cuda     scripts/cpu_cuda_check.py on one small model (byte identity)
 # and a summary cuda-gate-<stamp>.json plus, on a pass, the device-evidence
 # row written by scripts/device-evidence.py into a COPY of the ledger, so the
@@ -99,6 +101,7 @@ FAIL=0
 run_step tc-overflow make $MAKE_ARGS PYTHON="$PY" test-tc-overflow || FAIL=1
 # shellcheck disable=SC2086
 run_step iquants make $MAKE_ARGS PYTHON="$PY" test-cuda-iquants || FAIL=1
+run_step cuda-gated make $MAKE_ARGS PYTHON="$PY" test-cuda-gated || FAIL=1
 run_step cpu-cuda "$PY" scripts/cpu_cuda_check.py "$MODEL" --runner "$EXE" --tokens 64 || FAIL=1
 
 if grep -q "skipped (no CUDA device)" "$DIR/tc-overflow.log" 2>/dev/null; then

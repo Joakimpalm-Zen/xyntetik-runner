@@ -87,6 +87,24 @@ class CommandGate(unittest.TestCase):
                                     "--no-skips", str(xml)], capture_output=True)
                 self.assertEqual(p.returncode, expected, body)
 
+    def test_a_device_lane_rejects_only_skips_for_want_of_the_device(self):
+        """test-cuda-gated: on a CUDA host a case skipped for want of CUDA did
+        not run, while a skip for something else (or one the lane allows)
+        does not make the device lane fail."""
+        with tempfile.TemporaryDirectory() as td:
+            xml = pathlib.Path(td) / "cuda.xml"
+            def run(reason):
+                xml.write_text('<testsuite><testcase name="a"/><testcase name="b">'
+                               '<skipped message="%s"/></testcase></testsuite>' % reason)
+                return subprocess.run([sys.executable, str(ROOT / "scripts/check-junit.py"),
+                                       "--no-skips-matching", "(?i)cuda|device|gpu",
+                                       "--allow-skip", "CUDA runtime is available",
+                                       str(xml)], capture_output=True).returncode
+            self.assertEqual(run("no CUDA device"), 1)
+            self.assertEqual(run("--cpu-moe placement is CUDA-side"), 1)
+            self.assertEqual(run("openssl not available"), 0)
+            self.assertEqual(run("CUDA runtime is available"), 0)
+
 
 class ShutdownGate(unittest.TestCase):
     def test_forced_kill_is_not_a_clean_shutdown(self):
