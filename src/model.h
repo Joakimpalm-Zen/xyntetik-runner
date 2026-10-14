@@ -443,6 +443,9 @@ typedef struct {
     int    xdim;             // max(n_embd, per-layer q_dim); sizes xb/xb2/q
     int    reserve_vram_pct; // VRAM cap for the GPU backend (0 = free VRAM)
     int    gpu_layers_override; // forced leading GPU layer count (0 = auto)
+    int    gpu_instances;    // instances that will share one device upload
+                             // (--parallel N): the CUDA split budgets each
+                             // one's KV and scratch, the weights once
     int    mtp_layers;       // declared multi-token-prediction blocks excluded
                              // from the backbone; dense decoding never runs
                              // them. With model_params.mtp and exactly one
@@ -865,8 +868,11 @@ typedef struct {
     // How many sequences will share this reservation. A reservation is a
     // budget for the whole server, and its two halves scale differently: the
     // weights are uploaded once and shared, the KV cache and activation head
-    // are paid per slot. 0 or 1 means a lone sequence. Only the -c 0 auto-fit
-    // reads it; an explicit -c is the caller's own arithmetic.
+    // are paid per slot. 0 or 1 means a lone sequence. The -c 0 auto-fit
+    // sizes the context by it (an explicit -c is the caller's own
+    // arithmetic), and the CUDA split budgets that many instances of KV and
+    // scratch (model_t.gpu_instances), so every slot fits the split the
+    // first one decides.
     int   n_seq;
     // --wait-for-vram: seconds to queue behind other registered runners rather
     // than refusing outright. 0 = refuse immediately (the default).
@@ -1153,6 +1159,11 @@ typedef struct {
     uint64_t kv_f16_per_tok, kv_q8_per_tok, kv_fp4_per_tok, kv_k8v4_per_tok;
     uint64_t kv_f16, kv_q8, kv_fp4, kv_k8v4; // at n_ctx; 0 when that KV format is illegal
     uint64_t available;          // RAM available now, 0 = could not tell
+    // Slots that will share the weights (--parallel N; model_fit_report sets
+    // 1). Each pays its own KV cache, and on a discrete GPU its own scratch;
+    // the kv_* totals above are for ONE slot, the split and the verdict
+    // charge n_seq of them.
+    int      n_seq;
     // Discrete GPU (model_fit_gpu). With gpu set, the verdict compares RAM
     // against what stays on the HOST once the leading layers that fit the
     // device budget are offloaded, which is how a CUDA load splits. Per KV

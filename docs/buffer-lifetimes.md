@@ -91,16 +91,21 @@ boundary activation back through the host `x` buffer.
 alone. It separates the whole file (`weights`), the bytes touched per token
 (`hot`, smaller for a sparse MoE), KV per token and at the requested context
 for each KV format, and on a discrete GPU a fixed charge for the token
-embedding, activation scratch and headroom (`gpu_fixed`) before it counts
-how many leading layers fit.
+embedding and headroom plus each slot's activation scratch (`gpu_fixed`)
+before it counts how many leading layers fit. With `--parallel N`
+(`model_fit.n_seq`) every slot pays its own KV cache, on the host and for
+the offloaded layers on the device, and its own scratch; the weights are
+paid once. The CUDA loader plans its split the same way
+(`shared_plan_budget()`, `m->gpu_instances`), so every slot fits the split
+the first one decides. The host bill includes every layer's KV, because the
+host copy is the authoritative one.
 
-It does **not** yet separate:
+It does **not** separate:
 
-- per-slot state for `--parallel N`: the estimate is one instance, and each
-  further slot adds its own KV and scratch while the weights stay shared;
 - peak simultaneously-live temporary scratch (a matvec tile, a widened
   Metal batch, the CUDA microbatch tables);
-- device memory the CUDA weight registry already holds for another slot.
+- device memory a running server already holds: the answer is "right now",
+  so a resident server shows up only as less free memory.
 
 Those are where a future planner would add accounting; measure against
 `--doctor` and the idle tool before relying on an estimate

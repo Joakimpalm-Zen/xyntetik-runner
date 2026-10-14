@@ -99,6 +99,23 @@ def test_context_changes_the_kv_line(runner_bin):
     assert small != large
 
 
+def test_parallel_slots_each_pay_a_cache(runner_bin):
+    """--parallel N: the weights once, a KV cache per slot, as the server's
+    load bills it; the cache line is all of them and says so."""
+    def kv(*extra):
+        # a context long enough that the toy cache prints above 0.00 GiB
+        p = run(runner_bin, "--fit", str(FIXTURE), "-c", "4000000", *extra)
+        assert p.returncode == 0, p.stderr.decode()
+        out = p.stdout.decode()
+        w = re.search(r"weights\s+([\d.]+) GiB", out).group(1)
+        return out, w, float(re.search(r"kv cache\s+([\d.]+) GiB", out).group(1))
+    one, w1, k1 = kv()
+    three, w3, k3 = kv("--parallel", "3")
+    assert "slots" not in one and "3 (--parallel)" in three
+    assert w1 == w3 and k1 > 0.5
+    assert k3 == pytest.approx(3 * k1, abs=0.011)
+
+
 def test_fit_does_not_fetch(runner_bin):
     """A URL is not a path, and the runner does not speak HTTP.
 

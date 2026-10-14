@@ -2582,7 +2582,11 @@ $ runner --fit granite-4.2-8b-Q4_K_M.gguf -c 16384
 
 The answer is "right now": a server already holding the GPU or the RAM is
 counted against the budget, so ask before starting one. `-c N` sizes the KV estimate for the context you
-actually intend to run. For a sparse MoE the verdict uses the **hot set**, not
+actually intend to run, and `--parallel N` for that many server slots: the
+weights are counted once, a KV cache (and, on a discrete GPU, the device
+scratch) once per slot, which is how the server's load bills them. On a
+discrete GPU the RAM figure includes the whole KV cache, offloaded layers too,
+because the host keeps the authoritative copy of every layer's cache. For a sparse MoE the verdict uses the **hot set**, not
 the file size, because only the routed experts a token selects are touched -
 which is why a 3.53 GiB file can be a comfortable fit in 3.25 GiB.
 
@@ -2830,7 +2834,11 @@ taken from, so another model cannot install one. There is no on-disk warm
 start: a restarted server prefills from cold.
 
 `--parallel N` creates independent KV caches and thread pools while sharing
-mapped weights. Threads are divided across slots. Multi-model swap mode uses
+mapped weights. Threads are divided across slots. On CUDA the slots share one
+device upload, and its layer split is planned for all N of them (each its own
+KV cache and scratch), so every slot runs the same split; a server may put
+fewer layers on the card than a single slot would, and the `gpu-split` line
+says how many slots it planned for. Multi-model swap mode uses
 one slot because only one model is resident at a time, and accepts up to 16
 registered models:
 

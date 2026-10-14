@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Every `--parallel` slot gets the CUDA split the first one picks.**
+  The split was planned for one slot: the first filled the card with
+  layers, and the next was then refused its VRAM at startup, or found no
+  room for its scratch and served from the CPU, answering the same request
+  with different logits from the slot beside it. The plan now charges
+  each slot's KV cache and scratch and the weights once, so a server with
+  `--parallel N` may put fewer layers on the GPU than one slot would, and
+  the split line says how many slots it planned for. `--fit --parallel N`
+  answers for the same N slots. `--fit` on a discrete GPU also bills the
+  whole KV cache to RAM, offloaded layers included: the host copy is the
+  authoritative one and is written back after every device forward, so
+  the RAM figure it reported was short by the offloaded layers' cache.
+
 - **A server seed makes unseeded sampled requests reproducible at any
   `--parallel`.** Each slot kept its own sampling stream, and which idle
   slot serves a request is the scheduler's timing, so two runs of the same

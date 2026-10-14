@@ -763,6 +763,7 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
     out->kv_k8v4 = out->kv_k8v4_per_tok * (uint64_t)out->n_ctx;
 
     out->available = plat_ram_available_bytes();
+    out->n_seq = 1;
     #undef FK
     return true;
 }
@@ -774,7 +775,12 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
 // extras of the hybrid architectures) and the headroom. A full split also
 // owes the output projection, and when it does not fit the last layer goes
 // back to the CPU, as the loader does. What stays on the host is the rest of
-// the file (scaled to the hot set for a sparse MoE) and the CPU layers' KV.
+// the file (scaled to the hot set for a sparse MoE) and the whole KV cache:
+// the host copy is the authoritative one on a CUDA load, allocated for every
+// layer and written back after each device forward (cuda.c kv_copyback).
+// With f->n_seq slots each pays its own KV, host and device, and its own
+// activation scratch; the weights and the headroom are paid once, as the
+// loader's split plans it (cuda.c shared_plan_budget).
 bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
                    uint64_t headroom, int max_layers) {
     if (f->n_layer <= 0) return false;
@@ -810,9 +816,10 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     uint64_t act = 4ull * (64ull * (n_embd + 3 * xdim + q_dim + 2 * kv_dim +
                                     2 * n_ff + n_head * (uint64_t)f->n_ctx) +
                            n_vocab);
+    const uint64_t slots = f->n_seq > 1 ? (uint64_t)f->n_seq : 1;
     f->gpu = true;
     f->gpu_budget = budget;
-    f->gpu_fixed = tok + act + headroom;
+    f->gpu_fixed = tok + act * slots + headroom;
     const uint64_t per_tok[4] = { f->kv_f16_per_tok, f->kv_q8_per_tok,
                                   f->kv_k8v4_per_tok, f->kv_fp4_per_tok };
     for (int k = 0; k < 4; k++) {
@@ -822,7 +829,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
         int G = 0;
         uint64_t used = f->gpu_fixed, dev_w = tok;
         if (used <= budget) {
-            for (int l = 0; l < f->n_layer; l++) cost[l] = lb[l] + kv_layer;
+            for (int l = 0; l < f->n_layer; l++) cost[l] = lb[l] + kv_layer * slots;
             G = gpu_plan_prefix(cost, f->n_layer, max_layers, budget, &used);
             for (int l = 0; l < G; l++) dev_w += lb[l];
             // The loader's full-split test is `used + token_embd + output`
@@ -834,7 +841,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
             if (gpu_plan_full_split(&G, f->n_layer, used, tok + out, budget, &gave_back)) {
                 used += out; if (out != tok) dev_w += out;
             } else if (gave_back) {
-                used -= lb[G] + kv_layer; dev_w -= lb[G];
+                used -= lb[G] + kv_layer * slots; dev_w -= lb[G];
             }
         } else {
             used = 0; dev_w = 0;   // not even the fixed charge fits: all CPU
@@ -844,7 +851,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
             host_w = (uint64_t)((double)host_w * (double)f->hot / (double)f->weights);
         f->gpu_layers[k] = G;
         f->gpu_used[k] = used;
-        f->host_need[k] = host_w + kv_layer * (uint64_t)(f->n_layer - G);
+        f->host_need[k] = host_w + per_tok[k] * (uint64_t)f->n_ctx * slots;
     }
     free(lb);
     free(cost);
@@ -862,10 +869,11 @@ const char *model_fit_verdict(const model_fit *f) {
                 return words[k];
         return "PAGES";
     }
-    if (f->hot + f->kv_f16 <= f->available) return "FITS";
-    if (f->kv_q8 && f->hot + f->kv_q8 <= f->available) return "FITS WITH --kv q8";
-    if (f->kv_k8v4 && f->hot + f->kv_k8v4 <= f->available) return "FITS WITH --kv k8v4";
-    if (f->kv_fp4 && f->hot + f->kv_fp4 <= f->available) return "FITS WITH --kv fp4";
+    const uint64_t s = f->n_seq > 1 ? (uint64_t)f->n_seq : 1;
+    if (f->hot + f->kv_f16 * s <= f->available) return "FITS";
+    if (f->kv_q8 && f->hot + f->kv_q8 * s <= f->available) return "FITS WITH --kv q8";
+    if (f->kv_k8v4 && f->hot + f->kv_k8v4 * s <= f->available) return "FITS WITH --kv k8v4";
+    if (f->kv_fp4 && f->hot + f->kv_fp4 * s <= f->available) return "FITS WITH --kv fp4";
     return "PAGES";
 }
 
@@ -4324,6 +4332,7 @@ static int model_gpu_batch_default(void) {
 static bool runtime_placement(model_t *m, const model_params *p) {
     m->reserve_vram_pct = p->reserve_vram_pct;
     m->gpu_layers_override = p->gpu_layers_override;
+    m->gpu_instances = p->n_seq > 1 ? p->n_seq : 1;
     m->cpu_moe = p->cpu_moe && m->n_expert > 0;
     m->cpu_moe_layers = p->cpu_moe_layers;
     if (m->cpu_moe) {

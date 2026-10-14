@@ -1418,7 +1418,7 @@ static void fit_gib(char *buf, size_t n, uint64_t bytes) {
 }
 
 static int run_fit_check(const char *path, int n_ctx_want,
-                         const model_params *mp) {
+                         const model_params *mp, int n_seq) {
     gguf_file g;
     if (!gguf_open_header(&g, path)) return 1;   // already reported why
 
@@ -1429,6 +1429,9 @@ static int run_fit_check(const char *path, int n_ctx_want,
         gguf_close(&g);
         return 1;
     }
+    // --parallel N: every slot pays its own KV cache (and device scratch),
+    // the weights are shared, the same bill the server's load makes
+    f.n_seq = n_seq > 1 ? n_seq : 1;
     // A discrete GPU holds the leading layers, so RAM only has to hold the
     // rest: answering from RAM alone told an RTX 3070 box that an 8B model
     // it serves with 35 of 40 layers on the card would page every token.
@@ -1439,13 +1442,14 @@ static int run_fit_check(const char *path, int n_ctx_want,
         model_fit_gpu(&g, &f, gbudget, gheadroom, mp->gpu_layers_override);
 
     char w[32], h[32], kf[32], kq[32], av[32];
+    const uint64_t slots = (uint64_t)f.n_seq;
     fit_gib(w, sizeof w, f.weights);
     fit_gib(h, sizeof h, f.hot);
-    fit_gib(kf, sizeof kf, f.kv_f16);
-    fit_gib(kq, sizeof kq, f.kv_q8);
+    fit_gib(kf, sizeof kf, f.kv_f16 * slots);
+    fit_gib(kq, sizeof kq, f.kv_q8 * slots);
     char k4[32], k84[32];
-    fit_gib(k4, sizeof k4, f.kv_fp4);
-    fit_gib(k84, sizeof k84, f.kv_k8v4);
+    fit_gib(k4, sizeof k4, f.kv_fp4 * slots);
+    fit_gib(k84, sizeof k84, f.kv_k8v4 * slots);
     fit_gib(av, sizeof av, f.available);
 
     uint32_t split = gguf_get_u32(&g, "split.count", 0);
@@ -1457,6 +1461,9 @@ static int run_fit_check(const char *path, int n_ctx_want,
         printf("  NOTE          this is part 1 of a %u-part split; the sizes "
                "below are THIS PART only\n", split);
     printf("  weights       %s\n", w);
+    if (f.n_seq > 1)
+        printf("  slots         %d (--parallel): the weights once, a KV cache "
+               "per slot; the cache below is all of them\n", f.n_seq);
     if (f.sparse)
         printf("  hot set       %s  (only the routed experts a token actually "
                "uses)\n", h);
@@ -1488,6 +1495,10 @@ static int run_fit_check(const char *path, int n_ctx_want,
         printf("\n");
     }
 
+    // the RAM-only lines below price every slot's cache, as the verdict does
+    const uint64_t kv_f16_all = f.kv_f16 * slots, kv_q8_all = f.kv_q8 * slots,
+                   kv_fp4_all = f.kv_fp4 * slots;
+    const char *fewer = f.n_seq > 1 ? ", fewer --parallel slots" : "";
     const char *v = model_fit_verdict(&f);
     printf("  verdict       %s", v);
     if (f.gpu && f.available) {
@@ -1506,36 +1517,36 @@ static int run_fit_check(const char *path, int n_ctx_want,
             fit_gib(over, sizeof over, least - f.available);
             printf(" — %s more RAM than is available even with the smallest cache "
                    "and the GPU full. The CPU layers would page from disk.\n", over);
-            printf("                fixes: a smaller quantization, a shorter -c, "
-                   "or free GPU memory (another process may hold it)\n");
+            printf("                fixes: a smaller quantization, a shorter -c%s, "
+                   "or free GPU memory (another process may hold it)\n", fewer);
         }
     } else if (!f.available) {
         printf("\n                available RAM could not be read, so this is "
                "sizes only\n");
     } else if (!strcmp(v, "FITS")) {
         char slack[32];
-        fit_gib(slack, sizeof slack, f.available - f.hot - f.kv_f16);
+        fit_gib(slack, sizeof slack, f.available - f.hot - kv_f16_all);
         printf(" — %s to spare at ctx %d\n", slack, f.n_ctx);
     } else if (!strcmp(v, "FITS WITH --kv q8")) {
         char over[32];
-        fit_gib(over, sizeof over, f.hot + f.kv_f16 - f.available);
+        fit_gib(over, sizeof over, f.hot + kv_f16_all - f.available);
         printf(" — an f16 cache is %s over; q8 halves it\n", over);
     } else if (!strcmp(v, "FITS WITH --kv k8v4")) {
         char over[32];
-        fit_gib(over, sizeof over, f.hot + f.kv_q8 - f.available);
+        fit_gib(over, sizeof over, f.hot + kv_q8_all - f.available);
         printf(" — a q8 cache is %s over; k8v4 (fp4 V) takes a quarter off it\n", over);
     } else if (!strcmp(v, "FITS WITH --kv fp4")) {
         char over[32];
-        fit_gib(over, sizeof over, f.hot + (f.kv_q8 ? f.kv_q8 : f.kv_f16) - f.available);
+        fit_gib(over, sizeof over, f.hot + (kv_q8_all ? kv_q8_all : kv_f16_all) - f.available);
         printf(" — a q8 cache is %s over; fp4 halves it again\n", over);
     } else {
         char over[32];
-        fit_gib(over, sizeof over, f.hot + (f.kv_fp4 ? f.kv_fp4 : f.kv_q8 ? f.kv_q8 : f.kv_f16)
+        fit_gib(over, sizeof over, f.hot + (kv_fp4_all ? kv_fp4_all : kv_q8_all ? kv_q8_all : kv_f16_all)
                                    - f.available);
         printf(" — %s over even with the smallest cache. Every token would "
                "page from disk.\n", over);
-        printf("                fixes: a smaller quantization, a shorter -c, "
-               "or --gpu-layers to split it\n");
+        printf("                fixes: a smaller quantization, a shorter -c%s, "
+               "or --gpu-layers to split it\n", fewer);
     }
     if (f.sparse)
         printf("  note          the verdict uses the hot set; a sparse MoE runs "
@@ -4827,7 +4838,7 @@ int main(int argc, char **argv) {
         o->n_threads = plat_cpu_count() * o->reserve_cpu_pct / 100;
         if (o->n_threads < 1) o->n_threads = 1;
     }
-    if (o->fit_path) return run_fit_check(o->fit_path, o->mp.n_ctx, &o->mp);
+    if (o->fit_path) return run_fit_check(o->fit_path, o->mp.n_ctx, &o->mp, o->parallel);
 
     if (o->shadow_mode) return run_shadow_mode(o->model_path, o->shadow_yes);
     if (o->caps) return run_caps();
