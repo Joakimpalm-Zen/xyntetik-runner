@@ -313,23 +313,6 @@ static bool metal_moe_em_on(void) {
     return on > 0;
 }
 
-// RUNNER_METAL_MOE_MM=1: grouped simdgroup-MMA expert FFNs for prefill —
-// sort the batch's slots by expert on-GPU, run each expert's token group
-// through the dense k_mm tile structure with gathered columns. Same numerics
-// class as dense RUNNER_METAL_MM (half-staged operands, reassociated k-sum):
-// answers to the tolerance gates, never to byte identity. Opt-in until the
-// measured prefill win clears the bar recorded in
-// docs/performance.md.
-// DEFAULT ON since 2026-09-01, when the owner ratified the house fidelity
-// bar (margin-qualified top-1 + mean KLD, test-moe-mm-ab) as the instrument
-// that judges reassociating prefill on sparse-routing models — the dense
-// logit-identity bound measures routing near-tie flips, which the flip
-// account (scripts/moe-mm-flips.py) shows are staging-invariant and which
-// the fidelity bar shows leave the output distribution at the model's own
-// noise floor. RUNNER_METAL_MOE_MM=0 restores the matvec path;
-// "half" selects the half-staged comparison twins. NOT cached: the
-// mv-vs-mm harness toggles this between loads in one process, and a getenv
-// per MoE layer encode is noise.
 // Decode fusion (RUNNER_METAL_FUSE, default ON): fold the per-layer decode
 // chain — rope(q)+rope(k)+store, residual-add+rmsnorm, MoE gate+up+act —
 // into single dispatches. Every fused kernel reproduces the unfused
@@ -365,6 +348,18 @@ static void metal_front_announce(id<MTLComputePipelineState> pipe,
     fprintf(stderr, "gpu: attention front on (%s)\n", name);
 }
 
+// Grouped simdgroup-MMA expert FFNs for prefill (RUNNER_METAL_MOE_MM, default
+// on since 2026-09-01): sort the batch's slots by expert on the GPU and run
+// each expert's token group through the dense k_mm tile structure with
+// gathered columns and float-staged operands. The k-sum is reassociated, so
+// the route answers to the house fidelity bar (margin-qualified top-1 and
+// mean KLD, test-moe-mm-ab in make test), never to byte identity: discrete
+// top-k routing turns reassociation-scale differences into near-tie expert
+// flips, which scripts/moe-mm-flips.py shows are staging-invariant. Returns
+// 0 for "0"/"off" (the slot-major matvec every byte gate pins), 2 for
+// "half" (the half-staged comparison twins), else 1. NOT cached: the
+// mv-vs-mm harness toggles it between loads in one process, and one getenv
+// per MoE layer encode is noise.
 static int metal_moe_mm_on(void) {
     const char *v = getenv("RUNNER_METAL_MOE_MM");
     if (!v || !*v) return 1;

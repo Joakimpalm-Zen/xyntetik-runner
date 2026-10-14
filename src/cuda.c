@@ -699,8 +699,8 @@ static const struct { int type; const char *name; } TC_KERNELS[] = {
     { T_Q6_K, "k_gemm_q6_K_tc" },
     { T_Q8_0, "k_gemm_q8_0_tc" },
     { T_Q4_0, "k_gemm_q4_0_tc" },
-    // codebook i-quants: registered, not promoted (tc_promoted); the
-    // forced-TC leg of tests/test_iquants.py is their gate
+    // codebook i-quants: promoted 2026-09-14 on the same arch list
+    // (tc_promoted); the forced-TC leg of tests/test_iquants.py is their gate
     { T_IQ3_S,   "k_gemm_iq3_s_tc" },
     { T_IQ3_XXS, "k_gemm_iq3_xxs_tc" },
     { T_IQ2_S,   "k_gemm_iq2_s_tc" },
@@ -3267,8 +3267,10 @@ static bool tc_promoted(const model_t *m, int type) {
     // kernel-verify prompts at 32 and at 64 tokens, and byte-identical
     // greedy-32 on the 481-token prompt and greedy-64 on the 3,675-token
     // prompt (docs/qwen4exp-admission-evidence/). The promotion covers what
-    // the TC prefill touched there: the dense projections (Q5_K, Q3_K,
-    // IQ4_XS, BF16 mixers). With expert layers on the device the codebook
+    // the TC prefill touched there: of the dense projections (Q5_K, Q3_K,
+    // IQ4_XS, BF16 mixers) only IQ4_XS has a tensor-core kernel (TC_KERNELS);
+    // the others take their scalar batched kernels whatever this returns.
+    // With expert layers on the device the codebook
     // expert GEMMs would join the TC path under the same arch flag; that
     // placement was measured only through the eager route today, so a
     // device-expert row is still owed before it is called covered (R4.26.8).
