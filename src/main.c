@@ -4718,7 +4718,8 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
     template_bind_think_tags(tmpl, &rt->m.think_open, &rt->m.think_close);
     if (!o->system_prompt)
         o->system_prompt = template_default_system(
-            tmpl, gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL));
+            tmpl, gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL),
+            false);
     if (!o->system_prompt) o->system_prompt = "You are a helpful assistant.";
     fprintf(stderr, "chat mode (template: %s) — Ctrl-D or /exit to quit\n\n",
             template_name(tmpl));

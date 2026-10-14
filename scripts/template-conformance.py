@@ -569,6 +569,17 @@ def matrix(family):
                           [{"role": "system", "content": SYS},
                            {"role": "user", "content": U1}], True, mode))
     if family.tool_family:
+        # Tools declared and NO system message: the first turn of most agent
+        # requests. Every other tool case carries a system message, so until
+        # 2026-10-14 the branch a template takes for a system-less tool
+        # request was never rendered -- and it is where templates disagree:
+        # Qwen2.5 writes its default system prompt ahead of "# Tools",
+        # Granite 4.0-H replaces its default with the declarations. Runner
+        # dropped Qwen2.5's default on both branches, and an allowlist entry
+        # recorded the plain-chat half as deliberate.
+        cases.append(("tools-no-system+gen", [
+            {"role": "user", "content": "Weather in Oslo?"},
+        ], True, "default"))
         cases.append(("tool-call+result", [
             {"role": "system", "content": SYS},
             {"role": "user", "content": "Weather in Oslo?"},

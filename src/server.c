@@ -59,15 +59,16 @@
 // ---------------------------------------------------------------- routes
 
 // The publisher's fixed default system turn for the model this slot serves,
-// or NULL (template_default_system). Every chat surface asks here, so the
+// or NULL (template_default_system); `tools` is whether the request's tools
+// are rendered in the template's own declaration block. Every chat surface asks here, so the
 // same system-less conversation is the same prompt through every door.
 // server_template_text_override is the conformance renderer's stand-in for
 // the model's template text: it drives these handlers with no model loaded.
 const char *server_template_text_override;
-const char *slot_default_system(const slot_t *s) {
+const char *slot_default_system(const slot_t *s, bool tools) {
     const char *t = server_template_text_override;
     if (!t && s->m) t = gguf_get_str(&s->m->gf, "tokenizer.chat_template", NULL);
-    return template_default_system(s->tmpl, t);
+    return template_default_system(s->tmpl, t, tools);
 }
 
 // Declared in api.h, where the reason it exists is written down.
@@ -621,11 +622,11 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     int n_cm = 0, n_own = 0;
     if (ts.n)
         cm[n_cm++] = (chat_msg){ .role = "system", .content = ts.s };
-    else if (!native_tools && msgs->n > 0 &&
-             strcmp(chat_role(msgs->items[0]), "system")) {
+    else if (msgs->n > 0 && strcmp(chat_role(msgs->items[0]), "system")) {
         // no system turn from the caller and none from the tools: the
-        // publisher's template would write its own
-        const char *ds = slot_default_system(s);
+        // publisher's template would write its own, and some write it
+        // ahead of their native declarations as well
+        const char *ds = slot_default_system(s, native_tools != NULL);
         if (ds) {
             cm[n_cm++] = (chat_msg){ .role = "system", .content = ds };
             total += strlen(ds) + 64;

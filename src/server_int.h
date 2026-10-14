@@ -18,7 +18,7 @@
 #include "watermark.h"
 
 typedef struct slot_s slot_t;
-const char *slot_default_system(const slot_t *s);
+const char *slot_default_system(const slot_t *s, bool tools);
 extern const char *server_template_text_override;
 
 struct slot_s {

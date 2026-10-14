@@ -235,19 +235,31 @@ int template_from_name(const char *name) {
     return -1;
 }
 
-const char *template_default_system(int tmpl, const char *meta_tmpl) {
-    static const struct { int tmpl; const char *text; } known[] = {
-        // HuggingFaceTB/SmolLM2-*-Instruct tokenizer_config.json
-        { TMPL_CHATML,
+const char *template_default_system(int tmpl, const char *meta_tmpl,
+                                    bool tools) {
+    // `with_tools`: the template still writes its default when tools are
+    // declared, ahead of its own declaration block. Each publisher decides
+    // this differently, so it is read off each template, not assumed.
+    static const struct { int tmpl; bool with_tools; const char *text; }
+    known[] = {
+        // HuggingFaceTB/SmolLM2-*-Instruct tokenizer_config.json: written on
+        // every system-less conversation (the template has no tools branch)
+        { TMPL_CHATML, true,
           "You are a helpful AI assistant named SmolLM, trained by Hugging Face" },
-        // ibm-granite/granite-4.0-h-* chat_template (g4_default_system_message)
-        { TMPL_GRANITE4,
+        // Qwen/Qwen2.5-*-Instruct chat_template: written on both of its
+        // branches, before "# Tools" when tools are declared
+        { TMPL_CHATML, true,
+          "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." },
+        // ibm-granite/granite-4.0-h-* chat_template (g4_default_system_message):
+        // declared tools REPLACE it (ns.system_message = ns.tools_system_message)
+        { TMPL_GRANITE4, false,
           "You are a helpful assistant. Please ensure responses are "
           "professional, accurate, and safe." },
     };
     if (!meta_tmpl) return NULL;
     for (size_t i = 0; i < sizeof known / sizeof *known; i++)
-        if (known[i].tmpl == tmpl && strstr(meta_tmpl, known[i].text))
+        if (known[i].tmpl == tmpl && (!tools || known[i].with_tools) &&
+            strstr(meta_tmpl, known[i].text))
             return known[i].text;
     return NULL;
 }
