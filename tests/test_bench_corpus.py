@@ -36,6 +36,13 @@ def test_the_corpus_holds_every_shape_it_promises():
     assert {"split-partial", "split-resident", "concurrent-1", "concurrent-2"} <= set(ids)
 
 
+# Not the fixture's trained length (256), which is also the runner's default
+# context for it: the --bench-json runs, launched without -c, measured at 256
+# while the record said 4096, and this test never read the context they
+# reported. (The tool-result case needs more than 512 for its declarations.)
+CTX = 4096
+
+
 def test_the_driver_records_what_it_measured(tmp_path):
     exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
     if not exe.exists():
@@ -45,7 +52,7 @@ def test_the_driver_records_what_it_measured(tmp_path):
                    check=True, stdout=subprocess.DEVNULL)
     out = tmp_path / "r.json"
     subprocess.run([sys.executable, ROOT / "scripts/bench-corpus.py", "--runner", str(exe),
-                    "--model", str(model), "--ctx", "4096", "--repeat", "2",
+                    "--model", str(model), "--ctx", str(CTX), "--repeat", "2",
                     "--cases", "^(decode-1row|prefill-33|verify-k3|concurrent-1|tool-result-reuse)$",
                     "--out", str(out)], check=True, timeout=600, cwd=ROOT)
     rec = json.loads(out.read_text())
@@ -60,6 +67,8 @@ def test_the_driver_records_what_it_measured(tmp_path):
         res = r["result"]
         assert "error" not in res, (cid, res)
         if cid in ("decode-1row", "prefill-33", "verify-k3"):
+            # measured at the context the record states, not the default
+            assert res["context"] == CTX and rec["ctx"] == CTX, (cid, res["context"])
             paths = res["route"]["paths"]
             assert res["gen_tok_s"] > 0 and 1 < paths["batch"]["rows_max"], (cid, res)
             assert 0 < res["prompt_tokens"] <= r["prompt_tokens_target"], (cid, res)
