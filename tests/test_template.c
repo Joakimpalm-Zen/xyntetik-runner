@@ -2521,6 +2521,10 @@ static void test_llama2_bos_per_turn_and_the_fallback_that_must_not_get_it(void)
            == TMPL_LLAMA2_FALLBACK);
     // and it cannot be asked for by name -- only detection produces it
     assert(template_from_name("llama2-fallback") == -1);
+    // it reports its own name, not "raw": receipts and --caps name the
+    // framing the prompt actually had, and "raw" is the unframed template
+    assert(strcmp(template_name(TMPL_LLAMA2_FALLBACK), "llama2-fallback") == 0);
+    assert(strcmp(template_name(TMPL_RAW), "raw") == 0);
     assert(template_from_name("llama2") == TMPL_LLAMA2);
 }
 

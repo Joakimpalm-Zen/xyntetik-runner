@@ -72,3 +72,5 @@ def test_an_unrecognised_template_is_a_broken_verdict(model):
         pytest.skip("the fixture's template is recognised on this build")
     assert rc == 2 and d["verdict"] == "broken"
     assert "template_not_recognised" in [f["code"] for f in d["findings"]]
+    # the framing it fell back to, by name: Llama-2 markup, not "raw"
+    assert d["template"]["name"] == "llama2-fallback"

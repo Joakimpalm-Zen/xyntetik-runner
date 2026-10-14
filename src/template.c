@@ -279,6 +279,11 @@ const char *template_name(int t) {
         case TMPL_HARMONY: return "harmony";
         case TMPL_GRANITE: return "granite";
         case TMPL_GRANITE4: return "granite4";
+        // detection's answer when nothing matched: Llama-2 markup, named
+        // apart from "raw" (no framing) so a receipt or --caps says which
+        // framing the prompt had; --chat-template does not accept it
+        case TMPL_LLAMA2_FALLBACK: return "llama2-fallback";
+        case TMPL_RAW: return "raw";
         default: return "raw";
     }
 }

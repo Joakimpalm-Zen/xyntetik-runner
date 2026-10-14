@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A model whose chat template is not recognised reports it as
+  `llama2-fallback`, not `raw`.** Such a model is rendered with Llama-2
+  markup, but `--caps`, the doctor report, the server's capabilities and
+  receipts named its template `raw`, the template that adds no framing at
+  all. A receipt therefore claimed an unframed prompt for a framed one. They
+  now say `llama2-fallback`. `--chat-template` still does not accept the
+  name (only detection produces it), and replay is unaffected.
+
 - **A partial CUDA split of a small model uploads its weights in one
   block again.** A partial split switches to one upload per tensor when
   the file's tensor order spreads the offloaded layers across the file.
