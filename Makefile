@@ -2348,6 +2348,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(PYTHON) scripts/check-ptx-roster.py src/cuda.c src/kernels_ptx.h
 	$(PYTHON) scripts/check-ci-roster.py
 	$(PYTHON) scripts/check-fpclass.py
+	$(PYTHON) scripts/template-conformance.py --cites-only
 	$(PYTHON) scripts/check-agent-docs.py --self-test
 	$(PYTHON) scripts/check-agent-docs.py AGENTS.md CLAUDE.md
 	./$(TEST_PENALTY_WINDOW) test.gguf

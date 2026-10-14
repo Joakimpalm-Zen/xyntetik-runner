@@ -1914,6 +1914,11 @@ def main():
                          "oracle.json from the installed openai-harmony "
                          "library (the fixture a machine without the library "
                          "compares harmony against)")
+    ap.add_argument("--cites-only", action="store_true",
+                    help="check only that every allowlist citation still "
+                         "points at its anchor in the source: no oracle, "
+                         "no tokenizer, no network. make test runs it, so an "
+                         "edit that moves cited lines fails before CI does")
     ap.add_argument("--require-tokens", action="store_true",
                     help="treat a family with no local tokenizer as NOT "
                          "CHECKED (exit 2) instead of reporting the gap. Use "
@@ -1928,6 +1933,16 @@ def main():
                          "intentional deviations as bugs")
     if args.write_harmony_oracle:
         return write_harmony_fixture()
+    if args.cites_only:
+        rot = check_citations(load_allowlist(args.allowlist), list(FAMILIES))
+        for r in rot:
+            print("  " + r)
+        if rot:
+            print("FAIL: %d allowlist citation(s) no longer match the tree"
+                  % len(rot))
+            return 1
+        print("template conformance citations: every anchor is where it is cited")
+        return 0
     return run(args)
 
 
