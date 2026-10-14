@@ -20,18 +20,18 @@
       },
       "last_verified": {
         "date": "2026-10-14",
-        "commit": "65dc84a7842c36a8893e865764f5903030a0f221",
-        "ran": "build130.sh on the Windows CUDA host: make OS=Windows_NT -j8 runner from release-1.3.0 (0 warnings); tests/test_native_xml_routing.py 28/28; scripts/cuda-smoke-remote.sh 13/13; the OpenCode clean-setup walkthrough on the candidate binary before the tag (docs/compat-reports/clean-setup-1.3.0-2026-10-14-rtx3070.md)",
+        "commit": "d70652800b349bfb52c2234b4875c4e889fe9255",
+        "ran": "build131.sh on the Windows CUDA host: make OS=Windows_NT -j8 runner from release-1.3.1 (0 warnings); tests/test_native_xml_routing.py 28/28; scripts/cuda-smoke-remote.sh 13/13 on the 1.3.1 candidate",
         "result": "pass",
         "caps": {
-          "version": "1.3.0",
+          "version": "1.3.1",
           "os": "windows",
           "arch": "x86_64",
           "cpu_cores": 8,
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA GeForce RTX 3070"
         },
-        "evidence": "docs/compat-reports/cuda-smoke-1.3.0-2026-10-14-rtx3070.json"
+        "evidence": "docs/compat-reports/cuda-smoke-1.3.1-2026-10-14-rtx3070.json"
       }
     },
     {
