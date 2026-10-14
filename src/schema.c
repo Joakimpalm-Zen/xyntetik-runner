@@ -776,6 +776,71 @@ static bool same_prop_order(jv *a, jv *b) {
     return true;
 }
 
+// The discriminator: one literal per alternative's `tool` const, in
+// declared order, each distinct.
+static snode *discriminator_literals(jv *alts, int tool_i, char *err, int errcap) {
+    snode *tool = sn_new(SN_ENUM);
+    if (!tool) return NULL;
+    tool->lits = calloc(alts->n, sizeof(char *));
+    if (!tool->lits) { schema_free(tool); return NULL; }
+    for (int a = 0; a < alts->n; a++) {
+        jv *props = jv_get(alts->items[a], "properties");
+        char *lit = sn_literal(jv_get(props->items[tool_i], "const"));
+        if (!lit) { schema_free(tool); return NULL; }
+        for (int prev = 0; prev < a; prev++) {
+            if (!strcmp(tool->lits[prev], lit)) {
+                free(lit);
+                snprintf(err, errcap, "duplicate discriminator const");
+                schema_free(tool);
+                return NULL;
+            }
+        }
+        tool->lits[tool->n_lits++] = lit;
+    }
+    if (!enum_index(tool)) { schema_free(tool); return NULL; }
+    return tool;
+}
+
+// The arguments: one alternative per branch, chosen by the discriminator.
+static snode *discriminated_args(jv *alts, int args_i, char *err, int errcap,
+                                 int depth) {
+    snode *args = sn_new(SN_COND);
+    if (!args) return NULL;
+    args->alts = calloc(alts->n, sizeof(snode *));
+    if (!args->alts) { schema_free(args); return NULL; }
+    for (int a = 0; a < alts->n; a++) {
+        jv *props = jv_get(alts->items[a], "properties");
+        args->alts[args->n_alts] = compile_node(props->items[args_i], err, errcap,
+                                                depth + 1);
+        if (!args->alts[args->n_alts]) {
+            schema_free(args);
+            return NULL;
+        }
+        args->n_alts++;
+    }
+    return args;
+}
+
+// Every alternative declares alternative 0's `required` list, key for key.
+static bool same_required_sets(jv *alts, jv *req, char *err, int errcap) {
+    for (int a = 1; a < alts->n; a++) {
+        jv *other = jv_get(alts->items[a], "required");
+        int rn = req && req->type == J_ARR ? req->n : 0;
+        int on = other && other->type == J_ARR ? other->n : 0;
+        bool same = rn == on;
+        for (int r = 0; same && r < rn; r++) {
+            const char *k0 = jv_str(req->items[r], NULL);
+            const char *k1 = jv_str(other->items[r], NULL);
+            same = k0 && k1 && !strcmp(k0, k1);
+        }
+        if (!same) {
+            snprintf(err, errcap, "oneOf alternatives declare different required keys");
+            return false;
+        }
+    }
+    return true;
+}
+
 static snode *compile_discriminated_action(jv *alts, char *err, int errcap,
                                            int depth, bool *matched) {
     *matched = false;
@@ -834,43 +899,12 @@ static snode *compile_discriminated_action(jv *alts, char *err, int errcap,
         n->key_len[i] = (int)strlen(first_props->keys[i]);
     }
 
-    snode *tool = sn_new(SN_ENUM);
+    snode *tool = discriminator_literals(alts, tool_i, err, errcap);
     if (!tool) { schema_free(n); return NULL; }
-    tool->lits = calloc(alts->n, sizeof(char *));
-    if (!tool->lits) { schema_free(tool); schema_free(n); return NULL; }
-    for (int a = 0; a < alts->n; a++) {
-        jv *props = jv_get(alts->items[a], "properties");
-        char *lit = sn_literal(jv_get(props->items[tool_i], "const"));
-        if (!lit) { schema_free(tool); schema_free(n); return NULL; }
-        for (int prev = 0; prev < a; prev++) {
-            if (!strcmp(tool->lits[prev], lit)) {
-                free(lit);
-                snprintf(err, errcap, "duplicate discriminator const");
-                schema_free(tool);
-                schema_free(n);
-                return NULL;
-            }
-        }
-        tool->lits[tool->n_lits++] = lit;
-    }
-    if (!enum_index(tool)) { schema_free(tool); schema_free(n); return NULL; }
     n->props[tool_i] = tool;
 
-    snode *args = sn_new(SN_COND);
+    snode *args = discriminated_args(alts, args_i, err, errcap, depth);
     if (!args) { schema_free(n); return NULL; }
-    args->alts = calloc(alts->n, sizeof(snode *));
-    if (!args->alts) { schema_free(args); schema_free(n); return NULL; }
-    for (int a = 0; a < alts->n; a++) {
-        jv *props = jv_get(alts->items[a], "properties");
-        args->alts[args->n_alts] = compile_node(props->items[args_i], err, errcap,
-                                                depth + 1);
-        if (!args->alts[args->n_alts]) {
-            schema_free(args);
-            schema_free(n);
-            return NULL;
-        }
-        args->n_alts++;
-    }
     n->props[args_i] = args;
 
     for (int i = 0; i < first_props->n; i++) {
@@ -897,22 +931,7 @@ static snode *compile_discriminated_action(jv *alts, char *err, int errcap,
     // the compiled object carries one required set, so every alternative
     // must declare the same one — a per-branch difference would be enforced
     // as alternative 0's rules on all branches
-    for (int a = 1; a < alts->n; a++) {
-        jv *other = jv_get(alts->items[a], "required");
-        int rn = req && req->type == J_ARR ? req->n : 0;
-        int on = other && other->type == J_ARR ? other->n : 0;
-        bool same = rn == on;
-        for (int r = 0; same && r < rn; r++) {
-            const char *k0 = jv_str(req->items[r], NULL);
-            const char *k1 = jv_str(other->items[r], NULL);
-            same = k0 && k1 && !strcmp(k0, k1);
-        }
-        if (!same) {
-            snprintf(err, errcap, "oneOf alternatives declare different required keys");
-            schema_free(n);
-            return NULL;
-        }
-    }
+    if (!same_required_sets(alts, req, err, errcap)) { schema_free(n); return NULL; }
     return n;
 }
 
