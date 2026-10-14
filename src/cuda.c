@@ -4872,6 +4872,212 @@ static bool gpu_hc_combine(gpu_t *g, model_t *m, CUdeviceptr block_out, int os, 
     return launch(g, g->sw->f_hc_combine, (E + 255) / 256, tn, 1, 256, pc);
 }
 
+// Q, through the DeltaNet split on qwen35 (Q and the output gate share one
+// projection), else with its adapter delta and the output gate.
+static bool tile_q(gpu_t *g, model_t *m, layer_t *ly, int l, int tn,
+                   int n_embd, int xdim, int hd, int q_dim) {
+    bool ok = true;
+    if (m->qwen35) {
+        ok = ok && enc_mv(g, m, ly->wq, g->xb, g->q35_mix,
+                          n_embd, 2 * q_dim, g->sw->bq[l], tn, xdim,
+                          2 * q_dim);
+        int heads = m->n_head, packed_stride = 2 * q_dim, q_stride = q_dim;
+        void *ps[] = { &g->q35_mix, &g->q, &g->q35_gate, &heads, &hd,
+                       &packed_stride, &q_stride };
+        ok = ok && launch(g, g->sw->f_q35_split, (q_dim + 255) / 256,
+                          tn, 1, 256, ps);
+    } else {
+        ok = ok && enc_mv(g, m, ly->wq, g->xb, g->q, n_embd, q_dim,
+                          g->sw->bq[l], tn, xdim, q_dim)
+                && enc_lora(g, l, LW_Q, g->xb, g->q, n_embd, q_dim,
+                            tn, xdim, q_dim);
+        // the output gate projects the same normed input as Q, and xb is
+        // overwritten by wo below, so this must run before attention
+        if (m->attn_out_gate && ly->wq_gate)
+            ok = ok && enc_mv(g, m, ly->wq_gate, g->xb, g->q35_gate,
+                              n_embd, q_dim, 0, tn, xdim, q_dim);
+    }
+    return ok;
+}
+
+// K and V with their adapter deltas; gemma4 global layers copy K as V.
+static bool tile_kv_proj(gpu_t *g, model_t *m, layer_t *ly, int l, int tn,
+                         int n_embd, int xdim, int kv_dim) {
+    bool ok = true;
+    ok = ok && enc_mv(g, m, ly->wk, g->xb, g->kt, n_embd, kv_dim, g->sw->bk[l], tn, xdim, kv_dim)
+            && enc_lora(g, l, LW_K, g->xb, g->kt, n_embd, kv_dim, tn, xdim, kv_dim);
+    if (ly->wv) {
+        ok = ok && enc_mv(g, m, ly->wv, g->xb, g->vt, n_embd, kv_dim, g->sw->bv[l], tn, xdim, kv_dim)
+                && enc_lora(g, l, LW_V, g->xb, g->vt, n_embd, kv_dim, tn, xdim, kv_dim);
+    } else {
+        // gemma4 global layers have no V projection: V is the raw K
+        // (zero + add = device-side copy with the kernels we have)
+        ok = ok && cu.MemsetD8(g->vt, 0, sizeof(float) * (size_t)tn * kv_dim) == 0;
+        ok = ok && enc_add(g, g->vt, g->kt, kv_dim, tn, kv_dim, kv_dim);
+    }
+    return ok;
+}
+
+// The V and K norms, K's rotation, and the store into the cache.
+static bool tile_kv_store(gpu_t *g, model_t *m, int l, int tn, int hd,
+                          int n_kv, int kv_dim) {
+    bool ok = true;
+    if (m->v_rmsnorm)
+        // weightless per-head RMS norm on V (pre-K-norm values)
+        ok = ok && enc_qknorm(g, m, g->vt, g->sw->ones, n_kv, hd, tn, kv_dim);
+    if (g->sw->kn[l]) ok = ok && enc_qknorm(g, m, g->kt, g->sw->kn[l], n_kv, hd, tn, kv_dim);
+    if (model_layer_ropes(m, l))
+        ok = ok && enc_rope(g, m, g->kt, n_kv, tn, kv_dim, l);
+
+    {
+        // cache rows for consecutive positions are contiguous, so the
+        // kernel indexes both source column and destination row by grid.y
+        uint64_t l_off = model_k_byte_off(m, l), v_off = model_v_byte_off(m, l);
+        int q8 = model_kv_kind_k(m), vq8 = model_kv_kind_v(m);   // cache KINDS
+        // one thread per stored unit: per value for fp16, per 32-value
+        // q8_0 block or 16-value fp4 block (the block shares one scale);
+        // the grid covers the larger of the K and V unit counts
+        int ku = q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
+        int vu = vq8 == 2 ? kv_dim / 16 : vq8 ? kv_dim / 32 : kv_dim;
+        int units = ku > vu ? ku : vu;
+        int kring = model_kv_is_ring(m, l) ? m->kv_ring : 0;
+        void *ps[] = { &g->kt, &g->vt, &g->kc, &g->vc, &kv_dim, &l_off,
+                       &g->pos_dev, &q8, &kring, &v_off, &vq8 };
+        ok = ok && launch(g, g->sw->f_store, (units + 63) / 64, tn, 1, 64, ps);
+    }
+    return ok;
+}
+
+// Attention over the cache: flash-decoding at a single token (split, then
+// merge), the single-pass kernel for a prompt tile.
+static bool tile_attn(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
+                      int q_dim, int xdim, bool local) {
+    bool ok = true;
+    {
+        attn_args aa = { hd, m->n_head, n_kv, m->n_ctx,
+                         (uint64_t)model_k_byte_off(m, l),
+                         model_attn_scale(m, l), q_dim, xdim,
+                         local ? m->swa_window : 0, model_kv_kind_k(m),
+                         model_kv_is_ring(m, l) ? m->kv_ring : 0,
+                         (uint64_t)model_v_byte_off(m, l), model_kv_kind_v(m) };
+        // Decode (tn==1, one query, long KV): flash-decoding — split the KV
+        // range across ATTN_SPLITS blocks/head (higher occupancy, coalesced)
+        // then merge partials. Prefill (tn>1) already runs n_head*tn blocks,
+        // so it keeps the single-pass k_attn. tn is the tile size (constant
+        // at graph-capture time), not per-token state, so this branch is
+        // capture-safe.
+        // gpt-oss attention sinks for this layer (0 elsewhere): the sink
+        // joins the softmax at the normalization point — inside k_attn's
+        // single reduction, or at k_attn_merge's global merge (the split
+        // partials carry no normalization, so k_attn_dec is untouched)
+        CUdeviceptr sinks = g->sw->sinks[l];
+        if (tn == 1) {
+            void *pd[] = { &g->q, &g->kc, &g->vc, &g->att, &g->attn_part,
+                           &aa, &g->pos_dev };
+            ok = ok && launch(g, g->sw->f_attn_dec, m->n_head, ATTN_SPLITS, 1, 128, pd);
+            void *pm[] = { &g->xb2, &g->attn_part, &aa, &g->pos_dev, &sinks };
+            ok = ok && launch(g, g->sw->f_attn_merge, m->n_head, 1, 1, 128, pm);
+        } else {
+            void *pa[] = { &g->q, &g->kc, &g->vc, &g->att, &g->xb2, &aa, &g->pos_dev,
+                           &sinks };
+            ok = ok && launch(g, g->sw->f_attn, m->n_head, tn, 1, 128, pa);
+        }
+    }
+    return ok;
+}
+
+// The output gate and the output projection with its adapter delta.
+static bool tile_attn_out(gpu_t *g, model_t *m, layer_t *ly, int l, int tn,
+                          int n_embd, int q_dim, int xdim) {
+    bool ok = true;
+    if (m->qwen35 || (m->attn_out_gate && ly->wq_gate)) {
+        int gate_stride = q_dim;
+        void *pg[] = { &g->xb2, &g->q35_gate, &q_dim, &xdim, &gate_stride };
+        ok = ok && launch(g, g->sw->f_q35_gate, (q_dim + 255) / 256,
+                          tn, 1, 256, pg);
+    }
+
+    ok = ok && enc_mv(g, m, ly->wo, g->xb2, g->xb, q_dim, n_embd, g->sw->bo[l], tn, xdim, xdim)
+            && enc_lora(g, l, LW_O, g->xb2, g->xb, q_dim, n_embd, tn, xdim, xdim);
+    return ok;
+}
+
+// A branch's tail, the same after attention and after the FFN: its post-norm
+// (when the layer has one), the granite muP scale, and the residual add, or
+// the hyper-connection streams' combine.
+static bool tile_branch_out(gpu_t *g, model_t *m, CUdeviceptr post_norm, int tn,
+                            int xdim) {
+    int n_embd = m->n_embd;
+    bool ok = true;
+    if (post_norm)
+        ok = ok && enc_rmsnorm(g, g->xb, g->xb, post_norm, n_embd, m->post_norm_eps,
+                               tn, xdim, xdim);
+    if (m->resid_scale != 1.0f)  // granite muP branch scale
+        ok = ok && enc_scale(g, g->xb, m->resid_scale, n_embd, tn, xdim);
+    if (m->hyper_conn) ok = ok && gpu_hc_combine(g, m, g->xb, xdim, tn);
+    else ok = ok && enc_add(g, g->x, g->xb, n_embd, tn, n_embd, xdim);
+    return ok;
+}
+
+// The gated shared expert, the device twin of shexp_add, added into the
+// routed experts' output.
+static bool tile_shexp(gpu_t *g, model_t *m, layer_t *ly, int tn, int xdim) {
+    int n_embd = m->n_embd;
+    bool ok = true;
+    // the gated shared expert, the device twin of shexp_add:
+    // out += sigmoid(gate_inp_shexp . in) * down(act(gate(in)) * up(in))
+    int nf = m->n_ff_shexp;
+    ok = ok && enc_mv(g, m, ly->w_up_shexp, g->shexp_in, g->shexp_u, n_embd, nf, 0, tn, xdim, nf)
+            && enc_mv(g, m, ly->w_gate_shexp, g->shexp_in, g->shexp_g, n_embd, nf, 0, tn, xdim, nf)
+            && enc_actmul(g, m, g->shexp_g, g->shexp_u, tn * nf)
+            && enc_mv(g, m, ly->w_down_shexp, g->shexp_g, g->shexp_o, nf, n_embd, 0, tn, nf, n_embd);
+    // the scalar gate is required here (admission refuses an
+    // ungated shared expert on the device, see below)
+    ok = ok && enc_mv(g, m, ly->ffn_gate_inp_shexp, g->shexp_in, g->shexp_gate, n_embd, 1, 0, tn, xdim, 1);
+    if (ok) {
+        int vs = n_embd;
+        void *pa[] = { &g->xb, &g->shexp_o, &g->shexp_gate, &n_embd, &xdim, &vs };
+        ok = launch(g, g->sw->f_axpy_sigmoid, (n_embd + 255) / 256, tn, 1, 256, pa);
+    }
+    return ok;
+}
+
+// The dense FFN's input projections: up alone for a gate-less FFN (relu2,
+// xIELU), else gate and up, each with its adapter delta.
+static bool tile_ffn_in(gpu_t *g, model_t *m, layer_t *ly, int l, int tn, int xdim) {
+    int n_embd = m->n_embd;
+    bool ok = true;
+    if (!ly->w_gate) {
+        ok = ok && enc_mv(g, m, ly->w_up, g->xb, g->hb,
+                          n_embd, m->n_ff, 0, tn, xdim, m->n_ff)
+                && enc_lora(g, l, LW_UP, g->xb, g->hb, n_embd, m->n_ff,
+                            tn, xdim, m->n_ff);
+    } else {
+        ok = ok && enc_mv(g, m, ly->w_gate, g->xb, g->hb,
+                          n_embd, m->n_ff, 0, tn, xdim, m->n_ff)
+                && enc_lora(g, l, LW_GATE, g->xb, g->hb, n_embd, m->n_ff,
+                            tn, xdim, m->n_ff);
+        ok = ok && enc_mv(g, m, ly->w_up, g->xb, g->hb2,
+                          n_embd, m->n_ff, 0, tn, xdim, m->n_ff)
+                && enc_lora(g, l, LW_UP, g->xb, g->hb2, n_embd, m->n_ff,
+                            tn, xdim, m->n_ff);
+    }
+    return ok;
+}
+
+// The dense FFN's activation: relu2 or xIELU on a gate-less FFN, else the
+// gated product.
+static bool tile_ffn_act(gpu_t *g, model_t *m, layer_t *ly, int l, int tn) {
+    if (!ly->w_gate) {
+        if (m->ffn_relu2)
+            return enc_relu2(g, g->hb, tn * m->n_ff);
+        return enc_xielu(g, g->hb, tn * m->n_ff,
+                         m->xielu_an[l], m->xielu_ap[l],
+                         m->xielu_b[l], m->xielu_eps[l]);
+    }
+    return enc_actmul(g, m, g->hb, g->hb2, tn * m->n_ff);
+}
+
 static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
                      int pos, bool want_logits, int l0, int l1) {
     (void)tokens; (void)pos;
@@ -4915,66 +5121,15 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
             prof_mark(g, PH_MATVEC);
             goto attention_done;
         }
-        if (m->qwen35) {
-            ok = ok && enc_mv(g, m, ly->wq, g->xb, g->q35_mix,
-                              n_embd, 2 * q_dim, g->sw->bq[l], tn, xdim,
-                              2 * q_dim);
-            int heads = m->n_head, packed_stride = 2 * q_dim, q_stride = q_dim;
-            void *ps[] = { &g->q35_mix, &g->q, &g->q35_gate, &heads, &hd,
-                           &packed_stride, &q_stride };
-            ok = ok && launch(g, g->sw->f_q35_split, (q_dim + 255) / 256,
-                              tn, 1, 256, ps);
-        } else {
-            ok = ok && enc_mv(g, m, ly->wq, g->xb, g->q, n_embd, q_dim,
-                              g->sw->bq[l], tn, xdim, q_dim)
-                    && enc_lora(g, l, LW_Q, g->xb, g->q, n_embd, q_dim,
-                                tn, xdim, q_dim);
-            // the output gate projects the same normed input as Q, and xb is
-            // overwritten by wo below, so this must run before attention
-            if (m->attn_out_gate && ly->wq_gate)
-                ok = ok && enc_mv(g, m, ly->wq_gate, g->xb, g->q35_gate,
-                                  n_embd, q_dim, 0, tn, xdim, q_dim);
-        }
+        ok = ok && tile_q(g, m, ly, l, tn, n_embd, xdim, hd, q_dim);
         // gemma4 E-series shared-KV layers project Q as usual but compute no
         // K/V: they attend over the cache an earlier layer filled, which the
         // aliased model_kv_byte_off() below already resolves to.
         bool owns_kv = model_kv_owner(m, l) == l;
         if (!owns_kv) goto kv_done;
-        ok = ok && enc_mv(g, m, ly->wk, g->xb, g->kt, n_embd, kv_dim, g->sw->bk[l], tn, xdim, kv_dim)
-                && enc_lora(g, l, LW_K, g->xb, g->kt, n_embd, kv_dim, tn, xdim, kv_dim);
-        if (ly->wv) {
-            ok = ok && enc_mv(g, m, ly->wv, g->xb, g->vt, n_embd, kv_dim, g->sw->bv[l], tn, xdim, kv_dim)
-                    && enc_lora(g, l, LW_V, g->xb, g->vt, n_embd, kv_dim, tn, xdim, kv_dim);
-        } else {
-            // gemma4 global layers have no V projection: V is the raw K
-            // (zero + add = device-side copy with the kernels we have)
-            ok = ok && cu.MemsetD8(g->vt, 0, sizeof(float) * (size_t)tn * kv_dim) == 0;
-            ok = ok && enc_add(g, g->vt, g->kt, kv_dim, tn, kv_dim, kv_dim);
-        }
+        ok = ok && tile_kv_proj(g, m, ly, l, tn, n_embd, xdim, kv_dim);
         prof_mark(g, PH_MATVEC);
-        if (m->v_rmsnorm)
-            // weightless per-head RMS norm on V (pre-K-norm values)
-            ok = ok && enc_qknorm(g, m, g->vt, g->sw->ones, n_kv, hd, tn, kv_dim);
-        if (g->sw->kn[l]) ok = ok && enc_qknorm(g, m, g->kt, g->sw->kn[l], n_kv, hd, tn, kv_dim);
-        if (model_layer_ropes(m, l))
-            ok = ok && enc_rope(g, m, g->kt, n_kv, tn, kv_dim, l);
-
-        {
-            // cache rows for consecutive positions are contiguous, so the
-            // kernel indexes both source column and destination row by grid.y
-            uint64_t l_off = model_k_byte_off(m, l), v_off = model_v_byte_off(m, l);
-            int q8 = model_kv_kind_k(m), vq8 = model_kv_kind_v(m);   // cache KINDS
-            // one thread per stored unit: per value for fp16, per 32-value
-            // q8_0 block or 16-value fp4 block (the block shares one scale);
-            // the grid covers the larger of the K and V unit counts
-            int ku = q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
-            int vu = vq8 == 2 ? kv_dim / 16 : vq8 ? kv_dim / 32 : kv_dim;
-            int units = ku > vu ? ku : vu;
-            int kring = model_kv_is_ring(m, l) ? m->kv_ring : 0;
-            void *ps[] = { &g->kt, &g->vt, &g->kc, &g->vc, &kv_dim, &l_off,
-                           &g->pos_dev, &q8, &kring, &v_off, &vq8 };
-            ok = ok && launch(g, g->sw->f_store, (units + 63) / 64, tn, 1, 64, ps);
-        }
+        ok = ok && tile_kv_store(g, m, l, tn, hd, n_kv, kv_dim);
     kv_done:
         if (g->sw->qn[l]) ok = ok && enc_qknorm(g, m, g->q,  g->sw->qn[l], m->n_head, hd, tn, q_dim);
         prof_mark(g, PH_NORM);
@@ -4982,56 +5137,13 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
                                     pos, enc_rope);
         prof_mark(g, PH_ROPE);
 
-        {
-            attn_args aa = { hd, m->n_head, n_kv, m->n_ctx,
-                             (uint64_t)model_k_byte_off(m, l),
-                             model_attn_scale(m, l), q_dim, xdim,
-                             local ? m->swa_window : 0, model_kv_kind_k(m),
-                             model_kv_is_ring(m, l) ? m->kv_ring : 0,
-                             (uint64_t)model_v_byte_off(m, l), model_kv_kind_v(m) };
-            // Decode (tn==1, one query, long KV): flash-decoding — split the KV
-            // range across ATTN_SPLITS blocks/head (higher occupancy, coalesced)
-            // then merge partials. Prefill (tn>1) already runs n_head*tn blocks,
-            // so it keeps the single-pass k_attn. tn is the tile size (constant
-            // at graph-capture time), not per-token state, so this branch is
-            // capture-safe.
-            // gpt-oss attention sinks for this layer (0 elsewhere): the sink
-            // joins the softmax at the normalization point — inside k_attn's
-            // single reduction, or at k_attn_merge's global merge (the split
-            // partials carry no normalization, so k_attn_dec is untouched)
-            CUdeviceptr sinks = g->sw->sinks[l];
-            if (tn == 1) {
-                void *pd[] = { &g->q, &g->kc, &g->vc, &g->att, &g->attn_part,
-                               &aa, &g->pos_dev };
-                ok = ok && launch(g, g->sw->f_attn_dec, m->n_head, ATTN_SPLITS, 1, 128, pd);
-                void *pm[] = { &g->xb2, &g->attn_part, &aa, &g->pos_dev, &sinks };
-                ok = ok && launch(g, g->sw->f_attn_merge, m->n_head, 1, 1, 128, pm);
-            } else {
-                void *pa[] = { &g->q, &g->kc, &g->vc, &g->att, &g->xb2, &aa, &g->pos_dev,
-                               &sinks };
-                ok = ok && launch(g, g->sw->f_attn, m->n_head, tn, 1, 128, pa);
-            }
-        }
+        ok = ok && tile_attn(g, m, l, tn, hd, n_kv, q_dim, xdim, local);
         prof_mark(g, PH_ATTN);
 
-        if (m->qwen35 || (m->attn_out_gate && ly->wq_gate)) {
-            int gate_stride = q_dim;
-            void *pg[] = { &g->xb2, &g->q35_gate, &q_dim, &xdim, &gate_stride };
-            ok = ok && launch(g, g->sw->f_q35_gate, (q_dim + 255) / 256,
-                              tn, 1, 256, pg);
-        }
-
-        ok = ok && enc_mv(g, m, ly->wo, g->xb2, g->xb, q_dim, n_embd, g->sw->bo[l], tn, xdim, xdim)
-                && enc_lora(g, l, LW_O, g->xb2, g->xb, q_dim, n_embd, tn, xdim, xdim);
+        ok = ok && tile_attn_out(g, m, ly, l, tn, n_embd, q_dim, xdim);
         prof_mark(g, PH_MATVEC);
     attention_done:
-        if (g->sw->pan[l])
-            ok = ok && enc_rmsnorm(g, g->xb, g->xb, g->sw->pan[l], n_embd, m->post_norm_eps,
-                                   tn, xdim, xdim);
-        if (m->resid_scale != 1.0f)  // granite muP branch scale
-            ok = ok && enc_scale(g, g->xb, m->resid_scale, n_embd, tn, xdim);
-        if (m->hyper_conn) ok = ok && gpu_hc_combine(g, m, g->xb, xdim, tn);
-        else ok = ok && enc_add(g, g->x, g->xb, n_embd, tn, n_embd, xdim);
+        ok = ok && tile_branch_out(g, m, g->sw->pan[l], tn, xdim);
         prof_mark(g, PH_ELEM);
         if (ly->skip_ffn) goto mamba_tail;   // nemotron_h SSM/attention block
 
@@ -5090,63 +5202,19 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
                                        sizeof(float) * (size_t)tn * xdim) != 0)
                 return false;
             ok = ok && gpu_moe_ffn(g, m, ly, tn, xdim);  // writes FFN output into g->xb
-            if (ok && shexp) {
-                // the gated shared expert, the device twin of shexp_add:
-                // out += sigmoid(gate_inp_shexp . in) * down(act(gate(in)) * up(in))
-                int nf = m->n_ff_shexp;
-                ok = ok && enc_mv(g, m, ly->w_up_shexp, g->shexp_in, g->shexp_u, n_embd, nf, 0, tn, xdim, nf)
-                        && enc_mv(g, m, ly->w_gate_shexp, g->shexp_in, g->shexp_g, n_embd, nf, 0, tn, xdim, nf)
-                        && enc_actmul(g, m, g->shexp_g, g->shexp_u, tn * nf)
-                        && enc_mv(g, m, ly->w_down_shexp, g->shexp_g, g->shexp_o, nf, n_embd, 0, tn, nf, n_embd);
-                // the scalar gate is required here (admission refuses an
-                // ungated shared expert on the device, see below)
-                ok = ok && enc_mv(g, m, ly->ffn_gate_inp_shexp, g->shexp_in, g->shexp_gate, n_embd, 1, 0, tn, xdim, 1);
-                if (ok) {
-                    int vs = n_embd;
-                    void *pa[] = { &g->xb, &g->shexp_o, &g->shexp_gate, &n_embd, &xdim, &vs };
-                    ok = launch(g, g->sw->f_axpy_sigmoid, (n_embd + 255) / 256, tn, 1, 256, pa);
-                }
-            }
+            if (ok && shexp) ok = tile_shexp(g, m, ly, tn, xdim);
             prof_mark(g, PH_MATVEC);
         } else {
-        if (!ly->w_gate) {
-            ok = ok && enc_mv(g, m, ly->w_up, g->xb, g->hb,
-                              n_embd, m->n_ff, 0, tn, xdim, m->n_ff)
-                    && enc_lora(g, l, LW_UP, g->xb, g->hb, n_embd, m->n_ff,
-                                tn, xdim, m->n_ff);
+            ok = ok && tile_ffn_in(g, m, ly, l, tn, xdim);
             prof_mark(g, PH_MATVEC);
-            if (m->ffn_relu2)
-                ok = ok && enc_relu2(g, g->hb, tn * m->n_ff);
-            else
-                ok = ok && enc_xielu(g, g->hb, tn * m->n_ff,
-                                     m->xielu_an[l], m->xielu_ap[l],
-                                     m->xielu_b[l], m->xielu_eps[l]);
+            ok = ok && tile_ffn_act(g, m, ly, l, tn);
             prof_mark(g, PH_ELEM);
-        } else {
-            ok = ok && enc_mv(g, m, ly->w_gate, g->xb, g->hb,
-                              n_embd, m->n_ff, 0, tn, xdim, m->n_ff)
-                    && enc_lora(g, l, LW_GATE, g->xb, g->hb, n_embd, m->n_ff,
-                                tn, xdim, m->n_ff);
-            ok = ok && enc_mv(g, m, ly->w_up, g->xb, g->hb2,
-                              n_embd, m->n_ff, 0, tn, xdim, m->n_ff)
-                    && enc_lora(g, l, LW_UP, g->xb, g->hb2, n_embd, m->n_ff,
-                                tn, xdim, m->n_ff);
+            ok = ok && enc_mv(g, m, ly->w_down, g->hb, g->xb, m->n_ff, n_embd, 0, tn, m->n_ff, xdim)
+                    && enc_lora(g, l, LW_DOWN, g->hb, g->xb, m->n_ff, n_embd, tn, m->n_ff, xdim);
             prof_mark(g, PH_MATVEC);
-            ok = ok && enc_actmul(g, m, g->hb, g->hb2, tn * m->n_ff);
-            prof_mark(g, PH_ELEM);
-        }
-        ok = ok && enc_mv(g, m, ly->w_down, g->hb, g->xb, m->n_ff, n_embd, 0, tn, m->n_ff, xdim)
-                && enc_lora(g, l, LW_DOWN, g->hb, g->xb, m->n_ff, n_embd, tn, m->n_ff, xdim);
-        prof_mark(g, PH_MATVEC);
         }
     ffn_done:
-        if (g->sw->pfn[l])
-            ok = ok && enc_rmsnorm(g, g->xb, g->xb, g->sw->pfn[l], n_embd, m->post_norm_eps,
-                                   tn, xdim, xdim);
-        if (m->resid_scale != 1.0f)
-            ok = ok && enc_scale(g, g->xb, m->resid_scale, n_embd, tn, xdim);
-        if (m->hyper_conn) ok = ok && gpu_hc_combine(g, m, g->xb, xdim, tn);
-        else ok = ok && enc_add(g, g->x, g->xb, n_embd, tn, n_embd, xdim);
+        ok = ok && tile_branch_out(g, m, g->sw->pfn[l], tn, xdim);
     mamba_tail:
         ok = ok && enc_ple(g, m, ly, l, tn, xdim);
         if (ly->out_scale != 1.0f && ly->out_scale != 0.0f)
@@ -6095,16 +6163,10 @@ static int inject_fail_ordinal(void) {
     return --budget == 0 ? seen : 0;
 }
 
-bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
-                       bool want_logits, float **logits) {
-    gpu_t *g = m->gpu;
-    if (logits) *logits = NULL;
-    if (n < 1) return true;
-    // A prior recoverable GPU failure runs gpu_disable(), which frees the
-    // context and clears m->gpu. Decline rather than deref a NULL g (the
-    // batch path re-checks m0->gpu for the same reason).
-    if (!g) return false;
-
+// The recurrent state reset at a new sequence and snapshot before every
+// forward (the rollback a failed or rejected forward restores), the
+// keep-forward's checkpoint flags.
+static bool cuda_fwd_prepare(gpu_t *g, model_t *m, int n, int pos) {
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
     if (m->qwen35 && pos == 0) {
         int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
@@ -6146,95 +6208,85 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
             cu.MemcpyDtoD(g->mamba_state_prev, g->mamba_state, state_bytes) != 0)
             return false;
     }
-    if (prof.on && !prof.inited) prof_init();
-    prof.cur_mode = (n == 1) ? M_SINGLE : M_BATCH;
-    int m_ = prof.cur_mode;
-    double t_fwd0 = prof.on ? prof_now() : 0;
+    return true;
+}
 
-    // a non-contiguous position step means the host KV holds rows the device
-    // hasn't seen (a CPU-run batch, or a reset + new prompt): resync [0, pos)
-    if (pos != g->last_pos + 1) {
-        if (!kv_upload(g, m, 0, pos)) return false;
-    }
-
-    bool partial = m->gpu_layers < m->n_layer;
-    // !prof.on: a replayed CUDA graph never re-enters the instrumented launch
-    // path, so every per-phase counter stays 0.0 while the wall clock keeps
-    // running — the profiler reported `GPU-TOTAL 0.0 ms` and
-    // `residual = 100% of wall` for decode that was demonstrably happening
-    // (3070, 2026-08-09). Profiling therefore runs decode EAGERLY. The
-    // trade-off is stated in the report header: eager decode carries the
-    // launch overhead graphs exist to remove, so the absolute decode wall is
-    // pessimistic and the phase SPLIT is what the profile is for.
-    if (n == 1 && want_logits && !partial && !g->graph_bad && g->stream &&
-        !prof.on && !getenv("RUNNER_CUDA_GRAPH_OFF")) {
-        double ts0 = prof.on ? prof_now() : 0;
-        if (!stage_x(g, m, tokens, 1) ||
-            cu.MemcpyHtoD(g->pos_dev, &pos, sizeof(int)) != 0) return false;
-        if (prof.on) prof.t_stage[m_] += prof_now() - ts0;
-        if (!g->gexec) {
-            prof.capturing = 1;
-            // capture records the launch sequence without executing it; the
-            // recorded graph is position-invariant because pos lives in
-            // device memory, so one capture serves every decode token
-            //
-            // THREAD_LOCAL (1), not GLOBAL (0): GLOBAL capture forbids
-            // synchronous CUDA calls from every other thread for the whole
-            // capture window, so another slot's plain-path forward or a
-            // second gpu_t warming up on its own thread would fail and
-            // permanently downgrade that slot to CPU (model.c sees the
-            // failed forward and clears m->gpu)
-            if (cu.StreamBeginCapture(g->stream, 1) != 0 ||
-                !fwd_tile(g, m, tokens, 1, pos, true, 0, m->gpu_layers) ||
-                cu.StreamEndCapture(g->stream, &g->graph) != 0 ||
-                cu.GraphInstantiateWithFlags(&g->gexec, g->graph, 0) != 0) {
-                CUgraph junk = NULL;
-                cu.StreamEndCapture(g->stream, &junk); // ensure capture ended
-                if (junk && junk != g->graph) cu.GraphDestroy(junk);
-                fprintf(stderr, "gpu: graph capture failed — plain launches\n");
-                g->graph_bad = true;
-            }
-            prof.capturing = 0;
+// A single-token decode through the captured graph (capturing it on first
+// use): 1 served, 0 not served (the plain path runs), -1 failed.
+static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
+                                 int pos, float **logits, int m_, double t_fwd0) {
+    double ts0 = prof.on ? prof_now() : 0;
+    if (!stage_x(g, m, tokens, 1) ||
+        cu.MemcpyHtoD(g->pos_dev, &pos, sizeof(int)) != 0) return -1;
+    if (prof.on) prof.t_stage[m_] += prof_now() - ts0;
+    if (!g->gexec) {
+        prof.capturing = 1;
+        // capture records the launch sequence without executing it; the
+        // recorded graph is position-invariant because pos lives in
+        // device memory, so one capture serves every decode token
+        //
+        // THREAD_LOCAL (1), not GLOBAL (0): GLOBAL capture forbids
+        // synchronous CUDA calls from every other thread for the whole
+        // capture window, so another slot's plain-path forward or a
+        // second gpu_t warming up on its own thread would fail and
+        // permanently downgrade that slot to CPU (model.c sees the
+        // failed forward and clears m->gpu)
+        if (cu.StreamBeginCapture(g->stream, 1) != 0 ||
+            !fwd_tile(g, m, tokens, 1, pos, true, 0, m->gpu_layers) ||
+            cu.StreamEndCapture(g->stream, &g->graph) != 0 ||
+            cu.GraphInstantiateWithFlags(&g->gexec, g->graph, 0) != 0) {
+            CUgraph junk = NULL;
+            cu.StreamEndCapture(g->stream, &junk); // ensure capture ended
+            if (junk && junk != g->graph) cu.GraphDestroy(junk);
+            fprintf(stderr, "gpu: graph capture failed — plain launches\n");
+            g->graph_bad = true;
         }
-        if (g->gexec) {
-            double tg0 = prof.on ? prof_now() : 0;
-            bool gl = cu.GraphLaunch(g->gexec, g->stream) == 0 &&
-                      cu.StreamSynchronize(g->stream) == 0;
-            if (prof.on) prof.t_sync[m_] += prof_now() - tg0;
-            if (gl) {
-                if (!mtp_save_rows(g, m, 0, 1)) return false;
-                double tc0 = prof.on ? prof_now() : 0;
-                if (!kv_copyback(g, m, pos, pos + 1)) return false;
-                if (prof.on) prof.t_copyback[m_] += prof_now() - tc0;
-                g->last_pos = pos;
-                double tl0 = prof.on ? prof_now() : 0;
-                if (cu.MemcpyDtoH(g->h_logits, g->logits, sizeof(float) * m->n_vocab) != 0)
-                    return false;
-                if (prof.on) {
-                    prof.t_logitscp[m_] += prof_now() - tl0;
-                    prof.n_tokens[m_] += 1; prof.n_tiles[m_] += 1;
-                    prof.wall_ms[m_] += prof_now() - t_fwd0;
-                    prof_flush();
-                }
-                // Steady-state decode returns here, so the hook has to be
-                // checked on this path too — otherwise no injected failure can
-                // ever land after prefill, which is the only interesting place
-                // for one to land.
-                int ginj = inject_fail_ordinal();
-                if (ginj) {
-                    fprintf(stderr, "gpu: injected CUDA runtime failure at "
-                                    "device forward %d — falling back to CPU\n",
-                            ginj);
-                    return false;
-                }
-                if (logits) *logits = g->h_logits;
-                return true;
-            }
-        }
-        if (!g->graph_bad) { g->graph_bad = true;
-            fprintf(stderr, "gpu: graph launch failed — plain launches\n"); }
+        prof.capturing = 0;
     }
+    if (g->gexec) {
+        double tg0 = prof.on ? prof_now() : 0;
+        bool gl = cu.GraphLaunch(g->gexec, g->stream) == 0 &&
+                  cu.StreamSynchronize(g->stream) == 0;
+        if (prof.on) prof.t_sync[m_] += prof_now() - tg0;
+        if (gl) {
+            if (!mtp_save_rows(g, m, 0, 1)) return -1;
+            double tc0 = prof.on ? prof_now() : 0;
+            if (!kv_copyback(g, m, pos, pos + 1)) return -1;
+            if (prof.on) prof.t_copyback[m_] += prof_now() - tc0;
+            g->last_pos = pos;
+            double tl0 = prof.on ? prof_now() : 0;
+            if (cu.MemcpyDtoH(g->h_logits, g->logits, sizeof(float) * m->n_vocab) != 0)
+                return -1;
+            if (prof.on) {
+                prof.t_logitscp[m_] += prof_now() - tl0;
+                prof.n_tokens[m_] += 1; prof.n_tiles[m_] += 1;
+                prof.wall_ms[m_] += prof_now() - t_fwd0;
+                prof_flush();
+            }
+            // Steady-state decode returns here, so the hook has to be
+            // checked on this path too — otherwise no injected failure can
+            // ever land after prefill, which is the only interesting place
+            // for one to land.
+            int ginj = inject_fail_ordinal();
+            if (ginj) {
+                fprintf(stderr, "gpu: injected CUDA runtime failure at "
+                                "device forward %d — falling back to CPU\n",
+                        ginj);
+                return -1;
+            }
+            if (logits) *logits = g->h_logits;
+            return 1;
+        }
+    }
+    if (!g->graph_bad) { g->graph_bad = true;
+        fprintf(stderr, "gpu: graph launch failed — plain launches\n"); }
+    return 0;
+}
 
+// The batch in tiles of MVB: stage, run the device layers, hand a partial
+// split's boundary activation to the host.
+static bool cuda_fwd_tiles(gpu_t *g, model_t *m, const int32_t *tokens, int n,
+                           int pos, bool want_logits, bool partial, int m_) {
     for (int i = 0; i < n; i += MVB) {
         int tn = n - i < MVB ? n - i : MVB;
         bool last = i + tn == n;
@@ -6280,6 +6332,13 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
             }
         }
     }
+    return true;
+}
+
+// The forward synchronized, the KV rows copied back (the host cache stays
+// authoritative), the logits read.
+static bool cuda_fwd_finish(gpu_t *g, model_t *m, int n, int pos, bool want_logits,
+                            bool partial, float **logits, int m_, double t_fwd0) {
     double tsy0 = prof.on ? prof_now() : 0;
     if (cu.CtxSynchronize() != 0) {
         fprintf(stderr, "gpu: forward failed — falling back to CPU\n");
@@ -6308,4 +6367,45 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     }
     if (prof.on) prof.wall_ms[m_] += prof_now() - t_fwd0;
     return true;
+}
+
+bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
+                       bool want_logits, float **logits) {
+    gpu_t *g = m->gpu;
+    if (logits) *logits = NULL;
+    if (n < 1) return true;
+    // A prior recoverable GPU failure runs gpu_disable(), which frees the
+    // context and clears m->gpu. Decline rather than deref a NULL g (the
+    // batch path re-checks m0->gpu for the same reason).
+    if (!g) return false;
+
+    if (!cuda_fwd_prepare(g, m, n, pos)) return false;
+    if (prof.on && !prof.inited) prof_init();
+    prof.cur_mode = (n == 1) ? M_SINGLE : M_BATCH;
+    int m_ = prof.cur_mode;
+    double t_fwd0 = prof.on ? prof_now() : 0;
+
+    // a non-contiguous position step means the host KV holds rows the device
+    // hasn't seen (a CPU-run batch, or a reset + new prompt): resync [0, pos)
+    if (pos != g->last_pos + 1) {
+        if (!kv_upload(g, m, 0, pos)) return false;
+    }
+
+    bool partial = m->gpu_layers < m->n_layer;
+    // !prof.on: a replayed CUDA graph never re-enters the instrumented launch
+    // path, so every per-phase counter stays 0.0 while the wall clock keeps
+    // running — the profiler reported `GPU-TOTAL 0.0 ms` and
+    // `residual = 100% of wall` for decode that was demonstrably happening
+    // (3070, 2026-08-09). Profiling therefore runs decode EAGERLY. The
+    // trade-off is stated in the report header: eager decode carries the
+    // launch overhead graphs exist to remove, so the absolute decode wall is
+    // pessimistic and the phase SPLIT is what the profile is for.
+    if (n == 1 && want_logits && !partial && !g->graph_bad && g->stream &&
+        !prof.on && !getenv("RUNNER_CUDA_GRAPH_OFF")) {
+        int served = cuda_fwd_graph_decode(g, m, tokens, pos, logits, m_, t_fwd0);
+        if (served) return served > 0;
+    }
+
+    if (!cuda_fwd_tiles(g, m, tokens, n, pos, want_logits, partial, m_)) return false;
+    return cuda_fwd_finish(g, m, n, pos, want_logits, partial, logits, m_, t_fwd0);
 }
