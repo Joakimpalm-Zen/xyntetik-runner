@@ -1574,6 +1574,7 @@ static void quantize_job_close_source(quantize_job *J) {
     quantize_plans_free(&J->plan, &J->tplan);
 }
 
+// Everything, the partial file included unless it was installed.
 static void quantize_job_release(quantize_job *J) {
     quantize_job_close_source(J);
     if (J->w.f) fclose(J->w.f);
@@ -2274,6 +2275,8 @@ static void quantize_job_write_header(quantize_job *J) {
     }
 }
 
+// The tensor table (each tensor's type, written shape and data offset)
+// and the padding up to the data.
 static void quantize_job_write_layout(quantize_job *J) {
     // tensor table with new types/offsets, at the file's data alignment
     uint64_t off = 0;
@@ -2416,6 +2419,7 @@ static void quantize_job_write_rows(quantize_job *J, uint64_t i, merge_set_t *ms
     J->quantized++;
 }
 
+// Every written tensor's data, each at its offset.
 static void quantize_job_write_tensors(quantize_job *J, merge_set_t *ms) {
     // tensor data
     size_t max_row = 0;
@@ -2449,46 +2453,12 @@ static void quantize_job_write_tensors(quantize_job *J, merge_set_t *ms) {
     }
 }
 
-static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, int target,
-                       const char *prune_path, const char *type_plan_path,
-                       const char *remove_spec,
-                       merge_set_t *ms, uint32_t surgery_context,
-                       float surgery_factor, context_surgery_result *surgery_result) {
-    if (target != T_KEEP && !quantize_row_writable(target)) {
-        fprintf(stderr, "error: quantize target must be q8_0, q4_0, q3_k, "
-                "q4_k, q6_k, f16, or bf16\n");
-        return 1;
-    }
-    quantize_job job;
-    memset(&job, 0, sizeof(job));
-    quantize_job *J = &job;
-    int rc = 1;
-    if (!quantize_job_open_source(J, in_path, prune_path, type_plan_path,
-                                  remove_spec))
-        goto done;
-
-    if (J->rm.n > 0 && !quantize_job_remove_sublayers(J)) goto done;
-    if (ms && ms->n_base != J->g.n_tensors) {
-        // the base changed between the resolve open and this one
-        fprintf(stderr, "error: %s changed while merging\n", in_path);
-        goto done;
-    }
-
-    if (surgery_context &&
-        !quantize_job_context_surgery(J, surgery_context, surgery_factor,
-                                      surgery_result))
-        goto done;
-
-    if (J->plan.n > 0 && !quantize_job_check_prune(J, in_path)) goto done;
-
-    if (!quantize_job_open_output(J, out_path)) goto done;
-
-    if (J->uniform_prune) quantize_job_uniform_expert_count(J);
-
-    if (!quantize_job_decide_types(J, target, type_plan_path, ms)) goto done;
-    quantize_job_write_header(J);
-    quantize_job_write_layout(J);
-    quantize_job_write_tensors(J, ms);
+// The partial file closed and checked, a merge held to its survival floor,
+// the output installed over the destination.
+static int quantize_job_finish(quantize_job *J, const char *in_path,
+                               const char *out_path, int target,
+                               const char *type_plan_path,
+                               const merge_set_t *ms) {
     bool write_ok = wr_close(&J->w);
     // The source closes before the install: an in-place requant replaces
     // the very file the source maps.
@@ -2497,7 +2467,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     if (!write_ok) {
         fprintf(stderr, "error: failed writing quantized model %s "
                 "(destination left untouched)\n", out_path);
-        goto done;
+        return 1;
     }
 
     // A merge whose output grid rounded the delta away is not the adapted
@@ -2520,7 +2490,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                     100.0 * (double)ms->surv.bytes_changed /
                         (double)ms->surv.bytes,
                     100.0 * ms->min_retained, out_path);
-            goto done;
+            return 1;
         }
     }
 
@@ -2531,7 +2501,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     if (install_finished_file(J->tmp_path, out_path) != 0) {
         fprintf(stderr, "error: wrote %s but could not install it as %s "
                 "(destination unchanged)\n", J->tmp_path, out_path);
-        goto done;
+        return 1;
     }
     J->tmp_created = false;   // installed: it is the destination now
 
@@ -2553,7 +2523,50 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                 "%.2f%% of the adapted bytes differ from the base written "
                 "alone\n", 100.0 * ms->surv.ret_num / ms->surv.ret_den,
                 100.0 * (double)ms->surv.bytes_changed / (double)ms->surv.bytes);
-    rc = 0;
+    return 0;
+}
+
+// One file transformation: --quantize (with a type plan, an expert prune
+// or a sublayer removal), --merge-lora (ms) or --context-surgery
+// (surgery_context). Each stage adds to one quantize_job and refuses by
+// returning false; the job's one release path unwinds every stage before
+// the one that refused.
+static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, int target,
+                       const char *prune_path, const char *type_plan_path,
+                       const char *remove_spec,
+                       merge_set_t *ms, uint32_t surgery_context,
+                       float surgery_factor, context_surgery_result *surgery_result) {
+    if (target != T_KEEP && !quantize_row_writable(target)) {
+        fprintf(stderr, "error: quantize target must be q8_0, q4_0, q3_k, "
+                "q4_k, q6_k, f16, or bf16\n");
+        return 1;
+    }
+    quantize_job job;
+    memset(&job, 0, sizeof(job));
+    quantize_job *J = &job;
+    int rc = 1;
+    if (!quantize_job_open_source(J, in_path, prune_path, type_plan_path,
+                                  remove_spec))
+        goto done;
+    if (J->rm.n > 0 && !quantize_job_remove_sublayers(J)) goto done;
+    if (ms && ms->n_base != J->g.n_tensors) {
+        // the base changed between the resolve open and this one
+        fprintf(stderr, "error: %s changed while merging\n", in_path);
+        goto done;
+    }
+    if (surgery_context &&
+        !quantize_job_context_surgery(J, surgery_context, surgery_factor,
+                                      surgery_result))
+        goto done;
+    if (J->plan.n > 0 && !quantize_job_check_prune(J, in_path)) goto done;
+    if (!quantize_job_open_output(J, out_path)) goto done;
+    if (J->uniform_prune) quantize_job_uniform_expert_count(J);
+    if (!quantize_job_decide_types(J, target, type_plan_path, ms)) goto done;
+    // a failed write clears J->w.ok, and the finish refuses the file
+    quantize_job_write_header(J);
+    quantize_job_write_layout(J);
+    quantize_job_write_tensors(J, ms);
+    rc = quantize_job_finish(J, in_path, out_path, target, type_plan_path, ms);
 done:
     quantize_job_release(J);
     return rc;
