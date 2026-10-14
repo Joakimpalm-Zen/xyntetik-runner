@@ -298,9 +298,12 @@ $(QUANTIZE_OBJ): src/quantize.c $(HDR)
 # old FORCE guarded is answered by construction rather than by rebuilding
 # them in every one of `make test`'s 17 sub-makes.
 ENGINE_OBJ_NAMES = gguf compat instances tokenizer model sample vramreg template \
-                   jsonmode schema engine json envelope ed25519 ecdsa oms http \
+                   jsonmode schema schema_tools engine json envelope ed25519 ecdsa oms http \
                    registry provenance respstore receipts watermark kvsnap session scheduler completion api_responses api_anthropic server hfhub
 ENGINE_OBJ = $(ENGINE_OBJ_NAMES:%=$(OBJDIR)/%.o) $(MLDSA_OBJ)
+# the schema compiler and validator, and the native tool grammars built on them
+SCHEMA_SRC = src/schema.c src/schema_tools.c
+SCHEMA_OBJ = $(OBJDIR)/schema.o $(OBJDIR)/schema_tools.o
 ifeq ($(GPU_SRC),src/metal.m)
 GPU_OBJ = $(OBJDIR)/metal.o
 else
@@ -331,7 +334,7 @@ $(OBJDIR)/metal.o: src/metal.m $(HDR) src/kernels_metal.h src/kernels_tensor_met
 
 SRC = src/gguf.c src/compat.c $(QUANTS_OBJ) src/instances.c src/tokenizer.c src/model.c src/sample.c src/dpo.c \
       src/vramreg.c \
-      src/template.c src/jsonmode.c src/schema.c $(QUANTIZE_OBJ) src/engine.c src/decide.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/provenance.c src/lineage.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c src/hfhub.c src/bundle.c \
+      src/template.c src/jsonmode.c $(SCHEMA_SRC) $(QUANTIZE_OBJ) src/engine.c src/decide.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/provenance.c src/lineage.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c src/hfhub.c src/bundle.c \
       src/main.c $(GPU_SRC) $(TRAY_SRC)
 
 # Cross-compile a static riscv64 binary with zig (no toolchain install;
@@ -394,11 +397,11 @@ debug: $(SAN_SRC) $(HDR)
 # $(CFLAGS), not a hand-rolled flag list: schema bounds compile in the same
 # -ffast-math configuration as the shipped binary. Building this test without
 # those flags once gated behavior in a configuration that does not ship.
-$(TEST_JSON_SCHEMA): tests/test_json_schema.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(HDR)
-	$(CC) $(CFLAGS) -I src tests/test_json_schema.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o -o $@ -lm
+$(TEST_JSON_SCHEMA): tests/test_json_schema.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_json_schema.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) -o $@ -lm
 
-$(TEST_SVAL_WALK): tests/test_sval_walk.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(HDR)
-	$(CC) $(CFLAGS) -I src tests/test_sval_walk.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o -o $@ -lm
+$(TEST_SVAL_WALK): tests/test_sval_walk.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_sval_walk.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) -o $@ -lm
 
 # quants.c is needed for the ggml_type_* helpers gguf.c links against; CFLAGS
 # (not the plainer flags above) so the AVX2 paths match a real build
@@ -423,12 +426,12 @@ DIFFTOK_SRC = tests/difftok.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(OBJDIR)/c
 $(DIFFTOK): $(DIFFTOK_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(DIFFTOK_SRC) -o $@ -lm
 
-TEST_TMPL_SRC = tests/test_template.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(OBJDIR)/template.o $(OBJDIR)/schema.o $(OBJDIR)/jsonmode.o \
+TEST_TMPL_SRC = tests/test_template.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(OBJDIR)/template.o $(SCHEMA_OBJ) $(OBJDIR)/jsonmode.o \
                 $(OBJDIR)/json.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
 $(TEST_TEMPLATE): $(TEST_TMPL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TMPL_SRC) -o $@ -lm
 
-TEST_PROMPT_MARKS_SRC = tests/test_prompt_marks.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(OBJDIR)/template.o $(OBJDIR)/schema.o $(OBJDIR)/jsonmode.o \
+TEST_PROMPT_MARKS_SRC = tests/test_prompt_marks.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(OBJDIR)/template.o $(SCHEMA_OBJ) $(OBJDIR)/jsonmode.o \
                 $(OBJDIR)/json.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
 $(TEST_PROMPT_MARKS): $(TEST_PROMPT_MARKS_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_PROMPT_MARKS_SRC) -o $@ -lm
@@ -436,7 +439,7 @@ $(TEST_PROMPT_MARKS): $(TEST_PROMPT_MARKS_SRC) $(HDR)
 # the strict tool envelope is only meaningful if the schema engine enforces
 # it, so schema.c/jsonmode.c compile in and the tests drive the real validator
 TEST_TOOLS_SRC = tests/test_tools.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(OBJDIR)/template.o \
-                 $(OBJDIR)/schema.o $(OBJDIR)/jsonmode.o $(OBJDIR)/json.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
+                 $(SCHEMA_OBJ) $(OBJDIR)/jsonmode.o $(OBJDIR)/json.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
 $(TEST_TOOLS): $(TEST_TOOLS_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TOOLS_SRC) -o $@ -lm
 
@@ -463,20 +466,21 @@ $(TEST_TOK_CLASSES): $(TEST_TOK_CLASSES_SRC) src/tokenizer.c $(HDR)
 # same shape for the renderer: json.c and template.c are compiled into the test
 # with instrumented allocators, tokenizer.c/gguf.c link normally
 TEST_TMPL_OOM_SRC = tests/test_template_oom.c $(OBJDIR)/tokenizer.o $(OBJDIR)/gguf.o \
-                    $(OBJDIR)/schema.o $(OBJDIR)/jsonmode.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
+                    $(SCHEMA_OBJ) $(OBJDIR)/jsonmode.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
 $(TEST_TEMPLATE_OOM): $(TEST_TMPL_OOM_SRC) src/template.c src/json.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TMPL_OOM_SRC) -o $@ -lm
 
 # Every family's render contract at once: empty conversations, tools and
 # thinking reach, the tool protocol, and capacity at every buffer size.
 TEST_TMPL_FAMILIES_SRC = tests/test_template_families.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(OBJDIR)/template.o \
-                $(OBJDIR)/schema.o $(OBJDIR)/jsonmode.o $(OBJDIR)/json.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
+                $(SCHEMA_OBJ) $(OBJDIR)/jsonmode.o $(OBJDIR)/json.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
 $(TEST_TEMPLATE_FAMILIES): $(TEST_TMPL_FAMILIES_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TMPL_FAMILIES_SRC) -o $@ -lm
 
-# schema.c and json.c both compile into the test: enum/const literals are
-# serialised through jv_dump, so builder failures are schema failure paths
-$(TEST_SCHEMA_OOM): tests/test_schema_oom.c $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(HDR)
+# schema.c, schema_tools.c and json.c compile into the test: enum/const
+# literals are serialised through jv_dump, so builder failures are schema
+# failure paths
+$(TEST_SCHEMA_OOM): tests/test_schema_oom.c $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(HDR)
 	$(CC) $(CFLAGS) -I src tests/test_schema_oom.c $(OBJDIR)/jsonmode.o -o $@ -lm
 
 # shared model weights: needs the real model + backend, so it links the same
@@ -661,7 +665,7 @@ $(TEST_HOST_HEADER): tests/test_host_header.c $(OBJDIR)/http.o $(OBJDIR)/json.o 
 # same logits the model would have produced by prefilling
 TEST_PREFIX_SRC = tests/test_prefix.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
-                  $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_PREFIX): $(TEST_PREFIX_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_PREFIX_SRC) -o $@ $(LDFLAGS)
 
@@ -670,10 +674,10 @@ $(TEST_PREFIX): $(TEST_PREFIX_SRC) $(HDR)
 # logits — but on the recurrent (SSM) fold that a rewind must snapshot/restore.
 TEST_RECURRENT_SRC = tests/test_recurrent_rewind.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
-                  $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 TEST_PENALTY_WINDOW_SRC = tests/test_penalty_window.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
-                  $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_PENALTY_WINDOW): $(TEST_PENALTY_WINDOW_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_PENALTY_WINDOW_SRC) -o $@ $(LDFLAGS)
 
@@ -682,7 +686,7 @@ $(TEST_PENALTY_WINDOW): $(TEST_PENALTY_WINDOW_SRC) $(HDR)
 # penalty-window gate, since model_load is the interface under test
 TEST_ROPE_YARN_SRC = tests/test_rope_yarn.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
-                  $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_ROPE_YARN): $(TEST_ROPE_YARN_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_ROPE_YARN_SRC) -o $@ $(LDFLAGS)
 
@@ -707,7 +711,7 @@ $(TEST_RECURRENT): $(TEST_RECURRENT_SRC) $(HDR)
 # makes stale-fold reuse observable as byte divergence.
 TEST_REQUEST_STOP_SRC = tests/test_request_stop.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
-                  $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                  $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(GPU_OBJ)
 $(TEST_REQUEST_STOP): $(TEST_REQUEST_STOP_SRC) src/scheduler.c $(HDR) test-ornith.gguf test-ornith-draft.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_REQUEST_STOP_SRC) -o $@ $(LDFLAGS)
@@ -716,7 +720,7 @@ $(TEST_REQUEST_STOP): $(TEST_REQUEST_STOP_SRC) src/scheduler.c $(HDR) test-ornit
 # is byte identity of a real constrained generation with the walk on and off
 TEST_GRAMMAR_FF_SRC = tests/test_grammar_ff.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
-                  $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                  $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_GRAMMAR_FF): $(TEST_GRAMMAR_FF_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_GRAMMAR_FF_SRC) -o $@ $(LDFLAGS)
@@ -726,7 +730,7 @@ $(TEST_GRAMMAR_FF): $(TEST_GRAMMAR_FF_SRC) $(HDR)
 # tests/test_draft_lookup.py). Links the engine, so it takes engine.c's deps.
 TEST_LOOKUP_DRAFT_SRC = tests/test_lookup_draft.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
-                  $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                  $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_LOOKUP_DRAFT): $(TEST_LOOKUP_DRAFT_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_LOOKUP_DRAFT_SRC) -o $@ $(LDFLAGS)
@@ -1093,7 +1097,7 @@ $(TEST_AUTOFIT): $(TEST_AUTOFIT_SRC) $(HDR)
 # test itself includes.
 TEST_RESP_SM_SRC = tests/test_responses_sm.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
-                  $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                  $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(GPU_OBJ)
 $(TEST_RESP_SM): $(TEST_RESP_SM_SRC) src/completion.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_RESP_SM_SRC) -o $@ $(LDFLAGS)
@@ -1104,7 +1108,7 @@ $(TEST_RESP_SM): $(TEST_RESP_SM_SRC) src/completion.c $(HDR)
 # that sink agree on what the client received, so neither side may be stubbed.
 TEST_STOP_CONSTRAINT_SRC = tests/test_stop_constraint.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
-                  $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                  $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o \
                   $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(GPU_OBJ)
 $(TEST_STOP_CONSTRAINT): $(TEST_STOP_CONSTRAINT_SRC) src/completion.c $(HDR)
@@ -1118,7 +1122,7 @@ $(TEST_STOP_CONSTRAINT): $(TEST_STOP_CONSTRAINT_SRC) src/completion.c $(HDR)
 # prompt instead of generating from it.
 TEST_BUDGET_SRC = tests/test_prompt_budget.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
-                  $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                  $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o \
                   $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/api_responses.o $(OBJDIR)/api_anthropic.o \
                   $(OBJDIR)/session.o $(GPU_OBJ)
@@ -1132,7 +1136,7 @@ $(TEST_BUDGET): $(TEST_BUDGET_SRC) src/server.c $(HDR)
 # request that cannot be attributed gets back.
 TEST_ATTRIB_SRC = tests/test_tool_attribution.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
-                  $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                  $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o \
                   $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/api_responses.o $(OBJDIR)/api_anthropic.o \
                   $(OBJDIR)/session.o $(GPU_OBJ)
@@ -1165,7 +1169,7 @@ $(TEST_MSG_OOM): $(TEST_MSG_OOM_SRC) src/server.c src/api_anthropic.c \
 # comment) confined to one translation unit.
 TMPL_CONF_RENDER_SRC = scripts/template-conformance-render.c $(OBJDIR)/gguf.o \
                   $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o \
-                  $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o \
+                  $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o \
                   $(OBJDIR)/engine.o $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o \
                   $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/session.o $(GPU_OBJ)
 $(TMPL_CONF_RENDER): $(TMPL_CONF_RENDER_SRC) src/server.c $(HDR)
@@ -1176,7 +1180,7 @@ $(TMPL_CONF_RENDER): $(TMPL_CONF_RENDER_SRC) src/server.c $(HDR)
 TEST_RESTART = $(TEST_BATCH:test-batch%=test-server-restart%)
 TEST_RESTART_SRC = tests/test_server_restart.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                    $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
-                   $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                   $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                    $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o \
                    $(OBJDIR)/scheduler.o $(OBJDIR)/completion.o $(OBJDIR)/decide.o $(OBJDIR)/api_responses.o \
                    $(OBJDIR)/api_anthropic.o $(OBJDIR)/session.o $(OBJDIR)/server.o $(GPU_OBJ)
@@ -1190,7 +1194,7 @@ $(TEST_RESTART): $(TEST_RESTART_SRC) $(HDR)
 # default run because it starts a real server and drives it for a few seconds.
 TEST_SWAP_RACE_SRC = tests/test_swap_race.c src/gguf.c src/compat.c \
                      src/quants.c src/tokenizer.c src/model.c src/sample.c \
-                     src/jsonmode.c src/schema.c src/json.c src/engine.c \
+                     src/jsonmode.c $(SCHEMA_SRC) src/json.c src/engine.c \
                      src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/registry.c src/provenance.c src/lineage.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c \
                      src/scheduler.c src/completion.c src/api_responses.c \
                      src/api_anthropic.c src/session.c src/server.c src/decide.c $(GPU_SRC)
@@ -1223,7 +1227,7 @@ $(TEST_RESIDENCY): tests/test_residency.c $(OBJDIR)/compat.o $(HDR)
 TEST_SCHED_TURN = $(TEST_BATCH:test-batch%=test-sched-turn%)
 TEST_SCHED_TURN_SRC = tests/test_sched_turn.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                       $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
-                      $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                      $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                       $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o $(GPU_OBJ)
 $(TEST_SCHED_TURN): $(TEST_SCHED_TURN_SRC) src/scheduler.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_SCHED_TURN_SRC) -o $@ $(LDFLAGS)
@@ -1232,7 +1236,7 @@ $(TEST_SCHED_TURN): $(TEST_SCHED_TURN_SRC) src/scheduler.c $(HDR)
 TEST_PFX_PERSIST = $(TEST_BATCH:test-batch%=test-prefix-persist%)
 TEST_PFX_PERSIST_SRC = tests/test_prefix_persist.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                        $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
-                       $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                       $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                        $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_PFX_PERSIST): $(TEST_PFX_PERSIST_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_PFX_PERSIST_SRC) -o $@ $(LDFLAGS)
@@ -2655,9 +2659,9 @@ FUZZ_FLAGS = -g -O1 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src \
              -fno-omit-frame-pointer
 
 FUZZ_SRC_json_parse     = src/json.c
-FUZZ_SRC_schema_compile = src/json.c src/schema.c src/jsonmode.c
-FUZZ_SRC_sval_feed      = src/json.c src/schema.c src/jsonmode.c
-FUZZ_SRC_sval_trial     = src/json.c src/schema.c src/jsonmode.c
+FUZZ_SRC_schema_compile = src/json.c $(SCHEMA_SRC) src/jsonmode.c
+FUZZ_SRC_sval_feed      = src/json.c $(SCHEMA_SRC) src/jsonmode.c
+FUZZ_SRC_sval_trial     = src/json.c $(SCHEMA_SRC) src/jsonmode.c
 FUZZ_SRC_jsonv_feed     = src/jsonmode.c
 FUZZ_SRC_gguf_open      = src/gguf.c src/compat.c src/quants.c
 FUZZ_SRC_http_request   = src/http.c src/json.c src/compat.c
@@ -2820,7 +2824,7 @@ test-makefile-sane:
 		exit 1; \
 	}; \
 	if grep -q 'system(' src/tray.c src/tray_*.c src/tray_*.m; then echo "FAIL: tray launches through a shell"; exit 1; fi; \
-	for f in src/model.c src/engine.c src/completion.c src/server.c src/scheduler.c src/registry.c src/provenance.c src/lineage.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/api_responses.c src/api_anthropic.c src/template.c src/schema.c src/jsonmode.c src/tokenizer.c src/sample.c src/envelope.c src/oms.c src/http.c src/json.c src/gguf.c; do \
+	for f in src/model.c src/engine.c src/completion.c src/server.c src/scheduler.c src/registry.c src/provenance.c src/lineage.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/api_responses.c src/api_anthropic.c src/template.c $(SCHEMA_SRC) src/jsonmode.c src/tokenizer.c src/sample.c src/envelope.c src/oms.c src/http.c src/json.c src/gguf.c; do \
 	  $(CC) -fsyntax-only -std=gnu11 -Werror=vla -DRUNNER_GPU_CUDA -I src $$f 2>/dev/null || { \
 	    echo "FAIL: $$f declares a variable-length stack array (the forward runs on 512 KB server threads; size by file values goes on the heap)"; exit 1; }; done; \
 	tline=$$($(MAKE) -Bn --no-print-directory T3=1 CFLAGS="-O3 -ffast-math" runner | grep -- ' src/model.c '); \

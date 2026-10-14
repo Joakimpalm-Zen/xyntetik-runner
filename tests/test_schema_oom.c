@@ -6,10 +6,12 @@
 // deliberately operates near memory limits, so a failed allocation is a normal
 // condition — an unchecked one here is a remote crash.
 //
-// schema.c and json.c are compiled straight into this test with their
-// allocators macro-substituted, the same technique as test_json_oom.c. json.c
-// has to come along because the compiler serialises enum/const literals through
-// jv_dump/sbuf, so a failure inside the builder is a schema.c failure path too.
+// schema.c, schema_tools.c and json.c are compiled straight into this test
+// with their allocators macro-substituted, the same technique as
+// test_json_oom.c. schema_tools.c holds the native tool grammars the second
+// sweep drives. json.c has to come along because the compiler serialises
+// enum/const literals through jv_dump/sbuf, so a failure inside the builder
+// is a schema.c failure path too.
 // jsonmode.c is linked normally: it never allocates, and only the validator
 // (not the compiler under test here) calls into it.
 #include <assert.h>
@@ -79,6 +81,7 @@ static void t_free(void *p) {
 #define free    t_free
 #include "../src/json.c"
 #include "../src/schema.c"
+#include "../src/schema_tools.c"
 #undef malloc
 #undef calloc
 #undef realloc
