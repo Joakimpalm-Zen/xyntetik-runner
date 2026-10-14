@@ -49,3 +49,24 @@ def test_terminators_and_noise_are_not_first_tokens():
     empty = _frame({"choices": [{"index": 0, "delta": {"content": ""},
                                  "finish_reason": "stop"}]})
     assert not MOD.frame_carries_output(empty)
+
+
+def test_proc_stat_counts_fields_after_the_command_name():
+    """utime and stime are fields 14 and 15 of /proc/PID/stat, counted after
+    the parenthesised command name, which may itself hold spaces and ')'."""
+    line = ("4242 (run (ner) x) S 17 4242 4242 0 -1 4194304 1 0 0 0 "
+            "731 102 0 0 20 0 9 0 12345 0 0\n")
+    assert MOD.proc_stat_fields(line) == (17, 833)
+
+
+def test_filetime_is_hundred_nanosecond_units():
+    # 2**32 units of 100 ns is 429.4967296 s
+    assert MOD.filetime_seconds(1, 0) == 429.4967296
+    assert MOD.filetime_seconds(0, 10_000_000) == 1.0
+
+
+def test_the_platform_sampler_is_chosen_and_names_itself():
+    assert MOD.ps_stat is not None and MOD.ACCOUNTING
+    import os
+    s = MOD.ps_stat(os.getpid())
+    assert s and s["cputime_s"] > 0 and s["rss_mb"] > 0 and s["procs"] >= 1
