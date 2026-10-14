@@ -10,8 +10,9 @@ Keep public interfaces small and deliberate, with the complexity behind them.
 
 - Module boundaries are intentional: CLI and server behaviour in
   `main.c`/`server.c`, inference flow in `engine.c`, model loading and forward
-  in `model.c`, constrained output in `jsonmode.c`/`schema.c`, platform
-  details in `compat.c`, backends in `cuda.c`/`metal.m`.
+  in `model.c`, constrained output in `jsonmode.c`/`schema.c` (native tool
+  grammars in `schema_tools.c`), platform details in `compat.c`, backends in
+  `cuda.c`/`metal.m`.
 - Do not expose internals to make a quick change easier.
 - Lock behaviour through public interfaces: CLI output, HTTP endpoints,
   committed smoke scripts, or focused test binaries. Internals may change

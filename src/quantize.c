@@ -2004,7 +2004,7 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
     // enum, not #define: a macro here would leak to the end of the
     // translation unit for a constant that is meaningful only inside
     // this function. Same hand-maintained hazard as the seq capacities
-    // in schema.c, just smaller.
+    // in schema_tools.c, just smaller.
     enum { DECLINE_NAMES = 6 };
     const char *decl_w_name[DECLINE_NAMES]; uint32_t decl_w_type[DECLINE_NAMES];
     // tensors written in a 32-block fallback type because the requested

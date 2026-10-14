@@ -104,9 +104,9 @@ void jv_dump_tojson(const jv *v, sbuf *o);
 //
 // It lives here, next to jv, because TWO unrelated modules need the identical
 // order and must not each guess it: template.c renders gemma4's declarations
-// and call blocks with dictsorted keys, and schema.c compiles the grammar
-// that constrains those same blocks. A disagreement between the two would be
-// a grammar that rejects the model's own trained output.
+// and call blocks with dictsorted keys, and schema_tools.c compiles the
+// grammar that constrains those same blocks. A disagreement between the two
+// would be a grammar that rejects the model's own trained output.
 //
 // jinja's default is case_sensitive=False and python's sort is stable, so the
 // order is by LOWERCASED key with ties left in insertion order.
