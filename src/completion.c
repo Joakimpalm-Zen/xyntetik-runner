@@ -4425,6 +4425,18 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
     free(r.s);
 }
 
+// The stream an unseeded request samples from: splitmix64 of the server seed
+// and the request's place among the requests that sampled. Never 0,
+// which is the sampler xorshift's fixed point (the reason `seed: 0` is
+// refused).
+uint64_t server_request_stream(uint64_t seed, uint64_t arrival) {
+    uint64_t z = seed + (arrival + 1) * 0x9E3779B97F4A7C15ull;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    z ^= z >> 31;
+    return z ? z : 1;
+}
+
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            jv *req, const tool_envelope *env,
                            const render_state *rs) {
@@ -4652,7 +4664,19 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     double gtime;
     // Past the last refusal: the request's seed takes the slot's RNG now.
     // Nothing above draws from it (prefill and prompt scoring do not sample).
-    if (q.seed > 0) s->smp.rng = (uint64_t)q.seed;
+    // Every request that samples takes the next place in one server-wide
+    // order; an unseeded one draws from the server seed and that place, not
+    // from a stream kept per slot: which idle slot serves a request is the
+    // scheduler's timing, so the same requests under the same -s seed sampled
+    // differently from run to run at --parallel 2 or more. A greedy request
+    // draws nothing and takes no place; a refused one never gets here.
+    if (s->smp.temp > 0.0f || (e->think_smp && e->think_temp > 0.0f)) {
+        uint64_t place = atomic_fetch_add(&SV.sampled_requests, 1);
+        s->smp.rng = q.seed > 0 ? (uint64_t)q.seed
+                                : server_request_stream(SV.base_rng, place);
+    } else if (q.seed > 0) {
+        s->smp.rng = (uint64_t)q.seed;
+    }
     // R1.2.2: the sampler's state as generation starts is the receipt's seed
     uint64_t gen_rng = s->smp.rng;
     g.raw_on = receipts_enabled();

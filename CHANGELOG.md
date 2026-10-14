@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A server seed makes unseeded sampled requests reproducible at any
+  `--parallel`.** Each slot kept its own sampling stream, and which idle
+  slot serves a request is the scheduler's timing, so two runs of the same
+  requests under the same `-s` seed could sample differently with two or
+  more slots. Every request that samples now takes the next place in one
+  server-wide order, and an unseeded one draws from the server seed and
+  that place. A request's own `seed` still wins, and a greedy or refused
+  request still leaves the next request's draw alone. Unseeded sampled
+  output under a given `-s` differs from earlier releases.
+
 - **A loaded model that sits idle no longer costs a pass over its file.**
   The provenance endpoint's model digest was taken in the background after
   every load, reading the whole file: 6 to 11 CPU seconds in the first idle

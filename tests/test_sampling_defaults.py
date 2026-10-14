@@ -284,3 +284,34 @@ def test_a_file_without_the_keys_is_served_at_the_preset(model):
         mid = _get(srv, "/v1/models")["data"][0]["id"]
         t = _chat(srv, mid)["runner_telemetry"]["sampling"]
         assert "file" not in t["source"].values(), t
+
+
+def test_a_server_seed_fixes_unseeded_sampling_at_any_parallel(model):
+    """An unseeded sampled request draws from the server seed and its arrival
+    order, not from the slot that serves it. Which idle slot takes a request
+    is the scheduler's choice and depends on timing, so a stream kept per slot
+    made the same requests under the same -s seed sample differently from one
+    run to the next at --parallel 2 or more."""
+    exe = find_runner(ROOT)
+    if not pathlib.Path(exe).exists():
+        pytest.skip("runner not built")
+    prompts = ["Write a limerick.", "Name a colour.", "Count to five.",
+               "Say something else.", "Write a limerick."]
+
+    def run(parallel):
+        with RunnerServer(exe, model, ctx=2048, parallel=parallel,
+                          extra_args=["--gpu", "off", "-t", "2", "-s", "42",
+                                      "--chat-template", "chatml"]) as srv:
+            out = []
+            for p in prompts:
+                r = _post(srv, "/v1/chat/completions", {
+                    "max_tokens": 16, "temperature": 1.0, "top_k": 0,
+                    "top_p": 1.0, "messages": [{"role": "user", "content": p}]})
+                out.append(r["choices"][0]["message"]["content"])
+            return out
+
+    one, two, two_again = run(1), run(2), run(2)
+    assert one == two == two_again
+    # the streams differ by arrival: the first and last prompts are the same
+    # text, sampled under two different positions in the sequence
+    assert one[0] != one[4]

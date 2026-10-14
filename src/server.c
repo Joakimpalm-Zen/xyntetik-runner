@@ -3312,6 +3312,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             s->tmpl = tmpl;
             s->smp = defaults;
             s->smp.rng = defaults.rng ^ (0x9E3779B97F4A7C15ull * (unsigned)(i + 1));
+            SV.base_rng = defaults.rng;
             s->smp_base = s->smp;
             if (i == 0) {
                 s->m = base;
