@@ -16,21 +16,18 @@ Current release and unreleased changes. Compatibility follows the
   weight by the bytes it holds, and the MoE adapter fixtures are held to the
   CPU's bytes on CUDA hosts.
 
-- **`--cpu-moe` on CUDA runs a Granite 4 hybrid or Nemotron-H MoE layer's
-  FFN as the CPU forward does.** With the experts on the host, the device
-  hands each MoE layer's residual to a host function that runs the FFN and
-  its tail. That function was a copy of the forward's FFN, made when only
-  gpt-oss-style families took this path, and two later families' rules never
-  reached it: Granite 4 hybrid MoE layers (granite-4.0-h-tiny, h-small) were
-  added to the residual without the model's residual multiplier, and on
-  Nemotron-H MoE (`nemotron_h_moe`) the gate-less shared expert read an input
-  buffer nothing had written. The host path now runs the forward's own FFN
-  stages, and `tests/test_moe_host_bridge.c` holds it equal, bit for bit, to
-  the CPU forward on every MoE layer of the fixtures. On x86-64 the copy
-  also differed from the CPU forward in its last bits on every other MoE
-  family (it compiled differently), so `--cpu-moe` results on CUDA move
-  slightly there too: gpt-oss 20B's teacher-forced mean NLL by 3e-5 and
-  Qwen3 30B-A3B's by 1e-3 with every expert layer on the host.
+- **`--cpu-moe` on CUDA runs each MoE layer's FFN exactly as the CPU forward
+  does.** With the experts on the host, the device hands each MoE layer's
+  residual to a host function that runs the FFN and its tail. That function
+  was a copy of the forward's FFN, and on x86-64 it compiled differently from
+  the CPU forward, so `--cpu-moe` results on CUDA move slightly: gpt-oss 20B's
+  teacher-forced mean NLL by 3e-5 and Qwen3 30B-A3B's by up to 1e-3 with
+  every expert layer on the host. The copy also lacked two later families'
+  rules (Granite 4 hybrid's residual multiplier, Nemotron-H's gate-less shared
+  expert), but neither family reaches it in this release: both run on the CPU
+  under `--cpu-moe`. The host path now runs the forward's own FFN stages, and
+  `tests/test_moe_host_bridge.c` holds it equal, bit for bit, to the CPU
+  forward on every MoE layer of the fixtures.
 
 - **`runner -i` shows a reasoning model's thinking as thinking.** The chat
   loop started its reasoning split inside the thought only for Harmony,
