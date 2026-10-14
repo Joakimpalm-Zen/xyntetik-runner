@@ -56,6 +56,35 @@ class CommandGate(unittest.TestCase):
             workflow.write_text("  targets: probe probe\n")
             self.assertNotEqual(run(), 0)
 
+    def test_roster_catches_a_device_target_no_lane_runs(self):
+        """A test-cuda-* target outside cuda-gate.sh's DEVICE_STEPS, or a
+        test-metal-* target test-metal does not call, is a gate nothing runs;
+        DEVICE_OPT_IN is the only other place it may be, and a lane may not
+        name a target the Makefile lacks."""
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            for d in ("scripts", "tests/fuzz", ".github/workflows"):
+                (root / d).mkdir(parents=True)
+            script = root / "scripts/check-ci-roster.py"
+            script.write_bytes((ROOT / "scripts/check-ci-roster.py").read_bytes())
+            (root / "tests/fuzz/fuzz_probe.c").write_text("")
+            (root / "tests/test_new.py").write_text("")
+            (root / ".github/workflows/ci.yml").write_text("  targets: probe\n")
+            gate = root / "scripts/cuda-gate.sh"
+            make = root / "Makefile"
+            base = ("FUZZ_TARGETS = probe\ntest:\n\tpython -m pytest tests/test_new.py\n"
+                    "test-cuda-a:\n\ttrue\ntest-metal-b:\n\ttrue\n")
+            def run(makefile, steps):
+                make.write_text(makefile)
+                gate.write_text('DEVICE_STEPS="%s"\n' % steps)
+                return subprocess.run([sys.executable, str(script)], capture_output=True).returncode
+            metal = "test-metal:\n\t$(MAKE) --no-print-directory test-metal-b\n"
+            self.assertEqual(run(base + metal, "a:test-cuda-a"), 0)
+            self.assertNotEqual(run(base + metal, ""), 0)          # cuda target unrun
+            self.assertNotEqual(run(base + "test-metal:\n\ttrue\n", "a:test-cuda-a"), 0)
+            self.assertEqual(run(base + "DEVICE_OPT_IN = test-metal-b\n", "a:test-cuda-a"), 0)
+            self.assertNotEqual(run(base + metal, "a:test-cuda-a z:test-cuda-typo"), 0)
+
     def test_failed_command_keeps_its_status_and_timing(self):
         with tempfile.TemporaryDirectory() as td:
             p = subprocess.run([sys.executable, str(ROOT / "scripts/ci-run.py"),

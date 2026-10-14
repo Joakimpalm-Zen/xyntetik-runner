@@ -2263,6 +2263,17 @@ endif
 # platform each self-skips with a printed reason. CI runs this target on the
 # hosted macOS runner for every pull request, where the whole suite would
 # take half an hour; `make test` runs it on the merge and on a lab Mac.
+# The two KV-cache smokes run their model half only where
+# models/SmolLM2-135M-Instruct-Q8_0.gguf (or ASAN_MODEL) exists.
+#
+# Every test-metal-* target is called here and every test-cuda-* target is a
+# step of scripts/cuda-gate.sh, except the ones DEVICE_OPT_IN names, each for
+# the input it needs that no lane has (scripts/check-ci-roster.py holds this:
+# ten Metal smokes went two months with no caller, and three CUDA gates):
+#   test-metal-iquants            llama-quantize (RUNNER_LLAMA_CPP_BIN) and its fixtures
+#   test-metal-bigmodel           BIGMODEL=, a real multi-GB GGUF
+#   test-metal-bigmodel-multibuf  BIGMODEL=, the same
+DEVICE_OPT_IN = test-metal-iquants test-metal-bigmodel test-metal-bigmodel-multibuf
 .PHONY: test-metal
 test-metal:
 	@[ -f test-moe-fixture.moe1.gguf ] || $(PYTHON) scripts/make-test-moe.py test-moe-fixture
@@ -2276,6 +2287,16 @@ test-metal:
 	$(MAKE) --no-print-directory test-metal-moe-em
 	$(MAKE) --no-print-directory test-metal-moe-mm
 	$(MAKE) --no-print-directory test-metal-fuse
+	$(MAKE) --no-print-directory test-metal-prefill
+	$(MAKE) --no-print-directory test-metal-moe
+	$(MAKE) --no-print-directory test-metal-gptoss-moe
+	$(MAKE) --no-print-directory test-metal-gemma4-moe
+	$(MAKE) --no-print-directory test-metal-gemma4-hetero
+	$(MAKE) --no-print-directory test-metal-eseries
+	$(MAKE) --no-print-directory test-metal-swa
+	$(MAKE) --no-print-directory test-metal-gelu-overflow
+	$(MAKE) --no-print-directory test-metal-kv-fp4
+	$(MAKE) --no-print-directory test-metal-kv-q8
 
 test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_DPO_GRAD) $(TEST_MVT) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
