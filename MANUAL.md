@@ -958,8 +958,16 @@ keeps the truncation signal (`finish_reason: "length"`, Responses
 `stop_reason: "max_tokens"`) so a caller knows the arguments are minimal
 closures rather than the model's completed intent. If the model never starts
 the document, runner returns empty content rather than inventing required
-values. Syntax and schema shape are guaranteed; semantic correctness and tool
-selection remain the model's responsibility.
+values, with one exception: on a reasoning model under a tool choice or a
+schema, the reasoning channel closes at half the budget so that a call
+survives, and when the model spends the rest without writing a byte of it,
+the closer writes the whole call. Every value it writes, there or anywhere a
+call is cut, is listed in `runner_telemetry.closure.fields` (`synthesized`,
+or `completed` when the model began it), on JSON calls and on the XML-style
+native calls (Qwen3-Coder's tagged parameters, Muse's atem invoke) alike, so
+a client can refuse a value the model never chose. Syntax and schema shape are
+guaranteed; semantic correctness and tool selection remain the model's
+responsibility.
 
 A client `stop` sequence is handled as a truncation the caller asked for. The
 matched bytes are withheld from the response, as they are in unconstrained

@@ -1079,17 +1079,88 @@ static void cl_value(clscan *c) {
     c->depth--;
 }
 
+static size_t cl_find(const char *d, size_t n, size_t from, const char *needle) {
+    size_t k = strlen(needle);
+    for (size_t i = from; k && i + k <= n; i++)
+        if (memcmp(d + i, needle, k) == 0) return i;
+    return n;
+}
+
+// The XML-style native calls, which carry their arguments as tagged
+// parameters rather than JSON: Qwen3-Coder's <function=NAME> with
+// <parameter=KEY>\nVALUE\n</parameter>, and Muse's <atem:invoke name="NAME">
+// with <atem:parameter name="KEY">VALUE</atem:parameter>. Until 2026-10-14 the
+// JSON scan below was the only one, so on these families every closure
+// reported "fields": null and a value the closer invented (a required number
+// filled with 0) read exactly like one the model wrote (outside review of the
+// runner 1.2.0 tool-calling study). The closer only ever finishes a turn's
+// LAST call, so the paths are that call's: "/name" when the closer wrote the
+// tool name, "/arguments/KEY" for each parameter value, sorted against `at`
+// as cl_mark sorts JSON leaves. False when the document holds no such call.
+static const struct {
+    const char *call, *call_end, *param, *param_end, *close;
+    bool framed;                                // a newline frames each value
+} CL_XML[] = {
+    { "<function=", ">", "<parameter=", ">", "</parameter>", true },
+    { "<atem:invoke name=\"", "\"", "<atem:parameter name=\"", "\">",
+      "</atem:parameter>", false },
+};
+
+static bool cl_xml(clscan *c) {
+    for (size_t s = 0; s < sizeof CL_XML / sizeof *CL_XML; s++) {
+        size_t last = c->n;
+        for (size_t p = cl_find(c->d, c->n, 0, CL_XML[s].call); p < c->n;
+             p = cl_find(c->d, c->n, p + 1, CL_XML[s].call))
+            last = p;
+        if (last == c->n) continue;
+        size_t saved, inner;
+        size_t ns = last + strlen(CL_XML[s].call);
+        size_t ne = cl_find(c->d, c->n, ns, CL_XML[s].call_end);
+        cl_push(c, "name", 4, &saved);
+        cl_mark(c, ns, ne);
+        c->plen = saved; c->path[c->plen] = 0;
+        size_t i = ne < c->n ? ne + strlen(CL_XML[s].call_end) : c->n;
+        while (i < c->n) {
+            size_t po = cl_find(c->d, c->n, i, CL_XML[s].param);
+            if (po == c->n) break;
+            size_t ks = po + strlen(CL_XML[s].param);
+            size_t ke = cl_find(c->d, c->n, ks, CL_XML[s].param_end);
+            if (ke == c->n) break;              // the key itself is still open
+            size_t vs = ke + strlen(CL_XML[s].param_end);
+            if (CL_XML[s].framed && vs < c->n && c->d[vs] == '\n') vs++;
+            size_t vc = cl_find(c->d, c->n, vs, CL_XML[s].close);
+            size_t ve = vc;
+            if (CL_XML[s].framed && ve > vs && c->d[ve - 1] == '\n') ve--;
+            cl_push(c, "arguments", 9, &saved);
+            cl_push(c, c->d + ks, ke - ks, &inner);
+            cl_mark(c, vs, ve);
+            c->plen = saved; c->path[c->plen] = 0;
+            i = vc < c->n ? vc + strlen(CL_XML[s].close) : c->n;
+        }
+        return !c->bad;
+    }
+    return false;
+}
+
 // NULL when the closer did not run. The document is the content channel of a
-// constrained turn; the JSON is read from its first '{' or '[' (a native
-// protocol may frame it), and a document that is not JSON (an XML protocol)
-// reports the byte counts with "fields": null.
+// constrained turn. An XML-style native call is read by cl_xml; otherwise the
+// JSON is read from its first '{' or '[' (a native protocol may frame it),
+// and a document neither scan can read reports the byte counts with
+// "fields": null.
 static char *closure_json(const char *doc, size_t n, long at) {
     if (at < 0 || !doc) return NULL;
     sbuf synth = {0}, comp = {0}, out = {0};
     size_t j0 = 0;
-    while (j0 < n && doc[j0] != '{' && doc[j0] != '[') j0++;
-    clscan c = { .d = doc, .n = n, .i = j0, .at = at, .synth = &synth, .comp = &comp };
-    if (j0 < n) cl_value(&c); else c.bad = true;
+    clscan c = { .d = doc, .n = n, .at = at, .synth = &synth, .comp = &comp };
+    if (!cl_xml(&c)) {
+        // a scan that gave up part-way may have marked paths already
+        free(synth.s); free(comp.s);
+        synth = (sbuf){0}; comp = (sbuf){0};
+        c = (clscan){ .d = doc, .n = n, .at = at, .synth = &synth, .comp = &comp };
+        while (j0 < n && doc[j0] != '{' && doc[j0] != '[') j0++;
+        c.i = j0;
+        if (j0 < n) cl_value(&c); else c.bad = true;
+    }
     sb_fmt(&out, "{\"closed\":true,\"model_bytes\":%ld,\"closer_bytes\":%ld,",
            at, (long)n - at);
     if (c.bad) {
