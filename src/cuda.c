@@ -2420,8 +2420,10 @@ typedef struct {
 // wired through skip_mixer/skip_ffn below. nemotron_h (dense) and DENSE
 // granitehybrid (h-micro) fully offload — CPU/CUDA token-identity
 // measured 2026-08-21 (compat-reports/cpu-cuda-hybrid). MoE granitehybrid
-// (h-small) still trips the shared-expert / MoE-router guards below and
-// falls back there.
+// (h-tiny, h-small) runs with every expert bank on the host: its shared
+// expert has no gate, which moe_bank_device_ok() keeps off the device, so
+// --cpu-moe and --cpu-moe auto keep the banks home and anything that would
+// put one on the device trips the shared-expert guard below.
 static bool cuda_admit(model_t *m) {
     if (m->n_expert > 0 && !model_moe_router_is_plain(m)) {
         fprintf(stderr, "gpu: this model's MoE router (gating=%d groups=%d "
@@ -5063,8 +5065,8 @@ static bool tile_shexp(gpu_t *g, model_t *m, layer_t *ly, int tn, int xdim) {
             && enc_mv(g, m, ly->w_gate_shexp, g->shexp_in, g->shexp_g, n_embd, nf, 0, tn, xdim, nf)
             && enc_actmul(g, m, g->shexp_g, g->shexp_u, tn * nf)
             && enc_mv(g, m, ly->w_down_shexp, g->shexp_g, g->shexp_o, nf, n_embd, 0, tn, nf, n_embd);
-    // the scalar gate is required here (admission refuses an
-    // ungated shared expert on the device, see below)
+    // the scalar gate is required here: moe_bank_device_ok() keeps an
+    // ungated shared expert off the device
     ok = ok && enc_mv(g, m, ly->ffn_gate_inp_shexp, g->shexp_in, g->shexp_gate, n_embd, 1, 0, tn, xdim, 1);
     if (ok) {
         int vs = n_embd;

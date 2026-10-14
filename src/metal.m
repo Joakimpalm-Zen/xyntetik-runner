@@ -3763,7 +3763,7 @@ static bool metal_enc_ffn(metal_fwd *F, int l, const metal_layer_plan *P) {
                       n_embd, m->post_norm_eps, n, xdim, xdim);
     if (m->resid_scale != 1.0f)
         enc_scale_n(g, F->e, g->xb, 0, n_embd, m->resid_scale, n, xdim);
-    // Fusion F2b (decided above): defer this add into the next layer's
+    // Fusion F2b (decided in metal_fwd_layer): defer this add into the next layer's
     // attention norm; F5 already folded it into the expert sum on the
     // layers it took.
     if (f2b)
