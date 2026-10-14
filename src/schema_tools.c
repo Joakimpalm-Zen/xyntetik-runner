@@ -1514,6 +1514,72 @@ oom:
     return NULL;
 }
 
+// A string value: a literal set as <|"|>-delimited literals, otherwise raw
+// bytes up to the closing delimiter.
+static snode *g4_string(jv *schema, const char *what, char *err, int errcap) {
+    if (jv_get(schema, "minLength") || jv_get(schema, "maxLength") ||
+        jv_get(schema, "pattern")) {
+        snprintf(err, errcap,
+                 "gemma4 %s has string length/pattern constraints that its "
+                 "native delimiter syntax cannot enforce", what);
+        return NULL;
+    }
+    jv *en = jv_get(schema, "enum");
+    jv *cn = jv_get(schema, "const");
+    if (en || cn) {
+        snode *json = compile_node(schema, err, errcap, 0);
+        if (!json) return NULL;
+        if (json->kind != SN_ENUM) {
+            snprintf(err, errcap,
+                     "gemma4 %s string literal schema did not compile to an enum",
+                     what);
+            schema_free(json);
+            return NULL;
+        }
+        snode *n = sn_new(SN_ENUM);
+        if (!n) { schema_free(json); return NULL; }
+        n->lits = calloc((size_t)json->n_lits, sizeof(*n->lits));
+        if (!n->lits) { schema_free(n); schema_free(json); return NULL; }
+        n->whitespace_significant = true;
+        for (int i = 0; i < json->n_lits; i++) {
+            jv *literal = json_parse(json->lits[i], strlen(json->lits[i]));
+            const char *v = jv_str(literal, NULL);
+            if (!v || strstr(v, "<|\"|>")) {
+                snprintf(err, errcap,
+                         "gemma4 %s has an unrepresentable native string "
+                         "literal", what);
+                jv_free(literal); schema_free(n); schema_free(json);
+                return NULL;
+            }
+            sbuf lit = {0};
+            sb_fmt(&lit, "<|\"|>%s<|\"|>", v);
+            jv_free(literal);
+            if (lit.failed) {
+                free(lit.s); schema_free(n); schema_free(json); return NULL;
+            }
+            n->lits[n->n_lits++] = lit.s;
+        }
+        schema_free(json);
+        return n;
+    }
+    // The <|"|> delimiter is a reserved token, so an unconstrained value
+    // between the two needs no escaping and is raw bytes up to the closer.
+    snode *seq = atem_seq(2);
+    // built only once there is a sequence to own it: the cleanup below
+    // frees it through `seq`, so a body with no sequence is a leak (the
+    // two other sites with this shape already guard it the same way)
+    snode *body = !seq ? NULL : atem_raw("<|\"|>");
+    if (!seq || !body || !atem_seq_add(seq, atem_lit("<|\"|>")) ||
+        !atem_seq_add(seq, body)) {
+        if (seq && seq->n_props < 2) schema_free(body);
+        schema_free(seq);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling gemma4 string");
+        return NULL;
+    }
+    seq->whitespace_significant = true;
+    return seq;
+}
+
 static snode *g4_value(jv *schema, const char *what, int depth, int *budget,
                        char *err, int errcap) {
     if (depth > G4_MAX_DEPTH) {
@@ -1552,69 +1618,7 @@ static snode *g4_value(jv *schema, const char *what, int depth, int *budget,
             return NULL;
         }
     }
-    if (!strcmp(type, "string")) {
-        if (jv_get(schema, "minLength") || jv_get(schema, "maxLength") ||
-            jv_get(schema, "pattern")) {
-            snprintf(err, errcap,
-                     "gemma4 %s has string length/pattern constraints that its "
-                     "native delimiter syntax cannot enforce", what);
-            return NULL;
-        }
-        jv *en = jv_get(schema, "enum");
-        jv *cn = jv_get(schema, "const");
-        if (en || cn) {
-            snode *json = compile_node(schema, err, errcap, 0);
-            if (!json) return NULL;
-            if (json->kind != SN_ENUM) {
-                snprintf(err, errcap,
-                         "gemma4 %s string literal schema did not compile to an enum",
-                         what);
-                schema_free(json);
-                return NULL;
-            }
-            snode *n = sn_new(SN_ENUM);
-            if (!n) { schema_free(json); return NULL; }
-            n->lits = calloc((size_t)json->n_lits, sizeof(*n->lits));
-            if (!n->lits) { schema_free(n); schema_free(json); return NULL; }
-            n->whitespace_significant = true;
-            for (int i = 0; i < json->n_lits; i++) {
-                jv *literal = json_parse(json->lits[i], strlen(json->lits[i]));
-                const char *v = jv_str(literal, NULL);
-                if (!v || strstr(v, "<|\"|>")) {
-                    snprintf(err, errcap,
-                             "gemma4 %s has an unrepresentable native string "
-                             "literal", what);
-                    jv_free(literal); schema_free(n); schema_free(json);
-                    return NULL;
-                }
-                sbuf lit = {0};
-                sb_fmt(&lit, "<|\"|>%s<|\"|>", v);
-                jv_free(literal);
-                if (lit.failed) {
-                    free(lit.s); schema_free(n); schema_free(json); return NULL;
-                }
-                n->lits[n->n_lits++] = lit.s;
-            }
-            schema_free(json);
-            return n;
-        }
-        // The <|"|> delimiter is a reserved token, so an unconstrained value
-        // between the two needs no escaping and is raw bytes up to the closer.
-        snode *seq = atem_seq(2);
-        // built only once there is a sequence to own it: the cleanup below
-        // frees it through `seq`, so a body with no sequence is a leak (the
-        // two other sites with this shape already guard it the same way)
-        snode *body = !seq ? NULL : atem_raw("<|\"|>");
-        if (!seq || !body || !atem_seq_add(seq, atem_lit("<|\"|>")) ||
-            !atem_seq_add(seq, body)) {
-            if (seq && seq->n_props < 2) schema_free(body);
-            schema_free(seq);
-            if (!err[0]) snprintf(err, errcap, "out of memory compiling gemma4 string");
-            return NULL;
-        }
-        seq->whitespace_significant = true;
-        return seq;
-    }
+    if (!strcmp(type, "string")) return g4_string(schema, what, err, errcap);
     if (!strcmp(type, "boolean")) {
         snode *n = compile_node(schema, err, errcap, 0);
         if (n) n->whitespace_significant = true;
