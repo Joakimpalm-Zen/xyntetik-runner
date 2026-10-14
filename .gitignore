@@ -18,6 +18,8 @@ runner-debug.dSYM/
 # families). That is why the gate is not wired into `make test`.
 .build/
 test-dot-route
+# test_residency's scratch file, removed unless the test dies mid-run
+test-residency-release.tmp
 test-dot-route.exe
 test-iq-decode
 test-iq-decode.exe
@@ -255,6 +257,7 @@ test-attn-split-bin
 test-attn-split-bin.exe
 attn-split-*.gguf
 attn-split.err
+attn-split.list
 
 # xyntetik.com is generated at build time (site/build.py)
 site/_site/
@@ -265,6 +268,8 @@ test-canon-kernels.exe
 runner-riscv64
 test-pmath
 test-pmath.exe
+test-fpclass
+test-fpclass.exe
 
 # Native control-token regression gate
 test-prompt-marks

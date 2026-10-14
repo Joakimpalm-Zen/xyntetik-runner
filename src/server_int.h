@@ -18,7 +18,7 @@
 #include "watermark.h"
 
 typedef struct slot_s slot_t;
-const char *slot_default_system(const slot_t *s);
+const char *slot_default_system(const slot_t *s, bool tools);
 extern const char *server_template_text_override;
 
 struct slot_s {
@@ -132,6 +132,13 @@ typedef struct {
     // for the reason /health already documents about itself -- a dashboard
     // polling on a timer must not measure its own polling.
     atomic_ullong total_requests;
+    // the server's sampling seed (-s, or a time-derived one), the root of every
+    // unseeded request's stream (server_request_stream), and how many requests
+    // have started sampling: an unseeded request's place in that order picks
+    // its stream, so the serving slot does not, and a request that sampled
+    // nothing (refused, greedy) moves no other request's draws
+    uint64_t    base_rng;
+    atomic_ullong sampled_requests;
     // Loading state machine: swap_to releases swap_mu for the duration of the
     // actual model load (minutes for big files, up to --wait-for-vram longer),
     // so /unload and shutdown are never blocked behind a load. `loading` and

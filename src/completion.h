@@ -25,6 +25,10 @@ enum { API_TEXT, API_CHAT, API_RESPONSES, API_MESSAGES };
 // envelope when the request opted into one, else NULL. `rs` is where the
 // rendered turn starts (template.h, render_state): what the chat-shaped
 // surfaces' renderer reported for this prompt, NULL for a raw prompt.
+// The sampling stream of an unseeded request: the server seed and the
+// request's place among the requests that sampled, so it does not depend on
+// the serving slot.
+uint64_t server_request_stream(uint64_t seed, uint64_t arrival);
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                     jv *req, const tool_envelope *env, const render_state *rs);
 

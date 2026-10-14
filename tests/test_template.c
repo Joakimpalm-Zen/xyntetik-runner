@@ -2521,6 +2521,10 @@ static void test_llama2_bos_per_turn_and_the_fallback_that_must_not_get_it(void)
            == TMPL_LLAMA2_FALLBACK);
     // and it cannot be asked for by name -- only detection produces it
     assert(template_from_name("llama2-fallback") == -1);
+    // it reports its own name, not "raw": receipts and --caps name the
+    // framing the prompt actually had, and "raw" is the unframed template
+    assert(strcmp(template_name(TMPL_LLAMA2_FALLBACK), "llama2-fallback") == 0);
+    assert(strcmp(template_name(TMPL_RAW), "raw") == 0);
     assert(template_from_name("llama2") == TMPL_LLAMA2);
 }
 
@@ -2700,25 +2704,42 @@ static void test_nemotron_nano_framing(tokenizer *t) {
 
 // A publisher's fixed default system turn is the template's own text, taken
 // only from the template that carries it and only under its own family.
+// Whether it survives declared tools is each template's own decision too:
+// Qwen2.5 writes it ahead of "# Tools", Granite 4.0-H replaces it with the
+// declarations, and SmolLM2 has no tools branch at all.
 static void test_default_system_is_read_from_the_models_own_template(void) {
     const char *smol =
         "{{ '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, "
         "trained by Hugging Face<|im_end|>\n' }}";
+    const char *q25 =
+        "{%- if tools %}{{- '<|im_start|>system\\n' }}"
+        "{%- if messages[0]['role'] == 'system' %}{{- messages[0]['content'] }}"
+        "{%- else %}{{- 'You are Qwen, created by Alibaba Cloud. You are a "
+        "helpful assistant.' }}{%- endif %}";
     const char *g40 =
         "{%- set g4_default_system_message = 'You are a helpful assistant. "
         "Please ensure responses are professional, accurate, and safe.' %}"
         "<|start_of_role|>";
     const char *plain = "<|im_start|>{{ message.role }}";
-    assert(!strcmp(template_default_system(TMPL_CHATML, smol),
+    assert(!strcmp(template_default_system(TMPL_CHATML, smol, false),
                    "You are a helpful AI assistant named SmolLM, trained by Hugging Face"));
-    assert(!strcmp(template_default_system(TMPL_GRANITE4, g40),
+    assert(!strcmp(template_default_system(TMPL_CHATML, q25, false),
+                   "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."));
+    assert(!strcmp(template_default_system(TMPL_GRANITE4, g40, false),
                    "You are a helpful assistant. Please ensure responses are "
                    "professional, accurate, and safe."));
+    // with tools declared: kept by Qwen2.5 (and SmolLM2, which ignores
+    // tools), replaced by Granite 4.0-H's tools system message
+    assert(!strcmp(template_default_system(TMPL_CHATML, q25, true),
+                   "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."));
+    assert(template_default_system(TMPL_CHATML, smol, true) != NULL);
+    assert(template_default_system(TMPL_GRANITE4, g40, true) == NULL);
     // another ChatML model, a forced template, or no template text: nothing
-    assert(template_default_system(TMPL_CHATML, plain) == NULL);
-    assert(template_default_system(TMPL_CHATML_THINK, smol) == NULL);
-    assert(template_default_system(TMPL_CHATML, g40) == NULL);
-    assert(template_default_system(TMPL_CHATML, NULL) == NULL);
+    assert(template_default_system(TMPL_CHATML, plain, false) == NULL);
+    assert(template_default_system(TMPL_CHATML_THINK, smol, false) == NULL);
+    assert(template_default_system(TMPL_CHATML_THINK, q25, false) == NULL);
+    assert(template_default_system(TMPL_CHATML, g40, false) == NULL);
+    assert(template_default_system(TMPL_CHATML, NULL, false) == NULL);
 }
 
 // Hermes 4: always a system turn (the caller's, the standard prompt, or the

@@ -193,8 +193,11 @@ static inline void template_bind_think_tags(int tmpl, const char **open,
 // or an unrelated ChatML model never gets another model's persona. NULL when
 // there is none. Until 2026-10-02 the runner sent the user turn alone, which
 // put every system-less request outside the model's training distribution
-// (golden pass 2026-09-07: SmolLM2 and Granite 4.0-H, 20 cases).
-const char *template_default_system(int tmpl, const char *meta_tmpl);
+// (golden pass 2026-09-07: SmolLM2 and Granite 4.0-H, 20 cases). `tools` says
+// the request declares tools: some templates keep their default ahead of the
+// declarations (Qwen2.5), others replace it with them (Granite 4.0-H).
+const char *template_default_system(int tmpl, const char *meta_tmpl,
+                                    bool tools);
 
 // What a request that leaves parallel tool calls unsaid gets (owner,
 // 2026-10-09): several calls per turn, as OpenAI's API and Anthropic's

@@ -126,6 +126,27 @@ def _poison(client, n_slots=2):
         n_slots)
 
 
+def _after_poison(client, payload, name, attempts=4):
+    """Poison every slot, then send `payload`, checking the precondition the
+    tests that want a fork rely on rather than assuming it.
+
+    The two poison requests are concurrent, but a fixture request takes
+    milliseconds: the first can finish before the second arrives, both run on
+    one slot, and the other slot still holds SYSTEM. A request served there
+    rewinds into its own KV (prompt_reuse "kv" or "extended") and forks
+    nothing, which is not what the test is about. When that is what happened,
+    poison again; a precondition that never holds fails here, saying so.
+    """
+    for i in range(attempts):
+        _poison(client)
+        r = client.chat(payload, name=name if i == 0 else f"{name}-retry{i}")
+        t = _telemetry(r)
+        if t.get("prompt_reuse") not in ("kv", "extended"):
+            return r
+    raise ProtocolError("the poison never left every slot unrelated to SYSTEM",
+                        attempts=attempts, last_reuse=t.get("prompt_reuse"))
+
+
 @pytest.fixture()
 def cold(client):
     client.raw("prefix-clear", "POST", "/v1/runner/prefix-cache/clear")
@@ -167,10 +188,8 @@ def test_a_repeated_system_prompt_is_forked_not_prefilled(cold):
                                  name="prefix-warm"))
     assert first["prompt_forked_tokens"] == 0, "nothing was cached yet"
 
-    _poison(cold)
-
-    second = _telemetry(cold.chat(_payload(SYSTEM, "second question"),
-                                  name="prefix-fork"))
+    second = _telemetry(_after_poison(cold, _payload(SYSTEM, "second question"),
+                                      "prefix-fork"))
     assert second["prompt_forked_tokens"] > 0, (
         "a repeated system prompt was prefilled from scratch")
     # the fork is the shared block, not the whole prompt: the differing user
@@ -187,8 +206,7 @@ def test_a_repeated_system_prompt_is_forked_not_prefilled(cold):
 
 def test_saved_seconds_are_reported_and_accumulate(cold):
     cold.chat(_payload(SYSTEM, "alpha"), name="prefix-saved-warm")
-    _poison(cold)
-    t = _telemetry(cold.chat(_payload(SYSTEM, "beta"), name="prefix-saved-hit"))
+    t = _telemetry(_after_poison(cold, _payload(SYSTEM, "beta"), "prefix-saved-hit"))
     assert t["prompt_forked_tokens"] > 0
     assert t["prefix_cache_saved_seconds"] > 0, (
         "a fork that reused tokens reported no saved time")
@@ -216,9 +234,7 @@ def test_a_forked_prefix_answers_exactly_like_a_cold_one(cold):
     # so the fork is partial: the shared block hits, the user turn does not
     cold.chat(_payload(SYSTEM, "something entirely unrelated"),
               name="prefix-seed")
-    _poison(cold)
-
-    forked = cold.chat(_payload(SYSTEM, question), name="prefix-forked")
+    forked = _after_poison(cold, _payload(SYSTEM, question), "prefix-forked")
     t = _telemetry(forked)
     assert t["prompt_forked_tokens"] > 0, "this test needs an actual fork"
     _same_context(_fingerprint(forked), _fingerprint(reference),
@@ -242,9 +258,7 @@ def test_a_neighbours_prefix_is_never_installed(cold):
     # fill the cache with both, in both orders, then interleave
     cold.chat(_payload(SYSTEM, "seed a"), name="prefix-neighbour-seed-a")
     cold.chat(_payload(OTHER_SYSTEM, "seed b"), name="prefix-neighbour-seed-b")
-    _poison(cold)
-
-    got_a = cold.chat(_payload(SYSTEM, "question"), name="prefix-neighbour-a")
+    got_a = _after_poison(cold, _payload(SYSTEM, "question"), "prefix-neighbour-a")
     got_b = cold.chat(_payload(OTHER_SYSTEM, "question"),
                       name="prefix-neighbour-b")
     assert _telemetry(got_a)["prompt_forked_tokens"] > 0, "no fork happened"

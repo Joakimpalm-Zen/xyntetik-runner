@@ -6,6 +6,7 @@
 #include "vramreg.h"
 #include "compat.h"
 #include "template.h"   // HARMONY_THINK_OPEN/CLOSE for the gpt-oss channel split
+#include "build_arch.h" // RUNNER_BUILD_ARCH for the route record
 
 #include <math.h>
 #include "pmath.h"
@@ -762,6 +763,7 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
     out->kv_k8v4 = out->kv_k8v4_per_tok * (uint64_t)out->n_ctx;
 
     out->available = plat_ram_available_bytes();
+    out->n_seq = 1;
     #undef FK
     return true;
 }
@@ -773,7 +775,12 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
 // extras of the hybrid architectures) and the headroom. A full split also
 // owes the output projection, and when it does not fit the last layer goes
 // back to the CPU, as the loader does. What stays on the host is the rest of
-// the file (scaled to the hot set for a sparse MoE) and the CPU layers' KV.
+// the file (scaled to the hot set for a sparse MoE) and the whole KV cache:
+// the host copy is the authoritative one on a CUDA load, allocated for every
+// layer and written back after each device forward (cuda.c kv_copyback).
+// With f->n_seq slots each pays its own KV, host and device, and its own
+// activation scratch; the weights and the headroom are paid once, as the
+// loader's split plans it (cuda.c shared_plan_budget).
 bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
                    uint64_t headroom, int max_layers) {
     if (f->n_layer <= 0) return false;
@@ -809,9 +816,10 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     uint64_t act = 4ull * (64ull * (n_embd + 3 * xdim + q_dim + 2 * kv_dim +
                                     2 * n_ff + n_head * (uint64_t)f->n_ctx) +
                            n_vocab);
+    const uint64_t slots = f->n_seq > 1 ? (uint64_t)f->n_seq : 1;
     f->gpu = true;
     f->gpu_budget = budget;
-    f->gpu_fixed = tok + act + headroom;
+    f->gpu_fixed = tok + act * slots + headroom;
     const uint64_t per_tok[4] = { f->kv_f16_per_tok, f->kv_q8_per_tok,
                                   f->kv_k8v4_per_tok, f->kv_fp4_per_tok };
     for (int k = 0; k < 4; k++) {
@@ -821,7 +829,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
         int G = 0;
         uint64_t used = f->gpu_fixed, dev_w = tok;
         if (used <= budget) {
-            for (int l = 0; l < f->n_layer; l++) cost[l] = lb[l] + kv_layer;
+            for (int l = 0; l < f->n_layer; l++) cost[l] = lb[l] + kv_layer * slots;
             G = gpu_plan_prefix(cost, f->n_layer, max_layers, budget, &used);
             for (int l = 0; l < G; l++) dev_w += lb[l];
             // The loader's full-split test is `used + token_embd + output`
@@ -833,7 +841,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
             if (gpu_plan_full_split(&G, f->n_layer, used, tok + out, budget, &gave_back)) {
                 used += out; if (out != tok) dev_w += out;
             } else if (gave_back) {
-                used -= lb[G] + kv_layer; dev_w -= lb[G];
+                used -= lb[G] + kv_layer * slots; dev_w -= lb[G];
             }
         } else {
             used = 0; dev_w = 0;   // not even the fixed charge fits: all CPU
@@ -843,7 +851,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
             host_w = (uint64_t)((double)host_w * (double)f->hot / (double)f->weights);
         f->gpu_layers[k] = G;
         f->gpu_used[k] = used;
-        f->host_need[k] = host_w + kv_layer * (uint64_t)(f->n_layer - G);
+        f->host_need[k] = host_w + per_tok[k] * (uint64_t)f->n_ctx * slots;
     }
     free(lb);
     free(cost);
@@ -861,10 +869,11 @@ const char *model_fit_verdict(const model_fit *f) {
                 return words[k];
         return "PAGES";
     }
-    if (f->hot + f->kv_f16 <= f->available) return "FITS";
-    if (f->kv_q8 && f->hot + f->kv_q8 <= f->available) return "FITS WITH --kv q8";
-    if (f->kv_k8v4 && f->hot + f->kv_k8v4 <= f->available) return "FITS WITH --kv k8v4";
-    if (f->kv_fp4 && f->hot + f->kv_fp4 <= f->available) return "FITS WITH --kv fp4";
+    const uint64_t s = f->n_seq > 1 ? (uint64_t)f->n_seq : 1;
+    if (f->hot + f->kv_f16 * s <= f->available) return "FITS";
+    if (f->kv_q8 && f->hot + f->kv_q8 * s <= f->available) return "FITS WITH --kv q8";
+    if (f->kv_k8v4 && f->hot + f->kv_k8v4 * s <= f->available) return "FITS WITH --kv k8v4";
+    if (f->kv_fp4 && f->hot + f->kv_fp4 * s <= f->available) return "FITS WITH --kv fp4";
     return "PAGES";
 }
 
@@ -4323,6 +4332,7 @@ static int model_gpu_batch_default(void) {
 static bool runtime_placement(model_t *m, const model_params *p) {
     m->reserve_vram_pct = p->reserve_vram_pct;
     m->gpu_layers_override = p->gpu_layers_override;
+    m->gpu_instances = p->n_seq > 1 ? p->n_seq : 1;
     m->cpu_moe = p->cpu_moe && m->n_expert > 0;
     m->cpu_moe_layers = p->cpu_moe_layers;
     if (m->cpu_moe) {
@@ -4750,6 +4760,7 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_bytes
     }
     if (cpu_why) {
         fprintf(stderr, "gpu: %s — using CPU\n", cpu_why);
+        snprintf(m->route_fallback, sizeof m->route_fallback, "%s", cpu_why);
         return true;
     }
     // Register the intended VRAM footprint before allocating any of it, so
@@ -5651,6 +5662,260 @@ static inline double dt_now(void) {
 // families; the portable T3 build is exact either way). Inlined, every stage
 // compiles in its caller's context, as the single function did.
 #define NUM_STAGE static inline __attribute__((always_inline))
+// ---- the route record (plan P1; see model.h) ----
+static int route_on = -1;
+static bool route_enabled(void) {
+    if (route_on < 0) { const char *e = getenv("RUNNER_DEBUG_ROUTE"); route_on = e && *e && strcmp(e, "0") != 0; }
+    return route_on;
+}
+
+static const char *route_backend(const model_t *m) {
+    if (!m->gpu) return "cpu";
+#if defined(RUNNER_GPU_METAL)
+    return "metal";
+#elif defined(RUNNER_GPU_CUDA)
+    return "cuda";
+#else
+    return "gpu";
+#endif
+}
+
+static const char *route_build(void) {
+#if defined(RUNNER_T3_BUILD)
+    return "t3/" RUNNER_BUILD_ARCH;
+#elif defined(RUNNER_PORTABLE_MATH)
+    return "portable/" RUNNER_BUILD_ARCH;
+#else
+    return "default/" RUNNER_BUILD_ARCH;
+#endif
+}
+
+// The codegen flags this unit was compiled with that change which kernels
+// exist, read from the predefined macros (the CFLAGS string itself is not
+// in the binary). The compiler version is __VERSION__.
+static const char *route_codegen(void) {
+    return ""
+#ifdef __FAST_MATH__
+        "+fast-math"
+#endif
+#ifdef __AVX512F__
+        "+avx512f"
+#endif
+#ifdef __AVX512VNNI__
+        "+avx512vnni"
+#endif
+#ifdef __AVX2__
+        "+avx2"
+#endif
+#ifdef __FMA__
+        "+fma"
+#endif
+#ifdef __F16C__
+        "+f16c"
+#endif
+#ifdef __ARM_NEON
+        "+neon"
+#endif
+#ifdef __ARM_FEATURE_DOTPROD
+        "+dotprod"
+#endif
+        ;
+}
+
+#ifdef _WIN32
+#define ROUTE_ENVIRON _environ
+#else
+extern char **environ;
+#define ROUTE_ENVIRON environ
+#endif
+
+// Every RUNNER_* variable this process was started with, comma-joined: the
+// switches that select or pin a route (RUNNER_CUDA_TC=0, RUNNER_METAL_MM=0,
+// RUNNER_CPU_I8=1, ...) are all spelled that way, so reading the environment
+// is complete by construction where a list kept here would not be. A value
+// whose name says it might be a credential is reported as set, not shown.
+static void route_tuning(char *out, size_t cap) {
+    size_t n = 0;
+    out[0] = 0;
+    for (char **e = ROUTE_ENVIRON; e && *e && n + 1 < cap; e++) {
+        if (strncmp(*e, "RUNNER_", 7) != 0) continue;
+        const char *eq = strchr(*e, '=');
+        if (!eq) continue;
+        size_t kl = (size_t)(eq - *e);
+        bool secret = false;
+        static const char *const words[] = { "KEY", "TOKEN", "SECRET", "PASS" };
+        for (size_t w = 0; w < sizeof words / sizeof *words; w++) {
+            const char *f = strstr(*e, words[w]);
+            if (f && f < eq) secret = true;
+        }
+        int k = snprintf(out + n, cap - n, "%s%.*s=%.32s", n ? "," : "", (int)kl, *e,
+                         secret ? "(set)" : eq + 1);
+        if (k < 0 || (size_t)k >= cap - n) { out[n] = 0; break; }
+        n += (size_t)k;
+    }
+}
+
+// The weight types the matrices are stored in, by share of their bytes, at
+// most three: "Q4_K 78%,Q6_K 20%,F32 2%". Which kernels a forward runs follows
+// from these and from the backend's admission of each type.
+static void route_weights(const model_t *m, char *out, size_t cap) {
+    uint64_t bytes[64] = {0}, total = 0;
+    for (uint64_t i = 0; i < m->gf.n_tensors; i++) {
+        const gguf_tensor *t = &m->gf.tensors[i];
+        if (t->n_dims < 2 || t->type >= 64) continue;
+        bytes[t->type] += t->nbytes;
+        total += t->nbytes;
+    }
+    size_t n = 0;
+    out[0] = 0;
+    for (int k = 0; k < 3 && total; k++) {
+        int best = -1;
+        for (int t = 0; t < 64; t++)
+            if (bytes[t] && (best < 0 || bytes[t] > bytes[best])) best = t;
+        if (best < 0) break;
+        int w = snprintf(out + n, cap - n, "%s%s %d%%", n ? "," : "", ggml_type_name(best),
+                         (int)(100.0 * (double)bytes[best] / (double)total + 0.5));
+        if (w < 0 || (size_t)w >= cap - n) break;
+        n += (size_t)w;
+        bytes[best] = 0;
+    }
+}
+
+typedef struct {
+    const char *backend, *kv, *detail, *build, *codegen, *cpu_act;
+    char device[128], weights[96], tuning[512];
+    int  gpu_layers, n_layer, moe_layers, moe_host;
+} route_facts;
+
+static void route_collect(const model_t *m, route_facts *r) {
+    static char device[128];
+    static int device_known;
+    if (!device_known) {
+        if (!gpu_available(device, sizeof device)) device[0] = 0;
+        device_known = 1;
+    }
+    r->backend = route_backend(m);
+    snprintf(r->device, sizeof r->device, "%s", m->gpu ? device : "");
+    r->gpu_layers = m->gpu ? m->gpu_layers : 0;
+    r->n_layer = m->n_layer;
+    r->moe_layers = r->moe_host = 0;
+    for (int l = 0; l < m->n_layer; l++)
+        if (m->layers[l].is_moe) {
+            r->moe_layers++;
+            if (m->moe_host && m->moe_host[l]) r->moe_host++;
+        }
+    r->kv = m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16";
+    r->detail = m->gpu ? gpu_route_detail(m) : "";
+    r->build = route_build();
+    r->codegen = route_codegen();
+    // the activation the CPU's matvecs dot against: f32, or int8 under the
+    // tolerance-gated RUNNER_CPU_I8 (a device path names its own in detail)
+    r->cpu_act = i8_dot_enabled() ? "int8" : "f32";
+    route_weights(m, r->weights, sizeof r->weights);
+    route_tuning(r->tuning, sizeof r->tuning);
+}
+
+enum { RP_SOLO, RP_BATCH, RP_KEEP, RP_MTP, RP_MICRO };
+static const char *const route_path_name[MODEL_ROUTE_PATHS] = {
+    "solo", "batch", "keep", "mtp", "micro" };
+
+void model_route_note(model_t *m, int rows, const char *path) {
+    if (!route_enabled()) return;
+    route_facts r;
+    route_collect(m, &r);
+    char line[1280];
+    snprintf(line, sizeof line,
+             "route: backend=%s device=\"%s\" split=%d/%d experts_on_host=%d/%d "
+             "rows=%d path=%s kv=%s weights=\"%s\" cpu_act=%s%s%s fallback=\"%s\" "
+             "build=%s%s tuning=\"%s\"",
+             r.backend, r.device, r.gpu_layers, r.n_layer, r.moe_host, r.moe_layers,
+             rows, path, r.kv, r.weights, r.cpu_act, r.detail[0] ? " " : "", r.detail,
+             m->route_fallback, r.build, r.codegen, r.tuning);
+    uint64_t h = 1469598103934665603ull;
+    for (const char *p = line; *p; p++) { h ^= (unsigned char)*p; h *= 1099511628211ull; }
+    if (h == m->route_last) return;
+    m->route_last = h;
+    fprintf(stderr, "%s\n", line);
+}
+
+// After every forward that ran, on whatever backend it ended on (a device
+// forward that failed has already moved this instance to the CPU, so the
+// line says where the rows were computed, not where they were sent first):
+// count the path and its widest row count for the record, and print the
+// line when RUNNER_DEBUG_ROUTE asks. Two stores and a compare otherwise.
+static void route_ran(model_t *m, int path, int rows) {
+    m->route_runs[path]++;
+    if (rows > m->route_rows[path]) m->route_rows[path] = rows;
+    if (route_enabled()) model_route_note(m, rows, route_path_name[path]);
+}
+
+// a JSON string body for a device name or a reason (model.c links without
+// json.c in the focused test binaries, so it escapes its own strings)
+static void route_escape(const char *s, char *out, size_t cap) {
+    size_t n = 0;
+    for (; *s && n + 7 < cap; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (c == '"' || c == '\\') { out[n++] = '\\'; out[n++] = (char)c; }
+        else if (c < 0x20) n += (size_t)snprintf(out + n, cap - n, "\\u%04x", c);
+        else out[n++] = (char)c;
+    }
+    out[n] = 0;
+}
+
+// The process's kernel counters, for the end-of-run record only (they move
+// every forward, so the debug line leaves them out): tensor-core or simdgroup
+// GEMM dispatches per weight type, and the counted special routes.
+static int route_kernels(char *out, int cap) {
+    int n = snprintf(out, (size_t)cap, "{\"gemm_by_type\":{");
+    bool first = true;
+    for (int t = 0; t < 64 && n < cap; t++) {
+        unsigned long c = gpu_tc_dispatches_type(t);
+        if (!c) continue;
+        n += snprintf(out + n, (size_t)(cap - n), "%s\"%s\":%lu", first ? "" : ",",
+                      ggml_type_name(t), c);
+        first = false;
+    }
+    if (n < cap)
+        n += snprintf(out + n, (size_t)(cap - n),
+                      "},\"cuda_splitk\":%lu,\"metal_fast_mv\":%lu,\"metal_attn_coop\":%lu,"
+                      "\"metal_attn_tile\":%lu,\"metal_attn_gqa\":%lu,\"cpu_dot_multi\":%lu}",
+                      gpu_splitk_dispatches(), gpu_mv_dispatches(), gpu_attn_coop_dispatches(),
+                      gpu_attn_tile_dispatches(), gpu_attn_gqa_dispatches(),
+                      vec_dot_multi_calls());
+    return n;
+}
+
+void model_route_json(const model_t *m, char *out, int cap) {
+    route_facts r;
+    route_collect(m, &r);
+    char dev[260], why[330], wts[200], tun[1100], cc[200], kern[1024], paths[400];
+    route_escape(r.device, dev, sizeof dev);
+    route_escape(m->route_fallback, why, sizeof why);
+    route_escape(r.weights, wts, sizeof wts);
+    route_escape(r.tuning, tun, sizeof tun);
+    route_escape(__VERSION__, cc, sizeof cc);
+    route_kernels(kern, sizeof kern);
+    // every path the run's forwards took, with how often and how wide
+    int pn = snprintf(paths, sizeof paths, "{");
+    for (int p = 0, first = 1; p < MODEL_ROUTE_PATHS; p++) {
+        if (!m->route_runs[p]) continue;
+        pn += snprintf(paths + pn, sizeof paths - (size_t)pn,
+                       "%s\"%s\":{\"forwards\":%u,\"rows_max\":%d}", first ? "" : ",",
+                       route_path_name[p], m->route_runs[p], m->route_rows[p]);
+        first = 0;
+    }
+    snprintf(paths + pn, sizeof paths - (size_t)pn, "}");
+    snprintf(out, cap,
+             "{\"backend\":\"%s\",\"device\":\"%s\",\"gpu_layers\":%d,\"layers\":%d,"
+             "\"experts_on_host\":%d,\"moe_layers\":%d,\"paths\":%s,"
+             "\"kv\":\"%s\",\"weights\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\","
+             "\"kernels\":%s,\"fallback\":\"%s\",\"build\":\"%s\",\"codegen\":\"%s\","
+             "\"compiler\":\"%s\",\"tuning\":\"%s\"}",
+             r.backend, dev, r.gpu_layers, r.n_layer, r.moe_host, r.moe_layers, paths,
+             r.kv, wts, r.cpu_act, r.detail, kern, why, r.build,
+             r.codegen[0] == '+' ? r.codegen + 1 : r.codegen, cc, tun);
+}
+
 void model_debug_time_report(void) {
     if (!dbg_time_on()) return;
     double tot = 0; for (int k = 0; k < DT_N; k++) tot += dt_acc[k];
@@ -10486,12 +10751,16 @@ static float *forward_gpu_leading(model_t *m, const int32_t *tokens, int n,
             // oracle) — the 69b8085 MoE slice-nbytes defect hid exactly here.
             fprintf(stderr, "gpu: forward failed at runtime — releasing the "
                     "backend, continuing on CPU\n");
+            snprintf(m->route_fallback, sizeof m->route_fallback,
+                     "forward failed at runtime");
             gpu_disable(m);
         } else if (gpu_forward_batch(m, tokens, n, pos, false, NULL)) {
             *start = m->gpu_layers;
         } else {
             fprintf(stderr, "gpu: forward failed at runtime — releasing the "
                     "backend, continuing on CPU\n");
+            snprintf(m->route_fallback, sizeof m->route_fallback,
+                     "forward failed at runtime");
             gpu_disable(m);
         }
     }
@@ -10537,8 +10806,8 @@ static float *forward_head(model_t *m, int n, int dbg) {
     return m->logits;
 }
 
-float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
-                           bool want_logits) {
+static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int pos,
+                                bool want_logits) {
     int dbg = forward_begin(m, n, pos);
     forward_ple_before_split(m, tokens, n);
     int start;
@@ -10559,6 +10828,16 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                m->x, sizeof(float) * (size_t)m->n_embd);
     if (!want_logits) return NULL;
     return forward_head(m, n, dbg);
+}
+
+// The forward, then its route record: the path is the verify walk's keep
+// when this forward is flagged to emit every row's head
+float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
+                           bool want_logits) {
+    int path = n > 0 && m->spec_want_all >= n ? RP_KEEP : n == 1 ? RP_SOLO : RP_BATCH;
+    float *lg = forward_batch_run(m, tokens, n, pos, want_logits);
+    route_ran(m, path, n);
+    return lg;
 }
 
 // ---- speculative verification: the state a verify round reads (plan P6)
@@ -10910,7 +11189,7 @@ float *model_mtp_draft_logits(model_t *m) {
     return lg;
 }
 
-float *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos) {
+static float *mtp_step_run(model_t *m, const float *h, int32_t tok, int pos) {
     if (!model_mtp_ready(m) || !h || m->mtp_qn != 0) return NULL;
     if (m->gpu && gpu_mtp_bound(m)) {
         // h is the device-resident chained hidden (model_mtp_hidden returns a
@@ -10923,6 +11202,12 @@ float *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos) {
     if (!mtp_run(m, h, 0, &tok, 1, pos, true)) return NULL;
     mtp_dump(m, m->mtp_logits, pos + 1, "step");
     return m->mtp_logits;
+}
+
+float *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos) {
+    float *lg = mtp_step_run(m, h, tok, pos);
+    if (lg) route_ran(m, RP_MTP, 1);
+    return lg;
 }
 
 const float *model_mtp_hidden(const model_t *m) { return m->mtp_hid; }
@@ -11005,6 +11290,7 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
             for (int i = done; i < done + take; i++) {
                 model_t *m = b->seqs[idx[i]];
                 apply_head_transforms(m, out[i]);
+                route_ran(m, RP_MICRO, take);
             }
             // The backend's logit rows live in ONE buffer per batch that the
             // next microbatch overwrites, and the caller reads out[] only

@@ -88,6 +88,53 @@ static bool feeds(const snode *root, const char *doc) {
     return true;
 }
 
+// A JSON number has no terminator: after `<parameter=value>\n21` the newline
+// both ends the number and opens the required `\n</parameter>`, so it is the
+// protocol, not separator whitespace the engine may mask. It used to be
+// masked (only the open number's own frame was asked), and a constrained
+// Qwen3.8 that could not write its newline extended the number instead:
+// a probe for 21 returned 2.1000000000000003e+101 (`21e100`), one for 13
+// returned 13.000000000000002. Inside JSON the same newline after a number
+// is a separator and stays maskable.
+static void test_whitespace_after_a_native_number_is_protocol(void) {
+    jv *tools = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"reading\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"value\":{\"type\":\"number\"},\"unit\":{\"type\":\"string\",\"enum\":[\"C\",\"F\"]}},"
+        "\"required\":[\"value\",\"unit\"]}}},"
+        "{\"type\":\"function\",\"function\":{\"name\":\"count\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"n\":{\"type\":\"integer\"}},\"required\":[\"n\"]}}}]");
+    char err[192];
+    snode *xml = schema_compile_qwen_xml_turn(tools, false, NULL, NULL, false, err, sizeof err);
+    assert(xml);
+    static const char *const at_number[] = {
+        "<tool_call>\n<function=reading>\n<parameter=value>\n21",
+        "<tool_call>\n<function=reading>\n<parameter=value>\n21.5",
+        "<tool_call>\n<function=count>\n<parameter=n>\n13",
+    };
+    for (size_t k = 0; k < sizeof at_number / sizeof *at_number; k++) {
+        sval v;
+        sval_init(&v, xml);
+        assert(sval_feed(&v, at_number[k], (int)strlen(at_number[k])));
+        assert(sval_ws_is_content(&v));       // the newline is the closing tag's
+        assert(sval_feed(&v, "\n</parameter>\n", 14));
+    }
+    assert(accepts(xml, "<tool_call>\n<function=reading>\n<parameter=value>\n21\n</parameter>\n"
+                        "<parameter=unit>\nC\n</parameter>\n</function>\n</tool_call>"));
+    schema_free(xml);
+    // the JSON spelling of the same call: there the newline is a separator
+    snode *json = schema_compile_qwen_turn(tools, false, NULL, NULL, false, false, err, sizeof err);
+    assert(json);
+    sval w;
+    sval_init(&w, json);
+    const char *pre = "<tool_call>\n{\"name\": \"reading\", \"arguments\": {\"value\": 21";
+    assert(sval_feed(&w, pre, (int)strlen(pre)));
+    assert(!sval_ws_is_content(&w));
+    schema_free(json);
+    jv_free(tools);
+}
+
 static void test_atem_structured_tool_automaton(void) {
     jv *tools = parse(
         "[{\"type\":\"function\",\"function\":{\"name\":\"data.store\","
@@ -3170,6 +3217,7 @@ static void test_coder_raw_string_closes_on_the_tag(void) {
 }
 
 int main(void) {
+    test_whitespace_after_a_native_number_is_protocol();
     test_coder_constrained_turn();
     test_coder_raw_string_closes_on_the_tag();
     test_qwen_prose_still_constrains_calls();

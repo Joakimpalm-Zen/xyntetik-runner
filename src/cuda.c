@@ -699,8 +699,8 @@ static const struct { int type; const char *name; } TC_KERNELS[] = {
     { T_Q6_K, "k_gemm_q6_K_tc" },
     { T_Q8_0, "k_gemm_q8_0_tc" },
     { T_Q4_0, "k_gemm_q4_0_tc" },
-    // codebook i-quants: registered, not promoted (tc_promoted); the
-    // forced-TC leg of tests/test_iquants.py is their gate
+    // codebook i-quants: promoted 2026-09-14 on the same arch list
+    // (tc_promoted); the forced-TC leg of tests/test_iquants.py is their gate
     { T_IQ3_S,   "k_gemm_iq3_s_tc" },
     { T_IQ3_XXS, "k_gemm_iq3_xxs_tc" },
     { T_IQ2_S,   "k_gemm_iq2_s_tc" },
@@ -1361,6 +1361,7 @@ static size_t layer_weight_end(const layer_t *ly, int n_expert, const uint8_t *m
 typedef struct {
     size_t vram_budget;   // what the upload may spend
     size_t fixed;         // what it spends whatever the split
+    size_t instances;     // slots that will share it (m->gpu_instances)
     bool mtp_dev;         // a NextN/MTP block rides along
     int G;                // leading layers on the device
     bool full;            // every layer, the output projection too
@@ -1476,11 +1477,12 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
                         "this device; offload budget %.2f GB from the "
                         "driver's free view, headroom %.2f GB\n",
                 vram_budget / 1e9, headroom / 1e9);
-    // fixed device overhead regardless of split: activation scratch, the
-    // token-embedding weights (always uploaded), and the headroom covering
-    // the CUDA context + PTX JIT + allocator slack + the OS reserve
-    size_t fixed = act_bytes + (m->cpu_moe ? 0 : m->tok_embd->nbytes) +
-                   (size_t)headroom;
+    // fixed device overhead regardless of split: the token-embedding weights
+    // (always uploaded) and the headroom covering the CUDA context + PTX JIT
+    // + allocator slack + the OS reserve, once; and per instance its
+    // activation scratch and the state below (`inst`).
+    size_t fixed = (m->cpu_moe ? 0 : m->tok_embd->nbytes) + (size_t)headroom;
+    size_t inst = act_bytes;
     if (m->qwen35) {
         // the DeltaNet fold lives on the device: window + state, their
         // pre-forward copies for the speculative rollback, and the
@@ -1499,7 +1501,7 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
         size_t mixd = (size_t)convdim > 2 * qd ? (size_t)convdim : 2 * qd;
         size_t scratch = sizeof(float) * (size_t)MVB *
             (mixd + (size_t)convdim + (size_t)m->ssm.inner + 2 * (size_t)m->ssm.v_heads + qd);
-        fixed += 2 * fold + scratch;
+        inst += 2 * fold + scratch;
     }
     // the NextN/MTP block rides along with a full split: its attention,
     // mixers and head projections (its experts stay on the host under
@@ -1512,15 +1514,23 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
         if (m->mtp_head && m->mtp_head != m->output) fixed += m->mtp_head->nbytes;
         if (m->mtp_hc_head_down) fixed += m->mtp_hc_head_down->nbytes;
         if (m->mtp_hc_head_up) fixed += m->mtp_hc_head_up->nbytes;
-        fixed += model_kv_boundary_bytes_sum(m, m->n_layer + 1) -
-                 model_kv_boundary_bytes_sum(m, m->n_layer);
+        inst += model_kv_boundary_bytes_sum(m, m->n_layer + 1) -
+                model_kv_boundary_bytes_sum(m, m->n_layer);
         if (m->qwen35) {   // per-row recurrent checkpoints of a verify tile
             int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
             size_t per_row = sizeof(float) * (size_t)m->n_layer *
                 ((size_t)(m->ssm.conv_kernel - 1) * convdim + (size_t)m->ssm.v_heads * m->ssm.state * m->ssm.state);
-            fixed += per_row * (size_t)(m->spec_batch < 8 ? m->spec_batch : 8);
+            inst += per_row * (size_t)(m->spec_batch < 8 ? m->spec_batch : 8);
         }
     }
+    // --parallel N: the split is decided once, by the first slot, and every
+    // later slot reuses this upload with its own scratch, state and KV. A
+    // plan for one let the first slot fill the card; the next slot was then
+    // refused its VRAM claim at startup, or found no room for its scratch
+    // and served from the CPU with different logits from the slot beside it.
+    // So each instance is charged here and each layer's KV below.
+    P->instances = m->gpu_instances > 1 ? (size_t)m->gpu_instances : 1;
+    fixed += inst * P->instances;
     P->vram_budget = vram_budget;
     P->fixed = fixed;
     P->mtp_dev = mtp_dev;
@@ -1562,7 +1572,7 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
         // n_ctx rows left most of a 24 GB card idle under RUNNER_KV_RING.
         size_t kv = model_kv_boundary_bytes_sum(m, l + 1) -
                     model_kv_boundary_bytes_sum(m, l);
-        cost[l] = wb + kv;
+        cost[l] = wb + kv * P->instances;
         // a bank the device cannot run is no candidate for the auto fit
         is_moe[l] = ly->is_moe && moe_bank_device_ok(m, l);
         bank[l] = ly->is_moe ? expert_plan_bytes(ly, m->n_expert, true) : 0;
@@ -1677,6 +1687,9 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
         if (!moe_on_host(m, l)) moe_dev++;
     }
     fprintf(stderr, "gpu-split: budget=%.2fGB fixed=%.2fGB G=%d/%d full=%d used=%.2fGB\n", vram_budget/1e9, fixed/1e9, G, m->n_layer, (int)full, used/1e9);
+    if (P->instances > 1)
+        fprintf(stderr, "gpu-split: planned for %zu slots sharing the weights, "
+                "each with its own KV cache and scratch\n", P->instances);
     if (m->cpu_moe && moe_tot)
         fprintf(stderr, "gpu-split: experts %d/%d layers on GPU, %d on host%s\n",
                 moe_dev, moe_tot, moe_tot - moe_dev,
@@ -2925,6 +2938,43 @@ static void cuda_report_init(model_t *m, gpu_t *g, size_t act_bytes) {
                 act_bytes / 1e9);
 }
 
+// The host pages of what the device now holds. Every upload copies its
+// tensors out of the read-only file mapping, and every page that copy
+// touched stayed in this process's resident set for its lifetime: a fully
+// offloaded Qwen2.5-7B Q4_K_M server held ~5 GB of host RSS for a 4.7 GB
+// file, against ~0.8 GB for llama.cpp on the same request (1.2.0 study,
+// R120-028), while --fit and docs/buffer-lifetimes.md bill the host only
+// for what the CPU runs. Same walk as the bound upload: the device layers'
+// mixers, their FFN unless the bank stays home, the output on a full split.
+// The token embedding too: the host reads it one row per token
+// (stage_x), so only the rows a conversation uses come back.
+// Nothing here changes a value. The map is PROT_READ + MAP_PRIVATE, so a
+// page a later CPU read does want (a fallback forward, a training backward)
+// faults back in with the file's bytes. --mlock locks the mapping after
+// the load returns (model_load), which wires every page back in: the
+// operator asked for exactly that. weights_locked is checked anyway, so a
+// lock that ever moves ahead of this cannot be undone by it (on Windows the
+// trim IS an unlock).
+static bool release_host_pages(gguf_tensor *t, void *ctx) {
+    (void)ctx;
+    if (t && t->data) plat_release_pages(t->data, t->nbytes);
+    return true;
+}
+
+static void cuda_release_host_weights(model_t *m) {
+    if (m->weights_locked) return;
+    for (int l = 0; l < m->gpu_layers && l < m->n_layer; l++) {
+        layer_t *ly = &m->layers[l];
+        gguf_tensor *mix[LAYER_MIXER_MAX];
+        int nmix = layer_mixer_tensors(ly, mix);
+        for (int i = 0; i < nmix; i++) release_host_pages(mix[i], NULL);
+        if (!(ly->is_moe && moe_on_host(m, l)))
+            layer_ffn_tensors_each(ly, m->n_expert, release_host_pages, NULL);
+    }
+    if (m->gpu_layers >= m->n_layer) release_host_pages(m->output, NULL);
+    release_host_pages(m->tok_embd, NULL);
+}
+
 bool gpu_init(model_t *m) {
     if (!cuda_admit(m) || !cuda_open_driver()) return false;
 
@@ -2955,6 +3005,8 @@ bool gpu_init(model_t *m) {
 
     vram_probe("after instance buffers");
     m->gpu = g;
+    // only now: a load that fails above runs on the CPU, from these pages
+    cuda_release_host_weights(m);
     return true;
 
 fail:
@@ -3079,6 +3131,9 @@ void gpu_attn_coop_force(int on) { (void)on; }
 unsigned long gpu_attn_coop_dispatches(void) { return 0; }
 unsigned long gpu_attn_tile_dispatches(void) { return 0; }
 unsigned long gpu_attn_gqa_dispatches(void) { return 0; }
+
+static unsigned long g_splitk_dispatches;
+unsigned long gpu_splitk_dispatches(void) { return g_splitk_dispatches; }
 
 // Same hook for the MoE routing path: the fused-vs-eager tolerance gate has to
 // run both inside one process, which an env var read at first launch cannot
@@ -3267,8 +3322,10 @@ static bool tc_promoted(const model_t *m, int type) {
     // kernel-verify prompts at 32 and at 64 tokens, and byte-identical
     // greedy-32 on the 481-token prompt and greedy-64 on the 3,675-token
     // prompt (docs/qwen4exp-admission-evidence/). The promotion covers what
-    // the TC prefill touched there: the dense projections (Q5_K, Q3_K,
-    // IQ4_XS, BF16 mixers). With expert layers on the device the codebook
+    // the TC prefill touched there: of the dense projections (Q5_K, Q3_K,
+    // IQ4_XS, BF16 mixers) only IQ4_XS has a tensor-core kernel (TC_KERNELS);
+    // the others take their scalar batched kernels whatever this returns.
+    // With expert layers on the device the codebook
     // expert GEMMs would join the TC path under the same arch flag; that
     // placement was measured only through the eager route today, so a
     // device-expert row is still owed before it is called covered (R4.26.8).
@@ -3467,6 +3524,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                (n_in % (splits * 2 * 32)) == 0 &&
                (size_t)n_out * splits * 2 <= SPLITK_PARTIALS) splits *= 2;
         void *ps[] = { &weights, &x, &g->splitk, &a, &splits };
+        g_splitk_dispatches++;
         if (!launch(g, g->sw->f_mv_bf16_splitk, n_out, splits, 1, 256, ps)) return false;
         int hb = bias != 0;
         void *pr[] = { &g->splitk, &y, &b, &n_out, &splits, &hb };
@@ -5805,6 +5863,25 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
 bool gpu_spec_keep_ok(const model_t *m) {
     gpu_t *g = m ? m->gpu : NULL;
     return g && m->gpu_layers >= m->n_layer && m->spec_batch <= MVB;
+}
+
+// The selections enc_mv and the MoE path make for this instance (plan P1;
+// docs/kernel-routes.md has each one's obligation): whether one-token decode
+// replays its graph, the tensor-core GEMM's mode (promoted per type and
+// architecture, forced on, or off), the int8-activation GEMVs, the
+// small-batch twins, and fused or eager MoE routing.
+const char *gpu_route_detail(const model_t *m) {
+    const gpu_t *g = m ? m->gpu : NULL;
+    if (!g) return "";
+    static _Thread_local char buf[160];
+    if (g_tc_state == TC_ENV_UNSET) (void)tc_on(m, T_Q4_K);   // reads the env once
+    snprintf(buf, sizeof buf, "graph=%s tc=%s q8x=%s small_batch=%s%s%s",
+             g->graph_bad ? "off" : g->gexec ? "replay" : "none",
+             g_tc_state < 0 ? "promoted" : g_tc_state ? "forced" : "off",
+             gpu_q8x_on() ? "on" : "off", gpu_small_batch_on() ? "on" : "off",
+             m->n_expert > 0 ? " moe=" : "",
+             m->n_expert > 0 ? (g->moe_fused_ok ? "fused" : "eager") : "");
+    return buf;
 }
 float *gpu_spec_logits(model_t *m, int row) {
     gpu_t *g = m ? m->gpu : NULL;

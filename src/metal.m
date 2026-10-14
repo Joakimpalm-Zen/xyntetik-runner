@@ -3,6 +3,7 @@
 #import <Metal/Metal.h>
 
 #include "runner.h"
+#include "fpclass.h"
 #include "kernels_metal.h"
 #include "kernels_tensor_metal.h"
 #include "compat.h"   // plat_ram_available_bytes: the residency guard below
@@ -313,23 +314,6 @@ static bool metal_moe_em_on(void) {
     return on > 0;
 }
 
-// RUNNER_METAL_MOE_MM=1: grouped simdgroup-MMA expert FFNs for prefill —
-// sort the batch's slots by expert on-GPU, run each expert's token group
-// through the dense k_mm tile structure with gathered columns. Same numerics
-// class as dense RUNNER_METAL_MM (half-staged operands, reassociated k-sum):
-// answers to the tolerance gates, never to byte identity. Opt-in until the
-// measured prefill win clears the bar recorded in
-// docs/performance.md.
-// DEFAULT ON since 2026-09-01, when the owner ratified the house fidelity
-// bar (margin-qualified top-1 + mean KLD, test-moe-mm-ab) as the instrument
-// that judges reassociating prefill on sparse-routing models — the dense
-// logit-identity bound measures routing near-tie flips, which the flip
-// account (scripts/moe-mm-flips.py) shows are staging-invariant and which
-// the fidelity bar shows leave the output distribution at the model's own
-// noise floor. RUNNER_METAL_MOE_MM=0 restores the matvec path;
-// "half" selects the half-staged comparison twins. NOT cached: the
-// mv-vs-mm harness toggles this between loads in one process, and a getenv
-// per MoE layer encode is noise.
 // Decode fusion (RUNNER_METAL_FUSE, default ON): fold the per-layer decode
 // chain — rope(q)+rope(k)+store, residual-add+rmsnorm, MoE gate+up+act —
 // into single dispatches. Every fused kernel reproduces the unfused
@@ -365,6 +349,18 @@ static void metal_front_announce(id<MTLComputePipelineState> pipe,
     fprintf(stderr, "gpu: attention front on (%s)\n", name);
 }
 
+// Grouped simdgroup-MMA expert FFNs for prefill (RUNNER_METAL_MOE_MM, default
+// on since 2026-09-01): sort the batch's slots by expert on the GPU and run
+// each expert's token group through the dense k_mm tile structure with
+// gathered columns and float-staged operands. The k-sum is reassociated, so
+// the route answers to the house fidelity bar (margin-qualified top-1 and
+// mean KLD, test-moe-mm-ab in make test), never to byte identity: discrete
+// top-k routing turns reassociation-scale differences into near-tie expert
+// flips, which scripts/moe-mm-flips.py shows are staging-invariant. Returns
+// 0 for "0"/"off" (the slot-major matvec every byte gate pins), 2 for
+// "half" (the half-staged comparison twins), else 1. NOT cached: the
+// mv-vs-mm harness toggles it between loads in one process, and one getenv
+// per MoE layer encode is noise.
 static int metal_moe_mm_on(void) {
     const char *v = getenv("RUNNER_METAL_MOE_MM");
     if (!v || !*v) return 1;
@@ -830,7 +826,7 @@ static bool metal_tensor_self_test(id<MTLDevice> dev,
     if (ok) {
         float *out = yb.contents;
         for (int i = 0; i < NC * NOUT; i++)
-            if (!isfinite(out[i]) || fabsf(out[i] - 256.0f) > 0.5f) { ok = false; break; }
+            if (!fp_isfinite(out[i]) || fabsf(out[i] - 256.0f) > 0.5f) { ok = false; break; }
     }
     if (!ok) fprintf(stderr, "gpu: Metal 4 tensor self-test failed%s%s — using simdgroup GEMM\n",
                      cb.error ? ": " : "", cb.error ? cb.error.localizedDescription.UTF8String : "");
@@ -1029,6 +1025,8 @@ unsigned long gpu_attn_coop_dispatches(void) { return g_coop_dispatches; }
 // RUNNER_METAL_ATTN_GQA=0 pins that kernel.
 static unsigned long g_gqa_dispatches;
 unsigned long gpu_attn_gqa_dispatches(void) { return g_gqa_dispatches; }
+// CUDA-only route; present so its gate links and reports 'never here'.
+unsigned long gpu_splitk_dispatches(void) { return 0; }
 static bool metal_attn_gqa_on(void) {
     static int v = -1;
     if (v < 0) {
@@ -4069,6 +4067,27 @@ static bool metal_batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
 bool gpu_spec_keep_ok(const model_t *m) {
     (void)m;
     return true;
+}
+
+// The selections enc_mv_n, attention and the MoE prefill make (plan P1;
+// docs/kernel-routes.md has each one's obligation): decode fusion, the
+// simdgroup prefill GEMM, the fast or identity decode matvec, the
+// cooperative or identity attention read, grouped-MMA MoE prefill and its
+// staging, and whether the Metal 4 tensor GEMM admitted any type.
+const char *gpu_route_detail(const model_t *m) {
+    const gpu_t *g = m ? (const gpu_t *)m->gpu : NULL;
+    static _Thread_local char buf[160];
+    bool tensor = false;
+    for (int t = 0; g && t < METAL_TYPE_SLOTS; t++) if (g->p_tensor[t]) tensor = true;
+    int moe = metal_moe_mm_on();
+    snprintf(buf, sizeof buf, "fusion=%s mm=%s mv=%s attn=%s%s%s tensor=%s",
+             metal_fuse_on() ? "on" : "off", metal_mm_on() ? "on" : "off",
+             metal_mv_fast_on() ? "fast" : "identity",
+             metal_attn_coop_on() ? "coop" : "identity",
+             m && m->n_expert > 0 ? " moe_mm=" : "",
+             m && m->n_expert > 0 ? (moe == 2 ? "half" : moe ? "f32" : "off") : "",
+             tensor ? "on" : "off");
+    return buf;
 }
 
 float *gpu_spec_logits(model_t *mm, int row) {

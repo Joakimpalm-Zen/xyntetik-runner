@@ -12,7 +12,17 @@
 #   caps         --caps reports a CUDA device
 #   tc-overflow  make test-tc-overflow (fp16 range of the tensor-core operands)
 #   iquants      make test-cuda-iquants (device codebook decoders vs the CPU)
+#   cuda-gated   make test-cuda-gated (the pytest cases that skip without CUDA,
+#                none of them allowed to skip here for want of it)
+#   kv-fp4       make test-cuda-kv-fp4 (the device fp4 KV store vs the CPU codec)
+#   nvfp4        make test-cuda-nvfp4 (NVFP4 kernels and their scale companion)
+#   qwen4exp     make test-cuda-qwen4exp (the family's placements, the shared
+#                split GGUF, the MTP head, the BF16 split-K decode route)
 #   cpu-cuda     scripts/cpu_cuda_check.py on one small model (byte identity)
+# Every make target the steps name is in DEVICE_STEPS below, and every
+# test-cuda-* target in the Makefile has to be there (tests/test_ci_contracts.py):
+# a device target no step runs is a gate nothing runs. A step whose log says
+# it skipped itself for want of a device or driver fails, since it did not run.
 # and a summary cuda-gate-<stamp>.json plus, on a pass, the device-evidence
 # row written by scripts/device-evidence.py into a COPY of the ledger, so the
 # checkout is never modified. A person or a pull request carries the row into
@@ -95,22 +105,23 @@ fi
 add_step caps pass 0
 
 FAIL=0
-# shellcheck disable=SC2086
-run_step tc-overflow make $MAKE_ARGS PYTHON="$PY" test-tc-overflow || FAIL=1
-# shellcheck disable=SC2086
-run_step iquants make $MAKE_ARGS PYTHON="$PY" test-cuda-iquants || FAIL=1
+DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp"
+for pair in $DEVICE_STEPS; do
+  name=${pair%%:*}; target=${pair#*:}
+  # shellcheck disable=SC2086
+  run_step "$name" make $MAKE_ARGS PYTHON="$PY" "$target" || FAIL=1
+  if grep -qE "skipped[ :(]+(no CUDA|driver API|cuInit)" "$DIR/$name.log" 2>/dev/null; then
+    note "$name skipped itself: the device was not used"; FAIL=1
+  fi
+done
 run_step cpu-cuda "$PY" scripts/cpu_cuda_check.py "$MODEL" --runner "$EXE" --tokens 64 || FAIL=1
-
-if grep -q "skipped (no CUDA device)" "$DIR/tc-overflow.log" 2>/dev/null; then
-  note "tc-overflow skipped itself: the device was not used"; FAIL=1
-fi
 
 [ "$FAIL" = 0 ] || finish fail 1
 
 cp docs/device-evidence.json "$DIR/device-evidence.json"
 if "$PY" scripts/device-evidence.py --json "$DIR/device-evidence.json" \
      --record "$CLASS" --result pass --caps "$DIR/caps.json" \
-     --ran "scripts/cuda-gate.sh: test-tc-overflow, test-cuda-iquants, cpu_cuda_check ($(basename "$MODEL"), 64 tokens)" \
+     --ran "scripts/cuda-gate.sh: $(for pair in $DEVICE_STEPS; do printf '%s, ' "${pair#*:}"; done)cpu_cuda_check ($(basename "$MODEL"), 64 tokens)" \
      > "$DIR/record.log" 2>&1; then
   note "device-evidence row written to $DIR/device-evidence.json"
 else

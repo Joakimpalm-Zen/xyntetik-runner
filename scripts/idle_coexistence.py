@@ -11,7 +11,11 @@ what it holds and burns at each state:
 
 On macOS it also samples system-wide wired memory (vm_stat) around the
 lifecycle, which attributes unevictable memory to the server on an otherwise
-quiet machine. Run it once per engine, sequentially, never two engines at
+quiet machine; elsewhere, the GPU memory in use (nvidia-smi) when there is
+one. CPU time and memory come from the platform's own accounting: `ps` on
+macOS, /proc on Linux (10 ms ticks, where `ps` reports whole seconds), and
+GetProcessTimes/GetProcessMemoryInfo on Windows (where `ps` cannot see a
+native process). Run it once per engine, sequentially, never two engines at
 once, and compare the JSON reports.
 
 Examples:
@@ -27,7 +31,7 @@ choices here. Report both sides: what an engine holds while idle AND what
 latency it delivers when asked. This script measures cost of residence, not
 quality of inference.
 """
-import argparse, json, re, shlex, signal, subprocess, sys, time, urllib.request
+import argparse, json, os, re, shlex, signal, subprocess, sys, time, urllib.request
 
 IDLE_S = 60
 
@@ -73,7 +77,7 @@ def _descendants(root_pid):
     return sorted(tree)
 
 
-def ps_stat(pid):
+def _ps_stat_ps(pid):
     pids = _descendants(pid)
     o = subprocess.run(["ps", "-o", "rss=,cputime=", "-p",
                         ",".join(str(p) for p in pids)],
@@ -90,6 +94,111 @@ def ps_stat(pid):
         return None
     return {"rss_mb": round(rss_kb / 1024, 1),
             "cputime_s": cpu, "procs": seen}
+
+
+def proc_stat_fields(text):
+    """/proc/PID/stat: (ppid, utime + stime in ticks). The command name is
+    in parentheses and may contain spaces or parentheses itself, so the
+    fields are counted from the last ')'."""
+    rest = text[text.rindex(")") + 2:].split()
+    return int(rest[1]), int(rest[11]) + int(rest[12])
+
+
+def _ps_stat_proc(pid):
+    tick, page = os.sysconf("SC_CLK_TCK"), os.sysconf("SC_PAGE_SIZE")
+    ppid_of, ticks = {}, {}
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            with open(f"/proc/{d}/stat") as f:
+                ppid_of[int(d)], ticks[int(d)] = proc_stat_fields(f.read())
+        except (OSError, ValueError, IndexError):
+            continue
+    if pid not in ticks:
+        return None
+    tree, frontier = {pid}, [pid]
+    while frontier:
+        parent = frontier.pop()
+        for kid, pp in ppid_of.items():
+            if pp == parent and kid not in tree:
+                tree.add(kid)
+                frontier.append(kid)
+    rss, cpu = 0, 0
+    for p in tree:
+        cpu += ticks.get(p, 0)
+        try:
+            with open(f"/proc/{p}/statm") as f:
+                rss += int(f.read().split()[1]) * page
+        except (OSError, ValueError, IndexError):
+            pass
+    return {"rss_mb": round(rss / 2**20, 1), "cputime_s": cpu / tick,
+            "procs": len(tree)}
+
+
+def filetime_seconds(high, low):
+    """A Windows FILETIME (100 ns units) as seconds."""
+    return ((high << 32) | low) / 1e7
+
+
+def _ps_stat_windows(pid):
+    import ctypes, ctypes.wintypes as wt
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    k32.OpenProcess.argtypes = (wt.DWORD, wt.BOOL, wt.DWORD)
+    k32.OpenProcess.restype = wt.HANDLE
+
+    class PMC(ctypes.Structure):
+        _fields_ = [("cb", wt.DWORD), ("PageFaultCount", wt.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t)]
+    # QUERY_LIMITED_INFORMATION | QUERY_INFORMATION | VM_READ
+    h = k32.OpenProcess(0x1000 | 0x0400 | 0x0010, False, pid)
+    if not h:
+        return None
+    try:
+        code = wt.DWORD()
+        if not k32.GetExitCodeProcess(h, ctypes.byref(code)) or code.value != 259:
+            return None   # 259: STILL_ACTIVE
+        c, e, kt, ut = (wt.FILETIME() for _ in range(4))
+        pmc = PMC()
+        pmc.cb = ctypes.sizeof(PMC)
+        if not (k32.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e),
+                                    ctypes.byref(kt), ctypes.byref(ut)) and
+                psapi.GetProcessMemoryInfo(h, ctypes.byref(pmc), pmc.cb)):
+            return None
+        cpu = (filetime_seconds(kt.dwHighDateTime, kt.dwLowDateTime) +
+               filetime_seconds(ut.dwHighDateTime, ut.dwLowDateTime))
+        # the runner does not fork; the process is the tree
+        return {"rss_mb": round(pmc.WorkingSetSize / 2**20, 1),
+                "private_mb": round(pmc.PagefileUsage / 2**20, 1),
+                "cputime_s": cpu, "procs": 1}
+    finally:
+        k32.CloseHandle(h)
+
+
+if sys.platform == "win32":
+    ps_stat, ACCOUNTING = _ps_stat_windows, "process (GetProcessTimes, GetProcessMemoryInfo)"
+elif sys.platform.startswith("linux"):
+    ps_stat, ACCOUNTING = _ps_stat_proc, "process-tree (/proc)"
+else:
+    ps_stat, ACCOUNTING = _ps_stat_ps, "process-tree"
+
+
+def vram_used_mb():
+    try:
+        o = subprocess.run(["nvidia-smi", "--query-gpu=memory.used",
+                            "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=20).stdout
+        return float(o.split()[0])
+    except Exception:
+        return None
 
 def wired_mb():
     try:
@@ -151,15 +260,25 @@ def chat_ttft(port, prompt):
     return {"ttft_s": round(ttft, 3) if ttft is not None else None,
             "total_s": round(time.time() - t0, 3)}
 
+def system_memory():
+    """(key, MB): macOS wired memory, else the GPU memory in use."""
+    if sys.platform == "darwin":
+        return "wired_mb", wired_mb()
+    return "vram_used_mb", vram_used_mb()
+
+
 def idle_window(pid, label):
     a = ps_stat(pid); time.sleep(IDLE_S); b = ps_stat(pid)
     if not a or not b:
         return {"state": label, "error": "process exited"}
-    return {"state": label, "idle_window_s": IDLE_S,
-            "cpu_s_during_idle": round(b["cputime_s"] - a["cputime_s"], 2),
-            "rss_mb_end": b["rss_mb"], "procs": b["procs"],
-            "accounting": "process-tree",
-            "wired_mb_system": wired_mb()}
+    key, mb = system_memory()
+    r = {"state": label, "idle_window_s": IDLE_S,
+         "cpu_s_during_idle": round(b["cputime_s"] - a["cputime_s"], 2),
+         "rss_mb_end": b["rss_mb"], "procs": b["procs"],
+         "accounting": ACCOUNTING, key + "_system": mb}
+    if "private_mb" in b:
+        r["private_mb_end"] = b["private_mb"]
+    return r
 
 def main():
     ap = argparse.ArgumentParser()
@@ -168,8 +287,9 @@ def main():
     ap.add_argument("--out", default="idle_coexistence_report.json")
     args = ap.parse_args()
 
-    report = {"cmd": args.cmd, "idle_window_s": IDLE_S,
-              "wired_mb_baseline": wired_mb(), "states": []}
+    key, mb = system_memory()
+    report = {"cmd": args.cmd, "idle_window_s": IDLE_S, "platform": sys.platform,
+              key + "_baseline": mb, "states": []}
     # The server's own log must not land on OUR stdout: the report is printed
     # there, and an interleaved log makes it unparseable for anything reading
     # `... > report.json`. Kept in a file beside the report rather than
@@ -212,7 +332,7 @@ def main():
             p.kill()
         time.sleep(5)
         server_log.close()
-        report["wired_mb_after_kill"] = wired_mb()
+        report[key + "_after_kill"] = system_memory()[1]
         json.dump(report, open(args.out, "w"), indent=1)
         print(json.dumps(report, indent=1))
         print(f"\nreport -> {args.out}", file=sys.stderr)

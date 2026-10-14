@@ -6,7 +6,12 @@
 //     does (the small-batch route exists and is used);
 //  2. a same-process ratio canary: for 2..7 columns vec_dot_multi must not
 //     cost more than 1.5x the per-column vec_dot loop it replaces. A ratio
-//     on one machine in one process, not an absolute tok/s.
+//     on one machine in one process, not an absolute tok/s. Best of 5
+//     interleaved rounds removes a single spike but not a stretch of
+//     contention on a shared hosted runner (two macos-suite failures, each
+//     at ratio ~2 and ~1.0 on re-run), so a case over the limit is measured
+//     again with 25 rounds and fails only when that confirms it: a slow
+//     route is slow every time, a busy neighbour is not.
 #include "model.h"
 #include "quants.h"
 #include "runner.h"
@@ -57,15 +62,22 @@ static void ratio(int type, const char *name) {
     for (int nc = 2; nc < VEC_DOT_MULTI_MAX; nc++) {
         const float *xs[VEC_DOT_MULTI_MAX];
         for (int c = 0; c < nc; c++) xs[c] = x + (size_t)c * n;
-        double best_m = 1e9, best_l = 1e9;
-        for (int rep = 0; rep < 5; rep++) {
-            double t0 = route_now();
-            for (int r = 0; r < rows; r++) { vec_dot_multi(type, w + rs * r, xs, nc, n, out); sink += out[0]; }
-            double t1 = route_now();
-            for (int r = 0; r < rows; r++) for (int c = 0; c < nc; c++) sink += vec_dot(type, w + rs * r, xs[c], n);
-            double t2 = route_now();
-            if (t1 - t0 < best_m) best_m = t1 - t0;
-            if (t2 - t1 < best_l) best_l = t2 - t1;
+        double best_m, best_l;
+        for (int attempt = 0, rounds = 5; attempt < 2; attempt++, rounds = 25) {
+            best_m = 1e9; best_l = 1e9;
+            for (int rep = 0; rep < rounds; rep++) {
+                double t0 = route_now();
+                for (int r = 0; r < rows; r++) { vec_dot_multi(type, w + rs * r, xs, nc, n, out); sink += out[0]; }
+                double t1 = route_now();
+                for (int r = 0; r < rows; r++) for (int c = 0; c < nc; c++) sink += vec_dot(type, w + rs * r, xs[c], n);
+                double t2 = route_now();
+                if (t1 - t0 < best_m) best_m = t1 - t0;
+                if (t2 - t1 < best_l) best_l = t2 - t1;
+            }
+            if (best_m <= 1.5 * best_l) break;
+            if (attempt == 0)
+                fprintf(stderr, "re-measuring: %s, %d columns: ratio %.2f in 5 rounds\n",
+                        name, nc, best_m / best_l);
         }
         char msg[160];
         snprintf(msg, sizeof msg, "%s, %d columns: multi %.3f ms, per-column loop %.3f ms (ratio %.2f, limit 1.50)",

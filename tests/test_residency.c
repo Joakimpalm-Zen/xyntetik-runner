@@ -57,6 +57,55 @@ int main(int argc, char **argv) {
 
     ck(plat_resident_fraction(NULL, 0) < 0.0, "a null mapping is -1, not 0");
 
+    // --- releasing pages --------------------------------------------------
+    // What a CUDA load does with the tensors it uploaded (cuda.c
+    // cuda_release_host_weights). The bytes must read back identical after
+    // the release on every platform: it may change where they come from,
+    // never what they are. The resident set must drop where the OS
+    // guarantees it (Linux MADV_DONTNEED, the Windows working-set trim);
+    // macOS treats the advice as a priority hint, so there it is only
+    // reported. A file of its own, 32 MiB: Linux's resident counter is
+    // batched per CPU and can lag by hundreds of pages on a large host,
+    // which is most of test.gguf.
+    {
+        const char *rp = "test-residency-release.tmp";
+        const size_t rsz = 32u << 20;
+        FILE *f = fopen(rp, "wb");
+        unsigned char *buf = malloc(1 << 16);
+        bool wrote = f && buf;
+        for (size_t off = 0; wrote && off < rsz; off += 1 << 16) {
+            for (size_t i = 0; i < (1 << 16); i++)
+                buf[i] = (unsigned char)((off + i) * 2654435761u >> 13);
+            wrote = fwrite(buf, 1, 1 << 16, f) == 1 << 16;
+        }
+        if (f) wrote = fclose(f) == 0 && wrote;
+        free(buf);
+        size_t got = 0;
+        const unsigned char *b = wrote ? plat_mmap_ro(rp, &got) : NULL;
+        ck(b && got == rsz, "a 32 MiB scratch file maps");
+        if (b && got == rsz) {
+            uint64_t sum0 = 0;
+            for (size_t i = 0; i < rsz; i++) sum0 = sum0 * 1099511628211ull + b[i];
+            uint64_t before = plat_proc_rss_bytes();
+            plat_release_pages(b, rsz);
+            uint64_t after = plat_proc_rss_bytes();
+            printf("note: releasing %zu MiB moved the resident set %lld KiB\n",
+                   rsz >> 20, ((long long)after - (long long)before) / 1024);
+#if defined(__linux__) || defined(_WIN32)
+            ck(before > after && before - after >= rsz / 2,
+               "releasing a touched mapping shrinks the resident set");
+#endif
+            uint64_t sum1 = 0;
+            for (size_t i = 0; i < rsz; i++) sum1 = sum1 * 1099511628211ull + b[i];
+            ck(sum0 == sum1, "a released range reads back the same bytes");
+            // nothing, and a range with no whole page inside: both no-ops
+            plat_release_pages(NULL, 0);
+            plat_release_pages(b + 1, 1);
+            plat_munmap((void *)b, rsz);
+        }
+        remove(rp);
+    }
+
     // --- locking --------------------------------------------------------
     // Failure is a legitimate outcome: RLIMIT_MEMLOCK is 8 MB on a stock Linux
     // box, so locking a real model normally refuses. What must not happen is a

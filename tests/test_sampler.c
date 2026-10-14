@@ -573,7 +573,34 @@ static void test_template_outranks_the_model_name(void) {
                                       -1)->name, "mistral-nemo"));
 }
 
+// A NaN logit (a poisoned upstream activation) ranks below every real value,
+// so a top-k pick never draws it and the comparator stays a total order.
+// The ranking rests on an isnan() that -ffast-math let clang 22 fold to 0,
+// which turned the NaN handling back into an inconsistent comparator; the
+// NaNs sit inside the first k entries, where the heap starts, so that ranking
+// is what decides. The NaN is made at run time, out of reach of the folder.
+static void test_nan_logits_rank_last(void) {
+    volatile float zero = 0.0f;
+    const float nan = zero / zero;
+    enum { N = 64, K = 4 };
+    for (uint64_t seed = 1; seed <= 40; seed++) {
+        float logits[N];
+        for (int i = 0; i < N; i++) logits[i] = (float)((i * 37) % 17) * 0.25f;
+        logits[0] = nan; logits[2] = nan; logits[N - 1] = nan;
+        sampler s = { .temp = 1.0f, .top_k = K, .top_p = 1.0f, .rng = seed };
+        sampler_reset(&s);
+        int t = sample_pick(&s, logits, N, NULL, NULL);
+        assert(t >= 0 && t < N && t != 0 && t != 2 && t != N - 1);
+        // and among the finite logits it is one of the K best
+        int better = 0;
+        for (int i = 0; i < N; i++)
+            if (i != 0 && i != 2 && i != N - 1 && logits[i] > logits[t]) better++;
+        assert(better < K);
+    }
+}
+
 int main(void) {
+    test_nan_logits_rank_last();
     test_template_outranks_the_model_name();
     test_preset_selection();
     test_preset_fallback();

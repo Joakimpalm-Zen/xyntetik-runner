@@ -18,7 +18,8 @@ number from that report is not a throughput guarantee for another setup.
   numerical tolerances. CPU/GPU bit identity uses the certified scalar
   route, with `RUNNER_CUDA_TC=0`, `RUNNER_MOE_EAGER=1`, and the applicable
   `RUNNER_METAL_MM=0` identity pin. Do not infer one route's guarantee from
-  a different route passing.
+  a different route passing. [Kernel routes](kernel-routes.md) maps every
+  decision point to its route, obligation and gate.
 - CPU thread pools are shared by serving slots and park between work.
   `RUNNER_TPOOL_SPIN` bounds the brief spin before parking. Additional
   slots share immutable weights but still own request/KV/runtime state.
@@ -75,5 +76,7 @@ resources at a safe boundary; a model swap preserves shared prefixes.
 TTL, `keep_alive`, and cooperative VRAM yield retain their documented
 support/refusals. Check reload, target/draft cleanup, adapter/template
 identity, and VRAM-lease release when changing resource ownership.
+[Buffer lifetimes](buffer-lifetimes.md) lists each buffer's owner, its
+transfers and completion signal, and the CUDA graph constraints.
 See the [idle measurement](idle-coexistence-120b-m5max-2026-09-01.md) and
 [residency reference](../MANUAL.md#serving-and-apis).

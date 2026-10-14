@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#include "compat.h"   // RUNNER_PRINTF
+
 typedef enum { J_NULL, J_BOOL, J_NUM, J_STR, J_ARR, J_OBJ } jtype;
 
 typedef struct jv jv;
@@ -71,7 +73,7 @@ typedef struct sbuf { char *s; size_t n, cap; bool failed; } sbuf;
 void sb_put(sbuf *b, const char *s, size_t n);
 #define sb_lit(b, lit) sb_put(b, lit, strlen(lit))
 #if defined(__GNUC__) || defined(__clang__)
-void sb_fmt(sbuf *b, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void sb_fmt(sbuf *b, const char *fmt, ...) RUNNER_PRINTF(2, 3);
 #else
 void sb_fmt(sbuf *b, const char *fmt, ...);
 #endif

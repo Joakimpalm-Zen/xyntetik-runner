@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "compat.h"
 #include "envelope.h"
 #include "json.h"
 
@@ -21,12 +22,10 @@
 #include <process.h>
 #include <windows.h>
 #define HF_SEP '\\'
-#define hf_isatty _isatty
 #else
 #include <sys/wait.h>
 #include <unistd.h>
 #define HF_SEP '/'
-#define hf_isatty isatty
 #endif
 
 // ------------------------------------------------------------ selection
@@ -432,7 +431,7 @@ char *hf_fetch(const char *spec, char *err, size_t errcap) {
         return NULL;
     }
 
-    bool quiet = !hf_isatty(2);
+    bool quiet = !plat_is_terminal(2);   // a console, not NUL or a pipe
     // the file list, with blob sizes and LFS hashes, fetched fresh every time
     // so a tag added to the repository since the last run is seen
     char api_url[1024], api_path[1700];

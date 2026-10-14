@@ -314,28 +314,18 @@ def test_overflowing_exponent_in_a_sampling_param_is_rejected(client):
 
 
 def test_overflowing_max_tokens_cannot_run_away(client):
-    """FINDING (build-flag dependent, deliberately asserted loosely).
-
-    json.c's number parser rejects non-finite values with ``isfinite``, and
-    request_max_tokens re-checks — but the shipping CFLAGS include
-    ``-ffast-math``, under which the compiler is licensed to fold ``isfinite``
-    to true. So on a stock build ``{"max_tokens": 1e400}`` parses, survives
-    both guards as +inf, and is clamped by the ``v > INT_MAX`` branch instead.
-
-    Asserting "400" here would pass on a -fno-fast-math build and fail on the
-    shipped one. What actually matters — and holds either way — is that an
-    infinite cap cannot produce unbounded generation: either it is rejected, or
-    it is clamped to the context window.
+    """``1e400`` overflows to infinity, and an infinite cap is refused, not
+    clamped. json.c's number parser rejects it on strtod's ERANGE rather than
+    with isfinite(), which -ffast-math lets a compiler fold away (clang 22
+    does), and the request's own re-check uses src/fpclass.h, which no
+    compiler can fold. So this is a 400 on every build; it used to be
+    asserted loosely because a stock build parsed the literal as +inf and
+    only the ``v > INT_MAX`` clamp stood between it and the generation loop.
     """
     r = client.post_bytes("nonfinite-max-tokens", "/v1/chat/completions",
                           _chat_body(b'"temperature":0,"max_tokens":1e400'))
-    if r.status == 400:
-        r.expect_error_envelope()
-        return
-    r.expect_status(200)
-    if r.usage["completion_tokens"] >= 1024:
-        raise ProtocolError("infinite max_tokens produced unbounded generation",
-                            generated=r.usage["completion_tokens"])
+    r.expect_status(400)
+    r.expect_error_envelope()
 
 
 def test_max_tokens_above_int_max_is_clamped_not_rejected(client):

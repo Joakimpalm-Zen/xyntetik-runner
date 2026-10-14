@@ -1,5 +1,6 @@
 // Generation and wire framing. Lifted out of server.c (RNR-019); see completion.h.
 #include "completion.h"
+#include "fpclass.h"
 #include "respstore.h"
 #include "gpu.h"
 #include "build_arch.h"
@@ -1078,17 +1079,88 @@ static void cl_value(clscan *c) {
     c->depth--;
 }
 
+static size_t cl_find(const char *d, size_t n, size_t from, const char *needle) {
+    size_t k = strlen(needle);
+    for (size_t i = from; k && i + k <= n; i++)
+        if (memcmp(d + i, needle, k) == 0) return i;
+    return n;
+}
+
+// The XML-style native calls, which carry their arguments as tagged
+// parameters rather than JSON: Qwen3-Coder's <function=NAME> with
+// <parameter=KEY>\nVALUE\n</parameter>, and Muse's <atem:invoke name="NAME">
+// with <atem:parameter name="KEY">VALUE</atem:parameter>. Until 2026-10-14 the
+// JSON scan below was the only one, so on these families every closure
+// reported "fields": null and a value the closer invented (a required number
+// filled with 0) read exactly like one the model wrote (outside review of the
+// runner 1.2.0 tool-calling study). The closer only ever finishes a turn's
+// LAST call, so the paths are that call's: "/name" when the closer wrote the
+// tool name, "/arguments/KEY" for each parameter value, sorted against `at`
+// as cl_mark sorts JSON leaves. False when the document holds no such call.
+static const struct {
+    const char *call, *call_end, *param, *param_end, *close;
+    bool framed;                                // a newline frames each value
+} CL_XML[] = {
+    { "<function=", ">", "<parameter=", ">", "</parameter>", true },
+    { "<atem:invoke name=\"", "\"", "<atem:parameter name=\"", "\">",
+      "</atem:parameter>", false },
+};
+
+static bool cl_xml(clscan *c) {
+    for (size_t s = 0; s < sizeof CL_XML / sizeof *CL_XML; s++) {
+        size_t last = c->n;
+        for (size_t p = cl_find(c->d, c->n, 0, CL_XML[s].call); p < c->n;
+             p = cl_find(c->d, c->n, p + 1, CL_XML[s].call))
+            last = p;
+        if (last == c->n) continue;
+        size_t saved, inner;
+        size_t ns = last + strlen(CL_XML[s].call);
+        size_t ne = cl_find(c->d, c->n, ns, CL_XML[s].call_end);
+        cl_push(c, "name", 4, &saved);
+        cl_mark(c, ns, ne);
+        c->plen = saved; c->path[c->plen] = 0;
+        size_t i = ne < c->n ? ne + strlen(CL_XML[s].call_end) : c->n;
+        while (i < c->n) {
+            size_t po = cl_find(c->d, c->n, i, CL_XML[s].param);
+            if (po == c->n) break;
+            size_t ks = po + strlen(CL_XML[s].param);
+            size_t ke = cl_find(c->d, c->n, ks, CL_XML[s].param_end);
+            if (ke == c->n) break;              // the key itself is still open
+            size_t vs = ke + strlen(CL_XML[s].param_end);
+            if (CL_XML[s].framed && vs < c->n && c->d[vs] == '\n') vs++;
+            size_t vc = cl_find(c->d, c->n, vs, CL_XML[s].close);
+            size_t ve = vc;
+            if (CL_XML[s].framed && ve > vs && c->d[ve - 1] == '\n') ve--;
+            cl_push(c, "arguments", 9, &saved);
+            cl_push(c, c->d + ks, ke - ks, &inner);
+            cl_mark(c, vs, ve);
+            c->plen = saved; c->path[c->plen] = 0;
+            i = vc < c->n ? vc + strlen(CL_XML[s].close) : c->n;
+        }
+        return !c->bad;
+    }
+    return false;
+}
+
 // NULL when the closer did not run. The document is the content channel of a
-// constrained turn; the JSON is read from its first '{' or '[' (a native
-// protocol may frame it), and a document that is not JSON (an XML protocol)
-// reports the byte counts with "fields": null.
+// constrained turn. An XML-style native call is read by cl_xml; otherwise the
+// JSON is read from its first '{' or '[' (a native protocol may frame it),
+// and a document neither scan can read reports the byte counts with
+// "fields": null.
 static char *closure_json(const char *doc, size_t n, long at) {
     if (at < 0 || !doc) return NULL;
     sbuf synth = {0}, comp = {0}, out = {0};
     size_t j0 = 0;
-    while (j0 < n && doc[j0] != '{' && doc[j0] != '[') j0++;
-    clscan c = { .d = doc, .n = n, .i = j0, .at = at, .synth = &synth, .comp = &comp };
-    if (j0 < n) cl_value(&c); else c.bad = true;
+    clscan c = { .d = doc, .n = n, .at = at, .synth = &synth, .comp = &comp };
+    if (!cl_xml(&c)) {
+        // a scan that gave up part-way may have marked paths already
+        free(synth.s); free(comp.s);
+        synth = (sbuf){0}; comp = (sbuf){0};
+        c = (clscan){ .d = doc, .n = n, .at = at, .synth = &synth, .comp = &comp };
+        while (j0 < n && doc[j0] != '{' && doc[j0] != '[') j0++;
+        c.i = j0;
+        if (j0 < n) cl_value(&c); else c.bad = true;
+    }
     sb_fmt(&out, "{\"closed\":true,\"model_bytes\":%ld,\"closer_bytes\":%ld,",
            at, (long)n - at);
     if (c.bad) {
@@ -2159,7 +2231,7 @@ static bool request_number(jv *req, const char *key, double dflt,
     jv *v = jv_get(req, key);
     if (!absent(v) && v->type != J_NUM) return false;
     double n = absent(v) ? dflt : v->num;
-    if (!isfinite(n) || n < min || n > max) return false;
+    if (!fp_isfinite(n) || n < min || n > max) return false;
     *out = n;
     return true;
 }
@@ -2168,17 +2240,60 @@ static bool whole_number(double n) {
     return n == floor(n);
 }
 
+// A refusal, as a validation group returns it (Step 5): the status and the
+// message, plus the param and code send_error_detail carries for a field
+// error. creq_send answers it with the call each check used to make for
+// itself, so moving a check into a group does not move a byte on the wire.
+typedef struct {
+    int status;                 // 0: nothing refused
+    char msg[512];
+    const char *param, *code;   // NULL: send_error; set: send_error_detail
+} creq_err;
+
+static void creq_set(creq_err *err, int status, const char *msg) {
+    err->status = status;
+    snprintf(err->msg, sizeof err->msg, "%s", msg);
+    err->param = err->code = NULL;
+}
+
+static void creq_set_detail(creq_err *err, int status, const char *msg,
+                            const char *param, const char *code) {
+    creq_set(err, status, msg);
+    err->param = param;
+    err->code = code;
+}
+
+static void creq_send(sock_t fd, const creq_err *err) {
+    if (err->param)
+        send_error_detail(fd, err->status, err->msg, err->param, err->code);
+    else
+        send_error(fd, err->status, err->msg);
+}
+
+// What every validation group reads besides the request it fills: the slot
+// (its model, engine, tokenizer and sampler defaults), the surface, the tool
+// envelope, and the turn's start as rendered.
+typedef struct {
+    slot_t *s;
+    jv *req;
+    int api;
+    const tool_envelope *env;
+    bool chat;
+    bool reasoning_open;
+    int think_mode;
+} creq_ctx;
+
 // R4.12.23: the extension fields' refusals name their field, as RI-5's
 // sampling refusals below do; they used to send "param": null. The messages
 // stay as they were, several of them listing a group of fields with their
 // ranges, so `param` is what says which field of the group was wrong, and
 // `code` separates a wrong type from a value outside its range.
-static void refuse_field(sock_t fd, jv *req, const char *key, jtype want,
+static void refuse_field(creq_err *err, jv *req, const char *key, jtype want,
                          const char *msg) {
     jv *v = jv_get(req, key);
-    send_error_detail(fd, 400, msg, key,
-                      !absent(v) && v->type != want ? "invalid_type"
-                                                    : "invalid_value");
+    creq_set_detail(err, 400, msg, key,
+                    !absent(v) && v->type != want ? "invalid_type"
+                                                  : "invalid_value");
 }
 
 // RI-5: name the field and the rule it broke.
@@ -2195,20 +2310,20 @@ static void refuse_field(sock_t fd, jv *req, const char *key, jtype want,
 // `rule` states the accepted range in the caller's terms rather than echoing
 // the value back, since a caller who sent 1.5 for top_p can see what they
 // sent and needs to be told what is allowed.
-static bool sampling_number(sock_t fd, jv *req, const char *key, double dflt,
+static bool sampling_number(creq_err *err, jv *req, const char *key, double dflt,
                             double min, double max, const char *rule,
                             double *out) {
     jv *v = jv_get(req, key);
     char msg[192];
     if (!absent(v) && v->type != J_NUM) {
         snprintf(msg, sizeof(msg), "%s must be a number", key);
-        send_error_detail(fd, 400, msg, key, "invalid_type");
+        creq_set_detail(err, 400, msg, key, "invalid_type");
         return false;
     }
     double n = absent(v) ? dflt : v->num;
-    if (!isfinite(n) || n < min || n > max) {
+    if (!fp_isfinite(n) || n < min || n > max) {
         snprintf(msg, sizeof(msg), "%s must be %s", key, rule);
-        send_error_detail(fd, 400, msg, key, "invalid_value");
+        creq_set_detail(err, 400, msg, key, "invalid_value");
         return false;
     }
     *out = n;
@@ -2243,7 +2358,7 @@ static int request_max_tokens(jv *req, int dflt) {
     if (absent(v)) v = jv_get(req, "max_output_tokens");
     if (absent(v)) return dflt;
     if (v->type != J_NUM) return MT_BAD_TYPE;
-    if (!isfinite(v->num)) return MT_NON_FINITE;
+    if (!fp_isfinite(v->num)) return MT_NON_FINITE;
     if (v->num < 0) return MT_NEGATIVE;
     if (v->num > INT_MAX) return INT_MAX;
     if (!whole_number(v->num)) return MT_FRACTIONAL;
@@ -2255,7 +2370,7 @@ bool request_keep_alive(jv *req, bool *present, int *seconds) {
     if (!absent(v) && v->type != J_NUM) return false;
     *present = !absent(v);
     if (!*present) return true;
-    if (!isfinite(v->num) || v->num > INT_MAX || !whole_number(v->num))
+    if (!fp_isfinite(v->num) || v->num > INT_MAX || !whole_number(v->num))
         return false;
     *seconds = v->num < 0 ? -1 : (int)v->num;
     return true;
@@ -2266,13 +2381,13 @@ bool request_keep_alive(jv *req, bool *present, int *seconds) {
 // a no-op; reject every value that would otherwise be silently ignored.
 static const char *unsupported_completion_field(jv *req, int api) {
     jv *v = jv_get(req, "n");
-    if (!absent(v) && (v->type != J_NUM || !isfinite(v->num) || v->num != 1))
+    if (!absent(v) && (v->type != J_NUM || !fp_isfinite(v->num) || v->num != 1))
         return "n";
     v = jv_get(req, "frequency_penalty");
-    if (!absent(v) && (v->type != J_NUM || !isfinite(v->num) || v->num != 0))
+    if (!absent(v) && (v->type != J_NUM || !fp_isfinite(v->num) || v->num != 0))
         return "frequency_penalty";
     v = jv_get(req, "presence_penalty");
-    if (!absent(v) && (v->type != J_NUM || !isfinite(v->num) || v->num != 0))
+    if (!absent(v) && (v->type != J_NUM || !fp_isfinite(v->num) || v->num != 0))
         return "presence_penalty";
     v = jv_get(req, "logit_bias");
     if (!absent(v) && (v->type != J_OBJ || v->n != 0)) return "logit_bias";
@@ -2299,20 +2414,20 @@ static const char *unsupported_completion_field(jv *req, int api) {
 // environment variable the field is refused, not ignored, so nothing served
 // in production can rely on it by accident. Returns the field's text (not
 // owned) or NULL when absent; *bad is set when the field is present and not
-// admissible, with the reason already answered on fd.
+// admissible, with the reason in *err.
 // `runner_test_fault: true`, admitted under the same environment variable and
 // only beside a reply, ends the scripted reply in an allocation failure
 // instead of a clean stop (sample.h): the one way a test reaches the
 // generation-fault framing, which a streamed reply hits after its 200 and
 // headers are already on the wire.
-static const char *scripted_reply(sock_t fd, jv *req, bool *bad, bool *fault) {
+static const char *scripted_reply(creq_err *err, jv *req, bool *bad, bool *fault) {
     *bad = false;
     *fault = false;
     jv *v = jv_get(req, "runner_test_reply");
     jv *f = jv_get(req, "runner_test_fault");
     if (absent(v)) {
         if (!absent(f)) {
-            send_error(fd, 400, "runner_test_fault needs runner_test_reply");
+            creq_set(err, 400, "runner_test_fault needs runner_test_reply");
             *bad = true;
         }
         return NULL;
@@ -2323,19 +2438,19 @@ static const char *scripted_reply(sock_t fd, jv *req, bool *bad, bool *fault) {
         on = env && *env && strcmp(env, "0") != 0;
     }
     if (!on) {
-        send_error(fd, 400, "runner_test_reply is a test hook; the server "
+        creq_set(err, 400, "runner_test_reply is a test hook; the server "
                             "was not started with RUNNER_TEST_SCRIPTED_REPLY=1");
         *bad = true;
         return NULL;
     }
     if (v->type != J_STR) {
-        send_error(fd, 400, "runner_test_reply must be a string");
+        creq_set(err, 400, "runner_test_reply must be a string");
         *bad = true;
         return NULL;
     }
     if (!absent(f)) {
         if (f->type != J_BOOL) {
-            send_error(fd, 400, "runner_test_fault must be a boolean");
+            creq_set(err, 400, "runner_test_fault must be a boolean");
             *bad = true;
             return NULL;
         }
@@ -2728,41 +2843,40 @@ typedef struct {
     bool json_mode;
 } completion_req;
 
-// Reads and checks every field of a request, in the order the refusals have
-// always come in, and answers the first one it refuses. Nothing on the slot
-// or its engine changes here (the draft hints use the slot's scratch
-// buffer); false when the request was refused.
-static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
-                            const tool_envelope *env, bool chat,
-                            const render_state *rs, completion_req *q) {
-    model_t *m = s->m;
-    engine *e = &s->e;
-    // the turn's start as rendered: the grammars open where the prompt left
-    // the model and read the mode it was rendered under (a raw prompt keeps
-    // the request's own enable_thinking)
-    bool reasoning_open = rs && rs->reasoning_open;
-    int think_mode = rs ? rs->think_mode : req_thinking_mode(req);
+// The request's shape: fields this engine refuses outright, the test-reply
+// hook, and the two cache switches.
+static bool creq_shape(const creq_ctx *c, completion_req *q, creq_err *err) {
+    jv *req = c->req;
+    int api = c->api;
     const char *unsupported = unsupported_completion_field(req, api);
     if (unsupported) {
         char msg[128];
         snprintf(msg, sizeof(msg), "%s has unsupported semantics", unsupported);
-        send_error(fd, 400, msg);
+        creq_set(err, 400, msg);
         return false;
     }
     bool script_bad = false, script_fault = false;
-    const char *script_text = scripted_reply(fd, req, &script_bad, &script_fault);
+    const char *script_text = scripted_reply(err, req, &script_bad, &script_fault);
     if (script_bad) return false;
     bool cache_prompt = true;
     bool share_prefix = true;
     if (!request_bool(req, "cache_prompt", true, &cache_prompt)) {
-        send_error(fd, 400, "cache_prompt must be a boolean");
+        creq_set(err, 400, "cache_prompt must be a boolean");
         return false;
     }
     if (!request_bool(req, "prefix_cache", true, &share_prefix)) {
-        send_error(fd, 400, "prefix_cache must be a boolean");
+        creq_set(err, 400, "prefix_cache must be a boolean");
         return false;
     }
+    q->cache_prompt = cache_prompt;
+    q->share_prefix = share_prefix;
+    q->script_text = script_text;
+    q->script_fault = script_fault;
+    return true;
+}
 
+static bool creq_deadline(const creq_ctx *c, completion_req *q, creq_err *err) {
+    jv *req = c->req;
     // Per-request deadline. A wall-clock bound is what a batching server owes
     // its clients that a serial one does not: your latency now depends on who
     // else is on the box, so there has to be a point past which you get your
@@ -2773,32 +2887,38 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
     double req_timeout = SV.req_timeout;
     double rt;
     if (!request_number(req, "timeout", req_timeout, 0, 86400.0, &rt)) {
-        send_error(fd, 400, "timeout out of range");
+        creq_set(err, 400, "timeout out of range");
         return false;
     }
     req_timeout = rt;
     double req_deadline = req_timeout > 0 ? now_s() + req_timeout : 0;
+    q->req_deadline = req_deadline;
+    return true;
+}
 
+static bool creq_sampling(const creq_ctx *c, completion_req *q, creq_err *err) {
+    slot_t *s = c->s;
+    jv *req = c->req;
     // per-request sampling params start from the server defaults every time —
     // one request's overrides must not leak into the next on this slot; only
     // the rng STATE carries across so sampling sequences stay diverse
     double temp, top_p, min_p, top_k, seed, repeat_penalty;
-    if (!sampling_number(fd, req, "temperature", s->smp_base.temp,
+    if (!sampling_number(err, req, "temperature", s->smp_base.temp,
                          0, FLT_MAX, "0 or greater", &temp) ||
-        !sampling_number(fd, req, "top_p", s->smp_base.top_p,
+        !sampling_number(err, req, "top_p", s->smp_base.top_p,
                          0, 1, "between 0 and 1", &top_p) ||
-        !sampling_number(fd, req, "min_p", s->smp_base.min_p,
+        !sampling_number(err, req, "min_p", s->smp_base.min_p,
                          0, 1, "between 0 and 1", &min_p) ||
-        !sampling_number(fd, req, "top_k", s->smp_base.top_k,
+        !sampling_number(err, req, "top_k", s->smp_base.top_k,
                          0, INT_MAX, "between 0 and 2147483647", &top_k) ||
         // the model's family preset decides the default; a client that wants
         // no penalty at all asks for 1. Zero is rejected rather than treated
         // as "off": the penalty divides by it.
-        !sampling_number(fd, req, "repeat_penalty", s->smp_base.repeat_penalty,
+        !sampling_number(err, req, "repeat_penalty", s->smp_base.repeat_penalty,
                          FLT_MIN, FLT_MAX,
                          "greater than 0 (send 1 for no penalty)",
                          &repeat_penalty) ||
-        !sampling_number(fd, req, "seed", 0, 0, SEED_MAX,
+        !sampling_number(err, req, "seed", 0, 0, SEED_MAX,
                          "between 0 and 18446744073709549568", &seed))
         return false;   // sampling_number already answered, naming the field
     // top_k and seed are held as integer engine state, so accepting 2.5 and
@@ -2808,12 +2928,12 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
     // exceeded. One field per message, so a request setting both learns which
     // of them was wrong.
     if (!whole_number(top_k)) {
-        send_error_detail(fd, 400, "top_k must be a whole number",
+        creq_set_detail(err, 400, "top_k must be a whole number",
                           "top_k", "invalid_value");
         return false;
     }
     if (!whole_number(seed)) {
-        send_error_detail(fd, 400, "seed must be a whole number",
+        creq_set_detail(err, 400, "seed must be a whole number",
                           "seed", "invalid_value");
         return false;
     }
@@ -2826,33 +2946,52 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
     // default 0 is indistinguishable from an explicit one by value alone,
     // which is why this asks the request whether the member is there.
     if (!absent(jv_get(req, "seed")) && seed == 0) {
-        send_error_detail(fd, 400,
+        creq_set_detail(err, 400,
                           "seed 0 is not a usable seed: the sampler's RNG "
                           "state 0 is a fixed point, so the run would not be "
                           "reproducible. Use any other value, or omit seed.",
                           "seed", "invalid_value");
         return false;
     }
+    q->top_p = top_p;
+    q->min_p = min_p;
+    q->top_k = top_k;
+    q->seed = seed;
+    q->repeat_penalty = repeat_penalty;
+    q->temp = temp;
+    return true;
+}
+
+// max_tokens, in any of its three spellings.
+static bool creq_max_tokens(const creq_ctx *c, completion_req *q, creq_err *err) {
+    jv *req = c->req;
     int max_tokens = request_max_tokens(req, SV.n_predict_cap);
     if (max_tokens == MT_NON_FINITE) {
-        send_error(fd, 400, "max_tokens out of range");
+        creq_set(err, 400, "max_tokens out of range");
         return false;
     }
     if (max_tokens == MT_BAD_TYPE) {
-        send_error(fd, 400, "max_tokens must be a number");
+        creq_set(err, 400, "max_tokens must be a number");
         return false;
     }
     // Distinct from MT_BAD_TYPE on purpose: 1.5 *is* a number, so telling a
     // caller it is not sends them looking for a type bug they do not have.
     // Name the actual rule.
     if (max_tokens == MT_FRACTIONAL) {
-        send_error(fd, 400, "max_tokens must be a whole number");
+        creq_set(err, 400, "max_tokens must be a whole number");
         return false;
     }
     if (max_tokens == MT_NEGATIVE) {
-        send_error(fd, 400, "max_tokens must be non-negative");
+        creq_set(err, 400, "max_tokens must be non-negative");
         return false;
     }
+    q->max_tokens = max_tokens;
+    return true;
+}
+
+static bool creq_reasoning_budget(const creq_ctx *c, completion_req *q, creq_err *err) {
+    engine *e = &c->s->e;
+    jv *req = c->req;
     // R4.12.16 reasoning budget: cap the tokens a turn may spend INSIDE its
     // reasoning channel, leaving the answer's budget untouched. The request
     // field overrides the server default (--reasoning-budget); 0 turns it
@@ -2866,29 +3005,28 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
         double rbv = 0;
         if (!request_number(req, "reasoning_max_tokens", 0, 0, INT_MAX, &rbv) ||
             !whole_number(rbv)) {
-            send_error(fd, 400, "reasoning_max_tokens must be a whole number "
+            creq_set(err, 400, "reasoning_max_tokens must be a whole number "
                                 "of tokens, zero or more");
             return false;
         }
         reason_budget = (int)rbv;
         if (reason_budget > 0 && e->think_end_id < 0) {
-            send_error(fd, 400, "reasoning_max_tokens needs a model whose "
+            creq_set(err, 400, "reasoning_max_tokens needs a model whose "
                                 "reasoning turn ends on a single token; this "
                                 "model declares none");
             return false;
         }
     }
     q->think_budget = e->think_end_id >= 0 ? reason_budget : 0;
-    // The sentence the forced close writes before the close token. A bare
-    // terminator drops the model mid sentence and costs accuracy on the
-    // answer that follows (llama.cpp's budget PR measured HumanEval 93%
-    // uncapped, about 89% capped with a message and 79% with a bare end tag;
-    // s1 2501.19393 and Qwen3's own "Considering the limited time..." line do
-    // the same thing), so the default is a short neutral one. An empty string
-    // asks for the bare close deliberately. Tokenized once, here, so the
-    // generation loop never touches the tokenizer: a sentence that does not
-    // fit the forced-close buffer is refused rather than truncated, because
-    // half a sentence in the model's voice is worse than none of it.
+    return true;
+}
+
+static bool creq_reasoning_sampling(const creq_ctx *c, completion_req *q, creq_err *err) {
+    model_t *m = c->s->m;
+    jv *req = c->req;
+    double top_p = q->top_p;
+    double min_p = q->min_p;
+    double top_k = q->top_k;
     // R4.12.17: the reasoning channel's own sampling. A reasoning turn and an
     // answer are different jobs -- a loop needs randomness to escape it,
     // while a tool call's arguments must stay deterministic -- so these apply
@@ -2904,7 +3042,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
             if (!request_number(req, "reasoning_temperature",
                                 SV.reasoning_temp_set ? SV.reasoning_temp : 0,
                                 0, 2, &rtemp)) {
-                refuse_field(fd, req, "reasoning_temperature", J_NUM,
+                refuse_field(err, req, "reasoning_temperature", J_NUM,
                              "reasoning_temperature must be a number in 0..2");
                 return false;
             }
@@ -2917,7 +3055,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
                      !whole_number(rtop_k))
                 bad = "reasoning_top_k";
             if (bad) {
-                refuse_field(fd, req, bad, J_NUM,
+                refuse_field(err, req, bad, J_NUM,
                              "reasoning_top_p, reasoning_min_p and "
                              "reasoning_top_k must be in range "
                              "(0..1, 0..1, 0..1000 whole)");
@@ -2927,7 +3065,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
             // channel: a knob that silently does nothing has the caller
             // reading an unchanged trace as the setting's effect.
             if (!m->think_open || !m->think_close) {
-                send_error_detail(fd, 400, "reasoning_temperature needs a model "
+                creq_set_detail(err, 400, "reasoning_temperature needs a model "
                                   "with a reasoning channel; this model "
                                   "declares none", "reasoning_temperature",
                                   "unsupported_parameter");
@@ -2940,6 +3078,12 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
             q->think_top_k = (int)rtop_k;
         }
     }
+    return true;
+}
+
+static bool creq_loop_guard(const creq_ctx *c, completion_req *q, creq_err *err) {
+    model_t *m = c->s->m;
+    jv *req = c->req;
     // R4.12.18 loop guard (detect and force-close). Off unless asked for.
     // Reasoning-only by default: every measured runaway is a reasoning turn,
     // and a repeated span in an ANSWER is often a legitimate table or list,
@@ -2948,7 +3092,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
     {
         bool want = SV.loop_guard;
         if (!request_bool(req, "loop_guard", want, &want)) {
-            refuse_field(fd, req, "loop_guard", J_BOOL,
+            refuse_field(err, req, "loop_guard", J_BOOL,
                          "loop_guard must be a boolean");
             return false;
         }
@@ -2966,7 +3110,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
                      !whole_number(win))
                 bad = "loop_guard_window";
             if (bad) {
-                refuse_field(fd, req, bad, J_NUM,
+                refuse_field(err, req, bad, J_NUM,
                              "loop_guard_span (2..128), loop_guard_repeats "
                              "(2..16) and loop_guard_window (16..4096) must "
                              "be whole numbers in range");
@@ -2975,20 +3119,20 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
             double closes = 3;
             if (!request_number(req, "loop_guard_max_closes", 3, 1, 16, &closes) ||
                 !whole_number(closes)) {
-                refuse_field(fd, req, "loop_guard_max_closes", J_NUM,
+                refuse_field(err, req, "loop_guard_max_closes", J_NUM,
                              "loop_guard_max_closes must be a whole "
                              "number in 1..16");
                 return false;
             }
             if (!request_bool(req, "loop_guard_everywhere", false, &all)) {
-                refuse_field(fd, req, "loop_guard_everywhere", J_BOOL,
+                refuse_field(err, req, "loop_guard_everywhere", J_BOOL,
                              "loop_guard_everywhere must be a boolean");
                 return false;
             }
             // Each value is in its own range here; it is the window that has
             // to be wide enough to hold the repetition asked for.
             if (span * reps > win) {
-                send_error_detail(fd, 400, "loop_guard_span times "
+                creq_set_detail(err, 400, "loop_guard_span times "
                                   "loop_guard_repeats must fit inside "
                                   "loop_guard_window", "loop_guard_window",
                                   "invalid_value");
@@ -2998,7 +3142,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
             // reasoning channel and without the widening there is no region to
             // watch, and a guard that silently never runs is worse than none.
             if (!all && (!m->think_open || !m->think_close)) {
-                send_error_detail(fd, 400, "loop_guard watches the reasoning "
+                creq_set_detail(err, 400, "loop_guard watches the reasoning "
                                   "channel; this model declares none. Set "
                                   "loop_guard_everywhere to watch the whole "
                                   "turn", "loop_guard", "unsupported_parameter");
@@ -3012,6 +3156,22 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
             q->loop_max_closes = (int)closes;
         }
     }
+    return true;
+}
+
+static bool creq_budget_message(const creq_ctx *c, completion_req *q, creq_err *err) {
+    slot_t *s = c->s;
+    jv *req = c->req;
+    // The sentence the forced close writes before the close token. A bare
+    // terminator drops the model mid sentence and costs accuracy on the
+    // answer that follows (llama.cpp's budget PR measured HumanEval 93%
+    // uncapped, about 89% capped with a message and 79% with a bare end tag;
+    // s1 2501.19393 and Qwen3's own "Considering the limited time..." line do
+    // the same thing), so the default is a short neutral one. An empty string
+    // asks for the bare close deliberately. Tokenized once, here, so the
+    // generation loop never touches the tokenizer: a sentence that does not
+    // fit the forced-close buffer is refused rather than truncated, because
+    // half a sentence in the model's voice is worse than none of it.
     q->think_msg_n = 0;
     if (q->think_budget > 0) {
         const char *msg = REASON_BUDGET_MESSAGE;
@@ -3019,7 +3179,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
         jv *rm = jv_get(req, "reasoning_budget_message");
         if (!absent(rm)) {
             if (rm->type != J_STR) {
-                send_error(fd, 400, "reasoning_budget_message must be a string");
+                creq_set(err, 400, "reasoning_budget_message must be a string");
                 return false;
             }
             msg = rm->str;
@@ -3042,7 +3202,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
             if (!fits && !msg_is_default) {
                 // the caller chose these words; truncating them would put
                 // half a sentence in the model's voice
-                send_error(fd, 400, "reasoning_budget_message does not fit the "
+                creq_set(err, 400, "reasoning_budget_message does not fit the "
                                     "forced close; use a shorter sentence");
                 return false;
             }
@@ -3052,28 +3212,41 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
             q->think_msg_n = fits ? n : 0;
         }
     }
+    return true;
+}
+
+static bool creq_stream(const creq_ctx *c, completion_req *q, creq_err *err) {
+    jv *req = c->req;
     // "stream":"true" used to read as false and answer with a buffered
     // body, leaving a client that expected SSE waiting on events that
     // would never arrive
     bool stream = false;
     if (!request_bool(req, "stream", false, &stream)) {
-        send_error(fd, 400, "stream must be a boolean");
+        creq_set(err, 400, "stream must be a boolean");
         return false;
     }
     bool include_usage = false;
     jv *stream_options = jv_get(req, "stream_options");
     if (!absent(stream_options)) {
         if (stream_options->type != J_OBJ) {
-            send_error(fd, 400, "stream_options must be an object");
+            creq_set(err, 400, "stream_options must be an object");
             return false;
         }
         if (!request_bool(stream_options, "include_usage", false,
                           &include_usage)) {
-            send_error(fd, 400,
+            creq_set(err, 400,
                        "stream_options.include_usage must be a boolean");
             return false;
         }
     }
+    q->stream = stream;
+    q->include_usage = include_usage;
+    return true;
+}
+
+static bool creq_logprobs(const creq_ctx *c, completion_req *q, creq_err *err) {
+    jv *req = c->req;
+    int api = c->api;
     // OpenAI logprobs. Chat uses a boolean plus top_logprobs; legacy text
     // completions use logprobs itself as the requested alternative count.
     // The engine stores one request-sized diagnostic table. Buffered replies
@@ -3081,14 +3254,14 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
     // immediately before the terminal finish chunk.
     bool lp_on = false;
     if (api == API_CHAT && !request_bool(req, "logprobs", false, &lp_on)) {
-        send_error(fd, 400, "logprobs must be a boolean");
+        creq_set(err, 400, "logprobs must be a boolean");
         return false;
     }
     double lp_num = 0;
     if (api == API_TEXT &&
         (!request_number(req, "logprobs", 0, 0, 20, &lp_num) ||
          !whole_number(lp_num))) {
-        send_error(fd, 400, "logprobs out of range");
+        creq_set(err, 400, "logprobs out of range");
         return false;
     }
     bool want_lp = (api == API_CHAT && lp_on) ||
@@ -3096,7 +3269,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
     if (api == API_CHAT && want_lp &&
         (!request_number(req, "top_logprobs", 0, 0, 20, &lp_num) ||
          !whole_number(lp_num))) {
-        send_error(fd, 400, "top_logprobs out of range");
+        creq_set(err, 400, "top_logprobs out of range");
         return false;
     }
     int lp_n = (int)lp_num;
@@ -3106,23 +3279,32 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
     // stays the default; a harness scoring the wire format opts in.
     bool special_tokens = false;
     if (!request_bool(req, "special_tokens", false, &special_tokens)) {
-        send_error(fd, 400, "special_tokens must be a boolean");
+        creq_set(err, 400, "special_tokens must be a boolean");
         return false;
     }
     if (special_tokens && api != API_TEXT) {
-        send_error(fd, 400, "special_tokens is a /v1/completions extension: "
+        creq_set(err, 400, "special_tokens is a /v1/completions extension: "
                             "the chat, Responses and Messages surfaces render "
                             "the protocol into their own fields");
         return false;
     }
     if (lp_n > 20) lp_n = 20;
+    q->want_lp = want_lp;
+    q->lp_n = lp_n;
+    q->special_tokens = special_tokens;
+    return true;
+}
+
+static bool creq_choice(const creq_ctx *c, completion_req *q, creq_err *err) {
+    jv *req = c->req;
+    bool stream = q->stream;
     // JC-R1 constrained-choice posteriors (suite judgment-coprocessor plan):
     // buffered-only like logprobs, and only meaningful when a schema/JSON
     // constraint gives the sampler a legal set to choose from — both are
     // validated below once the request's constraint is known.
     bool cl_on = false;
     if (!request_bool(req, "choice_logprobs", false, &cl_on)) {
-        send_error(fd, 400, "choice_logprobs must be a boolean");
+        creq_set(err, 400, "choice_logprobs must be a boolean");
         return false;
     }
     double cl_probe_d = 32;
@@ -3131,11 +3313,11 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
     if (cl_probe_used && (!request_number(req, "choice_logprobs_probe", 32, 8, 64,
                                   &cl_probe_d) ||
                   !whole_number(cl_probe_d))) {
-        send_error(fd, 400, "choice_logprobs_probe out of range (8..64)");
+        creq_set(err, 400, "choice_logprobs_probe out of range (8..64)");
         return false;
     }
     if (cl_on && stream) {
-        send_error(fd, 400, "choice_logprobs is buffered-only; "
+        creq_set(err, 400, "choice_logprobs is buffered-only; "
                             "set stream to false");
         return false;
     }
@@ -3148,13 +3330,13 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
     jv *cbv = jv_get(req, "confirm_below");
     if (cbv && cbv->type != J_NULL) {
         if (cbv->type != J_NUM || !(cbv->num > 0 && cbv->num < 1)) {
-            send_error_detail(fd, 400, "confirm_below must be a probability "
+            creq_set_detail(err, 400, "confirm_below must be a probability "
                               "strictly between 0 and 1", "confirm_below",
                               "invalid_value");
             return false;
         }
         if (stream) {
-            send_error_detail(fd, 400, "confirm_below is buffered-only: the "
+            creq_set_detail(err, 400, "confirm_below is buffered-only: the "
                               "answer covers the whole turn; set stream to "
                               "false", "confirm_below", "invalid_value");
             return false;
@@ -3163,13 +3345,24 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
     }
     bool cl_render = cl_on;
     if (confirm_below > 0) cl_on = true;
+    q->cl_on = cl_on;
+    q->cl_render = cl_render;
+    q->cl_probe_d = cl_probe_d;
+    q->confirm_below = confirm_below;
+    return true;
+}
+
+static bool creq_prompt_scoring(const creq_ctx *c, completion_req *q, creq_err *err) {
+    jv *req = c->req;
+    int api = c->api;
+    bool stream = q->stream;
     // R4.8: echo (OpenAI legacy) and prompt_logprobs (vLLM's spelling) score
     // the prompt teacher-forced. Buffered-only: the prompt's entries are
     // known before the first generated token, but a stream has no field for
     // them in either wire shape.
     bool echo = false;
     if (api == API_TEXT && !request_bool(req, "echo", false, &echo)) {
-        send_error(fd, 400, "echo must be a boolean");
+        creq_set(err, 400, "echo must be a boolean");
         return false;
     }
     int plp = -1;   // -1 = prompt_logprobs absent or null
@@ -3179,7 +3372,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
         if (pv->type != J_NUM ||
             !request_number(req, "prompt_logprobs", 0, 0, 20, &v) ||
             !whole_number(v)) {
-            send_error(fd, 400, "prompt_logprobs must be a whole number "
+            creq_set(err, 400, "prompt_logprobs must be a whole number "
                                 "from 0 to 20");
             return false;
         }
@@ -3192,7 +3385,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
         jv *cv = jv_get(req, "context_id");
         if (!absent(cv)) {
             if (cv->type != J_STR || !prefix_context_name_ok(cv->str)) {
-                send_error_detail(fd, 400, "context_id must be 1 to 64 "
+                creq_set_detail(err, 400, "context_id must be 1 to 64 "
                                   "characters of [A-Za-z0-9._:-]",
                                   "context_id", "invalid_value");
                 return false;
@@ -3201,11 +3394,21 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
         }
     }
     if ((echo || plp >= 0) && stream) {
-        send_error(fd, 400, echo ? "echo is buffered-only; set stream to false"
+        creq_set(err, 400, echo ? "echo is buffered-only; set stream to false"
                                  : "prompt_logprobs is buffered-only; set "
                                    "stream to false");
         return false;
     }
+    q->echo = echo;
+    q->plp = plp;
+    q->ctx_id = ctx_id;
+    return true;
+}
+
+static bool creq_stops(const creq_ctx *c, completion_req *q, creq_err *err) {
+    slot_t *s = c->s;
+    jv *req = c->req;
+    const tool_envelope *env = c->env;
     // OpenAI "stop": a string or an array of up to 4 non-empty strings.
     // Pointers borrow from req, which outlives the whole request.
     const char *stops[4];
@@ -3230,7 +3433,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
             bad = true;
         }
         if (bad) {
-            send_error(fd, 400,
+            creq_set(err, 400,
                        "stop must be a string or an array of up to 4 non-empty strings");
             return false;
         }
@@ -3291,18 +3494,29 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
                 req_stops[n_req_stops++] = (int)v;
         }
         if (bad) {
-            send_error(fd, 400, "stop_token_ids must be an array of up to 8 token ids "
+            creq_set(err, 400, "stop_token_ids must be an array of up to 8 token ids "
                                 "within the model's vocabulary");
             return false;
         }
     }
     if ((n_stops > 0 || n_req_stops > 0) && env) {
-        send_error(fd, 400,
+        creq_set(err, 400,
                    "stop and stop_token_ids are not supported with tool calling: "
                    "the sequences would be matched against the tool-call protocol "
                    "the model generates, not the text you receive");
         return false;
     }
+    q->n_stops = n_stops;
+    q->n_req_stops = n_req_stops;
+    memcpy(q->stops, stops, sizeof q->stops);
+    memcpy(q->req_stops, req_stops, sizeof q->req_stops);
+    return true;
+}
+
+static bool creq_hints(const creq_ctx *c, completion_req *q, creq_err *err) {
+    slot_t *s = c->s;
+    engine *e = &c->s->e;
+    jv *req = c->req;
     // draft_hints (R3.7.4): strings the caller expects to be echoed. Drafts
     // only: every proposed token is verified by the target, so a hint can
     // make a turn faster and cannot change it.
@@ -3321,12 +3535,12 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
             else bytes += strlen(it->str);
         }
         if (bad || bytes > 262144) {
-            send_error(fd, 400, "draft_hints must be an array of up to 16 "
+            creq_set(err, 400, "draft_hints must be an array of up to 16 "
                                 "strings, 256 KiB in total");
             return false;
         }
         if (!e->lookup_on) {
-            send_error(fd, 400, "draft_hints needs a server started with "
+            creq_set(err, 400, "draft_hints needs a server started with "
                                 "--draft-lookup: hints are proposed through "
                                 "the lookup draft's verify walk");
             return false;
@@ -3335,7 +3549,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
         size_t need = bytes + (size_t)dh->n + 1;
         if (need > (size_t)s->hint_cap) {
             int32_t *nb = realloc(s->hint_buf, sizeof(int32_t) * need);
-            if (!nb) { send_error(fd, 500, "out of memory tokenizing draft_hints"); return false; }
+            if (!nb) { creq_set(err, 500, "out of memory tokenizing draft_hints"); return false; }
             s->hint_buf = nb;
             s->hint_cap = (int)need;
         }
@@ -3343,45 +3557,63 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
         for (int i = 0; i < dh->n; i++) {
             int n = tok_encode(s->tok, dh->items[i]->str, s->hint_buf + hn,
                                s->hint_cap - hn - 1, false, false);
-            if (n < 0) { send_error(fd, 500, "out of memory tokenizing draft_hints"); return false; }
+            if (n < 0) { creq_set(err, 500, "out of memory tokenizing draft_hints"); return false; }
             hn += n;
             s->hint_buf[hn++] = -1;
         }
         q->hints = true;
         q->hint_len = hn;
     }
+    return true;
+}
+
+// response_format: an object of a known type, and json_mode, read once.
+static bool creq_response_format(const creq_ctx *c, completion_req *q, creq_err *err) {
+    jv *req = c->req;
     jv *rf = jv_get(req, "response_format");
     if (rf && rf->type != J_NULL) {   // null reads as absent, as everywhere else
         // An unrecognised or malformed response_format used to fall through to
         // unconstrained decoding while still answering 200, so a caller asking
         // for guaranteed structure silently got none.
         if (rf->type != J_OBJ) {
-            send_error(fd, 400, "response_format must be an object");
+            creq_set(err, 400, "response_format must be an object");
             return false;
         }
         const char *rft = jv_str(jv_get(rf, "type"), "");
         if (strcmp(rft, "json_object") != 0 && strcmp(rft, "json_schema") != 0 &&
             strcmp(rft, "text") != 0) {
-            send_error(fd, 400,
+            creq_set(err, 400,
                        "response_format.type must be text, json_object or json_schema");
             return false;
         }
         if (strcmp(rft, "json_schema") == 0) {
             jv *js = jv_get(rf, "json_schema");
             if (!js || js->type != J_OBJ) {
-                send_error(fd, 400,
+                creq_set(err, 400,
                            "response_format.json_schema must be an object");
                 return false;
             }
             jv *inner = jv_get(js, "schema");
             if (inner && inner->type != J_OBJ) {
-                send_error(fd, 400,
+                creq_set(err, 400,
                            "response_format.json_schema.schema must be an object");
                 return false;
             }
         }
     }
     q->json_mode = request_json_mode(req);
+    return true;
+}
+
+// The constraint the sampler runs under: the tool envelope's grammar for the
+// family's protocol, or the request's own schema.
+static bool creq_schema(const creq_ctx *c, completion_req *q, creq_err *err) {
+    slot_t *s = c->s;
+    jv *req = c->req;
+    const tool_envelope *env = c->env;
+    bool chat = c->chat;
+    int think_mode = c->think_mode;
+    bool reasoning_open = c->reasoning_open;
     // Constrained decoding. The tool envelope wins when present: it already
     // contains the caller's response_format schema as its `final` branch, so
     // compiling that separately would drop the tool branches.
@@ -3467,7 +3699,7 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
         if (!schema) {
             char msg[256];
             snprintf(msg, sizeof(msg), "unsupported tool schema: %s", serr);
-            send_error(fd, 400, msg);
+            creq_set(err, 400, msg);
             return false;
         }
     } else if (sch) {
@@ -3478,43 +3710,58 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
         if (!schema) {
             char msg[192];
             snprintf(msg, sizeof(msg), "unsupported json schema: %s", serr);
-            send_error(fd, 400, msg);
+            creq_set(err, 400, msg);
             return false;
         }
     }
-
-    // accepted: hand everything read above to the caller
-    q->cache_prompt = cache_prompt;
-    q->share_prefix = share_prefix;
-    q->script_text = script_text;
-    q->script_fault = script_fault;
-    q->req_deadline = req_deadline;
-    q->top_p = top_p;
-    q->min_p = min_p;
-    q->top_k = top_k;
-    q->seed = seed;
-    q->repeat_penalty = repeat_penalty;
-    q->temp = temp;
-    q->max_tokens = max_tokens;
-    q->stream = stream;
-    q->include_usage = include_usage;
-    q->want_lp = want_lp;
-    q->lp_n = lp_n;
-    q->special_tokens = special_tokens;
-    q->cl_on = cl_on;
-    q->cl_render = cl_render;
-    q->cl_probe_d = cl_probe_d;
-    q->confirm_below = confirm_below;
-    q->echo = echo;
-    q->plp = plp;
-    q->ctx_id = ctx_id;
-    q->n_stops = n_stops;
-    q->n_req_stops = n_req_stops;
     q->constrain = constrain;
     q->sch = sch;
     q->schema = schema;
-    memcpy(q->stops, stops, sizeof q->stops);
-    memcpy(q->req_stops, req_stops, sizeof q->req_stops);
+    return true;
+}
+
+// Reads and checks every field of a request and answers the first one it
+// refuses. The groups run in the order the refusals have always come in
+// (CREQ_GROUPS), each one validating its fields, writing what it accepted
+// into q and, on a refusal, filling err; completion_read sends err the way
+// each check used to send for itself (creq_send), so the bytes on the wire
+// are unchanged. Nothing on the slot or its engine changes here (the draft
+// hints use the slot's scratch buffer); false when the request was refused.
+typedef bool (*creq_group)(const creq_ctx *, completion_req *, creq_err *);
+static const creq_group CREQ_GROUPS[] = {
+    creq_shape,
+    creq_deadline,
+    creq_sampling,
+    creq_max_tokens,
+    creq_reasoning_budget,
+    creq_reasoning_sampling,
+    creq_loop_guard,
+    creq_budget_message,
+    creq_stream,
+    creq_logprobs,
+    creq_choice,
+    creq_prompt_scoring,
+    creq_stops,
+    creq_hints,
+    creq_response_format,
+    creq_schema,
+};
+
+static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
+                            const tool_envelope *env, bool chat,
+                            const render_state *rs, completion_req *q) {
+    // the turn's start as rendered: the grammars open where the prompt left
+    // the model and read the mode it was rendered under (a raw prompt keeps
+    // the request's own enable_thinking)
+    creq_ctx c = { .s = s, .req = req, .api = api, .env = env, .chat = chat,
+                   .reasoning_open = rs && rs->reasoning_open,
+                   .think_mode = rs ? rs->think_mode : req_thinking_mode(req) };
+    creq_err err = { 0 };
+    for (size_t i = 0; i < sizeof CREQ_GROUPS / sizeof *CREQ_GROUPS; i++)
+        if (!CREQ_GROUPS[i](&c, q, &err)) {
+            if (err.status) creq_send(fd, &err);
+            return false;
+        }
     return true;
 }
 
@@ -4425,6 +4672,18 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
     free(r.s);
 }
 
+// The stream an unseeded request samples from: splitmix64 of the server seed
+// and the request's place among the requests that sampled. Never 0,
+// which is the sampler xorshift's fixed point (the reason `seed: 0` is
+// refused).
+uint64_t server_request_stream(uint64_t seed, uint64_t arrival) {
+    uint64_t z = seed + (arrival + 1) * 0x9E3779B97F4A7C15ull;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    z ^= z >> 31;
+    return z ? z : 1;
+}
+
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            jv *req, const tool_envelope *env,
                            const render_state *rs) {
@@ -4652,7 +4911,19 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     double gtime;
     // Past the last refusal: the request's seed takes the slot's RNG now.
     // Nothing above draws from it (prefill and prompt scoring do not sample).
-    if (q.seed > 0) s->smp.rng = (uint64_t)q.seed;
+    // Every request that samples takes the next place in one server-wide
+    // order; an unseeded one draws from the server seed and that place, not
+    // from a stream kept per slot: which idle slot serves a request is the
+    // scheduler's timing, so the same requests under the same -s seed sampled
+    // differently from run to run at --parallel 2 or more. A greedy request
+    // draws nothing and takes no place; a refused one never gets here.
+    if (s->smp.temp > 0.0f || (e->think_smp && e->think_temp > 0.0f)) {
+        uint64_t place = atomic_fetch_add(&SV.sampled_requests, 1);
+        s->smp.rng = q.seed > 0 ? (uint64_t)q.seed
+                                : server_request_stream(SV.base_rng, place);
+    } else if (q.seed > 0) {
+        s->smp.rng = (uint64_t)q.seed;
+    }
     // R1.2.2: the sampler's state as generation starts is the receipt's seed
     uint64_t gen_rng = s->smp.rng;
     g.raw_on = receipts_enabled();

@@ -9,7 +9,8 @@ expert on every block, hyper-connections (HC streams), a PLE n-gram block at
 block 1 with a hashed table sized to its head ranges, and the indexer tensors
 on the attention blocks with compress_ratios 0 (dense attention in both
 engines). Environment: QWEN4EXP_TEST_LAYERS (default 4), QWEN4EXP_TEST_SEED,
-QWEN4EXP_TEST_EXPERTS (default 8; 512 is the release file's count).
+QWEN4EXP_TEST_EXPERTS (default 8; 512 is the release file's count),
+QWEN4EXP_TEST_EMBD (default 32) and QWEN4EXP_TEST_HC_BF16=1 (below).
 """
 import os
 import struct
@@ -21,6 +22,13 @@ OUT = sys.argv[1] if len(sys.argv) > 1 else "test-qwen4exp.gguf"
 if str(OUT).startswith("-"):
     sys.exit(f"usage: {sys.argv[0]} [OUTPUT]: writes test fixtures to OUTPUT (got {str(OUT)!r})")
 E, HEADS, KV, HD = 32, 4, 2, 8            # HD must be a multiple of 4 for the rope sections below
+# QWEN4EXP_TEST_EMBD widens the residual and QWEN4EXP_TEST_HC_BF16=1 stores the
+# hyper-connection mixers in BF16, as the release file does. At 512 a mixer's
+# input is 4 * 512 = 2,048 wide: the shape CUDA's BF16 split-K decode kernel
+# takes (enc_mv: BF16, at most 1,024 rows of at least 2,048), which the F32
+# 128-wide default never reaches.
+E = int(os.environ.get("QWEN4EXP_TEST_EMBD", str(E)))
+HC_BF16 = os.environ.get("QWEN4EXP_TEST_HC_BF16", "") not in ("", "0")
 LAYERS = int(os.environ.get("QWEN4EXP_TEST_LAYERS", "4"))
 STATE, GROUPS, VHEADS, CONV = 8, 2, 4, 4
 HC, HC_LR = 4, 16
@@ -85,6 +93,14 @@ ZERO_NAMES = {
     "attn": ("attn_output.weight",),
     "lin":  ("ssm_out.weight",),
 }
+GGML_F32, GGML_BF16 = 0, 30
+def bf16(payload):
+    # round to nearest even, the conversion llama.cpp's writer applies
+    out = bytearray()
+    for (u,) in struct.iter_unpack("<I", payload):
+        out += struct.pack("<H", ((u + 0x7FFF + ((u >> 16) & 1)) >> 16) & 0xFFFF)
+    return bytes(out)
+HC_MIXERS = ZERO_NAMES["hc"] + ("nextn.hc_head_down", "nextn.hc_head_up")
 def add(ts, name, dims, payload=None):
     n = 1
     for d in dims: n *= d
@@ -93,7 +109,10 @@ def add(ts, name, dims, payload=None):
         for z in ZERO:
             if any(k in name for k in ZERO_NAMES[z]):
                 payload = struct.pack(f"<{n}f", *([0.] * n))
-    ts.append((name, dims, payload))
+    if HC_BF16 and any(k in name for k in HC_MIXERS):
+        ts.append((name, dims, bf16(payload), GGML_BF16))
+    else:
+        ts.append((name, dims, payload, GGML_F32))
 
 
 HCD = HC * E
@@ -180,7 +199,8 @@ kvs = [
     ku(f"{A}.expert_shared_feed_forward_length", FF_SHEXP),
     ku(f"{A}.ssm.conv_kernel", CONV), ku(f"{A}.ssm.state_size", STATE),
     ku(f"{A}.ssm.group_count", GROUPS), ku(f"{A}.ssm.time_step_rank", VHEADS),
-    ku(f"{A}.ssm.inner_size", E), ku(f"{A}.full_attention_interval", 4),
+    # the DeltaNet value width (v_heads * head_v_dim), equal to E only at the default
+    ku(f"{A}.ssm.inner_size", STATE * VHEADS), ku(f"{A}.full_attention_interval", 4),
     ku(f"{A}.hyper_connection.count", HC), ku(f"{A}.hyper_connection.low_rank", HC_LR),
     ku(f"{A}.attention.indexer.head_count", IDX_HEADS),
     ku(f"{A}.attention.indexer.key_length", IDX_DIM),
@@ -199,15 +219,15 @@ kvs = [
 ]
 meta = b"".join(kvs)
 info, off = b"", 0
-for name, dims, payload in t:
+for name, dims, payload, ty in t:
     info += s(name) + struct.pack("<I", len(dims))
     info += b"".join(struct.pack("<Q", d) for d in dims)
-    info += struct.pack("<IQ", 0, off)
+    info += struct.pack("<IQ", ty, off)
     off = (off + len(payload) + 31) & ~31
 head = struct.pack("<IIQQ", 0x46554747, 3, len(t), len(kvs)) + meta + info
 with open(OUT, "wb") as f:
     f.write(head + b"\0" * ((-len(head)) % 32))
-    for _, _, payload in t:
+    for _, _, payload, _ in t:
         f.write(payload)
         f.write(b"\0" * ((-len(payload)) % 32))
 print(f"wrote {OUT}")

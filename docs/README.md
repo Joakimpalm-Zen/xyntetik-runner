@@ -11,7 +11,7 @@ product claims.
 - [Tool-call truncation recovery](truncation-safe-tool-calling.md) and [the deterministic agent matrix](agent-torture.md)
 - [Context-grounded drafts](context-drafts.md) and [session images](session-images.md)
 - [Tray controller](tray-controller.md) and [Shadow execution/learning boundary](shadow-boundaries.md)
-- [Performance routes and idle cost](performance.md)
+- [Performance routes and idle cost](performance.md), [kernel routes and their obligations](kernel-routes.md), and [buffer lifetimes](buffer-lifetimes.md)
 
 ## Work with model files
 

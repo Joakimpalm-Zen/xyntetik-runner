@@ -82,7 +82,7 @@
     },
     "harmony": {
       "source": "fixture:openai-harmony 0.0.8",
-      "sha256": "1a21593bf6554bfb"
+      "sha256": "4ed60f0147926f09"
     },
     "hermes4": {
       "source": "hf:NousResearch/Hermes-4-14B",

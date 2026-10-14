@@ -2057,7 +2057,7 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
                 fell_back++;
                 want = fb;
                 J->out_type[i] = ggml_row_size(t->type, t->ne[0]) <=
-                              ggml_row_size(fb, t->ne[0]) ? t->type : fb;
+                              ggml_row_size(fb, t->ne[0]) ? (int)t->type : fb;
             } else if (ggml_row_size(t->type, t->ne[0]) <=
                        ggml_row_size(want, t->ne[0])) {
                 J->out_type[i] = t->type;   // never grow

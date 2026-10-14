@@ -569,6 +569,17 @@ def matrix(family):
                           [{"role": "system", "content": SYS},
                            {"role": "user", "content": U1}], True, mode))
     if family.tool_family:
+        # Tools declared and NO system message: the first turn of most agent
+        # requests. Every other tool case carries a system message, so until
+        # 2026-10-14 the branch a template takes for a system-less tool
+        # request was never rendered -- and it is where templates disagree:
+        # Qwen2.5 writes its default system prompt ahead of "# Tools",
+        # Granite 4.0-H replaces its default with the declarations. Runner
+        # dropped Qwen2.5's default on both branches, and an allowlist entry
+        # recorded the plain-chat half as deliberate.
+        cases.append(("tools-no-system+gen", [
+            {"role": "user", "content": "Weather in Oslo?"},
+        ], True, "default"))
         cases.append(("tool-call+result", [
             {"role": "system", "content": SYS},
             {"role": "user", "content": "Weather in Oslo?"},
@@ -1914,6 +1925,11 @@ def main():
                          "oracle.json from the installed openai-harmony "
                          "library (the fixture a machine without the library "
                          "compares harmony against)")
+    ap.add_argument("--cites-only", action="store_true",
+                    help="check only that every allowlist citation still "
+                         "points at its anchor in the source: no oracle, "
+                         "no tokenizer, no network. make test runs it, so an "
+                         "edit that moves cited lines fails before CI does")
     ap.add_argument("--require-tokens", action="store_true",
                     help="treat a family with no local tokenizer as NOT "
                          "CHECKED (exit 2) instead of reporting the gap. Use "
@@ -1928,6 +1944,16 @@ def main():
                          "intentional deviations as bugs")
     if args.write_harmony_oracle:
         return write_harmony_fixture()
+    if args.cites_only:
+        rot = check_citations(load_allowlist(args.allowlist), list(FAMILIES))
+        for r in rot:
+            print("  " + r)
+        if rot:
+            print("FAIL: %d allowlist citation(s) no longer match the tree"
+                  % len(rot))
+            return 1
+        print("template conformance citations: every anchor is where it is cited")
+        return 0
     return run(args)
 
 

@@ -4,8 +4,28 @@ import json
 import pathlib
 import subprocess
 
+import pytest
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _git_checkout(root):
+    try:
+        return subprocess.run(["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+                              capture_output=True, text=True).stdout.strip() == "true"
+    except OSError:
+        return False
+
+
+# A passing check() runs the release check's tree scans, which are `git grep`
+# over this checkout and fail closed when the tree is not one (a source
+# archive): that refusal is right for a release, so a test that needs every
+# check to pass needs a checkout. Without one it skips, saying why; with git
+# absent altogether the scans are skipped by the script itself.
+needs_git_checkout = pytest.mark.skipif(
+    not _git_checkout(ROOT),
+    reason="needs a git checkout: the release check's tree scans run git grep")
 SPEC = importlib.util.spec_from_file_location(
     "check_release", ROOT / "scripts/check-release.py"
 )
@@ -117,6 +137,7 @@ NOTHING_RAN_REPORT = json.dumps({"models": [{"id": "x", "checks": {
     "complete": False}) + "\n"
 
 
+@needs_git_checkout
 def test_release_check_accepts_consistent_artifacts(monkeypatch, tmp_path):
     args = good_args(tmp_path)
     monkeypatch.setattr(
@@ -125,6 +146,7 @@ def test_release_check_accepts_consistent_artifacts(monkeypatch, tmp_path):
     assert check_release.check(args)
 
 
+@needs_git_checkout
 def test_release_check_accepts_legacy_alpha_package_spelling(monkeypatch, tmp_path):
     args = good_args(tmp_path)
     args.tag = "v0.1.3-alpha"
@@ -199,6 +221,7 @@ def test_release_check_requires_a_compat_report_for_this_release(
     assert "compat report" in capsys.readouterr().err
 
 
+@needs_git_checkout
 def test_release_check_accepts_any_dated_report_for_this_release(
         monkeypatch, tmp_path):
     args = good_args(tmp_path)
@@ -211,6 +234,7 @@ def test_release_check_accepts_any_dated_report_for_this_release(
     assert check_release.check(args)
 
 
+@needs_git_checkout
 def test_release_check_skips_the_report_gate_when_no_directory_is_given(
         monkeypatch, tmp_path):
     """An older checkout, or a caller that does not pass the flag, still
@@ -258,6 +282,7 @@ def test_private_reference_scan_rejects_a_fatal_git_error(monkeypatch, capsys):
 # .github/workflows/release.yml carried `git tag v0.2.0` while the tree was at
 # 0.3.0, in the exact file the workflow scan targets, and the gate was green.
 
+@needs_git_checkout
 def test_release_check_accepts_the_1x_banner(monkeypatch, tmp_path, capsys):
     """From 1.0.0 the README banner reads "Version `X.Y.Z`" and points at the
     versioning policy; the gate accepts it and still demands the exact
@@ -387,6 +412,7 @@ def test_release_check_refuses_a_report_in_which_nothing_ran(
     assert "executed no check" in capsys.readouterr().err
 
 
+@needs_git_checkout
 def test_release_check_counts_executed_checks_across_all_dated_reports(
         monkeypatch, tmp_path):
     """An empty report beside a real one for the same version is fine: the
@@ -402,6 +428,7 @@ def test_release_check_counts_executed_checks_across_all_dated_reports(
     assert check_release.check(args)
 
 
+@needs_git_checkout
 def test_release_check_requires_readme_and_site_to_link_the_same_hf_repos(
         monkeypatch, tmp_path, capsys):
     """A card published with a README entry and no site entry, or the reverse,
@@ -432,6 +459,7 @@ def test_release_check_requires_readme_and_site_to_link_the_same_hf_repos(
     assert check_release.check(args) is True
 
 
+@needs_git_checkout
 def test_release_check_parity_sees_dataset_links_too(monkeypatch, tmp_path, capsys):
     """Evidence repositories live under `datasets/`; a parity check that only
     read the model spelling let a migrated report drift out of the README or
@@ -495,6 +523,7 @@ def test_release_check_refuses_a_missing_device_ledger(monkeypatch, tmp_path):
     assert check_release.check(args) is False
 
 
+@needs_git_checkout
 def test_release_check_accepts_fresh_device_evidence(monkeypatch, tmp_path):
     _pinned(monkeypatch)
     args = good_args(tmp_path)

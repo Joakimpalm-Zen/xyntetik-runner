@@ -64,6 +64,7 @@ void gpu_attn_coop_force(int on) { (void)on; }
 unsigned long gpu_attn_coop_dispatches(void) { return 0; }
 unsigned long gpu_attn_tile_dispatches(void) { return 0; }
 unsigned long gpu_attn_gqa_dispatches(void) { return 0; }
+unsigned long gpu_splitk_dispatches(void) { return 0; }
 
 // Same, for the fused-vs-eager MoE routing gate.
 void gpu_moe_eager_force(int on) { (void)on; }
@@ -141,6 +142,7 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
 }
 
 bool gpu_spec_keep_ok(const model_t *m) { (void)m; return false; }
+const char *gpu_route_detail(const model_t *m) { (void)m; return ""; }
 float *gpu_spec_logits(model_t *m, int row) { (void)m; (void)row; return NULL; }
 
 gpu_batch *gpu_batch_create(model_t **seqs, int n) {

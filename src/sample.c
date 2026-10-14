@@ -2,6 +2,7 @@
 // validity-constrained selection (used for JSON mode), and the per-family
 // defaults that seed all of the above.
 #include "sample.h"
+#include "fpclass.h"
 #include "template.h"   // TMPL_* — the detected template outranks the name
 
 #include <ctype.h>
@@ -44,7 +45,7 @@ static int cand_cmp(const void *a, const void *b) {
     // directed comparisons are false, so the comparator loses antisymmetry
     // and qsort's behavior is undefined. Rank NaN below every real value
     // instead — a poisoned candidate sorts last and the order stays total.
-    int xn = isnan(x->p), yn = isnan(y->p);
+    int xn = fp_isnan(x->p), yn = fp_isnan(y->p);
     if (xn | yn) {
         if (xn != yn) return xn ? 1 : -1;
     } else if (x->p != y->p) {
@@ -88,7 +89,7 @@ static void top_sorted(const float *logits, float temp, int n, int m,
     if (m < n) {
         for (int i = m / 2 - 1; i >= 0; i--) heap_down(out, m, i);
         float raw_worst = logits[out[0].id];
-        bool worst_nan = isnan(out[0].p) != 0;
+        bool worst_nan = fp_isnan(out[0].p) != 0;
         for (int i = m; i < n; i++) {
             float x = logits[i];
             if (!worst_nan && !(x > raw_worst)) continue;
@@ -97,7 +98,7 @@ static void top_sorted(const float *logits, float temp, int n, int m,
             out[0] = c;
             heap_down(out, m, 0);
             raw_worst = logits[out[0].id];
-            worst_nan = isnan(out[0].p) != 0;
+            worst_nan = fp_isnan(out[0].p) != 0;
         }
     }
     qsort(out, (size_t)m, sizeof(cand_t), cand_cmp);

@@ -113,6 +113,14 @@ runner; several are load-bearing gates for changing it.
 
 ## Benchmarks
 
+- **`bench-corpus.py`** + **`bench-corpus.json`** - the workload and shape
+  corpus a performance change is measured on: one-row decode, prefill either
+  side of tile boundaries, long prompts, speculative verification at widths 3
+  to 9, partial and resident splits, a tool-result turn's prefix reuse, one
+  and two requests in flight, the idle lifecycle (`--idle`). Each record names
+  the machine, the model's identity, the threads, the route each bench ran
+  (`--bench-json`'s `route`) and whether the run was a case's first or a
+  repeat. No thresholds; results are machine data and stay out of the repo.
 - **`batch-bench.py`** - concurrent-serving throughput + single-request latency
   against a running server (the numbers behind the batching phase work).
 - **`agent-torture.py` / `torture-compare.py`** - the adversarial tool-call

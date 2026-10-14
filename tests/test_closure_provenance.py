@@ -149,3 +149,49 @@ def test_a_cut_tool_call_says_the_closer_chose_it(srv, path, body):
     named = set(cl["fields"]["synthesized"] + cl["fields"]["completed"])
     assert "/arguments/units" in named, cl
     assert named <= {"/name", "/arguments", "/arguments/city", "/arguments/units"}, cl
+
+
+@pytest.fixture(scope="module", params=["qwen3_xml", "atem"])
+def native_xml(request, tmp_path_factory):
+    """A server whose tool calls are XML-style: Qwen3-Coder's tagged
+    parameters (the qwen38 template) and Muse's atem invoke (the Muse
+    fixture, whose own template it is)."""
+    exe = find_runner(ROOT)
+    if not pathlib.Path(exe).exists():
+        pytest.skip("runner not built")
+    model = tmp_path_factory.mktemp("cpx") / "m.gguf"
+    if request.param == "atem":
+        gen = [ROOT / "scripts/make-test-model.py", "--muse-glimmer",
+               "--control", "<|start|>,<|message|>,<|eom|>,<|eot|>", str(model)]
+        extra = ["--gpu", "off", "-t", "2"]
+    else:
+        gen = [ROOT / "scripts/make-test-model.py", str(model)]
+        extra = ["--gpu", "off", "-t", "2", "--chat-template", "qwen38"]
+    subprocess.run([sys.executable, *gen], check=True, stdout=subprocess.DEVNULL)
+    with RunnerServer(exe, model, ctx=8192, extra_args=extra) as s:
+        yield request.param, s
+
+
+def test_a_cut_xml_style_call_names_what_the_closer_wrote(native_xml):
+    """These calls carry their arguments as tagged parameters, not JSON, and
+    their closures used to report "fields": null: a required value the closer
+    filled in (a number as 0) read exactly like the model's. The provenance
+    now names the call's parameters the closer wrote, as for JSON calls."""
+    family, srv = native_xml
+    body = {"messages": [{"role": "user", "content": "weather"}], "temperature": 0,
+            "tool_choice": "required", "max_tokens": 6,
+            "tools": [{"type": "function", "function": {
+                "name": "get_weather", "parameters": SCHEMA}}]}
+    req = urllib.request.Request(srv.base_url + "/v1/chat/completions",
+                                 data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        d = json.load(r)
+    t = d["runner_telemetry"]
+    assert t["tool_protocol"]["family"] == family, t["tool_protocol"]
+    cl = t["closure"]
+    assert cl["closed"] is True and cl["closer_bytes"] > 0, cl
+    assert cl["fields"] is not None, cl
+    named = set(cl["fields"]["synthesized"] + cl["fields"]["completed"])
+    assert "/arguments/units" in named, (cl, d["choices"][0])
+    assert named <= {"/name", "/arguments/city", "/arguments/units"}, cl

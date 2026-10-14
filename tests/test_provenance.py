@@ -79,6 +79,64 @@ def _settled(srv, timeout=30.0):
         time.sleep(0.05)
 
 
+
+TAKEN = b"provenance: model sha256 taken"
+
+
+def _log_count(log):
+    return log.read_bytes().count(TAKEN) if log.exists() else 0
+
+
+def test_an_idle_load_is_not_hashed_until_something_asks(runner_bin, model,
+                                                         tmp_path):
+    """The digest reads the whole file. A server that only loads and sits
+    idle must not pay that pass (6 to 11 CPU seconds on a 3.6 GB model):
+    the route, a receipt or an expect_resident digest take it on first need."""
+    log = tmp_path / "srv.log"
+    with RunnerServer(runner_bin, model, ctx=512, log_path=log,
+                      extra_args=["--gpu", "off", "-t", "2"]) as srv:
+        time.sleep(0.5)
+        assert _log_count(log) == 0, log.read_text(errors="replace")[-800:]
+        body = _settled(srv)
+        assert body["model"]["sha256_state"] == "done"
+        assert body["model"]["sha256"] == _sha(model)
+        assert _log_count(log) == 1
+
+
+def test_receipts_take_the_digest_at_load(runner_bin, model, tmp_path):
+    """Receipts, session images and KV snapshots need the digest on a
+    request's path, so a server configured with one hashes at load."""
+    log = tmp_path / "srv.log"
+    with RunnerServer(runner_bin, model, ctx=512, log_path=log,
+                      extra_args=["--gpu", "off", "-t", "2",
+                                  "--receipts", str(tmp_path / "r")]) as srv:
+        deadline = time.monotonic() + 30
+        while _log_count(log) == 0:
+            assert time.monotonic() < deadline, "no digest taken at load"
+            time.sleep(0.05)
+        srv.assert_alive()
+
+
+def test_a_reload_of_the_same_file_reuses_its_digest(runner_bin, model,
+                                                     tmp_path):
+    """An unload and the reload a request brings back are the same bytes when
+    the file's identity is unchanged: the digest is not read again."""
+    log = tmp_path / "srv.log"
+    with RunnerServer(runner_bin, model, ctx=512, log_path=log,
+                      extra_args=["--gpu", "off", "-t", "2"]) as srv:
+        first = _settled(srv)["model"]["sha256"]
+        req = urllib.request.Request(srv.base_url + "/unload", data=b"", method="POST")
+        with urllib.request.urlopen(req, timeout=30) as r:   # the route takes no body
+            assert r.status == 200
+        status, body = _post(srv, "/v1/chat/completions", {
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1, "temperature": 0})
+        assert status == 200, body
+        status, body = _get(srv)
+        assert body["model"]["sha256_state"] == "done", body
+        assert body["model"]["sha256"] == first
+        assert _log_count(log) == 1
+
 def test_identity_matches_the_files_on_disk(runner_bin, model):
     with RunnerServer(runner_bin, model, ctx=512, parallel=2,
                       extra_args=["--gpu", "off", "-t", "2"]) as srv:

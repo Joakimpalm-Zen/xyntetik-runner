@@ -1066,9 +1066,9 @@ extern "C" __global__ void k_gemm_q4_K_tc(MV_PARAMS, const float *xsc) {
 // step by the whole block, a 128-K x 16-token fp16 activation tile, four
 // warps of m16n16k16 MMA strips with fp32 accumulation. Per-element weight
 // values match the scalar kernels' dequantization exactly, rounded to fp16
-// operands. Both are OPT-IN (RUNNER_CUDA_TC / per-(type, arch) promotion
-// via make test-tc-tol); tc_promoted() does not list them, so the default
-// path is untouched.
+// operands. Both were opt-in when written; tc_promoted() in cuda.c now
+// lists Q8_0 (2026-08-09) and Q4_0 (2026-08-13) on their make test-tc-tol
+// rows, and RUNNER_CUDA_TC=0 pins the scalar path.
 //
 // Unlike Q4_K (256-element super-blocks, so every K-step is block-aligned),
 // these formats have 32-element blocks and real models carry K dims that
@@ -3937,9 +3937,9 @@ extern "C" __global__ void k_mv_iq1_m_b(MV_PARAMS) {
 // decoded by the stager in iq_decode.h that the host test holds to
 // dequant_row() bit for bit, then rounded to fp16 for the MMA operand (the
 // same numeric class as the Q4_K/Q6_K/Q8_0/Q4_0 tensor-core kernels: exact
-// per-element weight values, fp16 operands, fp32 accumulation). Opt-in:
-// registered in cuda.c's TC_KERNELS, not promoted, reached through
-// RUNNER_CUDA_TC=1 or the gate's gpu_tc_force(1) until measured.
+// per-element weight values, fp16 operands, fp32 accumulation). Registered
+// in cuda.c's TC_KERNELS and promoted with the codebook family on
+// 2026-09-14 (tc_promoted); RUNNER_CUDA_TC=0 pins the scalar path.
 static __device__ __forceinline__ void tc_stage_iq3_s(__half *dst,
                                                       const uchar *rw, int nb,
                                                       int e0, int n_in) {

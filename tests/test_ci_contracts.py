@@ -56,6 +56,56 @@ class CommandGate(unittest.TestCase):
             workflow.write_text("  targets: probe probe\n")
             self.assertNotEqual(run(), 0)
 
+    def test_roster_catches_a_device_target_no_lane_runs(self):
+        """A test-cuda-* target outside cuda-gate.sh's DEVICE_STEPS, or a
+        test-metal-* target test-metal does not call, is a gate nothing runs;
+        DEVICE_OPT_IN is the only other place it may be, and a lane may not
+        name a target the Makefile lacks."""
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            for d in ("scripts", "tests/fuzz", ".github/workflows"):
+                (root / d).mkdir(parents=True)
+            script = root / "scripts/check-ci-roster.py"
+            script.write_bytes((ROOT / "scripts/check-ci-roster.py").read_bytes())
+            (root / "tests/fuzz/fuzz_probe.c").write_text("")
+            (root / "tests/test_new.py").write_text("")
+            (root / ".github/workflows/ci.yml").write_text("  targets: probe\n")
+            gate = root / "scripts/cuda-gate.sh"
+            make = root / "Makefile"
+            base = ("FUZZ_TARGETS = probe\ntest:\n\tpython -m pytest tests/test_new.py\n"
+                    "test-cuda-a:\n\ttrue\ntest-metal-b:\n\ttrue\n")
+            def run(makefile, steps):
+                make.write_text(makefile)
+                gate.write_text('DEVICE_STEPS="%s"\n' % steps)
+                return subprocess.run([sys.executable, str(script)], capture_output=True).returncode
+            metal = "test-metal:\n\t$(MAKE) --no-print-directory test-metal-b\n"
+            self.assertEqual(run(base + metal, "a:test-cuda-a"), 0)
+            self.assertNotEqual(run(base + metal, ""), 0)          # cuda target unrun
+            self.assertNotEqual(run(base + "test-metal:\n\ttrue\n", "a:test-cuda-a"), 0)
+            self.assertEqual(run(base + "DEVICE_OPT_IN = test-metal-b\n", "a:test-cuda-a"), 0)
+            self.assertNotEqual(run(base + metal, "a:test-cuda-a z:test-cuda-typo"), 0)
+
+    def test_fpclass_check_refuses_a_raw_class_test(self):
+        """A raw isnan()/isfinite() in a -ffast-math unit is refused (clang
+        22 folds them under -ffinite-math-only); the helper, the exempt
+        no-fast-math units, comments and strings are not."""
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            (root / "scripts").mkdir()
+            (root / "src").mkdir()
+            script = root / "scripts/check-fpclass.py"
+            script.write_bytes((ROOT / "scripts/check-fpclass.py").read_bytes())
+            def run(body, name="a.c"):
+                for p in (root / "src").iterdir():
+                    p.unlink()
+                (root / "src" / name).write_text(body)
+                return subprocess.run([sys.executable, str(script)], capture_output=True).returncode
+            self.assertNotEqual(run("int f(double x) { return isnan(x); }\n"), 0)
+            self.assertNotEqual(run("int f(float x) { return __builtin_isfinite(x); }\n"), 0)
+            self.assertEqual(run("int f(double x) { return fp_isnan(x); }\n"), 0)
+            self.assertEqual(run("// isnan(x) folds\nconst char *s = \"isfinite(\";\n"), 0)
+            self.assertEqual(run("int f(double x) { return isnan(x); }\n", "quants.c"), 0)
+
     def test_failed_command_keeps_its_status_and_timing(self):
         with tempfile.TemporaryDirectory() as td:
             p = subprocess.run([sys.executable, str(ROOT / "scripts/ci-run.py"),
@@ -86,6 +136,24 @@ class CommandGate(unittest.TestCase):
                 p = subprocess.run([sys.executable, str(ROOT / "scripts/check-junit.py"),
                                     "--no-skips", str(xml)], capture_output=True)
                 self.assertEqual(p.returncode, expected, body)
+
+    def test_a_device_lane_rejects_only_skips_for_want_of_the_device(self):
+        """test-cuda-gated: on a CUDA host a case skipped for want of CUDA did
+        not run, while a skip for something else (or one the lane allows)
+        does not make the device lane fail."""
+        with tempfile.TemporaryDirectory() as td:
+            xml = pathlib.Path(td) / "cuda.xml"
+            def run(reason):
+                xml.write_text('<testsuite><testcase name="a"/><testcase name="b">'
+                               '<skipped message="%s"/></testcase></testsuite>' % reason)
+                return subprocess.run([sys.executable, str(ROOT / "scripts/check-junit.py"),
+                                       "--no-skips-matching", "(?i)cuda|device|gpu",
+                                       "--allow-skip", "CUDA runtime is available",
+                                       str(xml)], capture_output=True).returncode
+            self.assertEqual(run("no CUDA device"), 1)
+            self.assertEqual(run("--cpu-moe placement is CUDA-side"), 1)
+            self.assertEqual(run("openssl not available"), 0)
+            self.assertEqual(run("CUDA runtime is available"), 0)
 
 
 class ShutdownGate(unittest.TestCase):

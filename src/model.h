@@ -9,6 +9,9 @@
 #include "tpool.h"
 #include "sample.h"
 
+// the forward paths the route record counts (model.c route_path_name)
+#define MODEL_ROUTE_PATHS 5
+
 typedef enum {
     KV_OWNER_MALLOC = 0,
     KV_OWNER_GPU_BACKEND = 1,
@@ -375,6 +378,14 @@ typedef struct {
     int    n_ctx, n_batch;
     int    spec_want_all;    // >0: the NEXT forward emits logits for every
                              // column (speculative verify), not just the last
+    // RUNNER_DEBUG_ROUTE: why this instance runs on the CPU when a GPU was
+    // asked for ("" while it is not), and the last route line printed
+    char     route_fallback[160];
+    uint64_t route_last;
+    // the forward paths this instance ran (plan P1): solo, batch, keep, mtp,
+    // micro; how many forwards and the widest row count of each
+    uint32_t route_runs[MODEL_ROUTE_PATHS];
+    int      route_rows[MODEL_ROUTE_PATHS];
     f16_t *kcache, *vcache;  // [n_layer][n_ctx][kv_dim], fp16 (or q8_0 blocks
                              // when kv_q8 — treated as raw bytes then)
     kv_owner_t kv_owner;     // malloc on CPU/CUDA; backend-owned on Metal
@@ -439,6 +450,9 @@ typedef struct {
     int    xdim;             // max(n_embd, per-layer q_dim); sizes xb/xb2/q
     int    reserve_vram_pct; // VRAM cap for the GPU backend (0 = free VRAM)
     int    gpu_layers_override; // forced leading GPU layer count (0 = auto)
+    int    gpu_instances;    // instances that will share one device upload
+                             // (--parallel N): the CUDA split budgets each
+                             // one's KV and scratch, the weights once
     int    mtp_layers;       // declared multi-token-prediction blocks excluded
                              // from the backbone; dense decoding never runs
                              // them. With model_params.mtp and exactly one
@@ -861,8 +875,11 @@ typedef struct {
     // How many sequences will share this reservation. A reservation is a
     // budget for the whole server, and its two halves scale differently: the
     // weights are uploaded once and shared, the KV cache and activation head
-    // are paid per slot. 0 or 1 means a lone sequence. Only the -c 0 auto-fit
-    // reads it; an explicit -c is the caller's own arithmetic.
+    // are paid per slot. 0 or 1 means a lone sequence. The -c 0 auto-fit
+    // sizes the context by it (an explicit -c is the caller's own
+    // arithmetic), and the CUDA split budgets that many instances of KV and
+    // scratch (model_t.gpu_instances), so every slot fits the split the
+    // first one decides.
     int   n_seq;
     // --wait-for-vram: seconds to queue behind other registered runners rather
     // than refusing outright. 0 = refuse immediately (the default).
@@ -1149,6 +1166,11 @@ typedef struct {
     uint64_t kv_f16_per_tok, kv_q8_per_tok, kv_fp4_per_tok, kv_k8v4_per_tok;
     uint64_t kv_f16, kv_q8, kv_fp4, kv_k8v4; // at n_ctx; 0 when that KV format is illegal
     uint64_t available;          // RAM available now, 0 = could not tell
+    // Slots that will share the weights (--parallel N; model_fit_report sets
+    // 1). Each pays its own KV cache, and on a discrete GPU its own scratch;
+    // the kv_* totals above are for ONE slot, the split and the verdict
+    // charge n_seq of them.
+    int      n_seq;
     // Discrete GPU (model_fit_gpu). With gpu set, the verdict compares RAM
     // against what stays on the HOST once the leading layers that fit the
     // device budget are offloaded, which is how a CUDA load splits. Per KV
@@ -1302,5 +1324,19 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
 
 // RUNNER_DEBUG_TIME=1 stage timing summary (stderr), no-op when unset
 void model_debug_time_report(void);
+
+// The route a forward actually took (plan P1), recorded after the forward on
+// whatever backend it ended on: backend and device, the split and where the
+// experts run, the rows and the path (solo, batch, keep, mtp, micro), the KV
+// type, the weight types by share, the CPU's activation (f32 or int8), the
+// backend's own facts (gpu_route_detail), why it runs on the CPU when a GPU
+// was asked for, the build and codegen flags, and every RUNNER_* switch set.
+// With RUNNER_DEBUG_ROUTE=1 model_route_note prints it to stderr whenever it
+// differs from the last line this instance printed; otherwise each forward
+// costs two stores and a compare. model_route_json writes the run's record as
+// a JSON object (--bench-json): every path taken with its forward count and
+// widest rows, the process's kernel counters and the compiler.
+void model_route_note(model_t *m, int rows, const char *path);
+void model_route_json(const model_t *m, char *out, int cap);
 
 #endif // RUNNER_MODEL_H

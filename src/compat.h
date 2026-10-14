@@ -8,6 +8,21 @@
 #include <stdint.h>
 #include <limits.h>
 
+// printf-style argument checking against the runtime that formats. MinGW's
+// GCC reads format(printf) as Microsoft's rules, which have no %z, so every
+// %zu in a helper that forwards to vsnprintf warned and misaligned the rest
+// of its arguments; UCRT's vsnprintf prints %zu correctly. The MinGW headers
+// name the archetype of the runtime they selected in __MINGW_PRINTF_FORMAT
+// (gnu_printf for UCRT), which is what the libc printf itself is checked by.
+#ifdef __MINGW32__
+#include <stdio.h>
+#endif
+#if defined(__MINGW32__) && defined(__MINGW_PRINTF_FORMAT)
+#define RUNNER_PRINTF(fmt, args) __attribute__((format(__MINGW_PRINTF_FORMAT, fmt, args)))
+#else
+#define RUNNER_PRINTF(fmt, args) __attribute__((format(printf, fmt, args)))
+#endif
+
 static inline bool checked_u64_add(uint64_t a, uint64_t b, uint64_t *out) {
     if (b > UINT64_MAX - a) return false;
     *out = a + b;
@@ -34,6 +49,14 @@ void   plat_willneed(const void *addr, size_t len);
 // already (the Metal shader library that failed to compile while --caps still
 // advertised the backend).
 bool   plat_willneed_available(void);
+// Hand the pages of a range of a READ-ONLY file mapping back to the OS: they
+// leave this process's resident set, and a later read faults them back in
+// from the file (normally the page cache) with the same bytes. Only whole
+// pages inside the range go, so a neighbour sharing a boundary page keeps
+// it. Advisory like plat_willneed: it changes residency, never a value.
+// Never on a locked range (--mlock): Linux refuses it there, and the Windows
+// call that trims the working set is the one that unlocks.
+void   plat_release_pages(const void *addr, size_t len);
 void   plat_munmap(void *p, size_t size);
 
 int         plat_cpu_count(void);
@@ -126,6 +149,11 @@ void        plat_parent_watch(long pid);
 
 void        plat_sleep_ms(int ms);
 long        plat_pid_self(void);
+
+// Is file descriptor `fd` a terminal a person is at? On Windows a console,
+// not merely a character device: _isatty() is also true for NUL, which is
+// where services, process managers and subprocess.DEVNULL put stdin.
+bool        plat_is_terminal(int fd);
 
 // Is `pid` a process that still exists? Used to reap registry entries left by
 // runners that died without deregistering (SIGKILL, crash, OOM killer).

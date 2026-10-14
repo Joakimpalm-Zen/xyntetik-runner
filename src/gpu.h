@@ -110,6 +110,9 @@ void   gpu_attn_coop_force(int on);
 unsigned long gpu_attn_coop_dispatches(void);
 unsigned long gpu_attn_tile_dispatches(void);  // prefill tiles (Metal), 0 elsewhere
 unsigned long gpu_attn_gqa_dispatches(void);   // grouped-query decode groups (Metal), 0 elsewhere
+// CUDA's BF16 split-K decode GEMV (k_mv_bf16_splitk) launches, so its gate
+// can prove the route ran; 0 on every other backend.
+unsigned long gpu_splitk_dispatches(void);
 // test hook: force (1) or forbid (0) the eager MoE routing path; -1 = env
 void   gpu_moe_eager_force(int on);
 bool   gpu_init(model_t *m);                     // false = unsupported, use CPU
@@ -225,6 +228,11 @@ typedef struct gpu_batch gpu_batch;
 // returns row b of the logits the last spec-flagged forward produced.
 bool       gpu_spec_keep_ok(const model_t *m);
 float     *gpu_spec_logits(model_t *m, int row);
+
+// The backend's own facts for the route record (model_route_note, plan P1):
+// CUDA whether single-token decode replays its captured graph, Metal whether
+// decode fusion is on; "" when the backend has none to add.
+const char *gpu_route_detail(const model_t *m);
 
 gpu_batch *gpu_batch_create(model_t **seqs, int n);
 void       gpu_batch_free(gpu_batch *b);

@@ -1,6 +1,7 @@
 #define _CRT_RAND_S
 // runner — CLI: one-shot completion, interactive chat, and server launcher.
 #include "decide.h"
+#include "fpclass.h"
 #include "dpo.h"
 #include "hfhub.h"
 #include "runner.h"
@@ -36,13 +37,14 @@
 
 // Bare-invocation tray launch needs to know whether a human is at the other
 // end: a piped/redirected probe (CI, scripts, `runner | head`) must get usage
-// text, never a GUI event loop.
+// text, never a GUI event loop. plat_is_terminal answers it per platform (on
+// Windows a console, not any character device: NUL is one).
 #ifdef _WIN32
 #include <io.h>
-#define RUNNER_TTY(f) _isatty(_fileno(f))
+#define RUNNER_TTY(f) plat_is_terminal(_fileno(f))
 #else
 #include <unistd.h>
-#define RUNNER_TTY(f) isatty(fileno(f))
+#define RUNNER_TTY(f) plat_is_terminal(fileno(f))
 #endif
 #include <sys/stat.h>
 
@@ -90,7 +92,7 @@ static double float_arg(const char *opt, const char *s, double min, double max) 
 static bool record_num(jv *obj, const char *key, double min, double max,
                        double *out) {
     jv *v = jv_get(obj, key);
-    if (!v || v->type != J_NUM || !isfinite(v->num) ||
+    if (!v || v->type != J_NUM || !fp_isfinite(v->num) ||
         v->num < min || v->num > max)
         return false;
     *out = v->num;
@@ -107,7 +109,7 @@ static bool record_int(jv *obj, const char *key, int min, int max, int *out) {
 }
 
 static bool record_token(jv *v, int n_vocab, int32_t *out) {
-    if (!v || v->type != J_NUM || !isfinite(v->num) || v->num < 0 ||
+    if (!v || v->type != J_NUM || !fp_isfinite(v->num) || v->num < 0 ||
         v->num >= n_vocab || v->num != trunc(v->num))
         return false;
     *out = (int32_t)v->num;
@@ -721,7 +723,7 @@ static bool train_examples_load(tokenizer *tok, const char *path, bool no_bos,
             jv *wv = jv_get(v, "weight");
             double weight = 1.0;
             if (wv) {
-                if (wv->type != J_NUM || !isfinite(wv->num) ||
+                if (wv->type != J_NUM || !fp_isfinite(wv->num) ||
                     wv->num < -(double)FLT_MAX || wv->num > (double)FLT_MAX) {
                     fprintf(stderr, "error: %s line %d weight must be a "
                             "finite number representable as f32\n", path,
@@ -1418,7 +1420,7 @@ static void fit_gib(char *buf, size_t n, uint64_t bytes) {
 }
 
 static int run_fit_check(const char *path, int n_ctx_want,
-                         const model_params *mp) {
+                         const model_params *mp, int n_seq) {
     gguf_file g;
     if (!gguf_open_header(&g, path)) return 1;   // already reported why
 
@@ -1429,6 +1431,9 @@ static int run_fit_check(const char *path, int n_ctx_want,
         gguf_close(&g);
         return 1;
     }
+    // --parallel N: every slot pays its own KV cache (and device scratch),
+    // the weights are shared, the same bill the server's load makes
+    f.n_seq = n_seq > 1 ? n_seq : 1;
     // A discrete GPU holds the leading layers, so RAM only has to hold the
     // rest: answering from RAM alone told an RTX 3070 box that an 8B model
     // it serves with 35 of 40 layers on the card would page every token.
@@ -1439,13 +1444,14 @@ static int run_fit_check(const char *path, int n_ctx_want,
         model_fit_gpu(&g, &f, gbudget, gheadroom, mp->gpu_layers_override);
 
     char w[32], h[32], kf[32], kq[32], av[32];
+    const uint64_t slots = (uint64_t)f.n_seq;
     fit_gib(w, sizeof w, f.weights);
     fit_gib(h, sizeof h, f.hot);
-    fit_gib(kf, sizeof kf, f.kv_f16);
-    fit_gib(kq, sizeof kq, f.kv_q8);
+    fit_gib(kf, sizeof kf, f.kv_f16 * slots);
+    fit_gib(kq, sizeof kq, f.kv_q8 * slots);
     char k4[32], k84[32];
-    fit_gib(k4, sizeof k4, f.kv_fp4);
-    fit_gib(k84, sizeof k84, f.kv_k8v4);
+    fit_gib(k4, sizeof k4, f.kv_fp4 * slots);
+    fit_gib(k84, sizeof k84, f.kv_k8v4 * slots);
     fit_gib(av, sizeof av, f.available);
 
     uint32_t split = gguf_get_u32(&g, "split.count", 0);
@@ -1457,6 +1463,9 @@ static int run_fit_check(const char *path, int n_ctx_want,
         printf("  NOTE          this is part 1 of a %u-part split; the sizes "
                "below are THIS PART only\n", split);
     printf("  weights       %s\n", w);
+    if (f.n_seq > 1)
+        printf("  slots         %d (--parallel): the weights once, a KV cache "
+               "per slot; the cache below is all of them\n", f.n_seq);
     if (f.sparse)
         printf("  hot set       %s  (only the routed experts a token actually "
                "uses)\n", h);
@@ -1488,6 +1497,10 @@ static int run_fit_check(const char *path, int n_ctx_want,
         printf("\n");
     }
 
+    // the RAM-only lines below price every slot's cache, as the verdict does
+    const uint64_t kv_f16_all = f.kv_f16 * slots, kv_q8_all = f.kv_q8 * slots,
+                   kv_fp4_all = f.kv_fp4 * slots;
+    const char *fewer = f.n_seq > 1 ? ", fewer --parallel slots" : "";
     const char *v = model_fit_verdict(&f);
     printf("  verdict       %s", v);
     if (f.gpu && f.available) {
@@ -1506,36 +1519,36 @@ static int run_fit_check(const char *path, int n_ctx_want,
             fit_gib(over, sizeof over, least - f.available);
             printf(" — %s more RAM than is available even with the smallest cache "
                    "and the GPU full. The CPU layers would page from disk.\n", over);
-            printf("                fixes: a smaller quantization, a shorter -c, "
-                   "or free GPU memory (another process may hold it)\n");
+            printf("                fixes: a smaller quantization, a shorter -c%s, "
+                   "or free GPU memory (another process may hold it)\n", fewer);
         }
     } else if (!f.available) {
         printf("\n                available RAM could not be read, so this is "
                "sizes only\n");
     } else if (!strcmp(v, "FITS")) {
         char slack[32];
-        fit_gib(slack, sizeof slack, f.available - f.hot - f.kv_f16);
+        fit_gib(slack, sizeof slack, f.available - f.hot - kv_f16_all);
         printf(" — %s to spare at ctx %d\n", slack, f.n_ctx);
     } else if (!strcmp(v, "FITS WITH --kv q8")) {
         char over[32];
-        fit_gib(over, sizeof over, f.hot + f.kv_f16 - f.available);
+        fit_gib(over, sizeof over, f.hot + kv_f16_all - f.available);
         printf(" — an f16 cache is %s over; q8 halves it\n", over);
     } else if (!strcmp(v, "FITS WITH --kv k8v4")) {
         char over[32];
-        fit_gib(over, sizeof over, f.hot + f.kv_q8 - f.available);
+        fit_gib(over, sizeof over, f.hot + kv_q8_all - f.available);
         printf(" — a q8 cache is %s over; k8v4 (fp4 V) takes a quarter off it\n", over);
     } else if (!strcmp(v, "FITS WITH --kv fp4")) {
         char over[32];
-        fit_gib(over, sizeof over, f.hot + (f.kv_q8 ? f.kv_q8 : f.kv_f16) - f.available);
+        fit_gib(over, sizeof over, f.hot + (kv_q8_all ? kv_q8_all : kv_f16_all) - f.available);
         printf(" — a q8 cache is %s over; fp4 halves it again\n", over);
     } else {
         char over[32];
-        fit_gib(over, sizeof over, f.hot + (f.kv_fp4 ? f.kv_fp4 : f.kv_q8 ? f.kv_q8 : f.kv_f16)
+        fit_gib(over, sizeof over, f.hot + (kv_fp4_all ? kv_fp4_all : kv_q8_all ? kv_q8_all : kv_f16_all)
                                    - f.available);
         printf(" — %s over even with the smallest cache. Every token would "
                "page from disk.\n", over);
-        printf("                fixes: a smaller quantization, a shorter -c, "
-               "or --gpu-layers to split it\n");
+        printf("                fixes: a smaller quantization, a shorter -c%s, "
+               "or --gpu-layers to split it\n", fewer);
     }
     if (f.sparse)
         printf("  note          the verdict uses the hot set; a sparse MoE runs "
@@ -3186,6 +3199,8 @@ static bool cli_configure_serving(const cli_opts *o) {
         return false;
     }
     if (o->sessions_path && !sessions_configure(o->sessions_path)) return false;
+    // these three need the model digest on a request's path: take it at load
+    provenance_hash_at_load(o->receipts_dir || o->kv_snapshots || o->sessions_path);
     if (o->n_adapters && !o->serve) {
         fprintf(stderr, "error: --adapter routes adapters per request and "
                 "needs --serve (use --lora for a one-shot run)\n");
@@ -4444,14 +4459,17 @@ static int run_bench(cli_opts *o, cli_run *rt) {
     // prompt_s is time-to-first-token for this prompt length: the number
     // an editor-assistant user actually waits on, and the one a rate alone
     // hides. Both phases report seconds beside their rates.
+    // the route the decode ran (plan P1): a rate means nothing without it
+    char route[4096];
+    model_route_json(&rt->m, route, sizeof route);
     printf("{\"model\":\"%s\",\"arch\":\"%s\",\"context\":%d,"
            "\"gpu_layers\":%d,\"layers\":%d,\"prompt_tokens\":%d,"
            "\"generated_tokens\":%d,\"prompt_tok_s\":%.3f,"
-           "\"gen_tok_s\":%.3f,\"prompt_s\":%.3f,\"gen_s\":%.3f}\n",
+           "\"gen_tok_s\":%.3f,\"prompt_s\":%.3f,\"gen_s\":%.3f,\"route\":%s}\n",
            esc_model, rt->m.arch, rt->m.n_ctx, rt->m.gpu_layers, rt->m.n_layer,
            n_prompt, n_gen,
            n_prompt / (ptime > 0 ? ptime : 1e-9),
-           n_gen / (gtime > 0 ? gtime : 1e-9), ptime, gtime);
+           n_gen / (gtime > 0 ? gtime : 1e-9), ptime, gtime, route);
     free(p);
     return 0;
 }
@@ -4700,7 +4718,8 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
     template_bind_think_tags(tmpl, &rt->m.think_open, &rt->m.think_close);
     if (!o->system_prompt)
         o->system_prompt = template_default_system(
-            tmpl, gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL));
+            tmpl, gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL),
+            false);
     if (!o->system_prompt) o->system_prompt = "You are a helpful assistant.";
     fprintf(stderr, "chat mode (template: %s) — Ctrl-D or /exit to quit\n\n",
             template_name(tmpl));
@@ -4822,7 +4841,7 @@ int main(int argc, char **argv) {
         o->n_threads = plat_cpu_count() * o->reserve_cpu_pct / 100;
         if (o->n_threads < 1) o->n_threads = 1;
     }
-    if (o->fit_path) return run_fit_check(o->fit_path, o->mp.n_ctx, &o->mp);
+    if (o->fit_path) return run_fit_check(o->fit_path, o->mp.n_ctx, &o->mp, o->parallel);
 
     if (o->shadow_mode) return run_shadow_mode(o->model_path, o->shadow_yes);
     if (o->caps) return run_caps();

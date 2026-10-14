@@ -1,0 +1,154 @@
+{
+ "_doc": "Which test fixture reaches each template family's code path (tests/test_family_fixtures.py checks it). A family whose reasoning is a channel (Harmony, Muse, Gemma 4) is admitted to Messages' thinking only on a model whose architecture has that channel, so a test of its reasoning behaviour run on the plain fixture passes without reaching it (register item 23). reasoning: tags = the template's <think> pair, which the plain fixture reaches under --chat-template; channel = needs the architecture's own fixture; none = no reasoning split.",
+ "fixtures": {
+  "plain": {
+   "make": [
+    "scripts/make-test-model.py"
+   ],
+   "file": "plain.gguf"
+  },
+  "gptoss": {
+   "make": [
+    "scripts/make-test-moe.py"
+   ],
+   "prefix": "moe",
+   "file": "moe.gptoss-mxfp4.gguf"
+  },
+  "muse": {
+   "make": [
+    "scripts/make-test-model.py",
+    "--muse-glimmer",
+    "--control",
+    "<|start|>,<|message|>,<|eom|>,<|eot|>"
+   ],
+   "file": "muse.gguf"
+  },
+  "gemma4": {
+   "make": [
+    "scripts/make-test-model.py",
+    "--arch",
+    "gemma4"
+   ],
+   "file": "gemma4.gguf"
+  }
+ },
+ "families": {
+  "apertus": {
+   "fixture": "plain",
+   "reasoning": "none"
+  },
+  "chatml": {
+   "fixture": "plain",
+   "reasoning": "none"
+  },
+  "chatml-think": {
+   "fixture": "plain",
+   "reasoning": "tags"
+  },
+  "gemma": {
+   "fixture": "plain",
+   "reasoning": "none"
+  },
+  "gemma4": {
+   "fixture": "gemma4",
+   "reasoning": "channel"
+  },
+  "gemma4-mainline": {
+   "fixture": "gemma4",
+   "reasoning": "channel"
+  },
+  "granite": {
+   "fixture": "plain",
+   "reasoning": "none"
+  },
+  "granite4": {
+   "fixture": "plain",
+   "reasoning": "none"
+  },
+  "granite42": {
+   "fixture": "plain",
+   "reasoning": "tags"
+  },
+  "harmony": {
+   "fixture": "gptoss",
+   "reasoning": "channel"
+  },
+  "hermes4": {
+   "fixture": "plain",
+   "reasoning": "tags"
+  },
+  "llama2": {
+   "fixture": "plain",
+   "reasoning": "none"
+  },
+  "llama2-fallback": {
+   "fixture": "plain",
+   "reasoning": "none",
+   "note": "detection's id; not selectable with --chat-template, reached by a file whose template nothing recognises (the plain fixture)"
+  },
+  "llama3": {
+   "fixture": "plain",
+   "reasoning": "none"
+  },
+  "mistral": {
+   "fixture": "plain",
+   "reasoning": "none"
+  },
+  "mistral-nemo": {
+   "fixture": "plain",
+   "reasoning": "none"
+  },
+  "mistral-v1": {
+   "fixture": "plain",
+   "reasoning": "none"
+  },
+  "muse": {
+   "fixture": "muse",
+   "reasoning": "channel"
+  },
+  "nemotron": {
+   "fixture": "plain",
+   "reasoning": "tags"
+  },
+  "nemotron35": {
+   "fixture": "plain",
+   "reasoning": "tags"
+  },
+  "ornith": {
+   "fixture": "plain",
+   "reasoning": "tags"
+  },
+  "phi3": {
+   "fixture": "plain",
+   "reasoning": "none"
+  },
+  "phi4": {
+   "fixture": "plain",
+   "reasoning": "none"
+  },
+  "qwen3-coder": {
+   "fixture": "plain",
+   "reasoning": "none"
+  },
+  "qwen35": {
+   "fixture": "plain",
+   "reasoning": "tags"
+  },
+  "qwen35-nothink": {
+   "fixture": "plain",
+   "reasoning": "tags"
+  },
+  "qwen38": {
+   "fixture": "plain",
+   "reasoning": "tags"
+  },
+  "raw": {
+   "fixture": "plain",
+   "reasoning": "none"
+  },
+  "zephyr": {
+   "fixture": "plain",
+   "reasoning": "none"
+  }
+ }
+}

@@ -396,7 +396,74 @@ static void test_stop_drops_the_think_splitters_tail(void) {
     slot_close(&s);
 }
 
+// R2.2 closure provenance on the XML-style native calls (Qwen3-Coder's
+// <parameter=KEY>, Muse's <atem:parameter name="KEY">). These used to report
+// "fields": null, so a required number the closer filled with 0 read like the
+// model's own value (outside review of the 1.2.0 tool-calling study).
+static bool cl_has(const char *json, const char *list, const char *ptr) {
+    const char *l = strstr(json, list);
+    if (!l) return false;
+    const char *end = strchr(l, ']');
+    char q[80];
+    snprintf(q, sizeof q, "\"%s\"", ptr);
+    const char *hit = strstr(l, q);
+    return hit && hit < end;
+}
+
+#define CL_CHECK(x) ck((x), "closure provenance: " #x)
+static void test_closure_provenance_on_xml_calls(void) {
+    const char *qwen = "<tool_call>\n<function=reading>\n<parameter=value>\n0\n</parameter>\n"
+                       "<parameter=unit>\nC\n</parameter>\n</function>\n</tool_call>";
+    // the closer wrote all of it (the budget ran out in the reasoning reserve)
+    char *j = closure_json(qwen, strlen(qwen), 0);
+    CL_CHECK(j && !strstr(j, "\"fields\":null"));
+    CL_CHECK(cl_has(j, "\"synthesized\":[", "/name"));
+    CL_CHECK(cl_has(j, "\"synthesized\":[", "/arguments/value"));
+    CL_CHECK(cl_has(j, "\"synthesized\":[", "/arguments/unit"));
+    free(j);
+    // the model began the value, the closer finished it and wrote the unit
+    char doc2[512];
+    snprintf(doc2, sizeof doc2, "%s", "<tool_call>\n<function=reading>\n<parameter=value>\n21\n</parameter>\n"
+             "<parameter=unit>\nC\n</parameter>\n</function>\n</tool_call>");
+    long at = (long)(strstr(doc2, "21") - doc2) + 1;         // the model wrote "2"
+    j = closure_json(doc2, strlen(doc2), at);
+    CL_CHECK(j && cl_has(j, "\"completed\":[", "/arguments/value"));
+    CL_CHECK(cl_has(j, "\"synthesized\":[", "/arguments/unit"));
+    CL_CHECK(!cl_has(j, "\"synthesized\":[", "/name") && !cl_has(j, "\"completed\":[", "/name"));
+    free(j);
+    // Muse's atem call, two model bytes then the closer
+    const char *atem = "<atem:function_calls>\n<atem:invoke name=\"reading\">\n"
+                       "<atem:parameter name=\"value\">0</atem:parameter>\n"
+                       "<atem:parameter name=\"unit\">C</atem:parameter>\n"
+                       "</atem:invoke>\n</atem:function_calls>";
+    j = closure_json(atem, strlen(atem), 2);
+    CL_CHECK(j && cl_has(j, "\"synthesized\":[", "/name"));
+    CL_CHECK(cl_has(j, "\"synthesized\":[", "/arguments/value") &&
+           cl_has(j, "\"synthesized\":[", "/arguments/unit"));
+    free(j);
+    // a parallel turn: the first call is the model's, the closer finished the
+    // second, and only the second call's values are named
+    char par[640];
+    snprintf(par, sizeof par, "%s%s",
+             "<tool_call>\n<function=reading>\n<parameter=value>\n5\n</parameter>\n"
+             "<parameter=unit>\nF\n</parameter>\n</function>\n</tool_call>\n",
+             "<tool_call>\n<function=reading>\n<parameter=value>\n0\n</parameter>\n"
+             "<parameter=unit>\nC\n</parameter>\n</function>\n</tool_call>");
+    at = (long)(strstr(par, "</tool_call>\n<tool_call>") - par) + 25 + 11;  // into the second name
+    j = closure_json(par, strlen(par), at);
+    CL_CHECK(j && cl_has(j, "\"completed\":[", "/name"));
+    CL_CHECK(cl_has(j, "\"synthesized\":[", "/arguments/value"));
+    free(j);
+    // a JSON document still takes the JSON scan
+    const char *js = "{\"city\":\"Paris\",\"units\":\"celsius\"}";
+    j = closure_json(js, strlen(js), (long)(strstr(js, "\"units\"") - js));
+    CL_CHECK(j && cl_has(j, "\"synthesized\":[", "/units") && !cl_has(j, "\"synthesized\":[", "/city"));
+    free(j);
+}
+#undef CL_CHECK
+
 int main(int argc, char **argv) {
+    test_closure_provenance_on_xml_calls();
     if (argc > 1) g_path = argv[1];
     test_stop_under_schema();
     test_stop_under_json_mode();

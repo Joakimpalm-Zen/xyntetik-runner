@@ -1,0 +1,352 @@
+{
+ "version": 1,
+ "_doc": "The workload and shape corpus (plan P2): fixed cases over the existing drivers (--bench-json, --draft-lookup, the server, scripts/idle_coexistence.py), run by scripts/bench-corpus.py. Results are machine data and stay out of the repository: each record carries the machine, the model's identity, threads, the P1 route and whether the run was the first or a repeat, so two records compare only like with like. No thresholds: hosted runners are not measured.",
+ "cases": [
+  {
+   "id": "decode-1row",
+   "kind": "bench",
+   "prompt_tokens": 32,
+   "n_predict": 128,
+   "measure": [
+    "gen_tok_s"
+   ],
+   "why": "single-row decode, the serving steady state"
+  },
+  {
+   "id": "prefill-31",
+   "kind": "bench",
+   "prompt_tokens": 31,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "prefill on either side of a tile boundary"
+  },
+  {
+   "id": "prefill-32",
+   "kind": "bench",
+   "prompt_tokens": 32,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "prefill on either side of a tile boundary"
+  },
+  {
+   "id": "prefill-33",
+   "kind": "bench",
+   "prompt_tokens": 33,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "prefill on either side of a tile boundary"
+  },
+  {
+   "id": "prefill-63",
+   "kind": "bench",
+   "prompt_tokens": 63,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "prefill on either side of a tile boundary"
+  },
+  {
+   "id": "prefill-64",
+   "kind": "bench",
+   "prompt_tokens": 64,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "prefill on either side of a tile boundary"
+  },
+  {
+   "id": "prefill-65",
+   "kind": "bench",
+   "prompt_tokens": 65,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "prefill on either side of a tile boundary"
+  },
+  {
+   "id": "prefill-127",
+   "kind": "bench",
+   "prompt_tokens": 127,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "prefill on either side of a tile boundary"
+  },
+  {
+   "id": "prefill-128",
+   "kind": "bench",
+   "prompt_tokens": 128,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "prefill on either side of a tile boundary"
+  },
+  {
+   "id": "prefill-129",
+   "kind": "bench",
+   "prompt_tokens": 129,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "prefill on either side of a tile boundary"
+  },
+  {
+   "id": "prefill-255",
+   "kind": "bench",
+   "prompt_tokens": 255,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "prefill on either side of a tile boundary"
+  },
+  {
+   "id": "prefill-256",
+   "kind": "bench",
+   "prompt_tokens": 256,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "prefill on either side of a tile boundary"
+  },
+  {
+   "id": "prefill-257",
+   "kind": "bench",
+   "prompt_tokens": 257,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "prefill on either side of a tile boundary"
+  },
+  {
+   "id": "prefill-511",
+   "kind": "bench",
+   "prompt_tokens": 511,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "prefill on either side of a tile boundary"
+  },
+  {
+   "id": "prefill-512",
+   "kind": "bench",
+   "prompt_tokens": 512,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "prefill on either side of a tile boundary"
+  },
+  {
+   "id": "prefill-513",
+   "kind": "bench",
+   "prompt_tokens": 513,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "prefill on either side of a tile boundary"
+  },
+  {
+   "id": "prefill-long-2048",
+   "kind": "bench",
+   "prompt_tokens": 2048,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "a long prompt (clamped to the context)"
+  },
+  {
+   "id": "prefill-long-4096",
+   "kind": "bench",
+   "prompt_tokens": 4096,
+   "n_predict": 1,
+   "measure": [
+    "prompt_tok_s",
+    "prompt_s"
+   ],
+   "why": "a long prompt (clamped to the context)"
+  },
+  {
+   "id": "verify-k2",
+   "kind": "bench",
+   "prompt_tokens": 64,
+   "n_predict": 96,
+   "draft_k": 2,
+   "measure": [
+    "gen_tok_s",
+    "spec"
+   ],
+   "why": "speculative verification at width k+1 (the model drafts for itself, so every round verifies the full width), odd widths included",
+   "draft": "self"
+  },
+  {
+   "id": "verify-k3",
+   "kind": "bench",
+   "prompt_tokens": 64,
+   "n_predict": 96,
+   "draft_k": 3,
+   "measure": [
+    "gen_tok_s",
+    "spec"
+   ],
+   "why": "speculative verification at width k+1 (the model drafts for itself, so every round verifies the full width), odd widths included",
+   "draft": "self"
+  },
+  {
+   "id": "verify-k4",
+   "kind": "bench",
+   "prompt_tokens": 64,
+   "n_predict": 96,
+   "draft_k": 4,
+   "measure": [
+    "gen_tok_s",
+    "spec"
+   ],
+   "why": "speculative verification at width k+1 (the model drafts for itself, so every round verifies the full width), odd widths included",
+   "draft": "self"
+  },
+  {
+   "id": "verify-k5",
+   "kind": "bench",
+   "prompt_tokens": 64,
+   "n_predict": 96,
+   "draft_k": 5,
+   "measure": [
+    "gen_tok_s",
+    "spec"
+   ],
+   "why": "speculative verification at width k+1 (the model drafts for itself, so every round verifies the full width), odd widths included",
+   "draft": "self"
+  },
+  {
+   "id": "verify-k7",
+   "kind": "bench",
+   "prompt_tokens": 64,
+   "n_predict": 96,
+   "draft_k": 7,
+   "measure": [
+    "gen_tok_s",
+    "spec"
+   ],
+   "why": "speculative verification at width k+1 (the model drafts for itself, so every round verifies the full width), odd widths included",
+   "draft": "self"
+  },
+  {
+   "id": "verify-k8",
+   "kind": "bench",
+   "prompt_tokens": 64,
+   "n_predict": 96,
+   "draft_k": 8,
+   "measure": [
+    "gen_tok_s",
+    "spec"
+   ],
+   "why": "speculative verification at width k+1 (the model drafts for itself, so every round verifies the full width), odd widths included",
+   "draft": "self"
+  },
+  {
+   "id": "split-partial",
+   "kind": "bench",
+   "prompt_tokens": 256,
+   "n_predict": 64,
+   "gpu_layers": "half",
+   "measure": [
+    "prompt_tok_s",
+    "gen_tok_s"
+   ],
+   "why": "a partial split (GPU builds; skipped without a device)"
+  },
+  {
+   "id": "split-resident",
+   "kind": "bench",
+   "prompt_tokens": 256,
+   "n_predict": 64,
+   "gpu_layers": "all",
+   "measure": [
+    "prompt_tok_s",
+    "gen_tok_s"
+   ],
+   "why": "fully resident (GPU builds; skipped without a device)"
+  },
+  {
+   "id": "tool-result-reuse",
+   "kind": "server",
+   "requests": "tool_turn",
+   "max_tokens": 32,
+   "measure": [
+    "ttft_s",
+    "prompt_cached_tokens",
+    "prompt_forked_tokens"
+   ],
+   "why": "a tool-result turn after its call: the prefix the second request reuses"
+  },
+  {
+   "id": "concurrent-1",
+   "kind": "server",
+   "requests": "chat",
+   "concurrency": 1,
+   "max_tokens": 64,
+   "measure": [
+    "tok_s",
+    "ttft_s"
+   ],
+   "why": "one and two requests in flight"
+  },
+  {
+   "id": "concurrent-2",
+   "kind": "server",
+   "requests": "chat",
+   "concurrency": 2,
+   "max_tokens": 64,
+   "measure": [
+    "tok_s",
+    "ttft_s"
+   ],
+   "why": "one and two requests in flight"
+  },
+  {
+   "id": "idle-lifecycle",
+   "kind": "idle",
+   "tool": "scripts/idle_coexistence.py",
+   "acceptance": true,
+   "measure": [
+    "cpu_s_during_idle",
+    "rss_mb_end"
+   ],
+   "why": "U8: what a resident server costs while idle (run alone, on a quiet machine)"
+  }
+ ]
+}

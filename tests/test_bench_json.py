@@ -80,3 +80,79 @@ def test_prompt_file_is_honoured(runner_bin, model, tmp_path):
     d = _bench(runner_bin, model, "-n", "4", "-f", str(pf))
     explicit = _bench(runner_bin, model, "-n", "4", "-p", "word")
     assert d["prompt_tokens"] > explicit["prompt_tokens"]
+
+
+def test_the_report_names_the_route_it_measured(runner_bin, model):
+    """A rate means nothing without the route that produced it (plan P1):
+    the backend, the split, where the experts ran, every path the forwards
+    took (the batched prefill AND the one-row decode, not a fixed "solo"),
+    the KV type, the weight types, the activation, the kernel counters, a
+    fallback's reason, the build, the compiler and the switches set."""
+    d = _bench(runner_bin, model, "-n", "4")
+    r = d["route"]
+    assert r["backend"] == "cpu" and r["gpu_layers"] == 0
+    assert r["layers"] == d["layers"]
+    paths = r["paths"]
+    assert paths["solo"]["rows_max"] == 1 and paths["solo"]["forwards"] >= 3, paths
+    assert 1 < paths["batch"]["rows_max"] <= d["prompt_tokens"], (paths, d["prompt_tokens"])
+    assert "keep" not in paths and "mtp" not in paths, paths
+    assert r["kv"] == "f16" and r["fallback"] == "" and r["cpu_act"] == "f32"
+    assert r["weights"] and "%" in r["weights"]
+    assert r["build"].split("/")[0] in ("default", "portable", "t3")
+    assert r["compiler"] and isinstance(r["kernels"]["gemm_by_type"], dict)
+
+
+def test_the_report_names_the_switches_set(runner_bin, model):
+    """Every RUNNER_* variable is in the record (the route switches are all
+    spelled that way), and one whose name says credential shows only that it
+    is set."""
+    import os
+    proc = subprocess.run(
+        [runner_bin, "-m", str(model), "--bench-json", "--gpu", "off", "-n", "2"],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300,
+        env=dict(os.environ, RUNNER_CUDA_TC="0", RUNNER_TEST_API_KEY="hunter2"))
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    tuning = json.loads(proc.stdout)["route"]["tuning"]
+    assert "RUNNER_CUDA_TC=0" in tuning, tuning
+    assert "RUNNER_TEST_API_KEY=(set)" in tuning and "hunter2" not in tuning, tuning
+
+
+def test_the_route_line_names_where_a_failed_forward_ended(runner_bin, model):
+    """The line is written after the forward: a device forward that fails and
+    finishes on the CPU is reported as the CPU's (it used to be printed before
+    the device was tried, so it named CUDA for rows the CPU computed)."""
+    import os
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, check=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("needs a CUDA device for the injected forward failure")
+    proc = subprocess.run([runner_bin, "-m", str(model), "-p", "hello there", "-n", "3",
+                           "--temp", "0", "--no-tray"], cwd=ROOT, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, timeout=120,
+                          env=dict(os.environ, RUNNER_DEBUG_ROUTE="1",
+                                   RUNNER_CUDA_INJECT_FAILURE="1"))
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    err = proc.stderr.decode(errors="replace")
+    lines = [l for l in err.splitlines() if l.startswith("route: ")]
+    assert "injected CUDA runtime failure" in err, err
+    assert lines and "backend=cpu" in lines[0], lines
+
+
+def test_debug_route_prints_each_route_once(runner_bin, model):
+    """RUNNER_DEBUG_ROUTE=1: one stderr line per route the forwards took (the
+    batched prefill, then the one-row decode), not one per forward."""
+    import os
+    proc = subprocess.run([runner_bin, "-m", str(model), "-p", "hello there", "-n", "6",
+                           "--gpu", "off", "--temp", "0", "--ignore-eos"],
+                          cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=120, env=dict(os.environ, RUNNER_DEBUG_ROUTE="1"))
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    lines = [l for l in proc.stderr.decode().splitlines() if l.startswith("route: ")]
+    assert any("path=batch" in l for l in lines), lines
+    assert sum("rows=1 path=solo" in l for l in lines) == 1, lines
+    assert all('weights="' in l and "cpu_act=f32" in l and 'tuning="' in l for l in lines), lines
+    assert all("backend=cpu" in l and "split=0/" in l for l in lines), lines
+    off = subprocess.run([runner_bin, "-m", str(model), "-p", "hello", "-n", "2",
+                          "--gpu", "off"], cwd=ROOT, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, timeout=120)
+    assert b"route: " not in off.stderr

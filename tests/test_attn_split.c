@@ -161,10 +161,33 @@ static int check(const char *arg) {
     return bad;
 }
 
+// The cases one per line of a list file, for `@FILE`: blank lines and lines
+// starting with # are skipped. make test passes its cases this way, not as
+// twenty arguments: on Windows, Defender's behaviour monitoring reads a
+// command line of that many file:mode arguments as malware
+// (Trojan:Win32/Commando.A!ml, a false positive) and blocks the process,
+// which a folder exclusion cannot prevent because it is not a file scan.
+static int check_list(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) { printf("attn-split: cannot read the case list %s\n", path); return 1; }
+    char line[1024];
+    int rc = 0, n = 0;
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (!line[0] || line[0] == '#') continue;
+        rc |= check(line);
+        n++;
+    }
+    fclose(f);
+    if (!n) { printf("attn-split: the case list %s names no case\n", path); return 1; }
+    return rc;
+}
+
 int main(int argc, char **argv) {
     int rc = 0;
     if (argc < 2) rc |= check("test.gguf");
-    for (int i = 1; i < argc; i++) rc |= check(argv[i]);
+    for (int i = 1; i < argc; i++)
+        rc |= argv[i][0] == '@' ? check_list(argv[i] + 1) : check(argv[i]);
     printf(rc ? "attn-split: FAIL\n" : "attn-split: ok\n");
     return rc;
 }

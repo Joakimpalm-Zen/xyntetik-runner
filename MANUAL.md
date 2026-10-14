@@ -958,8 +958,16 @@ keeps the truncation signal (`finish_reason: "length"`, Responses
 `stop_reason: "max_tokens"`) so a caller knows the arguments are minimal
 closures rather than the model's completed intent. If the model never starts
 the document, runner returns empty content rather than inventing required
-values. Syntax and schema shape are guaranteed; semantic correctness and tool
-selection remain the model's responsibility.
+values, with one exception: on a reasoning model under a tool choice or a
+schema, the reasoning channel closes at half the budget so that a call
+survives, and when the model spends the rest without writing a byte of it,
+the closer writes the whole call. Every value it writes, there or anywhere a
+call is cut, is listed in `runner_telemetry.closure.fields` (`synthesized`,
+or `completed` when the model began it), on JSON calls and on the XML-style
+native calls (Qwen3-Coder's tagged parameters, Muse's atem invoke) alike, so
+a client can refuse a value the model never chose. Syntax and schema shape are
+guaranteed; semantic correctness and tool selection remain the model's
+responsibility.
 
 A client `stop` sequence is handled as a truncation the caller asked for. The
 matched bytes are withheld from the response, as they are in unconstrained
@@ -1998,7 +2006,7 @@ per step, measured faster in aggregate at 4-8 slots on Metal, and
 | `-c N` | Context length; default is the smaller of model maximum and 4096. `0` auto-fits with a reservation. |
 | `-b N` | Prompt batch size: `64` with `--gpu off`; otherwise `64`, `256` or `512` by total RAM. Explicit `-b` overrides. [Details](#cli-b). |
 | `-t N` | Worker threads; defaults to physical cores and is capped at `32`. The cap is measured, not assumed: decode PEAKS at 32 threads and regresses above it on many-core hardware (a 64-core Zen 5 box in 2026-08, and a 128-core sweep in 2026-08 where both models peaked at 32 while the previous default of 64 cost up to -41% decode and -55% prefill). Only machines with more than 64 logical CPUs are affected; below that the default is unchanged. An explicit `-t` is honoured up to 64. |
-| `-s N` | RNG seed; default is time-based. `0` is refused: it is the sampler RNG's fixed point, so it cannot produce a stream. |
+| `-s N` | RNG seed; default is time-based. `0` is refused: it is the sampler RNG's fixed point, so it cannot produce a stream. With `--serve`, each request that samples takes the next place in one server-wide order, and an unseeded one draws from the seed and that place, so the same requests in the same order sample the same output at any `--parallel`. A request's own `seed` wins; a greedy or refused request takes no place. |
 | `--think` / `--no-think` | Select thinking or non-thinking prompt shape in interactive chat only; family support varies. [Details](#cli-think). |
 | `--temp F` | Temperature; `0` is greedy and disables repeat penalty. |
 | `--top-k N` | Top-k sampling; `0` disables it. Several presets ship `0`, where setting it is a measured decode-throughput win that also changes the sampled distribution - see [`--top-k 40`](#--top-k-40-a-faster-constrained-decode-with-different-semantics). |
@@ -2193,7 +2201,7 @@ whether the draft is `active` there.
 | `--merge-allow-erased` | With `--merge-lora`: write the merge even when the output grid rounded the delta away. [Details](#cli-merge-lora). |
 | `--prune-experts FILE` | Apply a per-layer MoE expert keep-list while rewriting. Requires `--quantize`. |
 | `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it; CPU and Metal, dense blocks only (a CUDA build refuses the offload). Requires `--quantize`. See [Sublayer removal](#sublayer-removal). |
-| `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics. |
+| `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics, with a `route` object for the run: every `paths` entry its forwards took (`batch` prefill, `solo` decode, `keep` verify rounds, `mtp`, `micro`) with the forward count and widest rows, the backend facts of `RUNNER_DEBUG_ROUTE`, the process's `kernels` counters (GEMM dispatches by weight type, CUDA split-K, Metal fast matvec and attention kernels, CPU multi-row dots), the `compiler`, `codegen` flags and `tuning` switches. |
 | `--lora FILE`, `--lora-scale F` | Serve a LoRA adapter with the frozen base; supports CPU, CUDA and Metal, with explicit architecture restrictions. [Details](#cli-lora). |
 | `--adapter NAME=PATH` | With `--serve`: load an adapter once and select it per request as `"model": "<model>:NAME"`. [Details](#cli-adapter). |
 | `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank` | Train a deterministic AdamW LoRA adapter from text or weighted prompt/completion JSONL. [Details](#cli-train). |
@@ -2582,7 +2590,11 @@ $ runner --fit granite-4.2-8b-Q4_K_M.gguf -c 16384
 
 The answer is "right now": a server already holding the GPU or the RAM is
 counted against the budget, so ask before starting one. `-c N` sizes the KV estimate for the context you
-actually intend to run. For a sparse MoE the verdict uses the **hot set**, not
+actually intend to run, and `--parallel N` for that many server slots: the
+weights are counted once, a KV cache (and, on a discrete GPU, the device
+scratch) once per slot, which is how the server's load bills them. On a
+discrete GPU the RAM figure includes the whole KV cache, offloaded layers too,
+because the host keeps the authoritative copy of every layer's cache. For a sparse MoE the verdict uses the **hot set**, not
 the file size, because only the routed experts a token selects are touched -
 which is why a 3.53 GiB file can be a comfortable fit in 3.25 GiB.
 
@@ -2694,7 +2706,7 @@ non-loopback authorities.
 | `GET /v1/models` | Registered models and current residency. |
 | `GET /v1/capabilities` | The build (`version`, the `--version` string, plus `build_flavor` on a T3 build), server process ID, active model, sampling preset, optional Xyntetik agent profile, and the EFFECTIVE execution mode: `slots` (the slot count actually running) and `draft` (`requested`/`active`, the `source` when active: `model`, `mtp` or `lookup`, plus a `reason` when a requested draft was refused). `active` reflects a configured draft in at least one resident slot, including multi-slot serving, and becomes false while the target is unloaded. `mtp.consumed` likewise reflects resident engines using the head; per-request telemetry separately reports whether that request speculated. |
 | `GET /v1/runner/prefix-cache` | Prefix-cache size, limits, and counters. Takes no request body and remains available while inference is active. |
-| `GET /v1/runner/provenance` | What the server can vouch for about itself, in the receipt's vocabulary: `build.binary_sha256` (the executable, hashed at start), the resident `model` (`sha256` of the file, hashed in the background after the load: `sha256_state` reads `hashing` until it is known, and `changed_since_load` with the digest withheld when the file on disk no longer has the size and timestamps it had at load), the load-time OMS `signature` verdict and `envelope` state, the `adapter` and its digest, the `profile` (device, threads, context, KV type, slots) and the effective `config`. `model` and `profile` are `null` while nothing is resident. Not an attestation: a process can only report on itself. Takes no request body. |
+| `GET /v1/runner/provenance` | What the server can vouch for about itself, in the receipt's vocabulary: `build.binary_sha256` (the executable, hashed at start), the resident `model` (`sha256` of the file, hashed in the background when something first needs it: this route, an `expect_resident` digest, or, from the load on, a server with `--receipts`, `--sessions` or `--kv-snapshots`; a reload of the same unchanged file reuses its digest. `sha256_state` reads `hashing` until it is known, and `changed_since_load` with the digest withheld when the file on disk no longer has the size and timestamps it had at load), the load-time OMS `signature` verdict and `envelope` state, the `adapter` and its digest, the `profile` (device, threads, context, KV type, slots) and the effective `config`. `model` and `profile` are `null` while nothing is resident. Not an attestation: a process can only report on itself. Takes no request body. |
 | `POST /v1/runner/prefix-cache/clear` | Release cached prefixes without unloading the model. Takes no request body and remains available while inference is active. |
 | `POST /v1/runner/contexts` | Pin a named context: `{"id": ..., "prompt": ...}` (raw text) or `{"id": ..., "messages": [...], "tools": [...]}` (rendered by the model's template WITHOUT the assistant generation prompt, so it is exactly what a later request with the same leading messages renders first). The prompt is prefilled once and its KV snapshot pinned: no TTL, never evicted by traffic, counted in `RUNNER_PREFIX_CACHE_MB` (`507` with code `context_budget` when it does not fit beside the other pins). Re-pinning an id replaces it. A request carrying `"context_id": id` must start with the context's tokens: it is refused with `404` (`context_not_found`) or `409` (`context_mismatch`, naming the first differing token) rather than served cold, and `runner_telemetry.context` reports `{id, tokens}` beside the usual `prompt_cached_tokens`. `context_id` needs the prefix cache (`cache_prompt`/`prefix_cache` not false) and is refused with `echo`/`prompt_logprobs`. A model whose template folds the system turn into the first user turn renders nothing for system messages alone and says so. Ids are 1 to 64 characters of `[A-Za-z0-9._:-]`. |
 | `GET /v1/runner/contexts` | The pinned contexts: `id`, `tokens`, `bytes`, `hits`, `age_seconds`. Takes no request body. |
@@ -2830,7 +2842,11 @@ taken from, so another model cannot install one. There is no on-disk warm
 start: a restarted server prefills from cold.
 
 `--parallel N` creates independent KV caches and thread pools while sharing
-mapped weights. Threads are divided across slots. Multi-model swap mode uses
+mapped weights. Threads are divided across slots. On CUDA the slots share one
+device upload, and its layer split is planned for all N of them (each its own
+KV cache and scratch), so every slot runs the same split; a server may put
+fewer layers on the card than a single slot would, and the `gpu-split` line
+says how many slots it planned for. Multi-model swap mode uses
 one slot because only one model is resident at a time, and accepts up to 16
 registered models:
 
@@ -2955,6 +2971,7 @@ switches:
 | `RUNNER_PREFETCH` | unset/off | Opt-in: on load, hint the whole weight mapping to the OS (`madvise(MADV_WILLNEED)` / `PrefetchVirtualMemory`) when the model fits in available RAM. **Off by default because the measurement said so**: on a 128 GB Apple Silicon Mac the sweep made the cold 63 GB gpt-oss-120b load 60% *slower* than plain demand faulting (11.5 s vs 18.4 s, interleaved with eviction between arms) — macOS demand paging outruns its own WILLNEED readahead. Linux and Windows have prior art the other way (batched readahead, `PrefetchVirtualMemory`) and can measure on their own hardware before flipping it on. Pages stay fully evictable either way; suppressed under `--mlock` and for oversubscribed models. |
 | `RUNNER_METAL_FUSE` | on | Decode-path kernel fusion, up to the attention-front megakernel: norm + Q/K/V (Q8_0/Q4_0/Q4_K/Q6_K rosters) + qk-norm + rope + KV-store as ONE dispatch, whole heads per threadgroup, the normed row staged in threadgroup memory; plus rope+store, residual-add+rmsnorm and MoE gate+up+activation fusions on the paths the megakernel does not cover. −52% dispatches per token; +5–6% decode on the 120B and 30B, byte-identical. The post-FFN residual add rides the MoE expert sum on layers where it isn't already deferred into the next norm. The megakernel admits MoE models only — it recovers dispatch-chain latency, and a fast dense model is matvec-bound and measured slower under it (`RUNNER_METAL_FRONT=all` lifts that for tests; `RUNNER_METAL_FRONT=0` disables just the megakernel while keeping the other fusions, the isolation lever the q4_0 contraction hunt was run with). Every fused kernel reproduces the unfused arithmetic element for element — **byte-identical**, gated across a six-architecture roster in `make test` (`test-metal-fuse`). q8 KV, NoPE layers, sandwich norms and the gemma dual branch keep the unfused path automatically; `0` restores it everywhere. |
 | `RUNNER_METAL_MOE_MM` | on | Grouped simdgroup-MMA MoE prefill (default): per-expert GEMM tiles over gathered token columns, float-staged operands, +21-31% measured prefill on 30B/120B-class MoE, decode untouched. Judged by the house fidelity bar (`test-moe-mm-ab`), not byte identity — top-k routing flips near-ties under any reassociation, so `0` restores the matvec path and is pinned by every byte-identity gate; `half` selects the half-staged comparison arm. Dense models unaffected. |
+| `RUNNER_DEBUG_ROUTE` | unset/off | Print one stderr line describing the route a forward actually took whenever it changes, written after the forward, so a device forward that fell back is reported on the CPU it finished on: `backend` and `device`, the layer `split`, `experts_on_host` under `--cpu-moe`, the `rows` and `path` (`solo`, `batch`, `keep` for speculative verification, `mtp`, `micro` for a slot microbatch), the `kv` type, the `weights` types by share, the CPU's activation (`cpu_act`: `f32`, or `int8` under `RUNNER_CPU_I8`), the backend's own selections (CUDA `graph`, `tc`, `q8x`, `small_batch`, `moe`; Metal `fusion`, `mm`, `mv`, `attn`, `moe_mm`, `tensor`), the reason for a CPU `fallback` when a GPU was asked for, the `build` with its codegen flags, and every `RUNNER_*` variable set (`tuning`; a name containing KEY, TOKEN, SECRET or PASS shows only that it is set). Off, a forward costs two stores and a compare. `--bench-json` reports the run's record as its `route` object. |
 | `RUNNER_METAL_TENSOR` | unset/off | On M5+ with macOS 26.2+, opt Q4_K, Q8_0, and Q4_0 prefill into the separately admitted Metal 4 MPP tensor GEMM (per-type self-test; a failing type falls back alone). Experimental and not promoted: every admitted type passes its correctness gate but measured only parity with the simdgroup GEMM on M5, short of the 1.2x default-promotion bar. Ignored on M1-M4. |
 
 Beyond these, the binary reads a number of development switches -
