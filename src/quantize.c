@@ -1546,12 +1546,14 @@ typedef struct {
     char *tmp_path;           // OUT.partial
     bool tmp_created;         // OUT.partial exists and is not installed
     uint64_t amask;           // the data alignment, less one
+    uint64_t data_start;      // where the tensor data begins
     writer w;
     int *out_type;
     uint64_t *out_off;
     int64_t (*eff_ne)[4];
     float *rowf, *basef, *deqm, *deqb;
     uint8_t *rowq, *rowqb;
+    uint64_t quantized, kept; // tensors converted, tensors copied
 } quantize_job;
 
 // Everything that reads the source, released before the output is installed.
@@ -2171,85 +2173,54 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
     return true;
 }
 
-static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, int target,
-                       const char *prune_path, const char *type_plan_path,
-                       const char *remove_spec,
-                       merge_set_t *ms, uint32_t surgery_context,
-                       float surgery_factor, context_surgery_result *surgery_result) {
-    if (target != T_KEEP && !quantize_row_writable(target)) {
-        fprintf(stderr, "error: quantize target must be q8_0, q4_0, q3_k, "
-                "q4_k, q6_k, f16, or bf16\n");
-        return 1;
-    }
-    quantize_job job;
-    memset(&job, 0, sizeof(job));
-    quantize_job *J = &job;
-    int rc = 1;
-    if (!quantize_job_open_source(J, in_path, prune_path, type_plan_path,
-                                  remove_spec))
-        goto done;
-
-    if (J->rm.n > 0 && !quantize_job_remove_sublayers(J)) goto done;
-    if (ms && ms->n_base != J->g.n_tensors) {
-        // the base changed between the resolve open and this one
-        fprintf(stderr, "error: %s changed while merging\n", in_path);
-        goto done;
-    }
-
-    if (surgery_context &&
-        !quantize_job_context_surgery(J, surgery_context, surgery_factor,
-                                      surgery_result))
-        goto done;
-
-    if (J->plan.n > 0 && !quantize_job_check_prune(J, in_path)) goto done;
-
-    if (!quantize_job_open_output(J, out_path)) goto done;
-
-    if (J->uniform_prune) quantize_job_uniform_expert_count(J);
-
-    if (!quantize_job_decide_types(J, target, type_plan_path, ms)) goto done;
-    uint32_t ftype_out = 0;
-    if (J->w.ok && J->g.n_tensors > 0) {
-        // dominant non-f32 output type -> its MOSTLY_* code. The K-quant
-        // S/M/L distinction is not recoverable from a one-type histogram;
-        // the M code is the closest honest label and the printed histogram
-        // carries the exact truth.
-        static const struct { int t; uint32_t ftype; const char *name; } FT[] = {
-            { T_F16, 1, "F16" }, { T_BF16, 32, "BF16" },
-            { T_Q4_0, 2, "Q4_0" }, { T_Q4_1, 3, "Q4_1" },
-            { T_Q5_0, 8, "Q5_0" }, { T_Q5_1, 9, "Q5_1" },
-            { T_Q8_0, 7, "Q8_0" },
-            { T_Q2_K, 10, "Q2_K" }, { T_Q3_K, 12, "Q3_K" },
-            { T_Q4_K, 15, "Q4_K" }, { T_Q5_K, 17, "Q5_K" },
-            { T_Q6_K, 18, "Q6_K" },
-            { T_IQ2_XXS, 19, "IQ2_XXS" }, { T_IQ2_XS, 20, "IQ2_XS" },
-            { T_IQ2_S, 28, "IQ2_S" }, { T_IQ3_XXS, 23, "IQ3_XXS" },
-            { T_IQ3_S, 26, "IQ3_S" }, { T_IQ1_S, 24, "IQ1_S" },
-            { T_IQ1_M, 31, "IQ1_M" }, { T_IQ4_NL, 25, "IQ4_NL" },
-            { T_IQ4_XS, 30, "IQ4_XS" }, { T_MXFP4, 38, "MXFP4" },
-            { T_NVFP4, 39, "NVFP4" }, { T_Q2_0, 41, "Q2_0" },   // llama.h LLAMA_FTYPE
-        };
-        uint64_t counts[sizeof(FT) / sizeof(*FT)] = {0};
-        uint64_t f32s = 0;
-        for (uint64_t i = 0; i < J->g.n_tensors; i++) {
-            if (J->drop && J->drop[i]) continue;
-            if (J->out_type[i] == T_F32) { f32s++; continue; }
-            for (size_t k = 0; k < sizeof(FT) / sizeof(*FT); k++)
-                if (FT[k].t == J->out_type[i]) { counts[k]++; break; }
-        }
-        size_t dom = 0;
-        uint64_t best = 0;
+// dominant non-f32 output type -> its MOSTLY_* code. The K-quant
+// S/M/L distinction is not recoverable from a one-type histogram;
+// the M code is the closest honest label and the printed histogram
+// carries the exact truth.
+static uint32_t quantize_job_file_type(const quantize_job *J) {
+    if (!J->w.ok || J->g.n_tensors == 0) return 0;
+    static const struct { int t; uint32_t ftype; const char *name; } FT[] = {
+        { T_F16, 1, "F16" }, { T_BF16, 32, "BF16" },
+        { T_Q4_0, 2, "Q4_0" }, { T_Q4_1, 3, "Q4_1" },
+        { T_Q5_0, 8, "Q5_0" }, { T_Q5_1, 9, "Q5_1" },
+        { T_Q8_0, 7, "Q8_0" },
+        { T_Q2_K, 10, "Q2_K" }, { T_Q3_K, 12, "Q3_K" },
+        { T_Q4_K, 15, "Q4_K" }, { T_Q5_K, 17, "Q5_K" },
+        { T_Q6_K, 18, "Q6_K" },
+        { T_IQ2_XXS, 19, "IQ2_XXS" }, { T_IQ2_XS, 20, "IQ2_XS" },
+        { T_IQ2_S, 28, "IQ2_S" }, { T_IQ3_XXS, 23, "IQ3_XXS" },
+        { T_IQ3_S, 26, "IQ3_S" }, { T_IQ1_S, 24, "IQ1_S" },
+        { T_IQ1_M, 31, "IQ1_M" }, { T_IQ4_NL, 25, "IQ4_NL" },
+        { T_IQ4_XS, 30, "IQ4_XS" }, { T_MXFP4, 38, "MXFP4" },
+        { T_NVFP4, 39, "NVFP4" }, { T_Q2_0, 41, "Q2_0" },   // llama.h LLAMA_FTYPE
+    };
+    uint64_t counts[sizeof(FT) / sizeof(*FT)] = {0};
+    uint64_t f32s = 0;
+    for (uint64_t i = 0; i < J->g.n_tensors; i++) {
+        if (J->drop && J->drop[i]) continue;
+        if (J->out_type[i] == T_F32) { f32s++; continue; }
         for (size_t k = 0; k < sizeof(FT) / sizeof(*FT); k++)
-            if (counts[k] > best) { best = counts[k]; dom = k; }
-        ftype_out = best ? FT[dom].ftype : 0;   // all-f32 -> ALL_F32
-        fprintf(stderr, "quantize: general.file_type %u (MOSTLY_%s) — output histogram:",
-                ftype_out, best ? FT[dom].name : "F32");
-        if (f32s) fprintf(stderr, " F32:%llu", (unsigned long long)f32s);
-        for (size_t k = 0; k < sizeof(FT) / sizeof(*FT); k++)
-            if (counts[k]) fprintf(stderr, " %s:%llu", FT[k].name,
-                                   (unsigned long long)counts[k]);
-        fprintf(stderr, "\n");
+            if (FT[k].t == J->out_type[i]) { counts[k]++; break; }
     }
+    size_t dom = 0;
+    uint64_t best = 0;
+    for (size_t k = 0; k < sizeof(FT) / sizeof(*FT); k++)
+        if (counts[k] > best) { best = counts[k]; dom = k; }
+    uint32_t ftype_out = best ? FT[dom].ftype : 0;   // all-f32 -> ALL_F32
+    fprintf(stderr, "quantize: general.file_type %u (MOSTLY_%s) — output histogram:",
+            ftype_out, best ? FT[dom].name : "F32");
+    if (f32s) fprintf(stderr, " F32:%llu", (unsigned long long)f32s);
+    for (size_t k = 0; k < sizeof(FT) / sizeof(*FT); k++)
+        if (counts[k]) fprintf(stderr, " %s:%llu", FT[k].name,
+                               (unsigned long long)counts[k]);
+    fprintf(stderr, "\n");
+    return ftype_out;
+}
+
+// The header: every source KV the transformation does not re-author, then
+// the re-authored ones.
+static void quantize_job_write_header(quantize_job *J) {
+    uint32_t ftype_out = quantize_job_file_type(J);
     // A pruned source may already carry the per-layer declaration; a new
     // plan re-authors it (never duplicates it), a plain requant copies it
     // through like every other KV.
@@ -2301,8 +2272,10 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                 "expert_count stays the ceiling)\n",
                 J->pl_key, (unsigned long long)J->n_blocks);
     }
+}
 
-    // tensor table with new types/offsets (data alignment `align`)
+static void quantize_job_write_layout(quantize_job *J) {
+    // tensor table with new types/offsets, at the file's data alignment
     uint64_t off = 0;
     J->out_off = malloc(sizeof(uint64_t) * J->g.n_tensors);
     // effective (possibly pruned) ne[] this tensor is WRITTEN with — equal
@@ -2316,8 +2289,8 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
         for (int d = 0; d < 4; d++) J->eff_ne[i][d] = t->ne[d];
         const prune_layer_t *pl = resolve_prune(t, &J->plan);
         if (pl) J->eff_ne[i][t->n_dims - 1] = pl->n_ids;
-        // out_type[i] was decided in the pre-pass above, before the header
-        // (general.file_type is derived from it)
+        // out_type[i] was decided by quantize_job_decide_types(), before
+        // the header (general.file_type is derived from it)
         uint64_t rows, bytes, end;
         if (!checked_u64_mul((uint64_t)J->eff_ne[i][1], (uint64_t)J->eff_ne[i][2], &rows) ||
             !checked_u64_mul(rows, (uint64_t)J->eff_ne[i][3], &rows) ||
@@ -2338,10 +2311,112 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     }
     // pad to data section
     int64_t hdr_end = wr_tell(&J->w);
-    uint64_t data_start = hdr_end >= 0 ? ((uint64_t)hdr_end + J->amask) & ~J->amask : 0;
-    if (hdr_end >= 0 && data_start < (uint64_t)hdr_end) J->w.ok = false;
-    wr_pad_to(&J->w, data_start);
+    J->data_start = hdr_end >= 0 ? ((uint64_t)hdr_end + J->amask) & ~J->amask : 0;
+    if (hdr_end >= 0 && J->data_start < (uint64_t)hdr_end) J->w.ok = false;
+    wr_pad_to(&J->w, J->data_start);
+}
 
+// One pruned tensor: its kept experts' blocks, in the plan's order.
+static void quantize_job_write_pruned(quantize_job *J, uint64_t i,
+                                      const prune_layer_t *pl) {
+    gguf_tensor *t = &J->g.tensors[i];
+    // Pruned: copy/convert only the kept experts' blocks, IN PLAN
+    // ORDER, instead of the tensor's full contiguous row range —
+    // each expert is one contiguous block of exp_rows rows (1 for
+    // the router/exps-bias 2D shapes, 1 element for the 1D
+    // bias/scale shapes, n_ff_exp rows for the fused 3D expert
+    // weights), so this is the pruning itself: the survivors, in
+    // the plan's order, is the new expert index space — no
+    // separate id remapping happens anywhere at runtime.
+    int64_t row_len, exp_rows;
+    expert_block_geometry(t, &row_len, &exp_rows);
+    size_t in_row = ggml_row_size(t->type, row_len);
+    size_t per_expert_in = in_row * (size_t)exp_rows;
+    if ((uint32_t)J->out_type[i] == t->type) {
+        for (int j = 0; J->w.ok && j < pl->n_ids; j++)
+            wr(&J->w, (const uint8_t *)t->data +
+                   (size_t)pl->ids[j] * per_expert_in, per_expert_in);
+        J->kept++;
+        return;
+    }
+    size_t out_rs = ggml_row_size(J->out_type[i], row_len);
+    for (int j = 0; J->w.ok && j < pl->n_ids; j++) {
+        for (int64_t r = 0; r < exp_rows; r++) {
+            int64_t src_row = (int64_t)pl->ids[j] * exp_rows + r;
+            dequant_row(t->type, (const uint8_t *)t->data +
+                        (size_t)src_row * in_row, J->rowf, (int)row_len);
+            quantize_row_any(J->out_type[i], J->rowf, J->rowq, (int)row_len);
+            wr(&J->w, J->rowq, out_rs);
+        }
+    }
+    J->quantized++;
+}
+
+// One tensor written whole: copied when its type stays and no delta
+// applies, else row by row through f32, with a merge's delta folded in
+// and its survival measured.
+static void quantize_job_write_rows(quantize_job *J, uint64_t i, merge_set_t *ms) {
+    gguf_tensor *t = &J->g.tensors[i];
+    // a zero-delta pair leaves its tensor on the verbatim path below —
+    // copying the base bytes is exactly the merge result, without a
+    // gratuitous dequant->requant of untouched weights
+    const merge_pair_t *mp = ms && ms->map[i].r && !ms->map[i].zero
+                             ? &ms->map[i] : NULL;
+    uint64_t rows = t->ne[1] * t->ne[2] * t->ne[3];
+    size_t in_rs = ggml_row_size(t->type, t->ne[0]);
+    size_t out_rs = ggml_row_size(J->out_type[i], t->ne[0]);
+    if (!mp && (uint32_t)J->out_type[i] == t->type) {
+        uint64_t bytes;
+        if (!checked_u64_mul(in_rs, rows, &bytes) || bytes > SIZE_MAX)
+            J->w.ok = false;
+        else
+            wr(&J->w, t->data, (size_t)bytes);
+        J->kept++;
+        return;
+    }
+    if (mp && t->scale != 1.0f) {
+        // The base rows are stored unscaled with a `.scale` companion the
+        // loader applies; folding a delta into them would put the delta
+        // under that companion too. Refuse rather than write a merged
+        // file that is wrong by 1/scale on the adapted part.
+        fprintf(stderr, "error: %s carries a per-tensor scale companion; "
+                "--merge-lora into a scaled base is not supported "
+                "(serve base + --lora instead)\n", t->name);
+        J->w.ok = false;
+        return;
+    }
+    int n0 = (int)t->ne[0];
+    for (uint64_t r = 0; r < rows; r++) {
+        dequant_row(t->type, (uint8_t *)t->data + r * in_rs, J->rowf, n0);
+        if (mp) {
+            memcpy(J->basef, J->rowf, sizeof(float) * (size_t)n0);
+            merge_row(mp, r, J->rowf, n0);
+        }
+        quantize_row_any(J->out_type[i], J->rowf, J->rowq, n0);
+        wr(&J->w, J->rowq, out_rs);
+        if (mp) {
+            // Did the grid keep the delta? The base alone, written at
+            // the same type, is what the merge would be had the adapter
+            // done nothing; the projection of (merged - that) onto the
+            // intended delta is the part of the delta that survived.
+            quantize_row_any(J->out_type[i], J->basef, J->rowqb, n0);
+            merge_survival *sv = &ms->surv;
+            sv->bytes += out_rs;
+            for (size_t k = 0; k < out_rs; k++)
+                sv->bytes_changed += J->rowq[k] != J->rowqb[k];
+            dequant_row(J->out_type[i], J->rowq, J->deqm, n0);
+            dequant_row(J->out_type[i], J->rowqb, J->deqb, n0);
+            for (int k = 0; k < n0; k++) {
+                double d = (double)J->rowf[k] - J->basef[k];
+                sv->ret_num += ((double)J->deqm[k] - J->deqb[k]) * d;
+                sv->ret_den += d * d;
+            }
+        }
+    }
+    J->quantized++;
+}
+
+static void quantize_job_write_tensors(quantize_job *J, merge_set_t *ms) {
     // tensor data
     size_t max_row = 0;
     for (uint64_t i = 0; i < J->g.n_tensors; i++)
@@ -2358,110 +2433,62 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
         if (!J->basef || !J->deqm || !J->deqb || !J->rowqb) J->w.ok = false;
     }
 
-    uint64_t quantized = 0, kept = 0;
     for (uint64_t i = 0; J->w.ok && i < J->g.n_tensors; i++) {
         gguf_tensor *t = &J->g.tensors[i];
         if (J->drop && J->drop[i]) continue;
         uint64_t want;
-        if (!checked_u64_add(data_start, J->out_off[i], &want)) {
+        if (!checked_u64_add(J->data_start, J->out_off[i], &want)) {
             J->w.ok = false;
             break;
         }
         wr_pad_to(&J->w, want);
 
         const prune_layer_t *pl = resolve_prune(t, &J->plan);
-        if (pl) {
-            // Pruned: copy/convert only the kept experts' blocks, IN PLAN
-            // ORDER, instead of the tensor's full contiguous row range —
-            // each expert is one contiguous block of exp_rows rows (1 for
-            // the router/exps-bias 2D shapes, 1 element for the 1D
-            // bias/scale shapes, n_ff_exp rows for the fused 3D expert
-            // weights), so this is the pruning itself: the survivors, in
-            // the plan's order, is the new expert index space — no
-            // separate id remapping happens anywhere at runtime.
-            int64_t row_len, exp_rows;
-            expert_block_geometry(t, &row_len, &exp_rows);
-            size_t in_row = ggml_row_size(t->type, row_len);
-            size_t per_expert_in = in_row * (size_t)exp_rows;
-            if ((uint32_t)J->out_type[i] == t->type) {
-                for (int j = 0; J->w.ok && j < pl->n_ids; j++)
-                    wr(&J->w, (const uint8_t *)t->data +
-                           (size_t)pl->ids[j] * per_expert_in, per_expert_in);
-                kept++;
-                continue;
-            }
-            size_t out_rs = ggml_row_size(J->out_type[i], row_len);
-            for (int j = 0; J->w.ok && j < pl->n_ids; j++) {
-                for (int64_t r = 0; r < exp_rows; r++) {
-                    int64_t src_row = (int64_t)pl->ids[j] * exp_rows + r;
-                    dequant_row(t->type, (const uint8_t *)t->data +
-                                (size_t)src_row * in_row, J->rowf, (int)row_len);
-                    quantize_row_any(J->out_type[i], J->rowf, J->rowq, (int)row_len);
-                    wr(&J->w, J->rowq, out_rs);
-                }
-            }
-            quantized++;
-            continue;
-        }
-
-        // a zero-delta pair leaves its tensor on the verbatim path below —
-        // copying the base bytes is exactly the merge result, without a
-        // gratuitous dequant->requant of untouched weights
-        const merge_pair_t *mp = ms && ms->map[i].r && !ms->map[i].zero
-                                 ? &ms->map[i] : NULL;
-        uint64_t rows = t->ne[1] * t->ne[2] * t->ne[3];
-        size_t in_rs = ggml_row_size(t->type, t->ne[0]);
-        size_t out_rs = ggml_row_size(J->out_type[i], t->ne[0]);
-        if (!mp && (uint32_t)J->out_type[i] == t->type) {
-            uint64_t bytes;
-            if (!checked_u64_mul(in_rs, rows, &bytes) || bytes > SIZE_MAX)
-                J->w.ok = false;
-            else
-                wr(&J->w, t->data, (size_t)bytes);
-            kept++;
-            continue;
-        }
-        if (mp && t->scale != 1.0f) {
-            // The base rows are stored unscaled with a `.scale` companion the
-            // loader applies; folding a delta into them would put the delta
-            // under that companion too. Refuse rather than write a merged
-            // file that is wrong by 1/scale on the adapted part.
-            fprintf(stderr, "error: %s carries a per-tensor scale companion; "
-                    "--merge-lora into a scaled base is not supported "
-                    "(serve base + --lora instead)\n", t->name);
-            J->w.ok = false;
-            break;
-        }
-        int n0 = (int)t->ne[0];
-        for (uint64_t r = 0; r < rows; r++) {
-            dequant_row(t->type, (uint8_t *)t->data + r * in_rs, J->rowf, n0);
-            if (mp) {
-                memcpy(J->basef, J->rowf, sizeof(float) * (size_t)n0);
-                merge_row(mp, r, J->rowf, n0);
-            }
-            quantize_row_any(J->out_type[i], J->rowf, J->rowq, n0);
-            wr(&J->w, J->rowq, out_rs);
-            if (mp) {
-                // Did the grid keep the delta? The base alone, written at
-                // the same type, is what the merge would be had the adapter
-                // done nothing; the projection of (merged - that) onto the
-                // intended delta is the part of the delta that survived.
-                quantize_row_any(J->out_type[i], J->basef, J->rowqb, n0);
-                merge_survival *sv = &ms->surv;
-                sv->bytes += out_rs;
-                for (size_t k = 0; k < out_rs; k++)
-                    sv->bytes_changed += J->rowq[k] != J->rowqb[k];
-                dequant_row(J->out_type[i], J->rowq, J->deqm, n0);
-                dequant_row(J->out_type[i], J->rowqb, J->deqb, n0);
-                for (int k = 0; k < n0; k++) {
-                    double d = (double)J->rowf[k] - J->basef[k];
-                    sv->ret_num += ((double)J->deqm[k] - J->deqb[k]) * d;
-                    sv->ret_den += d * d;
-                }
-            }
-        }
-        quantized++;
+        if (pl) quantize_job_write_pruned(J, i, pl);
+        else quantize_job_write_rows(J, i, ms);
     }
+}
+
+static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, int target,
+                       const char *prune_path, const char *type_plan_path,
+                       const char *remove_spec,
+                       merge_set_t *ms, uint32_t surgery_context,
+                       float surgery_factor, context_surgery_result *surgery_result) {
+    if (target != T_KEEP && !quantize_row_writable(target)) {
+        fprintf(stderr, "error: quantize target must be q8_0, q4_0, q3_k, "
+                "q4_k, q6_k, f16, or bf16\n");
+        return 1;
+    }
+    quantize_job job;
+    memset(&job, 0, sizeof(job));
+    quantize_job *J = &job;
+    int rc = 1;
+    if (!quantize_job_open_source(J, in_path, prune_path, type_plan_path,
+                                  remove_spec))
+        goto done;
+
+    if (J->rm.n > 0 && !quantize_job_remove_sublayers(J)) goto done;
+    if (ms && ms->n_base != J->g.n_tensors) {
+        // the base changed between the resolve open and this one
+        fprintf(stderr, "error: %s changed while merging\n", in_path);
+        goto done;
+    }
+
+    if (surgery_context &&
+        !quantize_job_context_surgery(J, surgery_context, surgery_factor,
+                                      surgery_result))
+        goto done;
+
+    if (J->plan.n > 0 && !quantize_job_check_prune(J, in_path)) goto done;
+
+    if (!quantize_job_open_output(J, out_path)) goto done;
+
+    if (J->uniform_prune) quantize_job_uniform_expert_count(J);
+
+    if (!quantize_job_decide_types(J, target, type_plan_path, ms)) goto done;
+    quantize_job_write_header(J);
+    quantize_job_write_layout(J);
+    quantize_job_write_tensors(J, ms);
     bool write_ok = wr_close(&J->w);
     // The source closes before the install: an in-place requant replaces
     // the very file the source maps.
@@ -2515,7 +2542,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
             type_plan_path ? "per-tensor plan"
                            : target == T_KEEP ? "per-tensor unchanged"
                                               : ggml_type_name(target),
-            (unsigned long long)quantized, (unsigned long long)kept);
+            (unsigned long long)J->quantized, (unsigned long long)J->kept);
     if (ms)
         fprintf(stderr, "merge: %d adapted projection%s folded into the "
                 "weights%s\n", ms->n_pairs - ms->n_zero,
