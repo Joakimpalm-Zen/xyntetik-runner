@@ -258,6 +258,20 @@ static snode *n_nemotron_named(jv *t, jv *f, char *e, int c) {
 static snode *n_nemotron_parallel(jv *t, jv *f, char *e, int c) {
     (void)f; return schema_compile_nemotron_turn(t, NULL, true, e, c);
 }
+// Mistral's [TOOL_CALLS] list: the auto turn with prose, the auto turn with a
+// final schema, the named call, and the parallel required turn.
+static snode *n_mistral_text(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_mistral_turn(t, true, NULL, NULL, false, e, c);
+}
+static snode *n_mistral_final(jv *t, jv *f, char *e, int c) {
+    return schema_compile_mistral_turn(t, true, NULL, f, false, e, c);
+}
+static snode *n_mistral_named(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_mistral_turn(t, false, "add", NULL, false, e, c);
+}
+static snode *n_mistral_parallel(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_mistral_turn(t, false, NULL, NULL, true, e, c);
+}
 static snode *n_harmony_named(jv *t, jv *f, char *e, int c) {
     (void)f; return schema_compile_harmony_turn(t, false, "add", NULL, false, e, c);
 }
@@ -286,6 +300,10 @@ static const struct { const char *name; native_fn fn; } NATIVE[] = {
     { "nemotron",         n_nemotron },
     { "nemotron_named",   n_nemotron_named },
     { "nemotron_parallel", n_nemotron_parallel },
+    { "mistral_text",     n_mistral_text },
+    { "mistral_final",    n_mistral_final },
+    { "mistral_named",    n_mistral_named },
+    { "mistral_parallel", n_mistral_parallel },
     { "harmony_named",    n_harmony_named },
     { "gemma4_named",     n_gemma4_named },
 };

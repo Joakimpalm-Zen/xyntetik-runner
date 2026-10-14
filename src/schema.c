@@ -2300,10 +2300,11 @@ static snode *mistral_list(jv *tools, const char *only, bool parallel,
                            char *err, int errcap) {
     snode *root = atem_seq(3), *open = sn_new(SN_ENUM);
     snode *entry = NULL, *rest = NULL;
-    if (!root || !open || !(open->lits = calloc(2, sizeof(*open->lits))) ||
-        !(open->lits[0] = strdup("[")) || !(open->lits[1] = strdup(" [")))
+    if (!root || !open || !(open->lits = calloc(2, sizeof(*open->lits))))
         goto fail;
-    open->n_lits = 2;
+    open->lits[open->n_lits++] = strdup("[");
+    open->lits[open->n_lits++] = strdup(" [");
+    if (!open->lits[0] || !open->lits[1]) goto fail;
     open->min_items = 1;
     open->whitespace_significant = true;
     if (!enum_index(open)) goto fail;
