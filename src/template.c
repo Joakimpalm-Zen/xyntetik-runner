@@ -1110,9 +1110,9 @@ static bool g4_has_text(const char *s) {
 //
 // Faithfulness notes, each deliberate:
 //   * `| dictsort` is jinja's default, which is CASE-INSENSITIVE and stable.
-//     jv_dictsort (json.c) implements it, and schema.c compiles the grammar
-//     from the SAME function -- a renderer and a validator that disagreed
-//     about key order would reject the model's own trained output.
+//     jv_dictsort (json.c) implements it, and schema_tools.c compiles the
+//     grammar from the SAME function -- a renderer and a validator that
+//     disagreed about key order would reject the model's own trained output.
 //   * format_parameters takes a `required` argument its body never reads
 //     (jinja:7). Not passed here, for the same reason.
 //   * format_function_declaration opens `parameters:{` and closes it only
@@ -4202,7 +4202,7 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
                            jv *tools, tool_envelope *env, bool *skip_generic) {
     bool qwen = tmpl_hermes_json(tmpl);
     // The function/parameter XML families. Qwen3-Coder's turn is constrained
-    // to the XML grammar (schema.c) as it has been since the template was
+    // to the XML grammar (schema_tools.c) as it has been since the template was
     // admitted; Qwen 3.8, Granite 4.2 and Ornith speak the same wire protocol
     // and are parsed by the same demultiplexer, but their sampler is not
     // constrained: their templates open a reasoning block the XML grammar
@@ -4630,7 +4630,7 @@ static int harmony_map(const tool_envelope *e, const char *doc, size_t n,
     static const char commentary[] = "<|channel|>commentary<|message|>";
     static const char final[] = "<|channel|>final<|message|>";
     static const char handoff_text[] = "<|end|><|start|>assistant";
-    // The analysis region is bounded in schema.c by the LONGER form, the one
+    // schema_tools.c bounds the analysis region by the LONGER form, the one
     // that already names a channel. Searching for the short form here would
     // stop at the first "<|end|><|start|>assistant" the model typed as body
     // text — legal under the schema, since inside a free-text region the

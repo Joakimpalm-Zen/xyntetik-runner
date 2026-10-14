@@ -1304,7 +1304,7 @@ static void test_harmony_tool_history_golden(void) {
 // The analysis body may legally CONTAIN the handoff text. Inside a free-text
 // region the constraint masks the control tokens, so the model types the
 // handoff byte-by-byte as ordinary characters — that is the normal path, not an
-// exotic one. schema.c bounds the analysis region with the 36-byte
+// exotic one. schema_tools.c bounds the analysis region with the 36-byte
 // "<|end|><|start|>assistant<|channel|>", so a bare "<|end|><|start|>assistant"
 // NOT followed by "<|channel|>" is accepted as body text. The mapper must use
 // the same 36-byte sentinel; with the shorter 25-byte one it stops at the first

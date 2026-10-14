@@ -6,10 +6,12 @@
 // deliberately operates near memory limits, so a failed allocation is a normal
 // condition — an unchecked one here is a remote crash.
 //
-// schema.c and json.c are compiled straight into this test with their
-// allocators macro-substituted, the same technique as test_json_oom.c. json.c
-// has to come along because the compiler serialises enum/const literals through
-// jv_dump/sbuf, so a failure inside the builder is a schema.c failure path too.
+// schema.c, schema_tools.c and json.c are compiled straight into this test
+// with their allocators macro-substituted, the same technique as
+// test_json_oom.c. schema_tools.c holds the native tool grammars the second
+// sweep drives. json.c has to come along because the compiler serialises
+// enum/const literals through jv_dump/sbuf, so a failure inside the builder
+// is a schema.c failure path too.
 // jsonmode.c is linked normally: it never allocates, and only the validator
 // (not the compiler under test here) calls into it.
 #include <assert.h>
@@ -79,6 +81,7 @@ static void t_free(void *p) {
 #define free    t_free
 #include "../src/json.c"
 #include "../src/schema.c"
+#include "../src/schema_tools.c"
 #undef malloc
 #undef calloc
 #undef realloc
@@ -233,6 +236,51 @@ static snode *n_qwen_no_think(jv *t, jv *f, char *e, int c) {
 static snode *n_qwen_parallel(jv *t, jv *f, char *e, int c) {
     (void)f; return schema_compile_qwen_parallel(t, NULL, e, c);
 }
+static snode *n_qwen_named(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_qwen_turn(t, false, "add", NULL, false, false, e, c);
+}
+// Qwen3-Coder's function/parameter XML: the auto turn with a final schema,
+// the named call, and the parallel required turn.
+static snode *n_qwen_xml(jv *t, jv *f, char *e, int c) {
+    return schema_compile_qwen_xml_turn(t, true, NULL, f, false, e, c);
+}
+static snode *n_qwen_xml_named(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_qwen_xml_turn(t, false, "add", NULL, false, e, c);
+}
+static snode *n_qwen_xml_parallel(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_qwen_xml_turn(t, false, NULL, NULL, true, e, c);
+}
+// Nemotron Nano's <TOOLCALL> list: one entry, a named entry, and the
+// parallel list.
+static snode *n_nemotron(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_nemotron_turn(t, NULL, false, e, c);
+}
+static snode *n_nemotron_named(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_nemotron_turn(t, "add", false, e, c);
+}
+static snode *n_nemotron_parallel(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_nemotron_turn(t, NULL, true, e, c);
+}
+// Mistral's [TOOL_CALLS] list: the auto turn with prose, the auto turn with a
+// final schema, the named call, and the parallel required turn.
+static snode *n_mistral_text(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_mistral_turn(t, true, NULL, NULL, false, e, c);
+}
+static snode *n_mistral_final(jv *t, jv *f, char *e, int c) {
+    return schema_compile_mistral_turn(t, true, NULL, f, false, e, c);
+}
+static snode *n_mistral_named(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_mistral_turn(t, false, "add", NULL, false, e, c);
+}
+static snode *n_mistral_parallel(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_mistral_turn(t, false, NULL, NULL, true, e, c);
+}
+static snode *n_harmony_named(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_harmony_turn(t, false, "add", NULL, false, e, c);
+}
+static snode *n_gemma4_named(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_gemma4_turn(t, false, "add", NULL, false, false, e, c);
+}
 
 static const struct { const char *name; native_fn fn; } NATIVE[] = {
     { "atem_tools",       n_atem_tools },
@@ -248,6 +296,19 @@ static const struct { const char *name; native_fn fn; } NATIVE[] = {
     { "qwen",             n_qwen },
     { "qwen_no_think",    n_qwen_no_think },
     { "qwen_parallel",    n_qwen_parallel },
+    { "qwen_named",       n_qwen_named },
+    { "qwen_xml",         n_qwen_xml },
+    { "qwen_xml_named",   n_qwen_xml_named },
+    { "qwen_xml_parallel", n_qwen_xml_parallel },
+    { "nemotron",         n_nemotron },
+    { "nemotron_named",   n_nemotron_named },
+    { "nemotron_parallel", n_nemotron_parallel },
+    { "mistral_text",     n_mistral_text },
+    { "mistral_final",    n_mistral_final },
+    { "mistral_named",    n_mistral_named },
+    { "mistral_parallel", n_mistral_parallel },
+    { "harmony_named",    n_harmony_named },
+    { "gemma4_named",     n_gemma4_named },
 };
 
 static void test_native_compilers_survive_allocation_failure(void) {
