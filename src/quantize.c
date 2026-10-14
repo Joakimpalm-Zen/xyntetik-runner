@@ -1520,471 +1520,481 @@ int merge_lora_gguf(const char *in_path, const char *adapter_path,
     return rc;
 }
 
-static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, int target,
-                       const char *prune_path, const char *type_plan_path,
-                       const char *remove_spec,
-                       merge_set_t *ms, uint32_t surgery_context,
-                       float surgery_factor, context_surgery_result *surgery_result) {
-    if (target != T_KEEP && !quantize_row_writable(target)) {
-        fprintf(stderr, "error: quantize target must be q8_0, q4_0, q3_k, "
-                "q4_k, q6_k, f16, or bf16\n");
-        return 1;
-    }
-    prune_plan_t plan = {0};
-    if (prune_path && !prune_plan_load(prune_path, &plan)) return 1;
+// Everything one file transformation owns. Each stage of
+// quantize_gguf_plan_inner() adds to it and every exit releases all of it in
+// one place, so a refusal at any stage unwinds every stage before it.
+typedef struct {
+    prune_plan_t plan;
     type_plan_t tplan;
-    memset(&tplan, 0, sizeof(tplan));
-    if (type_plan_path && !type_plan_load(type_plan_path, &tplan)) {
-        quantize_plans_free(&plan, &tplan);
-        return 1;
-    }
-    rm_plan_t rm = {0};
-    if (remove_spec && !rm_plan_parse(remove_spec, &rm)) {
-        quantize_plans_free(&plan, &tplan);
-        return 1;
-    }
-
+    rm_plan_t rm;
     gguf_file g;
-    if (!gguf_open(&g, in_path)) {
-        quantize_plans_free(&plan, &tplan);
-        return 1;
-    }
-    for (uint64_t i = 0; i < g.n_tensors; i++) {
-        if (!ggml_type_supported(g.tensors[i].type)) {
-            fprintf(stderr, "error: tensor %s has unsupported type %s\n",
-                    g.tensors[i].name, ggml_type_name(g.tensors[i].type));
-            gguf_close(&g);
-            quantize_plans_free(&plan, &tplan);
-            free(rm.items);
-            return 1;
-        }
-    }
-
-    // Sublayer-removal pre-pass: decide every dropped tensor and every
-    // re-authored per-layer array before a byte of output exists, so a bad
-    // request fails clean. `drop[i]` marks a tensor that is not written.
-    bool *drop = NULL;
-    reauth_arr_t reauth[4];
-    int n_reauth = 0;
-    uint64_t n_dropped = 0;
-    if (rm.n > 0) {
-        const char *rarch = gguf_get_str(&g, "general.architecture", "");
-        char key[160];
-        snprintf(key, sizeof key, "%s.block_count", rarch);
-        uint64_t nb = gguf_get_u32(&g, key, 0);
-        const char *why = NULL;
-        if (!strcmp(rarch, "nemotron_h") || !strcmp(rarch, "nemotron_h_moe") ||
-            !strcmp(rarch, "granitehybrid") || !strcmp(rarch, "qwen35") ||
-            (snprintf(key, sizeof key, "%s.ssm.conv_kernel", rarch),
-             gguf_get(&g, key) != NULL))
-            why = "hybrid or recurrent block typing";
-        // gemma-4 exports carry both E-series keys on every model, with 0
-        // on the dense ones (the 31B has embedding_length_per_layer_input
-        // = 0); it is the VALUE that makes a file E-series, as in the loader.
-        else if ((snprintf(key, sizeof key, "%s.embedding_length_per_layer_input",
-                           rarch), gguf_get_u32(&g, key, 0) > 0) ||
-                 (snprintf(key, sizeof key, "%s.attention.shared_kv_layers",
-                           rarch), gguf_get_u32(&g, key, 0) > 0))
-            why = "gemma-4 E-series per-layer embeddings or shared KV";
-        else if ((snprintf(key, sizeof key, "%s.nextn_predict_layers", rarch),
-                  gguf_get_u32(&g, key, 0) > 0))
-            why = "a declared NextN/MTP head";
-        else if (nb == 0)
-            why = "no block_count";
-        if (why) {
-            fprintf(stderr, "error: --remove-sublayer does not support %s (%s)\n",
-                    rarch, why);
-            gguf_close(&g); quantize_plans_free(&plan, &tplan); free(rm.items);
-            return 1;
-        }
-        drop = calloc(g.n_tensors ? g.n_tensors : 1, sizeof(bool));
-        if (!drop) {
-            gguf_close(&g); quantize_plans_free(&plan, &tplan); free(rm.items);
-            return 1;
-        }
-        char hc_key[160], hk_key[160], ff_key[160];
-        snprintf(hc_key, sizeof hc_key, "%s.attention.head_count", rarch);
-        snprintf(hk_key, sizeof hk_key, "%s.attention.head_count_kv", rarch);
-        snprintf(ff_key, sizeof ff_key, "%s.feed_forward_length", rarch);
-        uint32_t *hc = NULL, *hk = NULL, *ff = NULL;
-        bool bad = false;
-        for (int k = 0; k < rm.n && !bad; k++) {
-            int layer = rm.items[k].layer, part = rm.items[k].part;
-            const char *pname = part == RM_ATTN ? "attn" : "mlp";
-            if ((uint64_t)layer >= nb) {
-                fprintf(stderr, "error: --remove-sublayer %s:%d names block %d, "
-                        "but %s.block_count is %llu\n", pname, layer, layer,
-                        rarch, (unsigned long long)nb);
-                bad = true; break;
-            }
-            char nm[160];
-            if (part == RM_ATTN) {
-                if (!hc) {
-                    hc = malloc(sizeof(uint32_t) * nb);
-                    hk = malloc(sizeof(uint32_t) * nb);
-                    uint32_t nh = gguf_get_u32(&g, hc_key, 0);
-                    if (!hc || !hk || !reauth_fill(&g, hc_key, nb, nh, hc) ||
-                        !reauth_fill(&g, hk_key, nb, nh, hk)) { bad = true; break; }
-                }
-                if (hc[layer] == 0) {
-                    fprintf(stderr, "error: --remove-sublayer attn:%d: block %d "
-                            "already has its attention removed\n", layer, layer);
-                    bad = true; break;
-                }
-                snprintf(nm, sizeof nm, "blk.%d.attn_qkv.weight", layer);
-                if (gguf_find_tensor(&g, nm)) {
-                    fprintf(stderr, "error: --remove-sublayer attn:%d: fused-QKV "
-                            "families are not supported\n", layer);
-                    bad = true; break;
-                }
-                snprintf(nm, sizeof nm, "blk.%d.attn_output.weight", layer);
-                if (!gguf_find_tensor(&g, nm)) {
-                    fprintf(stderr, "error: --remove-sublayer attn:%d: block %d "
-                            "has no attention tensors\n", layer, layer);
-                    bad = true; break;
-                }
-                hc[layer] = 0;
-                hk[layer] = 0;
-            } else {
-                if (!ff) {
-                    ff = malloc(sizeof(uint32_t) * nb);
-                    uint32_t nf = gguf_get_u32(&g, ff_key, 0);
-                    if (!ff || !reauth_fill(&g, ff_key, nb, nf, ff)) { bad = true; break; }
-                }
-                if (ff[layer] == 0) {
-                    fprintf(stderr, "error: --remove-sublayer mlp:%d: block %d "
-                            "already has its FFN removed\n", layer, layer);
-                    bad = true; break;
-                }
-                snprintf(nm, sizeof nm, "blk.%d.ffn_gate_inp.weight", layer);
-                bool moe = gguf_find_tensor(&g, nm) != NULL;
-                for (uint64_t i = 0; !moe && i < g.n_tensors; i++) {
-                    int tl; const char *suf;
-                    if (parse_blk_name(g.tensors[i].name, &tl, &suf) &&
-                        tl == layer && strncmp(suf, "ffn_", 4) == 0 &&
-                        strstr(suf, "_exps"))
-                        moe = true;
-                }
-                if (moe) {
-                    fprintf(stderr, "error: --remove-sublayer mlp:%d: block %d is "
-                            "a MoE FFN, which is not supported for removal\n",
-                            layer, layer);
-                    bad = true; break;
-                }
-                snprintf(nm, sizeof nm, "blk.%d.ffn_down.weight", layer);
-                if (!gguf_find_tensor(&g, nm)) {
-                    fprintf(stderr, "error: --remove-sublayer mlp:%d: block %d "
-                            "has no dense FFN tensors\n", layer, layer);
-                    bad = true; break;
-                }
-                ff[layer] = 0;
-            }
-            uint64_t n_t = 0, bytes = 0;
-            for (uint64_t i = 0; i < g.n_tensors; i++) {
-                int tl; const char *suf;
-                if (!parse_blk_name(g.tensors[i].name, &tl, &suf) || tl != layer ||
-                    !rm_suffix_in_scope(part, suf) || drop[i])
-                    continue;
-                drop[i] = true;
-                n_t++;
-                bytes += g.tensors[i].nbytes;
-            }
-            n_dropped += n_t;
-            fprintf(stderr, "remove-sublayer: %s:%d dropped %llu tensors, %llu "
-                    "bytes of tensor data\n", pname, layer,
-                    (unsigned long long)n_t, (unsigned long long)bytes);
-        }
-        // A file with no attention (or no FFN) left in ANY block is not a
-        // model the loader can run: it reads the head count (or FFN width)
-        // as the largest per-block entry, finds 0 and refuses the file. Say
-        // so here, before writing an artifact that cannot load. Counted
-        // over the whole array, so blocks the source already lacked count.
-        if (!bad) {
-            uint64_t attn_left = 0, ffn_left = 0;
-            for (uint64_t i = 0; i < nb; i++) {
-                if (hc && hc[i]) attn_left++;
-                if (ff && ff[i]) ffn_left++;
-            }
-            const char *none = hc && !attn_left ? "attention" :
-                               ff && !ffn_left  ? "FFN" : NULL;
-            if (none) {
-                fprintf(stderr, "error: --remove-sublayer would leave no %s in "
-                        "any of the %llu blocks; the loader cannot run such a "
-                        "file, so it is not written\n", none,
-                        (unsigned long long)nb);
-                bad = true;
-            }
-        }
-        if (bad) {
-            free(hc); free(hk); free(ff); free(drop);
-            gguf_close(&g); quantize_plans_free(&plan, &tplan); free(rm.items);
-            return 1;
-        }
-        if (hc) {
-            snprintf(reauth[n_reauth].key, sizeof reauth[n_reauth].key, "%s", hc_key);
-            reauth[n_reauth++].vals = hc;
-            snprintf(reauth[n_reauth].key, sizeof reauth[n_reauth].key, "%s", hk_key);
-            reauth[n_reauth++].vals = hk;
-        }
-        if (ff) {
-            snprintf(reauth[n_reauth].key, sizeof reauth[n_reauth].key, "%s", ff_key);
-            reauth[n_reauth++].vals = ff;
-        }
-    }
-    free(rm.items);
-    rm.items = NULL;
-    if (ms && ms->n_base != g.n_tensors) {
-        // the base changed between the resolve open and this one
-        fprintf(stderr, "error: %s changed while merging\n", in_path);
-        gguf_close(&g);
-        quantize_plans_free(&plan, &tplan);
-        return 1;
-    }
-
-    if (surgery_context) {
-        const char *arch = gguf_get_str(&g, "general.architecture", "");
-        char ctx_key[128], type_key[128], factor_key[128], orig_key[128];
-        snprintf(ctx_key, sizeof(ctx_key), "%s.context_length", arch);
-        snprintf(type_key, sizeof(type_key), "%s.rope.scaling.type", arch);
-        snprintf(factor_key, sizeof(factor_key), "%s.rope.scaling.factor", arch);
-        snprintf(orig_key, sizeof(orig_key),
-                 "%s.rope.scaling.original_context_length", arch);
-        gguf_kv *ctx = gguf_get(&g, ctx_key);
-        gguf_kv *fac = gguf_get(&g, factor_key);
-        uint32_t source_context = gguf_get_u32(&g, ctx_key, 0);
-        uint32_t original_context = gguf_get_u32(&g, orig_key, 0);
-        float source_factor = gguf_get_f32(&g, factor_key, 0);
-        const char *scaling_type = gguf_get_str(&g, type_key, "");
-        double implied = (double)original_context * (double)surgery_factor;
-        uint64_t implied_context = implied >= 0.0 ? (uint64_t)(implied + 0.5) : 0;
-        bool valid = arch[0] && ctx && ctx->type == GGUF_T_U32 &&
-                     fac && fac->type == GGUF_T_F32 &&
-                     strcmp(scaling_type, "yarn") == 0 &&
-                     original_context > 0 && source_context > 0 &&
-                     source_factor > 1.0f;
-        if (!valid) {
-            fprintf(stderr, "error: --context-surgery requires complete native "
-                            "YaRN metadata with u32 context/original context "
-                            "and f32 factor\n");
-            gguf_close(&g);
-            quantize_plans_free(&plan, &tplan);
-            return 1;
-        }
-        if (surgery_context <= source_context ||
-            surgery_factor <= source_factor) {
-            fprintf(stderr, "error: --context-surgery only extends context "
-                            "(source %u/x%.9g, requested %u/x%.9g)\n",
-                    source_context, (double)source_factor, surgery_context,
-                    (double)surgery_factor);
-            gguf_close(&g);
-            quantize_plans_free(&plan, &tplan);
-            return 1;
-        }
-        if (implied_context != surgery_context ||
-            fabs(implied - (double)surgery_context) > 0.0001) {
-            fprintf(stderr, "error: --context-surgery target %u conflicts "
-                            "with original context %u x YaRN factor %.9g "
-                            "(implies %.9g)\n", surgery_context,
-                    original_context, (double)surgery_factor, implied);
-            gguf_close(&g);
-            quantize_plans_free(&plan, &tplan);
-            return 1;
-        }
-        ctx->v.u64 = surgery_context;
-        uint32_t factor_bits;
-        memcpy(&factor_bits, &surgery_factor, sizeof(factor_bits));
-        fac->raw = factor_bits;
-        fac->v.f64 = surgery_factor;
-        if (surgery_result) {
-            surgery_result->source_context = source_context;
-            surgery_result->original_context = original_context;
-            surgery_result->source_factor = source_factor;
-            surgery_result->tensors_byte_identical = false;
-        }
-        fprintf(stderr, "context-surgery: %s %u -> %u; %s %.9g -> %.9g\n",
-                ctx_key, source_context, surgery_context, factor_key,
-                (double)source_factor, (double)surgery_factor);
-    }
-
-    // Prune-plan pre-pass: resolve every plan entry against its layer's own
-    // router tensor (the one tensor every is_moe layer always has), validate
-    // ids are in range, and decide whether the WHOLE model ends up with one
-    // uniform post-prune expert count — the only case expert_count metadata
-    // can honestly be rewritten to a single new value. Done before any
-    // output is written so a bad plan fails clean, before touching the
-    // destination file at all.
-    bool uniform_prune = false;
-    int uniform_count = 0;
+    bool g_open;
+    bool *drop;               // tensors the removal does not write
+    reauth_arr_t reauth[4];   // per-layer arrays the removal re-authors
+    int n_reauth;
+    uint64_t n_dropped;       // tensors the removal drops
     // Per-layer expert counts after the prune, authored into the header as
     // <arch>.expert_count_per_layer (u32 per block, 0 for a non-MoE block).
     // GGUF has one global expert_count; a non-uniform plan makes that key a
     // ceiling rather than a description, and a consumer that trusts it
     // mis-sizes the model. The array is what lets the file describe itself.
-    char pl_key[128] = "";
-    uint32_t *layer_counts = NULL;
-    uint64_t n_blocks = 0;
-    if (plan.n > 0) {
-        const char *parch = gguf_get_str(&g, "general.architecture", "");
-        char bc_key[128];
-        snprintf(bc_key, sizeof(bc_key), "%s.block_count", parch);
-        snprintf(pl_key, sizeof(pl_key), "%s.expert_count_per_layer", parch);
-        n_blocks = gguf_get_u32(&g, bc_key, 0);
-        layer_counts = calloc(n_blocks ? n_blocks : 1, sizeof(uint32_t));
-        if (!layer_counts) { gguf_close(&g); quantize_plans_free(&plan, &tplan); return 1; }
-        int n_moe_layers = 0, n_moe_seen = 0;
-        bool any_pruned = false, all_equal = true;
-        int first_count = -1;
-        for (uint64_t i = 0; i < g.n_tensors; i++) {
-            int layer; const char *suffix;
-            if (!parse_blk_name(g.tensors[i].name, &layer, &suffix)) continue;
-            if (strcmp(suffix, "ffn_gate_inp.weight") != 0) continue;
-            n_moe_layers++;
-            gguf_tensor *router = &g.tensors[i];
-            if (router->n_dims < 2) {
-                fprintf(stderr, "error: %s has %d dims, expected 2\n",
-                        router->name, router->n_dims);
-                gguf_close(&g);
-                quantize_plans_free(&plan, &tplan);
-                return 1;
-            }
-            int64_t orig_n = router->ne[router->n_dims - 1];
-            const prune_layer_t *pl = prune_plan_find(&plan, layer);
-            int final_count = (int)orig_n;
-            if (pl) {
-                n_moe_seen++;
-                for (int j = 0; j < pl->n_ids; j++)
-                    if (pl->ids[j] >= orig_n) {
-                        fprintf(stderr, "error: prune-plan layer_%d lists "
-                                "expert %d, but blk.%d only has %lld experts\n",
-                                layer, pl->ids[j], layer, (long long)orig_n);
-                        gguf_close(&g);
-                        quantize_plans_free(&plan, &tplan);
-                        return 1;
-                    }
-                // Every tensor resolve_prune() will slice must describe the
-                // same expert axis as this router. Validating ids against the
-                // router alone is insufficient: a shorter bias/bank would
-                // make the copy loop index beyond that tensor's declared
-                // data and produce an artifact that cannot load.
-                for (uint64_t j = 0; j < g.n_tensors; j++) {
-                    int tensor_layer; const char *tensor_suffix;
-                    gguf_tensor *et = &g.tensors[j];
-                    if (!parse_blk_name(et->name, &tensor_layer,
-                                        &tensor_suffix) ||
-                        tensor_layer != layer ||
-                        !is_expert_tensor_suffix(tensor_suffix))
-                        continue;
-                    int64_t tensor_n = et->ne[et->n_dims - 1];
-                    if (tensor_n != orig_n) {
-                        fprintf(stderr, "error: %s expert axis has %lld "
-                                "entries, but the blk.%d router has %lld\n",
-                                et->name, (long long)tensor_n, layer,
-                                (long long)orig_n);
-                        gguf_close(&g);
-                        quantize_plans_free(&plan, &tplan);
-                        return 1;
-                    }
-                }
-                final_count = pl->n_ids;
-                if (final_count < orig_n) any_pruned = true;
-            }
-            if (first_count < 0) first_count = final_count;
-            else if (final_count != first_count) all_equal = false;
-            if ((uint64_t)layer >= n_blocks) {
-                fprintf(stderr, "error: %s names block %d but %s.block_count is %llu\n",
-                        router->name, layer, parch, (unsigned long long)n_blocks);
-                gguf_close(&g); quantize_plans_free(&plan, &tplan); free(layer_counts);
-                return 1;
-            }
-            layer_counts[layer] = (uint32_t)final_count;
-        }
-        if (n_moe_seen < plan.n) {
-            // at least one "layer_N" in the plan matched no MoE layer in
-            // this file at all — almost certainly the plan was built for a
-            // different model or has a typo'd layer index
-            fprintf(stderr, "error: --prune-experts lists %d layer(s) but "
-                    "only %d matched an MoE layer in %s\n",
-                    plan.n, n_moe_seen, in_path);
-            gguf_close(&g);
-            quantize_plans_free(&plan, &tplan);
-            return 1;
-        }
-        if (any_pruned && all_equal && n_moe_seen == n_moe_layers) {
-            uniform_prune = true;
-            uniform_count = first_count;
+    uint32_t *layer_counts;
+    uint64_t n_blocks;        // the length of layer_counts
+    char pl_key[128];         // <arch>.expert_count_per_layer
+    bool uniform_prune;       // every MoE layer pruned to one count
+    int uniform_count;
+    char *tmp_path;           // OUT.partial
+    bool tmp_created;         // OUT.partial exists and is not installed
+    uint64_t amask;           // the data alignment, less one
+    uint64_t data_start;      // where the tensor data begins
+    writer w;
+    int *out_type;
+    uint64_t *out_off;
+    int64_t (*eff_ne)[4];
+    float *rowf, *basef, *deqm, *deqb;
+    uint8_t *rowq, *rowqb;
+    uint64_t quantized, kept; // tensors converted, tensors copied
+} quantize_job;
+
+// Everything that reads the source, released before the output is installed.
+static void quantize_job_close_source(quantize_job *J) {
+    free(J->basef); free(J->deqm); free(J->deqb); free(J->rowqb);
+    free(J->rowf); free(J->rowq);
+    free(J->out_type); free(J->out_off); free(J->eff_ne);
+    J->basef = J->deqm = J->deqb = J->rowf = NULL;
+    J->rowqb = J->rowq = NULL;
+    J->out_type = NULL; J->out_off = NULL; J->eff_ne = NULL;
+    for (int k = 0; k < J->n_reauth; k++) free(J->reauth[k].vals);
+    J->n_reauth = 0;
+    free(J->layer_counts); J->layer_counts = NULL;
+    free(J->drop); J->drop = NULL;
+    free(J->rm.items); J->rm.items = NULL; J->rm.n = 0;
+    if (J->g_open) gguf_close(&J->g);
+    J->g_open = false;
+    quantize_plans_free(&J->plan, &J->tplan);
+}
+
+// Everything, the partial file included unless it was installed.
+static void quantize_job_release(quantize_job *J) {
+    quantize_job_close_source(J);
+    if (J->w.f) fclose(J->w.f);
+    J->w.f = NULL;
+    if (J->tmp_created) remove(J->tmp_path);
+    J->tmp_created = false;
+    free(J->tmp_path); J->tmp_path = NULL;
+}
+
+// The plans parsed and the source open, every tensor in a type this file
+// can read.
+static bool quantize_job_open_source(quantize_job *J, const char *in_path,
+                                     const char *prune_path,
+                                     const char *type_plan_path,
+                                     const char *remove_spec) {
+    if (prune_path && !prune_plan_load(prune_path, &J->plan)) return false;
+    if (type_plan_path && !type_plan_load(type_plan_path, &J->tplan)) return false;
+    if (remove_spec && !rm_plan_parse(remove_spec, &J->rm)) return false;
+
+    if (!gguf_open(&J->g, in_path)) return false;
+    J->g_open = true;
+    for (uint64_t i = 0; i < J->g.n_tensors; i++) {
+        if (!ggml_type_supported(J->g.tensors[i].type)) {
+            fprintf(stderr, "error: tensor %s has unsupported type %s\n",
+                    J->g.tensors[i].name, ggml_type_name(J->g.tensors[i].type));
+            return false;
         }
     }
+    return true;
+}
 
+// Sublayer-removal pre-pass: decide every dropped tensor and every
+// re-authored per-layer array before a byte of output exists, so a bad
+// request fails clean. `drop[i]` marks a tensor that is not written.
+static bool quantize_job_remove_sublayers(quantize_job *J) {
+    const char *rarch = gguf_get_str(&J->g, "general.architecture", "");
+    char key[160];
+    snprintf(key, sizeof key, "%s.block_count", rarch);
+    uint64_t nb = gguf_get_u32(&J->g, key, 0);
+    const char *why = NULL;
+    if (!strcmp(rarch, "nemotron_h") || !strcmp(rarch, "nemotron_h_moe") ||
+        !strcmp(rarch, "granitehybrid") || !strcmp(rarch, "qwen35") ||
+        (snprintf(key, sizeof key, "%s.ssm.conv_kernel", rarch),
+         gguf_get(&J->g, key) != NULL))
+        why = "hybrid or recurrent block typing";
+    // gemma-4 exports carry both E-series keys on every model, with 0
+    // on the dense ones (the 31B has embedding_length_per_layer_input
+    // = 0); it is the VALUE that makes a file E-series, as in the loader.
+    else if ((snprintf(key, sizeof key, "%s.embedding_length_per_layer_input",
+                       rarch), gguf_get_u32(&J->g, key, 0) > 0) ||
+             (snprintf(key, sizeof key, "%s.attention.shared_kv_layers",
+                       rarch), gguf_get_u32(&J->g, key, 0) > 0))
+        why = "gemma-4 E-series per-layer embeddings or shared KV";
+    else if ((snprintf(key, sizeof key, "%s.nextn_predict_layers", rarch),
+              gguf_get_u32(&J->g, key, 0) > 0))
+        why = "a declared NextN/MTP head";
+    else if (nb == 0)
+        why = "no block_count";
+    if (why) {
+        fprintf(stderr, "error: --remove-sublayer does not support %s (%s)\n",
+                rarch, why);
+        return false;
+    }
+    J->drop = calloc(J->g.n_tensors ? J->g.n_tensors : 1, sizeof(bool));
+    if (!J->drop) return false;
+    char hc_key[160], hk_key[160], ff_key[160];
+    snprintf(hc_key, sizeof hc_key, "%s.attention.head_count", rarch);
+    snprintf(hk_key, sizeof hk_key, "%s.attention.head_count_kv", rarch);
+    snprintf(ff_key, sizeof ff_key, "%s.feed_forward_length", rarch);
+    uint32_t *hc = NULL, *hk = NULL, *ff = NULL;
+    bool bad = false;
+    for (int k = 0; k < J->rm.n && !bad; k++) {
+        int layer = J->rm.items[k].layer, part = J->rm.items[k].part;
+        const char *pname = part == RM_ATTN ? "attn" : "mlp";
+        if ((uint64_t)layer >= nb) {
+            fprintf(stderr, "error: --remove-sublayer %s:%d names block %d, "
+                    "but %s.block_count is %llu\n", pname, layer, layer,
+                    rarch, (unsigned long long)nb);
+            bad = true; break;
+        }
+        char nm[160];
+        if (part == RM_ATTN) {
+            if (!hc) {
+                hc = malloc(sizeof(uint32_t) * nb);
+                hk = malloc(sizeof(uint32_t) * nb);
+                uint32_t nh = gguf_get_u32(&J->g, hc_key, 0);
+                if (!hc || !hk || !reauth_fill(&J->g, hc_key, nb, nh, hc) ||
+                    !reauth_fill(&J->g, hk_key, nb, nh, hk)) { bad = true; break; }
+            }
+            if (hc[layer] == 0) {
+                fprintf(stderr, "error: --remove-sublayer attn:%d: block %d "
+                        "already has its attention removed\n", layer, layer);
+                bad = true; break;
+            }
+            snprintf(nm, sizeof nm, "blk.%d.attn_qkv.weight", layer);
+            if (gguf_find_tensor(&J->g, nm)) {
+                fprintf(stderr, "error: --remove-sublayer attn:%d: fused-QKV "
+                        "families are not supported\n", layer);
+                bad = true; break;
+            }
+            snprintf(nm, sizeof nm, "blk.%d.attn_output.weight", layer);
+            if (!gguf_find_tensor(&J->g, nm)) {
+                fprintf(stderr, "error: --remove-sublayer attn:%d: block %d "
+                        "has no attention tensors\n", layer, layer);
+                bad = true; break;
+            }
+            hc[layer] = 0;
+            hk[layer] = 0;
+        } else {
+            if (!ff) {
+                ff = malloc(sizeof(uint32_t) * nb);
+                uint32_t nf = gguf_get_u32(&J->g, ff_key, 0);
+                if (!ff || !reauth_fill(&J->g, ff_key, nb, nf, ff)) { bad = true; break; }
+            }
+            if (ff[layer] == 0) {
+                fprintf(stderr, "error: --remove-sublayer mlp:%d: block %d "
+                        "already has its FFN removed\n", layer, layer);
+                bad = true; break;
+            }
+            snprintf(nm, sizeof nm, "blk.%d.ffn_gate_inp.weight", layer);
+            bool moe = gguf_find_tensor(&J->g, nm) != NULL;
+            for (uint64_t i = 0; !moe && i < J->g.n_tensors; i++) {
+                int tl; const char *suf;
+                if (parse_blk_name(J->g.tensors[i].name, &tl, &suf) &&
+                    tl == layer && strncmp(suf, "ffn_", 4) == 0 &&
+                    strstr(suf, "_exps"))
+                    moe = true;
+            }
+            if (moe) {
+                fprintf(stderr, "error: --remove-sublayer mlp:%d: block %d is "
+                        "a MoE FFN, which is not supported for removal\n",
+                        layer, layer);
+                bad = true; break;
+            }
+            snprintf(nm, sizeof nm, "blk.%d.ffn_down.weight", layer);
+            if (!gguf_find_tensor(&J->g, nm)) {
+                fprintf(stderr, "error: --remove-sublayer mlp:%d: block %d "
+                        "has no dense FFN tensors\n", layer, layer);
+                bad = true; break;
+            }
+            ff[layer] = 0;
+        }
+        uint64_t n_t = 0, bytes = 0;
+        for (uint64_t i = 0; i < J->g.n_tensors; i++) {
+            int tl; const char *suf;
+            if (!parse_blk_name(J->g.tensors[i].name, &tl, &suf) || tl != layer ||
+                !rm_suffix_in_scope(part, suf) || J->drop[i])
+                continue;
+            J->drop[i] = true;
+            n_t++;
+            bytes += J->g.tensors[i].nbytes;
+        }
+        J->n_dropped += n_t;
+        fprintf(stderr, "remove-sublayer: %s:%d dropped %llu tensors, %llu "
+                "bytes of tensor data\n", pname, layer,
+                (unsigned long long)n_t, (unsigned long long)bytes);
+    }
+    // A file with no attention (or no FFN) left in ANY block is not a
+    // model the loader can run: it reads the head count (or FFN width)
+    // as the largest per-block entry, finds 0 and refuses the file. Say
+    // so here, before writing an artifact that cannot load. Counted
+    // over the whole array, so blocks the source already lacked count.
+    if (!bad) {
+        uint64_t attn_left = 0, ffn_left = 0;
+        for (uint64_t i = 0; i < nb; i++) {
+            if (hc && hc[i]) attn_left++;
+            if (ff && ff[i]) ffn_left++;
+        }
+        const char *none = hc && !attn_left ? "attention" :
+                           ff && !ffn_left  ? "FFN" : NULL;
+        if (none) {
+            fprintf(stderr, "error: --remove-sublayer would leave no %s in "
+                    "any of the %llu blocks; the loader cannot run such a "
+                    "file, so it is not written\n", none,
+                    (unsigned long long)nb);
+            bad = true;
+        }
+    }
+    if (bad) {
+        free(hc); free(hk); free(ff);
+        return false;
+    }
+    if (hc) {
+        snprintf(J->reauth[J->n_reauth].key, sizeof J->reauth[J->n_reauth].key, "%s", hc_key);
+        J->reauth[J->n_reauth++].vals = hc;
+        snprintf(J->reauth[J->n_reauth].key, sizeof J->reauth[J->n_reauth].key, "%s", hk_key);
+        J->reauth[J->n_reauth++].vals = hk;
+    }
+    if (ff) {
+        snprintf(J->reauth[J->n_reauth].key, sizeof J->reauth[J->n_reauth].key, "%s", ff_key);
+        J->reauth[J->n_reauth++].vals = ff;
+    }
+    return true;
+}
+
+// --context-surgery: the header's YaRN context and factor rewritten in
+// memory, after checking that the file declares native YaRN and that the
+// request only extends it and agrees with the original context.
+static bool quantize_job_context_surgery(quantize_job *J, uint32_t surgery_context,
+                                         float surgery_factor,
+                                         context_surgery_result *surgery_result) {
+    const char *arch = gguf_get_str(&J->g, "general.architecture", "");
+    char ctx_key[128], type_key[128], factor_key[128], orig_key[128];
+    snprintf(ctx_key, sizeof(ctx_key), "%s.context_length", arch);
+    snprintf(type_key, sizeof(type_key), "%s.rope.scaling.type", arch);
+    snprintf(factor_key, sizeof(factor_key), "%s.rope.scaling.factor", arch);
+    snprintf(orig_key, sizeof(orig_key),
+             "%s.rope.scaling.original_context_length", arch);
+    gguf_kv *ctx = gguf_get(&J->g, ctx_key);
+    gguf_kv *fac = gguf_get(&J->g, factor_key);
+    uint32_t source_context = gguf_get_u32(&J->g, ctx_key, 0);
+    uint32_t original_context = gguf_get_u32(&J->g, orig_key, 0);
+    float source_factor = gguf_get_f32(&J->g, factor_key, 0);
+    const char *scaling_type = gguf_get_str(&J->g, type_key, "");
+    double implied = (double)original_context * (double)surgery_factor;
+    uint64_t implied_context = implied >= 0.0 ? (uint64_t)(implied + 0.5) : 0;
+    bool valid = arch[0] && ctx && ctx->type == GGUF_T_U32 &&
+                 fac && fac->type == GGUF_T_F32 &&
+                 strcmp(scaling_type, "yarn") == 0 &&
+                 original_context > 0 && source_context > 0 &&
+                 source_factor > 1.0f;
+    if (!valid) {
+        fprintf(stderr, "error: --context-surgery requires complete native "
+                        "YaRN metadata with u32 context/original context "
+                        "and f32 factor\n");
+        return false;
+    }
+    if (surgery_context <= source_context ||
+        surgery_factor <= source_factor) {
+        fprintf(stderr, "error: --context-surgery only extends context "
+                        "(source %u/x%.9g, requested %u/x%.9g)\n",
+                source_context, (double)source_factor, surgery_context,
+                (double)surgery_factor);
+        return false;
+    }
+    if (implied_context != surgery_context ||
+        fabs(implied - (double)surgery_context) > 0.0001) {
+        fprintf(stderr, "error: --context-surgery target %u conflicts "
+                        "with original context %u x YaRN factor %.9g "
+                        "(implies %.9g)\n", surgery_context,
+                original_context, (double)surgery_factor, implied);
+        return false;
+    }
+    ctx->v.u64 = surgery_context;
+    uint32_t factor_bits;
+    memcpy(&factor_bits, &surgery_factor, sizeof(factor_bits));
+    fac->raw = factor_bits;
+    fac->v.f64 = surgery_factor;
+    if (surgery_result) {
+        surgery_result->source_context = source_context;
+        surgery_result->original_context = original_context;
+        surgery_result->source_factor = source_factor;
+        surgery_result->tensors_byte_identical = false;
+    }
+    fprintf(stderr, "context-surgery: %s %u -> %u; %s %.9g -> %.9g\n",
+            ctx_key, source_context, surgery_context, factor_key,
+            (double)source_factor, (double)surgery_factor);
+    return true;
+}
+
+// Prune-plan pre-pass: resolve every plan entry against its layer's own
+// router tensor (the one tensor every is_moe layer always has), validate
+// ids are in range, and decide whether the WHOLE model ends up with one
+// uniform post-prune expert count — the only case expert_count metadata
+// can honestly be rewritten to a single new value. Done before any
+// output is written so a bad plan fails clean, before touching the
+// destination file at all.
+static bool quantize_job_check_prune(quantize_job *J, const char *in_path) {
+    const char *parch = gguf_get_str(&J->g, "general.architecture", "");
+    char bc_key[128];
+    snprintf(bc_key, sizeof(bc_key), "%s.block_count", parch);
+    snprintf(J->pl_key, sizeof(J->pl_key), "%s.expert_count_per_layer", parch);
+    J->n_blocks = gguf_get_u32(&J->g, bc_key, 0);
+    J->layer_counts = calloc(J->n_blocks ? J->n_blocks : 1, sizeof(uint32_t));
+    if (!J->layer_counts) return false;
+    int n_moe_layers = 0, n_moe_seen = 0;
+    bool any_pruned = false, all_equal = true;
+    int first_count = -1;
+    for (uint64_t i = 0; i < J->g.n_tensors; i++) {
+        int layer; const char *suffix;
+        if (!parse_blk_name(J->g.tensors[i].name, &layer, &suffix)) continue;
+        if (strcmp(suffix, "ffn_gate_inp.weight") != 0) continue;
+        n_moe_layers++;
+        gguf_tensor *router = &J->g.tensors[i];
+        if (router->n_dims < 2) {
+            fprintf(stderr, "error: %s has %d dims, expected 2\n",
+                    router->name, router->n_dims);
+            return false;
+        }
+        int64_t orig_n = router->ne[router->n_dims - 1];
+        const prune_layer_t *pl = prune_plan_find(&J->plan, layer);
+        int final_count = (int)orig_n;
+        if (pl) {
+            n_moe_seen++;
+            for (int j = 0; j < pl->n_ids; j++)
+                if (pl->ids[j] >= orig_n) {
+                    fprintf(stderr, "error: prune-plan layer_%d lists "
+                            "expert %d, but blk.%d only has %lld experts\n",
+                            layer, pl->ids[j], layer, (long long)orig_n);
+                    return false;
+                }
+            // Every tensor resolve_prune() will slice must describe the
+            // same expert axis as this router. Validating ids against the
+            // router alone is insufficient: a shorter bias/bank would
+            // make the copy loop index beyond that tensor's declared
+            // data and produce an artifact that cannot load.
+            for (uint64_t j = 0; j < J->g.n_tensors; j++) {
+                int tensor_layer; const char *tensor_suffix;
+                gguf_tensor *et = &J->g.tensors[j];
+                if (!parse_blk_name(et->name, &tensor_layer,
+                                    &tensor_suffix) ||
+                    tensor_layer != layer ||
+                    !is_expert_tensor_suffix(tensor_suffix))
+                    continue;
+                int64_t tensor_n = et->ne[et->n_dims - 1];
+                if (tensor_n != orig_n) {
+                    fprintf(stderr, "error: %s expert axis has %lld "
+                            "entries, but the blk.%d router has %lld\n",
+                            et->name, (long long)tensor_n, layer,
+                            (long long)orig_n);
+                    return false;
+                }
+            }
+            final_count = pl->n_ids;
+            if (final_count < orig_n) any_pruned = true;
+        }
+        if (first_count < 0) first_count = final_count;
+        else if (final_count != first_count) all_equal = false;
+        if ((uint64_t)layer >= J->n_blocks) {
+            fprintf(stderr, "error: %s names block %d but %s.block_count is %llu\n",
+                    router->name, layer, parch, (unsigned long long)J->n_blocks);
+            return false;
+        }
+        J->layer_counts[layer] = (uint32_t)final_count;
+    }
+    if (n_moe_seen < J->plan.n) {
+        // at least one "layer_N" in the plan matched no MoE layer in
+        // this file at all — almost certainly the plan was built for a
+        // different model or has a typo'd layer index
+        fprintf(stderr, "error: --prune-experts lists %d layer(s) but "
+                "only %d matched an MoE layer in %s\n",
+                J->plan.n, n_moe_seen, in_path);
+        return false;
+    }
+    if (any_pruned && all_equal && n_moe_seen == n_moe_layers) {
+        J->uniform_prune = true;
+        J->uniform_count = first_count;
+    }
+    return true;
+}
+
+// The output's data alignment decided and its partial file open.
+static bool quantize_job_open_output(quantize_job *J, const char *out_path) {
     // Honor the file's declared data alignment. The reader derives every
     // tensor's data offset from general.alignment (gguf.c), and we copy that
     // KV verbatim — so the data MUST be laid out at the same alignment, or
     // every offset past the first misaligned tensor is read at the wrong
     // address. (RNR-002: hardcoding 32 silently corrupts any model that
     // declares 64/128.)
-    uint64_t align = gguf_get_u32(&g, "general.alignment", 32);
+    uint64_t align = gguf_get_u32(&J->g, "general.alignment", 32);
     if (align == 0 || (align & (align - 1))) {
         fprintf(stderr, "error: general.alignment=%llu is not a power of two\n",
                 (unsigned long long)align);
-        gguf_close(&g);
-        quantize_plans_free(&plan, &tplan);
-        return 1;
+        return false;
     }
-    uint64_t amask = align - 1;
+    J->amask = align - 1;
 
     // Write beside the destination and rename on success, so a failed or
     // interrupted requant never destroys an existing good model — and an
     // in-place requant (in_path == out_path) no longer truncates its own
     // input. (RNR-015.)
     size_t tlen = strlen(out_path) + sizeof(".partial");
-    char *tmp_path = malloc(tlen);
-    if (!tmp_path) {
-        gguf_close(&g);
-        quantize_plans_free(&plan, &tplan);
-        return 1;
-    }
-    snprintf(tmp_path, tlen, "%s.partial", out_path);
+    J->tmp_path = malloc(tlen);
+    if (!J->tmp_path) return false;
+    snprintf(J->tmp_path, tlen, "%s.partial", out_path);
 
-    FILE *f = fopen(tmp_path, "wb");
-    if (!f) {
-        fprintf(stderr, "error: cannot write %s\n", tmp_path);
-        free(tmp_path);
-        gguf_close(&g);
-        quantize_plans_free(&plan, &tplan);
-        return 1;
+    J->w.f = fopen(J->tmp_path, "wb");
+    if (!J->w.f) {
+        fprintf(stderr, "error: cannot write %s\n", J->tmp_path);
+        return false;
     }
-    writer w = { f, true };
+    J->w.ok = true;
+    J->tmp_created = true;
+    return true;
+}
 
-    // Rewrite {arch}.expert_count in place (still in memory, not yet
-    // written) when pruning left every MoE layer at the SAME new count —
-    // the only case a single global KV can honestly describe. A plan that
-    // prunes layers to different counts, or leaves some layers unpruned,
-    // makes expert_count ambiguous by construction; runner reads each
-    // layer's real count from its own router tensor regardless (model.c),
-    // so leaving the metadata at its original value there is correct, not
-    // stale — it's still every layer's true ceiling, just no longer tight
-    // for the pruned ones.
-    if (uniform_prune) {
-        const char *arch = gguf_get_str(&g, "general.architecture", "");
-        char ec_key[128];
-        snprintf(ec_key, sizeof(ec_key), "%s.expert_count", arch);
-        gguf_kv *ec = gguf_get(&g, ec_key);
-        if (ec && ec->type == GGUF_T_U32) {
-            fprintf(stderr, "quantize: %s %llu -> %d (uniform prune)\n",
-                    ec_key, (unsigned long long)ec->v.u64, uniform_count);
-            ec->v.u64 = (uint64_t)uniform_count;
-        }
+// Rewrite {arch}.expert_count in place (still in memory, not yet
+// written) when pruning left every MoE layer at the SAME new count —
+// the only case a single global KV can honestly describe. A plan that
+// prunes layers to different counts, or leaves some layers unpruned,
+// makes expert_count ambiguous by construction; runner reads each
+// layer's real count from its own router tensor regardless (model.c),
+// so leaving the metadata at its original value there is correct, not
+// stale — it's still every layer's true ceiling, just no longer tight
+// for the pruned ones.
+static void quantize_job_uniform_expert_count(quantize_job *J) {
+    const char *arch = gguf_get_str(&J->g, "general.architecture", "");
+    char ec_key[128];
+    snprintf(ec_key, sizeof(ec_key), "%s.expert_count", arch);
+    gguf_kv *ec = gguf_get(&J->g, ec_key);
+    if (ec && ec->type == GGUF_T_U32) {
+        fprintf(stderr, "quantize: %s %llu -> %d (uniform prune)\n",
+                ec_key, (unsigned long long)ec->v.u64, J->uniform_count);
+        ec->v.u64 = (uint64_t)J->uniform_count;
     }
+}
 
-    // Output types are decided BEFORE the header goes out, because
-    // general.file_type must describe the OUTPUT: copying the parent's
-    // declaration shipped a mixed Q4_0/Q4_K artifact labeled by its parent
-    // (finding B of the 2026-08-11 external evaluation — the same
-    // mixed-tensor trap this project's own cert matrix fails third parties
-    // for). The declared value is computed from the histogram of what is
-    // actually written, and the histogram itself is printed so a mixed
-    // result is visible in the log, not just in a header field.
-    int *out_type = malloc(sizeof(int) * g.n_tensors);
-    if (g.n_tensors > 0 && !out_type) w.ok = false;
+// Output types are decided BEFORE the header goes out, because
+// general.file_type must describe the OUTPUT: copying the parent's
+// declaration shipped a mixed Q4_0/Q4_K artifact labeled by its parent
+// (finding B of the 2026-08-11 external evaluation — the same
+// mixed-tensor trap this project's own cert matrix fails third parties
+// for). The declared value is computed from the histogram of what is
+// actually written, and the histogram itself is printed so a mixed
+// result is visible in the log, not just in a header field.
+static bool quantize_job_decide_types(quantize_job *J, int target,
+                                      const char *type_plan_path,
+                                      const merge_set_t *ms) {
+    J->out_type = malloc(sizeof(int) * J->g.n_tensors);
+    if (J->g.n_tensors > 0 && !J->out_type) J->w.ok = false;
     // RI-3: a declined rule names the tensor and the type it asked for.
     // An aggregate count told the author of a plan that something was dropped
     // but not what, so the only way to find it was to diff the built histogram
@@ -2012,27 +2022,27 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     // said about it. Counted and reported, as declined_width already is.
     uint64_t declined_size = 0;
     bool merge_unwritable = false;
-    for (uint64_t i = 0; w.ok && i < g.n_tensors; i++) {
-        gguf_tensor *t = &g.tensors[i];
-        if (drop && drop[i]) { out_type[i] = t->type; continue; }
+    for (uint64_t i = 0; J->w.ok && i < J->g.n_tensors; i++) {
+        gguf_tensor *t = &J->g.tensors[i];
+        if (J->drop && J->drop[i]) { J->out_type[i] = t->type; continue; }
         if (type_plan_path) {
             // The plan decides per tensor. T_KEEP leaves the tensor byte for
             // byte; anything else goes through the same should_quantize,
             // block-width and never-grow guards as a whole-file target, so a
             // plan cannot make a tensor bigger, quantize something that must
             // stay f32, or write a row the target type cannot describe.
-            int want = type_plan_pick(&tplan, t->name);
+            int want = type_plan_pick(&J->tplan, t->name);
             if (keep_source_type(t) || want == T_KEEP) {
                 // "keep" means exactly that, for every tensor. Falling through
                 // to the whole-file rule below pushed a non-f16 tensor (a bf16
                 // norm) to F32 — a converted, grown tensor in a plan whose
                 // whole instruction was to convert nothing.
-                out_type[i] = t->type;
+                J->out_type[i] = t->type;
             } else if (!should_quantize(t)) {
-                out_type[i] = t->type == T_F16 ? T_F16 : T_F32;
+                J->out_type[i] = t->type == T_F16 ? T_F16 : T_F32;
             } else if (!type_fits_row(want, t->ne[0]) &&
                        width_fallback(want, t->ne[0]) == want) {
-                out_type[i] = t->type;
+                J->out_type[i] = t->type;
                 if (n_decl_w < DECLINE_NAMES) {
                     decl_w_name[n_decl_w] = t->name;
                     decl_w_type[n_decl_w++] = (uint32_t)want;
@@ -2046,11 +2056,11 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                 }
                 fell_back++;
                 want = fb;
-                out_type[i] = ggml_row_size(t->type, t->ne[0]) <=
+                J->out_type[i] = ggml_row_size(t->type, t->ne[0]) <=
                               ggml_row_size(fb, t->ne[0]) ? t->type : fb;
             } else if (ggml_row_size(t->type, t->ne[0]) <=
                        ggml_row_size(want, t->ne[0])) {
-                out_type[i] = t->type;   // never grow
+                J->out_type[i] = t->type;   // never grow
                 if ((uint32_t)want != t->type) {
                     if (n_decl_s < DECLINE_NAMES) {
                         decl_s_name[n_decl_s] = t->name;
@@ -2059,19 +2069,19 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                     declined_size++;
                 }
             } else {
-                out_type[i] = want;
+                J->out_type[i] = want;
             }
         } else if (target == T_KEEP) {
-            out_type[i] = t->type;
+            J->out_type[i] = t->type;
         } else {
             const char *only = ms ? NULL : getenv("RUNNER_REQUANT_ONLY");
             bool filtered = keep_source_type(t) ||
                             (only && *only && !strstr(t->name, only));
             if (filtered)
-                out_type[i] = t->type;
+                J->out_type[i] = t->type;
             else if (should_quantize(t) && !type_fits_row(target, t->ne[0]) &&
                      width_fallback(target, t->ne[0]) == target) {
-                out_type[i] = t->type;
+                J->out_type[i] = t->type;
                 filtered = true;          // and skip the never-grow rule below
                 if (n_decl_w < DECLINE_NAMES) {
                     decl_w_name[n_decl_w] = t->name;
@@ -2085,9 +2095,9 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                     fb_got[n_fb++] = (uint32_t)fb;
                 }
                 fell_back++;
-                out_type[i] = fb;         // the never-grow rule below still applies
+                J->out_type[i] = fb;         // the never-grow rule below still applies
             } else
-                out_type[i] = should_quantize(t) ? target
+                J->out_type[i] = should_quantize(t) ? target
                             : (t->type == T_F16 ? T_F16 : T_F32);
             // never grow a tensor that is already smaller than the target —
             // RUNNER_FORCE_REQUANT overrides this to build same-size
@@ -2104,31 +2114,23 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                     }
                     declined_size++;
                 }
-                out_type[i] = t->type;
+                J->out_type[i] = t->type;
             }
         }
         // an adapted tensor cannot keep a type this file has no quantizer
         // for — refuse before writing a byte rather than skip the delta
         if (ms && ms->map[i].r && !ms->map[i].zero &&
-            !quantize_row_writable(out_type[i])) {
+            !quantize_row_writable(J->out_type[i])) {
             fprintf(stderr, "error: cannot merge into %s — no %s "
                     "quantizer; pass --quant to pick a writable output "
-                    "type\n", t->name, ggml_type_name(out_type[i]));
+                    "type\n", t->name, ggml_type_name(J->out_type[i]));
             merge_unwritable = true;
         }
     }
-    if (merge_unwritable) {
-        free(out_type);
-        fclose(f);
-        remove(tmp_path);
-        free(tmp_path);
-        gguf_close(&g);
-        quantize_plans_free(&plan, &tplan);
-        return 1;
-    }
+    if (merge_unwritable) return false;
     bool strict_refuse = g_type_plan_strict && type_plan_path &&
                          (fell_back || declined_width || declined_size);
-    if (w.ok && fell_back) {
+    if (J->w.ok && fell_back) {
         fprintf(stderr, "quantize: %llu tensor(s) written in a 32-block fallback "
                 "type — the requested type's block does not divide their row "
                 "width\n", (unsigned long long)fell_back);
@@ -2139,7 +2141,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
             fprintf(stderr, "quantize:   ... and %llu more\n",
                     (unsigned long long)(fell_back - (uint64_t)n_fb));
     }
-    if (w.ok && declined_width) {
+    if (J->w.ok && declined_width) {
         fprintf(stderr, "quantize: %llu tensor(s) kept their own type — the "
                 "requested type's block does not divide their row width\n",
                 (unsigned long long)declined_width);
@@ -2150,7 +2152,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
             fprintf(stderr, "quantize:   ... and %llu more\n",
                     (unsigned long long)(declined_width - (uint64_t)n_decl_w));
     }
-    if (w.ok && declined_size) {
+    if (J->w.ok && declined_size) {
         fprintf(stderr, "quantize: %llu tensor(s) kept their own type — the "
                 "requested type is not smaller than what they already carry "
                 "(set RUNNER_FORCE_REQUANT=1 to convert anyway)\n",
@@ -2167,286 +2169,304 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                 "not be applied as written (listed above); nothing was "
                 "written\n", (unsigned long long)(fell_back + declined_width +
                                                   declined_size));
-        free(out_type);
-        fclose(f);
-        remove(tmp_path);
-        free(tmp_path);
-        gguf_close(&g);
-        quantize_plans_free(&plan, &tplan);
-        return 1;
+        return false;
     }
-    uint32_t ftype_out = 0;
-    if (w.ok && g.n_tensors > 0) {
-        // dominant non-f32 output type -> its MOSTLY_* code. The K-quant
-        // S/M/L distinction is not recoverable from a one-type histogram;
-        // the M code is the closest honest label and the printed histogram
-        // carries the exact truth.
-        static const struct { int t; uint32_t ftype; const char *name; } FT[] = {
-            { T_F16, 1, "F16" }, { T_BF16, 32, "BF16" },
-            { T_Q4_0, 2, "Q4_0" }, { T_Q4_1, 3, "Q4_1" },
-            { T_Q5_0, 8, "Q5_0" }, { T_Q5_1, 9, "Q5_1" },
-            { T_Q8_0, 7, "Q8_0" },
-            { T_Q2_K, 10, "Q2_K" }, { T_Q3_K, 12, "Q3_K" },
-            { T_Q4_K, 15, "Q4_K" }, { T_Q5_K, 17, "Q5_K" },
-            { T_Q6_K, 18, "Q6_K" },
-            { T_IQ2_XXS, 19, "IQ2_XXS" }, { T_IQ2_XS, 20, "IQ2_XS" },
-            { T_IQ2_S, 28, "IQ2_S" }, { T_IQ3_XXS, 23, "IQ3_XXS" },
-            { T_IQ3_S, 26, "IQ3_S" }, { T_IQ1_S, 24, "IQ1_S" },
-            { T_IQ1_M, 31, "IQ1_M" }, { T_IQ4_NL, 25, "IQ4_NL" },
-            { T_IQ4_XS, 30, "IQ4_XS" }, { T_MXFP4, 38, "MXFP4" },
-            { T_NVFP4, 39, "NVFP4" }, { T_Q2_0, 41, "Q2_0" },   // llama.h LLAMA_FTYPE
-        };
-        uint64_t counts[sizeof(FT) / sizeof(*FT)] = {0};
-        uint64_t f32s = 0;
-        for (uint64_t i = 0; i < g.n_tensors; i++) {
-            if (drop && drop[i]) continue;
-            if (out_type[i] == T_F32) { f32s++; continue; }
-            for (size_t k = 0; k < sizeof(FT) / sizeof(*FT); k++)
-                if (FT[k].t == out_type[i]) { counts[k]++; break; }
-        }
-        size_t dom = 0;
-        uint64_t best = 0;
+    return true;
+}
+
+// dominant non-f32 output type -> its MOSTLY_* code. The K-quant
+// S/M/L distinction is not recoverable from a one-type histogram;
+// the M code is the closest honest label and the printed histogram
+// carries the exact truth.
+static uint32_t quantize_job_file_type(const quantize_job *J) {
+    if (!J->w.ok || J->g.n_tensors == 0) return 0;
+    static const struct { int t; uint32_t ftype; const char *name; } FT[] = {
+        { T_F16, 1, "F16" }, { T_BF16, 32, "BF16" },
+        { T_Q4_0, 2, "Q4_0" }, { T_Q4_1, 3, "Q4_1" },
+        { T_Q5_0, 8, "Q5_0" }, { T_Q5_1, 9, "Q5_1" },
+        { T_Q8_0, 7, "Q8_0" },
+        { T_Q2_K, 10, "Q2_K" }, { T_Q3_K, 12, "Q3_K" },
+        { T_Q4_K, 15, "Q4_K" }, { T_Q5_K, 17, "Q5_K" },
+        { T_Q6_K, 18, "Q6_K" },
+        { T_IQ2_XXS, 19, "IQ2_XXS" }, { T_IQ2_XS, 20, "IQ2_XS" },
+        { T_IQ2_S, 28, "IQ2_S" }, { T_IQ3_XXS, 23, "IQ3_XXS" },
+        { T_IQ3_S, 26, "IQ3_S" }, { T_IQ1_S, 24, "IQ1_S" },
+        { T_IQ1_M, 31, "IQ1_M" }, { T_IQ4_NL, 25, "IQ4_NL" },
+        { T_IQ4_XS, 30, "IQ4_XS" }, { T_MXFP4, 38, "MXFP4" },
+        { T_NVFP4, 39, "NVFP4" }, { T_Q2_0, 41, "Q2_0" },   // llama.h LLAMA_FTYPE
+    };
+    uint64_t counts[sizeof(FT) / sizeof(*FT)] = {0};
+    uint64_t f32s = 0;
+    for (uint64_t i = 0; i < J->g.n_tensors; i++) {
+        if (J->drop && J->drop[i]) continue;
+        if (J->out_type[i] == T_F32) { f32s++; continue; }
         for (size_t k = 0; k < sizeof(FT) / sizeof(*FT); k++)
-            if (counts[k] > best) { best = counts[k]; dom = k; }
-        ftype_out = best ? FT[dom].ftype : 0;   // all-f32 -> ALL_F32
-        fprintf(stderr, "quantize: general.file_type %u (MOSTLY_%s) — output histogram:",
-                ftype_out, best ? FT[dom].name : "F32");
-        if (f32s) fprintf(stderr, " F32:%llu", (unsigned long long)f32s);
-        for (size_t k = 0; k < sizeof(FT) / sizeof(*FT); k++)
-            if (counts[k]) fprintf(stderr, " %s:%llu", FT[k].name,
-                                   (unsigned long long)counts[k]);
-        fprintf(stderr, "\n");
+            if (FT[k].t == J->out_type[i]) { counts[k]++; break; }
     }
+    size_t dom = 0;
+    uint64_t best = 0;
+    for (size_t k = 0; k < sizeof(FT) / sizeof(*FT); k++)
+        if (counts[k] > best) { best = counts[k]; dom = k; }
+    uint32_t ftype_out = best ? FT[dom].ftype : 0;   // all-f32 -> ALL_F32
+    fprintf(stderr, "quantize: general.file_type %u (MOSTLY_%s) — output histogram:",
+            ftype_out, best ? FT[dom].name : "F32");
+    if (f32s) fprintf(stderr, " F32:%llu", (unsigned long long)f32s);
+    for (size_t k = 0; k < sizeof(FT) / sizeof(*FT); k++)
+        if (counts[k]) fprintf(stderr, " %s:%llu", FT[k].name,
+                               (unsigned long long)counts[k]);
+    fprintf(stderr, "\n");
+    return ftype_out;
+}
+
+// The header: every source KV the transformation does not re-author, then
+// the re-authored ones.
+static void quantize_job_write_header(quantize_job *J) {
+    uint32_t ftype_out = quantize_job_file_type(J);
     // A pruned source may already carry the per-layer declaration; a new
     // plan re-authors it (never duplicates it), a plain requant copies it
     // through like every other KV.
     uint64_t dropped_kv = 0;
-    for (uint64_t i = 0; i < g.n_kv; i++) {
-        bool re = kv_is_reauthored(g.kv[i].key) ||
-                  (layer_counts && !strcmp(g.kv[i].key, pl_key));
-        for (int k = 0; !re && k < n_reauth; k++)
-            re = !strcmp(g.kv[i].key, reauth[k].key);
+    for (uint64_t i = 0; i < J->g.n_kv; i++) {
+        bool re = kv_is_reauthored(J->g.kv[i].key) ||
+                  (J->layer_counts && !strcmp(J->g.kv[i].key, J->pl_key));
+        for (int k = 0; !re && k < J->n_reauth; k++)
+            re = !strcmp(J->g.kv[i].key, J->reauth[k].key);
         if (re) dropped_kv++;
     }
 
-    wr_u32(&w, 0x46554747);
-    wr_u32(&w, 3);
-    wr_u64(&w, g.n_tensors - n_dropped);
-    wr_u64(&w, g.n_kv - dropped_kv + 1 + (layer_counts ? 1 : 0) + (uint64_t)n_reauth);
-    for (uint64_t i = 0; i < g.n_kv; i++) {
-        bool re = kv_is_reauthored(g.kv[i].key) ||
-                  (layer_counts && !strcmp(g.kv[i].key, pl_key));
-        for (int k = 0; !re && k < n_reauth; k++)
-            re = !strcmp(g.kv[i].key, reauth[k].key);
+    wr_u32(&J->w, 0x46554747);
+    wr_u32(&J->w, 3);
+    wr_u64(&J->w, J->g.n_tensors - J->n_dropped);
+    wr_u64(&J->w, J->g.n_kv - dropped_kv + 1 + (J->layer_counts ? 1 : 0) + (uint64_t)J->n_reauth);
+    for (uint64_t i = 0; i < J->g.n_kv; i++) {
+        bool re = kv_is_reauthored(J->g.kv[i].key) ||
+                  (J->layer_counts && !strcmp(J->g.kv[i].key, J->pl_key));
+        for (int k = 0; !re && k < J->n_reauth; k++)
+            re = !strcmp(J->g.kv[i].key, J->reauth[k].key);
         if (re) continue;
-        wr_kv(&w, &g.kv[i]);
+        wr_kv(&J->w, &J->g.kv[i]);
     }
-    for (int k = 0; k < n_reauth; k++) {
+    for (int k = 0; k < J->n_reauth; k++) {
         // per-layer arrays declaring the removed sublayers (0 = absent)
         char bc_key[160];
         snprintf(bc_key, sizeof bc_key, "%s.block_count",
-                 gguf_get_str(&g, "general.architecture", ""));
-        uint64_t nb = gguf_get_u32(&g, bc_key, 0);
-        wr_str(&w, reauth[k].key, strlen(reauth[k].key));
-        wr_u32(&w, 9);        // GGUF_T_ARR
-        wr_u32(&w, 4);        // of GGUF_T_U32
-        wr_u64(&w, nb);
-        for (uint64_t i = 0; i < nb; i++) wr_u32(&w, reauth[k].vals[i]);
+                 gguf_get_str(&J->g, "general.architecture", ""));
+        uint64_t nb = gguf_get_u32(&J->g, bc_key, 0);
+        wr_str(&J->w, J->reauth[k].key, strlen(J->reauth[k].key));
+        wr_u32(&J->w, 9);        // GGUF_T_ARR
+        wr_u32(&J->w, 4);        // of GGUF_T_U32
+        wr_u64(&J->w, nb);
+        for (uint64_t i = 0; i < nb; i++) wr_u32(&J->w, J->reauth[k].vals[i]);
         fprintf(stderr, "quantize: %s written as a per-block array (0 = removed)\n",
-                reauth[k].key);
-        free(reauth[k].vals);
-        reauth[k].vals = NULL;
+                J->reauth[k].key);
     }
-    wr_str(&w, "general.file_type", strlen("general.file_type"));
-    wr_u32(&w, 4);            // GGUF_T_U32
-    wr_u32(&w, ftype_out);
-    if (layer_counts) {
-        wr_str(&w, pl_key, strlen(pl_key));
-        wr_u32(&w, 9);        // GGUF_T_ARR
-        wr_u32(&w, 4);        // of GGUF_T_U32
-        wr_u64(&w, n_blocks);
-        for (uint64_t i = 0; i < n_blocks; i++) wr_u32(&w, layer_counts[i]);
+    wr_str(&J->w, "general.file_type", strlen("general.file_type"));
+    wr_u32(&J->w, 4);            // GGUF_T_U32
+    wr_u32(&J->w, ftype_out);
+    if (J->layer_counts) {
+        wr_str(&J->w, J->pl_key, strlen(J->pl_key));
+        wr_u32(&J->w, 9);        // GGUF_T_ARR
+        wr_u32(&J->w, 4);        // of GGUF_T_U32
+        wr_u64(&J->w, J->n_blocks);
+        for (uint64_t i = 0; i < J->n_blocks; i++) wr_u32(&J->w, J->layer_counts[i]);
         fprintf(stderr, "quantize: %s written (%llu blocks; the global "
                 "expert_count stays the ceiling)\n",
-                pl_key, (unsigned long long)n_blocks);
-        free(layer_counts);
-        layer_counts = NULL;
+                J->pl_key, (unsigned long long)J->n_blocks);
     }
+}
 
-    // tensor table with new types/offsets (data alignment `align`)
+// The tensor table (each tensor's type, written shape and data offset)
+// and the padding up to the data.
+static void quantize_job_write_layout(quantize_job *J) {
+    // tensor table with new types/offsets, at the file's data alignment
     uint64_t off = 0;
-    uint64_t *out_off = malloc(sizeof(uint64_t) * g.n_tensors);
+    J->out_off = malloc(sizeof(uint64_t) * J->g.n_tensors);
     // effective (possibly pruned) ne[] this tensor is WRITTEN with — equal
     // to t->ne[] unless resolve_prune() slices its expert axis
-    int64_t (*eff_ne)[4] = malloc(sizeof(int64_t[4]) * (g.n_tensors ? g.n_tensors : 1));
-    if ((g.n_tensors > 0 && (!out_type || !out_off || !eff_ne))) w.ok = false;
-    for (uint64_t i = 0; i < g.n_tensors; i++) {
-        gguf_tensor *t = &g.tensors[i];
-        if (!w.ok) break;
-        if (drop && drop[i]) { out_off[i] = 0; continue; }
-        for (int d = 0; d < 4; d++) eff_ne[i][d] = t->ne[d];
-        const prune_layer_t *pl = resolve_prune(t, &plan);
-        if (pl) eff_ne[i][t->n_dims - 1] = pl->n_ids;
-        // out_type[i] was decided in the pre-pass above, before the header
-        // (general.file_type is derived from it)
+    J->eff_ne = malloc(sizeof(int64_t[4]) * (J->g.n_tensors ? J->g.n_tensors : 1));
+    if ((J->g.n_tensors > 0 && (!J->out_type || !J->out_off || !J->eff_ne))) J->w.ok = false;
+    for (uint64_t i = 0; i < J->g.n_tensors; i++) {
+        gguf_tensor *t = &J->g.tensors[i];
+        if (!J->w.ok) break;
+        if (J->drop && J->drop[i]) { J->out_off[i] = 0; continue; }
+        for (int d = 0; d < 4; d++) J->eff_ne[i][d] = t->ne[d];
+        const prune_layer_t *pl = resolve_prune(t, &J->plan);
+        if (pl) J->eff_ne[i][t->n_dims - 1] = pl->n_ids;
+        // out_type[i] was decided by quantize_job_decide_types(), before
+        // the header (general.file_type is derived from it)
         uint64_t rows, bytes, end;
-        if (!checked_u64_mul((uint64_t)eff_ne[i][1], (uint64_t)eff_ne[i][2], &rows) ||
-            !checked_u64_mul(rows, (uint64_t)eff_ne[i][3], &rows) ||
-            !checked_u64_mul(ggml_row_size(out_type[i], eff_ne[i][0]), rows, &bytes) ||
+        if (!checked_u64_mul((uint64_t)J->eff_ne[i][1], (uint64_t)J->eff_ne[i][2], &rows) ||
+            !checked_u64_mul(rows, (uint64_t)J->eff_ne[i][3], &rows) ||
+            !checked_u64_mul(ggml_row_size(J->out_type[i], J->eff_ne[i][0]), rows, &bytes) ||
             !checked_u64_add(off, bytes, &end) ||
-            !checked_u64_add(end, amask, &end)) {
-            w.ok = false;
+            !checked_u64_add(end, J->amask, &end)) {
+            J->w.ok = false;
             break;
         }
-        out_off[i] = off;
-        off = end & ~amask;
+        J->out_off[i] = off;
+        off = end & ~J->amask;
 
-        wr_str(&w, t->name, strlen(t->name));
-        wr_u32(&w, t->n_dims);
-        for (uint32_t d = 0; d < t->n_dims; d++) wr_u64(&w, (uint64_t)eff_ne[i][d]);
-        wr_u32(&w, (uint32_t)out_type[i]);
-        wr_u64(&w, out_off[i]);
+        wr_str(&J->w, t->name, strlen(t->name));
+        wr_u32(&J->w, t->n_dims);
+        for (uint32_t d = 0; d < t->n_dims; d++) wr_u64(&J->w, (uint64_t)J->eff_ne[i][d]);
+        wr_u32(&J->w, (uint32_t)J->out_type[i]);
+        wr_u64(&J->w, J->out_off[i]);
     }
     // pad to data section
-    int64_t hdr_end = wr_tell(&w);
-    uint64_t data_start = hdr_end >= 0 ? ((uint64_t)hdr_end + amask) & ~amask : 0;
-    if (hdr_end >= 0 && data_start < (uint64_t)hdr_end) w.ok = false;
-    wr_pad_to(&w, data_start);
+    int64_t hdr_end = wr_tell(&J->w);
+    J->data_start = hdr_end >= 0 ? ((uint64_t)hdr_end + J->amask) & ~J->amask : 0;
+    if (hdr_end >= 0 && J->data_start < (uint64_t)hdr_end) J->w.ok = false;
+    wr_pad_to(&J->w, J->data_start);
+}
 
+// One pruned tensor: its kept experts' blocks, in the plan's order.
+static void quantize_job_write_pruned(quantize_job *J, uint64_t i,
+                                      const prune_layer_t *pl) {
+    gguf_tensor *t = &J->g.tensors[i];
+    // Pruned: copy/convert only the kept experts' blocks, IN PLAN
+    // ORDER, instead of the tensor's full contiguous row range —
+    // each expert is one contiguous block of exp_rows rows (1 for
+    // the router/exps-bias 2D shapes, 1 element for the 1D
+    // bias/scale shapes, n_ff_exp rows for the fused 3D expert
+    // weights), so this is the pruning itself: the survivors, in
+    // the plan's order, is the new expert index space — no
+    // separate id remapping happens anywhere at runtime.
+    int64_t row_len, exp_rows;
+    expert_block_geometry(t, &row_len, &exp_rows);
+    size_t in_row = ggml_row_size(t->type, row_len);
+    size_t per_expert_in = in_row * (size_t)exp_rows;
+    if ((uint32_t)J->out_type[i] == t->type) {
+        for (int j = 0; J->w.ok && j < pl->n_ids; j++)
+            wr(&J->w, (const uint8_t *)t->data +
+                   (size_t)pl->ids[j] * per_expert_in, per_expert_in);
+        J->kept++;
+        return;
+    }
+    size_t out_rs = ggml_row_size(J->out_type[i], row_len);
+    for (int j = 0; J->w.ok && j < pl->n_ids; j++) {
+        for (int64_t r = 0; r < exp_rows; r++) {
+            int64_t src_row = (int64_t)pl->ids[j] * exp_rows + r;
+            dequant_row(t->type, (const uint8_t *)t->data +
+                        (size_t)src_row * in_row, J->rowf, (int)row_len);
+            quantize_row_any(J->out_type[i], J->rowf, J->rowq, (int)row_len);
+            wr(&J->w, J->rowq, out_rs);
+        }
+    }
+    J->quantized++;
+}
+
+// One tensor written whole: copied when its type stays and no delta
+// applies, else row by row through f32, with a merge's delta folded in
+// and its survival measured.
+static void quantize_job_write_rows(quantize_job *J, uint64_t i, merge_set_t *ms) {
+    gguf_tensor *t = &J->g.tensors[i];
+    // a zero-delta pair leaves its tensor on the verbatim path below —
+    // copying the base bytes is exactly the merge result, without a
+    // gratuitous dequant->requant of untouched weights
+    const merge_pair_t *mp = ms && ms->map[i].r && !ms->map[i].zero
+                             ? &ms->map[i] : NULL;
+    uint64_t rows = t->ne[1] * t->ne[2] * t->ne[3];
+    size_t in_rs = ggml_row_size(t->type, t->ne[0]);
+    size_t out_rs = ggml_row_size(J->out_type[i], t->ne[0]);
+    if (!mp && (uint32_t)J->out_type[i] == t->type) {
+        uint64_t bytes;
+        if (!checked_u64_mul(in_rs, rows, &bytes) || bytes > SIZE_MAX)
+            J->w.ok = false;
+        else
+            wr(&J->w, t->data, (size_t)bytes);
+        J->kept++;
+        return;
+    }
+    if (mp && t->scale != 1.0f) {
+        // The base rows are stored unscaled with a `.scale` companion the
+        // loader applies; folding a delta into them would put the delta
+        // under that companion too. Refuse rather than write a merged
+        // file that is wrong by 1/scale on the adapted part.
+        fprintf(stderr, "error: %s carries a per-tensor scale companion; "
+                "--merge-lora into a scaled base is not supported "
+                "(serve base + --lora instead)\n", t->name);
+        J->w.ok = false;
+        return;
+    }
+    int n0 = (int)t->ne[0];
+    for (uint64_t r = 0; r < rows; r++) {
+        dequant_row(t->type, (uint8_t *)t->data + r * in_rs, J->rowf, n0);
+        if (mp) {
+            memcpy(J->basef, J->rowf, sizeof(float) * (size_t)n0);
+            merge_row(mp, r, J->rowf, n0);
+        }
+        quantize_row_any(J->out_type[i], J->rowf, J->rowq, n0);
+        wr(&J->w, J->rowq, out_rs);
+        if (mp) {
+            // Did the grid keep the delta? The base alone, written at
+            // the same type, is what the merge would be had the adapter
+            // done nothing; the projection of (merged - that) onto the
+            // intended delta is the part of the delta that survived.
+            quantize_row_any(J->out_type[i], J->basef, J->rowqb, n0);
+            merge_survival *sv = &ms->surv;
+            sv->bytes += out_rs;
+            for (size_t k = 0; k < out_rs; k++)
+                sv->bytes_changed += J->rowq[k] != J->rowqb[k];
+            dequant_row(J->out_type[i], J->rowq, J->deqm, n0);
+            dequant_row(J->out_type[i], J->rowqb, J->deqb, n0);
+            for (int k = 0; k < n0; k++) {
+                double d = (double)J->rowf[k] - J->basef[k];
+                sv->ret_num += ((double)J->deqm[k] - J->deqb[k]) * d;
+                sv->ret_den += d * d;
+            }
+        }
+    }
+    J->quantized++;
+}
+
+// Every written tensor's data, each at its offset.
+static void quantize_job_write_tensors(quantize_job *J, merge_set_t *ms) {
     // tensor data
     size_t max_row = 0;
-    for (uint64_t i = 0; i < g.n_tensors; i++)
-        if (g.tensors[i].ne[0] > max_row) max_row = g.tensors[i].ne[0];
-    float *rowf = malloc(sizeof(float) * max_row);
-    uint8_t *rowq = malloc(ggml_row_size(T_F32, max_row) + 64);
-    if (!rowf || !rowq) w.ok = false;
+    for (uint64_t i = 0; i < J->g.n_tensors; i++)
+        if (J->g.tensors[i].ne[0] > max_row) max_row = J->g.tensors[i].ne[0];
+    J->rowf = malloc(sizeof(float) * max_row);
+    J->rowq = malloc(ggml_row_size(T_F32, max_row) + 64);
+    if (!J->rowf || !J->rowq) J->w.ok = false;
     // the survival measurement's second write of each adapted row
-    float *basef = NULL, *deqm = NULL, *deqb = NULL;
-    uint8_t *rowqb = NULL;
     if (ms) {
-        basef = malloc(sizeof(float) * max_row);
-        deqm = malloc(sizeof(float) * max_row);
-        deqb = malloc(sizeof(float) * max_row);
-        rowqb = malloc(ggml_row_size(T_F32, max_row) + 64);
-        if (!basef || !deqm || !deqb || !rowqb) w.ok = false;
+        J->basef = malloc(sizeof(float) * max_row);
+        J->deqm = malloc(sizeof(float) * max_row);
+        J->deqb = malloc(sizeof(float) * max_row);
+        J->rowqb = malloc(ggml_row_size(T_F32, max_row) + 64);
+        if (!J->basef || !J->deqm || !J->deqb || !J->rowqb) J->w.ok = false;
     }
 
-    uint64_t quantized = 0, kept = 0;
-    for (uint64_t i = 0; w.ok && i < g.n_tensors; i++) {
-        gguf_tensor *t = &g.tensors[i];
-        if (drop && drop[i]) continue;
+    for (uint64_t i = 0; J->w.ok && i < J->g.n_tensors; i++) {
+        gguf_tensor *t = &J->g.tensors[i];
+        if (J->drop && J->drop[i]) continue;
         uint64_t want;
-        if (!checked_u64_add(data_start, out_off[i], &want)) {
-            w.ok = false;
+        if (!checked_u64_add(J->data_start, J->out_off[i], &want)) {
+            J->w.ok = false;
             break;
         }
-        wr_pad_to(&w, want);
+        wr_pad_to(&J->w, want);
 
-        const prune_layer_t *pl = resolve_prune(t, &plan);
-        if (pl) {
-            // Pruned: copy/convert only the kept experts' blocks, IN PLAN
-            // ORDER, instead of the tensor's full contiguous row range —
-            // each expert is one contiguous block of exp_rows rows (1 for
-            // the router/exps-bias 2D shapes, 1 element for the 1D
-            // bias/scale shapes, n_ff_exp rows for the fused 3D expert
-            // weights), so this is the pruning itself: the survivors, in
-            // the plan's order, is the new expert index space — no
-            // separate id remapping happens anywhere at runtime.
-            int64_t row_len, exp_rows;
-            expert_block_geometry(t, &row_len, &exp_rows);
-            size_t in_row = ggml_row_size(t->type, row_len);
-            size_t per_expert_in = in_row * (size_t)exp_rows;
-            if ((uint32_t)out_type[i] == t->type) {
-                for (int j = 0; w.ok && j < pl->n_ids; j++)
-                    wr(&w, (const uint8_t *)t->data +
-                           (size_t)pl->ids[j] * per_expert_in, per_expert_in);
-                kept++;
-                continue;
-            }
-            size_t out_rs = ggml_row_size(out_type[i], row_len);
-            for (int j = 0; w.ok && j < pl->n_ids; j++) {
-                for (int64_t r = 0; r < exp_rows; r++) {
-                    int64_t src_row = (int64_t)pl->ids[j] * exp_rows + r;
-                    dequant_row(t->type, (const uint8_t *)t->data +
-                                (size_t)src_row * in_row, rowf, (int)row_len);
-                    quantize_row_any(out_type[i], rowf, rowq, (int)row_len);
-                    wr(&w, rowq, out_rs);
-                }
-            }
-            quantized++;
-            continue;
-        }
-
-        // a zero-delta pair leaves its tensor on the verbatim path below —
-        // copying the base bytes is exactly the merge result, without a
-        // gratuitous dequant->requant of untouched weights
-        const merge_pair_t *mp = ms && ms->map[i].r && !ms->map[i].zero
-                                 ? &ms->map[i] : NULL;
-        uint64_t rows = t->ne[1] * t->ne[2] * t->ne[3];
-        size_t in_rs = ggml_row_size(t->type, t->ne[0]);
-        size_t out_rs = ggml_row_size(out_type[i], t->ne[0]);
-        if (!mp && (uint32_t)out_type[i] == t->type) {
-            uint64_t bytes;
-            if (!checked_u64_mul(in_rs, rows, &bytes) || bytes > SIZE_MAX)
-                w.ok = false;
-            else
-                wr(&w, t->data, (size_t)bytes);
-            kept++;
-            continue;
-        }
-        if (mp && t->scale != 1.0f) {
-            // The base rows are stored unscaled with a `.scale` companion the
-            // loader applies; folding a delta into them would put the delta
-            // under that companion too. Refuse rather than write a merged
-            // file that is wrong by 1/scale on the adapted part.
-            fprintf(stderr, "error: %s carries a per-tensor scale companion; "
-                    "--merge-lora into a scaled base is not supported "
-                    "(serve base + --lora instead)\n", t->name);
-            w.ok = false;
-            break;
-        }
-        int n0 = (int)t->ne[0];
-        for (uint64_t r = 0; r < rows; r++) {
-            dequant_row(t->type, (uint8_t *)t->data + r * in_rs, rowf, n0);
-            if (mp) {
-                memcpy(basef, rowf, sizeof(float) * (size_t)n0);
-                merge_row(mp, r, rowf, n0);
-            }
-            quantize_row_any(out_type[i], rowf, rowq, n0);
-            wr(&w, rowq, out_rs);
-            if (mp) {
-                // Did the grid keep the delta? The base alone, written at
-                // the same type, is what the merge would be had the adapter
-                // done nothing; the projection of (merged - that) onto the
-                // intended delta is the part of the delta that survived.
-                quantize_row_any(out_type[i], basef, rowqb, n0);
-                merge_survival *sv = &ms->surv;
-                sv->bytes += out_rs;
-                for (size_t k = 0; k < out_rs; k++)
-                    sv->bytes_changed += rowq[k] != rowqb[k];
-                dequant_row(out_type[i], rowq, deqm, n0);
-                dequant_row(out_type[i], rowqb, deqb, n0);
-                for (int k = 0; k < n0; k++) {
-                    double d = (double)rowf[k] - basef[k];
-                    sv->ret_num += ((double)deqm[k] - deqb[k]) * d;
-                    sv->ret_den += d * d;
-                }
-            }
-        }
-        quantized++;
+        const prune_layer_t *pl = resolve_prune(t, &J->plan);
+        if (pl) quantize_job_write_pruned(J, i, pl);
+        else quantize_job_write_rows(J, i, ms);
     }
-    bool write_ok = wr_close(&w);
-    free(basef); free(deqm); free(deqb); free(rowqb);
-    free(rowf); free(rowq); free(out_type); free(out_off); free(eff_ne);
-    free(drop);
-    gguf_close(&g);
-    quantize_plans_free(&plan, &tplan);
+}
+
+// The partial file closed and checked, a merge held to its survival floor,
+// the output installed over the destination.
+static int quantize_job_finish(quantize_job *J, const char *in_path,
+                               const char *out_path, int target,
+                               const char *type_plan_path,
+                               const merge_set_t *ms) {
+    bool write_ok = wr_close(&J->w);
+    // The source closes before the install: an in-place requant replaces
+    // the very file the source maps.
+    quantize_job_close_source(J);
 
     if (!write_ok) {
-        remove(tmp_path);
         fprintf(stderr, "error: failed writing quantized model %s "
                 "(destination left untouched)\n", out_path);
-        free(tmp_path);
         return 1;
     }
 
@@ -2457,7 +2477,6 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     if (ms && ms->surv.ret_den > 0) {
         double ret = ms->surv.ret_num / ms->surv.ret_den;
         if (ms->min_retained >= 0 && ret < ms->min_retained) {
-            remove(tmp_path);
             fprintf(stderr, "error: the merge kept %.1f%% of the adapter's "
                     "delta (%.2f%% of the adapted bytes differ from the base "
                     "written alone at the same type), under the %.0f%% "
@@ -2471,7 +2490,6 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                     100.0 * (double)ms->surv.bytes_changed /
                         (double)ms->surv.bytes,
                     100.0 * ms->min_retained, out_path);
-            free(tmp_path);
             return 1;
         }
     }
@@ -2480,14 +2498,12 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     // atomically replaces an existing destination; Windows needs MoveFileExA
     // with replace semantics. Never remove the destination first: if the final
     // install fails, the caller must still have the previous model.
-    if (install_finished_file(tmp_path, out_path) != 0) {
-        remove(tmp_path);
+    if (install_finished_file(J->tmp_path, out_path) != 0) {
         fprintf(stderr, "error: wrote %s but could not install it as %s "
-                "(destination unchanged)\n", tmp_path, out_path);
-        free(tmp_path);
+                "(destination unchanged)\n", J->tmp_path, out_path);
         return 1;
     }
-    free(tmp_path);
+    J->tmp_created = false;   // installed: it is the destination now
 
     // Under a --type-plan the whole-file `target` decided nothing, so naming
     // it here described the output as a type no tensor was written in.
@@ -2496,7 +2512,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
             type_plan_path ? "per-tensor plan"
                            : target == T_KEEP ? "per-tensor unchanged"
                                               : ggml_type_name(target),
-            (unsigned long long)quantized, (unsigned long long)kept);
+            (unsigned long long)J->quantized, (unsigned long long)J->kept);
     if (ms)
         fprintf(stderr, "merge: %d adapted projection%s folded into the "
                 "weights%s\n", ms->n_pairs - ms->n_zero,
@@ -2508,4 +2524,50 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                 "alone\n", 100.0 * ms->surv.ret_num / ms->surv.ret_den,
                 100.0 * (double)ms->surv.bytes_changed / (double)ms->surv.bytes);
     return 0;
+}
+
+// One file transformation: --quantize (with a type plan, an expert prune
+// or a sublayer removal), --merge-lora (ms) or --context-surgery
+// (surgery_context). Each stage adds to one quantize_job and refuses by
+// returning false; the job's one release path unwinds every stage before
+// the one that refused.
+static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, int target,
+                       const char *prune_path, const char *type_plan_path,
+                       const char *remove_spec,
+                       merge_set_t *ms, uint32_t surgery_context,
+                       float surgery_factor, context_surgery_result *surgery_result) {
+    if (target != T_KEEP && !quantize_row_writable(target)) {
+        fprintf(stderr, "error: quantize target must be q8_0, q4_0, q3_k, "
+                "q4_k, q6_k, f16, or bf16\n");
+        return 1;
+    }
+    quantize_job job;
+    memset(&job, 0, sizeof(job));
+    quantize_job *J = &job;
+    int rc = 1;
+    if (!quantize_job_open_source(J, in_path, prune_path, type_plan_path,
+                                  remove_spec))
+        goto done;
+    if (J->rm.n > 0 && !quantize_job_remove_sublayers(J)) goto done;
+    if (ms && ms->n_base != J->g.n_tensors) {
+        // the base changed between the resolve open and this one
+        fprintf(stderr, "error: %s changed while merging\n", in_path);
+        goto done;
+    }
+    if (surgery_context &&
+        !quantize_job_context_surgery(J, surgery_context, surgery_factor,
+                                      surgery_result))
+        goto done;
+    if (J->plan.n > 0 && !quantize_job_check_prune(J, in_path)) goto done;
+    if (!quantize_job_open_output(J, out_path)) goto done;
+    if (J->uniform_prune) quantize_job_uniform_expert_count(J);
+    if (!quantize_job_decide_types(J, target, type_plan_path, ms)) goto done;
+    // a failed write clears J->w.ok, and the finish refuses the file
+    quantize_job_write_header(J);
+    quantize_job_write_layout(J);
+    quantize_job_write_tensors(J, ms);
+    rc = quantize_job_finish(J, in_path, out_path, target, type_plan_path, ms);
+done:
+    quantize_job_release(J);
+    return rc;
 }

@@ -5,6 +5,40 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A partial CUDA split of a small model uploads its weights in one
+  block again.** A partial split switches to one upload per tensor when
+  the file's tensor order spreads the offloaded layers across the file.
+  The check counted the GGUF header as spread, so on a small model with a
+  large vocabulary the header alone tipped it, and the weights were
+  uploaded tensor by tensor for no reason (each upload rounded to the
+  driver's 2 MiB granularity). It now counts tensor bytes only.
+  `tests/test_gpu_split_order.py`, which failed on every CUDA host, passes.
+
+- **`--cpu-moe` on CUDA runs Granite 4 hybrid MoE models on the GPU.** The
+  CUDA backend kept four lists of a layer's device tensors, one each for
+  the split plan, the contiguous upload, the per-tensor upload and the
+  type check at load, and none had the Mamba-2 input projection
+  (`ssm_in`). Under `--cpu-moe` the first recurrent layer found its
+  projection missing, the forward failed, and the run continued on the
+  CPU. The split plan also never counted those bytes, and the contiguous
+  upload's reach left out the hyper-connection mixers and the shared
+  expert. One list now serves all four, and `tests/test_cuda_tensor_roles.py`
+  holds every tensor a layer binds to a device role. With `--cpu-moe` or
+  `--cpu-moe auto`, granite-4.0-h-tiny and h-small now run attention and
+  Mamba-2 on the GPU with the experts on the host (their shared expert has
+  no gate, which the device cannot run, so an auto fit keeps every bank on
+  the host). Granite 4 hybrid and Nemotron-H splits now budget the input
+  projections, so a tight card can fit one layer fewer than before.
+
+- **`--cpu-moe auto` on CUDA no longer crashes on a MoE model whose shared
+  expert has no gate.** The device runs a shared expert only with its
+  scalar gate (Qwen 3.5 and 3.8). The check that keeps an ungated one (the
+  DeepSeek shape, which the llama architecture admits) on the host ran at
+  load, before the auto fit decided where the expert banks go, and the fit
+  then placed them on the GPU, where the forward read the absent gate and
+  the process died. The fit now keeps such a bank on the host, and the
+  advice `--cpu-moe` prints counts only banks the GPU can run.
+
 - **`RUNNER_TRAIN_GPU=1` trains a MoE adapter to the CPU's bytes.** The
   device side of the backward's transposed matvec caches each weight it
   uploads, and it knew a weight by its descriptor's address. A routed

@@ -1502,14 +1502,9 @@ static int metal_fit_layers(model_t *m, uint64_t budget, int cap,
     return K;
 }
 
-bool gpu_init(model_t *m) {
-    // A split GGUF has one mapping per part. The weight wraps are keyed by
-    // HOST ADDRESS (not file offset), so each part's mapping gets its own
-    // tensor-boundary wraps and a multi-part set takes a full offload like a
-    // single file. What the separate mappings cannot express is a partial
-    // LAYER split: the prefix arithmetic in metal_fit_layers is file-offset
-    // arithmetic over one mapping, so that case refuses to CPU below rather
-    // than guessing.
+// Admission: every refusal that needs no device, in the order the loader
+// has always checked them.
+static bool metal_admit(model_t *m) {
     if (m->qwen35) {
         fprintf(stderr, "gpu: qwen35 hybrid path is not on the metal backend yet — using CPU\n");
         return false;
@@ -1557,12 +1552,17 @@ bool gpu_init(model_t *m) {
         for (size_t i = 0; i < sizeof(ws) / sizeof(*ws); i++)
             if (!metal_tensor_type_ok(ws[i], false)) return false;
     }
+    return true;
+}
 
+// The device, its shader library and the backend state. On a failure
+// nothing is left allocated; on success the library is the caller's.
+static gpu_t *metal_open(id<MTLLibrary> *lib_out) {
     id<MTLDevice> dev = metal_init_injected("device")
                       ? nil : MTLCreateSystemDefaultDevice();
     if (!dev) {
         fprintf(stderr, "gpu: no Metal device is available — using CPU\n");
-        return false;
+        return NULL;
     }
 
     NSError *err = nil;
@@ -1574,7 +1574,7 @@ bool gpu_init(model_t *m) {
         fprintf(stderr, "gpu: shader compile failed: %s\n",
                 err.localizedDescription.UTF8String);
         [dev release];
-        return false;
+        return NULL;
     }
 
     gpu_t *g = calloc(1, sizeof(gpu_t));
@@ -1583,10 +1583,16 @@ bool gpu_init(model_t *m) {
                 "CPU\n");
         [lib release];
         [dev release];
-        return false;
+        return NULL;
     }
     g->dev = dev;
     g->queue = [dev newCommandQueue];
+    *lib_out = lib;
+    return g;
+}
+
+// Every compute pipeline the encoders index, by kernel name.
+static void metal_make_pipelines(gpu_t *g, id<MTLDevice> dev, id<MTLLibrary> lib) {
     g->p_rmsnorm      = mk_pipeline(dev, lib, @"k_rmsnorm");
     g->p_qknorm       = mk_pipeline(dev, lib, @"k_qknorm");
     g->p_headnorm     = mk_pipeline(dev, lib, @"k_head_rmsnorm");
@@ -1695,9 +1701,10 @@ bool gpu_init(model_t *m) {
     g->p_moe_mm[T_Q6_K]   = mk_pipeline(dev, lib, @"k_moe_mm_q6_K");
     g->p_moe_mmh[T_Q8_0]  = mk_pipeline(dev, lib, @"k_moe_mmh_q8_0");
     g->p_moe_mmh[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mmh_mxfp4");
-    [lib release];
-    lib = nil;
+}
 
+// The Metal 4 tensor GEMM, admitted per type only after its self-test.
+static void metal_admit_tensor_gemm(gpu_t *g, id<MTLDevice> dev) {
     if (metal_tensor_device_ok(dev)) {
 #if defined(MAC_OS_VERSION_26_0)
         MTLCompileOptions *opts = [MTLCompileOptions new];
@@ -1740,13 +1747,17 @@ bool gpu_init(model_t *m) {
     } else if (metal_tensor_requested()) {
         fprintf(stderr, "gpu: Metal 4 tensor GEMM requires M5+ and macOS 26.2+ — using simdgroup GEMM\n");
     }
+}
+
+// Every pipeline the admitted types need exists.
+static bool metal_check_pipelines(model_t *m, gpu_t *g) {
     if (!g->p_rmsnorm || !g->p_rope || !g->p_store || !g->p_attn ||
         !g->p_attn_chunk || !g->p_attn_comb ||
         !g->p_silu || !g->p_gelu || !g->p_add || !g->p_scale || !g->p_sigmul ||
         !g->queue || !g->p_qknorm || !g->p_headnorm ||
         !g->p_moe_route || !g->p_moe_actmul || !g->p_moe_sum ||
         !g->p_trace_copy)
-        return gpu_init_fail(m, g, lib, "pipeline allocation");
+        return gpu_init_fail(m, g, nil, "pipeline allocation");
     // Admission and the pipeline tables must agree BY CONSTRUCTION rather than
     // by two hand-kept lists. enc_mv and enc_moe_mv index p_mv[]/p_moe_mv[] by
     // tensor type with no nil check at the use site, and
@@ -1764,23 +1775,29 @@ bool gpu_init(model_t *m) {
         if (gpu_type_ok(t) && !g->p_mv[t]) {
             fprintf(stderr, "gpu: no Metal matvec kernel for admitted type %s\n",
                     ggml_type_name(t));
-            return gpu_init_fail(m, g, lib, "pipeline allocation");
+            return gpu_init_fail(m, g, nil, "pipeline allocation");
         }
         if (m->n_expert > 0 && metal_moe_type_ok(t) && !g->p_moe_mv[t]) {
             fprintf(stderr, "gpu: no Metal MoE kernel for admitted type %s\n",
                     ggml_type_name(t));
-            return gpu_init_fail(m, g, lib, "MoE pipeline allocation");
+            return gpu_init_fail(m, g, nil, "MoE pipeline allocation");
         }
     }
     if (metal_init_injected("state"))
-        return gpu_init_fail(m, g, lib, "injected state allocation failure");
+        return gpu_init_fail(m, g, nil, "injected state allocation failure");
+    return true;
+}
 
+// How many leading layers run on the device, and how much of the mapping
+// is wrapped for them.
+static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
+                               size_t page, int *gpu_K_out, size_t *wlen_out,
+                               uint64_t *ws_limit_out) {
     // weights: wrap the mmap zero-copy (page aligned; length page-rounded —
     // mmap always maps whole pages, so the rounded tail is valid memory).
     // wlen is a prefix limit in part-0 file-offset space; for a multi-part
     // set it is never a prefix (full offload only) and wtotal carries the
     // budget question across every part's mapping.
-    size_t page = 16384;
     size_t wlen = (m->gf.map_size + page - 1) & ~(page - 1);
     uint64_t wtotal = gguf_mapped_size(&m->gf) - metal_host_only_bytes(m);
 
@@ -1815,7 +1832,7 @@ bool gpu_init(model_t *m) {
         if (need_split && m->gf.n_maps > 1) {
             // Either the whole set exceeds the budget or a layer split was
             // forced; both need the prefix arithmetic one mapping cannot span.
-            return gpu_init_fail(m, g, lib,
+            return gpu_init_fail(m, g, nil,
                 "a split GGUF takes a full Metal offload only — a partial "
                 "layer split cannot span its separate part mappings (merge "
                 "to one file with --quantize --quant keep for a split)");
@@ -1826,14 +1843,14 @@ bool gpu_init(model_t *m) {
             int fit = metal_fit_layers(m, budget, cap, &layout_ok, &wrap_end);
             if (!layout_ok) {
                 if (wlen > budget)
-                    return gpu_init_fail(m, g, lib,
+                    return gpu_init_fail(m, g, nil,
                         "model exceeds the Metal working set and its tensor "
                         "layout forbids a partial split (non-layer tensors "
                         "after blk.0, or blocks out of order)");
                 fprintf(stderr, "gpu: --gpu-layers ignored — tensor layout "
                         "does not allow a partial split\n");
             } else if (fit < 1) {
-                return gpu_init_fail(m, g, lib,
+                return gpu_init_fail(m, g, nil,
                     "not even one layer fits the Metal working set");
             } else if (wlen > budget && cap <= 0 &&
                        !metal_partial_pays(m, wrap_end)) {
@@ -1847,7 +1864,7 @@ bool gpu_init(model_t *m) {
                 // Residency only pays if the tail the CPU still owns fits in
                 // RAM. When it does not, pinning part of the model just takes
                 // memory from the part that is streaming.
-                return gpu_init_fail(m, g, lib,
+                return gpu_init_fail(m, g, nil,
                     "model is larger than available RAM, so no split can be "
                     "held resident — CPU-only is faster (--gpu-layers forces "
                     "a split anyway)");
@@ -1861,13 +1878,22 @@ bool gpu_init(model_t *m) {
             }
         }
     }
+    *gpu_K_out = gpu_K;
+    *wlen_out = wlen;
+    *ws_limit_out = ws_limit;
+    return true;
+}
 
+// The weights on the device: zero-copy wraps of the mapping, or one copied
+// buffer when a single file cannot be wrapped.
+static bool metal_place_weights(model_t *m, gpu_t *g, id<MTLDevice> dev,
+                                size_t wlen, size_t page) {
     if (!metal_wrap_weights(g, m, dev, wlen, page)) {
         if (m->gf.n_maps > 1)
             // One copied buffer cannot stand in for several mappings, and
             // copying parts separately would just re-implement the wrap that
             // already failed. Refuse; the run continues on the CPU.
-            return gpu_init_fail(m, g, lib,
+            return gpu_init_fail(m, g, nil,
                 "could not wrap the split GGUF's part mappings");
         // fallback: copy (costs RAM but still works). One buffer by
         // definition -- a copy this large only happens for a model well under
@@ -1898,35 +1924,32 @@ bool gpu_init(model_t *m) {
                      wlen / 1e9, mb / 1e9, ws / 1e9,
                      (uint64_t)wlen > mb ? " — exceeds the per-buffer limit"
                      : ((uint64_t)wlen > ws ? " — exceeds the working set" : ""));
-            return gpu_init_fail(m, g, lib, why);
+            return gpu_init_fail(m, g, nil, why);
         }
     }
+    return true;
+}
 
-    // Q-bias width off the per-layer MAXIMUM: gemma4 varies q width per layer,
-    // and a global-scalar size would overrun on the widest one. The per-column
-    // scratch takes the same maxima inside metal_ensure_batch().
-    int q_dim = m->n_head * m->head_dim;
-    for (int l = 0; l < m->n_layer; l++)
-        if (model_q_dim(m, l) > q_dim) q_dim = model_q_dim(m, l);
+// The KV cache, the per-column scratch and the decode attention partials.
+static bool metal_alloc_state(model_t *m, gpu_t *g, id<MTLDevice> dev) {
     size_t k_bytes = model_k_boundary_bytes(m, m->n_layer);
     size_t v_bytes = model_v_boundary_bytes(m, m->n_layer);
-
     #define NEWBUF(n) [dev newBufferWithLength:(n) options:MTLResourceStorageModeShared]
     g->kc = NEWBUF(k_bytes ? k_bytes : 1);
     g->vc = NEWBUF(v_bytes);
     if (!metal_buffer_ok(g->kc) || !metal_buffer_ok(g->vc))
-        return gpu_init_fail(m, g, lib, "KV buffer allocation");
+        return gpu_init_fail(m, g, nil, "KV buffer allocation");
     memset(g->kc.contents, 0, k_bytes);
     memset(g->vc.contents, 0, v_bytes);
     if (metal_init_injected("after-kv"))
-        return gpu_init_fail(m, g, lib, "injected post-KV allocation failure");
+        return gpu_init_fail(m, g, nil, "injected post-KV allocation failure");
 
     // Per-column scratch (x, xb, xb2, q, kt, vt, hb, hb2, att, logits, the
     // E-series PLE slices and the attention output gate) through the same
     // function a prompt batch widens it with, so the two cannot list different
     // buffers. g->batch_cap is still 0 from the calloc, so this allocates.
     if (!metal_ensure_batch(g, m, 1))
-        return gpu_init_fail(m, g, lib, "batch scratch allocation");
+        return gpu_init_fail(m, g, nil, "batch scratch allocation");
     g->dummy  = NEWBUF(4);
     // Chunked decode attention partials: one (max, sum, hd-vector) per
     // (head, chunk). They carry NO batch dimension -- the split is taken only
@@ -1944,8 +1967,19 @@ bool gpu_init(model_t *m) {
     #undef NEWBUF
     if (!metal_buffer_ok(g->dummy) ||
         !metal_buffer_ok(g->att_acc) || !metal_buffer_ok(g->att_ms))
-        return gpu_init_fail(m, g, lib, "scratch buffer allocation");
+        return gpu_init_fail(m, g, nil, "scratch buffer allocation");
+    return true;
+}
 
+// The norm weights, biases and other small constants, per model and per
+// layer, copied into device buffers.
+static bool metal_upload_constants(model_t *m, gpu_t *g, id<MTLDevice> dev) {
+    // Q-bias width off the per-layer MAXIMUM: gemma4 varies q width per layer,
+    // and a global-scalar size would overrun on the widest one. The per-column
+    // scratch takes the same maxima inside metal_ensure_batch().
+    int q_dim = m->n_head * m->head_dim;
+    for (int l = 0; l < m->n_layer; l++)
+        if (model_q_dim(m, l) > q_dim) q_dim = model_q_dim(m, l);
     g->inv_freq = f32_buf(dev, m->rope_inv_freq, m->rope_dim / 2);
     g->inv_freq_local = f32_buf(dev, m->rope_inv_freq_local,
                                 m->rope_dim_local / 2);
@@ -1957,7 +1991,7 @@ bool gpu_init(model_t *m) {
     if (!metal_buffer_ok(g->inv_freq) || !metal_buffer_ok(g->out_norm) ||
         (m->rope_inv_freq_local && !metal_buffer_ok(g->inv_freq_local)) ||
         (m->n_suppress > 0 && !metal_buffer_ok(g->suppress)))
-        return gpu_init_fail(m, g, lib, "shared constant allocation");
+        return gpu_init_fail(m, g, nil, "shared constant allocation");
     g->attn_norm = calloc(m->n_layer, sizeof(id));
     g->ffn_norm  = calloc(m->n_layer, sizeof(id));
     g->bq = calloc(m->n_layer, sizeof(id));
@@ -1984,7 +2018,7 @@ bool gpu_init(model_t *m) {
         !g->bo || !g->qn || !g->kn || !g->sinks || !g->gib || !g->geb ||
         !g->ueb || !g->deb || !g->pan || !g->pfn || !g->gpn1 ||
         !g->gprn2 || !g->gpn2 || !g->ggis || !g->gdsc)
-        return gpu_init_fail(m, g, lib, "per-layer table allocation");
+        return gpu_init_fail(m, g, nil, "per-layer table allocation");
     for (int l = 0; l < m->n_layer; l++) {
         layer_t *ly = &m->layers[l];
         g->attn_norm[l] = f32_buf(dev, ly->attn_norm_w, m->n_embd);
@@ -2013,7 +2047,7 @@ bool gpu_init(model_t *m) {
             g->gprn2[l] = f32_buf_ones(dev, ly->ffn_pre_norm2_w, m->n_embd);
             g->gpn2[l] = f32_buf_ones(dev, ly->ffn_post_norm2_w, m->n_embd);
             float *gs = malloc(sizeof(float) * (size_t)m->n_embd);
-            if (!gs) return gpu_init_fail(m, g, lib, "Gemma router scale allocation");
+            if (!gs) return gpu_init_fail(m, g, nil, "Gemma router scale allocation");
             float inv = 1.0f / sqrtf((float)m->n_embd);
             for (int i = 0; i < m->n_embd; i++)
                 gs[i] = (ly->gate_inp_scale ? ly->gate_inp_scale[i] : 1.0f) * inv;
@@ -2040,9 +2074,14 @@ bool gpu_init(model_t *m) {
              (!metal_buffer_ok(g->gpn1[l]) || !metal_buffer_ok(g->gprn2[l]) ||
               !metal_buffer_ok(g->gpn2[l]) || !metal_buffer_ok(g->ggis[l]) ||
               !metal_buffer_ok(g->gdsc[l]))))
-            return gpu_init_fail(m, g, lib, "per-layer buffer allocation");
+            return gpu_init_fail(m, g, nil, "per-layer buffer allocation");
     }
+    return true;
+}
 
+// The backend handed to the model.
+static void metal_publish(model_t *m, gpu_t *g, id<MTLDevice> dev, int gpu_K,
+                          size_t wlen, uint64_t ws_limit) {
     // CPU batch prompt processing writes the same cache through these pointers,
     // but do not detach the malloc-owned cache until every Metal allocation has
     // succeeded. Any failure above falls back with the CPU KV still intact.
@@ -2067,8 +2106,36 @@ bool gpu_init(model_t *m) {
                 "remaining %d run on the CPU.\n",
                 gpu_K, m->n_layer, wlen / 1e9, m->gf.map_size / 1e9,
                 ws_limit / 1e9, m->n_layer - gpu_K);
-    return true;
+}
 
+bool gpu_init(model_t *m) {
+    // A split GGUF has one mapping per part. The weight wraps are keyed by
+    // HOST ADDRESS (not file offset), so each part's mapping gets its own
+    // tensor-boundary wraps and a multi-part set takes a full offload like a
+    // single file. What the separate mappings cannot express is a partial
+    // LAYER split: the prefix arithmetic in metal_fit_layers is file-offset
+    // arithmetic over one mapping, so that case refuses to CPU below rather
+    // than guessing.
+    if (!metal_admit(m)) return false;
+    id<MTLLibrary> lib = nil;
+    gpu_t *g = metal_open(&lib);
+    if (!g) return false;
+    id<MTLDevice> dev = g->dev;
+    metal_make_pipelines(g, dev, lib);
+    [lib release];
+    lib = nil;
+    metal_admit_tensor_gemm(g, dev);
+    if (!metal_check_pipelines(m, g)) return false;
+    size_t page = 16384;
+    int gpu_K;
+    size_t wlen;
+    uint64_t ws_limit;
+    if (!metal_choose_split(m, g, dev, page, &gpu_K, &wlen, &ws_limit)) return false;
+    if (!metal_place_weights(m, g, dev, wlen, page)) return false;
+    if (!metal_alloc_state(m, g, dev)) return false;
+    if (!metal_upload_constants(m, g, dev)) return false;
+    metal_publish(m, g, dev, gpu_K, wlen, ws_limit);
+    return true;
 }
 
 // ---------------------------------------------------------------- encoding
@@ -3178,14 +3245,59 @@ static void metal_moe_full_trace(gpu_t *g, model_t *m, int n, int pos) {
     fflush(fp);
 }
 
-static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
-                                       int n, int pos) {
-    gpu_t *g = m->gpu;
-    int n_embd = m->n_embd;
-    int q_dim  = m->n_head * m->head_dim;
-    int kv_dim = m->n_head_kv * m->head_dim;
-    int xdim   = q_dim > n_embd ? q_dim : n_embd;
+// One native forward's encoding state. The encoder and its command buffer
+// are replaced whenever results are read back mid-forward (the NaN probes,
+// the Gemma MoE's host routing), so stages reach them only through here.
+typedef struct {
+    model_t *m;
+    gpu_t *g;
+    id<MTLCommandBuffer> cb;
+    id<MTLComputeCommandEncoder> e;
+    int n, pos;
+    int n_embd, q_dim, kv_dim, xdim;
+    int n_gpu_layers;
+    bool nantrace;
+    int nanstage;
+    int timing;
+    bool fuse_pending_add;   // F2b: post-FFN add deferred into the
+                             // next layer's attention norm
+} metal_fwd;
 
+// One layer's shape and fusion decisions, made before any of its dispatches.
+typedef struct {
+    int hd, n_kv, q_dim_l, kv_dim_l, window;
+    bool owns_kv;
+    id<MTLComputePipelineState> fpipe;   // the attention-front megakernel
+    bool front;
+    uint64_t qw, kw, vw;                 // Q/K/V offsets in qb
+    id<MTLBuffer> qb;
+    bool f2a, f2b, sum_add;
+} metal_layer_plan;
+
+// RUNNER_METAL_NAN_TRACE=2: end the encoder, wait, and scan a buffer for a
+// non-finite value; false when one was found.
+static bool metal_nan_probe(metal_fwd *F, id<MTLBuffer> buf, size_t cnt,
+                            const char *what, int l) {
+    if (!F->nanstage) return true;
+    [F->e endEncoding]; [F->cb commit]; [F->cb waitUntilCompleted];
+    if (metal_scan_bad((const float *)buf.contents, (int)cnt, what, l)) return false;
+    F->cb = [F->g->queue commandBuffer]; F->e = [F->cb computeCommandEncoder];
+    return true;
+}
+
+static int metal_timing_on(void) {
+    static int timing = -1;
+    if (timing < 0) {
+        const char *t = getenv("RUNNER_METAL_TIMING");
+        timing = t && *t && strcmp(t, "0") ? 1 : 0;
+    }
+    return timing;
+}
+
+// The batch's embeddings into the device's x buffer, and the E-series
+// per-layer embedding table beside them.
+static void metal_fwd_embed(model_t *m, gpu_t *g, const int32_t *tokens, int n) {
+    int n_embd = m->n_embd;
     size_t ers = ggml_row_size(m->tok_embd->type, n_embd);
     for (int b = 0; b < n; b++) {
         float *xp = (float *)g->x.contents + (size_t)b * n_embd;
@@ -3205,515 +3317,602 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
         memcpy(g->ple.contents, m->ple,
                sizeof(float) * (size_t)n * m->n_layer * m->n_embd_ple);
     }
+}
 
-    bool nantrace = metal_nan_trace();
-    int  nanstage = metal_nan_stage() >= 2;
-    // RUNNER_METAL_TIMING=1: split a forward into the CPU time spent encoding
-    // dispatches and the GPU time actually executing them. Decode on Metal is
-    // slower than CPU on an M1 and the two candidate explanations -- encode
-    // overhead at ~420 dispatches per token, versus the kernels themselves --
-    // are indistinguishable from throughput alone.
-    static int timing = -1;
-    if (timing < 0) {
-        const char *t = getenv("RUNNER_METAL_TIMING");
-        timing = t && *t && strcmp(t, "0") ? 1 : 0;
-    }
-    double t_enc0 = timing ? CFAbsoluteTimeGetCurrent() : 0;
-    id<MTLCommandBuffer> cb = [g->queue commandBuffer];
-    id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
-
-#define NAN_PROBE(BUF, CNT, WHAT) do { if (nanstage) { \
-        [e endEncoding]; [cb commit]; [cb waitUntilCompleted]; \
-        if (metal_scan_bad((const float *)(BUF).contents, (int)(CNT), (WHAT), l)) return NULL; \
-        cb = [g->queue commandBuffer]; e = [cb computeCommandEncoder]; \
-    } } while (0)
-
-    // Partial split: only the leading gpu_layers run here.
-    int n_gpu_layers = m->gpu_layers > 0 && m->gpu_layers < m->n_layer
-                     ? m->gpu_layers : m->n_layer;
-    bool fuse_pending_add = false;   // F2b: post-FFN add deferred into the
-                                     // next layer's attention norm
-    for (int l = 0; l < n_gpu_layers; l++) {
-        layer_t *ly = &m->layers[l];
-        int hd = model_head_dim(m, l);
-        int n_kv = model_n_head_kv(m, l);
-        int q_dim_l = model_q_dim(m, l);
-        int kv_dim_l = model_kv_dim(m, l);
-        int window = model_is_swa(m, l) ? m->swa_window : 0;
-        // Weight-heavy projections run ONCE for the whole batch: the simdgroup
-        // walks its weight row per column, so the row is fetched from device
-        // memory on the first token and cached for the rest. Per-token submits
-        // instead re-streamed every weight matrix n times, which is why Metal
-        // prefill used to run at decode speed. Bit-identical either way.
-        bool owns_kv = model_kv_owner(m, l) == l;
-        // The attention-front megakernel: norm + q/k/v + rope + store in ONE
-        // dispatch (kernels.metal explains why the walk is cut exactly
-        // here). Models it cannot serve byte-exactly stay on the split path.
-        // An adapter adds its delta after each projection, so a block that
-        // carries one keeps the split path the delta can be encoded into.
-        id<MTLComputePipelineState> fpipe =
-            n == 1 && metal_fuse_on() && !g->lora_a && !ly->skip_mixer
-                ? metal_front_pipe(g, m, l) : nil;
-        bool front = fpipe != nil;
-        uint64_t qw = 0, kw = 0, vw = 0;
-        id<MTLBuffer> qb = nil;
-        if (front) {
-            uint64_t kwo = 0, vwo = 0;
-            qb = metal_wbuf_for(g, (uint64_t)(uintptr_t)ly->wq->data,
-                                ly->wq->nbytes, &qw);
-            id<MTLBuffer> kb = metal_wbuf_for(g,
-                (uint64_t)(uintptr_t)ly->wk->data, ly->wk->nbytes, &kwo);
-            id<MTLBuffer> vb = metal_wbuf_for(g,
-                (uint64_t)(uintptr_t)ly->wv->data, ly->wv->nbytes, &vwo);
-            kw = kwo; vw = vwo;
-            if (!(qb && qb == kb && qb == vb)) front = false;
+// The attention input: the norm (or the previous layer's deferred add), then
+// Q, K and V, through the megakernel or one projection at a time, with
+// any adapter's deltas, and the Q/K/V norms.
+static void metal_enc_attn_in(metal_fwd *F, int l, const metal_layer_plan *P) {
+    gpu_t *g = F->g;
+    model_t *m = F->m;
+    int n = F->n;
+    int pos = F->pos;
+    int n_embd = F->n_embd;
+    int q_dim = F->q_dim;
+    int kv_dim = F->kv_dim;
+    int xdim = F->xdim;
+    layer_t *ly = &m->layers[l];
+    int hd = P->hd;
+    int n_kv = P->n_kv;
+    int q_dim_l = P->q_dim_l;
+    int kv_dim_l = P->kv_dim_l;
+    bool owns_kv = P->owns_kv;
+    id<MTLComputePipelineState> fpipe = P->fpipe;
+    bool front = P->front;
+    uint64_t qw = P->qw;
+    uint64_t kw = P->kw;
+    uint64_t vw = P->vw;
+    id<MTLBuffer> qb = P->qb;
+    if (F->fuse_pending_add) {
+        // Fusion F2b: the previous layer deferred its post-FFN residual
+        // add into this layer's attention norm (one dispatch, not two).
+        // F2b never defers INTO a front-capable layer, so front and
+        // pending are mutually exclusive here by construction.
+        enc_add_rmsnorm(g, F->e, g->x, g->xb, g->xb, g->attn_norm[l],
+                        n_embd, m->rms_eps);
+        F->fuse_pending_add = false;
+    } else if (!front)
+        enc_rmsnorm_n(g, F->e, g->x, 0, g->xb, 0, g->attn_norm[l],
+                      n_embd, m->rms_eps, n, n_embd, xdim);
+    if (front) {
+        metal_fuse_announce();
+        metal_front_announce(fpipe, g);
+        // the megakernel is f16-only, so K and V rows are the same size
+        uint64_t roff = model_k_byte_off(m, l) +
+            (uint64_t)model_kv_row_at(m, l, pos) * model_k_row_bytes(m, l);
+        uint64_t roff_v = model_v_byte_off(m, l) +
+            (uint64_t)model_kv_row_at(m, l, pos) * model_v_row_bytes(m, l);
+        attn_front_args fa = {
+            n_embd, m->n_head, n_kv, hd, model_rope_dim(m, l) / 2,
+            pos, m->rope_neox, model_rope_mscale(m, l), m->rms_eps,
+            qw, kw, vw,
+            g->bq[l] != nil, g->bk[l] != nil, g->bv[l] != nil,
+            roff, roff_v,
+            g->qn[l] != nil, g->kn[l] != nil };
+        bool local = model_is_swa(m, l);
+        [F->e setComputePipelineState:fpipe];
+        [F->e setBuffer:qb offset:0 atIndex:0];
+        [F->e setBuffer:g->x  offset:0 atIndex:1];
+        [F->e setBuffer:g->attn_norm[l] offset:0 atIndex:2];
+        [F->e setBuffer:g->q  offset:0 atIndex:3];
+        [F->e setBuffer:g->kt offset:0 atIndex:4];
+        [F->e setBuffer:g->vt offset:0 atIndex:5];
+        [F->e setBuffer:g->kc offset:0 atIndex:6];
+        [F->e setBuffer:g->vc offset:0 atIndex:7];
+        [F->e setBuffer:(local && g->inv_freq_local) ? g->inv_freq_local
+                                                  : g->inv_freq
+              offset:0 atIndex:8];
+        [F->e setBuffer:g->bq[l] ? g->bq[l] : g->dummy offset:0 atIndex:9];
+        [F->e setBuffer:g->bk[l] ? g->bk[l] : g->dummy offset:0 atIndex:10];
+        [F->e setBuffer:g->bv[l] ? g->bv[l] : g->dummy offset:0 atIndex:11];
+        [F->e setBytes:&fa length:sizeof(fa) atIndex:12];
+        [F->e setBuffer:g->qn[l] ? g->qn[l] : g->dummy offset:0 atIndex:13];
+        [F->e setBuffer:g->kn[l] ? g->kn[l] : g->dummy offset:0 atIndex:14];
+        g_disp.mv++;
+        [F->e dispatchThreadgroups:MTLSizeMake(m->n_head + 2 * n_kv, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    } else {
+    enc_mv_n(g, F->e, m, ly->wq, g->xb, 0, g->q,  0,
+             n_embd, q_dim_l,  g->bq[l], n, xdim, q_dim);
+    enc_lora(g, F->e, l, LW_Q, g->xb, g->q, n_embd, q_dim_l, n, xdim, q_dim);
+    // the output gate projects the same normed input as Q; xb is
+    // overwritten by the wo matvec below, so project it here
+    if (m->attn_out_gate && ly->wq_gate)
+        enc_mv_n(g, F->e, m, ly->wq_gate, g->xb, 0, g->agate, 0,
+                 n_embd, q_dim_l, nil, n, xdim, q_dim);
+    if (owns_kv) {
+        enc_mv_n(g, F->e, m, ly->wk, g->xb, 0, g->kt, 0,
+                 n_embd, kv_dim_l, g->bk[l], n, xdim, kv_dim);
+        enc_lora(g, F->e, l, LW_K, g->xb, g->kt, n_embd, kv_dim_l, n, xdim, kv_dim);
+        // gemma-4 global layers publish no V projection: V is the raw K
+        // projection, taken before K is normed/roped (as on the CPU path).
+        if (ly->wv) {
+            enc_mv_n(g, F->e, m, ly->wv, g->xb, 0, g->vt, 0,
+                     n_embd, kv_dim_l, g->bv[l], n, xdim, kv_dim);
+            enc_lora(g, F->e, l, LW_V, g->xb, g->vt, n_embd, kv_dim_l, n, xdim, kv_dim);
         }
-        // A removed sublayer (--remove-sublayer) is not encoded at all: the
-        // residual stream passes the branch untouched, as on the CPU. The
-        // fusions that fold a branch's residual add into a neighbouring norm
-        // have nothing to fold where the branch is gone, so they stand down
-        // around it: F2a needs this block's attention AND its FFN norm, F2b
-        // needs this block's FFN and the next block's attention norm.
-        bool f2a = n == 1 && metal_fuse_on() && g->p_add_rmsnorm &&
-                   !g->pan[l] && m->resid_scale == 1.0f && !nanstage &&
-                   !ly->moe_gemma && !ly->skip_mixer && !ly->skip_ffn;
-        bool f2b = n == 1 && metal_fuse_on() && g->p_add_rmsnorm &&
-                   !g->pfn[l] && m->resid_scale == 1.0f && !ly->ple_gate &&
-                   (ly->out_scale == 1.0f || ly->out_scale == 0.0f) &&
-                   !nantrace && !nanstage && l + 1 < n_gpu_layers &&
-                   n_gpu_layers == m->n_layer &&
-                   !ly->skip_ffn && !m->layers[l + 1].skip_mixer &&
-                   !metal_front_capable(g, m, l + 1);
-        bool sum_add = n == 1 && metal_fuse_on() && !f2b && ly->is_moe &&
-                       !ly->moe_gemma && !g->pfn[l] &&
-                       m->resid_scale == 1.0f && !ly->ple_gate &&
-                       !nantrace && !nanstage;
-        if (ly->skip_mixer) goto mixer_done;
-        if (fuse_pending_add) {
-            // Fusion F2b: the previous layer deferred its post-FFN residual
-            // add into this layer's attention norm (one dispatch, not two).
-            // F2b never defers INTO a front-capable layer, so front and
-            // pending are mutually exclusive here by construction.
-            enc_add_rmsnorm(g, e, g->x, g->xb, g->xb, g->attn_norm[l],
-                            n_embd, m->rms_eps);
-            fuse_pending_add = false;
-        } else if (!front)
-            enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->attn_norm[l],
-                          n_embd, m->rms_eps, n, n_embd, xdim);
-        if (front) {
+    }
+    }
+
+    // Batched in grid.y rather than encoded once per token. Bit-identical:
+    // each (head, column) pair was always an independent reduction, so
+    // only the encoding changes. This was 65n of the 240n per-token
+    // dispatches the census measured; the elementwise ops are the rest.
+    if (g->qn[l] && !front)
+        enc_qknorm_n(g, F->e, m, g->q, 0, g->qn[l], m->n_head, hd, n, q_dim);
+    if (owns_kv) {
+        if (m->v_rmsnorm)
+            enc_headnorm_n(g, F->e, m, ly->wv ? g->vt : g->kt, 0,
+                           g->vt, 0, nil, n_kv, hd, n, kv_dim);
+        if (g->kn[l] && !front)
+            enc_qknorm_n(g, F->e, m, g->kt, 0, g->kn[l], n_kv, hd, n, kv_dim);
+    }
+}
+
+// Rotation and the KV store: nothing when the megakernel did both, one fused
+// dispatch at decode where it is exact, else rope then store.
+static void metal_enc_rope_store(metal_fwd *F, int l, const metal_layer_plan *P) {
+    gpu_t *g = F->g;
+    model_t *m = F->m;
+    int n = F->n;
+    int pos = F->pos;
+    int q_dim = F->q_dim;
+    int kv_dim = F->kv_dim;
+    int hd = P->hd;
+    int n_kv = P->n_kv;
+    int q_dim_l = P->q_dim_l;
+    int kv_dim_l = P->kv_dim_l;
+    bool owns_kv = P->owns_kv;
+    bool front = P->front;
+    size_t row_b = model_k_row_bytes(m, l), vrow_b = model_v_row_bytes(m, l);
+    int q8 = model_kv_kind_k(m), vq8 = model_kv_kind_v(m);   // cache KINDS
+    int ku = q8 == 2 ? kv_dim_l / 16 : q8 ? kv_dim_l / 32 : kv_dim_l;
+    int vu = vq8 == 2 ? kv_dim_l / 16 : vq8 ? kv_dim_l / 32 : kv_dim_l;
+    int kv_units = ku > vu ? ku : vu;
+
+    // rope/store/attention each take the batch in one dispatch: the
+    // kernels derive their column's position from pos + col, so every
+    // token still rotates at, writes to, and attends over exactly the
+    // range a per-token submit gave it.
+    if (front) return;   // the megakernel already did it
+    // Decode fusion F1: rope(q)+rope(k)+f16 store in ONE dispatch
+    // (budget: -2 dispatches x n_layer per token). q8 caches and
+    // prefill keep the split path; byte identity is the gate.
+    bool fused_rs = n == 1 && !q8 && !vq8 && owns_kv && metal_fuse_on() &&
+                    g->p_rope_store && model_layer_ropes(m, l);
+    if (fused_rs) {
+        metal_fuse_announce();
+        int half = model_rope_dim(m, l) / 2;
+        uint64_t roff = model_k_byte_off(m, l) +
+                        (uint64_t)model_kv_row_at(m, l, pos) * row_b;
+        uint64_t roff_v = model_v_byte_off(m, l) +
+                          (uint64_t)model_kv_row_at(m, l, pos) * vrow_b;
+        rope_store_args ra = {
+            m->n_head, n_kv, hd, half, pos, m->rope_neox,
+            model_rope_mscale(m, l), 0, 0, 0, roff, roff_v };
+        bool local = model_is_swa(m, l);
+        [F->e setComputePipelineState:g->p_rope_store];
+        [F->e setBuffer:g->q  offset:0 atIndex:0];
+        [F->e setBuffer:g->kt offset:0 atIndex:1];
+        [F->e setBuffer:g->vt offset:0 atIndex:2];
+        [F->e setBuffer:g->kc offset:0 atIndex:3];
+        [F->e setBuffer:g->vc offset:0 atIndex:4];
+        [F->e setBuffer:(local && g->inv_freq_local) ? g->inv_freq_local
+                                                  : g->inv_freq
+              offset:0 atIndex:5];
+        [F->e setBytes:&ra length:sizeof(ra) atIndex:6];
+        int threads = m->n_head * half + n_kv * half +
+                      n_kv * (hd - 2 * half) + (kv_dim_l + 1) / 2;
+        g_disp.rope++;
+        [F->e dispatchThreads:MTLSizeMake(threads, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+        return;
+    }
+    if (model_layer_ropes(m, l)) {
+        enc_rope_n(g, F->e, m, g->q,  0, m->n_head, pos, l, n, q_dim);
+    } else if (m->attn_temp_scale != 0.0f) {
+        // NoPE layer: no rotation, and THIS is where the llama-4
+        // attention temperature applies -- on the layers that skipped
+        // rope, not on every layer (matching the CPU path and
+        // llama.cpp). The factor is per POSITION, so unlike everything
+        // else here it cannot be one batched dispatch; it is one scale
+        // per column, the same shape the CUDA backend uses.
+        for (int b = 0; b < n; b++) {
+            float ts = model_attn_temp(m, pos + b);
+            if (ts != 1.0f)
+                enc_scale(g, F->e, g->q, foff((size_t)b * q_dim),
+                          q_dim_l, ts);
+        }
+    }
+    if (owns_kv) {
+        if (model_layer_ropes(m, l))
+            enc_rope_n(g, F->e, m, g->kt, 0, n_kv, pos, l, n, kv_dim);
+
+        store_args sa = { kv_dim_l, q8, kv_dim, pos,
+                          model_kv_is_ring(m, l) ? m->kv_ring : 0,
+                          model_k_byte_off(m, l), (uint64_t)row_b,
+                          vq8, model_v_byte_off(m, l), (uint64_t)vrow_b };
+        [F->e setComputePipelineState:g->p_store];
+        [F->e setBuffer:g->kt offset:0 atIndex:0];
+        [F->e setBuffer:g->vt offset:0 atIndex:1];
+        [F->e setBuffer:g->kc offset:0 atIndex:2];
+        [F->e setBuffer:g->vc offset:0 atIndex:3];
+        [F->e setBytes:&sa length:sizeof(sa) atIndex:4];
+        g_disp.store++;
+        [F->e dispatchThreads:MTLSizeMake(kv_units, n, 1)
+          threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+    }
+}
+
+// Attention over the cache: the chunked decode kernels when the span is long
+// enough, else the single-pass (decode) or tiled (prefill) kernel.
+static void metal_enc_attention(metal_fwd *F, int l, const metal_layer_plan *P) {
+    gpu_t *g = F->g;
+    model_t *m = F->m;
+    int n = F->n;
+    int pos = F->pos;
+    int q_dim = F->q_dim;
+    int xdim = F->xdim;
+    int hd = P->hd;
+    int n_kv = P->n_kv;
+    int window = P->window;
+    int q8 = model_kv_kind_k(m), vq8 = model_kv_kind_v(m);   // cache KINDS
+
+    // Chunked path: decode only (n == 1), long enough range to be
+    // worth splitting, and a head_dim the partial buffer was sized
+    // for. Everything else keeps the single-pass kernel, including
+    // all of prefill -- which already has grid.y parallelism from the
+    // batch and is the validated fast path.
+    int a_t0 = (window > 0 && pos - window + 1 > 0) ? pos - window + 1 : 0;
+    int a_span = pos - a_t0 + 1;
+    if (n == 1) {
+        // K and V, both read across the span this layer attends over.
+        unsigned long long b = (unsigned long long)a_span
+                             * (unsigned long long)model_kv_row_bytes_sum(m, l);
+        if (window > 0) { g_disp.kv_swa += b; g_disp.kv_layers_swa++; }
+        else            { g_disp.kv_global += b; g_disp.kv_layers_global++; }
+        // ~4 device round-trips of the scores over the span, per head.
+        g_disp.scores_bytes += 4ull * (unsigned long long)m->n_head
+                             * (unsigned long long)a_span * sizeof(float);
+    }
+    int a_ov = metal_attn_chunk_override();
+    int a_chunk, a_nch;
+    // one group per KV head when several query heads share it
+    int gqa_g = n_kv > 0 ? m->n_head / n_kv : 1;
+    bool gqa = n == 1 && gqa_g > 1 && gqa_g <= 8 && m->n_head % n_kv == 0 &&
+               !q8 && !vq8 && metal_attn_coop_on() && metal_attn_gqa_on() &&
+               g->p_attn_chunk_gqa;
+    if (a_ov == 0) { a_chunk = 0; a_nch = 0; }        // path disabled
+    else if (a_ov > 0) {
+        a_chunk = a_ov;
+        a_nch = (a_span + a_chunk - 1) / a_chunk;
+    } else {
+        int want = METAL_ATTN_TARGET_GROUPS /
+                   (gqa ? n_kv : m->n_head > 0 ? m->n_head : 1);
+        if (want < 1) want = 1;
+        if (want > METAL_ATTN_MAX_CHUNKS) want = METAL_ATTN_MAX_CHUNKS;
+        a_chunk = (a_span + want - 1) / want;
+        // floor, not veto: a target implying tiny chunks means "use the
+        // smallest chunk worth having", and short context then drops to
+        // the single-pass kernel through the n_chunks < 2 test below
+        if (a_chunk < METAL_ATTN_MIN_CHUNK) a_chunk = METAL_ATTN_MIN_CHUNK;
+        a_nch = (a_span + a_chunk - 1) / a_chunk;
+    }
+    if (n == 1 && a_nch >= 2 && a_nch <= METAL_ATTN_MAX_CHUNKS &&
+        hd == model_head_dim(m, 0)) {
+        attn_chunk_args ca = { hd, m->n_head, n_kv, m->n_ctx, pos,
+                               (uint64_t)model_k_byte_off(m, l),
+                               model_attn_scale(m, l), q8, window,
+                               a_chunk, a_nch,
+                               model_kv_is_ring(m, l) ? m->kv_ring : 0,
+                               (uint64_t)model_v_byte_off(m, l), vq8 };
+        bool coopc = metal_attn_coop_on() && g->p_attn_chunk_coop;
+        if (coopc) g_coop_dispatches++;
+        if (gqa) g_gqa_dispatches++;
+        [F->e setComputePipelineState:gqa ? g->p_attn_chunk_gqa
+                                 : coopc ? g->p_attn_chunk_coop
+                                         : g->p_attn_chunk];
+        [F->e setBuffer:g->q       offset:0 atIndex:0];
+        [F->e setBuffer:g->kc      offset:0 atIndex:1];
+        [F->e setBuffer:g->vc      offset:0 atIndex:2];
+        [F->e setBuffer:g->att     offset:0 atIndex:3];
+        [F->e setBuffer:g->att_acc offset:0 atIndex:4];
+        [F->e setBuffer:g->att_ms  offset:0 atIndex:5];
+        [F->e setBytes:&ca length:sizeof(ca) atIndex:6];
+        g_disp.attn_chunk++;
+        [F->e dispatchThreadgroups:MTLSizeMake(gqa ? n_kv : m->n_head, a_nch, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+
+        attn_comb_args cb = { hd, m->n_head, a_nch,
+                              g->sinks[l] != nil };
+        [F->e setComputePipelineState:g->p_attn_comb];
+        [F->e setBuffer:g->att_acc offset:0 atIndex:0];
+        [F->e setBuffer:g->att_ms  offset:0 atIndex:1];
+        [F->e setBuffer:g->xb2     offset:0 atIndex:2];
+        [F->e setBytes:&cb length:sizeof(cb) atIndex:3];
+        [F->e setBuffer:g->sinks[l] ? g->sinks[l] : g->dummy offset:0 atIndex:4];
+        g_disp.attn_chunk++;
+        [F->e dispatchThreadgroups:MTLSizeMake(m->n_head, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        return;
+    }
+
+    attn_args aa = { hd, m->n_head, n_kv, m->n_ctx, pos,
+                     (uint64_t)model_k_byte_off(m, l),
+                     model_attn_scale(m, l), q8, window,
+                     g->sinks[l] != nil,
+                     q_dim, m->n_head * m->n_ctx, xdim,
+                     model_kv_is_ring(m, l) ? m->kv_ring : 0,
+                     (uint64_t)model_v_byte_off(m, l), vq8 };
+    // Cooperative twin at decode only: the score loop is what
+    // scatters, and at n > 1 each column has its own KV range, which
+    // the coop form's simdgroup-per-row split does not describe.
+    bool coop = (n == 1) && metal_attn_coop_on() && g->p_attn_coop;
+    if (coop) g_coop_dispatches++;
+    // Prefill: the tiled kernel, same arithmetic, shared KV reads.
+    // Must agree with ATTN_TILE in kernels.metal.
+    enum { ATTN_TILE = 8 };
+    bool tile = (n > 1) && hd <= 256 && metal_attn_tile_on() &&
+                g->p_attn_tile;
+    [F->e setComputePipelineState:tile ? g->p_attn_tile
+                             : coop ? g->p_attn_coop : g->p_attn];
+    [F->e setBuffer:g->q   offset:0 atIndex:0];
+    [F->e setBuffer:g->kc  offset:0 atIndex:1];
+    [F->e setBuffer:g->vc  offset:0 atIndex:2];
+    [F->e setBuffer:g->att offset:0 atIndex:3];
+    [F->e setBuffer:g->xb2 offset:0 atIndex:4];
+    [F->e setBytes:&aa length:sizeof(aa) atIndex:5];
+    [F->e setBuffer:g->sinks[l] ? g->sinks[l] : g->dummy offset:0 atIndex:6];
+    // Widest power-of-two threadgroup this pipeline allows, capped
+    // at the red[] scratch in the kernel. The reduction halves tpg
+    // each step, so a non-power-of-two would drop lanes silently.
+    int32_t tile_cols = n;
+    if (tile) [F->e setBytes:&tile_cols length:sizeof(tile_cols) atIndex:7];
+    NSUInteger amax = (tile ? g->p_attn_tile
+                            : coop ? g->p_attn_coop : g->p_attn)
+                          .maxTotalThreadsPerThreadgroup;
+    if (amax > 256) amax = 256;   // measured optimum; red[] is sized to match
+    NSUInteger atpg = 1;
+    while (atpg * 2 <= amax) atpg *= 2;
+    if (F->timing) {
+        static bool told;
+        if (!told) {
+            told = true;
+            fprintf(stderr, "metal-timing attn threadgroups=%d x %llu "
+                    "threads (pipeline max %llu)\n", m->n_head,
+                    (unsigned long long)atpg,
+                    (unsigned long long)g->p_attn.maxTotalThreadsPerThreadgroup);
+        }
+    }
+    g_disp.attn++;
+    if (tile) {
+        g_tile_dispatches++;
+        [F->e dispatchThreadgroups:MTLSizeMake(m->n_head,
+                                            (n + ATTN_TILE - 1) / ATTN_TILE, 1)
+          threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+    } else {
+        [F->e dispatchThreadgroups:MTLSizeMake(m->n_head, n, 1)
+          threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+    }
+}
+
+// The attention output: gate, output projection, post-norm, scale and the
+// residual add (or F2a's fused add + FFN norm, which the FFN stage encodes).
+static bool metal_enc_attn_out(metal_fwd *F, int l, const metal_layer_plan *P) {
+    gpu_t *g = F->g;
+    model_t *m = F->m;
+    int n = F->n;
+    int n_embd = F->n_embd;
+    int q_dim = F->q_dim;
+    int xdim = F->xdim;
+    layer_t *ly = &m->layers[l];
+    int q_dim_l = P->q_dim_l;
+    bool f2a = P->f2a;
+    if (!metal_nan_probe(F, g->xb2, (size_t)n * xdim, "attn-out", l)) return false;
+    if (m->attn_out_gate && ly->wq_gate)
+        enc_elem_n(g, F->e, g->p_sigmul, g->xb2, 0, g->agate, 0,
+                   q_dim_l, n, xdim, q_dim);
+    enc_mv_n(g, F->e, m, ly->wo, g->xb2, 0, g->xb, 0,
+             q_dim_l, n_embd, g->bo[l], n, xdim, xdim);
+    enc_lora(g, F->e, l, LW_O, g->xb2, g->xb, q_dim_l, n_embd, n, xdim, xdim);
+    if (!metal_nan_probe(F, g->xb, (size_t)n * xdim, "attn-wo", l)) return false;
+    if (g->pan[l])
+        enc_rmsnorm_n(g, F->e, g->xb, 0, g->xb, 0, g->pan[l],
+                      n_embd, m->post_norm_eps, n, xdim, xdim);
+    if (m->resid_scale != 1.0f)  // granite muP branch scale
+        enc_scale_n(g, F->e, g->xb, 0, n_embd, m->resid_scale, n, xdim);
+    // Fusion F2a: post-attention add + the FFN's leading norm, one
+    // dispatch. Guarded off wherever anything sits between the two
+    // (sandwich norm, muP scale, gemma dual-branch, debug probes).
+    if (!f2a)
+        enc_elem_n(g, F->e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
+    if (!metal_nan_probe(F, g->x, (size_t)n * n_embd, "post-attn-resid", l)) return false;
+    return true;
+}
+
+// The FFN: MoE or dense, its post-norm and scale, and the residual add (or
+// F2b's deferral into the next layer's attention norm).
+static bool metal_enc_ffn(metal_fwd *F, int l, const metal_layer_plan *P) {
+    gpu_t *g = F->g;
+    model_t *m = F->m;
+    int n = F->n;
+    int n_embd = F->n_embd;
+    int xdim = F->xdim;
+    layer_t *ly = &m->layers[l];
+    bool f2a = P->f2a;
+    bool f2b = P->f2b;
+    bool sum_add = P->sum_add;
+    if (ly->moe_gemma || ly->is_moe) {
+        if (f2a) {
             metal_fuse_announce();
-            metal_front_announce(fpipe, g);
-            // the megakernel is f16-only, so K and V rows are the same size
-            uint64_t roff = model_k_byte_off(m, l) +
-                (uint64_t)model_kv_row_at(m, l, pos) * model_k_row_bytes(m, l);
-            uint64_t roff_v = model_v_byte_off(m, l) +
-                (uint64_t)model_kv_row_at(m, l, pos) * model_v_row_bytes(m, l);
-            attn_front_args fa = {
-                n_embd, m->n_head, n_kv, hd, model_rope_dim(m, l) / 2,
-                pos, m->rope_neox, model_rope_mscale(m, l), m->rms_eps,
-                qw, kw, vw,
-                g->bq[l] != nil, g->bk[l] != nil, g->bv[l] != nil,
-                roff, roff_v,
-                g->qn[l] != nil, g->kn[l] != nil };
-            bool local = model_is_swa(m, l);
-            [e setComputePipelineState:fpipe];
-            [e setBuffer:qb offset:0 atIndex:0];
-            [e setBuffer:g->x  offset:0 atIndex:1];
-            [e setBuffer:g->attn_norm[l] offset:0 atIndex:2];
-            [e setBuffer:g->q  offset:0 atIndex:3];
-            [e setBuffer:g->kt offset:0 atIndex:4];
-            [e setBuffer:g->vt offset:0 atIndex:5];
-            [e setBuffer:g->kc offset:0 atIndex:6];
-            [e setBuffer:g->vc offset:0 atIndex:7];
-            [e setBuffer:(local && g->inv_freq_local) ? g->inv_freq_local
-                                                      : g->inv_freq
-                  offset:0 atIndex:8];
-            [e setBuffer:g->bq[l] ? g->bq[l] : g->dummy offset:0 atIndex:9];
-            [e setBuffer:g->bk[l] ? g->bk[l] : g->dummy offset:0 atIndex:10];
-            [e setBuffer:g->bv[l] ? g->bv[l] : g->dummy offset:0 atIndex:11];
-            [e setBytes:&fa length:sizeof(fa) atIndex:12];
-            [e setBuffer:g->qn[l] ? g->qn[l] : g->dummy offset:0 atIndex:13];
-            [e setBuffer:g->kn[l] ? g->kn[l] : g->dummy offset:0 atIndex:14];
-            g_disp.mv++;
-            [e dispatchThreadgroups:MTLSizeMake(m->n_head + 2 * n_kv, 1, 1)
-              threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-        } else {
-        enc_mv_n(g, e, m, ly->wq, g->xb, 0, g->q,  0,
-                 n_embd, q_dim_l,  g->bq[l], n, xdim, q_dim);
-        enc_lora(g, e, l, LW_Q, g->xb, g->q, n_embd, q_dim_l, n, xdim, q_dim);
-        // the output gate projects the same normed input as Q; xb is
-        // overwritten by the wo matvec below, so project it here
-        if (m->attn_out_gate && ly->wq_gate)
-            enc_mv_n(g, e, m, ly->wq_gate, g->xb, 0, g->agate, 0,
-                     n_embd, q_dim_l, nil, n, xdim, q_dim);
-        if (owns_kv) {
-            enc_mv_n(g, e, m, ly->wk, g->xb, 0, g->kt, 0,
-                     n_embd, kv_dim_l, g->bk[l], n, xdim, kv_dim);
-            enc_lora(g, e, l, LW_K, g->xb, g->kt, n_embd, kv_dim_l, n, xdim, kv_dim);
-            // gemma-4 global layers publish no V projection: V is the raw K
-            // projection, taken before K is normed/roped (as on the CPU path).
-            if (ly->wv) {
-                enc_mv_n(g, e, m, ly->wv, g->xb, 0, g->vt, 0,
-                         n_embd, kv_dim_l, g->bv[l], n, xdim, kv_dim);
-                enc_lora(g, e, l, LW_V, g->xb, g->vt, n_embd, kv_dim_l, n, xdim, kv_dim);
-            }
-        }
-        }
-
-        // Batched in grid.y rather than encoded once per token. Bit-identical:
-        // each (head, column) pair was always an independent reduction, so
-        // only the encoding changes. This was 65n of the 240n per-token
-        // dispatches the census measured; the elementwise ops are the rest.
-        if (g->qn[l] && !front)
-            enc_qknorm_n(g, e, m, g->q, 0, g->qn[l], m->n_head, hd, n, q_dim);
-        if (owns_kv) {
-            if (m->v_rmsnorm)
-                enc_headnorm_n(g, e, m, ly->wv ? g->vt : g->kt, 0,
-                               g->vt, 0, nil, n_kv, hd, n, kv_dim);
-            if (g->kn[l] && !front)
-                enc_qknorm_n(g, e, m, g->kt, 0, g->kn[l], n_kv, hd, n, kv_dim);
-        }
-        {
-            size_t row_b = model_k_row_bytes(m, l), vrow_b = model_v_row_bytes(m, l);
-            int q8 = model_kv_kind_k(m), vq8 = model_kv_kind_v(m);   // cache KINDS
-            int ku = q8 == 2 ? kv_dim_l / 16 : q8 ? kv_dim_l / 32 : kv_dim_l;
-            int vu = vq8 == 2 ? kv_dim_l / 16 : vq8 ? kv_dim_l / 32 : kv_dim_l;
-            int kv_units = ku > vu ? ku : vu;
-
-            // rope/store/attention each take the batch in one dispatch: the
-            // kernels derive their column's position from pos + col, so every
-            // token still rotates at, writes to, and attends over exactly the
-            // range a per-token submit gave it.
-            if (front) goto rope_store_done;   // the megakernel already did it
-            // Decode fusion F1: rope(q)+rope(k)+f16 store in ONE dispatch
-            // (budget: -2 dispatches x n_layer per token). q8 caches and
-            // prefill keep the split path; byte identity is the gate.
-            bool fused_rs = n == 1 && !q8 && !vq8 && owns_kv && metal_fuse_on() &&
-                            g->p_rope_store && model_layer_ropes(m, l);
-            if (fused_rs) {
-                metal_fuse_announce();
-                int half = model_rope_dim(m, l) / 2;
-                uint64_t roff = model_k_byte_off(m, l) +
-                                (uint64_t)model_kv_row_at(m, l, pos) * row_b;
-                uint64_t roff_v = model_v_byte_off(m, l) +
-                                  (uint64_t)model_kv_row_at(m, l, pos) * vrow_b;
-                rope_store_args ra = {
-                    m->n_head, n_kv, hd, half, pos, m->rope_neox,
-                    model_rope_mscale(m, l), 0, 0, 0, roff, roff_v };
-                bool local = model_is_swa(m, l);
-                [e setComputePipelineState:g->p_rope_store];
-                [e setBuffer:g->q  offset:0 atIndex:0];
-                [e setBuffer:g->kt offset:0 atIndex:1];
-                [e setBuffer:g->vt offset:0 atIndex:2];
-                [e setBuffer:g->kc offset:0 atIndex:3];
-                [e setBuffer:g->vc offset:0 atIndex:4];
-                [e setBuffer:(local && g->inv_freq_local) ? g->inv_freq_local
-                                                          : g->inv_freq
-                      offset:0 atIndex:5];
-                [e setBytes:&ra length:sizeof(ra) atIndex:6];
-                int threads = m->n_head * half + n_kv * half +
-                              n_kv * (hd - 2 * half) + (kv_dim_l + 1) / 2;
-                g_disp.rope++;
-                [e dispatchThreads:MTLSizeMake(threads, 1, 1)
-                  threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
-                goto rope_store_done;
-            }
-            if (model_layer_ropes(m, l)) {
-                enc_rope_n(g, e, m, g->q,  0, m->n_head, pos, l, n, q_dim);
-            } else if (m->attn_temp_scale != 0.0f) {
-                // NoPE layer: no rotation, and THIS is where the llama-4
-                // attention temperature applies -- on the layers that skipped
-                // rope, not on every layer (matching the CPU path and
-                // llama.cpp). The factor is per POSITION, so unlike everything
-                // else here it cannot be one batched dispatch; it is one scale
-                // per column, the same shape the CUDA backend uses.
-                for (int b = 0; b < n; b++) {
-                    float ts = model_attn_temp(m, pos + b);
-                    if (ts != 1.0f)
-                        enc_scale(g, e, g->q, foff((size_t)b * q_dim),
-                                  q_dim_l, ts);
-                }
-            }
-            if (owns_kv) {
-                if (model_layer_ropes(m, l))
-                    enc_rope_n(g, e, m, g->kt, 0, n_kv, pos, l, n, kv_dim);
-
-                store_args sa = { kv_dim_l, q8, kv_dim, pos,
-                                  model_kv_is_ring(m, l) ? m->kv_ring : 0,
-                                  model_k_byte_off(m, l), (uint64_t)row_b,
-                                  vq8, model_v_byte_off(m, l), (uint64_t)vrow_b };
-                [e setComputePipelineState:g->p_store];
-                [e setBuffer:g->kt offset:0 atIndex:0];
-                [e setBuffer:g->vt offset:0 atIndex:1];
-                [e setBuffer:g->kc offset:0 atIndex:2];
-                [e setBuffer:g->vc offset:0 atIndex:3];
-                [e setBytes:&sa length:sizeof(sa) atIndex:4];
-                g_disp.store++;
-                [e dispatchThreads:MTLSizeMake(kv_units, n, 1)
-                  threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
-            }
-            rope_store_done: ;
-
-            // Chunked path: decode only (n == 1), long enough range to be
-            // worth splitting, and a head_dim the partial buffer was sized
-            // for. Everything else keeps the single-pass kernel, including
-            // all of prefill -- which already has grid.y parallelism from the
-            // batch and is the validated fast path.
-            int a_t0 = (window > 0 && pos - window + 1 > 0) ? pos - window + 1 : 0;
-            int a_span = pos - a_t0 + 1;
-            if (n == 1) {
-                // K and V, both read across the span this layer attends over.
-                unsigned long long b = (unsigned long long)a_span
-                                     * (unsigned long long)model_kv_row_bytes_sum(m, l);
-                if (window > 0) { g_disp.kv_swa += b; g_disp.kv_layers_swa++; }
-                else            { g_disp.kv_global += b; g_disp.kv_layers_global++; }
-                // ~4 device round-trips of the scores over the span, per head.
-                g_disp.scores_bytes += 4ull * (unsigned long long)m->n_head
-                                     * (unsigned long long)a_span * sizeof(float);
-            }
-            int a_ov = metal_attn_chunk_override();
-            int a_chunk, a_nch;
-            // one group per KV head when several query heads share it
-            int gqa_g = n_kv > 0 ? m->n_head / n_kv : 1;
-            bool gqa = n == 1 && gqa_g > 1 && gqa_g <= 8 && m->n_head % n_kv == 0 &&
-                       !q8 && !vq8 && metal_attn_coop_on() && metal_attn_gqa_on() &&
-                       g->p_attn_chunk_gqa;
-            if (a_ov == 0) { a_chunk = 0; a_nch = 0; }        // path disabled
-            else if (a_ov > 0) {
-                a_chunk = a_ov;
-                a_nch = (a_span + a_chunk - 1) / a_chunk;
-            } else {
-                int want = METAL_ATTN_TARGET_GROUPS /
-                           (gqa ? n_kv : m->n_head > 0 ? m->n_head : 1);
-                if (want < 1) want = 1;
-                if (want > METAL_ATTN_MAX_CHUNKS) want = METAL_ATTN_MAX_CHUNKS;
-                a_chunk = (a_span + want - 1) / want;
-                // floor, not veto: a target implying tiny chunks means "use the
-                // smallest chunk worth having", and short context then drops to
-                // the single-pass kernel through the n_chunks < 2 test below
-                if (a_chunk < METAL_ATTN_MIN_CHUNK) a_chunk = METAL_ATTN_MIN_CHUNK;
-                a_nch = (a_span + a_chunk - 1) / a_chunk;
-            }
-            if (n == 1 && a_nch >= 2 && a_nch <= METAL_ATTN_MAX_CHUNKS &&
-                hd == model_head_dim(m, 0)) {
-                attn_chunk_args ca = { hd, m->n_head, n_kv, m->n_ctx, pos,
-                                       (uint64_t)model_k_byte_off(m, l),
-                                       model_attn_scale(m, l), q8, window,
-                                       a_chunk, a_nch,
-                                       model_kv_is_ring(m, l) ? m->kv_ring : 0,
-                                       (uint64_t)model_v_byte_off(m, l), vq8 };
-                bool coopc = metal_attn_coop_on() && g->p_attn_chunk_coop;
-                if (coopc) g_coop_dispatches++;
-                if (gqa) g_gqa_dispatches++;
-                [e setComputePipelineState:gqa ? g->p_attn_chunk_gqa
-                                         : coopc ? g->p_attn_chunk_coop
-                                                 : g->p_attn_chunk];
-                [e setBuffer:g->q       offset:0 atIndex:0];
-                [e setBuffer:g->kc      offset:0 atIndex:1];
-                [e setBuffer:g->vc      offset:0 atIndex:2];
-                [e setBuffer:g->att     offset:0 atIndex:3];
-                [e setBuffer:g->att_acc offset:0 atIndex:4];
-                [e setBuffer:g->att_ms  offset:0 atIndex:5];
-                [e setBytes:&ca length:sizeof(ca) atIndex:6];
-                g_disp.attn_chunk++;
-                [e dispatchThreadgroups:MTLSizeMake(gqa ? n_kv : m->n_head, a_nch, 1)
-                  threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-
-                attn_comb_args cb = { hd, m->n_head, a_nch,
-                                      g->sinks[l] != nil };
-                [e setComputePipelineState:g->p_attn_comb];
-                [e setBuffer:g->att_acc offset:0 atIndex:0];
-                [e setBuffer:g->att_ms  offset:0 atIndex:1];
-                [e setBuffer:g->xb2     offset:0 atIndex:2];
-                [e setBytes:&cb length:sizeof(cb) atIndex:3];
-                [e setBuffer:g->sinks[l] ? g->sinks[l] : g->dummy offset:0 atIndex:4];
-                g_disp.attn_chunk++;
-                [e dispatchThreadgroups:MTLSizeMake(m->n_head, 1, 1)
-                  threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-                goto attn_done;
-            }
-
-            attn_args aa = { hd, m->n_head, n_kv, m->n_ctx, pos,
-                             (uint64_t)model_k_byte_off(m, l),
-                             model_attn_scale(m, l), q8, window,
-                             g->sinks[l] != nil,
-                             q_dim, m->n_head * m->n_ctx, xdim,
-                             model_kv_is_ring(m, l) ? m->kv_ring : 0,
-                             (uint64_t)model_v_byte_off(m, l), vq8 };
-            // Cooperative twin at decode only: the score loop is what
-            // scatters, and at n > 1 each column has its own KV range, which
-            // the coop form's simdgroup-per-row split does not describe.
-            bool coop = (n == 1) && metal_attn_coop_on() && g->p_attn_coop;
-            if (coop) g_coop_dispatches++;
-            // Prefill: the tiled kernel, same arithmetic, shared KV reads.
-            // Must agree with ATTN_TILE in kernels.metal.
-            enum { ATTN_TILE = 8 };
-            bool tile = (n > 1) && hd <= 256 && metal_attn_tile_on() &&
-                        g->p_attn_tile;
-            [e setComputePipelineState:tile ? g->p_attn_tile
-                                     : coop ? g->p_attn_coop : g->p_attn];
-            [e setBuffer:g->q   offset:0 atIndex:0];
-            [e setBuffer:g->kc  offset:0 atIndex:1];
-            [e setBuffer:g->vc  offset:0 atIndex:2];
-            [e setBuffer:g->att offset:0 atIndex:3];
-            [e setBuffer:g->xb2 offset:0 atIndex:4];
-            [e setBytes:&aa length:sizeof(aa) atIndex:5];
-            [e setBuffer:g->sinks[l] ? g->sinks[l] : g->dummy offset:0 atIndex:6];
-            // Widest power-of-two threadgroup this pipeline allows, capped
-            // at the red[] scratch in the kernel. The reduction halves tpg
-            // each step, so a non-power-of-two would drop lanes silently.
-            int32_t tile_cols = n;
-            if (tile) [e setBytes:&tile_cols length:sizeof(tile_cols) atIndex:7];
-            NSUInteger amax = (tile ? g->p_attn_tile
-                                    : coop ? g->p_attn_coop : g->p_attn)
-                                  .maxTotalThreadsPerThreadgroup;
-            if (amax > 256) amax = 256;   // measured optimum; red[] is sized to match
-            NSUInteger atpg = 1;
-            while (atpg * 2 <= amax) atpg *= 2;
-            if (timing) {
-                static bool told;
-                if (!told) {
-                    told = true;
-                    fprintf(stderr, "metal-timing attn threadgroups=%d x %llu "
-                            "threads (pipeline max %llu)\n", m->n_head,
-                            (unsigned long long)atpg,
-                            (unsigned long long)g->p_attn.maxTotalThreadsPerThreadgroup);
-                }
-            }
-            g_disp.attn++;
-            if (tile) {
-                g_tile_dispatches++;
-                [e dispatchThreadgroups:MTLSizeMake(m->n_head,
-                                                    (n + ATTN_TILE - 1) / ATTN_TILE, 1)
-                  threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
-            } else {
-                [e dispatchThreadgroups:MTLSizeMake(m->n_head, n, 1)
-                  threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
-            }
-            attn_done: ;
-        }
-
-        NAN_PROBE(g->xb2, (size_t)n * xdim, "attn-out");
-        if (m->attn_out_gate && ly->wq_gate)
-            enc_elem_n(g, e, g->p_sigmul, g->xb2, 0, g->agate, 0,
-                       q_dim_l, n, xdim, q_dim);
-        enc_mv_n(g, e, m, ly->wo, g->xb2, 0, g->xb, 0,
-                 q_dim_l, n_embd, g->bo[l], n, xdim, xdim);
-        enc_lora(g, e, l, LW_O, g->xb2, g->xb, q_dim_l, n_embd, n, xdim, xdim);
-        NAN_PROBE(g->xb, (size_t)n * xdim, "attn-wo");
-        if (g->pan[l])
-            enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->pan[l],
-                          n_embd, m->post_norm_eps, n, xdim, xdim);
-        if (m->resid_scale != 1.0f)  // granite muP branch scale
-            enc_scale_n(g, e, g->xb, 0, n_embd, m->resid_scale, n, xdim);
-        // Fusion F2a: post-attention add + the FFN's leading norm, one
-        // dispatch. Guarded off wherever anything sits between the two
-        // (sandwich norm, muP scale, gemma dual-branch, debug probes).
-        if (!f2a)
-            enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
-        NAN_PROBE(g->x, (size_t)n * n_embd, "post-attn-resid");
-        mixer_done: ;
-        if (ly->skip_ffn) goto ffn_done;
-
-        if (ly->moe_gemma || ly->is_moe) {
-            if (f2a) {
-                metal_fuse_announce();
-                enc_add_rmsnorm(g, e, g->x, g->xb, g->xb, g->ffn_norm[l],
-                                n_embd, m->rms_eps);
-            }
-            if (ly->moe_gemma)
-                enc_gemma_moe_ffn_batch(g, e, m, ly, l, n, xdim, &cb, &e);
-            else
-                enc_moe_ffn_batch(g, e, m, ly, l, n, xdim, f2a, sum_add);
-        } else {
-            // gemma-4 E2B varies the FFN width per layer; hb/hb2 are sized
-            // for the max, so pack the batch at THIS layer's width.
-            int nff_l = ly->n_ff;
-            if (f2a) {
-                metal_fuse_announce();
-                enc_add_rmsnorm(g, e, g->x, g->xb, g->xb, g->ffn_norm[l],
-                                n_embd, m->rms_eps);
-            } else
-            enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->ffn_norm[l],
-                          n_embd, m->rms_eps, n, n_embd, xdim);
-            enc_mv_n(g, e, m, ly->w_gate, g->xb, 0, g->hb,  0,
-                     n_embd, nff_l, nil, n, xdim, nff_l);
-            enc_lora(g, e, l, LW_GATE, g->xb, g->hb, n_embd, nff_l, n, xdim, nff_l);
-            enc_mv_n(g, e, m, ly->w_up,   g->xb, 0, g->hb2, 0,
-                     n_embd, nff_l, nil, n, xdim, nff_l);
-            enc_lora(g, e, l, LW_UP, g->xb, g->hb2, n_embd, nff_l, n, xdim, nff_l);
-            // hb/hb2 are contiguous across the batch, so the activation is one
-            // dispatch over the whole batch rather than n
-            enc_elem(g, e, m->ffn_act == ACT_GELU ? g->p_gelu : g->p_silu,
-                     g->hb, 0, g->hb2, 0, n * nff_l);
-            enc_mv_n(g, e, m, ly->w_down, g->hb, 0, g->xb, 0,
-                     nff_l, n_embd, nil, n, nff_l, xdim);
-            enc_lora(g, e, l, LW_DOWN, g->hb, g->xb, nff_l, n_embd, n, nff_l, xdim);
-        }
-        NAN_PROBE(g->xb, (size_t)n * xdim, "ffn-out");
-        if (g->pfn[l])
-            enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->pfn[l],
-                          n_embd, m->post_norm_eps, n, xdim, xdim);
-        if (m->resid_scale != 1.0f)
-            enc_scale_n(g, e, g->xb, 0, n_embd, m->resid_scale, n, xdim);
-        // Fusion F2b (decided above): defer this add into the next layer's
-        // attention norm; F5 already folded it into the expert sum on the
-        // layers it took.
-        if (f2b)
-            fuse_pending_add = true;
-        else if (!sum_add)
-        enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
-        ffn_done: ;
-        // Order matters: the E-series branch reads the post-FFN residual of
-        // EVERY token, so it has to run before any token's output scale.
-        if (ly->ple_gate) enc_ple(g, e, m, ly, l, n, xdim);
-        if (ly->out_scale != 1.0f && ly->out_scale != 0.0f)
-            enc_scale_n(g, e, g->x, 0, n_embd, ly->out_scale, n, n_embd);
-        if (nantrace) {
-            [e endEncoding];
-            [cb commit];
-            [cb waitUntilCompleted];
-            if (metal_scan_bad((const float *)g->x.contents,
-                               n * n_embd, "resid", l))
-                return NULL;
-            cb = [g->queue commandBuffer];
-            e = [cb computeCommandEncoder];
-        }
-        // Only the last position's logits are ever read (see the return
-        // below), and the vocab matmul is the widest in the model — doing it
-        // for every prompt token was pure waste.
-        if (l == m->n_layer - 1 && n_gpu_layers == m->n_layer) {
-            // Speculative verify (model_forward_batch_keep) needs EVERY
-            // column's logits — the head runs per column then. The normal
-            // path keeps the last-column-only economy.
-            int c0 = m->spec_want_all >= n ? 0 : n - 1;
-            for (int c = c0; c < n; c++) {
-                NSUInteger xo = foff((size_t)c * n_embd);
-                NSUInteger xbo = foff((size_t)c * xdim);
-                enc_rmsnorm(g, e, g->x, xo, g->xb, xbo, g->out_norm,
+            enc_add_rmsnorm(g, F->e, g->x, g->xb, g->xb, g->ffn_norm[l],
                             n_embd, m->rms_eps);
-                enc_mv(g, e, m, m->output, g->xb, xbo, g->logits,
-                       foff((size_t)c * m->n_vocab),
-                       n_embd, m->n_vocab, nil);
-            }
+        }
+        if (ly->moe_gemma)
+            enc_gemma_moe_ffn_batch(g, F->e, m, ly, l, n, xdim, &F->cb, &F->e);
+        else
+            enc_moe_ffn_batch(g, F->e, m, ly, l, n, xdim, f2a, sum_add);
+    } else {
+        // gemma-4 E2B varies the FFN width per layer; hb/hb2 are sized
+        // for the max, so pack the batch at THIS layer's width.
+        int nff_l = ly->n_ff;
+        if (f2a) {
+            metal_fuse_announce();
+            enc_add_rmsnorm(g, F->e, g->x, g->xb, g->xb, g->ffn_norm[l],
+                            n_embd, m->rms_eps);
+        } else
+        enc_rmsnorm_n(g, F->e, g->x, 0, g->xb, 0, g->ffn_norm[l],
+                      n_embd, m->rms_eps, n, n_embd, xdim);
+        enc_mv_n(g, F->e, m, ly->w_gate, g->xb, 0, g->hb,  0,
+                 n_embd, nff_l, nil, n, xdim, nff_l);
+        enc_lora(g, F->e, l, LW_GATE, g->xb, g->hb, n_embd, nff_l, n, xdim, nff_l);
+        enc_mv_n(g, F->e, m, ly->w_up,   g->xb, 0, g->hb2, 0,
+                 n_embd, nff_l, nil, n, xdim, nff_l);
+        enc_lora(g, F->e, l, LW_UP, g->xb, g->hb2, n_embd, nff_l, n, xdim, nff_l);
+        // hb/hb2 are contiguous across the batch, so the activation is one
+        // dispatch over the whole batch rather than n
+        enc_elem(g, F->e, m->ffn_act == ACT_GELU ? g->p_gelu : g->p_silu,
+                 g->hb, 0, g->hb2, 0, n * nff_l);
+        enc_mv_n(g, F->e, m, ly->w_down, g->hb, 0, g->xb, 0,
+                 nff_l, n_embd, nil, n, nff_l, xdim);
+        enc_lora(g, F->e, l, LW_DOWN, g->hb, g->xb, nff_l, n_embd, n, nff_l, xdim);
+    }
+    if (!metal_nan_probe(F, g->xb, (size_t)n * xdim, "ffn-out", l)) return false;
+    if (g->pfn[l])
+        enc_rmsnorm_n(g, F->e, g->xb, 0, g->xb, 0, g->pfn[l],
+                      n_embd, m->post_norm_eps, n, xdim, xdim);
+    if (m->resid_scale != 1.0f)
+        enc_scale_n(g, F->e, g->xb, 0, n_embd, m->resid_scale, n, xdim);
+    // Fusion F2b (decided in metal_fwd_layer): defer this add into the next layer's
+    // attention norm; F5 already folded it into the expert sum on the
+    // layers it took.
+    if (f2b)
+        F->fuse_pending_add = true;
+    else if (!sum_add)
+    enc_elem_n(g, F->e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
+    return true;
+}
+
+// The layer's tail: the E-series branch, the output scale, the NaN trace,
+// and on the last layer the head.
+static bool metal_enc_layer_tail(metal_fwd *F, int l) {
+    gpu_t *g = F->g;
+    model_t *m = F->m;
+    int n = F->n;
+    int n_embd = F->n_embd;
+    int xdim = F->xdim;
+    int n_gpu_layers = F->n_gpu_layers;
+    bool nantrace = F->nantrace;
+    layer_t *ly = &m->layers[l];
+    // Order matters: the E-series branch reads the post-FFN residual of
+    // EVERY token, so it has to run before any token's output scale.
+    if (ly->ple_gate) enc_ple(g, F->e, m, ly, l, n, xdim);
+    if (ly->out_scale != 1.0f && ly->out_scale != 0.0f)
+        enc_scale_n(g, F->e, g->x, 0, n_embd, ly->out_scale, n, n_embd);
+    if (nantrace) {
+        [F->e endEncoding];
+        [F->cb commit];
+        [F->cb waitUntilCompleted];
+        if (metal_scan_bad((const float *)g->x.contents,
+                           n * n_embd, "resid", l))
+            return false;
+        F->cb = [g->queue commandBuffer];
+        F->e = [F->cb computeCommandEncoder];
+    }
+    // Only the last position's logits are ever read (see the return
+    // below), and the vocab matmul is the widest in the model — doing it
+    // for every prompt token was pure waste.
+    if (l == m->n_layer - 1 && n_gpu_layers == m->n_layer) {
+        // Speculative verify (model_forward_batch_keep) needs EVERY
+        // column's logits — the head runs per column then. The normal
+        // path keeps the last-column-only economy.
+        int c0 = m->spec_want_all >= n ? 0 : n - 1;
+        for (int c = c0; c < n; c++) {
+            NSUInteger xo = foff((size_t)c * n_embd);
+            NSUInteger xbo = foff((size_t)c * xdim);
+            enc_rmsnorm(g, F->e, g->x, xo, g->xb, xbo, g->out_norm,
+                        n_embd, m->rms_eps);
+            enc_mv(g, F->e, m, m->output, g->xb, xbo, g->logits,
+                   foff((size_t)c * m->n_vocab),
+                   n_embd, m->n_vocab, nil);
         }
     }
+    return true;
+}
 
-#undef NAN_PROBE
+// One layer: its fusion decisions, then its stages in order.
+static bool metal_fwd_layer(metal_fwd *F, int l) {
+    gpu_t *g = F->g;
+    model_t *m = F->m;
+    int n = F->n;
+    int n_gpu_layers = F->n_gpu_layers;
+    bool nantrace = F->nantrace;
+    int nanstage = F->nanstage;
+    layer_t *ly = &m->layers[l];
+    int hd = model_head_dim(m, l);
+    int n_kv = model_n_head_kv(m, l);
+    int q_dim_l = model_q_dim(m, l);
+    int kv_dim_l = model_kv_dim(m, l);
+    int window = model_is_swa(m, l) ? m->swa_window : 0;
+    // Weight-heavy projections run ONCE for the whole batch: the simdgroup
+    // walks its weight row per column, so the row is fetched from device
+    // memory on the first token and cached for the rest. Per-token submits
+    // instead re-streamed every weight matrix n times, which is why Metal
+    // prefill used to run at decode speed. Bit-identical either way.
+    bool owns_kv = model_kv_owner(m, l) == l;
+    // The attention-front megakernel: norm + q/k/v + rope + store in ONE
+    // dispatch (kernels.metal explains why the walk is cut exactly
+    // here). Models it cannot serve byte-exactly stay on the split path.
+    // An adapter adds its delta after each projection, so a block that
+    // carries one keeps the split path the delta can be encoded into.
+    id<MTLComputePipelineState> fpipe =
+        n == 1 && metal_fuse_on() && !g->lora_a && !ly->skip_mixer
+            ? metal_front_pipe(g, m, l) : nil;
+    bool front = fpipe != nil;
+    uint64_t qw = 0, kw = 0, vw = 0;
+    id<MTLBuffer> qb = nil;
+    if (front) {
+        uint64_t kwo = 0, vwo = 0;
+        qb = metal_wbuf_for(g, (uint64_t)(uintptr_t)ly->wq->data,
+                            ly->wq->nbytes, &qw);
+        id<MTLBuffer> kb = metal_wbuf_for(g,
+            (uint64_t)(uintptr_t)ly->wk->data, ly->wk->nbytes, &kwo);
+        id<MTLBuffer> vb = metal_wbuf_for(g,
+            (uint64_t)(uintptr_t)ly->wv->data, ly->wv->nbytes, &vwo);
+        kw = kwo; vw = vwo;
+        if (!(qb && qb == kb && qb == vb)) front = false;
+    }
+    // A removed sublayer (--remove-sublayer) is not encoded at all: the
+    // residual stream passes the branch untouched, as on the CPU. The
+    // fusions that fold a branch's residual add into a neighbouring norm
+    // have nothing to fold where the branch is gone, so they stand down
+    // around it: F2a needs this block's attention AND its FFN norm, F2b
+    // needs this block's FFN and the next block's attention norm.
+    bool f2a = n == 1 && metal_fuse_on() && g->p_add_rmsnorm &&
+               !g->pan[l] && m->resid_scale == 1.0f && !nanstage &&
+               !ly->moe_gemma && !ly->skip_mixer && !ly->skip_ffn;
+    bool f2b = n == 1 && metal_fuse_on() && g->p_add_rmsnorm &&
+               !g->pfn[l] && m->resid_scale == 1.0f && !ly->ple_gate &&
+               (ly->out_scale == 1.0f || ly->out_scale == 0.0f) &&
+               !nantrace && !nanstage && l + 1 < n_gpu_layers &&
+               n_gpu_layers == m->n_layer &&
+               !ly->skip_ffn && !m->layers[l + 1].skip_mixer &&
+               !metal_front_capable(g, m, l + 1);
+    bool sum_add = n == 1 && metal_fuse_on() && !f2b && ly->is_moe &&
+                   !ly->moe_gemma && !g->pfn[l] &&
+                   m->resid_scale == 1.0f && !ly->ple_gate &&
+                   !nantrace && !nanstage;
+    metal_layer_plan P = { hd, n_kv, q_dim_l, kv_dim_l, window, owns_kv, fpipe, front, qw, kw, vw, qb, f2a, f2b, sum_add };
+    if (!ly->skip_mixer) {
+        metal_enc_attn_in(F, l, &P);
+        metal_enc_rope_store(F, l, &P);
+        metal_enc_attention(F, l, &P);
+        if (!metal_enc_attn_out(F, l, &P)) return false;
+    }
+    if (!ly->skip_ffn && !metal_enc_ffn(F, l, &P)) return false;
+    return metal_enc_layer_tail(F, l);
+}
 
-    [e endEncoding];
-    double t_enc1 = timing ? CFAbsoluteTimeGetCurrent() : 0;
-    [cb commit];
-    [cb waitUntilCompleted];
-    if (timing) {
+// The command buffer committed and waited on, its failure checked, the
+// traces and the census written, the last column's logits returned.
+static float *metal_fwd_submit(metal_fwd *F, double t_enc0) {
+    gpu_t *g = F->g;
+    model_t *m = F->m;
+    int n = F->n;
+    int pos = F->pos;
+    [F->e endEncoding];
+    double t_enc1 = F->timing ? CFAbsoluteTimeGetCurrent() : 0;
+    [F->cb commit];
+    [F->cb waitUntilCompleted];
+    if (F->timing) {
         double now = CFAbsoluteTimeGetCurrent();
-        double gpu = [cb GPUEndTime] - [cb GPUStartTime];
+        double gpu = [F->cb GPUEndTime] - [F->cb GPUStartTime];
         fprintf(stderr, "metal-timing n=%d encode=%.2fms submit+wait=%.2fms "
                 "gpu=%.2fms total=%.2fms\n", n,
                 (t_enc1 - t_enc0) * 1e3, (now - t_enc1) * 1e3, gpu * 1e3,
                 (now - t_enc0) * 1e3);
     }
-    if (metal_command_failed(cb)) {
+    if (metal_command_failed(F->cb)) {
         fprintf(stderr, "gpu: command buffer failed — falling back to CPU\n");
         return NULL;
     }
@@ -3755,6 +3954,38 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                 g_disp.elem, g_disp.moe);
     }
     return (float *)g->logits.contents + (size_t)(n - 1) * m->n_vocab;
+}
+
+static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
+                                       int n, int pos) {
+    gpu_t *g = m->gpu;
+    int n_embd = m->n_embd;
+    int q_dim  = m->n_head * m->head_dim;
+    int kv_dim = m->n_head_kv * m->head_dim;
+    int xdim   = q_dim > n_embd ? q_dim : n_embd;
+
+    metal_fwd_embed(m, g, tokens, n);
+
+    bool nantrace = metal_nan_trace();
+    int  nanstage = metal_nan_stage() >= 2;
+    // RUNNER_METAL_TIMING=1: split a forward into the CPU time spent encoding
+    // dispatches and the GPU time actually executing them. Decode on Metal is
+    // slower than CPU on an M1 and the two candidate explanations -- encode
+    // overhead at ~420 dispatches per token, versus the kernels themselves --
+    // are indistinguishable from throughput alone.
+    int timing = metal_timing_on();
+    double t_enc0 = timing ? CFAbsoluteTimeGetCurrent() : 0;
+    id<MTLCommandBuffer> cb = [g->queue commandBuffer];
+    id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
+
+    // Partial split: only the leading gpu_layers run here.
+    int n_gpu_layers = m->gpu_layers > 0 && m->gpu_layers < m->n_layer
+                     ? m->gpu_layers : m->n_layer;
+    metal_fwd F = { m, g, cb, e, n, pos, n_embd, q_dim, kv_dim, xdim, n_gpu_layers,
+                    nantrace, nanstage, timing, false };
+    for (int l = 0; l < n_gpu_layers; l++)
+        if (!metal_fwd_layer(&F, l)) return NULL;
+    return metal_fwd_submit(&F, t_enc0);
 }
 
 

@@ -4251,6 +4251,23 @@ uint64_t gpu_plan_binding_bytes(uint64_t nbytes, bool bound) {
                  : nbytes;
 }
 
+// Whether a partial split's one contiguous upload, a prefix of the file
+// ending at prefix_end, overshoots the plan's weights enough to upload per
+// tensor instead. Only the prefix's tensor bytes count: the header and
+// metadata before data_start are no layer's spread, and on a small model
+// with a large vocabulary they alone exceeded the slack, so its contiguous
+// upload became a per-tensor one for nothing. The slack is relative and
+// small: the norms and biases outside a layer's big tensors are kilobytes,
+// never a sixty-fourth of the plan, while a real overshoot can be modest
+// and still fatal (a file with output.weight at its head overshot by 8%,
+// 1.9 GB on a 24 GB slice). An absolute margin would hide the spread on a
+// small file.
+bool gpu_plan_upload_spread(uint64_t prefix_end, uint64_t data_start,
+                            uint64_t planned) {
+    uint64_t tensor_bytes = prefix_end > data_start ? prefix_end - data_start : 0;
+    return tensor_bytes > planned + planned / 64;
+}
+
 // An integrated device's "VRAM" is system RAM: its offload budget is also
 // bounded by what the OS says is available (0: the OS could not tell).
 uint64_t gpu_plan_unified_cap(uint64_t budget, uint64_t ram_available) {
