@@ -31,7 +31,9 @@ typedef struct { pat_seg *seg; int n; } pattern;
 typedef struct snode snode;
 struct snode {
     int     kind;
-    char  **lits; int n_lits;                       // enum literals (JSON text)
+    char  **lits; int n_lits;                       // enum literals (JSON text), never
+                                                    //   empty: feed_byte matches them
+                                                    //   byte by byte
     int    *order;                                  //   their indices in sorted order (see enum_index)
     char  **keys; int *key_len; snode **props;      // object properties
     bool   *req;  int n_props;                      //   (declared order)

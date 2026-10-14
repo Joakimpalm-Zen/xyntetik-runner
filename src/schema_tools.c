@@ -1130,7 +1130,10 @@ static snode *harmony_call_select(jv *tools, const char *only_tool,
     for (int i = 0; i < tools->n; i++) {
         jv *fn = jv_get(tools->items[i], "function");
         const char *name = jv_str(jv_get(fn, "name"), NULL);
-        if (name && (!only_tool || !strcmp(name, only_tool))) selected++;
+        // an empty name is no name: the recipient enum must hold only
+        // literals a byte can complete (see snode.lits)
+        if (name && name[0] && (!only_tool || !strcmp(name, only_tool)))
+            selected++;
     }
     if (!selected) {
         snprintf(err, errcap, only_tool
@@ -1151,7 +1154,7 @@ static snode *harmony_call_select(jv *tools, const char *only_tool,
     for (int i = 0; i < tools->n; i++) {
         jv *fn = jv_get(tools->items[i], "function");
         const char *name = jv_str(jv_get(fn, "name"), NULL);
-        if (!name || (only_tool && strcmp(name, only_tool))) continue;
+        if (!name || !name[0] || (only_tool && strcmp(name, only_tool))) continue;
         names->lits[names->n_lits] = strdup(name);
         if (!names->lits[names->n_lits]) goto fail;
         names->n_lits++;

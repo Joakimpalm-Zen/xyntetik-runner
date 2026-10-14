@@ -3091,6 +3091,42 @@ static void test_schema_close_fits_a_long_enum_member(void) {
     jv_free(schema_json);
 }
 
+// An enum literal is matched byte by byte, so an empty one can never be
+// completed: at the first byte the matcher would compare a generated NUL
+// with its terminator and read past it. Every native grammar refuses a tool
+// whose name is empty, except Harmony, which read "" as a name (it skips a
+// tool with no name at all). An empty name is no name there too: the
+// recipient enum holds only real names, and a NUL is refused at it.
+static void test_harmony_empty_tool_name_is_no_name(void) {
+    const char *tsrc =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"\"}},"
+        "{\"type\":\"function\",\"function\":{\"name\":\"ping\"}}]";
+    jv *tools = json_parse(tsrc, strlen(tsrc));
+    assert(tools != NULL);
+    char err[160];
+    snode *g = schema_compile_harmony_turn(tools, false, NULL, NULL, false,
+                                           err, sizeof(err));
+    assert(g != NULL);
+    sval v, scratch;
+    sval_init(&v, g);
+    // the required turn's header, up to the recipient (the tool name enum)
+    const char *prefix = "<|channel|>commentary to=functions.";
+    assert(sval_feed(&v, prefix, (int)strlen(prefix)));
+    assert(sval_trial(&v, &scratch, "p", 1));
+    assert(!sval_trial(&v, &scratch, "\0", 1));
+    assert(!sval_trial(&v, &scratch, "<", 1));
+    schema_free(g);
+    jv_free(tools);
+
+    const char *only_empty = "[{\"type\":\"function\",\"function\":{\"name\":\"\"}}]";
+    tools = json_parse(only_empty, strlen(only_empty));
+    assert(tools != NULL);
+    err[0] = 0;
+    g = schema_compile_harmony_turn(tools, false, NULL, NULL, false, err, sizeof(err));
+    assert(g == NULL && strstr(err, "no function names"));
+    jv_free(tools);
+}
+
 int main(void) {
     test_schema_sibling_constraints_are_not_dropped();
     test_strict_bounded_numbers();
@@ -3167,6 +3203,7 @@ int main(void) {
     test_schema_close_mid_discriminator_matches_args();
     test_schema_rejects_discriminator_after_conditional_args();
     test_enum_past_sixty_literals();
+    test_harmony_empty_tool_name_is_no_name();
     test_escape_replaces_ill_formed_utf8();
     test_tojson_dump_matches_jinja();
     puts("json/schema tests ok");
