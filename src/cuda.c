@@ -1234,6 +1234,19 @@ static void vram_probe(const char *stage) {
         fprintf(stderr, "vram: %-28s free %.3f GB\n", stage, f / 1e9);
 }
 
+// Where the main mapping's tensor data begins: the header and metadata
+// before it are no tensor's bytes.
+static size_t map_data_start(const model_t *m) {
+    const uint8_t *base = (const uint8_t *)m->gf.map;
+    size_t start = m->gf.map_size;
+    for (uint64_t i = 0; i < m->gf.n_tensors; i++) {
+        const uint8_t *d = (const uint8_t *)m->gf.tensors[i].data;
+        if (d >= base && d < base + m->gf.map_size && (size_t)(d - base) < start)
+            start = (size_t)(d - base);
+    }
+    return start;
+}
+
 static uint64_t tensor_file_off(const model_t *m, const gguf_tensor *t) {
     return (uint64_t)((const uint8_t *)t->data - (const uint8_t *)m->gf.map);
 }
@@ -1704,14 +1717,9 @@ static void shared_plan_upload(gpu_weights *w, model_t *m, const shared_plan *P)
     for (int l = 0; l < G; l++)
         sum_w += layer_weight_bytes(&m->layers[l], m->n_expert, moe_on_host(m, l), false);
     size_t planned_upload = sum_w + m->tok_embd->nbytes + (full ? m->output->nbytes : 0);
-    // relative slack only, and a small one: the norms and biases outside
-    // a layer's big tensors are kilobytes, never a sixty-fourth of the
-    // plan, while a real overshoot can be modest and still fatal (the
-    // lab's file carries output.weight at the head of the file, so the
-    // prefix overshot the plan by 8%, 1.9 GB on a 24 GB slice). An
-    // absolute margin would hide the spread on a small file.
     bool spread = !m->cpu_moe && !full &&
-                  upload_len > planned_upload + planned_upload / 64;
+                  gpu_plan_upload_spread(upload_len, map_data_start(m),
+                                         planned_upload);
     if (spread)
         fprintf(stderr, "gpu: the file's tensor order spreads the %d offloaded "
                         "layers over %.2f GB of the file against %.2f GB of "

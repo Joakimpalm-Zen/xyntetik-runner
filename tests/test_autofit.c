@@ -441,6 +441,21 @@ static void test_gpu_plan(void) {
        "plan unified: available RAM below the driver's view caps it");
     ck(gpu_plan_unified_cap(8ull << 30, 10ull << 30) == 8ull << 30,
        "plan unified: more RAM than the driver's view changes nothing");
+
+    // the spread check counts the prefix's tensor bytes, not the header: the
+    // block-order fixture (7,584 header bytes against a 3,340-byte slack)
+    // read as spread when the header counted
+    uint64_t plan = 3340ull * 64;
+    ck(!gpu_plan_upload_spread(7584 + plan, 7584, plan),
+       "plan spread: a prefix of exactly the planned tensors is not spread");
+    ck(!gpu_plan_upload_spread(7584 + plan + plan / 64, 7584, plan),
+       "plan spread: the slack itself is not spread");
+    ck(gpu_plan_upload_spread(7584 + plan + plan / 64 + 1, 7584, plan),
+       "plan spread: one byte past the slack is");
+    ck(gpu_plan_upload_spread(plan + plan / 64 + 1, 0, plan),
+       "plan spread: with no header the prefix is all tensor bytes");
+    ck(!gpu_plan_upload_spread(100, 7584, plan),
+       "plan spread: a prefix inside the header has no tensor bytes");
 }
 
 int main(int argc, char **argv) {

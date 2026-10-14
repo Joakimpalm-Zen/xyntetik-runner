@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A partial CUDA split of a small model uploads its weights in one
+  block again.** A partial split switches to one upload per tensor when
+  the file's tensor order spreads the offloaded layers across the file.
+  The check counted the GGUF header as spread, so on a small model with a
+  large vocabulary the header alone tipped it, and the weights were
+  uploaded tensor by tensor for no reason (each upload rounded to the
+  driver's 2 MiB granularity). It now counts tensor bytes only.
+  `tests/test_gpu_split_order.py`, which failed on every CUDA host, passes.
+
 - **`--cpu-moe` on CUDA runs Granite 4 hybrid MoE models on the GPU.** The
   CUDA backend kept four lists of a layer's device tensors, one each for
   the split plan, the contiguous upload, the per-tensor upload and the

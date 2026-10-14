@@ -718,6 +718,8 @@ int       model_autofit_clamp(long long best, int n_ctx_train);
 #define GPU_PLAN_GRAN ((uint64_t)2 << 20)
 uint64_t  gpu_plan_binding_bytes(uint64_t nbytes, bool bound);
 uint64_t  gpu_plan_unified_cap(uint64_t budget, uint64_t ram_available);
+bool      gpu_plan_upload_spread(uint64_t prefix_end, uint64_t data_start,
+                                 uint64_t planned);
 int       gpu_plan_prefix(const uint64_t *cost, int n, int cap, uint64_t budget,
                           uint64_t *used);
 bool      gpu_plan_full_split(int *layers, int n_layer, uint64_t used,
