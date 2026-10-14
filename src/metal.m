@@ -1502,14 +1502,9 @@ static int metal_fit_layers(model_t *m, uint64_t budget, int cap,
     return K;
 }
 
-bool gpu_init(model_t *m) {
-    // A split GGUF has one mapping per part. The weight wraps are keyed by
-    // HOST ADDRESS (not file offset), so each part's mapping gets its own
-    // tensor-boundary wraps and a multi-part set takes a full offload like a
-    // single file. What the separate mappings cannot express is a partial
-    // LAYER split: the prefix arithmetic in metal_fit_layers is file-offset
-    // arithmetic over one mapping, so that case refuses to CPU below rather
-    // than guessing.
+// Admission: every refusal that needs no device, in the order the loader
+// has always checked them.
+static bool metal_admit(model_t *m) {
     if (m->qwen35) {
         fprintf(stderr, "gpu: qwen35 hybrid path is not on the metal backend yet — using CPU\n");
         return false;
@@ -1557,12 +1552,17 @@ bool gpu_init(model_t *m) {
         for (size_t i = 0; i < sizeof(ws) / sizeof(*ws); i++)
             if (!metal_tensor_type_ok(ws[i], false)) return false;
     }
+    return true;
+}
 
+// The device, its shader library and the backend state. On a failure
+// nothing is left allocated; on success the library is the caller's.
+static gpu_t *metal_open(id<MTLLibrary> *lib_out) {
     id<MTLDevice> dev = metal_init_injected("device")
                       ? nil : MTLCreateSystemDefaultDevice();
     if (!dev) {
         fprintf(stderr, "gpu: no Metal device is available — using CPU\n");
-        return false;
+        return NULL;
     }
 
     NSError *err = nil;
@@ -1574,7 +1574,7 @@ bool gpu_init(model_t *m) {
         fprintf(stderr, "gpu: shader compile failed: %s\n",
                 err.localizedDescription.UTF8String);
         [dev release];
-        return false;
+        return NULL;
     }
 
     gpu_t *g = calloc(1, sizeof(gpu_t));
@@ -1583,10 +1583,16 @@ bool gpu_init(model_t *m) {
                 "CPU\n");
         [lib release];
         [dev release];
-        return false;
+        return NULL;
     }
     g->dev = dev;
     g->queue = [dev newCommandQueue];
+    *lib_out = lib;
+    return g;
+}
+
+// Every compute pipeline the encoders index, by kernel name.
+static void metal_make_pipelines(gpu_t *g, id<MTLDevice> dev, id<MTLLibrary> lib) {
     g->p_rmsnorm      = mk_pipeline(dev, lib, @"k_rmsnorm");
     g->p_qknorm       = mk_pipeline(dev, lib, @"k_qknorm");
     g->p_headnorm     = mk_pipeline(dev, lib, @"k_head_rmsnorm");
@@ -1695,9 +1701,10 @@ bool gpu_init(model_t *m) {
     g->p_moe_mm[T_Q6_K]   = mk_pipeline(dev, lib, @"k_moe_mm_q6_K");
     g->p_moe_mmh[T_Q8_0]  = mk_pipeline(dev, lib, @"k_moe_mmh_q8_0");
     g->p_moe_mmh[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mmh_mxfp4");
-    [lib release];
-    lib = nil;
+}
 
+// The Metal 4 tensor GEMM, admitted per type only after its self-test.
+static void metal_admit_tensor_gemm(gpu_t *g, id<MTLDevice> dev) {
     if (metal_tensor_device_ok(dev)) {
 #if defined(MAC_OS_VERSION_26_0)
         MTLCompileOptions *opts = [MTLCompileOptions new];
@@ -1740,13 +1747,17 @@ bool gpu_init(model_t *m) {
     } else if (metal_tensor_requested()) {
         fprintf(stderr, "gpu: Metal 4 tensor GEMM requires M5+ and macOS 26.2+ — using simdgroup GEMM\n");
     }
+}
+
+// Every pipeline the admitted types need exists.
+static bool metal_check_pipelines(model_t *m, gpu_t *g) {
     if (!g->p_rmsnorm || !g->p_rope || !g->p_store || !g->p_attn ||
         !g->p_attn_chunk || !g->p_attn_comb ||
         !g->p_silu || !g->p_gelu || !g->p_add || !g->p_scale || !g->p_sigmul ||
         !g->queue || !g->p_qknorm || !g->p_headnorm ||
         !g->p_moe_route || !g->p_moe_actmul || !g->p_moe_sum ||
         !g->p_trace_copy)
-        return gpu_init_fail(m, g, lib, "pipeline allocation");
+        return gpu_init_fail(m, g, nil, "pipeline allocation");
     // Admission and the pipeline tables must agree BY CONSTRUCTION rather than
     // by two hand-kept lists. enc_mv and enc_moe_mv index p_mv[]/p_moe_mv[] by
     // tensor type with no nil check at the use site, and
@@ -1764,23 +1775,29 @@ bool gpu_init(model_t *m) {
         if (gpu_type_ok(t) && !g->p_mv[t]) {
             fprintf(stderr, "gpu: no Metal matvec kernel for admitted type %s\n",
                     ggml_type_name(t));
-            return gpu_init_fail(m, g, lib, "pipeline allocation");
+            return gpu_init_fail(m, g, nil, "pipeline allocation");
         }
         if (m->n_expert > 0 && metal_moe_type_ok(t) && !g->p_moe_mv[t]) {
             fprintf(stderr, "gpu: no Metal MoE kernel for admitted type %s\n",
                     ggml_type_name(t));
-            return gpu_init_fail(m, g, lib, "MoE pipeline allocation");
+            return gpu_init_fail(m, g, nil, "MoE pipeline allocation");
         }
     }
     if (metal_init_injected("state"))
-        return gpu_init_fail(m, g, lib, "injected state allocation failure");
+        return gpu_init_fail(m, g, nil, "injected state allocation failure");
+    return true;
+}
 
+// How many leading layers run on the device, and how much of the mapping
+// is wrapped for them.
+static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
+                               size_t page, int *gpu_K_out, size_t *wlen_out,
+                               uint64_t *ws_limit_out) {
     // weights: wrap the mmap zero-copy (page aligned; length page-rounded —
     // mmap always maps whole pages, so the rounded tail is valid memory).
     // wlen is a prefix limit in part-0 file-offset space; for a multi-part
     // set it is never a prefix (full offload only) and wtotal carries the
     // budget question across every part's mapping.
-    size_t page = 16384;
     size_t wlen = (m->gf.map_size + page - 1) & ~(page - 1);
     uint64_t wtotal = gguf_mapped_size(&m->gf) - metal_host_only_bytes(m);
 
@@ -1815,7 +1832,7 @@ bool gpu_init(model_t *m) {
         if (need_split && m->gf.n_maps > 1) {
             // Either the whole set exceeds the budget or a layer split was
             // forced; both need the prefix arithmetic one mapping cannot span.
-            return gpu_init_fail(m, g, lib,
+            return gpu_init_fail(m, g, nil,
                 "a split GGUF takes a full Metal offload only — a partial "
                 "layer split cannot span its separate part mappings (merge "
                 "to one file with --quantize --quant keep for a split)");
@@ -1826,14 +1843,14 @@ bool gpu_init(model_t *m) {
             int fit = metal_fit_layers(m, budget, cap, &layout_ok, &wrap_end);
             if (!layout_ok) {
                 if (wlen > budget)
-                    return gpu_init_fail(m, g, lib,
+                    return gpu_init_fail(m, g, nil,
                         "model exceeds the Metal working set and its tensor "
                         "layout forbids a partial split (non-layer tensors "
                         "after blk.0, or blocks out of order)");
                 fprintf(stderr, "gpu: --gpu-layers ignored — tensor layout "
                         "does not allow a partial split\n");
             } else if (fit < 1) {
-                return gpu_init_fail(m, g, lib,
+                return gpu_init_fail(m, g, nil,
                     "not even one layer fits the Metal working set");
             } else if (wlen > budget && cap <= 0 &&
                        !metal_partial_pays(m, wrap_end)) {
@@ -1847,7 +1864,7 @@ bool gpu_init(model_t *m) {
                 // Residency only pays if the tail the CPU still owns fits in
                 // RAM. When it does not, pinning part of the model just takes
                 // memory from the part that is streaming.
-                return gpu_init_fail(m, g, lib,
+                return gpu_init_fail(m, g, nil,
                     "model is larger than available RAM, so no split can be "
                     "held resident — CPU-only is faster (--gpu-layers forces "
                     "a split anyway)");
@@ -1861,13 +1878,22 @@ bool gpu_init(model_t *m) {
             }
         }
     }
+    *gpu_K_out = gpu_K;
+    *wlen_out = wlen;
+    *ws_limit_out = ws_limit;
+    return true;
+}
 
+// The weights on the device: zero-copy wraps of the mapping, or one copied
+// buffer when a single file cannot be wrapped.
+static bool metal_place_weights(model_t *m, gpu_t *g, id<MTLDevice> dev,
+                                size_t wlen, size_t page) {
     if (!metal_wrap_weights(g, m, dev, wlen, page)) {
         if (m->gf.n_maps > 1)
             // One copied buffer cannot stand in for several mappings, and
             // copying parts separately would just re-implement the wrap that
             // already failed. Refuse; the run continues on the CPU.
-            return gpu_init_fail(m, g, lib,
+            return gpu_init_fail(m, g, nil,
                 "could not wrap the split GGUF's part mappings");
         // fallback: copy (costs RAM but still works). One buffer by
         // definition -- a copy this large only happens for a model well under
@@ -1898,35 +1924,32 @@ bool gpu_init(model_t *m) {
                      wlen / 1e9, mb / 1e9, ws / 1e9,
                      (uint64_t)wlen > mb ? " — exceeds the per-buffer limit"
                      : ((uint64_t)wlen > ws ? " — exceeds the working set" : ""));
-            return gpu_init_fail(m, g, lib, why);
+            return gpu_init_fail(m, g, nil, why);
         }
     }
+    return true;
+}
 
-    // Q-bias width off the per-layer MAXIMUM: gemma4 varies q width per layer,
-    // and a global-scalar size would overrun on the widest one. The per-column
-    // scratch takes the same maxima inside metal_ensure_batch().
-    int q_dim = m->n_head * m->head_dim;
-    for (int l = 0; l < m->n_layer; l++)
-        if (model_q_dim(m, l) > q_dim) q_dim = model_q_dim(m, l);
+// The KV cache, the per-column scratch and the decode attention partials.
+static bool metal_alloc_state(model_t *m, gpu_t *g, id<MTLDevice> dev) {
     size_t k_bytes = model_k_boundary_bytes(m, m->n_layer);
     size_t v_bytes = model_v_boundary_bytes(m, m->n_layer);
-
     #define NEWBUF(n) [dev newBufferWithLength:(n) options:MTLResourceStorageModeShared]
     g->kc = NEWBUF(k_bytes ? k_bytes : 1);
     g->vc = NEWBUF(v_bytes);
     if (!metal_buffer_ok(g->kc) || !metal_buffer_ok(g->vc))
-        return gpu_init_fail(m, g, lib, "KV buffer allocation");
+        return gpu_init_fail(m, g, nil, "KV buffer allocation");
     memset(g->kc.contents, 0, k_bytes);
     memset(g->vc.contents, 0, v_bytes);
     if (metal_init_injected("after-kv"))
-        return gpu_init_fail(m, g, lib, "injected post-KV allocation failure");
+        return gpu_init_fail(m, g, nil, "injected post-KV allocation failure");
 
     // Per-column scratch (x, xb, xb2, q, kt, vt, hb, hb2, att, logits, the
     // E-series PLE slices and the attention output gate) through the same
     // function a prompt batch widens it with, so the two cannot list different
     // buffers. g->batch_cap is still 0 from the calloc, so this allocates.
     if (!metal_ensure_batch(g, m, 1))
-        return gpu_init_fail(m, g, lib, "batch scratch allocation");
+        return gpu_init_fail(m, g, nil, "batch scratch allocation");
     g->dummy  = NEWBUF(4);
     // Chunked decode attention partials: one (max, sum, hd-vector) per
     // (head, chunk). They carry NO batch dimension -- the split is taken only
@@ -1944,8 +1967,19 @@ bool gpu_init(model_t *m) {
     #undef NEWBUF
     if (!metal_buffer_ok(g->dummy) ||
         !metal_buffer_ok(g->att_acc) || !metal_buffer_ok(g->att_ms))
-        return gpu_init_fail(m, g, lib, "scratch buffer allocation");
+        return gpu_init_fail(m, g, nil, "scratch buffer allocation");
+    return true;
+}
 
+// The norm weights, biases and other small constants, per model and per
+// layer, copied into device buffers.
+static bool metal_upload_constants(model_t *m, gpu_t *g, id<MTLDevice> dev) {
+    // Q-bias width off the per-layer MAXIMUM: gemma4 varies q width per layer,
+    // and a global-scalar size would overrun on the widest one. The per-column
+    // scratch takes the same maxima inside metal_ensure_batch().
+    int q_dim = m->n_head * m->head_dim;
+    for (int l = 0; l < m->n_layer; l++)
+        if (model_q_dim(m, l) > q_dim) q_dim = model_q_dim(m, l);
     g->inv_freq = f32_buf(dev, m->rope_inv_freq, m->rope_dim / 2);
     g->inv_freq_local = f32_buf(dev, m->rope_inv_freq_local,
                                 m->rope_dim_local / 2);
@@ -1957,7 +1991,7 @@ bool gpu_init(model_t *m) {
     if (!metal_buffer_ok(g->inv_freq) || !metal_buffer_ok(g->out_norm) ||
         (m->rope_inv_freq_local && !metal_buffer_ok(g->inv_freq_local)) ||
         (m->n_suppress > 0 && !metal_buffer_ok(g->suppress)))
-        return gpu_init_fail(m, g, lib, "shared constant allocation");
+        return gpu_init_fail(m, g, nil, "shared constant allocation");
     g->attn_norm = calloc(m->n_layer, sizeof(id));
     g->ffn_norm  = calloc(m->n_layer, sizeof(id));
     g->bq = calloc(m->n_layer, sizeof(id));
@@ -1984,7 +2018,7 @@ bool gpu_init(model_t *m) {
         !g->bo || !g->qn || !g->kn || !g->sinks || !g->gib || !g->geb ||
         !g->ueb || !g->deb || !g->pan || !g->pfn || !g->gpn1 ||
         !g->gprn2 || !g->gpn2 || !g->ggis || !g->gdsc)
-        return gpu_init_fail(m, g, lib, "per-layer table allocation");
+        return gpu_init_fail(m, g, nil, "per-layer table allocation");
     for (int l = 0; l < m->n_layer; l++) {
         layer_t *ly = &m->layers[l];
         g->attn_norm[l] = f32_buf(dev, ly->attn_norm_w, m->n_embd);
@@ -2013,7 +2047,7 @@ bool gpu_init(model_t *m) {
             g->gprn2[l] = f32_buf_ones(dev, ly->ffn_pre_norm2_w, m->n_embd);
             g->gpn2[l] = f32_buf_ones(dev, ly->ffn_post_norm2_w, m->n_embd);
             float *gs = malloc(sizeof(float) * (size_t)m->n_embd);
-            if (!gs) return gpu_init_fail(m, g, lib, "Gemma router scale allocation");
+            if (!gs) return gpu_init_fail(m, g, nil, "Gemma router scale allocation");
             float inv = 1.0f / sqrtf((float)m->n_embd);
             for (int i = 0; i < m->n_embd; i++)
                 gs[i] = (ly->gate_inp_scale ? ly->gate_inp_scale[i] : 1.0f) * inv;
@@ -2040,9 +2074,14 @@ bool gpu_init(model_t *m) {
              (!metal_buffer_ok(g->gpn1[l]) || !metal_buffer_ok(g->gprn2[l]) ||
               !metal_buffer_ok(g->gpn2[l]) || !metal_buffer_ok(g->ggis[l]) ||
               !metal_buffer_ok(g->gdsc[l]))))
-            return gpu_init_fail(m, g, lib, "per-layer buffer allocation");
+            return gpu_init_fail(m, g, nil, "per-layer buffer allocation");
     }
+    return true;
+}
 
+// The backend handed to the model.
+static void metal_publish(model_t *m, gpu_t *g, id<MTLDevice> dev, int gpu_K,
+                          size_t wlen, uint64_t ws_limit) {
     // CPU batch prompt processing writes the same cache through these pointers,
     // but do not detach the malloc-owned cache until every Metal allocation has
     // succeeded. Any failure above falls back with the CPU KV still intact.
@@ -2067,8 +2106,36 @@ bool gpu_init(model_t *m) {
                 "remaining %d run on the CPU.\n",
                 gpu_K, m->n_layer, wlen / 1e9, m->gf.map_size / 1e9,
                 ws_limit / 1e9, m->n_layer - gpu_K);
-    return true;
+}
 
+bool gpu_init(model_t *m) {
+    // A split GGUF has one mapping per part. The weight wraps are keyed by
+    // HOST ADDRESS (not file offset), so each part's mapping gets its own
+    // tensor-boundary wraps and a multi-part set takes a full offload like a
+    // single file. What the separate mappings cannot express is a partial
+    // LAYER split: the prefix arithmetic in metal_fit_layers is file-offset
+    // arithmetic over one mapping, so that case refuses to CPU below rather
+    // than guessing.
+    if (!metal_admit(m)) return false;
+    id<MTLLibrary> lib = nil;
+    gpu_t *g = metal_open(&lib);
+    if (!g) return false;
+    id<MTLDevice> dev = g->dev;
+    metal_make_pipelines(g, dev, lib);
+    [lib release];
+    lib = nil;
+    metal_admit_tensor_gemm(g, dev);
+    if (!metal_check_pipelines(m, g)) return false;
+    size_t page = 16384;
+    int gpu_K;
+    size_t wlen;
+    uint64_t ws_limit;
+    if (!metal_choose_split(m, g, dev, page, &gpu_K, &wlen, &ws_limit)) return false;
+    if (!metal_place_weights(m, g, dev, wlen, page)) return false;
+    if (!metal_alloc_state(m, g, dev)) return false;
+    if (!metal_upload_constants(m, g, dev)) return false;
+    metal_publish(m, g, dev, gpu_K, wlen, ws_limit);
+    return true;
 }
 
 // ---------------------------------------------------------------- encoding
