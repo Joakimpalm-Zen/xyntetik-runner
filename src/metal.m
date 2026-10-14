@@ -1024,6 +1024,8 @@ unsigned long gpu_attn_coop_dispatches(void) { return g_coop_dispatches; }
 // RUNNER_METAL_ATTN_GQA=0 pins that kernel.
 static unsigned long g_gqa_dispatches;
 unsigned long gpu_attn_gqa_dispatches(void) { return g_gqa_dispatches; }
+// CUDA-only route; present so its gate links and reports 'never here'.
+unsigned long gpu_splitk_dispatches(void) { return 0; }
 static bool metal_attn_gqa_on(void) {
     static int v = -1;
     if (v < 0) {

@@ -1782,10 +1782,13 @@ test-tc-overflow: runner $(TEST_TC_TOL)
 # device must draft the CPU head's logits step for step (same argmax,
 # top logit and top-2 gap within reduction-order residue) and leave the
 # text identical (RUNNER_MTP_DUMP on the fixture's MTP block, an
-# 86-token prompt so the head's queue drains in two tiles). Skips itself
+# 86-token prompt so the head's queue drains in two tiles); and the BF16
+# split-K decode GEMV, on a fixture widened to reach it (512-wide residual,
+# BF16 hc mixers: a 2,048-wide mixer input), must launch, stay inside the
+# CPU bound, and give the same bytes on a second device run. Skips itself
 # without a CUDA device. 2e-5 is reduction-order residue on the fixture
 # (measured 4.8e-7).
-test-cuda-qwen4exp: runner
+test-cuda-qwen4exp: runner $(TEST_GPU_ID)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'cuda' else 1)"; then \
 		$(PYTHON) scripts/make-test-qwen4exp.py test-qwen4exp.gguf > /dev/null; \
@@ -1812,6 +1815,9 @@ test-cuda-qwen4exp: runner
 		  $(PYTHON) -c "import sys; a=open('cuda-q4e-mtp-cpu.out','rb').read(); b=open('cuda-q4e-mtp-gpu.out','rb').read(); assert a and a == b, 'generated text differs'; da=[l.split() for l in open('cuda-q4e-mtp-cpu.dump') if l.strip()]; db=[l.split() for l in open('cuda-q4e-mtp-gpu.dump') if l.strip()]; assert len(da) == len(db) > 10, (len(da), len(db)); bad=[(x,y) for x,y in zip(da,db) if x[4] != y[4] or abs(float(x[5])-float(y[5])) > 1e-5 or abs(float(x[7])-float(y[7])) > 1e-5]; assert not bad, 'head logits differ: %s' % bad[:2]; print('mtp head [%s]: %d draft steps, device head == CPU head (argmax, logit and gap within 1e-5), text identical' % (sys.argv[1], len(da)))" "$$arm"; \
 		done; \
 		rm -f test-q4e-mtp.gguf cuda-q4e-mtp-*; \
+		QWEN4EXP_TEST_EMBD=512 QWEN4EXP_TEST_HC_BF16=1 $(PYTHON) scripts/make-test-qwen4exp.py test-q4e-bf16.gguf > /dev/null; \
+		GPU_ID_REQUIRE_SPLITK=1 ./$(TEST_GPU_ID) test-q4e-bf16.gguf; \
+		rm -f test-q4e-bf16.gguf; \
 		$(PYTHON) scripts/gguf-split.py test-qwen4exp.gguf test-q4e-split 2 > /dev/null; \
 		./$(RUNNER_EXE) --serve --port 18840 -m test-q4e-split-00001-of-00002.gguf --parallel 2 --no-tray -c 256 > cuda-q4e-serve.log 2>&1 & pid=$$!; \
 		for i in $$(seq 1 60); do curl -sf http://127.0.0.1:18840/health > /dev/null 2>&1 && break; sleep 1; done; \

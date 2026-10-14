@@ -3080,6 +3080,9 @@ unsigned long gpu_attn_coop_dispatches(void) { return 0; }
 unsigned long gpu_attn_tile_dispatches(void) { return 0; }
 unsigned long gpu_attn_gqa_dispatches(void) { return 0; }
 
+static unsigned long g_splitk_dispatches;
+unsigned long gpu_splitk_dispatches(void) { return g_splitk_dispatches; }
+
 // Same hook for the MoE routing path: the fused-vs-eager tolerance gate has to
 // run both inside one process, which an env var read at first launch cannot
 // express. -1 restores the env default (RUNNER_MOE_EAGER).
@@ -3469,6 +3472,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                (n_in % (splits * 2 * 32)) == 0 &&
                (size_t)n_out * splits * 2 <= SPLITK_PARTIALS) splits *= 2;
         void *ps[] = { &weights, &x, &g->splitk, &a, &splits };
+        g_splitk_dispatches++;
         if (!launch(g, g->sw->f_mv_bf16_splitk, n_out, splits, 1, 256, ps)) return false;
         int hb = bias != 0;
         void *pr[] = { &g->splitk, &y, &b, &n_out, &splits, &hb };

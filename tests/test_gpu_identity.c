@@ -307,12 +307,44 @@ int main(int argc, char **argv) {
     float *gpu = run(path, GPU_AUTO, &nv_gpu, &gpu_used_gpu, toks, n_tok);
     if (!gpu) { free(cpu); printf("gpu-identity: FAILED (gpu run)\n"); return 1; }
 
+    // GPU_ID_REQUIRE_SPLITK=1 (make test-cuda-qwen4exp, on a fixture built to
+    // reach it): CUDA's BF16 split-K decode GEMV reduces in its own fixed tree,
+    // so it answers to the CPU bound below like every device route, and it
+    // must also be deterministic within the route, which a second device run
+    // compared byte for byte checks. A run that fell back to the CPU or never
+    // launched the kernel fails instead of skipping: the subject has to run.
+    const char *req = getenv("GPU_ID_REQUIRE_SPLITK");
+    bool want_splitk = req && *req && strcmp(req, "0") != 0;
     if (!gpu_used_gpu) {
+        if (want_splitk) {
+            printf("FAIL: GPU_ID_REQUIRE_SPLITK is set but the model ran on the CPU\n"
+                   "gpu-identity: FAILED\n");
+            free(cpu); free(gpu);
+            return 1;
+        }
         printf("  skipped: no GPU, or this model fell back to the CPU — a "
                "comparison of the CPU against itself proves nothing\n"
                "gpu-identity: ok (skipped)\n");
         free(cpu); free(gpu);
         return 0;
+    }
+    if (want_splitk) {
+        unsigned long launched = gpu_splitk_dispatches();
+        printf("  split-K decode launches: %lu\n", launched);
+        int nv_again = 0;
+        bool again_used = false;
+        float *again = launched ? run(path, GPU_AUTO, &nv_again, &again_used, toks, n_tok) : NULL;
+        bool same = again && again_used && nv_again == nv_gpu &&
+                    memcmp(again, gpu, sizeof(float) * (size_t)STEPS * (size_t)nv_gpu) == 0;
+        free(again);
+        if (!launched || !same) {
+            printf("FAIL: %s\ngpu-identity: FAILED\n", !launched
+                   ? "the split-K decode kernel never ran on this fixture"
+                   : "two device runs of the split-K route differ");
+            free(cpu); free(gpu);
+            return 1;
+        }
+        printf("  split-K route: two device runs byte-identical\n");
     }
     if (nv_cpu != nv_gpu) {
         printf("FAIL: vocab size differs (%d vs %d)\n", nv_cpu, nv_gpu);
