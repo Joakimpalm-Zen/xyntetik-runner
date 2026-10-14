@@ -916,69 +916,167 @@ static snode *compile_discriminated_action(jv *alts, char *err, int errcap,
     return n;
 }
 
-static snode *compile_typed(jv *s, const char *type, char *err, int errcap, int depth) {
-    if (!strcmp(type, "string")) {
-        snode *n = sn_new(SN_STR);
-        if (!n) return NULL;
-        jv *mn = jv_get(s, "minLength"), *mx = jv_get(s, "maxLength");
-        if (!compile_bound(mn, 0, &n->min_items) ||
-            !compile_bound(mx, -1, &n->max_items) ||
-            (n->max_items >= 0 && n->min_items > n->max_items)) {
+// A string: its length bounds, its pattern, and the string constraints an
+// allOf adds.
+static snode *compile_string(jv *s, char *err, int errcap) {
+    snode *n = sn_new(SN_STR);
+    if (!n) return NULL;
+    jv *mn = jv_get(s, "minLength"), *mx = jv_get(s, "maxLength");
+    if (!compile_bound(mn, 0, &n->min_items) ||
+        !compile_bound(mx, -1, &n->max_items) ||
+        (n->max_items >= 0 && n->min_items > n->max_items)) {
+        snprintf(err, errcap, "invalid string length bounds");
+        schema_free(n);
+        return NULL;
+    }
+    if (!compile_ascii_pattern(s, n, err, errcap)) {
+        schema_free(n);
+        return NULL;
+    }
+    // allOf of string constraints: every member's pattern is one more
+    // pattern the string must satisfy, its bounds tighten the node's.
+    // check_keywords admitted only string keywords in the members.
+    jv *all = jv_get(s, "allOf");
+    for (int i = 0; all && i < all->n; i++) {
+        jv *m = all->items[i];
+        jv *pv = jv_get(m, "pattern");
+        if (pv && !compile_ascii_pattern_value(pv, n, err, errcap)) {
+            schema_free(n);
+            return NULL;
+        }
+        int lo = 0, hi = -1;
+        if (!compile_bound(jv_get(m, "minLength"), 0, &lo) ||
+            !compile_bound(jv_get(m, "maxLength"), -1, &hi)) {
             snprintf(err, errcap, "invalid string length bounds");
             schema_free(n);
             return NULL;
         }
-        if (!compile_ascii_pattern(s, n, err, errcap)) {
+        if (lo > n->min_items) n->min_items = lo;
+        if (hi >= 0 && (n->max_items < 0 || hi < n->max_items)) n->max_items = hi;
+        if (n->max_items >= 0 && n->min_items > n->max_items) {
+            snprintf(err, errcap, "invalid string length bounds");
             schema_free(n);
             return NULL;
         }
-        // allOf of string constraints: every member's pattern is one more
-        // pattern the string must satisfy, its bounds tighten the node's.
-        // check_keywords admitted only string keywords in the members.
-        jv *all = jv_get(s, "allOf");
-        for (int i = 0; all && i < all->n; i++) {
-            jv *m = all->items[i];
-            jv *pv = jv_get(m, "pattern");
-            if (pv && !compile_ascii_pattern_value(pv, n, err, errcap)) {
-                schema_free(n);
-                return NULL;
-            }
-            int lo = 0, hi = -1;
-            if (!compile_bound(jv_get(m, "minLength"), 0, &lo) ||
-                !compile_bound(jv_get(m, "maxLength"), -1, &hi)) {
-                snprintf(err, errcap, "invalid string length bounds");
-                schema_free(n);
-                return NULL;
-            }
-            if (lo > n->min_items) n->min_items = lo;
-            if (hi >= 0 && (n->max_items < 0 || hi < n->max_items)) n->max_items = hi;
-            if (n->max_items >= 0 && n->min_items > n->max_items) {
-                snprintf(err, errcap, "invalid string length bounds");
-                schema_free(n);
-                return NULL;
-            }
-        }
-        if (n->n_pats > 1 && !patterns_consistent(n, err, errcap)) {
-            schema_free(n);
-            return NULL;
-        }
-        if (n->n_pats && pat_max_len(n) >= 0 &&
-            n->min_items > pat_max_len(n)) {
-            // a bounded pattern that can never be long enough for minLength is
-            // an empty language: refuse it at compile time rather than let a
-            // request wedge with no admissible byte
-            snprintf(err, errcap, "pattern cannot satisfy minLength");
-            schema_free(n);
-            return NULL;
-        }
-        if (n->n_pats && n->max_items >= 0 &&
-            pat_min_len(n) > n->max_items) {
-            snprintf(err, errcap, "pattern cannot satisfy maxLength");
-            schema_free(n);
-            return NULL;
-        }
+    }
+    if (n->n_pats > 1 && !patterns_consistent(n, err, errcap)) {
+        schema_free(n);
+        return NULL;
+    }
+    if (n->n_pats && pat_max_len(n) >= 0 &&
+        n->min_items > pat_max_len(n)) {
+        // a bounded pattern that can never be long enough for minLength is
+        // an empty language: refuse it at compile time rather than let a
+        // request wedge with no admissible byte
+        snprintf(err, errcap, "pattern cannot satisfy minLength");
+        schema_free(n);
+        return NULL;
+    }
+    if (n->n_pats && n->max_items >= 0 &&
+        pat_min_len(n) > n->max_items) {
+        snprintf(err, errcap, "pattern cannot satisfy maxLength");
+        schema_free(n);
+        return NULL;
+    }
+    return n;
+}
+
+// An array: its item schema and its item-count bounds.
+static snode *compile_array(jv *s, char *err, int errcap, int depth) {
+    snode *n = sn_new(SN_ARR);
+    if (!n) return NULL;
+    n->items = compile_node(jv_get(s, "items"), err, errcap, depth + 1);
+    if (!n->items) { schema_free(n); return NULL; }
+    jv *mi = jv_get(s, "minItems"), *ma = jv_get(s, "maxItems");
+    if (!compile_bound(mi, 0, &n->min_items) ||
+        !compile_bound(ma, -1, &n->max_items) ||
+        (n->max_items >= 0 && n->min_items > n->max_items)) {
+        snprintf(err, errcap, "invalid array item bounds");
+        schema_free(n);
+        return NULL;
+    }
+    return n;
+}
+
+// An object: closed and empty, a typed map, open, or declared properties
+// with their required keys.
+static snode *compile_object(jv *s, char *err, int errcap, int depth) {
+    if (!check_object_rules(s, err, errcap)) return NULL;
+    jv *props = jv_get(s, "properties");
+    jv *apv = jv_get(s, "additionalProperties");
+    bool closed_empty = (!props || (props->type == J_OBJ && props->n == 0)) &&
+                        apv && apv->type == J_BOOL && !apv->b;
+    if (closed_empty) {
+        // {"properties":{},"additionalProperties":false} declares an object
+        // with no permitted keys, i.e. exactly `{}`. Compiling it to the
+        // open machine would accept any object at all, which is the
+        // opposite of what was asked for.
+        snode *n = sn_new(SN_OBJ);
+        if (!n) return NULL;
         return n;
     }
+    bool no_declared = !props || (props->type == J_OBJ && props->n == 0);
+    if (no_declared && apv && apv->type == J_OBJ && apv->n > 0) {
+        // A schema-valued additionalProperties with no named properties
+        // is a homogeneous string-keyed map. Keep its value schema exact;
+        // compiling this as SN_ANY would silently discard the constraint.
+        snode *n = sn_new(SN_MAP);
+        if (!n) return NULL;
+        n->items = compile_node(apv, err, errcap, depth + 1);
+        if (!n->items) { schema_free(n); return NULL; }
+        return n;
+    }
+    if (!props || props->type != J_OBJ || props->n == 0) {
+        // open object: any JSON object (generic machine, '{' enforced)
+        snode *n = sn_new(SN_ANY);
+        if (!n) return NULL;
+        n->min_items = 1; // flag: object-rooted generic value
+        return n;
+    }
+    if (props->n > 60) {
+        snprintf(err, errcap, "too many properties (max 60)");
+        return NULL;
+    }
+    snode *n = sn_new(SN_OBJ);
+    if (!n) return NULL;
+    n->keys    = calloc(props->n, sizeof(char *));
+    n->key_len = calloc(props->n, sizeof(int));
+    n->props   = calloc(props->n, sizeof(snode *));
+    n->req     = calloc(props->n, sizeof(bool));
+    if (!n->keys || !n->key_len || !n->props || !n->req) { schema_free(n); return NULL; }
+    n->n_props = props->n;   // only once the arrays schema_free walks exist
+    for (int i = 0; i < props->n; i++) {
+        if (!plain_key(props->keys[i])) {
+            snprintf(err, errcap, "property keys needing JSON escapes are unsupported");
+            schema_free(n);
+            return NULL;
+        }
+        n->keys[i] = strdup(props->keys[i]);
+        if (!n->keys[i]) { schema_free(n); return NULL; }
+        n->key_len[i] = (int)strlen(props->keys[i]);
+        n->props[i] = compile_node(props->items[i], err, errcap, depth + 1);
+        if (!n->props[i]) { schema_free(n); return NULL; }
+    }
+    jv *req = jv_get(s, "required");
+    if (req && req->type == J_ARR) {
+        for (int r = 0; r < req->n; r++) {
+            const char *k = jv_str(req->items[r], NULL);
+            bool found = false;
+            for (int i = 0; i < props->n && k; i++)
+                if (!strcmp(n->keys[i], k)) { n->req[i] = true; found = true; }
+            if (!found) {
+                snprintf(err, errcap, "required key '%s' not in properties",
+                         k ? k : "?");
+                schema_free(n);
+                return NULL;
+            }
+        }
+    }
+    return n;
+}
+
+static snode *compile_typed(jv *s, const char *type, char *err, int errcap, int depth) {
+    if (!strcmp(type, "string")) return compile_string(s, err, errcap);
     if (!strcmp(type, "number")) {
         snode *n = sn_new(SN_NUM);
         if (!n) return NULL;
@@ -999,95 +1097,8 @@ static snode *compile_typed(jv *s, const char *type, char *err, int errcap, int 
     }
     if (!strcmp(type, "boolean")) return sn_new(SN_BOOL);
     if (!strcmp(type, "null"))    return sn_new(SN_NULL);
-    if (!strcmp(type, "array")) {
-        snode *n = sn_new(SN_ARR);
-        if (!n) return NULL;
-        n->items = compile_node(jv_get(s, "items"), err, errcap, depth + 1);
-        if (!n->items) { schema_free(n); return NULL; }
-        jv *mi = jv_get(s, "minItems"), *ma = jv_get(s, "maxItems");
-        if (!compile_bound(mi, 0, &n->min_items) ||
-            !compile_bound(ma, -1, &n->max_items) ||
-            (n->max_items >= 0 && n->min_items > n->max_items)) {
-            snprintf(err, errcap, "invalid array item bounds");
-            schema_free(n);
-            return NULL;
-        }
-        return n;
-    }
-    if (!strcmp(type, "object")) {
-        if (!check_object_rules(s, err, errcap)) return NULL;
-        jv *props = jv_get(s, "properties");
-        jv *apv = jv_get(s, "additionalProperties");
-        bool closed_empty = (!props || (props->type == J_OBJ && props->n == 0)) &&
-                            apv && apv->type == J_BOOL && !apv->b;
-        if (closed_empty) {
-            // {"properties":{},"additionalProperties":false} declares an object
-            // with no permitted keys, i.e. exactly `{}`. Compiling it to the
-            // open machine would accept any object at all, which is the
-            // opposite of what was asked for.
-            snode *n = sn_new(SN_OBJ);
-            if (!n) return NULL;
-            return n;
-        }
-        bool no_declared = !props || (props->type == J_OBJ && props->n == 0);
-        if (no_declared && apv && apv->type == J_OBJ && apv->n > 0) {
-            // A schema-valued additionalProperties with no named properties
-            // is a homogeneous string-keyed map. Keep its value schema exact;
-            // compiling this as SN_ANY would silently discard the constraint.
-            snode *n = sn_new(SN_MAP);
-            if (!n) return NULL;
-            n->items = compile_node(apv, err, errcap, depth + 1);
-            if (!n->items) { schema_free(n); return NULL; }
-            return n;
-        }
-        if (!props || props->type != J_OBJ || props->n == 0) {
-            // open object: any JSON object (generic machine, '{' enforced)
-            snode *n = sn_new(SN_ANY);
-            if (!n) return NULL;
-            n->min_items = 1; // flag: object-rooted generic value
-            return n;
-        }
-        if (props->n > 60) {
-            snprintf(err, errcap, "too many properties (max 60)");
-            return NULL;
-        }
-        snode *n = sn_new(SN_OBJ);
-        if (!n) return NULL;
-        n->keys    = calloc(props->n, sizeof(char *));
-        n->key_len = calloc(props->n, sizeof(int));
-        n->props   = calloc(props->n, sizeof(snode *));
-        n->req     = calloc(props->n, sizeof(bool));
-        if (!n->keys || !n->key_len || !n->props || !n->req) { schema_free(n); return NULL; }
-        n->n_props = props->n;   // only once the arrays schema_free walks exist
-        for (int i = 0; i < props->n; i++) {
-            if (!plain_key(props->keys[i])) {
-                snprintf(err, errcap, "property keys needing JSON escapes are unsupported");
-                schema_free(n);
-                return NULL;
-            }
-            n->keys[i] = strdup(props->keys[i]);
-            if (!n->keys[i]) { schema_free(n); return NULL; }
-            n->key_len[i] = (int)strlen(props->keys[i]);
-            n->props[i] = compile_node(props->items[i], err, errcap, depth + 1);
-            if (!n->props[i]) { schema_free(n); return NULL; }
-        }
-        jv *req = jv_get(s, "required");
-        if (req && req->type == J_ARR) {
-            for (int r = 0; r < req->n; r++) {
-                const char *k = jv_str(req->items[r], NULL);
-                bool found = false;
-                for (int i = 0; i < props->n && k; i++)
-                    if (!strcmp(n->keys[i], k)) { n->req[i] = true; found = true; }
-                if (!found) {
-                    snprintf(err, errcap, "required key '%s' not in properties",
-                             k ? k : "?");
-                    schema_free(n);
-                    return NULL;
-                }
-            }
-        }
-        return n;
-    }
+    if (!strcmp(type, "array"))   return compile_array(s, err, errcap, depth);
+    if (!strcmp(type, "object"))  return compile_object(s, err, errcap, depth);
     snprintf(err, errcap, "unsupported type '%s'", type);
     return NULL;
 }
@@ -1248,6 +1259,124 @@ static bool literal_equal(const jv *a, const jv *b) {
     }
 }
 
+// The `type` keyword's own shape: a supported type name, or a non-empty
+// array of them.
+static bool check_type_keyword(jv *ty, char *err, int errcap) {
+    if (ty && ty->type != J_STR && ty->type != J_ARR) {
+        snprintf(err, errcap, "bad 'type' value");
+        return false;
+    }
+    if (ty && ty->type == J_STR && !schema_type_name(ty->str)) {
+        snprintf(err, errcap, "unsupported type '%s'", ty->str);
+        return false;
+    }
+    if (ty && ty->type == J_ARR) {
+        if (ty->n <= 0) {
+            snprintf(err, errcap, "'type' array must list at least one type");
+            return false;
+        }
+        for (int i = 0; i < ty->n; i++) {
+            if (!ty->items[i] || ty->items[i]->type != J_STR) {
+                snprintf(err, errcap, "'type' array members must be strings");
+                return false;
+            }
+            if (!schema_type_name(ty->items[i]->str)) {
+                snprintf(err, errcap, "unsupported type '%s'",
+                         ty->items[i]->str);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// enum / const: the literals that can validate under the declared type,
+// in declared order.
+static snode *compile_literals(jv *en, jv *cn, jv *ty, char *err, int errcap) {
+    if (en && en->type != J_ARR) {
+        // an object-valued enum was read as a list of its VALUES, so
+        // {"enum":{"a":1}} compiled to the literal 1 -- a constraint the
+        // caller never wrote
+        snprintf(err, errcap, "enum must be an array");
+        return NULL;
+    }
+    int cnt = en ? en->n : 1;
+    if (cnt <= 0 || cnt > SCHEMA_ENUM_MAX) {
+        snprintf(err, errcap, "enum size must be 1..%d", SCHEMA_ENUM_MAX);
+        return NULL;
+    }
+    for (int i = 0; i < cnt; i++) {
+        jv *v = en ? en->items[i] : cn;
+        if (v->type != J_STR && v->type != J_NUM &&
+            v->type != J_BOOL && v->type != J_NULL) {
+            snprintf(err, errcap, "enum values must be scalars");
+            return NULL;
+        }
+    }
+    // Siblings intersect, they do not lose: an enum value outside the
+    // declared type is dropped (it could never validate), and a const
+    // beside an enum must be one of its members. Before this,
+    // {"type":"integer","enum":["bad",1]} accepted "bad" and
+    // {"const":1,"enum":[2]} accepted 2.
+    jv **keep = malloc(sizeof(jv *) * (size_t)cnt);   // cnt <= SCHEMA_ENUM_MAX
+    if (!keep) return NULL;
+    int n_keep = 0;
+    for (int i = 0; i < cnt; i++) {
+        jv *v = en ? en->items[i] : cn;
+        if (ty && !literal_has_type(v, ty)) continue;
+        if (en && cn && !literal_equal(v, cn)) continue;
+        keep[n_keep++] = v;
+    }
+    if (n_keep == 0) {
+        snprintf(err, errcap, en && cn
+                 ? "const is not one of the enum values"
+                 : "no enum value matches the declared type");
+        free(keep);
+        return NULL;
+    }
+    snode *n = sn_new(SN_ENUM);
+    if (!n) { free(keep); return NULL; }
+    n->lits = calloc(n_keep, sizeof(char *));
+    if (!n->lits) { schema_free(n); free(keep); return NULL; }
+    for (int i = 0; i < n_keep; i++) {
+        char *lit = sn_literal(keep[i]);
+        if (!lit) { schema_free(n); free(keep); return NULL; }
+        n->lits[i] = lit;
+        n->n_lits++;
+    }
+    free(keep);
+    if (!enum_index(n)) { schema_free(n); return NULL; }
+    return n;
+}
+
+// A `type` array, e.g. ["string","null"]: one alternative per type.
+static snode *compile_type_union(jv *s, jv *ty, char *err, int errcap, int depth) {
+    snode *n = sn_new(SN_UNION);
+    if (!n) return NULL;
+    n->alts = calloc(ty->n, sizeof(snode *));
+    if (!n->alts) { schema_free(n); return NULL; }
+    // number|integer merge into one numeric alternative; it is "number"
+    // only when "number" is actually listed. ["integer","null"] used to
+    // widen to number because the list had more than one member, so
+    // 1.5 validated as an integer.
+    bool any_number = false;
+    for (int i = 0; i < ty->n; i++)
+        if (!strcmp(jv_str(ty->items[i], "?"), "number")) any_number = true;
+    bool has_num = false;
+    for (int i = 0; i < ty->n; i++) {
+        const char *t = jv_str(ty->items[i], "?");
+        if ((!strcmp(t, "number") || !strcmp(t, "integer"))) {
+            if (has_num) continue; // merge number|integer
+            has_num = true;
+            t = any_number ? "number" : "integer";
+        }
+        snode *alt = compile_typed(s, t, err, errcap, depth + 1);
+        if (!alt) { schema_free(n); return NULL; }
+        n->alts[n->n_alts++] = alt;
+    }
+    return n;
+}
+
 snode *compile_node(jv *s, char *err, int errcap, int depth) {
     if (depth > 24) { snprintf(err, errcap, "schema too deep"); return NULL; }
     if (s && s->type == J_BOOL && !s->b) {
@@ -1277,91 +1406,12 @@ snode *compile_node(jv *s, char *err, int errcap, int depth) {
 
     // enum/const return before compile_typed, so validate the type keyword's
     // shape here rather than relying on the typed path to catch it later.
-    if (ty && ty->type != J_STR && ty->type != J_ARR) {
-        snprintf(err, errcap, "bad 'type' value");
-        return NULL;
-    }
-    if (ty && ty->type == J_STR && !schema_type_name(ty->str)) {
-        snprintf(err, errcap, "unsupported type '%s'", ty->str);
-        return NULL;
-    }
-    if (ty && ty->type == J_ARR) {
-        if (ty->n <= 0) {
-            snprintf(err, errcap, "'type' array must list at least one type");
-            return NULL;
-        }
-        for (int i = 0; i < ty->n; i++) {
-            if (!ty->items[i] || ty->items[i]->type != J_STR) {
-                snprintf(err, errcap, "'type' array members must be strings");
-                return NULL;
-            }
-            if (!schema_type_name(ty->items[i]->str)) {
-                snprintf(err, errcap, "unsupported type '%s'",
-                         ty->items[i]->str);
-                return NULL;
-            }
-        }
-    }
+    if (!check_type_keyword(ty, err, errcap)) return NULL;
 
     // enum / const dominate the type
     jv *en = jv_get(s, "enum");
     jv *cn = jv_get(s, "const");
-    if (en || cn) {
-        if (en && en->type != J_ARR) {
-            // an object-valued enum was read as a list of its VALUES, so
-            // {"enum":{"a":1}} compiled to the literal 1 -- a constraint the
-            // caller never wrote
-            snprintf(err, errcap, "enum must be an array");
-            return NULL;
-        }
-        int cnt = en ? en->n : 1;
-        if (cnt <= 0 || cnt > SCHEMA_ENUM_MAX) {
-            snprintf(err, errcap, "enum size must be 1..%d", SCHEMA_ENUM_MAX);
-            return NULL;
-        }
-        for (int i = 0; i < cnt; i++) {
-            jv *v = en ? en->items[i] : cn;
-            if (v->type != J_STR && v->type != J_NUM &&
-                v->type != J_BOOL && v->type != J_NULL) {
-                snprintf(err, errcap, "enum values must be scalars");
-                return NULL;
-            }
-        }
-        // Siblings intersect, they do not lose: an enum value outside the
-        // declared type is dropped (it could never validate), and a const
-        // beside an enum must be one of its members. Before this,
-        // {"type":"integer","enum":["bad",1]} accepted "bad" and
-        // {"const":1,"enum":[2]} accepted 2.
-        jv **keep = malloc(sizeof(jv *) * (size_t)cnt);   // cnt <= SCHEMA_ENUM_MAX
-        if (!keep) return NULL;
-        int n_keep = 0;
-        for (int i = 0; i < cnt; i++) {
-            jv *v = en ? en->items[i] : cn;
-            if (ty && !literal_has_type(v, ty)) continue;
-            if (en && cn && !literal_equal(v, cn)) continue;
-            keep[n_keep++] = v;
-        }
-        if (n_keep == 0) {
-            snprintf(err, errcap, en && cn
-                     ? "const is not one of the enum values"
-                     : "no enum value matches the declared type");
-            free(keep);
-            return NULL;
-        }
-        snode *n = sn_new(SN_ENUM);
-        if (!n) { free(keep); return NULL; }
-        n->lits = calloc(n_keep, sizeof(char *));
-        if (!n->lits) { schema_free(n); free(keep); return NULL; }
-        for (int i = 0; i < n_keep; i++) {
-            char *lit = sn_literal(keep[i]);
-            if (!lit) { schema_free(n); free(keep); return NULL; }
-            n->lits[i] = lit;
-            n->n_lits++;
-        }
-        free(keep);
-        if (!enum_index(n)) { schema_free(n); return NULL; }
-        return n;
-    }
+    if (en || cn) return compile_literals(en, cn, ty, err, errcap);
 
     if (!ty) {
         if (jv_get(s, "properties")) return compile_typed(s, "object", err, errcap, depth);
@@ -1369,32 +1419,7 @@ snode *compile_node(jv *s, char *err, int errcap, int depth) {
         return sn_new(SN_ANY);
     }
     if (ty->type == J_STR) return compile_typed(s, ty->str, err, errcap, depth);
-    if (ty->type == J_ARR) { // union, e.g. ["string","null"]
-        snode *n = sn_new(SN_UNION);
-        if (!n) return NULL;
-        n->alts = calloc(ty->n, sizeof(snode *));
-        if (!n->alts) { schema_free(n); return NULL; }
-        // number|integer merge into one numeric alternative; it is "number"
-        // only when "number" is actually listed. ["integer","null"] used to
-        // widen to number because the list had more than one member, so
-        // 1.5 validated as an integer.
-        bool any_number = false;
-        for (int i = 0; i < ty->n; i++)
-            if (!strcmp(jv_str(ty->items[i], "?"), "number")) any_number = true;
-        bool has_num = false;
-        for (int i = 0; i < ty->n; i++) {
-            const char *t = jv_str(ty->items[i], "?");
-            if ((!strcmp(t, "number") || !strcmp(t, "integer"))) {
-                if (has_num) continue; // merge number|integer
-                has_num = true;
-                t = any_number ? "number" : "integer";
-            }
-            snode *alt = compile_typed(s, t, err, errcap, depth + 1);
-            if (!alt) { schema_free(n); return NULL; }
-            n->alts[n->n_alts++] = alt;
-        }
-        return n;
-    }
+    if (ty->type == J_ARR) return compile_type_union(s, ty, err, errcap, depth);
     snprintf(err, errcap, "bad 'type' value");
     return NULL;
 }
