@@ -1233,6 +1233,15 @@ reported beside it).
   160 tasks, 7 of 160 runs end in a reasoning loop, twelve gated attempts for
   two full passes) and pins this runner from 0.5.7. Serving advice is under
   "Serving a distilled reasoning student".
+- The [typed-decisions record](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Typed-Decisions-record)
+  is research evidence, **not a model** and no weights: TD-000 and TD-001 on
+  whether Kvist-14B's `/v1/decide` probabilities can be used as decisions.
+  TD-000 measured three models' probabilities and tested nothing. TD-001,
+  preregistered, asked whether a log-loss LoRA of Kvist-14B beats a per-class
+  temperature map by 0.05 nats on held-out ledger questions, and came out
+  **inconclusive** (-0.074 nats, 95% interval [-0.128, -0.037]); the adapter
+  is not distributed. The questions, every scored row, the preregistrations
+  and the pinned analysis are there. Kvist collection.
 - [Qwen3-30B-A3B selective precision](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF)
   (attention Q8_0 / experts Q4_0, 17.99 GB) **passes the bar** where the
   official uniform Q4_K_M fails it, from a byte-verified first-party Q8_0
