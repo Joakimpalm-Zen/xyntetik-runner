@@ -114,6 +114,10 @@ test-model-load-failure.exe
 test-model-load-oom
 test-model-load-oom.exe
 test-model-load-oom.err
+test-quantize-oom
+test-quantize-oom.exe
+test-quantize-oom.err
+test-quantize-oom-*
 test-moe-host-bridge
 test-moe-host-bridge.exe
 test-moe-host-bridge.err

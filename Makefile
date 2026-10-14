@@ -219,6 +219,7 @@ TEST_TRAY_WIN_DEP =
 TEST_TRAY_WIN_RUN = @echo "skip: test-tray-win-menu (Win32 menu readback; covered by the Windows job)"
 endif
 TEST_QUANTIZE = $(TEST_BATCH:test-batch%=test-quantize%)
+TEST_QUANTIZE_OOM = $(TEST_BATCH:test-batch%=test-quantize-oom%)
 TEST_VRAM_ROLLBACK = $(TEST_BATCH:test-batch%=test-vram-rollback%)
 TEST_GGUF_GETTERS = $(TEST_BATCH:test-batch%=test-gguf-getters%)
 TEST_HFHUB = $(TEST_BATCH:test-batch%=test-hfhub%)
@@ -1240,6 +1241,15 @@ TEST_QUANTIZE_SRC = tests/test_quantize.c $(QUANTIZE_OBJ) $(OBJDIR)/gguf.o \
                     $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/json.o
 $(TEST_QUANTIZE): $(TEST_QUANTIZE_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_QUANTIZE_SRC) -o $@ $(LDFLAGS)
+
+# Every allocation of a file transformation failed in turn, and the refusals
+# between its stages (tests/test_quantize_oom.c): quantize.c is compiled into
+# the test with its allocators substituted, under QUANTS_CFLAGS as quantize.o
+# is, so it links what quantize.o would and not quantize.o itself.
+TEST_QUANTIZE_OOM_SRC = tests/test_quantize_oom.c $(OBJDIR)/gguf.o \
+                        $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/json.o
+$(TEST_QUANTIZE_OOM): $(TEST_QUANTIZE_OOM_SRC) src/quantize.c $(HDR)
+	$(CC) $(QUANTS_CFLAGS) -I src $(TEST_QUANTIZE_OOM_SRC) -o $@ $(LDFLAGS)
 
 # vramreg.c is #included (calloc-hooked) by the test, so it is not linked here
 $(TEST_VRAM_ROLLBACK): tests/test_vram_rollback.c $(OBJDIR)/compat.o $(HDR)
@@ -2263,7 +2273,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_ATTN_SPLIT) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) \
-      $(TEST_QUANTIZE) \
+      $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
@@ -2483,6 +2493,13 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	    test-load-oom-cut.gguf test-load-oom-ffw.gguf 2> test-model-load-oom.err || \
 	    { tail -40 test-model-load-oom.err; exit 1; }
 	@tail -1 test-model-load-oom.err
+	@# every allocation of six file transformations (requant, type plan,
+	@# sublayer removal, expert prune, merge, context surgery) failed in
+	@# turn, and three refusals between their stages
+	./$(TEST_QUANTIZE_OOM) . test.gguf test-load-oom-moe.moe4.gguf test-yarn.gguf \
+	    test-lora.full.gguf 2> test-quantize-oom.err || \
+	    { tail -40 test-quantize-oom.err; exit 1; }
+	@tail -1 test-quantize-oom.err
 	@# the host MoE bridge equals the forward's FFN on every MoE layer: the
 	@# routings above, Granite's residual scale, Nemotron-H's gate-less
 	@# shared expert
@@ -2713,7 +2730,7 @@ clean:
 	      $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
 	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
-	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err \
+	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
 	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \
