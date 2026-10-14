@@ -19,19 +19,19 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-10-13",
-        "commit": "fd6d0989d5e8dbc051df6c3cab0a25bd4dfe681e",
-        "ran": "build121.sh on the Windows CUDA host: make OS=Windows_NT -j8 runner from release-1.2.1; tests/test_native_xml_routing.py 28/28; scripts/cuda-smoke-remote.sh 13/13; the OpenCode clean-setup walkthrough on the candidate binary before the tag (docs/compat-reports/clean-setup-1.2.1-2026-10-13-rtx3070.md)",
+        "date": "2026-10-14",
+        "commit": "65dc84a7842c36a8893e865764f5903030a0f221",
+        "ran": "build130.sh on the Windows CUDA host: make OS=Windows_NT -j8 runner from release-1.3.0 (0 warnings); tests/test_native_xml_routing.py 28/28; scripts/cuda-smoke-remote.sh 13/13; the OpenCode clean-setup walkthrough on the candidate binary before the tag (docs/compat-reports/clean-setup-1.3.0-2026-10-14-rtx3070.md)",
         "result": "pass",
         "caps": {
-          "version": "1.2.1",
+          "version": "1.3.0",
           "os": "windows",
           "arch": "x86_64",
           "cpu_cores": 8,
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA GeForce RTX 3070"
         },
-        "evidence": "docs/compat-reports/cuda-smoke-1.2.1-2026-10-13-rtx3070.json"
+        "evidence": "docs/compat-reports/cuda-smoke-1.3.0-2026-10-14-rtx3070.json"
       }
     },
     {
@@ -46,26 +46,26 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-10-13",
-        "commit": "4fa4662fddb84eba596a1fd5fef1b3cd0cc46d16",
-        "ran": "scripts/cuda-gate.sh on the release-1.2.1 clang CUDA build: --caps, test-tc-overflow, test-cuda-iquants (llama.cpp toolchain builds the fixtures), cpu_cuda_check (Qwen3-0.6B-q4_0.gguf, 64 tokens)",
+        "date": "2026-10-14",
+        "commit": "65dc84a7842c36a8893e865764f5903030a0f221",
+        "ran": "scripts/cuda-gate.sh on the release-1.3.0 clang CUDA build (an archive of the release commit, tree de6bfa6d): --caps, test-tc-overflow, test-cuda-iquants, test-cuda-gated, test-cuda-kv-fp4, test-cuda-nvfp4, test-cuda-qwen4exp, cpu_cuda_check (Qwen3-0.6B-q4_0.gguf, 64 tokens)",
         "result": "pass",
         "caps": {
-          "version": "1.2.1",
+          "version": "1.3.0",
           "os": "linux",
           "arch": "x86_64",
           "cpu_cores": 128,
           "gpu_backend": "cuda",
-          "gpu_name": "NVIDIA RTX PRO 6000 the Linux CUDA host Max-Q Workstation Edition MIG 1g.24gb"
+          "gpu_name": "NVIDIA RTX PRO 6000 Max-Q Workstation Edition MIG 1g.24gb"
         },
-        "evidence": "docs/device-runs-2026-10-13/blackwell/cuda-gate-20261013T053323Z.json"
+        "evidence": "docs/device-runs-2026-10-14/linux-x86_64-cuda/cuda-gate-20261014T170902Z.json"
       }
     },
     {
       "id": "macos-arm64-metal",
       "claimed_by": "README platform table, row 2: macOS arm64, Metal on Apple Silicon",
       "covers": "the Metal backend and the second device family that is itself a gate (the M1 caught the M5's fast-math rope contraction bug). GitHub's macOS runner builds this configuration on every push but is not where the Metal gates are trusted from.",
-      "host": "the lab M1, and whichever Apple Silicon box is on loan",
+      "host": "the lab's Apple Silicon Mac, and whichever Apple Silicon box is on loan",
       "max_age_days": 45,
       "expect": {
         "os": "macos",
@@ -73,19 +73,19 @@
         "gpu_backend": "metal"
       },
       "last_verified": {
-        "date": "2026-10-13",
-        "commit": "fd6d0989d5e8dbc051df6c3cab0a25bd4dfe681e",
-        "ran": "make test PYTHON=venv python (every C gate and 1293 pytest); scripts/conformance.sh 491/15; compat_matrix.py gemma-4-e4b-it-qat-q4_0 --gpu auto complete; make release-check",
+        "date": "2026-10-14",
+        "commit": "65dc84a7842c36a8893e865764f5903030a0f221",
+        "ran": "make test PYTHON=venv python (every C gate and 1506 pytest); scripts/conformance.sh 493/17; compat_matrix.py gemma-4-e4b-it-qat-q4_0 --gpu auto complete; make release-check",
         "result": "pass",
         "caps": {
-          "version": "1.2.1",
+          "version": "1.3.0",
           "os": "macos",
           "arch": "arm64",
           "cpu_cores": 8,
           "gpu_backend": "metal",
           "gpu_name": "Apple M1"
         },
-        "evidence": "docs/compat-reports/1.2.1-2026-10-13-m1-gemma-4-e4b-it-qat-q4_0.json"
+        "evidence": "docs/compat-reports/1.3.0-2026-10-14-macos-arm64-gemma-4-e4b-it-qat-q4_0.json"
       }
     }
   ]

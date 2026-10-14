@@ -3,7 +3,52 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.3.0 - 2026-10-14
+
+- **A model on a CUDA GPU no longer stays resident in host RAM.** Loading
+  copies the offloaded weights out of the mapped model file, and every page
+  that copy touched stayed in the process's resident set: a fully offloaded
+  Qwen2.5-7B Q4_K_M server held 4.86 GB of host RAM after a request. Once the
+  device is ready, the host pages of what it holds are handed back: 0.32 GB
+  for the same server, and Llama 3.2 3B on an RTX 3070 under Windows went
+  from 2,108 to 191 MiB. Output is unchanged, and a CPU fallback reads the
+  same bytes back from the file. The load itself still reads the whole file
+  once, and `--mlock` keeps every page resident as before.
+
+- **A number in a function-XML tool parameter can end.** With a required or
+  named tool choice, a parameter holding a number (`<parameter=a>` then
+  `13`) could not be followed by the newline that starts its closing tag, so
+  the model kept writing digits: "use add to add 13 and 29" on Qwen3.8 27B
+  came back as `a: 1.3e+101`. The newline now ends the number.
+
+- **A Qwen2.5 model gets the system prompt its template writes.** A request
+  with no system message reached a Qwen2.5 model without the default its own
+  chat template supplies ("You are Qwen, created by Alibaba Cloud. You are a
+  helpful assistant."), 21 tokens short of the reference, and with tools
+  declared the default was missing before the tool declarations too. Both
+  are written now, as they already were for SmolLM2, Hermes 4 and Granite
+  4.0-H. System-less Qwen2.5 prompts are longer than in earlier releases,
+  so their output can differ.
+
+- **`runner_telemetry.closure` names the fields the closer wrote on
+  XML-style calls.** When the token budget runs out inside a native tool
+  call, the closer completes it. Its provenance listed the fields it
+  synthesized only for JSON calls and read `"fields": null` for Qwen3-Coder
+  XML and Muse atem calls; it now names the call's `/name` and
+  `/arguments/KEY` there too.
+
+- **`RUNNER_DEBUG_ROUTE=1` and `--bench-json` say which route a forward
+  took.** With the variable set, every forward prints, after it ran, the
+  backend it ended on, the device, the split, experts on the host, rows,
+  path, KV type, weight types, graph and tensor-core state, the fallback
+  reason and the build. `--bench-json` carries the same as `route`, with
+  every path the run took and how many forwards each served.
+
+- **On Windows, a server with no console behind it no longer raises a
+  tray.** Any character device counted as a terminal, so a server started
+  with stdin on NUL (a scheduled task, a service wrapper) looked
+  interactive and raised one; a model download from such a process also
+  drew its progress bar into NUL. A terminal on Windows is now a console.
 
 - **Every `--parallel` slot gets the CUDA split the first one picks.**
   The split was planned for one slot: the first filled the card with
