@@ -75,5 +75,7 @@ resources at a safe boundary; a model swap preserves shared prefixes.
 TTL, `keep_alive`, and cooperative VRAM yield retain their documented
 support/refusals. Check reload, target/draft cleanup, adapter/template
 identity, and VRAM-lease release when changing resource ownership.
+[Buffer lifetimes](buffer-lifetimes.md) lists each buffer's owner, its
+transfers and completion signal, and the CUDA graph constraints.
 See the [idle measurement](idle-coexistence-120b-m5max-2026-09-01.md) and
 [residency reference](../MANUAL.md#serving-and-apis).
