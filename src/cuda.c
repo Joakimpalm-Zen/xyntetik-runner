@@ -1147,19 +1147,71 @@ static size_t expert_plan_bytes(const layer_t *ly, int n_expert, bool bound) {
     return model_layer_expert_bytes(ly, n_expert) + (bound ? 9 * GPU_PLAN_GRAN : 0);
 }
 
+// A layer's device tensors, listed once. The split plan's bytes
+// (layer_weight_bytes), the prefix upload's reach (layer_weight_end), the
+// per-tensor bindings (shared_upload_weights) and admission's type check
+// (cuda_admit) all walk these two lists. Each used to keep its own, and they
+// had drifted: none had ssm_in, so a Mamba-2 hybrid's input projection was
+// never budgeted or bound and its first layer failed on the device, and the
+// prefix's reach had neither the hyper-connection mixers nor the shared
+// expert. tests/test_cuda_tensor_roles.py holds every tensor field of
+// layer_t to one of the lists or a named host-side role.
+enum { LAYER_MIXER_MAX = 19 };
+
+// The mixer side, on the device whatever the FFN does: attention or the
+// recurrent mixer, the hyper-connection stream mixers (four projections and
+// two injects per layer: 1.27 GB on Qwen3.8-Flash-Next), the E-series
+// per-layer embedding projections. Absent tensors are left out.
+static int layer_mixer_tensors(const layer_t *ly, gguf_tensor **out) {
+    gguf_tensor *ts[LAYER_MIXER_MAX] = {
+        ly->ple_gate, ly->ple_proj, ly->wq, ly->wk, ly->wv, ly->wo, ly->wqkv,
+        ly->wq_gate, ly->ssm_in, ly->ssm_conv, ly->ssm_beta, ly->ssm_alpha,
+        ly->ssm_out, ly->hc_attn_down, ly->hc_attn_up, ly->hc_attn_inject,
+        ly->hc_ffn_down, ly->hc_ffn_up, ly->hc_ffn_inject };
+    int n = 0;
+    for (int i = 0; i < LAYER_MIXER_MAX; i++)
+        if (ts[i]) out[n++] = ts[i];
+    return n;
+}
+
+// The FFN side as the device holds it: the dense projections, or the
+// expert bank (router, routed experts fused or one tensor per expert, the
+// shared expert and its gate, Gemma's dense branch). fn sees each present
+// tensor in turn; a false from it stops the walk and is returned.
+static bool layer_ffn_tensors_each(const layer_t *ly, int n_expert,
+                                   bool (*fn)(gguf_tensor *, void *), void *ctx) {
+    gguf_tensor *dense[] = { ly->w_gate, ly->w_up, ly->w_down };
+    if (!ly->is_moe) {
+        for (int i = 0; i < 3; i++)
+            if (dense[i] && !fn(dense[i], ctx)) return false;
+        return true;
+    }
+    gguf_tensor *bank[] = { ly->ffn_gate_inp, ly->ffn_gate_up_exps,
+                            ly->ffn_gate_exps, ly->ffn_up_exps,
+                            ly->ffn_down_exps, ly->w_gate_shexp,
+                            ly->w_up_shexp, ly->w_down_shexp,
+                            ly->ffn_gate_inp_shexp };
+    for (size_t i = 0; i < sizeof bank / sizeof *bank; i++)
+        if (bank[i] && !fn(bank[i], ctx)) return false;
+    if (ly->moe_split)
+        for (int e = 0; e < n_expert; e++) {
+            gguf_tensor *one[] = { ly->moe_g[e], ly->moe_u[e], ly->moe_d[e] };
+            for (int i = 0; i < 3; i++)
+                if (one[i] && !fn(one[i], ctx)) return false;
+        }
+    if (ly->moe_gemma)
+        for (int i = 0; i < 3; i++)
+            if (dense[i] && !fn(dense[i], ctx)) return false;
+    return true;
+}
+
 static size_t layer_weight_bytes(const layer_t *ly, int n_expert,
                                  bool host_experts, bool bound) {
     size_t wb = 0;
-    // attention / recurrent mixer, and the hyper-connection stream mixers
-    // (four projections and two injects per layer: 1.27 GB on Qwen3.8-Flash-
-    // Next, all of it outside the plan until 2026-10-08)
-    gguf_tensor *att[] = { ly->wq, ly->wk, ly->wv, ly->wo, ly->wqkv,
-                           ly->wq_gate, ly->ssm_conv, ly->ssm_beta,
-                           ly->ssm_alpha, ly->ssm_out,
-                           ly->hc_attn_down, ly->hc_attn_up, ly->hc_attn_inject,
-                           ly->hc_ffn_down, ly->hc_ffn_up, ly->hc_ffn_inject };
-    for (size_t i = 0; i < sizeof(att) / sizeof(*att); i++)
-        wb += plan_bytes(att[i], bound);
+    gguf_tensor *mix[LAYER_MIXER_MAX];
+    int nmix = layer_mixer_tensors(ly, mix);
+    for (int i = 0; i < nmix; i++)
+        wb += plan_bytes(mix[i], bound);
     if (ly->is_moe && host_experts) {
         // The complete expert FFN (router, routed tensors and a coupled
         // Gemma shared branch) executes on the host. Attention remains here.
@@ -1169,11 +1221,6 @@ static size_t layer_weight_bytes(const layer_t *ly, int n_expert,
         gguf_tensor *ffn[] = { ly->w_gate, ly->w_up, ly->w_down };
         for (int i = 0; i < 3; i++) wb += plan_bytes(ffn[i], bound);
     }
-    // E-series per-layer embedding matrices ride with the layer. They are f32
-    // in the published GGUFs and far from negligible (~5 MB/layer on E4B), so
-    // leaving them out would under-budget the offload and overcommit VRAM.
-    wb += plan_bytes(ly->ple_gate, bound);
-    wb += plan_bytes(ly->ple_proj, bound);
     return wb;
 }
 
@@ -1248,6 +1295,13 @@ static bool binding_add(gpu_weights *w, const model_t *m, gguf_tensor *t) {
     return true;
 }
 
+typedef struct { gpu_weights *w; const model_t *m; } binding_ctx;
+
+static bool binding_add_each(gguf_tensor *t, void *ctx) {
+    binding_ctx *c = ctx;
+    return binding_add(c->w, c->m, t);
+}
+
 static bool binding_find(const gpu_weights *w, const model_t *m,
                          const gguf_tensor *t, CUdeviceptr *base,
                          uint64_t *relative_off) {
@@ -1272,35 +1326,22 @@ static bool binding_find(const gpu_weights *w, const model_t *m,
 // Highest file offset (data end) touched by any of a layer's weight tensors —
 // the partial-offload upload must reach this so a GPU MoE layer's expert slices
 // are all inside the uploaded prefix.
+typedef struct { const uint8_t *map; size_t end; } weight_end_ctx;
+
+static bool weight_end_of(gguf_tensor *t, void *ctx) {
+    weight_end_ctx *c = ctx;
+    size_t e = (size_t)((const uint8_t *)t->data - c->map) + t->nbytes;
+    if (e > c->end) c->end = e;
+    return true;
+}
+
 static size_t layer_weight_end(const layer_t *ly, int n_expert, const uint8_t *map) {
-    size_t end = 0;
-#define WEND(t) do { gguf_tensor *_t = (t); if (_t) { \
-        size_t _e = (size_t)((uint8_t *)_t->data - map) + _t->nbytes; \
-        if (_e > end) end = _e; } } while (0)
-    WEND(ly->wq); WEND(ly->wk); WEND(ly->wv); WEND(ly->wo);
-    WEND(ly->wqkv); WEND(ly->wq_gate); WEND(ly->ssm_conv);
-    WEND(ly->ssm_beta); WEND(ly->ssm_alpha); WEND(ly->ssm_out);
-    // gemma-4 E-series per-layer embeddings: real mmap tensors (unlike the
-    // f32-converted ple_post_norm), so the partial-offload byte-prefix must
-    // reach them too or the upload leaves them unmapped -- see cuda.c:1145
-    // where the cpu_moe binding path already treats them as required.
-    WEND(ly->ple_gate); WEND(ly->ple_proj);
-    if (ly->is_moe) {
-        WEND(ly->ffn_gate_inp);
-        WEND(ly->ffn_gate_up_exps);
-        if (ly->moe_split) {
-            for (int e = 0; e < n_expert; e++) {
-                WEND(ly->moe_g[e]); WEND(ly->moe_u[e]); WEND(ly->moe_d[e]);
-            }
-        } else {
-            WEND(ly->ffn_gate_exps); WEND(ly->ffn_up_exps); WEND(ly->ffn_down_exps);
-        }
-        if (ly->moe_gemma) { WEND(ly->w_gate); WEND(ly->w_up); WEND(ly->w_down); }
-    } else {
-        WEND(ly->w_gate); WEND(ly->w_up); WEND(ly->w_down);
-    }
-#undef WEND
-    return end;
+    weight_end_ctx c = { map, 0 };
+    gguf_tensor *mix[LAYER_MIXER_MAX];
+    int nmix = layer_mixer_tensors(ly, mix);
+    for (int i = 0; i < nmix; i++) weight_end_of(mix[i], &c);
+    layer_ffn_tensors_each(ly, n_expert, weight_end_of, &c);
+    return c.end;
 }
 
 // shared_build()'s split plan, carried between its stages.
@@ -1952,53 +1993,19 @@ static bool shared_upload_weights(gpu_weights *w, model_t *m, const shared_plan 
     if (w->bound) {
         // Pack only tensors used by the CUDA half. Every MoE FFN stays on
         // the host; attention and dense layers remain device resident.
+        binding_ctx bc = { w, m };
         for (int l = 0; l < G; l++) {
             layer_t *ly = &m->layers[l];
-            if (!binding_add(w, m, ly->ple_gate) ||
-                !binding_add(w, m, ly->ple_proj) ||
-                !binding_add(w, m, ly->wq) ||
-                !binding_add(w, m, ly->wk) ||
-                !binding_add(w, m, ly->wv) ||
-                !binding_add(w, m, ly->wo) ||
-                !binding_add(w, m, ly->wqkv) ||
-                !binding_add(w, m, ly->wq_gate) ||
-                !binding_add(w, m, ly->ssm_conv) ||
-                !binding_add(w, m, ly->ssm_beta) ||
-                !binding_add(w, m, ly->ssm_alpha) ||
-                !binding_add(w, m, ly->ssm_out) ||
-                !binding_add(w, m, ly->hc_attn_down) ||
-                !binding_add(w, m, ly->hc_attn_up) ||
-                !binding_add(w, m, ly->hc_attn_inject) ||
-                !binding_add(w, m, ly->hc_ffn_down) ||
-                !binding_add(w, m, ly->hc_ffn_up) ||
-                !binding_add(w, m, ly->hc_ffn_inject)) goto fail;
-            if (!ly->is_moe &&
-                (!binding_add(w, m, ly->w_gate) ||
-                 !binding_add(w, m, ly->w_up) ||
-                 !binding_add(w, m, ly->w_down))) goto fail;
-            // Partial expert offload: a device-resident bank uploads its
-            // router and expert tensors as ordinary bindings, so the same
-            // offset-resolved matvec path serves them.
-            if (ly->is_moe && !moe_on_host(m, l)) {
-                if (!binding_add(w, m, ly->ffn_gate_inp) ||
-                    !binding_add(w, m, ly->ffn_gate_up_exps) ||
-                    !binding_add(w, m, ly->ffn_gate_exps) ||
-                    !binding_add(w, m, ly->ffn_up_exps) ||
-                    !binding_add(w, m, ly->ffn_down_exps) ||
-                    !binding_add(w, m, ly->w_gate_shexp) ||
-                    !binding_add(w, m, ly->w_up_shexp) ||
-                    !binding_add(w, m, ly->w_down_shexp) ||
-                    !binding_add(w, m, ly->ffn_gate_inp_shexp)) goto fail;
-                if (ly->moe_split)
-                    for (int e = 0; e < m->n_expert; e++)
-                        if (!binding_add(w, m, ly->moe_g[e]) ||
-                            !binding_add(w, m, ly->moe_u[e]) ||
-                            !binding_add(w, m, ly->moe_d[e])) goto fail;
-                if (ly->moe_gemma &&
-                    (!binding_add(w, m, ly->w_gate) ||
-                     !binding_add(w, m, ly->w_up) ||
-                     !binding_add(w, m, ly->w_down))) goto fail;
-            }
+            gguf_tensor *mix[LAYER_MIXER_MAX];
+            int nmix = layer_mixer_tensors(ly, mix);
+            for (int i = 0; i < nmix; i++)
+                if (!binding_add(w, m, mix[i])) goto fail;
+            // A dense FFN, and under a partial expert offload a device-
+            // resident bank, upload as ordinary bindings, so the same
+            // offset-resolved matvec path serves them; a host bank stays home.
+            if (!(ly->is_moe && moe_on_host(m, l)) &&
+                !layer_ffn_tensors_each(ly, m->n_expert, binding_add_each, &bc))
+                goto fail;
         }
         if (full && !binding_add(w, m, m->output)) goto fail;
         if (full && m->hyper_conn &&
@@ -2477,13 +2484,16 @@ static bool cuda_admit(model_t *m) {
     if (!gpu_tensor_type_ok(m->output)) return false;
     for (int l = 0; l < m->n_layer; l++) {
         layer_t *ly = &m->layers[l];
-        gguf_tensor *ws[] = { ly->wq, ly->wk, ly->wv, ly->wo,
-                              ly->w_gate, ly->w_up, ly->w_down, ly->wqkv,
-                              ly->wq_gate, ly->ssm_beta, ly->ssm_alpha,
-                              ly->ssm_out };
-        int count = m->cpu_moe && ly->is_moe && moe_on_host(m, l) ? 4 : 12;
-        for (int i = 0; i < count; i++)
-            if (!gpu_tensor_type_ok(ws[i])) return false;
+        // every tensor the device reads: the mixer side always, the dense
+        // FFN unless a host bank replaces it (the expert banks are checked
+        // below)
+        gguf_tensor *mix[LAYER_MIXER_MAX];
+        int nmix = layer_mixer_tensors(ly, mix);
+        for (int i = 0; i < nmix; i++)
+            if (!gpu_tensor_type_ok(mix[i])) return false;
+        if (!(m->cpu_moe && ly->is_moe && moe_on_host(m, l)) &&
+            (!gpu_tensor_type_ok(ly->w_gate) || !gpu_tensor_type_ok(ly->w_up) ||
+             !gpu_tensor_type_ok(ly->w_down))) return false;
         // The architecture publishes this tiny depthwise kernel as F32 in its
         // GGUF contract. Keeping it F32 avoids a second quant decoder in the
         // stateful kernel; an unexpected export falls back safely.

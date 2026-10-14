@@ -12,6 +12,7 @@ typo. Either way, a missing required SSM tensor must FAIL CLOSED naming it (the
 hostile-GGUF discipline). No download: the fixtures are generated and mirror a
 real granite-4.0-h / Nemotron GGUF (sparse-MoE, NoPE, inner == 2*embd).
 """
+import json
 import os
 import pathlib
 import re
@@ -261,3 +262,33 @@ def test_granitehybrid_chunked_prefill_matches_serial(runner_bin, models):
 def test_nemotron_h_chunked_prefill_matches_serial(runner_bin, nemo_model):
     good, _ = nemo_model
     _assert_chunked_equals_serial(runner_bin, good)
+
+
+# --------------------------------------------------------------------------
+# --cpu-moe on CUDA: Granite 4 hybrid MoE runs its attention and Mamba-2
+# layers on the device and its experts on the host. Two defects kept it off
+# the device: the device tensor lists had no ssm_in, so the first recurrent
+# layer failed and the run continued on the CPU, and the --cpu-moe auto fit
+# placed banks whose ungated shared expert the device cannot run.
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize("cfg", [["--cpu-moe"], ["--cpu-moe", "auto"]])
+def test_granitehybrid_cpu_moe_runs_on_the_device(runner_bin, models, cfg):
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, check=True,
+                                     text=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("--cpu-moe placement is CUDA-side")
+    good, _ = models["granitehybrid"]
+    cpu = _run(runner_bin, good, n="8")
+    assert cpu.returncode == 0, cpu.stderr
+    proc = subprocess.run(
+        [runner_bin, "-m", str(good), "-p", "hi", "-n", "8", "--temp", "0", *cfg],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    err = proc.stderr.decode(errors="replace")
+    assert proc.returncode == 0, err
+    assert "CUDA backend" in err, err
+    for fallback in ("not resident", "falling back", "continuing on CPU"):
+        assert fallback not in err, err
+    # the shared expert has no gate: every bank stays on the host
+    assert re.search(r"experts 0/\d+ layers on GPU", err), err
+    assert proc.stdout == cpu.stdout
