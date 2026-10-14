@@ -2387,6 +2387,17 @@ bool sval_ws_is_content(const sval *v) {
     if (v->depth <= 0) return false;
     const sframe *f = &v->stack[v->depth - 1];
     if (!f->node) return false;
+    // A number has no terminator: its frame stays on top until a byte that
+    // cannot extend it arrives, and whitespace can only end it, so the
+    // question belongs to the frame that encloses it. Inside JSON that is a
+    // separator; in a native protocol it can be the first byte of a required
+    // literal (Qwen3-Coder's `\n</parameter>` after a numeric value). Asking
+    // the number's own frame masked that newline, and a constrained model
+    // that could not write it extended the number instead (21 -> 21e100).
+    if (f->phase == P_NUM && v->depth >= 2) {
+        f = &v->stack[v->depth - 2];
+        if (!f->node) return false;
+    }
     // Protocol positions where whitespace is REQUIRED, not optional: an
     // atem_lit("\n") or a native member separator is spelled in whitespace,
     // and masking a whitespace-only token there can remove the only
