@@ -8,14 +8,19 @@ put stdin. So `runner --serve` launched that way raised a tray, with no
 desktop session to show it in. The test is now a console handle
 (`plat_is_terminal`: GetConsoleMode succeeds only on one).
 
-Observable through the instance registry a raised tray registers itself
-in: point APPDATA at an empty directory, start a server with stdin on NUL
-and stdout and stderr piped, and no tray may appear. Windows only: the
-macOS test is isatty(), which NUL (/dev/null) never satisfies.
+Observed through the tray's icon-dump seam rather than its registry
+record: on a machine with no desktop session (a service, a scheduled task,
+CI) a raised tray registers and then fails to start its message loop
+within milliseconds, so a registry poll misses it and passes vacuously.
+With XYNTETIK_TRAY_ICON_DUMP set, a tray writes its glyphs to that
+directory and exits before it needs a desktop, and a tray the server
+raises inherits the server's environment. A positive control runs
+`runner --tray` itself first, so a seam that stopped working fails the
+test instead of hiding the bug. Windows only: the macOS test is isatty(),
+which NUL (/dev/null) never satisfies.
 """
 
 import contextlib
-import json
 import os
 import pathlib
 import socket
@@ -55,31 +60,34 @@ def _free_port():
         return s.getsockname()[1]
 
 
-def _trays(instances_dir):
-    out = []
-    if instances_dir.is_dir():
-        for p in instances_dir.glob("*.json"):
-            try:
-                rec = json.loads(p.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if rec.get("mode") == "tray":
-                out.append(rec)
-    return out
+def _dumped(d):
+    return sorted(p.name for p in d.glob("tray-*.bmp")) if d.is_dir() else []
+
+
+def test_the_icon_dump_seam_sees_a_tray(runner_bin, tmp_path):
+    """Positive control: a tray launched in this environment leaves files."""
+    icons = tmp_path / "icons"
+    icons.mkdir()
+    env = dict(os.environ, XYNTETIK_TRAY_ICON_DUMP=str(icons))
+    p = subprocess.run([str(runner_bin), "--tray"], env=env, cwd=ROOT,
+                       stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert _dumped(icons), "the icon-dump seam wrote nothing; the test below would be blind"
 
 
 def test_serve_with_stdin_on_nul_raises_no_tray(runner_bin, model, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    env = dict(os.environ, APPDATA=str(home), HOME=str(home))
-    instances = home / "xyntetik/runner/instances"
+    icons = tmp_path / "icons"
+    icons.mkdir()
+    env = dict(os.environ, APPDATA=str(home), HOME=str(home),
+               XYNTETIK_TRAY_ICON_DUMP=str(icons))
     port = _free_port()
     proc = subprocess.Popen(
         [str(runner_bin), "-m", str(model), "--serve", "--port", str(port),
          "-c", "256", "--gpu", "off"],
         cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    found = []
     try:
         deadline = time.time() + 60
         while time.time() < deadline:
@@ -91,11 +99,9 @@ def test_serve_with_stdin_on_nul_raises_no_tray(runner_bin, model, tmp_path):
                 time.sleep(0.1)
         else:
             raise AssertionError("server never answered /health")
-        # the tray is detached and registers itself asynchronously: give it
-        # room to appear rather than racing it to a pass
+        # the raise happens at startup; a raised tray dumps and exits at once
         deadline = time.time() + 4
-        while time.time() < deadline and not found:
-            found = _trays(instances)
+        while time.time() < deadline and not _dumped(icons):
             time.sleep(0.2)
     finally:
         proc.terminate()
@@ -104,10 +110,6 @@ def test_serve_with_stdin_on_nul_raises_no_tray(runner_bin, model, tmp_path):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=15)
-        for rec in _trays(instances):        # never leave one behind
-            pid = rec.get("pid")
-            if isinstance(pid, int) and pid > 0:
-                subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                               capture_output=True)
-    assert not found, ("a server with stdin on NUL raised %d tray process(es): "
-                       "NUL was taken for a terminal" % len(found))
+    assert not _dumped(icons), ("a server with stdin on NUL raised a tray (it "
+                                "dumped %s): NUL was taken for a terminal"
+                                % ", ".join(_dumped(icons)))
