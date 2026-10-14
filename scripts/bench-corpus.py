@@ -23,7 +23,7 @@ cache: `cache` says so, and nothing here measures a cold load. There are no
 thresholds: compare two records of the same case on the same machine.
 Results are machine data; keep them out of the repository.
 """
-import argparse, hashlib, json, os, platform, re, socket, subprocess, sys, threading, time
+import argparse, hashlib, json, os, platform, re, shlex, socket, subprocess, sys, threading, time
 import urllib.error, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -43,11 +43,20 @@ def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
 
+def runner_args(exe, model, ctx, threads):
+    """The arguments every launch of the measured binary shares: the
+    calibration server, each --bench-json run and the idle command. Each
+    launch used to spell its own, and the --bench-json one left out -c, so
+    every bench row ran at the runner's default context (the model's trained
+    length, at most 4096) while the record stated --ctx."""
+    return [exe, "-m", model, "-c", str(ctx)] + (["-t", str(threads)] if threads else [])
+
+
 class Server:
     def __init__(self, exe, model, ctx, threads, parallel=1):
         self.port = free_port()
-        self.args = [exe, "-m", model, "--serve", "--no-tray", "--port", str(self.port),
-                     "-c", str(ctx), "--parallel", str(parallel)] + (["-t", str(threads)] if threads else [])
+        self.args = runner_args(exe, model, ctx, threads) + [
+            "--serve", "--no-tray", "--port", str(self.port), "--parallel", str(parallel)]
 
     def __enter__(self):
         self.p = subprocess.Popen(self.args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -102,10 +111,9 @@ def prompt_of(srv, n, offset=0):
     return " ".join(text[:best]), count(" ".join(text[:best]))
 
 
-def bench(exe, model, prompt, case, threads, gpu_layers):
-    argv = [exe, "-m", model, "--bench-json", "-p", prompt, "-n", str(case["n_predict"])]
-    if threads:
-        argv += ["-t", str(threads)]
+def bench(exe, model, ctx, prompt, case, threads, gpu_layers):
+    argv = runner_args(exe, model, ctx, threads) + [
+        "--bench-json", "-p", prompt, "-n", str(case["n_predict"])]
     if gpu_layers is not None:
         argv += ["--gpu-layers", str(gpu_layers)]
     if case.get("draft") == "self":
@@ -117,6 +125,10 @@ def bench(exe, model, prompt, case, threads, gpu_layers):
     if p.returncode != 0:
         return {"error": p.stderr.strip().splitlines()[-1:] or ["exit %d" % p.returncode]}
     out = json.loads(p.stdout.strip().splitlines()[-1])
+    # the run states the context it allocated; a row measured at another one
+    # is not the row the record asks for
+    if out.get("context") != ctx:
+        return {"error": [f"measured at context {out.get('context')}, asked for {ctx}"]}
     if case.get("draft"):
         spec = [l for l in p.stderr.splitlines() if l.startswith("spec:")]
         out["spec"] = spec[-1] if spec else None
@@ -201,8 +213,8 @@ def main():
     if keys:
         with Server(args.runner, args.model, args.ctx, args.threads) as srv:
             probe, served = prompt_of(srv, 16)
-            offset = bench(args.runner, args.model, probe, {"n_predict": 1}, args.threads,
-                           None).get("prompt_tokens", served) - served
+            offset = bench(args.runner, args.model, args.ctx, probe, {"n_predict": 1},
+                           args.threads, None).get("prompt_tokens", served) - served
             for key in keys:
                 prompts[key] = prompt_of(srv, key, offset)
     n_layer = None
@@ -217,13 +229,13 @@ def main():
                         rec["cases"].append(row)
                         break
                     if n_layer is None:
-                        n_layer = bench(args.runner, args.model, "hi", {"n_predict": 1},
+                        n_layer = bench(args.runner, args.model, args.ctx, "hi", {"n_predict": 1},
                                         args.threads, None).get("layers")
                     gl = n_layer // 2 if c["gpu_layers"] == "half" else n_layer
                 text, _ = prompts[min(c["prompt_tokens"], args.ctx - c["n_predict"] - 8)]
                 row["prompt_tokens_target"] = c["prompt_tokens"]
                 row["others_running"] = others_running()
-                row["result"] = bench(args.runner, args.model, text, c, args.threads, gl)
+                row["result"] = bench(args.runner, args.model, args.ctx, text, c, args.threads, gl)
             elif c["kind"] == "server":
                 row["others_running"] = others_running()
                 try:
@@ -238,7 +250,8 @@ def main():
                 out = args.out + ".idle.json"
                 row["others_running"] = others_running()
                 subprocess.run([sys.executable, os.path.join(ROOT, c["tool"]), "--port", str(port),
-                                "--cmd", f"{args.runner} --serve --port {port} -m {args.model} -c {args.ctx}",
+                                "--cmd", shlex.join(runner_args(args.runner, args.model, args.ctx, args.threads)
+                                                    + ["--serve", "--port", str(port)]),
                                 "--out", out], capture_output=True, timeout=1200)
                 row["result"] = json.load(open(out)) if os.path.exists(out) else {"error": "no report"}
                 rec["cases"].append(row)
