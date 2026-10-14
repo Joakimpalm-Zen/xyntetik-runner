@@ -18,7 +18,8 @@ number from that report is not a throughput guarantee for another setup.
   numerical tolerances. CPU/GPU bit identity uses the certified scalar
   route, with `RUNNER_CUDA_TC=0`, `RUNNER_MOE_EAGER=1`, and the applicable
   `RUNNER_METAL_MM=0` identity pin. Do not infer one route's guarantee from
-  a different route passing.
+  a different route passing. [Kernel routes](kernel-routes.md) maps every
+  decision point to its route, obligation and gate.
 - CPU thread pools are shared by serving slots and park between work.
   `RUNNER_TPOOL_SPIN` bounds the brief spin before parking. Additional
   slots share immutable weights but still own request/KV/runtime state.
