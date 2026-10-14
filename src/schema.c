@@ -2824,6 +2824,149 @@ static void close_members(emitq *q, const snode *n, int from, bool first,
     eq_put(q, n->sentinel);
 }
 
+// An any-subtree frame: the generic machine closes what it opened.
+static void close_any_frame(sval *v, emitq *q, const snode *n, const sframe *f) {
+    if (f->phase == P_START) { emit_min_choice(q, n, 0, -1); return; }
+    char tmp[512];
+    int cn = jsonv_close(&v->any, tmp, sizeof(tmp));
+    if (cn > 0) eq_put(q, tmp);
+    else if (!v->any.done) eq_put(q, n->min_items ? "{}" : "null");
+}
+
+// A string frame: finish a pending escape or UTF-8 scalar, fill to the
+// minimum length, close the quote.
+static void close_string_frame(emitq *q, const snode *n, sframe *f) {
+    // a dangling backslash or a partial \uXXXX. The character it
+    // completes is one lit_pos never saw, and padding as if it were
+    // still missing added one filler too many -- straight past
+    // maxLength, into a document this grammar itself rejects.
+    if (eq_escape(q, f)) f->lit_pos++;
+    eq_utf8(q, f);
+    int string_min = n->min_items;
+    if (n->n_pats && string_min < pat_min_len(n))
+        string_min = pat_min_len(n);
+    while (f->lit_pos < string_min && !eq_full(q)) {
+        eq_putc(q, n->n_pats ? pat_fill_byte(n, f->lit_pos) : ' ');
+        f->lit_pos++;
+    }
+    eq_putc(q, '"');
+}
+
+// A literal frame (enum, boolean, null): finish the pending or first live
+// literal, and let a finished discriminator decide its parent's choice.
+static void close_literal_frame(sval *v, emitq *q, const snode *n, const sframe *f) {
+    static const char *bools[] = { "true", "false" };
+    static const char *nulls[] = { "null" };
+    const char *const *lits = n->kind == SN_ENUM ? (const char *const *)n->lits :
+                              n->kind == SN_BOOL ? bools : nulls;
+    int cnt = n->kind == SN_ENUM ? n->n_lits : (n->kind == SN_BOOL ? 2 : 1);
+    int pick = -1;
+    if (n->kind == SN_ENUM) {
+        // the completed literal if one is pending, else the first
+        // live one in sorted order (the range the walker carries)
+        int lo = (int)(uint32_t)f->alive, hi = (int)(f->alive >> 32);
+        pick = f->idx > 0 ? f->idx - 1 : (lo < hi ? (n->order ? n->order[lo] : lo) : -1);
+    } else {
+        for (int i = 0; i < cnt; i++)
+            if (f->alive & (1ull << i)) { pick = i; break; }
+    }
+    if (pick < 0) return;
+    eq_put(q, lits[pick] + f->lit_pos);
+    // Finishing a discriminator literal decides the parent's choice —
+    // the args emitted next must come from the same alternative. Both
+    // shapes frame_done() recognises are recognised here, or a turn
+    // truncated inside the tool NAME closes with a different tool's
+    // parameters: the object/args pair, and the ENUM+COND sequence
+    // every native grammar (atem, Harmony, gemma4) is built from.
+    if (n->kind == SN_ENUM && v->depth >= 2) {
+        sframe *pf = &v->stack[v->depth - 2];
+        if (pf->node->kind == SN_OBJ && pf->sub < pf->node->n_props &&
+            !strcmp(pf->node->keys[pf->sub], "tool"))
+            pf->disc = (uint16_t)(pick + 1);
+        else if (pf->node->kind == SN_SEQ && n->min_items)
+            pf->disc = (uint16_t)(pick + 1);
+    }
+}
+
+// A map key forced closed at `kh`: extend it with '_' until its hash is
+// fresh in this map, so the closed document never repeats a key the feed
+// guard (and json_parse) refuses, then give it a value and close the map.
+static void close_map_key(const sval *v, emitq *q, const snode *n, uint32_t kh,
+                          int choice) {
+    for (int extend = 0; extend < 64; extend++) {
+        bool dup = false;
+        for (int i = 0; i < v->n_seen; i++)
+            if (v->seen_depth[i] == v->depth &&
+                v->seen_hash[i] == kh) { dup = true; break; }
+        if (!dup) break;
+        eq_putc(q, '_');
+        kh = json_key_hash_byte(kh, '_');
+    }
+    eq_put(q, "\":");
+    emit_min_choice(q, n->items, 0, choice);
+    eq_putc(q, '}');
+}
+
+// A key in progress: in a map, finish it as a fresh key; in an object,
+// finish the lowest live candidate key, then the required rest.
+static void close_inkey_frame(sval *v, emitq *q, const snode *n, sframe *f,
+                              int choice) {
+    if (n->kind == SN_MAP) {
+        // a force-closed key must not complete into a duplicate the
+        // feed guard refuses (and json_parse will refuse): finish
+        // any pending escape or scalar while keeping the decoded
+        // hash current, then extend the key until the hash is fresh
+        uint32_t kh = (uint32_t)f->num_abs;
+        char fin[12];
+        uint32_t scalar = 0;
+        int fn = json_escape_close(&f->sub, &f->esc,
+                                   (uint16_t)(f->num_abs >> 32),
+                                   fin, (int)sizeof(fin), &scalar);
+        for (int i = 0; i < fn; i++) eq_putc(q, fin[i]);
+        if (scalar) kh = json_key_hash_scalar(kh, scalar);
+        fn = json_utf8_close(&f->utf8_state, fin);
+        for (int i = 0; i < fn; i++) {
+            eq_putc(q, fin[i]);
+            kh = json_key_hash_byte(kh, (uint8_t)fin[i]);
+        }
+        close_map_key(v, q, n, kh, choice);
+        return;
+    }
+    // finish the lowest still-alive candidate key, give it a value
+    for (int i = 0; i < n->n_props; i++) {
+        if (!(f->alive & (1ull << i))) continue;
+        eq_put(q, n->keys[i] + f->lit_pos);
+        eq_put(q, "\":");
+        emit_min_choice(q, n->props[i], 0, choice);
+        f->idx = i + 1;
+        break;
+    }
+    close_obj(q, n, f->idx, true, false, choice);
+}
+
+// A native member list: finish the member in progress, then the required
+// rest and the list's close.
+static void close_member_frame(emitq *q, const snode *n, const sframe *f,
+                               int choice) {
+    bool first = f->phase == P_MEM_FIRST;
+    if (f->lit_pos == 0) {
+        close_members(q, n, f->idx, first, choice);
+        return;
+    }
+    int pick = f->sub ? f->sub - 1 : -1;
+    if (pick < 0) {
+        for (int i = f->idx; i <= n->n_props; i++) {
+            if (f->alive & (1ull << i)) { pick = i; break; }
+        }
+    }
+    if (pick < 0) return;
+    const char *prefix = member_prefix(n, pick, first);
+    eq_put(q, prefix + f->lit_pos);
+    if (pick == n->n_props) return;
+    emit_min_choice(q, n->props[pick], 0, choice);
+    close_members(q, n, pick + 1, false, choice);
+}
+
 static int sval_close_q(sval *v, emitq *q) {
     if (v->done) { q->out[0] = 0; return 0; }
     // Nothing generated at all — the root value never opened, so there is no
@@ -2846,67 +2989,18 @@ static int sval_close_q(sval *v, emitq *q) {
         const snode *n = f->node;
         int choice = frame_choice(v, v->depth - 1);
         switch (n->kind == SN_ANY ? P_STR + 100 : f->phase) {
-        case P_STR + 100: { // any-subtree: let the generic machine close
-            if (f->phase == P_START) { emit_min_choice(q, n, 0, -1); break; }
-            char tmp[512];
-            int cn = jsonv_close(&v->any, tmp, sizeof(tmp));
-            if (cn > 0) eq_put(q, tmp);
-            else if (!v->any.done) eq_put(q, n->min_items ? "{}" : "null");
+        case P_STR + 100: // any-subtree: let the generic machine close
+            close_any_frame(v, q, n, f);
             break;
-        }
         case P_START:
             emit_min_choice(q, n, 0, choice);
             break;
         case P_STR:
-            // a dangling backslash or a partial \uXXXX. The character it
-            // completes is one lit_pos never saw, and padding as if it were
-            // still missing added one filler too many -- straight past
-            // maxLength, into a document this grammar itself rejects.
-            if (eq_escape(q, f)) f->lit_pos++;
-            eq_utf8(q, f);
-            int string_min = n->min_items;
-            if (n->n_pats && string_min < pat_min_len(n))
-                string_min = pat_min_len(n);
-            while (f->lit_pos < string_min && !eq_full(q)) {
-                eq_putc(q, n->n_pats ? pat_fill_byte(n, f->lit_pos) : ' ');
-                f->lit_pos++;
-            }
-            eq_putc(q, '"');
+            close_string_frame(q, n, f);
             break;
-        case P_LIT: {
-            static const char *bools[] = { "true", "false" };
-            static const char *nulls[] = { "null" };
-            const char *const *lits = n->kind == SN_ENUM ? (const char *const *)n->lits :
-                                      n->kind == SN_BOOL ? bools : nulls;
-            int cnt = n->kind == SN_ENUM ? n->n_lits : (n->kind == SN_BOOL ? 2 : 1);
-            int pick = -1;
-            if (n->kind == SN_ENUM) {
-                // the completed literal if one is pending, else the first
-                // live one in sorted order (the range the walker carries)
-                int lo = (int)(uint32_t)f->alive, hi = (int)(f->alive >> 32);
-                pick = f->idx > 0 ? f->idx - 1 : (lo < hi ? (n->order ? n->order[lo] : lo) : -1);
-            } else {
-                for (int i = 0; i < cnt; i++)
-                    if (f->alive & (1ull << i)) { pick = i; break; }
-            }
-            if (pick < 0) break;
-            eq_put(q, lits[pick] + f->lit_pos);
-            // Finishing a discriminator literal decides the parent's choice —
-            // the args emitted next must come from the same alternative. Both
-            // shapes frame_done() recognises are recognised here, or a turn
-            // truncated inside the tool NAME closes with a different tool's
-            // parameters: the object/args pair, and the ENUM+COND sequence
-            // every native grammar (atem, Harmony, gemma4) is built from.
-            if (n->kind == SN_ENUM && v->depth >= 2) {
-                sframe *pf = &v->stack[v->depth - 2];
-                if (pf->node->kind == SN_OBJ && pf->sub < pf->node->n_props &&
-                    !strcmp(pf->node->keys[pf->sub], "tool"))
-                    pf->disc = (uint16_t)(pick + 1);
-                else if (pf->node->kind == SN_SEQ && n->min_items)
-                    pf->disc = (uint16_t)(pick + 1);
-            }
+        case P_LIT:
+            close_literal_frame(v, q, n, f);
             break;
-        }
         case P_NUM:
             if (n->kind == SN_INT) close_integer(q, n, f);
             else close_number(q, v, n, f);
@@ -2921,67 +3015,14 @@ static int sval_close_q(sval *v, emitq *q) {
                 // empty key may already exist in this map
                 uint32_t kh = json_key_hash_init();
                 eq_putc(q, '"');
-                for (int extend = 0; extend < 64; extend++) {
-                    bool dup = false;
-                    for (int i = 0; i < v->n_seen; i++)
-                        if (v->seen_depth[i] == v->depth &&
-                            v->seen_hash[i] == kh) { dup = true; break; }
-                    if (!dup) break;
-                    eq_putc(q, '_');
-                    kh = json_key_hash_byte(kh, '_');
-                }
-                eq_put(q, "\":");
-                emit_min_choice(q, n->items, 0, choice);
-                eq_putc(q, '}');
+                close_map_key(v, q, n, kh, choice);
             } else {
                 close_obj(q, n, f->idx, false, true, choice);
             }
             break;
-        case P_OBJ_INKEY: {
-            if (n->kind == SN_MAP) {
-                // a force-closed key must not complete into a duplicate the
-                // feed guard refuses (and json_parse will refuse): finish
-                // any pending escape or scalar while keeping the decoded
-                // hash current, then extend the key until the hash is fresh
-                uint32_t kh = (uint32_t)f->num_abs;
-                char fin[12];
-                uint32_t scalar = 0;
-                int fn = json_escape_close(&f->sub, &f->esc,
-                                           (uint16_t)(f->num_abs >> 32),
-                                           fin, (int)sizeof(fin), &scalar);
-                for (int i = 0; i < fn; i++) eq_putc(q, fin[i]);
-                if (scalar) kh = json_key_hash_scalar(kh, scalar);
-                fn = json_utf8_close(&f->utf8_state, fin);
-                for (int i = 0; i < fn; i++) {
-                    eq_putc(q, fin[i]);
-                    kh = json_key_hash_byte(kh, (uint8_t)fin[i]);
-                }
-                for (int extend = 0; extend < 64; extend++) {
-                    bool dup = false;
-                    for (int i = 0; i < v->n_seen; i++)
-                        if (v->seen_depth[i] == v->depth &&
-                            v->seen_hash[i] == kh) { dup = true; break; }
-                    if (!dup) break;
-                    eq_putc(q, '_');
-                    kh = json_key_hash_byte(kh, '_');
-                }
-                eq_put(q, "\":");
-                emit_min_choice(q, n->items, 0, choice);
-                eq_putc(q, '}');
-                break;
-            }
-            // finish the lowest still-alive candidate key, give it a value
-            for (int i = 0; i < n->n_props; i++) {
-                if (!(f->alive & (1ull << i))) continue;
-                eq_put(q, n->keys[i] + f->lit_pos);
-                eq_put(q, "\":");
-                emit_min_choice(q, n->props[i], 0, choice);
-                f->idx = i + 1;
-                break;
-            }
-            close_obj(q, n, f->idx, true, false, choice);
+        case P_OBJ_INKEY:
+            close_inkey_frame(v, q, n, f, choice);
             break;
-        }
         case P_OBJ_COLON:
             eq_putc(q, ':');
             emit_min_choice(q, n->kind == SN_MAP ? n->items : n->props[f->sub],
@@ -3006,26 +3047,9 @@ static int sval_close_q(sval *v, emitq *q) {
                 emit_min_choice(q, n->props[i], 0, choice);
             break;
         case P_MEM_FIRST:
-        case P_MEM_NEXT: {
-            bool first = f->phase == P_MEM_FIRST;
-            if (f->lit_pos == 0) {
-                close_members(q, n, f->idx, first, choice);
-                break;
-            }
-            int pick = f->sub ? f->sub - 1 : -1;
-            if (pick < 0) {
-                for (int i = f->idx; i <= n->n_props; i++) {
-                    if (f->alive & (1ull << i)) { pick = i; break; }
-                }
-            }
-            if (pick < 0) break;
-            const char *prefix = member_prefix(n, pick, first);
-            eq_put(q, prefix + f->lit_pos);
-            if (pick == n->n_props) break;
-            emit_min_choice(q, n->props[pick], 0, choice);
-            close_members(q, n, pick + 1, false, choice);
+        case P_MEM_NEXT:
+            close_member_frame(q, n, f, choice);
             break;
-        }
         case P_RAW:
             // Bytes already matching the sentinel are part of the generated
             // prefix; append only the unmatched suffix, then the enclosing
