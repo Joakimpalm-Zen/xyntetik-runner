@@ -265,6 +265,8 @@ test-canon-kernels.exe
 runner-riscv64
 test-pmath
 test-pmath.exe
+test-fpclass
+test-fpclass.exe
 
 # Native control-token regression gate
 test-prompt-marks

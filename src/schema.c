@@ -4,6 +4,7 @@
 // (required ones mandatory, optional ones skippable), matching how
 // grammar-based constrained decoding behaves elsewhere.
 #include "schema.h"
+#include "fpclass.h"
 #include "schema_int.h"
 #include "json.h"
 
@@ -667,7 +668,7 @@ static enum numeric_keyword_state numeric_keyword(jv *s, const char *key,
                                                    double *out) {
     jv *v = jv_get(s, key);
     if (!v) return NUMERIC_ABSENT;
-    if (v->type != J_NUM || !isfinite(v->num) ||
+    if (v->type != J_NUM || !fp_isfinite(v->num) ||
         v->num < -(double)JSON_SAFE_INTEGER ||
         v->num >  (double)JSON_SAFE_INTEGER)
         return NUMERIC_INVALID;

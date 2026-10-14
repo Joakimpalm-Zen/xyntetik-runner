@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #endif
 #include "compat.h"
+#include "fpclass.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -984,7 +985,8 @@ char *plat_executable_path(void) {
 // rejects empty input, trailing garbage, overflow, sign errors, and (for
 // doubles) non-finite values, instead of the silent atoi/atof/strtoull=0 that
 // let a typo disable a deadline or overflow a byte budget. Finiteness is tested
-// on the IEEE bits, not isfinite(), because the build uses -ffast-math.
+// on the IEEE bits (fpclass.h), not isfinite(), because the build uses
+// -ffast-math.
 #include <errno.h>
 
 // One policy, both platforms, and a pure function so the many-core regime can
@@ -1029,18 +1031,12 @@ bool parse_u64(const char *s, uint64_t lo, uint64_t hi, uint64_t *out) {
     return true;
 }
 
-static bool d_finite(double d) {
-    uint64_t u;
-    memcpy(&u, &d, 8);
-    return (u & 0x7ff0000000000000ull) != 0x7ff0000000000000ull;
-}
-
 bool parse_f64(const char *s, double lo, double hi, double *out) {
     if (!s || !*s) return false;
     char *end = NULL;
     errno = 0;
     double v = strtod(s, &end);
-    if (errno || end == s || *end || !d_finite(v) || v < lo || v > hi) return false;
+    if (errno || end == s || *end || !fp_isfinite(v) || v < lo || v > hi) return false;
     *out = v;
     return true;
 }

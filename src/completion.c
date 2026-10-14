@@ -1,5 +1,6 @@
 // Generation and wire framing. Lifted out of server.c (RNR-019); see completion.h.
 #include "completion.h"
+#include "fpclass.h"
 #include "respstore.h"
 #include "gpu.h"
 #include "build_arch.h"
@@ -2159,7 +2160,7 @@ static bool request_number(jv *req, const char *key, double dflt,
     jv *v = jv_get(req, key);
     if (!absent(v) && v->type != J_NUM) return false;
     double n = absent(v) ? dflt : v->num;
-    if (!isfinite(n) || n < min || n > max) return false;
+    if (!fp_isfinite(n) || n < min || n > max) return false;
     *out = n;
     return true;
 }
@@ -2206,7 +2207,7 @@ static bool sampling_number(sock_t fd, jv *req, const char *key, double dflt,
         return false;
     }
     double n = absent(v) ? dflt : v->num;
-    if (!isfinite(n) || n < min || n > max) {
+    if (!fp_isfinite(n) || n < min || n > max) {
         snprintf(msg, sizeof(msg), "%s must be %s", key, rule);
         send_error_detail(fd, 400, msg, key, "invalid_value");
         return false;
@@ -2243,7 +2244,7 @@ static int request_max_tokens(jv *req, int dflt) {
     if (absent(v)) v = jv_get(req, "max_output_tokens");
     if (absent(v)) return dflt;
     if (v->type != J_NUM) return MT_BAD_TYPE;
-    if (!isfinite(v->num)) return MT_NON_FINITE;
+    if (!fp_isfinite(v->num)) return MT_NON_FINITE;
     if (v->num < 0) return MT_NEGATIVE;
     if (v->num > INT_MAX) return INT_MAX;
     if (!whole_number(v->num)) return MT_FRACTIONAL;
@@ -2255,7 +2256,7 @@ bool request_keep_alive(jv *req, bool *present, int *seconds) {
     if (!absent(v) && v->type != J_NUM) return false;
     *present = !absent(v);
     if (!*present) return true;
-    if (!isfinite(v->num) || v->num > INT_MAX || !whole_number(v->num))
+    if (!fp_isfinite(v->num) || v->num > INT_MAX || !whole_number(v->num))
         return false;
     *seconds = v->num < 0 ? -1 : (int)v->num;
     return true;
@@ -2266,13 +2267,13 @@ bool request_keep_alive(jv *req, bool *present, int *seconds) {
 // a no-op; reject every value that would otherwise be silently ignored.
 static const char *unsupported_completion_field(jv *req, int api) {
     jv *v = jv_get(req, "n");
-    if (!absent(v) && (v->type != J_NUM || !isfinite(v->num) || v->num != 1))
+    if (!absent(v) && (v->type != J_NUM || !fp_isfinite(v->num) || v->num != 1))
         return "n";
     v = jv_get(req, "frequency_penalty");
-    if (!absent(v) && (v->type != J_NUM || !isfinite(v->num) || v->num != 0))
+    if (!absent(v) && (v->type != J_NUM || !fp_isfinite(v->num) || v->num != 0))
         return "frequency_penalty";
     v = jv_get(req, "presence_penalty");
-    if (!absent(v) && (v->type != J_NUM || !isfinite(v->num) || v->num != 0))
+    if (!absent(v) && (v->type != J_NUM || !fp_isfinite(v->num) || v->num != 0))
         return "presence_penalty";
     v = jv_get(req, "logit_bias");
     if (!absent(v) && (v->type != J_OBJ || v->n != 0)) return "logit_bias";

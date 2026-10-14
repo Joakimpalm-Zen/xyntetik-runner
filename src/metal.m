@@ -3,6 +3,7 @@
 #import <Metal/Metal.h>
 
 #include "runner.h"
+#include "fpclass.h"
 #include "kernels_metal.h"
 #include "kernels_tensor_metal.h"
 #include "compat.h"   // plat_ram_available_bytes: the residency guard below
@@ -825,7 +826,7 @@ static bool metal_tensor_self_test(id<MTLDevice> dev,
     if (ok) {
         float *out = yb.contents;
         for (int i = 0; i < NC * NOUT; i++)
-            if (!isfinite(out[i]) || fabsf(out[i] - 256.0f) > 0.5f) { ok = false; break; }
+            if (!fp_isfinite(out[i]) || fabsf(out[i] - 256.0f) > 0.5f) { ok = false; break; }
     }
     if (!ok) fprintf(stderr, "gpu: Metal 4 tensor self-test failed%s%s — using simdgroup GEMM\n",
                      cb.error ? ": " : "", cb.error ? cb.error.localizedDescription.UTF8String : "");

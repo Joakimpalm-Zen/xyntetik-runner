@@ -22,6 +22,7 @@
 // Each slot owns a full inference context (KV cache + thread pool); model
 // weights are shared between slots through the page cache (mmap).
 #include "runner.h"
+#include "fpclass.h"
 #include "json.h"
 #include "compat.h"
 #include "http.h"
@@ -1097,7 +1098,7 @@ static bool session_float(sock_t fd, jv *req, const char *key, double lo,
                           double hi, float *out) {
     jv *v = jv_get(req, key);
     if (!v || v->type == J_NULL) return true;
-    if (v->type != J_NUM || !isfinite(v->num) || v->num < lo || v->num > hi) {
+    if (v->type != J_NUM || !fp_isfinite(v->num) || v->num < lo || v->num > hi) {
         char msg[128];
         snprintf(msg, sizeof msg, "%s must be a number in [%g, %g]", key, lo, hi);
         send_error_detail(fd, 400, msg, key, "invalid_value");
@@ -1640,7 +1641,7 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
     }
     jv *dimensions = jv_get(req, "dimensions");
     if (!absent(dimensions) &&
-        (dimensions->type != J_NUM || !isfinite(dimensions->num) ||
+        (dimensions->type != J_NUM || !fp_isfinite(dimensions->num) ||
          dimensions->num != m->n_embd)) {
         send_error(fd, 400, "dimensions must equal the model embedding size");
         return;

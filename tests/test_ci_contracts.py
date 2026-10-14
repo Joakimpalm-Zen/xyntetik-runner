@@ -85,6 +85,27 @@ class CommandGate(unittest.TestCase):
             self.assertEqual(run(base + "DEVICE_OPT_IN = test-metal-b\n", "a:test-cuda-a"), 0)
             self.assertNotEqual(run(base + metal, "a:test-cuda-a z:test-cuda-typo"), 0)
 
+    def test_fpclass_check_refuses_a_raw_class_test(self):
+        """A raw isnan()/isfinite() in a -ffast-math unit is refused (clang
+        22 folds them under -ffinite-math-only); the helper, the exempt
+        no-fast-math units, comments and strings are not."""
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            (root / "scripts").mkdir()
+            (root / "src").mkdir()
+            script = root / "scripts/check-fpclass.py"
+            script.write_bytes((ROOT / "scripts/check-fpclass.py").read_bytes())
+            def run(body, name="a.c"):
+                for p in (root / "src").iterdir():
+                    p.unlink()
+                (root / "src" / name).write_text(body)
+                return subprocess.run([sys.executable, str(script)], capture_output=True).returncode
+            self.assertNotEqual(run("int f(double x) { return isnan(x); }\n"), 0)
+            self.assertNotEqual(run("int f(float x) { return __builtin_isfinite(x); }\n"), 0)
+            self.assertEqual(run("int f(double x) { return fp_isnan(x); }\n"), 0)
+            self.assertEqual(run("// isnan(x) folds\nconst char *s = \"isfinite(\";\n"), 0)
+            self.assertEqual(run("int f(double x) { return isnan(x); }\n", "quants.c"), 0)
+
     def test_failed_command_keeps_its_status_and_timing(self):
         with tempfile.TemporaryDirectory() as td:
             p = subprocess.run([sys.executable, str(ROOT / "scripts/ci-run.py"),

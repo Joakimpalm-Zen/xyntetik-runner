@@ -1,6 +1,7 @@
 #define _CRT_RAND_S
 // runner — CLI: one-shot completion, interactive chat, and server launcher.
 #include "decide.h"
+#include "fpclass.h"
 #include "dpo.h"
 #include "hfhub.h"
 #include "runner.h"
@@ -91,7 +92,7 @@ static double float_arg(const char *opt, const char *s, double min, double max) 
 static bool record_num(jv *obj, const char *key, double min, double max,
                        double *out) {
     jv *v = jv_get(obj, key);
-    if (!v || v->type != J_NUM || !isfinite(v->num) ||
+    if (!v || v->type != J_NUM || !fp_isfinite(v->num) ||
         v->num < min || v->num > max)
         return false;
     *out = v->num;
@@ -108,7 +109,7 @@ static bool record_int(jv *obj, const char *key, int min, int max, int *out) {
 }
 
 static bool record_token(jv *v, int n_vocab, int32_t *out) {
-    if (!v || v->type != J_NUM || !isfinite(v->num) || v->num < 0 ||
+    if (!v || v->type != J_NUM || !fp_isfinite(v->num) || v->num < 0 ||
         v->num >= n_vocab || v->num != trunc(v->num))
         return false;
     *out = (int32_t)v->num;
@@ -722,7 +723,7 @@ static bool train_examples_load(tokenizer *tok, const char *path, bool no_bos,
             jv *wv = jv_get(v, "weight");
             double weight = 1.0;
             if (wv) {
-                if (wv->type != J_NUM || !isfinite(wv->num) ||
+                if (wv->type != J_NUM || !fp_isfinite(wv->num) ||
                     wv->num < -(double)FLT_MAX || wv->num > (double)FLT_MAX) {
                     fprintf(stderr, "error: %s line %d weight must be a "
                             "finite number representable as f32\n", path,

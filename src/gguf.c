@@ -1,5 +1,6 @@
 // GGUF v2/v3 file parser (mmap based).
 #include "gguf.h"
+#include "fpclass.h"
 #include "quants.h"
 #include "compat.h"
 
@@ -417,7 +418,7 @@ static void gguf_bind_scale_companions(gguf_file *g) {
         gguf_tensor *w = gguf_find_tensor(g, wname);
         if (!w) continue;
         float v = *(const float *)c->data;
-        if (!(v > 0.0f) || !isfinite(v)) {
+        if (!(v > 0.0f) || !fp_isfinite(v)) {
             fprintf(stderr, "warning: %s holds %g, which is not a usable "
                             "per-tensor scale; %s left unscaled\n",
                     c->name, v, wname);
@@ -743,8 +744,9 @@ float gguf_get_f32(gguf_file *g, const char *key, float dflt) {
     if (kv->type == GGUF_T_F64) {
         if (!raw_f64_finite(kv->raw)) return dflt;
         float f = (float)kv->v.f64;              // may overflow a huge double to inf
-        uint32_t u; memcpy(&u, &f, 4);
-        return raw_f32_finite(u) ? f : dflt;     // rejects overflow to inf
+        return fp_isfinite(f) ? f : dflt;        // rejects overflow to inf (a
+                                                 // bit test of a computed float
+                                                 // folds; fpclass.h does not)
     }
     if (kv_is_unsigned(kv->type)) return (float)kv->v.u64;
     if (kv_is_signed(kv->type))   return (float)kv->v.i64;
