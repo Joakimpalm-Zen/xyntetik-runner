@@ -1917,7 +1917,7 @@ static void send_prefix_cache(sock_t fd) {
 typedef struct { char *p; size_t cap, n; bool over; } mbuf;
 
 static void m_fmt(mbuf *b, const char *fmt, ...)
-    __attribute__((format(printf, 2, 3)));
+    RUNNER_PRINTF(2, 3);
 
 static void m_fmt(mbuf *b, const char *fmt, ...) {
     if (b->over) return;

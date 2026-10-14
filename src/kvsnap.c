@@ -111,7 +111,7 @@ bool kvsnap_configure(const char *dir, const char *sign_key, const char *trust_k
 bool kvsnap_enabled(void) { return KS.on; }
 
 static bool fail(kvsnap_err *err, int status, const char *code, const char *fmt, ...)
-    __attribute__((format(printf, 4, 5)));
+    RUNNER_PRINTF(4, 5);
 static bool fail(kvsnap_err *err, int status, const char *code, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);

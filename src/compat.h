@@ -8,6 +8,21 @@
 #include <stdint.h>
 #include <limits.h>
 
+// printf-style argument checking against the runtime that formats. MinGW's
+// GCC reads format(printf) as Microsoft's rules, which have no %z, so every
+// %zu in a helper that forwards to vsnprintf warned and misaligned the rest
+// of its arguments; UCRT's vsnprintf prints %zu correctly. The MinGW headers
+// name the archetype of the runtime they selected in __MINGW_PRINTF_FORMAT
+// (gnu_printf for UCRT), which is what the libc printf itself is checked by.
+#ifdef __MINGW32__
+#include <stdio.h>
+#endif
+#if defined(__MINGW32__) && defined(__MINGW_PRINTF_FORMAT)
+#define RUNNER_PRINTF(fmt, args) __attribute__((format(__MINGW_PRINTF_FORMAT, fmt, args)))
+#else
+#define RUNNER_PRINTF(fmt, args) __attribute__((format(printf, fmt, args)))
+#endif
+
 static inline bool checked_u64_add(uint64_t a, uint64_t b, uint64_t *out) {
     if (b > UINT64_MAX - a) return false;
     *out = a + b;
