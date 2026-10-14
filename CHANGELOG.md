@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--cpu-moe auto` on CUDA no longer crashes on a MoE model whose shared
+  expert has no gate.** The device runs a shared expert only with its
+  scalar gate (Qwen 3.5 and 3.8). The check that keeps an ungated one (the
+  DeepSeek shape, which the llama architecture admits) on the host ran at
+  load, before the auto fit decided where the expert banks go, and the fit
+  then placed them on the GPU, where the forward read the absent gate and
+  the process died. The fit now keeps such a bank on the host, and the
+  advice `--cpu-moe` prints counts only banks the GPU can run.
+
 - **`RUNNER_TRAIN_GPU=1` trains a MoE adapter to the CPU's bytes.** The
   device side of the backward's transposed matvec caches each weight it
   uploads, and it knew a weight by its descriptor's address. A routed

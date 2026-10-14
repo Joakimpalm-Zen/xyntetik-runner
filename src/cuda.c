@@ -786,6 +786,21 @@ static bool moe_any_on_device(const model_t *m) {
     return false;
 }
 
+// Whether the device can run layer l's expert bank. The routed kernels and
+// the device twin of shexp_add cover a gated-SiLU shared expert with its
+// scalar sigmoid gate (Qwen3.5/3.8); an ungated shared expert (Granite 4
+// hybrid, DeepSeek-style) or a relu2 one has no device path and stays on the
+// host. Admission refuses a pinned device bank that fails this, and the
+// --cpu-moe auto fit places only banks that pass it: the fit runs after
+// admission, so a check there alone let auto put Granite's banks on the
+// device, where the shared expert dereferenced its absent gate.
+static bool moe_bank_device_ok(const model_t *m, int l) {
+    const layer_t *ly = &m->layers[l];
+    if (!ly->is_moe || m->n_ff_shexp <= 0) return true;
+    if (m->ffn_relu2) return false;
+    return !ly->w_up_shexp || (ly->w_gate_shexp && ly->ffn_gate_inp_shexp);
+}
+
 // The fused device-routing MoE path needs the fused-3D expert layout (a
 // legacy split model has one arbitrarily-placed tensor per expert, which
 // in-kernel base+e*stride addressing cannot express) and indirect kernels
@@ -1494,7 +1509,8 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
         size_t kv = model_kv_boundary_bytes_sum(m, l + 1) -
                     model_kv_boundary_bytes_sum(m, l);
         cost[l] = wb + kv;
-        is_moe[l] = ly->is_moe;
+        // a bank the device cannot run is no candidate for the auto fit
+        is_moe[l] = ly->is_moe && moe_bank_device_ok(m, l);
         bank[l] = ly->is_moe ? expert_plan_bytes(ly, m->n_expert, true) : 0;
     }
     uint64_t used = fixed;
@@ -1582,6 +1598,7 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
         for (int l = 0; l < G; l++) {
             if (!m->layers[l].is_moe) continue;
             moe_layers++;
+            if (!moe_bank_device_ok(m, l)) continue;
             size_t eb = model_layer_expert_bytes(&m->layers[l], m->n_expert);
             if (would_use + eb > vram_budget) continue;
             would_use += eb;
@@ -2421,12 +2438,9 @@ static bool cuda_admit(model_t *m) {
     // The shared always-on expert has no device path: the routed MoE
     // kernels write the FFN output and nothing adds a second dense branch.
     if (m->n_ff_shexp > 0 && moe_any_on_device(m)) {
-        // the device twin covers the gated-SiLU shared expert with its scalar
-        // sigmoid gate (Qwen3.5/3.8); an ungated or relu2 one stays on the host
-        bool ok_shape = !m->ffn_relu2;
+        bool ok_shape = true;
         for (int l = 0; ok_shape && l < m->n_layer; l++)
-            if (m->layers[l].is_moe && !moe_on_host(m, l) && m->layers[l].w_up_shexp &&
-                (!m->layers[l].w_gate_shexp || !m->layers[l].ffn_gate_inp_shexp))
+            if (m->layers[l].is_moe && !moe_on_host(m, l) && !moe_bank_device_ok(m, l))
                 ok_shape = false;
         if (!ok_shape) {
             fprintf(stderr, "gpu: this shared-expert shape has no device path — "

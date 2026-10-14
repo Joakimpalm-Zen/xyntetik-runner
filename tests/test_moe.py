@@ -17,6 +17,7 @@ logits — a broken MoE produces different tokens (verified during development).
 """
 import pathlib
 import json
+import re
 import os
 import subprocess
 import sys
@@ -217,6 +218,28 @@ def test_moe_gpu_forward_does_not_fall_back(runner_bin, models):
                 f"{variant} did not initialize the Metal MoE path:\n"
                 + proc.stderr.decode(errors="replace"))
 
+
+def test_cpu_moe_auto_keeps_an_ungated_shared_expert_on_the_host(runner_bin, models):
+    """--cpu-moe auto must not place a bank the device cannot run. An ungated
+    shared expert (the DeepSeek shape, which the llama architecture admits)
+    has no device path: the auto fit placed such banks on the device anyway,
+    after the admission guard that knows the shape had run, and the forward
+    crashed reading the absent gate. Attention stays on the device, every
+    bank stays on the host, and the output is the CPU's."""
+    caps = json.loads(subprocess.run(
+        [runner_bin, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
+        check=True, text=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("--cpu-moe placement is CUDA-side")
+    cpu = _generate(runner_bin, f"{models}.shexp.gguf")
+    proc = subprocess.run(
+        [runner_bin, "-m", f"{models}.shexp.gguf", "-p", "hello world", "-n", "12",
+         "--temp", "0", "--cpu-moe", "auto"],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    err = proc.stderr.decode(errors="replace")
+    assert proc.returncode == 0, err
+    assert re.search(r"experts 0/\d+ layers on GPU", err), err
+    assert proc.stdout == cpu
 
 def test_caps_advertise_moe_tensor_placement(runner_bin):
     caps = json.loads(subprocess.run(
