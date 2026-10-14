@@ -3553,35 +3553,40 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
     return true;
 }
 
-// --train / --train-dpo: LoRA training on the CPU path, and the provenance
-// record beside the adapter.
-static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *load_path) {
-    if (o->train_path && o->dpo_path) {
-        fprintf(stderr, "error: --train and --train-dpo are different "
-                "objectives; pass one\n");
-        return 1;
-    }
-    // --train (adaptation D4): AdamW LoRA training in the serving binary,
-    // CPU reference. Two data modes: plain text (tokenize, fixed windows,
-    // cycle) and .jsonl lines {"prompt","completion","weight"} — prompt
-    // transitions masked to weight 0, completion transitions carry the
-    // example weight (the GRPO-style advantage hook). Determinism is the
-    // default: fixed init seed unless -s is given, fixed data order, and
-    // the whole compute path is the byte-deterministic D3 backward — same
-    // data + same seed -> byte-identical adapter file.
+// AdamW's constants. Both objectives' steps use them and the provenance
+// record states them, stringized, so the record's text is the source's.
+#define TRAIN_ADAM_BETA1 0.9
+#define TRAIN_ADAM_BETA2 0.999
+#define TRAIN_ADAM_EPS   1e-8
+#define TRAIN_ADAM_WD    0.01
+#define TRAIN_STR_(x) #x
+#define TRAIN_STR(x)  TRAIN_STR_(x)
+
+static bool train_adam_step(cli_opts *o, cli_run *rt, int step) {
+    if (model_lora_adam_step(&rt->m, o->train_lr, (float)TRAIN_ADAM_BETA1,
+                             (float)TRAIN_ADAM_BETA2, (float)TRAIN_ADAM_EPS,
+                             (float)TRAIN_ADAM_WD, step))
+        return true;
+    fprintf(stderr, "error: cannot allocate optimizer state\n");
+    return false;
+}
+
+// What a run trains: the attached adapter, or a fresh one; refused on a
+// device-resident model.
+static bool train_prepare(cli_opts *o, cli_run *rt) {
     if (rt->m.gpu) {
         // v1 trains on the CPU path only (D8 is CUDA training); refuse
         // loudly rather than train a model whose forward the backward
         // cannot see.
         fprintf(stderr, "error: --train is CPU-only for now — run with "
                 "--gpu off\n");
-        return 1;
+        return false;
     }
     if (!rt->m.lora) {
         uint64_t iseed = o->seed_given ? o->smp.rng : 0;
         if (!model_lora_train_init(&rt->m, o->lora_rank,
                                    2.0f * (float)o->lora_rank, iseed))
-            return 1;
+            return false;
         fprintf(stderr, "train: fresh rank-%d adapters on every "
                 "projection (alpha %g)\n", o->lora_rank,
                 (double)(2.0f * o->lora_rank));
@@ -3597,77 +3602,69 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
             fprintf(stderr, "train-gpu: no usable CUDA device — "
                     "training on the CPU\n");
     }
-    train_ex *exs = NULL;
-    int n_ex = 0;
-    dpo_pair *pairs = NULL;
-    int n_pair = 0;
-    int wctx = o->train_ctx < rt->m.n_ctx ? o->train_ctx : rt->m.n_ctx;
-    int train_tmpl = tmpl_override >= 0 ? tmpl_override
-                     : template_detect(gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL), &rt->tok);
-    int eot_id = train_eot_id(&rt->tok, train_tmpl);
-    if (o->dpo_path) {
-        if (!dpo_pairs_load(&rt->tok, o->dpo_path, o->no_bos, wctx, eot_id, o->train_eot,
-                            &pairs, &n_pair)) return 1;
-    } else if (!train_examples_load(&rt->tok, o->train_path, o->no_bos, wctx, eot_id, o->train_eot,
-                                    &exs, &n_ex)) return 1;
-#define TRAIN_FAIL do { train_examples_free(exs, n_ex); \
-                    dpo_pairs_free(pairs, n_pair); return 1; } while (0)
-    double first_loss = 0, last_loss = 0;
-    if (o->dpo_path) {
-        // DPO (arXiv 2305.18290 eq. 7). pi_ref is this same model with the
-        // adapter bypassed, so the reference costs no second copy of the
-        // weights; see src/dpo.c for why the gradient is a scalar multiple
-        // of a difference of two weighted-CE gradients and therefore needs
-        // no new kernel. The objective and its gradient are gated against
-        // an independent numerical reference by tests/test_dpo_grad.c
-        // (independent loss formula, the gradient identity, and a
-        // directional derivative against central differences) because an
-        // unchecked loss that merely descends is indistinguishable from a
-        // checked one until the adapter is useless.
-        fprintf(stderr, "train-dpo: %d pair%s, %d steps, lr %g, beta %g, ctx %d\n",
-                n_pair, n_pair == 1 ? "" : "s", o->train_steps, (double)o->train_lr,
-                (double)o->dpo_beta, wctx);
-        double acc_sum = 0, margin_sum = 0;
-        for (int step = 1; step <= o->train_steps; step++) {
-            dpo_pair *q = &pairs[(step - 1) % n_pair];
-            double step_t0 = plat_now();
-            dpo_step d;
-            if (!dpo_accumulate(&rt->m, (double)o->dpo_beta, q->tw, q->nw, q->mw,
-                                q->tl, q->nl, q->ml, &d)) {
-                fprintf(stderr, "error: DPO step failed\n");
-                TRAIN_FAIL;
-            }
-            if (!model_lora_adam_step(&rt->m, o->train_lr, 0.9f, 0.999f, 1e-8f,
-                                      0.01f, step)) {
-                fprintf(stderr, "error: cannot allocate optimizer state\n");
-                TRAIN_FAIL;
-            }
-            if (step == 1) first_loss = d.loss;
-            last_loss = d.loss;
-            acc_sum += d.acc;
-            margin_sum += d.margin;
-            double step_s = plat_now() - step_t0;
-            // margin and acc are the fields that say whether the objective
-            // is doing anything: a run whose loss falls while the margin
-            // stays at zero has learned to shrink the reference gap rather
-            // than to prefer the chosen completion.
-            printf("{\"step\":%d,\"pair\":%d,\"tokens\":%d,"
-                   "\"loss\":%.6f,\"margin\":%.6f,\"acc\":%.0f,"
-                   "\"coeff\":%.6g,\"logp_w\":%.4f,\"logp_l\":%.4f,"
-                   "\"logp_ref_w\":%.4f,\"logp_ref_l\":%.4f,"
-                   "\"step_s\":%.2f}\n",
-                   step, (step - 1) % n_pair, q->nw + q->nl,
-                   d.loss, d.margin, d.acc, d.coeff,
-                   d.logp_w, d.logp_l, d.logp_ref_w, d.logp_ref_l, step_s);
-            fflush(stdout);
-            if (o->save_every > 0 && step % o->save_every == 0 &&
-                !model_lora_save(&rt->m, o->train_out))
-                TRAIN_FAIL;
+    return true;
+}
+
+// --train-dpo's steps: one preference pair per step, cycled in file order.
+static bool train_dpo_steps(cli_opts *o, cli_run *rt, dpo_pair *pairs,
+                            int n_pair, int wctx, double *first_loss,
+                            double *last_loss) {
+    // DPO (arXiv 2305.18290 eq. 7). pi_ref is this same model with the
+    // adapter bypassed, so the reference costs no second copy of the
+    // weights; see src/dpo.c for why the gradient is a scalar multiple
+    // of a difference of two weighted-CE gradients and therefore needs
+    // no new kernel. The objective and its gradient are gated against
+    // an independent numerical reference by tests/test_dpo_grad.c
+    // (independent loss formula, the gradient identity, and a
+    // directional derivative against central differences) because an
+    // unchecked loss that merely descends is indistinguishable from a
+    // checked one until the adapter is useless.
+    fprintf(stderr, "train-dpo: %d pair%s, %d steps, lr %g, beta %g, ctx %d\n",
+            n_pair, n_pair == 1 ? "" : "s", o->train_steps, (double)o->train_lr,
+            (double)o->dpo_beta, wctx);
+    double acc_sum = 0, margin_sum = 0;
+    for (int step = 1; step <= o->train_steps; step++) {
+        dpo_pair *q = &pairs[(step - 1) % n_pair];
+        double step_t0 = plat_now();
+        dpo_step d;
+        if (!dpo_accumulate(&rt->m, (double)o->dpo_beta, q->tw, q->nw, q->mw,
+                            q->tl, q->nl, q->ml, &d)) {
+            fprintf(stderr, "error: DPO step failed\n");
+            return false;
         }
-        fprintf(stderr, "train-dpo: mean margin %.6f, accuracy %.3f over "
-                "%d steps\n", margin_sum / o->train_steps,
-                acc_sum / o->train_steps, o->train_steps);
-    } else {
+        if (!train_adam_step(o, rt, step)) return false;
+        if (step == 1) *first_loss = d.loss;
+        *last_loss = d.loss;
+        acc_sum += d.acc;
+        margin_sum += d.margin;
+        double step_s = plat_now() - step_t0;
+        // margin and acc are the fields that say whether the objective
+        // is doing anything: a run whose loss falls while the margin
+        // stays at zero has learned to shrink the reference gap rather
+        // than to prefer the chosen completion.
+        printf("{\"step\":%d,\"pair\":%d,\"tokens\":%d,"
+               "\"loss\":%.6f,\"margin\":%.6f,\"acc\":%.0f,"
+               "\"coeff\":%.6g,\"logp_w\":%.4f,\"logp_l\":%.4f,"
+               "\"logp_ref_w\":%.4f,\"logp_ref_l\":%.4f,"
+               "\"step_s\":%.2f}\n",
+               step, (step - 1) % n_pair, q->nw + q->nl,
+               d.loss, d.margin, d.acc, d.coeff,
+               d.logp_w, d.logp_l, d.logp_ref_w, d.logp_ref_l, step_s);
+        fflush(stdout);
+        if (o->save_every > 0 && step % o->save_every == 0 &&
+            !model_lora_save(&rt->m, o->train_out))
+            return false;
+    }
+    fprintf(stderr, "train-dpo: mean margin %.6f, accuracy %.3f over "
+            "%d steps\n", margin_sum / o->train_steps,
+            acc_sum / o->train_steps, o->train_steps);
+    return true;
+}
+
+// --train's steps: weighted cross-entropy, one example per step, cycled in
+// file order.
+static bool train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
+                           int wctx, double *first_loss, double *last_loss) {
     fprintf(stderr, "train: %d example%s, %d steps, lr %g, ctx %d\n",
             n_ex, n_ex == 1 ? "" : "s", o->train_steps, (double)o->train_lr,
             wctx);
@@ -3677,12 +3674,8 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
         double step_t0 = plat_now();
         model_lora_grad_zero(&rt->m);
         if (!model_lora_backward_w(&rt->m, ex->t, ex->n, ex->w, &loss))
-            TRAIN_FAIL;
-        if (!model_lora_adam_step(&rt->m, o->train_lr, 0.9f, 0.999f, 1e-8f,
-                                  0.01f, step)) {
-            fprintf(stderr, "error: cannot allocate optimizer state\n");
-            TRAIN_FAIL;
-        }
+            return false;
+        if (!train_adam_step(o, rt, step)) return false;
         // Per-token mean over the weighted positions, normalized by the
         // weights' MAGNITUDE. `wsum > 0 ? loss/wsum : loss` silently fell
         // back to the unnormalized total whenever the weights summed
@@ -3699,8 +3692,8 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
         } else wsum = ex->n - 1;
         double wmag = wsum < 0 ? -wsum : wsum;
         double ml = wmag > 0 ? loss / wmag : loss;
-        if (step == 1) first_loss = ml;
-        last_loss = ml;
+        if (step == 1) *first_loss = ml;
+        *last_loss = ml;
         // step_s / tok_s: wall time and TRAINING tokens/sec (forward +
         // backward + optimizer, not inference throughput). Reporting
         // fields only — the reproducibility contract covers the loss
@@ -3713,93 +3706,133 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
         fflush(stdout);
         if (o->save_every > 0 && step % o->save_every == 0 &&
             !model_lora_save(&rt->m, o->train_out))
-            TRAIN_FAIL;
+            return false;
     }
+    return true;
+}
+
+// D7: the provenance record, written beside every adapter — the
+// reproducibility claim in checkable form. Two runs with the same
+// base/data/seed/config must produce the same adapter_sha256.
+static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
+                         int wctx, int eot_id, double first_loss,
+                         double last_loss) {
+    char bsha[65] = "", dsha[65] = "", asha[65] = "", xsha[65] = "";
+    const char *data_path = o->dpo_path ? o->dpo_path : o->train_path;
+    bool hash_ok = envelope_file_sha256(load_path, bsha) &&
+                   envelope_file_sha256(data_path, dsha) &&
+                   envelope_file_sha256(o->train_out, asha);
+    // The running binary's own hash + build identity, so a
+    // reproduction report can distinguish "same executable" from
+    // "same source" mechanically. The determinism contract is
+    // ARTIFACT-level: same binary + same inputs -> same adapter
+    // bytes. An external rebuild study showed a different ISA
+    // profile changes the bytes (libm expf in SiLU/softmax; the
+    // fmaf chains are pinned, transcendentals are the compiler's)
+    // while behavior stays put — these fields make that boundary
+    // visible in every record.
+    char *exe_path = plat_executable_path();
+    hash_ok = hash_ok && exe_path &&
+              envelope_file_sha256(exe_path, xsha);
+    free(exe_path);
+    if (!hash_ok) {
+        fprintf(stderr, "error: cannot hash every training artifact "
+                "for the provenance record\n");
+        return false;
     }
-    if (!model_lora_save(&rt->m, o->train_out)) TRAIN_FAIL;
-    {
-        // D7: the provenance record, written beside every adapter — the
-        // reproducibility claim in checkable form. Two runs with the same
-        // base/data/seed/config must produce the same adapter_sha256.
-        char bsha[65] = "", dsha[65] = "", asha[65] = "", xsha[65] = "";
-        const char *data_path = o->dpo_path ? o->dpo_path : o->train_path;
-        bool hash_ok = envelope_file_sha256(load_path, bsha) &&
-                       envelope_file_sha256(data_path, dsha) &&
-                       envelope_file_sha256(o->train_out, asha);
-        // The running binary's own hash + build identity, so a
-        // reproduction report can distinguish "same executable" from
-        // "same source" mechanically. The determinism contract is
-        // ARTIFACT-level: same binary + same inputs -> same adapter
-        // bytes. An external rebuild study showed a different ISA
-        // profile changes the bytes (libm expf in SiLU/softmax; the
-        // fmaf chains are pinned, transcendentals are the compiler's)
-        // while behavior stays put — these fields make that boundary
-        // visible in every record.
-        char *exe_path = plat_executable_path();
-        hash_ok = hash_ok && exe_path &&
-                  envelope_file_sha256(exe_path, xsha);
-        free(exe_path);
-        if (!hash_ok) {
-            fprintf(stderr, "error: cannot hash every training artifact "
-                    "for the provenance record\n");
-            TRAIN_FAIL;
-        }
-        sbuf rec = {0};
-        sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.train.v1\","
-                     "\"runner\":\"");
-        sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
-        sb_lit(&rec, "\",\"build\":{\"binary_sha256\":\"");
-        sb_lit(&rec, xsha);
-        sb_lit(&rec, "\",\"compiler\":\"");
-        sb_esc(&rec, __VERSION__, strlen(__VERSION__));
-        sb_lit(&rec, "\",\"os\":\"");
-        const char *build_os =
+    sbuf rec = {0};
+    sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.train.v1\","
+                 "\"runner\":\"");
+    sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
+    sb_lit(&rec, "\",\"build\":{\"binary_sha256\":\"");
+    sb_lit(&rec, xsha);
+    sb_lit(&rec, "\",\"compiler\":\"");
+    sb_esc(&rec, __VERSION__, strlen(__VERSION__));
+    sb_lit(&rec, "\",\"os\":\"");
+    const char *build_os =
 #ifdef _WIN32
-                "windows";
+            "windows";
 #elif defined(__APPLE__)
-                "macos";
+            "macos";
 #else
-                "linux";
+            "linux";
 #endif
-        sb_lit(&rec, build_os);
-        sb_lit(&rec, "\",\"arch\":\"");
-        const char *build_arch = RUNNER_BUILD_ARCH;
-        sb_lit(&rec, build_arch);
-        sb_lit(&rec, "\"},\"base\":");
-        lineage_put_input(&rec, load_path, bsha);
-        sb_lit(&rec, ",\"objective\":\"");
-        sb_lit(&rec, o->dpo_path ? "dpo" : "weighted-cross-entropy");
-        if (o->dpo_path) sb_fmt(&rec, "\",\"dpo_beta\":%g", (double)o->dpo_beta);
-        else sb_lit(&rec, "\"");
-        sb_lit(&rec, ",\"data\":");
-        lineage_put_input(&rec, data_path, dsha);
-        sb_fmt(&rec,
-                ",\"seed\":%llu,\"lora_rank\":%d,\"alpha\":%g,"
-                "\"lr\":%g,\"steps\":%d,\"ctx\":%d,"
-                "\"end_of_turn\":%s,\"eot_id\":%d,"
-                "\"adamw\":{\"beta1\":0.9,\"beta2\":0.999,"
-                "\"eps\":1e-8,\"weight_decay\":0.01},"
-                "\"loss_first\":%.6f,\"loss_last\":%.6f,"
-                "\"adapter\":{\"path\":\"",
-                (unsigned long long)(o->seed_given ? o->smp.rng : 0),
-                o->lora_rank, (double)rt->m.lora_alpha, (double)o->train_lr,
-                o->train_steps, wctx, o->train_eot ? "true" : "false", eot_id,
-                first_loss, last_loss);
-        sb_esc(&rec, o->train_out, strlen(o->train_out));
-        sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, asha);
-        sb_lit(&rec, "\"}}\n");
-        if (!write_record(o->train_out, ".train.json", "train", &rec, o->sign_key)) {
-            free(rec.s);
-            TRAIN_FAIL;
-        }
-        free(rec.s);
+    sb_lit(&rec, build_os);
+    sb_lit(&rec, "\",\"arch\":\"");
+    const char *build_arch = RUNNER_BUILD_ARCH;
+    sb_lit(&rec, build_arch);
+    sb_lit(&rec, "\"},\"base\":");
+    lineage_put_input(&rec, load_path, bsha);
+    sb_lit(&rec, ",\"objective\":\"");
+    sb_lit(&rec, o->dpo_path ? "dpo" : "weighted-cross-entropy");
+    if (o->dpo_path) sb_fmt(&rec, "\",\"dpo_beta\":%g", (double)o->dpo_beta);
+    else sb_lit(&rec, "\"");
+    sb_lit(&rec, ",\"data\":");
+    lineage_put_input(&rec, data_path, dsha);
+    sb_fmt(&rec,
+            ",\"seed\":%llu,\"lora_rank\":%d,\"alpha\":%g,"
+            "\"lr\":%g,\"steps\":%d,\"ctx\":%d,"
+            "\"end_of_turn\":%s,\"eot_id\":%d,"
+            "\"adamw\":{\"beta1\":" TRAIN_STR(TRAIN_ADAM_BETA1)
+            ",\"beta2\":" TRAIN_STR(TRAIN_ADAM_BETA2)
+            ",\"eps\":" TRAIN_STR(TRAIN_ADAM_EPS)
+            ",\"weight_decay\":" TRAIN_STR(TRAIN_ADAM_WD) "},"
+            "\"loss_first\":%.6f,\"loss_last\":%.6f,"
+            "\"adapter\":{\"path\":\"",
+            (unsigned long long)(o->seed_given ? o->smp.rng : 0),
+            o->lora_rank, (double)rt->m.lora_alpha, (double)o->train_lr,
+            o->train_steps, wctx, o->train_eot ? "true" : "false", eot_id,
+            first_loss, last_loss);
+    sb_esc(&rec, o->train_out, strlen(o->train_out));
+    sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, asha);
+    sb_lit(&rec, "\"}}\n");
+    bool ok = write_record(o->train_out, ".train.json", "train", &rec, o->sign_key);
+    free(rec.s);
+    return ok;
+}
+
+// --train / --train-dpo: LoRA training on the CPU path, and the provenance
+// record beside the adapter.
+static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *load_path) {
+    if (o->train_path && o->dpo_path) {
+        fprintf(stderr, "error: --train and --train-dpo are different "
+                "objectives; pass one\n");
+        return 1;
     }
-    fprintf(stderr, "train: done — first-step loss %.4f, last-step "
-            "%.4f, adapter -> %s\n", first_loss, last_loss, o->train_out);
+    // --train (adaptation D4): AdamW LoRA training in the serving binary,
+    // CPU reference. Two data modes: plain text (tokenize, fixed windows,
+    // cycle) and .jsonl lines {"prompt","completion","weight"} — prompt
+    // transitions masked to weight 0, completion transitions carry the
+    // example weight (the GRPO-style advantage hook). Determinism is the
+    // default: fixed init seed unless -s is given, fixed data order, and
+    // the whole compute path is the byte-deterministic D3 backward — same
+    // data + same seed -> byte-identical adapter file.
+    if (!train_prepare(o, rt)) return 1;
+    train_ex *exs = NULL;
+    int n_ex = 0;
+    dpo_pair *pairs = NULL;
+    int n_pair = 0;
+    int wctx = o->train_ctx < rt->m.n_ctx ? o->train_ctx : rt->m.n_ctx;
+    int train_tmpl = tmpl_override >= 0 ? tmpl_override
+                     : template_detect(gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL), &rt->tok);
+    int eot_id = train_eot_id(&rt->tok, train_tmpl);
+    if (o->dpo_path) {
+        if (!dpo_pairs_load(&rt->tok, o->dpo_path, o->no_bos, wctx, eot_id, o->train_eot,
+                            &pairs, &n_pair)) return 1;
+    } else if (!train_examples_load(&rt->tok, o->train_path, o->no_bos, wctx, eot_id, o->train_eot,
+                                    &exs, &n_ex)) return 1;
+    double first_loss = 0, last_loss = 0;
+    bool ok = o->dpo_path
+        ? train_dpo_steps(o, rt, pairs, n_pair, wctx, &first_loss, &last_loss)
+        : train_ce_steps(o, rt, exs, n_ex, wctx, &first_loss, &last_loss);
+    ok = ok && model_lora_save(&rt->m, o->train_out) &&
+         train_record(o, rt, load_path, wctx, eot_id, first_loss, last_loss);
+    if (ok)
+        fprintf(stderr, "train: done — first-step loss %.4f, last-step "
+                "%.4f, adapter -> %s\n", first_loss, last_loss, o->train_out);
     train_examples_free(exs, n_ex);
     dpo_pairs_free(pairs, n_pair);
-#undef TRAIN_FAIL
-    return 0;
+    return ok ? 0 : 1;
 }
 
 // ---- notarized inference D2: the replay

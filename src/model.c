@@ -5592,7 +5592,17 @@ static int dbg_act_mode(void) {
 }
 // RUNNER_DEBUG_TIME=1: wall-clock per block stage, summed over every
 // forward pass and printed by model_debug_time_report at the end of a run.
-// Off by default; one cached getenv and a predictable branch per stage.
+// Off by default; one cached getenv and a predictable branch per stage. The
+// stages mean the same on every block (plan P1): ple, qwen4exp's PLE block;
+// hc_mix, a branch's input, the norm or the hyper-connection stream mix;
+// attention and deltanet/ssm, the mixer through its post-norm and residual
+// scale; moe_route, experts and shared_expert, a MoE FFN (the experts'
+// share includes its post-norm and scale); dense_ffn, a dense FFN through
+// its post-norm and scale; hc_combine, adding a branch's output into the
+// residual or scattering it into the streams; head, the final norm, the LM
+// head and its transforms. CPU wall time; the CUDA and Metal phase
+// profilers are the backends' own. Shade's evaluation scripts read the
+// "TIME forward", "TIME mtp" and "TIME experts" lines.
 enum { DT_PLE, DT_MIX, DT_ATTN, DT_RECUR, DT_COMBINE, DT_ROUTE, DT_EXPERTS,
        DT_SHEXP, DT_DENSE_FFN, DT_HEAD, DT_N };
 static const char *const dt_names[DT_N] = {
@@ -5613,7 +5623,17 @@ static inline double dt_now(void) {
     return (double)ts.tv_sec + 1e-9 * (double)ts.tv_nsec;
 }
 #define DT_BEGIN double dt_t0 = dbg_time_on() ? dt_now() : 0
-#define DT_MARK(k) do { if (dbg_time_on()) { double dt_t1 = dt_now(); dt_acc[k] += dt_t1 - dt_t0; dt_t0 = dt_t1; } } while (0)
+#define DT_MARK_AT(t0, k) do { if (dbg_time_on()) { double dt_t1 = dt_now(); dt_acc[k] += dt_t1 - (t0); (t0) = dt_t1; } } while (0)
+#define DT_MARK(k) DT_MARK_AT(dt_t0, k)
+
+// A numerical stage of a hot or byte-pinned routine: split out to be read,
+// forced back into its caller to be compiled. Under the default build's
+// -ffast-math the compiler may contract and reassociate a loop differently
+// once it stands in a function of its own, and then the output's bytes move
+// with the code's layout (the GELU loop of a dense FFN did, on the Gemma
+// families; the portable T3 build is exact either way). Inlined, every stage
+// compiles in its caller's context, as the single function did.
+#define NUM_STAGE static inline __attribute__((always_inline))
 void model_debug_time_report(void) {
     if (!dbg_time_on()) return;
     double tot = 0; for (int k = 0; k < DT_N; k++) tot += dt_acc[k];
@@ -6321,6 +6341,22 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
              inner, m->n_embd, NULL, n);
 }
 
+// Expert identity and placement (plan P4). moe_expert_weight() is the one
+// lookup between an expert's logical identity and its bytes: the CPU
+// executors (moe_token_experts, moe_grouped_expert), Gemma's dual branch, the
+// backward's recompute (lbw_recompute, lbw_ffn_and_output) and the CUDA
+// binding all take the view it returns and none computes an address. Today
+// the placement is static (a host view into the mapped file, or a split
+// export's own tensor). A per-expert cache, VRAM residency or host staging,
+// would resolve here, keyed by the identity the view stands for: the file's
+// identity (model_file_identity), the layer, e, the role (which), the tensor
+// type and layout, and the adapter where cached bytes depend on one. The
+// router's decision reaches the executors as explicit inputs (sel/selw per
+// row, in the router's order, which is also the order the outputs are
+// summed in), so a cache changes where the bytes come from, never which
+// experts run or how their outputs combine. Grouped staging would enter at
+// moe_grouped_prefetch(), the one point that knows a prefill's whole routing
+// before any expert runs.
 gguf_tensor moe_expert_weight(const layer_t *ly, int which, int e,
                               int n_embd, int n_ff_exp) {
     if (ly->moe_split) {
@@ -6564,37 +6600,57 @@ static void shexp_add(model_t *m, const layer_t *ly, const float *in,
     }
 }
 
-static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
+// RUNNER_MOE_PROBE's lookback: row b's router run again on the inputs of
+// one, two and three layers back (the probe's history), each choice printed
+// against the one this layer made (sel).
+static void moe_probe_replay(model_t *m, const layer_t *ly, int b, const int *sel) {
+    if (m->moe_probe_depth <= 0) return;
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
-    int nff = m->n_ff_exp;
-    bool probe = moe_probe_file() != NULL;
-    bool trace = moe_trace_file() != NULL;
     int layer_idx = (int)(ly - m->layers);
-    int   sel[256];
-    float selw[256];
-    float norms[MOE_EXPERTS_MAX];
-    DT_BEGIN;
-    moe_route(m, ly, xin, n_embd, ne, used, sel, selw, true);
-    model_moe_prefetch(m, ly, sel, used);
-    DT_MARK(DT_ROUTE);
-    // RUNNER_MOE_PROBE: same lookback replay as gemma_route's caller — see
-    // gemma_moe_ffn's comment. xin gets overwritten in place by this
-    // function's last line, so the push below must happen before that, and
-    // the probe's extra moe_route calls (reading history) must happen before
-    // xin's real content is touched at all — both hold here since neither
-    // occurs until after this block.
-    if (probe && m->moe_probe_depth > 0) {
-        size_t slotsz = (size_t)m->n_batch * n_embd;
-        int max_d = m->moe_probe_depth < 3 ? m->moe_probe_depth : 3;
-        for (int d = 1; d <= max_d; d++) {
-            const float *h_old = m->moe_probe_hist + (size_t)(d - 1) * slotsz;
-            int psel[256]; float pselw[256];
-            moe_route(m, ly, h_old, n_embd, ne, used, psel, pselw, false);
-            moe_probe_emit(m->fwd_pos, layer_idx, d, psel, sel, used);
-        }
+    size_t slotsz = (size_t)m->n_batch * n_embd;
+    int max_d = m->moe_probe_depth < 3 ? m->moe_probe_depth : 3;
+    for (int d = 1; d <= max_d; d++) {
+        const float *h_old = m->moe_probe_hist +
+                             (size_t)(d - 1) * slotsz + (size_t)b * n_embd;
+        int psel[256]; float pselw[256];
+        moe_route(m, ly, h_old, n_embd, ne, used, psel, pselw, false);
+        moe_probe_emit(m->fwd_pos + b, layer_idx, d, psel, sel, used);
     }
-    if (probe) moe_probe_push(m, xin, 1, n_embd, n_embd);
-    for (int i = 0; i < n_embd; i++) m->moe_out[i] = 0.0f;
+}
+
+// One expert row's activation into g (the down projection's input), from its
+// up row u and, when the experts are gated, its gate row g. nemotron_h_moe's
+// experts are gate-less: relu(up)^2, the shape its dense MLP uses. Otherwise
+// gpt-oss's per-expert biases are added to this expert's own gate and up
+// before the activation (its down bias comes later, before the routing
+// weight scales the output: llama.cpp adds down_exps_b, then multiplies by
+// the weights). Shared by the per-token and the grouped path.
+NUM_STAGE void moe_expert_act_row(const model_t *m, const layer_t *ly, int e,
+                                  float *g, float *u) {
+    int nff = m->n_ff_exp;
+    if (m->ffn_relu2) {
+        for (int j = 0; j < nff; j++) {
+            float r = u[j] > 0.0f ? u[j] : 0.0f;
+            g[j] = r * r;
+        }
+        return;
+    }
+    if (ly->ffn_gate_exps_b)
+        for (int j = 0; j < nff; j++)
+            g[j] += ly->ffn_gate_exps_b[(size_t)e * nff + j];
+    if (ly->ffn_up_exps_b)
+        for (int j = 0; j < nff; j++)
+            u[j] += ly->ffn_up_exps_b[(size_t)e * nff + j];
+    for (int j = 0; j < nff; j++)
+        g[j] = gated_act(m->ffn_act, g[j], u[j]);
+}
+
+// Every selected expert's gate, up and down for the one token in xin: the
+// down outputs land in moe_dexp's rows in the router's order.
+NUM_STAGE void moe_token_experts(model_t *m, const layer_t *ly, const float *xin,
+                                 const int *sel) {
+    int n_embd = m->n_embd, used = m->n_expert_used;
+    int nff = m->n_ff_exp;
     // Every selected expert's projections go out as a few pool dispatches
     // rather than three per expert: with ten experts a layer and 48 layers
     // that was 1,440 fork/join barriers a token on matrices that take
@@ -6627,27 +6683,7 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
     for (int t = 0; t < used; t++) {
         int e = sel[t];
         float *g = m->moe_gate + (size_t)t * nff, *u = m->moe_up + (size_t)t * nff;
-        if (m->ffn_relu2) {
-            // nemotron_h_moe: gate-less squared-ReLU experts, no gate branch —
-            // relu(up)^2 into moe_gate (the down-projection input), same shape
-            // the dense nemotron MLP uses.
-            for (int j = 0; j < nff; j++) {
-                float r = u[j] > 0.0f ? u[j] : 0.0f;
-                g[j] = r * r;
-            }
-        } else {
-        // gpt-oss per-expert biases: added to this expert's own gate/up before
-        // the activation, and to its down output BEFORE the routing weight
-        // scales it (llama.cpp adds down_exps_b, then multiplies by weights).
-        if (ly->ffn_gate_exps_b)
-            for (int j = 0; j < nff; j++)
-                g[j] += ly->ffn_gate_exps_b[(size_t)e * nff + j];
-        if (ly->ffn_up_exps_b)
-            for (int j = 0; j < nff; j++)
-                u[j] += ly->ffn_up_exps_b[(size_t)e * nff + j];
-        for (int j = 0; j < nff; j++)
-            g[j] = gated_act(m->ffn_act, g[j], u[j]);
-        }
+        moe_expert_act_row(m, ly, e, g, u);
     }
     // phase 2: every expert's down projection, each from its own gated vector
     {
@@ -6663,6 +6699,30 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
             }
         }
     }
+}
+
+static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
+    int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
+    bool probe = moe_probe_file() != NULL;
+    bool trace = moe_trace_file() != NULL;
+    int layer_idx = (int)(ly - m->layers);
+    int   sel[256];
+    float selw[256];
+    float norms[MOE_EXPERTS_MAX];
+    DT_BEGIN;
+    moe_route(m, ly, xin, n_embd, ne, used, sel, selw, true);
+    model_moe_prefetch(m, ly, sel, used);
+    DT_MARK(DT_ROUTE);
+    // RUNNER_MOE_PROBE: same lookback replay as gemma_route's caller — see
+    // gemma_moe_ffn's comment. xin gets overwritten in place by this
+    // function's last line, so the push below must happen before that, and
+    // the probe's extra moe_route calls (reading history) must happen before
+    // xin's real content is touched at all — both hold here since neither
+    // occurs until after this block.
+    if (probe) moe_probe_replay(m, ly, 0, sel);
+    if (probe) moe_probe_push(m, xin, 1, n_embd, n_embd);
+    for (int i = 0; i < n_embd; i++) m->moe_out[i] = 0.0f;
+    moe_token_experts(m, ly, xin, sel);
     for (int t = 0; t < used; t++) {
         int e = sel[t];
         float w = selw[t];
@@ -6681,50 +6741,31 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
     for (int i = 0; i < n_embd; i++) xin[i] = m->moe_out[i];
 }
 
-// Prefill path: route every token, then run each expert ONCE over all the
-// tokens routed to it as a single batched matmul (the weight rows dequantize
-// once and stream across every token) instead of one token at a time. Same
-// math as the per-token path — the router, SwiGLU, and weights are identical,
-// and each token sums its experts in the ROUTER's order (moe_dall holds the
-// per-expert outputs until the whole layer has run), exactly the per-token
-// accumulation. Below MV_SMALL_BATCH rows per expert the dots are the
-// per-token dots too, so a speculation verify batch (K+1 rows) is byte-equal
-// to decoding its rows one at a time; the ascending-expert order this path
-// used before was not (Qwen3.8-Flash-Next --draft-lookup changed the greedy
-// text, 2026-10-07). Big prefill throughput win; decode is untouched.
-static void moe_ffn_grouped(model_t *m, const layer_t *ly, int n, int xdim) {
+// Every row routed (and, under RUNNER_MOE_PROBE, replayed against the layers
+// before), its output row zeroed, and the probe's history pushed.
+NUM_STAGE void moe_grouped_route(model_t *m, const layer_t *ly, int n, int xdim,
+                                 bool probe) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
-    int nff = m->n_ff_exp;
-    bool probe = moe_probe_file() != NULL;
-    bool trace = moe_trace_file() != NULL;
-    int layer_idx = (int)(ly - m->layers);
     for (int b = 0; b < n; b++) {
         float *xin = m->xb + (size_t)b * xdim;
         moe_route(m, ly, xin, n_embd, ne, used,
                   m->moe_sel + (size_t)b * used, m->moe_selw + (size_t)b * used, true);
         // RUNNER_MOE_PROBE: replay against 1/2/3 layers back, before m->xb
         // is overwritten with this layer's FFN output further below.
-        if (probe && m->moe_probe_depth > 0) {
-            size_t slotsz = (size_t)m->n_batch * n_embd;
-            int max_d = m->moe_probe_depth < 3 ? m->moe_probe_depth : 3;
-            for (int d = 1; d <= max_d; d++) {
-                const float *h_old = m->moe_probe_hist +
-                                     (size_t)(d - 1) * slotsz + (size_t)b * n_embd;
-                int psel[256]; float pselw[256];
-                moe_route(m, ly, h_old, n_embd, ne, used, psel, pselw, false);
-                moe_probe_emit(m->fwd_pos + b, layer_idx, d, psel,
-                               m->moe_sel + (size_t)b * used, used);
-            }
-        }
+        if (probe) moe_probe_replay(m, ly, b, m->moe_sel + (size_t)b * used);
         float *out = m->moe_out_b + (size_t)b * n_embd;
         for (int i = 0; i < n_embd; i++) out[i] = 0.0f;
     }
     if (probe) moe_probe_push(m, m->xb, n, n_embd, xdim);
-    // Prefill knows the WHOLE batch's routing before any expert runs, so this
-    // is the one place the prefetch gets real lead time: hand the union of
-    // selected experts to the OS up front and the reads overlap the compute
-    // that follows. Decode has no such luxury — routing there is inherently
-    // just-in-time.
+}
+
+// Prefill knows the WHOLE batch's routing before any expert runs, so this
+// is the one place the prefetch gets real lead time: hand the union of
+// selected experts to the OS up front and the reads overlap the compute
+// that follows. Decode has no such luxury — routing there is inherently
+// just-in-time.
+static void moe_grouped_prefetch(model_t *m, const layer_t *ly, int n) {
+    int used = m->n_expert_used;
     if (m->moe_prefetch) {
         int un[256], nun = 0;
         for (int b = 0; b < n; b++) {
@@ -6737,88 +6778,80 @@ static void moe_ffn_grouped(model_t *m, const layer_t *ly, int n, int xdim) {
         }
         model_moe_prefetch(m, ly, un, nun);
     }
-    for (int e = 0; e < ne; e++) {
-        int cnt = 0;
-        for (int b = 0; b < n; b++) {
-            const int   *sel  = m->moe_sel  + (size_t)b * used;
-            const float *selw = m->moe_selw + (size_t)b * used;
-            for (int t = 0; t < used; t++) {
-                if (sel[t] != e) continue;
-                m->moe_gidx[cnt] = b;
-                m->moe_gw[cnt]   = selw[t];
-                memcpy(m->moe_gath + (size_t)cnt * n_embd,
-                       m->xb + (size_t)b * xdim, (size_t)n_embd * sizeof(float));
-                cnt++;
-                break;                                   // top-k experts are distinct
-            }
+}
+
+// Expert e over every row routed to it: the rows gathered, one batched
+// gate, up and down, the activation per row, and each row's output parked
+// in that row's router slot (moe_dall), so the sum below keeps the router's
+// order.
+NUM_STAGE void moe_grouped_expert(model_t *m, const layer_t *ly, int e, int n,
+                                  int xdim, bool trace) {
+    int n_embd = m->n_embd, used = m->n_expert_used;
+    int nff = m->n_ff_exp;
+    int cnt = 0;
+    for (int b = 0; b < n; b++) {
+        const int   *sel  = m->moe_sel  + (size_t)b * used;
+        const float *selw = m->moe_selw + (size_t)b * used;
+        for (int t = 0; t < used; t++) {
+            if (sel[t] != e) continue;
+            m->moe_gidx[cnt] = b;
+            m->moe_gw[cnt]   = selw[t];
+            memcpy(m->moe_gath + (size_t)cnt * n_embd,
+                   m->xb + (size_t)b * xdim, (size_t)n_embd * sizeof(float));
+            cnt++;
+            break;                                   // top-k experts are distinct
         }
-        if (cnt == 0) continue;
-        gguf_tensor uv = moe_expert_weight(ly, 1, e, n_embd, nff);
-        gguf_tensor dv = moe_expert_weight(ly, 2, e, n_embd, nff);
-        matvec_b(m->tp, m->moe_up_b,   nff, &uv, m->moe_gath,
-                 n_embd, n_embd, nff, NULL, cnt);
-        const float *db = ly->ffn_down_exps_b
-                            ? ly->ffn_down_exps_b + (size_t)e * n_embd : NULL;
-        if (m->ffn_relu2) {
-            // gate-less squared-ReLU experts (nemotron_h_moe): relu(up)^2 into
-            // moe_gate_b, no gate projection or per-expert gate/up biases.
-            for (int c = 0; c < cnt; c++) {
-                float *g = m->moe_gate_b + (size_t)c * nff;
-                float *u = m->moe_up_b + (size_t)c * nff;
-                for (int j = 0; j < nff; j++) {
-                    float r = u[j] > 0.0f ? u[j] : 0.0f;
-                    g[j] = r * r;
-                }
-            }
-        } else {
+    }
+    if (cnt == 0) return;
+    gguf_tensor uv = moe_expert_weight(ly, 1, e, n_embd, nff);
+    gguf_tensor dv = moe_expert_weight(ly, 2, e, n_embd, nff);
+    matvec_b(m->tp, m->moe_up_b,   nff, &uv, m->moe_gath,
+             n_embd, n_embd, nff, NULL, cnt);
+    const float *db = ly->ffn_down_exps_b
+                        ? ly->ffn_down_exps_b + (size_t)e * n_embd : NULL;
+    if (!m->ffn_relu2) {
         gguf_tensor gv = moe_expert_weight(ly, 0, e, n_embd, nff);
         matvec_b(m->tp, m->moe_gate_b, nff, &gv, m->moe_gath,
                  n_embd, n_embd, nff, NULL, cnt);
-        // per-expert biases, identical ordering to the per-token path above:
-        // gate/up before the activation, down before the routing weight
-        const float *gb = ly->ffn_gate_exps_b
-                            ? ly->ffn_gate_exps_b + (size_t)e * nff : NULL;
-        const float *ub = ly->ffn_up_exps_b
-                            ? ly->ffn_up_exps_b + (size_t)e * nff : NULL;
-        for (int c = 0; c < cnt; c++) {
-            float *g = m->moe_gate_b + (size_t)c * nff;
-            float *u = m->moe_up_b + (size_t)c * nff;
-            if (gb) for (int j = 0; j < nff; j++) g[j] += gb[j];
-            if (ub) for (int j = 0; j < nff; j++) u[j] += ub[j];
-            for (int j = 0; j < nff; j++)
-                g[j] = gated_act(m->ffn_act, g[j], u[j]);
+    }
+    for (int c = 0; c < cnt; c++)
+        moe_expert_act_row(m, ly, e, m->moe_gate_b + (size_t)c * nff,
+                           m->moe_up_b + (size_t)c * nff);
+    matvec_b(m->tp, m->moe_dexp_b, n_embd, &dv, m->moe_gate_b,
+             nff, nff, n_embd, NULL, cnt);
+    for (int c = 0; c < cnt; c++) {
+        int b = m->moe_gidx[c];
+        float *out = m->moe_out_b + (size_t)b * n_embd;
+        const float *dx = m->moe_dexp_b + (size_t)c * n_embd;
+        float w = m->moe_gw[c];
+        if (trace) {
+            float ss = 0.0f;
+            if (db) for (int i = 0; i < n_embd; i++) { float v = dx[i] + db[i]; ss += v * v; }
+            else    for (int i = 0; i < n_embd; i++) ss += dx[i] * dx[i];
+            // this expert is at whichever slot t routed token b picked it
+            // (sel[t]==e) — moe_route's slots are few, a linear search is
+            // cheap and only runs when tracing is already on
+            const int *sel = m->moe_sel + (size_t)b * used;
+            for (int t = 0; t < used; t++)
+                if (sel[t] == e) { m->moe_trace_norms[(size_t)b * used + t] = sqrtf(ss); break; }
         }
-        }
-        matvec_b(m->tp, m->moe_dexp_b, n_embd, &dv, m->moe_gate_b,
-                 nff, nff, n_embd, NULL, cnt);
-        for (int c = 0; c < cnt; c++) {
-            int b = m->moe_gidx[c];
-            float *out = m->moe_out_b + (size_t)b * n_embd;
-            const float *dx = m->moe_dexp_b + (size_t)c * n_embd;
-            float w = m->moe_gw[c];
-            if (trace) {
-                float ss = 0.0f;
-                if (db) for (int i = 0; i < n_embd; i++) { float v = dx[i] + db[i]; ss += v * v; }
-                else    for (int i = 0; i < n_embd; i++) ss += dx[i] * dx[i];
-                // this expert is at whichever slot t routed token b picked it
-                // (sel[t]==e) — moe_route's slots are few, a linear search is
-                // cheap and only runs when tracing is already on
-                const int *sel = m->moe_sel + (size_t)b * used;
-                for (int t = 0; t < used; t++)
-                    if (sel[t] == e) { m->moe_trace_norms[(size_t)b * used + t] = sqrtf(ss); break; }
-            }
-            (void)out; (void)w;
-            // park this expert's output in the token's router slot
-            {
-                const int *sel = m->moe_sel + (size_t)b * used;
-                int t = 0;
-                while (t < used - 1 && sel[t] != e) t++;
-                float *slot = m->moe_dall + ((size_t)b * used + t) * n_embd;
-                if (db) for (int i = 0; i < n_embd; i++) slot[i] = dx[i] + db[i];
-                else    memcpy(slot, dx, sizeof(float) * (size_t)n_embd);
-            }
+        (void)out; (void)w;
+        // park this expert's output in the token's router slot
+        {
+            const int *sel = m->moe_sel + (size_t)b * used;
+            int t = 0;
+            while (t < used - 1 && sel[t] != e) t++;
+            float *slot = m->moe_dall + ((size_t)b * used + t) * n_embd;
+            if (db) for (int i = 0; i < n_embd; i++) slot[i] = dx[i] + db[i];
+            else    memcpy(slot, dx, sizeof(float) * (size_t)n_embd);
         }
     }
+}
+
+NUM_STAGE void moe_grouped_sum(model_t *m, const layer_t *ly, int n, int xdim,
+                               bool trace) {
+    int n_embd = m->n_embd, used = m->n_expert_used;
+    int layer_idx = (int)(ly - m->layers);
     // per token, the experts in the router's order: the per-token path's sum
     for (int b = 0; b < n; b++) {
         float *out = m->moe_out_b + (size_t)b * n_embd;
@@ -6837,6 +6870,27 @@ static void moe_ffn_grouped(model_t *m, const layer_t *ly, int n, int xdim) {
     for (int b = 0; b < n; b++)
         memcpy(m->xb + (size_t)b * xdim, m->moe_out_b + (size_t)b * n_embd,
                (size_t)n_embd * sizeof(float));
+}
+
+// Prefill path: route every token, then run each expert ONCE over all the
+// tokens routed to it as a single batched matmul (the weight rows dequantize
+// once and stream across every token) instead of one token at a time. Same
+// math as the per-token path — the router, SwiGLU, and weights are identical,
+// and each token sums its experts in the ROUTER's order (moe_dall holds the
+// per-expert outputs until the whole layer has run), exactly the per-token
+// accumulation. Below MV_SMALL_BATCH rows per expert the dots are the
+// per-token dots too, so a speculation verify batch (K+1 rows) is byte-equal
+// to decoding its rows one at a time; the ascending-expert order this path
+// used before was not (Qwen3.8-Flash-Next --draft-lookup changed the greedy
+// text, 2026-10-07). Big prefill throughput win; decode is untouched.
+static void moe_ffn_grouped(model_t *m, const layer_t *ly, int n, int xdim) {
+    bool probe = moe_probe_file() != NULL;
+    bool trace = moe_trace_file() != NULL;
+    moe_grouped_route(m, ly, n, xdim, probe);
+    moe_grouped_prefetch(m, ly, n);
+    for (int e = 0; e < ly->n_expert; e++)
+        moe_grouped_expert(m, ly, e, n, xdim, trace);
+    moe_grouped_sum(m, ly, n, xdim, trace);
 }
 
 // gemma-4 fused gate_up expert slice for expert e: {n_embd, 2*n_ff_exp} (first
@@ -6971,65 +7025,7 @@ static void moe_ffn(model_t *m, const layer_t *ly, int n, int xdim) {
     moe_ffn_grouped(m, ly, n, xdim);
 }
 
-bool model_moe_ffn_cpu(model_t *m, int layer, int n) {
-    if (!m || layer < 0 || layer > m->n_layer || (layer == m->n_layer && !m->mtp_ready) ||
-        n < 1 || n > m->n_batch)
-        return false;
-    layer_t *ly = &m->layers[layer];
-    if (!ly->is_moe) return false;
-    int ne = m->n_embd, xs = m->xdim;
-    if (ly->moe_gemma) {
-        // Gemma's validated MoE is a coupled dense+routed branch with its own
-        // sandwich norms, so the correctness boundary is the whole FFN.
-        gemma_moe_ffn(m, ly, n, xs);
-    } else {
-        for (int b = 0; b < n; b++)
-            rmsnorm(m->xb + (size_t)b * xs,
-                    m->x + (size_t)b * ne,
-                    ly->ffn_norm_w, ne, m->rms_eps);
-        if (ly->w_gate_shexp)
-            for (int b = 0; b < n; b++)
-                memcpy(m->shexp_in + (size_t)b * ne,
-                       m->xb + (size_t)b * xs, sizeof(float) * (size_t)ne);
-        moe_ffn(m, ly, n, xs);
-        shexp_add(m, ly, m->shexp_in, n, xs);
-    }
-    if (ly->post_ffn_norm_w)
-        for (int b = 0; b < n; b++)
-            rmsnorm(m->xb + (size_t)b * xs,
-                    m->xb + (size_t)b * xs,
-                    ly->post_ffn_norm_w, ne, m->post_norm_eps);
-    for (int b = 0; b < n; b++)
-        for (int i = 0; i < ne; i++)
-            m->x[(size_t)b * ne + i] += m->xb[(size_t)b * xs + i];
-    if (ly->out_scale != 1.0f && ly->out_scale != 0.0f)
-        for (int b = 0; b < n; b++)
-            for (int i = 0; i < ne; i++)
-                m->x[(size_t)b * ne + i] *= ly->out_scale;
-    return true;
-}
-
 static void ple4_block(model_t *m, const layer_t *ly, const int32_t *tokens, int n, int pos);
-
-// qwen4exp device boundary: the device has already run the hyper-connection
-// mixer, so the FFN input (n rows, stride xdim) sits in m->xb; run the routed
-// and shared experts on the host and leave the FFN OUTPUT in m->xb for the
-// device's hc_combine. No norm, no residual add here.
-bool model_moe_ffn_cpu_premixed(model_t *m, int layer, int n) {
-    if (!m || layer < 0 || layer > m->n_layer || (layer == m->n_layer && !m->mtp_ready) ||
-        n < 1 || n > m->n_batch)
-        return false;
-    layer_t *ly = &m->layers[layer];
-    if (!ly->is_moe || ly->moe_gemma) return false;
-    int ne = m->n_embd, xs = m->xdim;
-    if (ly->w_gate_shexp)
-        for (int b = 0; b < n; b++)
-            memcpy(m->shexp_in + (size_t)b * ne,
-                   m->xb + (size_t)b * xs, sizeof(float) * (size_t)ne);
-    moe_ffn(m, ly, n, xs);
-    shexp_add(m, ly, m->shexp_in, n, xs);
-    return true;
-}
 
 // qwen4exp device boundary: the PLE block on the host, over the wide
 // residual rows the device copied into m->x_hc (n rows of hc * n_embd).
@@ -7255,6 +7251,26 @@ static const char *const lora_slot_name[LW_SLOTS] = {
     "ffn_gate", "ffn_up", "ffn_down",
 };
 
+// Every buffer an adapter table can hold, then the table ([n_layer][LW_SLOTS];
+// the gradient and moment buffers stay NULL on a table that never trained).
+// The one release for owned, per-request and half-built tables alike.
+static void lora_tab_free(struct lora_w *tab, int n_layer) {
+    if (!tab) return;
+    for (int l = 0; l < n_layer; l++)
+        for (int s = 0; s < LW_SLOTS; s++) {
+            struct lora_w *lw = &tab[(size_t)l * LW_SLOTS + s];
+            free(lw->a);
+            free(lw->b);
+            free(lw->ga);
+            free(lw->gb);
+            free(lw->ma);
+            free(lw->va);
+            free(lw->mb);
+            free(lw->vb);
+        }
+    free(tab);
+}
+
 void model_lora_free(model_t *m) {
     if (m->gpu) gpu_lora_unbind(m);
     if (m->lora_borrowed) {
@@ -7265,20 +7281,19 @@ void model_lora_free(model_t *m) {
         return;
     }
     if (!m->lora) return;
-    for (int l = 0; l < m->n_layer; l++)
-        for (int s = 0; s < LW_SLOTS; s++) {
-            free(m->lora[(size_t)l * LW_SLOTS + s].a);
-            free(m->lora[(size_t)l * LW_SLOTS + s].b);
-            free(m->lora[(size_t)l * LW_SLOTS + s].ga);
-            free(m->lora[(size_t)l * LW_SLOTS + s].gb);
-            free(m->lora[(size_t)l * LW_SLOTS + s].ma);
-            free(m->lora[(size_t)l * LW_SLOTS + s].va);
-            free(m->lora[(size_t)l * LW_SLOTS + s].mb);
-            free(m->lora[(size_t)l * LW_SLOTS + s].vb);
-        }
-    free(m->lora);
+    lora_tab_free(m->lora, m->n_layer);
     m->lora = NULL;
     m->lora_id = 0;
+}
+
+// Attach an owned table as m's adapter, releasing whatever was attached
+// (owned or borrowed), under the identity the prefix cache keys on.
+static void lora_attach_owned(model_t *m, struct lora_w *tab, float alpha,
+                              uint64_t id) {
+    model_lora_free(m);
+    m->lora = tab;
+    m->lora_alpha = alpha;
+    m->lora_id = id;
 }
 
 // The low-rank delta for one projection: t = A x (r dots), y += scale * B t.
@@ -7349,10 +7364,6 @@ bool model_lora_slot(const model_t *m, int layer, int slot,
     return true;
 }
 
-// Parse an adapter GGUF against m's geometry: every refusal that makes an
-// adapter unservable on m, then the table. Returns the table (the caller's)
-// with its identity and alpha, or NULL having said why on stderr. Shared by
-// --lora (installed, owned) and --adapter (loaded once, borrowed per request).
 // Whether an adapter can be SERVED on this model at all, as a property of the
 // model and its configuration, before any adapter file is opened. v1 scope,
 // refused by property rather than allowed by accident: the hooks live on the
@@ -7389,6 +7400,137 @@ bool model_lora_serve_supported(const model_t *m, char *why, size_t cap) {
     return true;
 }
 
+// The adapter file's own declarations: a LoRA adapter GGUF, for m's
+// architecture, with a positive alpha.
+static bool lora_parse_header(const model_t *m, gguf_file *g, const char *path,
+                              float *alpha_out) {
+    const char *ftype = gguf_get_str(g, "general.type", "");
+    const char *atype = gguf_get_str(g, "adapter.type", "");
+    if (strcmp(ftype, "adapter") != 0 || strcmp(atype, "lora") != 0) {
+        fprintf(stderr, "error: %s is not a LoRA adapter GGUF "
+                "(general.type=%s adapter.type=%s)\n", path, ftype, atype);
+        return false;
+    }
+    const char *aarch = gguf_get_str(g, "general.architecture", "");
+    if (strcmp(aarch, m->arch) != 0) {
+        fprintf(stderr, "error: adapter architecture '%s' does not match "
+                "the model's '%s'\n", aarch, m->arch);
+        return false;
+    }
+    float alpha = gguf_get_f32(g, "adapter.lora.alpha", 0.0f);
+    if (!(alpha > 0.0f)) {
+        fprintf(stderr, "error: adapter.lora.alpha missing or not "
+                "positive\n");
+        return false;
+    }
+    *alpha_out = alpha;
+    return true;
+}
+
+// One adapter tensor onto its slot of tab: it names a hooked projection m
+// carries, is a float type, matches the base's geometry and agrees with its
+// pair's rank. Its values fold into the identity.
+static bool lora_parse_tensor(model_t *m, struct lora_w *tab, gguf_tensor *t,
+                              uint64_t *id) {
+    int l = -1;
+    char pname[64];
+    char side = 0;
+    if (sscanf(t->name, "blk.%d.%40[a-z_].weight.lora_%c", &l, pname,
+               &side) != 3 || (side != 'a' && side != 'b') ||
+        l < 0 || l >= m->n_layer) {
+        fprintf(stderr, "error: adapter tensor '%s' does not name a "
+                "hooked projection\n", t->name);
+        return false;
+    }
+    int s = -1;
+    for (int k = 0; k < LW_SLOTS; k++)
+        if (strcmp(pname, lora_slot_name[k]) == 0) { s = k; break; }
+    gguf_tensor *base = s >= 0 ? lora_slot_base(m, l, s) : NULL;
+    if (s < 0 || !base) {
+        fprintf(stderr, "error: adapter tensor '%s' targets a "
+                "projection this model/path does not carry\n", t->name);
+        return false;
+    }
+    struct lora_w *lw = &tab[(size_t)l * LW_SLOTS + s];
+    uint64_t n_in = base->ne[0], n_out = base->ne[1];
+    // our own writer emits F32; llama.cpp's convert_lora_to_gguf emits
+    // F16 by default, and community adapters ship that way (measured:
+    // the first third-party adapter tried was F16 and refused here).
+    // Any float format converts losslessly-deterministically through
+    // tensor_to_f32; quantized adapter tensors stay refused by name.
+    if (t->type != T_F32 && t->type != T_F16 && t->type != T_BF16) {
+        fprintf(stderr, "error: adapter tensor '%s' is %s — adapters "
+                "must be F32, F16 or BF16\n", t->name,
+                ggml_type_name(t->type));
+        return false;
+    }
+    uint64_t r = side == 'a' ? t->ne[1] : t->ne[0];
+    uint64_t want0 = side == 'a' ? n_in : r;
+    uint64_t want1 = side == 'a' ? r : n_out;
+    if (t->n_dims != 2 || r < 1 || r > LORA_R_MAX ||
+        t->ne[0] != want0 || t->ne[1] != want1) {
+        fprintf(stderr, "error: adapter tensor '%s' is %u-D "
+                "[%llu,%llu]; base '%s' is [%llu,%llu]\n", t->name,
+                t->n_dims, (unsigned long long)t->ne[0],
+                (unsigned long long)t->ne[1], base->name,
+                (unsigned long long)n_in, (unsigned long long)n_out);
+        return false;
+    }
+    if (lw->r && lw->r != (int)r) {
+        fprintf(stderr, "error: adapter '%s' rank %llu disagrees with "
+                "its pair (rank %d)\n", t->name,
+                (unsigned long long)r, lw->r);
+        return false;
+    }
+    lw->r = (int)r;
+    bool cok = true;
+    int64_t need = (int64_t)(side == 'a' ? r * n_in : r * n_out);
+    float *dat = tensor_to_f32(t, need, &cok);
+    if (!cok || !dat) {
+        fprintf(stderr, "error: adapter tensor '%s' failed to load\n",
+                t->name);
+        return false;
+    }
+    if (side == 'a') { free(lw->a); lw->a = dat; }
+    else             { free(lw->b); lw->b = dat; }
+    for (int64_t c = 0; c < need; c++) {
+        uint32_t bits;
+        memcpy(&bits, &dat[c], 4);
+        *id = (*id ^ bits) * 0x100000001B3ull;
+    }
+    return true;
+}
+
+// Every slot holds a whole pair or nothing, and at least one pair exists;
+// each pair's scale folds alpha, the rank and the user's scale. Returns the
+// pair count, or -1 having said why.
+static int lora_parse_pairs(const model_t *m, struct lora_w *tab, float alpha,
+                            float user_scale) {
+    int n_pairs = 0;
+    for (int l = 0; l < m->n_layer; l++)
+        for (int s = 0; s < LW_SLOTS; s++) {
+            struct lora_w *lw = &tab[(size_t)l * LW_SLOTS + s];
+            if (!lw->r) continue;
+            if (!lw->a || !lw->b) {
+                fprintf(stderr, "error: adapter has only half of the "
+                        "lora_a/lora_b pair for blk.%d.%s\n", l,
+                        lora_slot_name[s]);
+                return -1;
+            }
+            lw->scale = alpha / (float)lw->r * user_scale;
+            n_pairs++;
+        }
+    if (!n_pairs) {
+        fprintf(stderr, "error: adapter carries no lora_a/lora_b pairs\n");
+        return -1;
+    }
+    return n_pairs;
+}
+
+// Parse an adapter GGUF against m's geometry: every refusal that makes an
+// adapter unservable on m, then the table. Returns the table (the caller's)
+// with its identity and alpha, or NULL having said why on stderr. Shared by
+// --lora (installed, owned) and --adapter (loaded once, borrowed per request).
 static struct lora_w *lora_parse(model_t *m, const char *path, float user_scale,
                                  uint64_t *id_out, float *alpha_out,
                                  int *pairs_out) {
@@ -7405,25 +7547,8 @@ static struct lora_w *lora_parse(model_t *m, const char *path, float user_scale,
         return NULL;
     }
     struct lora_w *ok = NULL;
-    const char *ftype = gguf_get_str(&g, "general.type", "");
-    const char *atype = gguf_get_str(&g, "adapter.type", "");
-    if (strcmp(ftype, "adapter") != 0 || strcmp(atype, "lora") != 0) {
-        fprintf(stderr, "error: %s is not a LoRA adapter GGUF "
-                "(general.type=%s adapter.type=%s)\n", path, ftype, atype);
-        goto done;
-    }
-    const char *aarch = gguf_get_str(&g, "general.architecture", "");
-    if (strcmp(aarch, m->arch) != 0) {
-        fprintf(stderr, "error: adapter architecture '%s' does not match "
-                "the model's '%s'\n", aarch, m->arch);
-        goto done;
-    }
-    float alpha = gguf_get_f32(&g, "adapter.lora.alpha", 0.0f);
-    if (!(alpha > 0.0f)) {
-        fprintf(stderr, "error: adapter.lora.alpha missing or not "
-                "positive\n");
-        goto done;
-    }
+    float alpha = 0.0f;
+    if (!lora_parse_header(m, &g, path, &alpha)) goto done;
     struct lora_w *tab =
         calloc((size_t)m->n_layer * LW_SLOTS, sizeof(struct lora_w));
     if (!tab) goto done;
@@ -7434,93 +7559,10 @@ static struct lora_w *lora_parse(model_t *m, const char *path, float user_scale,
     // tensor's geometry — an unknown or misshapen tensor refuses the whole
     // adapter (the hostile-GGUF discipline; a silently skipped tensor would
     // serve a model that is not the one the adapter trained)
-    for (uint64_t ti = 0; ti < g.n_tensors; ti++) {
-        gguf_tensor *t = &g.tensors[ti];
-        int l = -1;
-        char pname[64];
-        char side = 0;
-        if (sscanf(t->name, "blk.%d.%40[a-z_].weight.lora_%c", &l, pname,
-                   &side) != 3 || (side != 'a' && side != 'b') ||
-            l < 0 || l >= m->n_layer) {
-            fprintf(stderr, "error: adapter tensor '%s' does not name a "
-                    "hooked projection\n", t->name);
-            goto fail_tab;
-        }
-        int s = -1;
-        for (int k = 0; k < LW_SLOTS; k++)
-            if (strcmp(pname, lora_slot_name[k]) == 0) { s = k; break; }
-        gguf_tensor *base = s >= 0 ? lora_slot_base(m, l, s) : NULL;
-        if (s < 0 || !base) {
-            fprintf(stderr, "error: adapter tensor '%s' targets a "
-                    "projection this model/path does not carry\n", t->name);
-            goto fail_tab;
-        }
-        struct lora_w *lw = &tab[(size_t)l * LW_SLOTS + s];
-        uint64_t n_in = base->ne[0], n_out = base->ne[1];
-        // our own writer emits F32; llama.cpp's convert_lora_to_gguf emits
-        // F16 by default, and community adapters ship that way (measured:
-        // the first third-party adapter tried was F16 and refused here).
-        // Any float format converts losslessly-deterministically through
-        // tensor_to_f32; quantized adapter tensors stay refused by name.
-        if (t->type != T_F32 && t->type != T_F16 && t->type != T_BF16) {
-            fprintf(stderr, "error: adapter tensor '%s' is %s — adapters "
-                    "must be F32, F16 or BF16\n", t->name,
-                    ggml_type_name(t->type));
-            goto fail_tab;
-        }
-        uint64_t r = side == 'a' ? t->ne[1] : t->ne[0];
-        uint64_t want0 = side == 'a' ? n_in : r;
-        uint64_t want1 = side == 'a' ? r : n_out;
-        if (t->n_dims != 2 || r < 1 || r > LORA_R_MAX ||
-            t->ne[0] != want0 || t->ne[1] != want1) {
-            fprintf(stderr, "error: adapter tensor '%s' is %u-D "
-                    "[%llu,%llu]; base '%s' is [%llu,%llu]\n", t->name,
-                    t->n_dims, (unsigned long long)t->ne[0],
-                    (unsigned long long)t->ne[1], base->name,
-                    (unsigned long long)n_in, (unsigned long long)n_out);
-            goto fail_tab;
-        }
-        if (lw->r && lw->r != (int)r) {
-            fprintf(stderr, "error: adapter '%s' rank %llu disagrees with "
-                    "its pair (rank %d)\n", t->name,
-                    (unsigned long long)r, lw->r);
-            goto fail_tab;
-        }
-        lw->r = (int)r;
-        bool cok = true;
-        int64_t need = (int64_t)(side == 'a' ? r * n_in : r * n_out);
-        float *dat = tensor_to_f32(t, need, &cok);
-        if (!cok || !dat) {
-            fprintf(stderr, "error: adapter tensor '%s' failed to load\n",
-                    t->name);
-            goto fail_tab;
-        }
-        if (side == 'a') { free(lw->a); lw->a = dat; }
-        else             { free(lw->b); lw->b = dat; }
-        for (int64_t c = 0; c < need; c++) {
-            uint32_t bits;
-            memcpy(&bits, &dat[c], 4);
-            id = (id ^ bits) * 0x100000001B3ull;
-        }
-    }
-    int n_pairs = 0;
-    for (int l = 0; l < m->n_layer; l++)
-        for (int s = 0; s < LW_SLOTS; s++) {
-            struct lora_w *lw = &tab[(size_t)l * LW_SLOTS + s];
-            if (!lw->r) continue;
-            if (!lw->a || !lw->b) {
-                fprintf(stderr, "error: adapter has only half of the "
-                        "lora_a/lora_b pair for blk.%d.%s\n", l,
-                        lora_slot_name[s]);
-                goto fail_tab;
-            }
-            lw->scale = alpha / (float)lw->r * user_scale;
-            n_pairs++;
-        }
-    if (!n_pairs) {
-        fprintf(stderr, "error: adapter carries no lora_a/lora_b pairs\n");
-        goto fail_tab;
-    }
+    for (uint64_t ti = 0; ti < g.n_tensors; ti++)
+        if (!lora_parse_tensor(m, tab, &g.tensors[ti], &id)) goto fail_tab;
+    int n_pairs = lora_parse_pairs(m, tab, alpha, user_scale);
+    if (n_pairs < 0) goto fail_tab;
     // alpha scales every delta, so two files that differ only in
     // adapter.lora.alpha are different adapters; without it in the id the
     // prefix cache served rows computed under the old alpha after a reload
@@ -7536,12 +7578,7 @@ static struct lora_w *lora_parse(model_t *m, const char *path, float user_scale,
     ok = tab;
     goto done;
 fail_tab:
-    for (int l = 0; l < m->n_layer; l++)
-        for (int s = 0; s < LW_SLOTS; s++) {
-            free(tab[(size_t)l * LW_SLOTS + s].a);
-            free(tab[(size_t)l * LW_SLOTS + s].b);
-        }
-    free(tab);
+    lora_tab_free(tab, m->n_layer);
 done:
     gguf_close(&g);
     return ok;
@@ -7553,10 +7590,7 @@ bool model_lora_load(model_t *m, const char *path, float user_scale) {
     int n_pairs = 0;
     struct lora_w *tab = lora_parse(m, path, user_scale, &id, &alpha, &n_pairs);
     if (!tab) return false;
-    model_lora_free(m);
-    m->lora = tab;
-    m->lora_alpha = alpha;
-    m->lora_id = id;
+    lora_attach_owned(m, tab, alpha, id);
     fprintf(stderr, "lora: %s — %d adapted projections, alpha %g, "
             "scale x%g\n", path, n_pairs, (double)alpha,
             (double)user_scale);
@@ -7594,12 +7628,7 @@ lora_set *model_lora_set_load(model_t *m, const char *path, float scale) {
 
 void model_lora_set_free(lora_set *ls) {
     if (!ls) return;
-    for (int l = 0; l < ls->n_layer; l++)
-        for (int s = 0; s < LW_SLOTS; s++) {
-            free(ls->tab[(size_t)l * LW_SLOTS + s].a);
-            free(ls->tab[(size_t)l * LW_SLOTS + s].b);
-        }
-    free(ls->tab);
+    lora_tab_free(ls->tab, ls->n_layer);
     free(ls);
 }
 
@@ -8161,9 +8190,98 @@ static void attn_bw_worker(void *ctx, int g0, int g1) {
 // spine, so plain globals are race-free)
 static double lbw_prof[4];   // R recompute / B1 sites / B1 attn / B2+B3
 
-static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
-                          float *dx) {
-    (void)toks;
+// One layer's reverse sweep, shared by its phases: the shapes resolved once,
+// every buffer the phases read and write, and the profile clock.
+// Every phase is a NUM_STAGE: compiled on its own, a phase changed the
+// trained adapter's bytes in the default build (on the Gemma families with
+// clang on arm64, on the MoE adapters with clang on x86-64).
+typedef struct {
+    bool lprof;
+    double lt;
+    layer_t *ly;
+    int E;
+    int hd;
+    int n_head;
+    int q_dim;
+    int kv_dim;
+    int n_kv;
+    int kv_mul;
+    int nff;
+    bool moe;
+    int ne_x;
+    int used;
+    int nfe;
+    float scale;
+    const uint8_t *kc_l;
+    const uint8_t *vc_l;
+    size_t k_row_b;
+    size_t v_row_b;
+    const float *tape_x;
+    int hd_l;
+    int owner_l;
+    bool owns;
+    bool vnorm;
+    bool vfromk;
+    bool need_kpre;
+    bool ple;
+    int P;
+    float *qpre;
+    float *kpre;
+    float *vpre;
+    float *dvn;
+    float *xpost;
+    float *ptt;
+    float *pga;
+    float *puu;
+    float *pdu;
+    float *pdg;
+    float *pdx;
+    float *xn1;
+    float *xa;
+    float *xn2;
+    float *q;
+    float *ao;
+    float *g;
+    float *u;
+    float *dxn1;
+    float *dxa;
+    float *dq;
+    float *dk;
+    float *dv;
+    float *hact;
+    float *dhact;
+    float *dgu;
+    float *dxn2;
+    float *dao;
+    float *tmpE;
+    float *p;
+    bool gate;
+    float rs;
+    int swa;
+    float *gpre;
+    float *aopre;
+    float *dg;
+    float *dxg;
+    float *opre;
+    float *fpre;
+    int *msel;
+    float *mselw;
+    float *mprob;
+    float *mg;
+    float *mu;
+    float *mh;
+    float *mdh;
+    float *mdg;
+    float *mdu;
+    float *md;
+    float *mdr;
+    float *dbr;
+    float *dyb;
+} lbw_state;
+
+// The sweep's shapes and buffers, and the layer output scale applied to dx;
+// false when an allocation failed (the phases then do nothing).
+NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s) {
     bool lprof = getenv("RUNNER_TRAIN_PROF") != NULL;
     double lt = lprof ? plat_now() : 0;
     layer_t *ly = &m->layers[l];
@@ -8275,7 +8393,139 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     // the layer, so every gradient inside the layer carries it
     if (ok && os != 1.0f)
         for (size_t i = 0; i < (size_t)T * E; i++) dx[i] *= os;
+    s->lprof = lprof;
+    s->lt = lt;
+    s->ly = ly;
+    s->E = E;
+    s->hd = hd;
+    s->n_head = n_head;
+    s->q_dim = q_dim;
+    s->kv_dim = kv_dim;
+    s->n_kv = n_kv;
+    s->kv_mul = kv_mul;
+    s->nff = nff;
+    s->moe = moe;
+    s->ne_x = ne_x;
+    s->used = used;
+    s->nfe = nfe;
+    s->scale = scale;
+    s->kc_l = kc_l;
+    s->vc_l = vc_l;
+    s->k_row_b = k_row_b;
+    s->v_row_b = v_row_b;
+    s->tape_x = tape_x;
+    s->hd_l = hd_l;
+    s->owner_l = owner_l;
+    s->owns = owns;
+    s->vnorm = vnorm;
+    s->vfromk = vfromk;
+    s->need_kpre = need_kpre;
+    s->ple = ple;
+    s->P = P;
+    s->qpre = qpre;
+    s->kpre = kpre;
+    s->vpre = vpre;
+    s->dvn = dvn;
+    s->xpost = xpost;
+    s->ptt = ptt;
+    s->pga = pga;
+    s->puu = puu;
+    s->pdu = pdu;
+    s->pdg = pdg;
+    s->pdx = pdx;
+    s->xn1 = xn1;
+    s->xa = xa;
+    s->xn2 = xn2;
+    s->q = q;
+    s->ao = ao;
+    s->g = g;
+    s->u = u;
+    s->dxn1 = dxn1;
+    s->dxa = dxa;
+    s->dq = dq;
+    s->dk = dk;
+    s->dv = dv;
+    s->hact = hact;
+    s->dhact = dhact;
+    s->dgu = dgu;
+    s->dxn2 = dxn2;
+    s->dao = dao;
+    s->tmpE = tmpE;
+    s->p = p;
+    s->gate = gate;
+    s->rs = rs;
+    s->swa = swa;
+    s->gpre = gpre;
+    s->aopre = aopre;
+    s->dg = dg;
+    s->dxg = dxg;
+    s->opre = opre;
+    s->fpre = fpre;
+    s->msel = msel;
+    s->mselw = mselw;
+    s->mprob = mprob;
+    s->mg = mg;
+    s->mu = mu;
+    s->mh = mh;
+    s->mdh = mdh;
+    s->mdg = mdg;
+    s->mdu = mdu;
+    s->md = md;
+    s->mdr = mdr;
+    s->dbr = dbr;
+    s->dyb = dyb;
+    return ok;
+}
 
+// Phase R: the layer's forward internals recomputed from the tape, attention
+// through the production worker.
+NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+    bool lprof = s->lprof;
+    double lt = s->lt;
+    layer_t *ly = s->ly;
+    int E = s->E;
+    int hd = s->hd;
+    int n_head = s->n_head;
+    int q_dim = s->q_dim;
+    int kv_dim = s->kv_dim;
+    int nff = s->nff;
+    bool moe = s->moe;
+    int ne_x = s->ne_x;
+    int used = s->used;
+    int nfe = s->nfe;
+    float scale = s->scale;
+    const uint8_t *kc_l = s->kc_l;
+    const uint8_t *vc_l = s->vc_l;
+    size_t k_row_b = s->k_row_b;
+    size_t v_row_b = s->v_row_b;
+    const float *tape_x = s->tape_x;
+    int hd_l = s->hd_l;
+    bool vnorm = s->vnorm;
+    bool need_kpre = s->need_kpre;
+    float *qpre = s->qpre;
+    float *kpre = s->kpre;
+    float *vpre = s->vpre;
+    float *xn1 = s->xn1;
+    float *xa = s->xa;
+    float *xn2 = s->xn2;
+    float *q = s->q;
+    float *ao = s->ao;
+    float *g = s->g;
+    float *u = s->u;
+    float *hact = s->hact;
+    float *tmpE = s->tmpE;
+    bool gate = s->gate;
+    float rs = s->rs;
+    int swa = s->swa;
+    float *gpre = s->gpre;
+    float *aopre = s->aopre;
+    float *opre = s->opre;
+    int *msel = s->msel;
+    float *mselw = s->mselw;
+    float *mprob = s->mprob;
+    float *mg = s->mg;
+    float *mu = s->mu;
+    bool ok = *okp;
     // ---- phase R: recompute forward internals from the tape
     for (int t = 0; ok && t < T; t++) {
         const float *xt = tape_x + (size_t)t * E;
@@ -8385,6 +8635,28 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         // the tape's recomputed forward is bit-identical to serving's
         for (int i = 0; i < nff; i++) ht[i] = gated_act(m->ffn_act, gt[i], ut[i]);
     }
+    *okp = ok;
+    s->lt = lt;
+}
+
+// Phase P: the per-layer embedding branch's adjoint on the post-FFN residual.
+NUM_STAGE void lbw_ple_branch(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+    layer_t *ly = s->ly;
+    int E = s->E;
+    int nff = s->nff;
+    bool ple = s->ple;
+    int P = s->P;
+    float *xpost = s->xpost;
+    float *ptt = s->ptt;
+    float *pga = s->pga;
+    float *puu = s->puu;
+    float *pdu = s->pdu;
+    float *pdg = s->pdg;
+    float *pdx = s->pdx;
+    float *xa = s->xa;
+    float *hact = s->hact;
+    float rs = s->rs;
+    bool ok = *okp;
     // ---- phase P (R8.9.6): the per-layer embedding branch. The forward
     // runs it on the post-FFN residual, before the layer output scale:
     //   y = x_post + rmsnorm(proj(gelu(gate x_post) * slice), w_post)
@@ -8425,6 +8697,56 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         ok = ok && matvec_t(m, ly->ple_gate, pdg, pdx, E, P, T);
         for (size_t i = 0; ok && i < (size_t)T * E; i++) dx[i] += pdx[i];
     }
+    *okp = ok;
+}
+
+// Phase B1, first half: the FFN backward site by site across the window, then
+// the attention output projection and its gate.
+NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+    bool lprof = s->lprof;
+    double lt = s->lt;
+    layer_t *ly = s->ly;
+    int E = s->E;
+    int q_dim = s->q_dim;
+    int nff = s->nff;
+    bool moe = s->moe;
+    int ne_x = s->ne_x;
+    int used = s->used;
+    int nfe = s->nfe;
+    float *xa = s->xa;
+    float *xn2 = s->xn2;
+    float *ao = s->ao;
+    float *g = s->g;
+    float *u = s->u;
+    float *dxn1 = s->dxn1;
+    float *dxa = s->dxa;
+    float *hact = s->hact;
+    float *dhact = s->dhact;
+    float *dgu = s->dgu;
+    float *dxn2 = s->dxn2;
+    float *dao = s->dao;
+    bool gate = s->gate;
+    float rs = s->rs;
+    float *gpre = s->gpre;
+    float *aopre = s->aopre;
+    float *dg = s->dg;
+    float *dxg = s->dxg;
+    float *opre = s->opre;
+    float *fpre = s->fpre;
+    int *msel = s->msel;
+    float *mselw = s->mselw;
+    float *mprob = s->mprob;
+    float *mg = s->mg;
+    float *mu = s->mu;
+    float *mh = s->mh;
+    float *mdh = s->mdh;
+    float *mdg = s->mdg;
+    float *mdu = s->mdu;
+    float *md = s->md;
+    float *mdr = s->mdr;
+    float *dbr = s->dbr;
+    float *dyb = s->dyb;
+    bool ok = *okp;
     // ---- phase B1: FFN backward site-major across the window, then the
     // attention-internal backward per position. Positions are independent
     // through every step here except the dK/dV accumulation, which keeps
@@ -8558,6 +8880,36 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         for (size_t i = 0; ok && i < (size_t)T * E; i++) dxn1[i] += dxg[i];
     }
     if (lprof) { double n2 = plat_now(); lbw_prof[1] += n2 - lt; lt = n2; }
+    *okp = ok;
+    s->lt = lt;
+}
+
+// Phase B1, second half: the score and softmax backward over KV-head groups,
+// and the shared-KV deposits.
+NUM_STAGE void lbw_attention(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+    bool lprof = s->lprof;
+    double lt = s->lt;
+    int hd = s->hd;
+    int n_head = s->n_head;
+    int q_dim = s->q_dim;
+    int kv_dim = s->kv_dim;
+    int n_kv = s->n_kv;
+    int kv_mul = s->kv_mul;
+    float scale = s->scale;
+    const uint8_t *kc_l = s->kc_l;
+    const uint8_t *vc_l = s->vc_l;
+    size_t k_row_b = s->k_row_b;
+    size_t v_row_b = s->v_row_b;
+    int owner_l = s->owner_l;
+    bool owns = s->owns;
+    float *q = s->q;
+    float *dq = s->dq;
+    float *dk = s->dk;
+    float *dv = s->dv;
+    float *dao = s->dao;
+    float *p = s->p;
+    int swa = s->swa;
+    bool ok = *okp;
     // score/softmax backward, threaded over KV-HEAD GROUPS (slice 3): each
     // dq element belongs to one (t,h) and each dk/dv element to one
     // (s,kvh), so a worker that owns whole kvh groups touches a disjoint
@@ -8589,6 +8941,32 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     }
 
     if (lprof) { double n2 = plat_now(); lbw_prof[2] += n2 - lt; lt = n2; }
+    *okp = ok;
+    s->lt = lt;
+}
+
+// Phase B2: the projection backwards once dK and dV are complete.
+NUM_STAGE void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+    layer_t *ly = s->ly;
+    int E = s->E;
+    int n_head = s->n_head;
+    int q_dim = s->q_dim;
+    int kv_dim = s->kv_dim;
+    int n_kv = s->n_kv;
+    int hd_l = s->hd_l;
+    bool owns = s->owns;
+    bool vnorm = s->vnorm;
+    bool vfromk = s->vfromk;
+    float *qpre = s->qpre;
+    float *kpre = s->kpre;
+    float *vpre = s->vpre;
+    float *dvn = s->dvn;
+    float *xn1 = s->xn1;
+    float *dxn1 = s->dxn1;
+    float *dq = s->dq;
+    float *dk = s->dk;
+    float *dv = s->dv;
+    bool ok = *okp;
     // ---- phase B2: projection backwards now that dK/dV are complete
     for (int t = 0; ok && t < T; t++) {
         if (model_layer_ropes(m, l)) {
@@ -8655,7 +9033,19 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
             ok = ok && lora_site_bw(m, l, LW_V, ly->wv, xn1, vnorm ? dvn : dv,
                                     dxn1, E, kv_dim, T);
     }
+    *okp = ok;
+}
 
+// Phase B3: the attention norm's backward and both residual paths into the layer input's gradient.
+NUM_STAGE void lbw_input_grad(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
+    bool lprof = s->lprof;
+    double lt = s->lt;
+    layer_t *ly = s->ly;
+    int E = s->E;
+    const float *tape_x = s->tape_x;
+    float *dxn1 = s->dxn1;
+    float *dxa = s->dxa;
+    bool ok = *okp;
     // ---- phase B3: attn-norm backward + both residual paths -> layer input
     for (int t = 0; ok && t < T; t++) {
         float *out = dx + (size_t)t * E;
@@ -8665,6 +9055,60 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     }
 
     if (lprof) lbw_prof[3] += plat_now() - lt;
+    *okp = ok;
+}
+
+// Every buffer lbw_state_init allocated.
+static void lbw_state_free(lbw_state *s) {
+    float *qpre = s->qpre;
+    float *kpre = s->kpre;
+    float *vpre = s->vpre;
+    float *dvn = s->dvn;
+    float *xpost = s->xpost;
+    float *ptt = s->ptt;
+    float *pga = s->pga;
+    float *puu = s->puu;
+    float *pdu = s->pdu;
+    float *pdg = s->pdg;
+    float *pdx = s->pdx;
+    float *xn1 = s->xn1;
+    float *xa = s->xa;
+    float *xn2 = s->xn2;
+    float *q = s->q;
+    float *ao = s->ao;
+    float *g = s->g;
+    float *u = s->u;
+    float *dxn1 = s->dxn1;
+    float *dxa = s->dxa;
+    float *dq = s->dq;
+    float *dk = s->dk;
+    float *dv = s->dv;
+    float *hact = s->hact;
+    float *dhact = s->dhact;
+    float *dgu = s->dgu;
+    float *dxn2 = s->dxn2;
+    float *dao = s->dao;
+    float *tmpE = s->tmpE;
+    float *p = s->p;
+    float *gpre = s->gpre;
+    float *aopre = s->aopre;
+    float *dg = s->dg;
+    float *dxg = s->dxg;
+    float *opre = s->opre;
+    float *fpre = s->fpre;
+    int *msel = s->msel;
+    float *mselw = s->mselw;
+    float *mprob = s->mprob;
+    float *mg = s->mg;
+    float *mu = s->mu;
+    float *mh = s->mh;
+    float *mdh = s->mdh;
+    float *mdg = s->mdg;
+    float *mdu = s->mdu;
+    float *md = s->md;
+    float *mdr = s->mdr;
+    float *dbr = s->dbr;
+    float *dyb = s->dyb;
     free(qpre); free(kpre);
     free(xn1); free(xa); free(xn2); free(q); free(ao); free(g); free(u);
     free(dxn1); free(dxa); free(dq); free(dk); free(dv); free(hact);
@@ -8675,6 +9119,19 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     free(pdu); free(pdg); free(pdx);
     free(msel); free(mselw); free(mprob); free(mg); free(mu); free(mh);
     free(mdh); free(mdg); free(mdu); free(md); free(mdr);
+}
+
+static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
+                          float *dx) {
+    lbw_state s;
+    bool ok = lbw_state_init(m, l, T, dx, &s);
+    lbw_recompute(m, l, T, dx, &s, &ok);
+    lbw_ple_branch(m, l, T, dx, &s, &ok);
+    lbw_ffn_and_output(m, l, T, dx, &s, &ok);
+    lbw_attention(m, l, T, dx, &s, &ok);
+    lbw_projections(m, l, T, dx, &s, &ok);
+    lbw_input_grad(m, l, T, dx, &s, &ok);
+    lbw_state_free(&s);
     return ok;
 }
 
@@ -8683,11 +9140,9 @@ bool model_lora_backward(model_t *m, const int32_t *toks, int T,
     return model_lora_backward_w(m, toks, T, NULL, loss_out);
 }
 
-// pos_w: per-transition weights (length T-1; transition t scores toks[t+1]).
-// NULL = all ones. A zero weight removes the position from loss AND gradient
-// (the prompt-masking / advantage-weighting hook GRPO-style training needs).
-bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
-                           const float *pos_w, double *loss_out) {
+// What a backward step needs before anything is allocated: an adapter, a
+// window of 2..n_ctx tokens, and a model the backward covers.
+static bool lora_backward_admit(model_t *m, int T) {
     char why[128];
     if (!m->lora) {
         fprintf(stderr, "error: backward needs a loaded adapter (--lora)\n");
@@ -8702,20 +9157,22 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
                 "%s\n", why);
         return false;
     }
+    return true;
+}
+
+// The taped forward: the inference forward, solo per position, with every
+// layer's input kept on the tape, and the window's (weighted) next-token
+// loss. A failure leaves the tape for the caller to free.
+NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
+                               const float *pos_w, double *loss_out) {
     int E = m->n_embd, V = m->n_vocab, L = m->n_layer;
-    // RUNNER_TRAIN_PROF=1: per-step phase wall times on stderr — the dev
-    // knob the slice-3 optimization ran on (guessing at the profile cost a
-    // round of measurement; this line is cheaper than being wrong again)
-    bool prof = getenv("RUNNER_TRAIN_PROF") != NULL;
-    double pt0 = prof ? plat_now() : 0, pt_fw = 0, pt_head = 0;
-    // ---- taped forward: the inference forward, solo per position
+    double loss = 0.0;
     m->tape_T = T;
     m->tape = malloc(sizeof(float) * (size_t)(L + 1) * T * E);
     if (!m->tape) { m->tape_T = 0; return false; }
-    double loss = 0.0;
     for (int t = 0; t < T; t++) {
         float *lg = model_forward(m, toks[t], t);
-        if (!lg) goto fail;
+        if (!lg) return false;
         if (t < T - 1 && (!pos_w || pos_w[t] != 0.0f)) {
             float mx = lg[0];
             for (int i = 1; i < V; i++) if (lg[i] > mx) mx = lg[i];
@@ -8726,31 +9183,35 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
                          - (double)lg[toks[t + 1]]);
         }
     }
-    if (prof) { pt_fw = plat_now(); }
-    {
-    // ---- reverse sweep
-    // Head + out-norm, chunked (slice 3): the lm-head transposed matvec is
-    // the backward's single largest tensor, and running it per position
-    // re-decoded all V rows T times. Scored positions gather into chunks
-    // of HEAD_CHUNK probs rows and one batched call per chunk decodes each
-    // row once per chunk instead — per-position gradient chains unchanged
-    // (positions are independent through the head; the chunk boundary is a
-    // scheduling artifact). Logits still recompute from the tape rather
-    // than being stored: memory over speed, the reference trade — the
-    // chunk bounds the probs plane to HEAD_CHUNK * V floats.
-    enum { HEAD_CHUNK = 16 };
-    float *dx     = calloc((size_t)T * E, sizeof(float));
+    *loss_out = loss;
+    return true;
+}
+
+// The reverse sweep starts at the head: head + out-norm into dx, chunked
+// (slice 3). The lm-head transposed matvec is the backward's single largest
+// tensor, and running it per position re-decoded all V rows T times. Scored
+// positions gather into chunks of HEAD_CHUNK probs rows and one batched call
+// per chunk decodes each row once per chunk instead — per-position gradient
+// chains unchanged (positions are independent through the head; the chunk
+// boundary is a scheduling artifact). Logits still recompute from the tape
+// rather than being stored: memory over speed, the reference trade — the
+// chunk bounds the probs plane to HEAD_CHUNK * V floats.
+enum { HEAD_CHUNK = 16 };
+NUM_STAGE bool lora_head_bw(model_t *m, const int32_t *toks, int T,
+                         const float *pos_w, float *dx) {
+    int E = m->n_embd, V = m->n_vocab, L = m->n_layer;
     float *probs  = malloc(sizeof(float) * (size_t)HEAD_CHUNK * V);
     float *hn     = malloc(sizeof(float) * (size_t)E);
     float *dhn    = malloc(sizeof(float) * (size_t)HEAD_CHUNK * E);
     // softcap adjoint needs tanh(z/c) per logit of the chunk
     float *thb    = m->logit_softcap > 0
                     ? malloc(sizeof(float) * (size_t)HEAD_CHUNK * V) : NULL;
-    int tmap[HEAD_CHUNK];
-    if (!dx || !probs || !hn || !dhn || (m->logit_softcap > 0 && !thb)) {
-        free(dx); free(probs); free(hn); free(dhn); free(thb);
-        goto fail;
+    if (!probs || !hn || !dhn || (m->logit_softcap > 0 && !thb)) {
+        free(probs); free(hn); free(dhn); free(thb);
+        return false;
     }
+    bool ok = true;
+    int tmap[HEAD_CHUNK];
     int nc = 0;
     for (int t = 0; t < T - 1; t++) {
         if (!pos_w || pos_w[t] != 0.0f) {
@@ -8788,7 +9249,8 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
         if (nc == HEAD_CHUNK || (t == T - 2 && nc > 0)) {
             memset(dhn, 0, sizeof(float) * (size_t)nc * E);
             if (!matvec_t(m, m->output, probs, dhn, E, V, nc)) {
-                free(dhn); free(dx); free(probs); free(hn); free(thb); goto fail;
+                ok = false;
+                break;
             }
             for (int c = 0; c < nc; c++) {
                 const float *hc = m->tape + ((size_t)L * T + tmap[c]) * E;
@@ -8798,8 +9260,14 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
             nc = 0;
         }
     }
-    free(dhn); free(thb);
-    if (prof) { pt_head = plat_now(); }
+    free(probs); free(hn); free(dhn); free(thb);
+    return ok;
+}
+
+// The layers in reverse, with the scratch they share: the shared-KV deposits
+// per owner layer and the window's per-layer embedding slices.
+static bool lora_layers_bw(model_t *m, const int32_t *toks, int T, float *dx) {
+    int L = m->n_layer;
     // R8.9.6 scratch: shared-KV deposits per owner layer, and the per-layer
     // embedding slices for the window, recomputed from the tape's layer-0
     // input (the scaled token embedding the forward's prepass consumed)
@@ -8826,23 +9294,42 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
         ok = lora_layer_bw(m, l, toks, T, dx);
     free(m->bw_dk_share); free(m->bw_dv_share); free(m->bw_ple);
     m->bw_dk_share = m->bw_dv_share = m->bw_ple = NULL;
-    if (prof) {
-        fprintf(stderr, "train-prof: fw %.2fs head %.2fs layers %.2fs "
-                "(R %.2f sites %.2f attn %.2f b2b3 %.2f)\n",
-                pt_fw - pt0, pt_head - pt_fw, plat_now() - pt_head,
-                lbw_prof[0], lbw_prof[1], lbw_prof[2], lbw_prof[3]);
-        memset(lbw_prof, 0, sizeof(lbw_prof));
-    }
-    free(probs); free(hn);
-    if (!ok) { free(dx); goto fail; }
-    free(dx);
+    return ok;
+}
+
+// pos_w: per-transition weights (length T-1; transition t scores toks[t+1]).
+// NULL = all ones. A zero weight removes the position from loss AND gradient
+// (the prompt-masking / advantage-weighting hook GRPO-style training needs).
+bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
+                           const float *pos_w, double *loss_out) {
+    if (!lora_backward_admit(m, T)) return false;
+    // RUNNER_TRAIN_PROF=1: per-step phase wall times on stderr — the dev
+    // knob the slice-3 optimization ran on (guessing at the profile cost a
+    // round of measurement; this line is cheaper than being wrong again)
+    bool prof = getenv("RUNNER_TRAIN_PROF") != NULL;
+    double pt0 = prof ? plat_now() : 0, pt_fw = 0, pt_head = 0;
+    double loss = 0.0;
+    bool ok = lora_taped_forward(m, toks, T, pos_w, &loss);
+    if (ok) {
+        if (prof) { pt_fw = plat_now(); }
+        float *dx = calloc((size_t)T * m->n_embd, sizeof(float));
+        ok = dx && lora_head_bw(m, toks, T, pos_w, dx);
+        if (ok) {
+            if (prof) { pt_head = plat_now(); }
+            ok = lora_layers_bw(m, toks, T, dx);
+            if (prof) {
+                fprintf(stderr, "train-prof: fw %.2fs head %.2fs layers %.2fs "
+                        "(R %.2f sites %.2f attn %.2f b2b3 %.2f)\n",
+                        pt_fw - pt0, pt_head - pt_fw, plat_now() - pt_head,
+                        lbw_prof[0], lbw_prof[1], lbw_prof[2], lbw_prof[3]);
+                memset(lbw_prof, 0, sizeof(lbw_prof));
+            }
+        }
+        free(dx);
     }
     free(m->tape); m->tape = NULL; m->tape_T = 0;
-    if (loss_out) *loss_out = loss;
-    return true;
-fail:
-    free(m->tape); m->tape = NULL; m->tape_T = 0;
-    return false;
+    if (ok && loss_out) *loss_out = loss;
+    return ok;
 }
 
 
@@ -8878,10 +9365,7 @@ bool model_lora_train_init(model_t *m, int rank, float alpha, uint64_t seed) {
             lw->a = malloc(sizeof(float) * (size_t)rank * n_in);
             lw->b = calloc((size_t)n_out * rank, sizeof(float));
             if (!lw->a || !lw->b) {
-                for (int i = 0; i <= l * LW_SLOTS + s; i++) {
-                    free(tab[i].a); free(tab[i].b);
-                }
-                free(tab);
+                lora_tab_free(tab, m->n_layer);
                 return false;
             }
             // uniform in [-1,1)/sqrt(n_in): the standard small-A init,
@@ -8893,14 +9377,11 @@ bool model_lora_train_init(model_t *m, int rank, float alpha, uint64_t seed) {
                             / 2147483648.0f) * sc;
             }
         }
-    model_lora_free(m);
-    m->lora = tab;
-    m->lora_alpha = alpha;
     // identity: a fresh adapter is a distinct model identity even before the
     // first step (B==0 makes it behaviorally the base, but training mutates
     // it in place and cached prefixes must not straddle that)
-    m->lora_id = 0x11A0D000ull ^ (seed ? seed : 0x5EEDBA5Eull) ^
-                 ((uint64_t)rank << 32);
+    lora_attach_owned(m, tab, alpha, 0x11A0D000ull ^
+                      (seed ? seed : 0x5EEDBA5Eull) ^ ((uint64_t)rank << 32));
     return true;
 }
 
@@ -8990,25 +9471,10 @@ static int install_lora_file(const char *tmp_path, const char *path) {
 #endif
 }
 
-bool model_lora_save(model_t *m, const char *path) {
-    if (!m->lora) return false;
-    size_t pn = strlen(path);
-    if (pn > SIZE_MAX - sizeof(".partial")) {
-        fprintf(stderr, "error: adapter path is too long\n");
-        return false;
-    }
-    char *tmp_path = malloc(pn + sizeof(".partial"));
-    if (!tmp_path) {
-        fprintf(stderr, "error: cannot allocate adapter checkpoint path\n");
-        return false;
-    }
-    snprintf(tmp_path, pn + sizeof(".partial"), "%s.partial", path);
-    FILE *f = fopen(tmp_path, "wb");
-    if (!f) {
-        fprintf(stderr, "error: cannot write %s\n", tmp_path);
-        free(tmp_path);
-        return false;
-    }
+// The adapter's bytes into f: the header and tensor infos, then each live
+// pair's A and B, every section 32-byte aligned. False when the header's
+// end cannot be told (the stream's own errors are the caller's to read).
+static bool lora_write_gguf(model_t *m, FILE *f) {
     // collect live pairs
     int n_t = 0;
     for (int l = 0; l < m->n_layer; l++)
@@ -9062,7 +9528,29 @@ bool model_lora_save(model_t *m, const char *path) {
             fwrite(lw->b, 1, nb, f);
             fwrite(zeros, 1, (size_t)((-(long)nb) & 31), f);
         }
-    bool ok = hdr_end >= 0 && fflush(f) == 0 && !ferror(f);
+    return hdr_end >= 0;
+}
+
+bool model_lora_save(model_t *m, const char *path) {
+    if (!m->lora) return false;
+    size_t pn = strlen(path);
+    if (pn > SIZE_MAX - sizeof(".partial")) {
+        fprintf(stderr, "error: adapter path is too long\n");
+        return false;
+    }
+    char *tmp_path = malloc(pn + sizeof(".partial"));
+    if (!tmp_path) {
+        fprintf(stderr, "error: cannot allocate adapter checkpoint path\n");
+        return false;
+    }
+    snprintf(tmp_path, pn + sizeof(".partial"), "%s.partial", path);
+    FILE *f = fopen(tmp_path, "wb");
+    if (!f) {
+        fprintf(stderr, "error: cannot write %s\n", tmp_path);
+        free(tmp_path);
+        return false;
+    }
+    bool ok = lora_write_gguf(m, f) && fflush(f) == 0 && !ferror(f);
     if (fclose(f) != 0) ok = false;
     if (!ok) {
         remove(tmp_path);
@@ -9302,28 +9790,67 @@ static void ple4_block(model_t *m, const layer_t *ly, const int32_t *tokens,
     memmove(histbuf, histbuf + (size_t)n * hcd, sizeof(float) * (size_t)hist * hcd);
 }
 
-static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
-    const int n_embd = m->n_embd;
-    const int xdim = m->xdim;
+// One block's facts for a forward over n rows at positions pos..pos+n-1,
+// resolved once and read by every stage of forward_layer().
+typedef struct {
+    layer_t *ly;
+    int      l, n, pos, dbg;
+    int      n_embd, xdim;
+    bool     local;           // a sliding-window layer
+    int      hd, n_kv, q_dim, kv_dim;
+    float    scale;
+    // gemma4 E-series shared-KV layers project Q as usual but compute no
+    // K/V at all: they attend over the cache an earlier layer already
+    // filled (kc_l/vc_l resolve to that layer's rows). Their wk/wv are
+    // never read: the current exports do not ship them at all (the loader
+    // binds them optionally on these layers, so both are NULL), and an older
+    // full-form file's copies are bound and then simply ignored.
+    bool     owns_kv;
+    uint8_t *kc_l, *vc_l;
+    size_t   k_row_b, v_row_b;
+    double   dt_t0;           // RUNNER_DEBUG_TIME's stage clock
+} fwd_layer;
+
+static void fwd_layer_facts(model_t *m, int l, int n, int pos, int dbg,
+                            fwd_layer *c) {
+    c->ly      = &m->layers[l];
+    c->l = l; c->n = n; c->pos = pos; c->dbg = dbg;
+    c->n_embd  = m->n_embd;
+    c->xdim    = m->xdim;
+    c->local   = model_is_swa(m, l);
+    c->hd      = model_head_dim(m, l);
+    c->n_kv    = model_n_head_kv(m, l);
+    c->q_dim   = model_q_dim(m, l);
+    c->kv_dim  = model_kv_dim(m, l);
+    c->scale   = model_attn_scale(m, l);
+    c->owns_kv = model_kv_owner(m, l) == l;
+    c->kc_l    = (uint8_t *)m->kcache + model_k_byte_off(m, l);
+    c->vc_l    = (uint8_t *)m->vcache + model_v_byte_off(m, l);
+    c->k_row_b = model_k_row_bytes(m, l);
+    c->v_row_b = model_v_row_bytes(m, l);
+}
+
+// ---- forward_layer's diagnostics and tape, each behind one call that
+// reads the stream without changing what the stages compute
+
+static void fwd_tape_record(model_t *m, int l, int n, int pos) {
     // adaptation D3 tape: record the residual stream entering each layer
     // (solo forwards only; the backward pass recomputes everything else
     // from these checkpoints plus the KV cache)
     if (m->tape && n == 1 && pos < m->tape_T && l < m->n_layer)
         memcpy(m->tape + ((size_t)l * m->tape_T + pos) * m->n_embd,
                m->x, sizeof(float) * (size_t)m->n_embd);
-    layer_t *ly = &m->layers[l];
-    bool local   = model_is_swa(m, l);
-    int hd       = model_head_dim(m, l);
-    int n_kv     = model_n_head_kv(m, l);
-    int q_dim    = model_q_dim(m, l);
-    int kv_dim   = model_kv_dim(m, l);
-    float scale  = model_attn_scale(m, l);
-    // RUNNER_LAYER_SIM=1: per-layer input/output cosine over the residual
-    // stream (ShortGPT-style block influence is 1 - cos). Diagnostic in
-    // the RUNNER_ACT family: measurement the depth-prune planning needs,
-    // printed per forward, aggregated by whoever is reading stderr.
-    static float *sim_snap;
-    static size_t sim_cap;
+}
+
+static float *sim_snap;   // RUNNER_LAYER_SIM: the layer's input rows
+static size_t sim_cap;
+
+// RUNNER_LAYER_SIM=1: per-layer input/output cosine over the residual
+// stream (ShortGPT-style block influence is 1 - cos). Diagnostic in
+// the RUNNER_ACT family: measurement the depth-prune planning needs,
+// printed per forward, aggregated by whoever is reading stderr.
+static bool layer_sim_begin(model_t *m, int n) {
+    const int n_embd = m->n_embd;
     bool sim = getenv("RUNNER_LAYER_SIM") != NULL;
     if (sim) {
         size_t need = (size_t)n * n_embd;
@@ -9337,50 +9864,120 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
         else
             sim = false;
     }
-    uint8_t *kc_l = (uint8_t *)m->kcache + model_k_byte_off(m, l);
-    uint8_t *vc_l = (uint8_t *)m->vcache + model_v_byte_off(m, l);
-    size_t k_row_b = model_k_row_bytes(m, l), v_row_b = model_v_row_bytes(m, l);
+    return sim;
+}
 
-    // No mixer at all (a nemotron_h MLP-only block, or an attention
-    // removed by --remove-sublayer): the residual passes straight to the
-    // FFN. The whole branch is omitted, not computed as zero and added.
-    DT_BEGIN;
-    if (ly->skip_mixer) goto nemo_ffn;
+static void layer_sim_end(const model_t *m, int l, int n) {
+    const int n_embd = m->n_embd;
+    double cs = 0;
+    for (int b = 0; b < n; b++) {
+        const float *pre = sim_snap + (size_t)b * n_embd;
+        const float *post = m->x + (size_t)b * n_embd;
+        double dp = 0, na = 0, nb2 = 0;
+        for (int i = 0; i < n_embd; i++) {
+            dp += (double)pre[i] * post[i];
+            na += (double)pre[i] * pre[i];
+            nb2 += (double)post[i] * post[i];
+        }
+        if (na > 0 && nb2 > 0) cs += dp / (sqrt(na) * sqrt(nb2));
+    }
+    fprintf(stderr, "LAYERSIM l=%d n=%d cos=%.6f\n", l, n, cs / n);
+}
 
-    // attention
+static void trace_layer_cfg(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim;
+    const int hd = c->hd, n_kv = c->n_kv, q_dim = c->q_dim, kv_dim = c->kv_dim;
+    const bool local = c->local;
+    const float scale = c->scale;
+    fprintf(stderr, "ACT L%-3d cfg swa=%d hd=%d n_kv=%d q_dim=%d kv_dim=%d "
+            "scale=%.5f out_scale=%.6f wv=%d qn=%d kn=%d pan=%d pfn=%d "
+            "anorm[absmax]=", l, (int)local, hd, n_kv, q_dim, kv_dim, scale,
+            ly->out_scale, ly->wv != NULL, ly->qnorm_w != NULL,
+            ly->knorm_w != NULL, ly->post_attn_norm_w != NULL,
+            ly->post_ffn_norm_w != NULL);
+    float a = 0;
+    for (int i = 0; ly->attn_norm_w && i < n_embd; i++) {
+        float t = ly->attn_norm_w[i] < 0 ? -ly->attn_norm_w[i] : ly->attn_norm_w[i];
+        if (t > a) a = t;
+    }
+    fprintf(stderr, "%.4g\n", a);
+    dbg_stat("post-attn-norm", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
+}
+
+static void tiedv_check_row(model_t *m, const fwd_layer *c, int b) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, pos = c->pos, hd = c->hd, n_kv = c->n_kv, kv_dim = c->kv_dim;
+    // TIED-V CHECK (RUNNER_TIEDV_CHECK=1, diagnostic only), placed
+    // AFTER rope so both sides are the post-rope rows the cache
+    // actually stores: the derived rope(V*w) against the K the store
+    // path computed. Prints per-row f32/f16 agreement so a real model
+    // can certify the derivation before RUNNER_TIEDV trusts it.
+    if (!ly->wv && ly->knorm_w && m->v_rmsnorm && tiedv_check()
+        && kv_dim <= 8192) {
+        const float *V = m->v_tmp + (size_t)b * kv_dim;
+        const float *K = m->k_tmp + (size_t)b * kv_dim;   // post-rope
+        float drv[8192];
+        for (int i = 0; i < kv_dim; i++)
+            drv[i] = V[i] * ly->knorm_w[i % hd];          // = K1
+        if (model_layer_ropes(m, l))
+            rope_apply(m, drv, n_kv, pos + b, l);         // = rope(V*w)
+        double worst = 0; long same16 = 0, exact32 = 0;
+        for (int i = 0; i < kv_dim; i++) {
+            if (drv[i] == K[i]) exact32++;
+            if (f32_to_f16(drv[i]) == f32_to_f16(K[i])) same16++;
+            double d = fabs((double)drv[i] - (double)K[i]);
+            double den = fabs((double)K[i]);
+            double rel = den > 0 ? d / den : d;
+            if (rel > worst) worst = rel;
+        }
+        fprintf(stderr, "tiedv L%-2d pos%-5d: f32 %ld/%d exact, worst "
+                "rel %.3e | f16 rows agree %ld/%d (%.4f%%)\n",
+                l, pos + b, exact32, kv_dim, worst, same16, kv_dim,
+                100.0 * (double)same16 / kv_dim);
+    }
+}
+
+// ---- forward_layer's stages
+
+// The mixer's input: the attention norm, or on hyper-connections the PLE
+// block and the stream mix.
+NUM_STAGE void layer_mixer_input(model_t *m, fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int n = c->n, pos = c->pos, n_embd = c->n_embd, xdim = c->xdim;
     if (m->hyper_conn) {
         // qwen4exp: the PLE block folds its n-gram rows into the wide
         // residual first, then the first mixer replaces the pre-norm
         if (ly->ple4) ple4_block(m, ly, m->fwd_tokens, n, pos);
-        DT_MARK(DT_PLE);
+        DT_MARK_AT(c->dt_t0, DT_PLE);
         hc_mix(m, ly->hc_attn_norm, ly->hc_attn_down, ly->hc_attn_up,
                ly->hc_attn_inject, m->xb, xdim, n);
-        DT_MARK(DT_MIX);
-    } else
-    for (int b = 0; b < n; b++)
-        xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
-              ly->attn_norm_w, ly->attn_norm_b, n_embd, m->rms_eps);
-    if (dbg) {
-        fprintf(stderr, "ACT L%-3d cfg swa=%d hd=%d n_kv=%d q_dim=%d kv_dim=%d "
-                "scale=%.5f out_scale=%.6f wv=%d qn=%d kn=%d pan=%d pfn=%d "
-                "anorm[absmax]=", l, (int)local, hd, n_kv, q_dim, kv_dim, scale,
-                ly->out_scale, ly->wv != NULL, ly->qnorm_w != NULL,
-                ly->knorm_w != NULL, ly->post_attn_norm_w != NULL,
-                ly->post_ffn_norm_w != NULL);
-        float a = 0;
-        for (int i = 0; ly->attn_norm_w && i < n_embd; i++) {
-            float t = ly->attn_norm_w[i] < 0 ? -ly->attn_norm_w[i] : ly->attn_norm_w[i];
-            if (t > a) a = t;
-        }
-        fprintf(stderr, "%.4g\n", a);
-        dbg_stat("post-attn-norm", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
-    }
-    if (ly->recurrent) {
-        if (m->granite_hybrid || m->nemotron_h)
-                               mamba2_ssd_step(m, ly, l, n, xdim);
-        else                   qwen35_linear(m, ly, l, n, xdim);
-        DT_MARK(DT_RECUR);
+        DT_MARK_AT(c->dt_t0, DT_MIX);
     } else {
+        for (int b = 0; b < n; b++)
+            xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
+                  ly->attn_norm_w, ly->attn_norm_b, n_embd, m->rms_eps);
+        DT_MARK_AT(c->dt_t0, DT_MIX);
+    }
+    if (c->dbg) trace_layer_cfg(m, c);
+}
+
+NUM_STAGE void layer_recurrent(model_t *m, fwd_layer *c) {
+    layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, xdim = c->xdim;
+    if (m->granite_hybrid || m->nemotron_h)
+                           mamba2_ssd_step(m, ly, l, n, xdim);
+    else                   qwen35_linear(m, ly, l, n, xdim);
+    DT_MARK_AT(c->dt_t0, DT_RECUR);
+}
+
+// Q (and the output gate), K and V for every row, with their adapter deltas.
+NUM_STAGE void attn_project(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim;
+    const int hd = c->hd, q_dim = c->q_dim, kv_dim = c->kv_dim;
+    const bool owns_kv = c->owns_kv;
+    const int dbg = c->dbg;
     if (m->qwen35) {
         matvec_b(m->tp, m->ssm_qkv, 2 * q_dim, ly->wq,
                  m->xb, xdim, n_embd, 2 * q_dim, ly->bq, n);
@@ -9394,13 +9991,6 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
                        sizeof(float) * hd);
             }
     }
-    // gemma4 E-series shared-KV layers project Q as usual but compute no
-    // K/V at all: they attend over the cache an earlier layer already
-    // filled (kc_l/vc_l above resolve to that layer's rows). Their wk/wv are
-    // never read: the current exports do not ship them at all (the loader
-    // binds them optionally on these layers, so both are NULL), and an older
-    // full-form file's copies are bound and then simply ignored.
-    bool owns_kv = model_kv_owner(m, l) == l;
     if (!m->qwen35) {
         // Q, the afmoe output gate (projected from the SAME normed input as
         // Q, consumed after attn_heads by the shared q_gate multiply below),
@@ -9440,6 +10030,18 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
             fprintf(stderr, "ACT L%-3d shared-kv src=%d\n", l, model_kv_owner(m, l));
         }
     }
+}
+
+// Per row: Q's norm and rotation (or the NoPE temperature), then on a layer
+// that owns its KV, K and V normed, rotated and stored in the cache.
+NUM_STAGE void attn_rope_store(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, pos = c->pos;
+    const int hd = c->hd, n_kv = c->n_kv, q_dim = c->q_dim, kv_dim = c->kv_dim;
+    const bool owns_kv = c->owns_kv;
+    const int dbg = c->dbg;
+    uint8_t *kc_l = c->kc_l, *vc_l = c->vc_l;
+    const size_t k_row_b = c->k_row_b, v_row_b = c->v_row_b;
     for (int b = 0; b < n; b++) {
         if (ly->qnorm_w)
             qk_norm(m->q + (size_t)b * q_dim, ly->qnorm_w, m->n_head,
@@ -9464,34 +10066,7 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
                     hd, m->rms_eps);
         if (model_layer_ropes(m, l))
             rope_apply(m, m->k_tmp + (size_t)b * kv_dim, n_kv, pos + b, l);
-        // TIED-V CHECK (RUNNER_TIEDV_CHECK=1, diagnostic only), placed
-        // AFTER rope so both sides are the post-rope rows the cache
-        // actually stores: the derived rope(V*w) against the K the store
-        // path computed. Prints per-row f32/f16 agreement so a real model
-        // can certify the derivation before RUNNER_TIEDV trusts it.
-        if (!ly->wv && ly->knorm_w && m->v_rmsnorm && tiedv_check()
-            && kv_dim <= 8192) {
-            const float *V = m->v_tmp + (size_t)b * kv_dim;
-            const float *K = m->k_tmp + (size_t)b * kv_dim;   // post-rope
-            float drv[8192];
-            for (int i = 0; i < kv_dim; i++)
-                drv[i] = V[i] * ly->knorm_w[i % hd];          // = K1
-            if (model_layer_ropes(m, l))
-                rope_apply(m, drv, n_kv, pos + b, l);         // = rope(V*w)
-            double worst = 0; long same16 = 0, exact32 = 0;
-            for (int i = 0; i < kv_dim; i++) {
-                if (drv[i] == K[i]) exact32++;
-                if (f32_to_f16(drv[i]) == f32_to_f16(K[i])) same16++;
-                double d = fabs((double)drv[i] - (double)K[i]);
-                double den = fabs((double)K[i]);
-                double rel = den > 0 ? d / den : d;
-                if (rel > worst) worst = rel;
-            }
-            fprintf(stderr, "tiedv L%-2d pos%-5d: f32 %ld/%d exact, worst "
-                    "rel %.3e | f16 rows agree %ld/%d (%.4f%%)\n",
-                    l, pos + b, exact32, kv_dim, worst, same16, kv_dim,
-                    100.0 * (double)same16 / kv_dim);
-        }
+        tiedv_check_row(m, c, b);
         size_t slot = (size_t)model_kv_row_at(m, l, pos + b);
         uint8_t *kc = kc_l + slot * k_row_b;
         uint8_t *vc = vc_l + slot * v_row_b;
@@ -9523,6 +10098,17 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
                     (const f16_t *)(vc_l + dslot * v_row_b), kv_dim);
         }
     }
+}
+
+NUM_STAGE void attn_rows(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, pos = c->pos, xdim = c->xdim;
+    const int hd = c->hd, q_dim = c->q_dim, kv_dim = c->kv_dim;
+    const bool local = c->local;
+    const float scale = c->scale;
+    const int dbg = c->dbg;
+    uint8_t *kc_l = c->kc_l, *vc_l = c->vc_l;
+    const size_t k_row_b = c->k_row_b, v_row_b = c->v_row_b;
     for (int b = 0; b < n; b++) {
         int p = pos + b;
         int t0 = local && p - m->swa_window + 1 > 0 ? p - m->swa_window + 1 : 0;
@@ -9539,58 +10125,61 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
             }
     }
     if (dbg) dbg_stat("attn-out", l, m->xb2 + (size_t)(n - 1) * xdim, q_dim);
+}
+
+NUM_STAGE void attn_output(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim, q_dim = c->q_dim;
     matvec_b(m->tp, m->xb, xdim, ly->wo, m->xb2, xdim, q_dim, n_embd, ly->bo, n);
     LORA_HOOK(LW_O, m->xb, xdim, m->xb2, xdim, q_dim, n_embd, n);
-    }
-    if (dbg) dbg_stat("wo-out", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
-    if (ly->post_attn_norm_w)
+}
+
+// A branch's output into the residual: its post-norm and the residual
+// scale (timed as the branch), then the add, or on hyper-connections the
+// scatter into every stream (timed as the combine). Shared by the mixer
+// and the FFN.
+NUM_STAGE void layer_branch_out(model_t *m, fwd_layer *c, const float *post_norm_w,
+                             int dt_branch) {
+    const int n = c->n, n_embd = c->n_embd, xdim = c->xdim;
+    if (post_norm_w)
         for (int b = 0; b < n; b++)
             rmsnorm(m->xb + (size_t)b * xdim, m->xb + (size_t)b * xdim,
-                    ly->post_attn_norm_w, n_embd, m->post_norm_eps);
+                    post_norm_w, n_embd, m->post_norm_eps);
     if (m->resid_scale != 1.0f)
         for (int b = 0; b < n; b++)
             for (int i = 0; i < n_embd; i++)
                 m->xb[(size_t)b * xdim + i] *= m->resid_scale;
-    DT_MARK(DT_ATTN);
+    DT_MARK_AT(c->dt_t0, dt_branch);
     if (m->hyper_conn) hc_combine(m, m->xb, xdim, n);   // scatter into every stream
     else
     for (int b = 0; b < n; b++)
         for (int i = 0; i < n_embd; i++)
             m->x[(size_t)b * n_embd + i] += m->xb[(size_t)b * xdim + i];
-    DT_MARK(DT_COMBINE);
-    if (dbg) {
-        dbg_stat("post-attn-res", l, m->x + (size_t)(n - 1) * n_embd, n_embd);
-    }
+    DT_MARK_AT(c->dt_t0, DT_COMBINE);
+}
 
-    // feed-forward (gated: silu for llama-family, gelu for gemma). MoE
-    // layers route each token to a few experts instead of one dense FFN.
-    // gemma-4 MoE is a dual branch that does its own norms off m->x directly.
-nemo_ffn:
-    if (ly->skip_ffn) goto nemo_layer_end;   // nemotron_h SSM/attention block
-    if (ly->moe_gemma) {
-        gemma_moe_ffn(m, ly, n, xdim);  // reads m->x, writes dense⊕routed to m->xb
-        goto ffn_done;
-    }
-    if (m->hyper_conn)
-        hc_mix(m, ly->hc_ffn_norm, ly->hc_ffn_down, ly->hc_ffn_up,
-               ly->hc_ffn_inject, m->xb, xdim, n);
-    else
-    for (int b = 0; b < n; b++)
-        xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
-              ly->ffn_norm_w, ly->ffn_norm_b, n_embd, m->rms_eps);
-    DT_MARK(DT_MIX);
-    if (ly->is_moe) {
-        if (ly->w_up_shexp)
-            for (int b = 0; b < n; b++)
-                memcpy(m->shexp_in + (size_t)b * n_embd,
-                       m->xb + (size_t)b * xdim,
-                       sizeof(float) * (size_t)n_embd);
-        moe_ffn(m, ly, n, xdim);   // reads normed m->xb, writes FFN out to m->xb
-        DT_MARK(DT_EXPERTS);
-        shexp_add(m, ly, m->shexp_in, n, xdim);
-        DT_MARK(DT_SHEXP);
-    } else {
-    {
+// A sparse MoE FFN: the routed experts, then the shared expert over the
+// same normed input.
+NUM_STAGE void layer_moe_ffn(model_t *m, fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int n = c->n, n_embd = c->n_embd, xdim = c->xdim;
+    if (ly->w_up_shexp)
+        for (int b = 0; b < n; b++)
+            memcpy(m->shexp_in + (size_t)b * n_embd,
+                   m->xb + (size_t)b * xdim,
+                   sizeof(float) * (size_t)n_embd);
+    moe_ffn(m, ly, n, xdim);   // reads normed m->xb, writes FFN out to m->xb
+    DT_MARK_AT(c->dt_t0, DT_EXPERTS);
+    shexp_add(m, ly, m->shexp_in, n, xdim);
+    DT_MARK_AT(c->dt_t0, DT_SHEXP);
+}
+
+// A dense FFN: gated (one dispatch for gate and up), or ungated with
+// nemotron_h's squared ReLU or Apertus' xIELU.
+NUM_STAGE void layer_dense_ffn(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim;
+    const int dbg = c->dbg;
     int nff = ly->n_ff;   // per-layer width (gemma-4 E2B varies it)
     if (!ly->w_gate) {
         // ungated MLP: up -> activation -> down, no gate branch
@@ -9623,53 +10212,68 @@ nemo_ffn:
     if (dbg) dbg_stat("ffn-act", l, m->hb + (size_t)(n - 1) * nff, nff);
     matvec_b(m->tp, m->xb, xdim, ly->w_down, m->hb, nff, nff, n_embd, NULL, n);
     LORA_HOOK(LW_DOWN, m->xb, xdim, m->hb, nff, nff, n_embd, n);
-    }
-    }
-    ffn_done:
-    DT_MARK(ly->is_moe ? DT_EXPERTS : DT_DENSE_FFN);
-    if (dbg) dbg_stat("ffn-down", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
-    if (ly->post_ffn_norm_w)
+}
+
+// feed-forward (gated: silu for llama-family, gelu for gemma). MoE
+// layers route each token to a few experts instead of one dense FFN.
+// gemma-4 MoE is a dual branch that does its own norms off m->x directly.
+NUM_STAGE void layer_ffn(model_t *m, fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim;
+    if (ly->moe_gemma) {
+        gemma_moe_ffn(m, ly, n, xdim);  // reads m->x, writes dense⊕routed to m->xb
+    } else {
+        if (m->hyper_conn)
+            hc_mix(m, ly->hc_ffn_norm, ly->hc_ffn_down, ly->hc_ffn_up,
+                   ly->hc_ffn_inject, m->xb, xdim, n);
+        else
         for (int b = 0; b < n; b++)
-            rmsnorm(m->xb + (size_t)b * xdim, m->xb + (size_t)b * xdim,
-                    ly->post_ffn_norm_w, n_embd, m->post_norm_eps);
-    if (m->resid_scale != 1.0f)
-        for (int b = 0; b < n; b++)
-            for (int i = 0; i < n_embd; i++)
-                m->xb[(size_t)b * xdim + i] *= m->resid_scale;
-    if (m->hyper_conn) hc_combine(m, m->xb, xdim, n);
-    else
-    for (int b = 0; b < n; b++)
+            xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
+                  ly->ffn_norm_w, ly->ffn_norm_b, n_embd, m->rms_eps);
+        DT_MARK_AT(c->dt_t0, DT_MIX);
+        if (ly->is_moe) layer_moe_ffn(m, c);
+        else            layer_dense_ffn(m, c);
+    }
+    if (c->dbg) dbg_stat("ffn-down", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
+    layer_branch_out(m, c, ly->post_ffn_norm_w,
+                     ly->is_moe ? DT_EXPERTS : DT_DENSE_FFN);
+}
+
+// Per-layer embedding branch (E-series). Runs on the post-FFN residual
+// and before the layer output scale, matching gemma4.cpp's ordering.
+// ple_tmp is free once the pre-pass is done, and xb once the FFN output
+// has been added into x just above.
+NUM_STAGE void layer_ple_branch(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim;
+    const int dbg = c->dbg;
+    int P = m->n_embd_ple;
+    size_t per_tok = (size_t)m->n_layer * P;
+    matvec_b(m->tp, m->ple_tmp, P, ly->ple_gate, m->x, n_embd,
+             n_embd, P, NULL, n);
+    for (int b = 0; b < n; b++) {
+        const float *slice = m->ple + (size_t)b * per_tok + (size_t)l * P;
+        float *g = m->ple_tmp + (size_t)b * P;
+        for (int i = 0; i < P; i++)
+            g[i] = gated_act(ACT_GELU, g[i], slice[i]);
+    }
+    matvec_b(m->tp, m->xb, xdim, ly->ple_proj, m->ple_tmp, P,
+             P, n_embd, NULL, n);
+    for (int b = 0; b < n; b++) {
+        float *u = m->xb + (size_t)b * xdim;
+        rmsnorm(u, u, ly->ple_post_norm, n_embd, m->rms_eps);
         for (int i = 0; i < n_embd; i++)
-            m->x[(size_t)b * n_embd + i] += m->xb[(size_t)b * xdim + i];
-    DT_MARK(DT_COMBINE);
-
-nemo_layer_end:;   // nemotron_h SSM/attention blocks land here (no FFN)
-    // Per-layer embedding branch (E-series). Runs on the post-FFN residual
-    // and before the layer output scale, matching gemma4.cpp's ordering.
-    // ple_tmp is free once the pre-pass is done, and xb once the FFN output
-    // has been added into x just above.
-    if (ly->ple_gate) {
-        int P = m->n_embd_ple;
-        size_t per_tok = (size_t)m->n_layer * P;
-        matvec_b(m->tp, m->ple_tmp, P, ly->ple_gate, m->x, n_embd,
-                 n_embd, P, NULL, n);
-        for (int b = 0; b < n; b++) {
-            const float *slice = m->ple + (size_t)b * per_tok + (size_t)l * P;
-            float *g = m->ple_tmp + (size_t)b * P;
-            for (int i = 0; i < P; i++)
-                g[i] = gated_act(ACT_GELU, g[i], slice[i]);
-        }
-        matvec_b(m->tp, m->xb, xdim, ly->ple_proj, m->ple_tmp, P,
-                 P, n_embd, NULL, n);
-        for (int b = 0; b < n; b++) {
-            float *u = m->xb + (size_t)b * xdim;
-            rmsnorm(u, u, ly->ple_post_norm, n_embd, m->rms_eps);
-            for (int i = 0; i < n_embd; i++)
-                m->x[(size_t)b * n_embd + i] += u[i];
-        }
-        if (dbg) dbg_stat("ple-out", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
+            m->x[(size_t)b * n_embd + i] += u[i];
     }
+    if (dbg) dbg_stat("ple-out", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
+}
 
+// The layer's output: gemma4's whole-layer scalar, and on hyper-connections
+// the single-stream view the diagnostics read.
+NUM_STAGE void layer_output(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, n_embd = c->n_embd;
+    const int dbg = c->dbg;
     if (ly->out_scale != 1.0f && ly->out_scale != 0.0f)
         // gemma4: whole-layer output scalar, applied after both residuals
         for (int b = 0; b < n; b++)
@@ -9684,31 +10288,113 @@ nemo_layer_end:;   // nemotron_h SSM/attention blocks land here (no FFN)
             float *xo = m->x + (size_t)b * n_embd;
             for (int i = 0; i < n_embd; i++) {
                 float acc = 0.0f;
-                for (int c = 0; c < hc; c++) acc += xs[(size_t)c * n_embd + i];
+                for (int st = 0; st < hc; st++) acc += xs[(size_t)st * n_embd + i];
                 xo[i] = acc / (float)hc;
             }
         }
     }
     if (dbg) dbg_stat("layer-out", l, m->x + (size_t)(n - 1) * n_embd, n_embd);
-    if (sim) {
-        double cs = 0;
-        for (int b = 0; b < n; b++) {
-            const float *pre = sim_snap + (size_t)b * n_embd;
-            const float *post = m->x + (size_t)b * n_embd;
-            double dp = 0, na = 0, nb2 = 0;
-            for (int i = 0; i < n_embd; i++) {
-                dp += (double)pre[i] * post[i];
-                na += (double)pre[i] * pre[i];
-                nb2 += (double)post[i] * post[i];
-            }
-            if (na > 0 && nb2 > 0) cs += dp / (sqrt(na) * sqrt(nb2));
+}
+
+static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
+    fwd_tape_record(m, l, n, pos);
+    fwd_layer c;
+    fwd_layer_facts(m, l, n, pos, dbg, &c);
+    const layer_t *ly = c.ly;
+    const int n_embd = c.n_embd, xdim = c.xdim;
+    bool sim = layer_sim_begin(m, n);
+    c.dt_t0 = dbg_time_on() ? dt_now() : 0;
+    // No mixer at all (a nemotron_h MLP-only block, or an attention
+    // removed by --remove-sublayer): the residual passes straight to the
+    // FFN. The whole branch is omitted, not computed as zero and added.
+    if (!ly->skip_mixer) {
+        layer_mixer_input(m, &c);
+        if (ly->recurrent) {
+            layer_recurrent(m, &c);
+        } else {
+            attn_project(m, &c);
+            attn_rope_store(m, &c);
+            attn_rows(m, &c);
+            attn_output(m, &c);
         }
-        fprintf(stderr, "LAYERSIM l=%d n=%d cos=%.6f\n", l, n, cs / n);
+        if (dbg) dbg_stat("wo-out", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
+        layer_branch_out(m, &c, ly->post_attn_norm_w, DT_ATTN);
+        if (dbg) dbg_stat("post-attn-res", l, m->x + (size_t)(n - 1) * n_embd, n_embd);
+    }
+    if (!ly->skip_ffn) layer_ffn(m, &c);   // skipped: a nemotron_h SSM/attention block
+    if (ly->ple_gate) layer_ple_branch(m, &c);
+    layer_output(m, &c);
+    if (sim) layer_sim_end(m, l, n);
+}
+
+// The host half of --cpu-moe's tensor-role placement on CUDA: the device ran
+// the mixer and resumes at the next layer, so everything after the mixer is
+// this call's, and it is the forward's own FFN half (the norm, the routed and
+// shared experts, the branch's post-norm and residual scale, the add, the
+// per-layer embedding branch, the layer's output scale). A hyper-connection
+// model's FFN tile is mixed and scattered on the device: the premixed form
+// below serves it.
+bool model_moe_ffn_cpu(model_t *m, int layer, int n) {
+    if (!m || layer < 0 || layer > m->n_layer || (layer == m->n_layer && !m->mtp_ready) ||
+        n < 1 || n > m->n_batch || m->hyper_conn)
+        return false;
+    layer_t *ly = &m->layers[layer];
+    if (!ly->is_moe) return false;
+    fwd_layer c;
+    fwd_layer_facts(m, layer, n, 0, 0, &c);
+    c.dt_t0 = dbg_time_on() ? dt_now() : 0;
+    layer_ffn(m, &c);
+    if (ly->ple_gate) layer_ple_branch(m, &c);
+    layer_output(m, &c);
+    return true;
+}
+
+// qwen4exp device boundary: the device has already run the hyper-connection
+// mixer, so the FFN input (n rows, stride xdim) sits in m->xb; run the routed
+// and shared experts on the host and leave the FFN OUTPUT in m->xb for the
+// device's hc_combine. No norm, no residual add here.
+bool model_moe_ffn_cpu_premixed(model_t *m, int layer, int n) {
+    if (!m || layer < 0 || layer > m->n_layer || (layer == m->n_layer && !m->mtp_ready) ||
+        n < 1 || n > m->n_batch)
+        return false;
+    layer_t *ly = &m->layers[layer];
+    if (!ly->is_moe || ly->moe_gemma) return false;
+    fwd_layer c;
+    fwd_layer_facts(m, layer, n, 0, 0, &c);
+    c.dt_t0 = dbg_time_on() ? dt_now() : 0;
+    layer_moe_ffn(m, &c);
+    return true;
+}
+
+// One token's row of an embedding table: dequantized, at the table's scale.
+// The id is untrusted (prompt ids, a corrupt cache, a mismatched tokenizer):
+// an id outside [0, n_vocab) would index the table out of its mapped rows, so
+// it is clamped to 0 and a bad id degrades output rather than reading past the
+// mapping. (The speculative path guards its drafted ids separately in
+// engine.c.) Shared by the backbone's inputs and the NextN/MTP head.
+static void embed_row(const model_t *m, const gguf_tensor *t, int32_t id,
+                      float *out, int E) {
+    if (id < 0 || id >= m->n_vocab) id = 0;
+    dequant_row(t->type, (const uint8_t *)t->data + (size_t)id * ggml_row_size(t->type, E),
+                out, E);
+    if (t->scale != 1.0f)
+        for (int i = 0; i < E; i++) out[i] *= t->scale;
+}
+
+// The backbone's input rows in m->x: the token embeddings, transformed as the
+// architecture scales them.
+static void embed_rows(model_t *m, const int32_t *tokens, int n) {
+    int n_embd = m->n_embd;
+    for (int b = 0; b < n; b++) {
+        embed_row(m, m->tok_embd, tokens[b], m->x + (size_t)b * n_embd, n_embd);
+        model_embd_transform(m, m->x + (size_t)b * n_embd);
     }
 }
 
-float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
-                           bool want_logits) {
+// A forward's start: the position, the MoE probe's ring, the recurrent
+// reset at position 0, and the RUNNER_DEBUG_ACT pass accounting. Returns
+// whether this pass is the one being dumped.
+static int forward_begin(model_t *m, int n, int pos) {
     m->fwd_pos = pos;
     m->moe_probe_depth = 0;   // the ring is scoped to one top-to-bottom layer
                               // pass, not carried across forward() calls
@@ -9719,11 +10405,6 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     // recurrent arches — including nemotron_h, which the per-arch blocks missed
     // — reset identically.
     if (pos == 0) model_recurrent_reset(m);
-    // GPU handles the leading gpu_layers. A full split (gpu_layers == n_layer)
-    // returns logits directly; a partial split runs [0, gpu_layers) on the GPU,
-    // leaves the boundary activation in the host x buffer + the offloaded
-    // layers' KV in the host cache, and the CPU loop below finishes the rest.
-    int start = 0;
     // RUNNER_DEBUG_ACT=N dumps the N-th forward pass (1-based): =1 keeps the
     // historical dump-the-first-pass behavior; =3 reaches the second DECODE
     // step — the first pass that reads KV a previous decode step wrote, which
@@ -9737,7 +10418,12 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                 n, pos, m->arch, m->embd_scale, m->rms_eps, m->attn_scale,
                 m->logit_softcap, (int)m->v_rmsnorm, (int)m->kv_q8, (int)m->kv_fp4,
                 (int)m->kv_split, m->n_suppress);
-    int n_embd = m->n_embd;
+    return dbg;
+}
+
+// The E-series per-layer embedding table, built before a partial split's
+// device pass overwrites the embeddings it is made from.
+static void forward_ple_before_split(model_t *m, const int32_t *tokens, int n) {
     // gemma-4 E-series: a partial GPU split hands off to the CPU loop below
     // starting at layer `gpu_layers`, and that hand-off overwrites m->x with
     // the boundary hidden state -- by the time the loop reads m->ple the raw
@@ -9751,25 +10437,28 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     // fed the CPU-continued layers a stale/zero per-layer-embedding table.
     if (m->n_embd_ple > 0 && m->gpu && m->gpu_layers > 0 &&
         m->gpu_layers < m->n_layer) {
-        size_t ers = ggml_row_size(m->tok_embd->type, n_embd);
-        for (int b = 0; b < n; b++) {
-            int32_t id = tokens[b];
-            if (id < 0 || id >= m->n_vocab) id = 0;
-            dequant_row(m->tok_embd->type,
-                        (uint8_t *)m->tok_embd->data + (size_t)id * ers,
-                        m->x + (size_t)b * n_embd, n_embd);
-            if (m->tok_embd->scale != 1.0f)
-                for (int i = 0; i < n_embd; i++)
-                    m->x[(size_t)b * n_embd + i] *= m->tok_embd->scale;
-            model_embd_transform(m, m->x + (size_t)b * n_embd);
-        }
+        embed_rows(m, tokens, n);
         model_ple_prepass(m, tokens, n, m->x, m->ple, m->ple_tmp);
     }
+}
+
+// GPU handles the leading gpu_layers. A full split (gpu_layers == n_layer)
+// returns logits directly; a partial split runs [0, gpu_layers) on the GPU,
+// leaves the boundary activation in the host x buffer + the offloaded
+// layers' KV in the host cache, and the CPU loop below finishes the rest.
+// Returns the device's logits when it ran the whole stack (*done), else
+// NULL with *start at the first layer the host runs.
+static float *forward_gpu_leading(model_t *m, const int32_t *tokens, int n,
+                                  int pos, bool want_logits, int *start,
+                                  bool *done) {
+    *start = 0;
+    *done = false;
     if (m->gpu) {
         if (m->gpu_layers >= m->n_layer) {
             float *lg = NULL;
             if (gpu_forward_batch(m, tokens, n, pos, want_logits, &lg)) {
                 apply_head_transforms(m, lg);
+                *done = true;
                 return lg;
             }
             // GPU failed at runtime: fall back to CPU permanently. Release the
@@ -9782,56 +10471,38 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                     "backend, continuing on CPU\n");
             gpu_disable(m);
         } else if (gpu_forward_batch(m, tokens, n, pos, false, NULL)) {
-            start = m->gpu_layers;
+            *start = m->gpu_layers;
         } else {
             fprintf(stderr, "gpu: forward failed at runtime — releasing the "
                     "backend, continuing on CPU\n");
             gpu_disable(m);
         }
     }
-    int xdim = m->xdim;   // cached at load (RNC-3)
+    return NULL;
+}
 
-    if (start == 0) {
-        size_t ers = ggml_row_size(m->tok_embd->type, n_embd);
-        for (int b = 0; b < n; b++) {
-            // tokens[] is untrusted here (prompt ids, a corrupt cache, a
-            // mismatched tokenizer): an id outside [0, n_vocab) would index the
-            // embedding table out of its mapped rows. Clamp to 0 so a bad id
-            // degrades output rather than reading past the mapping. (The
-            // speculative path guards its drafted ids separately in engine.c.)
-            int32_t id = tokens[b];
-            if (id < 0 || id >= m->n_vocab) id = 0;
-            dequant_row(m->tok_embd->type,
-                        (uint8_t *)m->tok_embd->data + (size_t)id * ers,
-                        m->x + (size_t)b * n_embd, n_embd);
-            if (m->tok_embd->scale != 1.0f)
-                for (int i = 0; i < n_embd; i++)
-                    m->x[(size_t)b * n_embd + i] *= m->tok_embd->scale;
-            model_embd_transform(m, m->x + (size_t)b * n_embd);
-        }
-        if (dbg) dbg_stat("post-embd", -1, m->x + (size_t)(n - 1) * n_embd, n_embd);
-        if (m->n_embd_ple > 0)
-            model_ple_prepass(m, tokens, n, m->x, m->ple, m->ple_tmp);
-        if (m->hyper_conn) {
-            // the wide residual starts as hc identical copies of the embedding
-            int hcd = m->hc_count * n_embd;
-            for (int b = 0; b < n; b++)
-                for (int c = 0; c < m->hc_count; c++)
-                    memcpy(m->x_hc + (size_t)b * hcd + (size_t)c * n_embd,
-                           m->x + (size_t)b * n_embd, sizeof(float) * (size_t)n_embd);
-        }
+// The host's input rows when it runs the stack from layer 0: embeddings,
+// the per-layer embedding table, and on hyper-connections the wide residual.
+static void forward_inputs(model_t *m, const int32_t *tokens, int n, int dbg) {
+    int n_embd = m->n_embd;
+    embed_rows(m, tokens, n);
+    if (dbg) dbg_stat("post-embd", -1, m->x + (size_t)(n - 1) * n_embd, n_embd);
+    if (m->n_embd_ple > 0)
+        model_ple_prepass(m, tokens, n, m->x, m->ple, m->ple_tmp);
+    if (m->hyper_conn) {
+        // the wide residual starts as hc identical copies of the embedding
+        int hcd = m->hc_count * n_embd;
+        for (int b = 0; b < n; b++)
+            for (int c = 0; c < m->hc_count; c++)
+                memcpy(m->x_hc + (size_t)b * hcd + (size_t)c * n_embd,
+                       m->x + (size_t)b * n_embd, sizeof(float) * (size_t)n_embd);
     }
-    m->fwd_tokens = tokens;   // the PLE block hashes the batch's own ids
+}
 
-    double dt_f0 = dbg_time_on() ? dt_now() : 0;
-    for (int l = start; l < m->n_layer; l++)
-        forward_layer(m, l, n, pos, dbg);
-    if (dbg_time_on()) { int k = n > 1; dt_fwd_t[k] += dt_now() - dt_f0; dt_fwd_n[k]++; dt_fwd_rows[k] += n; }
-
-    if (m->tape && n == 1 && pos < m->tape_T)
-        memcpy(m->tape + ((size_t)m->n_layer * m->tape_T + pos) * m->n_embd,
-               m->x, sizeof(float) * (size_t)m->n_embd);
-    if (!want_logits) return NULL;
+// The LM head over the last row: the final norm, the output projection and
+// the head transforms (scale, softcap, suppress).
+static float *forward_head(model_t *m, int n, int dbg) {
+    int n_embd = m->n_embd, xdim = m->xdim;   // cached at load (RNC-3)
     DT_BEGIN;
     head_norm_row(m, n - 1);
     if (dbg) dbg_stat("final-norm", m->n_layer, m->xb, n_embd);
@@ -9848,6 +10519,53 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     }
     return m->logits;
 }
+
+float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
+                           bool want_logits) {
+    int dbg = forward_begin(m, n, pos);
+    forward_ple_before_split(m, tokens, n);
+    int start;
+    bool done;
+    float *lg = forward_gpu_leading(m, tokens, n, pos, want_logits, &start, &done);
+    if (done) return lg;
+    if (start == 0) forward_inputs(m, tokens, n, dbg);
+    m->fwd_tokens = tokens;   // the PLE block hashes the batch's own ids
+
+    double dt_f0 = dbg_time_on() ? dt_now() : 0;
+    for (int l = start; l < m->n_layer; l++)
+        forward_layer(m, l, n, pos, dbg);
+    if (dbg_time_on()) { int k = n > 1; dt_fwd_t[k] += dt_now() - dt_f0; dt_fwd_n[k]++; dt_fwd_rows[k] += n; }
+
+    // the tape's last row: the final pre-norm hidden
+    if (m->tape && n == 1 && pos < m->tape_T)
+        memcpy(m->tape + ((size_t)m->n_layer * m->tape_T + pos) * m->n_embd,
+               m->x, sizeof(float) * (size_t)m->n_embd);
+    if (!want_logits) return NULL;
+    return forward_head(m, n, dbg);
+}
+
+// ---- speculative verification: the state a verify round reads (plan P6)
+// The quantities stay apart in name and in data. n_batch is the activation
+// rows one forward can take (a prompt chunk); spec_batch is the widest
+// verification a round can ask for, the rows all_logits and the recurrent
+// keep rows hold; the n of model_forward_batch_keep() is this round's width
+// (draft count + 1), at most both. Concurrent requests are separate model_t
+// instances and never share these buffers.
+// Row b of a keep-forward is position pos + b: its hidden state is
+// model_hidden_row(m, b), and its logits are computed on demand by
+// model_spec_row_logits(m, b) into all_logits row b (on a unified-memory full
+// offload, the backend's own row), valid until the next forward.
+// Rollback pairs a checkpoint with each way a round can end. On the host:
+// model_recurrent_snapshot() before the round and model_recurrent_restore()
+// on partial acceptance, then the accepted rows are folded again; where the
+// keep-forward filed per-row states (ssm_keep_n, ple4_keep_n, a device's
+// checkpoints) model_recurrent_restore_row() lands on row r without that
+// re-fold. KV rows past the accepted position are simply overwritten by the
+// next forward. The prompt-boundary mark (model_recurrent_mark) is the
+// separate checkpoint a slot's prompt reuse returns to. The draft, verify,
+// accept and commit counts and the drafting policy are the engine's
+// (engine.c); a future policy must pay for its drafts with accepted tokens
+// measured on these same primitives, and today's is unchanged.
 
 // forward a small batch keeping every row's hidden state in x (speculative
 // verify). Full GPU offload keeps hidden states on-device. A partial CUDA split
@@ -10026,25 +10744,16 @@ void model_mtp_reset(model_t *m, int pos) {
     }
 }
 
-// Run n pairs (h rows, tokens) through the head at positions pos..pos+n-1,
-// writing their KV slots; want_logits computes the last row's head output.
-static bool mtp_run(model_t *m, const float *h, size_t h_stride,
-                    const int32_t *tok, int n, int pos, bool want_logits) {
+// The head's input rows: per token, S rows (one, or one per hyper-connection
+// stream) of [enorm(embed(tok)) ; hnorm_c(h_c)], projected by the one
+// eh_proj into the block's own residual rows (mtp_res).
+NUM_STAGE void mtp_inputs(model_t *m, const float *h, size_t h_stride,
+                          const int32_t *tok, int n) {
     const int E = m->n_embd;
-    if (n < 1 || n > m->n_batch || pos < 0 || pos + n > m->n_ctx) return false;
-    double dt_m0 = dbg_time_on() ? dt_now() : 0;
-    const size_t ers = ggml_row_size(m->mtp_embd->type, E);
-    // S input rows per token: one, or one per hyper-connection stream, each
-    // [enorm(e) ; hnorm_c(h_c)] projected by the same eh_proj into stream c
     const int S = m->hyper_conn ? m->hc_count : 1;
     for (int b = 0; b < n; b++) {
         float *cat = m->mtp_cat + (size_t)b * S * 2 * E;
-        int32_t id = tok[b];
-        if (id < 0 || id >= m->n_vocab) id = 0;
-        dequant_row(m->mtp_embd->type,
-                    (const uint8_t *)m->mtp_embd->data + (size_t)id * ers, cat, E);
-        if (m->mtp_embd->scale != 1.0f)
-            for (int i = 0; i < E; i++) cat[i] *= m->mtp_embd->scale;
+        embed_row(m, m->mtp_embd, tok[b], cat, E);
         rmsnorm(cat, cat, m->mtp_enorm_w, E, m->rms_eps);
         for (int c = 1; c < S; c++)
             memcpy(cat + (size_t)c * 2 * E, cat, sizeof(float) * (size_t)E);
@@ -10053,22 +10762,34 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
             rmsnorm(cat + (size_t)c * 2 * E + E, hb + (size_t)c * E,
                     m->mtp_hnorm_w + (size_t)c * E, E, m->rms_eps);
     }
+    float *res = m->mtp_res;   // [n][S*E]
+    matvec_b(m->tp, res, E, m->mtp_eh_proj, m->mtp_cat, 2 * E, 2 * E, E,
+             NULL, n * S);
+}
+
+// The predictor block (index n_layer) as an ordinary layer over its own KV
+// region and its own residual rows.
+static void mtp_block(model_t *m, int n, int pos) {
+    float *res = m->mtp_res;
     // the block runs over its own residual rows: a drain can happen in the
     // middle of the engine's note/feed walk over a fresh batch (the queue
     // fills at n_batch), and the trunk's rows it still has to note must stay
     // intact. forward_layer reads the residual through m->x_hc / m->x, so
     // those pointers are swapped for the duration (head_norm_row's trick).
-    float *res = m->mtp_res;   // [n][S*E]
-    matvec_b(m->tp, res, E, m->mtp_eh_proj, m->mtp_cat, 2 * E, 2 * E, E,
-             NULL, n * S);
     float *save_x = m->x, *save_xhc = m->x_hc;
     if (m->hyper_conn) m->x_hc = res; else m->x = res;
     forward_layer(m, m->n_layer, n, pos, 0);
     m->x = save_x; m->x_hc = save_xhc;
-    if (!want_logits) {
-        if (dbg_time_on()) { dt_mtp_t += dt_now() - dt_m0; dt_mtp_n++; dt_mtp_rows += n; }
-        return true;
-    }
+}
+
+// The head over the last row: its norm (the shared head norm, or the
+// backbone's output norm; on hyper-connections the block's own stream mix),
+// then the LM head into mtp_logits. mtp_hid keeps the row the next chained
+// step reads.
+NUM_STAGE void mtp_head(model_t *m, int n) {
+    const int E = m->n_embd;
+    const int S = m->hyper_conn ? m->hc_count : 1;
+    const float *res = m->mtp_res;
     const float *last = res + (size_t)(n - 1) * S * E;
     if (m->hyper_conn) {
         // the next chained step reads the wide residual; the head reads it
@@ -10087,7 +10808,20 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
         matvec_b(m->tp, m->mtp_logits, m->n_vocab, m->mtp_head, m->mtp_hid, E, E,
                  m->n_vocab, NULL, 1);
     }
-    m->mtp_logits_pos = pos + n;
+}
+
+// Run n pairs (h rows, tokens) through the head at positions pos..pos+n-1,
+// writing their KV slots; want_logits computes the last row's head output.
+static bool mtp_run(model_t *m, const float *h, size_t h_stride,
+                    const int32_t *tok, int n, int pos, bool want_logits) {
+    if (n < 1 || n > m->n_batch || pos < 0 || pos + n > m->n_ctx) return false;
+    double dt_m0 = dbg_time_on() ? dt_now() : 0;
+    mtp_inputs(m, h, h_stride, tok, n);
+    mtp_block(m, n, pos);
+    if (want_logits) {
+        mtp_head(m, n);
+        m->mtp_logits_pos = pos + n;
+    }
     if (dbg_time_on()) { dt_mtp_t += dt_now() - dt_m0; dt_mtp_n++; dt_mtp_rows += n; }
     return true;
 }

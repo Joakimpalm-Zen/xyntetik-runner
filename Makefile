@@ -235,6 +235,7 @@ TEST_METAL_SHADERS = $(TEST_BATCH:test-batch%=test-metal-shaders%)
 TEST_METAL_KQUANTS = $(TEST_BATCH:test-batch%=test-metal-kquants%)
 TEST_MODEL_LOAD_FAILURE = $(TEST_BATCH:test-batch%=test-model-load-failure%)
 TEST_MODEL_LOAD_OOM = $(TEST_BATCH:test-batch%=test-model-load-oom%)
+TEST_MOE_HOST_BRIDGE = $(TEST_BATCH:test-batch%=test-moe-host-bridge%)
 TEST_THREAD_DEFAULT = $(TEST_BATCH:test-batch%=test-thread-default%)
 
 # Every module header, so a change to any of them rebuilds. runner.h was one
@@ -1296,6 +1297,14 @@ TEST_MODEL_LOAD_OOM_SRC = tests/test_model_load_oom.c $(OBJDIR)/gguf.o \
 $(TEST_MODEL_LOAD_OOM): $(TEST_MODEL_LOAD_OOM_SRC) src/model.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MODEL_LOAD_OOM_SRC) -o $@ $(LDFLAGS)
 
+# The host MoE bridge (--cpu-moe on CUDA) against the CPU forward's FFN
+# (tests/test_moe_host_bridge.c), built the same way: model.c compiled in.
+TEST_MOE_HOST_BRIDGE_SRC = tests/test_moe_host_bridge.c $(OBJDIR)/gguf.o \
+                           $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                           $(OBJDIR)/vramreg.o $(GPU_OBJ)
+$(TEST_MOE_HOST_BRIDGE): $(TEST_MOE_HOST_BRIDGE_SRC) src/model.c $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_MOE_HOST_BRIDGE_SRC) -o $@ $(LDFLAGS)
+
 # The CPU-only backend stub must be able to STAND IN for a real backend --
 # that is the entire claim in its own header comment ("CUDA (cuda.c) and Metal
 # (metal.m) implement this same interface"). It could not: gpu_max_working_set,
@@ -2257,7 +2266,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_QUANTIZE) \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) \
-      $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
+      $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
       runner test.gguf test-q8.gguf test-bf16.gguf test-ornith.gguf test-ornith-draft.gguf test-yarn.gguf \
@@ -2474,6 +2483,16 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	    test-load-oom-cut.gguf test-load-oom-ffw.gguf 2> test-model-load-oom.err || \
 	    { tail -40 test-model-load-oom.err; exit 1; }
 	@tail -1 test-model-load-oom.err
+	@# the host MoE bridge equals the forward's FFN on every MoE layer: the
+	@# routings above, Granite's residual scale, Nemotron-H's gate-less
+	@# shared expert
+	$(PYTHON) scripts/make-test-hybrid.py test-bridge-nemo --arch nemotron_h_moe > /dev/null
+	./$(TEST_MOE_HOST_BRIDGE) test-load-oom-moe.gptoss-mxfp4.gguf test-load-oom-moe.shexpg.gguf \
+	    test-load-oom-moe.shexp.gguf test-load-oom-moe.gemma4-moe.gguf test-load-oom-moe.moe4.gguf \
+	    test-load-oom-moe.afmoe-plain.gguf test-load-oom-moe.ggroup.gguf test-load-oom-moe.rsigmoid.gguf \
+	    test-load-oom-hybrid.gguf test-bridge-nemo.gguf 2> test-moe-host-bridge.err || \
+	    { tail -20 test-moe-host-bridge.err; exit 1; }
+	@tail -1 test-moe-host-bridge.err
 	$(MAKE) --no-print-directory test-bare-invocation
 	$(MAKE) --no-print-directory test-help-interface
 	$(MAKE) --no-print-directory test-shader-embed
@@ -2694,7 +2713,7 @@ clean:
 	      $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
 	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
-	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err \
+	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
 	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \

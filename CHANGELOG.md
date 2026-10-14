@@ -5,6 +5,30 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`RUNNER_TRAIN_GPU=1` trains a MoE adapter to the CPU's bytes.** The
+  device side of the backward's transposed matvec caches each weight it
+  uploads, and it knew a weight by its descriptor's address. A routed
+  expert reaches the backward as a view of the fused expert tensor, built
+  for each call, so every expert of a layer arrived at the same address and
+  the first expert's weights served every later expert: the MoE adapters'
+  gradients through the expert down projections were wrong whenever the
+  CUDA assist was on (dense models were unaffected). The cache now knows a
+  weight by the bytes it holds, and the MoE adapter fixtures are held to the
+  CPU's bytes on CUDA hosts.
+
+- **`--cpu-moe` on CUDA runs each MoE layer's FFN exactly as the CPU forward
+  does.** With the experts on the host, the device hands each MoE layer's
+  residual to a host function that runs the FFN and its tail. That function
+  was a copy of the forward's FFN, and on x86-64 it compiled differently from
+  the CPU forward, so `--cpu-moe` results on CUDA move slightly: gpt-oss 20B's
+  teacher-forced mean NLL by 3e-5 and Qwen3 30B-A3B's by up to 1e-3 with
+  every expert layer on the host. The copy also lacked two later families'
+  rules (Granite 4 hybrid's residual multiplier, Nemotron-H's gate-less shared
+  expert), but neither family reaches it in this release: both run on the CPU
+  under `--cpu-moe`. The host path now runs the forward's own FFN stages, and
+  `tests/test_moe_host_bridge.c` holds it equal, bit for bit, to the CPU
+  forward on every MoE layer of the fixtures.
+
 - **`runner -i` shows a reasoning model's thinking as thinking.** The chat
   loop started its reasoning split inside the thought only for Harmony,
   whatever the thinking mode. Qwen 3.5 and 3.8, Granite 4.2, Nemotron and

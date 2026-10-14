@@ -96,6 +96,50 @@ def test_training_is_byte_deterministic(runner_bin, base, tmp_path):
     assert r1["build"]["compiler"] and r1["build"]["os"] and r1["build"]["arch"]
 
 
+# Every family the trainer admits trains reproducibly, not only the plain
+# fixture above: the backward pass branches by family (qk-norm, Gemma's norms
+# and softcap, the E-series per-layer embedding, Muse, Granite's multipliers,
+# a quantized base, sparse-MoE attention adapters with and without router
+# renormalization), and a family whose two identical runs differ would make
+# every comparison of its adapters meaningless.
+TRAIN_FAMILIES = {
+    "qk-norm": ("make-test-model.py", ["--qk-norm"], None),
+    "gemma3": ("make-test-model.py", ["--gemma3"], None),
+    "gemma4": ("make-test-model.py", ["--arch", "gemma4"], None),
+    "e-series": ("make-test-model.py", ["--eseries", "3,8", "--drop-kv", "shared"], None),
+    "muse": ("make-test-model.py", ["--muse-glimmer"], None),
+    "granite": ("make-test-model.py", ["--granite"], None),
+    "q8_0": ("make-test-model.py", ["--quant", "q8_0"], None),
+    "moe-renorm": ("make-test-moe.py", [], "moe4-train"),
+    "moe-no-renorm": ("make-test-moe.py", [], "moe4-train-nonorm"),
+}
+
+
+def _family_fixture(tmp_path, family):
+    gen, args, member = TRAIN_FAMILIES[family]
+    d = tmp_path / "fx"
+    d.mkdir()
+    if member:
+        subprocess.run([sys.executable, ROOT / "scripts" / gen, str(d / "m")],
+                       check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+        (d / f"m.{member}.gguf").rename(d / "base.gguf")
+    else:
+        subprocess.run([sys.executable, ROOT / "scripts" / gen, *args, str(d / "base.gguf")],
+                       check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    (d / "corpus.txt").write_text(CORPUS)
+    return d
+
+
+@pytest.mark.parametrize("family", sorted(TRAIN_FAMILIES))
+def test_every_trainable_family_is_byte_deterministic(runner_bin, base, tmp_path, family):
+    d = _family_fixture(tmp_path, family)
+    a1, a2 = tmp_path / "a1.gguf", tmp_path / "a2.gguf"
+    l1 = _train(runner_bin, d, a1, steps=4)
+    l2 = _train(runner_bin, d, a2, steps=4)
+    assert l1 == l2, (family, "loss trajectories differ between identical runs")
+    assert a1.read_bytes() == a2.read_bytes(), (family, "adapter files differ")
+
+
 def test_loss_falls_and_adapter_improves_score(runner_bin, base, tmp_path):
     out = tmp_path / "ad.gguf"
     losses = _train(runner_bin, base, out, steps=30)
@@ -103,6 +147,57 @@ def test_loss_falls_and_adapter_improves_score(runner_bin, base, tmp_path):
     base_nll = _score(runner_bin, base)
     tuned_nll = _score(runner_bin, base, lora=out)
     assert tuned_nll < base_nll - 0.2, (base_nll, tuned_nll)
+
+
+# --train-dpo end to end: run_train's DPO step loop, its per-step fields, the
+# save and the record naming the objective. The objective and its gradient
+# are gated numerically by tests/test_dpo_grad.c; this pins the CLI around
+# them, which nothing else ran.
+DPO_FIELDS = ("step", "pair", "tokens", "loss", "margin", "acc", "coeff",
+              "logp_w", "logp_l", "logp_ref_w", "logp_ref_l")
+
+
+def _train_dpo(runner_bin, base_dir, data, out, steps=4):
+    cmd = [runner_bin, "-m", str(base_dir / "base.gguf"),
+           "--train-dpo", str(data), "--train-steps", str(steps),
+           "--lr", "3e-3", "--train-out", str(out), "-t", "2", "--gpu", "off"]
+    p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=600)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    return [json.loads(l) for l in p.stdout.splitlines() if l]
+
+
+def test_dpo_training_is_byte_deterministic_and_recorded(runner_bin, base, tmp_path):
+    data = tmp_path / "pairs.jsonl"
+    data.write_text(
+        json.dumps({"prompt": "the runner trains", "chosen": " the adapter",
+                    "rejected": " the corpus"}) + "\n" +
+        json.dumps({"prompt": "the adapter learns", "chosen": " the corpus",
+                    "rejected": " the runner"}) + "\n")
+    a1, a2 = tmp_path / "d1.gguf", tmp_path / "d2.gguf"
+    s1 = _train_dpo(runner_bin, base, data, a1)
+    s2 = _train_dpo(runner_bin, base, data, a2)
+    assert [{k: s[k] for k in DPO_FIELDS} for s in s1] == \
+        [{k: s[k] for k in DPO_FIELDS} for s in s2]
+    assert a1.read_bytes() == a2.read_bytes()
+    assert [s["step"] for s in s1] == [1, 2, 3, 4]
+    assert [s["pair"] for s in s1] == [0, 1, 0, 1]
+    # the first step's adapter is the base (B = 0): the policy is exactly
+    # the reference the bypass measures
+    assert s1[0]["margin"] == 0.0
+    assert s1[0]["logp_w"] == s1[0]["logp_ref_w"]
+    assert s1[0]["logp_l"] == s1[0]["logp_ref_l"]
+    rec = json.loads((tmp_path / "d1.gguf.train.json").read_text())
+    assert rec["objective"] == "dpo"
+    assert rec["dpo_beta"] == pytest.approx(0.1)
+    assert rec["steps"] == 4
+    assert rec["adamw"] == {"beta1": 0.9, "beta2": 0.999, "eps": 1e-8,
+                            "weight_decay": 0.01}
+    assert rec["loss_first"] == s1[0]["loss"]
+    assert rec["loss_last"] == s1[-1]["loss"]
+    assert rec["adapter"]["sha256"] == hashlib.sha256(a1.read_bytes()).hexdigest()
+    # and the adapter serves
+    _score(runner_bin, base, lora=a1)
 
 
 def test_jsonl_mode_trains_with_prompt_masking(runner_bin, base, tmp_path):
@@ -223,6 +318,31 @@ def test_gpu_training_matches_cpu_bytes(runner_bin, base, tmp_path):
         pytest.skip("no CUDA device engaged")
     assert a_cpu.read_bytes() == a_gpu.read_bytes(), \
         "GPU-assisted training changed the adapter bytes"
+
+
+# The MoE adapters' backward runs every routed expert's down projection
+# through the transposed matvec, each expert as a view of the fused expert
+# tensor. With RUNNER_TRAIN_GPU=1 those views go to the device, so the device
+# must tell one expert's bytes from another's: a cache that knew a tensor by
+# its descriptor's address reused the first expert's weights for every later
+# one, and the adapter came out different from the CPU's.
+@pytest.mark.parametrize("family", ["moe-renorm", "moe-no-renorm"])
+def test_gpu_training_matches_cpu_bytes_on_moe_experts(runner_bin, base, tmp_path, family):
+    import os
+    d = _family_fixture(tmp_path, family)
+    a_cpu, a_gpu = tmp_path / "cpu.gguf", tmp_path / "gpu.gguf"
+    _train(runner_bin, d, a_cpu, steps=3, extra=("--gpu", "off"))
+    env = dict(os.environ, RUNNER_TRAIN_GPU="1")
+    cmd = [runner_bin, "-m", str(d / "base.gguf"),
+           "--train", str(d / "corpus.txt"), "--train-steps", "3",
+           "--lr", "3e-3", "--train-out", str(a_gpu), "-t", "2", "--gpu", "off"]
+    p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=600, env=env)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    if b"train-gpu:" not in p.stderr or b"no usable CUDA" in p.stderr:
+        pytest.skip("no CUDA device engaged")
+    assert a_cpu.read_bytes() == a_gpu.read_bytes(), \
+        (family, "GPU-assisted training changed the MoE adapter's bytes")
 
 
 def test_seed_changes_the_adapter(runner_bin, base, tmp_path):
