@@ -1658,7 +1658,14 @@ endif
 # encoder (test_metal_kvfp4.m), the banner proving the fp4 cache was in
 # use, and the tolerance gate's fp4 arms (GPU fp4 against CPU fp4 within the
 # reassociation floor). Like test-metal-kv-q8 it wants a real small model.
-test-metal-kv-fp4: runner $(TEST_KV_TOL) $(TEST_METAL_KVFP4)
+# the store-kernel binary is Objective-C: a prerequisite only on Darwin, so
+# test-metal (which make test runs everywhere) skips cleanly elsewhere
+ifeq ($(shell uname -s),Darwin)
+TEST_METAL_KV_FP4_DEPS = $(TEST_METAL_KVFP4)
+else
+TEST_METAL_KV_FP4_DEPS =
+endif
+test-metal-kv-fp4: runner $(TEST_KV_TOL) $(TEST_METAL_KV_FP4_DEPS)
 ifeq ($(shell uname -s),Darwin)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
