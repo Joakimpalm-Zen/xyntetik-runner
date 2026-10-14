@@ -2365,23 +2365,32 @@ static gpu_weights *shared_acquire(model_t *m, size_t act_bytes, int max_hd) {
     return w;
 }
 
-bool gpu_init(model_t *m) {
-    // every weight matmul must have a kernel for its quant type (wv may be
-    // absent: gemma4 global layers reuse the raw K projection as V).
-    // gpt-oss runs here since the sink-aware attention softmax, the MXFP4
-    // kernels, swiglu_oai and the router/expert bias plumbing landed
-    // (2026-08-01); the old refusal is gone.
-    // Generalized MoE routing has no device kernel: k_moe_route is softmax +
-    // top-k + renormalize with no bias input, and regenerating kernels_ptx.h
-    // is the CUDA-13.3 machine's job. Refuse the backend rather than route
-    // with the wrong function and produce confident, wrong output.
-    // Mamba-2 hybrids (granitehybrid, nemotron_h) have a device SSD-scan
-    // + conv1d kernel (k_mamba2_*), dispatched from gpu_mamba2_recurrent and
-    // wired through skip_mixer/skip_ffn below. nemotron_h (dense) and DENSE
-    // granitehybrid (h-micro) fully offload — CPU/CUDA token-identity
-    // measured 2026-08-21 (compat-reports/cpu-cuda-hybrid). MoE granitehybrid
-    // (h-small) still trips the shared-expert / MoE-router guards below and
-    // falls back there.
+// One instance's activation widths and the scratch the plan budgets.
+typedef struct {
+    int q_dim, kv_dim, max_hd, xdim;
+    int q35_convdim, q35_mixdim;   // DeltaNet conv and mix widths
+    size_t act_bytes;
+} cuda_dims;
+
+// Every refusal that needs no driver: router shapes, per-layer expert
+// counts, shared-expert and gate shapes, FFN widths, tensor types.
+// every weight matmul must have a kernel for its quant type (wv may be
+// absent: gemma4 global layers reuse the raw K projection as V).
+// gpt-oss runs here since the sink-aware attention softmax, the MXFP4
+// kernels, swiglu_oai and the router/expert bias plumbing landed
+// (2026-08-01); the old refusal is gone.
+// Generalized MoE routing has no device kernel: k_moe_route is softmax +
+// top-k + renormalize with no bias input, and regenerating kernels_ptx.h
+// is the CUDA-13.3 machine's job. Refuse the backend rather than route
+// with the wrong function and produce confident, wrong output.
+// Mamba-2 hybrids (granitehybrid, nemotron_h) have a device SSD-scan
+// + conv1d kernel (k_mamba2_*), dispatched from gpu_mamba2_recurrent and
+// wired through skip_mixer/skip_ffn below. nemotron_h (dense) and DENSE
+// granitehybrid (h-micro) fully offload — CPU/CUDA token-identity
+// measured 2026-08-21 (compat-reports/cpu-cuda-hybrid). MoE granitehybrid
+// (h-small) still trips the shared-expert / MoE-router guards below and
+// falls back there.
+static bool cuda_admit(model_t *m) {
     if (m->n_expert > 0 && !model_moe_router_is_plain(m)) {
         fprintf(stderr, "gpu: this model's MoE router (gating=%d groups=%d "
                 "norm_w=%d scale=%g) has no device kernel — running on CPU\n",
@@ -2495,7 +2504,11 @@ bool gpu_init(model_t *m) {
                 !gpu_tensor_type_ok(ly->ffn_down_exps)) return false;
         }
     }
+    return true;
+}
 
+// The driver library loaded and initialized, and a device present.
+static bool cuda_open_driver(void) {
     // Deterministic admission-fallback tracer. This fires before driver
     // discovery so CPU-only CI can hold the diagnostic contract for a failure
     // that normally requires an actual CUDA device plus host allocation
@@ -2530,6 +2543,356 @@ bool gpu_init(model_t *m) {
         fprintf(stderr, "gpu: CUDA reports no devices — using CPU\n");
         return false;
     }
+    return true;
+}
+
+// The instance's activation widths (per-layer maxima on heterogeneous
+// architectures) and the scratch bytes the split plan budgets for.
+static void cuda_instance_dims(const model_t *m, cuda_dims *D) {
+    // heterogeneous archs (gemma4) vary q/kv widths per layer: size the
+    // shared activation buffers to the maxima
+    int q_dim = 0, kv_dim = 0, max_hd = 0;
+    for (int l = 0; l < m->n_layer; l++) {
+        if (model_q_dim(m, l)    > q_dim)  q_dim  = model_q_dim(m, l);
+        if (model_kv_dim(m, l)   > kv_dim) kv_dim = model_kv_dim(m, l);
+        if (model_head_dim(m, l) > max_hd) max_hd = model_head_dim(m, l);
+    }
+    int xdim = q_dim > m->n_embd ? q_dim : m->n_embd;
+    int q35_convdim = m->qwen35
+                    ? 2 * m->ssm.state * m->ssm.groups + m->ssm.inner : 0;
+    int q35_mixdim = q35_convdim > 2 * q_dim ? q35_convdim : 2 * q_dim;
+    size_t act_bytes = sizeof(float) * (MVB * ((size_t)m->n_embd + 3 * xdim +
+                       q_dim + 2 * kv_dim + 2 * m->n_ff +
+                       (size_t)m->n_head * m->n_ctx) + m->n_vocab);
+    if (m->qwen35) {
+        size_t q35_scratch = MVB * ((size_t)q35_mixdim + q35_convdim +
+                             m->ssm.inner + 2 * m->ssm.v_heads + q_dim);
+        size_t q35_persistent = (size_t)m->n_layer *
+                                (m->ssm.conv_kernel - 1) * q35_convdim +
+                                (size_t)m->n_layer * m->ssm.v_heads *
+                                m->ssm.state * m->ssm.state;
+        act_bytes += sizeof(float) * (q35_scratch + 2 * q35_persistent);
+    }
+    if (m->granite_hybrid || m->nemotron_h) {
+        int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
+        int dip = 2 * m->ssm.inner + 2 * m->ssm.groups * m->ssm.state +
+                  m->ssm.v_heads;
+        size_t scr = MVB * ((size_t)dip + cd + m->ssm.inner);
+        size_t per = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * cd +
+                     (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
+        act_bytes += sizeof(float) * (scr + 2 * per);
+    }
+    D->q_dim = q_dim;
+    D->kv_dim = kv_dim;
+    D->max_hd = max_hd;
+    D->xdim = xdim;
+    D->q35_convdim = q35_convdim;
+    D->q35_mixdim = q35_mixdim;
+    D->act_bytes = act_bytes;
+}
+
+// The KV cache for the offloaded layers (and a bound NextN/MTP block).
+static bool cuda_alloc_kv(model_t *m, gpu_t *g) {
+    // device KV holds only the offloaded layers [0, gpu_layers) -- the
+    // raw cumulative boundary, not layer gpu_layers's own (possibly
+    // redirected) storage location. See model_kv_boundary_bytes().
+    // K and V are sized separately: under --kv k8v4 the two caches
+    // have different row formats (K q8_0, V fp4).
+    const bool mtp_dev = m->mtp_ready && m->gpu_layers == m->n_layer;
+    size_t k_bytes = model_k_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
+    size_t v_bytes = model_v_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
+    CK(cu.MemAlloc(&g->kc, k_bytes));
+    CK(cu.MemAlloc(&g->vc, v_bytes));
+    CK(cu.MemsetD8(g->kc, 0, k_bytes));
+    CK(cu.MemsetD8(g->vc, 0, v_bytes));
+    return true;
+fail:
+    return false;
+}
+
+// Per-column activation scratch, the hyper-connection and NextN/MTP
+// buffers, attention partials and the logits.
+static bool cuda_alloc_activations(model_t *m, gpu_t *g, const cuda_dims *D) {
+    int q_dim = D->q_dim;
+    int kv_dim = D->kv_dim;
+    int max_hd = D->max_hd;
+    int xdim = D->xdim;
+    int q35_mixdim = D->q35_mixdim;
+    const bool mtp_dev = m->mtp_ready && m->gpu_layers == m->n_layer;
+    if (m->n_embd_ple > 0) {
+        // [token][layer][n_embd_ple] for a whole tile, plus the per-layer
+        // gate scratch. The pre-pass itself runs on the host (its
+        // per-token row gather+dequant from the quantized token table has
+        // no device kernel; see model_ple_prepass), so only its result
+        // crosses the bus — once per forward, not once per layer.
+        size_t per_tok = (size_t)m->n_layer * m->n_embd_ple;
+        CK(cu.MemAlloc(&g->ple,   sizeof(float) * MVB * per_tok));
+        CK(cu.MemAlloc(&g->ple_g, sizeof(float) * MVB * m->n_embd_ple));
+    }
+    CK(cu.MemAlloc(&g->x,      sizeof(float) * MVB * m->n_embd));
+    CK(cu.MemAlloc(&g->xb,     sizeof(float) * MVB * xdim));
+    CK(cu.MemAlloc(&g->xb2,    sizeof(float) * MVB * xdim));
+    if (mtp_dev) {
+        size_t hcd = (size_t)mtp_streams(m) * m->n_embd;
+        CK(cu.MemAlloc(&g->mtp_h,       sizeof(float) * (size_t)m->n_batch * hcd));
+        CK(cu.MemAlloc(&g->mtp_pending, sizeof(float) * hcd));
+        CK(cu.MemAlloc(&g->mtp_cat,     sizeof(float) * MVB * hcd * 2));
+        CK(cu.MemAlloc(&g->mtp_hid,     sizeof(float) * hcd));
+        CK(cu.MemAlloc(&g->mtp_en,      sizeof(float) * MVB * m->n_embd));
+        CK(cu.MemAlloc(&g->mtp_hn,      sizeof(float) * MVB * hcd));
+        CK(cu.MemAlloc(&g->mtp_rows,    sizeof(float) * (size_t)m->n_batch * hcd));
+        CK(cu.MemsetD8(g->mtp_pending, 0, sizeof(float) * hcd));
+        if (m->qwen35 && cu.MemcpyDtoDAsync) {
+            int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
+            size_t hist_l = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * convdim;
+            size_t state_l = (size_t)m->n_layer * m->ssm.v_heads * m->ssm.state * m->ssm.state;
+            g->snap_rows = m->spec_batch < 8 ? m->spec_batch : 8;
+            CK(cu.MemAlloc(&g->snap_state, sizeof(float) * state_l * g->snap_rows));
+            CK(cu.MemAlloc(&g->snap_hist,  sizeof(float) * (hist_l ? hist_l : 1) * g->snap_rows));
+        }
+    }
+    if (m->hyper_conn) {
+        size_t hcd = (size_t)m->hc_count * m->n_embd;
+        CK(cu.MemAlloc(&g->x_hc,      sizeof(float) * MVB * hcd));
+        CK(cu.MemAlloc(&g->hc_xn,     sizeof(float) * MVB * hcd));
+        CK(cu.MemAlloc(&g->hc_gate,   sizeof(float) * MVB * hcd));
+        CK(cu.MemAlloc(&g->hc_lo,     sizeof(float) * MVB * m->hc_low_rank));
+        CK(cu.MemAlloc(&g->hc_inject, sizeof(float) * MVB * m->hc_count));
+        CK(cu.MemAlloc(&g->splitk,    sizeof(float) * SPLITK_PARTIALS));
+    }
+    CK(cu.MemAlloc(&g->q,      sizeof(float) * MVB * q_dim));
+    CK(cu.MemAlloc(&g->kt,     sizeof(float) * MVB * kv_dim));
+    CK(cu.MemAlloc(&g->vt,     sizeof(float) * MVB * kv_dim));
+    // hb/hb2 also hold gemma-4 MoE's fused gate_up (2*n_ff_exp) for one
+    // token; MVB*n_ff dwarfs that for real models, but size for the max so a
+    // pathological n_ff_exp can never overrun the buffer.
+    size_t hb_elems = (size_t)MVB * m->n_ff;
+    if (m->moe_gemma && 2 * (size_t)m->n_ff_exp > hb_elems)
+        hb_elems = 2 * (size_t)m->n_ff_exp;
+    CK(cu.MemAlloc(&g->hb,     sizeof(float) * hb_elems));
+    CK(cu.MemAlloc(&g->hb2,    sizeof(float) * hb_elems));
+    if (gpu_q8x_on()) {
+        // the widest matvec input: FFN down (n_ff), the attention/recurrent
+        // projections (xdim, the DeltaNet mix), the MTP concat (2 n_embd)
+        int mi = xdim;
+        if (m->n_ff > mi) mi = m->n_ff;
+        if (q35_mixdim > mi) mi = q35_mixdim;
+        if (2 * m->n_embd > mi) mi = 2 * m->n_embd;
+        if (m->ssm.inner > mi) mi = m->ssm.inner;
+        g->q8x_cap = mi;
+        CK(cu.MemAlloc(&g->q8x_q, (size_t)MVB * mi));
+        CK(cu.MemAlloc(&g->q8x_d, sizeof(float) * (size_t)MVB * (mi / 32 + 1)));
+    }
+    if (m->n_ff_shexp > 0 && moe_any_on_device(m)) {
+        CK(cu.MemAlloc(&g->shexp_in,   sizeof(float) * MVB * xdim));
+        CK(cu.MemAlloc(&g->shexp_g,    sizeof(float) * MVB * m->n_ff_shexp));
+        CK(cu.MemAlloc(&g->shexp_u,    sizeof(float) * MVB * m->n_ff_shexp));
+        CK(cu.MemAlloc(&g->shexp_o,    sizeof(float) * MVB * m->n_embd));
+        CK(cu.MemAlloc(&g->shexp_gate, sizeof(float) * MVB));
+    }
+    CK(cu.MemAlloc(&g->att,    sizeof(float) * MVB * (size_t)m->n_head * m->n_ctx));
+    // flash-decoding partials: per (token, head, split) -> hd weighted-V + max + sum
+    CK(cu.MemAlloc(&g->attn_part, sizeof(float) * MVB * (size_t)m->n_head *
+                                  ATTN_SPLITS * (max_hd + 2)));
+    // spec_batch rows: the speculative verify reads every row's head
+    CK(cu.MemAlloc(&g->logits, sizeof(float) * (size_t)(m->spec_batch > 0 ? m->spec_batch : 1) * m->n_vocab));
+    CK(cu.MemAlloc(&g->xsc,    sizeof(float) * TC_N));
+    CK(cu.MemAlloc(&g->pos_dev, sizeof(int)));
+    return true;
+fail:
+    return false;
+}
+
+// The recurrent state (DeltaNet, Mamba-2) and the attention gate scratch.
+static bool cuda_alloc_recurrent(model_t *m, gpu_t *g, const cuda_dims *D) {
+    int q_dim = D->q_dim;
+    int q35_convdim = D->q35_convdim;
+    int q35_mixdim = D->q35_mixdim;
+    if (m->qwen35) {
+        size_t hist_elems = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) *
+                            q35_convdim;
+        size_t hist_alloc = hist_elems ? hist_elems : 1;
+        size_t state_elems = (size_t)m->n_layer * m->ssm.v_heads *
+                             m->ssm.state * m->ssm.state;
+        CK(cu.MemAlloc(&g->q35_mix, sizeof(float) * MVB * q35_mixdim));
+        CK(cu.MemAlloc(&g->q35_cv, sizeof(float) * MVB * q35_convdim));
+        CK(cu.MemAlloc(&g->q35_z, sizeof(float) * MVB * m->ssm.inner));
+        CK(cu.MemAlloc(&g->q35_beta, sizeof(float) * MVB * m->ssm.v_heads));
+        CK(cu.MemAlloc(&g->q35_alpha, sizeof(float) * MVB * m->ssm.v_heads));
+        CK(cu.MemAlloc(&g->q35_gate, sizeof(float) * MVB * q_dim));
+        CK(cu.MemAlloc(&g->q35_hist, sizeof(float) * hist_alloc));
+        CK(cu.MemAlloc(&g->q35_state, sizeof(float) * state_elems));
+        CK(cu.MemAlloc(&g->q35_hist_prev, sizeof(float) * hist_alloc));
+        CK(cu.MemAlloc(&g->q35_state_prev, sizeof(float) * state_elems));
+        CK(cu.MemsetD8(g->q35_hist, 0, sizeof(float) * hist_alloc));
+        CK(cu.MemsetD8(g->q35_state, 0, sizeof(float) * state_elems));
+        CK(cu.MemsetD8(g->q35_hist_prev, 0, sizeof(float) * hist_alloc));
+        CK(cu.MemsetD8(g->q35_state_prev, 0, sizeof(float) * state_elems));
+    }
+    if (m->granite_hybrid || m->nemotron_h) {
+        int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
+        int dip = 2 * m->ssm.inner + 2 * m->ssm.groups * m->ssm.state +
+                  m->ssm.v_heads;
+        size_t conv_elems = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * cd;
+        size_t conv_alloc = conv_elems ? conv_elems : 1;
+        size_t state_elems = (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
+        CK(cu.MemAlloc(&g->mamba_proj,  sizeof(float) * MVB * dip));
+        CK(cu.MemAlloc(&g->mamba_xBC,   sizeof(float) * MVB * cd));
+        CK(cu.MemAlloc(&g->mamba_y,     sizeof(float) * MVB * m->ssm.inner));
+        CK(cu.MemAlloc(&g->mamba_conv,       sizeof(float) * conv_alloc));
+        CK(cu.MemAlloc(&g->mamba_state,      sizeof(float) * state_elems));
+        CK(cu.MemAlloc(&g->mamba_conv_prev,  sizeof(float) * conv_alloc));
+        CK(cu.MemAlloc(&g->mamba_state_prev, sizeof(float) * state_elems));
+        CK(cu.MemsetD8(g->mamba_conv, 0, sizeof(float) * conv_alloc));
+        CK(cu.MemsetD8(g->mamba_state, 0, sizeof(float) * state_elems));
+        CK(cu.MemsetD8(g->mamba_conv_prev, 0, sizeof(float) * conv_alloc));
+        CK(cu.MemsetD8(g->mamba_state_prev, 0, sizeof(float) * state_elems));
+    }
+    // gated attention without the rest of qwen35 (afmoe, muse-glimmer):
+    // only the gate scratch is needed
+    if (m->attn_out_gate && !m->qwen35)
+        CK(cu.MemAlloc(&g->q35_gate, sizeof(float) * MVB * q_dim));
+    return true;
+fail:
+    return false;
+}
+
+// Sparse-MoE scratch, device and host, and which MoE paths apply.
+static bool cuda_alloc_moe(model_t *m, gpu_t *g) {
+    if (m->n_expert > 0) {
+        // sparse-MoE buffers, sized for both the fused indirect path
+        // (device routing for a whole tile, per-slot expert scratch) and
+        // the eager fallback (which uses column/slot 0 only)
+        int used_c = m->n_expert_used;
+        if (used_c < 1) used_c = 1;
+        if (used_c > 256) used_c = 256;
+        int rows = used_c > MVB ? used_c : MVB;
+        size_t gw = (size_t)m->n_ff_exp * (m->moe_gemma ? 2 : 1);
+        if (gw < 1) gw = 1;
+        CK(cu.MemAlloc(&g->moe_logits,
+                       sizeof(float) * (size_t)MVB * m->n_expert));
+        CK(cu.MemAlloc(&g->moe_eout,
+                       sizeof(float) * (size_t)rows * m->n_embd));
+        CK(cu.MemAlloc(&g->moe_sel,  sizeof(int)   * (size_t)MVB * used_c));
+        CK(cu.MemAlloc(&g->moe_selw, sizeof(float) * (size_t)MVB * used_c));
+        CK(cu.MemAlloc(&g->moe_hb,   sizeof(float) * (size_t)rows * gw));
+        CK(cu.MemAlloc(&g->moe_hb2,  sizeof(float) * (size_t)rows * gw));
+        // expert-grouped prefill staging (device + host mirrors)
+        CK(cu.MemAlloc(&g->moe_gath, sizeof(float) * (size_t)MVB * m->n_embd));
+        CK(cu.MemAlloc(&g->moe_dout, sizeof(float) * (size_t)MVB * m->n_embd));
+        CK(cu.MemAlloc(&g->moe_gidx, sizeof(int)   * (size_t)MVB * used_c));
+        CK(cu.MemAlloc(&g->moe_gw,   sizeof(float) * (size_t)MVB * used_c));
+        g->h_moe_sel  = malloc(sizeof(int)   * (size_t)MVB * used_c);
+        g->h_moe_selw = malloc(sizeof(float) * (size_t)MVB * used_c);
+        g->h_moe_gidx = malloc(sizeof(int)   * (size_t)MVB * used_c);
+        g->h_moe_gw   = malloc(sizeof(float) * (size_t)MVB * used_c);
+        if (!g->h_moe_sel || !g->h_moe_selw || !g->h_moe_gidx ||
+            !g->h_moe_gw) {
+            fprintf(stderr, "gpu: CUDA MoE host staging allocation failed "
+                    "— using CPU\n");
+            goto fail;
+        }
+        g->moe_fused_ok = moe_fused_eligible(m);
+        // RUNNER_MOE_EAGER: debug escape to the v0.1.4 host-routing
+        // path — the reference side of the RUNNER_DEBUG_MOE bit
+        // comparison, and the fused-vs-eager A/B instrument.
+        if (g_moe_eager_force >= 0) {
+            if (g_moe_eager_force) g->moe_fused_ok = false;
+        } else if (getenv("RUNNER_MOE_EAGER")) {
+            g->moe_fused_ok = false;
+        }
+        g->moe_grouped_ok = moe_grouped_eligible(m);
+    }
+    if (m->moe_gemma)
+        // gemma-4-MoE dual-branch scratch: xn, xn2, rin, mout — MVB
+        // columns each so the grouped prefill can batch the whole tile
+        CK(cu.MemAlloc(&g->g_scr,
+                       sizeof(float) * 5 * (size_t)MVB * m->n_embd));
+    return true;
+fail:
+    return false;
+}
+
+// The stream graphs are captured on, and whether this model can be captured.
+static void cuda_plan_graphs(model_t *m, gpu_t *g) {
+    if (cu_graphs_ok() && cu.StreamCreate(&g->stream, 0) != 0)
+        g->stream = NULL;
+    // gemma4's V-copy path (ly->wv == NULL) uses a synchronous MemsetD8
+    // that cannot be captured into a CUDA graph. MoE with device routing
+    // (moe_fused_ok) is fully capture-clean; only the eager fallback
+    // (split layout / uncovered expert type) still reads router logits
+    // back to the host mid-forward and must keep the graph off.
+    for (int l = 0; l < m->gpu_layers; l++)
+        if (!m->layers[l].wv ||
+            (m->layers[l].is_moe && !g->moe_fused_ok) ||
+            m->layers[l].recurrent) g->graph_bad = true;
+    if (m->qwen35) g->graph_bad = true;
+    if (moe_any_on_host(m)) g->graph_bad = true;
+}
+
+// Host staging for the per-layer embeddings, the residual and the logits.
+static bool cuda_alloc_host_staging(model_t *m, gpu_t *g) {
+    if (m->n_embd_ple > 0) {
+        size_t per_tok = (size_t)m->n_layer * m->n_embd_ple;
+        g->h_ple     = malloc(sizeof(float) * MVB * per_tok);
+        g->h_ple_tmp = malloc(sizeof(float) * per_tok);
+        if (!g->h_ple || !g->h_ple_tmp) {
+            fprintf(stderr, "gpu: CUDA per-layer embedding host staging "
+                    "allocation failed — using CPU\n");
+            goto fail;
+        }
+    }
+    g->h_x      = malloc(sizeof(float) * MVB * m->n_embd);
+    g->h_logits = malloc(sizeof(float) * (size_t)(m->spec_batch > 0 ? m->spec_batch : 1) * m->n_vocab);
+    if (m->n_expert > 0)
+        g->h_moe_logits = malloc(sizeof(float) * (size_t)m->n_expert * (size_t)(GPU_SMALL_BATCH > 1 ? GPU_SMALL_BATCH : 1));
+    if (!g->h_x || !g->h_logits ||
+        (m->n_expert > 0 && !g->h_moe_logits)) {
+        fprintf(stderr, "gpu: CUDA host activation staging allocation "
+                "failed — using CPU\n");
+        goto fail;
+    }
+    return true;
+fail:
+    return false;
+}
+
+static void cuda_report_init(model_t *m, gpu_t *g, size_t act_bytes) {
+    char name[128] = "CUDA GPU";
+    cu.DeviceGetName(name, sizeof(name), g->sw->dev);
+    if (m->cpu_moe) {
+        int on_host = 0, moe_tot = 0;
+        for (int l = 0; l < m->n_layer; l++) {
+            if (!m->layers[l].is_moe) continue;
+            moe_tot++;
+            if (moe_on_host(m, l)) on_host++;
+        }
+        fprintf(stderr, "gpu: CUDA backend on %s (%d/%d attention layers, "
+                "%.1f GB in VRAM; %d/%d expert layers on CPU)\n", name,
+                m->gpu_layers, m->n_layer, g->sw->bound_bytes / 1e9,
+                on_host, moe_tot);
+    }
+    else if (m->gpu_layers < m->n_layer)
+        fprintf(stderr, "gpu: CUDA backend on %s (%d/%d layers, %.1f GB in "
+                "VRAM; CPU runs the rest)\n", name, m->gpu_layers, m->n_layer,
+                (g->sw->bound ? g->sw->bound_bytes : g->sw->weights_len) / 1e9);
+    else
+        fprintf(stderr, "gpu: CUDA backend on %s (%.1f GB weights in VRAM)\n",
+                name, g->sw->weights_len / 1e9);
+    // the number Phase 5 is judged on: with weights shared, a second slot
+    // should cost only its KV cache and activation scratch
+    tc_scalar_notice(m);
+    size_t vfree = 0, vtotal = 0;
+    if (cu.MemGetInfo(&vfree, &vtotal) == 0)
+        fprintf(stderr, "gpu: VRAM %.2f GB free of %.2f GB after init "
+                "(kv %.2f GB + scratch %.2f GB this instance)\n",
+                vfree / 1e9, vtotal / 1e9,
+                (double)model_kv_boundary_bytes_sum(m, m->gpu_layers) / 1e9,
+                act_bytes / 1e9);
+}
+
+bool gpu_init(model_t *m) {
+    if (!cuda_admit(m) || !cuda_open_driver()) return false;
 
     gpu_t *g = calloc(1, sizeof(gpu_t));
     if (!g) {
@@ -2539,307 +2902,28 @@ bool gpu_init(model_t *m) {
     }
     g->last_pos = -2;
 
-    {
-        // heterogeneous archs (gemma4) vary q/kv widths per layer: size the
-        // shared activation buffers to the maxima
-        int q_dim = 0, kv_dim = 0, max_hd = 0;
-        for (int l = 0; l < m->n_layer; l++) {
-            if (model_q_dim(m, l)    > q_dim)  q_dim  = model_q_dim(m, l);
-            if (model_kv_dim(m, l)   > kv_dim) kv_dim = model_kv_dim(m, l);
-            if (model_head_dim(m, l) > max_hd) max_hd = model_head_dim(m, l);
-        }
-        int xdim = q_dim > m->n_embd ? q_dim : m->n_embd;
-        int q35_convdim = m->qwen35
-                        ? 2 * m->ssm.state * m->ssm.groups + m->ssm.inner : 0;
-        int q35_mixdim = q35_convdim > 2 * q_dim ? q35_convdim : 2 * q_dim;
-        size_t act_bytes = sizeof(float) * (MVB * ((size_t)m->n_embd + 3 * xdim +
-                           q_dim + 2 * kv_dim + 2 * m->n_ff +
-                           (size_t)m->n_head * m->n_ctx) + m->n_vocab);
-        if (m->qwen35) {
-            size_t q35_scratch = MVB * ((size_t)q35_mixdim + q35_convdim +
-                                 m->ssm.inner + 2 * m->ssm.v_heads + q_dim);
-            size_t q35_persistent = (size_t)m->n_layer *
-                                    (m->ssm.conv_kernel - 1) * q35_convdim +
-                                    (size_t)m->n_layer * m->ssm.v_heads *
-                                    m->ssm.state * m->ssm.state;
-            act_bytes += sizeof(float) * (q35_scratch + 2 * q35_persistent);
-        }
-        if (m->granite_hybrid || m->nemotron_h) {
-            int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
-            int dip = 2 * m->ssm.inner + 2 * m->ssm.groups * m->ssm.state +
-                      m->ssm.v_heads;
-            size_t scr = MVB * ((size_t)dip + cd + m->ssm.inner);
-            size_t per = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * cd +
-                         (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
-            act_bytes += sizeof(float) * (scr + 2 * per);
-        }
-
-        // the weights (and the CPU/GPU split they imply) come from the registry:
-        // a second instance of the same file reuses the first one's upload
-        g->sw = shared_acquire(m, act_bytes, max_hd);
-        if (!g->sw) goto fail_quiet;
-        m->gpu_layers = g->sw->gpu_layers;
-        CK(cu.CtxSetCurrent(g->sw->ctx));
-
-        // device KV holds only the offloaded layers [0, gpu_layers) -- the
-        // raw cumulative boundary, not layer gpu_layers's own (possibly
-        // redirected) storage location. See model_kv_boundary_bytes().
-        // K and V are sized separately: under --kv k8v4 the two caches
-        // have different row formats (K q8_0, V fp4).
-        const bool mtp_dev = m->mtp_ready && m->gpu_layers == m->n_layer;
-        size_t k_bytes = model_k_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
-        size_t v_bytes = model_v_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
-        CK(cu.MemAlloc(&g->kc, k_bytes));
-        CK(cu.MemAlloc(&g->vc, v_bytes));
-        CK(cu.MemsetD8(g->kc, 0, k_bytes));
-        CK(cu.MemsetD8(g->vc, 0, v_bytes));
-
-        if (m->n_embd_ple > 0) {
-            // [token][layer][n_embd_ple] for a whole tile, plus the per-layer
-            // gate scratch. The pre-pass itself runs on the host (its
-            // per-token row gather+dequant from the quantized token table has
-            // no device kernel; see model_ple_prepass), so only its result
-            // crosses the bus — once per forward, not once per layer.
-            size_t per_tok = (size_t)m->n_layer * m->n_embd_ple;
-            CK(cu.MemAlloc(&g->ple,   sizeof(float) * MVB * per_tok));
-            CK(cu.MemAlloc(&g->ple_g, sizeof(float) * MVB * m->n_embd_ple));
-        }
-        CK(cu.MemAlloc(&g->x,      sizeof(float) * MVB * m->n_embd));
-        CK(cu.MemAlloc(&g->xb,     sizeof(float) * MVB * xdim));
-        CK(cu.MemAlloc(&g->xb2,    sizeof(float) * MVB * xdim));
-        if (mtp_dev) {
-            size_t hcd = (size_t)mtp_streams(m) * m->n_embd;
-            CK(cu.MemAlloc(&g->mtp_h,       sizeof(float) * (size_t)m->n_batch * hcd));
-            CK(cu.MemAlloc(&g->mtp_pending, sizeof(float) * hcd));
-            CK(cu.MemAlloc(&g->mtp_cat,     sizeof(float) * MVB * hcd * 2));
-            CK(cu.MemAlloc(&g->mtp_hid,     sizeof(float) * hcd));
-            CK(cu.MemAlloc(&g->mtp_en,      sizeof(float) * MVB * m->n_embd));
-            CK(cu.MemAlloc(&g->mtp_hn,      sizeof(float) * MVB * hcd));
-            CK(cu.MemAlloc(&g->mtp_rows,    sizeof(float) * (size_t)m->n_batch * hcd));
-            CK(cu.MemsetD8(g->mtp_pending, 0, sizeof(float) * hcd));
-            if (m->qwen35 && cu.MemcpyDtoDAsync) {
-                int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
-                size_t hist_l = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * convdim;
-                size_t state_l = (size_t)m->n_layer * m->ssm.v_heads * m->ssm.state * m->ssm.state;
-                g->snap_rows = m->spec_batch < 8 ? m->spec_batch : 8;
-                CK(cu.MemAlloc(&g->snap_state, sizeof(float) * state_l * g->snap_rows));
-                CK(cu.MemAlloc(&g->snap_hist,  sizeof(float) * (hist_l ? hist_l : 1) * g->snap_rows));
-            }
-        }
-        if (m->hyper_conn) {
-            size_t hcd = (size_t)m->hc_count * m->n_embd;
-            CK(cu.MemAlloc(&g->x_hc,      sizeof(float) * MVB * hcd));
-            CK(cu.MemAlloc(&g->hc_xn,     sizeof(float) * MVB * hcd));
-            CK(cu.MemAlloc(&g->hc_gate,   sizeof(float) * MVB * hcd));
-            CK(cu.MemAlloc(&g->hc_lo,     sizeof(float) * MVB * m->hc_low_rank));
-            CK(cu.MemAlloc(&g->hc_inject, sizeof(float) * MVB * m->hc_count));
-            CK(cu.MemAlloc(&g->splitk,    sizeof(float) * SPLITK_PARTIALS));
-        }
-        CK(cu.MemAlloc(&g->q,      sizeof(float) * MVB * q_dim));
-        CK(cu.MemAlloc(&g->kt,     sizeof(float) * MVB * kv_dim));
-        CK(cu.MemAlloc(&g->vt,     sizeof(float) * MVB * kv_dim));
-        // hb/hb2 also hold gemma-4 MoE's fused gate_up (2*n_ff_exp) for one
-        // token; MVB*n_ff dwarfs that for real models, but size for the max so a
-        // pathological n_ff_exp can never overrun the buffer.
-        size_t hb_elems = (size_t)MVB * m->n_ff;
-        if (m->moe_gemma && 2 * (size_t)m->n_ff_exp > hb_elems)
-            hb_elems = 2 * (size_t)m->n_ff_exp;
-        CK(cu.MemAlloc(&g->hb,     sizeof(float) * hb_elems));
-        CK(cu.MemAlloc(&g->hb2,    sizeof(float) * hb_elems));
-        if (gpu_q8x_on()) {
-            // the widest matvec input: FFN down (n_ff), the attention/recurrent
-            // projections (xdim, the DeltaNet mix), the MTP concat (2 n_embd)
-            int mi = xdim;
-            if (m->n_ff > mi) mi = m->n_ff;
-            if (q35_mixdim > mi) mi = q35_mixdim;
-            if (2 * m->n_embd > mi) mi = 2 * m->n_embd;
-            if (m->ssm.inner > mi) mi = m->ssm.inner;
-            g->q8x_cap = mi;
-            CK(cu.MemAlloc(&g->q8x_q, (size_t)MVB * mi));
-            CK(cu.MemAlloc(&g->q8x_d, sizeof(float) * (size_t)MVB * (mi / 32 + 1)));
-        }
-        if (m->n_ff_shexp > 0 && moe_any_on_device(m)) {
-            CK(cu.MemAlloc(&g->shexp_in,   sizeof(float) * MVB * xdim));
-            CK(cu.MemAlloc(&g->shexp_g,    sizeof(float) * MVB * m->n_ff_shexp));
-            CK(cu.MemAlloc(&g->shexp_u,    sizeof(float) * MVB * m->n_ff_shexp));
-            CK(cu.MemAlloc(&g->shexp_o,    sizeof(float) * MVB * m->n_embd));
-            CK(cu.MemAlloc(&g->shexp_gate, sizeof(float) * MVB));
-        }
-        CK(cu.MemAlloc(&g->att,    sizeof(float) * MVB * (size_t)m->n_head * m->n_ctx));
-        // flash-decoding partials: per (token, head, split) -> hd weighted-V + max + sum
-        CK(cu.MemAlloc(&g->attn_part, sizeof(float) * MVB * (size_t)m->n_head *
-                                      ATTN_SPLITS * (max_hd + 2)));
-        // spec_batch rows: the speculative verify reads every row's head
-        CK(cu.MemAlloc(&g->logits, sizeof(float) * (size_t)(m->spec_batch > 0 ? m->spec_batch : 1) * m->n_vocab));
-        CK(cu.MemAlloc(&g->xsc,    sizeof(float) * TC_N));
-        CK(cu.MemAlloc(&g->pos_dev, sizeof(int)));
-        if (m->qwen35) {
-            size_t hist_elems = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) *
-                                q35_convdim;
-            size_t hist_alloc = hist_elems ? hist_elems : 1;
-            size_t state_elems = (size_t)m->n_layer * m->ssm.v_heads *
-                                 m->ssm.state * m->ssm.state;
-            CK(cu.MemAlloc(&g->q35_mix, sizeof(float) * MVB * q35_mixdim));
-            CK(cu.MemAlloc(&g->q35_cv, sizeof(float) * MVB * q35_convdim));
-            CK(cu.MemAlloc(&g->q35_z, sizeof(float) * MVB * m->ssm.inner));
-            CK(cu.MemAlloc(&g->q35_beta, sizeof(float) * MVB * m->ssm.v_heads));
-            CK(cu.MemAlloc(&g->q35_alpha, sizeof(float) * MVB * m->ssm.v_heads));
-            CK(cu.MemAlloc(&g->q35_gate, sizeof(float) * MVB * q_dim));
-            CK(cu.MemAlloc(&g->q35_hist, sizeof(float) * hist_alloc));
-            CK(cu.MemAlloc(&g->q35_state, sizeof(float) * state_elems));
-            CK(cu.MemAlloc(&g->q35_hist_prev, sizeof(float) * hist_alloc));
-            CK(cu.MemAlloc(&g->q35_state_prev, sizeof(float) * state_elems));
-            CK(cu.MemsetD8(g->q35_hist, 0, sizeof(float) * hist_alloc));
-            CK(cu.MemsetD8(g->q35_state, 0, sizeof(float) * state_elems));
-            CK(cu.MemsetD8(g->q35_hist_prev, 0, sizeof(float) * hist_alloc));
-            CK(cu.MemsetD8(g->q35_state_prev, 0, sizeof(float) * state_elems));
-        }
-        if (m->granite_hybrid || m->nemotron_h) {
-            int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
-            int dip = 2 * m->ssm.inner + 2 * m->ssm.groups * m->ssm.state +
-                      m->ssm.v_heads;
-            size_t conv_elems = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * cd;
-            size_t conv_alloc = conv_elems ? conv_elems : 1;
-            size_t state_elems = (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
-            CK(cu.MemAlloc(&g->mamba_proj,  sizeof(float) * MVB * dip));
-            CK(cu.MemAlloc(&g->mamba_xBC,   sizeof(float) * MVB * cd));
-            CK(cu.MemAlloc(&g->mamba_y,     sizeof(float) * MVB * m->ssm.inner));
-            CK(cu.MemAlloc(&g->mamba_conv,       sizeof(float) * conv_alloc));
-            CK(cu.MemAlloc(&g->mamba_state,      sizeof(float) * state_elems));
-            CK(cu.MemAlloc(&g->mamba_conv_prev,  sizeof(float) * conv_alloc));
-            CK(cu.MemAlloc(&g->mamba_state_prev, sizeof(float) * state_elems));
-            CK(cu.MemsetD8(g->mamba_conv, 0, sizeof(float) * conv_alloc));
-            CK(cu.MemsetD8(g->mamba_state, 0, sizeof(float) * state_elems));
-            CK(cu.MemsetD8(g->mamba_conv_prev, 0, sizeof(float) * conv_alloc));
-            CK(cu.MemsetD8(g->mamba_state_prev, 0, sizeof(float) * state_elems));
-        }
-        // gated attention without the rest of qwen35 (afmoe, muse-glimmer):
-        // only the gate scratch is needed
-        if (m->attn_out_gate && !m->qwen35)
-            CK(cu.MemAlloc(&g->q35_gate, sizeof(float) * MVB * q_dim));
-        if (m->n_expert > 0) {
-            // sparse-MoE buffers, sized for both the fused indirect path
-            // (device routing for a whole tile, per-slot expert scratch) and
-            // the eager fallback (which uses column/slot 0 only)
-            int used_c = m->n_expert_used;
-            if (used_c < 1) used_c = 1;
-            if (used_c > 256) used_c = 256;
-            int rows = used_c > MVB ? used_c : MVB;
-            size_t gw = (size_t)m->n_ff_exp * (m->moe_gemma ? 2 : 1);
-            if (gw < 1) gw = 1;
-            CK(cu.MemAlloc(&g->moe_logits,
-                           sizeof(float) * (size_t)MVB * m->n_expert));
-            CK(cu.MemAlloc(&g->moe_eout,
-                           sizeof(float) * (size_t)rows * m->n_embd));
-            CK(cu.MemAlloc(&g->moe_sel,  sizeof(int)   * (size_t)MVB * used_c));
-            CK(cu.MemAlloc(&g->moe_selw, sizeof(float) * (size_t)MVB * used_c));
-            CK(cu.MemAlloc(&g->moe_hb,   sizeof(float) * (size_t)rows * gw));
-            CK(cu.MemAlloc(&g->moe_hb2,  sizeof(float) * (size_t)rows * gw));
-            // expert-grouped prefill staging (device + host mirrors)
-            CK(cu.MemAlloc(&g->moe_gath, sizeof(float) * (size_t)MVB * m->n_embd));
-            CK(cu.MemAlloc(&g->moe_dout, sizeof(float) * (size_t)MVB * m->n_embd));
-            CK(cu.MemAlloc(&g->moe_gidx, sizeof(int)   * (size_t)MVB * used_c));
-            CK(cu.MemAlloc(&g->moe_gw,   sizeof(float) * (size_t)MVB * used_c));
-            g->h_moe_sel  = malloc(sizeof(int)   * (size_t)MVB * used_c);
-            g->h_moe_selw = malloc(sizeof(float) * (size_t)MVB * used_c);
-            g->h_moe_gidx = malloc(sizeof(int)   * (size_t)MVB * used_c);
-            g->h_moe_gw   = malloc(sizeof(float) * (size_t)MVB * used_c);
-            if (!g->h_moe_sel || !g->h_moe_selw || !g->h_moe_gidx ||
-                !g->h_moe_gw) {
-                fprintf(stderr, "gpu: CUDA MoE host staging allocation failed "
-                        "— using CPU\n");
-                goto fail;
-            }
-            g->moe_fused_ok = moe_fused_eligible(m);
-            // RUNNER_MOE_EAGER: debug escape to the v0.1.4 host-routing
-            // path — the reference side of the RUNNER_DEBUG_MOE bit
-            // comparison, and the fused-vs-eager A/B instrument.
-            if (g_moe_eager_force >= 0) {
-                if (g_moe_eager_force) g->moe_fused_ok = false;
-            } else if (getenv("RUNNER_MOE_EAGER")) {
-                g->moe_fused_ok = false;
-            }
-            g->moe_grouped_ok = moe_grouped_eligible(m);
-        }
-        if (m->moe_gemma)
-            // gemma-4-MoE dual-branch scratch: xn, xn2, rin, mout — MVB
-            // columns each so the grouped prefill can batch the whole tile
-            CK(cu.MemAlloc(&g->g_scr,
-                           sizeof(float) * 5 * (size_t)MVB * m->n_embd));
-        if (cu_graphs_ok() && cu.StreamCreate(&g->stream, 0) != 0)
-            g->stream = NULL;
-        // gemma4's V-copy path (ly->wv == NULL) uses a synchronous MemsetD8
-        // that cannot be captured into a CUDA graph. MoE with device routing
-        // (moe_fused_ok) is fully capture-clean; only the eager fallback
-        // (split layout / uncovered expert type) still reads router logits
-        // back to the host mid-forward and must keep the graph off.
-        for (int l = 0; l < m->gpu_layers; l++)
-            if (!m->layers[l].wv ||
-                (m->layers[l].is_moe && !g->moe_fused_ok) ||
-                m->layers[l].recurrent) g->graph_bad = true;
-        if (m->qwen35) g->graph_bad = true;
-        if (moe_any_on_host(m)) g->graph_bad = true;
-
-        if (m->n_embd_ple > 0) {
-            size_t per_tok = (size_t)m->n_layer * m->n_embd_ple;
-            g->h_ple     = malloc(sizeof(float) * MVB * per_tok);
-            g->h_ple_tmp = malloc(sizeof(float) * per_tok);
-            if (!g->h_ple || !g->h_ple_tmp) {
-                fprintf(stderr, "gpu: CUDA per-layer embedding host staging "
-                        "allocation failed — using CPU\n");
-                goto fail;
-            }
-        }
-        g->h_x      = malloc(sizeof(float) * MVB * m->n_embd);
-        g->h_logits = malloc(sizeof(float) * (size_t)(m->spec_batch > 0 ? m->spec_batch : 1) * m->n_vocab);
-        if (m->n_expert > 0)
-            g->h_moe_logits = malloc(sizeof(float) * (size_t)m->n_expert * (size_t)(GPU_SMALL_BATCH > 1 ? GPU_SMALL_BATCH : 1));
-        if (!g->h_x || !g->h_logits ||
-            (m->n_expert > 0 && !g->h_moe_logits)) {
-            fprintf(stderr, "gpu: CUDA host activation staging allocation "
-                    "failed — using CPU\n");
-            goto fail;
-        }
-
-        char name[128] = "CUDA GPU";
-        cu.DeviceGetName(name, sizeof(name), g->sw->dev);
-        if (m->cpu_moe) {
-            int on_host = 0, moe_tot = 0;
-            for (int l = 0; l < m->n_layer; l++) {
-                if (!m->layers[l].is_moe) continue;
-                moe_tot++;
-                if (moe_on_host(m, l)) on_host++;
-            }
-            fprintf(stderr, "gpu: CUDA backend on %s (%d/%d attention layers, "
-                    "%.1f GB in VRAM; %d/%d expert layers on CPU)\n", name,
-                    m->gpu_layers, m->n_layer, g->sw->bound_bytes / 1e9,
-                    on_host, moe_tot);
-        }
-        else if (m->gpu_layers < m->n_layer)
-            fprintf(stderr, "gpu: CUDA backend on %s (%d/%d layers, %.1f GB in "
-                    "VRAM; CPU runs the rest)\n", name, m->gpu_layers, m->n_layer,
-                    (g->sw->bound ? g->sw->bound_bytes : g->sw->weights_len) / 1e9);
-        else
-            fprintf(stderr, "gpu: CUDA backend on %s (%.1f GB weights in VRAM)\n",
-                    name, g->sw->weights_len / 1e9);
-        // the number Phase 5 is judged on: with weights shared, a second slot
-        // should cost only its KV cache and activation scratch
-        tc_scalar_notice(m);
-        size_t vfree = 0, vtotal = 0;
-        if (cu.MemGetInfo(&vfree, &vtotal) == 0)
-            fprintf(stderr, "gpu: VRAM %.2f GB free of %.2f GB after init "
-                    "(kv %.2f GB + scratch %.2f GB this instance)\n",
-                    vfree / 1e9, vtotal / 1e9,
-                    (double)model_kv_boundary_bytes_sum(m, m->gpu_layers) / 1e9,
-                    act_bytes / 1e9);
-    }
+    cuda_dims D;
+    cuda_instance_dims(m, &D);
+    // the weights (and the CPU/GPU split they imply) come from the registry:
+    // a second instance of the same file reuses the first one's upload
+    g->sw = shared_acquire(m, D.act_bytes, D.max_hd);
+    if (!g->sw) goto fail;
+    m->gpu_layers = g->sw->gpu_layers;
+    CK(cu.CtxSetCurrent(g->sw->ctx));
+    if (!cuda_alloc_kv(m, g) ||
+        !cuda_alloc_activations(m, g, &D) ||
+        !cuda_alloc_recurrent(m, g, &D) ||
+        !cuda_alloc_moe(m, g))
+        goto fail;
+    cuda_plan_graphs(m, g);
+    if (!cuda_alloc_host_staging(m, g)) goto fail;
+    cuda_report_init(m, g, D.act_bytes);
 
     vram_probe("after instance buffers");
     m->gpu = g;
     return true;
 
 fail:
-fail_quiet:
     gpu_ctx_free(m, g);
     return false;
 
