@@ -1050,6 +1050,15 @@ TEST_ATTN_SPLIT_SRC = tests/test_attn_split.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.
 $(TEST_ATTN_SPLIT): $(TEST_ATTN_SPLIT_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_ATTN_SPLIT_SRC) -o $@ $(LDFLAGS)
 
+# the cases go to the binary as a list file (@FILE, see check_list in the
+# test): twenty file:mode arguments on one command line are what Defender's
+# behaviour monitoring takes for malware on Windows
+ATTN_SPLIT_CASES = test.gguf test.gguf:fp4 attn-split-hd32.gguf \
+	attn-split-hd32.gguf:q8 attn-split-hd32.gguf:k8v4 test-muse.gguf \
+	attn-split-hd64.gguf attn-split-hd64.gguf:q8 attn-split-hd64.gguf:fp4 \
+	attn-split-hd64.gguf:k8v4 attn-split-hd48.gguf attn-split-hd48.gguf:fp4 \
+	attn-split-swa.gguf:ring attn-split-g4h.gguf:tied \
+	attn-split-moe.gptoss-top1.gguf
 test-attn-split: $(TEST_ATTN_SPLIT) test.gguf test-muse.gguf
 	@set -e; \
 	$(PYTHON) scripts/make-test-model.py --head-dim 32 attn-split-hd32.gguf > /dev/null; \
@@ -1058,13 +1067,10 @@ test-attn-split: $(TEST_ATTN_SPLIT) test.gguf test-muse.gguf
 	$(PYTHON) scripts/make-test-model.py --swa 32,2 attn-split-swa.gguf > /dev/null; \
 	$(PYTHON) scripts/make-test-model.py --gemma4-hetero attn-split-g4h.gguf > /dev/null; \
 	$(PYTHON) scripts/make-test-moe.py attn-split-moe > /dev/null; \
-	./$(TEST_ATTN_SPLIT) test.gguf test.gguf:fp4 attn-split-hd32.gguf \
-		attn-split-hd32.gguf:q8 attn-split-hd32.gguf:k8v4 test-muse.gguf \
-		attn-split-hd64.gguf attn-split-hd64.gguf:q8 attn-split-hd64.gguf:fp4 \
-		attn-split-hd64.gguf:k8v4 attn-split-hd48.gguf attn-split-hd48.gguf:fp4 \
-		attn-split-swa.gguf:ring attn-split-g4h.gguf:tied \
-		attn-split-moe.gptoss-top1.gguf 2> attn-split.err || { \
-		tail -40 attn-split.err; exit 1; }
+	printf '%s\n' $(ATTN_SPLIT_CASES) > attn-split.list; \
+	./$(TEST_ATTN_SPLIT) @attn-split.list 2> attn-split.err || { \
+		tail -40 attn-split.err; exit 1; }; \
+	rm -f attn-split.list
 
 # fused-vs-eager MoE routing tolerance: same full-engine link as tc-tol, and
 # the same self-skipping shape (no GPU / not MoE / no full offload / the fused
