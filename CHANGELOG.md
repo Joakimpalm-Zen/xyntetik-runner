@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A loaded model that sits idle no longer costs a pass over its file.**
+  The provenance endpoint's model digest was taken in the background after
+  every load, reading the whole file: 6 to 11 CPU seconds in the first idle
+  minute on a 3 to 4 GB model, and the file pulled through the page cache. It
+  is now taken when something first needs it (`GET /v1/runner/provenance`, an
+  `expect_resident` digest), and at load only when the server runs with
+  `--receipts`, `--sessions` or `--kv-snapshots`, which need it on a request's
+  path. A reload or swap back to the same unchanged file reuses its digest.
+  The first idle minute after loading Qwen3 4B Q4_K_M on an Apple GPU went
+  from 6.25 to 0.01 CPU seconds. The route's states are unchanged.
+
 - **A model whose chat template is not recognised reports it as
   `llama2-fallback`, not `raw`.** Such a model is rendered with Llama-2
   markup, but `--caps`, the doctor report, the server's capabilities and

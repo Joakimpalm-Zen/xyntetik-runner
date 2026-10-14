@@ -3186,6 +3186,8 @@ static bool cli_configure_serving(const cli_opts *o) {
         return false;
     }
     if (o->sessions_path && !sessions_configure(o->sessions_path)) return false;
+    // these three need the model digest on a request's path: take it at load
+    provenance_hash_at_load(o->receipts_dir || o->kv_snapshots || o->sessions_path);
     if (o->n_adapters && !o->serve) {
         fprintf(stderr, "error: --adapter routes adapters per request and "
                 "needs --serve (use --lora for a one-shot run)\n");

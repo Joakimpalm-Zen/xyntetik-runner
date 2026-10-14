@@ -9,9 +9,13 @@
 //
 // What it vouches for and what it does not:
 //   - the binary digest is the executable file hashed once at server start;
-//   - the model digest is the file hashed after the load, in the background (a
-//     multi-GB file takes a minute and must not hold a request); until it is
-//     known the state is "hashing";
+//   - the model digest is the file hashed in the background (a multi-GB file
+//     takes a minute and must not hold a request), when something first needs
+//     it: this route, an expect_resident digest, a receipt, a session image or
+//     a KV snapshot; a server configured with any of the last three hashes at
+//     load (provenance_hash_at_load). A file hashed before by this process with
+//     the same identity (size, inode, mtime, ctime) reuses its digest. Until it
+//     is known the state is "hashing";
 //   - when the file on disk no longer has the size and modification time it had
 //     at load, the digest is withheld and the state is "changed_since_load": the
 //     bytes on disk are not the bytes being served, and publishing their digest
@@ -40,6 +44,11 @@ typedef struct {
 
 // Hash the running executable. Called once at server start; safe to repeat.
 void provenance_init(void);
+// Take the model digest as soon as a model is loaded (true), or on first need
+// (false, the default): a load then costs no pass over the file while it sits
+// idle. The server turns it on when receipts, session images or KV snapshots
+// are configured, since those need the digest on a request's path.
+void provenance_hash_at_load(bool on);
 // Record the model that just became resident. Copies everything it needs.
 void provenance_note_load(const provenance_load *l);
 // The resident model is gone (unload, swap, shutdown).

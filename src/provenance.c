@@ -47,8 +47,22 @@ static char     env_detail[256];
 static char     loaded_utc[32];
 static file_id  load_id;
 static bool     load_id_ok;
-static enum { H_HASHING, H_DONE, H_FAILED } hstate;
+// H_PENDING: nothing has needed the digest yet, so no pass over the file has
+// begun (see provenance_hash_at_load)
+static enum { H_PENDING, H_HASHING, H_DONE, H_FAILED } hstate;
 static char     model_sha[65];
+static bool     hash_at_load;
+static uint64_t pending_gen;     // the load an H_PENDING digest belongs to
+
+// Digests this process has taken, by file identity: a reload or swap back to
+// a file whose size, inode, mtime and ctime are unchanged is the same bytes,
+// so its digest is reused instead of read again. Any rewrite moves ctime.
+#define DIGEST_CACHE 8
+static struct { file_id id; char sha[65]; bool used; } digest_cache[DIGEST_CACHE];
+static int digest_cache_next;
+
+static const char *cached_digest(const file_id *id);
+static void cache_digest(const file_id *id, const char *sha);
 
 static bool identify(const char *path, file_id *out) {
     return model_file_identity(path, NULL, &out->size, &out->ino,
@@ -58,6 +72,27 @@ static bool identify(const char *path, file_id *out) {
 static bool same_file(const file_id *a, const file_id *b) {
     return a->size == b->size && a->ino == b->ino &&
            a->mtime == b->mtime && a->ctime == b->ctime;
+}
+
+static const char *cached_digest(const file_id *id) {
+    for (int i = 0; i < DIGEST_CACHE; i++)
+        if (digest_cache[i].used && same_file(&digest_cache[i].id, id))
+            return digest_cache[i].sha;
+    return NULL;
+}
+
+static void cache_digest(const file_id *id, const char *sha) {
+    if (cached_digest(id)) return;
+    digest_cache[digest_cache_next].id = *id;
+    memcpy(digest_cache[digest_cache_next].sha, sha, 65);
+    digest_cache[digest_cache_next].used = true;
+    digest_cache_next = (digest_cache_next + 1) % DIGEST_CACHE;
+}
+
+void provenance_hash_at_load(bool on) {
+    pthread_mutex_lock(&mu);
+    hash_at_load = on;
+    pthread_mutex_unlock(&mu);
 }
 
 void provenance_init(void) {
@@ -84,10 +119,13 @@ static void *hash_model(void *arg) {
     hash_job *j = arg;
     file_id before, after;
     char sha[65];
+    double t0 = plat_now();
     bool ok = identify(j->path, &before) &&
               envelope_file_sha256(j->path, sha) &&
               identify(j->path, &after) && same_file(&before, &after);
+    if (ok) fprintf(stderr, "provenance: model sha256 taken (%.1f s)\n", plat_now() - t0);
     pthread_mutex_lock(&mu);
+    if (ok) cache_digest(&before, sha);   // the bytes identified, whichever load
     if (resident && gen == j->gen) {
         // a file that was already replaced before the read began is caught by
         // the render-time check; here it only matters that the bytes hashed
@@ -101,6 +139,31 @@ static void *hash_model(void *arg) {
     free(j->path);
     free(j);
     return NULL;
+}
+
+// Begin the background digest of the resident model. Called with mu held,
+// only while hstate is H_PENDING; leaves it H_HASHING, or H_FAILED when the
+// thread could not be started.
+static void start_hash_locked(void) {
+    hstate = H_HASHING;
+    hash_job *j = malloc(sizeof *j);
+    char *jp = model_path ? strdup(model_path) : NULL;
+    pthread_t th;
+    pthread_attr_t at;
+    bool started = false;
+    if (j && jp && pthread_attr_init(&at) == 0) {
+        j->path = jp;
+        j->gen = pending_gen;
+        pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+        started = pthread_create(&th, &at, hash_model, j) == 0;
+        pthread_attr_destroy(&at);
+    }
+    if (!started) {
+        free(j);
+        free(jp);
+        hstate = H_FAILED;
+        pthread_cond_broadcast(&hashed);
+    }
 }
 
 void provenance_note_load(const provenance_load *l) {
@@ -143,37 +206,30 @@ void provenance_note_load(const provenance_load *l) {
     load_id = id;
     load_id_ok = id_ok;
     model_sha[0] = 0;
-    hstate = H_HASHING;
     resident = mp != NULL;
     uint64_t my_gen = ++gen;
     load_gen++;
+    // The same bytes hashed before (a reload, a swap back): their digest.
+    // Otherwise the pass over the file starts now only when the server's
+    // request path will need it (receipts, session images, KV snapshots);
+    // anything else starts it on first need, so a load that sits idle reads
+    // the file no further than the load did.
+    const char *known = id_ok ? cached_digest(&id) : NULL;
+    if (known) {
+        memcpy(model_sha, known, 65);
+        hstate = H_DONE;
+    } else {
+        hstate = H_PENDING;
+        pending_gen = my_gen;
+        if (hash_at_load) start_hash_locked();
+    }
     pthread_mutex_unlock(&mu);
-
-    hash_job *j = malloc(sizeof *j);
-    char *jp = mp ? strdup(mp) : NULL;
-    pthread_t th;
-    pthread_attr_t at;
-    bool started = false;
-    if (j && jp && pthread_attr_init(&at) == 0) {
-        j->path = jp;
-        j->gen = my_gen;
-        pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
-        started = pthread_create(&th, &at, hash_model, j) == 0;
-        pthread_attr_destroy(&at);
-    }
-    if (!started) {
-        free(j);
-        free(jp);
-        pthread_mutex_lock(&mu);
-        if (gen == my_gen) hstate = H_FAILED;
-        pthread_cond_broadcast(&hashed);
-        pthread_mutex_unlock(&mu);
-    }
 }
 
 bool provenance_digests(char model[65], char binary[65]) {
     pthread_mutex_lock(&mu);
     uint64_t my_gen = gen;
+    if (resident && hstate == H_PENDING) start_hash_locked();
     while (resident && gen == my_gen && hstate == H_HASHING)
         pthread_cond_wait(&hashed, &mu);
     file_id now;
@@ -216,6 +272,8 @@ int provenance_expect(uint64_t want_generation, const char *want_sha256) {
         file_id now;
         bool changed = !load_id_ok || !identify(model_path, &now) ||
                        !same_file(&now, &load_id);
+        // asked for the digest: take it, without waiting for it
+        if (!changed && hstate == H_PENDING) start_hash_locked();
         if (changed || hstate != H_DONE) r = PROV_EXPECT_UNKNOWN;
         else if (strcmp(want_sha256, model_sha) != 0) r = PROV_EXPECT_MISMATCH;
     }
@@ -272,6 +330,8 @@ void provenance_render(sbuf *b, const char *model_id) {
     file_id now;
     bool changed = !load_id_ok || !identify(model_path, &now) ||
                    !same_file(&now, &load_id);
+    // the first read of the route is a need for the digest: take it now
+    if (!changed && hstate == H_PENDING) start_hash_locked();
     const char *st = changed           ? "changed_since_load"
                    : hstate == H_DONE  ? "done"
                    : hstate == H_HASHING ? "hashing" : "unreadable";
