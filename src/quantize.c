@@ -1545,6 +1545,7 @@ typedef struct {
     int uniform_count;
     char *tmp_path;           // OUT.partial
     bool tmp_created;         // OUT.partial exists and is not installed
+    uint64_t amask;           // the data alignment, less one
     writer w;
     int *out_type;
     uint64_t *out_off;
@@ -1922,38 +1923,8 @@ static bool quantize_job_check_prune(quantize_job *J, const char *in_path) {
     return true;
 }
 
-static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, int target,
-                       const char *prune_path, const char *type_plan_path,
-                       const char *remove_spec,
-                       merge_set_t *ms, uint32_t surgery_context,
-                       float surgery_factor, context_surgery_result *surgery_result) {
-    if (target != T_KEEP && !quantize_row_writable(target)) {
-        fprintf(stderr, "error: quantize target must be q8_0, q4_0, q3_k, "
-                "q4_k, q6_k, f16, or bf16\n");
-        return 1;
-    }
-    quantize_job job;
-    memset(&job, 0, sizeof(job));
-    quantize_job *J = &job;
-    int rc = 1;
-    if (!quantize_job_open_source(J, in_path, prune_path, type_plan_path,
-                                  remove_spec))
-        goto done;
-
-    if (J->rm.n > 0 && !quantize_job_remove_sublayers(J)) goto done;
-    if (ms && ms->n_base != J->g.n_tensors) {
-        // the base changed between the resolve open and this one
-        fprintf(stderr, "error: %s changed while merging\n", in_path);
-        goto done;
-    }
-
-    if (surgery_context &&
-        !quantize_job_context_surgery(J, surgery_context, surgery_factor,
-                                      surgery_result))
-        goto done;
-
-    if (J->plan.n > 0 && !quantize_job_check_prune(J, in_path)) goto done;
-
+// The output's data alignment decided and its partial file open.
+static bool quantize_job_open_output(quantize_job *J, const char *out_path) {
     // Honor the file's declared data alignment. The reader derives every
     // tensor's data offset from general.alignment (gguf.c), and we copy that
     // KV verbatim — so the data MUST be laid out at the same alignment, or
@@ -1964,9 +1935,9 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     if (align == 0 || (align & (align - 1))) {
         fprintf(stderr, "error: general.alignment=%llu is not a power of two\n",
                 (unsigned long long)align);
-        goto done;
+        return false;
     }
-    uint64_t amask = align - 1;
+    J->amask = align - 1;
 
     // Write beside the destination and rename on success, so a failed or
     // interrupted requant never destroys an existing good model — and an
@@ -1974,46 +1945,51 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     // input. (RNR-015.)
     size_t tlen = strlen(out_path) + sizeof(".partial");
     J->tmp_path = malloc(tlen);
-    if (!J->tmp_path) goto done;
+    if (!J->tmp_path) return false;
     snprintf(J->tmp_path, tlen, "%s.partial", out_path);
 
     J->w.f = fopen(J->tmp_path, "wb");
     if (!J->w.f) {
         fprintf(stderr, "error: cannot write %s\n", J->tmp_path);
-        goto done;
+        return false;
     }
     J->w.ok = true;
     J->tmp_created = true;
+    return true;
+}
 
-    // Rewrite {arch}.expert_count in place (still in memory, not yet
-    // written) when pruning left every MoE layer at the SAME new count —
-    // the only case a single global KV can honestly describe. A plan that
-    // prunes layers to different counts, or leaves some layers unpruned,
-    // makes expert_count ambiguous by construction; runner reads each
-    // layer's real count from its own router tensor regardless (model.c),
-    // so leaving the metadata at its original value there is correct, not
-    // stale — it's still every layer's true ceiling, just no longer tight
-    // for the pruned ones.
-    if (J->uniform_prune) {
-        const char *arch = gguf_get_str(&J->g, "general.architecture", "");
-        char ec_key[128];
-        snprintf(ec_key, sizeof(ec_key), "%s.expert_count", arch);
-        gguf_kv *ec = gguf_get(&J->g, ec_key);
-        if (ec && ec->type == GGUF_T_U32) {
-            fprintf(stderr, "quantize: %s %llu -> %d (uniform prune)\n",
-                    ec_key, (unsigned long long)ec->v.u64, J->uniform_count);
-            ec->v.u64 = (uint64_t)J->uniform_count;
-        }
+// Rewrite {arch}.expert_count in place (still in memory, not yet
+// written) when pruning left every MoE layer at the SAME new count —
+// the only case a single global KV can honestly describe. A plan that
+// prunes layers to different counts, or leaves some layers unpruned,
+// makes expert_count ambiguous by construction; runner reads each
+// layer's real count from its own router tensor regardless (model.c),
+// so leaving the metadata at its original value there is correct, not
+// stale — it's still every layer's true ceiling, just no longer tight
+// for the pruned ones.
+static void quantize_job_uniform_expert_count(quantize_job *J) {
+    const char *arch = gguf_get_str(&J->g, "general.architecture", "");
+    char ec_key[128];
+    snprintf(ec_key, sizeof(ec_key), "%s.expert_count", arch);
+    gguf_kv *ec = gguf_get(&J->g, ec_key);
+    if (ec && ec->type == GGUF_T_U32) {
+        fprintf(stderr, "quantize: %s %llu -> %d (uniform prune)\n",
+                ec_key, (unsigned long long)ec->v.u64, J->uniform_count);
+        ec->v.u64 = (uint64_t)J->uniform_count;
     }
+}
 
-    // Output types are decided BEFORE the header goes out, because
-    // general.file_type must describe the OUTPUT: copying the parent's
-    // declaration shipped a mixed Q4_0/Q4_K artifact labeled by its parent
-    // (finding B of the 2026-08-11 external evaluation — the same
-    // mixed-tensor trap this project's own cert matrix fails third parties
-    // for). The declared value is computed from the histogram of what is
-    // actually written, and the histogram itself is printed so a mixed
-    // result is visible in the log, not just in a header field.
+// Output types are decided BEFORE the header goes out, because
+// general.file_type must describe the OUTPUT: copying the parent's
+// declaration shipped a mixed Q4_0/Q4_K artifact labeled by its parent
+// (finding B of the 2026-08-11 external evaluation — the same
+// mixed-tensor trap this project's own cert matrix fails third parties
+// for). The declared value is computed from the histogram of what is
+// actually written, and the histogram itself is printed so a mixed
+// result is visible in the log, not just in a header field.
+static bool quantize_job_decide_types(quantize_job *J, int target,
+                                      const char *type_plan_path,
+                                      const merge_set_t *ms) {
     J->out_type = malloc(sizeof(int) * J->g.n_tensors);
     if (J->g.n_tensors > 0 && !J->out_type) J->w.ok = false;
     // RI-3: a declined rule names the tensor and the type it asked for.
@@ -2148,7 +2124,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
             merge_unwritable = true;
         }
     }
-    if (merge_unwritable) goto done;
+    if (merge_unwritable) return false;
     bool strict_refuse = g_type_plan_strict && type_plan_path &&
                          (fell_back || declined_width || declined_size);
     if (J->w.ok && fell_back) {
@@ -2190,8 +2166,48 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                 "not be applied as written (listed above); nothing was "
                 "written\n", (unsigned long long)(fell_back + declined_width +
                                                   declined_size));
+        return false;
+    }
+    return true;
+}
+
+static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, int target,
+                       const char *prune_path, const char *type_plan_path,
+                       const char *remove_spec,
+                       merge_set_t *ms, uint32_t surgery_context,
+                       float surgery_factor, context_surgery_result *surgery_result) {
+    if (target != T_KEEP && !quantize_row_writable(target)) {
+        fprintf(stderr, "error: quantize target must be q8_0, q4_0, q3_k, "
+                "q4_k, q6_k, f16, or bf16\n");
+        return 1;
+    }
+    quantize_job job;
+    memset(&job, 0, sizeof(job));
+    quantize_job *J = &job;
+    int rc = 1;
+    if (!quantize_job_open_source(J, in_path, prune_path, type_plan_path,
+                                  remove_spec))
+        goto done;
+
+    if (J->rm.n > 0 && !quantize_job_remove_sublayers(J)) goto done;
+    if (ms && ms->n_base != J->g.n_tensors) {
+        // the base changed between the resolve open and this one
+        fprintf(stderr, "error: %s changed while merging\n", in_path);
         goto done;
     }
+
+    if (surgery_context &&
+        !quantize_job_context_surgery(J, surgery_context, surgery_factor,
+                                      surgery_result))
+        goto done;
+
+    if (J->plan.n > 0 && !quantize_job_check_prune(J, in_path)) goto done;
+
+    if (!quantize_job_open_output(J, out_path)) goto done;
+
+    if (J->uniform_prune) quantize_job_uniform_expert_count(J);
+
+    if (!quantize_job_decide_types(J, target, type_plan_path, ms)) goto done;
     uint32_t ftype_out = 0;
     if (J->w.ok && J->g.n_tensors > 0) {
         // dominant non-f32 output type -> its MOSTLY_* code. The K-quant
@@ -2307,12 +2323,12 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
             !checked_u64_mul(rows, (uint64_t)J->eff_ne[i][3], &rows) ||
             !checked_u64_mul(ggml_row_size(J->out_type[i], J->eff_ne[i][0]), rows, &bytes) ||
             !checked_u64_add(off, bytes, &end) ||
-            !checked_u64_add(end, amask, &end)) {
+            !checked_u64_add(end, J->amask, &end)) {
             J->w.ok = false;
             break;
         }
         J->out_off[i] = off;
-        off = end & ~amask;
+        off = end & ~J->amask;
 
         wr_str(&J->w, t->name, strlen(t->name));
         wr_u32(&J->w, t->n_dims);
@@ -2322,7 +2338,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     }
     // pad to data section
     int64_t hdr_end = wr_tell(&J->w);
-    uint64_t data_start = hdr_end >= 0 ? ((uint64_t)hdr_end + amask) & ~amask : 0;
+    uint64_t data_start = hdr_end >= 0 ? ((uint64_t)hdr_end + J->amask) & ~J->amask : 0;
     if (hdr_end >= 0 && data_start < (uint64_t)hdr_end) J->w.ok = false;
     wr_pad_to(&J->w, data_start);
 
