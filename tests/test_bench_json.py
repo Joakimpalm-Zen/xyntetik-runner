@@ -80,3 +80,34 @@ def test_prompt_file_is_honoured(runner_bin, model, tmp_path):
     d = _bench(runner_bin, model, "-n", "4", "-f", str(pf))
     explicit = _bench(runner_bin, model, "-n", "4", "-p", "word")
     assert d["prompt_tokens"] > explicit["prompt_tokens"]
+
+
+def test_the_report_names_the_route_it_measured(runner_bin, model):
+    """A rate means nothing without the route that produced it (plan P1):
+    the backend, the split, where the experts ran, the KV type, the
+    backend's own facts, a fallback's reason and the build."""
+    d = _bench(runner_bin, model, "-n", "4")
+    r = d["route"]
+    assert r["backend"] == "cpu" and r["gpu_layers"] == 0
+    assert r["layers"] == d["layers"] and r["path"] == "solo" and r["rows"] == 1
+    assert r["kv"] == "f16" and r["fallback"] == ""
+    assert r["build"].split("/")[0] in ("default", "portable", "t3")
+
+
+def test_debug_route_prints_each_route_once(runner_bin, model):
+    """RUNNER_DEBUG_ROUTE=1: one stderr line per route the forwards took (the
+    batched prefill, then the one-row decode), not one per forward."""
+    import os
+    proc = subprocess.run([runner_bin, "-m", str(model), "-p", "hello there", "-n", "6",
+                           "--gpu", "off", "--temp", "0", "--ignore-eos"],
+                          cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=120, env=dict(os.environ, RUNNER_DEBUG_ROUTE="1"))
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    lines = [l for l in proc.stderr.decode().splitlines() if l.startswith("route: ")]
+    assert any("path=batch" in l for l in lines), lines
+    assert sum("rows=1 path=solo" in l for l in lines) == 1, lines
+    assert all("backend=cpu" in l and "split=0/" in l for l in lines), lines
+    off = subprocess.run([runner_bin, "-m", str(model), "-p", "hello", "-n", "2",
+                          "--gpu", "off"], cwd=ROOT, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, timeout=120)
+    assert b"route: " not in off.stderr

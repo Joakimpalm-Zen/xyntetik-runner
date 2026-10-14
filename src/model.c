@@ -6,6 +6,7 @@
 #include "vramreg.h"
 #include "compat.h"
 #include "template.h"   // HARMONY_THINK_OPEN/CLOSE for the gpt-oss channel split
+#include "build_arch.h" // RUNNER_BUILD_ARCH for the route record
 
 #include <math.h>
 #include "pmath.h"
@@ -4750,6 +4751,7 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_bytes
     }
     if (cpu_why) {
         fprintf(stderr, "gpu: %s — using CPU\n", cpu_why);
+        snprintf(m->route_fallback, sizeof m->route_fallback, "%s", cpu_why);
         return true;
     }
     // Register the intended VRAM footprint before allocating any of it, so
@@ -5651,6 +5653,106 @@ static inline double dt_now(void) {
 // families; the portable T3 build is exact either way). Inlined, every stage
 // compiles in its caller's context, as the single function did.
 #define NUM_STAGE static inline __attribute__((always_inline))
+// ---- the route record (plan P1; see model.h) ----
+static int route_on = -1;
+static bool route_enabled(void) {
+    if (route_on < 0) { const char *e = getenv("RUNNER_DEBUG_ROUTE"); route_on = e && *e && strcmp(e, "0") != 0; }
+    return route_on;
+}
+
+static const char *route_backend(const model_t *m) {
+    if (!m->gpu) return "cpu";
+#if defined(RUNNER_GPU_METAL)
+    return "metal";
+#elif defined(RUNNER_GPU_CUDA)
+    return "cuda";
+#else
+    return "gpu";
+#endif
+}
+
+static const char *route_build(void) {
+#if defined(RUNNER_T3_BUILD)
+    return "t3/" RUNNER_BUILD_ARCH;
+#elif defined(RUNNER_PORTABLE_MATH)
+    return "portable/" RUNNER_BUILD_ARCH;
+#else
+    return "default/" RUNNER_BUILD_ARCH;
+#endif
+}
+
+typedef struct {
+    const char *backend, *kv, *detail, *build;
+    char device[128];
+    int  gpu_layers, n_layer, moe_layers, moe_host;
+} route_facts;
+
+static void route_collect(const model_t *m, route_facts *r) {
+    static char device[128];
+    static int device_known;
+    if (!device_known) {
+        if (!gpu_available(device, sizeof device)) device[0] = 0;
+        device_known = 1;
+    }
+    r->backend = route_backend(m);
+    snprintf(r->device, sizeof r->device, "%s", m->gpu ? device : "");
+    r->gpu_layers = m->gpu ? m->gpu_layers : 0;
+    r->n_layer = m->n_layer;
+    r->moe_layers = r->moe_host = 0;
+    for (int l = 0; l < m->n_layer; l++)
+        if (m->layers[l].is_moe) {
+            r->moe_layers++;
+            if (m->moe_host && m->moe_host[l]) r->moe_host++;
+        }
+    r->kv = m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16";
+    r->detail = m->gpu ? gpu_route_detail(m) : "";
+    r->build = route_build();
+}
+
+void model_route_note(model_t *m, int rows, const char *path) {
+    if (!route_enabled()) return;
+    route_facts r;
+    route_collect(m, &r);
+    char line[512];
+    snprintf(line, sizeof line,
+             "route: backend=%s device=\"%s\" split=%d/%d experts_on_host=%d/%d "
+             "rows=%d path=%s kv=%s%s%s fallback=\"%s\" build=%s",
+             r.backend, r.device, r.gpu_layers, r.n_layer, r.moe_host, r.moe_layers,
+             rows, path, r.kv, r.detail[0] ? " " : "", r.detail, m->route_fallback, r.build);
+    uint64_t h = 1469598103934665603ull;
+    for (const char *p = line; *p; p++) { h ^= (unsigned char)*p; h *= 1099511628211ull; }
+    if (h == m->route_last) return;
+    m->route_last = h;
+    fprintf(stderr, "%s\n", line);
+}
+
+// a JSON string body for a device name or a reason (model.c links without
+// json.c in the focused test binaries, so it escapes its own two strings)
+static void route_escape(const char *s, char *out, size_t cap) {
+    size_t n = 0;
+    for (; *s && n + 7 < cap; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (c == '"' || c == '\\') { out[n++] = '\\'; out[n++] = (char)c; }
+        else if (c < 0x20) n += (size_t)snprintf(out + n, cap - n, "\\u%04x", c);
+        else out[n++] = (char)c;
+    }
+    out[n] = 0;
+}
+
+void model_route_json(const model_t *m, int rows, const char *path, char *out, int cap) {
+    route_facts r;
+    route_collect(m, &r);
+    char dev[260], why[330];
+    route_escape(r.device, dev, sizeof dev);
+    route_escape(m->route_fallback, why, sizeof why);
+    snprintf(out, cap,
+             "{\"backend\":\"%s\",\"device\":\"%s\",\"gpu_layers\":%d,\"layers\":%d,"
+             "\"experts_on_host\":%d,\"moe_layers\":%d,\"rows\":%d,\"path\":\"%s\","
+             "\"kv\":\"%s\",\"backend_detail\":\"%s\",\"fallback\":\"%s\",\"build\":\"%s\"}",
+             r.backend, dev, r.gpu_layers, r.n_layer, r.moe_host, r.moe_layers, rows, path,
+             r.kv, r.detail, why, r.build);
+}
+
 void model_debug_time_report(void) {
     if (!dbg_time_on()) return;
     double tot = 0; for (int k = 0; k < DT_N; k++) tot += dt_acc[k];
@@ -10486,12 +10588,16 @@ static float *forward_gpu_leading(model_t *m, const int32_t *tokens, int n,
             // oracle) — the 69b8085 MoE slice-nbytes defect hid exactly here.
             fprintf(stderr, "gpu: forward failed at runtime — releasing the "
                     "backend, continuing on CPU\n");
+            snprintf(m->route_fallback, sizeof m->route_fallback,
+                     "forward failed at runtime");
             gpu_disable(m);
         } else if (gpu_forward_batch(m, tokens, n, pos, false, NULL)) {
             *start = m->gpu_layers;
         } else {
             fprintf(stderr, "gpu: forward failed at runtime — releasing the "
                     "backend, continuing on CPU\n");
+            snprintf(m->route_fallback, sizeof m->route_fallback,
+                     "forward failed at runtime");
             gpu_disable(m);
         }
     }
@@ -10539,6 +10645,7 @@ static float *forward_head(model_t *m, int n, int dbg) {
 
 float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                            bool want_logits) {
+    if (route_enabled()) model_route_note(m, n, n == 1 ? "solo" : "batch");
     int dbg = forward_begin(m, n, pos);
     forward_ple_before_split(m, tokens, n);
     int start;
@@ -10599,6 +10706,7 @@ bool model_spec_verify_ok(const model_t *m) {
 }
 
 bool model_forward_batch_keep(model_t *m, const int32_t *tokens, int n, int pos) {
+    if (route_enabled()) model_route_note(m, n, "keep");
     if (!model_spec_verify_ok(m)) return false;
     if (!m->all_logits)
         m->all_logits = malloc(sizeof(float) * (size_t)m->spec_batch * m->n_vocab);
@@ -10911,6 +11019,7 @@ float *model_mtp_draft_logits(model_t *m) {
 }
 
 float *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos) {
+    if (route_enabled()) model_route_note(m, 1, "mtp");
     if (!model_mtp_ready(m) || !h || m->mtp_qn != 0) return NULL;
     if (m->gpu && gpu_mtp_bound(m)) {
         // h is the device-resident chained hidden (model_mtp_hidden returns a

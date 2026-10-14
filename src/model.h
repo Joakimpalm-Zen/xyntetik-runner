@@ -375,6 +375,10 @@ typedef struct {
     int    n_ctx, n_batch;
     int    spec_want_all;    // >0: the NEXT forward emits logits for every
                              // column (speculative verify), not just the last
+    // RUNNER_DEBUG_ROUTE: why this instance runs on the CPU when a GPU was
+    // asked for ("" while it is not), and the last route line printed
+    char     route_fallback[160];
+    uint64_t route_last;
     f16_t *kcache, *vcache;  // [n_layer][n_ctx][kv_dim], fp16 (or q8_0 blocks
                              // when kv_q8 — treated as raw bytes then)
     kv_owner_t kv_owner;     // malloc on CPU/CUDA; backend-owned on Metal
@@ -1302,5 +1306,15 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
 
 // RUNNER_DEBUG_TIME=1 stage timing summary (stderr), no-op when unset
 void model_debug_time_report(void);
+
+// The route a forward actually took (plan P1): backend and device, the split
+// and where the experts run, the rows and the path (solo, batch, keep, mtp),
+// the KV cache type, the backend's own facts (gpu_route_detail), why it runs
+// on the CPU when a GPU was asked for, and the build. With RUNNER_DEBUG_ROUTE=1
+// model_route_note prints it to stderr whenever it differs from the last line
+// this instance printed; otherwise it is one cached getenv and a branch.
+// model_route_json writes the same record as a JSON object (--bench-json).
+void model_route_note(model_t *m, int rows, const char *path);
+void model_route_json(const model_t *m, int rows, const char *path, char *out, int cap);
 
 #endif // RUNNER_MODEL_H

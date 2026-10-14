@@ -226,6 +226,11 @@ typedef struct gpu_batch gpu_batch;
 bool       gpu_spec_keep_ok(const model_t *m);
 float     *gpu_spec_logits(model_t *m, int row);
 
+// The backend's own facts for the route record (model_route_note, plan P1):
+// CUDA whether single-token decode replays its captured graph, Metal whether
+// decode fusion is on; "" when the backend has none to add.
+const char *gpu_route_detail(const model_t *m);
+
 gpu_batch *gpu_batch_create(model_t **seqs, int n);
 void       gpu_batch_free(gpu_batch *b);
 // Evaluate one token for each of the n sequences named by idx (indices into

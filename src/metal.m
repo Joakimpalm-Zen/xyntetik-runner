@@ -4071,6 +4071,11 @@ bool gpu_spec_keep_ok(const model_t *m) {
     return true;
 }
 
+const char *gpu_route_detail(const model_t *m) {
+    (void)m;
+    return metal_fuse_on() ? "fusion=on" : "fusion=off";
+}
+
 float *gpu_spec_logits(model_t *mm, int row) {
     gpu_t *g = (gpu_t *)mm->gpu;
     if (!g || !g->logits) return NULL;

@@ -4446,14 +4446,17 @@ static int run_bench(cli_opts *o, cli_run *rt) {
     // prompt_s is time-to-first-token for this prompt length: the number
     // an editor-assistant user actually waits on, and the one a rate alone
     // hides. Both phases report seconds beside their rates.
+    // the route the decode ran (plan P1): a rate means nothing without it
+    char route[1024];
+    model_route_json(&rt->m, 1, "solo", route, sizeof route);
     printf("{\"model\":\"%s\",\"arch\":\"%s\",\"context\":%d,"
            "\"gpu_layers\":%d,\"layers\":%d,\"prompt_tokens\":%d,"
            "\"generated_tokens\":%d,\"prompt_tok_s\":%.3f,"
-           "\"gen_tok_s\":%.3f,\"prompt_s\":%.3f,\"gen_s\":%.3f}\n",
+           "\"gen_tok_s\":%.3f,\"prompt_s\":%.3f,\"gen_s\":%.3f,\"route\":%s}\n",
            esc_model, rt->m.arch, rt->m.n_ctx, rt->m.gpu_layers, rt->m.n_layer,
            n_prompt, n_gen,
            n_prompt / (ptime > 0 ? ptime : 1e-9),
-           n_gen / (gtime > 0 ? gtime : 1e-9), ptime, gtime);
+           n_gen / (gtime > 0 ? gtime : 1e-9), ptime, gtime, route);
     free(p);
     return 0;
 }

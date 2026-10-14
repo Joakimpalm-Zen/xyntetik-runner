@@ -5806,6 +5806,12 @@ bool gpu_spec_keep_ok(const model_t *m) {
     gpu_t *g = m ? m->gpu : NULL;
     return g && m->gpu_layers >= m->n_layer && m->spec_batch <= MVB;
 }
+
+const char *gpu_route_detail(const model_t *m) {
+    const gpu_t *g = m ? m->gpu : NULL;
+    if (!g) return "";
+    return g->graph_bad ? "graph=off" : g->gexec ? "graph=replay" : "graph=none";
+}
 float *gpu_spec_logits(model_t *m, int row) {
     gpu_t *g = m ? m->gpu : NULL;
     if (!g || !g->h_logits || row < 0 || row >= m->spec_batch) return NULL;
