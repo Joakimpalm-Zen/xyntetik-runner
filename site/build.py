@@ -238,8 +238,92 @@ def chart_fidelity() -> str:
     return "".join(out)
 
 
+
+def chart_answers() -> str:
+    """The Runner hero: the three questions the lede names, each answered
+    by one real command and one real line of output. Every number is on the
+    page with its date (the fit capture of 2026-10-03, the attn:48 artifact,
+    the --verify contract). Drawn as a terminal so it reads as output, not
+    as a promise."""
+    w, h = 560, 332
+    mono = 'font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"'
+    rows = [
+        ("will it fit", "runner --fit granite-4.2-8b-Q4_K_M.gguf -c 16384",
+         [("verdict", "FITS: 35 of 40 layers on the GPU, 6.53 GiB of RAM to spare", "ok")]),
+        ("what did shrinking it cost", "runner -m gemma-4-31B.gguf --quantize cut.gguf --remove-sublayer attn:48",
+         [("cost", "KLD 0.0223 vs the parent, 44,413 positions; file 74.3 MB smaller", "ok")]),
+        ("what exactly did it say", "runner --verify run.transcript.json",
+         [("VERIFIED", "exit 0: every token and every output byte replayed", "ok")]),
+    ]
+    out = [f'<svg class="chart chart-term" viewBox="0 0 {w} {h}" role="img" aria-labelledby="ans-title" '
+           'xmlns="http://www.w3.org/2000/svg">',
+           '<title id="ans-title">Three questions Runner answers with one command each: will the model fit, '
+           'what did shrinking it cost, what exactly did it say</title>',
+           f'<rect class="term-bg" x="0.5" y="0.5" width="{w - 1}" height="{h - 1}" rx="10"/>',
+           f'<path class="term-bar" d="M0.5 10.5 a10 10 0 0 1 10 -10 h{w - 21} a10 10 0 0 1 10 10 v24 h-{w - 1} z"/>',
+           '<circle cx="18" cy="17" r="5" fill="#FF5F57" opacity="0.85"/>'
+           '<circle cx="34" cy="17" r="5" fill="#FEBC2E" opacity="0.85"/>'
+           '<circle cx="50" cy="17" r="5" fill="#28C840" opacity="0.85"/>',
+           f'<text class="term-cap" x="{w / 2}" y="21" text-anchor="middle">three questions, three answers, real output</text>']
+    y = 60
+    for q, cmd, answers in rows:
+        out.append(f'<text class="term-q" x="18" y="{y}" {mono}>{esc("# " + q)}</text>')
+        y += 20
+        out.append(f'<text class="term-dim" x="18" y="{y}" {mono}>$</text>'
+                   f'<text class="term-cmd" x="33" y="{y}" {mono}>{esc(cmd)}</text>')
+        y += 20
+        for key, val, kind in answers:
+            out.append(f'<text class="term-key term-{kind}" x="33" y="{y}" {mono}>{esc(key)}</text>'
+                       f'<text class="term-val" x="{33 + 9 * len(key) + 14}" y="{y}" {mono}>{esc(val)}</text>')
+            y += 20
+        y += 16
+    out.append(f'<text class="term-cap" x="18" y="{h - 14}">fit: RTX 3070, 2026-10-03 (70 of 72 matched). '
+               'cost: gemma-4-31B attn:48. verify: the receipt contract.</text>')
+    out.append("</svg>")
+    return "".join(out)
+
+
+def chart_truncation_mini() -> str:
+    """The Evidence hero: the six-engine truncation grid at a size that fits
+    beside the headline. Same data and cell classes as chart_truncation."""
+    d = CHART_DATA["truncation"]
+    budgets, engines = d["budgets"], d["engines"]
+    cell, gap, left, top = 30, 3, 104, 30
+    w = left + len(budgets) * (cell + gap) + 4
+    h = top + len(engines) * (cell + gap) + 4
+    out = [f'<svg class="chart chart-grid chart-mini" viewBox="0 0 {w} {h}" role="img" '
+           f'aria-labelledby="trunc-mini-title" xmlns="http://www.w3.org/2000/svg">',
+           '<title id="trunc-mini-title">One tool call cut short at token budgets 1 to 16: which engine still hands '
+           'back a call that runs</title>',
+           f'<text class="ax" x="{left - 8}" y="{top - 11}" text-anchor="end">max_tokens</text>']
+    for j, b in enumerate(budgets):
+        x = left + j * (cell + gap) + cell / 2
+        out.append(f'<text class="ax" x="{x}" y="{top - 11}" text-anchor="middle">{b}</text>')
+    for i, (name, row) in enumerate(engines):
+        y = top + i * (cell + gap)
+        short = name.split(" ")[0]
+        cls = "lab strong" if short == "Runner" else "lab"
+        out.append(f'<text class="{cls}" x="{left - 8}" y="{y + cell / 2 + 4}" text-anchor="end">{esc(short)}</text>')
+        for j, v in enumerate(row):
+            x = left + j * (cell + gap)
+            cx, cy = x + cell / 2, y + cell / 2
+            out.append(f'<g class="cell cell-{v}"><rect x="{x}" y="{y}" width="{cell}" height="{cell}" rx="5"/>')
+            if v == "ok":
+                out.append(f'<path class="glyph" d="M{cx - 6} {cy + 1} l4 4 l8 -9" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>')
+            elif v == "none":
+                out.append(f'<path class="glyph" d="M{cx - 5} {cy - 5} l10 10 M{cx + 5} {cy - 5} l-10 10" fill="none" stroke-width="2.2" stroke-linecap="round"/>')
+            else:
+                glyph = '{ "' if v == "bad" else "500"
+                out.append(f'<text class="glyph-text" x="{cx}" y="{cy + 4}" text-anchor="middle" style="font-size:9px">{glyph}</text>')
+            out.append("</g>")
+    out.append("</svg>")
+    return "".join(out)
+
+
 CHARTS = {
     "truncation": chart_truncation,
+    "truncation_mini": chart_truncation_mini,
+    "answers": chart_answers,
     "speed": chart_speed,
     "lora": chart_lora,
     "fidelity": chart_fidelity,
