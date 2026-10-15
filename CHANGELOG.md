@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The Runner and Evidence pages open with the numbers and a way in.**
+  The Runner page's first screen now carries the download button, the
+  sixty-second start and the evidence link, four facts, and a strip of four
+  measured results that link to their sections; the Evidence page opens
+  with its four headline results, losing row first, and its table of
+  contents gains the publisher-reference section that was only reachable
+  by scrolling. Every number was already on the page with its date.
+
 - **The site tells search engines who publishes it and what Runner is.**
   Every page of xyntetik.com now carries schema.org structured data: the
   publishing organization with the repository, the container image and the

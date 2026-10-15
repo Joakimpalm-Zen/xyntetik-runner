@@ -9,9 +9,42 @@ nav: runner
     <div class="page-mark">{{mark:runner:64}}</div>
     <p class="eyebrow">Runner {{version}}</p>
     <h1>One file that runs AI models on your machine, and shows its work.</h1>
-    <p class="lede">Runner is the program that loads an AI model file and answers with it, on your own computer. It is written from scratch in plain C, needs nothing installed underneath it, and runs on ordinary processors, NVIDIA graphics cards and Apple Silicon. Your apps and coding agents talk to it through the OpenAI and Anthropic APIs.</p>
-    <p class="lede">What sets it apart is that it answers the questions other engines leave to trial and error: will this model fit, what did shrinking it cost, and what exactly did it say. From 1.0 its interfaces are held to a <a href="#versioning">versioning policy</a>.</p>
-    <nav class="toc" aria-label="On this page">
+    <p class="lede">Runner loads an AI model file and answers with it, on your own computer. Written from scratch in plain C, nothing to install underneath it, on ordinary processors, NVIDIA graphics cards and Apple Silicon. Your apps and coding agents talk to it through the OpenAI and Anthropic APIs.</p>
+    <p class="lede">It answers the questions other engines leave to trial and error: will this model fit, what did shrinking it cost, and what exactly did it say. From 1.0 its interfaces are held to a <a href="#versioning">versioning policy</a>.</p>
+    <div class="btn-row">
+      <a class="btn btn-primary" href="{{repo}}/releases/latest">Download {{version}}</a>
+      <a class="btn" href="#sixty-seconds">Sixty seconds to a served model</a>
+      <a class="btn" href="/evidence/">The evidence</a>
+    </div>
+    <div class="hero-facts">
+      <span>Free forever, Apache 2.0</span>
+      <span>One binary, nothing to install</span>
+      <span>Mac, Windows and Linux; CPU, CUDA and Metal</span>
+      <span>Released {{release_date}}</span>
+    </div>
+    <div class="proof-strip mt-2 mb-2">
+      <div>
+        <div class="value">70 of 72</div>
+        <div class="label"><a href="#fit">Fit verdicts</a> that named the loader's exact layer split from the first 16 MB of the file; the other two were one layer cautious</div>
+        <span class="measured">RTX 3070, six models, two contexts, four cache formats. 2026-10-03.</span>
+      </div>
+      <div>
+        <div class="value">41%</div>
+        <div class="label">of the usual cache bytes with <a href="#memory"><code>--kv k8v4</code></a>, full agreement with the full-size cache on three models</div>
+        <span class="measured">Qwen3.5-4B, Muse-Glimmer-30B, Qwen3.8-27B, 500 positions each.</span>
+      </div>
+      <div>
+        <div class="value">35 MB</div>
+        <div class="label">of memory held by an idle 63 GB model under Runner; <a href="#coexistence">llama-server holds 60.8 GB</a> until the process dies</div>
+        <span class="measured">gpt-oss-120b on a 128 GB Apple Silicon Mac. 2026-09-01.</span>
+      </div>
+      <div>
+        <div class="value">1 of 6</div>
+        <div class="label">engines whose <a href="/evidence/#truncation">tool call still runs</a> when the token limit cuts it short, at every budget tested</div>
+        <span class="measured">Runner, vLLM, llama.cpp, Ollama, TensorRT-LLM, SGLang. 2026-08-19.</span>
+      </div>
+    </div>
+    <nav class="toc mt-2" aria-label="On this page">
       <a href="#sixty-seconds">Try it</a>
       <a href="#fit">Will it fit</a>
       <a href="#make">Make your own file</a>
@@ -331,6 +364,11 @@ src/ed25519.c         signing subset of TweetNaCl (receipts)</code></pre>
       <h2>Readable in an afternoon.</h2>
       <p>Host weights stay quantized in the mapped GGUF and are dequantized while computing. CUDA copies selected weights and compute buffers to VRAM; Metal wraps the mapped weights in unified memory. The load log and <code>--caps</code> are the sizing sources for an exact model and machine.</p>
       <p>The complete map, the command-line reference and the compatibility evidence are in the <a href="{{repo}}/blob/main/MANUAL.md">manual</a>; release history with each version's measurements is in the <a href="{{repo}}/blob/main/CHANGELOG.md">changelog</a>.</p>
+      <div class="btn-row">
+        <a class="btn btn-primary" href="{{repo}}/releases/latest">Download {{version}}</a>
+        <a class="btn" href="{{repo}}/blob/main/MANUAL.md">Read the manual</a>
+        <a class="btn" href="/evidence/">See the evidence</a>
+      </div>
     </div>
   </div>
 </section>
