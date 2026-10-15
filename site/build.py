@@ -30,6 +30,7 @@ OUT = SITE / "_site"
 REPO = "https://github.com/Joakimpalm-Zen/xyntetik-runner"
 HF = "https://huggingface.co/Joakimpalm-Zen"
 HFD = "https://huggingface.co/datasets/Joakimpalm-Zen"
+HFORG = "https://huggingface.co/Xyntetik"
 ORIGIN = "https://xyntetik.com"
 GHCR = "https://github.com/Joakimpalm-Zen/xyntetik-runner/pkgs/container/xyntetik-runner"
 
@@ -302,7 +303,7 @@ def jsonld(path: str) -> str:
         "alternateName": "Xyntetik",
         "url": ORIGIN,
         "logo": ORIGIN + "/assets/marks/zenova-light.svg",
-        "sameAs": [REPO, HF, GHCR],
+        "sameAs": [REPO, HF, HFORG, GHCR],
     }
     graph: list[dict] = [org]
     if path == "/":
@@ -335,7 +336,7 @@ def jsonld(path: str) -> str:
             "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
             "author": {"@id": ORIGIN + "/#zenova"},
             "publisher": {"@id": ORIGIN + "/#zenova"},
-            "sameAs": [REPO, GHCR, HF],
+            "sameAs": [REPO, GHCR, HF, HFORG],
         })
         graph.append({
             "@type": "SoftwareSourceCode",
@@ -585,7 +586,8 @@ def main() -> int:
         f"- [Container image]({GHCR})\n\n"
         "## Evidence\n\n"
         f"- [Measurements behind every claim]({ORIGIN}/evidence/): benchmarks, truncation, fidelity, losing rows included\n"
-        f"- [Model files and research records]({HF}): GGUF releases and preregistered evidence datasets\n\n"
+        f"- [Model files and research records]({HF}): GGUF releases and preregistered evidence datasets\n"
+        f"- [Xyntetik on Hugging Face]({HFORG}): the program's organization page\n\n"
         "## Program\n\n"
         f"- [About Xyntetik and Zenova AB]({ORIGIN}/about/)\n"
         f"- [Suite]({ORIGIN}/suite/): the testing and evidence layer, in private development\n"
