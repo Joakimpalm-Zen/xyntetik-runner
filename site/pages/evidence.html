@@ -18,7 +18,31 @@ nav: evidence
       <a href="#compat">Compatibility gates</a>
       <a href="#artifacts">Artifact ledger</a>
       <a href="#external">External reproductions</a>
+      <a href="#gold">Publisher reference</a>
     </nav>
+    <p class="small muted mt-1">The four results that matter most, losing rows first. Each number links to its section and its raw material.</p>
+    <div class="proof-strip">
+      <div>
+        <div class="value">6 to 10%</div>
+        <div class="label">of llama.cpp's prompt-processing speed on CUDA, the project's weakest row; <a href="#benchmarks">decode reads 69 to 93%</a> on the same files</div>
+        <span class="measured">Same box, same GGUF files, full offload verified. 2026-09-02 and 2026-10-03.</span>
+      </div>
+      <div>
+        <div class="value">1 of 6</div>
+        <div class="label">engines that hand back a <a href="#truncation">runnable tool call</a> when the token limit cuts it short, at every budget from 1 to 16 tokens</div>
+        <span class="measured">Runner, vLLM, llama.cpp, Ollama, TensorRT-LLM, SGLang. 2026-08-19.</span>
+      </div>
+      <div>
+        <div class="value">21 of 22</div>
+        <div class="label">rows where Runner's output is <a href="#gold">closer to the model publisher's own float32 implementation</a> than llama.cpp's, across twelve families</div>
+        <span class="measured">2,000 teacher-forced positions per row. 2026-09-07.</span>
+      </div>
+      <div>
+        <div class="value">0.69 to 1.00</div>
+        <div class="label">held-out tool-call score after <a href="#training">training through the 4-bit file</a> it serves; two runs wrote the same adapter bytes</div>
+        <span class="measured">Qwen3-4B Q4_K_M, reproduced by an outside tester on a Tesla T4. 2026-08-22.</span>
+      </div>
+    </div>
   </div>
 </section>
 
