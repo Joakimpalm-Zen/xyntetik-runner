@@ -130,11 +130,17 @@ jobs:
         # the section is missing — check-release already requires it to exist.
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          # Every release body opens with the same sentence the README and
+          # the site lead with, and a link back, so a release page found on
+          # its own says what the engine is.
+          printf '%s\n\n' \
+            'Xyntetik Runner: local inference you can prove. A free, single-binary GGUF engine in C for CPU, CUDA and Metal that serves, scores and trains LoRA through the quantized weights it deploys, byte-reproducibly. Manual, evidence and measurements: https://xyntetik.com/runner/' \
+            > RELEASE_NOTES.md
           awk -v v="## v${VERSION}" '
             $0 ~ ("^" v) {f=1; next}
             f && /^## v/ {f=0}
             f {print}
-          ' CHANGELOG.md > RELEASE_NOTES.md
+          ' CHANGELOG.md >> RELEASE_NOTES.md
           echo "--- release notes ---"; cat RELEASE_NOTES.md
           test -s RELEASE_NOTES.md
       - uses: softprops/action-gh-release@v2

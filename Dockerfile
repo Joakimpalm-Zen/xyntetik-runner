@@ -47,8 +47,12 @@ RUN python3 scripts/make-test-model.py /tmp/test.gguf \
 
 FROM gcr.io/distroless/cc-debian12
 LABEL org.opencontainers.image.title="Xyntetik Runner" \
-      org.opencontainers.image.description="Single-binary local LLM inference engine (CPU by default, GPU via --gpus all); tool calls survive the token limit." \
-      org.opencontainers.image.source="https://github.com/Joakimpalm-Zen/xyntetik-runner"
+      org.opencontainers.image.description="Local inference you can prove. A single-binary GGUF engine in C that serves, scores and trains LoRA through the quantized weights it deploys, byte-reproducibly; tool calls survive the token limit; every run replays as a signed receipt. CPU by default, GPU via --gpus all." \
+      org.opencontainers.image.source="https://github.com/Joakimpalm-Zen/xyntetik-runner" \
+      org.opencontainers.image.url="https://xyntetik.com/runner/" \
+      org.opencontainers.image.documentation="https://github.com/Joakimpalm-Zen/xyntetik-runner/blob/main/MANUAL.md" \
+      org.opencontainers.image.vendor="Zenova AB" \
+      org.opencontainers.image.licenses="Apache-2.0"
 COPY --from=build /src/runner /usr/local/bin/runner
 EXPOSE 8080
 ENTRYPOINT ["runner"]

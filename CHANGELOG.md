@@ -13,6 +13,12 @@ Current release and unreleased changes. Compatibility follows the
   `llms.txt` at the site root describes the program in plain text for the
   answer engines, next to the sitemap and robots file.
 
+- **The container image, the release notes and the Python client say the
+  same first sentence as the README.** The image labels carry the
+  positioning line, the documentation and site URLs; every GitHub release
+  body opens with it; `xyntetik-runner-client` on PyPI carries it with the
+  project links.
+
 ## v1.3.1 - 2026-10-14
 
 - **`scripts/bench-corpus.py` measures at the context its record states.**
