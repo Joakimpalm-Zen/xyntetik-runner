@@ -11,7 +11,11 @@ Current release and unreleased changes. Compatibility follows the
   measured results that link to their sections; the Evidence page opens
   with its four headline results, losing row first, and its table of
   contents gains the publisher-reference section that was only reachable
-  by scrolling. Every number was already on the page with its date.
+  by scrolling. Every number was already on the page with its date. Each
+  hero now also carries a drawn visual generated from the site's own data:
+  on Runner, a terminal with the three questions the page opens with and
+  one real command and answer for each; on Evidence, the six-engine
+  truncation grid at hero size, linked to its section.
 
 - **The site tells search engines who publishes it and what Runner is.**
   Every page of xyntetik.com now carries schema.org structured data: the

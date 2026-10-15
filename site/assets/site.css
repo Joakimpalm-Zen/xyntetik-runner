@@ -293,6 +293,26 @@ table.compare .p::before { content: "\25D0"; color: var(--coral); margin-right: 
 .fig .legend i.ref { height: 1px; width: 18px; background: var(--line-strong); }
 .chart { width: 100%; height: auto; display: block; font-family: var(--sans); }
 .chart-grid { max-width: 620px; margin: 0 auto; min-width: 460px; }
+.chart-mini { min-width: 0; max-width: 360px; margin: 0; }
+/* the hero terminal: the same palette in both themes, like the README shots */
+.chart-term { max-width: 560px; }
+.chart-term .term-bg { fill: #161B22; stroke: #30363D; }
+.chart-term .term-bar { fill: #21262D; }
+.chart-term .term-cap { font-size: 11px; fill: #8C9A98; }
+.chart-term .term-q { font-size: 11.5px; fill: #8C9A98; }
+.chart-term .term-dim { font-size: 12px; fill: #8C9A98; }
+.chart-term .term-cmd { font-size: 11.5px; fill: #E8ECEA; font-weight: 600; }
+.chart-term .term-key { font-size: 12px; font-weight: 700; }
+.chart-term .term-ok { fill: #3ED2BD; }
+.chart-term .term-val { font-size: 11.5px; fill: #E8ECEA; }
+.hero-grid-head { align-items: center; }
+.hero-fig svg { width: min(100%, 560px); }
+.hero-cap { display: block; max-width: 48ch; margin: 0.8rem 0 0; }
+@media (max-width: 900px) {
+  .hero-fig { display: contents; }
+  .hero-fig svg { order: 1; width: 100%; max-width: 560px; justify-self: start; }
+  .hero-cap { order: 2; }
+}
 .chart-bars { min-width: 560px; }
 .chart-speed { min-width: 940px; }
 .chart-lines { min-width: 520px; }
