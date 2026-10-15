@@ -31,6 +31,11 @@ REPO = "https://github.com/Joakimpalm-Zen/xyntetik-runner"
 HF = "https://huggingface.co/Joakimpalm-Zen"
 HFD = "https://huggingface.co/datasets/Joakimpalm-Zen"
 ORIGIN = "https://xyntetik.com"
+GHCR = "https://github.com/Joakimpalm-Zen/xyntetik-runner/pkgs/container/xyntetik-runner"
+
+# Filled by main() before any page is rendered; read by jsonld().
+VERSION = ""
+RELEASE_DATE = ""
 
 NAV = [
     ("runner", "Runner", "/runner/"),
@@ -283,6 +288,74 @@ def meta_block(text: str) -> tuple[dict, str]:
     return meta, text[m.end():]
 
 
+def jsonld(path: str) -> str:
+    """Structured data for search engines: who publishes the site, and what
+    the runner page describes. One Organization for Zenova AB on every page
+    (the publisher), the WebSite on the home page, and the software entity
+    on the runner page, each pointing at the same repository, package and
+    model-file account so the search engines consolidate them."""
+    import json
+    org = {
+        "@type": "Organization",
+        "@id": ORIGIN + "/#zenova",
+        "name": "Zenova AB",
+        "alternateName": "Xyntetik",
+        "url": ORIGIN,
+        "logo": ORIGIN + "/assets/marks/zenova-light.svg",
+        "sameAs": [REPO, HF, GHCR],
+    }
+    graph: list[dict] = [org]
+    if path == "/":
+        graph.append({
+            "@type": "WebSite",
+            "@id": ORIGIN + "/#website",
+            "url": ORIGIN,
+            "name": "Xyntetik",
+            "publisher": {"@id": ORIGIN + "/#zenova"},
+        })
+    if path in ("/", "/runner/"):
+        graph.append({
+            "@type": "SoftwareApplication",
+            "@id": ORIGIN + "/runner/#app",
+            "name": "Xyntetik Runner",
+            "alternateName": "xyntetik-runner",
+            "description": ("Local inference you can prove. A free, single-binary GGUF "
+                            "engine in C that serves, scores and trains LoRA through the "
+                            "quantized weights it deploys, byte-reproducibly, with tool calls "
+                            "that survive the token limit and a signed receipt for every run."),
+            "url": ORIGIN + "/runner/",
+            "applicationCategory": "DeveloperApplication",
+            "operatingSystem": "Linux, macOS, Windows",
+            "softwareVersion": VERSION.lstrip("v"),
+            "softwareHelp": REPO + "/blob/main/MANUAL.md",
+            "downloadUrl": REPO + "/releases/latest",
+            "installUrl": ORIGIN + "/runner/",
+            "license": "https://www.apache.org/licenses/LICENSE-2.0",
+            "isAccessibleForFree": True,
+            "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
+            "author": {"@id": ORIGIN + "/#zenova"},
+            "publisher": {"@id": ORIGIN + "/#zenova"},
+            "sameAs": [REPO, GHCR, HF],
+        })
+        graph.append({
+            "@type": "SoftwareSourceCode",
+            "@id": REPO + "#source",
+            "name": "xyntetik-runner",
+            "codeRepository": REPO,
+            "programmingLanguage": "C",
+            "runtimePlatform": "CPU, CUDA, Metal",
+            "license": "https://www.apache.org/licenses/LICENSE-2.0",
+            "version": VERSION.lstrip("v"),
+            "dateModified": RELEASE_DATE,
+            "targetProduct": {"@id": ORIGIN + "/runner/#app"},
+            "author": {"@id": ORIGIN + "/#zenova"},
+        })
+    data = {"@context": "https://schema.org", "@graph": graph}
+    return ('<script type="application/ld+json">'
+            + json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+            + "</script>")
+
+
 def shell(meta: dict, body: str, sha: str) -> str:
     title = meta["title"]
     full = title if meta.get("bare") else f"{title} · Xyntetik"
@@ -309,6 +382,7 @@ def shell(meta: dict, body: str, sha: str) -> str:
 <meta property="og:url" content="{ORIGIN}{path}">
 <meta property="og:image" content="{og_image}">
 <meta name="twitter:card" content="summary_large_image">
+{jsonld(path)}
 <meta name="theme-color" content="#FAFAF8" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0E1516" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
@@ -444,6 +518,8 @@ def check_page(path: str, out: str, known_paths: set[str]) -> list[str]:
 def main() -> int:
     sha = build_revision()
     version, release_date = latest_release()
+    global VERSION, RELEASE_DATE
+    VERSION, RELEASE_DATE = version, release_date
     if OUT.exists():
         shutil.rmtree(OUT)
     OUT.mkdir(parents=True)
@@ -489,6 +565,33 @@ def main() -> int:
         + "</urlset>\n", encoding="utf-8")
     (OUT / "robots.txt").write_text(f"User-agent: *\nAllow: /\nSitemap: {ORIGIN}/sitemap.xml\n", encoding="utf-8")
     (OUT / ".nojekyll").write_text("", encoding="utf-8")
+    # llms.txt: the answer engines read this file the way crawlers read
+    # robots.txt. Plain Markdown: what the site is, then where the detail is.
+    (OUT / "llms.txt").write_text(
+        "# Xyntetik\n\n"
+        "> Xyntetik is the Zenova AB program for running capable language models on "
+        "hardware you own and proving what they did. Its released product is Xyntetik "
+        "Runner, a free, single-binary GGUF inference engine in C for CPU, CUDA and "
+        "Metal that serves, scores and trains LoRA through the quantized file it "
+        "deploys, byte-reproducibly, keeps tool calls usable when the token budget "
+        "runs out, hands memory back while idle, and records every run as a signed "
+        "receipt. OpenAI- and Anthropic-compatible APIs.\n\n"
+        f"Current release: {version} ({release_date}).\n\n"
+        "## Runner\n\n"
+        f"- [What Runner does]({ORIGIN}/runner/): serve, fit, quantize, train, the 1.x promises\n"
+        f"- [Source and releases]({REPO}): Apache-2.0, single binary per platform\n"
+        f"- [Manual]({REPO}/blob/main/MANUAL.md): every flag, API and environment switch\n"
+        f"- [Documentation]({REPO}/tree/main/docs): kernel routes, determinism scope, benchmarks\n"
+        f"- [Container image]({GHCR})\n\n"
+        "## Evidence\n\n"
+        f"- [Measurements behind every claim]({ORIGIN}/evidence/): benchmarks, truncation, fidelity, losing rows included\n"
+        f"- [Model files and research records]({HF}): GGUF releases and preregistered evidence datasets\n\n"
+        "## Program\n\n"
+        f"- [About Xyntetik and Zenova AB]({ORIGIN}/about/)\n"
+        f"- [Suite]({ORIGIN}/suite/): the testing and evidence layer, in private development\n"
+        f"- [Shade]({ORIGIN}/shade/): the research lab\n"
+        f"- [Support the engine]({ORIGIN}/support/)\n",
+        encoding="utf-8")
 
     for p in (SITE / "assets" / "site.css", SITE / "assets" / "site.js", Path(__file__)):
         if "\u2014" in p.read_text(encoding="utf-8"):
