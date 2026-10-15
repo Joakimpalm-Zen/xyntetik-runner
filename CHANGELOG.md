@@ -3,6 +3,16 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **The site tells search engines who publishes it and what Runner is.**
+  Every page of xyntetik.com now carries schema.org structured data: the
+  publishing organization with the repository, the container image and the
+  model-file account as the same entity, and on the home and Runner pages
+  the software itself with its version, license and download link. A
+  `llms.txt` at the site root describes the program in plain text for the
+  answer engines, next to the sitemap and robots file.
+
 ## v1.3.1 - 2026-10-14
 
 - **`scripts/bench-corpus.py` measures at the context its record states.**
