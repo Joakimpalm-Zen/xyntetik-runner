@@ -45,6 +45,10 @@ static void *t_malloc(size_t n) { return g_starve_malloc ? NULL : malloc(n); }
 
 #undef malloc
 
+// completion.c's request stop predicate asks the server whether its shutdown
+// drain is over (server.c); this test runs no server, so never.
+double server_drain_deadline(void) { return 0; }
+
 static int g_fail = 0;
 
 static void ck(int cond, const char *what) {

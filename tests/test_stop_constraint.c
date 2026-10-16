@@ -57,6 +57,10 @@
 
 #include "../src/completion.c"
 
+// completion.c's request stop predicate asks the server whether its shutdown
+// drain is over (server.c); this test runs no server, so never.
+double server_drain_deadline(void) { return 0; }
+
 static const char *g_path = "test.gguf";
 static int g_fail = 0;
 

@@ -2843,12 +2843,19 @@ static bool accept_fastpath(sock_t fd) {
 // (ThreadSanitizer, 2026-10-10). A lock-free atomic is async-signal-safe too.
 static atomic_int stop_requested;
 static atomic_int listener_fd = -1;
+// When the first stop arrived (plat_now, microseconds; clock_gettime is
+// async-signal-safe) and which signal brought it: the drain's two bounds are
+// measured from it, and a drain that hits its hard bound exits with 128 plus
+// that signal.
+static atomic_llong stop_at_us;
+static atomic_int stop_sig = SIGTERM;
 
 void server_request_stop(void) {
     // A second signal is the operator overruling the drain: exit now. _exit is
     // async-signal-safe (128+SIGINT — the shell's convention for a Ctrl-C kill),
     // where the alternative on a pinned drain was reaching for SIGKILL.
     if (atomic_exchange(&stop_requested, 1)) _exit(130);
+    atomic_store(&stop_at_us, (long long)(plat_now() * 1e6));
     // exchange: a handler and a thread racing here close the listener once
     int fd = atomic_exchange(&listener_fd, -1);
     if (fd >= 0) {
@@ -2870,7 +2877,7 @@ void server_request_stop(void) {
 }
 
 static void stop_handler(int sig) {
-    (void)sig;
+    if (!atomic_load(&stop_requested)) atomic_store(&stop_sig, sig);
     server_request_stop();
 }
 
@@ -2894,8 +2901,12 @@ static bool stop_was_requested(void) { return atomic_load(&stop_requested) != 0;
 static volatile LONG win_stop_requested;
 static volatile SOCKET win_listener_socket = INVALID_SOCKET;
 
+static atomic_llong stop_at_us;
+static atomic_int stop_sig = 2;   // a console control event is Windows' SIGINT
+
 void server_request_stop(void) {
     if (InterlockedExchange(&win_stop_requested, 1)) _exit(130);
+    atomic_store(&stop_at_us, (long long)(plat_now() * 1e6));
     SOCKET s = win_listener_socket;
     if (s != INVALID_SOCKET) {
         win_listener_socket = INVALID_SOCKET;
@@ -2933,6 +2944,62 @@ static void install_stop_handlers(void) {
 
 static bool stop_was_requested(void) { return win_stop_requested != 0; }
 #endif
+
+// The drain's two bounds, in seconds after the first stop request.
+//
+// GRACE: an active request may still finish on its own. Past it, every
+// request's stop predicate (completion.c request_should_stop) answers true,
+// so it ends at its next prompt chunk or generated token: a turn already
+// generating returns what it has as a cut turn (finish_detail "shutdown"),
+// one still in its prompt gets 503 "server shutting down". Until 2026-10-16
+// there was no bound at all: the drain waited for every active request to
+// run out its own max_tokens or deadline, so one SIGTERM to a busy server
+// looked ignored for minutes (the lab: a 1,200-token generation finished
+// 111.5 s after the signal; a page-fault-bound prefill needed SIGKILL).
+// 2 s keeps a request that is about to finish whole and stays inside the
+// tray's 3 s SIGTERM-then-SIGKILL stop.
+//
+// HARD: a request is only stopped between steps (a forward abandoned midway
+// would leave KV a later reuse could read as complete), and one step can
+// itself take minutes, a prefill paging its weights in from a slow disk.
+// Past this bound the process exits without waiting for it: nothing is left
+// to save, the work was abandoned at GRACE.
+static double drain_grace_s = 2.0, drain_hard_s = 10.0;
+static atomic_int drain_done;
+
+double server_drain_deadline(void) {
+    long long t = atomic_load(&stop_at_us);
+    return t ? t / 1e6 + drain_grace_s : 0;
+}
+
+// The test hooks shorten both bounds (RUNNER_TEST_DRAIN_GRACE_MS,
+// RUNNER_TEST_DRAIN_HARD_MS), the way RUNNER_TEST_STEP_DELAY_MS slows a step.
+static void drain_bounds_init(void) {
+    const char *g = getenv("RUNNER_TEST_DRAIN_GRACE_MS");
+    const char *h = getenv("RUNNER_TEST_DRAIN_HARD_MS");
+    drain_grace_s = g && *g ? atof(g) / 1000.0 : 2.0;
+    drain_hard_s = h && *h ? atof(h) / 1000.0 : 10.0;
+    atomic_store(&stop_at_us, 0);
+    atomic_store(&drain_done, 0);
+}
+
+static void *drain_watchdog(void *arg) {
+    (void)arg;
+    long long t = atomic_load(&stop_at_us);
+    double until = (t ? t / 1e6 : plat_now()) + drain_hard_s;
+    while (!atomic_load(&drain_done)) {
+        double left = until - plat_now();
+        if (left <= 0) {
+            fprintf(stderr, "shutdown: a request was still inside one step "
+                    "%.0f s after the stop; exiting without waiting for it\n",
+                    drain_hard_s);
+            fflush(stderr);
+            _exit(128 + atomic_load(&stop_sig));
+        }
+        plat_sleep_ms(left > 0.1 ? 100 : (int)(left * 1000) + 1);
+    }
+    return NULL;
+}
 
 static struct {
     const char *const *names, *const *paths;
@@ -3040,6 +3107,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     atomic_store(&stop_requested, 0);
     atomic_store(&listener_fd, -1);
 #endif
+    drain_bounds_init();
     install_stop_handlers(); // resets the stop flag + listener on both platforms
     provenance_init();       // the executable's digest, once, before serving
     respstore_reset_from_env();   // an in-memory store lives with the server
@@ -3532,10 +3600,17 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     }
 #endif
     queue_shutdown();
+    // Bound the drain (drain_grace_s, drain_hard_s above). Detached: when the
+    // drain finishes first it returns on its own. A loop that ended without a
+    // stop request (the listener failed) drains by the same bounds.
+    if (!atomic_load(&stop_at_us)) atomic_store(&stop_at_us, (long long)(plat_now() * 1e6));
+    pthread_t wd;
+    if (pthread_create(&wd, NULL, drain_watchdog, NULL) == 0) pthread_detach(wd);
     // A worker parked in a --wait-for-vram queue would pin the joins below
     // for up to the full wait; the load gives up at its next poll instead.
     atomic_store(&SV.load_cancel, 1);
     for (int i = 0; i < parallel; i++) pthread_join(SV.slots[i].th, NULL);
+    atomic_store(&drain_done, 1);
     sched_shutdown();
     atomic_store(&SV.shutdown, true);
     if (SV.reaper_started) pthread_join(SV.reaper_th, NULL);

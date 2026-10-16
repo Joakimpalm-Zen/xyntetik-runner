@@ -19,6 +19,10 @@
 
 typedef struct slot_s slot_t;
 const char *slot_default_system(const slot_t *s, bool tools);
+// When a server stop has been requested: the moment active requests stop
+// being waited for (the first stop request plus the drain grace), else 0.
+// Read by each request's stop predicate, on the same clock as now_s().
+double server_drain_deadline(void);
 extern const char *server_template_text_override;
 
 struct slot_s {

@@ -134,6 +134,7 @@ typedef struct {
     // enough prompt overran its own timeout by the entire prefill.
     double deadline;
     bool   timed_out; // stopped by the deadline, not by a vanished client
+    bool   shut_down; // stopped by the server's drain (server_drain_deadline)
 } client_stop;
 
 static bool request_should_stop(void *ud) {
@@ -145,6 +146,15 @@ static bool request_should_stop(void *ud) {
     // were listening.
     if (s->deadline > 0 && now_s() >= s->deadline) {
         s->timed_out = true;
+        return true;
+    }
+    // The server is stopping and the drain's grace is over: end the request
+    // the way a deadline does, so the drain is bounded by the grace plus one
+    // step rather than by the longest active request (server.c,
+    // drain_grace_s). The caller is still there and is owed an answer.
+    double drain = server_drain_deadline();
+    if (drain > 0 && now_s() >= drain) {
+        s->shut_down = true;
         return true;
     }
     if (sock_peer_closed(s->fd)) *s->dead = true;
@@ -4841,7 +4851,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         // deadline is checked first: it is the only one where the caller is
         // still on the connection AND the prompt was fine, so reporting it as
         // a context overflow would send them shortening a prompt that fits.
-        if (stop.timed_out)
+        if (stop.shut_down && !stop.timed_out)
+            send_error(fd, 503, "server shutting down: the request was "
+                                "stopped before its prompt was processed");
+        else if (stop.timed_out)
             send_error_detail(fd, 408,
                               "request timed out while processing the prompt: "
                               "prefill did not finish inside the request "
@@ -5076,6 +5089,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // finish_detail, where it has lived since the wire value became "length".
     const char *cut_detail = e->prelude_exhausted && strcmp(finish, "reasoning_limit")
                            ? "reasoning_limit" : NULL;
+    // the server's drain cut the turn: the wire still says "length" (the turn
+    // was cut, the text is usable), and finish_detail says by what
+    if (stop.shut_down && !g.stopped && !e->hit_stop && !e->oom)
+        cut_detail = "shutdown";
     // a streamed call reports the same terminal reason a buffered one does.
     // Only a CLEANLY FINISHED document may claim "tool_calls": a budget
     // truncation still parses (the closer guarantees that) but the envelope
