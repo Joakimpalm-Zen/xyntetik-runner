@@ -41,6 +41,22 @@ Current release and unreleased changes. Compatibility follows the
   record or session image made under one by 1.4.0 names a digest this
   release does not reproduce; both are bound to the build that wrote them.
 
+- **`oneOf` admits only the values exactly one alternative lists.** JSON
+  Schema's `oneOf` holds when exactly one alternative validates, and Runner
+  merged literal alternatives into a union, which is what `anyOf` means. So
+  `oneOf: [{"enum": [1, 2]}, {"enum": [2, 3]}]` let the model emit 2, which
+  both alternatives admit. A value two alternatives share is now left out,
+  and a `oneOf` that leaves no value (two identical `const` branches, say) is
+  refused with a 400 instead of answered. `anyOf` is unchanged. Other
+  alternatives could not overlap: they must already differ in their first
+  character.
+
+- **`const` beside `enum` compares large integers exactly.** A `const` keeps
+  only the `enum` members equal to it, and the comparison used the rounded
+  double, so `{"const": 9007199254740992, "enum": [9007199254740993]}`
+  emitted 9007199254740993 with HTTP 200, while the small-integer
+  contradiction was a 400. It is a 400 now too.
+
 ## v1.4.0 - 2026-10-16
 
 - **`--train` says when a run is about to memorize.** A user trained four

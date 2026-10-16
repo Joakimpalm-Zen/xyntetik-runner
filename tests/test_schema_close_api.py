@@ -67,3 +67,32 @@ def test_a_large_min_length_closes_to_a_conforming_string(server):
     body = _chat(server, schema, max_tokens=2)
     doc = json.loads(body["choices"][0]["message"]["content"])
     assert len(doc["k"]) >= 6000
+
+
+def _chat_status(server, schema):
+    try:
+        return 200, _chat(server, schema, max_tokens=16)
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read() or b"null")
+
+
+# JSON Schema: oneOf holds when exactly one alternative validates, and const
+# and enum compare values exactly (2**53 + 1 is not 2**53). The 2026-10-16
+# review: overlapping oneOf literals were merged as a union, two identical
+# const branches compiled, and const 2**53 beside enum [2**53 + 1] emitted
+# 2**53 + 1, each with HTTP 200. A constraint no value can meet is a 400.
+@pytest.mark.parametrize("schema", [
+    {"oneOf": [{"const": 1}, {"const": 1}]},
+    {"oneOf": [{"enum": [1, 2]}, {"enum": [2, 1]}]},
+    {"const": 2 ** 53, "enum": [2 ** 53 + 1]},
+], ids=["identical-const-branches", "same-enum-twice", "const-2^53-enum-2^53+1"])
+def test_a_constraint_no_value_can_meet_is_refused(server, schema):
+    status, body = _chat_status(server, schema)
+    assert status == 400, (status, body)
+
+
+def test_one_of_emits_only_a_value_exactly_one_branch_admits(server):
+    # 1 and 2 are in both branches; 3 is the only value oneOf admits
+    schema = {"oneOf": [{"enum": [1, 2, 3]}, {"enum": [2, 1]}]}
+    body = _chat(server, schema, max_tokens=16)
+    assert json.loads(body["choices"][0]["message"]["content"]) == 3
