@@ -86,8 +86,15 @@ void clef_py_float_repr(double d, char out[40]) {
     if (decpt <= -4 || decpt > 16) {
         *o++ = dig[0];
         if (nd > 1) { *o++ = '.'; memcpy(o, dig + 1, (size_t)nd - 1); o += nd - 1; }
-        int x = decpt - 1;
-        snprintf(o, 12, "e%c%02d", x < 0 ? '-' : '+', x < 0 ? -x : x);
+        // e, the sign, and at least two digits (a double's exponent has three
+        // at most)
+        int x = decpt - 1, ax = x < 0 ? -x : x;
+        *o++ = 'e';
+        *o++ = x < 0 ? '-' : '+';
+        if (ax >= 100) *o++ = (char)('0' + ax / 100);
+        *o++ = (char)('0' + ax / 10 % 10);
+        *o++ = (char)('0' + ax % 10);
+        *o = 0;
         return;
     }
     if (decpt <= 0) {
