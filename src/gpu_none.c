@@ -142,6 +142,7 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
 }
 
 bool gpu_spec_keep_ok(const model_t *m) { (void)m; return false; }
+bool gpu_hidden_rows_ok(const model_t *m) { (void)m; return false; }
 const char *gpu_route_detail(const model_t *m) { (void)m; return ""; }
 float *gpu_spec_logits(model_t *m, int row) { (void)m; (void)row; return NULL; }
 

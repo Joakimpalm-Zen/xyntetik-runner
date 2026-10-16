@@ -2862,6 +2862,7 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
         if (logits) *logits = NULL;
         return true;
     }
+    if (m->want_hidden && !m->hyper_conn) metal_handoff_boundary(m, n);
     if (logits) *logits = want_logits ? lg : NULL;
     return true;
 }
@@ -4067,6 +4068,13 @@ static bool metal_batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
 bool gpu_spec_keep_ok(const model_t *m) {
     (void)m;
     return true;
+}
+
+// g->x holds every column's residual after the last layer (the head norms
+// into xb), and the buffer is host-visible: the same copy a partial split
+// makes at its boundary. The wide hyper-connection residual is not handed.
+bool gpu_hidden_rows_ok(const model_t *m) {
+    return m && !m->hyper_conn;
 }
 
 // The selections enc_mv_n, attention and the MoE prefill make (plan P1;

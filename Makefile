@@ -335,7 +335,7 @@ $(OBJDIR)/metal.o: src/metal.m $(HDR) src/kernels_metal.h src/kernels_tensor_met
 
 SRC = src/gguf.c src/compat.c $(QUANTS_OBJ) src/instances.c src/tokenizer.c src/model.c src/sample.c src/dpo.c \
       src/vramreg.c \
-      src/template.c src/jsonmode.c $(SCHEMA_SRC) $(QUANTIZE_OBJ) src/engine.c src/decide.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/provenance.c src/lineage.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c src/hfhub.c src/bundle.c \
+      src/template.c src/jsonmode.c $(SCHEMA_SRC) $(QUANTIZE_OBJ) src/engine.c src/decide.c src/clef.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/provenance.c src/lineage.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c src/hfhub.c src/bundle.c \
       src/main.c $(GPU_SRC) $(TRAY_SRC)
 
 # Cross-compile a static riscv64 binary with zig (no toolchain install;
@@ -1105,7 +1105,7 @@ $(TEST_AUTOFIT): $(TEST_AUTOFIT_SRC) $(HDR)
 TEST_RESP_SM_SRC = tests/test_responses_sm.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
                   $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
-                  $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(GPU_OBJ)
+                  $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/clef.o $(GPU_OBJ)
 $(TEST_RESP_SM): $(TEST_RESP_SM_SRC) src/completion.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_RESP_SM_SRC) -o $@ $(LDFLAGS)
 
@@ -1117,7 +1117,7 @@ TEST_STOP_CONSTRAINT_SRC = tests/test_stop_constraint.c $(OBJDIR)/gguf.o $(OBJDI
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
                   $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o \
-                  $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(GPU_OBJ)
+                  $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/clef.o $(GPU_OBJ)
 $(TEST_STOP_CONSTRAINT): $(TEST_STOP_CONSTRAINT_SRC) src/completion.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_STOP_CONSTRAINT_SRC) -o $@ $(LDFLAGS)
 
@@ -1131,7 +1131,7 @@ TEST_BUDGET_SRC = tests/test_prompt_budget.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
                   $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o \
-                  $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/api_responses.o $(OBJDIR)/api_anthropic.o \
+                  $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/clef.o $(OBJDIR)/api_responses.o $(OBJDIR)/api_anthropic.o \
                   $(OBJDIR)/session.o $(GPU_OBJ)
 $(TEST_BUDGET): $(TEST_BUDGET_SRC) src/server.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_BUDGET_SRC) -o $@ $(LDFLAGS)
@@ -1145,7 +1145,7 @@ TEST_ATTRIB_SRC = tests/test_tool_attribution.c $(OBJDIR)/gguf.o $(OBJDIR)/compa
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
                   $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o \
-                  $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/api_responses.o $(OBJDIR)/api_anthropic.o \
+                  $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/clef.o $(OBJDIR)/api_responses.o $(OBJDIR)/api_anthropic.o \
                   $(OBJDIR)/session.o $(GPU_OBJ)
 $(TEST_ATTRIB): $(TEST_ATTRIB_SRC) src/server.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_ATTRIB_SRC) -o $@ $(LDFLAGS)
@@ -1178,7 +1178,7 @@ TMPL_CONF_RENDER_SRC = scripts/template-conformance-render.c $(OBJDIR)/gguf.o \
                   $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o \
                   $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o \
                   $(OBJDIR)/engine.o $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o \
-                  $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/session.o $(GPU_OBJ)
+                  $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/clef.o $(OBJDIR)/session.o $(GPU_OBJ)
 $(TMPL_CONF_RENDER): $(TMPL_CONF_RENDER_SRC) src/server.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TMPL_CONF_RENDER_SRC) -o $@ $(LDFLAGS)
 
@@ -1189,7 +1189,7 @@ TEST_RESTART_SRC = tests/test_server_restart.c $(OBJDIR)/gguf.o $(OBJDIR)/compat
                    $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
                    $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                    $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o \
-                   $(OBJDIR)/scheduler.o $(OBJDIR)/completion.o $(OBJDIR)/decide.o $(OBJDIR)/api_responses.o \
+                   $(OBJDIR)/scheduler.o $(OBJDIR)/completion.o $(OBJDIR)/decide.o $(OBJDIR)/clef.o $(OBJDIR)/api_responses.o \
                    $(OBJDIR)/api_anthropic.o $(OBJDIR)/session.o $(OBJDIR)/server.o $(GPU_OBJ)
 $(TEST_RESTART): $(TEST_RESTART_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_RESTART_SRC) -o $@ $(LDFLAGS)
@@ -1204,7 +1204,7 @@ TEST_SWAP_RACE_SRC = tests/test_swap_race.c src/gguf.c src/compat.c \
                      src/jsonmode.c $(SCHEMA_SRC) src/json.c src/engine.c \
                      src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/registry.c src/provenance.c src/lineage.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c \
                      src/scheduler.c src/completion.c src/api_responses.c \
-                     src/api_anthropic.c src/session.c src/server.c src/decide.c $(GPU_SRC)
+                     src/api_anthropic.c src/session.c src/server.c src/decide.c src/clef.c $(GPU_SRC)
 # Parallel slots share one tokenizer and encode on their own threads; under
 # ThreadSanitizer any per-call state left in the shared struct is a report,
 # and TSan exits non-zero on one. Not in `make test` (MinGW has no TSan); CI

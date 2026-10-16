@@ -227,6 +227,10 @@ typedef struct gpu_batch gpu_batch;
 // gpu_spec_keep_ok says whether THIS backend supports it; gpu_spec_logits
 // returns row b of the logits the last spec-flagged forward produced.
 bool       gpu_spec_keep_ok(const model_t *m);
+// Whether a full offload copies every row's final residual into m->x
+// when m->want_hidden is set (model_hidden_states). A backend that
+// says no is run on the CPU for that forward instead.
+bool       gpu_hidden_rows_ok(const model_t *m);
 float     *gpu_spec_logits(model_t *m, int row);
 
 // The backend's own facts for the route record (model_route_note, plan P1):

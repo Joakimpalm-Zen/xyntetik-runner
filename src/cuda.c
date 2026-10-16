@@ -5865,6 +5865,13 @@ bool gpu_spec_keep_ok(const model_t *m) {
     return g && m->gpu_layers >= m->n_layer && m->spec_batch <= MVB;
 }
 
+// cuda_fwd_tiles copies each tile's final residual to the host, the copy a
+// partial split makes at its boundary. The wide hyper-connection residual
+// is not handed.
+bool gpu_hidden_rows_ok(const model_t *m) {
+    return m && m->gpu && !m->hyper_conn;
+}
+
 // The selections enc_mv and the MoE path make for this instance (plan P1;
 // docs/kernel-routes.md has each one's obligation): whether one-token decode
 // replays its graph, the tensor-core GEMM's mode (promoted per type and
@@ -6441,6 +6448,13 @@ static bool cuda_fwd_tiles(gpu_t *g, model_t *m, const int32_t *tokens, int n,
                                      g->x, sizeof(float) * tn * m->n_embd) != 0) {
                 return false;
             }
+        } else if (m->want_hidden && !m->hyper_conn) {
+            // model_hidden_states: every row's final residual, the tile's
+            // kernels finished first (as mtp_save_rows waits for them)
+            if (cu.StreamSynchronize(g->stream) != 0 ||
+                cu.MemcpyDtoH((uint8_t *)m->x + (size_t)i * m->n_embd * sizeof(float),
+                              g->x, sizeof(float) * tn * m->n_embd) != 0)
+                return false;
         }
     }
     return true;
