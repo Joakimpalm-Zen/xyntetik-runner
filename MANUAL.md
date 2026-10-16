@@ -3045,10 +3045,11 @@ The first SIGINT (Ctrl-C) or SIGTERM starts a bounded drain:
 
 A request is only stopped between steps, and one step can take a long time,
 for example a prompt whose weights are still being read from a slow disk. If
-work is still inside a step 10 seconds after the signal, the server exits
-without waiting for it, with exit code 128 plus the signal number (143 for
-SIGTERM, 130 for SIGINT). A second signal during the drain exits at once
-with code 130.
+the server has not exited 10 seconds after the signal, it exits without
+waiting, with exit code 128 plus the signal number (143 for SIGTERM, 130 for
+SIGINT). That holds whatever it was waiting on: work still inside a step, or
+a log line blocked because the server's output is a pipe nobody reads. A
+second signal during the drain exits at once with code 130.
 
 ### OpenAI Chat Completions
 

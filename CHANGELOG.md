@@ -16,6 +16,17 @@ Current release and unreleased changes. Compatibility follows the
   old and new code agree byte for byte, and both match the `tokenizers`
   package's NFC.
 
+- **A stop exits within its 10-second bound even when nobody reads the
+  log.** The bound's watchdog printed its last line through the C library's
+  stream before exiting, and stopped watching once the requests were
+  joined. With the server's output on a pipe nobody reads, that line waited
+  on the full pipe, so a step that did not end held the process past the
+  bound. A swap set with nothing in flight hung after the drain the same
+  way, logging its unload once the watchdog was gone. The watchdog now
+  watches until the process is gone, writes its line from a separate thread
+  with a plain `write`, and exits 200 ms later whether the line went out or
+  not.
+
 ## v1.4.0 - 2026-10-16
 
 - **`--train` says when a run is about to memorize.** A user trained four

@@ -54,6 +54,11 @@
 #include <time.h>
 
 #include <stdatomic.h>
+#ifdef _WIN32
+#include <io.h>        // _write: the drain watchdog's note, outside stdio
+#else
+#include <unistd.h>
+#endif
 
 
 
@@ -2997,8 +3002,15 @@ static bool stop_was_requested(void) { return win_stop_requested != 0; }
 // itself take minutes, a prefill paging its weights in from a slow disk.
 // Past this bound the process exits without waiting for it: nothing is left
 // to save, the work was abandoned at GRACE.
+//
+// The bound is the last word on a stop, so it watches until the process is
+// gone, not only until the requests are: what follows the joins writes too
+// (a swap set logs its unload) and exit() flushes stdout, and an output
+// stream nobody reads blocks both forever. It also owes nothing to stdio
+// itself (drain_note). Until 2026-10-16 it stopped watching after the joins
+// and printed with fprintf, so a full stderr pipe defeated it twice over.
 static double drain_grace_s = 2.0, drain_hard_s = 10.0;
-static atomic_int drain_done;
+static atomic_int drain_joined;   // the slots are joined: what is left is teardown
 
 double server_drain_deadline(void) {
     long long t = atomic_load(&stop_at_us);
@@ -3013,25 +3025,55 @@ static void drain_bounds_init(void) {
     drain_grace_s = g && *g ? atof(g) / 1000.0 : 2.0;
     drain_hard_s = h && *h ? atof(h) / 1000.0 : 10.0;
     atomic_store(&stop_at_us, 0);
-    atomic_store(&drain_done, 0);
+    atomic_store(&drain_joined, 0);
+}
+
+// The watchdog's last line, written on a thread of its own with write(2).
+// stderr may be a full pipe, or another thread may be parked inside fprintf
+// on it holding the stream's lock; through stdio, either parks the watchdog
+// with it. The watchdog waits 200 ms for the note and exits regardless.
+static char drain_note_text[160];
+static atomic_int drain_note_sent;
+
+static void *drain_note(void *arg) {
+    (void)arg;
+    const char *p = drain_note_text;
+    size_t left = strlen(p);
+    while (left > 0) {
+#ifdef _WIN32
+        int n = _write(2, p, (unsigned)left);
+#else
+        ssize_t n = write(2, p, left);
+#endif
+        if (n <= 0) break;
+        p += n;
+        left -= (size_t)n;
+    }
+    atomic_store(&drain_note_sent, 1);
+    return NULL;
 }
 
 static void *drain_watchdog(void *arg) {
     (void)arg;
     long long t = atomic_load(&stop_at_us);
     double until = (t ? t / 1e6 : plat_now()) + drain_hard_s;
-    while (!atomic_load(&drain_done)) {
+    for (;;) {
         double left = until - plat_now();
-        if (left <= 0) {
-            fprintf(stderr, "shutdown: a request was still inside one step "
-                    "%.0f s after the stop; exiting without waiting for it\n",
-                    drain_hard_s);
-            fflush(stderr);
-            _exit(128 + atomic_load(&stop_sig));
-        }
+        if (left <= 0) break;
         plat_sleep_ms(left > 0.1 ? 100 : (int)(left * 1000) + 1);
     }
-    return NULL;
+    snprintf(drain_note_text, sizeof drain_note_text,
+             atomic_load(&drain_joined)
+                 ? "shutdown: still tearing down %.0f s after the stop; exiting without waiting\n"
+                 : "shutdown: a request was still inside one step %.0f s after the stop; "
+                   "exiting without waiting for it\n",
+             drain_hard_s);
+    pthread_t th;
+    if (pthread_create(&th, NULL, drain_note, NULL) == 0) {
+        pthread_detach(th);
+        for (int i = 0; i < 20 && !atomic_load(&drain_note_sent); i++) plat_sleep_ms(10);
+    }
+    _exit(128 + atomic_load(&stop_sig));
 }
 
 static struct {
@@ -3633,9 +3675,10 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     }
 #endif
     queue_shutdown();
-    // Bound the drain (drain_grace_s, drain_hard_s above). Detached: when the
-    // drain finishes first it returns on its own. A loop that ended without a
-    // stop request (the listener failed) drains by the same bounds.
+    // Bound the drain (drain_grace_s, drain_hard_s above). Detached, and it
+    // never returns: a shutdown that finishes first ends the process under
+    // it. A loop that ended without a stop request (the listener failed)
+    // drains by the same bounds.
     if (!atomic_load(&stop_at_us)) atomic_store(&stop_at_us, (long long)(plat_now() * 1e6));
     pthread_t wd;
     if (pthread_create(&wd, NULL, drain_watchdog, NULL) == 0) pthread_detach(wd);
@@ -3643,7 +3686,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     // for up to the full wait; the load gives up at its next poll instead.
     atomic_store(&SV.load_cancel, 1);
     for (int i = 0; i < parallel; i++) pthread_join(SV.slots[i].th, NULL);
-    atomic_store(&drain_done, 1);
+    atomic_store(&drain_joined, 1);
     sched_shutdown();
     atomic_store(&SV.shutdown, true);
     if (SV.reaper_started) pthread_join(SV.reaper_th, NULL);
