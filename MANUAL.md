@@ -3003,6 +3003,27 @@ required runtime features before allocating model state; unknown requirements
 fail closed. `GET /v1/capabilities` returns the admitted profile. See
 [docs/agent-profile.md](docs/agent-profile.md).
 
+### Stopping the server
+
+The first SIGINT (Ctrl-C) or SIGTERM starts a bounded drain:
+
+- No new request is admitted, and requests still waiting in the queue are
+  answered `503 server shutting down`.
+- Requests already running get 2 seconds to finish on their own.
+- After that, each one ends at its next prompt chunk or generated token. A
+  request that was already generating returns what it has as a cut turn:
+  `finish_reason` is `length` and `runner_telemetry.finish_detail` is
+  `shutdown`. A request still processing its prompt is answered
+  `503 server shutting down`.
+- The server then exits with code 0.
+
+A request is only stopped between steps, and one step can take a long time,
+for example a prompt whose weights are still being read from a slow disk. If
+work is still inside a step 10 seconds after the signal, the server exits
+without waiting for it, with exit code 128 plus the signal number (143 for
+SIGTERM, 130 for SIGINT). A second signal during the drain exits at once
+with code 130.
+
 ### OpenAI Chat Completions
 
 Chat supports buffered and SSE responses, part-array content, assistant

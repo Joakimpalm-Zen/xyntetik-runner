@@ -402,6 +402,104 @@ def test_second_signal_exits_immediately():
         srv.stop()
 
 
+def _drain_server(env_extra, max_tokens):
+    """A server whose one generation is slowed by the step-delay hook, the
+    request sent on its own socket and read back after the stop."""
+    import socket
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    model = os.environ.get("RUNNER_TEST_MODEL", os.path.join(root, "test.gguf"))
+    srv = RunnerServer(find_runner(root), model, ctx=1024, parallel=2,
+                       extra_args=["--gpu", "off"],
+                       env=dict(os.environ, **env_extra))
+    srv.start()
+    body = json.dumps({"messages": [{"role": "user", "content": "hi"}],
+                       "max_tokens": max_tokens, "temperature": 0,
+                       "ignore_eos": True}).encode()
+    conn = socket.create_connection(("127.0.0.1", srv.port), timeout=30)
+    conn.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\n"
+                 b"Content-Type: application/json\r\nConnection: close\r\n"
+                 b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+    return srv, conn
+
+
+def _read_response(conn):
+    data = b""
+    while True:
+        chunk = conn.recv(65536)
+        if not chunk:
+            break
+        data += chunk
+    head, _, body = data.partition(b"\r\n\r\n")
+    status = int(head.split(b" ", 2)[1])
+    return status, json.loads(body) if body.strip() else None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signal contract")
+def test_drain_cuts_an_active_generation_after_the_grace():
+    """One SIGTERM must not wait out an active request's whole budget.
+
+    The lab, 2026-10-16: a 1,200-token generation finished 111.5 s after the
+    signal, and a page-fault-bound prefill needed SIGKILL, because the drain
+    waited for active work with no bound. Past the grace (2 s) the request
+    ends at its next step as a cut turn the client can still use: the wire
+    says "length", finish_detail says "shutdown", and the server exits 0."""
+    srv, conn = _drain_server({"RUNNER_TEST_STEP_DELAY_MS": "50"}, 400)  # ~20 s
+    try:
+        time.sleep(0.6)                    # the generation is under way
+        t0 = time.monotonic()
+        srv.proc.send_signal(signal.SIGTERM)
+        status, doc = _read_response(conn)
+        assert srv.proc.wait(timeout=10) == 0
+        took = time.monotonic() - t0
+        assert took < 5, "the drain waited %.1f s for an active request" % took
+        assert status == 200, (status, doc)
+        choice = doc["choices"][0]
+        assert choice["finish_reason"] == "length", choice
+        assert doc["runner_telemetry"]["finish_detail"] == "shutdown", doc["runner_telemetry"]
+        assert 0 < doc["usage"]["completion_tokens"] < 400, doc["usage"]
+    finally:
+        conn.close()
+        srv.stop()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signal contract")
+def test_drain_lets_a_request_finish_inside_the_grace():
+    """A request that ends within the grace finishes whole, with no cut."""
+    srv, conn = _drain_server({"RUNNER_TEST_STEP_DELAY_MS": "50"}, 8)  # ~0.4 s
+    try:
+        time.sleep(0.1)
+        srv.proc.send_signal(signal.SIGTERM)
+        status, doc = _read_response(conn)
+        assert srv.proc.wait(timeout=10) == 0
+        assert status == 200, (status, doc)
+        assert doc["usage"]["completion_tokens"] == 8, doc["usage"]
+        assert doc["runner_telemetry"].get("finish_detail") != "shutdown"
+    finally:
+        conn.close()
+        srv.stop()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signal contract")
+def test_drain_hard_bound_exits_a_step_that_does_not_end():
+    """A request is only stopped between steps, and one step can take minutes
+    (a prefill paging weights in from a slow disk). Past the hard bound the
+    process exits anyway, with 128 plus the signal, instead of waiting for it.
+    The hooks shorten the bounds; a 20 s step stands in for the slow one."""
+    srv, conn = _drain_server({"RUNNER_TEST_STEP_DELAY_MS": "20000",
+                               "RUNNER_TEST_DRAIN_GRACE_MS": "200",
+                               "RUNNER_TEST_DRAIN_HARD_MS": "1500"}, 4)
+    try:
+        time.sleep(0.6)
+        t0 = time.monotonic()
+        srv.proc.send_signal(signal.SIGTERM)
+        assert srv.proc.wait(timeout=10) == 128 + signal.SIGTERM
+        took = time.monotonic() - t0
+        assert 1.0 < took < 5, took
+    finally:
+        conn.close()
+        srv.stop()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX signal contract")
 def test_stalled_request_read_does_not_pin_the_drain():
     """A client that sent half a request has been admitted to nothing, so it

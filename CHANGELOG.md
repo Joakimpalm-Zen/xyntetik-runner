@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **One SIGTERM stops a busy server in seconds.** The drain after the
+  first SIGINT or SIGTERM waited for every active request to finish on its
+  own, with no bound, so a server in the middle of a long generation or a
+  slow prompt looked as if it ignored the signal: a 1,200-token generation
+  held it 111.5 s, and a prompt paging a 26B model in from a slow disk needed
+  SIGKILL. Active requests now get 2 seconds, then end at their next prompt
+  chunk or token: a generating turn returns what it has (`finish_reason`
+  `length`, `runner_telemetry.finish_detail` `shutdown`), and a request still
+  in its prompt is answered `503 server shutting down`. If one step is still
+  running 10 seconds after the signal, the process exits without it, with 128
+  plus the signal number. A second signal still exits at once with 130. The
+  manual documents all of it under "Stopping the server".
+
 - **The Runner and Evidence pages open with the numbers and a way in.**
   The Runner page's first screen now carries the download button, the
   sixty-second start and the evidence link, four facts, and a strip of four
