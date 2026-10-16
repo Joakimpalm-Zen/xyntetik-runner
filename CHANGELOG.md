@@ -3,7 +3,7 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.4.1 - 2026-10-16
 
 - **Several engines on one CUDA GPU keep the GPU.** A program that ran
   Runner engines on separate threads, sharing one CUDA device, could lose
