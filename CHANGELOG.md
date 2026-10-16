@@ -23,9 +23,11 @@ Current release and unreleased changes. Compatibility follows the
   on the full pipe, so a step that did not end held the process past the
   bound. A swap set with nothing in flight hung after the drain the same
   way, logging its unload once the watchdog was gone. The watchdog now
-  watches until the process is gone, writes its line from a separate thread
-  with a plain `write`, and exits 200 ms later whether the line went out or
-  not.
+  watches the server's whole shutdown, writes its line from a separate
+  thread with a plain `write`, and exits 200 ms later whether the line went
+  out or not. When the shutdown finishes in time, the watchdog stands down,
+  so a program that runs the server again in the same process keeps
+  running.
 
 - **Integers longer than fifteen digits keep every digit.** Runner kept the
   digits of such an integer when it parsed a request, but wrote the

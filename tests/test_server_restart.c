@@ -27,6 +27,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+// MinGW has no setenv; _putenv_s is its spelling
+#ifdef _WIN32
+#define env_set(k, v) _putenv_s(k, v)
+#else
+#define env_set(k, v) setenv(k, v, 1)
+#endif
+
 static const char *g_model = "test.gguf";
 static int g_port = 18099;
 static int g_fail = 0;
@@ -174,13 +181,31 @@ static void cycle(int n) {
     ck(c.rc == 0, msg);
 }
 
+// Each stop arms the drain's hard bound, and a bound must end with the
+// server_run that armed it. 2026-10-16: it was made to watch until the
+// process ended, so a cleanly stopped server's watchdog outlived it and
+// exited the whole process with 143 at the old deadline, in the middle of
+// the next server's life. This used to finish both cycles inside the
+// shipped 10 s bound and could not see it, so the bound is shortened to
+// 300 ms here and each cycle outlives the previous stop's deadline.
+static void outlive_the_last_deadline(int n) {
+    char msg[96];
+    snprintf(msg, sizeof(msg), "cycle %d: alive past the stop's hard bound", n);
+    step(n, "waiting past the stop's hard bound");
+    plat_sleep_ms(800);
+    ck(1, msg);   // reached only if the old watchdog did not exit the process
+}
+
 int main(int argc, char **argv) {
     if (argc > 1) g_model = argv[1];
     if (argc > 2) g_port = atoi(argv[2]);
+    env_set("RUNNER_TEST_DRAIN_HARD_MS", "300");
     f16_init();
     sock_init();
     cycle(1);
+    outlive_the_last_deadline(1);
     cycle(2);
+    outlive_the_last_deadline(2);
     if (g_fail) {
         fprintf(stderr, "server restart: FAILED\n");
         return 1;

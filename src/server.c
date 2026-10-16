@@ -3003,14 +3003,25 @@ static bool stop_was_requested(void) { return win_stop_requested != 0; }
 // Past this bound the process exits without waiting for it: nothing is left
 // to save, the work was abandoned at GRACE.
 //
-// The bound is the last word on a stop, so it watches until the process is
-// gone, not only until the requests are: what follows the joins writes too
-// (a swap set logs its unload) and exit() flushes stdout, and an output
-// stream nobody reads blocks both forever. It also owes nothing to stdio
-// itself (drain_note). Until 2026-10-16 it stopped watching after the joins
-// and printed with fprintf, so a full stderr pipe defeated it twice over.
+// The bound is the last word on a stop, so it watches the whole of
+// server_run's shutdown, not only the requests: the teardown after the joins
+// writes too (a swap set logs its unload), and an output stream nobody reads
+// blocks it forever. It also owes nothing to stdio itself (drain_note). And
+// it ends with the server_run that armed it, because a process may run the
+// server again (tests/test_server_restart.c): drain_owner names the run whose
+// bound may still exit the process, server_run releases it as its last act,
+// and a watchdog that no longer owns it returns. Nothing after server_run
+// returns can block on output either: the server writes only to stderr,
+// which is unbuffered, so exit() has nothing of it left to flush.
+//
+// 2026-10-16, twice: the bound stopped watching after the joins and printed
+// with fprintf, so a full stderr pipe defeated it; the first fix then let it
+// watch until the process ended, and a cleanly stopped server's watchdog
+// exited the process at its old deadline, during the next server's life.
 static double drain_grace_s = 2.0, drain_hard_s = 10.0;
 static atomic_int drain_joined;   // the slots are joined: what is left is teardown
+#define DRAIN_FIRING UINT_MAX     // drain_owner once a watchdog has claimed the exit
+static atomic_uint drain_owner, drain_runs;
 
 double server_drain_deadline(void) {
     long long t = atomic_load(&stop_at_us);
@@ -3053,21 +3064,26 @@ static void *drain_note(void *arg) {
     return NULL;
 }
 
+// arg: the number of the server_run whose stop this watchdog bounds
 static void *drain_watchdog(void *arg) {
-    (void)arg;
+    unsigned me = (unsigned)(uintptr_t)arg;
     long long t = atomic_load(&stop_at_us);
-    double until = (t ? t / 1e6 : plat_now()) + drain_hard_s;
+    double hard = drain_hard_s, until = (t ? t / 1e6 : plat_now()) + hard;
     for (;;) {
+        if (atomic_load(&drain_owner) != me) return NULL;   // that run shut down in time
         double left = until - plat_now();
         if (left <= 0) break;
         plat_sleep_ms(left > 0.1 ? 100 : (int)(left * 1000) + 1);
     }
+    // claim the exit, unless the run released its bound at this very moment
+    unsigned owner = me;
+    if (!atomic_compare_exchange_strong(&drain_owner, &owner, DRAIN_FIRING)) return NULL;
     snprintf(drain_note_text, sizeof drain_note_text,
              atomic_load(&drain_joined)
-                 ? "shutdown: still tearing down %.0f s after the stop; exiting without waiting\n"
-                 : "shutdown: a request was still inside one step %.0f s after the stop; "
+                 ? "shutdown: still tearing down %g s after the stop; exiting without waiting\n"
+                 : "shutdown: a request was still inside one step %g s after the stop; "
                    "exiting without waiting for it\n",
-             drain_hard_s);
+             hard);
     pthread_t th;
     if (pthread_create(&th, NULL, drain_note, NULL) == 0) {
         pthread_detach(th);
@@ -3675,13 +3691,18 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     }
 #endif
     queue_shutdown();
-    // Bound the drain (drain_grace_s, drain_hard_s above). Detached, and it
-    // never returns: a shutdown that finishes first ends the process under
-    // it. A loop that ended without a stop request (the listener failed)
-    // drains by the same bounds.
+    // Bound the drain (drain_grace_s, drain_hard_s above). Detached: this
+    // run's last act releases its bound and the watchdog returns. A loop
+    // that ended without a stop request (the listener failed) drains by the
+    // same bounds.
     if (!atomic_load(&stop_at_us)) atomic_store(&stop_at_us, (long long)(plat_now() * 1e6));
+    unsigned drain_run = atomic_fetch_add(&drain_runs, 1) + 1;
+    if (drain_run == 0 || drain_run == DRAIN_FIRING)   // the counter wrapped
+        drain_run = atomic_fetch_add(&drain_runs, 2) + 2;
+    atomic_store(&drain_owner, drain_run);
     pthread_t wd;
-    if (pthread_create(&wd, NULL, drain_watchdog, NULL) == 0) pthread_detach(wd);
+    if (pthread_create(&wd, NULL, drain_watchdog, (void *)(uintptr_t)drain_run) == 0)
+        pthread_detach(wd);
     // A worker parked in a --wait-for-vram queue would pin the joins below
     // for up to the full wait; the load gives up at its next poll instead.
     atomic_store(&SV.load_cancel, 1);
@@ -3718,5 +3739,12 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     pthread_cond_destroy(&SV.q.cv);
     pthread_mutex_destroy(&SV.q.mu);
     free(SV.slots);
+    // The shutdown is complete: release the bound, so its watchdog returns
+    // and the process, or the next server_run in it, lives on. If the
+    // watchdog claimed the exit a moment ago, it is about to _exit, and
+    // returning now would hand the caller a clean stop that is not one.
+    unsigned owner = drain_run;
+    if (!atomic_compare_exchange_strong(&drain_owner, &owner, 0))
+        for (;;) plat_sleep_ms(100);
     return 0;
 }
