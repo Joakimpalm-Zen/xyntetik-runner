@@ -2553,7 +2553,7 @@ own sha256, so the same state is the same id. A resume continues it exactly: on 
 8 GB M1 serving Llama-3.2-3B on Metal, a 60-token sampled generation suspended at 25 and
 resumed, and one suspended at 25 and again at 40, both returned the uninterrupted run's
 text byte for byte. `fork_seed` continues under another seed, the same text every time it
-is asked for. The images are the CLI's format. A served session holds the device from
+is asked for; like a session's own `seed`, it is a positive integer below 2^53. The images are the CLI's format. A served session holds the device from
 prefill to its last token, so it does not share batches with other slots, and a resume
 is exact on the backend and build that suspended it. A recurrent model on a device
 cannot be imaged (its state is not the host's to restore; serve it with `--gpu off`), and

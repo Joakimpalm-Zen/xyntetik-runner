@@ -191,3 +191,22 @@ def test_resume_validates_its_numbers(exe, model, tmp_path):
             code, err = _post(srv, f"/v1/runner/sessions/{a['id']}/resume", body)
             assert code == 400, (body, err)
             assert err["error"]["code"] == "invalid_value"
+
+
+@pytest.mark.parametrize("fork_seed", [2 ** 53, 2 ** 53 + 1, 1e30])
+def test_fork_seed_is_held_to_the_session_seed_range(exe, model, tmp_path, fork_seed):
+    """fork_seed is a seed, held to the rule a session's own seed is: a
+    positive integer below 2^53, the range a double holds exactly. It was
+    checked only for being a whole double, so 2**53 and 2**53 + 1 both ran as
+    2**53 and wrote one session image (2026-10-16 review), and 1e30 reached
+    a long long cast it does not fit. Each is refused by name; 2**53 - 1 runs."""
+    with RunnerServer(exe, model, ctx=256, extra_args=[
+            "--gpu", "off", "-t", "2", "--sessions", str(tmp_path / "s")]) as srv:
+        code, a = _post(srv, "/v1/runner/sessions", dict(START, suspend_after=5))
+        assert code == 200
+        code, err = _post(srv, f"/v1/runner/sessions/{a['id']}/resume",
+                          {"fork_seed": fork_seed})
+        assert code == 400 and "fork_seed" in json.dumps(err), (code, err)
+        code, ok = _post(srv, f"/v1/runner/sessions/{a['id']}/resume",
+                         {"fork_seed": 2 ** 53 - 1})
+        assert code == 200 and ok["forked"], (code, ok)

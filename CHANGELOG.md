@@ -61,6 +61,17 @@ Current release and unreleased changes. Compatibility follows the
   digits, a whole double past 2^63 by its exact expansion, so `1e20` and
   `100000000000000000000` are one value and 2^53 and 2^53 + 1 are two.
 
+- **A request's `seed` runs as sent, and `fork_seed` keeps the session seed
+  rule.** The chat and completion `seed` was read as a double, so any seed
+  above 2^53 could run and be reported as a neighbour: 9007199254740993 ran
+  as 9007199254740992, and 18446744073709551615 (2^64 - 1) was refused as
+  2^64. A seed written in digits is now read exactly over the whole uint64
+  range, and the error names that range. A session resume's `fork_seed` was
+  checked only for being a whole number, so 2^53 and 2^53 + 1 forked into one
+  image, and a value past 2^63 reached an undefined cast. It is now held to
+  the rule a session's own `seed` follows (a positive integer below 2^53)
+  and refused by name otherwise.
+
 - **Concurrent `/v1/decide` and `/v1/rerank` answers get distinct ids.**
   Each response id (`decide-N`, `rerank-N`) came from a counter that every
   parallel slot bumped without synchronization, so two answers produced at
