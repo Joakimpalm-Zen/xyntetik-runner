@@ -2,9 +2,16 @@
 #include "envelope.h"
 #include "runner.h"
 #include <math.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+// The response ids ("decide-N", "rerank-N"). Every slot answers on its own
+// thread, so a plain ++ let two requests read one value and share an id
+// (2026-10-16 review: 3 duplicates in 16,000 concurrent calls);
+// tests/test_decide_race.c holds both under ThreadSanitizer.
+static atomic_ullong decide_ids, rerank_ids;
 
 // log-sum-exp of raw logits in double, the same arithmetic the sampler's
 // logprob capture uses (max first, then a double accumulator)
@@ -243,8 +250,8 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
         free(canon.s);
     }
     size_t slen = strlen(state), alen = strlen(aprefix);
-    static unsigned long long counter = 0;
-    sb_fmt(out, "{\"id\":\"decide-%llu\",\"object\":\"decide\",\"model\":\"", ++counter);
+    sb_fmt(out, "{\"id\":\"decide-%llu\",\"object\":\"decide\",\"model\":\"",
+           (unsigned long long)atomic_fetch_add(&decide_ids, 1) + 1);
     sb_esc(out, model_name, strlen(model_name));
     sb_lit(out, "\",\"decisions\":[");
     int total_prompt = 0;
@@ -507,8 +514,8 @@ int rerank_handle(engine *e, const jv *req, const char *model_name, int tmpl,
         envelope_data_sha256(canon.s ? canon.s : "", canon.n, d_sha);
         free(canon.s);
     }
-    static unsigned long long counter = 0;
-    sb_fmt(out, "{\"id\":\"rerank-%llu\",\"object\":\"rerank\",\"model\":\"", ++counter);
+    sb_fmt(out, "{\"id\":\"rerank-%llu\",\"object\":\"rerank\",\"model\":\"",
+           (unsigned long long)atomic_fetch_add(&rerank_ids, 1) + 1);
     sb_esc(out, model_name, strlen(model_name));
     sb_lit(out, "\",\"results\":[");
     for (int k = 0; k < top_n; k++) {

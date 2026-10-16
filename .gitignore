@@ -76,6 +76,8 @@ test-swap-race-bin
 test-tokenizer-race-bin
 test-swap-race-bin.dSYM/
 test-tokenizer-race-bin.dSYM/
+test-decide-race-bin
+test-decide-race-bin.dSYM/
 test-batch
 test-batch-identity.exe
 test-batch.exe

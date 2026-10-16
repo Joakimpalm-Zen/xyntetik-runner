@@ -57,6 +57,13 @@ Current release and unreleased changes. Compatibility follows the
   emitted 9007199254740993 with HTTP 200, while the small-integer
   contradiction was a 400. It is a 400 now too.
 
+- **Concurrent `/v1/decide` and `/v1/rerank` answers get distinct ids.**
+  Each response id (`decide-N`, `rerank-N`) came from a counter that every
+  parallel slot bumped without synchronization, so two answers produced at
+  the same moment could carry one id: a probe saw 3 duplicates in 16,000
+  concurrent calls. The counters are atomic now, and a ThreadSanitizer test
+  holds them there.
+
 ## v1.4.0 - 2026-10-16
 
 - **`--train` says when a run is about to memorize.** A user trained four

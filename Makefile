@@ -2792,7 +2792,7 @@ clean:
 	      $(TEST_FILE_ID) test-file-identity.tmp \
 	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \
-	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin test-tokenizer-race-bin \
+	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin test-tokenizer-race-bin test-decide-race-bin \
 	      runner-gpu-stub
 	rm -rf test-attn
 	rm -rf .build
@@ -2932,7 +2932,15 @@ test-server-race-tsan: test.gguf
 	$(CC) $(TSAN_FLAGS) $(filter-out $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c -o test-server-race-tsan-bin $(LDFLAGS)
 	TSAN_OPTIONS=halt_on_error=1 ./test-server-race-tsan-bin test.gguf
 
-.PHONY: test-pool-race test-server-race-tsan
+# /v1/decide and /v1/rerank number their answers from counters every slot
+# shares; slots answer on their own threads. TSan halting on an unguarded
+# increment is the gate (tests/test_decide_race.c). CI runs it beside the two
+# above; MinGW has no TSan.
+test-decide-race: test.gguf
+	$(CC) $(TSAN_FLAGS) tests/test_decide_race.c $(filter-out tests/test_swap_race.c $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c -o test-decide-race-bin $(LDFLAGS)
+	TSAN_OPTIONS=halt_on_error=1 ./test-decide-race-bin test.gguf
+
+.PHONY: test-pool-race test-server-race-tsan test-decide-race
 
 fuzz-replay-%: tests/fuzz/fuzz_%.c tests/fuzz/replay.c tests/fuzz/fuzz_files.h $(HDR)
 	$(FUZZ_CLANG) $(filter-out $(FUZZ_INSTRUMENTATION),$(FUZZ_FLAGS)) -fsanitize=address,undefined tests/fuzz/replay.c tests/fuzz/fuzz_$*.c $(FUZZ_SRC_$*) -o $@ -lm -lpthread
