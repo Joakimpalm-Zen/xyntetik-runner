@@ -216,26 +216,53 @@ static bool nfc_utf8(const char *s, size_t n, char **out, size_t *out_n, bool *o
     for (size_t i = 0; i < ncp; i++) nd += (size_t)nfc_decompose(cp[i], d + nd);
     free(cp);
     // canonical ordering: a stable sort of each run of non-starters by class
-    for (size_t i = 1; i < nd; i++) {
-        uint32_t c = d[i], k = nfc_class(c);
-        if (!k) continue;
-        size_t j = i;
-        while (j > 0) {
-            uint32_t kp = nfc_class(d[j - 1]);
-            if (kp <= k) break;
-            d[j] = d[j - 1];
-            j--;
+    // (every class is 1..240, so one byte holds it, looked up once). A run is
+    // a handful of marks in real text, and a short one sorts by insertion. A
+    // long one sorts by counting: the insertion sort that stood here alone
+    // was O(r^2) in the run, and a request can be one run of marks out of
+    // class order (2026-10-16: 128 KB took 8.4 s before inference began).
+    // Both sorts are stable, so marks of one class keep their order.
+    uint8_t *cls = malloc(nd + 1);
+    uint32_t *tmp = NULL;   // the counting sort's scratch, on the first long run
+    if (!cls) { free(d); *oom = true; return false; }
+    for (size_t i = 0; i < nd; i++) cls[i] = (uint8_t)nfc_class(d[i]);
+    for (size_t a = 0, b; a < nd; a = b) {
+        if (!cls[a]) { b = a + 1; continue; }
+        for (b = a + 1; b < nd && cls[b]; b++) {}
+        if (b - a <= 32) {
+            for (size_t i = a + 1; i < b; i++) {
+                uint32_t c = d[i];
+                uint8_t k = cls[i];
+                size_t j = i;
+                for (; j > a && cls[j - 1] > k; j--) { d[j] = d[j - 1]; cls[j] = cls[j - 1]; }
+                d[j] = c;
+                cls[j] = k;
+            }
+            continue;
         }
-        d[j] = c;
+        if (!tmp && !(tmp = malloc(sizeof(uint32_t) * nd))) {
+            free(cls); free(d); *oom = true; return false;
+        }
+        size_t count[256] = { 0 }, at[256];
+        for (size_t i = a; i < b; i++) count[cls[i]]++;
+        for (size_t k = 0, s = a; k < 256; k++) { at[k] = s; s += count[k]; }
+        for (size_t i = a; i < b; i++) tmp[at[cls[i]]++] = d[i];
+        memcpy(d + a, tmp + a, sizeof(uint32_t) * (b - a));
+        for (size_t k = 1, s = a; k < 256; k++) {
+            memset(cls + s, (int)k, count[k]);
+            s += count[k];
+        }
     }
-    // canonical composition (UAX #15, the sample algorithm)
+    free(tmp);
+    // canonical composition (UAX #15, the sample algorithm); it writes d only
+    // at or before the index it reads, so cls[i] is still d[i]'s class
     size_t w = 0;
     if (nd > 0) {
         size_t starter = 0;
-        uint32_t last = nfc_class(d[0]) ? 256 : 0;
+        uint32_t last = cls[0] ? 256 : 0;
         w = 1;
         for (size_t i = 1; i < nd; i++) {
-            uint32_t c = d[i], k = nfc_class(c);
+            uint32_t c = d[i], k = cls[i];
             uint32_t comp = (last == 256) ? 0 : nfc_compose(d[starter], c);
             if (comp && (last < k || last == 0)) {
                 d[starter] = comp;
@@ -246,6 +273,7 @@ static bool nfc_utf8(const char *s, size_t n, char **out, size_t *out_n, bool *o
             }
         }
     }
+    free(cls);
     char *o = malloc(4 * w + 1);
     if (!o) { free(d); *oom = true; return false; }
     size_t on = 0;

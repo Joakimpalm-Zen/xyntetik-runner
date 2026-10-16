@@ -3,6 +3,19 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **A run of combining marks no longer stalls a Qwen tokenizer.** NFC puts
+  each run of combining marks in combining-class order, and Runner sorted the
+  run with an insertion sort, whose time grows with the square of the run's
+  length. A request made of marks out of class order therefore held its slot
+  before inference began: 128 KB took 8.4 s in `/v1/messages/count_tokens`.
+  A run longer than 32 marks is now sorted by counting, in linear time, and
+  256 KB takes about 10 ms. The output is unchanged: over the 13,264-string
+  NFC corpus and 5,902 more strings built around the sort's boundaries, the
+  old and new code agree byte for byte, and both match the `tokenizers`
+  package's NFC.
+
 ## v1.4.0 - 2026-10-16
 
 - **`--train` says when a run is about to memorize.** A user trained four
