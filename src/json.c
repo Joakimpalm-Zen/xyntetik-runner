@@ -29,6 +29,7 @@ static jv *jv_new(jtype t) {
 void jv_free(jv *v) {
     if (!v) return;
     free(v->str);
+    free(v->num_text);
     for (int i = 0; i < v->n; i++) {
         jv_free(v->items[i]);
         if (v->keys) free(v->keys[i]);
@@ -275,6 +276,7 @@ static jv *parse_number(jcur *c) {
     const char *p = start;
     if (p < c->end && *p == '-') p++;
     if (p >= c->end) return NULL;
+    const char *digits = p;
     if (*p == '0') {
         p++;
         if (p < c->end && *p >= '0' && *p <= '9') return NULL;
@@ -283,12 +285,16 @@ static jv *parse_number(jcur *c) {
     } else {
         return NULL;
     }
+    size_t n_int_digits = (size_t)(p - digits);
+    bool is_int = true;
     if (p < c->end && *p == '.') {
+        is_int = false;
         p++;
         if (p >= c->end || *p < '0' || *p > '9') return NULL;
         do { p++; } while (p < c->end && *p >= '0' && *p <= '9');
     }
     if (p < c->end && (*p == 'e' || *p == 'E')) {
+        is_int = false;
         p++;
         if (p < c->end && (*p == '+' || *p == '-')) p++;
         if (p >= c->end || *p < '0' || *p > '9') return NULL;
@@ -309,6 +315,14 @@ static jv *parse_number(jcur *c) {
     jv *r = jv_new(J_NUM);
     if (!r) return NULL;
     r->num = d;
+    r->num_int = is_int;
+    // fifteen digits always survive the double; past that only the text does
+    if (is_int && n_int_digits > 15) {
+        r->num_text = malloc(n + 1);
+        if (!r->num_text) { jv_free(r); return NULL; }
+        memcpy(r->num_text, start, n);
+        r->num_text[n] = 0;
+    }
     c->p = p;
     return r;
 }

@@ -464,6 +464,14 @@ typedef struct {
     // position p, where h is the backbone's final residual (pre-norm) and x
     // the token, and predicts x_{p+1}; the target's verify walk keeps output
     // token-identical to plain decoding.
+    // Clef (arch "clef"): the joint schema head over the final hidden
+    // states, bound by model_clef_bind and run by clef.c. NULL on every
+    // other architecture. Shared host weights, like the norms above.
+    struct clef_head *clef;
+    // set around a forward whose every row's final residual must land in
+    // x on the host (model_hidden_states): a fully offloaded backend
+    // copies its rows back as a partial split hands over its boundary
+    bool   want_hidden;
     bool   mtp_ready;        // head bound; drafts available on the CPU path
     bool   mtp_external;     // the block came from --mtp-file, not the trunk
     gguf_tensor *mtp_eh_proj;   // [2*n_embd, n_embd]  concat(enorm e, hnorm h)
@@ -1261,6 +1269,18 @@ enum { MODEL_POOL_NONE = 0, MODEL_POOL_MEAN = 1, MODEL_POOL_CLS = 2,
 bool   model_pooling_supported(const model_t *m);
 const char *model_pooling_name(uint32_t pooling_type);
 bool   model_embed(model_t *m, const int32_t *toks, int n, float *out);
+// Every position's final hidden state of `toks`, after the output norm
+// (what a transformers model returns as last_hidden_state), into
+// out[n][n_embd]. Runs from position 0 and clobbers KV slots [0, n): the
+// caller resets its engine afterwards. False when n is outside (0, n_ctx]
+// or a forward fails.
+bool   model_hidden_states(model_t *m, const int32_t *toks, int n, float *out);
+// Y[b] = W X[b] (+ bias) for b in [0, n_batch) on the host, the projection
+// every CPU layer runs (any weight type this build decodes, f32
+// activations). For heads that live outside the layer loop (clef.c).
+void   model_matmul(model_t *m, float *y, int y_stride, const gguf_tensor *w,
+                    const float *x, int x_stride, int n_in, int n_out,
+                    const float *bias, int n_batch);
 // The per-row embedding transforms every forward path applies right after the
 // dequantized table row lands in a host buffer: the gemma-family sqrt(n_embd)
 // scale, then muse-glimmer's weightless RMS norm. One function so the CPU,

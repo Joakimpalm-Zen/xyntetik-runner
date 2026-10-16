@@ -5,6 +5,7 @@
 //   POST /v1/completions        raw prompt completion
 //   POST /v1/embeddings         L2-normed embeddings, pooled as the GGUF declares
 //   POST /v1/rerank             documents ranked by a yes/no relevance choice
+//   POST /v1/systemone          a Clef model's typed decisions (Jev/SystemOne)
 //   GET  /v1/models             the loaded model
 //   GET  /v1/capabilities       registry + feature discovery
 //   GET  /health                liveness
@@ -28,6 +29,7 @@
 #include "http.h"
 #include "server_int.h"
 #include "decide.h"
+#include "clef.h"
 #include "scheduler.h"
 #include "completion.h"
 #include "api.h"
@@ -1589,6 +1591,30 @@ static void handle_decide(slot_t *s, sock_t fd, jv *req) {
     free(r.s);
 }
 
+// POST /v1/systemone: a Clef model's typed decisions (Jev/SystemOne body).
+// One forward over the encoded record and the joint head on the host; no
+// token is sampled. The forward runs from position 0 and overwrites this
+// slot's KV, so the engine is reset before the device turn is released and
+// the next request on the slot starts clean.
+static void handle_systemone(slot_t *s, sock_t fd, jv *req) {
+    sbuf r = {0};
+    const char *err = NULL;
+    sched_prefill_begin();
+    int st = clef_systemone_handle(&s->e, req, &r, &err);
+    engine_reset(&s->e);
+    s->e.pos = 0;
+    sched_prefill_end();
+    if (st != 200) {
+        free(r.s);
+        send_error(fd, st, err ? err : "systemone failed");
+        return;
+    }
+    send_built(fd, &r);
+    jv *q = jv_get(req, "questions");
+    fprintf(stderr, "[slot %d] systemone: %d question(s)\n", s->id, q ? q->n : 0);
+    free(r.s);
+}
+
 static void handle_rerank(slot_t *s, sock_t fd, jv *req) {
     sbuf r = {0};
     const char *err = NULL;
@@ -2249,6 +2275,11 @@ static void send_capabilities(sock_t fd) {
     // A declared head is only consumed when a resident engine enables it.
     sb_fmt(&r, ",\"mtp\":{\"declared_layers\":%d,\"consumed\":%s}",
            pm ? pm->mtp_layers : 0, mtp_consumed ? "true" : "false");
+    // A Clef model's joint schema head: decisions over POST /v1/systemone
+    // (the chat surfaces still run its backbone like any qwen35 file).
+    sb_lit(&r, pm && pm->clef
+                   ? ",\"decision_head\":{\"type\":\"clef\",\"endpoint\":\"/v1/systemone\"}"
+                   : ",\"decision_head\":null");
     sb_lit(&r, ",\"sampling\":{\"preset\":");
     if (SV.preset_name) {
         sb_lit(&r, "\"");
@@ -2515,6 +2546,7 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 !strcmp(path, "/v1/completions") ||
                 !strcmp(path, "/v1/embeddings") ||
                 !strcmp(path, "/v1/decide") ||
+                !strcmp(path, "/v1/systemone") ||
                 !strcmp(path, "/v1/rerank") ||
                 !strcmp(path, "/v1/runner/contexts") ||
                 (!strncmp(path, "/v1/runner/contexts/",
@@ -2648,6 +2680,7 @@ static void handle_conn(slot_t *s, sock_t fd) {
                     handle_count_tokens(s, fd, req);
                 else if (strcmp(path, "/v1/embeddings") == 0) handle_embeddings(s, fd, req);
                 else if (strcmp(path, "/v1/decide") == 0) handle_decide(s, fd, req);
+                else if (strcmp(path, "/v1/systemone") == 0) handle_systemone(s, fd, req);
                 else if (strcmp(path, "/v1/rerank") == 0) handle_rerank(s, fd, req);
                 else if (strcmp(path, "/v1/runner/contexts") == 0)
                     handle_context_create(s, fd, req);

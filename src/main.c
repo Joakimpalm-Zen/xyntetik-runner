@@ -1,6 +1,7 @@
 #define _CRT_RAND_S
 // runner — CLI: one-shot completion, interactive chat, and server launcher.
 #include "decide.h"
+#include "clef.h"
 #include "fpclass.h"
 #include "dpo.h"
 #include "hfhub.h"
@@ -1289,6 +1290,9 @@ static void usage_to(FILE *f, const char *prog) {
         "                 FILE (state, questions[{question, options}]), one\n"
         "                 response per line on stdout; options scored verbatim\n"
         "                 in context, no sampling (- reads stdin)\n"
+        "  --systemone FILE  Clef typed decisions: one /v1/systemone request\n"
+        "                 (model, state, questions) per line of FILE, one\n"
+        "                 response per line on stdout (- reads stdin)\n"
         "  --lora FILE    load a LoRA adapter GGUF beside the frozen base\n"
         "                 (dense projections, on the CPU and on an offloaded\n"
         "                 CUDA or Metal block; fails closed otherwise)\n"
@@ -1808,6 +1812,7 @@ typedef struct {
     bool doctor;        // --doctor: one diagnostic report, then exit
     bool doctor_text;   // --doctor-include-text: keep the probe's text
     const char *decide_path;   // --decide FILE (jsonl of /v1/decide requests)
+    const char *systemone_path; // --systemone FILE (jsonl of /v1/systemone requests)
     const char *fit_path;
     // serving
     int port, parallel, ttl;
@@ -2067,6 +2072,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "--doctor-include-text")) o->doctor = o->doctor_text = true;
         else if (!strcmp(a, "--score")) o->score = true;
         else if (!strcmp(a, "--decide")) o->decide_path = NEXT;
+        else if (!strcmp(a, "--systemone")) o->systemone_path = NEXT;
         else if (!strcmp(a, "--lora")) o->lora_path = NEXT;
         else if (!strcmp(a, "--lora-sig")) o->lora_sig = NEXT;
         else if (!strcmp(a, "--adapter")) {
@@ -2478,7 +2484,7 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
     if (!o->prompt && !o->interactive && !o->serve && !o->quant_out && !o->merge_out &&
         !o->context_out &&
         !o->bench_json && !o->doctor && !o->tool_info && !o->adapt_info && !o->train_path && !o->dpo_path && !o->verify_path &&
-        !o->decide_path && !have_detect_text && !o->resume_path) {
+        !o->decide_path && !o->systemone_path && !have_detect_text && !o->resume_path) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
         usage(prog);
         *rc = 1;
@@ -4051,12 +4057,17 @@ static int run_detect_text(cli_opts *o, cli_run *rt, const wm_key *wmk, char *de
     return rc;
 }
 
-static int run_decide(cli_opts *o, cli_run *rt) {
-    // Typed decisions (R13.10): the same handler the server route uses,
-    // one request per line, one response per line; a bad line is an
-    // {"error":...} object on its line and the exit code is 1 at the end
-    FILE *df = strcmp(o->decide_path, "-") ? fopen(o->decide_path, "rb") : stdin;
-    if (!df) { fprintf(stderr, "error: cannot open %s\n", o->decide_path); return 1; }
+// One request per line through a server handler, one response per line on
+// stdout; a bad line is an {"error":...} object on its line and the exit code
+// is 1 at the end. Shared by --decide and --systemone so the two CLI modes
+// read and report alike.
+typedef int (*jsonl_handler)(cli_run *rt, const jv *req, const char *label,
+                             sbuf *out, const char **err);
+
+static int run_jsonl(cli_opts *o, cli_run *rt, const char *path, jsonl_handler h,
+                     const char *what) {
+    FILE *df = strcmp(path, "-") ? fopen(path, "rb") : stdin;
+    if (!df) { fprintf(stderr, "error: cannot open %s\n", path); return 1; }
     size_t cap = 1 << 16, len = 0; char *line = malloc(cap);
     if (!line) { if (df != stdin) fclose(df); return 1; }
     int rc = 0, lineno = 0, c;
@@ -4074,10 +4085,19 @@ static int run_decide(cli_opts *o, cli_run *rt) {
             jv *req = json_parse(line, len);
             sbuf r = {0};
             const char *derr = NULL;
-            int st = req ? decide_handle(&rt->e, req, label, &r, &derr) : 400;
+            int st = req ? h(rt, req, label, &r, &derr) : 400;
             if (!req) derr = "invalid JSON";
             if (st == 200) printf("%s\n", r.s);
-            else { printf("{\"error\":{\"line\":%d,\"status\":%d,\"message\":\"%s\"}}\n", lineno, st, derr ? derr : "decide failed"); rc = 1; }
+            else {
+                // the message can carry the caller's own text (a question id)
+                sbuf e = {0};
+                const char *msg = derr ? derr : what;
+                sb_esc(&e, msg, strlen(msg));
+                printf("{\"error\":{\"line\":%d,\"status\":%d,\"message\":\"%s\"}}\n",
+                       lineno, st, e.s ? e.s : "");
+                free(e.s);
+                rc = 1;
+            }
             fflush(stdout);
             free(r.s);
             if (req) jv_free(req);
@@ -4088,6 +4108,30 @@ static int run_decide(cli_opts *o, cli_run *rt) {
     free(line);
     if (df != stdin) fclose(df);
     return rc;
+}
+
+static int decide_line(cli_run *rt, const jv *req, const char *label, sbuf *out,
+                       const char **err) {
+    return decide_handle(&rt->e, req, label, out, err);
+}
+
+static int run_decide(cli_opts *o, cli_run *rt) {
+    // Typed decisions (R13.10): the same handler the server route uses
+    return run_jsonl(o, rt, o->decide_path, decide_line, "decide failed");
+}
+
+static int systemone_line(cli_run *rt, const jv *req, const char *label, sbuf *out,
+                          const char **err) {
+    (void)label;   // the response echoes the request's own model field
+    int st = clef_systemone_handle(&rt->e, req, out, err);
+    engine_reset(&rt->e);   // the forward overwrote the KV from position 0
+    rt->e.pos = 0;
+    return st;
+}
+
+static int run_systemone(cli_opts *o, cli_run *rt) {
+    // Clef decisions: the same handler as POST /v1/systemone
+    return run_jsonl(o, rt, o->systemone_path, systemone_line, "systemone failed");
 }
 
 static int run_score(cli_opts *o, cli_run *rt) {
@@ -4895,6 +4939,7 @@ int main(int argc, char **argv) {
     else if (o->verify_path) rc = run_verify_replay(o, rt, &vr, load_path);
     else if (detect_text) rc = run_detect_text(o, rt, &wmk, detect_text);
     else if (o->decide_path) rc = run_decide(o, rt);
+    else if (o->systemone_path) rc = run_systemone(o, rt);
     else if (o->score) rc = run_score(o, rt);
     else if (o->doctor) rc = run_doctor(o, rt, tmpl_override);
     else if (o->bench_json) rc = run_bench(o, rt);

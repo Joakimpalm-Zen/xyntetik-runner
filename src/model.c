@@ -7,6 +7,7 @@
 #include "compat.h"
 #include "template.h"   // HARMONY_THINK_OPEN/CLOSE for the gpt-oss channel split
 #include "build_arch.h" // RUNNER_BUILD_ARCH for the route record
+#include "clef.h"       // the joint schema head bound below (struct only)
 
 #include <math.h>
 #include "pmath.h"
@@ -1096,7 +1097,7 @@ const char *const *model_supported_archs(size_t *count) {
         "llama", "qwen2", "qwen3", "qwen35", "qwen4exp", "qwen3moe", "mistral",
         "smollm", "stablelm", "gemma3", "gemma4", "phi3", "gpt-oss",
         "apertus", "afmoe", "muse-glimmer", "granite", "granitehybrid",
-        "nemotron_h", "nemotron_h_moe",
+        "nemotron_h", "nemotron_h_moe", "clef",
     };
     if (count) *count = sizeof(arches) / sizeof(arches[0]);
     return arches;
@@ -1106,6 +1107,7 @@ static bool model_load_inner(model_t *m, const char *path, const model_params *p
 static bool model_bind_weights(model_t *m, const char *path, const model_params *p);
 static bool model_alloc_runtime(model_t *m, const model_params *p);
 static bool model_mtp_bind(model_t *m, gguf_file *g);
+static bool model_clef_bind(model_t *m, gguf_file *g, const char *arch);
 
 static bool profile_integer(const gguf_kv *kv) {
     if (!kv) return false;
@@ -1309,6 +1311,8 @@ static void model_free_weights(model_t *m) {
     free(m->fused_splits);
     free(m->out_norm_w); free(m->out_norm_b); free(m->hc_head_norm);
     free(m->mtp_enorm_w); free(m->mtp_hnorm_w); free(m->mtp_head_norm_w);
+    clef_head_free(m->clef);
+    m->clef = NULL;
     // Unlock before unmapping, and only the mapping this model_t actually
     // locked: with shared weights several model_t alias one map, and munlock
     // on a mapping we never locked is a silent no-op that would hide a failed
@@ -4050,7 +4054,10 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         return false;
     if (!bind_mtp_layers(m, g, arch, p)) return false;
     if (!m->l_is_swa && !bind_swa_default(m, g, arch)) return false;
-    if ((strcmp(arch, "qwen35") == 0 || strcmp(arch, "qwen4exp") == 0) &&
+    // clef is a Qwen3.5/Qwen3.8 backbone under its own key prefix, with a
+    // decision head on top (bound after the layers, model_clef_bind)
+    if ((strcmp(arch, "qwen35") == 0 || strcmp(arch, "qwen4exp") == 0 ||
+         strcmp(arch, "clef") == 0) &&
         !bind_meta_qwen35(m, g, arch))
         return false;
     m->ple4_layer = -1;
@@ -4104,6 +4111,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     for (int i = 0; i < m->n_layer + (bind_mtp ? 1 : 0); i++)
         if (!bind_layer(m, g, arch, i, fused_qkv)) return false;
     if (bind_mtp && !model_mtp_bind(m, g)) return false;
+    if (strcmp(arch, "clef") == 0 && !model_clef_bind(m, g, arch)) return false;
 
     // gemma4 dropped the plus-one norm convention (unlike gemma1-3): its
     // RMSNorm is the standard x_normed * weight, so norm weights are used raw.
@@ -10983,6 +10991,189 @@ static bool model_mtp_bind(model_t *m, gguf_file *g) {
     return true;
 }
 
+// ---- Clef joint schema head --------------------------------------------
+// The tensors llama.cpp's converter writes for joint_head.safetensors
+// (conversion/clef.py at 2f729cfa): dec.blk.0 .. n_routing-1 are the
+// EvidenceRoutingLayer blocks, dec.blk.n_routing .. the decoder blocks, the
+// projections and norms under decision.*, the type embedding as
+// token_types, and the three learned scalars as decision.scales with
+// exp/sigmoid already applied. Every shape is required exactly: the head
+// math in clef.c indexes these with widths taken from the file, so a tensor
+// with spare rows is a different head, not a compatible one.
+
+void clef_head_free(struct clef_head *h) {
+    if (!h) return;
+    clef_norm *norms[] = { &h->hidden_norm, &h->option_summary_norm,
+                           &h->field_norm, &h->option_norm };
+    for (size_t i = 0; i < sizeof norms / sizeof *norms; i++) {
+        free(norms[i]->w); free(norms[i]->b);
+    }
+    for (int i = 0; h->blocks && i < h->n_routing + h->n_joint; i++) {
+        clef_block *b = &h->blocks[i];
+        clef_norm *bn[] = { &b->self_norm, &b->cross_norm, &b->cross_norm_kv, &b->ffn_norm };
+        for (size_t k = 0; k < sizeof bn / sizeof *bn; k++) { free(bn[k]->w); free(bn[k]->b); }
+        clef_attn *ba[] = { &b->self_attn, &b->cross_attn };
+        for (size_t k = 0; k < sizeof ba / sizeof *ba; k++) {
+            free(ba[k]->bq); free(ba[k]->bk); free(ba[k]->bv); free(ba[k]->bo);
+        }
+        free(b->ffn_up_b); free(b->ffn_down_b);
+    }
+    free(h->blocks);
+    free(h->type_embd);
+    free(h->scorer_b); free(h->scorer_out_b);
+    free(h);
+}
+
+static gguf_tensor *clef_mat(gguf_file *g, const char *name, int ne0, int ne1, bool *ok) {
+    if (!*ok) return NULL;
+    gguf_tensor *t = gguf_find_tensor(g, name);
+    if (!t) {
+        fprintf(stderr, "error: clef: the decision head is missing %s\n", name);
+        *ok = false;
+        return NULL;
+    }
+    if (!ggml_type_supported(t->type)) {
+        fprintf(stderr, "error: clef: %s has unsupported type %d (%s)\n",
+                name, t->type, ggml_type_name(t->type));
+        *ok = false;
+        return NULL;
+    }
+    if ((int64_t)t->ne[0] != ne0 || (int64_t)t->ne[1] != ne1 ||
+        t->ne[2] != 1 || t->ne[3] != 1) {
+        fprintf(stderr, "error: clef: %s has shape [%llu,%llu], expected [%d,%d]\n",
+                name, (unsigned long long)t->ne[0], (unsigned long long)t->ne[1],
+                ne0, ne1);
+        *ok = false;
+        return NULL;
+    }
+    return t;
+}
+
+// a vector of exactly n values, as f32
+static float *clef_vec(gguf_file *g, const char *name, int n, bool *ok) {
+    gguf_tensor *t = clef_mat(g, name, n, 1, ok);
+    return t ? tensor_to_f32(t, n, ok) : NULL;
+}
+
+// a LayerNorm's weight and bias under `base`
+static void clef_norm_bind(gguf_file *g, clef_norm *nm, const char *base, int n,
+                           bool *ok) {
+    char name[160];
+    snprintf(name, sizeof name, "%s.weight", base);
+    nm->w = clef_vec(g, name, n, ok);
+    snprintf(name, sizeof name, "%s.bias", base);
+    nm->b = clef_vec(g, name, n, ok);
+}
+
+static void clef_attn_bind(gguf_file *g, clef_attn *a, const char *prefix, int i,
+                           int w, bool *ok) {
+    char name[128];
+    gguf_tensor **ws[] = { &a->wq, &a->wk, &a->wv, &a->wo };
+    float **bs[] = { &a->bq, &a->bk, &a->bv, &a->bo };
+    const char *part[] = { "q", "k", "v", "o" };
+    for (int k = 0; k < 4; k++) {
+        snprintf(name, sizeof name, "dec.blk.%d.%s_%s.weight", i, prefix, part[k]);
+        *ws[k] = clef_mat(g, name, w, w, ok);
+        snprintf(name, sizeof name, "dec.blk.%d.%s_%s.bias", i, prefix, part[k]);
+        *bs[k] = clef_vec(g, name, w, ok);
+    }
+}
+
+static bool model_clef_bind(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    const char *type = gguf_get_str(g, AK("decision.type"), "clef");
+    if (strcmp(type, "clef") != 0) {
+        char shown[64];
+        meta_printable(shown, sizeof shown, type);
+        fprintf(stderr, "error: clef: decision head type '%s' is not the Clef "
+                "joint schema head\n", shown);
+        return false;
+    }
+    struct clef_head *h = calloc(1, sizeof *h);
+    if (!h) return false;
+    h->hidden    = m->n_embd;
+    h->n_routing = (int)gguf_get_u32(g, AK("decision.routing_block_count"), 0);
+    h->n_joint   = (int)gguf_get_u32(g, AK("decision.block_count"), 0);
+    h->n_head    = (int)gguf_get_u32(g, AK("decision.head_count"), 0);
+    h->eps       = gguf_get_f32(g, AK("attention.layer_norm_epsilon"), 1e-5f);
+    gguf_tensor *mem = gguf_find_tensor(g, "decision.proj_memory.weight");
+    gguf_tensor *up0 = gguf_find_tensor(g, "dec.blk.0.ffn_up.weight");
+    h->width = mem ? (int)mem->ne[1] : 0;
+    h->n_ff  = up0 ? (int)up0->ne[1] : 0;
+    if (h->n_routing < 0 || h->n_routing > 64 || h->n_joint < 0 || h->n_joint > 64 ||
+        h->n_routing + h->n_joint == 0 || h->n_head <= 0 ||
+        h->width <= 0 || h->width > MDL_DIM_MAX || h->width % h->n_head != 0 ||
+        h->n_ff <= 0 || h->n_ff > MDL_DIM_MAX || !(h->eps > 0 && h->eps < 1)) {
+        fprintf(stderr, "error: clef: invalid decision head geometry (routing %d, "
+                "blocks %d, heads %d, width %d, feedforward %d)\n", h->n_routing,
+                h->n_joint, h->n_head, h->width, h->n_ff);
+        free(h);
+        return false;
+    }
+    int E = h->hidden, W = h->width, F = h->n_ff;
+    bool ok = true;
+    h->blocks = calloc((size_t)(h->n_routing + h->n_joint), sizeof *h->blocks);
+    if (!h->blocks) ok = false;
+    for (int i = 0; ok && i < h->n_routing + h->n_joint; i++) {
+        clef_block *b = &h->blocks[i];
+        char name[128];
+        if (i < h->n_routing) {
+            snprintf(name, sizeof name, "dec.blk.%d.cross_attn_norm_kv", i);
+            clef_norm_bind(g, &b->cross_norm_kv, name, W, &ok);
+        } else {
+            snprintf(name, sizeof name, "dec.blk.%d.attn_norm", i);
+            clef_norm_bind(g, &b->self_norm, name, W, &ok);
+            clef_attn_bind(g, &b->self_attn, "attn", i, W, &ok);
+        }
+        snprintf(name, sizeof name, "dec.blk.%d.cross_attn_norm", i);
+        clef_norm_bind(g, &b->cross_norm, name, W, &ok);
+        clef_attn_bind(g, &b->cross_attn, "cross_attn", i, W, &ok);
+        snprintf(name, sizeof name, "dec.blk.%d.ffn_norm", i);
+        clef_norm_bind(g, &b->ffn_norm, name, W, &ok);
+        snprintf(name, sizeof name, "dec.blk.%d.ffn_up.weight", i);
+        b->ffn_up = clef_mat(g, name, W, F, &ok);
+        snprintf(name, sizeof name, "dec.blk.%d.ffn_up.bias", i);
+        b->ffn_up_b = clef_vec(g, name, F, &ok);
+        snprintf(name, sizeof name, "dec.blk.%d.ffn_down.weight", i);
+        b->ffn_down = clef_mat(g, name, F, W, &ok);
+        snprintf(name, sizeof name, "dec.blk.%d.ffn_down.bias", i);
+        b->ffn_down_b = clef_vec(g, name, W, &ok);
+    }
+    clef_norm_bind(g, &h->hidden_norm, "decision.hidden_norm", E, &ok);
+    clef_norm_bind(g, &h->option_summary_norm, "decision.option_summary_norm", W, &ok);
+    clef_norm_bind(g, &h->field_norm, "decision.field_norm", W, &ok);
+    clef_norm_bind(g, &h->option_norm, "decision.option_norm", W, &ok);
+    h->proj_memory          = clef_mat(g, "decision.proj_memory.weight", E, W, &ok);
+    h->proj_question        = clef_mat(g, "decision.proj_question.weight", E, W, &ok);
+    h->proj_option_question = clef_mat(g, "decision.proj_option_question.weight", E, W, &ok);
+    h->proj_global          = clef_mat(g, "decision.proj_global.weight", E, W, &ok);
+    h->proj_option_context  = clef_mat(g, "decision.proj_option_context.weight", E, W, &ok);
+    h->proj_option_lexical  = clef_mat(g, "decision.proj_option_lexical.weight", E, W, &ok);
+    gguf_tensor *te = clef_mat(g, "token_types.weight", W, 3, &ok);
+    if (te) h->type_embd = tensor_to_f32(te, 3 * W, &ok);
+    h->scorer       = clef_mat(g, "decision.scorer.weight", 4 * W, W, &ok);
+    h->scorer_b     = clef_vec(g, "decision.scorer.bias", W, &ok);
+    h->scorer_out   = clef_mat(g, "decision.scorer_out.weight", W, 1, &ok);
+    h->scorer_out_b = clef_vec(g, "decision.scorer_out.bias", 1, &ok);
+    float *sc = clef_vec(g, "decision.scales", 3, &ok);
+    if (sc) {
+        h->prior_scale = sc[0]; h->joint_scale = sc[1]; h->gate = sc[2];
+        free(sc);
+        // what the converter stores: exp(min(x, ln 100)) twice and a sigmoid
+        if (!(h->prior_scale > 0 && h->prior_scale <= 100.0001f) ||
+            !(h->joint_scale > 0 && h->joint_scale <= 100.0001f) ||
+            !(h->gate >= 0 && h->gate <= 1)) {
+            fprintf(stderr, "error: clef: decision.scales [%g, %g, %g] are not "
+                    "two clamped exponentials and a sigmoid\n",
+                    (double)h->prior_scale, (double)h->joint_scale, (double)h->gate);
+            ok = false;
+        }
+    }
+    if (!ok) { clef_head_free(h); return false; }
+    m->clef = h;
+    return true;
+}
+
 static bool mtp_alloc(model_t *m) {
     if (m->mtp_h) return true;
     const size_t E = (size_t)m->n_embd, B = (size_t)m->n_batch;
@@ -11377,4 +11568,38 @@ bool model_embed(model_t *m, const int32_t *toks, int n, float *out) {
         for (int j = 0; j < m->n_embd; j++) out[j] *= inv;
     }
     return true;
+}
+
+// The rows model_embed pools, kept: every position's residual after the last
+// layer, through the output norm. A fully offloaded backend that can hand its
+// rows back (gpu_hidden_rows_ok) copies each tile into x as it finishes;
+// one that cannot runs this forward on the CPU, as model_embed always does.
+bool model_hidden_states(model_t *m, const int32_t *toks, int n, float *out) {
+    if (n <= 0 || n > m->n_ctx || m->hyper_conn) return false;
+    // set aside only for this forward: no device forward runs meanwhile, so
+    // nothing can release the backend under the saved pointer
+    void *save_gpu = NULL;
+    if (m->gpu && m->gpu_layers >= m->n_layer && !gpu_hidden_rows_ok(m)) {
+        save_gpu = m->gpu;
+        m->gpu = NULL;
+    }
+    m->want_hidden = true;
+    for (int i = 0; i < n; ) {
+        int chunk = n - i < m->n_batch ? n - i : m->n_batch;
+        model_forward_batch(m, toks + i, chunk, i, false);
+        for (int b = 0; b < chunk; b++)
+            xnorm(m, out + (size_t)(i + b) * m->n_embd,
+                  m->x + (size_t)b * m->n_embd, m->out_norm_w, m->out_norm_b,
+                  m->n_embd, m->rms_eps);
+        i += chunk;
+    }
+    m->want_hidden = false;
+    if (save_gpu) m->gpu = save_gpu;
+    return true;
+}
+
+void model_matmul(model_t *m, float *y, int y_stride, const gguf_tensor *w,
+                  const float *x, int x_stride, int n_in, int n_out,
+                  const float *bias, int n_batch) {
+    matvec_b(m->tp, y, y_stride, w, x, x_stride, n_in, n_out, bias, n_batch);
 }

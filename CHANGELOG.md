@@ -5,6 +5,37 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Clef decision models load and answer at `/v1/systemone`.** Cloudflare's
+  Clef (Qwen3.8-27B) and Clef-Flash (Qwen3.5-9B) put a trained joint head
+  on a Qwen backbone: a state and typed questions in, a probability for
+  every allowed option out, in one forward pass. Every public Clef GGUF
+  carries the `clef` architecture, which Runner refused. It now loads them
+  and answers `POST /v1/systemone` and `--systemone FILE` with the body
+  Cloudflare's own `systemone()` returns. The prompt is built exactly as
+  the publisher's encoder builds it and the head runs its module graph in
+  float32: on a small Clef checkpoint scored against that code, all 15
+  edge-case records are token-identical and the per-option scores agree to
+  1.5e-4, on the CPU and with full CUDA offload. Text input only for now;
+  a request with images or videos is refused. `"runner_logits": true`
+  returns the raw scores beside the answers.
+
+- **Qwen tokenizers normalize to NFC, as the publisher's do.** Qwen's
+  `tokenizer.json` (Qwen2 through Qwen3.8) declares an NFC normalizer, so
+  the reference composes decomposed text before it splits it, and Runner
+  did not: "cafe" followed by a combining accent was two tokens here and one
+  (" café") there. Runner now applies NFC to text between special tokens
+  on the qwen2 and qwen35 tokenizers. Over 13,264 strings built to stress it
+  (every character with a canonical decomposition written decomposed, plus
+  marks out of order, conjoining Hangul jamo and Indic, Thai, Hebrew and
+  Vietnamese text), Runner and the `tokenizers` package now produce the same
+  ids for every one. Text that was already composed, which is almost all
+  text, tokenizes as before.
+
+- **`--decide` escapes the message in an error line.** A failing request
+  was reported as `{"error":{...,"message":"..."}}` with the message
+  written raw, so a message containing a quote produced a line that was not
+  JSON. `--decide` and `--systemone` now share one reader that escapes it.
+
 - **One SIGTERM stops a busy server in seconds.** The drain after the
   first SIGINT or SIGTERM waited for every active request to finish on its
   own, with no bound, so a server in the middle of a long generation or a

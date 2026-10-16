@@ -1,6 +1,7 @@
 {
   "agent_profile": null,
   "context": "<number>",
+  "decision_head": null,
   "draft": {
     "active": false,
     "requested": false

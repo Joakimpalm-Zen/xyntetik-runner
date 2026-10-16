@@ -178,6 +178,11 @@ Nothing here gates a merge; these are how a claim gets a number behind it.
   accuracy, by design; its records cannot feed `cl-calibration.py`. Ships
   with John6666's 36-prompt bank (`tool-choice-boundary-bank.jsonl`, MIT OR
   Apache-2.0, carried byte-identical). See `docs/tool-choice-boundary-lane.md`.
+- **`clef-gold.py`** - Clef against the publisher's code:
+  `reference` runs Cloudflare's `joint_schema_model.py` (sha256-checked) in
+  float32 on the CPU over a record set, `requests` writes the matching
+  `--systemone` input, `compare` reports token-id, span, score and answer
+  agreement. See `docs/clef-admission-2026-10-16.md`.
 - **`decide-calibrate.py`** - calibration report for POST /v1/decide
   (R13.10): accuracy, multi-class Brier score, log loss, and expected
   calibration error with a reliability curve, plus a permutation-invariance
@@ -218,10 +223,18 @@ Nothing here gates a merge; these are how a claim gets a number behind it.
   equivalence test (`make test-moe`; see `docs/moe-support.md`).
 - **`make-test-ornith.py`** - tiny Qwen3.5/Ornith hybrid fixture
   (via `tests/test_ornith_cpu.py`).
+- **`make-test-clef.py`** - tiny Clef fixture: the Ornith-sized backbone
+  under the `clef` prefix with a random joint head and a byte vocabulary
+  (via `tests/test_clef.py`).
 - **`make-vocab-fixture.py`** - tokenizer vocab fixtures in `tests/fixtures/`.
 - **`tokenizer-corpus.py` / `difftok.py`** - regenerate / diff the 721-string
   tokenizer conformance corpus against Hugging Face reference tokenizers;
   revision-bound `--capture` files make the reference side replayable offline.
+- **`tokenizer-nfc-corpus.py`** - writes `tests/fixtures/tokenizer-nfc-corpus.txt`,
+  13,264 strings whose NFC differs from their bytes, for `difftok.py`
+  against the Qwen tokenizers' NFC normalizer.
+- **`gen-unicode-nfc.py`** - generates `src/unicode_nfc.h` (the NFC tables)
+  from python's unicodedata, cross-checked against the `tokenizers` package.
 - **`ornith-reference.py`** - reference layout contract for Ornith GGUFs
   (unit-tested by `tests/test_ornith_reference.py`).
 - **`embed-ptx.py`** - embeds `src/kernels.ptx` into `src/kernels_ptx.h`

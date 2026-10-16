@@ -13,6 +13,15 @@ typedef struct jv jv;
 struct jv {
     jtype  type;
     double num;
+    // J_NUM from json_parse: the literal had no fraction and no exponent, so
+    // Python's json.loads reads it as an int, not a float. `1250` and
+    // `1250.0` are one double and two spellings, and a reference that
+    // re-serializes its input with json.dumps (Clef's encoder) writes them
+    // back differently. num_text keeps the literal itself when it has more
+    // digits than a double carries exactly (sixteen or more), so a large
+    // integer is written back digit for digit; otherwise it is NULL.
+    bool   num_int;
+    char  *num_text;
     bool   b;
     char  *str;      // J_STR (decoded, NUL-terminated)
     jv   **items;    // J_ARR / J_OBJ values

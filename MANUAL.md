@@ -1402,6 +1402,7 @@ merely dense matvec/matmul support.
 | `llama`, `mistral`, `smollm`, `stablelm` | Llama-style dense families with family tokenizers/templates. |
 | `qwen2`, `qwen3` | QKV-bias and per-head-QK-norm variants. |
 | `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU and CUDA. Qwen3.8-27B (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore (its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike); a CUDA-resident recurrent layer runs speculative decode (per-row recurrent checkpoints restore a partially accepted round) and declines grammar fast-forward. |
+| `clef` | Cloudflare's Clef decision models (Cloudflare/clef on Qwen3.8-27B, Cloudflare/clef-flash on Qwen3.5-9B): the `qwen35` backbone plus the joint schema head, served at `POST /v1/systemone` and `--systemone FILE` ([Clef decisions](#clef-decisions-v1systemone)). Text input only; a request with images or videos is refused. Gold against the publisher's `joint_schema_model.py` in `docs/clef-admission-2026-10-16.md`. |
 | `qwen3moe` | Fused and legacy split sparse-MoE layouts on CPU/CUDA; supported fused layouts on Metal. |
 | `gemma3` | Regular and QAT layouts, sliding-window attention, sandwich norms. The 27B (62 blocks) scales attention by its config's `query_pre_attn_scalar`, which is n_embd / n_head (168), not its 128-wide heads; every other size uses the head width (`tests/test_attn_scale.c`). |
 | `gemma4` | Heterogeneous attention, thinking channels, E-series, supported dense/MoE layouts, and the family's native tool protocol. Both E-series export shapes load. A layer at or past `block_count - attention.shared_kv_layers` computes no K and no V (it attends over the cache an earlier layer filled), so the current quantized exports - the ggml-org Q4_0, Google's own QAT Q4_0 and the community QAT F16 - omit `attn_k.weight`, `attn_v.weight` and `attn_k_norm.weight` on exactly those layers: 666 tensors on E4B where the BF16 export has 720. Those three are optional on the shared-KV tail and still required on every KV-owning layer, where a missing one is refused by name. |
@@ -1429,7 +1430,7 @@ silently dropped branch.
 | Area | Current support |
 |---|---|
 | File format | GGUF v2/v3, mmap/file-mapped host weights, including standard local multi-part sets. |
-| Tokenizers | SPM and byte-level BPE with llama, qwen2/qwen35, smollm, afmoe, tekken, llama4/gpt-4o, Gemma, and GPT-2-family (including `granite-docling`) pre-tokenization rules. |
+| Tokenizers | SPM and byte-level BPE with llama, qwen2/qwen35, smollm, afmoe, tekken, llama4/gpt-4o, Gemma, and GPT-2-family (including `granite-docling`) pre-tokenization rules. The qwen2 and qwen35 tokenizers apply the NFC normalizer Qwen's `tokenizer.json` declares, so decomposed text (`e` plus U+0301) tokenizes as the publisher's tokenizer does; a `clef` file uses Clef's own qwen2 split although its GGUF declares `qwen35`. |
 | Quantizations | `--caps` lists the admitted tensor formats: the k-quant and legacy families plus MXFP4, NVFP4 (two-level, with its per-tensor scale companion applied) and the codebook i-quants (IQ1_S/M, IQ2_XXS/XS/S, IQ3_XXS/S, IQ4_NL/XS). CUDA serves every one of them; Metal admits the codebook i-quants through its current dense kernels and retains separate NVFP4/MoE/layout refusals, naming the tensor and type that caused a fallback. |
 | Transformer | RMSNorm, adjacent-pair and NeoX RoPE, grouped-query attention, SwiGLU/GELU/xIELU family paths, tied embeddings, dense and selected sparse MoE. |
 | Sampling | Greedy, temperature, top-k, top-p, min-p, repeat penalty, stop strings, JSON/schema constraints, speculative decoding. |
@@ -1845,6 +1846,10 @@ Vulkan is not implemented; AMD and Intel GPUs use the CPU path.
   The probabilities are the model's own and are not calibrated by the
   engine; measure them with `scripts/decide-calibrate.py` before trusting a
   number.
+- `--systemone FILE` and `POST /v1/systemone`: a Clef model's decisions.
+  The same state-plus-questions shape, answered by the model's trained joint
+  head instead of next-token probabilities. See
+  [Clef decisions](#clef-decisions-v1systemone).
 
 ### Resource control
 
@@ -2701,6 +2706,8 @@ non-loopback authorities.
 | `POST /v1/completions` | Legacy raw prompt completions; `prompt` is a string or an array of token ids. |
 | `POST /v1/embeddings` | L2-normalized embeddings, pooled as the GGUF declares in `{arch}.pooling_type`: the mean over every token (also when the key is absent, as on generative models), or the last token (embedding models such as Qwen3-Embedding), with the end token appended first when `tokenizer.ggml.add_eos_token` is set. A model declaring CLS or rank pooling is refused with 400 naming it. |
 | `POST /v1/rerank` | Documents ranked against a `query` with no reranker model: each document is put to the served model as a question with exactly two answers (`yes`, `no`) and scored with `/v1/decide`'s exact in-context readout. `relevance_score` is P(yes) renormalized over the two answers, `logit` is log P(yes) - log P(no), and `margin` is the logit gap to the next-ranked document, so a client can tell a decisive order from a near tie. Accepts `documents` as strings or `{"text": ...}` objects, `top_n`, `return_documents`, an `instruction` replacing the default ("Judge whether the document answers the query. Answer yes or no."), and `rendering`: `chat-v1` (default; the model's own chat template, thinking off, refused for harmony's channel protocol) or `raw-v1` (`{instruction}\n\nQuery: {query}\nDocument: {document}\nRelevant:` with answers ` yes`/` no`, for base models). The `envelope` carries digests of the query, documents and instruction. The score is the served model's judgement, not a trained reranker's. |
+| `POST /v1/decide` | Typed decisions read off the served model's own next-token probabilities: a state, questions with verbatim option strings, one distribution per question (`--decide FILE` is the CLI form; the contract is `src/decide.h`). |
+| `POST /v1/systemone` | A Clef model's decisions, the Jev/SystemOne body: `model`, `state`, `questions` in; `answers`, `usage` and an `envelope` out ([Clef decisions](#clef-decisions-v1systemone)). Other models get `400`. |
 | `POST /v1/messages` | Anthropic Messages translation. |
 | `POST /v1/messages/count_tokens` | Token count for the matching Messages request. |
 | `GET /v1/models` | Registered models and current residency. |
@@ -3686,6 +3693,62 @@ needs no re-run. The split line counts both sides in the split unit
 counts beside it.
 No claim about any model's calibration is made here; the script measures
 whatever endpoint it is pointed at.
+
+### Clef decisions (`/v1/systemone`)
+
+[Clef](https://huggingface.co/Cloudflare/clef) turns a state and a schema of
+typed questions into decisions in one forward pass: a trained head reads the
+backbone's hidden states and scores every allowed option of every question
+together. Nothing is generated. Runner loads any GGUF whose
+`general.architecture` is `clef` and answers `POST /v1/systemone` (and
+`--systemone FILE`, one request per line) with the body Cloudflare's own
+`systemone()` returns.
+
+```bash
+curl http://127.0.0.1:8080/v1/systemone -H 'Content-Type: application/json' -d '{
+  "model": "Cloudflare_clef-IQ3_M",
+  "state": "Our checkout started returning errors and orders are blocked.",
+  "questions": {
+    "department": {"type": "choice", "instructions": "Which team should handle the message?",
+                   "criteria": {"billing": "Payments or invoices", "technical": "Bugs or outages"}},
+    "urgency": {"type": "score", "criteria": ["Can wait", "This week", "Today"]},
+    "outage": {"type": "noul", "instructions": "Is a service down?"}}}'
+```
+
+- `state` is any JSON value; a question's `type` is `noul` (true or false),
+  `choice` (`criteria` maps option ids to descriptions) or `score`
+  (`criteria` is a list of level descriptions, indexed from 0).
+  `instructions` is optional; the question id stands in.
+- The answer per question follows `systemone()`: `noul` gives the
+  probability of true; `choice` gives `choice`, `confidence` and
+  `probabilities` in the caller's order; `score` gives the expected level,
+  `confidence`, `legend` and `probabilities`. Numbers are rounded to four
+  decimals as python's `round(x, 4)` rounds them.
+- `model` must name the served model, as on every route (`GET /v1/models`).
+- The prompt is built exactly as the publisher's `encode_record` builds it:
+  each piece tokenized on its own, the state and descriptions rendered as
+  python's `json.dumps` would (sorted keys, `1250.0` stays `1250.0`). As in
+  that encoder, special-token text inside the state (`<|im_end|>`) is read
+  as the special token.
+- The state is cut to fit 16,384 tokens, or the context (`-c`) when that is
+  smaller; `envelope.state_truncated` says when it was. A schema that alone
+  exceeds the bound is refused with the encoder's own message.
+- `envelope` carries the runner version, the encoding, the sha256 of the
+  input token ids and the bound. `"runner_logits": true` in a request adds
+  `runner_logits`: the token ids, each question's and option's token span,
+  and the head's raw per-option scores, for scoring the head against a
+  reference.
+- The backbone runs where the model is placed (CPU, CUDA; Metal runs this
+  backbone on the CPU today). The head runs on the host in f32. The forward
+  starts at position 0 for every request, so no prefix is reused between
+  requests.
+- Text only: a request with `images` or `videos` is refused with `400`.
+  The chat routes still run the backbone as a qwen35 model.
+
+`scripts/clef-gold.py` scores this against the publisher's code. It runs
+`joint_schema_model.py` (sha256-checked) in float32 on the CPU over a record
+set and compares token ids, spans, scores and answers; the admission numbers
+are in `docs/clef-admission-2026-10-16.md`.
 
 ### Serving a distilled reasoning student
 

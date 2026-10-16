@@ -106,6 +106,157 @@ static int u8_encode(uint32_t cp, char *out) {
     return 4;
 }
 
+// ---------------------------------------------------------------- nfc
+//
+// Unicode normalization form C, for the tokenizers whose publisher declares
+// it ({"type": "NFC"} in Qwen's tokenizer.json, Qwen2 through Qwen3.8). The
+// reference tokenizer normalizes every run of text between special tokens
+// before it splits it, so "cafe" + U+0301 is the one token " café" there and
+// was two tokens here until 2026-10-16 (found by the Clef gold run). The
+// algorithm is UAX #15's: full canonical decomposition, canonical ordering,
+// canonical composition; the tables are generated (scripts/gen-unicode-nfc.py).
+
+#include "unicode_nfc.h"
+
+static uint32_t nfc_class(uint32_t cp) {
+    size_t lo = 0, hi = sizeof nfc_ccc / sizeof *nfc_ccc;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if (cp < nfc_ccc[mid][0]) hi = mid;
+        else if (cp > nfc_ccc[mid][1]) lo = mid + 1;
+        else return nfc_ccc[mid][2];
+    }
+    return 0;
+}
+
+enum { NFC_SBASE = 0xAC00, NFC_LBASE = 0x1100, NFC_VBASE = 0x1161, NFC_TBASE = 0x11A7,
+       NFC_LCOUNT = 19, NFC_VCOUNT = 21, NFC_TCOUNT = 28,
+       NFC_NCOUNT = NFC_VCOUNT * NFC_TCOUNT, NFC_SCOUNT = NFC_LCOUNT * NFC_NCOUNT };
+
+// the full canonical decomposition of cp into out (at most 4 code points)
+static int nfc_decompose(uint32_t cp, uint32_t *out) {
+    if (cp >= NFC_SBASE && cp < NFC_SBASE + NFC_SCOUNT) {
+        uint32_t si = cp - NFC_SBASE;
+        out[0] = NFC_LBASE + si / NFC_NCOUNT;
+        out[1] = NFC_VBASE + (si % NFC_NCOUNT) / NFC_TCOUNT;
+        uint32_t t = si % NFC_TCOUNT;
+        if (t) { out[2] = NFC_TBASE + t; return 3; }
+        return 2;
+    }
+    size_t lo = 0, hi = sizeof nfc_dec / sizeof *nfc_dec;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if (cp < nfc_dec[mid][0]) hi = mid;
+        else if (cp > nfc_dec[mid][0]) lo = mid + 1;
+        else {
+            uint32_t n = nfc_dec[mid][2];
+            for (uint32_t i = 0; i < n; i++) out[i] = nfc_dec_pool[nfc_dec[mid][1] + i];
+            return (int)n;
+        }
+    }
+    out[0] = cp;
+    return 1;
+}
+
+// the primary composite of (a, b), or 0
+static uint32_t nfc_compose(uint32_t a, uint32_t b) {
+    if (a >= NFC_LBASE && a < NFC_LBASE + NFC_LCOUNT &&
+        b >= NFC_VBASE && b < NFC_VBASE + NFC_VCOUNT)
+        return NFC_SBASE + ((a - NFC_LBASE) * NFC_VCOUNT + (b - NFC_VBASE)) * NFC_TCOUNT;
+    if (a >= NFC_SBASE && a < NFC_SBASE + NFC_SCOUNT && (a - NFC_SBASE) % NFC_TCOUNT == 0 &&
+        b > NFC_TBASE && b < NFC_TBASE + NFC_TCOUNT)
+        return a + (b - NFC_TBASE);
+    size_t lo = 0, hi = sizeof nfc_comp / sizeof *nfc_comp;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        uint32_t ma = nfc_comp[mid][0], mb = nfc_comp[mid][1];
+        if (a < ma || (a == ma && b < mb)) hi = mid;
+        else if (a > ma || (a == ma && b > mb)) lo = mid + 1;
+        else return nfc_comp[mid][2];
+    }
+    return 0;
+}
+
+// strict UTF-8 decode of s[0..n) into cp; false on any malformed sequence
+static bool nfc_utf8_decode(const char *s, size_t n, uint32_t *cp, size_t *ncp) {
+    size_t k = 0;
+    for (size_t i = 0; i < n; ) {
+        uint8_t c = (uint8_t)s[i];
+        int l = u8_len(c);
+        if ((l == 1 && c >= 0x80) || i + (size_t)l > n) return false;
+        for (int j = 1; j < l; j++)
+            if (((uint8_t)s[i + j] & 0xC0) != 0x80) return false;
+        uint32_t v = u8_decode(s + i, l);
+        if ((l == 2 && v < 0x80) || (l == 3 && v < 0x800) || (l == 4 && v < 0x10000) ||
+            v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF))
+            return false;
+        cp[k++] = v;
+        i += (size_t)l;
+    }
+    *ncp = k;
+    return true;
+}
+
+// NFC of s[0..n) as a malloc'd string in *out (length *out_n), or false when
+// the text needs no change: nothing at or above U+0300, or not valid UTF-8
+// (which the reference could not have been given, so it is left as bytes).
+// *oom is set when an allocation failed.
+static bool nfc_utf8(const char *s, size_t n, char **out, size_t *out_n, bool *oom) {
+    *out = NULL;
+    bool any = false;
+    for (size_t i = 0; i < n; i++)
+        if ((uint8_t)s[i] >= 0xCC) { any = true; break; }   // lead byte of U+0300+
+    if (!any || n > SIZE_MAX / (4 * sizeof(uint32_t)) - 1) return false;
+    uint32_t *cp = malloc(sizeof(uint32_t) * (n + 1));
+    uint32_t *d = malloc(sizeof(uint32_t) * (4 * n + 1));
+    if (!cp || !d) { free(cp); free(d); *oom = true; return false; }
+    size_t ncp = 0;
+    if (!nfc_utf8_decode(s, n, cp, &ncp)) { free(cp); free(d); return false; }
+    size_t nd = 0;
+    for (size_t i = 0; i < ncp; i++) nd += (size_t)nfc_decompose(cp[i], d + nd);
+    free(cp);
+    // canonical ordering: a stable sort of each run of non-starters by class
+    for (size_t i = 1; i < nd; i++) {
+        uint32_t c = d[i], k = nfc_class(c);
+        if (!k) continue;
+        size_t j = i;
+        while (j > 0) {
+            uint32_t kp = nfc_class(d[j - 1]);
+            if (kp <= k) break;
+            d[j] = d[j - 1];
+            j--;
+        }
+        d[j] = c;
+    }
+    // canonical composition (UAX #15, the sample algorithm)
+    size_t w = 0;
+    if (nd > 0) {
+        size_t starter = 0;
+        uint32_t last = nfc_class(d[0]) ? 256 : 0;
+        w = 1;
+        for (size_t i = 1; i < nd; i++) {
+            uint32_t c = d[i], k = nfc_class(c);
+            uint32_t comp = (last == 256) ? 0 : nfc_compose(d[starter], c);
+            if (comp && (last < k || last == 0)) {
+                d[starter] = comp;
+            } else {
+                if (k == 0) starter = w;
+                last = k;
+                d[w++] = c;
+            }
+        }
+    }
+    char *o = malloc(4 * w + 1);
+    if (!o) { free(d); *oom = true; return false; }
+    size_t on = 0;
+    for (size_t i = 0; i < w; i++) on += (size_t)u8_encode(d[i], o + on);
+    o[on] = 0;
+    free(d);
+    *out = o;
+    *out_n = on;
+    return true;
+}
+
 // ---------------------------------------------------------------- init
 
 // Length descending, then id ascending. The id tiebreak is what lets plain
@@ -267,6 +418,19 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     else if (strcmp(pre, "llama4") == 0 ||
              strcmp(pre, "gpt-4o") == 0) t->pre = TOK_PRE_LLAMA4;
     else                                 t->pre = TOK_PRE_GPT2;
+    // Clef (Cloudflare's Qwen3.8 and Qwen3.5 post-trains) was trained with
+    // the qwen2 split: its tokenizer.json carries \p{L}+ where Qwen's own
+    // carries [\p{L}\p{M}]+, and transformers builds the qwen2 regex for it
+    // (the publisher's encode_record splits "\u0939\u093f\u0928\u094d..." at
+    // every mark). llama.cpp's converter still writes "qwen35" into every
+    // Clef GGUF, so the declared name is read as the trained-with split here;
+    // text with combining marks tokenizes differently from llama.cpp by design.
+    if (t->pre == TOK_PRE_QWEN35 &&
+        strcmp(gguf_get_str(g, "general.architecture", ""), "clef") == 0)
+        t->pre = TOK_PRE_QWEN2;
+    // Qwen's tokenizer.json normalizes with NFC (Qwen2 through Qwen3.8, and
+    // so Clef); stablelm2 shares the qwen2 split but not that normalizer
+    t->nfc = strcmp(pre, "qwen2") == 0 || strcmp(pre, "qwen35") == 0;
 
     gguf_kv *toks = gguf_get(g, "tokenizer.ggml.tokens");
     if (!toks || toks->type != GGUF_T_ARR || toks->arr_type != GGUF_T_STR) {
@@ -1200,8 +1364,8 @@ static int bpe_word(tokenizer *t, const char *w, int n, int32_t *out, int cap, i
     return n_out;
 }
 
-static int bpe_encode_text(tokenizer *t, const char *text, size_t n,
-                           int32_t *out, int cap, int n_out) {
+static int bpe_encode_split(tokenizer *t, const char *text, size_t n,
+                            int32_t *out, int cap, int n_out) {
     if (n == 0) return n_out;
     if (n > SIZE_MAX / sizeof(size_t) - 2 || n > (SIZE_MAX - 8) / 2) return n_out;
     // decode to codepoints, remembering byte offsets
@@ -1243,6 +1407,22 @@ static int bpe_encode_text(tokenizer *t, const char *text, size_t n,
     }
     free(cp); free(off); free(word);
     return n_out;
+}
+
+// One run of text between special tokens: the normalizer the publisher
+// declares (NFC for Qwen), then the split and the merges.
+static int bpe_encode_text(tokenizer *t, const char *text, size_t n,
+                           int32_t *out, int cap, int n_out) {
+    char *norm = NULL;
+    size_t nn = 0;
+    bool oom = false;
+    if (t->nfc && nfc_utf8(text, n, &norm, &nn, &oom)) {
+        int r = bpe_encode_split(t, norm, nn, out, cap, n_out);
+        free(norm);
+        return r;
+    }
+    if (oom) { tls_encode_oom = true; return n_out; }
+    return bpe_encode_split(t, text, n, out, cap, n_out);
 }
 
 // gemma4: SPM-style BPE — the normalizer replaces spaces with U+2581 and BPE
@@ -1412,10 +1592,11 @@ int tok_find(tokenizer *t, const char *s) {
 }
 
 // Encode raw bytes verbatim: no BOS, no specials, and — the point — none of
-// tok_encode's segment-start normalization (SPM's leading-space prefix), so
-// the token list round-trips to exactly the input bytes wherever the vocab
-// can express them. Grammar fast-forward drafts through this; a vocab that
-// cannot round-trip some byte simply yields a shorter (or empty) draft.
+// tok_encode's segment-start normalization (SPM's leading-space prefix) nor
+// the NFC normalizer, so the token list round-trips to exactly the input
+// bytes wherever the vocab can express them. Grammar fast-forward drafts
+// through this; a vocab that cannot round-trip some byte simply yields a
+// shorter (or empty) draft.
 int tok_encode_raw(tokenizer *t, const char *text, int n,
                    int32_t *out, int cap) {
     tls_encode_oom = false;
@@ -1424,7 +1605,7 @@ int tok_encode_raw(tokenizer *t, const char *text, int n,
         ? spm_encode_text(t, text, n, out, cap, 0, false)
         : t->model == TOK_BPE_SPM
         ? bpe_spm_encode_text(t, text, n, out, cap, 0)
-        : bpe_encode_text(t, text, n, out, cap, 0);
+        : bpe_encode_split(t, text, n, out, cap, 0);
     return tls_encode_oom ? -1 : k;
 }
 

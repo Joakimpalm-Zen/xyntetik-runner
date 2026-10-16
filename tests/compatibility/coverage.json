@@ -1019,6 +1019,25 @@
     "metal": "UNSUPPORTED"
    },
    "note": "EXPERIMENTAL. CPU and CUDA execution measured on the toy fixture and release file in docs/qwen4exp-admission-evidence/README.md (2026-10-06, scoped placement/context). Metal has no qwen35-family path. Publisher-float32 agreement and live tool/client loops remain unmeasured; backend execution does not certify those checks."
+  },
+  "clef": {
+   "templates": [
+    "qwen38"
+   ],
+   "artifacts": [],
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "A decision model: its surface is /v1/systemone, not tool calling. The chat routes run the qwen35 backbone; no tool-protocol anchor is recorded for it."
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "PASS",
+    "cuda": "PASS",
+    "metal": "UNSUPPORTED"
+   },
+   "note": "Decisions gold-checked against the publisher's joint_schema_model.py in float32 on a small Clef (15/15 records token-identical, max |dlogit| 1.4e-4 CPU, 1.5e-4 full CUDA offload) in docs/clef-admission-2026-10-16.md. No pinned release file yet; a float32 gold run on Clef-Flash or Clef is owed before one. Metal has no qwen35-family path. Text input only."
   }
  }
 }
