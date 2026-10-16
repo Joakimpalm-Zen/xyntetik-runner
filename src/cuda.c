@@ -15,6 +15,7 @@
 #include "runner.h"
 #include "kernel_args.h"   // shared with src/kernels.cu — see the header
 #include "compat.h"     // plat_ram_available_bytes for the unified-pool budget
+#include <stdatomic.h>
 
 #include <math.h>
 #include <stdarg.h>
@@ -167,8 +168,11 @@ static void *sym2(const char *name) {
     return p ? p : dl_sym(cu.lib, name);
 }
 
-static bool cu_load(void) {
-    if (cu.lib) return true;
+// Loaded once per process (cu_load). This body set cu.lib before filling the
+// table cu.lib guards, so a second engine initialising at that moment saw
+// "loaded" and could call a NULL cu.Init; and a later call answered true even
+// when the first had found a required symbol missing.
+static bool cu_load_now(void) {
     cu.lib = dl_open();
     if (!cu.lib) return false;
     cu.Init              = dl_sym(cu.lib, "cuInit");
@@ -222,6 +226,14 @@ static bool cu_load(void) {
            cu.MemGetInfo && cu.MemAlloc && cu.MemFree && cu.MemcpyHtoD &&
            cu.MemcpyDtoH && cu.MemcpyDtoD && cu.MemsetD8 && cu.ModuleLoadData && cu.ModuleUnload &&
            cu.ModuleGetFunction && cu.LaunchKernel && cu.CtxSynchronize;
+}
+
+static pthread_once_t cu_once = PTHREAD_ONCE_INIT;
+static bool cu_ok;
+static void cu_load_once(void) { cu_ok = cu_load_now(); }
+static bool cu_load(void) {
+    pthread_once(&cu_once, cu_load_once);   // orders the table before every reader
+    return cu_ok;
 }
 
 static bool cu_graphs_ok(void) {
@@ -684,8 +696,9 @@ static bool gpu_tensor_type_ok(const gguf_tensor *t) {
 // "did it run?" instead of inferring it from the output. Also per weight
 // type, so the gate can ask it per format: one total cannot tell "the Q4_K
 // tensors ran on the tensor cores" from "every TC-capable tensor did".
-static unsigned long g_tc_dispatches = 0;
-static unsigned long g_tc_dispatches_type[KT_N];
+// Atomic: every slot dispatches, and a ++ two slots race on loses counts.
+static _Atomic unsigned long g_tc_dispatches = 0;
+static _Atomic unsigned long g_tc_dispatches_type[KT_N];
 unsigned long gpu_tc_dispatches(void) { return g_tc_dispatches; }
 unsigned long gpu_tc_dispatches_type(int type) {
     return type >= 0 && type < KT_N ? g_tc_dispatches_type[type] : 0;
@@ -764,7 +777,7 @@ static bool moe_grouped_type_ok(int type) {
 // Per-layer expert placement under tensor-role mode. Outside that mode every
 // expert bank is device-resident, so the array is absent and the answer is no.
 // test hook state (definition of the setter is beside gpu_tc_force below)
-static int g_moe_eager_force = -1;
+static _Atomic int g_moe_eager_force = -1;
 
 static bool moe_on_host(const model_t *m, int l) {
     return m->cpu_moe && m->moe_host && m->moe_host[l];
@@ -1227,7 +1240,7 @@ static size_t layer_weight_bytes(const layer_t *ly, int n_expert,
 // RUNNER_DEBUG_VRAM=1: the driver's free figure at each init stage, so the
 // placement plan can be checked against what the device actually spends
 static void vram_probe(const char *stage) {
-    static int on = -1;
+    static _Atomic int on = -1;
     if (on < 0) { const char *e = getenv("RUNNER_DEBUG_VRAM"); on = e && *e && *e != '0'; }
     size_t f = 0, t = 0;
     if (on && cu.MemGetInfo && cu.MemGetInfo(&f, &t) == 0)
@@ -2843,8 +2856,9 @@ static bool cuda_alloc_moe(model_t *m, gpu_t *g) {
         // RUNNER_MOE_EAGER: debug escape to the v0.1.4 host-routing
         // path — the reference side of the RUNNER_DEBUG_MOE bit
         // comparison, and the fused-vs-eager A/B instrument.
-        if (g_moe_eager_force >= 0) {
-            if (g_moe_eager_force) g->moe_fused_ok = false;
+        int eager = g_moe_eager_force;   // one read: a test may set it meanwhile
+        if (eager >= 0) {
+            if (eager) g->moe_fused_ok = false;
         } else if (getenv("RUNNER_MOE_EAGER")) {
             g->moe_fused_ok = false;
         }
@@ -3024,9 +3038,8 @@ fail:
 // fixes, so the first one to happen names itself. Once per process: a failing
 // forward fails for every layer, and the first is the informative one.
 static void gpu_first_error(const char *fmt, ...) {
-    static bool reported = false;
-    if (reported) return;
-    reported = true;
+    static _Atomic bool reported;   // any slot may fail first (compat.h)
+    if (!plat_once(&reported)) return;
     va_list ap;
     va_start(ap, fmt);
     fprintf(stderr, "gpu: ");
@@ -3109,7 +3122,7 @@ static bool enc_rmsnorm(gpu_t *g, CUdeviceptr x, CUdeviceptr y, CUdeviceptr w,
 // combos — how a gate candidate is measured); =0/off forces it off
 // everywhere. Parse the VALUE: a bare existence check made =0 mean "on".
 enum { TC_ENV_UNSET = -2 };
-static int g_tc_state = TC_ENV_UNSET;   // -2 env unread, -1 per-combo, 0/1 forced
+static _Atomic int g_tc_state = TC_ENV_UNSET;   // -2 env unread, -1 per-combo, 0/1 forced
 
 // Test hook (the TC tolerance gate compares scalar and TC in one process,
 // so an env var read once at first launch cannot express "both"). Pass -1
@@ -3132,7 +3145,7 @@ unsigned long gpu_attn_coop_dispatches(void) { return 0; }
 unsigned long gpu_attn_tile_dispatches(void) { return 0; }
 unsigned long gpu_attn_gqa_dispatches(void) { return 0; }
 
-static unsigned long g_splitk_dispatches;
+static _Atomic unsigned long g_splitk_dispatches;
 unsigned long gpu_splitk_dispatches(void) { return g_splitk_dispatches; }
 
 // Same hook for the MoE routing path: the fused-vs-eager tolerance gate has to
@@ -3340,12 +3353,15 @@ static bool tc_promoted(const model_t *m, int type) {
 }
 
 static bool tc_on(const model_t *m, int type) {
-    if (g_tc_state == TC_ENV_UNSET) {
+    int st = g_tc_state;   // one read; gpu_tc_force may set it from a test meanwhile
+    if (st == TC_ENV_UNSET) {
         const char *e = getenv("RUNNER_CUDA_TC");
-        if (!e || !*e) g_tc_state = -1;                    // per-combo default
-        else g_tc_state = strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+        int v = !e || !*e ? -1                             // per-combo default
+              : strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+        // only from unread: a forced value set meanwhile stands
+        st = atomic_compare_exchange_strong(&g_tc_state, &(int){ TC_ENV_UNSET }, v) ? v : g_tc_state;
     }
-    if (g_tc_state >= 0) return g_tc_state != 0;
+    if (st >= 0) return st != 0;
     return tc_promoted(m, type);
 }
 
@@ -3435,13 +3451,13 @@ static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
 // RUNNER_CUDA_Q8X=1: the int8-activation codebook GEMVs (EXPERIMENTAL; not
 // the float route's bits, tolerance-gated against the CPU)
 static bool gpu_q8x_on(void) {
-    static int on = -1;
+    static _Atomic int on = -1;
     if (on < 0) { const char *e = getenv("RUNNER_CUDA_Q8X"); on = e && *e && *e != '0'; }
     return on == 1;
 }
 
 static bool gpu_small_batch_on(void) {
-    static int on = -1;
+    static _Atomic int on = -1;
     if (on < 0) {
         const char *e = getenv("RUNNER_CUDA_SMALL_BATCH");
         on = !(e && *e && strcmp(e, "0") == 0);
@@ -4263,9 +4279,8 @@ static bool gpu_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
         return false;
     // RUNNER_DEBUG_MOE: fused-path twin of the eager dump above
     if (getenv("RUNNER_DEBUG_MOE")) {
-        static int dumped = 0;
-        if (dumped < 2) {
-            dumped++;
+        static _Atomic unsigned dumped;   // ++ is atomic: two dumps, whichever slots
+        if (dumped++ < 2) {
             cu.StreamSynchronize(g->stream);
             int hs[256]; float hw[256];
             cu.MemcpyDtoH(hs, g->moe_sel, sizeof(int) * used);
@@ -4600,9 +4615,8 @@ static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, i
         // regression (device-vs-host expf + reciprocal-math, both 1-ulp).
         // Paired with the same dump in the fused path; bit-compare them.
         if (getenv("RUNNER_DEBUG_MOE")) {
-            static int dumped = 0;
-            if (dumped < 2 && t == 0) {
-                dumped++;
+            static _Atomic unsigned dumped;   // ++ is atomic: two dumps, whichever slots
+            if (t == 0 && dumped++ < 2) {
                 fprintf(stderr, "EAGER sel :");
                 for (int s = 0; s < used; s++) fprintf(stderr, " %d", sel[s]);
                 fprintf(stderr, "\nEAGER selw:");
@@ -6267,18 +6281,24 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
 // what exercises the rollback that matters: the qwen35 recurrent snapshot
 // taken at the top of this function, and a device KV the host must resync.
 //
-// Single-slot only — the counter is a plain static, so a --parallel run would
-// race it. That is acceptable for a hook nothing but tests sets.
+// Counted across every slot: under --parallel the Nth call process-wide is
+// the one that fails. The counters are atomic, and the budget is taken with a
+// compare-and-swap so two slots never both spend its last failure.
 static int inject_fail_ordinal(void) {
-    static int budget = -1;  // -1 unread, 0 disabled
-    static int seen = 0;
+    static _Atomic int budget = -1;  // -1 unread, then the calls left until the failure
+    static _Atomic int seen = 0;
     if (budget < 0) {
         const char *s = getenv("RUNNER_CUDA_INJECT_FAILURE");
-        budget = s ? (atoi(s) > 0 ? atoi(s) : 1) : 0;
+        int v = s ? (atoi(s) > 0 ? atoi(s) : 1) : 0;
+        atomic_compare_exchange_strong(&budget, &(int){ -1 }, v);
     }
-    if (budget == 0) return 0;
-    seen++;
-    return --budget == 0 ? seen : 0;
+    for (int left = budget; left > 0; ) {
+        if (atomic_compare_exchange_weak(&budget, &left, left - 1)) {
+            int n = ++seen;
+            return left == 1 ? n : 0;
+        }
+    }
+    return 0;
 }
 
 // The recurrent state reset at a new sequence and snapshot before every
