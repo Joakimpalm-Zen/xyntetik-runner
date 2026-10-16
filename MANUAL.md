@@ -381,6 +381,21 @@ Budget hours, not minutes, and expect a Python training stack to be
 faster per step. What Runner buys for that is one numerical path and an
 auditable artifact.
 
+**Small data memorizes.** A step is one example, so `--train-steps 60`
+over 4 examples is 15 passes over the data. On data that small the adapter
+memorizes its completions, and when they share one answer it learns that
+every prompt of that shape gets that answer. Measured on MiniCPM5-1B Q4_K_M
+with four questions that all answer the same passphrase: at the default
+`--lr 1e-4`, 2.5 passes gave the passphrase to none of 24 unrelated
+questions, 5 passes to 42% and 15 passes to 62%; at `--lr 5e-4`, 15 passes
+gave it to 92%. A reference PEFT run with the same settings gave the same
+numbers, so this is the data and the settings, not the trainer. Keep it to
+one to three passes, add examples where other questions keep their usual
+answers, and use `--train-eot` so a short answer ends instead of repeating.
+`--train` prints a warning before the first step when the passes, one
+shared answer, the learning rate or a missing end-of-turn token make this
+likely.
+
 **What was measured.** One public base and task, Qwen3-4B Q4_K_M with a
 29-prompt held-out tool-calling evaluation, greedy, measured 2026-08-22 on
 [Qwen3-4B-Runner-ToolUse-Q4_K_M](https://huggingface.co/Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M)
@@ -2351,7 +2366,11 @@ with the prompt masked from the loss and per-example weights (the policy-gradien
 `scripts/train-grpo-lite.py` drives). Fresh adapters start as an exact no-op (A seeded,
 B zero); checkpoints are adapter GGUFs that `--lora` loads back. Deterministic by
 default: same data + same seed produce a byte-identical adapter file, gated in `make
-test`. Design, gates and measured results:
+test`. One example per step, cycled in file order; before the first step `--train`
+warns when the run is likely to memorize (more than three passes over fewer than 200
+examples, one completion shared by more than half of them, `--lr` above twice the
+default, short completions without an end-of-turn token; see
+[Train the GGUF you actually serve](#train-the-gguf-you-actually-serve)). Design, gates and measured results:
 [docs/adaptation-engine.md](docs/adaptation-engine.md).
 
 <a id="cli-score"></a>
