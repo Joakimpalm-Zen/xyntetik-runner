@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <limits.h>
+#include <stdio.h>     // FILE: plat_env_file
 
 // printf-style argument checking against the runtime that formats. MinGW's
 // GCC reads format(printf) as Microsoft's rules, which have no %z, so every
@@ -195,5 +196,18 @@ bool      parse_f64(const char *s, double lo, double hi, double *out);
 long long env_i64(const char *name, long long lo, long long hi, long long cur);
 uint64_t  env_u64(const char *name, uint64_t lo, uint64_t hi, uint64_t cur);
 double    env_f64(const char *name, double lo, double hi, double cur);
+
+// Process-wide state any thread may reach first. A plain static set on first
+// use is a data race when two threads get there together (two slots, or an
+// embedder's two engines, starting cold), so these two are the shared forms.
+//
+// plat_once: true for exactly one caller, the first; *flag starts false. For
+// a notice said once per process.
+bool plat_once(_Atomic bool *flag);
+// plat_env_file: the file an environment variable names, opened for append
+// by the first caller and kept; NULL when the variable is unset or the open
+// failed (which is warned once). Zero-initialise the struct.
+typedef struct { _Atomic int state; FILE *fp; } plat_env_file;
+FILE *plat_env_file_get(plat_env_file *f, const char *env);
 
 #endif

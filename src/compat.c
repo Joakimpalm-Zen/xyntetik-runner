@@ -5,6 +5,8 @@
 #include "compat.h"
 #include "fpclass.h"
 
+#include <stdatomic.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1105,4 +1107,28 @@ double env_f64(const char *name, double lo, double hi, double cur) {
         return cur;
     }
     return v;
+}
+
+bool plat_once(_Atomic bool *flag) {
+    return !atomic_exchange_explicit(flag, true, memory_order_relaxed);
+}
+
+// state: 0 unread, 1 one caller is opening it, 2 settled (fp final). The
+// release store publishes fp to the acquire loads; a caller that loses the
+// race waits the microseconds the open takes.
+FILE *plat_env_file_get(plat_env_file *f, const char *env) {
+    if (atomic_load_explicit(&f->state, memory_order_acquire) == 2) return f->fp;
+    int unread = 0;
+    if (atomic_compare_exchange_strong(&f->state, &unread, 1)) {
+        const char *path = getenv(env);
+        if (path && *path) {
+            f->fp = fopen(path, "a");
+            if (!f->fp)
+                fprintf(stderr, "warning: %s=%s: could not open for append\n", env, path);
+        }
+        atomic_store_explicit(&f->state, 2, memory_order_release);
+        return f->fp;
+    }
+    while (atomic_load_explicit(&f->state, memory_order_acquire) != 2) plat_sleep_ms(1);
+    return f->fp;
 }

@@ -5995,18 +5995,8 @@ static void dbg_stat_f16(const char *tag, int layer, const f16_t *v, size_t n) {
 // dbg_act_mode above). CPU path only — the CUDA MoE kernels route on-device
 // and never reach this call site.
 static FILE *moe_trace_file(void) {
-    static FILE *fp = NULL;
-    static int opened = 0;
-    if (!opened) {
-        opened = 1;
-        const char *path = getenv("RUNNER_MOE_TRACE");
-        if (path && *path) {
-            fp = fopen(path, "a");
-            if (!fp)
-                fprintf(stderr, "warning: RUNNER_MOE_TRACE=%s: could not open for append\n", path);
-        }
-    }
-    return fp;
+    static plat_env_file f;   // any slot may ask first (compat.h)
+    return plat_env_file_get(&f, "RUNNER_MOE_TRACE");
 }
 
 // `norms` is the L2 norm of each selected expert's own FFN output (after its
@@ -6043,18 +6033,8 @@ static void moe_trace_emit(int pos, int layer, const int *sel, const float *selw
 // default, zero cost when unset. gemma-4 only (gemma_moe_ffn below) — the
 // only architecture this trip's dev task targets.
 static FILE *moe_probe_file(void) {
-    static FILE *fp = NULL;
-    static int opened = 0;
-    if (!opened) {
-        opened = 1;
-        const char *path = getenv("RUNNER_MOE_PROBE");
-        if (path && *path) {
-            fp = fopen(path, "a");
-            if (!fp)
-                fprintf(stderr, "warning: RUNNER_MOE_PROBE=%s: could not open for append\n", path);
-        }
-    }
-    return fp;
+    static plat_env_file f;   // any slot may ask first (compat.h)
+    return plat_env_file_get(&f, "RUNNER_MOE_PROBE");
 }
 
 static void moe_probe_emit(int pos, int layer, int lookahead,
@@ -10133,8 +10113,11 @@ static void fwd_tape_record(model_t *m, int l, int n, int pos) {
                m->x, sizeof(float) * (size_t)m->n_embd);
 }
 
-static float *sim_snap;   // RUNNER_LAYER_SIM: the layer's input rows
-static size_t sim_cap;
+// RUNNER_LAYER_SIM: the layer's input rows, per thread. layer_sim_begin and
+// layer_sim_end run on the thread driving that forward, and two slots
+// forwarding at once shared one buffer and overwrote each other's rows.
+static _Thread_local float *sim_snap;
+static _Thread_local size_t sim_cap;
 
 // RUNNER_LAYER_SIM=1: per-layer input/output cosine over the residual
 // stream (ShortGPT-style block influence is 1 - cos). Diagnostic in
@@ -11361,8 +11344,8 @@ const float *model_mtp_pending(const model_t *m) { return m->mtp_pending; }
 // the device head can be compared against the CPU head on a fixture whose
 // drafts are never accepted. Off by default, one cached getenv.
 static void mtp_dump(const model_t *m, const float *lg, int pos, const char *how) {
-    static FILE *fp; static int opened;
-    if (!opened) { opened = 1; const char *e = getenv("RUNNER_MTP_DUMP"); if (e && *e) fp = fopen(e, "a"); }
+    static plat_env_file f;   // any slot may ask first (compat.h)
+    FILE *fp = plat_env_file_get(&f, "RUNNER_MTP_DUMP");
     if (!fp || !lg) return;
     int a = 0, b = -1; double sum = 0;
     for (int i = 0; i < m->n_vocab; i++) {

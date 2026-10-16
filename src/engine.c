@@ -2302,19 +2302,8 @@ static int grammar_forced_bytes(const engine *e, bool schema,
 // bytes never fight JSON escaping; the analysis script decodes them. Same
 // opt-in shape as RUNNER_MOE_TRACE (cached getenv + FILE*, off by default).
 static FILE *gtrace_file(void) {
-    static FILE *fp = NULL;
-    static int opened = 0;
-    if (!opened) {
-        opened = 1;
-        const char *path = getenv("RUNNER_GRAMMAR_TRACE");
-        if (path && *path) {
-            fp = fopen(path, "a");
-            if (!fp)
-                fprintf(stderr, "warning: RUNNER_GRAMMAR_TRACE=%s: "
-                                "could not open for append\n", path);
-        }
-    }
-    return fp;
+    static plat_env_file f;   // any slot may ask first (compat.h)
+    return plat_env_file_get(&f, "RUNNER_GRAMMAR_TRACE");
 }
 
 static void gtrace_hex(FILE *fp, const char *b, int n) {
