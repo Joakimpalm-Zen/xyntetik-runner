@@ -1160,12 +1160,57 @@ static bool union_start_bytes(const snode *a, bool set[256]) {
     }
 }
 
+// The value a literal's spelling (sn_literal) denotes, as a key two literals
+// share exactly when they are the same value: JSON Schema 2020-12 (4.2.2)
+// compares numbers by value, so 1e20 and 100000000000000000000 are one
+// number and 2^53 and 2^53 + 1 are two. A string, boolean or null is its
+// own key, and so is an integer written in digits: the dump writes every
+// whole double below 2^63, and every integer literal longer than a double
+// holds, that way. Any other number is its double. Whole, it gets its exact
+// digits: a double that large is an integer, m * 2^k, and is expanded in
+// base 10^9. Otherwise it keeps its shortest spelling, one per double.
+// Returns `lit` itself or `buf`.
+#define LIT_KEY_CAP 330   // a sign, DBL_MAX's 309 digits, the NUL
+static const char *literal_key(const char *lit, char buf[LIT_KEY_CAP]) {
+    const char *p = lit + (*lit == '-');
+    if (*p < '0' || *p > '9' || !strpbrk(p, ".eE")) return lit;
+    double d = strtod(lit, NULL);
+    if (d != floor(d)) return lit;
+    if (d >= (double)LLONG_MIN && d < 9223372036854775808.0) {
+        snprintf(buf, LIT_KEY_CAP, "%lld", (long long)d);
+        return buf;
+    }
+    int e;
+    double m = frexp(fabs(d), &e);                    // |d| = m * 2^e, 0.5 <= m < 1
+    uint64_t mant = (uint64_t)ldexp(m, 53);           // the 53 significant bits
+    uint32_t limb[40];                                // base 10^9, low first
+    int n = 0;
+    for (; mant; mant /= 1000000000u) limb[n++] = (uint32_t)(mant % 1000000000u);
+    for (int shift = e - 53; shift > 0; ) {           // >= 10: |d| >= 2^63
+        int k = shift > 29 ? 29 : shift;
+        shift -= k;
+        uint64_t carry = 0;
+        for (int i = 0; i < n; i++) {
+            uint64_t v = ((uint64_t)limb[i] << k) + carry;
+            limb[i] = (uint32_t)(v % 1000000000u);
+            carry = v / 1000000000u;
+        }
+        for (; carry; carry /= 1000000000u) limb[n++] = (uint32_t)(carry % 1000000000u);
+    }
+    char *o = buf;
+    if (d < 0) *o++ = '-';
+    o += snprintf(o, (size_t)(LIT_KEY_CAP - (o - buf)), "%u", limb[n - 1]);
+    for (int i = n - 2; i >= 0; i--)
+        o += snprintf(o, (size_t)(LIT_KEY_CAP - (o - buf)), "%09u", limb[i]);
+    return buf;
+}
+
 // oneOf over literal alternatives (JSON Schema 2020-12, 10.2.1.3): a value
-// is valid when EXACTLY one alternative admits it, so a literal two branches
-// share is no answer at all, where anyOf keeps it. Literals compare by the
-// spelling the grammar emits, one per value (sn_literal). Sorting the
-// (spelling, branch) pairs finds the shared ones without comparing every
-// literal with every other: an enum may hold SCHEMA_ENUM_MAX of them.
+// is valid when EXACTLY one alternative admits it, so a value two branches
+// share is no answer at all, where anyOf keeps it. Literals compare by value
+// (literal_key). Sorting the (key, branch) pairs finds the shared ones
+// without comparing every literal with every other: an enum may hold
+// SCHEMA_ENUM_MAX of them.
 typedef struct { const char *s; int branch, pos; } lit_ref;
 
 static int lit_ref_cmp(const void *a, const void *b) {
@@ -1180,11 +1225,23 @@ static int lit_ref_cmp(const void *a, const void *b) {
 // value exactly one branch lists; returns how many, or -1 on OOM
 static int one_of_literals(snode *const *alts, int n_alts, int total, bool *keep) {
     lit_ref *r = malloc(sizeof(lit_ref) * (size_t)total);
-    if (!r) return -1;
+    char **own = calloc((size_t)total, sizeof(char *));   // keys unlike their spelling
+    if (!r || !own) { free(r); free(own); return -1; }
     int k = 0;
     for (int i = 0; i < n_alts; i++)
-        for (int j = 0; j < alts[i]->n_lits; j++, k++)
-            r[k] = (lit_ref){ alts[i]->lits[j], i, k };
+        for (int j = 0; j < alts[i]->n_lits; j++, k++) {
+            char buf[LIT_KEY_CAP];
+            const char *key = literal_key(alts[i]->lits[j], buf);
+            if (key == buf) {
+                if (!(own[k] = strdup(buf))) {
+                    for (int x = 0; x < k; x++) free(own[x]);
+                    free(own); free(r);
+                    return -1;
+                }
+                key = own[k];
+            }
+            r[k] = (lit_ref){ key, i, k };
+        }
     qsort(r, (size_t)total, sizeof *r, lit_ref_cmp);
     int kept = 0;
     for (int g = 0; g < total; ) {
@@ -1195,6 +1252,8 @@ static int one_of_literals(snode *const *alts, int n_alts, int total, bool *keep
         if (one_branch) { keep[r[g].pos] = true; kept++; }
         g = e;
     }
+    for (int x = 0; x < total; x++) free(own[x]);
+    free(own);
     free(r);
     return kept;
 }
@@ -1328,17 +1387,18 @@ static bool literal_has_type(const jv *v, jv *ty) {
     }
     return true; // a malformed type keyword is reported by compile_typed
 }
-// Numbers are equal when they are the same value. An integer literal longer
-// than fifteen digits is a value only its digits hold (json.h, num_text):
-// 2^53 and 2^53 + 1 are one double, so comparing doubles kept enum member
-// 2^53 + 1 under const 2^53 (2026-10-16 review). The spellings the grammar
-// emits are exact for those and one per double otherwise; compare them.
+// Numbers are equal when they are the same value (literal_key). An integer
+// literal longer than fifteen digits is a value only its digits hold (json.h,
+// num_text): comparing doubles kept enum member 2^53 + 1 under const 2^53,
+// and comparing spellings then refused const 1e20 beside enum
+// [100000000000000000000] (2026-10-16 reviews).
 static bool number_equal(const jv *a, const jv *b) {
     if (!a->num_text && !b->num_text) return a->num == b->num;
-    char x[32], y[32];
+    char x[32], y[32], kx[LIT_KEY_CAP], ky[LIT_KEY_CAP];
     if (!a->num_text) json_format_number(a->num, x);
     if (!b->num_text) json_format_number(b->num, y);
-    return !strcmp(a->num_text ? a->num_text : x, b->num_text ? b->num_text : y);
+    return !strcmp(literal_key(a->num_text ? a->num_text : x, kx),
+                   literal_key(b->num_text ? b->num_text : y, ky));
 }
 
 static bool literal_equal(const jv *a, const jv *b) {

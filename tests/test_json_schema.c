@@ -1370,6 +1370,61 @@ static void test_schema_const_and_enum_compare_large_integers_exactly(void) {
     assert(!schema_accepts(src, "9007199254740992"));
 }
 
+// Equal means the same number, whatever the spelling (JSON Schema 2020-12,
+// 4.2.2: numbers are equal when their mathematical values are). 1e20 and
+// 100000000000000000000 are one number; 9.007199254740993e15, read as a
+// double, is 2^53 and not 2^53 + 1. Python agrees on each: 1e20 == 10**20,
+// 9.007199254740993e15 != 2**53 + 1 (its int/float comparison is exact).
+// Comparing spellings refused the first const/enum pair and let the two
+// spellings through as separate oneOf branches (2026-10-16 review).
+static void test_schema_numbers_compare_by_value_not_spelling(void) {
+    assert(schema_accepts("{\"const\":1e20,\"enum\":[100000000000000000000,7]}",
+                          "100000000000000000000"));
+    assert(!schema_accepts("{\"const\":1e20,\"enum\":[100000000000000000000,7]}", "7"));
+    assert(schema_accepts("{\"const\":18446744073709551616,\"enum\":[1.8446744073709552e19]}",
+                          "1.8446744073709552e+19"));
+    assert(schema_refused("{\"const\":1e20,\"enum\":[100000000000000000001]}"));
+    assert(schema_refused("{\"const\":9.007199254740993e15,\"enum\":[9007199254740993]}"));
+    assert(schema_accepts("{\"const\":9.007199254740993e15,\"enum\":[9007199254740992]}",
+                          "9007199254740992"));
+    // one value in two branches is no oneOf answer, in either spelling
+    const char *two = "{\"oneOf\":[{\"const\":1e20},{\"const\":100000000000000000000},{\"const\":7}]}";
+    assert(schema_accepts(two, "7"));
+    assert(!schema_accepts(two, "100000000000000000000") && !schema_accepts(two, "1e+20"));
+    assert(schema_refused("{\"oneOf\":[{\"const\":1e20},{\"const\":100000000000000000000}]}"));
+}
+
+// A whole double past 2^63 is written in exponent form, and its value is an
+// integer only exact digits name. The expansion is checked against Python's
+// int(float), which is exact: each const, spelled as the double, must match
+// its exact digits and refuse the next integer. The rows run from 2^63, the
+// first double the %lld path cannot take, to 1.6e308 near the parser's top.
+static void test_schema_large_doubles_compare_by_exact_digits(void) {
+    static const struct { const char *dbl, *exact, *next; } rows[] = {
+        { "9.223372036854776e+18", "9223372036854775808", "9223372036854775809" },
+        { "1.8446744073709552e+19", "18446744073709551616", "18446744073709551617" },
+        { "2.7670116110564327e+19", "27670116110564327424", "27670116110564327425" },
+        { "1e+20", "100000000000000000000", "100000000000000000001" },
+        { "1e+23", "99999999999999991611392", "99999999999999991611393" },
+        { "-1.1805916207174113e+21", "-1180591620717411303424", "-1180591620717411303425" },
+        { "-1e+300", "-1000000000000000052504760255204420248704468581108159154915854115511802457988908195786371375080447864043704443832883878176942523235360430575644792184786706982848387200926575803737830233794788090059368953234970799945081119038967640880074652742780142494579258788820056842838115669472196386865459400540160", "-1000000000000000052504760255204420248704468581108159154915854115511802457988908195786371375080447864043704443832883878176942523235360430575644792184786706982848387200926575803737830233794788090059368953234970799945081119038967640880074652742780142494579258788820056842838115669472196386865459400540161" },
+        { "1.6e+308", "159999999999999997764969561641033243472042269410021822003994571774137053642763901585037542627663370668582068486282473846293650765604033653380415237929846352171691066635030002857104637617170341434265972257138027520176322712852864297543325003016991155218743815378766749154225070877620513952042826684000337133568", "159999999999999997764969561641033243472042269410021822003994571774137053642763901585037542627663370668582068486282473846293650765604033653380415237929846352171691066635030002857104637617170341434265972257138027520176322712852864297543325003016991155218743815378766749154225070877620513952042826684000337133569" },
+    };
+    for (size_t i = 0; i < sizeof rows / sizeof *rows; i++) {
+        char src[1024];
+        snprintf(src, sizeof src, "{\"const\":%s,\"enum\":[%s]}", rows[i].dbl, rows[i].exact);
+        if (schema_refused(src)) {
+            fprintf(stderr, "%s is not %s\n", rows[i].dbl, rows[i].exact);
+            abort();
+        }
+        snprintf(src, sizeof src, "{\"const\":%s,\"enum\":[%s]}", rows[i].dbl, rows[i].next);
+        if (!schema_refused(src)) {
+            fprintf(stderr, "%s matched %s\n", rows[i].dbl, rows[i].next);
+            abort();
+        }
+    }
+}
+
 static void test_schema_integer_bounds_are_enforced(void) {
     const char *src =
         "{\"type\":\"integer\",\"minimum\":0,"
@@ -3265,6 +3320,8 @@ int main(void) {
     test_schema_enum_keeps_a_large_integer();
     test_schema_one_of_admits_exactly_one_branch();
     test_schema_const_and_enum_compare_large_integers_exactly();
+    test_schema_numbers_compare_by_value_not_spelling();
+    test_schema_large_doubles_compare_by_exact_digits();
     test_schema_integer_bounds_are_enforced();
     test_schema_integer_rejects_leading_zeros();
     test_schema_number_bounds_intersect_their_exclusive_twins();

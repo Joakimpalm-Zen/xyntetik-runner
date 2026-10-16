@@ -51,11 +51,15 @@ Current release and unreleased changes. Compatibility follows the
   alternatives could not overlap: they must already differ in their first
   character.
 
-- **`const` beside `enum` compares large integers exactly.** A `const` keeps
-  only the `enum` members equal to it, and the comparison used the rounded
-  double, so `{"const": 9007199254740992, "enum": [9007199254740993]}`
-  emitted 9007199254740993 with HTTP 200, while the small-integer
-  contradiction was a 400. It is a 400 now too.
+- **Schema literals compare by value, exactly.** A `const` keeps only the
+  `enum` members equal to it, and `oneOf` drops the values two alternatives
+  share, so both need number equality, which JSON Schema defines by value.
+  The comparison used the rounded double, so
+  `{"const": 9007199254740992, "enum": [9007199254740993]}` emitted
+  9007199254740993 with HTTP 200, while the small-integer contradiction was
+  a 400. It now compares exact values: an integer of any length by its
+  digits, a whole double past 2^63 by its exact expansion, so `1e20` and
+  `100000000000000000000` are one value and 2^53 and 2^53 + 1 are two.
 
 - **Concurrent `/v1/decide` and `/v1/rerank` answers get distinct ids.**
   Each response id (`decide-N`, `rerank-N`) came from a counter that every

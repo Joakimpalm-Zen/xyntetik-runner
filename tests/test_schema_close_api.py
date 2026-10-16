@@ -85,7 +85,9 @@ def _chat_status(server, schema):
     {"oneOf": [{"const": 1}, {"const": 1}]},
     {"oneOf": [{"enum": [1, 2]}, {"enum": [2, 1]}]},
     {"const": 2 ** 53, "enum": [2 ** 53 + 1]},
-], ids=["identical-const-branches", "same-enum-twice", "const-2^53-enum-2^53+1"])
+    {"oneOf": [{"const": 1e20}, {"const": 10 ** 20}]},
+], ids=["identical-const-branches", "same-enum-twice", "const-2^53-enum-2^53+1",
+        "one-number-two-spellings"])
 def test_a_constraint_no_value_can_meet_is_refused(server, schema):
     status, body = _chat_status(server, schema)
     assert status == 400, (status, body)
@@ -96,3 +98,10 @@ def test_one_of_emits_only_a_value_exactly_one_branch_admits(server):
     schema = {"oneOf": [{"enum": [1, 2, 3]}, {"enum": [2, 1]}]}
     body = _chat(server, schema, max_tokens=16)
     assert json.loads(body["choices"][0]["message"]["content"]) == 3
+
+
+def test_a_const_matches_the_same_number_in_another_spelling(server):
+    # 1e20 is 10**20 exactly (JSON Schema compares numbers by value; so does
+    # Python: 1e20 == 10**20). Comparing spellings answered this with a 400.
+    body = _chat(server, {"const": 1e20, "enum": [10 ** 20]}, max_tokens=32)
+    assert json.loads(body["choices"][0]["message"]["content"]) == 10 ** 20
