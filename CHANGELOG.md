@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--train` says when a run is about to memorize.** A user trained four
+  examples that all answered the same passphrase for 60 steps at five times
+  the default learning rate, and the adapter then answered the passphrase to
+  "what is the capital of Japan". A step is one example, so that was 15
+  passes over the data. Measured against a reference PEFT run with the same
+  settings, the two behaved the same at every checkpoint: the data and the
+  settings did it, not the trainer. `--train` now warns before the first step
+  when a run is likely to end that way: more than three passes over fewer than
+  200 examples, one completion shared by more than half of them, `--lr` above
+  twice the default, or short completions without an end-of-turn token. The
+  manual explains it with the numbers under "Train the GGUF you actually
+  serve". Training itself is unchanged; the adapter bytes are the same.
+
 - **Clef decision models load and answer at `/v1/systemone`.** Cloudflare's
   Clef (Qwen3.8-27B) and Clef-Flash (Qwen3.5-9B) put a trained joint head
   on a Qwen backbone: a state and typed questions in, a probability for

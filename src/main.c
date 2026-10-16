@@ -1916,7 +1916,7 @@ static void cli_opts_init(cli_opts *o) {
     o->train_steps = 100;
     o->train_ctx = 128;
     o->lora_rank = 8;
-    o->train_lr = 1e-4f;
+    o->train_lr = 1e-4f;   // TRAIN_LR_DEFAULT (train_risk_warn)
     o->dpo_beta = 0.1f;
     // RUNNER_VRAM_PRIORITY sets the baseline; --vram-priority (parsed below)
     // overrides it, same precedence as every other env/flag pair in runner.
@@ -3682,6 +3682,86 @@ static bool train_dpo_steps(cli_opts *o, cli_run *rt, dpo_pair *pairs,
     return true;
 }
 
+// Before the first step: the combinations that make an adapter memorize its
+// data and then give the memorized answer to unrelated prompts. They come
+// from an external report (4 examples with one shared answer, 60 steps,
+// --lr 5e-4 on a 1B model, the passphrase returned for "what is the capital
+// of Japan") and the study that answered it (2026-10-16): Runner and a
+// reference PEFT run on matched settings behaved the same at every
+// checkpoint, so this is the data and the settings, and the user is the one
+// who can change them. Measured there at the default lr: 2.5 passes over the
+// four examples gave the answer to none of 24 unrelated questions, 5 passes
+// to 42%, 15 passes to 62%. Warnings only, never a refusal; the documented
+// use (hundreds of examples, one to three passes) prints nothing.
+#define TRAIN_LR_DEFAULT 1e-4f
+
+static uint64_t train_tokens_hash(const int32_t *t, int n) {
+    uint64_t h = 1469598103934665603ull;
+    for (int i = 0; i < n; i++) {
+        h ^= (uint32_t)t[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+static int u64_cmp(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+static void train_risk_warn(const cli_opts *o, const train_ex *exs, int n_ex, int eot_id) {
+    if (n_ex < 1) return;
+    double passes = (double)o->train_steps / n_ex;
+    if (passes > 3.0 && n_ex < 200)
+        fprintf(stderr, "train: warning: %d steps over %d example%s is %.1f passes over "
+                "the data (one example per step). With this little data an adapter "
+                "memorizes its completions and starts giving them to unrelated prompts; "
+                "1 to 3 passes, more examples, or examples where other questions keep "
+                "their usual answers avoid it\n", o->train_steps, n_ex,
+                n_ex == 1 ? "" : "s", passes);
+    // prompt/completion data: the completion is the run of tokens after the
+    // first scored transition
+    if (exs[0].w) {
+        uint64_t *h = malloc(sizeof(*h) * (size_t)n_ex);
+        int n_h = 0, short_open = 0, with_eot = 0;
+        for (int i = 0; h && i < n_ex; i++) {
+            const train_ex *e = &exs[i];
+            int c0 = -1;
+            for (int k = 0; k < e->n - 1; k++)
+                if (e->w[k] != 0.0f) { c0 = k + 1; break; }
+            if (c0 < 0) continue;
+            h[n_h++] = train_tokens_hash(e->t + c0, e->n - c0);
+            if (eot_id >= 0 && e->t[e->n - 1] == eot_id) with_eot++;
+            else if (e->n - c0 < 32) short_open++;
+        }
+        if (h && n_h >= 2) {
+            qsort(h, (size_t)n_h, sizeof(*h), u64_cmp);
+            int best = 1, run = 1;
+            for (int i = 1; i < n_h; i++) {
+                run = h[i] == h[i - 1] ? run + 1 : 1;
+                if (run > best) best = run;
+            }
+            if (2 * best > n_h)
+                fprintf(stderr, "train: warning: %d of %d completions are the same text, "
+                        "so the data teaches that every prompt of this shape gets that "
+                        "answer, and the adapter will give it to unrelated prompts too; "
+                        "add examples where other questions get their usual answers\n",
+                        best, n_h);
+        }
+        if (with_eot == 0 && short_open * 2 > n_h && n_h > 0)
+            fprintf(stderr, "train: warning: the completions do not end with an "
+                    "end-of-turn token, so after the trained answer the model keeps "
+                    "generating (it tends to repeat the answer); --train-eot, or "
+                    "\"end_of_turn\": true on a line, teaches it to stop\n");
+        free(h);
+    }
+    if (o->train_lr > 2.0f * TRAIN_LR_DEFAULT)
+        fprintf(stderr, "train: warning: --lr %g is %.0fx the default %g, and the "
+                "adapter's scale is alpha/rank = 2; on small data that memorizes "
+                "within a few passes\n", (double)o->train_lr,
+                (double)(o->train_lr / TRAIN_LR_DEFAULT), (double)TRAIN_LR_DEFAULT);
+}
+
 // --train's steps: weighted cross-entropy, one example per step, cycled in
 // file order.
 static bool train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
@@ -3842,6 +3922,7 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
                             &pairs, &n_pair)) return 1;
     } else if (!train_examples_load(&rt->tok, o->train_path, o->no_bos, wctx, eot_id, o->train_eot,
                                     &exs, &n_ex)) return 1;
+    if (!o->dpo_path) train_risk_warn(o, exs, n_ex, eot_id);
     double first_loss = 0, last_loss = 0;
     bool ok = o->dpo_path
         ? train_dpo_steps(o, rt, pairs, n_pair, wctx, &first_loss, &last_loss)

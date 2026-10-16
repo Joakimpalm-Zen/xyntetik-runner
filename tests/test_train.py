@@ -400,3 +400,37 @@ def test_text_corpus_is_not_truncated_by_its_byte_count(runner_bin, base, tmp_pa
     assert q.returncode == 0, q.stderr.decode(errors="replace")
     steps = [json.loads(l)["tokens"] for l in q.stdout.splitlines() if l.startswith(b"{")]
     assert steps[0] == n_tokens, (steps[0], n_tokens)
+
+
+def test_small_one_answer_data_warns_before_training(runner_bin, base, tmp_path):
+    """The shape of the 2026-10-16 report: a handful of examples that all
+    share one answer, many passes, a raised lr, no end-of-turn token. Each
+    is named before the first step, and training still runs."""
+    # short, as a one-line answer is (the fixture's byte-level vocabulary
+    # spells a word as several tokens)
+    lines = [json.dumps({"prompt": f"question {i}?", "completion": " seven"})
+             for i in range(4)]
+    (base / "one-answer.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    cmd = [runner_bin, "-m", str(base / "base.gguf"), "--train", str(base / "one-answer.jsonl"),
+           "--train-steps", "13", "--lr", "5e-4", "--train-out", str(tmp_path / "w.gguf"), "-t", "2"]
+    p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    err = p.stderr.decode()
+    assert "13 steps over 4 examples is 3.2 passes over the data" in err
+    assert "4 of 4 completions are the same text" in err
+    assert "do not end with an end-of-turn token" in err
+    assert "--lr 0.0005 is 5x the default 0.0001" in err
+    assert (tmp_path / "w.gguf").exists()
+
+
+def test_documented_use_trains_without_a_warning(runner_bin, base, tmp_path):
+    """Distinct answers, one pass, the default lr and an end-of-turn token:
+    nothing to warn about."""
+    lines = [json.dumps({"prompt": f"question {i}?", "completion": f" answer number {i}"})
+             for i in range(8)]
+    (base / "varied.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    cmd = [runner_bin, "-m", str(base / "base.gguf"), "--train", str(base / "varied.jsonl"),
+           "--train-steps", "8", "--train-eot", "--train-out", str(tmp_path / "q.gguf"), "-t", "2"]
+    p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert b"train: warning" not in p.stderr, p.stderr.decode(errors="replace")
