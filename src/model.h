@@ -445,6 +445,11 @@ typedef struct {
     int    bw_share_kvmax;
     float *bw_ple;
     int    tape_T;
+    // Read-only observer of the taped forward: called with position t's
+    // logits (the head transforms applied, as the sampler reads them) right
+    // after its forward. --train-logprobs reports through it; NULL = off.
+    void (*tape_logits_cb)(void *ud, int t, const float *logits);
+    void  *tape_logits_ud;
     float *all_logits;       // lazy [spec_batch][n_vocab] (speculative verify)
     int    spec_batch;       // rows all_logits can hold
     int    xdim;             // max(n_embd, per-layer q_dim); sizes xb/xb2/q

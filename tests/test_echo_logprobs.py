@@ -18,7 +18,6 @@ Anchors:
 """
 import json
 import pathlib
-import struct
 import subprocess
 import sys
 import urllib.error
@@ -74,10 +73,6 @@ def _serve(runner_bin, model):
                         extra_args=["--gpu", "off", "-t", "2"])
 
 
-def _f32(x):
-    return struct.unpack("f", struct.pack("f", x))[0]
-
-
 def _score(runner_bin, model, prompt):
     p = subprocess.run([runner_bin, "-m", str(model), "--score", "-p", prompt,
                         "-c", "256", "-t", "2", "--gpu", "off"], cwd=ROOT,
@@ -101,9 +96,9 @@ def test_echo_logprobs_are_the_score_numbers(runner_bin, models, kind):
         assert lp["token_ids"][:n] == ref["tokens"]
         assert lp["token_logprobs"][0] is None
         assert lp["top_logprobs"][0] is None
-        # exact: the wire's %.6f of the very float --score prints at %.9g
+        # exact: the wire prints the very float --score prints, both at %.9g
         for got, want in zip(lp["token_logprobs"][1:n], ref["logprobs"]):
-            assert got == float(f"{_f32(want):.6f}")
+            assert got == want
         # the prompt entries are followed by the generated ones, one per token
         n_gen = body["usage"]["completion_tokens"]
         assert len(lp["token_ids"]) == n + n_gen

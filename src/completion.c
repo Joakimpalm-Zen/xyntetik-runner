@@ -219,14 +219,14 @@ static void append_stop_token(sbuf *r, slot_t *s, engine *e) {
     // the agreement and the KLD statistics (lab, 2026-09-25).
     if (e->stop_lp_at < 0) return;
     char tb[512];
-    sb_fmt(r, ",\"stop_logprobs\":{\"logprob\":%.6f,\"top_logprobs\":{", e->stop_lp);
+    sb_fmt(r, ",\"stop_logprobs\":{\"logprob\":%.9g,\"top_logprobs\":{", e->stop_lp);
     for (int j = 0; j < e->lp_n; j++) {
         const lp_alt *a = &e->lp_top[(size_t)e->stop_lp_at * e->lp_n + j];
         if (a->id < 0) break;
         if (j) sb_lit(r, ",");
         int tn = lp_piece(s, e, a->id, tb, sizeof(tb));
         sb_lit(r, "\""); sb_esc(r, tb, tn);
-        sb_fmt(r, "\":%.6f", a->lp);
+        sb_fmt(r, "\":%.9g", a->lp);
     }
     sb_lit(r, "},\"top_token_ids\":[");
     for (int j = 0; j < e->lp_n; j++) {
@@ -246,7 +246,7 @@ static void append_chat_logprobs(sbuf *r, slot_t *s, engine *e) {
         int tn = lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
         sb_lit(r, "{\"token\":\"");
         sb_esc(r, tb, tn);
-        sb_fmt(r, "\",\"logprob\":%.6f,\"top_logprobs\":[", e->lp_chosen[i]);
+        sb_fmt(r, "\",\"logprob\":%.9g,\"top_logprobs\":[", e->lp_chosen[i]);
         for (int j = 0; j < e->lp_n; j++) {
             const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
             if (a->id < 0) break;
@@ -254,7 +254,7 @@ static void append_chat_logprobs(sbuf *r, slot_t *s, engine *e) {
             tn = lp_piece(s, e, a->id, tb, sizeof(tb));
             sb_lit(r, "{\"token\":\"");
             sb_esc(r, tb, tn);
-            sb_fmt(r, "\",\"logprob\":%.6f}", a->lp);
+            sb_fmt(r, "\",\"logprob\":%.9g}", a->lp);
         }
         sb_lit(r, "]}");
     }
@@ -293,7 +293,7 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e,
     for (int i = 0; i < np + e->lp_count; i++) {
         if (i) sb_lit(r, ",");
         if (i == 0 && np) sb_lit(r, "null");
-        else sb_fmt(r, "%.6f", i < np ? pg->ps.lp[i] : e->lp_chosen[i - np]);
+        else sb_fmt(r, "%.9g", i < np ? pg->ps.lp[i] : e->lp_chosen[i - np]);
     }
     sb_lit(r, "],\"top_logprobs\":[");
     for (int i = 0; i < np + e->lp_count; i++) {
@@ -309,7 +309,7 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e,
             if (j) sb_lit(r, ",");
             int tn = lp_piece(s, e, a->id, tb, sizeof(tb));
             sb_lit(r, "\""); sb_esc(r, tb, tn);
-            sb_fmt(r, "\":%.6f", a->lp);
+            sb_fmt(r, "\":%.9g", a->lp);
         }
         sb_lit(r, "}");
     }
@@ -4614,7 +4614,7 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
             int tn = lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
             sb_lit(&r, "{\"token\":\"");
             sb_esc(&r, tb, tn);
-            sb_fmt(&r, "\",\"logprob\":%.6f,\"top_logprobs\":[", e->lp_chosen[i]);
+            sb_fmt(&r, "\",\"logprob\":%.9g,\"top_logprobs\":[", e->lp_chosen[i]);
             for (int j = 0; j < e->lp_n; j++) {
                 const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
                 if (a->id < 0) break;
@@ -4622,7 +4622,7 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
                 tn = lp_piece(s, e, a->id, tb, sizeof(tb));
                 sb_lit(&r, "{\"token\":\"");
                 sb_esc(&r, tb, tn);
-                sb_fmt(&r, "\",\"logprob\":%.6f}", a->lp);
+                sb_fmt(&r, "\",\"logprob\":%.9g}", a->lp);
             }
             sb_lit(&r, "]}");
         }
@@ -4687,7 +4687,7 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
                 sb_lit(&r, "{\"token\":\"");
                 sb_esc(&r, tb, tn);
                 sb_fmt(&r, "\",\"id\":%d,\"prob\":%.6f,"
-                           "\"logprob\":%.6f}",
+                           "\"logprob\":%.9g}",
                        c->ids[j], c->prob[j], c->raw_lp[j]);
             }
             sb_lit(&r, "]}");

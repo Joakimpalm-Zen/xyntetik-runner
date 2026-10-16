@@ -10,6 +10,25 @@ that samples is the policy that trains, same binary, same kernels, same
 bits. Sampling is seeded per request and training is deterministic, so an
 entire run replays exactly from its config.
 
+"Same bits" holds under three conditions, and the loop keeps all three:
+
+- the trainer gets the sampled TOKEN IDS, not their text. Decoding sampled
+  ids and tokenizing the text again is not an identity: a byte token that
+  ends mid-character decodes to U+FFFD, and a sampled split of a word need
+  not be the split the tokenizer would pick.
+- the rollout server reads the prompt one token per forward (-b 1), the
+  path the trainer's taped forward runs. The default batched prompt pass
+  takes another CPU route from 8 rows up, and every logprob after it then
+  differs (measured: up to 3.1e-3 on MiniCPM5-1B Q4_K_M after this loop's
+  60-token prompt, 4.8e-6 on the quantized test fixtures).
+- sampling and training both run on the CPU (--gpu off): a GPU sampler
+  agrees with the CPU trainer token for token, not bit for bit.
+
+Every round checks it: the trainer reports the logprobs its first step
+trained through (--train-logprobs), before any update, and they must equal
+the server's logprobs for the same example; a difference stops the run.
+tests/test_rollout_identity.py gates the same property in `make test`.
+
 Built-in task `tool-call`: the model must answer with ONLY a JSON object
 {"tool": "<expected>", "args": {"pattern": "..."}}. Reward 1.0 for a parse
 with the right tool and a non-empty pattern, 0.3 for valid JSON with the
@@ -81,14 +100,29 @@ def free_port():
     return p
 
 
-def sample(port, prompt, seed, max_tokens, temperature):
-    body = json.dumps({"prompt": prompt, "max_tokens": max_tokens,
-                       "temperature": temperature, "seed": seed}).encode()
+def sample(port, prompt, seed, max_tokens, temperature, prompt_ids):
+    """One rollout: its text (for the reward), the prompt's token ids, the
+    sampled ids and their logprobs (raw log-softmax, at full precision).
+    The prompt's ids come from echo the first time a prompt is sent."""
+    body = {"prompt": prompt, "max_tokens": max_tokens,
+            "temperature": temperature, "seed": seed, "logprobs": 1}
+    if prompt_ids is None:
+        body["echo"] = True
     req = urllib.request.Request(
-        "http://127.0.0.1:%d/v1/completions" % port, data=body,
+        "http://127.0.0.1:%d/v1/completions" % port,
+        data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as r:
-        return json.loads(r.read())["choices"][0]["text"]
+        d = json.loads(r.read())
+    ch = d["choices"][0]
+    lp = ch["logprobs"]
+    ids, lps, text = lp["token_ids"], lp["token_logprobs"], ch["text"]
+    if prompt_ids is None:
+        n = d["usage"]["prompt_tokens"]
+        prompt_ids, ids, lps = ids[:n], ids[n:], lps[n:]
+        if text.startswith(prompt):
+            text = text[len(prompt):]
+    return text, prompt_ids, ids, lps
 
 
 def main():
@@ -116,8 +150,11 @@ def main():
     for rnd in range(args.rounds + 1):   # round 0 = measure-only baseline
         # ---- serve the CURRENT policy and sample K per prompt
         port = free_port()
+        # -b 1: the prompt is read one token per forward, the trainer's own
+        # path (see the docstring); the prefix cache keeps it to one pass
+        # per prompt, so it costs almost nothing here
         cmd = [args.runner, "-m", args.model, "--serve", "--port", str(port),
-               "--no-tray", "--gpu", "off", *tflag]
+               "--no-tray", "--gpu", "off", "-b", "1", *tflag]
         if adapter:
             cmd += ["--lora", str(adapter)]
         srv = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
@@ -131,20 +168,22 @@ def main():
                 if srv.poll() is not None:
                     sys.exit("server died at round %d" % rnd)
                 time.sleep(1)
-        examples, rewards = [], []
+        examples, sampled_lps, rewards = [], [], []
         for pi, (tool, request) in enumerate(PROMPTS):
             prompt = instruction(tool, request)
             group = []
+            prompt_ids = None
             for ki in range(args.k):
                 seed = 100000 + rnd * 1000 + pi * 100 + ki
-                text = sample(port, prompt, seed, args.max_tokens,
-                              args.temperature)
-                group.append((text, reward(tool, text)))
-            mean_r = sum(r for _, r in group) / len(group)
-            var = sum((r - mean_r) ** 2 for _, r in group) / len(group)
+                text, prompt_ids, ids, lps = sample(
+                    port, prompt, seed, args.max_tokens, args.temperature,
+                    prompt_ids)
+                group.append((text, ids, lps, reward(tool, text)))
+            mean_r = sum(g[3] for g in group) / len(group)
+            var = sum((g[3] - mean_r) ** 2 for g in group) / len(group)
             std = var ** 0.5
-            rewards += [r for _, r in group]
-            for text, r in group:
+            rewards += [g[3] for g in group]
+            for text, ids, lps, r in group:
                 # GRPO-standard advantage: group-normalized and clipped.
                 # The raw (r - mean) form was measured to COLLAPSE the
                 # policy on a high-baseline task (0.91 -> 0.09 by round 5):
@@ -154,9 +193,13 @@ def main():
                 # std and clipping to +-1 restores the symmetric update.
                 a = (r - mean_r) / (std + 1e-4)
                 a = max(-1.0, min(1.0, a))
-                if a != 0.0:
-                    examples.append({"prompt": prompt, "completion": text,
+                # an empty completion (an immediate stop) has no token to
+                # train: the stop itself is not a target in this loop
+                if a != 0.0 and ids:
+                    examples.append({"prompt_tokens": prompt_ids,
+                                     "completion_tokens": ids,
                                      "weight": round(a, 6)})
+                    sampled_lps.append(lps)
         srv.send_signal(signal.SIGTERM)
         srv.wait(timeout=30)
         rate = sum(1 for r in rewards if r >= 1.0) / len(rewards)
@@ -176,9 +219,11 @@ def main():
         data = out / ("round%d.jsonl" % rnd)
         data.write_text("\n".join(json.dumps(e) for e in examples) + "\n")
         next_adapter = out / ("adapter-r%d.gguf" % (rnd + 1))
+        lp_out = out / ("round%d.logprobs.jsonl" % rnd)
         cmd = [args.runner, "-m", args.model, "--train", str(data),
                "--train-steps", str(len(examples)), "--lr", str(args.lr),
-               "--train-out", str(next_adapter), *tflag]
+               "--train-out", str(next_adapter),
+               "--train-logprobs", str(lp_out), *tflag]
         if adapter:
             cmd += ["--lora", str(adapter)]
         else:
@@ -188,6 +233,19 @@ def main():
         if p.returncode != 0:
             sys.exit("train step failed:\n" +
                      p.stderr.decode(errors="replace")[-1500:])
+        # the zero-mismatch check: step 1 trains example 0 under the very
+        # weights the server sampled it with, before any update
+        with open(lp_out) as f:
+            trained = json.loads(f.readline())["logprobs"]
+        differ = sum(1 for a, b in zip(sampled_lps[0], trained) if a != b)
+        check = {"round": rnd, "rollout_check": {
+            "tokens": len(trained), "differ": differ,
+            "max_abs": max((abs(a - b) for a, b in
+                            zip(sampled_lps[0], trained)), default=0.0)}}
+        print(json.dumps(check), flush=True)
+        if differ or len(trained) != len(sampled_lps[0]):
+            sys.exit("rollout check failed: the trainer's logprobs differ "
+                     "from the sampler's (see the docstring's conditions)")
         adapter = next_adapter
 
     print(json.dumps({"summary": history}), flush=True)
