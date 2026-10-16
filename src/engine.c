@@ -342,7 +342,7 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
     // and what that cost. A "0 cached" a client cannot explain is almost
     // always a template re-rendering an earlier turn differently (a think
     // block, a re-serialised call), and this says at which token.
-    static int trace = -1;
+    static _Atomic int trace = -1;
     if (trace < 0) trace = getenv("RUNNER_REWIND_TRACE") ? 1 : 0;
     if (trace) {
         fprintf(stderr, "rewind: history %d, prompt %d, agree %d, mark %d -> "
@@ -1533,7 +1533,7 @@ static int tag_advance(const char *tag, int match, char c) {
 // in this file; NULL vs set is the whole test, so RUNNER_DEBUG_TOKENS=0 still
 // enables the trace exactly as it did before.
 static bool debug_tokens(void) {
-    static int on = -1;
+    static _Atomic int on = -1;
     if (on < 0) on = getenv("RUNNER_DEBUG_TOKENS") ? 1 : 0;
     return on == 1;
 }
@@ -1542,7 +1542,7 @@ static bool all_insignificant_ws(const sval *sv, const char *bytes, int n) {
     // RUNNER_SCHEMA_ALLOW_WS=1 restores the old behaviour, so the effect can
     // be A/B'd in one binary rather than across two builds -- the only way
     // this project has found to keep a before/after honest.
-    static int allow = -1;
+    static _Atomic int allow = -1;
     if (allow < 0) {
         const char *e = getenv("RUNNER_SCHEMA_ALLOW_WS");
         allow = e && *e && strcmp(e, "0") ? 1 : 0;
@@ -2090,7 +2090,7 @@ static void loop_guard_check(engine *e) {
 // reading the code alone; the first trace run answered it in one line.
 static void schema_trace(const engine *e, bool schema, const char *bytes,
                          int n, int visible, bool fed_ok) {
-    static int on = -1;
+    static _Atomic int on = -1;
     if (on < 0) {
         const char *v = getenv("RUNNER_SCHEMA_TRACE");
         on = v && *v && strcmp(v, "0") ? 1 : 0;
@@ -2932,11 +2932,11 @@ static bool gen_consume(engine *e, int tok, gen_cb cb, void *ud) {
 // test of what the server reports DURING a request, or of what a disconnect
 // leaves behind, has nothing to observe without it. Read once; 0 when unset.
 static int test_step_delay_ms(void) {
-    static int ms = -1;
+    static _Atomic int ms = -1;
     if (ms < 0) {
         const char *v = getenv("RUNNER_TEST_STEP_DELAY_MS");
-        ms = v && *v ? atoi(v) : 0;
-        if (ms < 0) ms = 0;
+        int d = v && *v ? atoi(v) : 0;
+        ms = d < 0 ? 0 : d;   // one store: another thread never sees a draft
     }
     return ms;
 }

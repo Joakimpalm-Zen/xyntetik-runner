@@ -5294,7 +5294,7 @@ static void mv_multi_rows(void *ctx, int i0, int i1) {
 }
 
 static bool mv_fuse_enabled(void) {
-    static int on = -1;
+    static _Atomic int on = -1;
     if (on < 0) {
         const char *e = getenv("RUNNER_MV_FUSE");
         on = !(e && e[0] == '0' && e[1] == 0);
@@ -5610,7 +5610,7 @@ static void attn_run(model_t *m, attn_job *j, int n_head) {
 // getenv + a predictable branch per dumped tensor).
 
 static bool tiedv_check(void) {
-    static int on = -1;
+    static _Atomic int on = -1;
     if (on < 0) {
         const char *e = getenv("RUNNER_TIEDV_CHECK");
         on = e && *e && strcmp(e, "0") != 0 ? 1 : 0;
@@ -5618,11 +5618,12 @@ static bool tiedv_check(void) {
     return on != 0;
 }
 static int dbg_act_mode(void) {
-    static int mode = -1;
+    static _Atomic int mode = -1;
     if (mode < 0) {
         const char *e = getenv("RUNNER_DEBUG_ACT");
-        mode = e && *e && strcmp(e, "0") != 0 ? atoi(e) : 0;
-        if (mode == 0 && e && *e && strcmp(e, "0") != 0) mode = 1;
+        int m = e && *e && strcmp(e, "0") != 0 ? atoi(e) : 0;
+        if (m == 0 && e && *e && strcmp(e, "0") != 0) m = 1;
+        mode = m;   // one store: another thread never sees a draft
     }
     return mode;
 }
@@ -5649,7 +5650,7 @@ static double dt_acc[DT_N];
 // count (one row, or a batch) and the NextN/MTP head's runs
 static double dt_fwd_t[2], dt_mtp_t;
 static long   dt_fwd_n[2], dt_fwd_rows[2], dt_mtp_n, dt_mtp_rows;
-static int dt_on = -1;
+static _Atomic int dt_on = -1;
 static inline bool dbg_time_on(void) {
     if (dt_on < 0) { const char *e = getenv("RUNNER_DEBUG_TIME"); dt_on = e && *e && strcmp(e, "0") != 0; }
     return dt_on > 0;
@@ -5671,7 +5672,7 @@ static inline double dt_now(void) {
 // compiles in its caller's context, as the single function did.
 #define NUM_STAGE static inline __attribute__((always_inline))
 // ---- the route record (plan P1; see model.h) ----
-static int route_on = -1;
+static _Atomic int route_on = -1;
 static bool route_enabled(void) {
     if (route_on < 0) { const char *e = getenv("RUNNER_DEBUG_ROUTE"); route_on = e && *e && strcmp(e, "0") != 0; }
     return route_on;
@@ -6191,16 +6192,16 @@ void model_embd_transform(const model_t *m, float *row) {
 #endif
 
 static int ssm_prefill_chunk(void) {
-    static int c = -1;
+    static _Atomic int c = -1;
     if (c < 0) {
         const char *e = getenv("XR_SSM_CHUNK");
-        c = e ? atoi(e) : SSM_PREFILL_CHUNK;
-        if (c < 1) c = SSM_PREFILL_CHUNK;
+        int n = e ? atoi(e) : SSM_PREFILL_CHUNK;
+        c = n < 1 ? SSM_PREFILL_CHUNK : n;   // one store: never a chunk of 0
     }
     return c;
 }
 static int ssm_force_serial(void) {
-    static int f = -1;
+    static _Atomic int f = -1;
     if (f < 0) {
         const char *e = getenv("XR_SSM_SERIAL");
         f = (e && e[0] && e[0] != '0') ? 1 : 0;

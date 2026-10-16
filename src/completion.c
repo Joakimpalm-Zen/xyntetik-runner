@@ -2442,7 +2442,7 @@ static const char *scripted_reply(creq_err *err, jv *req, bool *bad, bool *fault
         }
         return NULL;
     }
-    static int on = -1;
+    static _Atomic int on = -1;
     if (on < 0) {
         const char *env = getenv("RUNNER_TEST_SCRIPTED_REPLY");
         on = env && *env && strcmp(env, "0") != 0;
