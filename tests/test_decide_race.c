@@ -8,7 +8,10 @@
 // Built with -fsanitize=thread by `make test-decide-race`: TSan halting on
 // the unsynchronized increment is the gate, whatever the timing. The check
 // that every id came out distinct rides along. Each thread loads its own
-// model and engine, as a slot does.
+// model and engine, as a slot does. With "gpu" after the model the engines
+// run on the build's GPU backend (`make test-decide-race-gpu`), so the
+// backend's own first-use state is raced too: kernel-selection flags,
+// dispatch counters, once-only notices.
 #include "runner.h"
 #include "decide.h"
 
@@ -20,6 +23,7 @@
 enum { THREADS = 4, ROUNDS = 25 };
 
 static const char *g_model = "test.gguf";
+static int g_gpu_mode = GPU_OFF;
 static unsigned long long g_ids[2][THREADS * ROUNDS];
 static int g_n[2];
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -47,7 +51,7 @@ static void *worker(void *arg) {
     (void)arg;
     model_params p;
     memset(&p, 0, sizeof(p));
-    p.gpu_mode = GPU_OFF;
+    p.gpu_mode = g_gpu_mode;
     p.n_threads = 1;
     p.n_ctx = 512;
     p.n_batch = 8;
@@ -94,6 +98,7 @@ static int cmp_u64(const void *a, const void *b) {
 
 int main(int argc, char **argv) {
     if (argc > 1) g_model = argv[1];
+    if (argc > 2 && !strcmp(argv[2], "gpu")) g_gpu_mode = GPU_AUTO;
     f16_init();
     pthread_t th[THREADS];
     for (int i = 0; i < THREADS; i++) pthread_create(&th[i], NULL, worker, NULL);

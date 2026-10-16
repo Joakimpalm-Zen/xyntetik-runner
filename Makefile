@@ -2792,7 +2792,7 @@ clean:
 	      $(TEST_FILE_ID) test-file-identity.tmp \
 	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \
-	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin test-tokenizer-race-bin test-decide-race-bin \
+	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin test-tokenizer-race-bin test-decide-race-bin test-decide-race-gpu-bin \
 	      runner-gpu-stub
 	rm -rf test-attn
 	rm -rf .build
@@ -2939,8 +2939,24 @@ test-server-race-tsan: test.gguf
 test-decide-race: test.gguf
 	$(CC) $(TSAN_FLAGS) tests/test_decide_race.c $(filter-out tests/test_swap_race.c $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c -o test-decide-race-bin $(LDFLAGS)
 	TSAN_OPTIONS=halt_on_error=1 ./test-decide-race-bin test.gguf
+# The same with the build's GPU backend under the four engines (Metal on a
+# Mac, CUDA where the build has it), so the backend's own first-use state is
+# raced too: kernel-selection flags, dispatch counters, once-only notices,
+# the driver load. Needs the device, so CI's hosted runners cannot run it.
+# MinGW has no TSan: there it builds plain and is the functional half only
+# (four engines on the GPU at once, every answer and every id distinct).
+ifeq ($(OS),Windows_NT)
+DECIDE_RACE_GPU_FLAGS = -O1 -g -std=gnu11 -Wall -I src
+DECIDE_RACE_GPU_RUN   =
+else
+DECIDE_RACE_GPU_FLAGS = $(TSAN_FLAGS)
+DECIDE_RACE_GPU_RUN   = TSAN_OPTIONS=halt_on_error=1
+endif
+test-decide-race-gpu: test.gguf
+	$(CC) $(DECIDE_RACE_GPU_FLAGS) $(GPU_BACKEND_DEF) tests/test_decide_race.c $(filter-out tests/test_swap_race.c,$(TEST_SWAP_RACE_SRC)) -o test-decide-race-gpu-bin $(LDFLAGS)
+	$(DECIDE_RACE_GPU_RUN) ./test-decide-race-gpu-bin test.gguf gpu
 
-.PHONY: test-pool-race test-server-race-tsan test-decide-race
+.PHONY: test-pool-race test-server-race-tsan test-decide-race test-decide-race-gpu
 
 fuzz-replay-%: tests/fuzz/fuzz_%.c tests/fuzz/replay.c tests/fuzz/fuzz_files.h $(HDR)
 	$(FUZZ_CLANG) $(filter-out $(FUZZ_INSTRUMENTATION),$(FUZZ_FLAGS)) -fsanitize=address,undefined tests/fuzz/replay.c tests/fuzz/fuzz_$*.c $(FUZZ_SRC_$*) -o $@ -lm -lpthread

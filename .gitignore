@@ -78,6 +78,8 @@ test-swap-race-bin.dSYM/
 test-tokenizer-race-bin.dSYM/
 test-decide-race-bin
 test-decide-race-bin.dSYM/
+test-decide-race-gpu-bin
+test-decide-race-gpu-bin.dSYM/
 test-batch
 test-batch-identity.exe
 test-batch.exe

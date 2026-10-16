@@ -9,6 +9,7 @@
 #include "compat.h"   // plat_ram_available_bytes: the residency guard below
 #include "metal_admission.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -189,11 +190,12 @@ typedef struct { int head_dim, n_head, n_chunks, has_sinks; } attn_comb_args;
 // condition that actually means "nothing to split".
 #define METAL_ATTN_MIN_CHUNK 128
 static int metal_attn_chunk_override(void) {
-    static int v = -2;
+    static _Atomic int v = -2;
     if (v == -2) {
         const char *e = getenv("RUNNER_METAL_ATTN_CHUNK");
-        v = -1;
-        if (e && *e) { long n = strtol(e, NULL, 10); if (n >= 0) v = (int)n; }
+        int r = -1;
+        if (e && *e) { long n = strtol(e, NULL, 10); if (n >= 0) r = (int)n; }
+        v = r;   // one store: another slot never reads the draft -1
     }
     return v;
 }
@@ -306,7 +308,7 @@ static bool metal_moe_batch_on(void) {
 // clears the promotion bar; it only engages when a dispatch carries at least
 // as many slots as experts, so decode always stays slot-major.
 static bool metal_moe_em_on(void) {
-    static int on = -1;
+    static _Atomic int on = -1;
     if (on < 0) {
         const char *v = getenv("RUNNER_METAL_MOE_EM");
         on = v && *v && strcmp(v, "0") && strcmp(v, "off") ? 1 : 0;
@@ -327,9 +329,8 @@ static bool metal_fuse_on(void) {
 }
 
 static void metal_fuse_announce(void) {
-    static bool told = false;
-    if (!told) {
-        told = true;
+    static _Atomic bool told;   // any slot may get here first (compat.h)
+    if (plat_once(&told)) {
         fprintf(stderr, "gpu: decode fusion on "
                 "(byte-identical; RUNNER_METAL_FUSE=0 disables)\n");
     }
@@ -337,9 +338,8 @@ static void metal_fuse_announce(void) {
 
 static void metal_front_announce(id<MTLComputePipelineState> pipe,
                                  gpu_t *g) {
-    static bool told = false;
-    if (told) return;
-    told = true;
+    static _Atomic bool told;   // any slot may get here first (compat.h)
+    if (!plat_once(&told)) return;
     const char *name =
         pipe == g->p_attn_front_q8   ? "q8_0"    :
         pipe == g->p_attn_front_q40  ? "q4_0"    :
@@ -386,10 +386,9 @@ static bool metal_buffer_ok(id<MTLBuffer> b) {
 
 static bool metal_command_failed(id<MTLCommandBuffer> cb) {
     const char *inject = getenv("RUNNER_METAL_INJECT_FAILURE");
-    static int injected_once = 0;
+    static _Atomic bool injected_once;   // once across every slot
     bool injected = inject && *inject && strcmp(inject, "0") &&
-                    (!injected_once || strcmp(inject, "always") == 0);
-    if (injected) injected_once = 1;
+                    (strcmp(inject, "always") == 0 || plat_once(&injected_once));
     return injected || cb.status == MTLCommandBufferStatusError;
 }
 
@@ -915,9 +914,11 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
 // -1 restores the env default (RUNNER_METAL_MM), 0 pins the matvec path on,
 // 1 forces the tiled path wherever a kernel exists for the weight type.
 enum { MM_ENV_UNSET = -2 };
-static int g_mm_state = MM_ENV_UNSET;
-static int g_tensor_state = MM_ENV_UNSET;
-static unsigned long g_tc_dispatches = 0;
+// Atomic, these states and the dispatch counters below: every slot reads and
+// counts, and a test hook may set a state meanwhile.
+static _Atomic int g_mm_state = MM_ENV_UNSET;
+static _Atomic int g_tensor_state = MM_ENV_UNSET;
+static _Atomic unsigned long g_tc_dispatches = 0;
 
 void gpu_tc_force(int on) {
     g_mm_state = on < 0 ? MM_ENV_UNSET : (on != 0);
@@ -927,7 +928,7 @@ void gpu_tc_force(int on) {
 unsigned long gpu_tc_dispatches(void) { return g_tc_dispatches; }
 // per weight type, both tiled branches (tensor and mm) counted together
 enum { MM_TYPE_N = 64 };
-static unsigned long g_tc_dispatches_type[MM_TYPE_N];
+static _Atomic unsigned long g_tc_dispatches_type[MM_TYPE_N];
 unsigned long gpu_tc_dispatches_type(int type) {
     return type >= 0 && type < MM_TYPE_N ? g_tc_dispatches_type[type] : 0;
 }
@@ -958,12 +959,15 @@ bool gpu_tc_type_has_kernel(int type) {
 }
 
 static bool metal_mm_on(void) {
-    if (g_mm_state == MM_ENV_UNSET) {
+    int st = g_mm_state;   // one read
+    if (st == MM_ENV_UNSET) {
         const char *e = getenv("RUNNER_METAL_MM");
-        if (!e || !*e) g_mm_state = -1;                  // promoted default
-        else g_mm_state = strcmp(e, "0") && strcmp(e, "off");
+        int v = !e || !*e ? -1                           // promoted default
+              : strcmp(e, "0") && strcmp(e, "off");
+        // only from unread: a value gpu_tc_force set meanwhile stands
+        st = atomic_compare_exchange_strong(&g_mm_state, &(int){ MM_ENV_UNSET }, v) ? v : g_mm_state;
     }
-    if (g_mm_state >= 0) return g_mm_state != 0;
+    if (st >= 0) return st != 0;
     return true;   // promoted: every type with a k_mm_* kernel, prefill only
 }
 
@@ -972,7 +976,8 @@ static bool metal_mm_on(void) {
 // slower software path there. The tracer bullet stays opt-in until its real
 // model tolerance and >=1.2x prefill promotion bars pass.
 static bool metal_tensor_requested(void) {
-    if (g_tensor_state != MM_ENV_UNSET) return g_tensor_state != 0;
+    int st = g_tensor_state;   // one read
+    if (st != MM_ENV_UNSET) return st != 0;
     const char *e = getenv("RUNNER_METAL_TENSOR");
     return e && *e && strcmp(e, "0") && strcmp(e, "off");
 }
@@ -993,7 +998,7 @@ static bool metal_tensor_device_ok(id<MTLDevice> dev) {
 // machine is not a default anywhere. `RUNNER_METAL_MV=1` opts in; -1 through
 // gpu_mv_force restores the env default.
 enum { MV_ENV_UNSET = -2 };
-static int g_mv_state = MV_ENV_UNSET;
+static _Atomic int g_mv_state = MV_ENV_UNSET;
 
 void gpu_mv_force(int on) {
     g_mv_state = on < 0 ? MV_ENV_UNSET : (on != 0);
@@ -1011,8 +1016,8 @@ void gpu_mv_force(int on) {
 // model that engages the route, both KV cache formats, at a measured
 // +3.0-4.3% decode across 2.3k-8.1k spans.
 enum { COOP_ENV_UNSET = -2 };
-static int g_coop_state = COOP_ENV_UNSET;
-static unsigned long g_coop_dispatches = 0;
+static _Atomic int g_coop_state = COOP_ENV_UNSET;
+static _Atomic unsigned long g_coop_dispatches = 0;
 
 void gpu_attn_coop_force(int on) {
     g_coop_state = on < 0 ? COOP_ENV_UNSET : (on != 0);
@@ -1023,12 +1028,12 @@ unsigned long gpu_attn_coop_dispatches(void) { return g_coop_dispatches; }
 // a KV head from one threadgroup, so the group's K and V rows are fetched
 // once (k_attn_chunk_gqa). The same bytes as k_attn_chunk_coop;
 // RUNNER_METAL_ATTN_GQA=0 pins that kernel.
-static unsigned long g_gqa_dispatches;
+static _Atomic unsigned long g_gqa_dispatches;
 unsigned long gpu_attn_gqa_dispatches(void) { return g_gqa_dispatches; }
 // CUDA-only route; present so its gate links and reports 'never here'.
 unsigned long gpu_splitk_dispatches(void) { return 0; }
 static bool metal_attn_gqa_on(void) {
-    static int v = -1;
+    static _Atomic int v = -1;
     if (v < 0) {
         const char *e = getenv("RUNNER_METAL_ATTN_GQA");
         v = !(e && e[0] == '0');
@@ -1039,10 +1044,10 @@ static bool metal_attn_gqa_on(void) {
 // Prefill attention tiles several columns per threadgroup so they share each
 // KV read (k_attn_tile). Byte-identical to k_attn; RUNNER_METAL_ATTN_TILE=0
 // pins the one-column kernel for an identity investigation.
-static unsigned long g_tile_dispatches;
+static _Atomic unsigned long g_tile_dispatches;
 unsigned long gpu_attn_tile_dispatches(void) { return g_tile_dispatches; }
 static bool metal_attn_tile_on(void) {
-    static int v = -1;
+    static _Atomic int v = -1;
     if (v < 0) {
         const char *e = getenv("RUNNER_METAL_ATTN_TILE");
         v = !(e && e[0] == '0');
@@ -1102,26 +1107,32 @@ static void enc_lora(gpu_t *g, id<MTLComputeCommandEncoder> e, int l, int slot,
 }
 
 static bool metal_attn_coop_on(void) {
-    if (g_coop_state == COOP_ENV_UNSET) {
+    int st = g_coop_state;   // one read
+    if (st == COOP_ENV_UNSET) {
         const char *e = getenv("RUNNER_METAL_ATTN_COOP");
-        if (!e || !*e) g_coop_state = -1;                 // promoted default
-        else g_coop_state = strcmp(e, "0") && strcmp(e, "off");
+        int v = !e || !*e ? -1                            // promoted default
+              : strcmp(e, "0") && strcmp(e, "off");
+        // only from unread: a value gpu_attn_coop_force set meanwhile stands
+        st = atomic_compare_exchange_strong(&g_coop_state, &(int){ COOP_ENV_UNSET }, v) ? v : g_coop_state;
     }
-    if (g_coop_state >= 0) return g_coop_state != 0;
+    if (st >= 0) return st != 0;
     return true;   // promoted: decode attention, every arch that reaches it
 }
 
-static unsigned long g_mv_dispatches = 0;
+static _Atomic unsigned long g_mv_dispatches = 0;
 unsigned long gpu_mv_dispatches(void) { return g_mv_dispatches; }
 
 static bool metal_mv_fast_on(void) {
     // Cache the env read: this sits in the per-matvec dispatch path, and
     // gpu_mv_force(-1) resets to UNSET so the next call re-reads it.
-    if (g_mv_state == MV_ENV_UNSET) {
+    int st = g_mv_state;   // one read
+    if (st == MV_ENV_UNSET) {
         const char *e = getenv("RUNNER_METAL_MV");
-        g_mv_state = e && *e && strcmp(e, "0") && strcmp(e, "off");
+        int v = e && *e && strcmp(e, "0") && strcmp(e, "off");
+        // only from unread: a value gpu_mv_force set meanwhile stands
+        st = atomic_compare_exchange_strong(&g_mv_state, &(int){ MV_ENV_UNSET }, v) ? v : g_mv_state;
     }
-    return g_mv_state > 0;
+    return st > 0;
 }
 
 void gpu_moe_eager_force(int on) { (void)on; }
@@ -1361,7 +1372,7 @@ static id<MTLBuffer> metal_wbuf_for(gpu_t *g, uint64_t off, uint64_t len,
 // so without a hook the recovery path below could only be reasoned about, not
 // run. Same argument as the command-buffer hook in docs/metal-fallback.md.
 static bool metal_bind_inject(void) {
-    static int on = -1;
+    static _Atomic int on = -1;
     if (on < 0) {
         const char *v = getenv("RUNNER_METAL_INJECT_BIND_FAILURE");
         on = v && *v && strcmp(v, "0") ? 1 : 0;
@@ -2146,25 +2157,27 @@ bool gpu_init(model_t *m) {
 // which kinds scale with n (collapsed) and which do not (batched).
 //
 // Off unless RUNNER_METAL_STATS is set... except that the counters themselves
-// are unconditional. They are non-atomic increments of a static struct on the
-// encoding thread, which is the same thread for a whole command buffer, and
-// the alternative — a branch per dispatch — costs more than the increment.
+// are unconditional: a branch per dispatch costs more than the increment.
+// They are atomic. A command buffer is encoded on one thread, but parallel
+// slots encode theirs at once, and a plain ++ two slots race on loses counts
+// (and is a data race); an uncontended atomic add is a few cycles against a
+// dispatch's encoding.
 static struct {
-    unsigned long tensor, mm, mv, mvf, rmsnorm, qknorm, headnorm, rope, store,
-                  attn, attn_chunk, elem, moe, ple;
+    _Atomic unsigned long tensor, mm, mv, mvf, rmsnorm, qknorm, headnorm, rope, store,
+                          attn, attn_chunk, elem, moe, ple;
     // KV bytes an attention dispatch will read, accumulated for DECODE only
     // (n == 1), split by whether the layer slides. Decode-only because at
     // n > 1 each column attends over its own growing range and a single
     // `pos` does not describe the read; counting prefill here would produce
     // an underestimate that looks authoritative.
-    unsigned long long kv_global, kv_swa;
-    unsigned long      kv_layers_global, kv_layers_swa;
+    _Atomic unsigned long long kv_global, kv_swa;
+    _Atomic unsigned long      kv_layers_global, kv_layers_swa;
     // `ah` (the per-head attention scores) is device memory the decode kernel
     // round-trips ~4x per head over the attended span (write, max scan,
     // exp-sum, weighted read). Counted here so "is the scores buffer worth
     // moving to threadgroup memory" is a measurement, not the plan's
     // arithmetic — same decode-only framing as the KV bytes above.
-    unsigned long long scores_bytes;
+    _Atomic unsigned long long scores_bytes;
 } g_disp;
 
 static void enc_rmsnorm_n(gpu_t *g, id<MTLComputeCommandEncoder> e,
@@ -2215,11 +2228,11 @@ static void enc_rmsnorm(gpu_t *g, id<MTLComputeCommandEncoder> e,
 // Columns per threadgroup in the batched matmul. Tunable so the tradeoff can
 // be re-measured on other Apple GPUs without a rebuild.
 static int metal_col_tile(void) {
-    static int v = -1;
+    static _Atomic int v = -1;
     if (v < 0) {
         const char *s = getenv("RUNNER_METAL_COL_TILE");
-        v = s && *s ? atoi(s) : 8;
-        if (v < 1) v = 1;
+        int t = s && *s ? atoi(s) : 8;
+        v = t < 1 ? 1 : t;   // one store: another slot never reads a tile of 0
     }
     return v;
 }
@@ -2545,9 +2558,8 @@ static void enc_moe_mv(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
     }
     bool em = emp != nil;
     if (em) {
-        static bool announced = false;
-        if (!announced) {
-            announced = true;
+        static _Atomic bool announced;   // any slot may get here first (compat.h)
+        if (plat_once(&announced)) {
             fprintf(stderr, "gpu: MoE expert-major prefill kernels on "
                     "(RUNNER_METAL_MOE_EM)\n");
         }
@@ -2898,9 +2910,8 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                mmp[ly->ffn_up_exps->type] ||
                mmp[ly->ffn_down_exps->type]);
     if (mm) {
-        static bool announced = false;
-        if (!announced) {
-            announced = true;
+        static _Atomic bool announced;   // any slot may get here first (compat.h)
+        if (plat_once(&announced)) {
             fprintf(stderr, "gpu: MoE grouped-MMA prefill kernels on "
                     "(%s-staged, RUNNER_METAL_MOE_MM)\n",
                     mm_mode == 2 ? "half" : "f32");
@@ -3157,7 +3168,7 @@ static void enc_ple(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
 // can only be bisected by guesswork. Costs one command buffer per layer, so it
 // is opt-in and read once.
 static bool metal_nan_trace(void) {
-    static int on = -1;
+    static _Atomic int on = -1;
     if (on < 0) { const char *v = getenv("RUNNER_METAL_NAN_TRACE"); on = v && *v && strcmp(v, "0"); }
     return on > 0;
 }
@@ -3167,7 +3178,7 @@ static bool metal_nan_trace(void) {
 // stage of that layer produced it, which is where a wrong op actually hides.
 // Costs one command buffer per probe, so it is strictly opt-in.
 static int metal_nan_stage(void) {
-    static int lvl = -1;
+    static _Atomic int lvl = -1;
     if (lvl < 0) { const char *v = getenv("RUNNER_METAL_NAN_TRACE"); lvl = v && *v ? atoi(v) : 0; }
     return lvl;
 }
@@ -3207,17 +3218,8 @@ static void metal_moe_route_trace(gpu_t *g, model_t *m, int n) {
 }
 
 static FILE *metal_moe_trace_file(void) {
-    static FILE *fp;
-    static int opened;
-    if (!opened) {
-        opened = 1;
-        const char *path = getenv("RUNNER_MOE_TRACE");
-        if (path && *path) {
-            fp = fopen(path, "a");
-            if (!fp) fprintf(stderr, "warning: RUNNER_MOE_TRACE=%s: could not open for append\n", path);
-        }
-    }
-    return fp;
+    static plat_env_file f;   // any slot may ask first (compat.h)
+    return plat_env_file_get(&f, "RUNNER_MOE_TRACE");
 }
 
 static void metal_moe_full_trace(gpu_t *g, model_t *m, int n, int pos) {
@@ -3285,7 +3287,7 @@ static bool metal_nan_probe(metal_fwd *F, id<MTLBuffer> buf, size_t cnt,
 }
 
 static int metal_timing_on(void) {
-    static int timing = -1;
+    static _Atomic int timing = -1;
     if (timing < 0) {
         const char *t = getenv("RUNNER_METAL_TIMING");
         timing = t && *t && strcmp(t, "0") ? 1 : 0;
@@ -3654,9 +3656,8 @@ static void metal_enc_attention(metal_fwd *F, int l, const metal_layer_plan *P) 
     NSUInteger atpg = 1;
     while (atpg * 2 <= amax) atpg *= 2;
     if (F->timing) {
-        static bool told;
-        if (!told) {
-            told = true;
+        static _Atomic bool told;   // any slot may get here first (compat.h)
+        if (plat_once(&told)) {
             fprintf(stderr, "metal-timing attn threadgroups=%d x %llu "
                     "threads (pipeline max %llu)\n", m->n_head,
                     (unsigned long long)atpg,

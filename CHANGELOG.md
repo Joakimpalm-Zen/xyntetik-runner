@@ -5,6 +5,20 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Parallel slots no longer race on state the process sets up on first
+  use.** Runner reads a few dozen settings once and keeps them: kernel
+  switches from the environment, dispatch counters, once-only notices, debug
+  trace files and the CUDA driver's function table. Each was a plain variable
+  that whichever thread got there first wrote, so two slots, or an
+  embedder's two engines, starting together raced on it. Two of these races
+  had visible effects. The CUDA driver table was marked loaded before it was
+  filled, so a second engine starting at that moment could call into an
+  empty table. The per-layer similarity diagnostic (`RUNNER_LAYER_SIM`)
+  shared one buffer between concurrent forwards. All of this state is now
+  atomic, set up once, or per thread. `make test-decide-race-gpu` runs four
+  engines on the GPU at once, under ThreadSanitizer where the platform has
+  it.
+
 - **A run of combining marks no longer stalls a Qwen tokenizer.** NFC puts
   each run of combining marks in combining-class order, and Runner sorted the
   run with an insertion sort, whose time grows with the square of the run's
