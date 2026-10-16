@@ -3,6 +3,42 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **A run of combining marks no longer stalls a Qwen tokenizer.** NFC puts
+  each run of combining marks in combining-class order, and Runner sorted the
+  run with an insertion sort, whose time grows with the square of the run's
+  length. A request made of marks out of class order therefore held its slot
+  before inference began: 128 KB took 8.4 s in `/v1/messages/count_tokens`.
+  A run longer than 32 marks is now sorted by counting, in linear time, and
+  256 KB takes about 10 ms. The output is unchanged: over the 13,264-string
+  NFC corpus and 5,902 more strings built around the sort's boundaries, the
+  old and new code agree byte for byte, and both match the `tokenizers`
+  package's NFC.
+
+- **A stop exits within its 10-second bound even when nobody reads the
+  log.** The bound's watchdog printed its last line through the C library's
+  stream before exiting, and stopped watching once the requests were
+  joined. With the server's output on a pipe nobody reads, that line waited
+  on the full pipe, so a step that did not end held the process past the
+  bound. A swap set with nothing in flight hung after the drain the same
+  way, logging its unload once the watchdog was gone. The watchdog now
+  watches until the process is gone, writes its line from a separate thread
+  with a plain `write`, and exits 200 ms later whether the line went out or
+  not.
+
+- **Integers longer than fifteen digits keep every digit.** Runner kept the
+  digits of such an integer when it parsed a request, but wrote the
+  rounded double back out, so 9007199254740993 (2^53 + 1) became
+  9007199254740992. It showed in Clef's score legend, which no longer named
+  the criterion the model had scored. The same writer renders tool schemas
+  and history into chat prompts, compiles `enum` and `const` literals into
+  the output grammar, and echoes tool-call arguments, so each of those now
+  keeps the caller's integer too. A JSON schema holding such an integer now
+  has a sha256 of its own (it used to share the rounded schema's), so a
+  record or session image made under one by 1.4.0 names a digest this
+  release does not reproduce; both are bound to the build that wrote them.
+
 ## v1.4.0 - 2026-10-16
 
 - **`--train` says when a run is about to memorize.** A user trained four

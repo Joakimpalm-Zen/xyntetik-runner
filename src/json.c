@@ -596,6 +596,8 @@ static void jv_dump_sep(const jv *v, sbuf *o,
     case J_NULL: sb_lit(o, "null"); break;
     case J_BOOL: sb_lit(o, v->b ? "true" : "false"); break;
     case J_NUM: {
+        // an integer literal too long for the double: its own digits (json.h)
+        if (v->num_text) { sb_put(o, v->num_text, strlen(v->num_text)); break; }
         char num[32];
         json_format_number(v->num, num);
         sb_put(o, num, strlen(num));

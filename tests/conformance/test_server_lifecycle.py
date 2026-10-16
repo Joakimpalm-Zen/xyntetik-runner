@@ -500,6 +500,120 @@ def test_drain_hard_bound_exits_a_step_that_does_not_end():
         srv.stop()
 
 
+def _serve_on_a_pipe(model_spec, parallel, env_extra):
+    """A server whose stdout and stderr are one pipe: read while it starts,
+    and nobody's once the caller fills it."""
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    port = free_port()
+    r, w = os.pipe()
+    argv = [find_runner(root), "-m", model_spec, "--serve", "--no-tray",
+            "--port", str(port), "--parallel", str(parallel), "-c", "1024",
+            "--gpu", "off"]
+    proc = subprocess.Popen(argv, stdout=w, stderr=w, env=dict(os.environ, **env_extra))
+    os.set_blocking(r, False)   # this end only: the server holds its own copy of w
+    out = bytearray()
+    deadline = time.monotonic() + 60
+    while True:
+        out += _drain_pipe(r)
+        assert proc.poll() is None and time.monotonic() < deadline, out[-2000:]
+        try:
+            urllib.request.urlopen("http://127.0.0.1:%d/health" % port, timeout=1).read()
+            return proc, port, r, w
+        except (urllib.error.URLError, OSError):
+            time.sleep(0.05)
+
+
+def _drain_pipe(r):
+    data = b""
+    while True:
+        try:
+            chunk = os.read(r, 1 << 16)
+        except BlockingIOError:
+            return data
+        if not chunk:
+            return data
+        data += chunk
+
+
+def _fill_pipe(w):
+    """Fill the pipe to the last byte without touching its flags: one blocking
+    write larger than the pipe, from a thread that then waits forever. (Making
+    w non-blocking would make the SERVER's copy non-blocking too, one open
+    file, and its writes would fail instead of waiting.)"""
+    import threading
+
+    def write():
+        try:
+            os.write(w, b"x" * (1 << 20))
+        except OSError:
+            pass   # the read end closed at cleanup
+    threading.Thread(target=write, daemon=True).start()
+    time.sleep(0.3)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signal contract")
+@pytest.mark.parametrize("shape", ["step-that-does-not-end", "swap-set-unload", "log-still-read"])
+def test_drain_hard_bound_holds_when_nobody_reads_the_log(shape):
+    """The hard bound is the last word on a stop, so nothing it waits on may
+    be able to wait forever. The 2026-10-16 review: with the server's output
+    on a pipe nobody reads, the watchdog's own message blocked on the full
+    pipe, and a step that did not end outlived the bound by seconds. A swap
+    set with nothing in flight hung the same way after the drain, logging
+    "swap: unloading" after the bound had stopped watching. Both must exit
+    at the bound, with 128 plus the signal. With the pipe still read, the
+    watchdog's note still goes out."""
+    env = {"RUNNER_TEST_DRAIN_GRACE_MS": "200", "RUNNER_TEST_DRAIN_HARD_MS": "500"}
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    model = os.environ.get("RUNNER_TEST_MODEL", os.path.join(root, "test.gguf"))
+    swap = shape == "swap-set-unload"
+    if not swap:
+        env["RUNNER_TEST_STEP_DELAY_MS"] = "20000"
+    proc, port, r, w = _serve_on_a_pipe("a=%s,b=%s" % (model, model) if swap else model,
+                                        1 if swap else 2, env)
+    conn = None
+    try:
+        import socket
+        req_doc = {"messages": [{"role": "user", "content": "hi"}],
+                   "max_tokens": 4, "temperature": 0, "ignore_eos": True}
+        if swap:
+            req_doc["model"] = "a"
+        body = json.dumps(req_doc).encode()
+        if swap:
+            # load "a" so the stop has a resident model to unload, then idle
+            req = urllib.request.Request("http://127.0.0.1:%d/v1/chat/completions" % port,
+                                         data=body, headers={"Content-Type": "application/json"})
+            assert urllib.request.urlopen(req, timeout=30).status == 200
+        else:
+            conn = socket.create_connection(("127.0.0.1", port), timeout=30)
+            conn.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\n"
+                         b"Content-Type: application/json\r\nConnection: close\r\n"
+                         b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+            time.sleep(0.6)                  # the step is under way
+        _drain_pipe(r)
+        if shape != "log-still-read":
+            _fill_pipe(w)
+        t0 = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        try:
+            rc = proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pytest.fail("%s: still running %.1f s after SIGTERM with a 0.5 s hard bound"
+                        % (shape, time.monotonic() - t0))
+        took = time.monotonic() - t0
+        assert rc == 128 + signal.SIGTERM, (shape, rc)
+        assert took < 3, (shape, took)
+        if shape == "log-still-read":
+            assert b"exiting without waiting" in _drain_pipe(r)
+    finally:
+        if conn is not None:
+            conn.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        os.close(r)
+        os.close(w)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX signal contract")
 def test_stalled_request_read_does_not_pin_the_drain():
     """A client that sent half a request has been admitted to nothing, so it

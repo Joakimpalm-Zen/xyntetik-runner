@@ -374,10 +374,15 @@ $(OBJDIR)/%.o: src/%.m $(HDR)
 # The executable is keyed too: switching back from T3 must not keep a newer
 # T3 runner merely because the default objects are older. Comparison keeps no-op
 # builds cheap while selecting the exact configured executable on every call.
+# The copy lands under a temporary name and is renamed over the old file, so
+# it is a new file and never the old one rewritten: on macOS, a process still
+# running from the old file (a server left up) gets every later launch of a
+# file rewritten under it SIGKILLed at exec, which every test then reports as
+# "runner exited during startup", returncode -9, no log.
 $(OBJDIR)/$(RUNNER_EXE): $(RUNNER_OBJ) $(HDR) src/kernels_ptx.h src/kernels_tensor_metal.h
 	$(CC) $(CFLAGS) $(RUNNER_OBJ) -o $@ $(LDFLAGS)
 runner: $(OBJDIR)/$(RUNNER_EXE) FORCE
-	@$(PYTHON) -c "import filecmp,os,shutil; src='$(OBJDIR)/$(RUNNER_EXE)'; dst='$(RUNNER_EXE)'; same=os.path.exists(dst) and filecmp.cmp(src,dst,shallow=False); shutil.copy2(src,dst) if not same else None"
+	@$(PYTHON) -c "import filecmp,os,shutil; src='$(OBJDIR)/$(RUNNER_EXE)'; dst='$(RUNNER_EXE)'; same=os.path.exists(dst) and filecmp.cmp(src,dst,shallow=False); same or (shutil.copy2(src,dst+'.tmp'), os.replace(dst+'.tmp',dst))"
 
 # Local negative controls for scripts/write-stall.py. These compile from the
 # same sources and embedded kernels as runner; they are not release artifacts.

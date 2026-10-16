@@ -120,13 +120,18 @@ static void test_init_survives_allocation_failure(void) {
 // Texts chosen to reach every allocating encode path: the SPM symbol list and
 // its U+2581 rewrite buffer, the BPE codepoint/offset arrays and byte-mapped
 // word buffer, and bpe_word's two symbol arrays. Multi-byte and special-token
-// input keeps the segment loop running more than once.
+// input keeps the segment loop running more than once. Under the qwen2
+// vocabulary's NFC, the emoji reaches the normalizer's buffers and the run of
+// 36 marks out of class order its counting sort's scratch.
 static const char *const texts[] = {
     "hello",
     "The quick brown fox jumps over the lazy dog, 1234567890 times.",
     "caf\xC3\xA9 \xF0\x9F\xA6\x99 llama",
     "</s>tokenization/end.\n\nI'll go",
     "  12",
+    "e\xCC\x81\xCC\x96\xCC\x81\xCC\x96\xCC\x81\xCC\x96\xCC\x81\xCC\x96\xCC\x81\xCC\x96\xCC\x81\xCC\x96"
+    "\xCC\x81\xCC\x96\xCC\x81\xCC\x96\xCC\x81\xCC\x96\xCC\x81\xCC\x96\xCC\x81\xCC\x96\xCC\x81\xCC\x96"
+    "\xCC\x81\xCC\x96\xCC\x81\xCC\x96\xCC\x81\xCC\x96\xCC\x81\xCC\x96\xCC\x81\xCC\x96\xCC\x81\xCC\x96 x",
 };
 
 // tok_encode's error channel (RNR-006): if an encode helper has to drop a text

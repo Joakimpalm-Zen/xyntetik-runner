@@ -253,6 +253,52 @@ static void test_bpe_digit_run_gpt2(tokenizer *t) {
     expect_pieces(t, "1234567890", want, 4);
 }
 
+// NFC's canonical ordering (UAX #15, Unicode 3.11 D108-D109): a run of
+// non-starters is put in non-decreasing combining-class order, and marks of
+// one class keep their order. The expected text is written from that rule,
+// not from this tokenizer: "x" + (U+0301 U+0300 U+0316) x m, classes 230 230
+// 220, is "x" + U+0316 x m + (U+0301 U+0300) x m, and x composes with none of
+// the three, so that is the NFC (python's unicodedata.normalize agrees). The
+// interleaved 230 pair is what a sort that is not stable would swap. The
+// longest run is the 2026-10-16 report's shape: the ordering was an insertion
+// sort, O(r^2) in the run length: 128 KB of marks out of class order took
+// 8.4 s in /v1/messages/count_tokens before the request reached inference,
+// and this 256 KB run took about 8 s per fixture on an Apple M1.
+static void test_nfc_canonical_order(tokenizer *t) {
+    assert(t->nfc);
+    static const int reps[] = { 1, 5, 10, 11, 16, 17, 100, 43690 };
+    for (size_t r = 0; r < sizeof reps / sizeof *reps; r++) {
+        int m = reps[r];
+        size_t n = 1 + 6 * (size_t)m;
+        char *in = malloc(n + 1), *want = malloc(n + 1);
+        int32_t *a = malloc(sizeof(int32_t) * (n + 8)), *b = malloc(sizeof(int32_t) * (n + 8));
+        assert(in && want && a && b);
+        in[0] = want[0] = 'x';
+        for (int i = 0; i < m; i++) {
+            memcpy(in + 1 + 6 * i, "\xCC\x81\xCC\x80\xCC\x96", 6);   // 0301 0300 0316
+            memcpy(want + 1 + 2 * i, "\xCC\x96", 2);                  // 0316 first
+            memcpy(want + 1 + 2 * m + 4 * i, "\xCC\x81\xCC\x80", 4);  // then 0301 0300
+        }
+        in[n] = want[n] = 0;
+        double t0 = plat_now();
+        int na = tok_encode(t, in, a, (int)n + 8, false, false);
+        double took = plat_now() - t0;
+        int nb = tok_encode_raw(t, want, (int)n, b, (int)n + 8);
+        if (na != nb || memcmp(a, b, sizeof(int32_t) * (size_t)(na > 0 ? na : 0))) {
+            fprintf(stderr, "FAIL %s: NFC of %d mark triples is not the canonical order "
+                    "(%d vs %d tokens)\n", current, m, na, nb);
+            exit(1);
+        }
+        // linear work is a few milliseconds here; the quadratic sort was seconds
+        if (took > 1.0) {
+            fprintf(stderr, "FAIL %s: NFC of %zu bytes of marks took %.2f s\n",
+                    current, n, took);
+            exit(1);
+        }
+        free(in); free(want); free(a); free(b);
+    }
+}
+
 static void run_bpe_fixture(const char *path, int pre, void (*digits)(tokenizer *)) {
     current = path;
     gguf_file g;
@@ -291,6 +337,7 @@ static void run_bpe_fixture(const char *path, int pre, void (*digits)(tokenizer 
     }
     if (pre == TOK_PRE_QWEN35) test_bpe_mark_inside_run_qwen35(&t);
     else if (pre == TOK_PRE_QWEN2) test_bpe_mark_inside_run_qwen2(&t);
+    if (pre == TOK_PRE_QWEN35 || pre == TOK_PRE_QWEN2) test_nfc_canonical_order(&t);
     test_bpe_contraction_and_space(&t);
     test_bpe_roundtrip_is_exact(&t);
     digits(&t);
