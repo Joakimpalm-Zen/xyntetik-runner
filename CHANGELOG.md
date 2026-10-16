@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Several engines on one CUDA GPU keep the GPU.** A program that ran
+  Runner engines on separate threads, sharing one CUDA device, could lose
+  all but one of them to the CPU. One engine capturing its decode step into
+  a CUDA graph while another made a synchronous copy is a combination CUDA
+  refuses: it fails the copy and invalidates the capture, and the failed
+  forward dropped the copying engine to the CPU for good. The answers stayed
+  correct, so only the speed showed it. Captures and the driver calls that
+  would collide with them now take turns. A `--parallel` server was not
+  affected, because its scheduler drives the device from one thread.
+
 - **Parallel slots no longer race on state the process sets up on first
   use.** Runner reads a few dozen settings once and keeps them: kernel
   switches from the environment, dispatch counters, once-only notices, debug

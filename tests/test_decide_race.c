@@ -11,7 +11,14 @@
 // model and engine, as a slot does. With "gpu" after the model the engines
 // run on the build's GPU backend (`make test-decide-race-gpu`), so the
 // backend's own first-use state is raced too: kernel-selection flags,
-// dispatch counters, once-only notices.
+// dispatch counters, once-only notices. There every engine must start on the
+// device and still be on it at the end: on CUDA, one engine's graph capture
+// and another's synchronous copy collided, and the copier's forward failed
+// and dropped it to the CPU for good (2026-10-16), with every answer still
+// correct, so only this check could see it. Each engine captures its graph
+// once, so on the GPU the test runs GPU_CYCLES rounds of fresh engines: four
+// captures caught that collision in 2 of 3 runs, and twelve make a miss
+// rare.
 #include "runner.h"
 #include "decide.h"
 
@@ -20,11 +27,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { THREADS = 4, ROUNDS = 25 };
+enum { THREADS = 4, ROUNDS = 25, GPU_CYCLES = 3 };
 
 static const char *g_model = "test.gguf";
 static int g_gpu_mode = GPU_OFF;
-static unsigned long long g_ids[2][THREADS * ROUNDS];
+static unsigned long long g_ids[2][THREADS * ROUNDS * GPU_CYCLES];
 static int g_n[2];
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_fail;
@@ -68,6 +75,11 @@ static void *worker(void *arg) {
         g_fail = 1;
         return NULL;
     }
+    bool on_gpu = m.gpu != NULL;
+    if (g_gpu_mode == GPU_AUTO && !on_gpu) {
+        fprintf(stderr, "FAIL: an engine did not start on the GPU\n");
+        g_fail = 1;
+    }
     jv *dq = json_parse(DECIDE, strlen(DECIDE)), *rq = json_parse(RERANK, strlen(RERANK));
     for (int r = 0; r < ROUNDS; r++) {
         const char *err = NULL;
@@ -81,6 +93,11 @@ static void *worker(void *arg) {
         if (st != 200) { fprintf(stderr, "FAIL: rerank %d %s\n", st, err ? err : ""); g_fail = 1; }
         else record(1, rout.s, "\"id\":\"rerank-");
         free(rout.s);
+    }
+    if (on_gpu && (!m.gpu || m.route_fallback[0])) {
+        fprintf(stderr, "FAIL: an engine left the GPU mid-run (%s)\n",
+                m.route_fallback[0] ? m.route_fallback : "backend released");
+        g_fail = 1;
     }
     jv_free(dq);
     jv_free(rq);
@@ -100,13 +117,16 @@ int main(int argc, char **argv) {
     if (argc > 1) g_model = argv[1];
     if (argc > 2 && !strcmp(argv[2], "gpu")) g_gpu_mode = GPU_AUTO;
     f16_init();
-    pthread_t th[THREADS];
-    for (int i = 0; i < THREADS; i++) pthread_create(&th[i], NULL, worker, NULL);
-    for (int i = 0; i < THREADS; i++) pthread_join(th[i], NULL);
+    int cycles = g_gpu_mode == GPU_AUTO ? GPU_CYCLES : 1;
+    for (int c = 0; c < cycles; c++) {
+        pthread_t th[THREADS];
+        for (int i = 0; i < THREADS; i++) pthread_create(&th[i], NULL, worker, NULL);
+        for (int i = 0; i < THREADS; i++) pthread_join(th[i], NULL);
+    }
     static const char *const kind[2] = { "decide", "rerank" };
     for (int k = 0; k < 2; k++) {
-        if (g_n[k] != THREADS * ROUNDS) {
-            fprintf(stderr, "FAIL: %d %s answers, want %d\n", g_n[k], kind[k], THREADS * ROUNDS);
+        if (g_n[k] != THREADS * ROUNDS * cycles) {
+            fprintf(stderr, "FAIL: %d %s answers, want %d\n", g_n[k], kind[k], THREADS * ROUNDS * cycles);
             g_fail = 1;
         }
         qsort(g_ids[k], (size_t)g_n[k], sizeof g_ids[k][0], cmp_u64);
@@ -117,7 +137,7 @@ int main(int argc, char **argv) {
             }
     }
     if (g_fail) return 1;
-    printf("decide race: %d decide and %d rerank answers from %d threads, every id distinct\n",
-           g_n[0], g_n[1], THREADS);
+    printf("decide race: %d decide and %d rerank answers from %d threads%s, every id distinct\n",
+           g_n[0], g_n[1], THREADS, cycles > 1 ? " x 3 cycles, every engine kept the GPU" : "");
     return 0;
 }
