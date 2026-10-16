@@ -228,9 +228,127 @@ static bool cu_load_now(void) {
            cu.ModuleGetFunction && cu.LaunchKernel && cu.CtxSynchronize;
 }
 
+// ----------------------------------------------------- capture exclusion
+// Engines on one device each own a stream, and those streams are created
+// blocking (StreamCreate flags 0), so the legacy default stream
+// synchronizes with every one of them: a synchronous copy, memset,
+// allocation, free, module load or context-wide sync from one engine
+// orders itself after the other engines' streams. CUDA refuses that while
+// one of those streams is being captured into a graph: the call fails and
+// the capture is invalidated. THREAD_LOCAL capture mode does not cover it,
+// because it only lifts the ban on OTHER threads' unsafe calls. So two
+// engines on two threads collided: one engine's graph capture and
+// another's synchronous copy. The copier's forward failed and model.c
+// dropped it to the CPU for good, and the capturer fell back to plain
+// launches (2026-10-16, four engines on an RTX 3070,
+// tests/test_decide_race.c). A --parallel server is not affected, because
+// its scheduler drives the device from one thread.
+//
+// The two are kept apart: g_capture_mu is held for a capture's whole window
+// (capture_begin .. capture_end), and every call that synchronizes with the
+// legacy stream takes it. Those table entries are replaced by guarded
+// wrappers at load (cu_guard_syncing), so no call site can forget. A thread
+// inside its own capture does not take it again (t_capturing), so its calls
+// behave exactly as they did. Uncontended, the lock is a few tens of
+// nanoseconds on a call that waits for the device anyway.
+static pthread_mutex_t g_capture_mu = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local bool t_capturing;
+static struct {
+    CUresult (*MemAlloc)(CUdeviceptr *, size_t);
+    CUresult (*MemFree)(CUdeviceptr);
+    CUresult (*MemcpyHtoD)(CUdeviceptr, const void *, size_t);
+    CUresult (*MemcpyDtoH)(void *, CUdeviceptr, size_t);
+    CUresult (*MemcpyDtoD)(CUdeviceptr, CUdeviceptr, size_t);
+    CUresult (*MemsetD8)(CUdeviceptr, unsigned char, size_t);
+    CUresult (*ModuleLoadData)(CUmodule *, const void *);
+    CUresult (*ModuleUnload)(CUmodule);
+    CUresult (*LaunchKernel)(CUfunction, unsigned, unsigned, unsigned,
+                             unsigned, unsigned, unsigned,
+                             unsigned, void *, void **, void **);
+    CUresult (*CtxSynchronize)(void);
+} cu_raw;
+
+#define SYNC_GUARDED(call) do {                                   \
+        bool held_ = !t_capturing;                                \
+        if (held_) pthread_mutex_lock(&g_capture_mu);             \
+        r_ = (call);                                              \
+        if (held_) pthread_mutex_unlock(&g_capture_mu);           \
+    } while (0)
+
+static CUresult guarded_MemAlloc(CUdeviceptr *p, size_t n) {
+    CUresult r_; SYNC_GUARDED(cu_raw.MemAlloc(p, n)); return r_;
+}
+static CUresult guarded_MemFree(CUdeviceptr p) {
+    CUresult r_; SYNC_GUARDED(cu_raw.MemFree(p)); return r_;
+}
+static CUresult guarded_MemcpyHtoD(CUdeviceptr d, const void *h, size_t n) {
+    CUresult r_; SYNC_GUARDED(cu_raw.MemcpyHtoD(d, h, n)); return r_;
+}
+static CUresult guarded_MemcpyDtoH(void *h, CUdeviceptr d, size_t n) {
+    CUresult r_; SYNC_GUARDED(cu_raw.MemcpyDtoH(h, d, n)); return r_;
+}
+static CUresult guarded_MemcpyDtoD(CUdeviceptr a, CUdeviceptr b, size_t n) {
+    CUresult r_; SYNC_GUARDED(cu_raw.MemcpyDtoD(a, b, n)); return r_;
+}
+static CUresult guarded_MemsetD8(CUdeviceptr d, unsigned char v, size_t n) {
+    CUresult r_; SYNC_GUARDED(cu_raw.MemsetD8(d, v, n)); return r_;
+}
+static CUresult guarded_ModuleLoadData(CUmodule *mod, const void *img) {
+    CUresult r_; SYNC_GUARDED(cu_raw.ModuleLoadData(mod, img)); return r_;
+}
+static CUresult guarded_ModuleUnload(CUmodule mod) {
+    CUresult r_; SYNC_GUARDED(cu_raw.ModuleUnload(mod)); return r_;
+}
+static CUresult guarded_CtxSynchronize(void) {
+    CUresult r_; SYNC_GUARDED(cu_raw.CtxSynchronize()); return r_;
+}
+// a launch on the engine's own stream is ordered by that stream alone; one
+// on the legacy stream (NULL: the training matvec) synchronizes like a copy
+static CUresult guarded_LaunchKernel(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
+                                     unsigned bx, unsigned by, unsigned bz,
+                                     unsigned shmem, void *stream, void **params,
+                                     void **extra) {
+    if (stream) return cu_raw.LaunchKernel(f, gx, gy, gz, bx, by, bz, shmem, stream, params, extra);
+    CUresult r_;
+    SYNC_GUARDED(cu_raw.LaunchKernel(f, gx, gy, gz, bx, by, bz, shmem, stream, params, extra));
+    return r_;
+}
+
+static void cu_guard_syncing(void) {
+#define GUARD(fn) do { cu_raw.fn = cu.fn; if (cu.fn) cu.fn = guarded_##fn; } while (0)
+    GUARD(MemAlloc); GUARD(MemFree); GUARD(MemcpyHtoD); GUARD(MemcpyDtoH);
+    GUARD(MemcpyDtoD); GUARD(MemsetD8); GUARD(ModuleLoadData); GUARD(ModuleUnload);
+    GUARD(LaunchKernel); GUARD(CtxSynchronize);
+#undef GUARD
+}
+
+// A capture holds g_capture_mu from its first call to its last. capture_end
+// is safe to call twice (the failure paths end a capture "to be sure").
+static CUresult capture_begin(CUstream s) {
+    pthread_mutex_lock(&g_capture_mu);
+    t_capturing = true;
+    CUresult r = cu.StreamBeginCapture(s, 1);   // THREAD_LOCAL; see above for why that is not enough
+    if (r != 0) {
+        t_capturing = false;
+        pthread_mutex_unlock(&g_capture_mu);
+    }
+    return r;
+}
+static CUresult capture_end(CUstream s, CUgraph *graph) {
+    CUresult r = cu.StreamEndCapture(s, graph);
+    if (t_capturing) {
+        t_capturing = false;
+        pthread_mutex_unlock(&g_capture_mu);
+    }
+    return r;
+}
+
 static pthread_once_t cu_once = PTHREAD_ONCE_INIT;
 static bool cu_ok;
-static void cu_load_once(void) { cu_ok = cu_load_now(); }
+static void cu_load_once(void) {
+    cu_ok = cu_load_now();
+    if (cu_ok) cu_guard_syncing();
+}
 static bool cu_load(void) {
     pthread_once(&cu_once, cu_load_once);   // orders the table before every reader
     return cu_ok;
@@ -6225,12 +6343,12 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     if (!b->graph_bad && !prof.on) {   // see the note on the solo path above
         if (!b->gexec[n]) {
             prof.capturing = 1;
-            if (cu.StreamBeginCapture(g->stream, 1) != 0 ||
+            if (capture_begin(g->stream) != 0 ||
                 !fwd_batch(b, m0, n) ||
-                cu.StreamEndCapture(g->stream, &b->graph[n]) != 0 ||
+                capture_end(g->stream, &b->graph[n]) != 0 ||
                 cu.GraphInstantiateWithFlags(&b->gexec[n], b->graph[n], 0) != 0) {
                 CUgraph junk = NULL;
-                cu.StreamEndCapture(g->stream, &junk);
+                capture_end(g->stream, &junk);
                 if (junk && junk != b->graph[n]) cu.GraphDestroy(junk);
                 fprintf(stderr, "gpu: batch graph capture failed — plain launches\n");
                 b->graph_bad = true;
@@ -6368,13 +6486,15 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
         // capture window, so another slot's plain-path forward or a
         // second gpu_t warming up on its own thread would fail and
         // permanently downgrade that slot to CPU (model.c sees the
-        // failed forward and clears m->gpu)
-        if (cu.StreamBeginCapture(g->stream, 1) != 0 ||
+        // failed forward and clears m->gpu). THREAD_LOCAL alone still let
+        // another engine's synchronous copy invalidate the capture;
+        // capture_begin's exclusion is the other half (see above).
+        if (capture_begin(g->stream) != 0 ||
             !fwd_tile(g, m, tokens, 1, pos, true, 0, m->gpu_layers) ||
-            cu.StreamEndCapture(g->stream, &g->graph) != 0 ||
+            capture_end(g->stream, &g->graph) != 0 ||
             cu.GraphInstantiateWithFlags(&g->gexec, g->graph, 0) != 0) {
             CUgraph junk = NULL;
-            cu.StreamEndCapture(g->stream, &junk); // ensure capture ended
+            capture_end(g->stream, &junk); // ensure capture ended
             if (junk && junk != g->graph) cu.GraphDestroy(junk);
             fprintf(stderr, "gpu: graph capture failed — plain launches\n");
             g->graph_bad = true;

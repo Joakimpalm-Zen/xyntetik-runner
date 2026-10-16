@@ -11,7 +11,11 @@
 // model and engine, as a slot does. With "gpu" after the model the engines
 // run on the build's GPU backend (`make test-decide-race-gpu`), so the
 // backend's own first-use state is raced too: kernel-selection flags,
-// dispatch counters, once-only notices.
+// dispatch counters, once-only notices. There every engine must start on the
+// device and still be on it at the end: on CUDA, one engine's graph capture
+// and another's synchronous copy collided, and the copier's forward failed
+// and dropped it to the CPU for good (2026-10-16), with every answer still
+// correct, so only this check could see it.
 #include "runner.h"
 #include "decide.h"
 
@@ -68,6 +72,11 @@ static void *worker(void *arg) {
         g_fail = 1;
         return NULL;
     }
+    bool on_gpu = m.gpu != NULL;
+    if (g_gpu_mode == GPU_AUTO && !on_gpu) {
+        fprintf(stderr, "FAIL: an engine did not start on the GPU\n");
+        g_fail = 1;
+    }
     jv *dq = json_parse(DECIDE, strlen(DECIDE)), *rq = json_parse(RERANK, strlen(RERANK));
     for (int r = 0; r < ROUNDS; r++) {
         const char *err = NULL;
@@ -81,6 +90,11 @@ static void *worker(void *arg) {
         if (st != 200) { fprintf(stderr, "FAIL: rerank %d %s\n", st, err ? err : ""); g_fail = 1; }
         else record(1, rout.s, "\"id\":\"rerank-");
         free(rout.s);
+    }
+    if (on_gpu && (!m.gpu || m.route_fallback[0])) {
+        fprintf(stderr, "FAIL: an engine left the GPU mid-run (%s)\n",
+                m.route_fallback[0] ? m.route_fallback : "backend released");
+        g_fail = 1;
     }
     jv_free(dq);
     jv_free(rq);
