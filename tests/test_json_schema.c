@@ -1271,6 +1271,50 @@ static void test_schema_merges_enum_and_const_anyof(void) {
     schema_free(schema); jv_free(j);
 }
 
+// json_parse keeps an integer literal of more than fifteen digits as its text
+// (a double holds every fifteen-digit integer, not every sixteen-digit one),
+// and every writer must hand it back digit for digit. 2^53 + 1 =
+// 9007199254740993 is the first integer a double cannot hold; it was written
+// back as ...992 (2026-10-16, Clef's score legend), which also put the wrong
+// number into rendered tool schemas and grammar literals. The anchor is the
+// literal itself: each must come back unchanged, in both spellings.
+static void test_dump_keeps_integer_literals(void) {
+    const char *src = "[9007199254740993,-9007199254740993,12345678901234567890,"
+                      "{\"n\":[9007199254740993]},123456789012345,-0,7]";
+    jv *j = json_parse(src, strlen(src));
+    assert(j);
+    sbuf a = { 0 }, b = { 0 };
+    jv_dump(j, &a);
+    jv_dump_tojson(j, &b);
+    assert(a.s && b.s);
+    if (strcmp(a.s, "[9007199254740993,-9007199254740993,12345678901234567890,"
+                     "{\"n\":[9007199254740993]},123456789012345,0,7]")) {
+        fprintf(stderr, "jv_dump changed an integer: %s\n", a.s);
+        abort();
+    }
+    if (strcmp(b.s, "[9007199254740993, -9007199254740993, 12345678901234567890, "
+                     "{\"n\": [9007199254740993]}, 123456789012345, 0, 7]")) {
+        fprintf(stderr, "jv_dump_tojson changed an integer: %s\n", b.s);
+        abort();
+    }
+    free(a.s); free(b.s); jv_free(j);
+}
+
+// An enum literal is compiled from its dump, so it constrains output to the
+// caller's integer, not to the nearest double.
+static void test_schema_enum_keeps_a_large_integer(void) {
+    const char *src = "{\"enum\":[9007199254740993]}";
+    jv *j = json_parse(src, strlen(src));
+    char err[128];
+    snode *schema = schema_compile(j, err, sizeof(err));
+    assert(schema != NULL);
+    sval v; sval_init(&v, schema);
+    assert(sval_feed(&v, "9007199254740993", 16) && v.done);
+    sval w; sval_init(&w, schema);
+    assert(!(sval_feed(&w, "9007199254740992", 16) && w.done));
+    schema_free(schema); jv_free(j);
+}
+
 static void test_schema_integer_bounds_are_enforced(void) {
     const char *src =
         "{\"type\":\"integer\",\"minimum\":0,"
@@ -3162,6 +3206,8 @@ int main(void) {
     test_schema_negated_and_escaped_classes();
     test_schema_number_bounds_reject_dead_minus_and_close_in_bounds();
     test_schema_merges_enum_and_const_anyof();
+    test_dump_keeps_integer_literals();
+    test_schema_enum_keeps_a_large_integer();
     test_schema_integer_bounds_are_enforced();
     test_schema_integer_rejects_leading_zeros();
     test_schema_number_bounds_intersect_their_exclusive_twins();

@@ -180,6 +180,23 @@ def test_answers_follow_systemone(runner_bin, clef_model):
     assert len(env["input_ids_sha256"]) == 64
 
 
+def test_score_legend_keeps_integers_a_double_cannot_hold(runner_bin, clef_model):
+    """The legend is the caller's criteria handed back, and the prompt is
+    built from the same criteria, so both must keep every digit. 2**53 + 1 is
+    the first integer a double cannot hold: it came back as ...992 (the
+    2026-10-16 review), nested ones too, while the prompt kept ...993, so the
+    legend no longer named what the model had scored. Python's json keeps
+    integers exact, which makes it the anchor here."""
+    big = 2 ** 53 + 1
+    criteria = [big, {"n": -big, "ids": [big + 2, 12345678901234567890]}, "small"]
+    r = {"id": "big-integers", "model": "clef", "state": {"order": big},
+         "questions": {"size": {"type": "score", "criteria": criteria}}}
+    p, (resp,) = systemone(runner_bin, clef_model, [traced(r)])
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert resp["answers"]["size"]["legend"] == {str(i): c for i, c in enumerate(criteria)}
+    assert decode(resp["runner_logits"]["input_ids"]) == expected_prompt(r)[0]
+
+
 def test_trace_only_on_request(runner_bin, clef_model):
     p, (resp,) = systemone(runner_bin, clef_model, [record("card-invoice")])
     assert p.returncode == 0

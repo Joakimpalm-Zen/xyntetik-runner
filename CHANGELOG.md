@@ -27,6 +27,18 @@ Current release and unreleased changes. Compatibility follows the
   with a plain `write`, and exits 200 ms later whether the line went out or
   not.
 
+- **Integers longer than fifteen digits keep every digit.** Runner kept the
+  digits of such an integer when it parsed a request, but wrote the
+  rounded double back out, so 9007199254740993 (2^53 + 1) became
+  9007199254740992. It showed in Clef's score legend, which no longer named
+  the criterion the model had scored. The same writer renders tool schemas
+  and history into chat prompts, compiles `enum` and `const` literals into
+  the output grammar, and echoes tool-call arguments, so each of those now
+  keeps the caller's integer too. A JSON schema holding such an integer now
+  has a sha256 of its own (it used to share the rounded schema's), so a
+  record or session image made under one by 1.4.0 names a digest this
+  release does not reproduce; both are bound to the build that wrote them.
+
 ## v1.4.0 - 2026-10-16
 
 - **`--train` says when a run is about to memorize.** A user trained four
