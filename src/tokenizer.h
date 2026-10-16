@@ -29,6 +29,8 @@ typedef struct {
     // the end token (embedding models such as Qwen3-Embedding pool on it).
     // Honoured where a whole input is encoded as-is: /v1/embeddings.
     bool     add_eos;
+    // the publisher's tokenizer composes its input to NFC before splitting
+    bool     nfc;
     hmap     vocab;         // token string -> id
     hmap     merges;        // "left right" -> rank (BPE)
     char    *merges_buf;    // owned storage for merge keys
