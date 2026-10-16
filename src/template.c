@@ -5071,7 +5071,7 @@ static bool qwen_call_for(const tool_envelope *e, const char **p,
 // finish_reason "error"), and reading the code alone did not say which
 // byte a fixture model's constrained call had put where.
 static bool tool_trace_on(void) {
-    static int on = -1;
+    static _Atomic int on = -1;
     if (on < 0) {
         const char *v = getenv("RUNNER_TOOL_TRACE");
         on = v && *v && strcmp(v, "0") ? 1 : 0;

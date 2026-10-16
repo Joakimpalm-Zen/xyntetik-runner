@@ -51,11 +51,33 @@ Current release and unreleased changes. Compatibility follows the
   alternatives could not overlap: they must already differ in their first
   character.
 
-- **`const` beside `enum` compares large integers exactly.** A `const` keeps
-  only the `enum` members equal to it, and the comparison used the rounded
-  double, so `{"const": 9007199254740992, "enum": [9007199254740993]}`
-  emitted 9007199254740993 with HTTP 200, while the small-integer
-  contradiction was a 400. It is a 400 now too.
+- **Schema literals compare by value, exactly.** A `const` keeps only the
+  `enum` members equal to it, and `oneOf` drops the values two alternatives
+  share, so both need number equality, which JSON Schema defines by value.
+  The comparison used the rounded double, so
+  `{"const": 9007199254740992, "enum": [9007199254740993]}` emitted
+  9007199254740993 with HTTP 200, while the small-integer contradiction was
+  a 400. It now compares exact values: an integer of any length by its
+  digits, a whole double past 2^63 by its exact expansion, so `1e20` and
+  `100000000000000000000` are one value and 2^53 and 2^53 + 1 are two.
+
+- **A request's `seed` runs as sent, and `fork_seed` keeps the session seed
+  rule.** The chat and completion `seed` was read as a double, so any seed
+  above 2^53 could run and be reported as a neighbour: 9007199254740993 ran
+  as 9007199254740992, and 18446744073709551615 (2^64 - 1) was refused as
+  2^64. A seed written in digits is now read exactly over the whole uint64
+  range, and the error names that range. A session resume's `fork_seed` was
+  checked only for being a whole number, so 2^53 and 2^53 + 1 forked into one
+  image, and a value past 2^63 reached an undefined cast. It is now held to
+  the rule a session's own `seed` follows (a positive integer below 2^53)
+  and refused by name otherwise.
+
+- **Concurrent `/v1/decide` and `/v1/rerank` answers get distinct ids.**
+  Each response id (`decide-N`, `rerank-N`) came from a counter that every
+  parallel slot bumped without synchronization, so two answers produced at
+  the same moment could carry one id: a probe saw 3 duplicates in 16,000
+  concurrent calls. The counters are atomic now, and a ThreadSanitizer test
+  holds them there.
 
 ## v1.4.0 - 2026-10-16
 

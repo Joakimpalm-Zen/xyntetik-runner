@@ -430,6 +430,20 @@ def test_explicit_seed_zero_is_rejected(client):
     client.expect_400(dict(CHAT, seed=0), name="seed-zero", contains="seed")
 
 
+@pytest.mark.parametrize("seed", [2 ** 53, 2 ** 53 + 1, 2 ** 64 - 1],
+                         ids=["2^53", "2^53+1", "2^64-1"])
+def test_a_seed_runs_as_sent(client, seed):
+    """seed is a uint64, and the request must run the one it sent. A double
+    holds every integer below 2^53 and not every one above, and the seed was
+    read as one: 2**53 + 1 ran, and was reported, as 2**53 (2026-10-16
+    review of fork_seed, the same read here), so two seeds the caller told
+    apart sampled one stream. Python's json keeps integers exact, so the
+    reported seed is the anchor."""
+    r = client.chat(dict(CHAT, seed=seed, temperature=0.9), name=f"seed-{seed}")
+    r.expect_status(200)
+    assert r.json["runner_telemetry"]["sampling"]["seed"] == seed
+
+
 def test_absent_seed_is_still_accepted(client):
     r = client.raw("seed-absent", "POST", "/v1/chat/completions", CHAT)
     r.expect_status(200)

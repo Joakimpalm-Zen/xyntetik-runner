@@ -1087,8 +1087,9 @@ static bool session_int(sock_t fd, jv *req, const char *key, int lo, int hi,
         send_error_detail(fd, 400, msg, key, "invalid_value");
         return false;
     }
-    if (v->type != J_NUM || v->num != (double)(long long)v->num ||
-        v->num < lo || v->num > hi) {
+    // the range first: (long long) of a double outside its range is undefined
+    if (v->type != J_NUM || v->num < lo || v->num > hi ||
+        v->num != (double)(long long)v->num) {
         char msg[128];
         snprintf(msg, sizeof msg, "%s must be an integer in [%d, %d]", key, lo, hi);
         send_error_detail(fd, 400, msg, key, "invalid_value");
@@ -1222,17 +1223,16 @@ static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
     char msha[65], bsha[65];
     const char *why = session_unsupported(s->m);
     int stop_at = 0;
-    long long fork_seed = 0;
-    jv *fs = jv_get(req, "fork_seed");
-    if (fs && fs->type != J_NULL) {
-        if (fs->type != J_NUM || fs->num < 1 || fs->num != (double)(long long)fs->num) {
-            session_image_free(&img);
-            send_error_detail(fd, 400, "fork_seed must be a positive integer",
-                              "fork_seed", "invalid_value");
-            return;
-        }
-        fork_seed = (long long)fs->num;
+    // A fork's seed is held to the rule a session's own is (session_seed):
+    // it only checked for a whole double, so 2^53 and 2^53 + 1 both forked as
+    // 2^53 into one image, and a value past 2^63 reached a long long cast it
+    // does not fit (2026-10-16 review).
+    uint64_t fork_seed_u = 0;
+    if (!session_seed(fd, req, "fork_seed", &fork_seed_u)) {
+        session_image_free(&img);
+        return;
     }
+    long long fork_seed = (long long)fork_seed_u;
     if (!session_int(fd, req, "suspend_after", 1, sm->max_new, &stop_at, false)) {
         session_image_free(&img);
         return;

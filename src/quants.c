@@ -3338,8 +3338,8 @@ bool i8_dot_ok(int type, int n) {
 //   (MoE; main's Q8_0/Q4_K-only route already fails 2/64 on this model)
 //
 // Same disposition: opt-in, gated per model by test-i8-tol.
-static int g_i8_env = -1;      // -1 unparsed, else the env verdict
-static int g_i8_force = -1;    // -1 follow env, else the forced verdict
+static _Atomic int g_i8_env = -1;     // -1 unparsed, else the env verdict
+static _Atomic int g_i8_force = -1;   // -1 follow env, else the forced verdict
 
 bool i8_dot_enabled(void) {
     if (g_i8_force >= 0) return g_i8_force != 0;

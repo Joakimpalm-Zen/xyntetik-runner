@@ -251,7 +251,7 @@ static int prefix_decide(sampler *s, cand_t *valid, int k, double top,
 // RUNNER_SAMPLE_STATS=1 traces why the head fast path was or was not usable.
 // Cached: this sits in the per-token path and getenv is not free.
 static bool sample_stats(void) {
-    static int on = -1;
+    static _Atomic int on = -1;
     if (on < 0) { const char *e = getenv("RUNNER_SAMPLE_STATS"); on = e && *e && strcmp(e, "0") != 0; }
     return on != 0;
 }

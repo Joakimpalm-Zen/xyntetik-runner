@@ -2442,7 +2442,7 @@ static const char *scripted_reply(creq_err *err, jv *req, bool *bad, bool *fault
         }
         return NULL;
     }
-    static int on = -1;
+    static _Atomic int on = -1;
     if (on < 0) {
         const char *env = getenv("RUNNER_TEST_SCRIPTED_REPLY");
         on = env && *env && strcmp(env, "0") != 0;
@@ -2821,7 +2821,8 @@ typedef struct {
     const char *script_text;          // runner_test_reply, when given
     bool script_fault;                // runner_test_fault: end it in a fault
     double req_deadline;              // 0: none
-    double temp, top_p, min_p, top_k, seed, repeat_penalty;
+    double temp, top_p, min_p, top_k, repeat_penalty;
+    uint64_t seed;                    // 0: not fixed by the request (exact: request_seed)
     int max_tokens;
     bool stream, include_usage;
     bool want_lp;
@@ -2906,13 +2907,66 @@ static bool creq_deadline(const creq_ctx *c, completion_req *q, creq_err *err) {
     return true;
 }
 
+// seed is engine state, a uint64, and the request runs the one it sent. A
+// double holds every integer below 2^53 and not every one above, so an
+// integer literal longer than fifteen digits is read from its digits (json.h
+// num_text): read as a double, 9007199254740993 ran, and was reported, as
+// 9007199254740992, and 2^64 - 1 was refused as 2^64 (2026-10-16, the
+// review's fork_seed finding, which this read shared).
+static bool request_seed(creq_err *err, jv *req, uint64_t *out) {
+    jv *v = jv_get(req, "seed");
+    *out = 0;
+    if (absent(v)) return true;
+    if (v->type != J_NUM) {
+        creq_set_detail(err, 400, "seed must be a number", "seed", "invalid_type");
+        return false;
+    }
+    bool in_range;
+    if (v->num_text) {
+        char *end = NULL;
+        errno = 0;
+        unsigned long long u = strtoull(v->num_text, &end, 10);
+        in_range = v->num_text[0] != '-' && errno != ERANGE && end && !*end;
+        *out = (uint64_t)u;
+    } else {
+        in_range = fp_isfinite(v->num) && v->num >= 0 && v->num <= SEED_MAX;
+        // fractional is its own message: 1.5 is inside the range
+        if (in_range && !whole_number(v->num)) {
+            creq_set_detail(err, 400, "seed must be a whole number", "seed", "invalid_value");
+            return false;
+        }
+        if (in_range) *out = (uint64_t)v->num;
+    }
+    if (!in_range) {
+        creq_set_detail(err, 400, "seed must be between 0 and 18446744073709551615",
+                        "seed", "invalid_value");
+        return false;
+    }
+    // An explicit seed:0 asks for a REPRODUCIBLE run and does not get one:
+    // the sampler's xorshift64 has a fixed point at state 0, so the engine
+    // leaves the inherited state and two identical requests diverge. The CLI
+    // has refused -s 0 by name since the same reasoning was written down
+    // there; accepting it here and randomizing anyway is the
+    // accepted-then-ignored hazard, answered 200. Absent stays absent.
+    if (*out == 0) {
+        creq_set_detail(err, 400,
+                          "seed 0 is not a usable seed: the sampler's RNG "
+                          "state 0 is a fixed point, so the run would not be "
+                          "reproducible. Use any other value, or omit seed.",
+                          "seed", "invalid_value");
+        return false;
+    }
+    return true;
+}
+
 static bool creq_sampling(const creq_ctx *c, completion_req *q, creq_err *err) {
     slot_t *s = c->s;
     jv *req = c->req;
     // per-request sampling params start from the server defaults every time —
     // one request's overrides must not leak into the next on this slot; only
     // the rng STATE carries across so sampling sequences stay diverse
-    double temp, top_p, min_p, top_k, seed, repeat_penalty;
+    double temp, top_p, min_p, top_k, repeat_penalty;
+    uint64_t seed;
     if (!sampling_number(err, req, "temperature", s->smp_base.temp,
                          0, FLT_MAX, "0 or greater", &temp) ||
         !sampling_number(err, req, "top_p", s->smp_base.top_p,
@@ -2928,9 +2982,8 @@ static bool creq_sampling(const creq_ctx *c, completion_req *q, creq_err *err) {
                          FLT_MIN, FLT_MAX,
                          "greater than 0 (send 1 for no penalty)",
                          &repeat_penalty) ||
-        !sampling_number(err, req, "seed", 0, 0, SEED_MAX,
-                         "between 0 and 18446744073709549568", &seed))
-        return false;   // sampling_number already answered, naming the field
+        !request_seed(err, req, &seed))
+        return false;   // the reader already answered, naming the field
     // top_k and seed are held as integer engine state, so accepting 2.5 and
     // truncating it to 2 would run the request with settings the caller did
     // not ask for. Not "out of range": 2.5 is inside every bound top_k has,
@@ -2940,27 +2993,6 @@ static bool creq_sampling(const creq_ctx *c, completion_req *q, creq_err *err) {
     if (!whole_number(top_k)) {
         creq_set_detail(err, 400, "top_k must be a whole number",
                           "top_k", "invalid_value");
-        return false;
-    }
-    if (!whole_number(seed)) {
-        creq_set_detail(err, 400, "seed must be a whole number",
-                          "seed", "invalid_value");
-        return false;
-    }
-    // An explicit seed:0 asks for a REPRODUCIBLE run and does not get one:
-    // the sampler's xorshift64 has a fixed point at state 0, so `seed > 0`
-    // below leaves the inherited state and two identical requests diverge.
-    // The CLI has refused -s 0 by name since the same reasoning was written
-    // down there; accepting it here and randomizing anyway is the
-    // accepted-then-ignored hazard, answered 200. Absent stays absent: the
-    // default 0 is indistinguishable from an explicit one by value alone,
-    // which is why this asks the request whether the member is there.
-    if (!absent(jv_get(req, "seed")) && seed == 0) {
-        creq_set_detail(err, 400,
-                          "seed 0 is not a usable seed: the sampler's RNG "
-                          "state 0 is a fixed point, so the run would not be "
-                          "reproducible. Use any other value, or omit seed.",
-                          "seed", "invalid_value");
         return false;
     }
     q->top_p = top_p;

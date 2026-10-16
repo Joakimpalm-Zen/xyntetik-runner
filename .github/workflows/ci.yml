@@ -768,7 +768,7 @@ jobs:
       - name: shared pool, registry/shutdown and tokenizer races
         # every --parallel slot tokenizes with the one tokenizer the server
         # loaded; per-call state left in it was a data race (2026-09-30)
-        run: python3 scripts/ci-run.py --timeout 1200 thread-sanitizer -- make test-pool-race test-server-race-tsan test-tokenizer-race
+        run: python3 scripts/ci-run.py --timeout 1200 thread-sanitizer -- make test-pool-race test-server-race-tsan test-tokenizer-race test-decide-race
       - uses: actions/upload-artifact@v7
         if: always()
         with:
