@@ -3,7 +3,7 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.4.0 - 2026-10-16
 
 - **`--train` says when a run is about to memorize.** A user trained four
   examples that all answered the same passphrase for 60 steps at five times
