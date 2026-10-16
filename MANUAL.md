@@ -936,7 +936,10 @@ lengths and supported anchored patterns, array item/count constraints,
 scalar-const `oneOf`/`anyOf`, and the tool-discriminated object union used by
 agent clients. Required properties are present, unknown properties are blocked
 for closed objects, and tool arguments are generated against the selected
-tool's schema.
+tool's schema. Over scalar literal alternatives, `anyOf` admits every value
+an alternative lists and `oneOf` only the values exactly one alternative
+lists, so `oneOf: [{"enum": [1, 2]}, {"enum": [2, 3]}]` admits 1 and 3; a
+`oneOf` that leaves no value is refused.
 
 Object schemas may be closed fixed-property records, unconstrained open
 objects, or homogeneous maps: with no declared properties (or an empty

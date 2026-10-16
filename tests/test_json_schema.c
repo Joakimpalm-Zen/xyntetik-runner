@@ -1315,6 +1315,61 @@ static void test_schema_enum_keeps_a_large_integer(void) {
     schema_free(schema); jv_free(j);
 }
 
+// The anchor is the JSON Schema spec (2020-12, 10.2.1.3): an instance is
+// valid against oneOf when it is valid against EXACTLY one alternative, and
+// against anyOf when it is valid against at least one. Literal alternatives
+// were merged as a union for both, so oneOf [{enum:[1,2]},{enum:[2,3]}]
+// accepted 2, which both branches admit, and two identical const branches
+// compiled although no value can satisfy them (2026-10-16 review).
+static bool schema_accepts(const char *src, const char *val) {
+    jv *j = json_parse(src, strlen(src));
+    char err[160];
+    snode *s = schema_compile(j, err, sizeof(err));
+    assert(s != NULL);
+    sval v; sval_init(&v, s);
+    bool ok = sval_feed(&v, val, (int)strlen(val)) && v.done;
+    schema_free(s); jv_free(j);
+    return ok;
+}
+
+static bool schema_refused(const char *src) {
+    jv *j = json_parse(src, strlen(src));
+    char err[160];
+    snode *s = schema_compile(j, err, sizeof(err));
+    schema_free(s); jv_free(j);
+    return s == NULL;
+}
+
+static void test_schema_one_of_admits_exactly_one_branch(void) {
+    const char *one = "{\"oneOf\":[{\"enum\":[1,2]},{\"enum\":[2,3]}]}";
+    assert(schema_accepts(one, "1") && schema_accepts(one, "3"));
+    assert(!schema_accepts(one, "2"));
+    const char *any = "{\"anyOf\":[{\"enum\":[1,2]},{\"enum\":[2,3]}]}";
+    assert(schema_accepts(any, "1") && schema_accepts(any, "2") && schema_accepts(any, "3"));
+    // a value listed twice in ONE branch still matches one branch
+    const char *dup = "{\"oneOf\":[{\"enum\":[1,1]},{\"const\":2}]}";
+    assert(schema_accepts(dup, "1") && schema_accepts(dup, "2"));
+    // equal values spelled differently are one value
+    const char *spell = "{\"oneOf\":[{\"const\":1},{\"enum\":[1.0,2]}]}";
+    assert(!schema_accepts(spell, "1") && schema_accepts(spell, "2"));
+    // no value matches exactly one branch: refused, not weakened
+    assert(schema_refused("{\"oneOf\":[{\"const\":1},{\"const\":1}]}"));
+    assert(schema_refused("{\"oneOf\":[{\"enum\":[1,2]},{\"enum\":[2,1]}]}"));
+    assert(!schema_refused("{\"anyOf\":[{\"const\":1},{\"const\":1}]}"));
+}
+
+// const beside enum keeps only the members equal to the const, and equal
+// means the same value: 2^53 and 2^53 + 1 are one double and two integers.
+// The small-integer twin was refused; the large one emitted 2^53 + 1 under
+// const 2^53 (2026-10-16 review).
+static void test_schema_const_and_enum_compare_large_integers_exactly(void) {
+    assert(schema_refused("{\"const\":9007199254740992,\"enum\":[9007199254740993]}"));
+    assert(schema_refused("{\"const\":2,\"enum\":[3]}"));
+    const char *src = "{\"const\":9007199254740993,\"enum\":[9007199254740992,9007199254740993]}";
+    assert(schema_accepts(src, "9007199254740993"));
+    assert(!schema_accepts(src, "9007199254740992"));
+}
+
 static void test_schema_integer_bounds_are_enforced(void) {
     const char *src =
         "{\"type\":\"integer\",\"minimum\":0,"
@@ -3208,6 +3263,8 @@ int main(void) {
     test_schema_merges_enum_and_const_anyof();
     test_dump_keeps_integer_literals();
     test_schema_enum_keeps_a_large_integer();
+    test_schema_one_of_admits_exactly_one_branch();
+    test_schema_const_and_enum_compare_large_integers_exactly();
     test_schema_integer_bounds_are_enforced();
     test_schema_integer_rejects_leading_zeros();
     test_schema_number_bounds_intersect_their_exclusive_twins();

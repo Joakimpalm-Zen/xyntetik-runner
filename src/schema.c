@@ -1160,7 +1160,47 @@ static bool union_start_bytes(const snode *a, bool set[256]) {
     }
 }
 
-static snode *compile_oneof(jv *alts, char *err, int errcap, int depth) {
+// oneOf over literal alternatives (JSON Schema 2020-12, 10.2.1.3): a value
+// is valid when EXACTLY one alternative admits it, so a literal two branches
+// share is no answer at all, where anyOf keeps it. Literals compare by the
+// spelling the grammar emits, one per value (sn_literal). Sorting the
+// (spelling, branch) pairs finds the shared ones without comparing every
+// literal with every other: an enum may hold SCHEMA_ENUM_MAX of them.
+typedef struct { const char *s; int branch, pos; } lit_ref;
+
+static int lit_ref_cmp(const void *a, const void *b) {
+    const lit_ref *x = a, *y = b;
+    int c = strcmp(x->s, y->s);
+    if (c) return c;
+    if (x->branch != y->branch) return x->branch < y->branch ? -1 : 1;
+    return x->pos < y->pos ? -1 : x->pos > y->pos;
+}
+
+// keep[pos] = the literal at flat position pos is the first spelling of a
+// value exactly one branch lists; returns how many, or -1 on OOM
+static int one_of_literals(snode *const *alts, int n_alts, int total, bool *keep) {
+    lit_ref *r = malloc(sizeof(lit_ref) * (size_t)total);
+    if (!r) return -1;
+    int k = 0;
+    for (int i = 0; i < n_alts; i++)
+        for (int j = 0; j < alts[i]->n_lits; j++, k++)
+            r[k] = (lit_ref){ alts[i]->lits[j], i, k };
+    qsort(r, (size_t)total, sizeof *r, lit_ref_cmp);
+    int kept = 0;
+    for (int g = 0; g < total; ) {
+        int e = g + 1;
+        bool one_branch = true;
+        for (; e < total && !strcmp(r[e].s, r[g].s); e++)
+            if (r[e].branch != r[g].branch) one_branch = false;
+        if (one_branch) { keep[r[g].pos] = true; kept++; }
+        g = e;
+    }
+    free(r);
+    return kept;
+}
+
+// `exclusive`: oneOf (exactly one alternative) rather than anyOf (at least one)
+static snode *compile_oneof(jv *alts, bool exclusive, char *err, int errcap, int depth) {
     if (!alts || alts->type != J_ARR || alts->n <= 0) {
         snprintf(err, errcap, "oneOf/anyOf must be a non-empty array");
         return NULL;
@@ -1192,7 +1232,9 @@ static snode *compile_oneof(jv *alts, char *err, int errcap, int depth) {
         n->n_alts++;
     }
     /* JSON-schema generators commonly spell a string enum plus one sentinel
-       const as anyOf. They are one literal language, not an ambiguous union. */
+       const as anyOf. They are one literal language, not an ambiguous union:
+       their union for anyOf, and for oneOf the values exactly one of them
+       lists. */
     int literal_count = 0;
     bool all_literals = true;
     for (int i = 0; i < n->n_alts; i++) {
@@ -1200,17 +1242,35 @@ static snode *compile_oneof(jv *alts, char *err, int errcap, int depth) {
         literal_count += n->alts[i]->n_lits;
     }
     if (all_literals && literal_count > 0 && literal_count <= SCHEMA_ENUM_MAX) {
+        bool *keep = calloc((size_t)literal_count, sizeof(bool));
+        if (!keep) { schema_free(n); return NULL; }
+        int n_keep = literal_count;
+        if (exclusive) {
+            n_keep = one_of_literals(n->alts, n->n_alts, literal_count, keep);
+            if (n_keep < 0) { free(keep); schema_free(n); return NULL; }
+            if (n_keep == 0) {
+                snprintf(err, errcap, "oneOf admits no value: every value its "
+                         "alternatives list is listed by more than one of them");
+                free(keep); schema_free(n);
+                return NULL;
+            }
+        } else {
+            for (int i = 0; i < literal_count; i++) keep[i] = true;
+        }
         snode *merged = sn_new(SN_ENUM);
-        if (!merged) { schema_free(n); return NULL; }
-        merged->lits = calloc((size_t)literal_count, sizeof(char *));
-        if (!merged->lits) { schema_free(merged); schema_free(n); return NULL; }
-        for (int i = 0; i < n->n_alts; i++) {
+        if (!merged) { free(keep); schema_free(n); return NULL; }
+        merged->lits = calloc((size_t)n_keep, sizeof(char *));
+        if (!merged->lits) { free(keep); schema_free(merged); schema_free(n); return NULL; }
+        // the kept literals move to `merged`; the rest are freed with n
+        for (int i = 0, pos = 0; i < n->n_alts; i++) {
             snode *a = n->alts[i];
-            for (int j = 0; j < a->n_lits; j++) {
+            for (int j = 0; j < a->n_lits; j++, pos++) {
+                if (!keep[pos]) continue;
                 merged->lits[merged->n_lits++] = a->lits[j];
                 a->lits[j] = NULL;
             }
         }
+        free(keep);
         if (!enum_index(merged)) { schema_free(merged); schema_free(n); return NULL; }
         schema_free(n);
         return merged;
@@ -1268,10 +1328,23 @@ static bool literal_has_type(const jv *v, jv *ty) {
     }
     return true; // a malformed type keyword is reported by compile_typed
 }
+// Numbers are equal when they are the same value. An integer literal longer
+// than fifteen digits is a value only its digits hold (json.h, num_text):
+// 2^53 and 2^53 + 1 are one double, so comparing doubles kept enum member
+// 2^53 + 1 under const 2^53 (2026-10-16 review). The spellings the grammar
+// emits are exact for those and one per double otherwise; compare them.
+static bool number_equal(const jv *a, const jv *b) {
+    if (!a->num_text && !b->num_text) return a->num == b->num;
+    char x[32], y[32];
+    if (!a->num_text) json_format_number(a->num, x);
+    if (!b->num_text) json_format_number(b->num, y);
+    return !strcmp(a->num_text ? a->num_text : x, b->num_text ? b->num_text : y);
+}
+
 static bool literal_equal(const jv *a, const jv *b) {
     if (a->type != b->type) return false;
     switch (a->type) {
-        case J_NUM:  return a->num == b->num;
+        case J_NUM:  return number_equal(a, b);
         case J_STR:  return !strcmp(a->str, b->str);
         case J_BOOL: return a->b == b->b;
         case J_NULL: return true;
@@ -1422,7 +1495,7 @@ snode *compile_node(jv *s, char *err, int errcap, int depth) {
                  "declare the type on each alternative");
         return NULL;
     }
-    if (one || any) return compile_oneof(one ? one : any, err, errcap, depth);
+    if (one || any) return compile_oneof(one ? one : any, one != NULL, err, errcap, depth);
 
     // enum/const return before compile_typed, so validate the type keyword's
     // shape here rather than relying on the typed path to catch it later.
