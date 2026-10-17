@@ -566,3 +566,78 @@ def test_a_removed_attention_keeps_the_ffn_dispatch_on_the_gpu(
     removed = _score_gpu(runner_bin, out, chunked, gpu_backend, extra)
     assert removed == _score_gpu(runner_bin, zeroed, chunked, gpu_backend, extra)
     assert removed != _score_gpu(runner_bin, parent, chunked, gpu_backend, extra)
+
+
+# ------------------------------------------- --fit reads the per-layer geometry
+def _kv_f16_per_token(path):
+    """The f16 KV bytes one token costs, from the header by the GGUF spec:
+    K and V per layer at that layer's KV heads (0 where the attention was
+    removed) times its head width (gemma-4's sliding layers declare their own),
+    and nothing for gemma-4 E-series layers that read an earlier layer's cache.
+    The independent anchor both --fit and the loader are held to."""
+    kv = _parse(path)["kvs"]
+    arch = kv["general.architecture"]
+    n = kv[f"{arch}.block_count"]
+    hc = kv[f"{arch}.attention.head_count"]
+    hkv = kv.get(f"{arch}.attention.head_count_kv", hc)
+
+    def at(v, i):
+        return v[i] if isinstance(v, list) else v
+    width = max(at(hc, i) for i in range(n))
+    kl = kv.get(f"{arch}.attention.key_length", kv[f"{arch}.embedding_length"] // width)
+    kls = kv.get(f"{arch}.attention.key_length_swa", kl)
+    pat = kv.get(f"{arch}.attention.sliding_window_pattern")
+    shared = kv.get(f"{arch}.attention.shared_kv_layers", 0) if arch == "gemma4" else 0
+    owners = n - shared if 0 < shared < n else n
+    total = 0
+    for i in range(n):
+        if i >= owners or at(hc, i) == 0:
+            continue
+        # bool arrays parse as one-byte strings, and b"\x00" is truthy
+        bit = isinstance(pat, list) and (pat[i][0] if isinstance(pat[i], bytes) else pat[i])
+        hd = kls if bit else kl
+        total += 2 * 2 * at(hkv, i) * hd
+    return total
+
+
+def _fit_kv_gib(runner_bin, model, ctx):
+    p = _run(runner_bin, ["--fit", model, "-c", str(ctx), "--gpu", "off"])
+    out = p.stdout.decode(errors="replace")
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    return float(re.search(r"kv cache\s+([\d.]+) GiB", out).group(1))
+
+
+def _loaded_kv_mb(runner_bin, model, ctx):
+    p = _run(runner_bin, ["-m", model, "-v", "-p", "hi", "-n", "1", "-c", str(ctx),
+                          "--gpu", "off"])
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode == 0, err
+    return float(re.search(r"kv cache\s+([\d.]+) MB", err).group(1))
+
+
+@pytest.mark.parametrize("which", ["plain", "plain-attn1", "gemma4", "gemma4-attn2",
+                                   "gemma4-eseries-shared"])
+def test_fit_and_the_loader_both_charge_each_layer_its_own_kv(
+        runner_bin, parent, gemma4_hetero, tmp_path, which):
+    """--fit used to charge every layer the scalar KV heads times the scalar
+    width: gemma-4-31B read about four times the cache a load allocates, and a
+    removed file was refused (no scalar head_count left to read). Both now
+    match the header, and so each other."""
+    if which == "plain":
+        model = parent
+    elif which == "gemma4":
+        model = gemma4_hetero
+    elif which == "gemma4-eseries-shared":
+        model = tmp_path / "es.gguf"
+        subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--eseries",
+                        "3,8", "--drop-kv", "shared", str(model)], check=True, cwd=ROOT,
+                       stdout=subprocess.DEVNULL)
+    else:
+        src, spec = (parent, "attn:1") if which == "plain-attn1" else (gemma4_hetero, "attn:2")
+        model = tmp_path / "rm.gguf"
+        p = _remove(runner_bin, src, model, spec)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+    per_tok = _kv_f16_per_token(model)
+    big, mid = 1 << 22, 1 << 16   # the fit allocates nothing; the load does
+    assert abs(_fit_kv_gib(runner_bin, model, big) - per_tok * big / (1 << 30)) <= 0.006
+    assert abs(_loaded_kv_mb(runner_bin, model, mid) - per_tok * mid / 1e6) <= 0.06
