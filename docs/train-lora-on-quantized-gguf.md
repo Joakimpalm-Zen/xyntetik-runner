@@ -9,6 +9,10 @@ so there is no second numerical path for the policy to drift across, and the
 adapter is written beside a provenance record (base, data and adapter sha256,
 seed, full config).
 
+This page is the short version. Every adapter feature, from data formats and
+continued training to DPO, the reinforcement loop, per-request adapters,
+signing and lineage, is explained in [the complete adapter guide](lora.md).
+
 ## The measured claim
 
 Measured 2026-08-22 on a public artifact you can download and reproduce,
@@ -48,8 +52,10 @@ into Q8_0 99.5% (`survival` in the merge record; `--merge-allow-erased` override
 ```
 
 Flag reference: `--train`, `--train-steps`, `--lr`, `--train-ctx`,
-`--train-out`, `--save-every`, `--lora-rank`, `--lora`, `--lora-scale`,
-`--merge-lora`, `--score` in the [command-line reference](../MANUAL.md#command-line-reference).
+`--train-out`, `--save-every`, `--lora-rank`, `--train-eot`,
+`--train-logprobs`, `--train-dpo`, `--dpo-beta`, `--lora`, `--lora-scale`,
+`--lora-sig`, `--adapter`, `--merge-lora`, `--merge-allow-erased`,
+`--adapt-info`, `--score` in the [command-line reference](../MANUAL.md#command-line-reference).
 
 ## Where the numbers come from
 

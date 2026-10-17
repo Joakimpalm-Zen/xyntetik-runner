@@ -366,10 +366,12 @@ guarantees the SHAPE of a call at any quantization, not its contents
 on the model's projections, through the quantized GGUF the binary serves.
 There is no 16-bit training copy, no second framework and no conversion
 step afterwards: the serving forward pass is the training forward pass,
-and the adapter comes out beside a provenance record (base, data and
-adapter sha256, seed, full configuration, binary identity). The trained
-adapter is then served on the same file with `--lora`, routed per request
-with `--adapter`, or folded into a standalone file with `--merge-lora`.
+and the adapter comes out beside a provenance record (base, data, starting
+adapter and adapter sha256, seed, full configuration, binary identity). The
+trained adapter is then served on the same file with `--lora`, routed per
+request with `--adapter`, or folded into a standalone file with `--merge-lora`.
+Every adapter feature, from checking a model to signing and tracing an
+adapter, is explained in order in [the complete adapter guide](docs/lora.md).
 
 **What it is for, and what it costs.** Small, targeted datasets: a tool
 habit, a format, a house style, on the order of hundreds of examples and
@@ -468,7 +470,10 @@ of the delta its output kept and refuses one that keeps under half
 A merged Q8_0 or F16 file is a standalone GGUF any runtime can serve.
 
 Flags and their semantics: [`--train`](#cli-train), [`--lora`](#cli-lora),
-[`--adapter`](#cli-adapter), [`--merge-lora`](#cli-merge-lora). Start with the
+[`--adapter`](#cli-adapter), [`--merge-lora`](#cli-merge-lora), `--train-dpo`,
+`--adapt-info` and `--lora-sig` (rows in the
+[command-line reference](#command-line-reference)). Every feature in order:
+[the complete adapter guide](docs/lora.md). Start with the
 [training walkthrough](docs/train-lora-on-quantized-gguf.md) or
 [reproducible training with receipts](docs/reproducible-lora-training-receipts.md);
 design, gates and failure modes are in
@@ -2382,7 +2387,10 @@ ends mid-character decodes to U+FFFD). `--train-logprobs FILE` writes one JSON l
 step, `{"step","example","first","logprobs"}`: the logprob of every target token from
 `first` on, under the forward that step trains through, before its update, through the
 same normalizer as the server's logprobs, so the two compare bit for bit. Fresh adapters start as an exact no-op (A seeded,
-B zero); checkpoints are adapter GGUFs that `--lora` loads back. Deterministic by
+B zero); checkpoints are adapter GGUFs that `--lora` loads back. `--train` with `--lora`
+continues that adapter: it keeps its rank and alpha, AdamW starts fresh (an adapter file
+holds no optimizer state), and the record names it as `from_adapter`, hashed before the
+first step, so `--lineage` walks back through every earlier run. Deterministic by
 default: same data + same seed produce a byte-identical adapter file, gated in `make
 test`. One example per step, cycled in file order; before the first step `--train`
 warns when the run is likely to memorize (more than three passes over fewer than 200

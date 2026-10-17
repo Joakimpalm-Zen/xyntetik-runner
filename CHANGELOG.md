@@ -25,6 +25,26 @@ Current release and unreleased changes. Compatibility follows the
   per step, the logprob of every completion token under the forward that
   step trains through, before its update.
 
+- **A continued adapter's record names the adapter it started from.**
+  `--train` with `--lora` continues an existing adapter (the reinforcement
+  loop does it every round), but the record named only the base and the
+  data, and gave the `--lora-rank` default as the rank whatever the loaded
+  adapter's was. Such a record could not reproduce its run. It now records
+  `from_adapter` (hash and its own record, taken before the first step, so
+  training in place is recorded right) and the adapter's real rank, and
+  `--lineage` walks back through every earlier run.
+
+- **`--train-dpo` no longer needs `--gpu off`.** On a CUDA or Metal build it
+  loaded the model onto the GPU and then refused, naming `--train`. It now
+  takes the CPU path the way `--train` does.
+
+- **Every adapter feature, explained in one place.**
+  [docs/lora.md](docs/lora.md) walks through checking a model, data formats,
+  training, continuing, DPO, the reinforcement loop, evaluation, serving one
+  or many adapters, merging, records, signatures, lineage, receipts and
+  interop, each with its commands, limits and measurements. The README,
+  manual, site and the other adapter pages link to it.
+
 - **Logprobs are reported at full precision.** The completion and chat
   logprob fields printed six decimals, which hid differences in the last
   bits and lost most digits of a small logprob. They now print the

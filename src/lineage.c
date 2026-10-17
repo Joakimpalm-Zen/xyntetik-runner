@@ -82,7 +82,7 @@ static const char *step_of(jv *rec, const char **out_key) {
 
 // The input keys each step records, in the order they print.
 static const char *const INPUT_KEYS[] = {
-    "base", "adapter", "data", "prune_experts", "type_plan",
+    "base", "from_adapter", "adapter", "data", "prune_experts", "type_plan",
 };
 
 typedef struct { int worst; } walk_state;   // 0 verified, 1 unsigned, 2 broken

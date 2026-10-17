@@ -3405,7 +3405,9 @@ static int run_adapt_info(cli_run *rt) {
 // True when the process exits with *rc (a refusal, or one of the two modes).
 static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool registry,
                            int tmpl_override, const oms_policy *signing, int *rc) {
-    if (o->train_path) o->mp.gpu_mode = GPU_OFF;   // --train is the CPU path (v1)
+    // training is the CPU path (v1), for both objectives: --train-dpo used to
+    // load onto the GPU and then refuse with a message naming --train
+    if (o->train_path || o->dpo_path) o->mp.gpu_mode = GPU_OFF;
     // --adapt-info answers for the model, not for where it happened to load:
     // training is CPU-hosted, and the device half is named separately
     if (o->adapt_info) o->mp.gpu_mode = GPU_OFF;
@@ -3668,7 +3670,7 @@ static bool train_prepare(cli_opts *o, cli_run *rt) {
         // v1 trains on the CPU path only (D8 is CUDA training); refuse
         // loudly rather than train a model whose forward the backward
         // cannot see.
-        fprintf(stderr, "error: --train is CPU-only for now — run with "
+        fprintf(stderr, "error: training is CPU-only for now; run with "
                 "--gpu off\n");
         return false;
     }
@@ -3942,9 +3944,12 @@ static bool train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
 // D7: the provenance record, written beside every adapter — the
 // reproducibility claim in checkable form. Two runs with the same
 // base/data/seed/config must produce the same adapter_sha256.
+// from_adapter: the record's input for the adapter a run continued from
+// (lineage_put_input JSON, taken before the first step), or NULL when the run
+// started a fresh one.
 static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
-                         int wctx, int eot_id, double first_loss,
-                         double last_loss) {
+                         const char *from_adapter, int wctx, int eot_id,
+                         double first_loss, double last_loss) {
     char bsha[65] = "", dsha[65] = "", asha[65] = "", xsha[65] = "";
     const char *data_path = o->dpo_path ? o->dpo_path : o->train_path;
     bool hash_ok = envelope_file_sha256(load_path, bsha) &&
@@ -3991,6 +3996,10 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
     sb_lit(&rec, build_arch);
     sb_lit(&rec, "\"},\"base\":");
     lineage_put_input(&rec, load_path, bsha);
+    if (from_adapter) {
+        sb_lit(&rec, ",\"from_adapter\":");
+        sb_lit(&rec, from_adapter);
+    }
     sb_lit(&rec, ",\"objective\":\"");
     sb_lit(&rec, o->dpo_path ? "dpo" : "weighted-cross-entropy");
     if (o->dpo_path) sb_fmt(&rec, "\",\"dpo_beta\":%g", (double)o->dpo_beta);
@@ -4008,7 +4017,7 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
             "\"loss_first\":%.6f,\"loss_last\":%.6f,"
             "\"adapter\":{\"path\":\"",
             (unsigned long long)(o->seed_given ? o->smp.rng : 0),
-            o->lora_rank, (double)rt->m.lora_alpha, (double)o->train_lr,
+            model_lora_rank(&rt->m), (double)rt->m.lora_alpha, (double)o->train_lr,
             o->train_steps, wctx, o->train_eot ? "true" : "false", eot_id,
             first_loss, last_loss);
     sb_esc(&rec, o->train_out, strlen(o->train_out));
@@ -4050,15 +4059,24 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     } else if (!train_examples_load(&rt->tok, rt->m.n_vocab, o->train_path, o->no_bos, wctx, eot_id, o->train_eot,
                                     &exs, &n_ex)) return 1;
     if (!o->dpo_path) train_risk_warn(o, exs, n_ex, eot_id);
+    // The adapter a run continues from is an input like the base and the
+    // data, identified (hash, and its own record) before the first step:
+    // --train-out may name the same file, and --save-every rewrites it.
+    sbuf from = {0};
+    bool ok = !o->lora_path || lineage_put_input(&from, o->lora_path, NULL);
+    if (!ok)
+        fprintf(stderr, "error: cannot hash the --lora adapter %s for the "
+                "provenance record\n", o->lora_path);
     double first_loss = 0, last_loss = 0;
-    bool ok = o->dpo_path
+    ok = ok && (o->dpo_path
         ? train_dpo_steps(o, rt, pairs, n_pair, wctx, &first_loss, &last_loss)
-        : train_ce_steps(o, rt, exs, n_ex, wctx, &first_loss, &last_loss);
+        : train_ce_steps(o, rt, exs, n_ex, wctx, &first_loss, &last_loss));
     ok = ok && model_lora_save(&rt->m, o->train_out) &&
-         train_record(o, rt, load_path, wctx, eot_id, first_loss, last_loss);
+         train_record(o, rt, load_path, from.s, wctx, eot_id, first_loss, last_loss);
     if (ok)
         fprintf(stderr, "train: done — first-step loss %.4f, last-step "
                 "%.4f, adapter -> %s\n", first_loss, last_loss, o->train_out);
+    free(from.s);
     train_examples_free(exs, n_ex);
     dpo_pairs_free(pairs, n_pair);
     return ok ? 0 : 1;
