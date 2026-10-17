@@ -6,9 +6,11 @@ came from which run, which data and which base?
 **Answer.** On the same build, yes, byte for byte: `--train` with the same
 data, seed and configuration writes the same adapter file, verified by
 sha256 in CI. Every adapter is written with a `.train.json` sidecar that
-records the base, data and adapter sha256, the seed, the full configuration,
-and the binary sha, compiler, OS and architecture that produced it. That
-sidecar is the receipt for the training run.
+records the base, data and adapter sha256, the adapter a continued run
+started from (`from_adapter`), the seed, the full configuration, and the
+binary sha, compiler, OS and architecture that produced it. That sidecar is
+the receipt for the training run; [the complete adapter guide](lora.md#11-records-signatures-and-lineage)
+lists every field and how to sign and trace it.
 
 ## What "reproducible" means here, exactly
 

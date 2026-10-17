@@ -1004,6 +1004,8 @@ bool   model_lora_train_init(model_t *m, int rank, float alpha,
 bool   model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
                             float eps, float wd, int step);
 bool   model_lora_save(model_t *m, const char *path);
+// The largest rank among the adapter's projections; 0 without an adapter.
+int    model_lora_rank(const model_t *m);
 void   model_lora_grad_zero(model_t *m);
 // The adapted projection sites, in the order every consumer walks them. A
 // backend applying the adapter itself (cuda.c) needs to name them, so the

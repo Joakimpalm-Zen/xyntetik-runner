@@ -9619,6 +9619,15 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
 // Fresh trainable adapters on every hooked slot: A seeded small (xorshift,
 // deterministic from the given seed), B zero — so the initial adapter is an
 // exact no-op and training starts from the base model's own behavior.
+int model_lora_rank(const model_t *m) {
+    int r = 0;
+    for (int l = 0; m->lora && l < m->n_layer; l++)
+        for (int s = 0; s < LW_SLOTS; s++)
+            if (m->lora[(size_t)l * LW_SLOTS + s].r > r)
+                r = m->lora[(size_t)l * LW_SLOTS + s].r;
+    return r;
+}
+
 bool model_lora_train_init(model_t *m, int rank, float alpha, uint64_t seed) {
     char why[128];
     if (rank < 1 || rank > LORA_R_MAX) {

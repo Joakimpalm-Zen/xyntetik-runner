@@ -6,8 +6,9 @@ primitives. CUDA/Metal serving uses device arithmetic with its own measured
 numerical envelope; training on the CPU is not a claim that every device
 forward is bit identical.
 
-For commands, use the [training walkthrough](train-lora-on-quantized-gguf.md)
-and the [manual](../MANUAL.md#adaptation). This page describes current
+For commands, use [the complete adapter guide](lora.md), the
+[training walkthrough](train-lora-on-quantized-gguf.md) and the
+[manual](../MANUAL.md#adaptation). This page describes current
 admission, ownership, numerical contracts, and the scoped public evidence.
 
 ## Scoring and attachment
