@@ -3,6 +3,27 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **CUDA runs a file with a removed sublayer.** A file made by
+  `--remove-sublayer`, such as the released Gemma 4 31B with block 48's
+  attention removed, ran only on the CPU under a CUDA build. The CUDA walk
+  now skips the removed branch and leaves its KV unallocated, as the CPU and
+  Metal paths do. On the 31B at `-c 4096` that frees 64 MiB of KV, and the
+  output matches the CPU path within the usual CUDA envelope (9 of 9 prompts
+  exact over 64 tokens; 0.0012 nats mean over 326 scored positions). A
+  removed attention on a MoE file keeps its FFN path, experts on the device
+  or the host. The `-v` line no longer says such a file runs on the CPU path.
+
+- **`--fit` charges each layer its own KV cache.** It charged every layer
+  the scalar KV heads times the scalar head width. On gemma-4-31B that is
+  about four times what a load allocates (120 GiB at 32k), and a file with a
+  removed sublayer was refused outright. It now reads per-layer KV heads,
+  gemma-4's sliding head width, removed blocks and E-series shared-KV layers
+  the way the loader does, and the GPU split it predicts uses the same
+  per-layer figures. A test holds `--fit`, the loader's allocation and a
+  reading of the header to the same bytes.
+
 ## v1.4.2 - 2026-10-17
 
 - **Reinforcement fine-tuning trains on exactly what it sampled.**

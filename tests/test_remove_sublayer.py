@@ -16,7 +16,6 @@ red.
 import json
 import os
 import pathlib
-import platform
 import re
 import struct
 import subprocess
@@ -390,21 +389,33 @@ def test_adapters_and_training_refuse_a_removed_model(runner_bin, parent, tmp_pa
     assert b"removed" in p.stderr
 
 
-def _score_gpu(runner_bin, model, chunked):
+@pytest.fixture(scope="module")
+def gpu_backend(runner_bin):
+    """The device this build runs on: CUDA or Metal, from --caps. Both walks
+    omit a removed sublayer; a host with neither skips (and a CUDA gate host
+    that skips here fails its gate, see CUDA_GATED_TESTS)."""
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, timeout=60).stdout)
+    backend = (caps.get("gpu") or {}).get("backend")
+    if backend not in ("cuda", "metal"):
+        pytest.skip("no CUDA or Metal GPU device in this build or host")
+    return {"cuda": "CUDA", "metal": "Metal"}[backend]
+
+
+def _score_gpu(runner_bin, model, chunked, backend, extra=()):
     env = dict(os.environ)
     if chunked:
         env["RUNNER_SCORE_CHUNKED"] = "1"
     p = subprocess.run([runner_bin, "-m", str(model), "--score", "-p", PROMPT,
-                        "-t", "2", "--gpu", "auto"], cwd=ROOT, env=env,
+                        "-t", "2", "--gpu", "auto", *extra], cwd=ROOT, env=env,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        timeout=120)
-    assert p.returncode == 0, p.stderr.decode(errors="replace")
-    assert b"Metal backend" in p.stderr, p.stderr.decode(errors="replace")
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode == 0, err
+    assert f"{backend} backend" in err and "using CPU" not in err, err
     return json.loads(p.stdout)["logprobs"]
 
 
-@pytest.mark.skipif(platform.system() != "Darwin" or platform.machine() != "arm64",
-                    reason="the Metal walk is the backend that omits a removed sublayer")
 @pytest.mark.parametrize("spec,zero", [
     ("attn:1", ["blk.1.attn_output.weight"]),
     ("attn:0", ["blk.0.attn_output.weight"]),
@@ -414,11 +425,12 @@ def _score_gpu(runner_bin, model, chunked):
     ("attn:0,mlp:0", ["blk.0.attn_output.weight", "blk.0.ffn_down.weight"]),
 ])
 @pytest.mark.parametrize("chunked", [False, True], ids=["decode", "prefill"])
-def test_metal_omits_a_removed_sublayer_bit_identically(
-        runner_bin, parent, tmp_path, spec, zero, chunked):
-    """The CPU anchor, on the device: the removed file scores exactly as the
-    parent with the branch's output projection zeroed, token by token (the
-    decode walk and its fusions) and in one batch (the prefill walk)."""
+def test_the_gpu_omits_a_removed_sublayer_bit_identically(
+        runner_bin, gpu_backend, parent, tmp_path, spec, zero, chunked):
+    """The CPU anchor, on the device (Metal or CUDA): the removed file scores
+    exactly as the parent with the branch's output projection zeroed, token by
+    token (the decode walk and its fusions) and in one batch (the prefill
+    walk)."""
     out = tmp_path / "removed.gguf"
     p = _remove(runner_bin, parent, out, spec)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
@@ -427,9 +439,9 @@ def test_metal_omits_a_removed_sublayer_bit_identically(
         nxt = tmp_path / ("zeroed%d.gguf" % i)
         _zero_tensor(zeroed, nxt, name)
         zeroed = nxt
-    removed = _score_gpu(runner_bin, out, chunked)
-    assert removed == _score_gpu(runner_bin, zeroed, chunked)
-    assert removed != _score_gpu(runner_bin, parent, chunked)
+    removed = _score_gpu(runner_bin, out, chunked, gpu_backend)
+    assert removed == _score_gpu(runner_bin, zeroed, chunked, gpu_backend)
+    assert removed != _score_gpu(runner_bin, parent, chunked, gpu_backend)
 
 
 # ---------------------------------------------------- the gemma-4 file shape
@@ -470,6 +482,23 @@ def test_gemma4_shape_removal_matches_zeroed_output(runner_bin, gemma4_hetero,
     assert f"blk.{layer}.attn_q.weight" not in _parse(out)["tensors"]
 
 
+@pytest.mark.parametrize("layer", [1, 2])  # 1 slides (has V); 2 is full and V-less
+@pytest.mark.parametrize("chunked", [False, True], ids=["decode", "prefill"])
+def test_gemma4_shape_removal_on_the_gpu(runner_bin, gpu_backend, gemma4_hetero,
+                                         tmp_path, layer, chunked):
+    """The released Gemma 4 31B cut (attn:48) is this shape: the device walk
+    omits the removed attention on a sliding and on a V-less full layer exactly
+    as the parent with that layer's output projection zeroed computes it."""
+    out = tmp_path / f"g4-attn{layer}.gguf"
+    p = _remove(runner_bin, gemma4_hetero, out, f"attn:{layer}")
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    zeroed = tmp_path / "z.gguf"
+    _zero_tensor(gemma4_hetero, zeroed, f"blk.{layer}.attn_output.weight")
+    removed = _score_gpu(runner_bin, out, chunked, gpu_backend)
+    assert removed == _score_gpu(runner_bin, zeroed, chunked, gpu_backend)
+    assert removed != _score_gpu(runner_bin, gemma4_hetero, chunked, gpu_backend)
+
+
 @pytest.mark.parametrize("spec,part", [("attn:0,attn:1", "attention"),
                                        ("mlp:0,mlp:1", "FFN")])
 def test_removing_a_part_from_every_block_is_refused_before_writing(
@@ -505,3 +534,110 @@ def test_loader_names_a_file_with_every_attention_removed(runner_bin, tmp_path):
     p = _run(runner_bin, ["-m", f, "-p", "hi", "-n", "1", "--gpu", "off"])
     assert p.returncode != 0
     assert b"every block of this file has its attention removed" in p.stderr
+
+
+# ------------------------------------------- a removed attention on a MoE file
+@pytest.fixture(scope="module")
+def moe_fixtures(tmp_path_factory):
+    base = tmp_path_factory.mktemp("rm-moe") / "m"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-moe.py", str(base)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    return base
+
+
+@pytest.mark.parametrize("member,extra", [
+    ("moe4", ()),                  # routed experts on the device
+    ("moe4", ("--cpu-moe",)),      # routed experts on the host
+    ("gemma4-moe", ()),            # gemma-4's dual-branch FFN
+])
+@pytest.mark.parametrize("chunked", [False, True], ids=["decode", "prefill"])
+def test_a_removed_attention_keeps_the_ffn_dispatch_on_the_gpu(
+        runner_bin, gpu_backend, moe_fixtures, tmp_path, member, extra, chunked):
+    """A removed attention skips its branch only: the FFN that follows still
+    takes its own path (device or host experts, gemma's dual branch). The
+    CUDA walk once skipped such a block through the nemotron_h jump, which
+    lands on the dense/device-MoE FFN and would have run the wrong FFN here."""
+    parent = pathlib.Path(f"{moe_fixtures}.{member}.gguf")
+    out = tmp_path / "rm.gguf"
+    p = _remove(runner_bin, parent, out, "attn:0")
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    zeroed = tmp_path / "z.gguf"
+    _zero_tensor(parent, zeroed, "blk.0.attn_output.weight")
+    removed = _score_gpu(runner_bin, out, chunked, gpu_backend, extra)
+    assert removed == _score_gpu(runner_bin, zeroed, chunked, gpu_backend, extra)
+    assert removed != _score_gpu(runner_bin, parent, chunked, gpu_backend, extra)
+
+
+# ------------------------------------------- --fit reads the per-layer geometry
+def _kv_f16_per_token(path):
+    """The f16 KV bytes one token costs, from the header by the GGUF spec:
+    K and V per layer at that layer's KV heads (0 where the attention was
+    removed) times its head width (gemma-4's sliding layers declare their own),
+    and nothing for gemma-4 E-series layers that read an earlier layer's cache.
+    The independent anchor both --fit and the loader are held to."""
+    kv = _parse(path)["kvs"]
+    arch = kv["general.architecture"]
+    n = kv[f"{arch}.block_count"]
+    hc = kv[f"{arch}.attention.head_count"]
+    hkv = kv.get(f"{arch}.attention.head_count_kv", hc)
+
+    def at(v, i):
+        return v[i] if isinstance(v, list) else v
+    width = max(at(hc, i) for i in range(n))
+    kl = kv.get(f"{arch}.attention.key_length", kv[f"{arch}.embedding_length"] // width)
+    kls = kv.get(f"{arch}.attention.key_length_swa", kl)
+    pat = kv.get(f"{arch}.attention.sliding_window_pattern")
+    shared = kv.get(f"{arch}.attention.shared_kv_layers", 0) if arch == "gemma4" else 0
+    owners = n - shared if 0 < shared < n else n
+    total = 0
+    for i in range(n):
+        if i >= owners or at(hc, i) == 0:
+            continue
+        # bool arrays parse as one-byte strings, and b"\x00" is truthy
+        bit = isinstance(pat, list) and (pat[i][0] if isinstance(pat[i], bytes) else pat[i])
+        hd = kls if bit else kl
+        total += 2 * 2 * at(hkv, i) * hd
+    return total
+
+
+def _fit_kv_gib(runner_bin, model, ctx):
+    p = _run(runner_bin, ["--fit", model, "-c", str(ctx), "--gpu", "off"])
+    out = p.stdout.decode(errors="replace")
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    return float(re.search(r"kv cache\s+([\d.]+) GiB", out).group(1))
+
+
+def _loaded_kv_mb(runner_bin, model, ctx):
+    p = _run(runner_bin, ["-m", model, "-v", "-p", "hi", "-n", "1", "-c", str(ctx),
+                          "--gpu", "off"])
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode == 0, err
+    return float(re.search(r"kv cache\s+([\d.]+) MB", err).group(1))
+
+
+@pytest.mark.parametrize("which", ["plain", "plain-attn1", "gemma4", "gemma4-attn2",
+                                   "gemma4-eseries-shared"])
+def test_fit_and_the_loader_both_charge_each_layer_its_own_kv(
+        runner_bin, parent, gemma4_hetero, tmp_path, which):
+    """--fit used to charge every layer the scalar KV heads times the scalar
+    width: gemma-4-31B read about four times the cache a load allocates, and a
+    removed file was refused (no scalar head_count left to read). Both now
+    match the header, and so each other."""
+    if which == "plain":
+        model = parent
+    elif which == "gemma4":
+        model = gemma4_hetero
+    elif which == "gemma4-eseries-shared":
+        model = tmp_path / "es.gguf"
+        subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--eseries",
+                        "3,8", "--drop-kv", "shared", str(model)], check=True, cwd=ROOT,
+                       stdout=subprocess.DEVNULL)
+    else:
+        src, spec = (parent, "attn:1") if which == "plain-attn1" else (gemma4_hetero, "attn:2")
+        model = tmp_path / "rm.gguf"
+        p = _remove(runner_bin, src, model, spec)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+    per_tok = _kv_f16_per_token(model)
+    big, mid = 1 << 22, 1 << 16   # the fit allocates nothing; the load does
+    assert abs(_fit_kv_gib(runner_bin, model, big) - per_tok * big / (1 << 30)) <= 0.006
+    assert abs(_loaded_kv_mb(runner_bin, model, mid) - per_tok * mid / 1e6) <= 0.06

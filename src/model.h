@@ -1181,6 +1181,7 @@ typedef struct {
     uint64_t kv_f16_per_tok, kv_q8_per_tok, kv_fp4_per_tok, kv_k8v4_per_tok;
     uint64_t kv_f16, kv_q8, kv_fp4, kv_k8v4; // at n_ctx; 0 when that KV format is illegal
     uint64_t available;          // RAM available now, 0 = could not tell
+    bool     swa;                // declares a sliding window (its KV is the flat cache)
     // Slots that will share the weights (--parallel N; model_fit_report sets
     // 1). Each pays its own KV cache, and on a discrete GPU its own scratch;
     // the kv_* totals above are for ONE slot, the split and the verdict

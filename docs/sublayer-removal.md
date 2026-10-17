@@ -90,8 +90,19 @@ Two readings a zero could also carry are refused, not guessed: an
   neighbouring norm stand down around a removed branch. Gate: the removed
   file scores bit-identically to the zeroed parent on the device, token by
   token and as one batch.
-- Refused by name: CUDA offload (`--gpu auto` on a CUDA build says to rerun
-  with `--gpu off`), `--lora`, `--train`, the MTP head on such a file, and
+- CUDA runs such a file (2026-10-17): its tile walk jumps past the removed
+  attention's branch only (pre-norm, attention, post-norm, residual add), so
+  the FFN dispatch that follows (device or host experts, gemma-4's dual
+  branch) runs unchanged, and a removed FFN takes `skip_ffn`. The block's
+  KV is not allocated on the device either. The multi-sequence microbatch
+  declines such a file, so parallel slots decode it one at a time. Gate: the
+  same device test as Metal (`tests/test_remove_sublayer.py`, in
+  `CUDA_GATED_TESTS`), plus a removed attention on the sparse-MoE fixture
+  with the experts on the device and on the host (`--cpu-moe`) and on
+  gemma-4's dual-branch MoE. Before this change the walk could only reach a
+  removed block through the nemotron_h jump, which lands on the dense FFN;
+  a build with that jump fails those MoE cases.
+- Refused by name: `--lora`, `--train`, the MTP head on such a file, and
   the families the writer refuses.
 
 ## Gates (`tests/test_remove_sublayer.py`, in `make test`)
@@ -150,11 +161,27 @@ The zeroed-weights file was built earlier by a different tool, so the
 bit-identity row is the fixture anchor at scale: the omitted branch and the
 computed-zero branch are the same function on a 60-block model.
 
+## The released file on CUDA (2026-10-17)
+
+`gemma-4-31B-it-attn48-removed-q4_0.gguf` on an RTX PRO 6000 MIG slice
+(24 GB), clang build of the CUDA change:
+
+| | the cut (attn:48 removed) | the Q4_0 parent |
+| --- | --- | --- |
+| `-c 4096`, full offload: weights in VRAM | 17.6 GB | 17.7 GB |
+| KV cache at `-c 4096` | 3623.9 MB | 3691.0 MB (64 MiB more) |
+| KV cache at `-c 16384` (44 of 60 layers on the device) | 14495.5 MB | 14764.0 MB (256 MiB more) |
+| decode, 32 tokens at `-c 4096` | 18.18 tok/s | 18.34 tok/s |
+
+CPU against CUDA on the cut: `scripts/cpu_cuda_check.py` passes 9 of 9
+prompts exactly over 64 tokens, and teacher-forced logprobs over 326 positions
+of prose differ by 0.0012 nats on average (0.080 at most), with the argmax the
+same at all 326. The fidelity rows measured on the CPU path (chat-format KL
+0.0094 against the Q4_0 parent, margin top-1 100%) therefore hold on CUDA
+within that envelope; the 400-position probe has not been rerun on the device.
+
 ## What remains
 
-- The CUDA device path: CUDA already carries `skip_mixer` / `skip_ffn` for
-  nemotron_h; the dense decode loops need the same checks before its
-  refusal can go. Metal's walk has them.
 - MoE FFN removal (drop the router, experts and shared expert), which the
   Glimmer Q4_K byte question needs.
 - The C2 E4B MatFormer slice is a different transform (per-layer FFN

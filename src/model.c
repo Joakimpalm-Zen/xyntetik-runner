@@ -706,6 +706,74 @@ int model_kv_ring_rows(int window, int batch, int n_ctx) {
     return window + batch;
 }
 
+// The KV width a load gives each layer, from the header alone, by the
+// loader's own rules: a layer's KV heads come from head_count_kv, scalar or
+// per layer (bind_hparams; 0 for a block whose attention --remove-sublayer
+// took out, whose head_count entry is 0 too); gemma-4 picks the sliding
+// layers' head width (key_length_swa) on the raw pattern bit
+// (bind_meta_gemma4), and its E-series layers past n_layer -
+// shared_kv_layers read an earlier layer's cache and own none. The fit used
+// to charge every layer the scalar heads times the scalar width, which put
+// gemma-4-31B's cache at about four times what a load allocates and refused
+// a removed file outright (no scalar head_count left to read).
+// tests/test_fit_check.py holds the sum to the loader's allocation.
+typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; } fit_geom;
+
+static bool fit_geometry(gguf_file *g, const char *arch, int n_layer, fit_geom *o) {
+    char key[128];
+    #define FK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
+    memset(o, 0, sizeof *o);
+    uint32_t n_embd = gguf_get_u32(g, FK("embedding_length"), 0);
+    uint32_t n_head = 0;   // the widest block: a removed one reads 0
+    for (int l = 0; l < n_layer; l++) {
+        uint32_t v = gguf_get_u32_idx(g, FK("attention.head_count"), (uint64_t)l, 0);
+        if (v > n_head) n_head = v;
+    }
+    uint32_t head_dim = gguf_get_u32(g, FK("attention.key_length"),
+                                     n_head ? n_embd / n_head : 0);
+    uint32_t hd_swa = gguf_get_u32(g, FK("attention.key_length_swa"), head_dim);
+    gguf_kv *pat = gguf_get(g, FK("attention.sliding_window_pattern"));
+    if (pat && (pat->type != GGUF_T_ARR || !pat->arr_raw ||
+                (pat->arr_type != GGUF_T_BOOL && pat->arr_type != GGUF_T_U8 &&
+                 pat->arr_type != GGUF_T_I8)))
+        pat = NULL;
+    int shared = strcmp(arch, "gemma4") == 0
+        ? (int)gguf_get_u32(g, FK("attention.shared_kv_layers"), 0) : 0;
+    int owners = shared > 0 && shared < n_layer ? n_layer - shared : n_layer;
+    bool ok = n_layer > 0 && n_head > 0 && head_dim > 0;
+    o->kv_dim = ok ? calloc((size_t)n_layer, sizeof(uint64_t)) : NULL;
+    if (!o->kv_dim) {
+        #undef FK
+        return false;
+    }
+    #define FK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
+    o->n_head = n_head;
+    for (int l = 0; l < n_layer; l++) {
+        uint32_t hc = gguf_get_u32_idx(g, FK("attention.head_count"), (uint64_t)l, n_head);
+        uint32_t kvh = hc ? gguf_get_u32_idx(g, FK("attention.head_count_kv"),
+                                             (uint64_t)l, n_head) : 0;
+        bool swa = pat && (uint64_t)l < pat->arr_n &&
+                   ((const uint8_t *)pat->arr_raw)[l] != 0;
+        uint64_t hd = swa ? hd_swa : head_dim;
+        if (hd > o->head_dim_max) o->head_dim_max = hd;
+        o->kv_dim[l] = l < owners ? (uint64_t)kvh * hd : 0;
+        if (o->kv_dim[l] > o->kv_dim_max) o->kv_dim_max = o->kv_dim[l];
+    }
+    #undef FK
+    return true;
+}
+
+// Bytes of one token's K and V row for one layer of width d, per KV format
+// (0 = f16, 1 = q8, 2 = k8v4, 3 = fp4), as model_k/v_bytes_of lay them out.
+static uint64_t fit_kv_row(uint64_t d, int kind) {
+    switch (kind) {
+    case 0:  return 2 * d * 2;
+    case 1:  return 2 * (d / 32) * 34;
+    case 2:  return (d / 32) * 34 + (d / 16) * 9;
+    default: return 2 * (d / 16) * 9;
+    }
+}
+
 bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
     memset(out, 0, sizeof(*out));
     char key[128];
@@ -715,17 +783,14 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
 
     meta_printable(out->arch, sizeof(out->arch), arch);
     out->n_layer   = (int)gguf_get_u32(g, FK("block_count"), 0);
-    int n_embd     = (int)gguf_get_u32(g, FK("embedding_length"), 0);
-    int n_head     = (int)gguf_get_u32(g, FK("attention.head_count"), 0);
-    int n_head_kv  = (int)gguf_get_u32(g, FK("attention.head_count_kv"), n_head);
-    int head_dim   = (int)gguf_get_u32(g, FK("attention.key_length"),
-                                       n_head > 0 ? n_embd / n_head : 0);
     int train_ctx  = (int)gguf_get_u32(g, FK("context_length"), 0);
+    out->swa           = gguf_get_u32(g, FK("attention.sliding_window"), 0) > 0;
     out->n_expert      = (int)gguf_get_u32(g, FK("expert_count"), 0);
     out->n_expert_used = (int)gguf_get_u32(g, FK("expert_used_count"), 0);
     out->train_ctx     = train_ctx;
 
-    if (out->n_layer <= 0 || head_dim <= 0 || n_head_kv <= 0) return false;
+    fit_geom geo;
+    if (out->n_layer <= 0 || !fit_geometry(g, arch, out->n_layer, &geo)) return false;
 
     // Context: what the caller asked for, else the loader's own default.
     out->n_ctx = n_ctx_want > 0 ? n_ctx_want
@@ -743,21 +808,23 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
         out->hot = out->weights;
     }
 
-    // Same shape as model_kv_row_bytes: K and V, per layer, per token. A model
-    // with per-layer KV geometry (gemma-4 shared KV, MLA) will differ from
-    // this; it is stated as an upper-bound estimate rather than quietly
-    // presented as exact.
-    uint64_t kv_dim = (uint64_t)n_head_kv * (uint64_t)head_dim;
-    out->kv_f16_per_tok = 2ull * (uint64_t)out->n_layer * kv_dim * 2ull;
-    out->kv_q8_per_tok  = kv_dim % 32 == 0
-        ? 2ull * (uint64_t)out->n_layer * (kv_dim / 32) * 34ull
-        : 0;                                   // q8 KV needs head_dim % 32 == 0
-    out->kv_fp4_per_tok = kv_dim % 16 == 0
-        ? 2ull * (uint64_t)out->n_layer * (kv_dim / 16) * 9ull
-        : 0;                                   // fp4 KV needs head_dim % 16 == 0
-    out->kv_k8v4_per_tok = kv_dim % 32 == 0
-        ? (uint64_t)out->n_layer * ((kv_dim / 32) * 34ull + (kv_dim / 16) * 9ull)
-        : 0;
+    // Same shape as model_kv_row_bytes: K and V, per layer, per token, each
+    // layer at its own width (fit_geometry). A quantized KV format is legal
+    // only when every layer's width is a multiple of its block (q8 and k8v4:
+    // 32; fp4: 16), or the per-token figure is 0 and the line says why.
+    bool q8_ok = true, fp4_ok = true;
+    for (int l = 0; l < out->n_layer; l++) {
+        uint64_t d = geo.kv_dim[l];
+        if (d % 32) q8_ok = false;
+        if (d % 16) fp4_ok = false;
+        out->kv_f16_per_tok  += fit_kv_row(d, 0);
+        out->kv_q8_per_tok   += fit_kv_row(d, 1);
+        out->kv_k8v4_per_tok += fit_kv_row(d, 2);
+        out->kv_fp4_per_tok  += fit_kv_row(d, 3);
+    }
+    free(geo.kv_dim);
+    if (!q8_ok) out->kv_q8_per_tok = out->kv_k8v4_per_tok = 0;
+    if (!fp4_ok) out->kv_fp4_per_tok = 0;
     out->kv_f16 = out->kv_f16_per_tok * (uint64_t)out->n_ctx;
     out->kv_q8  = out->kv_q8_per_tok  * (uint64_t)out->n_ctx;
     out->kv_fp4 = out->kv_fp4_per_tok * (uint64_t)out->n_ctx;
@@ -789,15 +856,14 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     const char *arch = gguf_get_str(g, "general.architecture", "");
     #define FK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
     uint64_t n_embd    = gguf_get_u32(g, FK("embedding_length"), 0);
-    uint64_t n_head    = gguf_get_u32(g, FK("attention.head_count"), 0);
-    uint64_t n_head_kv = gguf_get_u32(g, FK("attention.head_count_kv"), (uint32_t)n_head);
-    uint64_t head_dim  = gguf_get_u32(g, FK("attention.key_length"),
-                                      n_head ? (uint32_t)(n_embd / n_head) : 0);
     uint64_t n_ff      = gguf_get_u32(g, FK("feed_forward_length"), (uint32_t)(4 * n_embd));
     #undef FK
+    fit_geom geo;
+    if (!fit_geometry(g, arch, f->n_layer, &geo)) return false;
+    uint64_t n_head = geo.n_head, head_dim = geo.head_dim_max;
     uint64_t *lb = calloc((size_t)f->n_layer, sizeof(uint64_t));
     uint64_t *cost = calloc((size_t)f->n_layer, sizeof(uint64_t));
-    if (!lb || !cost) { free(lb); free(cost); return false; }
+    if (!lb || !cost) { free(lb); free(cost); free(geo.kv_dim); return false; }
     uint64_t tok = 0, out = 0, n_vocab = 0;
     for (uint64_t i = 0; i < g->n_tensors; i++) {
         const gguf_tensor *t = &g->tensors[i];
@@ -812,7 +878,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
             out = t->nbytes;
     }
     if (!out) out = tok;   // tied embeddings: the loader's output IS token_embd
-    uint64_t q_dim = n_head * head_dim, kv_dim = n_head_kv * head_dim;
+    uint64_t q_dim = n_head * head_dim, kv_dim = geo.kv_dim_max;
     uint64_t xdim = q_dim > n_embd ? q_dim : n_embd;
     uint64_t act = 4ull * (64ull * (n_embd + 3 * xdim + q_dim + 2 * kv_dim +
                                     2 * n_ff + n_head * (uint64_t)f->n_ctx) +
@@ -826,11 +892,12 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     for (int k = 0; k < 4; k++) {
         f->gpu_layers[k] = -1;
         if (!per_tok[k]) continue;
-        uint64_t kv_layer = per_tok[k] / (uint64_t)f->n_layer * (uint64_t)f->n_ctx;
         int G = 0;
         uint64_t used = f->gpu_fixed, dev_w = tok;
         if (used <= budget) {
-            for (int l = 0; l < f->n_layer; l++) cost[l] = lb[l] + kv_layer * slots;
+            // each layer pays its own KV rows (fit_geometry), not an average
+            for (int l = 0; l < f->n_layer; l++)
+                cost[l] = lb[l] + fit_kv_row(geo.kv_dim[l], k) * (uint64_t)f->n_ctx * slots;
             G = gpu_plan_prefix(cost, f->n_layer, max_layers, budget, &used);
             for (int l = 0; l < G; l++) dev_w += lb[l];
             // The loader's full-split test is `used + token_embd + output`
@@ -842,7 +909,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
             if (gpu_plan_full_split(&G, f->n_layer, used, tok + out, budget, &gave_back)) {
                 used += out; if (out != tok) dev_w += out;
             } else if (gave_back) {
-                used -= lb[G] + kv_layer * slots; dev_w -= lb[G];
+                used -= cost[G]; dev_w -= lb[G];
             }
         } else {
             used = 0; dev_w = 0;   // not even the fixed charge fits: all CPU
@@ -856,6 +923,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     }
     free(lb);
     free(cost);
+    free(geo.kv_dim);
     return true;
 }
 
@@ -4848,7 +4916,7 @@ static void runtime_report(const model_t *m, size_t kv_bytes, size_t k_bytes) {
             if (m->l_no_ffn && m->l_no_ffn[l])
                 fprintf(stderr, "%smlp:%d", shown++ ? ", " : "", l);
         }
-        fprintf(stderr, " (CPU path; the removed attention reserves no KV rows)\n");
+        fprintf(stderr, " (the removed attention reserves no KV rows)\n");
     }
     fprintf(stderr, "%-24s %d\n", "vocab", m->n_vocab);
     fprintf(stderr, "%-24s %d (train %d)\n", "context", m->n_ctx, m->n_ctx_train);

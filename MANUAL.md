@@ -1232,10 +1232,10 @@ At load the arrays are validated against the bytes in both directions: a
 tensor missing without a declaration is still `error: missing tensor`, and
 a declaration whose tensors are still present is refused by name. A removed
 attention reserves no KV rows, so the cache shrinks by that block's share at
-every context length (the `-v` banner lists `sublayers removed`). Limits,
-each refused rather than approximated: the CPU and Metal paths only (the
-CUDA decode loops still drive every block; pass `--gpu off` there), dense
-blocks only (MoE
+every context length (the `-v` banner lists `sublayers removed`). The CPU,
+Metal and CUDA paths all omit the branch; on CUDA the multi-sequence
+microbatch declines such a file, so parallel slots decode it one at a time.
+Limits, each refused rather than approximated: dense blocks only (MoE
 FFNs, the hybrid SSM families, gemma-4 E-series shared-KV/per-layer
 embeddings, fused-QKV exports and NextN heads are declined by name), one
 head width across the file (a non-zero entry that differs from the rest is
@@ -2236,7 +2236,7 @@ whether the draft is `active` there.
 | `--merge-lora OUT` | Merge an adapter into a standalone GGUF. Quantized merges round the delta; a merge that keeps under 50% of it is refused. [Details](#cli-merge-lora). |
 | `--merge-allow-erased` | With `--merge-lora`: write the merge even when the output grid rounded the delta away. [Details](#cli-merge-lora). |
 | `--prune-experts FILE` | Apply a per-layer MoE expert keep-list while rewriting. Requires `--quantize`. |
-| `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it; CPU and Metal, dense blocks only (a CUDA build refuses the offload). Requires `--quantize`. See [Sublayer removal](#sublayer-removal). |
+| `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it, on the CPU, CUDA and Metal; a removed FFN must be a dense one. Requires `--quantize`. See [Sublayer removal](#sublayer-removal). |
 | `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics, with a `route` object for the run: every `paths` entry its forwards took (`batch` prefill, `solo` decode, `keep` verify rounds, `mtp`, `micro`) with the forward count and widest rows, the backend facts of `RUNNER_DEBUG_ROUTE`, the process's `kernels` counters (GEMM dispatches by weight type, CUDA split-K, Metal fast matvec and attention kernels, CPU multi-row dots), the `compiler`, `codegen` flags and `tuning` switches. |
 | `--lora FILE`, `--lora-scale F` | Serve a LoRA adapter with the frozen base; supports CPU, CUDA and Metal, with explicit architecture restrictions. [Details](#cli-lora). |
 | `--adapter NAME=PATH` | With `--serve`: load an adapter once and select it per request as `"model": "<model>:NAME"`. [Details](#cli-adapter). |
@@ -2612,8 +2612,12 @@ fit: Trinity-Nano-Preview-Q4_K_M.gguf
   available RAM 3.25 GiB right now
   verdict       FITS — 2.37 GiB to spare at ctx 4096
   note          the verdict uses the hot set; a sparse MoE runs usefully while the file exceeds RAM
-  note          KV is an upper bound: models with per-layer KV geometry (shared KV, MLA) use less
 ```
+
+The KV line charges each layer its own rows, as a load allocates them: per-layer KV heads,
+the sliding layers' own head width on gemma-4, nothing for a layer whose attention was
+removed or that reads another layer's cache (gemma-4 E-series). On a sliding-window model a
+note says the figure is the flat cache, which `RUNNER_KV_RING` shrinks.
 
 The verdict is `FITS`, `FITS WITH --kv q8` (or `k8v4`, or `fp4`), or `PAGES`, always with the
 arithmetic that produced it.

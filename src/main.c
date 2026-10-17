@@ -1625,8 +1625,12 @@ static int run_fit_check(const char *path, int n_ctx_want,
     if (f.sparse)
         printf("  note          the verdict uses the hot set; a sparse MoE runs "
                "usefully while the file exceeds RAM\n");
-    printf("  note          KV is an upper bound: models with per-layer KV "
-           "geometry (shared KV, MLA) use less\n");
+    // The KV line is each layer's own rows (model_fit_report), as the loader
+    // allocates them; what a load can still do differently is the opt-in
+    // ring, which gives sliding-window layers only their window.
+    if (f.swa)
+        printf("  note          KV is the flat cache a load allocates; "
+               "RUNNER_KV_RING gives sliding-window layers only their window\n");
 
     gguf_close(&g);
     return 0;
