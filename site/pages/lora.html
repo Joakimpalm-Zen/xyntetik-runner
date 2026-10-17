@@ -84,6 +84,42 @@ nav: runner
   </div>
 </section>
 
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Everything the adapter workflow covers</p>
+      <h2>Train, serve, merge, prove. One binary.</h2>
+    </div>
+    <div class="grid-3">
+      <div class="card">
+        <h3>Train from your data</h3>
+        <p>Plain text, prompt and completion pairs with the prompt masked from the loss, or exact token ids. Per-example weights, negative ones included, and an opt-in end-of-turn target so a trained answer also learns to stop. Warnings before the first step when small data is likely to be memorized.</p>
+      </div>
+      <div class="card">
+        <h3>Continue and checkpoint</h3>
+        <p>Checkpoints every N steps, written so a failure keeps the previous one. Continue an existing adapter with <code>--lora</code>: the record names the adapter it started from, so the history stays traceable.</p>
+      </div>
+      <div class="card">
+        <h3>Preferences and rewards</h3>
+        <p>DPO from chosen and rejected answers, with the frozen base as the reference and no second model copy. A reinforcement loop that samples, scores and trains in rounds, and checks every round that the trainer scores the rollouts bit for bit as the server sampled them.</p>
+      </div>
+      <div class="card">
+        <h3>Serve one, or many</h3>
+        <p>Serve an adapter beside the frozen base on the CPU, CUDA or Metal, with its scale adjustable. Or load up to 16 adapters and pick one per request by model name, each request isolated from the others' cached prompts.</p>
+      </div>
+      <div class="card">
+        <h3>Merge without losing it</h3>
+        <p>Fold an adapter into a standalone GGUF for any runtime. Every merge measures how much of the fine-tune survived the output's quantization grid, and refuses one that would erase it.</p>
+      </div>
+      <div class="card">
+        <h3>Prove where it came from</h3>
+        <p>Every run writes a record of its base, data, starting adapter, settings and build. Sign records and adapter files, require the signature at load, walk an adapter's lineage back to its base and data, and replay a served answer with the adapter that gave it.</p>
+      </div>
+    </div>
+    <p class="mt-2">Each feature, with its commands, limits and measurements: <a href="{{repo}}/blob/main/docs/lora.md">the complete adapter guide</a>. Check a model first with <code>--adapt-info</code>; adapters load and save in llama.cpp's format, both ways.</p>
+  </div>
+</section>
+
 <section class="section tint">
   <div class="wrap split rev">
     <div>
@@ -101,7 +137,7 @@ nav: runner
 
 # teacher-forced logprobs for evals and rewards
 ./runner -m base-Q4_K_M.gguf --lora adapter.gguf -f eval.txt --score</code></pre>
-      <p class="small muted">Flags: <code>--train</code>, <code>--train-steps</code>, <code>--lr</code>, <code>--train-ctx</code>, <code>--train-out</code>, <code>--save-every</code>, <code>--lora-rank</code>, <code>--train-logprobs</code>, <code>--lora</code>, <code>--lora-scale</code>, <code>--merge-lora</code>, <code>--score</code>. <a href="{{repo}}/blob/main/MANUAL.md#command-line-reference">Command-line reference</a>. <code>scripts/train-grpo-lite.py</code> closes the loop into seeded, replayable reinforcement fine-tuning.</p>
+      <p class="small muted">Flags: <code>--adapt-info</code>, <code>--train</code>, <code>--train-steps</code>, <code>--lr</code>, <code>--train-ctx</code>, <code>--train-out</code>, <code>--save-every</code>, <code>--lora-rank</code>, <code>--train-eot</code>, <code>--train-logprobs</code>, <code>--train-dpo</code>, <code>--dpo-beta</code>, <code>--lora</code>, <code>--lora-scale</code>, <code>--lora-sig</code>, <code>--adapter</code>, <code>--merge-lora</code>, <code>--merge-allow-erased</code>, <code>--score</code>, <code>--lineage</code>. <a href="{{repo}}/blob/main/MANUAL.md#command-line-reference">Command-line reference</a>. <code>scripts/train-grpo-lite.py</code> closes the loop into seeded, replayable reinforcement fine-tuning.</p>
     </div>
     <div class="sticky">
       <p class="eyebrow">Run it</p>

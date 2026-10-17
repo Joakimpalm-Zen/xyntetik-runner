@@ -434,3 +434,59 @@ def test_documented_use_trains_without_a_warning(runner_bin, base, tmp_path):
     p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     assert b"train: warning" not in p.stderr, p.stderr.decode(errors="replace")
+
+
+def _sha(path):
+    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+
+def test_continued_training_records_the_adapter_it_started_from(runner_bin, base, tmp_path):
+    """--train with --lora continues an adapter (train-grpo-lite.py does it
+    every round). The record names that adapter as an input, with its own
+    record, so --lineage walks back through every earlier run, and gives the
+    rank of the adapter actually trained, not the --lora-rank default."""
+    first, second = tmp_path / "first.gguf", tmp_path / "second.gguf"
+    _train(runner_bin, base, first, steps=2, extra=("--lora-rank", "4"))
+    fresh = json.loads((tmp_path / "first.gguf.train.json").read_text())
+    assert "from_adapter" not in fresh and fresh["lora_rank"] == 4
+    _train(runner_bin, base, second, steps=2, extra=("--lora", str(first)))
+    rec = json.loads((tmp_path / "second.gguf.train.json").read_text())
+    assert rec["lora_rank"] == 4 and rec["alpha"] == 8
+    src = rec["from_adapter"]
+    assert src["path"] == str(first) and src["sha256"] == _sha(first)
+    assert src["record"]["path"] == str(first) + ".train.json"
+    assert src["record"]["sha256"] == _sha(str(first) + ".train.json")
+    walk = subprocess.run([runner_bin, "--lineage", str(second)], cwd=ROOT,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    out = walk.stdout.decode()
+    assert walk.returncode == 1, out   # consistent, unsigned
+    assert "from_adapter: " + str(first) in out
+    assert out.count("train -> ") == 2, out
+
+
+def test_training_in_place_records_the_adapter_as_it_was(runner_bin, base, tmp_path):
+    """--lora and --train-out naming one file: the starting adapter is hashed
+    before the first step, so the record names what the run started from."""
+    ad = tmp_path / "inplace.gguf"
+    _train(runner_bin, base, ad, steps=2)
+    before = _sha(ad)
+    _train(runner_bin, base, ad, steps=2, extra=("--lora", str(ad)))
+    rec = json.loads((tmp_path / "inplace.gguf.train.json").read_text())
+    assert rec["from_adapter"]["sha256"] == before
+    assert rec["adapter"]["sha256"] == _sha(ad) != before
+
+
+def test_dpo_trains_without_naming_the_cpu(runner_bin, base, tmp_path):
+    """--train-dpo is the CPU path like --train. It used to load onto the GPU
+    of a Metal or CUDA build and then refuse, naming --train, unless --gpu off
+    was given."""
+    data = tmp_path / "pairs.jsonl"
+    data.write_text(json.dumps({"prompt": "the runner", "chosen": " trains",
+                                "rejected": " sleeps"}) + "\n")
+    out = tmp_path / "dpo-auto.gguf"
+    p = subprocess.run([runner_bin, "-m", str(base / "base.gguf"), "--train-dpo",
+                        str(data), "--train-steps", "1", "--train-out", str(out),
+                        "-t", "2"], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=600)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert out.exists()
