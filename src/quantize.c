@@ -6,6 +6,7 @@
 #include "gguf.h"
 #include "compat.h"
 #include "json.h"
+#include "model.h"   // model_lora_arch_ok (static inline)
 
 #include <limits.h>
 #include <math.h>
@@ -1144,6 +1145,12 @@ static const char *const merge_slot_name[] = {
     "attn_q", "attn_k", "attn_v", "attn_output",
     "ffn_gate", "ffn_up", "ffn_down",
 };
+// the qwen35 DeltaNet projections, hooked only on that backbone (qwen35, or
+// clef on it): afmoe and Qwen-G1 have an attn_gate of their own that
+// serving does not hook, so the merge must not accept the name there
+static const char *const merge_slot_name_q35[] = {
+    "attn_qkv", "attn_gate", "ssm_beta", "ssm_alpha", "ssm_out",
+};
 
 static void merge_set_free(merge_set_t *ms) {
     if (ms->open) gguf_close(&ms->g);
@@ -1178,7 +1185,7 @@ static bool merge_set_resolve(merge_set_t *ms, const char *adapter_path,
     }
     const char *aarch = gguf_get_str(&ms->g, "general.architecture", "");
     const char *barch = gguf_get_str(base, "general.architecture", "");
-    if (strcmp(aarch, barch) != 0) {
+    if (!model_lora_arch_ok(barch, aarch)) {
         fprintf(stderr, "error: adapter architecture '%s' does not match "
                 "the model's '%s'\n", aarch, barch);
         return false;
@@ -1216,6 +1223,11 @@ static bool merge_set_resolve(merge_set_t *ms, const char *adapter_path,
         for (size_t k = 0; k < sizeof(merge_slot_name) /
                                sizeof(*merge_slot_name); k++)
             if (strcmp(pname, merge_slot_name[k]) == 0) { hooked = true; break; }
+        bool q35 = model_lora_arch_ok("qwen35", barch);   // qwen35 itself, or clef
+        if (!q35) q35 = strcmp(barch, "clef") == 0;
+        for (size_t k = 0; q35 && !hooked && k < sizeof(merge_slot_name_q35) /
+                                                  sizeof(*merge_slot_name_q35); k++)
+            if (strcmp(pname, merge_slot_name_q35[k]) == 0) hooked = true;
         char bname[96];
         snprintf(bname, sizeof(bname), "blk.%d.%s.weight", l, pname);
         const gguf_tensor *bt = NULL;

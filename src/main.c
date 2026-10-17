@@ -3376,7 +3376,7 @@ static int run_adapt_info(cli_run *rt) {
     // the device applies the adapter on its own blocks where the
     // backend has the kernels; otherwise serving means --gpu off
     sb_fmt(&r, ",\"device_kernels\":%s},\"training\":{\"supported\":%s,\"reason\":",
-           !can_s || !gpu_there ? "null"
+           !can_s || !gpu_there || (rt->m.qwen35 && !gpu_qwen35_ok()) ? "null"
 #ifdef __APPLE__
            : "\"metal\"",
 #else

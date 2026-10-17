@@ -45,7 +45,9 @@ propagates through frozen softmax routing and frozen experts, including
 selected-expert renormalization and supported non-renormalized weights.
 Frozen parameters still affect the gradient to the attention adapter.
 Expert adapters, unsupported gating/group/bias/shared-expert shapes,
-Gemma dual-branch MoE, recurrent architectures, removed sublayers, attention
+Gemma dual-branch MoE, recurrent architectures (qwen35 and Clef serve an
+adapter on their DeltaNet, attention and FFN projections, but do not train
+one), removed sublayers, attention
 sinks, partial-dimension RoPE, and unimplemented backward properties refuse
 by name. Derived-K (`RUNNER_TIEDV`), ring KV, and non-f16 training caches
 retain their refusals. `--adapt-info` reports serving and training support

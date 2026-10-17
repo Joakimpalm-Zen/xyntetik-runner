@@ -1148,6 +1148,10 @@ bool gpu_shared_weights_resident(const model_t *m) { (void)m; return false; }
 
 bool gpu_removed_sublayers_ok(void) { return true; }
 
+// the qwen35 hybrid path is not on this backend: gpu_init sends the whole
+// model to the CPU (see the refusal there)
+bool gpu_qwen35_ok(void) { return false; }
+
 bool gpu_eseries_ok(void) {
     // The per-layer-embedding branch landed in 0.1.11 and is gated by
     // `make test-metal-eseries`. Before that this was honestly false, which is

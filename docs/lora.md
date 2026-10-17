@@ -401,10 +401,20 @@ server.
   without the fused front kernel. Measured: 117 to 44 tok/s on that 135M model
   (the CPU decodes it at 37), and 9.8 to 8.3 tok/s on Llama-3.2-3B Q4_K_M with
   a rank-16 adapter on Q and V. Prompt processing barely moves.
+- **Qwen3.5/3.6/3.8 hybrids and Clef.** On a qwen35 model an adapter can also
+  sit on each Gated DeltaNet layer's five projections, `attn_qkv`, `attn_gate`,
+  `ssm_beta`, `ssm_alpha` and `ssm_out` (PEFT's `in_proj_qkv`, `in_proj_z`,
+  `in_proj_b`, `in_proj_a`, `out_proj`), as well as on the full-attention
+  layers (whose `attn_q` spans the query and its output gate) and every FFN, on
+  the CPU and on CUDA (Metal runs qwen35 on the CPU). On a Clef file the same
+  adapter reaches the decision head through the backbone; a `qwen35` adapter,
+  which llama.cpp's converter writes from Clef's backbone, is accepted there.
+  These models serve adapters but do not train them yet.
 - **Fails closed.** A shape or rank mismatch, an unknown target, an
-  architecture the adapter path does not cover, or an adapter on a routed-expert
-  FFN that the device path cannot reach refuses the load by name, rather than
-  serving a model that ignored the adapter on some blocks.
+  architecture the adapter path does not cover (the Mamba-2 hybrids, Gemma's
+  dual-branch MoE), or an adapter on a routed-expert FFN that the device path
+  cannot reach refuses the load by name, rather than serving a model that
+  ignored the adapter on some blocks.
 - The adapter is part of the engine's model identity, so a cached prompt prefix
   never crosses from one adapter to another.
 - The adapter and scale apply to every serving slot and to every reload after
@@ -593,7 +603,9 @@ router's softmax weights.
 
 It refuses by name: adapters on the experts themselves, other MoE routers
 (sigmoid, group-limited, biased), shared experts, attention sinks, recurrent
-or hybrid blocks, Gemma's dual-branch MoE, removed sublayers,
+or hybrid blocks (qwen35 and Clef serve an adapter but cannot train one: the
+backward does not go through the DeltaNet recurrence), Gemma's dual-branch MoE,
+removed sublayers,
 partial-dimension RoPE, and the derived-K and ring KV caches. `--adapt-info` gives the sentence for the model you have.
 Every covered shape is pinned by a finite-difference gate in `make test` on a
 fixture that carries it.

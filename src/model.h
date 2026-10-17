@@ -3,6 +3,7 @@
 #define RUNNER_MODEL_H
 
 #include <math.h>
+#include <string.h>
 #include "fp16.h"
 #include "gguf.h"
 #include "quants.h"
@@ -1010,7 +1011,24 @@ void   model_lora_grad_zero(model_t *m);
 // The adapted projection sites, in the order every consumer walks them. A
 // backend applying the adapter itself (cuda.c) needs to name them, so the
 // enum is public rather than private to model.c.
-enum { LW_Q, LW_K, LW_V, LW_O, LW_GATE, LW_UP, LW_DOWN, LW_SLOTS };
+// The projections an adapter can sit on. The first seven are the dense
+// transformer's; the last five are a qwen35 (Gated DeltaNet) layer's input
+// and output projections, named as llama.cpp's converter writes PEFT's
+// in_proj_qkv / in_proj_z / in_proj_b / in_proj_a / out_proj, and resolve
+// only on those layers (lora_slot_base).
+enum { LW_Q, LW_K, LW_V, LW_O, LW_GATE, LW_UP, LW_DOWN,
+       LW_QKV, LW_ZGATE, LW_BETA, LW_ALPHA, LW_SSMO, LW_SLOTS };
+// Whether an adapter declaring adapter_arch may apply to a model of
+// model_arch: the same architecture, or a qwen35 adapter on clef, whose
+// backbone is qwen35 under its own key prefix (an adapter trained on the
+// Qwen3.5/3.8 backbone and converted by llama.cpp says "qwen35").
+// Header-only so the merge (quantize.c, linked without model.c into its own
+// test binaries) applies the same rule as the loader.
+static inline bool model_lora_arch_ok(const char *model_arch, const char *adapter_arch) {
+    if (!model_arch || !adapter_arch) return false;
+    return strcmp(model_arch, adapter_arch) == 0 ||
+           (strcmp(model_arch, "clef") == 0 && strcmp(adapter_arch, "qwen35") == 0);
+}
 // What a backend needs to apply the adapter at one projection site: the f32
 // A [r][n_in] and B [n_out][r] host buffers, the rank, and the scale already
 // folded to (alpha/r) * user scale. false = no adapter on that (layer, slot),

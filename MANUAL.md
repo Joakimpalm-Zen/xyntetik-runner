@@ -2329,7 +2329,13 @@ is what llama.cpp's `convert_lora_to_gguf` emits, and a community adapter in tha
 loads and serves, measured). Interop runs the other way too: an adapter runner trained
 scores identically (1.000 on its held-out eval) when served by stock llama.cpp. Applied
 as `y += scale·B(Ax)` on the dense projections (attention q/k/v/output, FFN
-gate/up/down) - the base weights and kernels are untouched, so every base identity gate
+gate/up/down), and on a qwen35 or Clef model also on each Gated DeltaNet layer's input
+and output projections (`attn_qkv`, `attn_gate`, `ssm_beta`, `ssm_alpha`, `ssm_out`:
+PEFT's `in_proj_qkv`, `in_proj_z`, `in_proj_b`, `in_proj_a` and `out_proj` as llama.cpp's
+converter names them; a full-attention layer's `attn_q` spans the query and its output
+gate, which share one projection). A `qwen35` adapter, which is what the converter writes
+from Clef's backbone, serves on a `clef` file. Metal runs qwen35 on the CPU, so there the
+CPU applies it - the base weights and kernels are untouched, so every base identity gate
 still describes the adapted run's substrate. Runs on the CPU and, on CUDA and Metal, on
 the device: an offloaded block applies the delta from adapter weights held in device
 memory (36.9 MB at rank 8 on a 1.5B), a partial split lets each half apply its own
@@ -2340,8 +2346,8 @@ M1). On Metal a block with an adapter decodes on the split path, without the fus
 front kernel, so decode slows: 117 to 44 tok/s on that 135M (still above the CPU's 37),
 and 9.8 to 8.3 tok/s on Llama-3.2-3B Q4_K_M with a rank-16 adapter on Q and V of every
 block (the CPU decodes it at 5.7). Prefill barely moves in either case. Fails
-closed by name on shape/rank mismatches, unknown targets, recurrent/gemma-4-MoE
-architectures, and an adapter on a routed-expert FFN that the device path cannot reach,
+closed by name on shape/rank mismatches, unknown targets, the Mamba-2 hybrids and
+the gemma-4 MoE, and an adapter on a routed-expert FFN that the device path cannot reach,
 rather than serving a model that ignored the adapter on its offloaded blocks. A zero adapter is gated byte-identical to the bare base; a real
 adapter is gated against the merged-weights reference. The adapter id joins the engine's
 model identity, so cached prefixes never cross an adapter boundary. The adapter and
@@ -3795,7 +3801,9 @@ curl http://127.0.0.1:8080/v1/systemone -H 'Content-Type: application/json' -d '
 - The backbone runs where the model is placed (CPU, CUDA; Metal runs this
   backbone on the CPU today). The head runs on the host in f32. The forward
   starts at position 0 for every request, so no prefix is reused between
-  requests.
+  requests. A `--lora` adapter on the backbone (a `clef` or a `qwen35` one)
+  reaches the head through the hidden rows it reads; the head itself takes
+  no adapter.
 - Text only: a request with `images` or `videos` is refused with `400`.
   The chat routes still run the backbone as a qwen35 model.
 

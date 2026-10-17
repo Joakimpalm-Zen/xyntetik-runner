@@ -21,6 +21,13 @@ Writes, next to the given output prefix:
                           loader must accept (converted to f32 at load)
 
 Usage: make-test-lora.py <base.gguf> <out-prefix>
+
+LORA_TARGETS=all puts the adapter on all seven dense projections of block 0;
+LORA_TARGETS=qwen35 on a qwen35 (or clef) base puts it on the first Gated
+DeltaNet layer's five projections (attn_qkv, attn_gate, ssm_beta, ssm_alpha,
+ssm_out) and its FFN, and on the first full-attention layer's q/k/v/output.
+LORA_ARCH overrides the architecture the adapter declares (a qwen35 adapter
+for a clef base is what llama.cpp's converter writes from the backbone).
 """
 import os
 import struct
@@ -125,6 +132,7 @@ def read_base(path):
 
 
 raw, tens, data0 = read_base(BASE)
+Q35_SLOTS = ("attn_qkv", "attn_gate", "ssm_beta", "ssm_alpha", "ssm_out")
 targets = {"blk.0.attn_q.weight": None, "blk.0.ffn_down.weight": None}
 # LORA_TARGETS=all puts the adapter (and so the merged reference) on every
 # projection a backend hooks in block 0, so a device path is held to the
@@ -133,6 +141,15 @@ if os.environ.get("LORA_TARGETS") == "all":
     targets = {f"blk.0.{n}.weight": None
                for n in ("attn_q", "attn_k", "attn_v", "attn_output",
                          "ffn_gate", "ffn_up", "ffn_down")}
+if os.environ.get("LORA_TARGETS") == "qwen35":
+    present = {t[0] for t in tens}
+    blocks = sorted({int(n.split(".")[1]) for n in present if n.startswith("blk.")})
+    dn = next(b for b in blocks if f"blk.{b}.attn_qkv.weight" in present)
+    fa = next(b for b in blocks if f"blk.{b}.attn_q.weight" in present)
+    targets = {f"blk.{dn}.{n}.weight": None
+               for n in Q35_SLOTS + ("ffn_gate", "ffn_up", "ffn_down")}
+    targets.update({f"blk.{fa}.{n}.weight": None
+                    for n in ("attn_q", "attn_k", "attn_v", "attn_output")})
 targets_f32 = True
 for name, dims, ttype, toff in tens:
     if name in targets:
@@ -143,8 +160,20 @@ for name, dims, ttype, toff in tens:
 # a sparse-MoE base has no dense FFN tensors: its adapter is attention-only
 # (R17.3), so a default target the base lacks is dropped, not refused --
 # but attn_q, the one every base carries, must be there
-assert targets.get("blk.0.attn_q.weight"), "base lacks blk.0.attn_q.weight"
+# LORA_ONLY=<proj> targets that one projection of block 0 alone (a test of
+# what a loader does with a single name, hooked or not)
+if os.environ.get("LORA_ONLY"):
+    only = f"blk.0.{os.environ['LORA_ONLY']}.weight"
+    targets = {only: next(((t[1], t[3]) for t in tens if t[0] == only), None)}
+    assert targets[only], f"base lacks {only}"
+    targets_f32 = next(t[2] for t in tens if t[0] == only) == T_F32
+if os.environ.get("LORA_TARGETS") == "qwen35" or os.environ.get("LORA_ONLY"):
+    missing = [k for k, v in targets.items() if not v]
+    assert not missing, f"base lacks {missing}"
+else:
+    assert targets.get("blk.0.attn_q.weight"), "base lacks blk.0.attn_q.weight"
 targets = {k: v for k, v in targets.items() if v}
+ANCHOR = next(iter(targets))   # the hostile variants' tensor
 
 
 def pack_f(vals):
@@ -163,7 +192,8 @@ def adapter_tensors(zero_b):
     return out
 
 
-meta = [ks("general.architecture", BASE_ARCH), ks("general.type", "adapter"),
+meta = [ks("general.architecture", os.environ.get("LORA_ARCH", BASE_ARCH)),
+        ks("general.type", "adapter"),
         ks("adapter.type", "lora"), kf("adapter.lora.alpha", ALPHA)]
 
 _seed = 0x1234
@@ -212,6 +242,9 @@ def all_target_dims():
     n_layers = 1 + max(int(n.split(".")[1]) for n in names if n.startswith("blk."))
     slots = ["attn_q", "attn_k", "attn_v", "attn_output",
              "ffn_gate", "ffn_up", "ffn_down"]
+    if BASE_ARCH in ("qwen35", "clef"):
+        # hooked only on that backbone; afmoe's own attn_gate is not
+        slots += list(Q35_SLOTS)
     out = []
     for l in range(n_layers):
         for sname in slots:
@@ -234,23 +267,24 @@ for name, dims in all_target_dims():
 write_gguf(OUT + ".full.gguf", meta, full)
 
 # hostile variants
-nin, nout = targets["blk.0.attn_q.weight"][0][0], targets["blk.0.attn_q.weight"][0][1]
-bad = [("blk.0.attn_q.weight.lora_a", [nin + 2, RANK], pack_f([0.1] * (RANK * (nin + 2)))),
-       ("blk.0.attn_q.weight.lora_b", [RANK, nout], pack_f([0.1] * (nout * RANK)))]
+nin, nout = targets[ANCHOR][0][0], targets[ANCHOR][0][1]
+AW = ANCHOR   # "blk.N.<proj>.weight"
+bad = [(f"{AW}.lora_a", [nin + 2, RANK], pack_f([0.1] * (RANK * (nin + 2)))),
+       (f"{AW}.lora_b", [RANK, nout], pack_f([0.1] * (nout * RANK)))]
 write_gguf(OUT + ".badshape.gguf", meta, bad)
-extra = [("blk.0.attn_q.weight.lora_a", [nin, RANK, 2],
+extra = [(f"{AW}.lora_a", [nin, RANK, 2],
           pack_f([0.1] * (2 * RANK * nin))),
-         ("blk.0.attn_q.weight.lora_b", [RANK, nout],
+         (f"{AW}.lora_b", [RANK, nout],
           pack_f([0.1] * (nout * RANK)))]
 write_gguf(OUT + ".extradim.gguf", meta, extra)
-half = [("blk.0.attn_q.weight.lora_a", [nin, RANK], pack_f([0.1] * (RANK * nin)))]
+half = [(f"{AW}.lora_a", [nin, RANK], pack_f([0.1] * (RANK * nin)))]
 write_gguf(OUT + ".halfpair.gguf", meta, half)
 # A second tensor for the SAME (projection, side). The name is distinct, so
 # gguf's duplicate-name rule does not see it, and the merge loader's
 # name parse read the trailing "2" as nothing at all -- both landed in the one
 # slot and the second silently won, emitting a merged model that is not
 # base + adapter.
-dup = [("blk.0.attn_q.weight.lora_a", [nin, RANK], pack_f([0.1] * (RANK * nin))),
-       ("blk.0.attn_q.weight.lora_a2", [nin, RANK], pack_f([0.9] * (RANK * nin))),
-       ("blk.0.attn_q.weight.lora_b", [RANK, nout], pack_f([0.1] * (nout * RANK)))]
+dup = [(f"{AW}.lora_a", [nin, RANK], pack_f([0.1] * (RANK * nin))),
+       (f"{AW}.lora_a2", [nin, RANK], pack_f([0.9] * (RANK * nin))),
+       (f"{AW}.lora_b", [RANK, nout], pack_f([0.1] * (nout * RANK)))]
 write_gguf(OUT + ".dupside.gguf", meta, dup)
