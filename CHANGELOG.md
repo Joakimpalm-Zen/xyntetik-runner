@@ -15,6 +15,19 @@ Current release and unreleased changes. Compatibility follows the
   removed attention on a MoE file keeps its FFN path, experts on the device
   or the host. The `-v` line no longer says such a file runs on the CPU path.
 
+- **LoRA adapters serve on Qwen3.5/3.6/3.8 hybrids and on Clef.** An
+  adapter on a qwen35 model or a Clef file was refused ("recurrent
+  architectures"). It now sits on each Gated DeltaNet layer's five
+  projections (`attn_qkv`, `attn_gate`, `ssm_beta`, `ssm_alpha`,
+  `ssm_out`, which is how llama.cpp's converter names PEFT's
+  `in_proj_qkv`/`z`/`b`/`a` and `out_proj`), on the full-attention
+  projections and on every FFN, on the CPU and on CUDA. On Clef it reaches
+  the decision head through the backbone, and a `qwen35` adapter, which the
+  converter writes from that backbone, is accepted. `--merge-lora` folds
+  the same projections. A served adapter matches the weights merged by hand
+  to within 1e-5. Training on these models, and the Mamba-2 hybrids, are
+  still refused.
+
 - **`--fit` charges each layer its own KV cache.** It charged every layer
   the scalar KV heads times the scalar head width. On gemma-4-31B that is
   about four times what a load allocates (120 GiB at 32k), and a file with a
