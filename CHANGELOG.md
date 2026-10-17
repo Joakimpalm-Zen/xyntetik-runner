@@ -3,7 +3,7 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.4.2 - 2026-10-17
 
 - **Reinforcement fine-tuning trains on exactly what it sampled.**
   `scripts/train-grpo-lite.py` promised that the policy that samples is the
