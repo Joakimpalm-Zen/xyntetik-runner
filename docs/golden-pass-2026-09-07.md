@@ -573,6 +573,20 @@ Both halves matter, so both are stated.
   schema v3). The two rows above are instrument readings, not fidelity, and
   are not re-measured yet: a float32 reference needs about 30 GB of memory
   for Mistral v0.3 and 16 GB for Phi-3.5.
+  **Correction 2026-10-17: stop and control tokens.** A server spells a
+  stop or control token "" (it decodes to no bytes), so a reference
+  `<|endoftext|>` in the gold top-20 never matched by spelling and was
+  scored at a floor on both sides, whatever the engines computed. Found by
+  the lab on a qwen35 BF16 file, where one position read KL 0.112 against
+  8.2e-9 over its 19 shared tokens. `gold-logits.py` now matches by token
+  id where the endpoint gives ids, reads a greedy stop from the runner's
+  `stop_logprobs` instead of skipping the position, and reports any mass it
+  had to drop (schema v4). Every report in this document predates the fix:
+  at positions whose reference top-20 held a stop or control token, the
+  absolute KL of both engines may be overstated. Both sides met the same
+  floor rule, so the paired comparisons are less affected, but they are not
+  re-measured yet; the stored rows do not keep the gold top-20, so this
+  needs the float32 references run again.
 
 ## Per-family facts
 

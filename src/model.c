@@ -2413,6 +2413,14 @@ static bool bind_meta_gemma4(model_t *m, gguf_file *g, const char *arch) {
                 "verified against llama.cpp at the Q4_K noise floor "
                 "rather than token-identically\n",
                 m->kv_from_start < m->n_layer ? " + shared KV" : "");
+    else if (gguf_get_u32(g, AK("expert_count"), 0) > 0)
+        // The MoE variant used to print the dense line below, which read as
+        // a llama.cpp token-identity claim this file never earned (lab,
+        // 2026-10-17, on gemma-4-26B-A4B-it). Its evidence is its own.
+        fprintf(stderr, "gemma4: MoE variant (dual-branch FFN): CUDA verified "
+                "GPU/CPU-identical on gemma-4-26B-A4B-it; the dense variant's "
+                "llama.cpp token-identity check does not cover it "
+                "(docs/moe-support.md)\n");
     else
         fprintf(stderr, "gemma4: dense variant verified against llama.cpp (token-identical greedy output on the official ggml-org GGUF); unofficial dequant conversions may still produce garbage — prefer official files\n");
     m->embd_scale    = sqrtf((float)m->n_embd);
