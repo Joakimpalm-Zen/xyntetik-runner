@@ -30,12 +30,105 @@ for the same reason.
 Endpoints speak /v1/completions with `logprobs` (llama-server and the runner
 both do). The tokenizer is the HF one; the prefix at each position is the
 decoded token prefix, so every side sees the same text.
+
+Tokens are matched by id wherever the endpoint gives ids (the runner's
+`top_token_ids`, llama-server's `id`), and by spelling otherwise. Spelling
+alone cannot match a stop or control token: it decodes to no bytes, so a
+server spells it "" while the reference spells it `<|endoftext|>`, and every
+such token in a JSON map is the same "" key. Matched by spelling, the gold
+mass on it was scored at a floor whatever the engine computed: measured by the
+lab on 2026-10-17 on a qwen35 BF16 file, one position read KL 0.112 where the
+19 shared tokens agree to 8.2e-9, because the gold top-20 held
+`<|endoftext|>` at 2.8%. Where an endpoint gives no ids, a reference special
+token it did not list is dropped, the gold renormalised over the rest, and the
+dropped mass reported per row, instead of a floor.
 """
 import argparse
 import json
 import math
 import sys
 import urllib.request
+
+
+class _Obj(dict):
+    """A JSON object that also keeps its members in order, duplicates
+    included. The runner spells every control token "" in a top_logprobs
+    map, so two of them in one map are two "" keys, and a plain dict keeps
+    only the last; the parallel `top_token_ids` array needs every member."""
+
+    def __init__(self, pairs):
+        super().__init__(pairs)
+        self.pairs = list(pairs)
+
+
+class Top:
+    """One endpoint's answer at one position: logprob by spelling, by id
+    (None when the endpoint gives no ids), each id's spelling as the
+    endpoint wrote it, and its top-1."""
+
+    def __init__(self, by_spell, by_id, spelled, top1_spell, top1_id):
+        self.by_spell, self.by_id, self.spelled = by_spell, by_id, spelled
+        self.top1_spell, self.top1_id = top1_spell, top1_id
+
+
+def _runner_top(pairs, ids, chosen=None):
+    """The runner's parallel shape: (spelling, logprob) pairs in order, the
+    ids in the same order, and the chosen (spelling, id, logprob) if any."""
+    by_spell = dict(pairs)
+    by_id = spelled = None
+    if ids is not None and len(ids) == len(pairs):
+        by_id = {i: v for i, (_, v) in zip(ids, pairs)}
+        spelled = {i: t for i, (t, _) in zip(ids, pairs)}
+    entries = [(v, t, ids[k] if by_id is not None else None)
+               for k, (t, v) in enumerate(pairs)]
+    if chosen:
+        t, i, v = chosen
+        by_spell[t] = v
+        if by_id is not None and i is not None:
+            by_id[i], spelled[i] = v, t
+        entries.append((v, t, i if by_id is not None else None))
+    v, t, i = max(entries, key=lambda e: e[0]) if entries else (None, None, None)
+    return Top(by_spell, by_id, spelled, t, i)
+
+
+def parse_top(d):
+    """The distribution a /v1/completions response gives for its one
+    generated position, or None when it gives none."""
+    ch = d["choices"][0]
+    lp = ch.get("logprobs")
+    if lp and "content" in lp:  # llama.cpp's OpenAI-style schema
+        if not lp["content"]:
+            return None
+        step = lp["content"][0]
+        alts = step["top_logprobs"]
+        by_spell = {e["token"]: e["logprob"] for e in alts}
+        by_spell[step["token"]] = step["logprob"]
+        by_id = spelled = None
+        if "id" in step and all("id" in e for e in alts):
+            by_id = {e["id"]: e["logprob"] for e in alts}
+            spelled = {e["id"]: e["token"] for e in alts}
+            by_id[step["id"]], spelled[step["id"]] = step["logprob"], step["token"]
+        return Top(by_spell, by_id, spelled, step["token"], step.get("id"))
+    if lp and lp.get("tokens"):  # the runner's schema: parallel arrays
+        alts = lp["top_logprobs"][0]
+        pairs = alts.pairs if isinstance(alts, _Obj) else list(alts.items())
+        ids = (lp.get("top_token_ids") or [None])[0]
+        tid = (lp.get("token_ids") or [None])[0]
+        return _runner_top(pairs, ids, (lp["tokens"][0], tid, lp["token_logprobs"][0]))
+    # The greedy pick was a stop: the runner's logprob arrays align with the
+    # emitted text and stay empty, and the decision rides in stop_logprobs.
+    # Skipping these positions would drop a one-sided stop from the score.
+    sl = ch.get("stop_logprobs")
+    if sl:
+        alts = sl.get("top_logprobs") or {}
+        pairs = alts.pairs if isinstance(alts, _Obj) else list(alts.items())
+        return _runner_top(pairs, sl.get("top_token_ids"),
+                           ("", ch.get("stop_token_id"), sl["logprob"]))
+    # A server may answer a position with no logprobs at all (measured
+    # 2026-09-07 on SmolLM2: the request whose next token is the end of
+    # text comes back without the block). That is a position this gate
+    # cannot score, not a reason to lose the whole family.
+    return None
 
 
 def query(endpoint, model_name, prompt, top_n=20):
@@ -45,22 +138,8 @@ def query(endpoint, model_name, prompt, top_n=20):
         f"{endpoint}/v1/completions", data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as r:
-        d = json.load(r)
-    lp = d["choices"][0].get("logprobs")
-    # A server may answer a position with no logprobs at all (measured
-    # 2026-09-07 on SmolLM2: the request whose next token is the end of
-    # text comes back without the block). That is a position this gate
-    # cannot score, not a reason to lose the whole family.
-    if not lp:
-        return None
-    if "content" in lp:  # llama.cpp's OpenAI-style schema
-        step = lp["content"][0]
-        top = {e["token"]: e["logprob"] for e in step["top_logprobs"]}
-        top[step["token"]] = step["logprob"]
-    else:  # the runner's schema: parallel arrays, top_logprobs a dict
-        top = dict(lp["top_logprobs"][0])
-        top[lp["tokens"][0]] = lp["token_logprobs"][0]
-    return top
+        d = json.loads(r.read(), object_pairs_hook=_Obj)
+    return parse_top(d)
 
 
 def token_speller(tok):
@@ -105,6 +184,43 @@ def kld(gold, other):
     gz = math.log(sum(math.exp(x) for x in g))
     oz = math.log(sum(math.exp(x) for x in o))
     return sum(math.exp(x - gz) * ((x - gz) - (y - oz)) for x, y in zip(g, o))
+
+
+def compare(gold_rows, top, unlistable=frozenset()):
+    """KL(gold || endpoint) over gold's top tokens, matched by id when the
+    endpoint gives ids and by spelling otherwise. `gold_rows` is
+    [(id, spelling, logprob)]. Matched by spelling, a gold token in
+    `unlistable` (the reference's special tokens) that the endpoint did not
+    list is dropped, not floored, and its share of the gold top-N mass is
+    returned; any other token the endpoint did not list gets the floor, as
+    kld() gives it. Returns (kld, dropped_gold_mass, match)."""
+    match = "id" if top.by_id is not None else "spelling"
+    gz = math.log(sum(math.exp(lp) for _, _, lp in gold_rows))
+    kept, dropped = {}, 0.0
+    other = {}
+    for i, sp, lp in gold_rows:
+        v = top.by_id.get(i) if top.by_id is not None else top.by_spell.get(sp)
+        if v is None and match == "spelling" and i in unlistable:
+            dropped += math.exp(lp - gz)
+            continue
+        kept[i] = lp
+        if v is not None:
+            other[i] = v
+    listed = list(top.by_id.values()) if top.by_id is not None else list(top.by_spell.values())
+    floor = min(listed) - 2.0 if listed else -20.0
+    k = kld(kept, {i: other.get(i, floor) for i in kept}) if kept else 0.0
+    return k, dropped, match
+
+
+def id_spelling_mismatches(top, spell):
+    """Ids whose spelling at the endpoint differs from the reference's: the
+    sign of an endpoint whose vocabulary is numbered differently, where id
+    matching would pair the wrong tokens. A token the endpoint spells "" (a
+    control token) or with U+FFFD (a partial character) says nothing."""
+    if top.spelled is None:
+        return 0
+    return sum(1 for i, t in top.spelled.items()
+               if t and "\ufffd" not in t and t != spell(i))
 
 
 def mcnemar_exact(b, c):
@@ -232,6 +348,11 @@ def main():
     logp = torch.log_softmax(out.logits[0].float(), dim=-1)
 
     spell = token_speller(tok)
+    # the reference's special tokens: what a server spells "" or not at all
+    unlistable = set(getattr(tok, "all_special_ids", []) or [])
+    for i, t in (getattr(tok, "added_tokens_decoder", None) or {}).items():
+        if getattr(t, "special", False):
+            unlistable.add(int(i))
     rows = []
     skipped = 0
     sides = [("a", args.endpoint_a, args.model_name_a)]
@@ -245,8 +366,10 @@ def main():
         if tok(prefix, add_special_tokens=False)["input_ids"] != body[:pos]:
             continue
         top = torch.topk(logp[len(special) + pos - 1], args.top_n)
-        gold = {spell(int(i)): float(v) for v, i in zip(top.values, top.indices)}
-        gold_top1 = spell(int(top.indices[0]))
+        gold_rows = [(int(i), spell(int(i)), float(v))
+                     for v, i in zip(top.values, top.indices)]
+        gold_top1_id = gold_rows[0][0]
+        gold_top1 = gold_rows[0][1]
         row = {"pos": pos, "gold_top1": gold_top1, "gold_margin":
                float(top.values[0] - top.values[1])}
         got = {name: query(ep, mn, prefix, args.top_n) for name, ep, mn in sides}
@@ -255,9 +378,12 @@ def main():
             continue
         for name, ep, mn in sides:
             other = got[name]
-            o_top1 = max(other, key=other.get)
-            row[name] = {"kld": kld(gold, other), "top1": o_top1,
-                         "agree": o_top1 == gold_top1}
+            k, dropped, match = compare(gold_rows, other, unlistable)
+            agree = (other.top1_id == gold_top1_id if match == "id"
+                     else other.top1_spell == gold_top1)
+            row[name] = {"kld": k, "top1": other.top1_spell, "agree": agree,
+                         "match": match, "dropped_gold_mass": dropped,
+                         "id_spelling_mismatches": id_spelling_mismatches(other, spell)}
         rows.append(row)
         print(f"pos {pos:4d} " + " ".join(
             f"{k}: kld {row[k]['kld']:.4f} {'ok' if row[k]['agree'] else 'DIFF'}"
@@ -268,6 +394,8 @@ def main():
                "special_prefix_tokens": len(special),
                "special_prefix_forced": bool(args.force_bos and special),
                "token_spelling": "in-sentence (anchored decode)",
+               "token_match": "by id where the endpoint gives ids, else by "
+                              "spelling with unlisted special tokens dropped",
                "positions_skipped_no_logprobs": skipped,
                "reference_dtype": "float32", "reference_device": "cpu",
                "sides": {}}
@@ -281,7 +409,15 @@ def main():
             "margin_qualified_top1_pct": 100.0 * sum(
                 r[name]["agree"] for r in rows if r["gold_margin"] > 0.5)
             / max(1, sum(1 for r in rows if r["gold_margin"] > 0.5)),
+            "matched_by_id_positions": sum(r[name]["match"] == "id" for r in rows),
+            "positions_with_dropped_mass": sum(r[name]["dropped_gold_mass"] > 0 for r in rows),
+            "max_dropped_gold_mass": max((r[name]["dropped_gold_mass"] for r in rows), default=0.0),
+            "id_spelling_mismatches": sum(r[name]["id_spelling_mismatches"] for r in rows),
         }
+        if summary["sides"][name]["id_spelling_mismatches"]:
+            print(f"warning: side {name}: token ids whose spelling differs from the "
+                  "reference's; the endpoint may number its vocabulary differently, "
+                  "and id matching would pair the wrong tokens", file=sys.stderr)
     # Whether any of the above is distinguishable from noise. Both sides
     # see the same positions, so the comparison is paired.
     if len(sides) == 2:
@@ -304,8 +440,11 @@ def main():
                 else ("a closer" if w[0] > 0 else "b closer")),
         }
     # v3: tokens are spelled as a server spells them (token_speller); a v2
-    # report on an add_space_prefix family compared mismatched spellings
-    report = {"schema_version": "xyntetik.runner.gold-logits.v3",
+    # report on an add_space_prefix family compared mismatched spellings.
+    # v4: tokens are matched by id where the endpoint gives ids; a v3 report
+    # scored a gold stop or control token at a floor (the server spells it
+    # ""), and skipped the positions whose greedy pick was a stop.
+    report = {"schema_version": "xyntetik.runner.gold-logits.v4",
               "summary": summary, "rows": rows}
     print(json.dumps(summary, indent=2))
     if args.out:

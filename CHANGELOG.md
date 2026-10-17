@@ -25,6 +25,22 @@ Current release and unreleased changes. Compatibility follows the
   per step, the logprob of every completion token under the forward that
   step trains through, before its update.
 
+- **The gold logit check no longer floors stop tokens.** A server spells a
+  stop or control token "" (it decodes to no bytes), while the float32
+  reference spells it `<|endoftext|>`, so `scripts/gold-logits.py`, which
+  matched by spelling, scored the reference's mass on it at a floor: one
+  qwen35 position read KL 0.112 where its 19 shared tokens agree to 8.2e-9.
+  It now matches by token id where the endpoint gives ids, reads a greedy
+  stop from `stop_logprobs` instead of skipping the position, and, where an
+  endpoint gives no ids, drops an unlisted special token and reports the
+  dropped mass (report schema v4). Earlier reports may overstate absolute
+  KL at such positions (docs/golden-pass-2026-09-07.md).
+
+- **A gemma4 MoE file no longer prints the dense variant's verification
+  line.** The load banner said "dense variant verified against llama.cpp"
+  on gemma-4-26B-A4B-it too; it now names what the MoE variant was verified
+  on.
+
 - **Logprobs are reported at full precision.** The completion and chat
   logprob fields printed six decimals, which hid differences in the last
   bits and lost most digits of a small logprob. They now print the

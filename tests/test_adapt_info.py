@@ -81,3 +81,21 @@ def test_the_refusal_is_the_loaders_own_sentence(fx):
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
     assert p.returncode != 0
     assert reason in p.stderr.decode(errors="replace")
+
+
+def _banner(exe, model):
+    p = subprocess.run([exe, "-m", str(model), "--adapt-info", "--no-tray"],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    return p.stderr.decode(errors="replace")
+
+
+def test_the_gemma4_banner_names_what_the_file_was_verified_on(fx):
+    """The MoE variant printed the dense variant's line, a llama.cpp
+    token-identity claim it never earned (lab, 2026-10-17)."""
+    exe, d = fx
+    err = _banner(exe, d / "moe.gemma4-moe.gguf")
+    assert "gemma4: MoE variant" in err and "dense variant verified" not in err, err
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--arch", "gemma4",
+                    str(d / "g4.gguf")], check=True, stdout=subprocess.DEVNULL)
+    err = _banner(exe, d / "g4.gguf")
+    assert "gemma4: dense variant verified" in err and "MoE variant" not in err, err
