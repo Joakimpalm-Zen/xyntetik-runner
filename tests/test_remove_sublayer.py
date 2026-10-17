@@ -402,12 +402,12 @@ def gpu_backend(runner_bin):
     return {"cuda": "CUDA", "metal": "Metal"}[backend]
 
 
-def _score_gpu(runner_bin, model, chunked, backend):
+def _score_gpu(runner_bin, model, chunked, backend, extra=()):
     env = dict(os.environ)
     if chunked:
         env["RUNNER_SCORE_CHUNKED"] = "1"
     p = subprocess.run([runner_bin, "-m", str(model), "--score", "-p", PROMPT,
-                        "-t", "2", "--gpu", "auto"], cwd=ROOT, env=env,
+                        "-t", "2", "--gpu", "auto", *extra], cwd=ROOT, env=env,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        timeout=120)
     err = p.stderr.decode(errors="replace")
@@ -534,3 +534,35 @@ def test_loader_names_a_file_with_every_attention_removed(runner_bin, tmp_path):
     p = _run(runner_bin, ["-m", f, "-p", "hi", "-n", "1", "--gpu", "off"])
     assert p.returncode != 0
     assert b"every block of this file has its attention removed" in p.stderr
+
+
+# ------------------------------------------- a removed attention on a MoE file
+@pytest.fixture(scope="module")
+def moe_fixtures(tmp_path_factory):
+    base = tmp_path_factory.mktemp("rm-moe") / "m"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-moe.py", str(base)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    return base
+
+
+@pytest.mark.parametrize("member,extra", [
+    ("moe4", ()),                  # routed experts on the device
+    ("moe4", ("--cpu-moe",)),      # routed experts on the host
+    ("gemma4-moe", ()),            # gemma-4's dual-branch FFN
+])
+@pytest.mark.parametrize("chunked", [False, True], ids=["decode", "prefill"])
+def test_a_removed_attention_keeps_the_ffn_dispatch_on_the_gpu(
+        runner_bin, gpu_backend, moe_fixtures, tmp_path, member, extra, chunked):
+    """A removed attention skips its branch only: the FFN that follows still
+    takes its own path (device or host experts, gemma's dual branch). The
+    CUDA walk once skipped such a block through the nemotron_h jump, which
+    lands on the dense/device-MoE FFN and would have run the wrong FFN here."""
+    parent = pathlib.Path(f"{moe_fixtures}.{member}.gguf")
+    out = tmp_path / "rm.gguf"
+    p = _remove(runner_bin, parent, out, "attn:0")
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    zeroed = tmp_path / "z.gguf"
+    _zero_tensor(parent, zeroed, "blk.0.attn_output.weight")
+    removed = _score_gpu(runner_bin, out, chunked, gpu_backend, extra)
+    assert removed == _score_gpu(runner_bin, zeroed, chunked, gpu_backend, extra)
+    assert removed != _score_gpu(runner_bin, parent, chunked, gpu_backend, extra)
