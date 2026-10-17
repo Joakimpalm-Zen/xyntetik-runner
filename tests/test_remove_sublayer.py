@@ -16,7 +16,6 @@ red.
 import json
 import os
 import pathlib
-import platform
 import re
 import struct
 import subprocess
@@ -390,7 +389,20 @@ def test_adapters_and_training_refuse_a_removed_model(runner_bin, parent, tmp_pa
     assert b"removed" in p.stderr
 
 
-def _score_gpu(runner_bin, model, chunked):
+@pytest.fixture(scope="module")
+def gpu_backend(runner_bin):
+    """The device this build runs on: CUDA or Metal, from --caps. Both walks
+    omit a removed sublayer; a host with neither skips (and a CUDA gate host
+    that skips here fails its gate, see CUDA_GATED_TESTS)."""
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, timeout=60).stdout)
+    backend = (caps.get("gpu") or {}).get("backend")
+    if backend not in ("cuda", "metal"):
+        pytest.skip("no CUDA or Metal GPU device in this build or host")
+    return {"cuda": "CUDA", "metal": "Metal"}[backend]
+
+
+def _score_gpu(runner_bin, model, chunked, backend):
     env = dict(os.environ)
     if chunked:
         env["RUNNER_SCORE_CHUNKED"] = "1"
@@ -398,13 +410,12 @@ def _score_gpu(runner_bin, model, chunked):
                         "-t", "2", "--gpu", "auto"], cwd=ROOT, env=env,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        timeout=120)
-    assert p.returncode == 0, p.stderr.decode(errors="replace")
-    assert b"Metal backend" in p.stderr, p.stderr.decode(errors="replace")
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode == 0, err
+    assert f"{backend} backend" in err and "using CPU" not in err, err
     return json.loads(p.stdout)["logprobs"]
 
 
-@pytest.mark.skipif(platform.system() != "Darwin" or platform.machine() != "arm64",
-                    reason="the Metal walk is the backend that omits a removed sublayer")
 @pytest.mark.parametrize("spec,zero", [
     ("attn:1", ["blk.1.attn_output.weight"]),
     ("attn:0", ["blk.0.attn_output.weight"]),
@@ -414,11 +425,12 @@ def _score_gpu(runner_bin, model, chunked):
     ("attn:0,mlp:0", ["blk.0.attn_output.weight", "blk.0.ffn_down.weight"]),
 ])
 @pytest.mark.parametrize("chunked", [False, True], ids=["decode", "prefill"])
-def test_metal_omits_a_removed_sublayer_bit_identically(
-        runner_bin, parent, tmp_path, spec, zero, chunked):
-    """The CPU anchor, on the device: the removed file scores exactly as the
-    parent with the branch's output projection zeroed, token by token (the
-    decode walk and its fusions) and in one batch (the prefill walk)."""
+def test_the_gpu_omits_a_removed_sublayer_bit_identically(
+        runner_bin, gpu_backend, parent, tmp_path, spec, zero, chunked):
+    """The CPU anchor, on the device (Metal or CUDA): the removed file scores
+    exactly as the parent with the branch's output projection zeroed, token by
+    token (the decode walk and its fusions) and in one batch (the prefill
+    walk)."""
     out = tmp_path / "removed.gguf"
     p = _remove(runner_bin, parent, out, spec)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
@@ -427,9 +439,9 @@ def test_metal_omits_a_removed_sublayer_bit_identically(
         nxt = tmp_path / ("zeroed%d.gguf" % i)
         _zero_tensor(zeroed, nxt, name)
         zeroed = nxt
-    removed = _score_gpu(runner_bin, out, chunked)
-    assert removed == _score_gpu(runner_bin, zeroed, chunked)
-    assert removed != _score_gpu(runner_bin, parent, chunked)
+    removed = _score_gpu(runner_bin, out, chunked, gpu_backend)
+    assert removed == _score_gpu(runner_bin, zeroed, chunked, gpu_backend)
+    assert removed != _score_gpu(runner_bin, parent, chunked, gpu_backend)
 
 
 # ---------------------------------------------------- the gemma-4 file shape
@@ -468,6 +480,23 @@ def test_gemma4_shape_removal_matches_zeroed_output(runner_bin, gemma4_hetero,
     assert [v for i, v in enumerate(hk) if i != layer] == \
         [v for i, v in enumerate(kv["gemma4.attention.head_count_kv"]) if i != layer]
     assert f"blk.{layer}.attn_q.weight" not in _parse(out)["tensors"]
+
+
+@pytest.mark.parametrize("layer", [1, 2])  # 1 slides (has V); 2 is full and V-less
+@pytest.mark.parametrize("chunked", [False, True], ids=["decode", "prefill"])
+def test_gemma4_shape_removal_on_the_gpu(runner_bin, gpu_backend, gemma4_hetero,
+                                         tmp_path, layer, chunked):
+    """The released Gemma 4 31B cut (attn:48) is this shape: the device walk
+    omits the removed attention on a sliding and on a V-less full layer exactly
+    as the parent with that layer's output projection zeroed computes it."""
+    out = tmp_path / f"g4-attn{layer}.gguf"
+    p = _remove(runner_bin, gemma4_hetero, out, f"attn:{layer}")
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    zeroed = tmp_path / "z.gguf"
+    _zero_tensor(gemma4_hetero, zeroed, f"blk.{layer}.attn_output.weight")
+    removed = _score_gpu(runner_bin, out, chunked, gpu_backend)
+    assert removed == _score_gpu(runner_bin, zeroed, chunked, gpu_backend)
+    assert removed != _score_gpu(runner_bin, gemma4_hetero, chunked, gpu_backend)
 
 
 @pytest.mark.parametrize("spec,part", [("attn:0,attn:1", "attention"),

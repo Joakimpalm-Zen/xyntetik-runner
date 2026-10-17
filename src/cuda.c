@@ -1082,7 +1082,11 @@ bool gpu_moe_ok(void) {
     return true;    // expert banks upload and route on the device
 }
 
-bool gpu_removed_sublayers_ok(void) { return false; }
+// A block whose attention or FFN was removed (--remove-sublayer) is walked
+// without that branch: fwd_tile skips it per block, and the multi-sequence
+// microbatch declines such a model (batch_eligible wants every layer's
+// attention weights), so its sequences decode one at a time.
+bool gpu_removed_sublayers_ok(void) { return true; }
 
 bool gpu_eseries_ok(void) {
     // stage_ple ships the per-layer-embedding pre-pass each forward and enc_ple
@@ -5320,6 +5324,13 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
         int q_dim   = model_q_dim(m, l);
         int kv_dim  = model_kv_dim(m, l);
 
+        // --remove-sublayer attn:N: the block has no attention, so its whole
+        // branch (pre-norm, attention, post-norm, residual add) is skipped and
+        // the residual passes through. It jumps past the branch only, unlike
+        // the nemotron_h jump below, so the FFN dispatch that follows (host or
+        // device experts, gemma's dual-branch FFN) still runs as it would.
+        // The block's KV is not allocated: its per-layer KV width is 0.
+        if (m->l_no_attn && m->l_no_attn[l]) goto attention_removed;
         if (ly->skip_mixer) goto mamba_mlp;   // nemotron_h MLP-only block
         if (m->hyper_conn) {
             size_t hcd = (size_t)m->hc_count * n_embd;
@@ -5369,7 +5380,9 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
     attention_done:
         ok = ok && tile_branch_out(g, m, g->sw->pan[l], tn, xdim);
         prof_mark(g, PH_ELEM);
-        if (ly->skip_ffn) goto mamba_tail;   // nemotron_h SSM/attention block
+    attention_removed:
+        // nemotron_h SSM/attention blocks, and --remove-sublayer mlp:N
+        if (ly->skip_ffn) goto mamba_tail;
 
         if (ly->is_moe && moe_on_host(m, l) && m->hyper_conn) {
             // qwen4exp: the device mixes the FFN input, the host runs the
