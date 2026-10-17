@@ -65,6 +65,10 @@ bool   gpu_eseries_ok(void);
 // True when the backend's layer walk omits a removed attention or FFN
 // (--remove-sublayer) per block; false makes the loader refuse the offload.
 bool   gpu_removed_sublayers_ok(void);
+// Whether this backend runs a qwen35 (Gated DeltaNet) model on the device at
+// all; where it does not, the whole model, adapters included, runs on the
+// CPU (--adapt-info reports no device kernels for it).
+bool   gpu_qwen35_ok(void);
 // True when gpu_init would reuse device weights already uploaded for this file
 // and configuration (CUDA's shared-weight registry); false elsewhere.
 bool   gpu_shared_weights_resident(const model_t *m);

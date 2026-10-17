@@ -1088,6 +1088,9 @@ bool gpu_moe_ok(void) {
 // attention weights), so its sequences decode one at a time.
 bool gpu_removed_sublayers_ok(void) { return true; }
 
+// the DeltaNet layers run on the device (gpu_q35_recurrent), adapters too
+bool gpu_qwen35_ok(void) { return true; }
+
 bool gpu_eseries_ok(void) {
     // stage_ple ships the per-layer-embedding pre-pass each forward and enc_ple
     // runs the gate/proj/norm branch per layer; gpu_init has no PLE refusal.
@@ -4971,14 +4974,24 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
         return false;
     CUdeviceptr conv_w = weight_base + weight_off;
 
+    // each projection, then its adapter delta on its own output, as the
+    // CPU walk (qwen35_linear) applies them
     bool ok = enc_mv(g, m, ly->wqkv, g->xb, g->q35_mix,
                      m->n_embd, convdim, 0, tn, xdim, convdim)
+           && enc_lora(g, l, LW_QKV, g->xb, g->q35_mix, m->n_embd, convdim,
+                       tn, xdim, convdim)
            && enc_mv(g, m, ly->wq_gate, g->xb, g->q35_z,
                      m->n_embd, inner, 0, tn, xdim, inner)
+           && enc_lora(g, l, LW_ZGATE, g->xb, g->q35_z, m->n_embd, inner,
+                       tn, xdim, inner)
            && enc_mv(g, m, ly->ssm_beta, g->xb, g->q35_beta,
                      m->n_embd, nh, 0, tn, xdim, nh)
+           && enc_lora(g, l, LW_BETA, g->xb, g->q35_beta, m->n_embd, nh,
+                       tn, xdim, nh)
            && enc_mv(g, m, ly->ssm_alpha, g->xb, g->q35_alpha,
-                     m->n_embd, nh, 0, tn, xdim, nh);
+                     m->n_embd, nh, 0, tn, xdim, nh)
+           && enc_lora(g, l, LW_ALPHA, g->xb, g->q35_alpha, m->n_embd, nh,
+                       tn, xdim, nh);
     if (!ok) return false;
 
     size_t hist_layer = (size_t)histn * convdim;
@@ -5014,7 +5027,9 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
         }
     }
     return enc_mv(g, m, ly->ssm_out, g->xb2, g->xb, inner, m->n_embd,
-                  0, tn, xdim, xdim);
+                  0, tn, xdim, xdim)
+        && enc_lora(g, l, LW_SSMO, g->xb2, g->xb, inner, m->n_embd,
+                    tn, xdim, xdim);
 }
 
 // One Mamba-2 recurrent layer (granitehybrid / nemotron_h). Mirrors the CPU
@@ -5106,9 +5121,13 @@ static bool tile_q(gpu_t *g, model_t *m, layer_t *ly, int l, int tn,
                    int n_embd, int xdim, int hd, int q_dim) {
     bool ok = true;
     if (m->qwen35) {
+        // Q and the output gate share the projection, interleaved per head;
+        // the adapter spans the whole output (attn_q's rows), before the split
         ok = ok && enc_mv(g, m, ly->wq, g->xb, g->q35_mix,
                           n_embd, 2 * q_dim, g->sw->bq[l], tn, xdim,
-                          2 * q_dim);
+                          2 * q_dim)
+                && enc_lora(g, l, LW_Q, g->xb, g->q35_mix, n_embd, 2 * q_dim,
+                            tn, xdim, 2 * q_dim);
         int heads = m->n_head, packed_stride = 2 * q_dim, q_stride = q_dim;
         void *ps[] = { &g->q35_mix, &g->q, &g->q35_gate, &heads, &hd,
                        &packed_stride, &q_stride };

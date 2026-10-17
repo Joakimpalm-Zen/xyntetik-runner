@@ -6606,22 +6606,33 @@ static void q35_heads_worker(void *vp, int h0, int h1) {
 
 static size_t recurrent_conv_bytes(const model_t *m);
 static size_t recurrent_state_bytes(const model_t *m);
+// LORA_HOOK for a site defined before the adapter table is (the hook and
+// struct lora_w come later in this file)
+static void lora_hook(model_t *m, int l, int slot, float *y, int ys,
+                      const float *xin, int xs, int nin, int nout, int nb);
 static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
     int sk = m->ssm.state, ng = m->ssm.groups, nh = m->ssm.v_heads;
     int inner = m->ssm.inner, hv = inner / nh;
     int keydim = sk * ng, convdim = 2 * keydim + inner;
     int histn = m->ssm.conv_kernel - 1;
 
+    // each projection, then its adapter delta on its own output (the dense
+    // sites' order); the deltas land before the conv and the recurrence
+    // read any of them
     matvec_b(m->tp, m->ssm_qkv, convdim, ly->wqkv,
              m->xb, xdim, m->n_embd, convdim, NULL, n);
+    lora_hook(m, layer, LW_QKV, m->ssm_qkv, convdim, m->xb, xdim, m->n_embd, convdim, n);
     matvec_b(m->tp, m->ssm_z, inner, ly->wq_gate,
              m->xb, xdim, m->n_embd, inner, NULL, n);
+    lora_hook(m, layer, LW_ZGATE, m->ssm_z, inner, m->xb, xdim, m->n_embd, inner, n);
     // beta and alpha are small per-head projections.
     matvec_b(m->tp, m->q_gate, nh, ly->ssm_beta,
              m->xb, xdim, m->n_embd, nh, NULL, n);
+    lora_hook(m, layer, LW_BETA, m->q_gate, nh, m->xb, xdim, m->n_embd, nh, n);
     float *alphas = m->ssm_aux + (size_t)n * convdim;
     matvec_b(m->tp, alphas, nh, ly->ssm_alpha,
              m->xb, xdim, m->n_embd, nh, NULL, n);
+    lora_hook(m, layer, LW_ALPHA, alphas, nh, m->xb, xdim, m->n_embd, nh, n);
 
     float *hist = m->ssm_conv_state + (size_t)layer * histn * convdim;
     float *states = m->ssm_state_mem + (size_t)layer * nh * hv * hv;
@@ -6686,6 +6697,7 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
     }
     matvec_b(m->tp, m->xb, xdim, ly->ssm_out, m->xb2, xdim,
              inner, m->n_embd, NULL, n);
+    lora_hook(m, layer, LW_SSMO, m->xb, xdim, m->xb2, xdim, inner, m->n_embd, n);
 }
 
 // Expert identity and placement (plan P4). moe_expert_weight() is the one
@@ -7596,7 +7608,9 @@ struct lora_w {
 static const char *const lora_slot_name[LW_SLOTS] = {
     "attn_q", "attn_k", "attn_v", "attn_output",
     "ffn_gate", "ffn_up", "ffn_down",
+    "attn_qkv", "attn_gate", "ssm_beta", "ssm_alpha", "ssm_out",
 };
+
 
 // Every buffer an adapter table can hold, then the table ([n_layer][LW_SLOTS];
 // the gradient and moment buffers stay NULL on a table that never trained).
@@ -7675,16 +7689,30 @@ static void lora_apply(const struct lora_w *lw, float *y, int ys,
                                  (y), (ys), (xin), (xs), (nin), (nout), (nb)); \
     } while (0)
 
+static void lora_hook(model_t *m, int l, int slot, float *y, int ys,
+                      const float *xin, int xs, int nin, int nout, int nb) {
+    LORA_HOOK(slot, y, ys, xin, xs, nin, nout, nb);
+}
+
 static gguf_tensor *lora_slot_base(const model_t *m, int l, int s) {
     const layer_t *ly = &m->layers[l];
+    // the DeltaNet slots exist only on a qwen35 recurrent layer: afmoe and
+    // Qwen-G1 carry an attn_gate of their own (an attention output gate)
+    // that no hook covers, so the name must not resolve there
+    const bool dn = m->qwen35 && ly->recurrent;
     switch (s) {
-        case LW_Q:    return ly->wq;
-        case LW_K:    return ly->wk;
-        case LW_V:    return ly->wv;
-        case LW_O:    return ly->wo;
-        case LW_GATE: return ly->w_gate;
-        case LW_UP:   return ly->w_up;
-        case LW_DOWN: return ly->w_down;
+        case LW_Q:     return ly->wq;
+        case LW_K:     return ly->wk;
+        case LW_V:     return ly->wv;
+        case LW_O:     return ly->wo;
+        case LW_GATE:  return ly->w_gate;
+        case LW_UP:    return ly->w_up;
+        case LW_DOWN:  return ly->w_down;
+        case LW_QKV:   return dn ? ly->wqkv : NULL;
+        case LW_ZGATE: return dn ? ly->wq_gate : NULL;
+        case LW_BETA:  return dn ? ly->ssm_beta : NULL;
+        case LW_ALPHA: return dn ? ly->ssm_alpha : NULL;
+        case LW_SSMO:  return dn ? ly->ssm_out : NULL;
     }
     return NULL;
 }
@@ -7718,9 +7746,12 @@ bool model_lora_slot(const model_t *m, int layer, int slot,
 // would print. Shared by the loader and by --adapt-info, so the two cannot
 // disagree.
 bool model_lora_serve_supported(const model_t *m, char *why, size_t cap) {
-    if (m->qwen35 || m->granite_hybrid || m->nemotron_h) {
-        snprintf(why, cap, "--lora does not cover recurrent architectures "
-                 "yet (%s)", m->arch);
+    // qwen35 (and clef on its backbone) carries hooks on the DeltaNet
+    // projections as well as on its attention and FFN; the Mamba-2 hybrids
+    // do not yet
+    if (m->granite_hybrid || m->nemotron_h) {
+        snprintf(why, cap, "--lora does not cover Mamba-2 hybrid "
+                 "architectures yet (%s)", m->arch);
         return false;
     }
     if (m->n_removed > 0) {
@@ -7759,7 +7790,7 @@ static bool lora_parse_header(const model_t *m, gguf_file *g, const char *path,
         return false;
     }
     const char *aarch = gguf_get_str(g, "general.architecture", "");
-    if (strcmp(aarch, m->arch) != 0) {
+    if (!model_lora_arch_ok(m->arch, aarch)) {
         fprintf(stderr, "error: adapter architecture '%s' does not match "
                 "the model's '%s'\n", aarch, m->arch);
         return false;
@@ -10341,6 +10372,10 @@ NUM_STAGE void attn_project(model_t *m, const fwd_layer *c) {
     if (m->qwen35) {
         matvec_b(m->tp, m->ssm_qkv, 2 * q_dim, ly->wq,
                  m->xb, xdim, n_embd, 2 * q_dim, ly->bq, n);
+        // Q and the output gate share this projection, interleaved per
+        // head; its adapter spans the whole output, as attn_q's rows do,
+        // and lands before the split
+        LORA_HOOK(LW_Q, m->ssm_qkv, 2 * q_dim, m->xb, xdim, n_embd, 2 * q_dim, n);
         for (int b = 0; b < n; b++)
             for (int h = 0; h < m->n_head; h++) {
                 memcpy(m->q + (size_t)b * q_dim + h * hd,
