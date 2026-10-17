@@ -9444,6 +9444,7 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
     for (int t = 0; t < T; t++) {
         float *lg = model_forward(m, toks[t], t);
         if (!lg) return false;
+        if (m->tape_logits_cb) m->tape_logits_cb(m->tape_logits_ud, t, lg);
         if (t < T - 1 && (!pos_w || pos_w[t] != 0.0f)) {
             float mx = lg[0];
             for (int i = 1; i < V; i++) if (lg[i] > mx) mx = lg[i];

@@ -3,6 +3,34 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **Reinforcement fine-tuning trains on exactly what it sampled.**
+  `scripts/train-grpo-lite.py` promised that the policy that samples is the
+  policy that trains, bit for bit, but nothing tested it, and two things
+  broke it. The loop handed the trainer the sampled text, which the trainer
+  tokenized again: that is not an identity (a byte token that ends in the
+  middle of a character decodes to U+FFFD), so it could train on tokens the
+  model never produced. And the rollout server read each prompt in one
+  batch, which from 8 rows up takes a different CPU route than the trainer's
+  one token per forward: the logprobs after the prompt then differed, by
+  up to 3.1e-3 on MiniCPM5-1B Q4_K_M after the loop's 60-token prompt. The loop now passes token ids, reads prompts with `-b 1`, and
+  stops if the trainer's first step scores a rollout differently from the
+  server. `tests/test_rollout_identity.py` holds the identity on every
+  family the trainer admits, in `make test`.
+
+- **`--train` takes token ids, and reports the logprobs it trains on.** A
+  `.jsonl` line can give `{"prompt_tokens":[...],"completion_tokens":[...]}`
+  instead of text, used exactly as given. `--train-logprobs FILE` writes,
+  per step, the logprob of every completion token under the forward that
+  step trains through, before its update.
+
+- **Logprobs are reported at full precision.** The completion and chat
+  logprob fields printed six decimals, which hid differences in the last
+  bits and lost most digits of a small logprob. They now print the
+  engine's float at nine significant digits, which round-trips it exactly,
+  as `prompt_logprobs` and `--score` already did.
+
 ## v1.4.1 - 2026-10-16
 
 - **Several engines on one CUDA GPU keep the GPU.** A program that ran

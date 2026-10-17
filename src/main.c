@@ -466,7 +466,9 @@ static bool write_record(const char *artifact, const char *suffix,
     return ok;
 }
 
-typedef struct { int32_t *t; float *w; int n; } train_ex;
+// first: the index of the example's first target token (the completion's
+// first token; 1 for a text window, whose every transition is a target)
+typedef struct { int32_t *t; float *w; int n, first; } train_ex;
 
 static void train_examples_free(train_ex *exs, int n_ex) {
     for (int i = 0; i < n_ex; i++) {
@@ -483,14 +485,14 @@ static bool train_line_blank(const char *s, size_t n) {
 }
 
 static bool train_example_append(train_ex **exs, int *n_ex,
-                                 int32_t *t, float *w, int n) {
+                                 int32_t *t, float *w, int n, int first) {
     if (*n_ex == INT_MAX) return false;
     size_t count = (size_t)*n_ex + 1;
     if (count > SIZE_MAX / sizeof(**exs)) return false;
     train_ex *grown = realloc(*exs, sizeof(**exs) * count);
     if (!grown) return false;
     *exs = grown;
-    grown[(*n_ex)++] = (train_ex){ t, w, n };
+    grown[(*n_ex)++] = (train_ex){ t, w, n, first };
     return true;
 }
 
@@ -663,8 +665,88 @@ fail:
     return false;
 }
 
-static bool train_examples_load(tokenizer *tok, const char *path, bool no_bos,
-                                int wctx, int eot_id, bool eot_all,
+// The text form of a JSONL example: the prompt (BOS unless --no-bos) and the
+// completion tokenized apart, into a buffer with a slot to spare for the
+// end-of-turn token. NULL on success, else why the line is refused.
+static const char *train_text_tokens(tokenizer *tok, const char *prompt,
+                                     const char *completion, bool no_bos,
+                                     int32_t **out, int *np_out, int *nc_out,
+                                     char *why, size_t why_n) {
+    size_t prompt_n = strlen(prompt), completion_n = strlen(completion);
+    if (prompt_n > SIZE_MAX - completion_n - 8 ||
+        prompt_n + completion_n + 8 > INT_MAX)
+        return "is too large to tokenize";
+    // tok_encode truncates silently at its capacity, and "one token per
+    // byte" is not a bound: a SentencePiece vocabulary with byte fallback and
+    // segment normalization emitted 68 tokens for 52 bytes on the test
+    // fixture, which the old fixed-size buffer cut to 60 without a word. So
+    // the buffer grows until the encoding fits with room to spare (the
+    // end-of-turn slot included), and a line that still fills it is refused
+    // rather than truncated.
+    size_t bytes = prompt_n + completion_n;
+    int cap = (int)(2 * bytes + 32);
+    int32_t *tokens = NULL;
+    int np = -1, nc = -1;
+    for (int attempt = 0; attempt < 6; attempt++) {
+        free(tokens);
+        tokens = malloc(sizeof(*tokens) * (size_t)cap);
+        if (!tokens) break;
+        np = tok_encode(tok, prompt, tokens, cap, !no_bos, true);
+        nc = np >= 0 ? tok_encode(tok, completion, tokens + np, cap - np,
+                                  false, false) : -1;
+        if (np < 0 || nc < 0 || np + nc + 1 < cap) break;   // fits, or failed
+        if (attempt == 5 || cap > INT_MAX / 2) break;      // cap stays the allocation
+        cap *= 2;
+    }
+    if (!tokens) return "ran out of memory while tokenizing";
+    if (np >= 0 && nc >= 0 && np + nc + 1 >= cap) {
+        free(tokens);
+        snprintf(why, why_n, "tokenizes past %d tokens for %zu bytes; "
+                 "refusing to truncate it", cap, bytes);
+        return why;
+    }
+    *out = tokens;
+    *np_out = np;
+    *nc_out = nc;
+    return NULL;
+}
+
+// The id form: both arrays used exactly as given (no BOS added, nothing
+// re-tokenized), each id a row of the model's vocabulary, into a buffer with
+// the end-of-turn slot to spare. NULL on success, else why it is refused.
+static const char *train_ids_tokens(jv *ptv, jv *ctv, int n_vocab,
+                                    int32_t **out, int *np_out, int *nc_out) {
+    int np = 0, nc = 0;
+    int32_t *pt = json_token_ids(ptv, &np);
+    int32_t *ct = pt ? json_token_ids(ctv, &nc) : NULL;
+    if (!pt || !ct) {
+        free(pt);
+        return "needs \"prompt_tokens\" and \"completion_tokens\" as "
+               "arrays of non-negative integer token ids";
+    }
+    const char *bad = np < 1 || nc < 1
+        ? "needs at least one prompt token and one completion token" : NULL;
+    for (int i = 0; i < np && !bad; i++)
+        if (pt[i] >= n_vocab) bad = "has a prompt token id outside the vocabulary";
+    for (int i = 0; i < nc && !bad; i++)
+        if (ct[i] >= n_vocab) bad = "has a completion token id outside the vocabulary";
+    int32_t *t = bad || np > INT_MAX - 1 - nc ? NULL
+                 : malloc(sizeof *t * ((size_t)np + nc + 1));
+    if (!bad && !t) bad = "ran out of memory loading its token ids";
+    if (!bad) {
+        memcpy(t, pt, sizeof *t * (size_t)np);
+        memcpy(t + np, ct, sizeof *t * (size_t)nc);
+        *out = t;
+        *np_out = np;
+        *nc_out = nc;
+    }
+    free(pt);
+    free(ct);
+    return bad;
+}
+
+static bool train_examples_load(tokenizer *tok, int n_vocab, const char *path,
+                                bool no_bos, int wctx, int eot_id, bool eot_all,
                                 train_ex **out, int *out_n) {
     size_t data_n = 0;
     char *data = read_file(path, &data_n);
@@ -690,13 +772,25 @@ static bool train_examples_load(tokenizer *tok, const char *path, bool no_bos,
             if (train_line_blank(line, line_n)) continue;
 
             jv *v = json_parse(line, line_n);
-            const char *prompt = v && v->type == J_OBJ
-                ? jv_str(jv_get(v, "prompt"), NULL) : NULL;
-            const char *completion = v && v->type == J_OBJ
-                ? jv_str(jv_get(v, "completion"), NULL) : NULL;
-            if (!prompt || !completion) {
+            bool obj = v && v->type == J_OBJ;
+            // Two forms: text, tokenized here, or the token ids themselves.
+            // The id form is how a rollout trains on exactly what it sampled:
+            // decoding sampled ids and tokenizing the text again is not an
+            // identity (a byte token that ends mid-character decodes to
+            // U+FFFD, and a sampled split of a word need not be the split the
+            // tokenizer picks), so a text round trip can train on tokens the
+            // policy never produced.
+            jv *ptv = obj ? jv_get(v, "prompt_tokens") : NULL;
+            jv *ctv = obj ? jv_get(v, "completion_tokens") : NULL;
+            bool ids = ptv || ctv;
+            const char *prompt = obj ? jv_str(jv_get(v, "prompt"), NULL) : NULL;
+            const char *completion = obj ? jv_str(jv_get(v, "completion"), NULL) : NULL;
+            bool has_text = obj && (jv_get(v, "prompt") || jv_get(v, "completion"));
+            if (ids ? (!ptv || !ctv || has_text) : (!prompt || !completion)) {
                 fprintf(stderr, "error: %s line %d needs a JSON object with "
-                        "string {\"prompt\",\"completion\"}\n", path, line_no);
+                        "string {\"prompt\",\"completion\"} or id arrays "
+                        "{\"prompt_tokens\",\"completion_tokens\"}, one of "
+                        "the two\n", path, line_no);
                 jv_free(v);
                 goto fail;
             }
@@ -735,46 +829,15 @@ static bool train_examples_load(tokenizer *tok, const char *path, bool no_bos,
                 weight = wv->num;
             }
 
-            size_t prompt_n = strlen(prompt), completion_n = strlen(completion);
-            if (prompt_n > SIZE_MAX - completion_n - 8 ||
-                prompt_n + completion_n + 8 > INT_MAX) {
-                fprintf(stderr, "error: %s line %d is too large to tokenize\n",
-                        path, line_no);
-                jv_free(v);
-                goto fail;
-            }
-            // tok_encode truncates silently at its capacity, and "one token
-            // per byte" is not a bound: a SentencePiece vocabulary with byte
-            // fallback and segment normalization emitted 68 tokens for 52
-            // bytes on the test fixture, which the old fixed-size buffer cut
-            // to 60 without a word. So the buffer grows until the encoding
-            // fits with room to spare (the end-of-turn slot included), and a
-            // line that still fills it is refused rather than truncated.
-            size_t bytes = prompt_n + completion_n;
-            int cap = (int)(2 * bytes + 32);
             int32_t *tokens = NULL;
             int np = -1, nc = -1;
-            for (int attempt = 0; attempt < 6; attempt++) {
-                free(tokens);
-                tokens = malloc(sizeof(*tokens) * (size_t)cap);
-                if (!tokens) break;
-                np = tok_encode(tok, prompt, tokens, cap, !no_bos, true);
-                nc = np >= 0 ? tok_encode(tok, completion, tokens + np, cap - np,
-                                          false, false) : -1;
-                if (np < 0 || nc < 0 || np + nc + 1 < cap) break;   // fits, or failed
-                if (attempt == 5 || cap > INT_MAX / 2) break;      // cap stays the allocation
-                cap *= 2;
-            }
-            if (!tokens) {
-                fprintf(stderr, "error: out of memory loading %s line %d\n",
-                        path, line_no);
-                jv_free(v);
-                goto fail;
-            }
-            if (np >= 0 && nc >= 0 && np + nc + 1 >= cap) {
-                fprintf(stderr, "error: %s line %d tokenizes past %d tokens for %zu bytes; "
-                        "refusing to truncate it\n", path, line_no, cap, bytes);
-                free(tokens);
+            char why[160];
+            const char *bad = ids
+                ? train_ids_tokens(ptv, ctv, n_vocab, &tokens, &np, &nc)
+                : train_text_tokens(tok, prompt, completion, no_bos, &tokens,
+                                    &np, &nc, why, sizeof why);
+            if (bad) {
+                fprintf(stderr, "error: %s line %d %s\n", path, line_no, bad);
                 jv_free(v);
                 goto fail;
             }
@@ -804,7 +867,7 @@ static bool train_examples_load(tokenizer *tok, const char *path, bool no_bos,
             // transition np-1. Prompt transitions are fully masked.
             for (int i = 0; i < total - 1; i++)
                 weights[i] = i >= np - 1 ? (float)weight : 0.0f;
-            if (!train_example_append(&exs, &n_ex, tokens, weights, total)) {
+            if (!train_example_append(&exs, &n_ex, tokens, weights, total, np)) {
                 fprintf(stderr, "error: out of memory loading training data\n");
                 free(tokens);
                 free(weights);
@@ -868,7 +931,7 @@ static bool train_examples_load(tokenizer *tok, const char *path, bool no_bos,
                 goto fail;
             }
             memcpy(tokens, all + st, sizeof(*tokens) * (size_t)n);
-            if (!train_example_append(&exs, &n_ex, tokens, NULL, n)) {
+            if (!train_example_append(&exs, &n_ex, tokens, NULL, n, 1)) {
                 fprintf(stderr, "error: out of memory loading training data\n");
                 free(tokens);
                 free(all);
@@ -1306,8 +1369,13 @@ static void usage_to(FILE *f, const char *prog) {
         "                 with --lora; --lora-scale applies)\n"
         "  --train FILE   AdamW LoRA training (CPU): plain text, or .jsonl\n"
         "                 lines {\"prompt\",\"completion\",\"weight\"} with the\n"
-        "                 prompt masked from the loss. Deterministic by\n"
-        "                 default: same data + seed -> byte-identical adapter\n"
+        "                 prompt masked from the loss (or \"prompt_tokens\" and\n"
+        "                 \"completion_tokens\" id arrays, used as given).\n"
+        "                 Deterministic by default: same data + seed ->\n"
+        "                 byte-identical adapter\n"
+        "  --train-logprobs F  with --train: per step, one JSON line with the\n"
+        "                 logprob of every completion token under the forward\n"
+        "                 that step trains through (before its update)\n"
         "  --train-eot    append the template's end-of-turn token to every\n"
         "                 completion (a jsonl line can set \"end_of_turn\")\n"
         "  --train-dpo F  preference pairs .jsonl {\"prompt\",\"chosen\",\n"
@@ -1844,7 +1912,7 @@ typedef struct {
     const char *lora_path;
     const char *lora_sig;   // R1.2.3: the adapter's OMS bundle
     float lora_scale;
-    const char *train_path, *train_out, *dpo_path;
+    const char *train_path, *train_out, *dpo_path, *train_lp_path;
     int train_steps, train_ctx, lora_rank, save_every;
     bool train_eot;
     float train_lr, dpo_beta;
@@ -2113,6 +2181,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "--train-steps"))
             o->train_steps = (int)int_arg(a, NEXT, 1, INT_MAX);
         else if (!strcmp(a, "--train-out")) o->train_out = NEXT;
+        else if (!strcmp(a, "--train-logprobs")) o->train_lp_path = NEXT;
         else if (!strcmp(a, "--train-ctx"))
             o->train_ctx = (int)int_arg(a, NEXT, 2, INT_MAX);
         else if (!strcmp(a, "--lr"))
@@ -3762,6 +3831,29 @@ static void train_risk_warn(const cli_opts *o, const train_ex *exs, int n_ex, in
                 (double)(o->train_lr / TRAIN_LR_DEFAULT), (double)TRAIN_LR_DEFAULT);
 }
 
+// --train-logprobs: the forward a step trains through, observed position by
+// position (model_t.tape_logits_cb). Position t's logits give the logprob of
+// token t+1 through engine_logsumexp, the normalizer every logprob the runner
+// reports divides by, so a line compares bit for bit with what a sampler
+// reported for the same tokens under the same weights.
+typedef struct { const train_ex *ex; float *lp; int V; } train_lp_obs;
+
+static void train_lp_observe(void *ud, int t, const float *lg) {
+    train_lp_obs *ob = ud;
+    int k = t + 1 - ob->ex->first;
+    if (k < 0 || t + 1 >= ob->ex->n) return;
+    ob->lp[k] = lg[ob->ex->t[t + 1]] - engine_logsumexp(lg, ob->V);
+}
+
+static bool train_lp_write(FILE *f, int step, int example, const train_ex *ex,
+                           const float *lp) {
+    fprintf(f, "{\"step\":%d,\"example\":%d,\"first\":%d,\"logprobs\":[",
+            step, example, ex->first);
+    for (int k = 0; k < ex->n - ex->first; k++)
+        fprintf(f, "%s%.9g", k ? "," : "", (double)lp[k]);
+    return fprintf(f, "]}\n") > 0;
+}
+
 // --train's steps: weighted cross-entropy, one example per step, cycled in
 // file order.
 static bool train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
@@ -3769,14 +3861,43 @@ static bool train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
     fprintf(stderr, "train: %d example%s, %d steps, lr %g, ctx %d\n",
             n_ex, n_ex == 1 ? "" : "s", o->train_steps, (double)o->train_lr,
             wctx);
-    for (int step = 1; step <= o->train_steps; step++) {
+    FILE *lpf = NULL;
+    float *lp = NULL;
+    if (o->train_lp_path) {
+        int max_n = 1;
+        for (int i = 0; i < n_ex; i++) if (exs[i].n > max_n) max_n = exs[i].n;
+        lp = malloc(sizeof *lp * (size_t)max_n);
+        lpf = lp ? fopen(o->train_lp_path, "w") : NULL;
+        if (!lpf) {
+            fprintf(stderr, "error: cannot write --train-logprobs %s\n",
+                    o->train_lp_path);
+            free(lp);
+            return false;
+        }
+    }
+    bool ok = true;
+    for (int step = 1; ok && step <= o->train_steps; step++) {
         train_ex *ex = &exs[(step - 1) % n_ex];
         double loss = 0;
         double step_t0 = plat_now();
+        train_lp_obs obs = { ex, lp, rt->m.n_vocab };
         model_lora_grad_zero(&rt->m);
-        if (!model_lora_backward_w(&rt->m, ex->t, ex->n, ex->w, &loss))
-            return false;
-        if (!train_adam_step(o, rt, step)) return false;
+        if (lpf) {
+            rt->m.tape_logits_cb = train_lp_observe;
+            rt->m.tape_logits_ud = &obs;
+        }
+        ok = model_lora_backward_w(&rt->m, ex->t, ex->n, ex->w, &loss);
+        rt->m.tape_logits_cb = NULL;
+        rt->m.tape_logits_ud = NULL;
+        if (ok && lpf && !train_lp_write(lpf, step, (step - 1) % n_ex, ex, lp)) {
+            fprintf(stderr, "error: cannot write --train-logprobs %s\n",
+                    o->train_lp_path);
+            ok = false;
+        }
+        if (!ok || !train_adam_step(o, rt, step)) {
+            ok = false;
+            break;
+        }
         // Per-token mean over the weighted positions, normalized by the
         // weights' MAGNITUDE. `wsum > 0 ? loss/wsum : loss` silently fell
         // back to the unnormalized total whenever the weights summed
@@ -3807,9 +3928,15 @@ static bool train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
         fflush(stdout);
         if (o->save_every > 0 && step % o->save_every == 0 &&
             !model_lora_save(&rt->m, o->train_out))
-            return false;
+            ok = false;
     }
-    return true;
+    if (lpf && fclose(lpf) != 0 && ok) {
+        fprintf(stderr, "error: cannot write --train-logprobs %s\n",
+                o->train_lp_path);
+        ok = false;
+    }
+    free(lp);
+    return ok;
 }
 
 // D7: the provenance record, written beside every adapter — the
@@ -3920,7 +4047,7 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     if (o->dpo_path) {
         if (!dpo_pairs_load(&rt->tok, o->dpo_path, o->no_bos, wctx, eot_id, o->train_eot,
                             &pairs, &n_pair)) return 1;
-    } else if (!train_examples_load(&rt->tok, o->train_path, o->no_bos, wctx, eot_id, o->train_eot,
+    } else if (!train_examples_load(&rt->tok, rt->m.n_vocab, o->train_path, o->no_bos, wctx, eot_id, o->train_eot,
                                     &exs, &n_ex)) return 1;
     if (!o->dpo_path) train_risk_warn(o, exs, n_ex, eot_id);
     double first_loss = 0, last_loss = 0;
@@ -4992,6 +5119,13 @@ int main(int argc, char **argv) {
 
     int tmpl_override = -1;
     if (!cli_model_flags_ok(o, &tmpl_override)) return 1;
+
+    // a --train run's report: refused anywhere else rather than ignored
+    if (o->train_lp_path && !o->train_path) {
+        fprintf(stderr, "error: --train-logprobs reports the --train "
+                "objective's forward; pass it with --train\n");
+        return 1;
+    }
 
     if (o->context_out) return run_context_surgery(o, load_path);
     if (o->merge_out) return run_merge_lora(o);

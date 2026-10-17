@@ -448,9 +448,16 @@ layout. Every covered shape is pinned by the finite-difference gate in
 over the whole adapter that averages out the f16 cache staircase.
 
 **Where the numbers hold.** The train/infer identity is the CPU codepath's:
-the trainer tapes the host forward, so it holds exactly for an adapter
-served on the CPU, and within the engine's measured CPU/GPU envelope
-(1.255e-3 max \|Δlogprob\| on Qwen2.5-1.5B Q4_K_M) for one served on CUDA.
+the trainer tapes the host forward, one token per forward. Given a rollout's
+token ids, it scores them bit for bit as a CPU server sampled them, when the
+server read the prompt the same way: `-b 1`, or `echo`, which scores the
+prompt one token at a time (`tests/test_rollout_identity.py`, every family
+the trainer admits). The default batched prompt pass takes another CPU route
+from 8 rows up, and the logprobs after it then move: up to 3.1e-3 on
+MiniCPM5-1B Q4_K_M after a 60-token prompt, 4.8e-6 on the quantized test
+fixtures. An adapter served on CUDA
+agrees within the engine's measured CPU/GPU envelope (1.255e-3 max
+\|Δlogprob\| on Qwen2.5-1.5B Q4_K_M).
 
 **Serving and merging.** `--lora` keeps the adapter delta exact. A merge
 rounds it onto the output grid: in the measured study, merging into the
@@ -510,7 +517,8 @@ serves any adapter back, `--merge-lora` folds an adapter into the base for
 a standalone GGUF any runtime can serve (with its own provenance record -
 and the honest caveat that a quantized merge rounds the delta; `--lora` is
 the exact form), and `scripts/train-grpo-lite.py` closes the loop into
-seeded, replayable reinforcement fine-tuning. `--train-dpo` trains from
+seeded, replayable reinforcement fine-tuning, in which every round checks
+that the trainer scores its rollouts bit for bit as the sampler did. `--train-dpo` trains from
 `prompt`/`chosen`/`rejected` pairs against the frozen base as the reference
 (no second model copy: the adapter is bypassed for the reference pass),
 gated on the gradient's identity with two weighted cross-entropy backwards
@@ -2356,7 +2364,7 @@ server started with `--lora` on the same adapter, and the zero adapter exactly a
 the bare base (`tests/test_adapter_routing.py`).
 
 <a id="cli-train"></a>
-#### `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank`
+#### `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank`, `--train-logprobs`
 
 AdamW LoRA training in the serving binary (position-batched and threaded under a
 byte-exact contract - 4B trains at ~20 s/step on a many-core host, 2.3× over the first
@@ -2366,7 +2374,14 @@ matvecs on the device and, since its position grid, is the faster arm on a consu
 kernel, RTX 3070; the adapter bytes are gated invariant across binaries, thread counts
 and the assist): plain-text corpora or `.jsonl` lines `{"prompt","completion","weight"}`
 with the prompt masked from the loss and per-example weights (the policy-gradient hook
-`scripts/train-grpo-lite.py` drives). Fresh adapters start as an exact no-op (A seeded,
+`scripts/train-grpo-lite.py` drives). A `.jsonl` line can give token ids instead of text,
+`{"prompt_tokens":[...],"completion_tokens":[...],"weight":w}`, used exactly as given (no
+BOS added, nothing re-tokenized): the form for training on what a sampler produced, since
+decoding sampled ids and tokenizing the text again is not an identity (a byte token that
+ends mid-character decodes to U+FFFD). `--train-logprobs FILE` writes one JSON line per
+step, `{"step","example","first","logprobs"}`: the logprob of every target token from
+`first` on, under the forward that step trains through, before its update, through the
+same normalizer as the server's logprobs, so the two compare bit for bit. Fresh adapters start as an exact no-op (A seeded,
 B zero); checkpoints are adapter GGUFs that `--lora` loads back. Deterministic by
 default: same data + same seed produce a byte-identical adapter file, gated in `make
 test`. One example per step, cycled in file order; before the first step `--train`
@@ -2385,8 +2400,8 @@ logprobs, the per-position `argmax` ids, NLL, perplexity, and the absolute next-
 `top1`/`top1_rate` beside `n_vocab`. The default path scores one forward per position, the exact numerics the
 sampler sees at decode time; `RUNNER_SCORE_CHUNKED=1` opts into a faster batched pass
 whose deviation from solo is measured and test-pinned (max |Δlogprob| ~1e-6 on the
-fixtures - the CPU batched forward is not bit-identical to solo, and scoring defaults to
-exactness over speed). `top1` exists so a harness can check the run instead of trusting
+fixtures and 4.2e-3 over 165 positions of MiniCPM5-1B Q4_K_M - the CPU batched forward
+is not bit-identical to solo, and scoring defaults to exactness over speed). `top1` exists so a harness can check the run instead of trusting
 it: a token with probability above 0.5 must be the argmax and an argmax token must carry
 at least `1/n_vocab`, so the reported count is bracketed by the reported logprobs, and a
 scorer that disagrees with itself fails loudly rather than returning a confident wrong
@@ -2768,6 +2783,10 @@ position a map from token id to `{logprob, rank, decoded_token}` holding the
 actual token and the top K alternatives. The prompt is fed one token at a time
 from position 0 with no prefix reuse, the solo forward `--score` uses, so the
 numbers are `--score`'s bit for bit; that costs one forward per prompt token.
+Every logprob a response carries (`token_logprobs`, `top_logprobs`, the chat
+`logprob` fields, `stop_logprobs`, `prompt_logprobs`) is the engine's f32 at
+nine significant digits, which round-trips it exactly, so two runs or two
+paths compare bit for bit from the responses alone.
 Both are buffered-only (a stream refuses them with 400) and remain refused on
 the chat surfaces, whose prompt is a render the caller did not write.
 

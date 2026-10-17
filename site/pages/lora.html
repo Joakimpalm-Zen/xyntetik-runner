@@ -30,7 +30,7 @@ nav: runner
       </div>
       <div class="card accent">
         <h3>What Runner does instead</h3>
-        <p>The serving forward pass is the training forward pass. The policy you sample is the policy you train, so the train/infer mismatch that silently breaks on-policy learning cannot occur between two codepaths that are one codepath. There is no FP16 copy to keep, and no framework to install.</p>
+        <p>The serving forward pass is the training forward pass. The policy you sample is the policy you train: given a rollout's token ids, the trainer scores them bit for bit as a CPU server sampled them, with the prompt read one token per forward (<code>-b 1</code>), gated in CI on every family the trainer admits. So the train/infer mismatch that silently breaks on-policy learning does not occur. There is no FP16 copy to keep, and no framework to install.</p>
       </div>
       <div class="card accent">
         <h3>Adaptation as an auditable artifact</h3>
@@ -101,7 +101,7 @@ nav: runner
 
 # teacher-forced logprobs for evals and rewards
 ./runner -m base-Q4_K_M.gguf --lora adapter.gguf -f eval.txt --score</code></pre>
-      <p class="small muted">Flags: <code>--train</code>, <code>--train-steps</code>, <code>--lr</code>, <code>--train-ctx</code>, <code>--train-out</code>, <code>--save-every</code>, <code>--lora-rank</code>, <code>--lora</code>, <code>--lora-scale</code>, <code>--merge-lora</code>, <code>--score</code>. <a href="{{repo}}/blob/main/MANUAL.md#command-line-reference">Command-line reference</a>. <code>scripts/train-grpo-lite.py</code> closes the loop into seeded, replayable reinforcement fine-tuning.</p>
+      <p class="small muted">Flags: <code>--train</code>, <code>--train-steps</code>, <code>--lr</code>, <code>--train-ctx</code>, <code>--train-out</code>, <code>--save-every</code>, <code>--lora-rank</code>, <code>--train-logprobs</code>, <code>--lora</code>, <code>--lora-scale</code>, <code>--merge-lora</code>, <code>--score</code>. <a href="{{repo}}/blob/main/MANUAL.md#command-line-reference">Command-line reference</a>. <code>scripts/train-grpo-lite.py</code> closes the loop into seeded, replayable reinforcement fine-tuning.</p>
     </div>
     <div class="sticky">
       <p class="eyebrow">Run it</p>

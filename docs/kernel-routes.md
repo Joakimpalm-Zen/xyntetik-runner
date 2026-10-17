@@ -44,6 +44,16 @@ The thread count never changes which rows a worker sums or their order:
 threads. Scoring defaults to the scalar teacher-forced path;
 `RUNNER_SCORE_CHUNKED=1` takes the batch route and its contract.
 
+The f32 tile is exact per output, but it is not the one-column `vec_dot`'s
+arithmetic, so a prompt read in batches of 8 or more moves every logprob
+after it: 4.2e-3 at most over 165 positions of MiniCPM5-1B Q4_K_M
+(`RUNNER_SCORE_CHUNKED=1` against the solo default), and 3.1e-3 on the
+tokens sampled after a 60-token prompt. Batches of 2 to 7 stay on
+`vec_dot_multi` and match solo exactly, at about a quarter of the tile's
+prefill speed (37 against 129 to 143 tok/s on that model, 422 tokens, 4
+threads). Training rollouts therefore read the prompt with `-b 1`
+(`scripts/train-grpo-lite.py`, gated by `tests/test_rollout_identity.py`).
+
 ## CUDA: `enc_mv` in `src/cuda.c`
 
 The branches are tried in this order; the first that applies runs.
