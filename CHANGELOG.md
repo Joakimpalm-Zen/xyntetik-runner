@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CPU decode: Q4_K and Q5_K rows no longer re-sum the activations.** The
+  dot subtracts each 32-element group's minimum times the sum of the
+  activations in that group, and that sum was recomputed for every row of a
+  matrix. A decode matvec now computes the sums once and every row reuses
+  them, byte-identical (`test-quants-simd` compares the two on random and
+  boundary inputs). On an Apple M1 at four threads, decode went from 20.27
+  to 20.79 tok/s on Llama-3.2-1B Q4_K_M and from 16.01 to 16.49 on
+  Qwen2.5-1.5B Q4_K_M.
+
 - **`--score-top N` reports each position's distribution head.** With
   `--score`, a `top` array lists every position's N most likely next tokens
   with their logprobs. `scripts/gold-logits.py --score-a FILE` compares such

@@ -1968,7 +1968,8 @@ static float dot_q4_0_avx2(const block_q4_0 *b, const float *x, int n) {
     return hsum8(acc);
 }
 
-static float dot_q4_K_avx2(const block_q4_K *b, const float *x, int n) {
+static inline float dot_q4_K_avx2_xs(const block_q4_K *b, const float *x,
+                                     const float *xs, int n) {
     const __m128i mF = _mm_set1_epi8(0xF);
     float s = 0;
     for (int i = 0; i < n / QK_K; i++, b++) {
@@ -1997,14 +1998,20 @@ static float dot_q4_K_avx2(const block_q4_K *b, const float *x, int n) {
                 s1 = _mm256_add_ps(s1, _mm256_add_ps(x0, x1));
                 s2 = _mm256_add_ps(s2, _mm256_add_ps(x2, x3));
             }
-            s += d1 * hsum8(t1) - m1 * hsum8(s1) + d2 * hsum8(t2) - m2 * hsum8(s2);
+            const int g = (i * QK_K + j) / 32;
+            float sx1 = xs ? xs[g] : hsum8(s1), sx2 = xs ? xs[g + 1] : hsum8(s2);
+            s += d1 * hsum8(t1) - m1 * sx1 + d2 * hsum8(t2) - m2 * sx2;
             q += 32; is += 2; xp += 64;
         }
     }
     return s;
 }
+static float dot_q4_K_avx2(const block_q4_K *b, const float *x, int n) {
+    return dot_q4_K_avx2_xs(b, x, NULL, n);
+}
 
-static float dot_q5_K_avx2(const block_q5_K *b, const float *x, int n) {
+static inline float dot_q5_K_avx2_xs(const block_q5_K *b, const float *x,
+                                     const float *xs, int n) {
     const __m128i mF = _mm_set1_epi8(0xF), m16 = _mm_set1_epi8(16);
     float s = 0;
     for (int i = 0; i < n / QK_K; i++, b++) {
@@ -2040,11 +2047,16 @@ static float dot_q5_K_avx2(const block_q5_K *b, const float *x, int n) {
                 s1 = _mm256_add_ps(s1, _mm256_add_ps(x0, x1));
                 s2 = _mm256_add_ps(s2, _mm256_add_ps(x2, x3));
             }
-            s += d1 * hsum8(t1) - m1 * hsum8(s1) + d2 * hsum8(t2) - m2 * hsum8(s2);
+            const int g = (i * QK_K + j) / 32;
+            float sx1 = xs ? xs[g] : hsum8(s1), sx2 = xs ? xs[g + 1] : hsum8(s2);
+            s += d1 * hsum8(t1) - m1 * sx1 + d2 * hsum8(t2) - m2 * sx2;
             q += 32; is += 2; xp += 64; u1 <<= 2; u2 <<= 2;
         }
     }
     return s;
+}
+static float dot_q5_K_avx2(const block_q5_K *b, const float *x, int n) {
+    return dot_q5_K_avx2_xs(b, x, NULL, n);
 }
 
 static float dot_q6_K_avx2(const block_q6_K *b, const float *x, int n) {
@@ -2292,8 +2304,13 @@ static float dot_bf16_neon(const uint16_t *w, const float *x, int n) {
     return s;
 }
 
-// same shape as dot_q5_K_neon, minus the fifth bit plane
-static float dot_q4_K_neon(const block_q4_K *b, const float *x, int n) {
+// same shape as dot_q5_K_neon, minus the fifth bit plane. xs, when given,
+// holds vaddvq_f32(sum32()) of every 32-element group of x (q4_K_xsums_neon):
+// those sums are the same for every row of a matvec, so the decode matvec
+// computes them once instead of once per row, and the dot is byte-equal
+// either way (the same value enters the same expression).
+static inline float dot_q4_K_neon_xs(const block_q4_K *b, const float *x,
+                                     const float *xs, int n) {
     const uint8x16_t mF = vdupq_n_u8(0xF);
     float s = 0;
     for (int i = 0; i < n / QK_K; i++, b++) {
@@ -2310,12 +2327,18 @@ static float dot_q4_K_neon(const block_q4_K *b, const float *x, int n) {
             uint8x16_t q0 = vld1q_u8(q), q1 = vld1q_u8(q + 16);
             float32x4_t t1 = dot32u(vandq_u8(q0, mF), vandq_u8(q1, mF), xp);
             float32x4_t t2 = dot32u(vshrq_n_u8(q0, 4), vshrq_n_u8(q1, 4), xp + 32);
-            s += d1 * vaddvq_f32(t1) - m1 * vaddvq_f32(sum32(xp))
-               + d2 * vaddvq_f32(t2) - m2 * vaddvq_f32(sum32(xp + 32));
+            const int g = (i * QK_K + j) / 32;
+            float sx1 = xs ? xs[g] : vaddvq_f32(sum32(xp));
+            float sx2 = xs ? xs[g + 1] : vaddvq_f32(sum32(xp + 32));
+            s += d1 * vaddvq_f32(t1) - m1 * sx1
+               + d2 * vaddvq_f32(t2) - m2 * sx2;
             q += 32; is += 2; xp += 64;
         }
     }
     return s;
+}
+static float dot_q4_K_neon(const block_q4_K *b, const float *x, int n) {
+    return dot_q4_K_neon_xs(b, x, NULL, n);
 }
 
 static float dot_q4_0_neon(const block_q4_0 *b, const float *x, int n) {
@@ -2386,7 +2409,8 @@ static float dot_iq3_xxs_neon(const block_iq3_xxs *b, const float *x, int n) {
     return vaddvq_f32(acc);
 }
 
-static float dot_q5_K_neon(const block_q5_K *b, const float *x, int n) {
+static inline float dot_q5_K_neon_xs(const block_q5_K *b, const float *x,
+                                     const float *xs, int n) {
     const uint8x16_t mF = vdupq_n_u8(0xF), m16 = vdupq_n_u8(16);
     float s = 0;
     for (int i = 0; i < n / QK_K; i++, b++) {
@@ -2414,12 +2438,18 @@ static float dot_q5_K_neon(const block_q5_K *b, const float *x, int n) {
                     vandq_u8(vtstq_u8(h1, u2v), m16));
             float32x4_t t1 = dot32u(lo0, lo1, xp);
             float32x4_t t2 = dot32u(hi0, hi1, xp + 32);
-            s += d1 * vaddvq_f32(t1) - m1 * vaddvq_f32(sum32(xp))
-               + d2 * vaddvq_f32(t2) - m2 * vaddvq_f32(sum32(xp + 32));
+            const int g = (i * QK_K + j) / 32;
+            float sx1 = xs ? xs[g] : vaddvq_f32(sum32(xp));
+            float sx2 = xs ? xs[g + 1] : vaddvq_f32(sum32(xp + 32));
+            s += d1 * vaddvq_f32(t1) - m1 * sx1
+               + d2 * vaddvq_f32(t2) - m2 * sx2;
             q += 32; is += 2; xp += 64; u1 <<= 2; u2 <<= 2;
         }
     }
     return s;
+}
+static float dot_q5_K_neon(const block_q5_K *b, const float *x, int n) {
+    return dot_q5_K_neon_xs(b, x, NULL, n);
 }
 
 static float dot_q6_K_neon(const block_q6_K *b, const float *x, int n) {
@@ -2685,6 +2715,51 @@ static float canon_dot_f32(const float *w, const float *x, int n) {
 }
 #endif
 #endif // RUNNER_CANON_KERNELS
+
+// C3.4: the Q4_K/Q5_K dots subtract dmin * mn * sum(x) for every 32-element
+// group, and that sum does not depend on the row. A decode matvec computes
+// the n / 32 sums once (vec_dot_xsums, in the order the active kernel sums
+// them) and every row's dot takes them (vec_dot_xs), byte-equal to vec_dot
+// because the same float enters the same expression; only the repeated
+// additions go. Measured on the arm64 kernel as about a quarter of its
+// instructions. The canonical-order build keeps its own kernels.
+bool vec_dot_xs_ok(int type) {
+#if !defined(RUNNER_CANON_KERNELS) && (RUNNER_AVX2 || RUNNER_NEON)
+    return type == T_Q4_K || type == T_Q5_K;
+#else
+    (void)type;
+    return false;
+#endif
+}
+
+void vec_dot_xsums(const float *x, int n, float *xs) {
+#if !defined(RUNNER_CANON_KERNELS) && RUNNER_AVX2
+    for (int g = 0; g < n / 32; g++) {
+        const float *xp = x + (size_t)g * 32;
+        __m256 s1 = _mm256_setzero_ps();
+        for (int l = 0; l < 32; l += 16)
+            s1 = _mm256_add_ps(s1, _mm256_add_ps(_mm256_loadu_ps(xp + l),
+                                                  _mm256_loadu_ps(xp + l + 8)));
+        xs[g] = hsum8(s1);
+    }
+#elif !defined(RUNNER_CANON_KERNELS) && RUNNER_NEON
+    for (int g = 0; g < n / 32; g++) xs[g] = vaddvq_f32(sum32(x + (size_t)g * 32));
+#else
+    (void)x; (void)n; (void)xs;
+#endif
+}
+
+float vec_dot_xs(int type, const void *row, const float *x, const float *xs, int n) {
+#if !defined(RUNNER_CANON_KERNELS) && RUNNER_AVX2
+    if (type == T_Q4_K) return dot_q4_K_avx2_xs(row, x, xs, n);
+    if (type == T_Q5_K) return dot_q5_K_avx2_xs(row, x, xs, n);
+#elif !defined(RUNNER_CANON_KERNELS) && RUNNER_NEON
+    if (type == T_Q4_K) return dot_q4_K_neon_xs(row, x, xs, n);
+    if (type == T_Q5_K) return dot_q5_K_neon_xs(row, x, xs, n);
+#endif
+    (void)xs;
+    return vec_dot(type, row, x, n);
+}
 
 float vec_dot(int type, const void *row, const float *x, int n) {
 #ifdef RUNNER_CANON_KERNELS

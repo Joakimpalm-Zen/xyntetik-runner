@@ -665,6 +665,31 @@ static void test_vec_dot_multi(int type, int n) {
     free(row); free(x);
 }
 
+// vec_dot_xs with vec_dot_xsums' group sums: byte-equal to vec_dot on every
+// trial, the deterministic fills (extreme codes, zero blocks, scale
+// extremes) included. Its anchor is test_vec_dot's double-precision
+// reference, which vec_dot answers to; this proves the hoisted form is it.
+static void test_vec_dot_xs(int type, int n) {
+    if (!vec_dot_xs_ok(type)) return;
+    size_t rowsz = ggml_row_size(type, n);
+    uint8_t *row = malloc(rowsz);
+    float *x = malloc((size_t)n * sizeof(float));
+    float *xs = malloc((size_t)(n / 32) * sizeof(float));
+    for (int trial = 0; trial < RANDOM_TRIALS + FILL_TRIALS; trial++) {
+        set_trial(trial);
+        make_row(type, row, n);
+        if (trial < RANDOM_TRIALS) for (int i = 0; i < n; i++) x[i] = frnd();
+        else fill_x(trial, x, n);
+        vec_dot_xsums(x, n, xs);
+        float got = vec_dot_xs(type, row, x, xs, n), one = vec_dot(type, row, x, n);
+        uint32_t a, b; memcpy(&a, &got, 4); memcpy(&b, &one, 4);
+        CHECK(a == b, "vec_dot_xs %s n=%d trial=%d: %.9g vs vec_dot %.9g",
+              ggml_type_name(type), n, trial, (double)got, (double)one);
+    }
+    g_fill = -1;
+    free(row); free(x); free(xs);
+}
+
 static void test_dequant(int type, int n) {
     size_t rowsz = ggml_row_size(type, n);
     uint8_t *row = malloc(rowsz);
@@ -1185,7 +1210,11 @@ int main(void) {
         test_vec_dot(types[t], 256);   // single K-block / few 32-blocks
         test_vec_dot_multi(types[t], 4096);
         test_vec_dot_multi(types[t], 256);
+        test_vec_dot_xs(types[t], 4096);
+        test_vec_dot_xs(types[t], 256);
     }
+    CHECK(vec_dot_xs_ok(T_Q4_K) == vec_dot_xs_ok(T_Q5_K) && !vec_dot_xs_ok(T_Q6_K),
+          "vec_dot_xs covers exactly the min-term K-quants");
     test_dequant(T_Q8_0, 4096);
     test_dequant(T_Q4_0, 4096);
     test_dequant(T_IQ4_NL, 4096);

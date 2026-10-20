@@ -5162,6 +5162,7 @@ typedef struct {
     size_t rsz;
     const void *xq;   // int8-quantized activations, or NULL for the f32 route
     size_t xq_stride; // bytes between quantized columns (small batches)
+    const float *xs;  // per-32 sums of x for vec_dot_xs (one column), or NULL
 } mv_job;
 
 // Batches narrower than this take the per-column native dot (see mv_rows);
@@ -5200,6 +5201,14 @@ static void mv_rows(void *ctx, int i0, int i1) {
             // the vec_dot_multi commit). Two to seven rows stay on the multi
             // route, where it still wins (MTP verify tiles 4.57 vs 4.19 tok/s
             // at four threads against a per-column loop). Byte-equal either way.
+            if (j->xs) {
+                for (int r = i0; r < i1; r++) {
+                    const void *row = base + (size_t)r * j->rsz;
+                    j->y[r] = vec_dot_xs(type, row, j->x, j->xs, n_in) * sc +
+                              (j->bias ? j->bias[r] : 0.0f);
+                }
+                return;
+            }
             for (int r = i0; r < i1; r++) {
                 const void *row = base + (size_t)r * j->rsz;
                 j->y[r] = vec_dot(type, row, j->x, n_in) * sc + (j->bias ? j->bias[r] : 0.0f);
@@ -5345,19 +5354,37 @@ static void *mv_quant_act(const float *x, int x_stride, int n_in, int n_batch) {
     return xq;
 }
 
+// The per-32 sums vec_dot_xs takes, for a single column whose rows take the
+// native dot: in `stack` when they fit, else allocated (*heap, freed by the
+// caller); NULL leaves every row on vec_dot.
+enum { MV_XS_STACK = 1024 };
+static const float *mv_xsums(const gguf_tensor *w, const float *x, int n_in,
+                             int n_batch, float *stack, float **heap) {
+    *heap = NULL;
+    if (n_batch != 1 || !vec_dot_xs_ok(w->type) || n_in % 32) return NULL;
+    float *xs = n_in / 32 <= MV_XS_STACK ? stack
+              : (*heap = malloc(sizeof(float) * (size_t)(n_in / 32)));
+    if (xs) vec_dot_xsums(x, n_in, xs);
+    return xs;
+}
+
 static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
                      const float *x, int x_stride, int n_in, int n_out,
                      const float *bias, int n_batch) {
     mv_job j = { w, x, bias, y, n_in, n_batch, x_stride, y_stride,
-                 ggml_row_size(w->type, n_in), NULL, 0 };
+                 ggml_row_size(w->type, n_in), NULL, 0, NULL };
     void *xq = NULL;
+    float xs_stack[MV_XS_STACK], *xs_heap = NULL;
     if (mv_takes_i8(w, n_in, n_out, n_batch) &&
         (xq = mv_quant_act(x, x_stride, n_in, n_batch))) {
         j.xq = xq;
         j.xq_stride = i8_act_size(n_in);
+    } else {
+        j.xs = mv_xsums(w, x, n_in, n_batch, xs_stack, &xs_heap);
     }
     tpool_run(tp, mv_rows, &j, n_out);
     free(xq);
+    free(xs_heap);
 }
 
 // Several projections of ONE input in one pool dispatch (R3.1.6). Q, K and V
@@ -5416,9 +5443,14 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
     mv_multi mm = { .n = np };
     void *xq = NULL;
     bool xq_tried = false;
+    // the parts read one input, so its group sums serve every part that
+    // takes them
+    float xs_stack[MV_XS_STACK], *xs_heap = NULL;
+    const float *xsum = NULL;
+    bool xs_tried = false;
     for (int s = 0; s < np; s++) {
         mv_job j = { p[s].w, x, p[s].bias, p[s].y, n_in, n_batch, x_stride,
-                     p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0 };
+                     p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL };
         if (mv_takes_i8(p[s].w, n_in, p[s].n_out, n_batch)) {
             if (!xq_tried) {
                 xq = mv_quant_act(x, x_stride, n_in, n_batch);
@@ -5429,11 +5461,19 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
                 j.xq_stride = i8_act_size(n_in);
             }
         }
+        if (!j.xq && n_batch == 1 && vec_dot_xs_ok(p[s].w->type)) {
+            if (!xs_tried) {
+                xsum = mv_xsums(p[s].w, x, n_in, n_batch, xs_stack, &xs_heap);
+                xs_tried = true;
+            }
+            j.xs = xsum;
+        }
         mm.job[s] = j;
         mm.start[s + 1] = mm.start[s] + p[s].n_out;
     }
     tpool_run(tp, mv_multi_rows, &mm, mm.start[np]);
     free(xq);
+    free(xs_heap);
 }
 
 // The same fusion for parts that each read their OWN input (the selected
@@ -5450,18 +5490,29 @@ static void matvec_b_parts_x(tpool *tp, const mv_part *p, const float *const *xs
     }
     mv_multi mm = { .n = np };
     void *xq[MV_MAX_PARTS] = {0};
+    // each part's own group sums (vec_dot_xs), one block for all parts
+    float *xsum = NULL;
+    for (int s = 0; s < np && !xsum; s++)
+        if (vec_dot_xs_ok(p[s].w->type) && n_in % 32 == 0)
+            xsum = malloc(sizeof(float) * (size_t)np * (size_t)(n_in / 32));
     for (int s = 0; s < np; s++) {
         mv_job j = { p[s].w, xs[s], p[s].bias, p[s].y, n_in, 1, n_in,
-                     p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0 };
+                     p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL };
         if (mv_takes_i8(p[s].w, n_in, p[s].n_out, 1)) {
             xq[s] = mv_quant_act(xs[s], n_in, n_in, 1);
             if (xq[s]) { j.xq = xq[s]; j.xq_stride = i8_act_size(n_in); }
+        }
+        if (!j.xq && xsum && vec_dot_xs_ok(p[s].w->type)) {
+            float *own = xsum + (size_t)s * (size_t)(n_in / 32);
+            vec_dot_xsums(xs[s], n_in, own);
+            j.xs = own;
         }
         mm.job[s] = j;
         mm.start[s + 1] = mm.start[s] + p[s].n_out;
     }
     tpool_run(tp, mv_multi_rows, &mm, mm.start[np]);
     for (int s = 0; s < np; s++) free(xq[s]);
+    free(xsum);
 }
 
 // qwen3-style per-head RMSNorm on Q or K (weight is one head_dim vector)
