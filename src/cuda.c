@@ -473,6 +473,7 @@ typedef struct gpu_weights {
     CUfunction  f_gemm2[KT_N];          // pipelined tensor-core GEMM (TC2), by type
     CUmodule    mod80;                  // the compute_80 module, on a CC >= 8.0 device
     CUfunction  f_gemm2_80[KT_N];       // its TC2 kernels (m16n8k16), by type
+    CUfunction  f_gemm2_80w[KT_N];      // the same at a 128-column tile
     CUfunction  f_x_half;               // its scaled fp16 activations (k_x_half_scaled)
     CUfunction  f_gemv[KT_N];           // decode coalesced GEMV variants (Q8_0/Q4_K)
     // cross-sequence decode microbatch (Phase 6): per-column position and KV
@@ -654,6 +655,8 @@ typedef struct {
 #define G2_BN 64
 #define G2_BK 64
 #define G2_SMEM ((2 * G2_BM * (G2_BK + 8) + 2 * G2_BN * (G2_BK + 8)) * 2)
+#define G2_BN_W 128   // the compute_80 module's 128-column tile (kernels_tc2.cuh)
+#define G2_SMEM_W ((2 * G2_BM * (G2_BK + 8) + 2 * G2_BN_W * (G2_BK + 8)) * 2)
 #define CU_FUNC_ATTR_MAX_DYN_SMEM 8   // CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES
 #define CU_DEV_ATTR_CC_MAJOR 75       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR
 #define CU_DEV_ATTR_CC_MINOR 76       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR
@@ -2261,6 +2264,20 @@ static bool shared_load_module(gpu_weights *w) {
                         cu.FuncSetAttribute(f, CU_FUNC_ATTR_MAX_DYN_SMEM, G2_SMEM) != 0)
                         f = NULL;
                     w->f_gemm2_80[TC2_80[i].type] = f;
+                }
+                // the 128-column twins, for GEMMs over more than 64 columns;
+                // a device that refuses their shared memory keeps the above
+                static const struct { int type; const char *name; } TC2_80W[] = {
+                    { T_Q4_K, "k_gemm2_80w_q4_K" }, { T_Q6_K, "k_gemm2_80w_q6_K" },
+                    { T_Q8_0, "k_gemm2_80w_q8_0" }, { T_Q4_0, "k_gemm2_80w_q4_0" },
+                };
+                for (size_t i = 0; i < sizeof TC2_80W / sizeof *TC2_80W; i++) {
+                    CUfunction f = NULL;
+                    if (!w->f_gemm2_80[TC2_80W[i].type] ||
+                        cu.ModuleGetFunction(&f, w->mod80, TC2_80W[i].name) != 0 ||
+                        cu.FuncSetAttribute(f, CU_FUNC_ATTR_MAX_DYN_SMEM, G2_SMEM_W) != 0)
+                        f = NULL;
+                    w->f_gemm2_80w[TC2_80W[i].type] = f;
                 }
             }
         }
@@ -3902,6 +3919,20 @@ static bool gpu_sm80_on(void) {
 }
 static _Atomic unsigned long g_tc2_80_dispatches;
 unsigned long gpu_tc2_80_dispatches(void) { return g_tc2_80_dispatches; }
+// the compute_80 module's 128-column tile for a GEMM over more than 64
+// columns: byte-identical to the 64-column kernels, so on wherever they run;
+// RUNNER_CUDA_TC2_WIDE=0 keeps the 64-column tile (an A/B control),
+// gpu_tc2_wide_force overrides for a test (-1 returns to the switch)
+static _Atomic int g_tc2_wide_force = -1;
+void gpu_tc2_wide_force(int on) { g_tc2_wide_force = on < 0 ? -1 : on != 0; }
+static bool gpu_tc2_wide_on(void) {
+    if (g_tc2_wide_force >= 0) return g_tc2_wide_force == 1;
+    static _Atomic int on = -1;
+    if (on < 0) { const char *e = getenv("RUNNER_CUDA_TC2_WIDE"); on = !(e && *e && strcmp(e, "0") == 0); }
+    return on == 1;
+}
+static _Atomic unsigned long g_tc2_wide_dispatches;
+unsigned long gpu_tc2_wide_dispatches(void) { return g_tc2_wide_dispatches; }
 
 // The TC2 kernel for the type on this instance, or NULL for the TC route.
 // With the compute_80 module loaded (CC >= 8.0, RUNNER_CUDA_SM80 not 0) only
@@ -4019,10 +4050,21 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
         g_tc_dispatches++;
         g_tc_dispatches_type[w->type]++;
         g_tc2_dispatches++;
-        if (f2 == g->sw->f_gemm2_80[w->type]) g_tc2_80_dispatches++;
+        int bn = G2_BN;
+        unsigned smem = G2_SMEM;
+        if (f2 == g->sw->f_gemm2_80[w->type]) {
+            g_tc2_80_dispatches++;
+            // the 128-column twin for a GEMM over 64 columns: same outputs
+            if (batch > G2_BN && g->sw->f_gemm2_80w[w->type] && gpu_tc2_wide_on()) {
+                f2 = g->sw->f_gemm2_80w[w->type];
+                bn = G2_BN_W;
+                smem = G2_SMEM_W;
+                g_tc2_wide_dispatches++;
+            }
+        }
         void *pg[] = { &weights, &g->xh, &y, &a, &b, &g->xsc };
         return launch_smem(g, f2, (unsigned)((n_out + G2_BM - 1) / G2_BM),
-                           (unsigned)((batch + G2_BN - 1) / G2_BN), 1, 256, G2_SMEM, pg);
+                           (unsigned)((batch + bn - 1) / bn), 1, 256, smem, pg);
     }
     // Prefill (batch>1), tensor-core GEMM when promoted for this (type, arch)
     // or forced by RUNNER_CUDA_TC: the block dequantizes a 64-row fp16 weight

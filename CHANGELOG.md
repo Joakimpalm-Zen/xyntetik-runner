@@ -155,7 +155,14 @@ Current release and unreleased changes. Compatibility follows the
   3070 at a 512-token prompt, the default route's prefill went from 1090 to
   1824 tok/s on Llama-3.2-3B Q4_K_M and from 639 to 1159 on Qwen2.5-7B
   Q4_K_M (2K: 653 to 862 and 453 to 667; 8K, where attention takes most of
-  the time: 235 to 259 and 197 to 231); decode is unchanged. Cards below
+  the time: 235 to 259 and 197 to 231); decode is unchanged. Where a GEMM
+  spans more than 64 prompt columns, the compute_80 kernels take a
+  128-column tile, which converts each weight stage once for twice the
+  columns with each column's sums unchanged (`GPU_ID_TC2_WIDE=1
+  ./test-gpu-identity`: byte-identical to the 64-column tile with launches
+  counted, four files on the RTX 3070 and three on the datacenter MIG slice):
+  another 3.6-6.1% at a 512-token prompt on four files (0.6-0.8% at 8K);
+  `RUNNER_CUDA_TC2_WIDE=0` keeps the 64-column tile. Cards below
   8.0 keep the tensor-core route by default;
   `RUNNER_CUDA_TC2=1` forces the compute_75 TC2 kernels there (the same
   numerical class as the tensor-core route, not the same bytes:

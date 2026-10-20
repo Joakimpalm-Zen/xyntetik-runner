@@ -53,7 +53,13 @@
 #endif
 
 
-enum { STEPS = 24, MAX_TOK = 96, N_BATCH = 32 };
+enum { STEPS = 24, MAX_TOK = 512, N_TOK = 96, N_BATCH = 32 };
+
+// Prompt length, settable (fourth argument) for a route that only a wide
+// prefill reaches: the context is the prompt plus eight, and the device's
+// prompt window cannot exceed it, so the default 96 tokens never give a GEMM
+// more than 64 columns (the 128-column TC2 tile needs more).
+static int g_n_tok = N_TOK;
 
 // Prefill batch. Settable because "every forward this backend ever sees is a
 // single token" is a distinct backend STATE, not just a slower schedule: a
@@ -287,6 +293,10 @@ int main(int argc, char **argv) {
     const char *path = argc > 1 ? argv[1] : "test.gguf";
     if (argc > 2) g_gpu_layers = atoi(argv[2]);
     if (argc > 3) g_n_batch = atoi(argv[3]) > 0 ? atoi(argv[3]) : N_BATCH;
+    if (argc > 4) {
+        int n = atoi(argv[4]);
+        g_n_tok = n < STEPS + 8 ? STEPS + 8 : n > MAX_TOK ? MAX_TOK : n;
+    }
 
     f16_init();
     // Pin the identity route. The tiled prefill GEMM (RUNNER_METAL_MM), the
@@ -308,12 +318,12 @@ int main(int argc, char **argv) {
         gguf_close(&gf); return 1;
     }
     static int32_t toks[MAX_TOK];
-    int n_tok = tok_encode(&tk, TEXT, toks, MAX_TOK, true, false);
+    int n_tok = tok_encode(&tk, TEXT, toks, g_n_tok, true, false);
     tokenizer_free(&tk);
     gguf_close(&gf);
     if (n_tok < 8) { fprintf(stderr, "text tokenized to %d tokens\n", n_tok); return 1; }
-    for (int i = n_tok; i < MAX_TOK; i++) toks[i] = toks[i - n_tok + 1];
-    n_tok = MAX_TOK;
+    for (int i = n_tok; i < g_n_tok; i++) toks[i] = toks[i - n_tok + 1];
+    n_tok = g_n_tok;
 
     printf("gpu-identity: %s | %d tokens, %d teacher-forced positions, "
            "prefill batch %d\n", path, n_tok, STEPS, g_n_batch);
@@ -378,14 +388,21 @@ int main(int argc, char **argv) {
     // This pair has no absolute anchor of its own: it proves the new route is
     // the old one, whose anchor is the CPU bound below and the publisher
     // reference gates (scripts/gold-logits.py) that route already answers to.
-    struct { const char *env, *what; void (*force)(int); unsigned long (*count)(void); } pairs[] = {
-        { "GPU_ID_RECUR", "whole-tile recurrent prefill", gpu_recur_seq_force, gpu_recur_seq_dispatches },
+    //
+    // GPU_ID_TC2_WIDE=1 (with RUNNER_CUDA_TC2=1 and a prefill batch over 64,
+    // the third argument): TC2's 128-column tile against its 64-column one.
+    // Both arms run the tensor-core route (tc), which the CPU bound below
+    // switches off; the pair compares the two widths with each other.
+    struct { const char *env, *what; void (*force)(int); unsigned long (*count)(void); bool tc; } pairs[] = {
+        { "GPU_ID_RECUR", "whole-tile recurrent prefill", gpu_recur_seq_force, gpu_recur_seq_dispatches, false },
+        { "GPU_ID_TC2_WIDE", "128-column TC2 tile", gpu_tc2_wide_force, gpu_tc2_wide_dispatches, true },
     };
     for (size_t pi = 0; pi < sizeof pairs / sizeof *pairs; pi++) {
         const char *ev = getenv(pairs[pi].env);
         if (!ev || !*ev || strcmp(ev, "0") == 0) continue;
         int nv_off = 0, nv_on = 0;
         bool off_used = false, on_used = false;
+        if (pairs[pi].tc) gpu_tc_force(1);
         pairs[pi].force(0);
         unsigned long d0 = pairs[pi].count();
         float *off = run(path, GPU_AUTO, &nv_off, &off_used, toks, n_tok);
@@ -394,6 +411,7 @@ int main(int argc, char **argv) {
         float *on = off ? run(path, GPU_AUTO, &nv_on, &on_used, toks, n_tok) : NULL;
         unsigned long d2 = pairs[pi].count();
         pairs[pi].force(-1);
+        if (pairs[pi].tc) gpu_tc_force(0);
         bool same = off && on && off_used && on_used && nv_off == nv_on &&
                     memcmp(off, on, sizeof(float) * (size_t)STEPS * (size_t)nv_on) == 0;
         free(off); free(on);

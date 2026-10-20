@@ -94,6 +94,9 @@ unsigned long gpu_tc_dispatches_type(int type);
 unsigned long gpu_tc2_dispatches(void);
 // of those, the ones the compute_80 kernels ran (CUDA, a CC >= 8.0 device, E1)
 unsigned long gpu_tc2_80_dispatches(void);
+// TC2 GEMMs that ran the 128-column tile, and the test override of its switch
+unsigned long gpu_tc2_wide_dispatches(void);
+void gpu_tc2_wide_force(int on);
 // the prompt window (columns) a CUDA instance was built for; 0 on other
 // backends and without a device. Transcripts record it and --verify restores it.
 int    gpu_prompt_window(const model_t *m);

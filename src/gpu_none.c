@@ -55,6 +55,8 @@ unsigned long gpu_tc_dispatches(void) { return 0; }
 unsigned long gpu_tc_dispatches_type(int type) { (void)type; return 0; }
 unsigned long gpu_tc2_dispatches(void) { return 0; }
 unsigned long gpu_tc2_80_dispatches(void) { return 0; }
+unsigned long gpu_tc2_wide_dispatches(void) { return 0; }
+void gpu_tc2_wide_force(int on) { (void)on; }
 int gpu_prompt_window(const model_t *m) { (void)m; return 0; }
 void gpu_route_pin(int mask) { (void)mask; }
 int gpu_route_active(const model_t *m) { (void)m; return 0; }

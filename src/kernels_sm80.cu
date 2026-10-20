@@ -31,3 +31,19 @@ G2_80(k_gemm2_80_q4_K, G2Q4K)
 G2_80(k_gemm2_80_q6_K, G2Q6K)
 G2_80(k_gemm2_80_q8_0, G2Q80)
 G2_80(k_gemm2_80_q4_0, G2Q40)
+
+// The 128-column tile: each weight dequantized once for 128 token columns
+// instead of 64, the integer work that bounds the 64-column kernel halved per
+// output. Byte-identical to the kernels above (gemm2_body). For GEMMs over
+// more than 64 columns; it needs 73,728 bytes of dynamic shared memory, which
+// every compute capability 8.0+ device grants (7.5 stops at 64 KB).
+#define G2_80W(NAME, F)                                                             \
+extern "C" __global__ void __launch_bounds__(256)                                   \
+NAME(const uchar *wb, const __half *xh, float *y, mv_args a, const float *bias,     \
+     const float *xsc) {                                                            \
+    gemm2_body<F, G2_BN_W>(wb, xh, y, a, bias, xsc);                                \
+}
+G2_80W(k_gemm2_80w_q4_K, G2Q4K)
+G2_80W(k_gemm2_80w_q6_K, G2Q6K)
+G2_80W(k_gemm2_80w_q8_0, G2Q80)
+G2_80W(k_gemm2_80w_q4_0, G2Q40)

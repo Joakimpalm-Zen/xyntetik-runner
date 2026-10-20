@@ -12,6 +12,10 @@
 #define G2_BK 64
 #define G2_LD (G2_BK + 8)
 #define G2_SMEM ((2 * G2_BM * G2_LD + 2 * G2_BN * G2_LD) * 2)   // bytes, dynamic
+// the 128-column tile (compute_80 module only: 73,728 bytes of dynamic shared
+// memory, past compute capability 7.5's 64 KB per block)
+#define G2_BN_W 128
+#define G2_SMEM_W ((2 * G2_BM * G2_LD + 2 * G2_BN_W * G2_LD) * 2)
 
 static __device__ __forceinline__ void g2_ldsm_x4(unsigned &r0, unsigned &r1, unsigned &r2,
                                                   unsigned &r3, const __half *p) {
@@ -245,26 +249,32 @@ struct G2Q40 {
     static __device__ __forceinline__ ulong64 row_bytes(int n_in) { return (ulong64)(n_in / 32) * 18; }
 };
 
-template <class F>
+// BN is the block's column tile: 64, or 128 on the compute_80 module. Each
+// warp owns 32 rows by BN / 2 columns, so a wider tile adds n-tiles to every
+// warp and dequantizes each weight once for twice the columns; an output's
+// k-steps, their order and the instruction are the same at either width, so
+// the outputs are too.
+template <class F, int BN = G2_BN>
 __device__ __forceinline__ void gemm2_body(const uchar *wb, const __half *xh, float *y,
                                            const mv_args &a, const float *bias,
                                            const float *xsc) {
+    enum { NT = BN / 16, XR = BN / 16 };                // n8-tiles per warp, act loads per thread
     extern __shared__ __align__(16) unsigned char g2_sm[];
     __half *sA = (__half *)g2_sm;                       // [2][G2_BM][G2_LD]
-    __half *sB = sA + 2 * G2_BM * G2_LD;                // [2][G2_BN][G2_LD]
+    __half *sB = sA + 2 * G2_BM * G2_LD;                // [2][BN][G2_LD]
     const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
     const int wm = warp & 3, wn = warp >> 2;
-    const int row0 = blockIdx.x * G2_BM, col0 = blockIdx.y * G2_BN;
+    const int row0 = blockIdx.x * G2_BM, col0 = blockIdx.y * BN;
     const int nst = a.n_in / G2_BK;
     const ulong64 rb = F::row_bytes(a.n_in);
-    // staging roles: threads 0..127 own one weight row each, 128..255 four
-    // 16-byte pieces of the activation tile (64 columns x 64 halves)
+    // staging roles: threads 0..127 own one weight row each, 128..255 BN / 16
+    // 16-byte pieces of the activation tile (BN columns x 64 halves)
     const bool wrole = tid < G2_BM;
     const int wr = row0 + tid;
     const bool wvalid = wrole && wr < a.n_out;
     const uchar *wrow = wb + a.w_off + (ulong64)(wvalid ? wr : 0) * rb;
     typename F::raw rw;
-    uint4 xr[4];
+    uint4 xr[XR];
 
     auto load = [&](int s) {
         const int ks = s * G2_BK;
@@ -272,7 +282,7 @@ __device__ __forceinline__ void gemm2_body(const uchar *wb, const __half *xh, fl
             if (wvalid) F::load(rw, wrow, ks, a.n_in);
         } else {
             #pragma unroll
-            for (int j = 0; j < 4; j++) {
+            for (int j = 0; j < XR; j++) {
                 int idx = (tid - G2_BM) + j * 128, col = idx >> 3, part = idx & 7;
                 int c = col0 + col;
                 xr[j] = c < a.batch ? *(const uint4 *)(xh + (ulong64)c * a.n_in + ks + part * 8)
@@ -291,18 +301,18 @@ __device__ __forceinline__ void gemm2_body(const uchar *wb, const __half *xh, fl
             }
         } else {
             #pragma unroll
-            for (int j = 0; j < 4; j++) {
+            for (int j = 0; j < XR; j++) {
                 int idx = (tid - G2_BM) + j * 128, col = idx >> 3, part = idx & 7;
-                *(uint4 *)(sB + buf * G2_BN * G2_LD + col * G2_LD + part * 8) = xr[j];
+                *(uint4 *)(sB + buf * BN * G2_LD + col * G2_LD + part * 8) = xr[j];
             }
         }
     };
 
-    float acc[2][4][4];
+    float acc[2][NT][4];
     #pragma unroll
     for (int i = 0; i < 2; i++)
         #pragma unroll
-        for (int j = 0; j < 4; j++)
+        for (int j = 0; j < NT; j++)
             #pragma unroll
             for (int e = 0; e < 4; e++) acc[i][j][e] = 0.0f;
 
@@ -316,23 +326,23 @@ __device__ __forceinline__ void gemm2_body(const uchar *wb, const __half *xh, fl
         // the stage which last read it
         if (F::kDirect && s + 1 < nst) store(s + 1, cur ^ 1);
         const __half *A = sA + cur * G2_BM * G2_LD;
-        const __half *B = sB + cur * G2_BN * G2_LD;
+        const __half *B = sB + cur * BN * G2_LD;
         #pragma unroll
         for (int kk = 0; kk < G2_BK; kk += 16) {
-            unsigned af[2][4], bf[2][4];
+            unsigned af[2][4], bf[NT / 2][4];
             #pragma unroll
             for (int mt = 0; mt < 2; mt++)
                 g2_ldsm_x4(af[mt][0], af[mt][1], af[mt][2], af[mt][3],
                            A + (wm * 32 + mt * 16 + (lane & 15)) * G2_LD + kk + (lane >> 4) * 8);
             #pragma unroll
-            for (int np = 0; np < 2; np++)
+            for (int np = 0; np < NT / 2; np++)
                 g2_ldsm_x4(bf[np][0], bf[np][1], bf[np][2], bf[np][3],
-                           B + (wn * 32 + np * 16 + (lane & 7) + ((lane >> 4) << 3)) * G2_LD
+                           B + (wn * (BN / 2) + np * 16 + (lane & 7) + ((lane >> 4) << 3)) * G2_LD
                              + kk + ((lane >> 3) & 1) * 8);
             #pragma unroll
             for (int mt = 0; mt < 2; mt++)
                 #pragma unroll
-                for (int nt = 0; nt < 4; nt++) {
+                for (int nt = 0; nt < NT; nt++) {
                     const unsigned *b = bf[nt >> 1] + (nt & 1) * 2;
 #ifdef G2_MMA_K16
                     g2_mma16(acc[mt][nt], af[mt][0], af[mt][1], af[mt][2], af[mt][3],
@@ -350,11 +360,11 @@ __device__ __forceinline__ void gemm2_body(const uchar *wb, const __half *xh, fl
     #pragma unroll
     for (int mt = 0; mt < 2; mt++)
         #pragma unroll
-        for (int nt = 0; nt < 4; nt++)
+        for (int nt = 0; nt < NT; nt++)
             #pragma unroll
             for (int e = 0; e < 4; e++) {
                 int r = row0 + wm * 32 + mt * 16 + (lane >> 2) + (e >> 1) * 8;
-                int c = col0 + wn * 32 + nt * 8 + (lane & 3) * 2 + (e & 1);
+                int c = col0 + wn * (BN / 2) + nt * 8 + (lane & 3) * 2 + (e & 1);
                 if (r < a.n_out && c < a.batch) {
                     float v = acc[mt][nt][e] * (xsc[c] * (1.0f / 16384.0f));
                     y[(ulong64)c * a.ys + r] = a.has_bias ? v + bias[r] : v;
