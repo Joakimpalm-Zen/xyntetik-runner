@@ -64,4 +64,3 @@ def test_every_shared_buffer_is_freed_with_the_upload():
     missing = sorted(f for f in fields if "w->" + f not in body)
     assert not missing, "declared in gpu_weights but never released by shared_destroy: " + ", ".join(missing)
     assert "l < w->n_tab" in body, "shared_destroy must walk every table slot, the MTP block's included"
-

@@ -109,15 +109,16 @@ Current release and unreleased changes. Compatibility follows the
 
 - **CUDA decode: one KV copy-back per token.** The host KV cache stays
   authoritative, so each decoded token's K and V rows went back to it as two
-  copies per offloaded layer. Every layer's new rows are now gathered on the
-  device as the last node of the decode graph and brought back in one copy,
-  the same bytes to the same host slots. On an RTX 3070 the copies per token
-  went from 57 to 2, and with the experimental attention kernels on, decode
-  rose 5.5% on Llama-3.2-3B Q4_K_M (120.3 to 127.0 tok/s), 7.2% on
-  Qwen2.5-3B and 3.5% on Qwen2.5-7B. On the datacenter MIG slice, default
-  route, decode rose 5.0% on Llama-3.2-3B, 4.3% on granite-4.1-3b Q8_0 and
-  2.6% on Qwen2.5-7B at a 512-token context (2.6%, 2.5% and 1.7% at 4K).
-  `RUNNER_CUDA_KV_GATHER=0` keeps the per-layer copies.
+  copies per offloaded layer. With every layer on the device, the new rows
+  are now gathered there as the last node of the decode graph and brought
+  back in one copy, the same bytes to the same host slots. On an RTX 3070
+  the copies per token went from 57 to 2, and with the experimental
+  attention kernels on, decode rose 5.5% on Llama-3.2-3B Q4_K_M (120.3 to
+  127.0 tok/s), 7.2% on Qwen2.5-3B and 3.5% on Qwen2.5-7B. On the
+  datacenter MIG slice, default route, decode rose 5.0% on Llama-3.2-3B,
+  4.3% on granite-4.1-3b Q8_0 and 2.6% on Qwen2.5-7B at a 512-token context
+  (2.6%, 2.5% and 1.7% at 4K). `RUNNER_CUDA_KV_GATHER=0` keeps the
+  per-layer copies.
 
 - **CUDA tensor-core prefill attention, experimental and off by default.**
   `RUNNER_CUDA_ATTN_TC=1` computes the prefill attention scores and the
