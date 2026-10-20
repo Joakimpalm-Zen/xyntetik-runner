@@ -7538,3 +7538,24 @@ k_attn_tc(const float *q, const unsigned char *kc, const unsigned char *vc, floa
         }
     }
 }
+
+// ------------------------------------------------ decode KV row gather (X3)
+// RUNNER_CUDA_KV_GATHER (cuda.c kv_gather_*): the host KV cache stays
+// authoritative, so every decoded token's K and V rows go back to it. That
+// was two synchronous copies per offloaded layer (and a whole ring for a ring
+// layer); this kernel, the last node of the decode graph, copies each
+// layer's single new row (slot kv_slot(pos)) of both caches into one staging
+// buffer, which one copy then brings to the host. Bytes move unchanged.
+// tab: per layer {k byte offset, v byte offset, k row bytes, v row bytes,
+// ring rows, staging offset}; grid (n_layers, 2), 256 threads.
+extern "C" __global__ void k_kv_gather(const unsigned char *kc, const unsigned char *vc,
+                                       const kvg_entry *tab, const int *posp,
+                                       unsigned char *out) {
+    const kvg_entry e = tab[blockIdx.x];
+    const bool v = blockIdx.y == 1;
+    const unsigned n = v ? e.vrow : e.krow;
+    const ulong64 slot = kv_slot(*posp, e.ring);
+    const unsigned char *src = (v ? vc + e.voff : kc + e.koff) + slot * n;
+    unsigned char *dst = out + e.stage + (v ? e.krow : 0u);
+    for (unsigned i = threadIdx.x; i < n; i += blockDim.x) dst[i] = src[i];
+}

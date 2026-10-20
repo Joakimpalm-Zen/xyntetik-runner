@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA decode: one KV copy-back per token, experimental and off by
+  default.** The host KV cache stays authoritative, so each decoded token's
+  K and V rows went back to it as two copies per offloaded layer.
+  `RUNNER_CUDA_KV_GATHER=1` gathers every layer's new rows on the device as
+  the last node of the decode graph and brings them back in one copy. In a
+  profiled run on an RTX 3070 the copies per token went from 57 to 2 and the
+  decode step from 8.49 to 7.82 ms on Llama-3.2-3B Q4_K_M (15.60 to 14.68
+  ms on Qwen2.5-7B Q4_K_M).
+
 - **CUDA tensor-core prefill attention, experimental and off by default.**
   `RUNNER_CUDA_ATTN_TC=1` computes the prefill attention scores and the
   value sums of an f16 cache on the tensor cores (64 query rows a block, two

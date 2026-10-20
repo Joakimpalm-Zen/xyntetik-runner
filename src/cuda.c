@@ -96,6 +96,9 @@ static struct {
     // optional: a kernel asking for more than 48 KB of dynamic shared
     // memory (TC2) opts in through it; absent, that kernel stays unused
     CUresult (*FuncSetAttribute)(CUfunction, int, int);
+    // optional: page-locked host staging (X3's KV gather); absent, pageable
+    CUresult (*MemAllocHost)(void **, size_t);
+    CUresult (*MemFreeHost)(void *);
     // optional: CUDA graphs for the single-token decode path (Experiment A).
     // Not required for the backend to function — see cu_graphs_ok().
     CUresult (*StreamCreate)(CUstream *, unsigned);
@@ -210,6 +213,8 @@ static bool cu_load_now(void) {
     cu.CtxSynchronize    = dl_sym(cu.lib, "cuCtxSynchronize");
     cu.GetErrorString    = dl_sym(cu.lib, "cuGetErrorString");
     cu.FuncSetAttribute  = dl_sym(cu.lib, "cuFuncSetAttribute");
+    cu.MemAllocHost      = sym2("cuMemAllocHost");
+    cu.MemFreeHost       = dl_sym(cu.lib, "cuMemFreeHost");
     // optional graph entry points — absence just disables the graph path
     cu.StreamCreate       = dl_sym(cu.lib, "cuStreamCreate");
     cu.StreamDestroy      = sym2("cuStreamDestroy");
@@ -448,6 +453,7 @@ typedef struct gpu_weights {
     CUfunction  f_attn_tile32, f_attn_tile16; // tiled prefill attention (tile_attn)
     CUfunction  f_attn_dec_gqa, f_attn_merge32; // grouped decode attention (tile_attn)
     CUfunction  f_attn_tc;                  // tensor-core prefill attention (tile_attn)
+    CUfunction  f_kv_gather;                // one-copy decode KV write-back (X3)
     // kernel tables indexed by ggml tensor type; sized past the largest
     // supported type id (T_MXFP4 = 39), not the count of supported types
     // Sized past the HIGHEST type the loader can admit (T_NVFP4 = 40), not
@@ -612,6 +618,15 @@ typedef struct {
     CUdeviceptr  pos_dev;
     bool         graph_bad;
     int          win;                   // prompt window: columns of every activation buffer
+    // X3 (RUNNER_CUDA_KV_GATHER): a decoded token's K and V rows of every
+    // offloaded layer gathered on the device (kvg_dev) and brought back in
+    // one copy (kvg_host, page-locked when the driver gives it), then
+    // scattered into the host cache by the table's host copy
+    CUdeviceptr  kvg_tab, kvg_dev;
+    void        *kvg_host;
+    bool         kvg_pinned;
+    size_t       kvg_bytes;
+    void        *h_kvg_tab;
 } gpu_t;
 
 // max tokens per matvec tile — must match MVB in kernels.cu; every activation
@@ -2196,6 +2211,7 @@ static bool shared_load_module(gpu_weights *w) {
     cu.ModuleGetFunction(&w->f_attn_tile32, w->mod, "k_attn_tile32");
     cu.ModuleGetFunction(&w->f_attn_dec_gqa, w->mod, "k_attn_dec_gqa");
     cu.ModuleGetFunction(&w->f_attn_tc, w->mod, "k_attn_tc");
+    cu.ModuleGetFunction(&w->f_kv_gather, w->mod, "k_kv_gather");
     cu.ModuleGetFunction(&w->f_attn_merge32, w->mod, "k_attn_merge32");
     cu.ModuleGetFunction(&w->f_attn_tile16, w->mod, "k_attn_tile16");
     return true;
@@ -3274,6 +3290,8 @@ static void cuda_release_host_weights(model_t *m) {
     release_host_pages(m->tok_embd, NULL);
 }
 
+static bool kv_gather_init(gpu_t *g, model_t *m);
+
 bool gpu_init(model_t *m) {
     if (!cuda_admit(m) || !cuda_open_driver()) return false;
 
@@ -3295,6 +3313,7 @@ bool gpu_init(model_t *m) {
     g->win = g->sw->win;
     CK(cu.CtxSetCurrent(g->sw->ctx));
     if (!cuda_alloc_kv(m, g) ||
+        !kv_gather_init(g, m) ||
         !cuda_alloc_activations(m, g, &D) ||
         !cuda_alloc_recurrent(m, g, &D) ||
         !cuda_alloc_moe(m, g))
@@ -4076,13 +4095,18 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            // the shared context (tests/test_cuda_teardown.c)
                            g->x_hc, g->hc_xn, g->hc_gate, g->hc_lo, g->hc_inject,
                            g->splitk, g->shexp_in, g->shexp_g, g->shexp_u,
-                           g->shexp_o, g->shexp_gate };
+                           g->shexp_o, g->shexp_gate, g->kvg_tab, g->kvg_dev };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++)
         if (bufs[i]) cu.MemFree(bufs[i]);
     free(g->h_x); free(g->h_logits); free(g->h_moe_logits);
     free(g->h_ple); free(g->h_ple_tmp);
     free(g->h_moe_sel); free(g->h_moe_selw);
     free(g->h_moe_gidx); free(g->h_moe_gw);
+    if (g->kvg_host) {
+        if (g->kvg_pinned && cu.MemFreeHost) cu.MemFreeHost(g->kvg_host);
+        else free(g->kvg_host);
+    }
+    free(g->h_kvg_tab);
     shared_release(g->sw);
     free(g);
 }
@@ -4410,6 +4434,65 @@ void gpu_disable(model_t *m) {
     if (g && g->sw && g->sw->ctx && cu.CtxSetCurrent(g->sw->ctx) == 0)
         recurrent_xfer(g, m, true, true);
     gpu_free(m);
+}
+
+// X3: one gather of a decoded token's KV rows, one copy back
+static bool gpu_kv_gather_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_KV_GATHER");
+        on = e && *e && strcmp(e, "0") != 0;
+    }
+    return on == 1;
+}
+static _Atomic unsigned long g_kvg_tokens;
+
+// The per-layer table and the two staging buffers, at load; false only on a
+// CUDA error (no switch, no kernel or nothing offloaded leaves it unused).
+static bool kv_gather_init(gpu_t *g, model_t *m) {
+    if (!gpu_kv_gather_on() || !g->sw->f_kv_gather || m->gpu_layers < 1) return true;
+    int n = m->gpu_layers;
+    kvg_entry *t = calloc((size_t)n, sizeof(kvg_entry));
+    if (!t) return true;
+    size_t at = 0;
+    for (int l = 0; l < n; l++) {
+        t[l].koff = model_k_byte_off(m, l);
+        t[l].voff = model_v_byte_off(m, l);
+        t[l].krow = (unsigned)model_k_row_bytes(m, l);
+        t[l].vrow = (unsigned)model_v_row_bytes(m, l);
+        t[l].ring = model_kv_is_ring(m, l) ? m->kv_ring : 0;
+        t[l].stage = (unsigned)at;
+        at += t[l].krow + t[l].vrow;
+    }
+    g->h_kvg_tab = t;
+    g->kvg_bytes = at;
+    if (cu.MemAlloc(&g->kvg_tab, sizeof(kvg_entry) * (size_t)n) != 0 ||
+        cu.MemcpyHtoD(g->kvg_tab, t, sizeof(kvg_entry) * (size_t)n) != 0 ||
+        cu.MemAlloc(&g->kvg_dev, at ? at : 1) != 0)
+        return false;
+    if (cu.MemAllocHost && cu.MemAllocHost(&g->kvg_host, at ? at : 1) == 0) g->kvg_pinned = true;
+    else g->kvg_host = malloc(at ? at : 1);
+    return g->kvg_host != NULL;
+}
+
+static bool kv_gather_launch(gpu_t *g, model_t *m) {
+    void *p[] = { &g->kc, &g->vc, &g->kvg_tab, &g->pos_dev, &g->kvg_dev };
+    return launch(g, g->sw->f_kv_gather, (unsigned)m->gpu_layers, 2, 1, 256, p);
+}
+
+// after the forward synchronized: the token's rows, one copy, then into the
+// host cache at their slots (the host cache stays authoritative)
+static bool kv_gather_finish(gpu_t *g, model_t *m, int pos) {
+    if (cu.MemcpyDtoH(g->kvg_host, g->kvg_dev, g->kvg_bytes) != 0) return false;
+    const kvg_entry *t = g->h_kvg_tab;
+    for (int l = 0; l < m->gpu_layers; l++) {
+        size_t slot = (size_t)(t[l].ring > 0 ? pos % t[l].ring : pos);
+        const uint8_t *src = (const uint8_t *)g->kvg_host + t[l].stage;
+        memcpy((uint8_t *)m->kcache + t[l].koff + slot * t[l].krow, src, t[l].krow);
+        memcpy((uint8_t *)m->vcache + t[l].voff + slot * t[l].vrow, src + t[l].krow, t[l].vrow);
+    }
+    g_kvg_tokens++;
+    return true;
 }
 
 // upload host KV rows [lo, hi) for every layer (CPU prompt processing wrote them)
@@ -6879,6 +6962,7 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
         // capture_begin's exclusion is the other half (see above).
         if (capture_begin(g->stream) != 0 ||
             !fwd_tile(g, m, tokens, 1, pos, true, 0, m->gpu_layers) ||
+            (g->kvg_dev && !kv_gather_launch(g, m)) ||
             capture_end(g->stream, &g->graph) != 0 ||
             cu.GraphInstantiateWithFlags(&g->gexec, g->graph, 0) != 0) {
             CUgraph junk = NULL;
@@ -6897,7 +6981,8 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
         if (gl) {
             if (!mtp_save_rows(g, m, 0, 1)) return -1;
             double tc0 = prof.on ? prof_now() : 0;
-            if (!kv_copyback(g, m, pos, pos + 1)) return -1;
+            if (g->kvg_dev ? !kv_gather_finish(g, m, pos) : !kv_copyback(g, m, pos, pos + 1))
+                return -1;
             if (prof.on) prof.t_copyback[m_] += prof_now() - tc0;
             g->last_pos = pos;
             double tl0 = prof.on ? prof_now() : 0;
@@ -6951,6 +7036,7 @@ static bool cuda_fwd_tiles(gpu_t *g, model_t *m, const int32_t *tokens, int n,
             return false;
         }
         if (!mtp_save_rows(g, m, i, tn)) return false;
+        if (n == 1 && !partial && g->kvg_dev && !kv_gather_launch(g, m)) return false;
         int inj = inject_fail_ordinal();
         if (inj) {
             // Deterministic ownership/state-machine hook: fail after recurrent
@@ -7003,7 +7089,9 @@ static bool cuda_fwd_finish(gpu_t *g, model_t *m, int n, int pos, bool want_logi
     // keep the host KV cache authoritative: copy the offloaded layers' rows
     // back so the CPU path can take over at any point
     double tc0 = prof.on ? prof_now() : 0;
-    if (!kv_copyback(g, m, pos, pos + n)) return false;
+    if (n == 1 && !partial && g->kvg_dev ? !kv_gather_finish(g, m, pos)
+                                         : !kv_copyback(g, m, pos, pos + n))
+        return false;
     if (prof.on) prof.t_copyback[m_] += prof_now() - tc0;
     g->last_pos = pos + n - 1;
 

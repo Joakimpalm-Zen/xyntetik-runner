@@ -64,4 +64,14 @@ typedef struct {
     int    vq8;      // V cache KIND; differs from q8 under --kv k8v4
 } attn_args;
 
+// One offloaded layer's entry in the decode KV gather table (k_kv_gather,
+// cuda.c kv_gather_*): where its K and V rows live, how long they are, its
+// ring length (0: flat) and where they land in the staging buffer.
+typedef struct {
+    ka_u64   koff, voff;   // byte offsets of the layer's K and V regions
+    unsigned krow, vrow;   // row bytes of each
+    int      ring;         // rows a ring layer recycles, 0 for a flat layer
+    unsigned stage;        // byte offset of the layer's K row in the staging buffer (V follows)
+} kvg_entry;
+
 #endif // RUNNER_KERNEL_ARGS_H
