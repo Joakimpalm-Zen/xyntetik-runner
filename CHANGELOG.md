@@ -150,6 +150,10 @@ Current release and unreleased changes. Compatibility follows the
   per-layer copies.
 
 - **CUDA tensor-core prefill attention, experimental and off by default.**
+  It stays off: on Mistral-7B v0.3 its long-context float32-reference row
+  read 0.19% further from the reference than the default kernel's (a
+  significant paired difference, p 0.014, top-1 unchanged), which the
+  promotion rule does not admit.
   `RUNNER_CUDA_ATTN_TC=1` computes the prefill attention scores and the
   value sums of an f16 cache on the tensor cores (64 query rows a block, two
   passes over the cached rows), for head widths that are multiples of 16 up
@@ -198,21 +202,27 @@ Current release and unreleased changes. Compatibility follows the
   on the RTX 3070 and IQ3_S on the slice). On an RTX 3070, granite-4.2-3b IQ3_S prefill went from 814
   to 1265 tok/s at a 512-token prompt (513 to 663 at 2K).
 
-- **CUDA long-context attention, experimental and off by default.**
-  `RUNNER_CUDA_ATTN_TILE=1` runs prefill attention one strip of query rows
-  at a time over K and V tiles staged in shared memory (each score computed
-  as the existing kernel computes it), and `RUNNER_CUDA_ATTN_DEC=1` reads
-  each cached KV row once for all the query heads that share it in decode,
-  instead of once per head. On an RTX 3070 with Llama-3.2-3B Q4_K_M at a
-  16K-token prompt, prefill went from 101 to 303 tok/s and decode from 24.7
-  to 55.3 tok/s (Qwen2.5-7B Q4_K_M: 109 to 220 and 21.2 to 41.9). The
-  grouped decode splits the cached rows into whole 32-row tiles, so a short
-  context fills a few splits with full tiles instead of giving each of the
-  32 a few rows: decode at a 512-token context is no longer slower (+6.3%
-  on Llama-3.2-3B, +3.3% on Qwen2.5-7B; it had cost about 4% per token), and
-  +49.6% / +28.3% at 4K. Both stay off until the promotion gates pass;
-  `test-gpu-identity` holds them to the CPU bound on every KV format
-  (`GPU_ID_KV=q8|fp4|k8v4`).
+- **CUDA long-context attention, on by default.** Prefill attention runs
+  one strip of query rows at a time over K and V tiles staged in shared
+  memory (each score computed as the existing kernel computes it), and
+  decode attention reads each cached KV row once for all the query heads
+  that share it, instead of once per head; the grouped decode splits the
+  cached rows into whole 32-row tiles, so a short context costs nothing.
+  Both add in another order than the kernels they replace, so they were
+  held to the publisher's float32 model first: at positions 4,000 to 6,000
+  of a long document (2,000 positions; Qwen3-4B, Mistral-7B v0.3, and
+  gpt-oss-20b with its attention sinks and alternating 128-token window),
+  mean KL and margin-qualified top-1 were never worse than the previous
+  kernels' (paired tests p 0.15 to 0.60 on the first two; on gpt-oss-20b
+  the tiled prefill read closer to the reference, p 4e-6, and the grouped
+  decode matched it, p 0.24). On an RTX 3070 at a 16K-token prompt,
+  Llama-3.2-3B read the prompt at 347 tok/s where it read 106 and decoded
+  at 57.6 tok/s where it decoded 25.2 (Qwen2.5-7B: 264 against 120, and
+  43.4 against 21.7); at a 512-token prompt prefill gains 17-28% and decode
+  4-7% (three rounds). `test-gpu-identity` holds them to the CPU bound on
+  every KV format (`GPU_ID_KV=q8|fp4|k8v4`). A run records them
+  (`profile.gpu_route`: `attn-tile`, `attn-dec`); `--gpu-route reference`,
+  `RUNNER_CUDA_ATTN_TILE=0` and `RUNNER_CUDA_ATTN_DEC=0` switch them off.
 
 - **CUDA prefill reads the prompt in wider windows.** The device ran a
   prompt in tiles of at most 64 tokens, fixed at build time, so every weight

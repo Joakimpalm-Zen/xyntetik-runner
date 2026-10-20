@@ -2444,11 +2444,13 @@ another order or at another precision, each held to a tolerance gate
 rather than to byte identity: the pipelined tensor-core GEMM (`tc2`), its
 compute capability 8.0 build (`sm80`), the tiled prefill attention
 (`attn-tile`), the grouped decode attention (`attn-dec`) and the
-tensor-core prefill attention for f16 caches (`attn-tc`). The pair
-`tc2,sm80` is the default on compute capability 8.0 and newer: those
-kernels add in the tensor-core route's order and gave its bytes on every
-device measured, and they stay a named route so that a replay on another
-card cannot substitute the compute_75 rounding. `--gpu-route`
+tensor-core prefill attention for f16 caches (`attn-tc`). The default
+set is `attn-tile,attn-dec`, plus `tc2,sm80` on compute capability 8.0 and
+newer: the two attention routes measured no distance from the kernels they
+replace against the publisher's float32 model at long context, and the
+compute_80 GEMM kernels add in the tensor-core route's order and gave its
+bytes on every device measured; each stays a named route so that a replay
+cannot substitute other arithmetic. `--gpu-route`
 names the set for the process: `reference` runs none of them, a comma list
 runs those. It overrides `RUNNER_CUDA_ROUTE` (the same set from the
 environment, which the CPU-against-GPU harnesses set to `reference`) and the

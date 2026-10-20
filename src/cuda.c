@@ -5756,13 +5756,17 @@ static bool tile_kv_store(gpu_t *g, model_t *m, int l, int tn, int hd,
 }
 
 // RUNNER_CUDA_ATTN_TILE: the tiled prefill attention (k_attn_tile*, C2
-// step 1). 1 selects it, 0 or unset keeps k_attn while its gates are run.
+// step 1), on by default since its float32-reference rows (2,000 positions
+// at 4,000-6,000 tokens of context; Qwen3-4B, Mistral-7B, and gpt-oss-20b
+// with its sinks and alternating window) were never further from the
+// reference than k_attn's; 0 keeps k_attn. A tolerance route: recorded as
+// attn-tile, and --gpu-route reference runs k_attn.
 static bool attn_tile_on(void) {
     if (route_pinned(GR_ATTN_TILE) >= 0) return route_pinned(GR_ATTN_TILE);
     static _Atomic int on = -1;
     if (on < 0) {
         const char *e = getenv("RUNNER_CUDA_ATTN_TILE");
-        on = e && *e && strcmp(e, "0") != 0;
+        on = !(e && *e && strcmp(e, "0") == 0);
     }
     return on == 1;
 }
@@ -5798,8 +5802,10 @@ static bool tile_attn_tiled(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
 }
 
 // RUNNER_CUDA_ATTN_TC: the tensor-core prefill attention (k_attn_tc, C2
-// step 2) for fp16 caches. 1 selects it ahead of the tiled kernel, 0 or unset
-// keeps the scalar route while its tolerance gates are run.
+// step 2) for fp16 caches. 1 selects it ahead of the tiled kernel; off by
+// default: on Mistral-7B its float32-reference row read 0.19% further from
+// the reference than k_attn's (Wilcoxon p 0.014), which the promotion rule
+// does not admit.
 static bool attn_tc_on(void) {
     if (route_pinned(GR_ATTN_TC) >= 0) return route_pinned(GR_ATTN_TC);
     static _Atomic int on = -1;
@@ -5831,14 +5837,15 @@ static bool tile_attn_tc(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
 }
 
 // RUNNER_CUDA_ATTN_DEC: the grouped decode attention (k_attn_dec_gqa, one
-// block per KV head and slice serving its query heads). 1 selects it, 0 or
-// unset keeps k_attn_dec while its gates are run.
+// block per KV head and slice serving its query heads), on by default since
+// its float32-reference rows matched k_attn_dec's (the same three models);
+// 0 keeps k_attn_dec. Recorded as attn-dec.
 static bool attn_dec_on(void) {
     if (route_pinned(GR_ATTN_DEC) >= 0) return route_pinned(GR_ATTN_DEC);
     static _Atomic int on = -1;
     if (on < 0) {
         const char *e = getenv("RUNNER_CUDA_ATTN_DEC");
-        on = e && *e && strcmp(e, "0") != 0;
+        on = !(e && *e && strcmp(e, "0") == 0);
     }
     return on == 1;
 }

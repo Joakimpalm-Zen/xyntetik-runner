@@ -72,13 +72,19 @@ The branches are tried in this order; the first that applies runs.
 
 Around the matvec:
 
-- **Prefill and decode attention (experimental).** `RUNNER_CUDA_ATTN_TILE=1`
-  takes prefill attention through `k_attn_tile32`/`16` (query strips over
-  shared-memory K and V tiles; each score is `k_attn`'s, the softmax and the
-  V sum reassociate), and `RUNNER_CUDA_ATTN_DEC=1` single-token attention
-  through `k_attn_dec_gqa` and `k_attn_merge32` (a KV row read once per
-  head group, 32 fixed splits). Obligation: tolerance, token-identical on
-  the long-context checks. Gate: `test-gpu-identity` (with `GPU_ID_KV`).
+- **Prefill and decode attention (on by default).** Prefill attention takes
+  `k_attn_tile32`/`16` (query strips over shared-memory K and V tiles; each
+  score is `k_attn`'s, the softmax and the V sum reassociate) unless
+  `RUNNER_CUDA_ATTN_TILE=0`, and single-token attention `k_attn_dec_gqa` and
+  `k_attn_merge32` (a KV row read once per head group, whole 32-row tiles
+  per split) unless `RUNNER_CUDA_ATTN_DEC=0`; both recorded as routes
+  (`attn-tile`, `attn-dec`). Obligation: tolerance, and no measurable
+  distance from the replaced kernels against the float32 reference at long
+  context (2,000 positions at 4,000-6,000 tokens; Qwen3-4B, Mistral-7B, and
+  gpt-oss-20b, whose attention has sinks and an alternating window). Gate:
+  `test-gpu-identity` (with `GPU_ID_KV`). The tensor-core prefill attention
+  (`RUNNER_CUDA_ATTN_TC=1`, `k_attn_tc`) stays opt-in: it read 0.19% further
+  from the reference on Mistral-7B.
 - **Byte movers, on by default.** The one-copy KV gather (decode with full
   offload: every layer's new K and V rows gathered on the device, one copy
   back, `RUNNER_CUDA_KV_GATHER=0` restores the per-layer copies) and the
