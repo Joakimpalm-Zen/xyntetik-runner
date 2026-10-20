@@ -138,7 +138,8 @@ Current release and unreleased changes. Compatibility follows the
   tensor-core route's own: chunked `--score` logprobs came out byte for byte
   the tensor-core route's, with TC2 launches counted, on four files
   on an RTX 3070 and three on the datacenter MIG slice, and the CUDA gate
-  now checks the same on its device (`make test-cuda-tc2-bytes`). On an RTX
+  now checks the same on its device (`make test-cuda-tc2-bytes`, which reads
+  the device's `compute_capability`, now in `--caps`). On an RTX
   3070 at a 512-token prompt, the default route's prefill went from 1090 to
   1824 tok/s on Llama-3.2-3B Q4_K_M and from 639 to 1159 on Qwen2.5-7B
   Q4_K_M (2K: 653 to 862 and 453 to 667; 8K, where attention takes most of

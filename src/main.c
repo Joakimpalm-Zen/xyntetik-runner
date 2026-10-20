@@ -1766,6 +1766,8 @@ static int run_caps(void) {
                "\"ptx_target\":\"%s\"",
                RUNNER_CUDA_MIN_CC, RUNNER_CUDA_MIN_GPU,
                RUNNER_CUDA_PTX_TARGET);
+        const char *cc = gpu_compute_capability();
+        if (cc) printf(",\"compute_capability\":\"%s\"", cc);
 #endif
         if (vm)
             printf(",\"vram_bytes\":%llu,\"vram_free_bytes\":%llu",

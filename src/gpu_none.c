@@ -34,6 +34,7 @@ bool gpu_max_working_set(size_t *bytes) {
 }
 
 const char *gpu_shader_source_sha(void) { return NULL; }   // no shaders here
+const char *gpu_compute_capability(void) { return NULL; }
 
 bool gpu_kv_q8_ok(void) {
     return false;   // no backend here; the CPU path handles q8 on its own

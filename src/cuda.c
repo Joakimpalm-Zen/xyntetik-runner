@@ -656,6 +656,7 @@ typedef struct {
 #define G2_SMEM ((2 * G2_BM * (G2_BK + 8) + 2 * G2_BN * (G2_BK + 8)) * 2)
 #define CU_FUNC_ATTR_MAX_DYN_SMEM 8   // CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES
 #define CU_DEV_ATTR_CC_MAJOR 75       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR
+#define CU_DEV_ATTR_CC_MINOR 76       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR
 #define TC_N    64   // tensor-core GEMM token tile (keep in sync)
 #define Q8_COLS 8    // k_gemm_q8_0 column tile (keep in sync)
 
@@ -801,6 +802,22 @@ bool gpu_unified_memory(void) {
     CUdevice dev;
     if (cu.DeviceGet(&dev, 0) != 0) return false;
     return cu_dev_integrated(dev);
+}
+
+// The device's compute capability, "major.minor": which kernels a default
+// run takes depends on it (TC2 runs its compute_80 kernels from 8.0), so
+// --caps reports it beside the build's minimum
+const char *gpu_compute_capability(void) {
+    static char buf[16];
+    if (!cu_load() || cu.Init(0) != 0 || !cu.DeviceGetAttribute) return NULL;
+    int n = 0, maj = 0, min = 0;
+    CUdevice dev;
+    if (cu.DeviceGetCount(&n) != 0 || n < 1 || cu.DeviceGet(&dev, 0) != 0 ||
+        cu.DeviceGetAttribute(&maj, CU_DEV_ATTR_CC_MAJOR, dev) != 0 ||
+        cu.DeviceGetAttribute(&min, CU_DEV_ATTR_CC_MINOR, dev) != 0)
+        return NULL;
+    snprintf(buf, sizeof buf, "%d.%d", maj, min);
+    return buf;
 }
 
 // The CUDA kernels ship as embedded PTX, not shader source; there is no

@@ -7,9 +7,12 @@ order, so their outputs are that route's bytes on every device measured
 (sm_86, sm_120). The CPU-against-GPU harnesses pin the reference route, so
 without this check a card nobody measured would run the default kernels
 unchecked. For each model: chunked --score with TC2 off and in its default
-mode must give the same stdout bytes, and the default arm's `score: route`
-line must show TC2 launches exactly when the compute_80 module loaded
-(`tc2=on-sm80` in its backend detail): auto mode runs no compute_75 kernel.
+mode must give the same stdout bytes, and on a device of compute capability
+8.0 or newer (--caps) the default arm's `score: route` line must show the
+compute_80 module loaded (`tc2=on-sm80`) and TC2 launches; below 8.0 it must
+show none, and the step reports itself as not applicable there. Every
+switch that changes the route is cleared from the environment first, so an
+inherited one can neither fail the step nor let it pass without running.
 
 Usage: cuda-tc2-bytes.py RUNNER MODEL [MODEL ...]
 Exit status 0 when every model passes; prints a skip line and exits 0 when
@@ -25,12 +28,15 @@ PROMPT = ("The runner reads a prompt in windows of up to five hundred and "
           "against all of the window's columns in one launch of the GEMM. ") * 2
 
 
+ROUTE_SWITCHES = ("RUNNER_CUDA_ROUTE", "RUNNER_CUDA_TC", "RUNNER_CUDA_TC2", "RUNNER_CUDA_SM80",
+                  "RUNNER_CUDA_TC2_WIDE", "RUNNER_CUDA_Q8X", "RUNNER_CUDA_SMALL_BATCH")
+
+
 def score(runner, model, tc2):
     env = dict(os.environ, RUNNER_SCORE_CHUNKED="1", RUNNER_GPU_FALLBACK="fail")
-    env.pop("RUNNER_CUDA_ROUTE", None)
-    if tc2 is None:
-        env.pop("RUNNER_CUDA_TC2", None)
-    else:
+    for k in ROUTE_SWITCHES:
+        env.pop(k, None)
+    if tc2 is not None:
         env["RUNNER_CUDA_TC2"] = tc2
     p = subprocess.run([runner, "-m", model, "--score", "-p", PROMPT, "-c", "1024",
                         "--no-tray"], env=env, stdout=subprocess.PIPE,
@@ -51,9 +57,14 @@ def main():
     runner, models = sys.argv[1], sys.argv[2:]
     caps = json.loads(subprocess.run([runner, "--caps"], stdout=subprocess.PIPE,
                                      check=True).stdout)
-    if (caps.get("gpu") or {}).get("backend") != "cuda":
+    gpu = caps.get("gpu") or {}
+    if gpu.get("backend") != "cuda":
         print("tc2 bytes: skipped (no CUDA device)")
         return 0
+    cc = gpu.get("compute_capability")
+    if not cc:
+        sys.exit("FAIL: --caps reports no compute_capability for the CUDA device")
+    want80 = int(cc.split(".")[0]) >= 8
     for model in models:
         off, r_off = score(runner, model, "0")
         on, r_on = score(runner, model, None)
@@ -62,6 +73,9 @@ def main():
         n = len(json.loads(off).get("logprobs") or [])
         t_off, t_on = r_off["kernels"].get("cuda_tc2"), r_on["kernels"].get("cuda_tc2")
         sm80 = "tc2=on-sm80" in r_on.get("backend_detail", "")
+        if sm80 != want80:
+            sys.exit("FAIL %s: compute capability %s, but the compute_80 module %s" %
+                     (model, cc, "loaded" if sm80 else "did not load"))
         if n < 100 or off != on:
             sys.exit("FAIL %s: %d positions, TC2 default %s the TC route's bytes" %
                      (model, n, "matches" if off == on else "DIFFERS FROM"))
@@ -70,7 +84,8 @@ def main():
                      (model, t_off, t_on, "loaded" if sm80 else "not loaded"))
         print("tc2 bytes %s: %d positions identical, TC2 launches %d (%s)" %
               (os.path.basename(model), n, t_on,
-               "compute_80 kernels" if sm80 else "below compute capability 8.0: none"))
+               "compute_80 kernels" if sm80 else
+               "not applicable: compute capability %s runs no TC2 by default" % cc))
     return 0
 
 

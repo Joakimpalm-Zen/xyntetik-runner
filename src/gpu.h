@@ -42,6 +42,8 @@ bool   gpu_max_working_set(size_t *bytes);
 // drift check cannot see a stale binary, and twice on 2026-08-07 a kernel
 // change was measured against a build that did not contain it.
 const char *gpu_shader_source_sha(void);
+// the CUDA device's compute capability as "major.minor" (--caps); NULL elsewhere
+const char *gpu_compute_capability(void);
 // does this backend's attention read a q8_0 KV cache? The CPU path always
 // can; a backend that cannot forces the cache back to f16 rather than
 // handing q8_0 blocks to kernels that would read them as fp16.
