@@ -1326,14 +1326,15 @@ bool prefix_context_origin(const char *name, char *out, size_t cap) {
 model_t *spec_draft_load(const char *path, const model_t *target,
                          const model_params *mp) {
     if (!model_spec_verify_ok(target)) {
-        // Covers both refusals with one capability question: a discrete-VRAM
-        // full offload (hidden states unreadable) and CUDA-resident
-        // recurrent state (no host-visible fold rollback). Unified-memory
-        // Metal full offload passes: the verify walk reads the backend's own
-        // buffers and the per-column heads the forward emits for it.
+        // One capability question for the refusals: a partial CUDA split with
+        // a recurrent layer on the device (no host-visible fold rollback), or
+        // a full offload whose backend cannot hand the walk its rows
+        // (gpu_spec_keep_ok). Metal and CUDA full offload pass: the forward
+        // emits every row's head for the walk (on CUDA through the batched
+        // kernels, so the walk is target-exact only up to near-ties there).
         fprintf(stderr, "draft: this target's backend cannot serve the "
-                "speculative verify walk (discrete-VRAM offload or "
-                "device-resident recurrent state) — ignoring --draft\n");
+                "speculative verify walk (device-resident recurrent state "
+                "under a partial split) — ignoring --draft\n");
         return NULL;
     }
     model_params dmp = *mp;
