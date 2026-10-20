@@ -4759,6 +4759,18 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
     m->att    = malloc(sizeof(float) * (size_t)m->n_head * n_ctx);
     m->logits = malloc(sizeof(float) * m->n_vocab);
     m->spec_batch = 16; // all_logits rows, allocated lazily on first use
+    // RUNNER_SPEC_BATCH (1-64): the rows a verify or chunked --score forward
+    // carries, for scoring at a device's real prefill widths (a 16-row chunk
+    // gives a 128-expert MoE about one column an expert, so expert paths
+    // that take the batched GEMM from two or more columns never ran in a
+    // fidelity run). A wider chunk changes which MoE paths a tile admits, as
+    // the prompt window does; within a path a row's arithmetic does not
+    // depend on the chunk. 64 is CUDA's keep limit (MVB).
+    {
+        const char *e = getenv("RUNNER_SPEC_BATCH");
+        int v = e && *e ? atoi(e) : 0;
+        if (v >= 1 && v <= 64) m->spec_batch = v;
+    }
     if (m->n_expert > 0) {
         // per-token MoE scratch (decode routes each token independently)
         m->moe_logits = malloc(sizeof(float) * (size_t)m->n_expert);

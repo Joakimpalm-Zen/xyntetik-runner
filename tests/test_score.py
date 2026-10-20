@@ -233,6 +233,36 @@ def test_score_reports_its_route(runner_bin, models, chunked):
         assert paths["solo"]["forwards"] == n_scored
 
 
+def test_spec_batch_widens_the_score_chunks(runner_bin, models):
+    """RUNNER_SPEC_BATCH sets the rows a chunked score forward carries (16 by
+    default, at most 64), so a fidelity run can score at a device's prefill
+    widths; out-of-range values leave the default."""
+    long_prompt = PROMPT   # byte-level fixture tokens: ~90 positions
+
+    def route(value):
+        env = dict(os.environ, RUNNER_SCORE_CHUNKED="1")
+        env.pop("RUNNER_SPEC_BATCH", None)
+        if value is not None:
+            env["RUNNER_SPEC_BATCH"] = value
+        p = subprocess.run(
+            [runner_bin, "-m", str(models["dense"]), "--score", "-p", long_prompt,
+             "-t", "2", "--gpu", "off"],
+            cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=120)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        line = [ln for ln in p.stderr.decode().splitlines()
+                if ln.startswith("score: route ")][0]
+        return (json.loads(p.stdout)["n_scored"],
+                json.loads(line[len("score: route "):])["paths"]["keep"]["rows_max"])
+
+    n, rows = route(None)
+    assert n > 40 and rows == 16
+    n48, rows48 = route("48")
+    assert n48 == n and 16 < rows48 <= 48
+    for bad in ("0", "65", "junk"):
+        assert route(bad) == (n, 16), bad
+
+
 def test_score_top_needs_score(runner_bin, models):
     p = subprocess.run(
         [runner_bin, "-m", str(models["dense"]), "--score-top", "5",

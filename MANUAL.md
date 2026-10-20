@@ -2428,7 +2428,10 @@ next tokens after position i as `[id, logprob]`, best first, ties to the lower i
 same logits as `logprobs` and `argmax`. A distribution-level comparison (KL divergence
 against a reference such as the publisher's float32 model, `scripts/gold-logits.py
 --score-a`) then needs one pass over the text instead of a request per position, and with
-`RUNNER_SCORE_CHUNKED=1` every position comes from the batched prefill route.
+`RUNNER_SCORE_CHUNKED=1` every position comes from the batched prefill route,
+in chunks of 16 rows; `RUNNER_SPEC_BATCH=N` (up to 64 on CUDA) widens them,
+so a MoE model's batched expert paths, which a wider prompt window admits,
+are the ones scored.
 
 The run ends with one line on stderr, `score: route {...}`: the paths its forwards took
 (with counts and widest rows) and the counted kernels, the object `--bench-json` reports as
