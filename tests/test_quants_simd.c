@@ -1266,6 +1266,15 @@ int main(void) {
     CHECK(!i8_dot_ok(T_Q4_0, 48), "i8_dot_ok must decline a partial q4_0 block");
     CHECK(i8_dot_ok(T_Q8_0, 64) && i8_dot_ok(T_Q4_0, 64),
           "a whole-block row is still admitted");
+#elif defined(__aarch64__) && defined(__ARM_FEATURE_DOTPROD)
+    // the arm64 kernels: q8_0, q4_0 and q4_K at both row lengths, with the
+    // same whole-weight-block rule
+    CHECK(g_i8_checked == 6, "fused int8 route (arm64): %d combos exercised, expected 6",
+          g_i8_checked);
+    CHECK(!i8_dot_ok(T_Q8_0, 48), "i8_dot_ok must decline a partial q8_0 block");
+    CHECK(!i8_dot_ok(T_Q4_0, 48), "i8_dot_ok must decline a partial q4_0 block");
+    CHECK(i8_dot_ok(T_Q8_0, 64) && i8_dot_ok(T_Q4_0, 64),
+          "a whole-block row is still admitted");
 #endif
 
     // vec_dot_f32_multi: the batched prefill inner loop.

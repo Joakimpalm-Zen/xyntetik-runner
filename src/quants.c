@@ -3358,6 +3358,12 @@ typedef struct { float d; int32_t s; int8_t qs[I8A_QK]; } block_i8a;
 #if defined(__AVX512F__) && defined(__AVX512VNNI__) && defined(__AVX512VL__)
 #define RUNNER_I8_VNNI 1
 #endif
+// arm64 with the dot-product extension (Armv8.4, every Apple M-series core):
+// SDOT multiplies 16 signed byte pairs into four int32 lanes, the role VNNI's
+// dpbusd plays above, so the same per-block affine fix-up applies
+#if RUNNER_NEON && defined(__ARM_FEATURE_DOTPROD) && !defined(RUNNER_CANON_KERNELS)
+#define RUNNER_I8_NEON 1
+#endif
 
 size_t i8_act_size(int n) {
     return (size_t)(n / I8A_QK) * sizeof(block_i8a);
@@ -3378,6 +3384,13 @@ bool i8_dot_ok(int type, int n) {
         case T_Q4_K:
         case T_IQ3_S:
         case T_IQ2_S: return n % ggml_block_size(type) == 0;
+        default:     return false;
+    }
+#elif RUNNER_I8_NEON
+    switch (type) {
+        case T_Q8_0:
+        case T_Q4_0:
+        case T_Q4_K: return n % ggml_block_size(type) == 0;
         default:     return false;
     }
 #else
@@ -3485,6 +3498,31 @@ void i8_quant_act(const float *x, void *dst, int n) {
                                      _mm256_extracti128_si256(p01, 1));
         p8 = _mm_shuffle_epi32(p8, 0xD8);
         _mm_storeu_si128((__m128i *)b->qs, p8);
+    }
+#elif RUNNER_NEON
+    // the scalar body's arithmetic lane for lane: max |x| (exact in any
+    // order), one fused x * id + copysign(0.5, x), truncation toward zero
+    const uint32x4_t sign = vdupq_n_u32(0x80000000u);
+    const float32x4_t half = vdupq_n_f32(0.5f);
+    for (int i = 0; i < n / I8A_QK; i++, b++, x += I8A_QK) {
+        float32x4_t v[4] = { vld1q_f32(x), vld1q_f32(x + 4), vld1q_f32(x + 8), vld1q_f32(x + 12) };
+        float32x4_t mx = vmaxq_f32(vmaxq_f32(vabsq_f32(v[0]), vabsq_f32(v[1])),
+                                   vmaxq_f32(vabsq_f32(v[2]), vabsq_f32(v[3])));
+        float amax = vmaxvq_f32(mx);
+        float d = amax / 127.0f;
+        float id = d > 0 ? 1.0f / d : 0.0f;
+        b->d = d;
+        const float32x4_t idv = vdupq_n_f32(id);
+        int32x4_t q[4], sum = vdupq_n_s32(0);
+        for (int k = 0; k < 4; k++) {
+            float32x4_t hs = vbslq_f32(sign, v[k], half);   // copysign(0.5, v)
+            q[k] = vcvtq_s32_f32(vfmaq_f32(hs, v[k], idv));
+            sum = vaddq_s32(sum, q[k]);
+        }
+        b->s = vaddvq_s32(sum);
+        int16x8_t p0 = vcombine_s16(vmovn_s32(q[0]), vmovn_s32(q[1]));
+        int16x8_t p1 = vcombine_s16(vmovn_s32(q[2]), vmovn_s32(q[3]));
+        vst1q_s8(b->qs, vcombine_s8(vmovn_s16(p0), vmovn_s16(p1)));
     }
 #else
     for (int i = 0; i < n / I8A_QK; i++, b++, x += I8A_QK) {
@@ -3738,7 +3776,83 @@ static float dot_iq2_s_i8(const block_iq2_s *b, const block_i8a *xq, int n) {
 }
 #endif // RUNNER_AVX2
 
+#if RUNNER_I8_NEON
+// One 16-element activation block against 16 signed weights: four int32
+// lanes, exact.
+static inline int32x4_t i8n_dot16(int8x16_t w, const block_i8a *xb) {
+    return vdotq_s32(vdupq_n_s32(0), w, vld1q_s8(xb->qs));
+}
+static float dot_q8_0_i8_neon(const block_q8_0 *b, const block_i8a *xq, int n) {
+    float32x4_t facc = vdupq_n_f32(0);
+    for (int i = 0; i < n / QK; i++) {
+        float dw = f16_to_f32(b[i].d);
+        int32x4_t a0 = i8n_dot16(vld1q_s8(b[i].qs), &xq[2 * i]);
+        int32x4_t a1 = i8n_dot16(vld1q_s8(b[i].qs + 16), &xq[2 * i + 1]);
+        facc = vfmaq_n_f32(facc, vcvtq_f32_s32(a0), dw * xq[2 * i].d);
+        facc = vfmaq_n_f32(facc, vcvtq_f32_s32(a1), dw * xq[2 * i + 1].d);
+    }
+    return vaddvq_f32(facc);
+}
+// low nibbles are elements 0-15 of the block, high nibbles 16-31
+static float dot_q4_0_i8_neon(const block_q4_0 *b, const block_i8a *xq, int n) {
+    const uint8x16_t mF = vdupq_n_u8(0xF);
+    const int8x16_t m8 = vdupq_n_s8(8);
+    float32x4_t facc = vdupq_n_f32(0);
+    for (int i = 0; i < n / QK; i++) {
+        uint8x16_t q = vld1q_u8(b[i].qs);
+        int8x16_t lo = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(q, mF)), m8);
+        int8x16_t hi = vsubq_s8(vreinterpretq_s8_u8(vshrq_n_u8(q, 4)), m8);
+        float dw = f16_to_f32(b[i].d);
+        facc = vfmaq_n_f32(facc, vcvtq_f32_s32(i8n_dot16(lo, &xq[2 * i])), dw * xq[2 * i].d);
+        facc = vfmaq_n_f32(facc, vcvtq_f32_s32(i8n_dot16(hi, &xq[2 * i + 1])), dw * xq[2 * i + 1].d);
+    }
+    return vaddvq_f32(facc);
+}
+// Q4_K: w = nib * d * sc - dmin * mn, so the dot is d*sc*ax*isum minus
+// dmin*mn*ax*sum(xq) per activation block (the block's precomputed s), as
+// dot_q4_K_i8 does with VNNI
+static float dot_q4_K_i8_neon(const block_q4_K *b, const block_i8a *xq, int n) {
+    const uint8x16_t mF = vdupq_n_u8(0xF);
+    float32x4_t facc = vdupq_n_f32(0);
+    float mins = 0;
+    int blk = 0;
+    for (int i = 0; i < n / QK_K; i++, b++) {
+        float d = f16_to_f32(b->d), dmin = f16_to_f32(b->dmin);
+        const uint8_t *q = b->qs;
+        int is = 0;
+        for (int j = 0; j < QK_K; j += 64) {
+            uint8_t sc, mn;
+            get_scale_min_k4(is + 0, b->scales, &sc, &mn);
+            float d1 = d * sc, m1 = dmin * mn;
+            get_scale_min_k4(is + 1, b->scales, &sc, &mn);
+            float d2 = d * sc, m2 = dmin * mn;
+            uint8x16_t q0 = vld1q_u8(q), q1 = vld1q_u8(q + 16);
+            int8x16_t l0 = vreinterpretq_s8_u8(vandq_u8(q0, mF));
+            int8x16_t l1 = vreinterpretq_s8_u8(vandq_u8(q1, mF));
+            int8x16_t h0 = vreinterpretq_s8_u8(vshrq_n_u8(q0, 4));
+            int8x16_t h1 = vreinterpretq_s8_u8(vshrq_n_u8(q1, 4));
+            facc = vfmaq_n_f32(facc, vcvtq_f32_s32(i8n_dot16(l0, &xq[blk])), d1 * xq[blk].d);
+            facc = vfmaq_n_f32(facc, vcvtq_f32_s32(i8n_dot16(l1, &xq[blk + 1])), d1 * xq[blk + 1].d);
+            facc = vfmaq_n_f32(facc, vcvtq_f32_s32(i8n_dot16(h0, &xq[blk + 2])), d2 * xq[blk + 2].d);
+            facc = vfmaq_n_f32(facc, vcvtq_f32_s32(i8n_dot16(h1, &xq[blk + 3])), d2 * xq[blk + 3].d);
+            mins -= m1 * (xq[blk].d * (float)xq[blk].s + xq[blk + 1].d * (float)xq[blk + 1].s)
+                  + m2 * (xq[blk + 2].d * (float)xq[blk + 2].s + xq[blk + 3].d * (float)xq[blk + 3].s);
+            q += 32; is += 2; blk += 4;
+        }
+    }
+    return vaddvq_f32(facc) + mins;
+}
+#endif // RUNNER_I8_NEON
+
 float vec_dot_i8(int type, const void *row, const void *xq, int n) {
+#if RUNNER_I8_NEON
+    switch (type) {
+        case T_Q8_0: return dot_q8_0_i8_neon(row, xq, n);
+        case T_Q4_0: return dot_q4_0_i8_neon(row, xq, n);
+        case T_Q4_K: return dot_q4_K_i8_neon(row, xq, n);
+        default: break;
+    }
+#endif
 #if RUNNER_AVX2
     switch (type) {
         case T_Q8_0: return dot_q8_0_i8(row, xq, n);

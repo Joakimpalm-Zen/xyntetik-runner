@@ -5,6 +5,12 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The int8 CPU route runs on arm64.** `RUNNER_CPU_I8=1` now has
+  dot-product (SDOT) kernels for Q8_0, Q4_0 and Q4_K on arm64 (every Apple
+  M-series core) beside the x86 ones, and quantizes the activations with the
+  same bytes as the scalar definition. It stays off by default under the
+  same tolerance gate (`./test-i8-tol MODEL.gguf`).
+
 - **CPU decode: Q4_K and Q5_K rows no longer re-sum the activations.** The
   dot subtracts each 32-element group's minimum times the sum of the
   activations in that group, and that sum was recomputed for every row of a
