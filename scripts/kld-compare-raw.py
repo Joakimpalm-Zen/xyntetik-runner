@@ -62,17 +62,35 @@ def require_served(endpoint, name, label):
                          f"served ids: {', '.join(ids) if ids else '(none)'}")
 
 
-def start_server(runner, model, port, threads=0, ctx=0):
+def server_cmd_env(runner, model, port, threads=0, ctx=0, gpu="off",
+                   extra=(), env_extra=()):
+    """The command line and environment of one served side. `extra` are
+    runner flags for this side only and `env_extra` NAME=value settings for
+    it (an A/B of one switch, e.g. RUNNER_CUDA_TC=0 against =1, in one
+    scorer run). The scorer serves on the CPU unless `gpu` says otherwise."""
     cmd = [runner, "-m", model, "--serve", "--no-tray",
-           "--port", str(port), "--gpu", "off"]
+           "--port", str(port), "--gpu", gpu]
     # server-mode passthrough (the lab, 2026-09-23): without it the
     # rehearsal pre-started both servers by hand to pin threads and context
     if threads > 0:
         cmd += ["-t", str(threads)]
     if ctx > 0:
         cmd += ["-c", str(ctx)]
+    cmd += list(extra)
+    env = dict(os.environ)
+    for kv in env_extra:
+        k, sep, v = kv.partition("=")
+        if not k or not sep:
+            raise SystemExit(f"error: environment setting {kv!r} is not NAME=value")
+        env[k] = v
+    return cmd, env
+
+
+def start_server(runner, model, port, threads=0, ctx=0, gpu="off",
+                 extra=(), env_extra=()):
+    cmd, env = server_cmd_env(runner, model, port, threads, ctx, gpu, extra, env_extra)
     proc = subprocess.Popen(
-        cmd,
+        cmd, env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(400):
         if proc.poll() is not None:
@@ -266,6 +284,15 @@ def main(argv):
                     help="server mode: -t for both served runners (default: the runner's own default)")
     ap.add_argument("--ctx", type=int, default=0,
                     help="server mode: -c for both served runners (default: the model's trained context)")
+    ap.add_argument("--gpu", default="off",
+                    help="server mode: --gpu for both served runners (default off: the "
+                         "CPU scalar route; 'auto' scores the device route)")
+    ap.add_argument("--args-a", default="",
+                    help="server mode: extra runner flags for side A only, e.g. '--kv q8'")
+    ap.add_argument("--args-b", default="", help="server mode: extra runner flags for side B only")
+    ap.add_argument("--env-a", default="",
+                    help="server mode: NAME=value settings for side A only, e.g. RUNNER_CUDA_TC=0")
+    ap.add_argument("--env-b", default="", help="server mode: NAME=value settings for side B only")
     ap.add_argument("--tie-band", type=float, default=DEFAULT_TIE_BAND,
                     help="near-tie band in nats for margin-qualified top-1 "
                          f"(default {DEFAULT_TIE_BAND}; see the derivation "
@@ -285,7 +312,9 @@ def main(argv):
             if not args.model_name_a:
                 args.model_name_a = os.path.basename(args.model_a)
             print(f"starting server A: {args.model_a}", file=sys.stderr)
-            procs.append(start_server(args.runner, args.model_a, args.port_a, args.threads, args.ctx))
+            procs.append(start_server(args.runner, args.model_a, args.port_a, args.threads,
+                                      args.ctx, args.gpu, args.args_a.split(),
+                                      args.env_a.split()))
             ep_a = f"http://127.0.0.1:{args.port_a}"
         if args.endpoint_b:
             ep_b = args.endpoint_b
@@ -297,7 +326,9 @@ def main(argv):
             if not args.model_name_b:
                 args.model_name_b = os.path.basename(args.model_b)
             print(f"starting server B: {args.model_b}", file=sys.stderr)
-            procs.append(start_server(args.runner, args.model_b, args.port_b, args.threads, args.ctx))
+            procs.append(start_server(args.runner, args.model_b, args.port_b, args.threads,
+                                      args.ctx, args.gpu, args.args_b.split(),
+                                      args.env_b.split()))
             ep_b = f"http://127.0.0.1:{args.port_b}"
 
         require_served(ep_a, args.model_name_a, "a")
@@ -398,6 +429,14 @@ def main(argv):
 # ADOPTED 2026-08-14 (owner decision): margin-qualified top-1 is the
 # publication criterion; plain top-1 is reported beside it forever.
         "tie_band_nats": args.tie_band,
+        # what each served side ran with, so an A/B of one switch says which
+        # arm is which (empty for an endpoint side the script did not start)
+        "sides": {
+            "a": {"gpu": args.gpu, "args": args.args_a.split(), "env": args.env_a.split()}
+                 if not args.endpoint_a else {"endpoint": args.endpoint_a},
+            "b": {"gpu": args.gpu, "args": args.args_b.split(), "env": args.env_b.split()}
+                 if not args.endpoint_b else {"endpoint": args.endpoint_b},
+        },
         "positions_scored": n_scored,
         "positions_failed": n_failed,
         # Stop positions are scored, not dropped (see query()). one_sided is
