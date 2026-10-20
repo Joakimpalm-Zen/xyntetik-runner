@@ -96,22 +96,29 @@ Current release and unreleased changes. Compatibility follows the
   route, which a request per position cannot reach.
 
 - **CUDA prefill of Gated DeltaNet and Mamba-2 layers in one launch per
-  tile, experimental and off by default.** The recurrent layers of
-  Qwen3.5/3.8, granite-4.x-h and Nemotron-H advanced a prompt one token per
-  kernel launch, reloading each head's state from device memory every time.
-  `RUNNER_CUDA_RECUR_SEQ=1` runs a prompt tile's convolution and state
-  updates in one launch per kernel with the state held in registers, the
-  per-token arithmetic unchanged: byte-identical logits and state
-  (`GPU_ID_RECUR=1 ./test-gpu-identity`).
+  tile.** The recurrent layers of Qwen3.5/3.8, granite-4.x-h and Nemotron-H
+  advanced a prompt one token per kernel launch, reloading each head's state
+  from device memory every time. A prompt tile's convolution and state
+  updates now run in one launch per kernel with the state held in
+  registers, the per-token arithmetic unchanged: byte-identical logits and
+  state (`GPU_ID_RECUR=1 ./test-gpu-identity`). With the experimental
+  tensor-core and attention kernels on, Qwen3.5-4B Q4_K_M prefill went from
+  333 to 869 tok/s at a 512-token prompt and from 288 to 622 at 8K on an
+  RTX 3070, and from 434 to 791 and 375 to 612 on the datacenter MIG slice,
+  where Qwen3.8-27B IQ3_S went from 53 to 66 and 50 to 61; decode is
+  unchanged. `RUNNER_CUDA_RECUR_SEQ=0` keeps the per-token launches.
 
-- **CUDA decode: one KV copy-back per token, experimental and off by
-  default.** The host KV cache stays authoritative, so each decoded token's
-  K and V rows went back to it as two copies per offloaded layer.
-  `RUNNER_CUDA_KV_GATHER=1` gathers every layer's new rows on the device as
-  the last node of the decode graph and brings them back in one copy. In a
-  profiled run on an RTX 3070 the copies per token went from 57 to 2 and the
-  decode step from 8.49 to 7.82 ms on Llama-3.2-3B Q4_K_M (15.60 to 14.68
-  ms on Qwen2.5-7B Q4_K_M).
+- **CUDA decode: one KV copy-back per token.** The host KV cache stays
+  authoritative, so each decoded token's K and V rows went back to it as two
+  copies per offloaded layer. Every layer's new rows are now gathered on the
+  device as the last node of the decode graph and brought back in one copy,
+  the same bytes to the same host slots. On an RTX 3070 the copies per token
+  went from 57 to 2, and with the experimental attention kernels on, decode
+  rose 5.5% on Llama-3.2-3B Q4_K_M (120.3 to 127.0 tok/s), 7.2% on
+  Qwen2.5-3B and 3.5% on Qwen2.5-7B. On the datacenter MIG slice, default
+  route, decode rose 5.0% on Llama-3.2-3B, 4.3% on granite-4.1-3b Q8_0 and
+  2.6% on Qwen2.5-7B at a 512-token context (2.6%, 2.5% and 1.7% at 4K).
+  `RUNNER_CUDA_KV_GATHER=0` keeps the per-layer copies.
 
 - **CUDA tensor-core prefill attention, experimental and off by default.**
   `RUNNER_CUDA_ATTN_TC=1` computes the prefill attention scores and the

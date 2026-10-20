@@ -3860,8 +3860,9 @@ unsigned long gpu_tc2_80_dispatches(void) { return g_tc2_80_dispatches; }
 // C2.3: a prompt tile's recurrent steps (Gated DeltaNet conv + delta,
 // Mamba-2 conv + scan) as one launch per kernel over the whole tile
 // (k_*_seq) instead of one launch per token. Byte-equal to the per-token
-// kernels; RUNNER_CUDA_RECUR_SEQ=1 selects it, gpu_recur_seq_force overrides
-// for a test (-1 returns to the switch).
+// kernels, so on by default; RUNNER_CUDA_RECUR_SEQ=0 keeps the per-token
+// launches, gpu_recur_seq_force overrides for a test (-1 returns to the
+// switch).
 #define RS_MAX_HIST 7     // kernels.cu: conv history taps a thread keeps
 #define RS_MAX_SD   128   // kernels.cu: state row a thread keeps
 static _Atomic int g_recur_seq_force = -1;
@@ -3871,7 +3872,7 @@ static bool recur_seq_on(void) {
     static _Atomic int on = -1;
     if (on < 0) {
         const char *e = getenv("RUNNER_CUDA_RECUR_SEQ");
-        on = e && *e && strcmp(e, "0") != 0;
+        on = !(e && *e && strcmp(e, "0") == 0);
     }
     return on == 1;
 }
@@ -4532,12 +4533,14 @@ void gpu_disable(model_t *m) {
     gpu_free(m);
 }
 
-// X3: one gather of a decoded token's KV rows, one copy back
+// X3: one gather of a decoded token's KV rows, one copy back. It moves the
+// same bytes to the same host slots as the per-layer copies, so it is on by
+// default; RUNNER_CUDA_KV_GATHER=0 keeps the per-layer copies.
 static bool gpu_kv_gather_on(void) {
     static _Atomic int on = -1;
     if (on < 0) {
         const char *e = getenv("RUNNER_CUDA_KV_GATHER");
-        on = e && *e && strcmp(e, "0") != 0;
+        on = !(e && *e && strcmp(e, "0") == 0);
     }
     return on == 1;
 }

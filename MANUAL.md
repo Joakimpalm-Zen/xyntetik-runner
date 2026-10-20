@@ -2453,8 +2453,10 @@ goes into transcripts and receipts as `profile.gpu_route`, and `--verify`
 replays with the record's set whatever the command line says; a record
 without the field predates these kernels and replays with `reference`.
 Kernels that only move bytes (the KV gather, the whole-tile recurrent
-prefill) are not routes in this sense: they cannot change a token. Other
-backends accept the flag and ignore it.
+prefill) are not routes in this sense: they cannot change a token, and they
+are on by default (`RUNNER_CUDA_KV_GATHER=0` and `RUNNER_CUDA_RECUR_SEQ=0`
+switch them off for a comparison). Other backends accept the flag and ignore
+it.
 
 <a id="cli-transcript"></a>
 #### `--transcript FILE`

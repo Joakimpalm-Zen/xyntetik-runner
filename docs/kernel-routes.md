@@ -79,6 +79,15 @@ Around the matvec:
   through `k_attn_dec_gqa` and `k_attn_merge32` (a KV row read once per
   head group, 32 fixed splits). Obligation: tolerance, token-identical on
   the long-context checks. Gate: `test-gpu-identity` (with `GPU_ID_KV`).
+- **Byte movers, on by default.** The one-copy KV gather (decode with full
+  offload: every layer's new K and V rows gathered on the device, one copy
+  back, `RUNNER_CUDA_KV_GATHER=0` restores the per-layer copies) and the
+  whole-tile recurrent prefill (Gated DeltaNet and Mamba-2 tiles in one
+  launch per kernel, `RUNNER_CUDA_RECUR_SEQ=0` restores the per-token
+  launches) move the same bytes to the same places or repeat the per-token
+  arithmetic in order. Obligation: byte-identical. Gates: `GPU_ID_RECUR=1
+  ./test-gpu-identity` (launch count required), the CUDA gate's identity,
+  injected-failure and recovery steps (which now run through the gather).
 - **Slot microbatching.** `batch_mv_twin_ok()` admits a type to the
   shared-weight decode microbatch only when its batched kernels are twins
   of the batch-1 kernel. A refusal decodes the sequences one at a time; it
