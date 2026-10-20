@@ -627,6 +627,7 @@ typedef struct {
     bool         kvg_pinned;
     size_t       kvg_bytes;
     void        *h_kvg_tab;
+    bool         h_logits_pinned;       // X1: h_logits page-locked (RUNNER_CUDA_PINNED_LOGITS)
 } gpu_t;
 
 // max tokens per matvec tile — must match MVB in kernels.cu; every activation
@@ -3205,7 +3206,17 @@ static bool cuda_alloc_host_staging(model_t *m, gpu_t *g) {
         }
     }
     g->h_x      = malloc(sizeof(float) * (size_t)g->win * m->n_embd);
-    g->h_logits = malloc(sizeof(float) * (size_t)(m->spec_batch > 0 ? m->spec_batch : 1) * m->n_vocab);
+    // X1 (RUNNER_CUDA_PINNED_LOGITS=1): the logits staging page-locked, so
+    // the per-token read lands by DMA instead of through the driver's bounce
+    // buffer; bounded (64 MiB) and released with the instance. Pageable
+    // whenever the switch is off, the driver lacks it or the cap is exceeded.
+    size_t lb = sizeof(float) * (size_t)(m->spec_batch > 0 ? m->spec_batch : 1) * m->n_vocab;
+    const char *pe = getenv("RUNNER_CUDA_PINNED_LOGITS");
+    if (pe && *pe && strcmp(pe, "0") != 0 && cu.MemAllocHost && lb <= ((size_t)64 << 20) &&
+        cu.MemAllocHost((void **)&g->h_logits, lb) == 0)
+        g->h_logits_pinned = true;
+    else
+        g->h_logits = malloc(lb);
     if (m->n_expert > 0)
         g->h_moe_logits = malloc(sizeof(float) * (size_t)m->n_expert * (size_t)(GPU_SMALL_BATCH > 1 ? GPU_SMALL_BATCH : 1));
     if (!g->h_x || !g->h_logits ||
@@ -4098,7 +4109,9 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            g->shexp_o, g->shexp_gate, g->kvg_tab, g->kvg_dev };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++)
         if (bufs[i]) cu.MemFree(bufs[i]);
-    free(g->h_x); free(g->h_logits); free(g->h_moe_logits);
+    free(g->h_x); free(g->h_moe_logits);
+    if (g->h_logits_pinned && cu.MemFreeHost) cu.MemFreeHost(g->h_logits);
+    else free(g->h_logits);
     free(g->h_ple); free(g->h_ple_tmp);
     free(g->h_moe_sel); free(g->h_moe_selw);
     free(g->h_moe_gidx); free(g->h_moe_gw);
