@@ -226,6 +226,8 @@ test-autofit
 test-autofit.exe
 test-gpu-identity
 test-gpu-identity.exe
+test-cuda-teardown
+test-cuda-teardown.exe
 test-attn-tol
 test-attn-tol.exe
 test-instances-oom

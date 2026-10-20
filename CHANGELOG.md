@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Unloading a model on CUDA frees all of its device memory.** Teardown
+  frees device buffers from hand-kept lists, and those lists had fallen
+  behind the allocation sites: a model with hyper-connections (Qwen3.8), a
+  shared expert, Mamba-2 layers or an MTP block left device buffers behind
+  on every unload, in the context every model on the card shares, so a
+  server that swaps models lost VRAM until it exited. Teardown now frees
+  them. A count of live device allocations shows the lists agreeing
+  (`test-cuda-teardown`: three load and free cycles of the qwen4exp test
+  model return to the starting count, in the CUDA gate), and a source test
+  holds each free list against its allocation sites.
+
 - **CUDA runs a file with a removed sublayer.** A file made by
   `--remove-sublayer`, such as the released Gemma 4 31B with block 48's
   attention removed, ran only on the CPU under a CUDA build. The CUDA walk

@@ -117,6 +117,10 @@ unsigned long gpu_attn_gqa_dispatches(void);   // grouped-query decode groups (M
 // CUDA's BF16 split-K decode GEMV (k_mv_bf16_splitk) launches, so its gate
 // can prove the route ran; 0 on every other backend.
 unsigned long gpu_splitk_dispatches(void);
+// Device allocations the engine holds right now (every cuMemAlloc it made
+// and has not freed), or -1 where the backend does not count them. A model
+// loaded and freed must leave it where it was (tests/test_cuda_teardown.c).
+long gpu_live_buffers(void);
 // test hook: force (1) or forbid (0) the eager MoE routing path; -1 = env
 void   gpu_moe_eager_force(int on);
 bool   gpu_init(model_t *m);                     // false = unsupported, use CPU

@@ -275,11 +275,19 @@ static struct {
         if (held_) pthread_mutex_unlock(&g_capture_mu);           \
     } while (0)
 
+// every allocation the engine holds (gpu_live_buffers): the free path is a
+// hand-kept list beside the allocation sites, and this count is what shows
+// the two have drifted
+static _Atomic long g_live_bufs;
 static CUresult guarded_MemAlloc(CUdeviceptr *p, size_t n) {
-    CUresult r_; SYNC_GUARDED(cu_raw.MemAlloc(p, n)); return r_;
+    CUresult r_; SYNC_GUARDED(cu_raw.MemAlloc(p, n));
+    if (r_ == 0) g_live_bufs++;
+    return r_;
 }
 static CUresult guarded_MemFree(CUdeviceptr p) {
-    CUresult r_; SYNC_GUARDED(cu_raw.MemFree(p)); return r_;
+    CUresult r_; SYNC_GUARDED(cu_raw.MemFree(p));
+    if (r_ == 0) g_live_bufs--;
+    return r_;
 }
 static CUresult guarded_MemcpyHtoD(CUdeviceptr d, const void *h, size_t n) {
     CUresult r_; SYNC_GUARDED(cu_raw.MemcpyHtoD(d, h, n)); return r_;
@@ -472,6 +480,7 @@ typedef struct gpu_weights {
     bool        bound;                  // weights uploaded per tensor (bindings), not as one file prefix
     size_t      bound_bytes;            // bytes the bindings hold (the banner's number when bound)
     int         gpu_layers;             // split decided by the first loader
+    int         n_tab;                  // per-layer table length: n_layer, +1 with a bound MTP block
     bool        no_id;                  // identity unavailable: listed so the
                                         // split guard can see it, never matched
     CUdeviceptr inv_freq, inv_freq_local, out_norm, dummy;
@@ -1207,10 +1216,14 @@ bool gpu_shared_weights_resident(const model_t *m) {
 static void shared_destroy(gpu_weights *w) {
     if (!w) return;
     if (w->ctx) cu.CtxSetCurrent(w->ctx);
-    for (int l = 0; l < w->n_layer; l++) {
+    // every table slot, the bound MTP block's (index n_layer) included
+    for (int l = 0; l < w->n_tab; l++) {
         CUdeviceptr bufs[] = {
             w->attn_norm ? w->attn_norm[l] : 0,
             w->ffn_norm  ? w->ffn_norm[l]  : 0,
+            w->hc_an ? w->hc_an[l] : 0, w->hc_fn ? w->hc_fn[l] : 0,
+            w->ssm_D ? w->ssm_D[l] : 0, w->ssm_conv_b ? w->ssm_conv_b[l] : 0,
+            w->ssm_gnorm ? w->ssm_gnorm[l] : 0,
             w->bq ? w->bq[l] : 0, w->bk ? w->bk[l] : 0,
             w->bv ? w->bv[l] : 0, w->bo ? w->bo[l] : 0,
             w->qn ? w->qn[l] : 0, w->kn ? w->kn[l] : 0,
@@ -1235,13 +1248,20 @@ static void shared_destroy(gpu_weights *w) {
     free(w->g_pn1); free(w->g_prn2); free(w->g_pn2); free(w->g_gis);
     free(w->g_dsc);
     free(w->ssm_dt); free(w->ssm_a); free(w->ssm_norm);
+    free(w->hc_an); free(w->hc_fn);
+    free(w->ssm_D); free(w->ssm_conv_b); free(w->ssm_gnorm);
     free(w->sinks);
     free(w->gib); free(w->geb); free(w->ueb); free(w->deb);
     for (int i = 0; i < w->n_bindings; i++)
         if (w->bindings[i].device) cu.MemFree(w->bindings[i].device);
     free(w->bindings);
+    // the hyper-connection head gamma and the MTP gammas were missing here
+    // until 2026-10-20, like the per-layer tables above: each load of such a
+    // file left them in the context every model on the device shares
     CUdeviceptr bufs[] = { w->weights, w->inv_freq, w->inv_freq_local,
-                           w->out_norm, w->dummy, w->ones, w->moe_ones };
+                           w->out_norm, w->dummy, w->ones, w->moe_ones,
+                           w->hc_head_norm, w->mtp_enorm, w->mtp_hnorm,
+                           w->mtp_head_norm };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++)
         if (bufs[i]) cu.MemFree(bufs[i]);
     if (w->mod) cu.ModuleUnload(w->mod);
@@ -2248,6 +2268,7 @@ fail:
 static bool shared_upload_layer_tables(gpu_weights *w, model_t *m) {
     // one slot past the backbone for the NextN/MTP block when it is bound
     const int n_tab = m->n_layer + (m->mtp_ready ? 1 : 0);
+    w->n_tab = n_tab;
     w->attn_norm = calloc(n_tab, sizeof(CUdeviceptr));
     w->hc_an = calloc(n_tab, sizeof(CUdeviceptr));
     w->hc_fn = calloc(n_tab, sizeof(CUdeviceptr));
@@ -3272,6 +3293,7 @@ unsigned long gpu_attn_gqa_dispatches(void) { return 0; }
 
 static _Atomic unsigned long g_splitk_dispatches;
 unsigned long gpu_splitk_dispatches(void) { return g_splitk_dispatches; }
+long gpu_live_buffers(void) { return cu_ok ? g_live_bufs : -1; }
 
 // Same hook for the MoE routing path: the fused-vs-eager tolerance gate has to
 // run both inside one process, which an env var read at first launch cannot
@@ -3863,7 +3885,14 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            g->mtp_en, g->mtp_hn, g->mtp_rows, g->snap_state, g->snap_hist,
                            g->mamba_proj, g->mamba_xBC, g->mamba_y,
                            g->mamba_conv, g->mamba_state,
-                           g->mamba_conv_prev, g->mamba_state_prev };
+                           g->mamba_conv_prev, g->mamba_state_prev,
+                           // the hyper-connection streams, the split-K partials
+                           // and the shared expert: missing from this list until
+                           // 2026-10-20, so every such instance leaked them into
+                           // the shared context (tests/test_cuda_teardown.c)
+                           g->x_hc, g->hc_xn, g->hc_gate, g->hc_lo, g->hc_inject,
+                           g->splitk, g->shexp_in, g->shexp_g, g->shexp_u,
+                           g->shexp_o, g->shexp_gate };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++)
         if (bufs[i]) cu.MemFree(bufs[i]);
     free(g->h_x); free(g->h_logits); free(g->h_moe_logits);

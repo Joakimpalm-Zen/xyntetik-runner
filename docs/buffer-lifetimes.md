@@ -83,7 +83,9 @@ boundary activation back through the host `x` buffer.
 - **What the graph assumes.** Every device address it recorded stays valid
   and unmoved for the life of the `gpu_t`. All per-instance device buffers
   are allocated at init and released only by `gpu_ctx_free()`, which
-  destroys the graph first.
+  destroys the graph first. `gpu_live_buffers()` counts every device
+  allocation the backend holds, and `test-cuda-teardown` requires load and
+  free cycles to return it to its starting value.
 - **When capture is refused** (`graph_bad`): no stream; a layer without
   `attn_v.weight` (a synchronous memset that cannot be captured); a MoE layer
   without fused device routing; recurrent layers; qwen35; experts on the
