@@ -930,16 +930,24 @@ extern "C" __global__ void k_gemm_q4_K(MV_PARAMS) {
 #define TC_ROWS 64    // output rows per block (4 warps x 16-row fragments)
 #define TC_K    128   // K-elements staged per step (half a q4_K super-block)
 #define TC_N    64    // token columns per tile (was 16; widened to amortise the weight dequantisation)
+// Leading dimension of the staged tiles, in halves. A row of TC_K halves is
+// 256 bytes, so the eight 16-byte rows one ldmatrix phase reads (and the
+// lanes of a staging store, one row each) all fall in the same four banks:
+// every fragment load was an 8-way conflict and every scalar staging store
+// up to 32-way. Eight halves of padding moves row r by 4r banks. Only shared
+// addresses change: the operands, the MMAs and their order are the same, so
+// the outputs are bit-identical to the unpadded kernels.
+#define TC_KP   (TC_K + 8)
 
 extern "C" __global__ void k_gemm_q4_K_tc(MV_PARAMS, const float *xsc) {
     using namespace nvcuda::wmma;
     const int tid  = threadIdx.x;         // 128 threads = 4 warps
     const int warp = tid >> 5;
     const unsigned row0 = blockIdx.x * TC_ROWS;
-    __shared__ __half sh_w[TC_ROWS * TC_K];   // row-major, ldm = TC_K
-    __shared__ __half sh_x[TC_N * TC_K];      // col-major (k,t) at [t*TC_K+k]
-    // The epilogue tile ALIASES the weight tile: sh_w is 64*128 halves = 16 KB
-    // and sh_c needs TC_ROWS*TC_N floats, and their lifetimes are disjoint
+    __shared__ __align__(32) __half sh_w[TC_ROWS * TC_KP];   // row-major, ldm = TC_KP
+    __shared__ __align__(32) __half sh_x[TC_N * TC_KP];      // col-major (k,t) at [t*TC_KP+k]
+    // The epilogue tile ALIASES the weight tile: sh_w is 64*136 halves = 17 KB
+    // and sh_c needs TC_ROWS*TC_N floats = 16 KB; their lifetimes are disjoint
     // (weights are dead once the last MMA has run). Separate arrays would push
     // the block past the 48 KB static shared cap at a wide tile.
     float *sh_c = (float *)sh_w;
@@ -961,7 +969,7 @@ extern "C" __global__ void k_gemm_q4_K_tc(MV_PARAMS, const float *xsc) {
             // ---- stage weights: 64 rows x 128 K, dequantized once ----
             {
                 unsigned gr = row0 + srow;
-                __half *dst = sh_w + srow * TC_K + sseg * 64;
+                __half *dst = sh_w + srow * TC_KP + sseg * 64;
                 if (gr < (unsigned)a.n_out) {
                     const uchar *blk = wb + a.w_off +
                                        (ulong64)gr * nb * 144 + (ulong64)b * 144;
@@ -1008,7 +1016,7 @@ extern "C" __global__ void k_gemm_q4_K_tc(MV_PARAMS, const float *xsc) {
             // Inf operand is a NaN logit. Scaled back in the epilogue.
             {
                 int col = tid / 2, part = tid % 2;
-                __half *dst = sh_x + col * TC_K + part * 64;
+                __half *dst = sh_x + col * TC_KP + part * 64;
                 if (col < a.batch) {
                     const float xinv = 16384.0f / xsc[col];
                     const float *xg = x + (ulong64)col * a.xs + b * 256 + koff
@@ -1028,15 +1036,15 @@ extern "C" __global__ void k_gemm_q4_K_tc(MV_PARAMS, const float *xsc) {
             }
             __syncthreads();
             // ---- 8 MMA K-steps over the staged tile ----
-            const __half *wt = sh_w + warp * 16 * TC_K;
+            const __half *wt = sh_w + warp * 16 * TC_KP;
             #pragma unroll
             for (int k = 0; k < TC_K; k += 16) {
-                load_matrix_sync(fa, wt + k, TC_K);
+                load_matrix_sync(fa, wt + k, TC_KP);
                 // one staged weight tile, reused across every n-tile: this is
                 // the entire point of widening TC_N
                 #pragma unroll
                 for (int n = 0; n < TC_N / 16; n++) {
-                    load_matrix_sync(fb, sh_x + n * 16 * TC_K + k, TC_K);
+                    load_matrix_sync(fb, sh_x + n * 16 * TC_KP + k, TC_KP);
                     mma_sync(fc[n], fa, fb, fc[n]);
                 }
             }
@@ -1173,9 +1181,11 @@ extern "C" __global__ void NAME(MV_PARAMS TC_XPARAM_##XSCALED) {               \
     const int tid  = threadIdx.x;                                              \
     const int warp = tid >> 5;                                                 \
     const unsigned row0 = blockIdx.x * TC_ROWS;                                \
-    __shared__ __half sh_w[TC_ROWS * TC_K];                                    \
-    __shared__ __half sh_x[TC_N * TC_K];                                       \
-    __shared__ float  sh_c[TC_ROWS * TC_N];                                    \
+    __shared__ __align__(32) __half sh_w[TC_ROWS * TC_KP];                     \
+    __shared__ __align__(32) __half sh_x[TC_N * TC_KP];                        \
+    /* the epilogue tile aliases the weight tile (dead after the last MMA, */  \
+    /* which the loop's closing barrier orders), as in k_gemm_q4_K_tc      */  \
+    float *sh_c = (float *)sh_w;                                               \
     fragment<matrix_a, 16, 16, 16, __half, row_major> fa;                      \
     fragment<matrix_b, 16, 16, 16, __half, col_major> fb;                      \
     fragment<accumulator, 16, 16, 16, float> fc[TC_N / 16];                    \
@@ -1186,7 +1196,7 @@ extern "C" __global__ void NAME(MV_PARAMS TC_XPARAM_##XSCALED) {               \
     for (int ks = 0; ks < a.n_in; ks += TC_K) {                                \
         {                                                                      \
             unsigned gr = row0 + srow;                                         \
-            __half *dst = sh_w + srow * TC_K + sseg * 64;                      \
+            __half *dst = sh_w + srow * TC_KP + sseg * 64;                     \
             if (gr < (unsigned)a.n_out) {                                      \
                 const uchar *rw = wb + a.w_off +                               \
                                   (ulong64)gr * nb * BLKBYTES;                 \
@@ -1202,7 +1212,7 @@ extern "C" __global__ void NAME(MV_PARAMS TC_XPARAM_##XSCALED) {               \
             /* n_in is a 32-multiple (quant blocks) but need not be a        */\
             /* 64-multiple — a 64-wide part can straddle the end of the row. */\
             int col = tid >> 1, part = tid & 1;                                \
-            __half *dst = sh_x + col * TC_K + part * 64;                       \
+            __half *dst = sh_x + col * TC_KP + part * 64;                      \
             TC_XSCALE_STAGE_##XSCALED(col < a.batch ? col : 0)                 \
             _Pragma("unroll")                                                  \
             for (int h = 0; h < 2; h++) {                                      \
@@ -1225,13 +1235,13 @@ extern "C" __global__ void NAME(MV_PARAMS TC_XPARAM_##XSCALED) {               \
             }                                                                  \
         }                                                                      \
         __syncthreads();                                                       \
-        const __half *wt = sh_w + warp * 16 * TC_K;                            \
+        const __half *wt = sh_w + warp * 16 * TC_KP;                           \
         _Pragma("unroll")                                                      \
         for (int k = 0; k < TC_K; k += 16) {                                   \
-            load_matrix_sync(fa, wt + k, TC_K);                                \
+            load_matrix_sync(fa, wt + k, TC_KP);                               \
             _Pragma("unroll")                                                  \
             for (int n = 0; n < TC_N / 16; n++) {                              \
-                load_matrix_sync(fb, sh_x + n * 16 * TC_K + k, TC_K);          \
+                load_matrix_sync(fb, sh_x + n * 16 * TC_KP + k, TC_KP);        \
                 mma_sync(fc[n], fa, fb, fc[n]);                                \
             }                                                                  \
         }                                                                      \
@@ -6268,8 +6278,8 @@ extern "C" __global__ void k_gemm_q6_K_tc(MV_PARAMS, const float *xsc) {
     const int tid  = threadIdx.x;
     const int warp = tid >> 5;
     const unsigned row0 = blockIdx.x * TC_ROWS;
-    __shared__ __half sh_w[TC_ROWS * TC_K];
-    __shared__ __half sh_x[TC_N * TC_K];
+    __shared__ __align__(32) __half sh_w[TC_ROWS * TC_KP];
+    __shared__ __align__(32) __half sh_x[TC_N * TC_KP];
     float *sh_c = (float *)sh_w;
 
     fragment<matrix_a, 16, 16, 16, __half, row_major> fa;
@@ -6286,7 +6296,7 @@ extern "C" __global__ void k_gemm_q6_K_tc(MV_PARAMS, const float *xsc) {
         for (int koff = 0; koff < 256; koff += TC_K) {
             {   // ---- stage weights: 64 rows x 128 K, dequantized once ----
                 unsigned gr = row0 + srow;
-                __half *dst = sh_w + srow * TC_K + sseg * 64;
+                __half *dst = sh_w + srow * TC_KP + sseg * 64;
                 if (gr < (unsigned)a.n_out) {
                     const uchar *blk = wb + a.w_off +
                                        (ulong64)gr * nb * 210 + (ulong64)b * 210;
@@ -6319,7 +6329,7 @@ extern "C" __global__ void k_gemm_q6_K_tc(MV_PARAMS, const float *xsc) {
             {   // ---- stage activations: 128 K x TC_N tokens, each column
                 //      scaled to fp16's range (see k_gemm_q4_K_tc) ----
                 int col = tid / 2, part = tid % 2;
-                __half *dst = sh_x + col * TC_K + part * 64;
+                __half *dst = sh_x + col * TC_KP + part * 64;
                 if (col < a.batch) {
                     const float xinv = 16384.0f / xsc[col];
                     const float *xg = x + (ulong64)col * a.xs + b * 256 + koff
@@ -6338,13 +6348,13 @@ extern "C" __global__ void k_gemm_q6_K_tc(MV_PARAMS, const float *xsc) {
                 }
             }
             __syncthreads();
-            const __half *wt = sh_w + warp * 16 * TC_K;
+            const __half *wt = sh_w + warp * 16 * TC_KP;
             #pragma unroll
             for (int k = 0; k < TC_K; k += 16) {
-                load_matrix_sync(fa, wt + k, TC_K);
+                load_matrix_sync(fa, wt + k, TC_KP);
                 #pragma unroll
                 for (int n = 0; n < TC_N / 16; n++) {
-                    load_matrix_sync(fb, sh_x + n * 16 * TC_K + k, TC_K);
+                    load_matrix_sync(fb, sh_x + n * 16 * TC_KP + k, TC_KP);
                     mma_sync(fc[n], fa, fb, fc[n]);
                 }
             }

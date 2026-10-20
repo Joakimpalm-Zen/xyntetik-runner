@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA prefill: the tensor-core GEMMs no longer conflict on shared-memory
+  banks.** They staged 128-element fp16 rows at a 256-byte stride, so every
+  row of a tile read from the same banks. Rows are now padded by 16 bytes.
+  The arithmetic is unchanged and the output byte-identical (`test-tc-tol`
+  deviations equal before and after; chunked `--score` logprobs over 1,540
+  to 1,605 positions on three models compared byte for byte). Its speedup
+  is reported with the wider prompt window.
+
 - **Qwen3.5/3.8 on CUDA: a race in the Gated DeltaNet kernel is closed.**
   The kernel read the query-norm sum from a shared reduction slot and then
   let every thread store its share of the key-norm sum into the same slots
