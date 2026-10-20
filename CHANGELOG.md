@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA decode: two rows per warp in the Q8_0, Q4_K and Q6_K decode GEMVs,
+  experimental and off by default.** `RUNNER_CUDA_GEMV2=1` lets one warp
+  compute two output rows, so each activation load serves both and twice the
+  weight bytes are in flight per step. Each row keeps its kernel's
+  arithmetic, so the logits are byte-identical (`GPU_ID_GEMV2=1
+  ./test-gpu-identity MODEL.gguf`, with boundary fixtures for an odd row
+  count, Q8_0 tail blocks and an odd Q6_K block count).
+
 - **CUDA decode: page-locked logits staging, experimental and off by
   default.** `RUNNER_CUDA_PINNED_LOGITS=1` reads each token's logits into
   page-locked host memory (bounded at 64 MiB, released with the instance,

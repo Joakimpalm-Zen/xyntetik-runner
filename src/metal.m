@@ -927,6 +927,8 @@ void gpu_tc_force(int on) {
 
 unsigned long gpu_tc2_dispatches(void) { return 0; }   // CUDA's pipelined TC2 kernels
 int gpu_prompt_window(const model_t *m) { (void)m; return 0; }   // CUDA's prompt window
+void gpu_gemv2_force(int on) { (void)on; }              // CUDA's two-row decode GEMVs
+unsigned long gpu_gemv2_dispatches(void) { return 0; }
 unsigned long gpu_tc_dispatches(void) { return g_tc_dispatches; }
 // per weight type, both tiled branches (tensor and mm) counted together
 enum { MM_TYPE_N = 64 };

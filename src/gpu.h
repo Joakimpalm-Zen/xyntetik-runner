@@ -91,6 +91,10 @@ unsigned long gpu_tc2_dispatches(void);
 // the prompt window (columns) a CUDA instance was built for; 0 on other
 // backends and without a device. Transcripts record it and --verify restores it.
 int    gpu_prompt_window(const model_t *m);
+// the two-rows-a-warp decode GEMVs (CUDA, RUNNER_CUDA_GEMV2): force them on
+// (1) or off (0) for a test, -1 returns to the switch; and their launches
+void   gpu_gemv2_force(int on);
+unsigned long gpu_gemv2_dispatches(void);
 // Does this backend carry a batched (tensor-core or tiled) GEMM for the
 // type? A static fact about the backend's kernel table, answered without a
 // device, and the gate's only source for "TC-capable" (its own hand-kept

@@ -354,6 +354,43 @@ int main(int argc, char **argv) {
         }
         printf("  split-K route: two device runs byte-identical\n");
     }
+    // GPU_ID_GEMV2=1: a CUDA route that keeps the arithmetic of the route it
+    // replaces (the two-rows-a-warp decode GEMVs) must give device logits equal to
+    // the forced-off run byte for byte, and must have run: a file without the
+    // format or the layer kind would compare the old route with itself.
+    // This pair has no absolute anchor of its own: it proves the new route is
+    // the old one, whose anchor is the CPU bound below and the publisher
+    // reference gates (scripts/gold-logits.py) that route already answers to.
+    struct { const char *env, *what; void (*force)(int); unsigned long (*count)(void); } pairs[] = {
+        { "GPU_ID_GEMV2", "two-row decode GEMV", gpu_gemv2_force, gpu_gemv2_dispatches },
+    };
+    for (size_t pi = 0; pi < sizeof pairs / sizeof *pairs; pi++) {
+        const char *ev = getenv(pairs[pi].env);
+        if (!ev || !*ev || strcmp(ev, "0") == 0) continue;
+        int nv_off = 0, nv_on = 0;
+        bool off_used = false, on_used = false;
+        pairs[pi].force(0);
+        unsigned long d0 = pairs[pi].count();
+        float *off = run(path, GPU_AUTO, &nv_off, &off_used, toks, n_tok);
+        unsigned long d1 = pairs[pi].count();
+        pairs[pi].force(1);
+        float *on = off ? run(path, GPU_AUTO, &nv_on, &on_used, toks, n_tok) : NULL;
+        unsigned long d2 = pairs[pi].count();
+        pairs[pi].force(-1);
+        bool same = off && on && off_used && on_used && nv_off == nv_on &&
+                    memcmp(off, on, sizeof(float) * (size_t)STEPS * (size_t)nv_on) == 0;
+        free(off); free(on);
+        printf("  %s: %lu launches (forced-off arm %lu), %s\n", pairs[pi].what,
+               d2 - d1, d1 - d0, same ? "byte-identical to the route it replaces" : "DIFFERENT");
+        if (d2 == d1 || d1 != d0 || !same) {
+            printf("FAIL: the %s %s\ngpu-identity: FAILED\n", pairs[pi].what,
+                   d2 == d1 ? "never ran on this file"
+                   : d1 != d0 ? "ran in the forced-off arm"
+                   : "changed the logits");
+            free(cpu); free(gpu);
+            return 1;
+        }
+    }
     if (nv_cpu != nv_gpu) {
         printf("FAIL: vocab size differs (%d vs %d)\n", nv_cpu, nv_gpu);
         free(cpu); free(gpu);
