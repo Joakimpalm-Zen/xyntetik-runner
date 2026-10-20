@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **gemma-4 E2B runs on CUDA.** E2B publishes a different FFN width per
+  layer, and the CUDA backend sized its FFN path off one global width, so it
+  refused these files and they ran on the CPU. Every FFN projection now takes
+  its layer's width (the buffers keep the widest layer's stride). On an RTX
+  3070, gemma-4-E2B went from 24-33 to 800 tok/s prefill and from 11 to 104
+  tok/s decode; 64 greedy tokens on the device match the CPU byte for byte on
+  E2B and E4B, and `make test-cuda-varff` holds a fixture with alternating
+  widths to the CPU in the CUDA gate.
+
 - **CPU decode on arm64: Q4_K and Q5_K dots widen their weights by table
   lookup.** Most of the instructions in the NEON Q4_K/Q5_K dot went to
   widening each weight byte to a float through two widening moves. A byte

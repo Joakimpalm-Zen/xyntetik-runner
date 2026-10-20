@@ -19,6 +19,7 @@
 #   qwen4exp     make test-cuda-qwen4exp (the family's placements, the shared
 #                split GGUF, the MTP head, the BF16 split-K decode route)
 #   q3k          make test-cuda-q3k (the Q3_K decode GEMV on a Q3_K fixture)
+#   varff        make test-cuda-varff (per-layer FFN widths, the gemma-4 E2B shape)
 #   cpu-cuda     scripts/cpu_cuda_check.py on one small model (byte identity)
 # Every make target the steps name is in DEVICE_STEPS below, and every
 # test-cuda-* target in the Makefile has to be there (tests/test_ci_contracts.py):
@@ -106,7 +107,7 @@ fi
 add_step caps pass 0
 
 FAIL=0
-DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp q3k:test-cuda-q3k"
+DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp q3k:test-cuda-q3k varff:test-cuda-varff"
 for pair in $DEVICE_STEPS; do
   name=${pair%%:*}; target=${pair#*:}
   # shellcheck disable=SC2086

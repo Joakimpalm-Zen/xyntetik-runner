@@ -2795,17 +2795,6 @@ static bool cuda_admit(model_t *m) {
                 "on the CUDA backend yet — using CPU\n");
         return false;
     }
-    if (m->ffn_var && !m->nemotron_h) {
-        // gemma-4 E2B: per-layer FFN widths differ, and the device FFN path
-        // sizes off one global width — computing with it would be silently
-        // wrong on every narrow layer. nemotron_h is exempt: its ffn_var flag
-        // only marks the 0-width SSM/attention blocks (which skip the FFN); the
-        // MLP blocks are all one uniform width (m->n_ff), which the device sizes
-        // off correctly.
-        fprintf(stderr, "gpu: per-layer FFN widths have no device path — "
-                "running on CPU\n");
-        return false;
-    }
     if (!gpu_tensor_type_ok(m->output)) return false;
     for (int l = 0; l < m->n_layer; l++) {
         layer_t *ly = &m->layers[l];
@@ -4998,7 +4987,7 @@ static bool gpu_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
 static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
                                       int l, int tn, int xdim) {
     int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used;
-    int nff = m->n_ff_exp, dff = m->n_ff;
+    int nff = m->n_ff_exp, dff = ly->n_ff;
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
@@ -5217,7 +5206,7 @@ static bool gpu_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int tn,
 static bool gpu_gemma_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
                                     int l, int tn, int xdim) {
     int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used;
-    int nff = m->n_ff_exp, dff = m->n_ff;   // dff = dense shared-FFN size
+    int nff = m->n_ff_exp, dff = ly->n_ff;  // dff = dense shared-FFN size
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
@@ -5275,7 +5264,7 @@ static bool gpu_gemma_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
 static bool gpu_gemma_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int l,
                               int tn, int xdim) {
     int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used;
-    int nff = m->n_ff_exp, dff = m->n_ff;   // dff = dense shared-FFN size
+    int nff = m->n_ff_exp, dff = ly->n_ff;  // dff = dense shared-FFN size
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
@@ -5874,30 +5863,33 @@ static bool tile_shexp(gpu_t *g, model_t *m, layer_t *ly, int tn, int xdim) {
 }
 
 // The dense FFN's input projections: up alone for a gate-less FFN (relu2,
-// xIELU), else gate and up, each with its adapter delta.
+// xIELU), else gate and up, each with its adapter delta. The layer's own
+// width (gemma-4 E2B varies it per layer); rows keep the model-wide stride
+// m->n_ff, the widest layer, which the buffers are sized by.
 static bool tile_ffn_in(gpu_t *g, model_t *m, layer_t *ly, int l, int tn, int xdim) {
-    int n_embd = m->n_embd;
+    int n_embd = m->n_embd, nff = ly->n_ff;
     bool ok = true;
     if (!ly->w_gate) {
         ok = ok && enc_mv(g, m, ly->w_up, g->xb, g->hb,
-                          n_embd, m->n_ff, 0, tn, xdim, m->n_ff)
-                && enc_lora(g, l, LW_UP, g->xb, g->hb, n_embd, m->n_ff,
+                          n_embd, nff, 0, tn, xdim, m->n_ff)
+                && enc_lora(g, l, LW_UP, g->xb, g->hb, n_embd, nff,
                             tn, xdim, m->n_ff);
     } else {
         ok = ok && enc_mv(g, m, ly->w_gate, g->xb, g->hb,
-                          n_embd, m->n_ff, 0, tn, xdim, m->n_ff)
-                && enc_lora(g, l, LW_GATE, g->xb, g->hb, n_embd, m->n_ff,
+                          n_embd, nff, 0, tn, xdim, m->n_ff)
+                && enc_lora(g, l, LW_GATE, g->xb, g->hb, n_embd, nff,
                             tn, xdim, m->n_ff);
         ok = ok && enc_mv(g, m, ly->w_up, g->xb, g->hb2,
-                          n_embd, m->n_ff, 0, tn, xdim, m->n_ff)
-                && enc_lora(g, l, LW_UP, g->xb, g->hb2, n_embd, m->n_ff,
+                          n_embd, nff, 0, tn, xdim, m->n_ff)
+                && enc_lora(g, l, LW_UP, g->xb, g->hb2, n_embd, nff,
                             tn, xdim, m->n_ff);
     }
     return ok;
 }
 
 // The dense FFN's activation: relu2 or xIELU on a gate-less FFN, else the
-// gated product.
+// gated product. Over whole m->n_ff rows: on a narrower layer the columns
+// past its width hold stale values nothing reads.
 static bool tile_ffn_act(gpu_t *g, model_t *m, layer_t *ly, int l, int tn) {
     if (!ly->w_gate) {
         if (m->ffn_relu2)
@@ -6049,8 +6041,8 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
             prof_mark(g, PH_MATVEC);
             ok = ok && tile_ffn_act(g, m, ly, l, tn);
             prof_mark(g, PH_ELEM);
-            ok = ok && enc_mv(g, m, ly->w_down, g->hb, g->xb, m->n_ff, n_embd, 0, tn, m->n_ff, xdim)
-                    && enc_lora(g, l, LW_DOWN, g->hb, g->xb, m->n_ff, n_embd, tn, m->n_ff, xdim);
+            ok = ok && enc_mv(g, m, ly->w_down, g->hb, g->xb, ly->n_ff, n_embd, 0, tn, m->n_ff, xdim)
+                    && enc_lora(g, l, LW_DOWN, g->hb, g->xb, ly->n_ff, n_embd, tn, m->n_ff, xdim);
             prof_mark(g, PH_MATVEC);
         }
     ffn_done:
@@ -6857,10 +6849,10 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
         ok = ok && enc_add(g, g->x, g->xb, n_embd, tn, n_embd, xdim);
 
         ok = ok && enc_rmsnorm(g, g->x, g->xb, g->sw->ffn_norm[l], n_embd, m->rms_eps, tn, n_embd, xdim);
-        ok = ok && enc_mv_batch(g, m, ly->w_gate, g->xb, g->hb,  n_embd, m->n_ff, 0, tn, xdim, m->n_ff);
-        ok = ok && enc_mv_batch(g, m, ly->w_up,   g->xb, g->hb2, n_embd, m->n_ff, 0, tn, xdim, m->n_ff);
+        ok = ok && enc_mv_batch(g, m, ly->w_gate, g->xb, g->hb,  n_embd, ly->n_ff, 0, tn, xdim, m->n_ff);
+        ok = ok && enc_mv_batch(g, m, ly->w_up,   g->xb, g->hb2, n_embd, ly->n_ff, 0, tn, xdim, m->n_ff);
         ok = ok && enc_actmul(g, m, g->hb, g->hb2, tn * m->n_ff);
-        ok = ok && enc_mv_batch(g, m, ly->w_down, g->hb, g->xb, m->n_ff, n_embd, 0, tn, m->n_ff, xdim);
+        ok = ok && enc_mv_batch(g, m, ly->w_down, g->hb, g->xb, ly->n_ff, n_embd, 0, tn, m->n_ff, xdim);
         if (g->sw->pfn[l])
             ok = ok && enc_rmsnorm(g, g->xb, g->xb, g->sw->pfn[l], n_embd, m->post_norm_eps, tn, xdim, xdim);
         if (m->resid_scale != 1.0f)

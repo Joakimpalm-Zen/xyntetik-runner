@@ -1785,6 +1785,18 @@ test-cuda-q3k: runner $(TEST_GPU_ID)
 	./$(RUNNER_EXE) -m test-q3k-src.gguf --quantize test-q3k.gguf --quant q3_k > /dev/null 2>&1; \
 	./$(TEST_GPU_ID) test-q3k.gguf
 
+# Per-layer FFN widths on CUDA (the gemma-4 E2B export shape: widths that
+# alternate between layers, an ARRAY-typed feed_forward_length): the device
+# runs each layer at its own width against the CPU at logit precision, in
+# f32 and requantized to q8_0 (the tensor-core prefill and the q8 decode
+# kernels). Until 2026-10-20 CUDA refused these files and they ran on the CPU.
+test-cuda-varff: runner $(TEST_GPU_ID)
+	@set -e; \
+	$(PYTHON) scripts/make-test-model.py --eseries 3,16 --ffn-widths 96,96,192,96,96,192 test-varff.gguf > /dev/null; \
+	./$(RUNNER_EXE) -m test-varff.gguf --quantize test-varff-q8.gguf --quant q8_0 > /dev/null 2>&1; \
+	./$(TEST_GPU_ID) test-varff.gguf; \
+	./$(TEST_GPU_ID) test-varff-q8.gguf
+
 # The same gate on a Mac: the Metal codebook i-quant kernels (2026-09-17)
 # against the CPU decoders at logit precision on the fixture set, which
 # tests/test_iquants.py builds with llama-quantize/llama-imatrix from
