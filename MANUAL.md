@@ -2461,8 +2461,10 @@ without the field predates these kernels and replays with `reference`.
 Kernels that only move bytes (the KV gather, the whole-tile recurrent
 prefill) are not routes in this sense: they cannot change a token, and they
 are on by default (`RUNNER_CUDA_KV_GATHER=0` and `RUNNER_CUDA_RECUR_SEQ=0`
-switch them off for a comparison). Other backends accept the flag and ignore
-it.
+switch them off for a comparison). The by-expert MoE prefill gives the fused
+path's bytes and is not a route either: it is on for gemma-4 MoE and gpt-oss
+(`RUNNER_MOE_TWIN=1` on any family, `=0` on none). Other backends accept the
+flag and ignore it.
 
 <a id="cli-transcript"></a>
 #### `--transcript FILE`

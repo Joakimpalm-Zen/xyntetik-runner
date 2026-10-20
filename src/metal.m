@@ -928,6 +928,8 @@ void gpu_tc_force(int on) {
 
 unsigned long gpu_tc2_dispatches(void) { return 0; }   // CUDA's pipelined TC2 kernels
 unsigned long gpu_tc2_80_dispatches(void) { return 0; }
+unsigned long gpu_moe_twin_tiles(void) { return 0; }   // CUDA's by-expert MoE prefill
+void gpu_moe_twin_force(int on) { (void)on; }
 unsigned long gpu_tc2_wide_dispatches(void) { return 0; }   // CUDA's 128-column TC2 tile
 void gpu_tc2_wide_force(int on) { (void)on; }
 int gpu_prompt_window(const model_t *m) { (void)m; return 0; }   // CUDA's prompt window

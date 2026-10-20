@@ -5,6 +5,22 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA MoE prefill runs by expert on gemma-4 and gpt-oss, with the same
+  bytes.** The fused MoE prefill computed each token's selected experts one
+  token at a time, so a prompt tile read every routed expert's weights once
+  for each token that chose it. On gemma-4 MoE and gpt-oss the prefill now
+  groups the tile's (token, expert) pairs by expert, runs each expert's
+  columns eight at a time through matvec twins that give every column the
+  single-token kernel's arithmetic, and sums each token's expert outputs in
+  its router order, so the output is the fused path's bit for bit
+  (`GPU_ID_MOE_TWIN=1 ./test-gpu-identity`, launch count required; `make
+  test-cuda-moe-twin` in the CUDA gate on routed Q8_0 and Q4_0 fixtures,
+  the gpt-oss MXFP4 fixture and gemma-4's dual-branch layout at Q8_0 and
+  Q4_0). On the datacenter MIG slice prefill rose 13-14% at a 512-token
+  prompt on gemma-4-26B-A4B and gpt-oss-20b (11-13% at 2K, three rounds).
+  Qwen3-30B-A3B measured 8-9% slower by expert, so qwen3moe, and families
+  not yet measured, keep the per-token path; `RUNNER_MOE_TWIN=1` takes the
+  by-expert prefill on any family and `=0` on none.
 - **CUDA decode for IQ4_NL, NVFP4, Q2_K, IQ1_S, IQ1_M, Q4_1, Q5_0, Q5_1
   and Q2_0 reads the activations once per block of rows, with the same
   bytes.** These formats have no coalesced decode kernel; their matvec,

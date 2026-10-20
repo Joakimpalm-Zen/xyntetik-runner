@@ -103,6 +103,16 @@ Around the matvec:
   as the eager host routing (`RUNNER_MOE_EAGER=1`) and keeps routing weights
   within about 2 ulp: device `expf` is not the host libm. Gate:
   `./test-moe-tol MODEL.gguf`.
+- **MoE prefill by expert.** A prompt tile of more than 8 columns that
+  averages at least four tokens an expert groups its (token, expert) pairs
+  by expert (`k_moe_place`) and runs each expert's columns through the
+  width-classed twins of the kernel the fused path uses for that weight
+  (an expert slice: `k_moe_mv_<type>`'s body; gemma-4's dense shared MLP:
+  the batch-1 dispatch), then `k_moe_sum_tile` adds each token's outputs in
+  router order. On by default for gemma4 and gpt-oss, where it measured
+  faster; `RUNNER_MOE_TWIN=1|0` overrides. Obligation: byte-identical to
+  the per-token fused path. Gate: `GPU_ID_MOE_TWIN=1 ./test-gpu-identity`
+  (launch count required), `make test-cuda-moe-twin`.
 - **Graph replay.** One-token decode with full offload replays a captured
   graph of the same launches. `RUNNER_CUDA_GRAPH_OFF=1` runs them eagerly, to
   separate a kernel from the graph path. See [buffer lifetimes](buffer-lifetimes.md)

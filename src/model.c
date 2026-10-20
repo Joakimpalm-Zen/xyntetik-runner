@@ -6052,10 +6052,11 @@ static int route_kernels(char *out, int cap) {
     }
     if (n < cap)
         n += snprintf(out + n, (size_t)(cap - n),
-                      "},\"cuda_tc2\":%lu,\"cuda_splitk\":%lu,\"cuda_attn_tile\":%lu,\"metal_fast_mv\":%lu,"
+                      "},\"cuda_tc2\":%lu,\"cuda_moe_twin\":%lu,\"cuda_splitk\":%lu,\"cuda_attn_tile\":%lu,\"metal_fast_mv\":%lu,"
                       "\"metal_attn_coop\":%lu,\"metal_attn_tile\":%lu,\"metal_attn_gqa\":%lu,"
                       "\"cpu_dot_multi\":%lu}",
-                      gpu_tc2_dispatches(), gpu_splitk_dispatches(), gpu_attn_tiled_dispatches(),
+                      gpu_tc2_dispatches(), gpu_moe_twin_tiles(), gpu_splitk_dispatches(),
+                      gpu_attn_tiled_dispatches(),
                       gpu_mv_dispatches(),
                       gpu_attn_coop_dispatches(), gpu_attn_tile_dispatches(),
                       gpu_attn_gqa_dispatches(), vec_dot_multi_calls());

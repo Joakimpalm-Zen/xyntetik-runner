@@ -396,6 +396,10 @@ int main(int argc, char **argv) {
     struct { const char *env, *what; void (*force)(int); unsigned long (*count)(void); bool tc; } pairs[] = {
         { "GPU_ID_RECUR", "whole-tile recurrent prefill", gpu_recur_seq_force, gpu_recur_seq_dispatches, false },
         { "GPU_ID_TC2_WIDE", "128-column TC2 tile", gpu_tc2_wide_force, gpu_tc2_wide_dispatches, true },
+        // GPU_ID_MOE_TWIN=1: the by-expert MoE prefill against the fused
+        // per-token path it reproduces (a prefill tile averaging four or more
+        // tokens an expert, experts of a type with GEMV twins)
+        { "GPU_ID_MOE_TWIN", "by-expert MoE prefill", gpu_moe_twin_force, gpu_moe_twin_tiles, false },
     };
     for (size_t pi = 0; pi < sizeof pairs / sizeof *pairs; pi++) {
         const char *ev = getenv(pairs[pi].env);

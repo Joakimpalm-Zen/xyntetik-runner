@@ -481,6 +481,7 @@ typedef struct gpu_weights {
     // multi-column twins of f_gemv, per microbatch width (see BW_* below):
     // f_gemvb[w][type], w indexing the width class, not the width itself
     CUfunction  f_gemvb[BW_N][KT_N];
+    CUfunction  f_moe_q4_0_mvb[BW_N];   // k_mv_q4_0's twins (the by-expert MoE prefill)
     // exact-width twins, [n] for n = 2..8 columns (the codebook i-quants);
     // enc_mv_batch prefers them over the width class
     CUfunction  f_gemvx[9][KT_N];
@@ -489,6 +490,7 @@ typedef struct gpu_weights {
     CUfunction  f_q8x[9][KT_N], f_quant_q8x;
     // sparse-MoE device routing + indirect expert matvecs (fused-3D layout)
     CUfunction  f_moe_route, f_moe_actmul, f_moe_sum;
+    CUfunction  f_moe_sum_tile, f_moe_place;   // the by-expert prefill (moe_twin)
     CUfunction  f_moe_mv[KT_N];         // indexed by expert tensor type
     // expert-grouped prefill (P2): gather/scatter around the k_gemm family
     CUfunction  f_moe_gather, f_moe_scatter, f_moe_actmul_plain, f_moe_copy;
@@ -572,10 +574,15 @@ typedef struct {
     // concatenated per-expert token lists + weights [MVB*used], and the host
     // staging the grouping is built from
     CUdeviceptr moe_gath, moe_dout, moe_gidx, moe_gw;
+    // by-expert prefill bit-identical to the fused path (moe_twin): each
+    // pair's (token, slot) row and expert, and the tile's slot outputs
+    CUdeviceptr moe_gpos, moe_gsel, moe_slots;
+    int        *h_moe_gpos, *h_moe_gsel;
     int        *h_moe_sel, *h_moe_gidx;
     float      *h_moe_selw, *h_moe_gw;
     bool        moe_fused_ok;           // every MoE layer runs the indirect path
     bool        moe_grouped_ok;         // expert types have width-classed kernels
+    bool        moe_twin_ok;            // ... and the by-expert path can be fused-identical
     CUdeviceptr g_scr;                  // gemma-4-MoE dual-branch scratch: 5*n_embd
     CUdeviceptr q35_mix, q35_cv, q35_z, q35_beta, q35_alpha, q35_gate;
     CUdeviceptr q35_hist, q35_state;    // persistent recurrent state per sequence
@@ -1063,6 +1070,59 @@ static bool moe_grouped_eligible(const model_t *m) {
                 !moe_grouped_type_ok(ly->ffn_up_exps->type) ||
                 !moe_grouped_type_ok(ly->ffn_down_exps->type)) return false;
         }
+    }
+    return true;
+}
+
+// The by-expert prefill (moe_twin) reproduces the fused path bit for bit:
+// an expert's token columns go through the width-classed GEMV twins, which
+// give every column the batch-1 kernel's bits, and the batch-1 kernel is the
+// one each k_moe_mv_* body copies (k_gemv_* where it exists, else k_mv_*).
+// So every expert tensor type needs both twins, its k_moe_mv kernel and that
+// batch-1 kernel; the float types stay on the fused path (BF16's batch-1
+// route can be split-K, which k_moe_mv_bf16 does not copy). gemma-4's
+// dual-branch layout has its own paths.
+static bool moe_twin_type_ok(const gpu_weights *w, int type) {
+    // The by-expert prefill must give each column the fused path's bytes, so
+    // a type is admitted only where the kernels it runs have the per-column
+    // arithmetic of k_moe_mv_<type>. Q8_0, Q4_K, Q5_K, Q6_K: k_moe_mv is the
+    // coalesced GEMV's body, and the dense dispatch (k_gemv and its k_gemvb /
+    // k_gemvx twins) is that GEMV. MXFP4: no coalesced GEMV exists, so the
+    // dense dispatch is k_mv_mxfp4 and its twins, k_moe_mv_mxfp4's body.
+    // Q4_0: k_moe_mv_q4_0 is k_mv_q4_0's lane-per-block body, not the
+    // coalesced k_gemv_q4_0 the dense dispatch picks, so moe_twin_gemm runs
+    // its columns through k_mv_q4_0 and its own twins (admitted by existence
+    // alone, the dense dispatch gave gemma-4-26B-A4B's Q4_0 experts other
+    // bytes than the fused path).
+    switch (type) {
+    case T_Q8_0: case T_Q4_K: case T_Q5_K: case T_Q6_K: case T_MXFP4:
+        return w->f_gemvb[BW_4][type] && w->f_gemvb[BW_8][type] && w->f_moe_mv[type] &&
+               (w->f_gemv[type] || w->f_mv[type]);
+    case T_Q4_0:
+        return w->f_moe_q4_0_mvb[BW_4] && w->f_moe_q4_0_mvb[BW_8] && w->f_mv[T_Q4_0] &&
+               w->f_moe_mv[T_Q4_0];
+    default:
+        return false;
+    }
+}
+static bool moe_twin_eligible(const model_t *m, const gpu_weights *w) {
+    if (!w) return false;
+    for (int l = 0; l < m->n_layer; l++) {
+        const layer_t *ly = &m->layers[l];
+        if (!ly->is_moe || moe_on_host(m, l)) continue;
+        if (ly->moe_split) return false;
+        if (ly->moe_gemma) {   // the fused gate_up tensor and the down tensor
+            if (!ly->ffn_gate_up_exps || !ly->ffn_down_exps ||
+                !moe_twin_type_ok(w, ly->ffn_gate_up_exps->type) ||
+                !moe_twin_type_ok(w, ly->ffn_down_exps->type))
+                return false;
+            continue;
+        }
+        if (!ly->ffn_gate_exps || !ly->ffn_up_exps || !ly->ffn_down_exps ||
+            !moe_twin_type_ok(w, ly->ffn_gate_exps->type) ||
+            !moe_twin_type_ok(w, ly->ffn_up_exps->type) ||
+            !moe_twin_type_ok(w, ly->ffn_down_exps->type))
+            return false;
     }
     return true;
 }
@@ -2090,6 +2150,10 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_gemvb[BW_8][T_Q4_K], "k_gemvb_q4_K_x8" },
         { &w->f_gemvb[BW_8][T_Q5_K], "k_gemvb_q5_K_x8" },
         { &w->f_gemvb[BW_8][T_Q6_K], "k_gemvb_q6_K_x8" },
+        { &w->f_gemvb[BW_4][T_MXFP4], "k_gemvb_mxfp4_x4" },
+        { &w->f_gemvb[BW_8][T_MXFP4], "k_gemvb_mxfp4_x8" },
+        { &w->f_moe_q4_0_mvb[BW_4], "k_gemvb_q4_0_mv_x4" },
+        { &w->f_moe_q4_0_mvb[BW_8], "k_gemvb_q4_0_mv_x8" },
         { &w->f_gemvb[BW_4][T_IQ2_XXS], "k_gemvb_iq2_xxs_x4" },
         { &w->f_gemvb[BW_8][T_IQ2_XXS], "k_gemvb_iq2_xxs_x8" },
         { &w->f_gemvb[BW_4][T_IQ2_XS], "k_gemvb_iq2_xs_x4" },
@@ -2148,6 +2212,8 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_moe_route,        "k_moe_route" },
         { &w->f_moe_actmul,       "k_moe_actmul" },
         { &w->f_moe_sum,          "k_moe_sum" },
+        { &w->f_moe_sum_tile,     "k_moe_sum_tile" },
+        { &w->f_moe_place,        "k_moe_place" },
         { &w->f_moe_mv[T_F32],    "k_moe_mv_f32" },
         { &w->f_moe_mv[T_F16],    "k_moe_mv_f16" },
         { &w->f_moe_mv[T_Q8_0],   "k_moe_mv_q8_0" },
@@ -2991,6 +3057,8 @@ static void cuda_instance_dims(const model_t *m, cuda_dims *D) {
         if (m->n_ff_shexp > 0)
             per_col += sizeof(float) * ((size_t)xdim + 2 * (size_t)m->n_ff_shexp +
                                         m->n_embd + 1);
+        // the by-expert prefill's slot outputs and pair tables (moe_twin)
+        per_col += used * (sizeof(float) * (size_t)m->n_embd + 2 * sizeof(int));
     }
     if (m->hyper_conn)
         per_col += sizeof(float) * (3 * (size_t)m->hc_count * m->n_embd +
@@ -3250,6 +3318,16 @@ static bool cuda_alloc_moe(model_t *m, gpu_t *g) {
             g->moe_fused_ok = false;
         }
         g->moe_grouped_ok = moe_grouped_eligible(m);
+        g->moe_twin_ok = g->moe_fused_ok && moe_twin_eligible(m, g->sw);
+        if (g->moe_twin_ok) {
+            CK(cu.MemAlloc(&g->moe_gpos,  sizeof(int) * (size_t)g->win * used_c));
+            CK(cu.MemAlloc(&g->moe_gsel,  sizeof(int) * (size_t)g->win * used_c));
+            CK(cu.MemAlloc(&g->moe_slots,
+                           sizeof(float) * (size_t)g->win * used_c * m->n_embd));
+            g->h_moe_gpos = malloc(sizeof(int) * (size_t)g->win * used_c);
+            g->h_moe_gsel = malloc(sizeof(int) * (size_t)g->win * used_c);
+            if (!g->h_moe_gpos || !g->h_moe_gsel) g->moe_twin_ok = false;
+        }
     }
     if (m->moe_gemma)
         // gemma-4-MoE dual-branch scratch: xn, xn2, rin, mout — window
@@ -4313,6 +4391,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            g->moe_logits, g->moe_eout, g->moe_sel,
                            g->moe_selw, g->moe_hb, g->moe_hb2,
                            g->moe_gath, g->moe_dout, g->moe_gidx, g->moe_gw,
+                           g->moe_gpos, g->moe_gsel, g->moe_slots,
                            g->g_scr, g->ple, g->ple_g,
                            g->q35_mix, g->q35_cv, g->q35_z, g->q35_beta,
                            g->q35_alpha, g->q35_gate, g->q35_hist,
@@ -4335,6 +4414,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
     free(g->h_ple); free(g->h_ple_tmp);
     free(g->h_moe_sel); free(g->h_moe_selw);
     free(g->h_moe_gidx); free(g->h_moe_gw);
+    free(g->h_moe_gpos); free(g->h_moe_gsel);
     if (g->kvg_host) {
         if (g->kvg_pinned && cu.MemFreeHost) cu.MemFreeHost(g->kvg_host);
         else free(g->kvg_host);
@@ -5095,7 +5175,7 @@ static bool gpu_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
     if (!enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used,
                        tn, ne))
         return false;
-    int e_start[MOE_MAX_USED], e_cnt[MOE_MAX_USED];
+    int e_start[MOE_ROUTE_MAX], e_cnt[MOE_ROUTE_MAX];   // by expert: ne, up to MOE_ROUTE_MAX
     if (!moe_build_groups(g, ly, tn, used, ne, false, e_start, e_cnt))
         return false;
     if (cu.MemsetD8(g->moe_eout, 0, sizeof(float) * (size_t)tn * n_embd) != 0)
@@ -5168,7 +5248,7 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
     ok = ok && enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne,
                              used, tn, ne);
     if (!ok) return false;
-    int e_start[MOE_MAX_USED], e_cnt[MOE_MAX_USED];
+    int e_start[MOE_ROUTE_MAX], e_cnt[MOE_ROUTE_MAX];   // by expert: ne, up to MOE_ROUTE_MAX
     if (!moe_build_groups(g, ly, tn, used, ne, true, e_start, e_cnt))
         return false;
     if (cu.MemsetD8(g->moe_eout, 0, sizeof(float) * (size_t)tn * n_embd) != 0)
@@ -5331,12 +5411,181 @@ static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, i
     return cu.MemcpyDtoD(g->xb, g->xb2, (size_t)tn * xdim * sizeof(float)) == 0;
 }
 
+// ------------------------------------- by-expert prefill, fused-identical
+// The fused path reads every token's experts' weights per token: a 512-token
+// tile of Qwen3-30B-A3B streams about 21 MB of expert weights a token a
+// layer, which is what bounds its prefill. This path runs the same arithmetic
+// grouped by expert: the tile's routing is read back once, each active
+// expert's token columns are gathered, and its gate, up and down projections
+// run through the width-classed GEMV twins eight columns at a time (each
+// column the batch-1 kernel's bits, which is what k_moe_mv_* computes per
+// token), so an expert's weights stream once per eight of its tokens. The
+// activation is k_moe_actmul with each column's own expert and routing weight,
+// the down outputs are placed at their (token, slot) rows, and k_moe_sum_tile
+// sums each token's slots in slot order: every value, and every addition's
+// order, is the fused path's. On by default for the families where it
+// measured faster than the fused path (datacenter MIG slice, three rounds,
+// 512 / 2K-token prompts): gemma4 MoE +13 / +11% and gpt-oss +14 / +13%
+// prefill. Not for qwen3moe, where it measured 9 / 8% SLOWER (its fused
+// Q4_K expert kernel already reads well, and 128 small experts make the
+// per-expert launches the cost), nor for families never measured.
+// RUNNER_MOE_TWIN=1 takes it on any family, 0 keeps the fused path on all;
+// gpu_moe_twin_force overrides both for a test (-1 returns to the switch).
+static _Atomic int g_moe_twin_force = -1;
+void gpu_moe_twin_force(int on) { g_moe_twin_force = on < 0 ? -1 : on != 0; }
+static bool moe_twin_on(const model_t *m) {
+    if (g_moe_twin_force >= 0) return g_moe_twin_force == 1;
+    static _Atomic int env = -2;
+    if (env == -2) {
+        const char *e = getenv("RUNNER_MOE_TWIN");
+        env = !(e && *e) ? -1 : strcmp(e, "0") != 0;
+    }
+    if (env >= 0) return env == 1;
+    return strcmp(m->arch, "gemma4") == 0 || strcmp(m->arch, "gpt-oss") == 0;
+}
+static _Atomic unsigned long g_moe_twin_tiles;
+unsigned long gpu_moe_twin_tiles(void) { return g_moe_twin_tiles; }
+
+// one projection over cnt columns with each column's batch-1 bits: eight at
+// a time through the width-classed twins where the type has them (and is not
+// a float type, whose batch-1 route can be split-K), else one batch-1 call a
+// column. `expert`: w is an expert slice, which the fused path runs through
+// k_moe_mv_<type>; otherwise a dense tensor (gemma-4's shared MLP), which it
+// runs through enc_mv's batch-1 dispatch. The two differ only for Q4_0:
+// k_moe_mv_q4_0 is k_mv_q4_0's lane-per-block body, while enc_mv picks the
+// coalesced k_gemv_q4_0, whose own twins (k_gemvb_q4_0_x*) give its bits.
+static bool moe_twin_gemm(gpu_t *g, model_t *m, gguf_tensor *w, bool expert,
+                          CUdeviceptr x, CUdeviceptr y, int n_in, int n_out,
+                          int cnt, int xs, int ys) {
+    bool lane_q40 = expert && w->type == T_Q4_0;
+    bool twins = w->type != T_Q4_0 || lane_q40
+               ? moe_twin_type_ok(g->sw, w->type)
+               : g->sw->f_gemvb[BW_4][T_Q4_0] && g->sw->f_gemvb[BW_8][T_Q4_0] &&
+                 g->sw->f_gemv[T_Q4_0];
+    if (!twins) {
+        for (int c = 0; c < cnt; c++)
+            if (!enc_mv(g, m, w, x + (size_t)c * xs * sizeof(float),
+                        y + (size_t)c * ys * sizeof(float), n_in, n_out, 0, 1, xs, ys))
+                return false;
+        return true;
+    }
+    CUdeviceptr weights = 0, nob = g->sw->dummy;
+    uint64_t w_off = 0;
+    if (lane_q40 && !binding_find(g->sw, m, w, &weights, &w_off)) {
+        gpu_first_error("tensor '%s' is not resident on the device "
+                        "(no binding covers it)", w->name);
+        return false;
+    }
+    for (int c0 = 0; c0 < cnt; c0 += 8) {
+        int wd = cnt - c0 < 8 ? cnt - c0 : 8;
+        CUdeviceptr xc = x + (size_t)c0 * xs * sizeof(float);
+        CUdeviceptr yc = y + (size_t)c0 * ys * sizeof(float);
+        bool ok;
+        if (lane_q40) {
+            // k_moe_mv_q4_0's own body: k_mv_q4_0 for one column (4 rows a
+            // block, as enc_mv launches it), its twins for 2 to 8
+            mv_args a = { n_in, n_out, w_off, false, wd, xs, ys };
+            void *p[] = { &weights, &xc, &yc, &a, &nob };
+            ok = wd == 1
+               ? launch(g, g->sw->f_mv[T_Q4_0], (unsigned)((n_out + 3) / 4), 1, 1, 128, p)
+               : launch(g, g->sw->f_moe_q4_0_mvb[batch_width_class(wd)],
+                        (unsigned)((n_out + GEMM_WARPS - 1) / GEMM_WARPS), 1, 1,
+                        GEMM_WARPS * 32, p);
+        } else {
+            ok = wd == 1 ? enc_mv(g, m, w, xc, yc, n_in, n_out, 0, 1, xs, ys)
+                         : enc_mv_batch(g, m, w, xc, yc, n_in, n_out, 0, wd, xs, ys);
+        }
+        if (!ok) return false;
+    }
+    return true;
+}
+
+static bool gpu_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly, int tn,
+                             int xdim) {
+    int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used;
+    int nff = m->n_ff_exp;
+    int l = (int)(ly - m->layers);
+    enum { MOE_MAX_USED = 256 };
+    if (used > MOE_MAX_USED) used = MOE_MAX_USED;
+    if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
+    // routing as the fused path does it: the batch-1 router per token (the
+    // gpt-oss router bias riding it), then the routing kernel for the tile
+    for (int t = 0; t < tn; t++) {
+        CUdeviceptr xin = g->xb + (size_t)t * xdim * sizeof(float);
+        CUdeviceptr lg  = g->moe_logits + (size_t)t * ne * sizeof(float);
+        if (!enc_mv(g, m, ly->ffn_gate_inp, xin, lg, n_embd, ne,
+                    g->sw->gib[l], 1, xdim, ne))
+            return false;
+    }
+    if (!enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used,
+                       tn, ne))
+        return false;
+    // the tile's routing, once (prefill is never captured into a graph), as
+    // each expert's (token, slot) pairs in ascending token order
+    if (cu.StreamSynchronize(g->stream) != 0 ||
+        cu.MemcpyDtoH(g->h_moe_sel, g->moe_sel, sizeof(int) * (size_t)tn * used) != 0 ||
+        cu.MemcpyDtoH(g->h_moe_selw, g->moe_selw, sizeof(float) * (size_t)tn * used) != 0)
+        return false;
+    int e_start[MOE_ROUTE_MAX], e_cnt[MOE_ROUTE_MAX], total = 0;
+    for (int e = 0; e < ne; e++) {
+        e_start[e] = total;
+        for (int t = 0; t < tn; t++)
+            for (int sl = 0; sl < used; sl++) {
+                if (g->h_moe_sel[(size_t)t * used + sl] != e) continue;
+                g->h_moe_gidx[total] = t;
+                g->h_moe_gpos[total] = t * used + sl;
+                g->h_moe_gsel[total] = e;
+                g->h_moe_gw[total] = g->h_moe_selw[(size_t)t * used + sl];
+                total++;
+                break;                          // a token's experts are distinct
+            }
+        e_cnt[e] = total - e_start[e];
+    }
+    if (cu.MemcpyHtoD(g->moe_gidx, g->h_moe_gidx, sizeof(int) * (size_t)total) != 0 ||
+        cu.MemcpyHtoD(g->moe_gpos, g->h_moe_gpos, sizeof(int) * (size_t)total) != 0 ||
+        cu.MemcpyHtoD(g->moe_gsel, g->h_moe_gsel, sizeof(int) * (size_t)total) != 0 ||
+        cu.MemcpyHtoD(g->moe_gw, g->h_moe_gw, sizeof(float) * (size_t)total) != 0)
+        return false;
+    for (int e = 0; e < ne; e++) {
+        int cnt = e_cnt[e];
+        if (cnt == 0) continue;
+        CUdeviceptr idx = g->moe_gidx + (size_t)e_start[e] * sizeof(int);
+        CUdeviceptr pos = g->moe_gpos + (size_t)e_start[e] * sizeof(int);
+        CUdeviceptr esl = g->moe_gsel + (size_t)e_start[e] * sizeof(int);
+        CUdeviceptr wts = g->moe_gw   + (size_t)e_start[e] * sizeof(float);
+        gguf_tensor gv = moe_expert_weight(ly, 0, e, n_embd, nff);
+        gguf_tensor uv = moe_expert_weight(ly, 1, e, n_embd, nff);
+        gguf_tensor dv = moe_expert_weight(ly, 2, e, n_embd, nff);
+        void *pp[] = { &g->moe_slots, &g->moe_dout, &pos, &n_embd, &n_embd };
+        bool ok = enc_moe_gather(g, g->moe_gath, g->xb, idx, n_embd, cnt, xdim, n_embd)
+               && moe_twin_gemm(g, m, &gv, true, g->moe_gath, g->moe_hb, n_embd, nff, cnt, n_embd, nff)
+               && moe_twin_gemm(g, m, &uv, true, g->moe_gath, g->moe_hb2, n_embd, nff, cnt, n_embd, nff)
+               && enc_moe_actmul(g, m, g->moe_hb, g->moe_hb2, nff, nff, nff, wts,
+                                 g->sw->moe_ones, esl, cnt, g->sw->geb[l], g->sw->ueb[l])
+               && moe_twin_gemm(g, m, &dv, true, g->moe_hb, g->moe_dout, nff, n_embd, cnt, nff, n_embd)
+               && launch(g, g->sw->f_moe_place, (n_embd + 255) / 256, cnt, 1, 256, pp);
+        if (!ok) return false;
+    }
+    // every token's slots summed in slot order into its column of xb
+    void *ps[] = { &g->xb, &g->moe_slots, &n_embd, &used, &n_embd, &g->sw->deb[l],
+                   &g->moe_sel, &g->moe_selw, &xdim };
+    g_moe_twin_tiles++;
+    return launch(g, g->sw->f_moe_sum_tile, (n_embd + 255) / 256, tn, 1, 256, ps);
+}
+
 static bool gpu_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int tn,
                         int xdim) {
-    if (g->moe_fused_ok)
-        return tn > 1 && g->moe_grouped_ok
-                      ? gpu_moe_ffn_grouped(g, m, ly, tn, xdim)
-                      : gpu_moe_ffn_fused(g, m, ly, tn, xdim);
+    if (g->moe_fused_ok) {
+        if (tn > 1 && g->moe_grouped_ok)
+            return gpu_moe_ffn_grouped(g, m, ly, tn, xdim);
+        // by expert once the tile averages four or more tokens an expert, the
+        // fused path's own bits either way (the int8 activation route has no
+        // twins, so it keeps the fused path)
+        if (tn > 8 && g->moe_twin_ok && moe_twin_on(m) && !gpu_q8x_on() &&
+            (long)tn * m->n_expert_used >= 4L * m->n_expert)
+            return gpu_moe_ffn_twin(g, m, ly, tn, xdim);
+        return gpu_moe_ffn_fused(g, m, ly, tn, xdim);
+    }
     return gpu_moe_ffn_eager(g, m, ly, tn, xdim);
 }
 
@@ -5489,12 +5738,110 @@ static bool gpu_gemma_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int
     return cu.StreamSynchronize(g->stream) == 0;
 }
 
+// gemma-4's dual-branch tile, fused-identical (moe_twin): the fused path's
+// per-token sequence with every per-column step run over the tile (the RMS
+// norms, the add and the routing kernel compute each column as they do one
+// column), the dense shared MLP and the experts' projections through
+// moe_twin_gemm (each column the batch-1 bits), the routed experts grouped
+// by expert as in gpu_moe_ffn_twin, and each token's slots summed in slot
+// order before post_ffw_norm_2.
+static bool gpu_gemma_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly,
+                                   int l, int tn, int xdim) {
+    int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used;
+    int nff = m->n_ff_exp, dff = ly->n_ff;
+    enum { MOE_MAX_USED = 256 };
+    if (used > MOE_MAX_USED) used = MOE_MAX_USED;
+    if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
+    float eps = m->rms_eps;
+    CUdeviceptr xn_b   = g->g_scr;
+    CUdeviceptr xn2_b  = g->g_scr + (size_t)g->win * n_embd * sizeof(float);
+    CUdeviceptr rin_b  = g->g_scr + (size_t)2 * g->win * n_embd * sizeof(float);
+    CUdeviceptr mout_b = g->g_scr + (size_t)3 * g->win * n_embd * sizeof(float);
+    // --- dense shared MLP for the tile, written into xb, then post_ffw_norm_1
+    bool ok = enc_rmsnorm(g, g->x, xn_b, g->sw->ffn_norm[l], n_embd, eps, tn, n_embd, n_embd)
+           && moe_twin_gemm(g, m, ly->w_gate, false, xn_b, g->hb,  n_embd, dff, tn, n_embd, dff)
+           && moe_twin_gemm(g, m, ly->w_up,   false, xn_b, g->hb2, n_embd, dff, tn, n_embd, dff)
+           && enc_actmul(g, m, g->hb, g->hb2, tn * dff)
+           && moe_twin_gemm(g, m, ly->w_down, false, g->hb, g->xb, dff, n_embd, tn, dff, xdim)
+           && enc_rmsnorm(g, g->xb, g->xb, g->sw->g_pn1[l], n_embd, eps, tn, xdim, xdim);
+    // --- routed branch: the two norms, the batch-1 router per token, routing
+    ok = ok && enc_rmsnorm(g, g->x, xn2_b, g->sw->g_prn2[l], n_embd, eps, tn, n_embd, n_embd)
+            && enc_rmsnorm(g, g->x, rin_b, g->sw->g_gis[l], n_embd, eps, tn, n_embd, n_embd);
+    for (int t = 0; ok && t < tn; t++)
+        ok = enc_mv(g, m, ly->ffn_gate_inp, rin_b + (size_t)t * n_embd * sizeof(float),
+                    g->moe_logits + (size_t)t * ne * sizeof(float), n_embd, ne, 0, 1, n_embd, ne);
+    ok = ok && enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used, tn, ne);
+    if (!ok) return false;
+    if (cu.StreamSynchronize(g->stream) != 0 ||
+        cu.MemcpyDtoH(g->h_moe_sel, g->moe_sel, sizeof(int) * (size_t)tn * used) != 0 ||
+        cu.MemcpyDtoH(g->h_moe_selw, g->moe_selw, sizeof(float) * (size_t)tn * used) != 0)
+        return false;
+    int e_start[MOE_ROUTE_MAX], e_cnt[MOE_ROUTE_MAX], total = 0;
+    for (int e = 0; e < ne; e++) {
+        e_start[e] = total;
+        for (int t = 0; t < tn; t++)
+            for (int sl = 0; sl < used; sl++) {
+                if (g->h_moe_sel[(size_t)t * used + sl] != e) continue;
+                g->h_moe_gidx[total] = t;
+                g->h_moe_gpos[total] = t * used + sl;
+                g->h_moe_gsel[total] = e;
+                g->h_moe_gw[total] = g->h_moe_selw[(size_t)t * used + sl];
+                total++;
+                break;
+            }
+        e_cnt[e] = total - e_start[e];
+    }
+    if (cu.MemcpyHtoD(g->moe_gidx, g->h_moe_gidx, sizeof(int) * (size_t)total) != 0 ||
+        cu.MemcpyHtoD(g->moe_gpos, g->h_moe_gpos, sizeof(int) * (size_t)total) != 0 ||
+        cu.MemcpyHtoD(g->moe_gsel, g->h_moe_gsel, sizeof(int) * (size_t)total) != 0 ||
+        cu.MemcpyHtoD(g->moe_gw, g->h_moe_gw, sizeof(float) * (size_t)total) != 0)
+        return false;
+    for (int e = 0; e < ne; e++) {
+        int cnt = e_cnt[e];
+        if (cnt == 0) continue;
+        CUdeviceptr idx = g->moe_gidx + (size_t)e_start[e] * sizeof(int);
+        CUdeviceptr pos = g->moe_gpos + (size_t)e_start[e] * sizeof(int);
+        CUdeviceptr esl = g->moe_gsel + (size_t)e_start[e] * sizeof(int);
+        CUdeviceptr wts = g->moe_gw   + (size_t)e_start[e] * sizeof(float);
+        // the expert's slice of the fused gate_up tensor, as the grouped path cuts it
+        gguf_tensor guv = *ly->ffn_gate_up_exps;
+        size_t rs = ggml_row_size(guv.type, n_embd);
+        guv.data = (uint8_t *)ly->ffn_gate_up_exps->data + (size_t)e * (2 * (size_t)nff) * rs;
+        guv.nbytes = (2 * (size_t)nff) * rs;
+        gguf_tensor dv = moe_expert_weight(ly, 2, e, n_embd, nff);
+        CUdeviceptr up = g->moe_hb + (size_t)nff * sizeof(float);
+        void *pp[] = { &g->moe_slots, &g->moe_dout, &pos, &n_embd, &n_embd };
+        bool eok = enc_moe_gather(g, g->moe_gath, xn2_b, idx, n_embd, cnt, n_embd, n_embd)
+                && moe_twin_gemm(g, m, &guv, true, g->moe_gath, g->moe_hb, n_embd, 2 * nff, cnt,
+                                 n_embd, 2 * nff)
+                && enc_moe_actmul(g, m, g->moe_hb, up, nff, 2 * nff, 2 * nff, wts,
+                                  g->sw->g_dsc[l], esl, cnt, 0, 0)
+                && moe_twin_gemm(g, m, &dv, true, g->moe_hb, g->moe_dout, nff, n_embd, cnt,
+                                 2 * nff, n_embd)
+                && launch(g, g->sw->f_moe_place, (n_embd + 255) / 256, cnt, 1, 256, pp);
+        if (!eok) return false;
+    }
+    // every token's slots in slot order (no down bias on gemma), then
+    // post_ffw_norm_2 and dense += routed, all per column
+    CUdeviceptr zero = 0;
+    void *ps[] = { &mout_b, &g->moe_slots, &n_embd, &used, &n_embd, &zero,
+                   &g->moe_sel, &g->moe_selw, &n_embd };
+    g_moe_twin_tiles++;
+    return launch(g, g->sw->f_moe_sum_tile, (n_embd + 255) / 256, tn, 1, 256, ps)
+        && enc_rmsnorm(g, mout_b, mout_b, g->sw->g_pn2[l], n_embd, eps, tn, n_embd, n_embd)
+        && enc_add(g, g->xb, mout_b, n_embd, tn, xdim, n_embd);
+}
+
 static bool gpu_gemma_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int l,
                               int tn, int xdim) {
-    if (g->moe_fused_ok)
-        return tn > 1 && g->moe_grouped_ok
-                      ? gpu_gemma_moe_ffn_grouped(g, m, ly, l, tn, xdim)
-                      : gpu_gemma_moe_ffn_fused(g, m, ly, l, tn, xdim);
+    if (g->moe_fused_ok) {
+        if (tn > 1 && g->moe_grouped_ok)
+            return gpu_gemma_moe_ffn_grouped(g, m, ly, l, tn, xdim);
+        if (tn > 8 && g->moe_twin_ok && moe_twin_on(m) && !gpu_q8x_on() &&
+            (long)tn * m->n_expert_used >= 4L * m->n_expert)
+            return gpu_gemma_moe_ffn_twin(g, m, ly, l, tn, xdim);
+        return gpu_gemma_moe_ffn_fused(g, m, ly, l, tn, xdim);
+    }
     return gpu_gemma_moe_ffn_eager(g, m, ly, l, tn, xdim);
 }
 

@@ -94,6 +94,9 @@ unsigned long gpu_tc_dispatches_type(int type);
 unsigned long gpu_tc2_dispatches(void);
 // of those, the ones the compute_80 kernels ran (CUDA, a CC >= 8.0 device, E1)
 unsigned long gpu_tc2_80_dispatches(void);
+// MoE prefill tiles run by expert (moe_twin), and the test override of its switch
+unsigned long gpu_moe_twin_tiles(void);
+void gpu_moe_twin_force(int on);
 // TC2 GEMMs that ran the 128-column tile, and the test override of its switch
 unsigned long gpu_tc2_wide_dispatches(void);
 void gpu_tc2_wide_force(int on);

@@ -4471,6 +4471,101 @@ GEMVB_Q5_K(k_gemvb_q5_K_x8, 8)
 GEMVB_Q6_K(k_gemvb_q6_K_x4, 4)
 GEMVB_Q6_K(k_gemvb_q6_K_x8, 8)
 
+// ---- MXFP4: k_mv_mxfp4's twin (gpt-oss experts; the by-expert MoE prefill
+// runs their columns through it). The batch-1 kernel gives each lane whole
+// blocks (b = lane, lane + 32, ...) and reads x from global; so does this one,
+// with one accumulator per column and the same inner order and warp_sum.
+#define GEMVB_MXFP4(NAME, NC)                                                  \
+extern "C" __global__ void NAME(MV_PARAMS) {                                   \
+    __shared__ float xsm[NC][32 * LANE_XPAD];                                  \
+    __shared__ float kv[16];                                                   \
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];             \
+    unsigned warp = threadIdx.x >> 5;                                          \
+    unsigned lane = threadIdx.x & 31;                                          \
+    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
+    bool live = row < (unsigned)a.n_out;                                       \
+    int nb = a.n_in / 32;                                                      \
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 17;      \
+    float s[NC] = {0};                                                         \
+    for (int b0 = 0; b0 < nb; b0 += 32) {                                      \
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;                                \
+        for (int c = 0; c < NC && c < a.batch; c++)                            \
+            LANE_STAGE_X(xsm[c], x + (ulong64)c * a.xs, b0, nblk)              \
+        __syncthreads();                                                       \
+        if (live && (int)lane < nblk) {                                        \
+            const uchar *blk = rw + (ulong64)(b0 + lane) * 17;                 \
+            float d = ldexpf(1.0f, (int)blk[0] - 127);                         \
+            const uchar *q = blk + 1;                                          \
+            _Pragma("unroll")                                                  \
+            for (int c = 0; c < NC; c++) {                                     \
+                if (c >= a.batch) break;                                       \
+                const float *xp = xsm[c] + lane * LANE_XPAD;                   \
+                float t = 0;                                                   \
+                for (int j = 0; j < 16; j++) {                                 \
+                    t += kv[q[j] & 0xF] * xp[j];                               \
+                    t += kv[q[j] >> 4]  * xp[j + 16];                          \
+                }                                                              \
+                s[c] += d * t;                                                 \
+            }                                                                  \
+        }                                                                      \
+        __syncthreads();                                                       \
+    }                                                                          \
+    if (live)                                                                  \
+        for (int c = 0; c < a.batch && c < NC; c++) {                          \
+            float r = warp_sum(s[c]);                                          \
+            if (lane == 0) y[(ulong64)c * a.ys + row] =                        \
+                a.has_bias ? r + bias[row] : r;                                \
+        }                                                                      \
+}
+GEMVB_MXFP4(k_gemvb_mxfp4_x4, 4)
+GEMVB_MXFP4(k_gemvb_mxfp4_x8, 8)
+
+// ---- Q4_0: k_mv_q4_0's twin. The fused MoE prefill's Q4_0 expert kernel is
+// k_mv_q4_0's lane-per-block body (k_moe_mv_q4_0), not the coalesced
+// k_gemv_q4_0 that k_gemvb_q4_0_x* reproduce; the by-expert prefill runs Q4_0
+// expert columns through this one: whole blocks per lane (b = lane, lane +
+// 32, ...), one accumulator per column, the same inner expression and warp_sum.
+#define GEMVB_Q4_0_MV(NAME, NC)                                                \
+extern "C" __global__ void NAME(MV_PARAMS) {                                   \
+    __shared__ float xsm[NC][32 * LANE_XPAD];                                  \
+    unsigned warp = threadIdx.x >> 5;                                          \
+    unsigned lane = threadIdx.x & 31;                                          \
+    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
+    bool live = row < (unsigned)a.n_out;                                       \
+    int nb = a.n_in / 32;                                                      \
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 18;      \
+    float s[NC] = {0};                                                         \
+    for (int b0 = 0; b0 < nb; b0 += 32) {                                      \
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;                                \
+        for (int c = 0; c < NC && c < a.batch; c++)                            \
+            LANE_STAGE_X(xsm[c], x + (ulong64)c * a.xs, b0, nblk)              \
+        __syncthreads();                                                       \
+        if (live && (int)lane < nblk) {                                        \
+            const uchar *blk = rw + (ulong64)(b0 + lane) * 18;                 \
+            float d = f16f(blk);                                               \
+            const uchar *q = blk + 2;                                          \
+            _Pragma("unroll")                                                  \
+            for (int c = 0; c < NC; c++) {                                     \
+                if (c >= a.batch) break;                                       \
+                const float *xp = xsm[c] + lane * LANE_XPAD;                   \
+                float t = 0;                                                   \
+                for (int j = 0; j < 16; j++)                                   \
+                    t += ((int)(q[j] & 0xF) - 8) * xp[j] + ((int)(q[j] >> 4) - 8) * xp[j + 16]; \
+                s[c] += d * t;                                                 \
+            }                                                                  \
+        }                                                                      \
+        __syncthreads();                                                       \
+    }                                                                          \
+    if (live)                                                                  \
+        for (int c = 0; c < a.batch && c < NC; c++) {                          \
+            float r = warp_sum(s[c]);                                          \
+            if (lane == 0) y[(ulong64)c * a.ys + row] =                        \
+                a.has_bias ? r + bias[row] : r;                                \
+        }                                                                      \
+}
+GEMVB_Q4_0_MV(k_gemvb_q4_0_mv_x4, 4)
+GEMVB_Q4_0_MV(k_gemvb_q4_0_mv_x8, 8)
+
 extern "C" __global__ void k_mv_iq4_xs(MV_PARAMS) {
     IQ_LANE_MV1(iq4xs_lane_n, 136)
 }
@@ -4945,7 +5040,9 @@ extern "C" __global__ void k_moe_mv_q8_0(MOE_MV_PARAMS) {
         if (lane == 0) y[(ulong64)blockIdx.y * a.ys + row] = s;                \
     }
 
-// body of k_mv_q4_0 (no coalesced GEMV exists for Q4_0 yet)
+// body of k_mv_q4_0, lane per block (k_gemv_q4_0, the coalesced GEMV, came
+// later and sums in another order; the by-expert prefill's Q4_0 twins below
+// reproduce this body, not that one)
 extern "C" __global__ void k_moe_mv_q4_0(MOE_MV_PARAMS) {
     MOE_LANE_HEAD;
     int nb = a.n_in / 32;
@@ -5287,11 +5384,9 @@ extern "C" __global__ void k_moe_actmul(float *gbuf, const float *ubuf,
 // The routing weight was folded into the hidden before the down matvec, so
 // each slot's eout is already w*down(h); the CPU computes w*(down(h)+db),
 // and w*down(h) + selw*db is the same quantity with the fold's association.
-extern "C" __global__ void k_moe_sum(float *out, const float *eout, int n,
-                                     int nslots, int es, const float *db,
-                                     const int *sel, const float *selw) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
+static __device__ __forceinline__ void moe_sum_body(float *out, const float *eout, int n,
+                                                    int nslots, int es, const float *db,
+                                                    const int *sel, const float *selw, int i) {
     float s = eout[i];
     if (db) s += selw[0] * db[(ulong64)sel[0] * n + i];
     for (int sl = 1; sl < nslots; sl++) {
@@ -5299,6 +5394,37 @@ extern "C" __global__ void k_moe_sum(float *out, const float *eout, int n,
         if (db) s += selw[sl] * db[(ulong64)sel[sl] * n + i];
     }
     out[i] = s;
+}
+extern "C" __global__ void k_moe_sum(float *out, const float *eout, int n,
+                                     int nslots, int es, const float *db,
+                                     const int *sel, const float *selw) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    moe_sum_body(out, eout, n, nslots, es, db, sel, selw, i);
+}
+
+// k_moe_sum for every token of a tile in one launch, grid.y = token: token
+// t's slots are eout rows t * nslots .. t * nslots + nslots - 1 (es apart) and
+// its routing at sel/selw + t * nslots; the sum lands in column t of out
+// (stride os). Each token's arithmetic is k_moe_sum's (one body).
+extern "C" __global__ void k_moe_sum_tile(float *out, const float *eout, int n,
+                                          int nslots, int es, const float *db,
+                                          const int *sel, const float *selw,
+                                          int os) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    ulong64 t = blockIdx.y;
+    moe_sum_body(out + t * os, eout + t * (ulong64)nslots * es, n, nslots, es, db,
+                 sel + t * nslots, selw + t * nslots, i);
+}
+
+// dst[pos[c]][i] = src[c][i]: an expert's per-column outputs placed at their
+// (token, slot) rows of the tile's slot buffer, for k_moe_sum_tile. A copy.
+extern "C" __global__ void k_moe_place(float *dst, const float *src,
+                                       const int *pos, int n, int ss) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dst[(ulong64)pos[blockIdx.y] * n + i] = src[(ulong64)blockIdx.y * ss + i];
 }
 
 // ---------------------------------------- expert-grouped prefill (MoE P2)

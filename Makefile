@@ -1785,6 +1785,27 @@ test-cuda-q3k: runner $(TEST_GPU_ID)
 	./$(RUNNER_EXE) -m test-q3k-src.gguf --quantize test-q3k.gguf --quant q3_k > /dev/null 2>&1; \
 	./$(TEST_GPU_ID) test-q3k.gguf
 
+# The by-expert MoE prefill (moe_twin) against the fused per-token path it
+# must reproduce byte for byte, on a 32-row prefill: the routed top-2-of-4
+# fixture with its experts requantized to Q8_0, the gpt-oss fixture (MXFP4
+# experts, per-expert gate, up and down biases) and gemma-4's dual-branch
+# fixture at Q8_0 (dense shared MLP plus routed experts), and both again at
+# Q4_0, whose fused expert kernel is the lane-per-block k_mv_q4_0 body rather
+# than the coalesced GEMV the other types share (gemma-4-26B-A4B's Q4_0
+# experts once came out of the by-expert path with other bytes).
+test-cuda-moe-twin: runner $(TEST_GPU_ID)
+	@set -e; \
+	$(PYTHON) scripts/make-test-moe.py test-moe-twin > /dev/null; \
+	./$(RUNNER_EXE) -m test-moe-twin.moe4.gguf --quantize test-moe-twin-q8.gguf --quant q8_0 > /dev/null 2>&1; \
+	GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin-q8.gguf; \
+	GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin.gptoss-mxfp4.gguf; \
+	./$(RUNNER_EXE) -m test-moe-twin.gemma4-moe.gguf --quantize test-moe-twin-g4.gguf --quant q8_0 > /dev/null 2>&1; \
+	GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin-g4.gguf; \
+	./$(RUNNER_EXE) -m test-moe-twin.moe4.gguf --quantize test-moe-twin-q40.gguf --quant q4_0 > /dev/null 2>&1; \
+	GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin-q40.gguf; \
+	./$(RUNNER_EXE) -m test-moe-twin.gemma4-moe.gguf --quantize test-moe-twin-g4q40.gguf --quant q4_0 > /dev/null 2>&1; \
+	GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin-g4q40.gguf
+
 # Per-layer FFN widths on CUDA (the gemma-4 E2B export shape: widths that
 # alternate between layers, an ARRAY-typed feed_forward_length): the device
 # runs each layer at its own width against the CPU at logit precision, in
