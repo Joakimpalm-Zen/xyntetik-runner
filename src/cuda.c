@@ -447,6 +447,7 @@ typedef struct gpu_weights {
     CUfunction  f_attn_dec, f_attn_merge;   // flash-decoding attention (decode)
     CUfunction  f_attn_tile32, f_attn_tile16; // tiled prefill attention (tile_attn)
     CUfunction  f_attn_dec_gqa, f_attn_merge32; // grouped decode attention (tile_attn)
+    CUfunction  f_attn_tc;                  // tensor-core prefill attention (tile_attn)
     // kernel tables indexed by ggml tensor type; sized past the largest
     // supported type id (T_MXFP4 = 39), not the count of supported types
     // Sized past the HIGHEST type the loader can admit (T_NVFP4 = 40), not
@@ -2194,6 +2195,7 @@ static bool shared_load_module(gpu_weights *w) {
     // so a PTX without it keeps k_attn
     cu.ModuleGetFunction(&w->f_attn_tile32, w->mod, "k_attn_tile32");
     cu.ModuleGetFunction(&w->f_attn_dec_gqa, w->mod, "k_attn_dec_gqa");
+    cu.ModuleGetFunction(&w->f_attn_tc, w->mod, "k_attn_tc");
     cu.ModuleGetFunction(&w->f_attn_merge32, w->mod, "k_attn_merge32");
     cu.ModuleGetFunction(&w->f_attn_tile16, w->mod, "k_attn_tile16");
     return true;
@@ -5448,6 +5450,38 @@ static bool tile_attn_tiled(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
     return true;
 }
 
+// RUNNER_CUDA_ATTN_TC: the tensor-core prefill attention (k_attn_tc, C2
+// step 2) for fp16 caches. 1 selects it ahead of the tiled kernel, 0 or unset
+// keeps the scalar route while its tolerance gates are run.
+static bool attn_tc_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_ATTN_TC");
+        on = e && *e && strcmp(e, "0") != 0;
+    }
+    return on == 1;
+}
+static _Atomic unsigned long g_attn_tc_dispatches;
+
+// The tensor-core prefill attention over a whole tile, or false when it does
+// not apply: switch off, kernel absent, a quantized K or V cache, or a head
+// width that is not a multiple of 16 up to 128. 64 query rows a block.
+static bool tile_attn_tc(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
+                         const attn_args *aa, CUdeviceptr sinks, bool *ok) {
+    if (!attn_tc_on() || !g->sw->f_attn_tc || model_kv_kind_k(m) || model_kv_kind_v(m) ||
+        hd % 16 || hd > 128 || n_kv < 1 || m->n_head % n_kv)
+        return false;
+    int G = m->n_head / n_kv, R = 64;
+    int hb = G < R ? G : R, qs = R / hb, ngh = (G + hb - 1) / hb;
+    attn_args a = *aa;
+    void *pa[] = { &g->q, &g->kc, &g->vc, &g->xb2, &a, &g->pos_dev, &sinks,
+                   &tn, &hb, &qs };
+    *ok = launch(g, g->sw->f_attn_tc, (unsigned)(n_kv * ngh), (unsigned)((tn + qs - 1) / qs),
+                 1, 128, pa);
+    if (*ok) { g_attn_tc_dispatches++; g_attn_tiled_dispatches++; }
+    return true;
+}
+
 // RUNNER_CUDA_ATTN_DEC: the grouped decode attention (k_attn_dec_gqa, one
 // block per KV head and slice serving its query heads). 1 selects it, 0 or
 // unset keeps k_attn_dec while its gates are run.
@@ -5516,6 +5550,8 @@ static bool tile_attn(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
             ok = ok && launch(g, g->sw->f_attn_dec, m->n_head, ATTN_SPLITS, 1, 128, pd);
             void *pm[] = { &g->xb2, &g->attn_part, &aa, &g->pos_dev, &sinks };
             ok = ok && launch(g, g->sw->f_attn_merge, m->n_head, 1, 1, 128, pm);
+        } else if (tile_attn_tc(g, m, tn, hd, n_kv, &aa, sinks, &ok)) {
+            // ran (or failed) on the tensor cores over the whole tile
         } else if (tile_attn_tiled(g, m, tn, hd, n_kv, &aa, sinks, &ok)) {
             // ran (or failed) as one launch over the whole tile
         } else {
@@ -6356,7 +6392,8 @@ const char *gpu_route_detail(const model_t *m) {
              g_tc_state < 0 ? "promoted" : g_tc_state ? "forced" : "off",
              gpu_tc2_on() ? "on" : "off",
              gpu_q8x_on() ? "on" : "off", gpu_small_batch_on() ? "on" : "off",
-             attn_tile_on() ? (attn_dec_on() ? "on+dec" : "on") : (attn_dec_on() ? "dec" : "off"),
+             attn_tc_on() ? (attn_dec_on() ? "tc+dec" : "tc")
+             : attn_tile_on() ? (attn_dec_on() ? "on+dec" : "on") : (attn_dec_on() ? "dec" : "off"),
              g->win, gpu_tc2_on() ? G2_BN : TC_N,
              m->n_expert > 0 ? " moe=" : "",
              m->n_expert > 0 ? (g->moe_fused_ok ? "fused" : "eager") : "");

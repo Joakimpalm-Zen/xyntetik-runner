@@ -7325,3 +7325,216 @@ G2_KERNEL(k_gemm2_iq1_s, G2IQ1S)
 G2_KERNEL(k_gemm2_iq1_m, G2IQ1M)
 G2_KERNEL(k_gemm2_iq4_xs, G2IQ4XS)
 G2_KERNEL(k_gemm2_iq4_nl, G2IQ4NL)
+
+// --------------------------------------- tensor-core prefill attention (C2)
+// C2 step 2 (RUNNER_CUDA_ATTN_TC, tile_attn in cuda.c): k_attn_tile's two
+// passes with both products on tensor cores, for fp16 caches. A block owns 64
+// query rows (heads of one KV group times a strip of tokens, k_attn_tile's
+// rows), four warps of 16, and walks the strip's keys in tiles of 64:
+//   pass 1: S = Q K^T (mma.sync m16n8k8, f16 in, f32 accumulate), the scale,
+//           the causal / sliding mask, each row's maximum;
+//   pass 2: S again, p = expf(s - max) in fp32, its row sum in fp32, then
+//           O += P V with P rounded to half in registers (an m16n8 accumulator
+//           tile is exactly the A operand of the next m16n8k8, so P never
+//           leaves the warp) and V read through ldmatrix.trans.
+// Q is rounded to half after an exact power-of-two scale per row (max|q|
+// brought to at most 2^14, undone on the score), so no row overflows fp16.
+// K and V are the fp16 cache rows themselves. Obligation: tolerance, like the
+// TC GEMM: operands rounded to half, fp32 accumulation, a different summation
+// order from k_attn_tile; gated by the CPU identity bound, the long-context
+// greedy rows and the fp32 distance rows before it can be anything but opt-in.
+#define AQ_ROWS 64
+#define AQ_TK   64
+#define AQ_LD   (128 + 8)     // halves per staged row (head_dim <= 128, padded)
+
+extern "C" __global__ void __launch_bounds__(128)
+k_attn_tc(const float *q, const unsigned char *kc, const unsigned char *vc, float *out,
+          attn_args a, const int *posp, const float *sinks, int tn, int hb, int qs) {
+    __shared__ __align__(16) __half Qs[AQ_ROWS * AQ_LD];
+    __shared__ __align__(16) __half KVs[AQ_TK * AQ_LD];
+    __shared__ float qscale[AQ_ROWS];
+    const int hd = a.head_dim, tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    const int G = a.n_head / a.n_head_kv;
+    const int ngh = (G + hb - 1) / hb;
+    const int kvh = blockIdx.x / ngh, hg = blockIdx.x % ngh;
+    const int h0 = kvh * G + hg * hb;
+    const int nh = G - hg * hb < hb ? G - hg * hb : hb;
+    const int tk0 = blockIdx.y * qs;
+    const int nt = tn - tk0 < qs ? tn - tk0 : qs;
+    const int pos0 = *posp;
+    const int kv_dim = a.n_head_kv * hd;
+    const ulong64 row_b = (ulong64)kv_dim * 2;            // fp16 rows only
+    const ulong64 base = a.l_off + (ulong64)kvh * hd * 2;
+    const ulong64 base_v = a.v_off + (ulong64)kvh * hd * 2;
+
+    // ---- Q rows, each scaled by an exact power of two into fp16's range ----
+    for (int r = warp; r < AQ_ROWS; r += 4) {
+        int hi = r / qs, ti = r - hi * qs;
+        bool ok = hi < nh && ti < nt;
+        const float *qr = q + (ulong64)(tk0 + ti) * a.qs + (ulong64)(h0 + hi) * hd;
+        float mx = 0.0f;
+        if (ok) for (int d = lane; d < hd; d += 32) mx = fmaxf(mx, fabsf(qr[d]));
+        for (int off = 16; off > 0; off >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, off));
+        int e = 0;
+        if (mx > 0.0f) { frexpf(mx, &e); }              // mx < 2^e
+        float s = mx > 0.0f ? ldexpf(1.0f, 14 - e) : 1.0f;
+        if (lane == 0) qscale[r] = s;
+        for (int d = lane; d < AQ_LD - 8; d += 32)
+            Qs[r * AQ_LD + d] = __float2half(ok && d < hd ? qr[d] * s : 0.0f);
+    }
+    // the warp's 16 rows: g = lane / 4 holds rows g and g + 8 of each tile
+    const int r0 = warp * 16 + (lane >> 2), r1 = r0 + 8;
+    auto rowpos = [&](int r, int *lo, int *hi_) {
+        int hi = r / qs, ti = r - hi * qs;
+        bool ok = hi < nh && ti < nt;
+        int pr = pos0 + tk0 + ti;
+        int t0r = (a.window > 0 && pr - a.window + 1 > 0) ? pr - a.window + 1 : 0;
+        *lo = ok ? t0r : 1;
+        *hi_ = ok ? pr : 0;                              // empty range for unused rows
+    };
+    int lo0, hi0, lo1, hi1;
+    rowpos(r0, &lo0, &hi0);
+    rowpos(r1, &lo1, &hi1);
+    const int plast = pos0 + tk0 + nt - 1;
+    int klo = 0;
+    if (a.window > 0) { int f = pos0 + tk0 - a.window + 1; klo = f > 0 ? f : 0; }
+    const int nkh = hd / 8;      // k8 steps over head_dim
+    __syncthreads();
+    const float qs0 = qscale[r0], qs1 = qscale[r1];
+    auto stage = [&](const unsigned char *cache, ulong64 b0, int kt) {
+        // 64 rows x hd halves, 16 bytes a thread a step
+        const int per_row = hd / 8;
+        for (int i = tid; i < AQ_TK * per_row; i += 128) {
+            int k = i / per_row, c = i - k * per_row, t = kt + k;
+            uint4 v = make_uint4(0u, 0u, 0u, 0u);
+            if (t <= plast) v = *(const uint4 *)(cache + b0 + kv_slot(t, a.ring) * row_b + (ulong64)c * 16);
+            *(uint4 *)(KVs + k * AQ_LD + c * 8) = v;
+        }
+    };
+    // S for this warp's 16 rows against the 64 staged keys: 8 n8 tiles
+    auto scores = [&](float (&S)[8][4]) {
+        #pragma unroll
+        for (int j = 0; j < 8; j++) S[j][0] = S[j][1] = S[j][2] = S[j][3] = 0.0f;
+        for (int kk = 0; kk < nkh; kk += 2) {          // k16 per step
+            unsigned qa[4];
+            g2_ldsm_x4(qa[0], qa[1], qa[2], qa[3],
+                       Qs + (warp * 16 + (lane & 15)) * AQ_LD + kk * 8 + (lane >> 4) * 8);
+            #pragma unroll
+            for (int np = 0; np < 4; np++) {           // two n8 key tiles a load
+                unsigned kb[4];
+                g2_ldsm_x4(kb[0], kb[1], kb[2], kb[3],
+                           KVs + (np * 16 + (lane & 7) + ((lane >> 4) << 3)) * AQ_LD
+                               + kk * 8 + ((lane >> 3) & 1) * 8);
+                g2_mma(S[2 * np], qa[0], qa[1], kb[0]);
+                g2_mma(S[2 * np], qa[2], qa[3], kb[1]);
+                g2_mma(S[2 * np + 1], qa[0], qa[1], kb[2]);
+                g2_mma(S[2 * np + 1], qa[2], qa[3], kb[3]);
+            }
+        }
+    };
+    // ---- pass 1: row maxima ----
+    float m0 = -1e30f, m1 = -1e30f;
+    for (int kt = klo; kt <= plast; kt += AQ_TK) {
+        __syncthreads();
+        stage(kc, base, kt);
+        __syncthreads();
+        float S[8][4];
+        scores(S);
+        #pragma unroll
+        for (int j = 0; j < 8; j++)
+            #pragma unroll
+            for (int e = 0; e < 4; e++) {
+                int t = kt + j * 8 + (lane & 3) * 2 + (e & 1);
+                bool top = e < 2;
+                int lo = top ? lo0 : lo1, hi = top ? hi0 : hi1;
+                if (t >= lo && t <= hi) {
+                    float v = S[j][e] / (top ? qs0 : qs1) * a.scale;
+                    if (top) m0 = fmaxf(m0, v); else m1 = fmaxf(m1, v);
+                }
+            }
+    }
+    for (int off = 1; off < 4; off <<= 1) {
+        m0 = fmaxf(m0, __shfl_xor_sync(0xffffffffu, m0, off));
+        m1 = fmaxf(m1, __shfl_xor_sync(0xffffffffu, m1, off));
+    }
+    if (sinks) {
+        int hiA = r0 / qs, hiB = r1 / qs;
+        if (hiA < nh && sinks[h0 + hiA] > m0) m0 = sinks[h0 + hiA];
+        if (hiB < nh && sinks[h0 + hiB] > m1) m1 = sinks[h0 + hiB];
+    }
+    // ---- pass 2: probabilities, sums, O = P V ----
+    float O[16][4];                                     // hd / 8 n8 tiles (hd <= 128)
+    #pragma unroll
+    for (int j = 0; j < 16; j++) O[j][0] = O[j][1] = O[j][2] = O[j][3] = 0.0f;
+    float l0 = 0.0f, l1 = 0.0f;
+    for (int kt = klo; kt <= plast; kt += AQ_TK) {
+        __syncthreads();
+        stage(kc, base, kt);
+        __syncthreads();
+        float S[8][4];
+        scores(S);
+        unsigned pa[8][2];                              // P as A operands, one k8 key chunk each
+        #pragma unroll
+        for (int j = 0; j < 8; j++) {
+            float p[4];
+            #pragma unroll
+            for (int e = 0; e < 4; e++) {
+                int t = kt + j * 8 + (lane & 3) * 2 + (e & 1);
+                bool top = e < 2;
+                int lo = top ? lo0 : lo1, hi = top ? hi0 : hi1;
+                p[e] = (t >= lo && t <= hi)
+                     ? expf(S[j][e] / (top ? qs0 : qs1) * a.scale - (top ? m0 : m1)) : 0.0f;
+            }
+            l0 += p[0] + p[1];
+            l1 += p[2] + p[3];
+            pa[j][0] = g2_pack(p[0], p[1]);
+            pa[j][1] = g2_pack(p[2], p[3]);
+        }
+        __syncthreads();
+        stage(vc, base_v, kt);
+        __syncthreads();
+        // V as B operands: ldmatrix.trans of [key][d], one k8 key chunk x
+        // two n8 d tiles per load
+        #pragma unroll
+        for (int dp = 0; dp < 16; dp += 4) {        // compile-time trip, so O stays in registers
+            if (dp >= nkh) break;
+            #pragma unroll
+            for (int j = 0; j < 8; j++) {
+                unsigned vb[4];
+                unsigned addr = (unsigned)__cvta_generic_to_shared(
+                    KVs + (j * 8 + (lane & 7)) * AQ_LD + dp * 8 + (lane >> 3) * 8);
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];\n"
+                             : "=r"(vb[0]), "=r"(vb[1]), "=r"(vb[2]), "=r"(vb[3]) : "r"(addr));
+                // vb[i]: d tile dp + i (8 wide) for this key chunk; x4 covers 4 d tiles
+                #pragma unroll
+                for (int i = 0; i < 4; i++)
+                    if (dp + i < nkh) g2_mma(O[dp + i], pa[j][0], pa[j][1], vb[i]);
+            }
+        }
+    }
+    for (int off = 1; off < 4; off <<= 1) {
+        l0 += __shfl_xor_sync(0xffffffffu, l0, off);
+        l1 += __shfl_xor_sync(0xffffffffu, l1, off);
+    }
+    if (sinks) {
+        int hiA = r0 / qs, hiB = r1 / qs;
+        if (hiA < nh) l0 += expf(sinks[h0 + hiA] - m0);
+        if (hiB < nh) l1 += expf(sinks[h0 + hiB] - m1);
+    }
+    // ---- O / sum into the row's token and head ----
+    #pragma unroll
+    for (int half_ = 0; half_ < 2; half_++) {
+        int r = half_ ? r1 : r0;
+        int hi = r / qs, ti = r - hi * qs;
+        if (hi >= nh || ti >= nt) continue;
+        float inv = 1.0f / (half_ ? l1 : l0);
+        float *o = out + (ulong64)(tk0 + ti) * a.os + (ulong64)(h0 + hi) * hd;
+        #pragma unroll
+        for (int j = 0; j < 16; j++) {
+            if (j >= nkh) break;
+            int d = j * 8 + (lane & 3) * 2;
+            o[d]     = O[j][half_ * 2 + 0] * inv;
+            o[d + 1] = O[j][half_ * 2 + 1] * inv;
+        }
+    }
+}

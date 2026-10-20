@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA tensor-core prefill attention, experimental and off by default.**
+  `RUNNER_CUDA_ATTN_TC=1` computes the prefill attention scores and the
+  value sums of an f16 cache on the tensor cores (64 query rows a block, two
+  passes over the cached rows), for head widths that are multiples of 16 up
+  to 128; quantized caches keep the tiled kernel. On an RTX 3070, a
+  Llama-3.2-3B Q4_K_M request with a 16K-token prompt and 64 generated
+  tokens took 20.8 s against 59.5 s with the tiled kernel and 170 s with the
+  original one, generating the same 64 tokens (one run each).
+
 - **CUDA pipelined tensor-core prefill GEMM (TC2), experimental and off by
   default.** `RUNNER_CUDA_TC2=1` runs the batched projections through a
   128 x 64 tile GEMM that converts the next 64-deep stage of quantized
