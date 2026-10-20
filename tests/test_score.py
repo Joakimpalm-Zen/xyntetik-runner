@@ -203,6 +203,36 @@ def test_score_top_reports_the_distribution_head(runner_bin, models, chunked):
             assert lps[ids.index(tok)] == pytest.approx(lp, abs=1e-6)
 
 
+@pytest.mark.parametrize("chunked", [False, True])
+def test_score_reports_its_route(runner_bin, models, chunked):
+    """The paths and kernels a score ran, on stderr (the record stays
+    byte-comparable across routes): a gate that compares two scores proves a
+    route switch only when the switch's path and kernels are shown to run."""
+    env = dict(os.environ)
+    if chunked:
+        env["RUNNER_SCORE_CHUNKED"] = "1"
+    p = subprocess.run(
+        [runner_bin, "-m", str(models["dense"]), "--score", "-p", PROMPT,
+         "-t", "2", "--gpu", "off"],
+        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    n_scored = json.loads(p.stdout)["n_scored"]
+    lines = [ln for ln in p.stderr.decode().splitlines()
+             if ln.startswith("score: route ")]
+    assert len(lines) == 1
+    route = json.loads(lines[0][len("score: route "):])
+    assert route["backend"] == "cpu"
+    assert "kernels" in route
+    paths = route["paths"]
+    if chunked:
+        assert paths["keep"]["forwards"] >= 1
+        assert paths["keep"]["rows_max"] > 1
+    else:
+        assert set(paths) == {"solo"}
+        assert paths["solo"]["forwards"] == n_scored
+
+
 def test_score_top_needs_score(runner_bin, models):
     p = subprocess.run(
         [runner_bin, "-m", str(models["dense"]), "--score-top", "5",

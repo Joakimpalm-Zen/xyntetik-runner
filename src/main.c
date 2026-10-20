@@ -4565,6 +4565,12 @@ static int run_score(cli_opts *o, cli_run *rt) {
            "\"nll_total\":%.9g,\"nll_mean\":%.9g,\"ppl\":%.9g}\n",
            rt->m.n_vocab, top1, (double)top1 / (n_prompt - 1),
            nll, mean, exp(mean));
+    // the paths and kernels the forwards took, on stderr so the record's
+    // bytes stay comparable across routes: two equal scores say nothing about
+    // a route switch unless the route's kernels are shown to have run
+    char route[4096];
+    model_route_json(&rt->m, route, sizeof route);
+    fprintf(stderr, "score: route %s\n", route);
     return 0;
 }
 
