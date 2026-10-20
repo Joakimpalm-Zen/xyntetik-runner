@@ -287,6 +287,10 @@ def main(argv):
     ap.add_argument("--gpu", default="off",
                     help="server mode: --gpu for both served runners (default off: the "
                          "CPU scalar route; 'auto' scores the device route)")
+    ap.add_argument("--gpu-a", default=None,
+                    help="server mode: --gpu for side A only (overrides --gpu), e.g. a device "
+                         "candidate against the CPU scalar reference on side B")
+    ap.add_argument("--gpu-b", default=None, help="server mode: --gpu for side B only")
     ap.add_argument("--args-a", default="",
                     help="server mode: extra runner flags for side A only, e.g. '--kv q8'")
     ap.add_argument("--args-b", default="", help="server mode: extra runner flags for side B only")
@@ -313,7 +317,7 @@ def main(argv):
                 args.model_name_a = os.path.basename(args.model_a)
             print(f"starting server A: {args.model_a}", file=sys.stderr)
             procs.append(start_server(args.runner, args.model_a, args.port_a, args.threads,
-                                      args.ctx, args.gpu, args.args_a.split(),
+                                      args.ctx, args.gpu_a or args.gpu, args.args_a.split(),
                                       args.env_a.split()))
             ep_a = f"http://127.0.0.1:{args.port_a}"
         if args.endpoint_b:
@@ -327,7 +331,7 @@ def main(argv):
                 args.model_name_b = os.path.basename(args.model_b)
             print(f"starting server B: {args.model_b}", file=sys.stderr)
             procs.append(start_server(args.runner, args.model_b, args.port_b, args.threads,
-                                      args.ctx, args.gpu, args.args_b.split(),
+                                      args.ctx, args.gpu_b or args.gpu, args.args_b.split(),
                                       args.env_b.split()))
             ep_b = f"http://127.0.0.1:{args.port_b}"
 
@@ -432,9 +436,11 @@ def main(argv):
         # what each served side ran with, so an A/B of one switch says which
         # arm is which (empty for an endpoint side the script did not start)
         "sides": {
-            "a": {"gpu": args.gpu, "args": args.args_a.split(), "env": args.env_a.split()}
+            "a": {"gpu": args.gpu_a or args.gpu, "args": args.args_a.split(),
+                  "env": args.env_a.split()}
                  if not args.endpoint_a else {"endpoint": args.endpoint_a},
-            "b": {"gpu": args.gpu, "args": args.args_b.split(), "env": args.env_b.split()}
+            "b": {"gpu": args.gpu_b or args.gpu, "args": args.args_b.split(),
+                  "env": args.env_b.split()}
                  if not args.endpoint_b else {"endpoint": args.endpoint_b},
         },
         "positions_scored": n_scored,

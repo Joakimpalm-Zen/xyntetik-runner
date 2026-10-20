@@ -218,7 +218,7 @@ def test_raw_ab_run_records_each_side(runner_bin, corpus):
         [sys.executable, str(RAW_SCRIPT), "--runner", str(runner_bin),
          "--model-a", str(model), "--model-b", str(model),
          "--port-a", "58721", "--port-b", "58722",
-         "--env-a", "RUNNER_SCORE_AB_SIDE=a", "--args-b", "-t 1",
+         "--env-a", "RUNNER_SCORE_AB_SIDE=a", "--args-b", "-t 1", "--gpu-b", "off",
          "--corpus", str(corpus), "--max-positions", "3", "--out", str(out)],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
     assert proc.returncode == 0, proc.stderr
