@@ -2094,6 +2094,7 @@ static void send_provenance(sock_t fd) {
                          : m->kv_q8 ? "q8" : "f16",
                m->n_batch, SV.n_slots);
         if (gpu_prompt_window(m) > 0) sb_fmt(&r, ",\"gpu_window\":%d", gpu_prompt_window(m));
+        if (gpu_route_record(m)) sb_fmt(&r, ",\"gpu_route\":\"%s\"", gpu_route_record(m));
         sb_lit(&r, "}");
     }
     sb_lit(&r, ",\"config\":{");

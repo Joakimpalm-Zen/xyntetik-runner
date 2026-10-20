@@ -2105,6 +2105,7 @@ instance instead.
 |---|---|
 | `--gpu auto\|off` | Auto-detect offload, or force CPU. |
 | `--gpu-layers N` | Force the first `N` layers onto the GPU; `0` means no GPU. Omit for auto-fit. On Metal it also overrides the residency veto: a model larger than available RAM is refused for auto-selected partial offload, because nothing pinned can be held resident and the measured result was 8-35x slower decode, but an explicit `--gpu-layers N` splits it anyway. |
+| `--gpu-route R` | CUDA only: which tensor-core and attention kernels whose sums differ from the reference kernels run, `reference` or a comma list of `tc2`, `sm80`, `attn-tile`, `attn-dec`, `attn-tc`. Transcripts and receipts record the set and `--verify` replays with the record's. [Details](#cli-gpu-route). |
 | `--cpu-moe [N\|auto]` | CUDA hybrid placement: keep all, the deepest `N`, or an auto-fit set of expert FFNs in system RAM. |
 | `--wait-for-vram [S]` | Wait for another registered runner to release VRAM, default `300` seconds, instead of failing immediately. |
 | `--vram-priority N` | Advisory priority tag on this claim, default `0` (also `RUNNER_VRAM_PRIORITY`). See [VRAM registry: priority and cooperative yield](#vram-registry-priority-and-cooperative-yield). |
@@ -2428,6 +2429,26 @@ same logits as `logprobs` and `argmax`. A distribution-level comparison (KL dive
 against a reference such as the publisher's float32 model, `scripts/gold-logits.py
 --score-a`) then needs one pass over the text instead of a request per position, and with
 `RUNNER_SCORE_CHUNKED=1` every position comes from the batched prefill route.
+
+<a id="cli-gpu-route"></a>
+#### `--gpu-route R`
+
+A few CUDA kernels compute the same quantities as the reference kernels in
+another order or at another precision, each held to a tolerance gate
+rather than to byte identity: the pipelined tensor-core GEMM (`tc2`), its
+compute capability 8.0 build (`sm80`), the tiled prefill attention
+(`attn-tile`), the grouped decode attention (`attn-dec`) and the
+tensor-core prefill attention for f16 caches (`attn-tc`). `--gpu-route`
+names the set for the process: `reference` runs none of them, a comma list
+runs those. It overrides `RUNNER_CUDA_ROUTE` (the same set from the
+environment, which the CPU-against-GPU harnesses set to `reference`) and the
+per-route `RUNNER_CUDA_*` diagnostics. The set in force
+goes into transcripts and receipts as `profile.gpu_route`, and `--verify`
+replays with the record's set whatever the command line says; a record
+without the field predates these kernels and replays with `reference`.
+Kernels that only move bytes (the KV gather, the whole-tile recurrent
+prefill) are not routes in this sense: they cannot change a token. Other
+backends accept the flag and ignore it.
 
 <a id="cli-transcript"></a>
 #### `--transcript FILE`

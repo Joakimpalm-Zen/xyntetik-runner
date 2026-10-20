@@ -3,6 +3,8 @@
 #define RUNNER_GPU_H
 
 #include "model.h"
+#include <stdio.h>
+#include <string.h>
 
 
 enum { GPU_AUTO = 0, GPU_OFF = 1 };
@@ -93,6 +95,65 @@ unsigned long gpu_tc2_80_dispatches(void);
 // the prompt window (columns) a CUDA instance was built for; 0 on other
 // backends and without a device. Transcripts record it and --verify restores it.
 int    gpu_prompt_window(const model_t *m);
+// The CUDA routes whose sums differ from the reference kernels' (each is
+// tolerance-gated, not byte-identical): which of them are on is part of the
+// arithmetic a record was made with, so transcripts and receipts record the
+// set (profile.gpu_route) and --verify pins it. Routes that only move bytes
+// (the KV gather, the whole-tile recurrent kernels) are not listed: they
+// cannot change a token.
+enum { GR_TC2 = 1, GR_SM80 = 2, GR_ATTN_TILE = 4, GR_ATTN_DEC = 8, GR_ATTN_TC = 16,
+       GR_ALL = 31 };
+// Pin the set for this process (--gpu-route, --verify): it then overrides
+// RUNNER_CUDA_ROUTE (the same set from the environment), the per-route
+// RUNNER_CUDA_* diagnostics and the defaults. -1 returns to them.
+// No-op on the other backends.
+void   gpu_route_pin(int mask);
+// The set in force: the pin, else the environment and the defaults; with a
+// loaded instance, sm80 only where its compute_80 module loaded. 0 on the
+// other backends.
+int    gpu_route_active(const model_t *m);
+// "reference" (no route) or the names joined by commas, in GR_ order; and
+// back. gpu_route_parse returns -1 for an unknown name or an empty item.
+static const struct { int bit; const char *name; } GPU_ROUTE_NAMES[] = {
+    { GR_TC2, "tc2" }, { GR_SM80, "sm80" }, { GR_ATTN_TILE, "attn-tile" },
+    { GR_ATTN_DEC, "attn-dec" }, { GR_ATTN_TC, "attn-tc" },
+};
+static inline void gpu_route_format(int mask, char *buf, size_t n) {
+    size_t at = 0;
+    buf[0] = 0;
+    for (size_t i = 0; i < sizeof GPU_ROUTE_NAMES / sizeof *GPU_ROUTE_NAMES; i++)
+        if (mask & GPU_ROUTE_NAMES[i].bit && at < n)
+            at += (size_t)snprintf(buf + at, n - at, "%s%s", at ? "," : "",
+                                   GPU_ROUTE_NAMES[i].name);
+    if (!at) snprintf(buf, n, "reference");
+}
+static inline int gpu_route_parse(const char *s) {
+    if (!s || !*s) return -1;
+    if (!strcmp(s, "reference")) return 0;
+    int mask = 0;
+    while (*s) {
+        const char *e = strchr(s, ',');
+        size_t len = e ? (size_t)(e - s) : strlen(s);
+        int bit = 0;
+        for (size_t i = 0; i < sizeof GPU_ROUTE_NAMES / sizeof *GPU_ROUTE_NAMES; i++)
+            if (strlen(GPU_ROUTE_NAMES[i].name) == len &&
+                !strncmp(GPU_ROUTE_NAMES[i].name, s, len)) bit = GPU_ROUTE_NAMES[i].bit;
+        if (!bit) return -1;
+        mask |= bit;
+        if (!e) break;
+        s = e + 1;
+        if (!*s) return -1;
+    }
+    return mask;
+}
+// A record's gpu_route for an instance: NULL unless it runs on CUDA (the
+// backend with a prompt window), else the routes it runs with.
+static inline const char *gpu_route_record(const model_t *m) {
+    static _Thread_local char buf[64];
+    if (gpu_prompt_window(m) <= 0) return NULL;
+    gpu_route_format(gpu_route_active(m), buf, sizeof buf);
+    return buf;
+}
 // the whole-tile recurrent prefill kernels (CUDA, RUNNER_CUDA_RECUR_SEQ):
 // force them on (1) or off (0) for a test, -1 returns to the switch; and
 // the layer-tiles they advanced

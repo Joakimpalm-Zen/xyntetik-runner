@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--gpu-route` names the CUDA arithmetic routes, and records keep them.**
+  The tensor-core and attention kernels this release adds compute in another
+  order or precision than the reference kernels (each held to a tolerance
+  gate). `--gpu-route reference` runs none of them, a comma list of `tc2`,
+  `sm80`, `attn-tile`, `attn-dec`, `attn-tc` runs those, and
+  `RUNNER_CUDA_ROUTE` takes the same value from the environment. The set a
+  CUDA run used goes into transcripts and receipts (`profile.gpu_route`), and
+  `--verify` replays with the record's set; older records replay with
+  `reference`. Off CUDA the flag is accepted and does nothing.
+
 - **Q3_K models decode on CUDA again.** The Q3_K decode kernel read its
   quant and high-mask bytes eight at a time from 110-byte blocks, so three
   of every four loads were misaligned and the first decoded token raised a

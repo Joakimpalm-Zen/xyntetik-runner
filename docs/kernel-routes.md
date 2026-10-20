@@ -22,8 +22,9 @@ logit-bit-identical**: the CPU sums a row with SIMD lanes and the GPU with a
 32-lane reduction tree, and those round differently. `test-gpu-identity`
 states that bound. A route promoted to a default keeps an opt-out switch that
 restores the reference route; every CPU-against-GPU byte comparison in the
-suite sets those switches (`RUNNER_CUDA_TC=0`, `RUNNER_METAL_MM=0`,
-`RUNNER_METAL_ATTN_COOP=0`, `RUNNER_METAL_MOE_MM=0`, `RUNNER_MOE_EAGER=1`).
+suite sets those switches (`RUNNER_CUDA_TC=0`, `RUNNER_CUDA_ROUTE=reference`,
+`RUNNER_METAL_MM=0`, `RUNNER_METAL_ATTN_COOP=0`, `RUNNER_METAL_MOE_MM=0`,
+`RUNNER_MOE_EAGER=1`).
 
 Several tolerance gates take a real model as an argument (`./test-tc-tol
 MODEL.gguf`). They run on a promotion, not on every change; the rows they

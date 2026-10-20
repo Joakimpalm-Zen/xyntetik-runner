@@ -1273,6 +1273,9 @@ static void usage_to(FILE *f, const char *prog) {
         "  --gpu auto|off GPU offload if a backend is available (default auto)\n"
         "  --gpu-layers N force N leading layers on the GPU, rest on CPU\n"
         "                 (0 = no GPU, same as --gpu off; omit for auto-fit)\n"
+        "  --gpu-route R  CUDA arithmetic routes: reference, or a comma list of\n"
+        "                 tc2, sm80, attn-tile, attn-dec, attn-tc (recorded in\n"
+        "                 transcripts and receipts; --verify uses the record's)\n"
         "  --cpu-moe [N|auto]  keep sparse MoE expert FFNs in RAM while CUDA\n"
         "                 runs attention and other dense tensors on the GPU.\n"
         "                 Bare = every expert layer on the host; N = only the\n"
@@ -1955,6 +1958,7 @@ typedef struct {
     receipt_sig_state rsig;   // the record's signature state
     char rec_pub[SIGN_PUBHEX_CAP];
     char prev[65];
+    int route;                // the CUDA arithmetic routes it pins (gpu.h GR_*)
 } cli_verify;
 
 // What a mode runs on once the model is loaded: the model and its tokenizer,
@@ -2105,6 +2109,17 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "--chat-template")) o->tmpl_arg = NEXT;
         else if (!strcmp(a, "--no-bos")) o->no_bos = true;
         else if (!strcmp(a, "--ignore-eos")) o->ignore_eos = true;
+        else if (!strcmp(a, "--gpu-route")) {
+            const char *v = NEXT;
+            int mask = gpu_route_parse(v);
+            if (mask < 0) {
+                fprintf(stderr, "error: --gpu-route expects reference or a comma list of "
+                        "tc2, sm80, attn-tile, attn-dec, attn-tc\n");
+                *rc = 1;
+                return false;
+            }
+            gpu_route_pin(mask);   // the process's CUDA arithmetic, over RUNNER_CUDA_*
+        }
         else if (!strcmp(a, "--gpu")) {
             const char *v = NEXT;
             if (!strcmp(v, "auto")) o->mp.gpu_mode = GPU_AUTO;
@@ -2848,6 +2863,9 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
         jv *gpu_layers_v = jv_get(prof, "gpu_layers");
         jv *gpu_window_v = jv_get(prof, "gpu_window");
         double gpu_window_d = jv_num(gpu_window_v, -1);
+        jv *gpu_route_v = jv_get(prof, "gpu_route");
+        int gpu_route_m = gpu_route_v && gpu_route_v->type == J_STR
+                        ? gpu_route_parse(jv_str(gpu_route_v, "")) : -1;
         const char *kv = jv_str(jv_get(prof, "kv"), NULL);
         double ctx_d = jv_num(ctx_v, -1), batch_d = jv_num(batch_v, -1);
         double threads_d = jv_num(threads_v, -1);
@@ -2866,6 +2884,7 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
             (gpu_window_v && (gpu_window_v->type != J_NUM || gpu_window_d < 64 ||
              gpu_window_d > 4096 || gpu_window_d != (double)(int)gpu_window_d ||
              (int)gpu_window_d % 64 != 0)) ||
+            (gpu_route_v && gpu_route_m < 0) ||
             (strcmp(kv, "f16") != 0 && strcmp(kv, "q8") != 0 &&
              strcmp(kv, "fp4") != 0 && strcmp(kv, "k8v4") != 0)) {
             fprintf(stderr, "UNVERIFIABLE: malformed execution profile\n");
@@ -2885,6 +2904,10 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
         // the CUDA prompt window the record ran at; a record without one was
         // written before the window was memory-sized, when it was fixed at 64
         o->mp.gpu_window = gpu_window_v ? (int)gpu_window_d : 64;
+        // and its arithmetic routes; a record without the field predates them
+        // and ran the reference kernels. The record wins over --gpu-route.
+        gpu_route_pin(gpu_route_v ? gpu_route_m : 0);
+        vr->route = gpu_route_v ? gpu_route_m : 0;
         jv *record_adapter = jv_get(vr->rec, "adapter");
         if (record_adapter && record_adapter->type != J_NULL) {
             jv *scale_v = record_adapter->type == J_OBJ
@@ -4126,7 +4149,8 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
         rt->m.kv_fp4 != expected_fp4 || rt->m.kv_split != expected_split ||
         (rt->m.gpu != NULL) != expected_gpu ||
         (expected_layers_v && rt->m.gpu_layers != expected_layers) ||
-        (got_window > 0 && got_window != expected_window)) {
+        (got_window > 0 && got_window != expected_window) ||
+        (got_window > 0 && gpu_route_active(&rt->m) != vr->route)) {
         fprintf(stderr, "UNVERIFIABLE: runtime could not reproduce the "
                 "recorded execution profile\n");
         jv_free(vr->rec);
@@ -5008,6 +5032,7 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
             .gpu = rt->m.gpu != NULL,
             .gpu_layers = rt->m.gpu_layers,
             .gpu_window = gpu_prompt_window(&rt->m),
+            .gpu_route = gpu_route_record(&rt->m),
             .threads = tpool_size(rt->m.tp), .n_ctx = rt->m.n_ctx,
             .n_batch = rt->m.n_batch, .kv_q8 = rt->m.kv_q8, .kv_fp4 = rt->m.kv_fp4,
             .kv_split = rt->m.kv_split,

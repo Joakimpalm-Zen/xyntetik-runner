@@ -3814,10 +3814,39 @@ static bool gpu_q8x_on(void) {
     return on == 1;
 }
 
+// The arithmetic routes' pin (gpu.h GR_*): -1 leaves each route to its
+// RUNNER_CUDA_* diagnostic and its default; a mask set by --gpu-route or by
+// --verify from a record decides every one of them instead.
+static _Atomic int g_route_pin = -1;
+void gpu_route_pin(int mask) { g_route_pin = mask < 0 ? -1 : (mask & GR_ALL); }
+// RUNNER_CUDA_ROUTE: the same set as an environment setting, under the
+// command line's pin and over the per-route variables, so a harness that
+// compares CPU and GPU bytes pins every arithmetic route with one variable
+// (RUNNER_CUDA_ROUTE=reference beside RUNNER_CUDA_TC=0). An unknown value is
+// said once and ignored.
+static int route_env(void) {
+    static _Atomic int env = -2;    // -2 unread, -1 unset or invalid
+    if (env == -2) {
+        const char *e = getenv("RUNNER_CUDA_ROUTE");
+        int v = e && *e ? gpu_route_parse(e) : -1;
+        if (e && *e && v < 0)
+            fprintf(stderr, "gpu: RUNNER_CUDA_ROUTE=%s is not reference or a list of tc2, "
+                    "sm80, attn-tile, attn-dec, attn-tc; ignored\n", e);
+        env = v;
+    }
+    return env;
+}
+static int route_pinned(int bit) {
+    int p = g_route_pin;
+    if (p < 0) p = route_env();
+    return p < 0 ? -1 : (p & bit) != 0;
+}
+
 // RUNNER_CUDA_TC2: the pipelined tensor-core GEMM (k_gemm2_*) wherever the
 // TC route is on for the type and a TC2 kernel exists. 1 selects it, 0 or
 // unset keeps the TC kernels while its gates are run.
 static bool gpu_tc2_on(void) {
+    if (route_pinned(GR_TC2) >= 0) return route_pinned(GR_TC2);
     static _Atomic int on = -1;
     if (on < 0) { const char *e = getenv("RUNNER_CUDA_TC2"); on = e && *e && strcmp(e, "0") != 0; }
     return on == 1;
@@ -3828,6 +3857,7 @@ unsigned long gpu_tc2_dispatches(void) { return g_tc2_dispatches; }
 // E1: RUNNER_CUDA_SM80=0 keeps TC2 on its compute_75 kernels on a device
 // that could run the compute_80 ones (a diagnostic and A/B control)
 static bool gpu_sm80_on(void) {
+    if (route_pinned(GR_SM80) >= 0) return route_pinned(GR_SM80);
     static _Atomic int on = -1;
     if (on < 0) {
         const char *e = getenv("RUNNER_CUDA_SM80");
@@ -5614,6 +5644,7 @@ static bool tile_kv_store(gpu_t *g, model_t *m, int l, int tn, int hd,
 // RUNNER_CUDA_ATTN_TILE: the tiled prefill attention (k_attn_tile*, C2
 // step 1). 1 selects it, 0 or unset keeps k_attn while its gates are run.
 static bool attn_tile_on(void) {
+    if (route_pinned(GR_ATTN_TILE) >= 0) return route_pinned(GR_ATTN_TILE);
     static _Atomic int on = -1;
     if (on < 0) {
         const char *e = getenv("RUNNER_CUDA_ATTN_TILE");
@@ -5656,6 +5687,7 @@ static bool tile_attn_tiled(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
 // step 2) for fp16 caches. 1 selects it ahead of the tiled kernel, 0 or unset
 // keeps the scalar route while its tolerance gates are run.
 static bool attn_tc_on(void) {
+    if (route_pinned(GR_ATTN_TC) >= 0) return route_pinned(GR_ATTN_TC);
     static _Atomic int on = -1;
     if (on < 0) {
         const char *e = getenv("RUNNER_CUDA_ATTN_TC");
@@ -5688,6 +5720,7 @@ static bool tile_attn_tc(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
 // block per KV head and slice serving its query heads). 1 selects it, 0 or
 // unset keeps k_attn_dec while its gates are run.
 static bool attn_dec_on(void) {
+    if (route_pinned(GR_ATTN_DEC) >= 0) return route_pinned(GR_ATTN_DEC);
     static _Atomic int on = -1;
     if (on < 0) {
         const char *e = getenv("RUNNER_CUDA_ATTN_DEC");
@@ -5696,6 +5729,18 @@ static bool attn_dec_on(void) {
     return on == 1;
 }
 static _Atomic unsigned long g_attn_dec_gqa_dispatches;
+
+// The arithmetic routes in force (gpu.h): what a record states and --verify
+// checks after it has pinned them. With an instance, sm80 counts only when
+// its compute_80 module actually loaded (a device under 8.0 runs TC2's
+// compute_75 kernels whatever was asked).
+int gpu_route_active(const model_t *m) {
+    const gpu_t *g = m ? m->gpu : NULL;
+    bool sm80 = gpu_tc2_on() && gpu_sm80_on() && (!g || (g->sw && g->sw->mod80));
+    return (gpu_tc2_on() ? GR_TC2 : 0) | (sm80 ? GR_SM80 : 0) |
+           (attn_tile_on() ? GR_ATTN_TILE : 0) | (attn_dec_on() ? GR_ATTN_DEC : 0) |
+           (attn_tc_on() ? GR_ATTN_TC : 0);
+}
 
 // The grouped decode attention for the single query column, or false
 // (nothing launched) when it does not apply. 32 fixed slices, so the grid

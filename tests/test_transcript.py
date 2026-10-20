@@ -313,6 +313,69 @@ def test_cuda_record_carries_and_enforces_its_prompt_window(
     assert b"could not reproduce the recorded execution profile" in v.stderr
 
 
+def test_profile_gpu_route_is_validated_and_ignored_off_cuda(
+        runner_bin, base, tmp_path):
+    """The CUDA arithmetic routes (profile.gpu_route) are part of a record's
+    arithmetic, so --verify pins them. A CPU run writes none; a malformed
+    value is refused before any replay; a well-formed one is ignored by a
+    backend without those kernels. --gpu-route itself refuses an unknown name
+    and is accepted, with no effect, off CUDA."""
+    rec = tmp_path / "route.json"
+    r = _run(runner_bin, base, rec, extra=("--gpu-route", "tc2,attn-tc"))
+    assert "gpu_route" not in r["profile"]
+
+    for bad in ("", "bogus", "tc2,", ",tc2", "tc2,,sm80", "TC2", 5, None):
+        r2 = json.loads(json.dumps(r))
+        r2["profile"]["gpu_route"] = bad
+        forged = tmp_path / "bad-route.json"
+        _forge_record(forged, r2)
+        p = _verify(runner_bin, base, forged)
+        assert p.returncode == 3, (bad, p.stderr.decode(errors="replace"))
+        assert b"malformed execution profile" in p.stderr, bad
+
+    for good in ("reference", "attn-tc,tc2", "tc2,sm80,attn-tile,attn-dec,attn-tc"):
+        r3 = json.loads(json.dumps(r))
+        r3["profile"]["gpu_route"] = good
+        forged = tmp_path / "cpu-route.json"
+        _forge_record(forged, r3)
+        p = _verify(runner_bin, base, forged)
+        assert p.returncode == 0, (good, p.stderr.decode(errors="replace"))
+        assert json.loads(p.stdout)["verdict"] == "VERIFIED"
+
+    p = subprocess.run([runner_bin, "-m", str(base), "-p", "x", "-n", "1",
+                        "--gpu-route", "warp9"], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=60)
+    assert p.returncode != 0
+    assert b"--gpu-route expects reference or a comma list" in p.stderr
+
+
+def test_cuda_record_carries_and_replays_its_routes(runner_bin, base, tmp_path):
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, check=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("needs a CUDA device: only CUDA has these routes")
+    for route in ("reference", "attn-tile"):
+        rec = tmp_path / f"cuda-route-{route}.json"
+        p = subprocess.run(
+            [runner_bin, "-m", str(base), "-p", "the runner trains the", "-n", "12",
+             "--temp", "0", "-s", "7", "-t", "2", "--gpu-route", route, "--no-tray",
+             "--transcript", str(rec)],
+            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        r = json.loads(rec.read_bytes())
+        if not r["profile"]["gpu"]:
+            pytest.skip("the fixture did not run on the device")
+        assert r["profile"]["gpu_route"] == route
+        # the replay pins the record's routes whatever the command line asks
+        v = subprocess.run(
+            [runner_bin, "-m", str(base), "--verify", str(rec), "-t", "2",
+             "--gpu-route", "reference" if route != "reference" else "attn-tile",
+             "--no-tray"],
+            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        assert v.returncode == 0, v.stderr.decode(errors="replace")
+        assert json.loads(v.stdout)["verdict"] == "VERIFIED"
+
+
 def test_recorded_adapter_scale_drives_replay(runner_bin, base, tmp_path):
     prefix = tmp_path / "fx"
     subprocess.run([sys.executable, ROOT / "scripts/make-test-lora.py",

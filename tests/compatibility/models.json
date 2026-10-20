@@ -24,7 +24,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -72,7 +73,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -119,7 +121,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -165,7 +168,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -212,7 +216,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -263,7 +268,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -310,7 +316,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -357,6 +364,7 @@
         "cpu_cuda": {
           "pins": {
             "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
             "RUNNER_MOE_EAGER": "1"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
@@ -403,6 +411,7 @@
         "cpu_cuda": {
           "pins": {
             "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
             "RUNNER_MOE_EAGER": "1"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
@@ -443,6 +452,7 @@
         "cpu_cuda": {
           "pins": {
             "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
             "RUNNER_MOE_EAGER": "1"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
@@ -483,6 +493,7 @@
         "cpu_cuda": {
           "pins": {
             "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
             "RUNNER_MOE_EAGER": "1"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
@@ -548,6 +559,7 @@
         "cpu_cuda": {
           "pins": {
             "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
             "RUNNER_MOE_EAGER": "1"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
@@ -588,6 +600,7 @@
         "cpu_cuda": {
           "pins": {
             "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
             "RUNNER_MOE_EAGER": "1"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
@@ -628,6 +641,7 @@
         "cpu_cuda": {
           "pins": {
             "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
             "RUNNER_MOE_EAGER": "1"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
@@ -670,7 +684,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -712,7 +727,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -760,7 +776,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -806,7 +823,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -852,7 +870,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -900,7 +919,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -947,7 +967,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -1024,6 +1045,7 @@
         "cpu_cuda": {
           "pins": {
             "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
             "RUNNER_MOE_EAGER": "1"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
@@ -1065,7 +1087,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -1105,7 +1128,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -1146,7 +1170,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -1188,7 +1213,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,
@@ -1230,7 +1256,8 @@
       "check_params": {
         "cpu_cuda": {
           "pins": {
-            "RUNNER_CUDA_TC": "0"
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
           },
           "prompt_set": "cpu_cuda_check.PROMPTS",
           "min_prompt_tokens": 85,

@@ -355,6 +355,9 @@ bool transcript_write(const transcript_info *ti) {
     // the CUDA prompt window, which picks the route of a prompt's last
     // partial tile: --verify rebuilds the instance at it
     if (ti->gpu_window > 0) tsb_fmt(&w, ",\"gpu_window\":%d", ti->gpu_window);
+    // the arithmetic routes the CUDA instance ran with (gpu.h GR_*), which
+    // --verify pins: "reference" or route names, never free text
+    if (ti->gpu_route) tsb_fmt(&w, ",\"gpu_route\":\"%s\"", ti->gpu_route);
     tsb_put(&w, "},", 2);
     tsb_put(&w, "\"model\":{\"path\":", 16);
     tsb_json_str(&w, ti->model_path, strlen(ti->model_path));

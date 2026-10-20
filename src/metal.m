@@ -928,6 +928,8 @@ void gpu_tc_force(int on) {
 unsigned long gpu_tc2_dispatches(void) { return 0; }   // CUDA's pipelined TC2 kernels
 unsigned long gpu_tc2_80_dispatches(void) { return 0; }
 int gpu_prompt_window(const model_t *m) { (void)m; return 0; }   // CUDA's prompt window
+void gpu_route_pin(int mask) { (void)mask; }             // CUDA's arithmetic routes
+int gpu_route_active(const model_t *m) { (void)m; return 0; }
 void gpu_recur_seq_force(int on) { (void)on; }          // CUDA's whole-tile recurrent kernels
 unsigned long gpu_recur_seq_dispatches(void) { return 0; }
 unsigned long gpu_tc_dispatches(void) { return g_tc_dispatches; }
