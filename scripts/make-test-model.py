@@ -39,6 +39,7 @@ ATTN_TEMP_SCALE = 0.0
 # the temperature is actually live at position 0.
 ATTN_TEMP_FLOOR = 8192
 SWA_WINDOW = 0
+SWA_WINDOW_ONLY = 0  # --swa-window: a window with no pattern key (phi3 exports)
 POST_NORMS = False
 SWA_PATTERN = 0
 ESERIES_SHARED_KV = 0
@@ -126,6 +127,12 @@ while i < len(args):
         i += 1
         _win, _pat = args[i].split(",")
         SWA_WINDOW, SWA_PATTERN = int(_win), int(_pat)
+    elif a == "--swa-window":
+        # a sliding window with NO pattern key, as phi3 exports publish it
+        # (Phi-3.5: 262144 over a 131072 context): the architecture, not a
+        # pattern, decides which layers it covers
+        i += 1
+        SWA_WINDOW_ONLY = int(args[i])
     elif a == "--eseries":
         # --eseries SHARED_KV,PLE_DIM  (e.g. "3,16" on the default 6 layers)
         i += 1
@@ -570,6 +577,28 @@ if ESERIES_PLE:
         ("per_layer_proj_norm.weight", [ESERIES_PLE], ones(ESERIES_PLE)),
     ]
 
+if ARCH == "phi3":
+    # phi3 fuses Q/K/V into attn_qkv and gate/up into ffn_up (gate rows
+    # first), and ships LongRoPE: two per-frequency factor sets, chosen by
+    # context, and an attention factor on the rotation. The factors are not
+    # identity (as the real short factors are not), so a layer that ropes
+    # without them is visible in the logits.
+    fused = []
+    by = {t[0]: t for t in tensors}
+    for i in range(N_LAYER):
+        q, k, v = (by.pop(f"blk.{i}.attn_{x}.weight") for x in "qkv")
+        g, u = by.pop(f"blk.{i}.ffn_gate.weight"), by.pop(f"blk.{i}.ffn_up.weight")
+        fused += [(f"blk.{i}.attn_qkv.weight", [N_EMBD, q[1][1] + k[1][1] + v[1][1]], q[2] + k[2] + v[2]),
+                  (f"blk.{i}.ffn_up.weight", [N_EMBD, 2 * g[1][1]], g[2] + u[2])]
+    tensors = [t for t in tensors if t[0] in by] + fused
+    half = (N_EMBD // N_HEAD) // 2
+    tensors += [
+        ("rope_factors_short.weight", [half],
+         struct.pack(f"<{half}f", *[1.0 + 0.75 * j / half for j in range(half)])),
+        ("rope_factors_long.weight", [half],
+         struct.pack(f"<{half}f", *[2.0 + 3.0 * j / half for j in range(half)])),
+    ]
+
 meta_kvs = [
     kv_str("general.architecture", ARCH),
     kv_u32(f"{ARCH}.block_count", N_LAYER + MTP_LAYERS),
@@ -720,6 +749,14 @@ if ATTN_NOPE_STEP:
         kv_f32(f"{ARCH}.attention.attn_temp_scale", ATTN_TEMP_SCALE),
         kv_f32(f"{ARCH}.attention.attn_temp_offset", 1.0),
     ]
+if ARCH == "phi3":
+    meta_kvs += [
+        kv_u32(f"{ARCH}.rope.scaling.original_context_length", 256),
+        kv_f32(f"{ARCH}.rope.scaling.attn_factor", 1.19),
+        kv_u32(f"{ARCH}.rope.dimension_count", N_EMBD // N_HEAD),
+    ]
+if SWA_WINDOW_ONLY:
+    meta_kvs.append(kv_u32(f"{ARCH}.attention.sliding_window", SWA_WINDOW_ONLY))
 if SWA_WINDOW:
     meta_kvs += [
         kv_u32(f"{ARCH}.attention.sliding_window", SWA_WINDOW),

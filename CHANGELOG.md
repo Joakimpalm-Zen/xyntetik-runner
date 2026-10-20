@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Phi-3.5 ropes every layer with its LongRoPE factors.** phi3 exports
+  publish a sliding window without a layer pattern (Phi-3.5: 262144 over a
+  131072 context), and the loader read it as gemma2's alternation, so every
+  other layer roped without the LongRoPE short factors and attention
+  factor. Against the publisher's float32 model over 2,000 positions,
+  Phi-3.5-mini Q4_K_M went from mean KL 0.275 to 0.045 (another engine on
+  the same file: 0.049) and margin-qualified top-1 from 85.6% to 98.5%. A
+  phi3 window now covers every layer alike under the one rotation, and a
+  window at least the trained context covers none; `tests/test_phi3_rope.py`
+  holds a phi3 fixture with non-identity factors to that.
+
 - **gemma-4 E2B runs on CUDA.** E2B publishes a different FFN width per
   layer, and the CUDA backend sized its FFN path off one global width, so it
   refused these files and they ran on the CPU. Every FFN projection now takes

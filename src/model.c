@@ -2258,18 +2258,30 @@ static bool bind_mtp_layers(model_t *m, gguf_file *g, const char *arch, const mo
 }
 
 // The sliding window and its pattern, for an architecture whose block above
-// set none.
+// set none. Without a pattern key the default alternates (gemma2's layout).
+// phi3 is not alternating: its window covers every layer alike, under the
+// one LongRoPE rotation, and Phi-3.5 publishes a 262144 window over a 131072
+// context. Read as gemma2's, every other layer roped from the raw local table
+// (no short factors, no attention factor) and Phi-3.5 sat at mean KL 0.275
+// from its float32 reference, against 0.049 for another engine on the same
+// file. A phi3 window at least the trained context masks nothing and binds
+// no layer; a shorter one binds them all, sharing the global rope.
 static bool bind_swa_default(model_t *m, gguf_file *g, const char *arch) {
     char key[128];
     int sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
+    bool uniform = strcmp(arch, "phi3") == 0;
+    if (uniform && sw >= m->n_ctx_train) sw = 0;
     if (sw > 0) {
         int pattern = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 2);
         if (pattern < 1) pattern = 2;
         m->swa_window = sw;
         m->l_is_swa = calloc(m->n_layer, sizeof(bool));
         if (!m->l_is_swa) return false;
-        if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
-                               m->l_is_swa, m->n_layer))
+        if (uniform) {
+            for (int i = 0; i < m->n_layer; i++) m->l_is_swa[i] = true;
+            m->swa_rope_global = true;
+        } else if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
+                                      m->l_is_swa, m->n_layer))
             for (int i = 0; i < m->n_layer; i++)
                 m->l_is_swa[i] = ((i + 1) % pattern) != 0;
     }
