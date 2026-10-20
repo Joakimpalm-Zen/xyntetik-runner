@@ -5,6 +5,20 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA decode for IQ4_NL, NVFP4, Q2_K, IQ1_S, IQ1_M, Q4_1, Q5_0, Q5_1
+  and Q2_0 reads the activations once per block of rows, with the same
+  bytes.** These formats have no coalesced decode kernel; their matvec,
+  like Q4_0's and MXFP4's before the previous change, gave each lane a
+  whole quant block and read its activations 128 bytes or more from the
+  next lane's. They, and the MoE expert copies for NVFP4, IQ4_NL, IQ4_XS
+  and Q2_0, now take the same staging through shared memory, eight rows a
+  block, every lane adding the same blocks in the same order. On an RTX
+  3070, Xyntetik-Kvist-14B IQ4_NL decodes at 22.9 tok/s where it ran 6.8
+  and granite-4.2-3b IQ1_M at 60.8 where it ran 24.6 (three rounds); the
+  matvecs themselves run 3.5-9.0x faster. `--score` is byte-identical to
+  the previous kernels on Kvist-14B IQ4_NL-mix, Qwen3.5-4B NVFP4 and
+  granite-4.2-3b IQ1_M and IQ2_XXS.
+
 - **CUDA MoE experts in Q4_0 and MXFP4 read their activations once per
   block of rows, with the same bytes.** These two formats' expert matvec
   gives each lane a whole 32-weight block, so a lane walked its block's 32

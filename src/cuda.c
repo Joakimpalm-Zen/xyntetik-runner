@@ -3808,6 +3808,19 @@ static void tc_scalar_notice(const model_t *m) {
 // `scale` is passed as a sixth kernel parameter only when `scaled` is set:
 // the NVFP4 kernels take the per-tensor companion that way, every other
 // kernel keeps its five-parameter signature and its committed PTX.
+// The types whose batch-1 matvec gives each lane a whole quant block and
+// stages the activations once per block of rows (X21, X21b): launched eight
+// rows a block. The others keep four.
+static bool lane_staged_type(int type) {
+    switch (type) {
+    case T_Q4_0: case T_MXFP4: case T_IQ4_NL: case T_NVFP4: case T_Q2_K:
+    case T_IQ1_S: case T_IQ1_M: case T_Q4_1: case T_Q5_0: case T_Q5_1: case T_Q2_0:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static bool launch_tiled(gpu_t *g, CUfunction f, unsigned grid, unsigned block,
                          CUdeviceptr weights, CUdeviceptr x, CUdeviceptr y,
                          mv_args a, CUdeviceptr bias, int tile,
@@ -4121,11 +4134,15 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     // decoded weight to all columns, the single variant is faster at batch 1
     CUfunction f = batch > 1 ? g->sw->f_mvb[w->type] : g->sw->f_mv[w->type];
     // the lane-level i-quant batch-1 kernels take IQ_ROWS (2) rows per warp
-    unsigned rpb = 4;
+    unsigned rpb = 4, block = 128;
     if (batch == 1 && (w->type == T_IQ2_XXS || w->type == T_IQ2_XS || w->type == T_IQ2_S ||
                        w->type == T_IQ3_XXS || w->type == T_IQ3_S || w->type == T_IQ4_XS))
         rpb = 4 * 2;
-    return launch_tiled(g, f, (n_out + rpb - 1) / rpb, 128, weights, x, y, a, b,
+    // the one-lane-per-block batch-1 kernels stage the column's activations
+    // once per block of rows (kernels.cu, LANE_STAGE_XN), so eight rows a
+    // block share each copy; every row is computed the same either way
+    if (batch == 1 && lane_staged_type(w->type)) { rpb = 8; block = 256; }
+    return launch_tiled(g, f, (n_out + rpb - 1) / rpb, block, weights, x, y, a, b,
                         batch > 1 ? MVT : MVB,
                         w->type == T_NVFP4, w->scale);
 }
@@ -4851,10 +4868,12 @@ static bool enc_moe_mv(gpu_t *g, model_t *m, gguf_tensor *base,
     // the others read five and ignore the trailing entry
     float scale = base->scale;
     void *p[] = { &weights, &x, &y, &a, &sel, &scale };
-    // Q4_0 and MXFP4 stage the slot's activations once per block of rows
-    // (kernels.cu, MOE_LANE_HEAD), so eight rows a block share each copy;
-    // each warp's row is computed the same either way
-    int rows = base->type == T_Q4_0 || base->type == T_MXFP4 ? 8 : 4;
+    // the one-lane-per-block types stage the slot's activations once per
+    // block of rows (kernels.cu, MOE_LANE_HEAD), so eight rows a block share
+    // each copy; each warp's row is computed the same either way
+    // (IQ4_XS: its MoE copy is lane-per-block and staged, its dense batch-1
+    // kernel is not, so it is named here and not in lane_staged_type)
+    int rows = lane_staged_type(base->type) || base->type == T_IQ4_XS ? 8 : 4;
     return launch(g, f, (unsigned)((n_out + rows - 1) / rows), nslots, 1,
                   (unsigned)(32 * rows), p);
 }

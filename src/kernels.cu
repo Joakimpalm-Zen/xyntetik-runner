@@ -158,6 +158,22 @@ static __device__ __forceinline__ float warp_sum(float s) {
 
 #define MV_PARAMS const uchar *wb, const float *x, float *y, mv_args a, const float *bias
 
+// Activation staging for the one-lane-per-block matvecs (see LANE_XPAD at
+// k_mv_q4_0) at any block width: EL-element blocks in rows of
+// EL + 1 floats (lane l's element j in bank (l + j) % 32), for the remaining
+// one-lane-per-block kernels (X21b: the decode kernels of the types with no
+// coalesced GEMV, and their MoE copies). The block's rows share each copy;
+// dead rows join the barriers and skip the math and the store.
+#define LANE_STAGE_XN(xsm, xsrc, b0, nblk, EL)                                 \
+    for (int i_ = threadIdx.x; i_ < (nblk) * (EL); i_ += blockDim.x)           \
+        (xsm)[(i_ / (EL)) * ((EL) + 1) + (i_ % (EL))] = (xsrc)[(ulong64)(b0) * (EL) + i_];
+#define LANE_DENSE_HEAD(EL)                                                    \
+    __shared__ float xsm[32 * ((EL) + 1)];                                     \
+    unsigned row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5);        \
+    unsigned lane = threadIdx.x & 31;                                          \
+    bool live = row < (unsigned)a.n_out;
+
+
 extern "C" __global__ void k_mv_f32(MV_PARAMS) {
     MV_HEAD;
     const float *rw = (const float *)(wb + a.w_off) + (ulong64)row * a.n_in;
@@ -398,26 +414,37 @@ extern "C" __global__ void k_gemv_q4_0(MV_PARAMS) {
 // Q2_0 (ggml type 42): 64 codes per 18-byte block, code j at bits 2*(j%4) of
 // byte j/4, value (code - 1) * d; the device twin of quants.c dq_q2_0.
 extern "C" __global__ void k_mv_q2_0(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(64)
     int nb = a.n_in / 64;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 18;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 18;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 18;
-        float d = f16f(blk);
-        const uchar *q = blk + 2;
-        const float *xp = x + (ulong64)b * 64;
-        float t = 0;
-        for (int j = 0; j < 16; j++) {
-            uchar c = q[j];
-            t += ((int)(c & 3) - 1) * xp[4 * j]
-               + ((int)((c >> 2) & 3) - 1) * xp[4 * j + 1]
-               + ((int)((c >> 4) & 3) - 1) * xp[4 * j + 2]
-               + ((int)(c >> 6) - 1) * xp[4 * j + 3];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 64)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (64 + 1);
+            const uchar *blk = rw + (ulong64)b * 18;
+            float d = f16f(blk);
+            const uchar *q = blk + 2;
+            const float *xp = xs_;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                uchar c = q[j];
+                t += ((int)(c & 3) - 1) * xp[4 * j]
+                   + ((int)((c >> 2) & 3) - 1) * xp[4 * j + 1]
+                   + ((int)((c >> 4) & 3) - 1) * xp[4 * j + 2]
+                   + ((int)(c >> 6) - 1) * xp[4 * j + 3];
+            }
+            s += d * t;
         }
-        s += d * t;
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_q2_0_b(MV_PARAMS) {
@@ -505,24 +532,35 @@ extern "C" __global__ void k_mv_q4_0_b(MV_PARAMS) {
 }
 
 extern "C" __global__ void k_mv_q4_1(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(32)
     int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 20;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 20;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 20;
-        float d  = f16f(blk);
-        float mm = f16f(blk + 2);
-        const uchar *q = blk + 4;
-        const float *xp = x + b * 32;
-        float t = 0, sx = 0;
-        for (int j = 0; j < 16; j++) {
-            t += (float)(q[j] & 0xF) * xp[j] + (float)(q[j] >> 4) * xp[j + 16];
-            sx += xp[j] + xp[j + 16];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 20;
+            float d  = f16f(blk);
+            float mm = f16f(blk + 2);
+            const uchar *q = blk + 4;
+            const float *xp = xs_;
+            float t = 0, sx = 0;
+            for (int j = 0; j < 16; j++) {
+                t += (float)(q[j] & 0xF) * xp[j] + (float)(q[j] >> 4) * xp[j + 16];
+                sx += xp[j] + xp[j + 16];
+            }
+            s += d * t + mm * sx;
         }
-        s += d * t + mm * sx;
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_q4_1_b(MV_PARAMS) {
@@ -544,26 +582,37 @@ extern "C" __global__ void k_mv_q4_1_b(MV_PARAMS) {
 }
 
 extern "C" __global__ void k_mv_q5_0(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(32)
     int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 22;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 22;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 22;
-        float d = f16f(blk);
-        uint qh = (uint)blk[2] | ((uint)blk[3] << 8) |
-                  ((uint)blk[4] << 16) | ((uint)blk[5] << 24);
-        const uchar *q = blk + 6;
-        const float *xp = x + b * 32;
-        float t = 0;
-        for (int j = 0; j < 16; j++) {
-            int x0 = (int)((q[j] & 0xF) | (((qh >> j) & 1u) << 4)) - 16;
-            int x1 = (int)((q[j] >> 4)  | (((qh >> (j + 16)) & 1u) << 4)) - 16;
-            t += x0 * xp[j] + x1 * xp[j + 16];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 22;
+            float d = f16f(blk);
+            uint qh = (uint)blk[2] | ((uint)blk[3] << 8) |
+                      ((uint)blk[4] << 16) | ((uint)blk[5] << 24);
+            const uchar *q = blk + 6;
+            const float *xp = xs_;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                int x0 = (int)((q[j] & 0xF) | (((qh >> j) & 1u) << 4)) - 16;
+                int x1 = (int)((q[j] >> 4)  | (((qh >> (j + 16)) & 1u) << 4)) - 16;
+                t += x0 * xp[j] + x1 * xp[j + 16];
+            }
+            s += d * t;
         }
-        s += d * t;
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_q5_0_b(MV_PARAMS) {
@@ -588,27 +637,38 @@ extern "C" __global__ void k_mv_q5_0_b(MV_PARAMS) {
 }
 
 extern "C" __global__ void k_mv_q5_1(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(32)
     int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 24;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 24;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 24;
-        float d  = f16f(blk);
-        float mm = f16f(blk + 2);
-        uint qh = (uint)blk[4] | ((uint)blk[5] << 8) |
-                  ((uint)blk[6] << 16) | ((uint)blk[7] << 24);
-        const uchar *q = blk + 8;
-        const float *xp = x + b * 32;
-        float t = 0, sx = 0;
-        for (int j = 0; j < 16; j++) {
-            t += (float)((q[j] & 0xF) | (((qh >> j) & 1u) << 4)) * xp[j] +
-                 (float)((q[j] >> 4)  | (((qh >> (j + 16)) & 1u) << 4)) * xp[j + 16];
-            sx += xp[j] + xp[j + 16];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 24;
+            float d  = f16f(blk);
+            float mm = f16f(blk + 2);
+            uint qh = (uint)blk[4] | ((uint)blk[5] << 8) |
+                      ((uint)blk[6] << 16) | ((uint)blk[7] << 24);
+            const uchar *q = blk + 8;
+            const float *xp = xs_;
+            float t = 0, sx = 0;
+            for (int j = 0; j < 16; j++) {
+                t += (float)((q[j] & 0xF) | (((qh >> j) & 1u) << 4)) * xp[j] +
+                     (float)((q[j] >> 4)  | (((qh >> (j + 16)) & 1u) << 4)) * xp[j + 16];
+                sx += xp[j] + xp[j + 16];
+            }
+            s += d * t + mm * sx;
         }
-        s += d * t + mm * sx;
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_q5_1_b(MV_PARAMS) {
@@ -710,32 +770,43 @@ extern "C" __global__ void k_mv_bf16_b(MV_PARAMS) {
     const uchar *qbase = blk + 16;
 
 extern "C" __global__ void k_mv_q2_K(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(256)
     int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 84;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 84;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 84;
-        Q2K_SETUP;
-        const float *xp = x + (ulong64)b * 256;
-        int pos = 0, is = 0; const uchar *q = qbase;
-        for (int n = 0; n < 256; n += 128) {
-            int shift = 0;
-            for (int j = 0; j < 4; j++) {
-                uchar scb = q2scales[is++];
-                float dl = d * (scb & 0xF), ml = dmin * (scb >> 4);
-                for (int l = 0; l < 16; l++)
-                    s += (dl * (float)((q[l] >> shift) & 3) - ml) * xp[pos++];
-                scb = q2scales[is++];
-                dl = d * (scb & 0xF); ml = dmin * (scb >> 4);
-                for (int l = 0; l < 16; l++)
-                    s += (dl * (float)((q[l+16] >> shift) & 3) - ml) * xp[pos++];
-                shift += 2;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 256)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (256 + 1);
+            const uchar *blk = rw + (ulong64)b * 84;
+            Q2K_SETUP;
+            const float *xp = xs_;
+            int pos = 0, is = 0; const uchar *q = qbase;
+            for (int n = 0; n < 256; n += 128) {
+                int shift = 0;
+                for (int j = 0; j < 4; j++) {
+                    uchar scb = q2scales[is++];
+                    float dl = d * (scb & 0xF), ml = dmin * (scb >> 4);
+                    for (int l = 0; l < 16; l++)
+                        s += (dl * (float)((q[l] >> shift) & 3) - ml) * xp[pos++];
+                    scb = q2scales[is++];
+                    dl = d * (scb & 0xF); ml = dmin * (scb >> 4);
+                    for (int l = 0; l < 16; l++)
+                        s += (dl * (float)((q[l+16] >> shift) & 3) - ml) * xp[pos++];
+                    shift += 2;
+                }
+                q += 32;
             }
-            q += 32;
         }
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_q2_K_b(MV_PARAMS) {
@@ -2206,23 +2277,34 @@ extern "C" __global__ void k_mvt_q4_K(MV_PARAMS) {
 #include "kernels_iq4_table.cuh"
 
 extern "C" __global__ void k_mv_iq4_nl(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(32)
     int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 18;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 18;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 18;
-        float d = f16f(blk);
-        const uchar *q = blk + 2;
-        const float *xp = x + b * 32;
-        float t = 0;
-        for (int j = 0; j < 16; j++) {
-            t += (float)kv_iq4[q[j] & 0xF] * xp[j];
-            t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 18;
+            float d = f16f(blk);
+            const uchar *q = blk + 2;
+            const float *xp = xs_;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                t += (float)kv_iq4[q[j] & 0xF] * xp[j];
+                t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+            }
+            s += d * t;
         }
-        s += d * t;
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_iq4_nl_b(MV_PARAMS) {
@@ -2828,28 +2910,39 @@ extern "C" __global__ void k_mv_iq3_s_b(MV_PARAMS) {
 // scale (bits 12-14) decoded as 1 + 2*scale, and the sign of the shared
 // 1/8 delta (bit 15).
 extern "C" __global__ void k_mv_iq1_s(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(256)
     int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 50;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 50;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 50;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2, *qh = blk + 34;
-        const float *xp = x + b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 4) {
-            unsigned h = iq_ld16(qh + 2 * ib);
-            float dl = d * (float)(2 * ((h >> 12) & 7) + 1);
-            float delta = h & 0x8000 ? -IQ1_DELTA : IQ1_DELTA;
-            float t = 0;
-            for (int l = 0; l < 4; l++, xp += 8) {
-                ulong64 g = kiq1s_grid[qs[l] | (((h >> (3 * l)) & 7) << 8)];
-                for (int j = 0; j < 8; j++) t += iq1_w(g, j, delta) * xp[j];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 256)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (256 + 1);
+            const uchar *blk = rw + (ulong64)b * 50;
+            float d = f16f(blk);
+            const uchar *qs = blk + 2, *qh = blk + 34;
+            const float *xp = xs_;
+            for (int ib = 0; ib < 8; ib++, qs += 4) {
+                unsigned h = iq_ld16(qh + 2 * ib);
+                float dl = d * (float)(2 * ((h >> 12) & 7) + 1);
+                float delta = h & 0x8000 ? -IQ1_DELTA : IQ1_DELTA;
+                float t = 0;
+                for (int l = 0; l < 4; l++, xp += 8) {
+                    ulong64 g = kiq1s_grid[qs[l] | (((h >> (3 * l)) & 7) << 8)];
+                    for (int j = 0; j < 8; j++) t += iq1_w(g, j, delta) * xp[j];
+                }
+                s += dl * t;
             }
-            s += dl * t;
         }
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_iq1_s_b(MV_PARAMS) {
@@ -2880,34 +2973,45 @@ extern "C" __global__ void k_mv_iq1_s_b(MV_PARAMS) {
 // 32 (one per 16 weights, decoded as 1 + 2*scale) in its low 12 bits, and
 // the block's fp16 scale is scattered across the four top nibbles.
 extern "C" __global__ void k_mv_iq1_m(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(256)
     int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 56;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 56;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 56;
-        const uchar *qs = blk, *qh = blk + 32, *scb = blk + 48;
-        unsigned sc0 = iq_ld16(scb), sc1 = iq_ld16(scb + 2), sc2 = iq_ld16(scb + 4), sc3 = iq_ld16(scb + 6);
-        unsigned short sd = (sc0 >> 12) | ((sc1 >> 8) & 0x00f0) |
-                            ((sc2 >> 4) & 0x0f00) | (sc3 & 0xf000);
-        float d = __half2float(__ushort_as_half(sd));
-        const float *xp = x + b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 4, qh += 2) {
-            unsigned sw = iq_ld16(scb + 2 * (ib >> 1)) >> (6 * (ib & 1));
-            float dl0 = d * (float)(2 * (sw & 7) + 1);
-            float dl1 = d * (float)(2 * ((sw >> 3) & 7) + 1);
-            for (int l = 0; l < 4; l++, xp += 8) {
-                unsigned hb = qh[l >> 1];
-                unsigned idx = qs[l] | ((hb << ((l & 1) ? 4 : 8)) & 0x700);
-                float delta = hb & ((l & 1) ? 0x80 : 0x08) ? -IQ1_DELTA : IQ1_DELTA;
-                ulong64 g = kiq1s_grid[idx];
-                float t = 0;
-                for (int j = 0; j < 8; j++) t += iq1_w(g, j, delta) * xp[j];
-                s += (l < 2 ? dl0 : dl1) * t;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 256)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (256 + 1);
+            const uchar *blk = rw + (ulong64)b * 56;
+            const uchar *qs = blk, *qh = blk + 32, *scb = blk + 48;
+            unsigned sc0 = iq_ld16(scb), sc1 = iq_ld16(scb + 2), sc2 = iq_ld16(scb + 4), sc3 = iq_ld16(scb + 6);
+            unsigned short sd = (sc0 >> 12) | ((sc1 >> 8) & 0x00f0) |
+                                ((sc2 >> 4) & 0x0f00) | (sc3 & 0xf000);
+            float d = __half2float(__ushort_as_half(sd));
+            const float *xp = xs_;
+            for (int ib = 0; ib < 8; ib++, qs += 4, qh += 2) {
+                unsigned sw = iq_ld16(scb + 2 * (ib >> 1)) >> (6 * (ib & 1));
+                float dl0 = d * (float)(2 * (sw & 7) + 1);
+                float dl1 = d * (float)(2 * ((sw >> 3) & 7) + 1);
+                for (int l = 0; l < 4; l++, xp += 8) {
+                    unsigned hb = qh[l >> 1];
+                    unsigned idx = qs[l] | ((hb << ((l & 1) ? 4 : 8)) & 0x700);
+                    float delta = hb & ((l & 1) ? 0x80 : 0x08) ? -IQ1_DELTA : IQ1_DELTA;
+                    ulong64 g = kiq1s_grid[idx];
+                    float t = 0;
+                    for (int j = 0; j < 8; j++) t += iq1_w(g, j, delta) * xp[j];
+                    s += (l < 2 ? dl0 : dl1) * t;
+                }
             }
         }
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_iq1_m_b(MV_PARAMS) {
@@ -3045,26 +3149,38 @@ static __device__ __forceinline__ float ue4m3f(uchar x) {
 }
 
 extern "C" __global__ void k_mv_nvfp4(MV_PARAMS, float scale) {
-    MV_HEAD;
+    __shared__ float kv[16];
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];
+    LANE_DENSE_HEAD(64)
     int nb = a.n_in / 64;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 36;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 36;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 36;
-        for (int sub = 0; sub < 4; sub++) {
-            float d = ue4m3f(blk[sub]);
-            const uchar *q = blk + 4 + sub * 8;
-            const float *xp = x + b * 64 + sub * 16;
-            float t = 0;
-            for (int j = 0; j < 8; j++) {
-                t += kv_mxfp4[q[j] & 0xF] * xp[j];
-                t += kv_mxfp4[q[j] >> 4]  * xp[j + 8];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 64)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (64 + 1);
+            const uchar *blk = rw + (ulong64)b * 36;
+            for (int sub = 0; sub < 4; sub++) {
+                float d = ue4m3f(blk[sub]);
+                const uchar *q = blk + 4 + sub * 8;
+                const float *xp = xs_ + sub * 16;
+                float t = 0;
+                for (int j = 0; j < 8; j++) {
+                    t += kv[q[j] & 0xF] * xp[j];
+                    t += kv[q[j] >> 4]  * xp[j + 8];
+                }
+                s += d * t;
             }
-            s += d * t;
         }
+        __syncthreads();
     }
-    s = warp_sum(s) * scale;
-    if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    if (live) {
+        s = warp_sum(s) * scale;
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_nvfp4_b(MV_PARAMS, float scale) {
@@ -4815,6 +4931,14 @@ extern "C" __global__ void k_moe_mv_q8_0(MOE_MV_PARAMS) {
     const uchar *wbase = wb + a.w_off + (ulong64)sel[blockIdx.y] * a.estride;  \
     x += (ulong64)blockIdx.y * a.xs;                                           \
     float s = 0;
+#define MOE_LANE_HEAD_N(EL)                                                    \
+    __shared__ float xsm[32 * ((EL) + 1)];                                     \
+    unsigned row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5);        \
+    unsigned lane = threadIdx.x & 31;                                          \
+    bool live = row < (unsigned)a.n_out;                                       \
+    const uchar *wbase = wb + a.w_off + (ulong64)sel[blockIdx.y] * a.estride;  \
+    x += (ulong64)blockIdx.y * a.xs;                                           \
+    float s = 0;
 #define MOE_LANE_TAIL                                                          \
     if (live) {                                                                \
         s = warp_sum(s);                                                       \
@@ -4875,25 +4999,37 @@ extern "C" __global__ void k_moe_mv_mxfp4(MOE_MV_PARAMS) {
 
 // body of k_mv_nvfp4 (ModelOpt NVFP4 expert tensors)
 extern "C" __global__ void k_moe_mv_nvfp4(MOE_MV_PARAMS, float scale) {
-    MOE_MV_HEAD;
+    __shared__ float kv[16];
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];
+    MOE_LANE_HEAD_N(64)
     int nb = a.n_in / 64;
-    const uchar *rw = wbase + (ulong64)row * nb * 36;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 36;
-        for (int sub = 0; sub < 4; sub++) {
-            float d = ue4m3f(blk[sub]);
-            const uchar *q = blk + 4 + sub * 8;
-            const float *xp = x + b * 64 + sub * 16;
-            float t = 0;
-            for (int j = 0; j < 8; j++) {
-                t += kv_mxfp4[q[j] & 0xF] * xp[j];
-                t += kv_mxfp4[q[j] >> 4]  * xp[j + 8];
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 36;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 64)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (64 + 1);
+            const uchar *blk = rw + (ulong64)b * 36;
+            for (int sub = 0; sub < 4; sub++) {
+                float d = ue4m3f(blk[sub]);
+                const uchar *q = blk + 4 + sub * 8;
+                const float *xp = xs_ + sub * 16;
+                float t = 0;
+                for (int j = 0; j < 8; j++) {
+                    t += kv[q[j] & 0xF] * xp[j];
+                    t += kv[q[j] >> 4]  * xp[j + 8];
+                }
+                s += d * t;
             }
-            s += d * t;
         }
+        __syncthreads();
     }
-    s = warp_sum(s) * scale;
-    if (lane == 0) y[(ulong64)blockIdx.y * a.ys + row] = s;
+    if (live) {
+        s = warp_sum(s) * scale;
+        if (lane == 0) y[(ulong64)blockIdx.y * a.ys + row] = s;
+    }
 }
 
 // body of k_gemv_q4_K
@@ -4937,22 +5073,30 @@ extern "C" __global__ void k_moe_mv_iq3_xxs(MOE_MV_PARAMS) {
 
 // body of k_mv_iq4_nl (Qwen3.8-Flash-Next down experts)
 extern "C" __global__ void k_moe_mv_iq4_nl(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
+    MOE_LANE_HEAD_N(32)
     int nb = a.n_in / 32;
-    const uchar *rw = wbase + (ulong64)row * nb * 18;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 18;
-        float d = f16f(blk);
-        const uchar *q = blk + 2;
-        const float *xp = x + b * 32;
-        float t = 0;
-        for (int j = 0; j < 16; j++) {
-            t += (float)kv_iq4[q[j] & 0xF] * xp[j];
-            t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 18;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 18;
+            float d = f16f(blk);
+            const uchar *q = blk + 2;
+            const float *xp = xs_;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                t += (float)kv_iq4[q[j] & 0xF] * xp[j];
+                t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+            }
+            s += d * t;
         }
-        s += d * t;
+        __syncthreads();
     }
-    MOE_MV_TAIL;
+    MOE_LANE_TAIL;
 }
 
 // body of k_mv_iq2_s (Qwen3.8-Flash-Next gate/up experts on 20 of 48 blocks)
@@ -4975,52 +5119,68 @@ extern "C" __global__ void k_moe_mv_iq3_s(MOE_MV_PARAMS) {
 
 // body of k_mv_iq4_xs (Qwen3.8-Flash-Next gate/up experts on its last block)
 extern "C" __global__ void k_moe_mv_iq4_xs(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
+    MOE_LANE_HEAD_N(256)
     int nb = a.n_in / 256;
-    const uchar *rw = wbase + (ulong64)row * nb * 136;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 136;
-        float d = f16f(blk);
-        unsigned sh = (unsigned)blk[2] | ((unsigned)blk[3] << 8);
-        const uchar *sl = blk + 4;
-        const uchar *q  = blk + 8;
-        const float *xp = x + b * 256;
-        for (int ib = 0; ib < 8; ib++) {
-            int ls = ((sl[ib / 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4);
-            float dl = d * (ls - 32);
-            float t = 0;
-            for (int j = 0; j < 16; j++) {
-                t += (float)kv_iq4[q[j] & 0xF] * xp[j];
-                t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 136;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 256)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (256 + 1);
+            const uchar *blk = rw + (ulong64)b * 136;
+            float d = f16f(blk);
+            unsigned sh = (unsigned)blk[2] | ((unsigned)blk[3] << 8);
+            const uchar *sl = blk + 4;
+            const uchar *q  = blk + 8;
+            const float *xp = xs_;
+            for (int ib = 0; ib < 8; ib++) {
+                int ls = ((sl[ib / 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4);
+                float dl = d * (ls - 32);
+                float t = 0;
+                for (int j = 0; j < 16; j++) {
+                    t += (float)kv_iq4[q[j] & 0xF] * xp[j];
+                    t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+                }
+                s += dl * t;
+                q += 16; xp += 32;
             }
-            s += dl * t;
-            q += 16; xp += 32;
         }
+        __syncthreads();
     }
-    MOE_MV_TAIL;
+    MOE_LANE_TAIL;
 }
 
 // body of k_mv_q2_0 (some blocks' down experts in the GSQ release)
 extern "C" __global__ void k_moe_mv_q2_0(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
+    MOE_LANE_HEAD_N(64)
     int nb = a.n_in / 64;
-    const uchar *rw = wbase + (ulong64)row * nb * 18;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 18;
-        float d = f16f(blk);
-        const uchar *q = blk + 2;
-        const float *xp = x + (ulong64)b * 64;
-        float t = 0;
-        for (int j = 0; j < 16; j++) {
-            uchar c = q[j];
-            t += ((int)(c & 3) - 1) * xp[4 * j]
-               + ((int)((c >> 2) & 3) - 1) * xp[4 * j + 1]
-               + ((int)((c >> 4) & 3) - 1) * xp[4 * j + 2]
-               + ((int)(c >> 6) - 1) * xp[4 * j + 3];
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 18;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 64)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (64 + 1);
+            const uchar *blk = rw + (ulong64)b * 18;
+            float d = f16f(blk);
+            const uchar *q = blk + 2;
+            const float *xp = xs_;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                uchar c = q[j];
+                t += ((int)(c & 3) - 1) * xp[4 * j]
+                   + ((int)((c >> 2) & 3) - 1) * xp[4 * j + 1]
+                   + ((int)((c >> 4) & 3) - 1) * xp[4 * j + 2]
+                   + ((int)(c >> 6) - 1) * xp[4 * j + 3];
+            }
+            s += d * t;
         }
-        s += d * t;
+        __syncthreads();
     }
-    MOE_MV_TAIL;
+    MOE_LANE_TAIL;
 }
 
 // body of k_gemv_q5_K
