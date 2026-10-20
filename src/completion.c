@@ -2769,6 +2769,7 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
 #endif
         .device = m->gpu ? gname : "cpu", .gpu = m->gpu != NULL,
         .gpu_layers = m->gpu_layers,
+        .gpu_window = gpu_prompt_window(m),
         .threads = m->tp ? tpool_size(m->tp) : 0, .n_ctx = m->n_ctx,
         .n_batch = m->n_batch, .kv_q8 = m->kv_q8, .kv_fp4 = m->kv_fp4,
         .kv_split = m->kv_split,

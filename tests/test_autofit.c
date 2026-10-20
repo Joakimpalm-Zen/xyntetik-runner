@@ -496,7 +496,41 @@ static void test_gpu_plan(void) {
        "plan spread: a prefix inside the header has no tensor bytes");
 }
 
+// The CUDA prompt window (C1 step 2): the scratch charge is the loader's
+// own, split per column, and a wider window spends only what the split left
+// spare. Anchor: the per-column and fixed bytes below are hand computed from
+// Qwen2.5-7B's widths (n_embd = q_dim = 3584, kv_dim 512, n_ff 18944, 28
+// heads, vocab 152064) at a 4096 context, and at 64 columns they must equal
+// the formula the plan used before the window existed.
+static void test_gpu_window(void) {
+    gpu_act_cost c = model_gpu_act_cost(3584, 3584, 3584, 512, 18944, 28, 4096, 152064);
+    ck(c.per_col == 227328ull, "window: per-column scratch, hand computed (4 * 56832)");
+    ck(c.fixed == 29968384ull, "window: fixed scratch, hand computed (4 * (64*28*4096 + 152064))");
+    ck(c.fixed + 64 * c.per_col == 4ull * (64ull * (3584 + 3 * 3584 + 3584 + 2 * 512 +
+                                                    2 * 18944 + 28ull * 4096) + 152064),
+       "window: at 64 columns the charge is the pre-window formula");
+    uint64_t pc = c.per_col;
+    ck(model_gpu_window((512 - 64) * pc, pc, 1, 512, 0) == 512,
+       "window: spare exactly covering 512 columns gives 512");
+    ck(model_gpu_window((512 - 64) * pc - 1, pc, 1, 512, 0) == 448,
+       "window: one byte short gives the next multiple of 64 down");
+    ck(model_gpu_window((512 - 64) * pc, pc, 2, 512, 0) == 256,
+       "window: two slots each pay their own columns");
+    ck(model_gpu_window(0, pc, 1, 512, 0) == 64, "window: no spare budget stays at 64");
+    ck(model_gpu_window(UINT64_MAX / 2, pc, 1, 100, 0) == 64,
+       "window: -b 100 caps it below the next multiple of 64 above 64");
+    ck(model_gpu_window(UINT64_MAX / 2, pc, 1, 200, 0) == 192, "window: -b 200 gives 192");
+    ck(model_gpu_window(UINT64_MAX / 2, pc, 1, 32, 0) == 64,
+       "window: a batch below 64 still allocates the minimum");
+    ck(model_gpu_window(UINT64_MAX / 2, pc, 1, 4096, 0) == 512, "window: never wider than 512");
+    ck(model_gpu_window(UINT64_MAX / 2, pc, 1, 512, 128) == 128,
+       "window: RUNNER_CUDA_WINDOW narrows it");
+    ck(model_gpu_window(0, pc, 1, 512, 512) == 64,
+       "window: a forced width never spends budget the split did not leave");
+}
+
 int main(int argc, char **argv) {
+    test_gpu_window();
     test_gpu_budget();
     test_multislot_is_not_billed_once();
     test_budget_is_never_exceeded();

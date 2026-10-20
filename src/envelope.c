@@ -349,9 +349,13 @@ bool transcript_write(const transcript_info *ti) {
             sizeof "},\"profile\":{\"device\":" - 1);
     tsb_json_str(&w, ti->device, strlen(ti->device));
     tsb_fmt(&w, ",\"gpu\":%s,\"gpu_layers\":%d,\"threads\":%d,"
-                "\"ctx\":%d,\"kv\":\"%s\",\"batch\":%d},",
+                "\"ctx\":%d,\"kv\":\"%s\",\"batch\":%d",
             ti->gpu ? "true" : "false", ti->gpu_layers, ti->threads,
             ti->n_ctx, ti->kv_fp4 ? "fp4" : ti->kv_split ? "k8v4" : ti->kv_q8 ? "q8" : "f16", ti->n_batch);
+    // the CUDA prompt window, which picks the route of a prompt's last
+    // partial tile: --verify rebuilds the instance at it
+    if (ti->gpu_window > 0) tsb_fmt(&w, ",\"gpu_window\":%d", ti->gpu_window);
+    tsb_put(&w, "},", 2);
     tsb_put(&w, "\"model\":{\"path\":", 16);
     tsb_json_str(&w, ti->model_path, strlen(ti->model_path));
     tsb_fmt(&w, ",\"sha256\":\"%s\"", msha);

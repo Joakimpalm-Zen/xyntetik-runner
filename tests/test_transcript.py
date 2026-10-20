@@ -247,6 +247,72 @@ def test_profile_records_effective_runtime_and_drives_replay(
     assert "batch                    3" in err
 
 
+def test_profile_gpu_window_is_validated_and_ignored_off_cuda(
+        runner_bin, base, tmp_path):
+    """The CUDA prompt window (profile.gpu_window) decides which route a
+    prompt's last partial tile takes, so a CUDA record carries it and --verify
+    rebuilds the instance at it. A CPU run writes no window; a malformed one is
+    refused before any replay; a well-formed one is ignored by a backend that
+    has no such window (a CUDA record replays there at the token tier)."""
+    rec = tmp_path / "window.json"
+    r = _run(runner_bin, base, rec)
+    assert "gpu_window" not in r["profile"]
+
+    for bad in (100, 0, -64, 64.5, "64"):
+        r2 = json.loads(json.dumps(r))
+        r2["profile"]["gpu_window"] = bad
+        forged = tmp_path / "bad-window.json"
+        _forge_record(forged, r2)
+        p = _verify(runner_bin, base, forged)
+        assert p.returncode == 3, (bad, p.stderr.decode(errors="replace"))
+        assert b"malformed execution profile" in p.stderr, bad
+
+    r3 = json.loads(json.dumps(r))
+    r3["profile"]["gpu_window"] = 128
+    forged = tmp_path / "cpu-window.json"
+    _forge_record(forged, r3)
+    p = _verify(runner_bin, base, forged)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert json.loads(p.stdout)["verdict"] == "VERIFIED"
+
+
+def test_cuda_record_carries_and_enforces_its_prompt_window(
+        runner_bin, base, tmp_path):
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, check=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("needs a CUDA device: only CUDA sizes a prompt window")
+    rec = tmp_path / "cuda-window.json"
+    p = subprocess.run(
+        [runner_bin, "-m", str(base), "-p", "the runner trains the", "-n", "12",
+         "--temp", "0", "-s", "7", "-t", "2", "-b", "3", "--no-tray",
+         "--transcript", str(rec)],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    r = json.loads(rec.read_bytes())
+    if not r["profile"]["gpu"]:
+        pytest.skip("the fixture did not run on the device")
+    # -b 3 caps the window at its 64-column minimum
+    assert r["profile"]["gpu_window"] == 64
+
+    def verify(path):
+        return subprocess.run(
+            [runner_bin, "-m", str(base), "--verify", str(path), "-t", "2", "--no-tray"],
+            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    v = verify(rec)
+    assert v.returncode == 0, v.stderr.decode(errors="replace")
+    assert json.loads(v.stdout)["verdict"] == "VERIFIED"
+
+    # a window the recorded batch cannot reach: the replay would run at
+    # another window, so it must not claim the record
+    r["profile"]["gpu_window"] = 128
+    forged = tmp_path / "cuda-window-128.json"
+    _forge_record(forged, r)
+    v = verify(forged)
+    assert v.returncode == 3, v.stderr.decode(errors="replace")
+    assert b"could not reproduce the recorded execution profile" in v.stderr
+
+
 def test_recorded_adapter_scale_drives_replay(runner_bin, base, tmp_path):
     prefix = tmp_path / "fx"
     subprocess.run([sys.executable, ROOT / "scripts/make-test-lora.py",

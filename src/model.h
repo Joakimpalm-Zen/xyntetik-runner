@@ -456,6 +456,7 @@ typedef struct {
     int    xdim;             // max(n_embd, per-layer q_dim); sizes xb/xb2/q
     int    reserve_vram_pct; // VRAM cap for the GPU backend (0 = free VRAM)
     int    gpu_layers_override; // forced leading GPU layer count (0 = auto)
+    int    gpu_window_req;   // model_params.gpu_window: the CUDA prompt window asked for
     int    gpu_instances;    // instances that will share one device upload
                              // (--parallel N): the CUDA split budgets each
                              // one's KV and scratch, the weights once
@@ -875,6 +876,11 @@ typedef struct {
     // force exactly this many leading layers onto the GPU (the rest run on the
     // CPU); 0 = auto-fit to available/reserved VRAM. Like llama.cpp's -ngl.
     int   gpu_layers_override;
+    // CUDA prompt window to build for, in columns (a multiple of 64): 0 picks
+    // it from the memory the split leaves spare (model_gpu_window). Set by
+    // --verify from the record, because the window decides which kernel route
+    // a prompt's last partial tile takes and so belongs to the arithmetic.
+    int   gpu_window;
     // Keep sparse MoE expert FFNs in system RAM while the CUDA backend runs
     // attention, norms, embeddings/output and any dense layers. This is
     // tensor-role placement, distinct from the leading-layer split above.
@@ -1233,6 +1239,24 @@ const char *model_fit_verdict(const model_fit *f);
 // Pure arithmetic over the header, so it is gated without a card.
 bool        model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
                           uint64_t headroom, int max_layers);
+// The device activation scratch of one CUDA instance (cuda.c allocates it),
+// split into what each prompt-window column costs and what is paid whatever
+// the window: the prefill score sub-tile (64 query columns over the
+// context) and one logits row. The split plan and --fit charge
+// `fixed + 64 * per_col`; a wider window spends only what that plan leaves
+// spare (model_gpu_window), so it never costs a layer.
+enum { GPU_WINDOW_MIN = 64, GPU_WINDOW_MAX = 512 };
+typedef struct { uint64_t per_col, fixed; } gpu_act_cost;
+gpu_act_cost model_gpu_act_cost(uint64_t n_embd, uint64_t xdim, uint64_t q_dim,
+                                uint64_t kv_dim, uint64_t n_ff, uint64_t n_head,
+                                uint64_t n_ctx, uint64_t n_vocab);
+// The prompt window, in columns, a device instance is built for: the widest
+// multiple of 64 up to min(n_batch, GPU_WINDOW_MAX) (and up to `force` when
+// that is positive, RUNNER_CUDA_WINDOW) whose scratch beyond 64 columns,
+// `per_col` bytes a column for each of `instances` slots, fits `spare`;
+// GPU_WINDOW_MIN otherwise.
+int model_gpu_window(uint64_t spare, uint64_t per_col, int instances,
+                     int n_batch, int force);
 // residency warning text; false when no warning is warranted (see model.c)
 // Should a load hint the WHOLE weight mapping to the OS (WILLNEED sweep)?
 // Cold-start page-in otherwise arrives as ~16 KB synchronous faults — 1.1M+

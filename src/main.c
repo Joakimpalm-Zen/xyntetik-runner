@@ -2842,6 +2842,8 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
         jv *ctx_v = jv_get(prof, "ctx"), *batch_v = jv_get(prof, "batch");
         jv *threads_v = jv_get(prof, "threads"), *gpu_v = jv_get(prof, "gpu");
         jv *gpu_layers_v = jv_get(prof, "gpu_layers");
+        jv *gpu_window_v = jv_get(prof, "gpu_window");
+        double gpu_window_d = jv_num(gpu_window_v, -1);
         const char *kv = jv_str(jv_get(prof, "kv"), NULL);
         double ctx_d = jv_num(ctx_v, -1), batch_d = jv_num(batch_v, -1);
         double threads_d = jv_num(threads_v, -1);
@@ -2857,6 +2859,9 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
              gpu_layers_d < 0 || gpu_layers_d > INT_MAX ||
              gpu_layers_d != (double)(int)gpu_layers_d ||
              (gpu_v->b != (gpu_layers_d > 0)))) ||
+            (gpu_window_v && (gpu_window_v->type != J_NUM || gpu_window_d < 64 ||
+             gpu_window_d > 4096 || gpu_window_d != (double)(int)gpu_window_d ||
+             (int)gpu_window_d % 64 != 0)) ||
             (strcmp(kv, "f16") != 0 && strcmp(kv, "q8") != 0 &&
              strcmp(kv, "fp4") != 0 && strcmp(kv, "k8v4") != 0)) {
             fprintf(stderr, "UNVERIFIABLE: malformed execution profile\n");
@@ -2873,6 +2878,9 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
         o->mp.gpu_mode = gpu_v->b ? GPU_AUTO : GPU_OFF;
         if (gpu_layers_v && gpu_layers_d > 0)
             o->mp.gpu_layers_override = (int)gpu_layers_d;
+        // the CUDA prompt window the record ran at; a record without one was
+        // written before the window was memory-sized, when it was fixed at 64
+        o->mp.gpu_window = gpu_window_v ? (int)gpu_window_d : 64;
         jv *record_adapter = jv_get(vr->rec, "adapter");
         if (record_adapter && record_adapter->type != J_NULL) {
             jv *scale_v = record_adapter->type == J_OBJ
@@ -4099,11 +4107,18 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     bool expected_split = strcmp(jv_str(jv_get(vprof, "kv"), ""), "k8v4") == 0;
     jv *expected_layers_v = jv_get(vprof, "gpu_layers");
     int expected_layers = (int)jv_num(expected_layers_v, -1);
+    // a CUDA replay must run at the record's prompt window (64 for a record
+    // that predates the field); other backends have no such window and replay
+    // a CUDA record at the token tier, so they do not check it
+    jv *expected_window_v = jv_get(vprof, "gpu_window");
+    int expected_window = expected_window_v ? (int)jv_num(expected_window_v, -1) : 64;
+    int got_window = gpu_prompt_window(&rt->m);
     if (rt->m.n_ctx != expected_ctx || rt->m.n_batch != expected_batch ||
         tpool_size(rt->m.tp) != expected_threads || rt->m.kv_q8 != expected_q8 ||
         rt->m.kv_fp4 != expected_fp4 || rt->m.kv_split != expected_split ||
         (rt->m.gpu != NULL) != expected_gpu ||
-        (expected_layers_v && rt->m.gpu_layers != expected_layers)) {
+        (expected_layers_v && rt->m.gpu_layers != expected_layers) ||
+        (got_window > 0 && got_window != expected_window)) {
         fprintf(stderr, "UNVERIFIABLE: runtime could not reproduce the "
                 "recorded execution profile\n");
         jv_free(vr->rec);
@@ -4933,6 +4948,7 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
             .device = rt->m.gpu ? gname : "cpu",
             .gpu = rt->m.gpu != NULL,
             .gpu_layers = rt->m.gpu_layers,
+            .gpu_window = gpu_prompt_window(&rt->m),
             .threads = tpool_size(rt->m.tp), .n_ctx = rt->m.n_ctx,
             .n_batch = rt->m.n_batch, .kv_q8 = rt->m.kv_q8, .kv_fp4 = rt->m.kv_fp4,
             .kv_split = rt->m.kv_split,

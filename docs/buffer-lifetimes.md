@@ -102,11 +102,12 @@ boundary activation back through the host `x` buffer.
 alone. It separates the whole file (`weights`), the bytes touched per token
 (`hot`, smaller for a sparse MoE), KV per token and at the requested context
 for each KV format, and on a discrete GPU a fixed charge for the token
-embedding and headroom plus each slot's activation scratch (`gpu_fixed`)
-before it counts how many leading layers fit. With `--parallel N`
-(`model_fit.n_seq`) every slot pays its own KV cache, on the host and for
-the offloaded layers on the device, and its own scratch; the weights are
-paid once. The CUDA loader plans its split the same way
+embedding and headroom plus each slot's activation scratch at a 64-column
+prompt window (`gpu_fixed`; the loader widens the window only into what its
+split leaves spare) before it counts how many leading layers fit. With
+`--parallel N` (`model_fit.n_seq`) every slot pays its own KV cache, on the
+host and for the offloaded layers on the device, and its own scratch; the
+weights are paid once. The CUDA loader plans its split the same way
 (`shared_plan_budget()`, `m->gpu_instances`), so every slot fits the split
 the first one decides. The host bill includes every layer's KV, because the
 host copy is the authoritative one.

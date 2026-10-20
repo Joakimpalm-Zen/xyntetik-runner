@@ -836,12 +836,35 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
     return true;
 }
 
+gpu_act_cost model_gpu_act_cost(uint64_t n_embd, uint64_t xdim, uint64_t q_dim,
+                                uint64_t kv_dim, uint64_t n_ff, uint64_t n_head,
+                                uint64_t n_ctx, uint64_t n_vocab) {
+    gpu_act_cost c;
+    // per column: x, the three xdim-wide buffers, q, k, v and the FFN pair
+    c.per_col = 4ull * (n_embd + 3 * xdim + q_dim + 2 * kv_dim + 2 * n_ff);
+    // the score sub-tile (cuda.c ATT_COLS) and one logits row
+    c.fixed = 4ull * (64ull * n_head * n_ctx + n_vocab);
+    return c;
+}
+
+int model_gpu_window(uint64_t spare, uint64_t per_col, int instances,
+                     int n_batch, int force) {
+    int cap = n_batch < GPU_WINDOW_MAX ? n_batch : GPU_WINDOW_MAX;
+    if (force > 0 && force < cap) cap = force;
+    uint64_t inst = instances > 1 ? (uint64_t)instances : 1;
+    for (int w = cap / GPU_WINDOW_MIN * GPU_WINDOW_MIN; w > GPU_WINDOW_MIN;
+         w -= GPU_WINDOW_MIN)
+        if ((uint64_t)(w - GPU_WINDOW_MIN) * per_col * inst <= spare) return w;
+    return GPU_WINDOW_MIN;
+}
+
 // The leading-layer split a CUDA load makes (cuda.c shared_build), from the
 // header alone. Each layer costs its `blk.N.` tensors plus its share of the
 // KV cache; the device first holds the token embedding, the activation
-// scratch (the loader's own formula at MVB 64 columns, without the SSM
-// extras of the hybrid architectures) and the headroom. A full split also
-// owes the output projection, and when it does not fit the last layer goes
+// scratch (model_gpu_act_cost at the narrowest window, the loader's own
+// charge, without the SSM extras of the hybrid architectures) and the
+// headroom. A full split also owes the output projection, and when it does
+// not fit the last layer goes
 // back to the CPU, as the loader does. What stays on the host is the rest of
 // the file (scaled to the hot set for a sparse MoE) and the whole KV cache:
 // the host copy is the authoritative one on a CUDA load, allocated for every
@@ -880,9 +903,12 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     if (!out) out = tok;   // tied embeddings: the loader's output IS token_embd
     uint64_t q_dim = n_head * head_dim, kv_dim = geo.kv_dim_max;
     uint64_t xdim = q_dim > n_embd ? q_dim : n_embd;
-    uint64_t act = 4ull * (64ull * (n_embd + 3 * xdim + q_dim + 2 * kv_dim +
-                                    2 * n_ff + n_head * (uint64_t)f->n_ctx) +
-                           n_vocab);
+    gpu_act_cost ac = model_gpu_act_cost(n_embd, xdim, q_dim, kv_dim, n_ff, n_head,
+                                         (uint64_t)f->n_ctx, n_vocab);
+    // the plan's charge at the narrowest window; a wider one is paid from
+    // what the split leaves spare and moves no layer, so the counts below
+    // are the loader's whatever window it then picks
+    uint64_t act = ac.fixed + GPU_WINDOW_MIN * ac.per_col;
     const uint64_t slots = f->n_seq > 1 ? (uint64_t)f->n_seq : 1;
     f->gpu = true;
     f->gpu_budget = budget;
@@ -4416,6 +4442,7 @@ static int model_gpu_batch_default(void) {
 static bool runtime_placement(model_t *m, const model_params *p) {
     m->reserve_vram_pct = p->reserve_vram_pct;
     m->gpu_layers_override = p->gpu_layers_override;
+    m->gpu_window_req = p->gpu_window;
     m->gpu_instances = p->n_seq > 1 ? p->n_seq : 1;
     m->cpu_moe = p->cpu_moe && m->n_expert > 0;
     m->cpu_moe_layers = p->cpu_moe_layers;

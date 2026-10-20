@@ -2425,9 +2425,10 @@ perplexity.
 #### `--transcript FILE`
 
 Record a one-shot `-p` run as `xyntetik.runner.transcript.v1`: model, adapter and binary
-hashes; the effective execution profile (including fallback KV type and GPU layer
-count); the exact 64-bit seed and sampling config; prompt/output text and token ids; the
-exact streamed output bytes as `output.bytes_hex` (tokenizer pieces need not
+hashes; the effective execution profile (including fallback KV type, GPU layer
+count and, on CUDA, the prompt window); the exact 64-bit seed and sampling
+config; prompt/output text and token ids; the exact streamed output bytes as
+`output.bytes_hex` (tokenizer pieces need not
 individually be valid UTF-8); a `speculation` object naming the draft source (`model`,
 `mtp` or `lookup`) with its round, drafted and accepted counts when one was configured
 (absent for plain decoding, so those records are unchanged); and a chain hash over the

@@ -481,6 +481,7 @@ typedef struct gpu_weights {
     size_t      bound_bytes;            // bytes the bindings hold (the banner's number when bound)
     int         gpu_layers;             // split decided by the first loader
     int         n_tab;                  // per-layer table length: n_layer, +1 with a bound MTP block
+    int         win;                    // prompt window every instance is built for (model_gpu_window)
     bool        no_id;                  // identity unavailable: listed so the
                                         // split guard can see it, never matched
     CUdeviceptr inv_freq, inv_freq_local, out_norm, dummy;
@@ -594,8 +595,12 @@ typedef struct {
     CUstream     stream;
     CUgraph      graph;
     CUgraphExec  gexec;
+    // the window's first position, then one per later ATT_COLS-column
+    // attention sub-tile (set_pos): k_attn finds its sub-tile's start
+    // through the pointer it is handed
     CUdeviceptr  pos_dev;
     bool         graph_bad;
+    int          win;                   // prompt window: columns of every activation buffer
 } gpu_t;
 
 // max tokens per matvec tile — must match MVB in kernels.cu; every activation
@@ -607,6 +612,11 @@ typedef struct {
 #define LORA_R_DEV_MAX 512
 #define MVB 64   // activation buffer columns (keep in sync with kernels.cu)
 #define MVT 16   // scalar-kernel fixed tile (keep in sync with MVT there)
+// Prefill attention scores are staged per (token, head) over the whole
+// context, so their scratch is sized by a fixed sub-tile of query columns,
+// not by the prompt window: a window of W tokens runs k_attn W/ATT_COLS
+// times over the same scratch. Its kernel and arithmetic are unchanged.
+#define ATT_COLS 64
 #define TC_N    64   // tensor-core GEMM token tile (keep in sync)
 #define Q8_COLS 8    // k_gemm_q8_0 column tile (keep in sync)
 
@@ -1523,6 +1533,7 @@ typedef struct {
     bool mtp_dev;         // a NextN/MTP block rides along
     int G;                // leading layers on the device
     bool full;            // every layer, the output projection too
+    size_t used;          // what the split spends of vram_budget
 } shared_plan;
 
 // The file identity and the model facts a later match compares against,
@@ -1855,6 +1866,8 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
     w->gpu_layers = full ? m->n_layer : G;
     P->G = G;
     P->full = full;
+    // the full-split test's own charge (token_embd counted twice, as there)
+    P->used = used + (full ? (m->cpu_moe ? 0 : m->tok_embd->nbytes) + m->output->nbytes : 0);
     return true;
 }
 
@@ -2497,8 +2510,25 @@ fail:
     return false;
 }
 
-static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
-                                 uint64_t fsize, uint64_t fino, int64_t fmtime) {
+// The window asked for: model_params.gpu_window (--verify restoring a
+// record), else RUNNER_CUDA_WINDOW (a diagnostic and A/B control). Either is
+// a cap, a multiple of 64 and never wider than the plan allows; -b caps it
+// the same way. --verify then checks the window it got (gpu_prompt_window).
+static int cuda_window_force(const model_t *m) {
+    if (m->gpu_window_req > 0) return m->gpu_window_req;
+    const char *e = getenv("RUNNER_CUDA_WINDOW");
+    return e && *e ? atoi(e) : 0;
+}
+
+// the window an instance was built for (transcripts record it)
+int gpu_prompt_window(const model_t *m) {
+    const gpu_t *g = m ? m->gpu : NULL;
+    return g ? g->win : 0;
+}
+
+static gpu_weights *shared_build(model_t *m, size_t act_bytes, size_t per_col,
+                                 int max_hd, uint64_t fsize, uint64_t fino,
+                                 int64_t fmtime) {
     gpu_weights *w = calloc(1, sizeof(gpu_weights));
     if (!w) {
         fprintf(stderr, "gpu: CUDA shared-weight state allocation failed — "
@@ -2511,6 +2541,15 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         !shared_plan_budget(w, m, act_bytes, &P) ||
         !shared_plan_split(w, m, &P))
         goto fail;
+    // The prompt window: wider columns only from what the split left spare,
+    // so it can never cost a layer (model_gpu_window). Decided once here and
+    // shared by every instance of the upload, like the split itself.
+    w->win = model_gpu_window(P.vram_budget > P.used ? P.vram_budget - P.used : 0,
+                              per_col, (int)P.instances, m->n_batch,
+                              cuda_window_force(m));
+    fprintf(stderr, "gpu-split: prompt window %d columns (batch %d, %.2f GB spare)\n",
+            w->win, m->n_batch,
+            (P.vram_budget > P.used ? P.vram_budget - P.used : 0) / 1e9);
     shared_plan_upload(w, m, &P);
     if (!shared_load_module(w) ||
         !shared_upload_weights(w, m, &P) ||
@@ -2532,7 +2571,8 @@ fail:
     return NULL;
 }
 
-static gpu_weights *shared_acquire(model_t *m, size_t act_bytes, int max_hd) {
+static gpu_weights *shared_acquire(model_t *m, size_t act_bytes, size_t per_col,
+                                   int max_hd) {
     uint64_t fsize = 0, fino = 0;
     int64_t  fmtime = 0;
     // Every file gets an identity: part 1's (size, inode, mtime) plus, in
@@ -2554,7 +2594,7 @@ static gpu_weights *shared_acquire(model_t *m, size_t act_bytes, int max_hd) {
                 "%d instances)\n",
                 (w->bound ? w->bound_bytes : w->weights_len) / 1e9, w->refs);
     } else {
-        w = shared_build(m, act_bytes, max_hd, fsize, fino, fmtime);
+        w = shared_build(m, act_bytes, per_col, max_hd, fsize, fino, fmtime);
         // an entry with no file identity stays private — shared_matches never
         // returns it — but it is listed anyway so the split guard can compare
         // splits across it; shared_release unlinks it normally at refs 0
@@ -2573,7 +2613,8 @@ static gpu_weights *shared_acquire(model_t *m, size_t act_bytes, int max_hd) {
 typedef struct {
     int q_dim, kv_dim, max_hd, xdim;
     int q35_convdim, q35_mixdim;   // DeltaNet conv and mix widths
-    size_t act_bytes;
+    size_t act_bytes;              // the plan's charge, at GPU_WINDOW_MIN columns
+    size_t act_per_col;            // what each further window column allocates
 } cuda_dims;
 
 // Every refusal that needs no driver: router shapes, per-layer expert
@@ -2767,12 +2808,39 @@ static void cuda_instance_dims(const model_t *m, cuda_dims *D) {
     int q35_convdim = m->qwen35
                     ? 2 * m->ssm.state * m->ssm.groups + m->ssm.inner : 0;
     int q35_mixdim = q35_convdim > 2 * q_dim ? q35_convdim : 2 * q_dim;
-    size_t act_bytes = sizeof(float) * (MVB * ((size_t)m->n_embd + 3 * xdim +
-                       q_dim + 2 * kv_dim + 2 * m->n_ff +
-                       (size_t)m->n_head * m->n_ctx) + m->n_vocab);
+    gpu_act_cost ac = model_gpu_act_cost(m->n_embd, xdim, q_dim, kv_dim, m->n_ff,
+                                         m->n_head, m->n_ctx, m->n_vocab);
+    size_t act_bytes = ac.fixed + GPU_WINDOW_MIN * ac.per_col;
+    // A window column also carries the buffers below that the plan at the
+    // narrowest window never charged (each sized in cuda_alloc_*): MoE
+    // routing and grouping staging, the shared expert, the hyper-connection
+    // streams, the per-layer embeddings and the NextN/MTP rows. A wider
+    // window spends only spare budget, so these are counted in full there.
+    size_t per_col = ac.per_col;
+    if (m->n_expert > 0) {
+        size_t used = m->n_expert_used > 0 ? (size_t)m->n_expert_used : 1;
+        size_t gw = (size_t)m->n_ff_exp * (m->moe_gemma ? 2 : 1);
+        per_col += sizeof(float) * ((size_t)m->n_expert + 4 * used +
+                                    3 * (size_t)m->n_embd + 2 * gw +
+                                    (m->moe_gemma ? 5 * (size_t)m->n_embd : 0));
+        if (m->n_ff_shexp > 0)
+            per_col += sizeof(float) * ((size_t)xdim + 2 * (size_t)m->n_ff_shexp +
+                                        m->n_embd + 1);
+    }
+    if (m->hyper_conn)
+        per_col += sizeof(float) * (3 * (size_t)m->hc_count * m->n_embd +
+                                    m->hc_low_rank + m->hc_count);
+    if (m->n_embd_ple > 0)
+        per_col += 2 * sizeof(float) * ((size_t)m->n_layer + 1) * m->n_embd_ple;
+    if (m->mtp_ready) {
+        size_t hcd = (size_t)mtp_streams(m) * m->n_embd;
+        per_col += sizeof(float) * (3 * hcd + m->n_embd);
+    }
     if (m->qwen35) {
         size_t q35_scratch = MVB * ((size_t)q35_mixdim + q35_convdim +
                              m->ssm.inner + 2 * m->ssm.v_heads + q_dim);
+        per_col += sizeof(float) * ((size_t)q35_mixdim + q35_convdim +
+                                    m->ssm.inner + 2 * m->ssm.v_heads + q_dim);
         size_t q35_persistent = (size_t)m->n_layer *
                                 (m->ssm.conv_kernel - 1) * q35_convdim +
                                 (size_t)m->n_layer * m->ssm.v_heads *
@@ -2787,7 +2855,9 @@ static void cuda_instance_dims(const model_t *m, cuda_dims *D) {
         size_t per = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * cd +
                      (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
         act_bytes += sizeof(float) * (scr + 2 * per);
+        per_col += sizeof(float) * ((size_t)dip + cd + m->ssm.inner);
     }
+    if (m->attn_out_gate && !m->qwen35) per_col += sizeof(float) * (size_t)q_dim;
     D->q_dim = q_dim;
     D->kv_dim = kv_dim;
     D->max_hd = max_hd;
@@ -2795,6 +2865,7 @@ static void cuda_instance_dims(const model_t *m, cuda_dims *D) {
     D->q35_convdim = q35_convdim;
     D->q35_mixdim = q35_mixdim;
     D->act_bytes = act_bytes;
+    D->act_per_col = per_col;
 }
 
 // The KV cache for the offloaded layers (and a bound NextN/MTP block).
@@ -2832,20 +2903,20 @@ static bool cuda_alloc_activations(model_t *m, gpu_t *g, const cuda_dims *D) {
         // no device kernel; see model_ple_prepass), so only its result
         // crosses the bus — once per forward, not once per layer.
         size_t per_tok = (size_t)m->n_layer * m->n_embd_ple;
-        CK(cu.MemAlloc(&g->ple,   sizeof(float) * MVB * per_tok));
-        CK(cu.MemAlloc(&g->ple_g, sizeof(float) * MVB * m->n_embd_ple));
+        CK(cu.MemAlloc(&g->ple,   sizeof(float) * (size_t)g->win * per_tok));
+        CK(cu.MemAlloc(&g->ple_g, sizeof(float) * (size_t)g->win * m->n_embd_ple));
     }
-    CK(cu.MemAlloc(&g->x,      sizeof(float) * MVB * m->n_embd));
-    CK(cu.MemAlloc(&g->xb,     sizeof(float) * MVB * xdim));
-    CK(cu.MemAlloc(&g->xb2,    sizeof(float) * MVB * xdim));
+    CK(cu.MemAlloc(&g->x,      sizeof(float) * (size_t)g->win * m->n_embd));
+    CK(cu.MemAlloc(&g->xb,     sizeof(float) * (size_t)g->win * xdim));
+    CK(cu.MemAlloc(&g->xb2,    sizeof(float) * (size_t)g->win * xdim));
     if (mtp_dev) {
         size_t hcd = (size_t)mtp_streams(m) * m->n_embd;
         CK(cu.MemAlloc(&g->mtp_h,       sizeof(float) * (size_t)m->n_batch * hcd));
         CK(cu.MemAlloc(&g->mtp_pending, sizeof(float) * hcd));
-        CK(cu.MemAlloc(&g->mtp_cat,     sizeof(float) * MVB * hcd * 2));
+        CK(cu.MemAlloc(&g->mtp_cat,     sizeof(float) * (size_t)g->win * hcd * 2));
         CK(cu.MemAlloc(&g->mtp_hid,     sizeof(float) * hcd));
-        CK(cu.MemAlloc(&g->mtp_en,      sizeof(float) * MVB * m->n_embd));
-        CK(cu.MemAlloc(&g->mtp_hn,      sizeof(float) * MVB * hcd));
+        CK(cu.MemAlloc(&g->mtp_en,      sizeof(float) * (size_t)g->win * m->n_embd));
+        CK(cu.MemAlloc(&g->mtp_hn,      sizeof(float) * (size_t)g->win * hcd));
         CK(cu.MemAlloc(&g->mtp_rows,    sizeof(float) * (size_t)m->n_batch * hcd));
         CK(cu.MemsetD8(g->mtp_pending, 0, sizeof(float) * hcd));
         if (m->qwen35 && cu.MemcpyDtoDAsync) {
@@ -2859,20 +2930,20 @@ static bool cuda_alloc_activations(model_t *m, gpu_t *g, const cuda_dims *D) {
     }
     if (m->hyper_conn) {
         size_t hcd = (size_t)m->hc_count * m->n_embd;
-        CK(cu.MemAlloc(&g->x_hc,      sizeof(float) * MVB * hcd));
-        CK(cu.MemAlloc(&g->hc_xn,     sizeof(float) * MVB * hcd));
-        CK(cu.MemAlloc(&g->hc_gate,   sizeof(float) * MVB * hcd));
-        CK(cu.MemAlloc(&g->hc_lo,     sizeof(float) * MVB * m->hc_low_rank));
-        CK(cu.MemAlloc(&g->hc_inject, sizeof(float) * MVB * m->hc_count));
+        CK(cu.MemAlloc(&g->x_hc,      sizeof(float) * (size_t)g->win * hcd));
+        CK(cu.MemAlloc(&g->hc_xn,     sizeof(float) * (size_t)g->win * hcd));
+        CK(cu.MemAlloc(&g->hc_gate,   sizeof(float) * (size_t)g->win * hcd));
+        CK(cu.MemAlloc(&g->hc_lo,     sizeof(float) * (size_t)g->win * m->hc_low_rank));
+        CK(cu.MemAlloc(&g->hc_inject, sizeof(float) * (size_t)g->win * m->hc_count));
         CK(cu.MemAlloc(&g->splitk,    sizeof(float) * SPLITK_PARTIALS));
     }
-    CK(cu.MemAlloc(&g->q,      sizeof(float) * MVB * q_dim));
-    CK(cu.MemAlloc(&g->kt,     sizeof(float) * MVB * kv_dim));
-    CK(cu.MemAlloc(&g->vt,     sizeof(float) * MVB * kv_dim));
+    CK(cu.MemAlloc(&g->q,      sizeof(float) * (size_t)g->win * q_dim));
+    CK(cu.MemAlloc(&g->kt,     sizeof(float) * (size_t)g->win * kv_dim));
+    CK(cu.MemAlloc(&g->vt,     sizeof(float) * (size_t)g->win * kv_dim));
     // hb/hb2 also hold gemma-4 MoE's fused gate_up (2*n_ff_exp) for one
-    // token; MVB*n_ff dwarfs that for real models, but size for the max so a
+    // token; win*n_ff dwarfs that for real models, but size for the max so a
     // pathological n_ff_exp can never overrun the buffer.
-    size_t hb_elems = (size_t)MVB * m->n_ff;
+    size_t hb_elems = (size_t)g->win * m->n_ff;
     if (m->moe_gemma && 2 * (size_t)m->n_ff_exp > hb_elems)
         hb_elems = 2 * (size_t)m->n_ff_exp;
     CK(cu.MemAlloc(&g->hb,     sizeof(float) * hb_elems));
@@ -2890,20 +2961,20 @@ static bool cuda_alloc_activations(model_t *m, gpu_t *g, const cuda_dims *D) {
         CK(cu.MemAlloc(&g->q8x_d, sizeof(float) * (size_t)MVB * (mi / 32 + 1)));
     }
     if (m->n_ff_shexp > 0 && moe_any_on_device(m)) {
-        CK(cu.MemAlloc(&g->shexp_in,   sizeof(float) * MVB * xdim));
-        CK(cu.MemAlloc(&g->shexp_g,    sizeof(float) * MVB * m->n_ff_shexp));
-        CK(cu.MemAlloc(&g->shexp_u,    sizeof(float) * MVB * m->n_ff_shexp));
-        CK(cu.MemAlloc(&g->shexp_o,    sizeof(float) * MVB * m->n_embd));
-        CK(cu.MemAlloc(&g->shexp_gate, sizeof(float) * MVB));
+        CK(cu.MemAlloc(&g->shexp_in,   sizeof(float) * (size_t)g->win * xdim));
+        CK(cu.MemAlloc(&g->shexp_g,    sizeof(float) * (size_t)g->win * m->n_ff_shexp));
+        CK(cu.MemAlloc(&g->shexp_u,    sizeof(float) * (size_t)g->win * m->n_ff_shexp));
+        CK(cu.MemAlloc(&g->shexp_o,    sizeof(float) * (size_t)g->win * m->n_embd));
+        CK(cu.MemAlloc(&g->shexp_gate, sizeof(float) * (size_t)g->win));
     }
-    CK(cu.MemAlloc(&g->att,    sizeof(float) * MVB * (size_t)m->n_head * m->n_ctx));
+    CK(cu.MemAlloc(&g->att,    sizeof(float) * ATT_COLS * (size_t)m->n_head * m->n_ctx));
     // flash-decoding partials: per (token, head, split) -> hd weighted-V + max + sum
     CK(cu.MemAlloc(&g->attn_part, sizeof(float) * MVB * (size_t)m->n_head *
                                   ATTN_SPLITS * (max_hd + 2)));
     // spec_batch rows: the speculative verify reads every row's head
     CK(cu.MemAlloc(&g->logits, sizeof(float) * (size_t)(m->spec_batch > 0 ? m->spec_batch : 1) * m->n_vocab));
     CK(cu.MemAlloc(&g->xsc,    sizeof(float) * TC_N));
-    CK(cu.MemAlloc(&g->pos_dev, sizeof(int)));
+    CK(cu.MemAlloc(&g->pos_dev, sizeof(int) * (size_t)((g->win + ATT_COLS - 1) / ATT_COLS)));
     return true;
 fail:
     return false;
@@ -2920,12 +2991,12 @@ static bool cuda_alloc_recurrent(model_t *m, gpu_t *g, const cuda_dims *D) {
         size_t hist_alloc = hist_elems ? hist_elems : 1;
         size_t state_elems = (size_t)m->n_layer * m->ssm.v_heads *
                              m->ssm.state * m->ssm.state;
-        CK(cu.MemAlloc(&g->q35_mix, sizeof(float) * MVB * q35_mixdim));
-        CK(cu.MemAlloc(&g->q35_cv, sizeof(float) * MVB * q35_convdim));
-        CK(cu.MemAlloc(&g->q35_z, sizeof(float) * MVB * m->ssm.inner));
-        CK(cu.MemAlloc(&g->q35_beta, sizeof(float) * MVB * m->ssm.v_heads));
-        CK(cu.MemAlloc(&g->q35_alpha, sizeof(float) * MVB * m->ssm.v_heads));
-        CK(cu.MemAlloc(&g->q35_gate, sizeof(float) * MVB * q_dim));
+        CK(cu.MemAlloc(&g->q35_mix, sizeof(float) * (size_t)g->win * q35_mixdim));
+        CK(cu.MemAlloc(&g->q35_cv, sizeof(float) * (size_t)g->win * q35_convdim));
+        CK(cu.MemAlloc(&g->q35_z, sizeof(float) * (size_t)g->win * m->ssm.inner));
+        CK(cu.MemAlloc(&g->q35_beta, sizeof(float) * (size_t)g->win * m->ssm.v_heads));
+        CK(cu.MemAlloc(&g->q35_alpha, sizeof(float) * (size_t)g->win * m->ssm.v_heads));
+        CK(cu.MemAlloc(&g->q35_gate, sizeof(float) * (size_t)g->win * q_dim));
         CK(cu.MemAlloc(&g->q35_hist, sizeof(float) * hist_alloc));
         CK(cu.MemAlloc(&g->q35_state, sizeof(float) * state_elems));
         CK(cu.MemAlloc(&g->q35_hist_prev, sizeof(float) * hist_alloc));
@@ -2942,9 +3013,9 @@ static bool cuda_alloc_recurrent(model_t *m, gpu_t *g, const cuda_dims *D) {
         size_t conv_elems = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * cd;
         size_t conv_alloc = conv_elems ? conv_elems : 1;
         size_t state_elems = (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
-        CK(cu.MemAlloc(&g->mamba_proj,  sizeof(float) * MVB * dip));
-        CK(cu.MemAlloc(&g->mamba_xBC,   sizeof(float) * MVB * cd));
-        CK(cu.MemAlloc(&g->mamba_y,     sizeof(float) * MVB * m->ssm.inner));
+        CK(cu.MemAlloc(&g->mamba_proj,  sizeof(float) * (size_t)g->win * dip));
+        CK(cu.MemAlloc(&g->mamba_xBC,   sizeof(float) * (size_t)g->win * cd));
+        CK(cu.MemAlloc(&g->mamba_y,     sizeof(float) * (size_t)g->win * m->ssm.inner));
         CK(cu.MemAlloc(&g->mamba_conv,       sizeof(float) * conv_alloc));
         CK(cu.MemAlloc(&g->mamba_state,      sizeof(float) * state_elems));
         CK(cu.MemAlloc(&g->mamba_conv_prev,  sizeof(float) * conv_alloc));
@@ -2957,7 +3028,7 @@ static bool cuda_alloc_recurrent(model_t *m, gpu_t *g, const cuda_dims *D) {
     // gated attention without the rest of qwen35 (afmoe, muse-glimmer):
     // only the gate scratch is needed
     if (m->attn_out_gate && !m->qwen35)
-        CK(cu.MemAlloc(&g->q35_gate, sizeof(float) * MVB * q_dim));
+        CK(cu.MemAlloc(&g->q35_gate, sizeof(float) * (size_t)g->win * q_dim));
     return true;
 fail:
     return false;
@@ -2972,26 +3043,26 @@ static bool cuda_alloc_moe(model_t *m, gpu_t *g) {
         int used_c = m->n_expert_used;
         if (used_c < 1) used_c = 1;
         if (used_c > 256) used_c = 256;
-        int rows = used_c > MVB ? used_c : MVB;
+        int rows = used_c > g->win ? used_c : g->win;
         size_t gw = (size_t)m->n_ff_exp * (m->moe_gemma ? 2 : 1);
         if (gw < 1) gw = 1;
         CK(cu.MemAlloc(&g->moe_logits,
-                       sizeof(float) * (size_t)MVB * m->n_expert));
+                       sizeof(float) * (size_t)g->win * m->n_expert));
         CK(cu.MemAlloc(&g->moe_eout,
                        sizeof(float) * (size_t)rows * m->n_embd));
-        CK(cu.MemAlloc(&g->moe_sel,  sizeof(int)   * (size_t)MVB * used_c));
-        CK(cu.MemAlloc(&g->moe_selw, sizeof(float) * (size_t)MVB * used_c));
+        CK(cu.MemAlloc(&g->moe_sel,  sizeof(int)   * (size_t)g->win * used_c));
+        CK(cu.MemAlloc(&g->moe_selw, sizeof(float) * (size_t)g->win * used_c));
         CK(cu.MemAlloc(&g->moe_hb,   sizeof(float) * (size_t)rows * gw));
         CK(cu.MemAlloc(&g->moe_hb2,  sizeof(float) * (size_t)rows * gw));
         // expert-grouped prefill staging (device + host mirrors)
-        CK(cu.MemAlloc(&g->moe_gath, sizeof(float) * (size_t)MVB * m->n_embd));
-        CK(cu.MemAlloc(&g->moe_dout, sizeof(float) * (size_t)MVB * m->n_embd));
-        CK(cu.MemAlloc(&g->moe_gidx, sizeof(int)   * (size_t)MVB * used_c));
-        CK(cu.MemAlloc(&g->moe_gw,   sizeof(float) * (size_t)MVB * used_c));
-        g->h_moe_sel  = malloc(sizeof(int)   * (size_t)MVB * used_c);
-        g->h_moe_selw = malloc(sizeof(float) * (size_t)MVB * used_c);
-        g->h_moe_gidx = malloc(sizeof(int)   * (size_t)MVB * used_c);
-        g->h_moe_gw   = malloc(sizeof(float) * (size_t)MVB * used_c);
+        CK(cu.MemAlloc(&g->moe_gath, sizeof(float) * (size_t)g->win * m->n_embd));
+        CK(cu.MemAlloc(&g->moe_dout, sizeof(float) * (size_t)g->win * m->n_embd));
+        CK(cu.MemAlloc(&g->moe_gidx, sizeof(int)   * (size_t)g->win * used_c));
+        CK(cu.MemAlloc(&g->moe_gw,   sizeof(float) * (size_t)g->win * used_c));
+        g->h_moe_sel  = malloc(sizeof(int)   * (size_t)g->win * used_c);
+        g->h_moe_selw = malloc(sizeof(float) * (size_t)g->win * used_c);
+        g->h_moe_gidx = malloc(sizeof(int)   * (size_t)g->win * used_c);
+        g->h_moe_gw   = malloc(sizeof(float) * (size_t)g->win * used_c);
         if (!g->h_moe_sel || !g->h_moe_selw || !g->h_moe_gidx ||
             !g->h_moe_gw) {
             fprintf(stderr, "gpu: CUDA MoE host staging allocation failed "
@@ -3011,10 +3082,10 @@ static bool cuda_alloc_moe(model_t *m, gpu_t *g) {
         g->moe_grouped_ok = moe_grouped_eligible(m);
     }
     if (m->moe_gemma)
-        // gemma-4-MoE dual-branch scratch: xn, xn2, rin, mout — MVB
+        // gemma-4-MoE dual-branch scratch: xn, xn2, rin, mout — window
         // columns each so the grouped prefill can batch the whole tile
         CK(cu.MemAlloc(&g->g_scr,
-                       sizeof(float) * 5 * (size_t)MVB * m->n_embd));
+                       sizeof(float) * 5 * (size_t)g->win * m->n_embd));
     return true;
 fail:
     return false;
@@ -3041,7 +3112,7 @@ static void cuda_plan_graphs(model_t *m, gpu_t *g) {
 static bool cuda_alloc_host_staging(model_t *m, gpu_t *g) {
     if (m->n_embd_ple > 0) {
         size_t per_tok = (size_t)m->n_layer * m->n_embd_ple;
-        g->h_ple     = malloc(sizeof(float) * MVB * per_tok);
+        g->h_ple     = malloc(sizeof(float) * (size_t)g->win * per_tok);
         g->h_ple_tmp = malloc(sizeof(float) * per_tok);
         if (!g->h_ple || !g->h_ple_tmp) {
             fprintf(stderr, "gpu: CUDA per-layer embedding host staging "
@@ -3049,7 +3120,7 @@ static bool cuda_alloc_host_staging(model_t *m, gpu_t *g) {
             goto fail;
         }
     }
-    g->h_x      = malloc(sizeof(float) * MVB * m->n_embd);
+    g->h_x      = malloc(sizeof(float) * (size_t)g->win * m->n_embd);
     g->h_logits = malloc(sizeof(float) * (size_t)(m->spec_batch > 0 ? m->spec_batch : 1) * m->n_vocab);
     if (m->n_expert > 0)
         g->h_moe_logits = malloc(sizeof(float) * (size_t)m->n_expert * (size_t)(GPU_SMALL_BATCH > 1 ? GPU_SMALL_BATCH : 1));
@@ -3150,9 +3221,10 @@ bool gpu_init(model_t *m) {
     cuda_instance_dims(m, &D);
     // the weights (and the CPU/GPU split they imply) come from the registry:
     // a second instance of the same file reuses the first one's upload
-    g->sw = shared_acquire(m, D.act_bytes, D.max_hd);
+    g->sw = shared_acquire(m, D.act_bytes, D.act_per_col, D.max_hd);
     if (!g->sw) goto fail;
     m->gpu_layers = g->sw->gpu_layers;
+    g->win = g->sw->win;
     CK(cu.CtxSetCurrent(g->sw->ctx));
     if (!cuda_alloc_kv(m, g) ||
         !cuda_alloc_activations(m, g, &D) ||
@@ -4088,10 +4160,11 @@ bool gpu_mtp_reset_pending(model_t *m) {
 // Run n queued pairs (h from mtp_h, or the chained mtp_hid when chained) at
 // positions pos..pos+n-1; want_logits leaves the last row's head logits in
 // m->mtp_logits (host) and the last wide residual in mtp_hid.
+static bool set_pos(gpu_t *g, int pos, int tn);
 bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n, int pos,
                  bool want_logits) {
     gpu_t *g = m->gpu;
-    if (!gpu_mtp_bound(m) || n < 1 || n > MVB || (chained && n != 1) ||
+    if (!gpu_mtp_bound(m) || n < 1 || n > g->win || (chained && n != 1) ||
         slot0 < 0 || slot0 + n > m->n_batch) return false;
     int E = m->n_embd, hc = mtp_streams(m), hcd = hc * E, l = m->n_layer;
     // the block's residual: the wide x_hc, or the narrow x of a plain model
@@ -4107,7 +4180,7 @@ bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n,
         if (m->mtp_embd->scale != 1.0f) for (int i = 0; i < E; i++) hx[i] *= m->mtp_embd->scale;
     }
     if (cu.MemcpyHtoD(g->mtp_en, g->h_x, sizeof(float) * (size_t)n * E) != 0 ||
-        cu.MemcpyHtoD(g->pos_dev, &pos, sizeof(int)) != 0)   // the block's rows start at pos
+        !set_pos(g, pos, n))   // the block's rows start at pos
         return false;
     CUdeviceptr hsrc = chained ? g->mtp_hid : g->mtp_h + (size_t)slot0 * hcd * sizeof(float);
     // the normed embedding goes through xb (not in place: the norm kernel's
@@ -4316,7 +4389,7 @@ static bool stage_x(gpu_t *g, model_t *m, const int32_t *tokens, int tn) {
     return stage_ple(g, m, tokens, tn);
 }
 
-// encode a tile of up to MVB tokens: matvecs read each weight once for the
+// encode a tile of up to win tokens: matvecs read each weight once for the
 // whole tile, and every other kernel takes the token column from the launch
 // grid — a tile costs the same number of launches as a single token, which
 // matters because WDDM launch overhead dominates small-kernel dispatch. The
@@ -4629,8 +4702,8 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;
     CUdeviceptr xn_b  = g->g_scr;
-    CUdeviceptr xn2_b = g->g_scr + (size_t)MVB * n_embd * sizeof(float);
-    CUdeviceptr rin_b = g->g_scr + (size_t)2 * MVB * n_embd * sizeof(float);
+    CUdeviceptr xn2_b = g->g_scr + (size_t)g->win * n_embd * sizeof(float);
+    CUdeviceptr rin_b = g->g_scr + (size_t)2 * g->win * n_embd * sizeof(float);
     // --- dense shared MLP for the whole tile
     bool ok = enc_rmsnorm(g, g->x, xn_b, g->sw->ffn_norm[l], n_embd, eps,
                           tn, n_embd, n_embd)
@@ -5225,7 +5298,7 @@ static bool tile_kv_store(gpu_t *g, model_t *m, int l, int tn, int hd,
 }
 
 // Attention over the cache: flash-decoding at a single token (split, then
-// merge), the single-pass kernel for a prompt tile.
+// merge), k_attn for a prompt tile.
 static bool tile_attn(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
                       int q_dim, int xdim, bool local) {
     bool ok = true;
@@ -5254,9 +5327,16 @@ static bool tile_attn(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
             void *pm[] = { &g->xb2, &g->attn_part, &aa, &g->pos_dev, &sinks };
             ok = ok && launch(g, g->sw->f_attn_merge, m->n_head, 1, 1, 128, pm);
         } else {
-            void *pa[] = { &g->q, &g->kc, &g->vc, &g->att, &g->xb2, &aa, &g->pos_dev,
-                           &sinks };
-            ok = ok && launch(g, g->sw->f_attn, m->n_head, tn, 1, 128, pa);
+            // one launch per ATT_COLS query columns over the shared score
+            // scratch; set_pos left each sub-tile's start at pos_dev[s/ATT_COLS]
+            for (int s = 0; s < tn && ok; s += ATT_COLS) {
+                int sn = tn - s < ATT_COLS ? tn - s : ATT_COLS;
+                CUdeviceptr qs = g->q + (size_t)s * q_dim * sizeof(float);
+                CUdeviceptr os = g->xb2 + (size_t)s * xdim * sizeof(float);
+                CUdeviceptr ps = g->pos_dev + (size_t)(s / ATT_COLS) * sizeof(int);
+                void *pa[] = { &qs, &g->kc, &g->vc, &g->att, &os, &aa, &ps, &sinks };
+                ok = launch(g, g->sw->f_attn, m->n_head, sn, 1, 128, pa);
+            }
         }
     }
     return ok;
@@ -5781,7 +5861,7 @@ bool gpu_lora_bind(model_t *m) {
         return true;
     }
     if (cu.MemAlloc(&g->lora_t,
-                    sizeof(float) * (size_t)MVB * (size_t)g->lora_r) != 0) {
+                    sizeof(float) * (size_t)g->win * (size_t)g->lora_r) != 0) {
         fprintf(stderr, "error: cannot place the adapter scratch in VRAM; "
                 "run with --gpu off\n");
         gpu_lora_unbind(m);
@@ -6073,12 +6153,16 @@ bool gpu_hidden_rows_ok(const model_t *m) {
 const char *gpu_route_detail(const model_t *m) {
     const gpu_t *g = m ? m->gpu : NULL;
     if (!g) return "";
-    static _Thread_local char buf[160];
+    static _Thread_local char buf[200];
     if (g_tc_state == TC_ENV_UNSET) (void)tc_on(m, T_Q4_K);   // reads the env once
-    snprintf(buf, sizeof buf, "graph=%s tc=%s q8x=%s small_batch=%s%s%s",
+    // window: the prompt columns one pass of the device layers takes
+    // (model_gpu_window); tc_cols: the column tile each tensor-core GEMM
+    // launch covers inside it, so a window of 512 is 8 such launches
+    snprintf(buf, sizeof buf, "graph=%s tc=%s q8x=%s small_batch=%s window=%d tc_cols=%d%s%s",
              g->graph_bad ? "off" : g->gexec ? "replay" : "none",
              g_tc_state < 0 ? "promoted" : g_tc_state ? "forced" : "off",
              gpu_q8x_on() ? "on" : "off", gpu_small_batch_on() ? "on" : "off",
+             g->win, TC_N,
              m->n_expert > 0 ? " moe=" : "",
              m->n_expert > 0 ? (g->moe_fused_ok ? "fused" : "eager") : "");
     return buf;
@@ -6480,6 +6564,18 @@ static int inject_fail_ordinal(void) {
     return 0;
 }
 
+// The device copy of a tile's positions: its first row's, then the start of
+// every later ATT_COLS-column attention sub-tile. Every writer of pos_dev
+// goes through here so a sub-tile can never read a stale start.
+static bool set_pos(gpu_t *g, int pos, int tn) {
+    int hp[GPU_WINDOW_MAX / ATT_COLS];
+    int n = (tn + ATT_COLS - 1) / ATT_COLS;
+    if (n < 1) n = 1;
+    if (n > (g->win + ATT_COLS - 1) / ATT_COLS) return false;
+    for (int j = 0; j < n; j++) hp[j] = pos + j * ATT_COLS;
+    return cu.MemcpyHtoD(g->pos_dev, hp, sizeof(int) * (size_t)n) == 0;
+}
+
 // The recurrent state reset at a new sequence and snapshot before every
 // forward (the rollback a failed or rejected forward restores), the
 // keep-forward's checkpoint flags.
@@ -6533,8 +6629,7 @@ static bool cuda_fwd_prepare(gpu_t *g, model_t *m, int n, int pos) {
 static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
                                  int pos, float **logits, int m_, double t_fwd0) {
     double ts0 = prof.on ? prof_now() : 0;
-    if (!stage_x(g, m, tokens, 1) ||
-        cu.MemcpyHtoD(g->pos_dev, &pos, sizeof(int)) != 0) return -1;
+    if (!stage_x(g, m, tokens, 1) || !set_pos(g, pos, 1)) return -1;
     if (prof.on) prof.t_stage[m_] += prof_now() - ts0;
     if (!g->gexec) {
         prof.capturing = 1;
@@ -6602,19 +6697,19 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
     return 0;
 }
 
-// The batch in tiles of MVB: stage, run the device layers, hand a partial
-// split's boundary activation to the host.
+// The batch in tiles of the instance's prompt window (model_gpu_window):
+// stage, run the device layers, hand a partial split's boundary activation
+// to the host.
 static bool cuda_fwd_tiles(gpu_t *g, model_t *m, const int32_t *tokens, int n,
                            int pos, bool want_logits, bool partial, int m_) {
-    for (int i = 0; i < n; i += MVB) {
-        int tn = n - i < MVB ? n - i : MVB;
+    for (int i = 0; i < n; i += g->win) {
+        int tn = n - i < g->win ? n - i : g->win;
         bool last = i + tn == n;
         int p = pos + i;
         // device runs layers [0, gpu_layers); logits only when it owns the whole
         // model (partial hands the boundary activation back to the CPU)
         double ts0 = prof.on ? prof_now() : 0;
-        bool sok = stage_x(g, m, tokens + i, tn) &&
-                   cu.MemcpyHtoD(g->pos_dev, &p, sizeof(int)) == 0;
+        bool sok = stage_x(g, m, tokens + i, tn) && set_pos(g, p, tn);
         if (prof.on) { prof.t_stage[m_] += prof_now() - ts0; prof.n_tiles[m_] += 1;
                        prof.n_tokens[m_] += tn; }
         if (!sok ||

@@ -75,6 +75,7 @@ typedef struct {
     const char *device;            // "cpu" | gpu device name
     bool        gpu;
     int         threads, n_ctx, n_batch, gpu_layers;
+    int         gpu_window;        // CUDA prompt window; written when > 0
     bool        kv_q8;
     bool        kv_fp4;
     bool        kv_split;

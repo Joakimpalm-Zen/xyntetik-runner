@@ -5,6 +5,20 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA prefill reads the prompt in wider windows.** The device ran a
+  prompt in tiles of at most 64 tokens, fixed at build time, so every weight
+  matrix was read once per 64 tokens. The window is now chosen at load from
+  the memory the layer split leaves spare: up to 512 tokens, never at the
+  cost of a layer, still capped by `-b`, and `--fit` and the loader charge
+  the same scratch. On an RTX 3070 at a 512-token prompt, this window and the
+  bank-conflict padding below took prefill from 599 to 1091 tok/s on
+  Llama-3.2-3B Q4_K_M, 322 to 634 on Qwen2.5-7B Q4_K_M and 515 to 808 on
+  granite-4.1-3b Q8_0, with the same tokens. The window decides which kernel
+  route a prompt's last partial tile takes, so transcripts and receipts
+  record it (`profile.gpu_window`) and `--verify` rebuilds the instance at
+  the recorded window, refusing as unverifiable when it cannot; a record
+  written before this change replays at the old window of 64.
+
 - **CUDA prefill: the tensor-core GEMMs no longer conflict on shared-memory
   banks.** They staged 128-element fp16 rows at a 256-byte stride, so every
   row of a tile read from the same banks. Rows are now padded by 16 bytes.
