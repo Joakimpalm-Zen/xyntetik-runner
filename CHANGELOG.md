@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Q3_K models decode on CUDA again.** The Q3_K decode kernel read its
+  quant and high-mask bytes eight at a time from 110-byte blocks, so three
+  of every four loads were misaligned and the first decoded token raised a
+  device fault; the runner then released the GPU and decoded on the CPU
+  (Qwen2.5-32B Q3_K_S at 0.85 tok/s on the datacenter MIG slice, where
+  another engine decodes 26). The bytes are now read as 16-bit words, the
+  same values. `test-gpu-identity` had read ok throughout, because it
+  recorded GPU use at load and the faulted run finished on the CPU; it now
+  fails a run that loses its backend part-way, and `make test-cuda-q3k`
+  (in the CUDA gate) runs a Q3_K fixture on the device.
+
 - **TC2 on compute capability 8.0 and newer uses the newer tensor-core
   instruction.** The embedded kernels target compute capability 7.5, so TC2
   issued two `m16n8k8` multiplies per 16-deep step even on cards that have

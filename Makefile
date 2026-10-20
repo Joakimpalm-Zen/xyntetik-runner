@@ -1772,6 +1772,19 @@ endif
 test-cuda-iquants: runner $(TEST_GPU_ID)
 	RUNNER_REQUIRE_IQ_GATES=gpu $(PYTHON) -m pytest -q tests/test_iquants.py
 
+# CUDA Q3_K decode (k_gemv_q3_K): a fixture quantized to Q3_K, the device
+# against the CPU at logit precision. Q3_K's 110-byte blocks put three of
+# every four at an address that is not 8-byte aligned; the GEMV read them
+# with 8-byte loads and faulted, every Q3_K file then decoded on the CPU
+# (Qwen2.5-32B Q3_K_S at 0.85 tok/s on the datacenter MIG slice), and no
+# gate saw it because the identity run finished on the CPU and compared it
+# with itself. test-gpu-identity now fails a run that loses its backend.
+test-cuda-q3k: runner $(TEST_GPU_ID)
+	@set -e; \
+	$(PYTHON) scripts/make-test-model.py --wide test-q3k-src.gguf > /dev/null; \
+	./$(RUNNER_EXE) -m test-q3k-src.gguf --quantize test-q3k.gguf --quant q3_k > /dev/null 2>&1; \
+	./$(TEST_GPU_ID) test-q3k.gguf
+
 # The same gate on a Mac: the Metal codebook i-quant kernels (2026-09-17)
 # against the CPU decoders at logit precision on the fixture set, which
 # tests/test_iquants.py builds with llama-quantize/llama-imatrix from

@@ -1412,6 +1412,15 @@ extern "C" __global__ void k_mv_q5_K_b(MV_PARAMS) {
 // j = (e%128)/32 (shift 2j, high-bit mask 1<<(4*half+j)), byte l = e%32 of
 // qs + 32*half, scale index 8*half + 2j + (l >= 16); value
 // ((q >> shift) & 3) - (hbit ? 0 : 4), times d_all * (scale - 32).
+// A Q3_K block is 110 bytes, so block k starts at 6k mod 8: only every
+// fourth block is 8-byte aligned and an 8-byte load faults on the rest (a
+// misaligned-address error, sticky for the context). The 8 quant and 8
+// high-mask bytes a lane takes are read as four 16-bit words instead (every
+// block offset is even); the same bytes, so the same values.
+static __device__ __forceinline__ uint2 ld8_a2(const uchar *p) {
+    const unsigned short *h = (const unsigned short *)p;
+    return make_uint2((uint)h[0] | ((uint)h[1] << 16), (uint)h[2] | ((uint)h[3] << 16));
+}
 extern "C" __global__ void k_gemv_q3_K(MV_PARAMS) {
     MV_HEAD;
     int nb = a.n_in / 256;
@@ -1426,8 +1435,8 @@ extern "C" __global__ void k_gemv_q3_K(MV_PARAMS) {
         const uchar *blk = rw + (ulong64)b * 110;
         Q3K_UNPACK_SCALES;
         float dl = d_all * (float)(q3scales[sidx] - 32);
-        uint2 qv = *(const uint2 *)(qbase + 32 * half + lseg);
-        uint2 hv = *(const uint2 *)(hm + lseg);
+        uint2 qv = ld8_a2(qbase + 32 * half + lseg);
+        uint2 hv = ld8_a2(hm + lseg);
         const float *xp = x + (ulong64)b * 256 + (int)lane * 8;
         float4 x0 = *(const float4 *)xp, x1 = *(const float4 *)(xp + 4);
         uint v0 = (qv.x >> shift) & 0x03030303u, v1 = (qv.y >> shift) & 0x03030303u;

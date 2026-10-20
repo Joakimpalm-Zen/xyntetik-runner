@@ -82,6 +82,9 @@ static const char *TEXT =
     "The quick brown fox jumps over the lazy dog while the observatory "
     "published a revised catalogue listing four thousand objects in 1929.";
 
+// set by run() when a device run lost its backend part-way (see run())
+static bool g_fell_back;
+
 static float *run(const char *path, int gpu_mode, int *n_vocab_out,
                   bool *used_gpu, const int32_t *toks, int n_tok) {
     model_t m;
@@ -107,6 +110,7 @@ static float *run(const char *path, int gpu_mode, int *n_vocab_out,
     }
     *used_gpu = m.gpu != NULL;
     *n_vocab_out = m.n_vocab;
+    const bool loaded_on_gpu = m.gpu != NULL;
 
     float *out = malloc(sizeof(float) * (size_t)STEPS * (size_t)m.n_vocab);
     if (!out) { model_free(&m); return NULL; }
@@ -126,6 +130,12 @@ static float *run(const char *path, int gpu_mode, int *n_vocab_out,
         memcpy(out + (size_t)s * m.n_vocab, lg,
                sizeof(float) * (size_t)m.n_vocab);
     }
+    // A device fault mid-run releases the backend and the forward continues
+    // on the CPU (model.c), so a run that loaded on the GPU and ends without
+    // it compared the CPU with itself for the rest of the steps. That is a
+    // failure of the device route, not a skip: the Q3_K decode GEMV faulted
+    // on every misaligned block this way and the comparison still read ok.
+    if (loaded_on_gpu && !m.gpu) g_fell_back = true;
     model_free(&m);
     return out;
 }
@@ -314,6 +324,12 @@ int main(int argc, char **argv) {
     if (!cpu) { printf("gpu-identity: FAILED (cpu run)\n"); return 1; }
     float *gpu = run(path, GPU_AUTO, &nv_gpu, &gpu_used_gpu, toks, n_tok);
     if (!gpu) { free(cpu); printf("gpu-identity: FAILED (gpu run)\n"); return 1; }
+    if (g_fell_back) {
+        printf("FAIL: the device run lost its backend part-way and finished on the CPU "
+               "(a device fault; see the gpu: lines above)\ngpu-identity: FAILED\n");
+        free(cpu); free(gpu);
+        return 1;
+    }
 
     // GPU_ID_REQUIRE_SPLITK=1 (make test-cuda-qwen4exp, on a fixture built to
     // reach it): CUDA's BF16 split-K decode GEMV reduces in its own fixed tree,
@@ -391,6 +407,12 @@ int main(int argc, char **argv) {
             free(cpu); free(gpu);
             return 1;
         }
+    }
+    if (g_fell_back) {
+        printf("FAIL: a device run of the pair checks lost its backend part-way\n"
+               "gpu-identity: FAILED\n");
+        free(cpu); free(gpu);
+        return 1;
     }
     if (nv_cpu != nv_gpu) {
         printf("FAIL: vocab size differs (%d vs %d)\n", nv_cpu, nv_gpu);
