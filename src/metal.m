@@ -1023,6 +1023,7 @@ static _Atomic unsigned long g_coop_dispatches = 0;
 void gpu_attn_coop_force(int on) {
     g_coop_state = on < 0 ? COOP_ENV_UNSET : (on != 0);
 }
+unsigned long gpu_attn_tiled_dispatches(void) { return 0; }   // CUDA's tiled prefill attention
 unsigned long gpu_attn_coop_dispatches(void) { return g_coop_dispatches; }
 
 // Decode attention under grouped-query attention serves every query head of

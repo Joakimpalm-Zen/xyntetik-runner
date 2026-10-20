@@ -64,6 +64,7 @@ unsigned long gpu_mv_dispatches(void) { return 0; }
 void gpu_attn_coop_force(int on) { (void)on; }
 unsigned long gpu_attn_coop_dispatches(void) { return 0; }
 unsigned long gpu_attn_tile_dispatches(void) { return 0; }
+unsigned long gpu_attn_tiled_dispatches(void) { return 0; }
 unsigned long gpu_attn_gqa_dispatches(void) { return 0; }
 unsigned long gpu_splitk_dispatches(void) { return 0; }
 long gpu_live_buffers(void) { return -1; }

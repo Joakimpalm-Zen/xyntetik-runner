@@ -92,6 +92,14 @@ static float *run(const char *path, int gpu_mode, int *n_vocab_out,
     p.n_ctx    = n_tok + 8;
     p.n_batch  = g_n_batch;
     p.gpu_layers_override = gpu_mode == GPU_OFF ? 0 : g_gpu_layers;
+    // GPU_ID_KV=q8|fp4|k8v4: both arms keep that cache format, so the bound
+    // also covers the device kernels that read compact rows (the tiled and
+    // grouped attention stage them as raw bytes: a row whose length is not
+    // a whole number of words, fp4 at head width 48, was once left short)
+    const char *kv = getenv("GPU_ID_KV");
+    if (kv && !strcmp(kv, "q8")) p.kv_q8 = true;
+    else if (kv && !strcmp(kv, "fp4")) p.kv_fp4 = true;
+    else if (kv && !strcmp(kv, "k8v4")) p.kv_split = true;
 
     if (!model_load(&m, path, &p)) {
         fprintf(stderr, "cannot load %s\n", path);

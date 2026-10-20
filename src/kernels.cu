@@ -4466,6 +4466,236 @@ extern "C" __global__ void k_attn(const float *q, const unsigned char *kc,
     }
 }
 
+// ------------------------------------------------ tiled prefill attention
+// C2 step 1 (RUNNER_CUDA_ATTN_TILE, see tile_attn in cuda.c). k_attn above
+// runs one block per (head, token) and reads every K and V row of the
+// context from global memory for each of them: a prompt of L tokens on a
+// model with G query heads per KV head reads the cache G * L times, and the
+// scores make a round trip through global scratch. This kernel gives one
+// block a KV head, up to R / G of its query heads' rows (or R heads at one
+// token when G >= R) and a strip of query tokens, and walks the strip's key
+// range in tiles of TK rows staged in shared memory, so each cache row is
+// read once per R query rows.
+//
+// The tiling follows the design of the published flash-attention kernels
+// (tiles of keys staged on chip, every query row of the block reusing them);
+// the arithmetic is k_attn's own, kept to the same two passes:
+//   pass 1: every score q.k * scale, through the unchanged kv_dot on the
+//           staged row (the cache's own bytes, so q8_0 and fp4 rows keep
+//           their per-block association), and each row's maximum;
+//   pass 2: the same scores recomputed by the same call, expf(s - max),
+//           their sum, and the weighted V rows through kv_pair.
+// Scores and maxima are therefore bit-identical to k_attn's; only the order
+// of the softmax denominator's sum and of the V accumulation differ, so the
+// obligation is k_attn's: token-identical to the CPU scalar route, logits
+// not bit-identical, gated empirically (test-gpu-identity, cpu_cuda_check).
+// Keys a row may not see (causal, sliding window) contribute exp = 0, which
+// leaves an fp32 sum unchanged; rows past the strip are zero.
+//
+// Shared memory: q rows [R][hd+1] floats, one K or V tile [TK][bws] words
+// (row bytes rounded up to an odd word count so lanes reading different rows
+// hit different banks), the probabilities [R][TK] and the row max and sum.
+// Rows are r = hi * qs + ti (query head hi of the block, token ti of the
+// strip). Launch: 256 threads, grid (n_kv * ngh, ceil(tn / qs)).
+#define AT_THREADS 256
+template <int R, int TK>
+__device__ __forceinline__ void attn_tile_body(const float *q, const unsigned char *kc,
+                                               const unsigned char *vc, float *out,
+                                               const attn_args &a, const int *posp,
+                                               const float *sinks, int tn, int hb,
+                                               int qs) {
+    extern __shared__ float at_sm[];
+    const int hd = a.head_dim, tid = threadIdx.x;
+    const int G = a.n_head / a.n_head_kv;
+    const int ngh = (G + hb - 1) / hb;
+    const int kvh = blockIdx.x / ngh, hg = blockIdx.x % ngh;
+    const int h0 = kvh * G + hg * hb;
+    const int nh = G - hg * hb < hb ? G - hg * hb : hb;
+    const int tk0 = blockIdx.y * qs;
+    const int nt = tn - tk0 < qs ? tn - tk0 : qs;
+    const int pos0 = *posp;
+    const int kv_dim = a.n_head_kv * hd;
+    const ulong64 row_b = KV_ROW_BYTES(kv_dim, a.q8), row_v = KV_ROW_BYTES(kv_dim, a.vq8);
+    const ulong64 base = a.l_off + kv_head_off(kvh, hd, a.q8);
+    const ulong64 base_v = a.v_off + kv_head_off(kvh, hd, a.vq8);
+    const int kbytes = (int)KV_ROW_BYTES(hd, a.q8), vbytes = (int)KV_ROW_BYTES(hd, a.vq8);
+    const int kws = ((kbytes + 3) / 4) | 1, vws = ((vbytes + 3) / 4) | 1;
+    const int bws = kws > vws ? kws : vws;
+    const int qst = hd + 1;
+    float *Q = at_sm;                                 // [R][qst]
+    unsigned *KV = (unsigned *)(Q + R * qst);         // [TK][bws]
+    float *P = (float *)(KV + TK * bws);              // [R][TK]
+    float *rmax = P + R * TK;                         // [R]
+    float *rsum = rmax + R;                           // [R]
+
+    for (int i = tid; i < R * hd; i += AT_THREADS) {
+        int r = i / hd, d = i - r * hd;
+        int hi = r / qs, ti = r - hi * qs;
+        float v = 0.0f;
+        if (hi < nh && ti < nt) v = q[(ulong64)(tk0 + ti) * a.qs + (ulong64)(h0 + hi) * hd + d];
+        Q[r * qst + d] = v;
+    }
+    // the strip's key range: the first row's window start to the last row
+    const int plast = pos0 + tk0 + nt - 1;
+    int klo = 0;
+    if (a.window > 0) {
+        int f = pos0 + tk0 - a.window + 1;
+        klo = f > 0 ? f : 0;
+    }
+    enum { DPT = (R * TK + AT_THREADS - 1) / AT_THREADS };      // scores per thread
+    float mx[DPT];
+    #pragma unroll
+    for (int j = 0; j < DPT; j++) mx[j] = -1e30f;
+
+    // stage the cache rows [kt, kt + TK) of one side (K or V) as raw bytes
+    auto stage = [&](const unsigned char *cache, ulong64 b0, ulong64 rb, int nbytes,
+                     int ws, int kt) {
+        // whole words when the head slice is word aligned and a whole number
+        // of words long (fp16 always is; a q8_0 row at head width 96 or an
+        // fp4 row at 80 is not, and its tail bytes would go unstaged)
+        if (((b0 | rb | (ulong64)nbytes) & 3) == 0) {
+            int nw = nbytes / 4;
+            for (int i = tid; i < TK * nw; i += AT_THREADS) {
+                int k = i / nw, w = i - k * nw, t = kt + k;
+                unsigned v = 0u;
+                if (t <= plast)
+                    v = *(const unsigned *)(cache + b0 + kv_slot(t, a.ring) * rb + (ulong64)w * 4);
+                KV[k * ws + w] = v;
+            }
+        } else {
+            for (int i = tid; i < TK * nbytes; i += AT_THREADS) {
+                int k = i / nbytes, c = i - k * nbytes, t = kt + k;
+                unsigned char v = 0;
+                if (t <= plast) v = cache[b0 + kv_slot(t, a.ring) * rb + (ulong64)c];
+                ((unsigned char *)(KV + k * ws))[c] = v;
+            }
+        }
+    };
+
+    // ---- pass 1: row maxima ----
+    for (int kt = klo; kt <= plast; kt += TK) {
+        __syncthreads();
+        stage(kc, base, row_b, kbytes, bws, kt);
+        __syncthreads();
+        #pragma unroll
+        for (int j = 0; j < DPT; j++) {
+            int idx = tid + j * AT_THREADS;
+            if (idx >= R * TK) break;
+            int r = idx / TK, k = idx - r * TK, t = kt + k;
+            int hi = r / qs, ti = r - hi * qs;
+            int pr = pos0 + tk0 + ti;
+            int t0r = (a.window > 0 && pr - a.window + 1 > 0) ? pr - a.window + 1 : 0;
+            if (hi < nh && ti < nt && t >= t0r && t <= pr) {
+                float sc = kv_dot((const unsigned char *)(KV + k * bws), Q + r * qst, hd, a.q8) * a.scale;
+                mx[j] = fmaxf(mx[j], sc);
+            }
+        }
+    }
+    // rows share a lane group of TK consecutive lanes (TK divides 32)
+    #pragma unroll
+    for (int j = 0; j < DPT; j++) {
+        float v = mx[j];
+        for (int off = TK / 2; off > 0; off >>= 1)
+            v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, off));
+        int idx = tid + j * AT_THREADS;
+        if (idx < R * TK && idx % TK == 0) {
+            int r = idx / TK, hi = r / qs;
+            if (sinks && hi < nh && sinks[h0 + hi] > v) v = sinks[h0 + hi];
+            rmax[r] = v;
+        }
+    }
+
+    // ---- pass 2: probabilities, their sum and the weighted values ----
+    // (row, value pair) outputs per thread: the host launches only when
+    // R * head_dim <= 4096 (32 rows at <= 128, 16 rows at <= 256)
+    enum { OPT = 4096 / 2 / AT_THREADS };
+    const int P2 = hd / 2;
+    float2 acc[OPT];
+    #pragma unroll
+    for (int j = 0; j < OPT; j++) acc[j] = make_float2(0.0f, 0.0f);
+    float sm_[DPT];
+    #pragma unroll
+    for (int j = 0; j < DPT; j++) sm_[j] = 0.0f;
+    for (int kt = klo; kt <= plast; kt += TK) {
+        __syncthreads();
+        stage(kc, base, row_b, kbytes, bws, kt);
+        __syncthreads();
+        #pragma unroll
+        for (int j = 0; j < DPT; j++) {
+            int idx = tid + j * AT_THREADS;
+            if (idx >= R * TK) break;
+            int r = idx / TK, k = idx - r * TK, t = kt + k;
+            int hi = r / qs, ti = r - hi * qs;
+            int pr = pos0 + tk0 + ti;
+            int t0r = (a.window > 0 && pr - a.window + 1 > 0) ? pr - a.window + 1 : 0;
+            float pv = 0.0f;
+            if (hi < nh && ti < nt && t >= t0r && t <= pr) {
+                float sc = kv_dot((const unsigned char *)(KV + k * bws), Q + r * qst, hd, a.q8) * a.scale;
+                pv = expf(sc - rmax[r]);
+            }
+            sm_[j] += pv;
+            P[r * TK + k] = pv;
+        }
+        __syncthreads();
+        stage(vc, base_v, row_v, vbytes, bws, kt);
+        __syncthreads();
+        #pragma unroll
+        for (int j = 0; j < OPT; j++) {
+            int idx = tid + j * AT_THREADS;
+            if (idx >= R * P2) break;
+            int r = idx / P2, i2 = idx - r * P2;
+            float2 o = acc[j];
+            for (int k = 0; k < TK; k++) {
+                float pk = P[r * TK + k];
+                float2 vf = kv_pair((const unsigned char *)(KV + k * bws), i2, a.vq8);
+                o.x += pk * vf.x;
+                o.y += pk * vf.y;
+            }
+            acc[j] = o;
+        }
+    }
+    #pragma unroll
+    for (int j = 0; j < DPT; j++) {
+        float v = sm_[j];
+        for (int off = TK / 2; off > 0; off >>= 1)
+            v += __shfl_xor_sync(0xffffffffu, v, off);
+        int idx = tid + j * AT_THREADS;
+        if (idx < R * TK && idx % TK == 0) {
+            int r = idx / TK, hi = r / qs;
+            if (sinks && hi < nh) v += expf(sinks[h0 + hi] - rmax[r]);
+            rsum[r] = v;
+        }
+    }
+    __syncthreads();
+    #pragma unroll
+    for (int j = 0; j < OPT; j++) {
+        int idx = tid + j * AT_THREADS;
+        if (idx >= R * P2) break;
+        int r = idx / P2, i2 = idx - r * P2;
+        int hi = r / qs, ti = r - hi * qs;
+        if (hi >= nh || ti >= nt) continue;
+        float s = rsum[r];
+        ulong64 o = (ulong64)(tk0 + ti) * a.os + (ulong64)(h0 + hi) * hd + 2 * i2;
+        out[o]     = acc[j].x / s;
+        out[o + 1] = acc[j].y / s;
+    }
+}
+
+// head_dim <= 128: 32 query rows, 32-key tiles
+extern "C" __global__ void __launch_bounds__(AT_THREADS)
+k_attn_tile32(const float *q, const unsigned char *kc, const unsigned char *vc,
+              float *out, attn_args a, const int *posp, const float *sinks,
+              int tn, int hb, int qs) {
+    attn_tile_body<32, 32>(q, kc, vc, out, a, posp, sinks, tn, hb, qs);
+}
+// head_dim <= 256: 16 query rows, 16-key tiles (the same shared footprint)
+extern "C" __global__ void __launch_bounds__(AT_THREADS)
+k_attn_tile16(const float *q, const unsigned char *kc, const unsigned char *vc,
+              float *out, attn_args a, const int *posp, const float *sinks,
+              int tn, int hb, int qs) {
+    attn_tile_body<16, 16>(q, kc, vc, out, a, posp, sinks, tn, hb, qs);
+}
+
 // --------------------------------------------------- flash-decoding attention
 // Decode (batch==1, one query token, long KV) attention. The plain k_attn runs
 // one block per (head, token): a 4B decode step is 32 blocks on a 46-SM GPU,
@@ -6483,4 +6713,175 @@ extern "C" __global__ void k_relu2(float *x, int n) {
     if (i >= n) return;
     float r = x[i] > 0.0f ? x[i] : 0.0f;
     x[i] = r * r;
+}
+
+// ------------------------------------------ grouped decode attention (C2)
+// RUNNER_CUDA_ATTN_DEC (cuda.c tile_attn, tn == 1). k_attn_dec gives each
+// QUERY head its own blocks, and every one of them reads the whole K and V
+// of its KV head from global memory: a model with G query heads per KV head
+// reads the cache G times per token (8 on Qwen2.5-3B, where decode at a 16K
+// context fell to 17% of another engine's rate in the 2026-10-20 baseline).
+// This kernel gives one block a KV head and a slice of the positions, stages
+// each tile of TK cache rows once in shared memory (the cache's own bytes),
+// and serves all G query heads from it:
+//   pass 1: every score through the unchanged kv_dot, each head's maximum;
+//   pass 2: the same scores recomputed, expf(s - max), their sum, and the
+//           weighted V rows through kv_pair;
+// then writes k_attn_dec's partial (un-normalised V, max, sum) per head, so
+// the merge is k_attn_dec's arithmetic over AD_SPLITS slices.
+// Splits: AD_SPLITS is fixed (the decode graph's grid must not depend on the
+// position), the slice length computed on the device from pos as before.
+// Obligation: k_attn_dec's (deterministic within the route; the slice and
+// reduction grouping differ, so token-identical to the CPU scalar route and
+// gated empirically, not bit-identical to k_attn_dec).
+#define AD_SPLITS 32
+#define AD_TK 32
+#define AD_THREADS 256
+#define AD_GMAX 8   // query heads per KV head a block serves (larger: k_attn_dec)
+
+extern "C" __global__ void __launch_bounds__(AD_THREADS)
+k_attn_dec_gqa(const float *q, const unsigned char *kc, const unsigned char *vc,
+               float *part, attn_args a, const int *posp) {
+    extern __shared__ float ad_sm[];
+    const int kvh = blockIdx.x, sp = blockIdx.y, tid = threadIdx.x;
+    const int hd = a.head_dim, G = a.n_head / a.n_head_kv, h0 = kvh * G;
+    const int pos = *posp;
+    const int kv_dim = a.n_head_kv * hd;
+    const ulong64 row_b = KV_ROW_BYTES(kv_dim, a.q8), row_v = KV_ROW_BYTES(kv_dim, a.vq8);
+    const ulong64 base = a.l_off + kv_head_off(kvh, hd, a.q8);
+    const ulong64 base_v = a.v_off + kv_head_off(kvh, hd, a.vq8);
+    const int kbytes = (int)KV_ROW_BYTES(hd, a.q8), vbytes = (int)KV_ROW_BYTES(hd, a.vq8);
+    const int kws = ((kbytes + 3) / 4) | 1, vws = ((vbytes + 3) / 4) | 1;
+    const int bws = kws > vws ? kws : vws;
+    int t0 = 0;
+    if (a.window > 0 && pos - a.window + 1 > 0) t0 = pos - a.window + 1;
+    const int total = pos + 1 - t0;
+    const int slice = (total + AD_SPLITS - 1) / AD_SPLITS;
+    const int s0 = t0 + sp * slice;
+    int s1 = s0 + slice;
+    if (s1 > pos + 1) s1 = pos + 1;
+    if (s0 >= s1) {                      // empty slice: the merge's sentinel
+        if (tid < G) {
+            float *P = part + ((ulong64)(h0 + tid) * AD_SPLITS + sp) * (hd + 2);
+            P[hd] = -1e30f;
+            P[hd + 1] = 0.0f;
+        }
+        return;
+    }
+    float *Q = ad_sm;                                   // [G][hd + 1]
+    unsigned *KV = (unsigned *)(Q + AD_GMAX * (hd + 1)); // [AD_TK][bws]
+    float *Pr = (float *)(KV + AD_TK * bws);            // [G][AD_TK]
+    float *hmax = Pr + AD_GMAX * AD_TK;                 // [G]
+    for (int i = tid; i < G * hd; i += AD_THREADS) {
+        int g = i / hd, d = i - g * hd;
+        Q[g * (hd + 1) + d] = q[(ulong64)(h0 + g) * hd + d];
+    }
+    auto stage = [&](const unsigned char *cache, ulong64 b0, ulong64 rb, int nbytes, int kt) {
+        // words only for a word-aligned slice of whole words (see attn_tile_body)
+        if (((b0 | rb | (ulong64)nbytes) & 3) == 0) {
+            int nw = nbytes / 4;
+            for (int i = tid; i < AD_TK * nw; i += AD_THREADS) {
+                int k = i / nw, w = i - k * nw, t = kt + k;
+                KV[k * bws + w] = t < s1 ? *(const unsigned *)(cache + b0 + kv_slot(t, a.ring) * rb + (ulong64)w * 4)
+                                         : 0u;
+            }
+        } else {
+            for (int i = tid; i < AD_TK * nbytes; i += AD_THREADS) {
+                int k = i / nbytes, c = i - k * nbytes, t = kt + k;
+                ((unsigned char *)(KV + k * bws))[c] = t < s1 ? cache[b0 + kv_slot(t, a.ring) * rb + (ulong64)c] : 0;
+            }
+        }
+    };
+    // score thread mapping: head g = tid / AD_TK, key k = tid % AD_TK
+    const int sg = tid / AD_TK, sk = tid - sg * AD_TK;
+    float mx = -1e30f;
+    for (int kt = s0; kt < s1; kt += AD_TK) {
+        __syncthreads();
+        stage(kc, base, row_b, kbytes, kt);
+        __syncthreads();
+        if (sg < G && kt + sk < s1)
+            mx = fmaxf(mx, kv_dot((const unsigned char *)(KV + sk * bws), Q + sg * (hd + 1), hd, a.q8) * a.scale);
+    }
+    for (int off = AD_TK / 2; off > 0; off >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, off));
+    if (sk == 0 && sg < G) hmax[sg] = mx;
+    // value mapping: (head, pair) outputs, AD_GMAX * 128 pairs at most
+    const int P2 = hd / 2;
+    float2 acc[4];
+    #pragma unroll
+    for (int j = 0; j < 4; j++) acc[j] = make_float2(0.0f, 0.0f);
+    float sum = 0.0f;
+    for (int kt = s0; kt < s1; kt += AD_TK) {
+        __syncthreads();
+        stage(kc, base, row_b, kbytes, kt);
+        __syncthreads();
+        float pv = 0.0f;
+        if (sg < G && kt + sk < s1)
+            pv = expf(kv_dot((const unsigned char *)(KV + sk * bws), Q + sg * (hd + 1), hd, a.q8) * a.scale - hmax[sg]);
+        sum += pv;
+        if (sg < G) Pr[sg * AD_TK + sk] = pv;
+        __syncthreads();
+        stage(vc, base_v, row_v, vbytes, kt);
+        __syncthreads();
+        #pragma unroll
+        for (int j = 0; j < 4; j++) {
+            int idx = tid + j * AD_THREADS;
+            if (idx >= G * P2) break;
+            int g = idx / P2, i2 = idx - g * P2;
+            float2 o = acc[j];
+            for (int k = 0; k < AD_TK; k++) {
+                float pk = Pr[g * AD_TK + k];
+                float2 vf = kv_pair((const unsigned char *)(KV + k * bws), i2, a.vq8);
+                o.x += pk * vf.x;
+                o.y += pk * vf.y;
+            }
+            acc[j] = o;
+        }
+    }
+    for (int off = AD_TK / 2; off > 0; off >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, off);
+    if (sk == 0 && sg < G) {
+        float *P = part + ((ulong64)(h0 + sg) * AD_SPLITS + sp) * (hd + 2);
+        P[hd] = hmax[sg];
+        P[hd + 1] = sum;
+    }
+    #pragma unroll
+    for (int j = 0; j < 4; j++) {
+        int idx = tid + j * AD_THREADS;
+        if (idx >= G * P2) break;
+        int g = idx / P2, i2 = idx - g * P2;
+        float *P = part + ((ulong64)(h0 + g) * AD_SPLITS + sp) * (hd + 2);
+        P[2 * i2] = acc[j].x;
+        P[2 * i2 + 1] = acc[j].y;
+    }
+}
+
+// k_attn_merge over AD_SPLITS partials (its arithmetic, a different count)
+extern "C" __global__ void k_attn_merge32(float *out, const float *part,
+                                          attn_args a, const int *posp,
+                                          const float *sinks) {
+    int h = blockIdx.x;
+    int tid = threadIdx.x, tpg = blockDim.x;
+    int hd = a.head_dim;
+    const float *base = part + (ulong64)h * AD_SPLITS * (hd + 2);
+    float M = -1e30f;
+    for (int sp = 0; sp < AD_SPLITS; sp++)
+        M = fmaxf(M, base[sp * (hd + 2) + hd]);
+    if (sinks && sinks[h] > M) M = sinks[h];
+    float L = 0.f;
+    for (int sp = 0; sp < AD_SPLITS; sp++) {
+        float m = base[sp * (hd + 2) + hd];
+        if (m <= -1e29f) continue;
+        L += base[sp * (hd + 2) + hd + 1] * expf(m - M);
+    }
+    if (sinks) L += expf(sinks[h] - M);
+    for (int i = tid; i < hd; i += tpg) {
+        float acc = 0.f;
+        for (int sp = 0; sp < AD_SPLITS; sp++) {
+            const float *P = base + sp * (hd + 2);
+            float m = P[hd];
+            if (m <= -1e29f) continue;
+            acc += P[i] * expf(m - M);
+        }
+        out[h * hd + i] = acc / L;
+    }
+    (void)posp;
 }

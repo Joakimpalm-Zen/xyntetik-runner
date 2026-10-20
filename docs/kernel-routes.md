@@ -70,6 +70,13 @@ The branches are tried in this order; the first that applies runs.
 
 Around the matvec:
 
+- **Prefill and decode attention (experimental).** `RUNNER_CUDA_ATTN_TILE=1`
+  takes prefill attention through `k_attn_tile32`/`16` (query strips over
+  shared-memory K and V tiles; each score is `k_attn`'s, the softmax and the
+  V sum reassociate), and `RUNNER_CUDA_ATTN_DEC=1` single-token attention
+  through `k_attn_dec_gqa` and `k_attn_merge32` (a KV row read once per
+  head group, 32 fixed splits). Obligation: tolerance, token-identical on
+  the long-context checks. Gate: `test-gpu-identity` (with `GPU_ID_KV`).
 - **Slot microbatching.** `batch_mv_twin_ok()` admits a type to the
   shared-weight decode microbatch only when its batched kernels are twins
   of the batch-1 kernel. A refusal decodes the sequences one at a time; it

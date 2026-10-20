@@ -441,6 +441,8 @@ typedef struct gpu_weights {
     CUfunction  f_mamba_conv, f_mamba_ssd, f_mamba_gate_norm, f_relu2;
     CUfunction  f_colabsmax;            // per-column |x| max for the scaled TC GEMMs
     CUfunction  f_attn_dec, f_attn_merge;   // flash-decoding attention (decode)
+    CUfunction  f_attn_tile32, f_attn_tile16; // tiled prefill attention (tile_attn)
+    CUfunction  f_attn_dec_gqa, f_attn_merge32; // grouped decode attention (tile_attn)
     // kernel tables indexed by ggml tensor type; sized past the largest
     // supported type id (T_MXFP4 = 39), not the count of supported types
     // Sized past the HIGHEST type the loader can admit (T_NVFP4 = 40), not
@@ -2151,6 +2153,12 @@ static bool shared_load_module(gpu_weights *w) {
     for (size_t i = 0; i < sizeof TC_KERNELS / sizeof *TC_KERNELS; i++)
         cu.ModuleGetFunction(&w->f_gemm_tc[TC_KERNELS[i].type], w->mod,
                              TC_KERNELS[i].name);
+    // the tiled prefill attention: resolved non-fatally like the TC kernels,
+    // so a PTX without it keeps k_attn
+    cu.ModuleGetFunction(&w->f_attn_tile32, w->mod, "k_attn_tile32");
+    cu.ModuleGetFunction(&w->f_attn_dec_gqa, w->mod, "k_attn_dec_gqa");
+    cu.ModuleGetFunction(&w->f_attn_merge32, w->mod, "k_attn_merge32");
+    cu.ModuleGetFunction(&w->f_attn_tile16, w->mod, "k_attn_tile16");
     return true;
 fail:
     return false;
@@ -3277,6 +3285,18 @@ static bool launch(gpu_t *g, CUfunction f, unsigned gx, unsigned gy, unsigned gz
     return r == 0;
 }
 
+// launch() with dynamic shared memory (bytes <= 48 KB: no opt-in attribute)
+static bool launch_smem(gpu_t *g, CUfunction f, unsigned gx, unsigned gy, unsigned gz,
+                        unsigned bx, unsigned smem, void **params) {
+    if (prof.on) prof.total_launches[prof.cur_mode]++;
+    if (!f) { gpu_first_error("no kernel bound for this operation"); return false; }
+    CUresult r = cu.LaunchKernel(f, gx, gy, gz, bx, 1, 1, smem, g->stream, params, NULL);
+    if (r != 0)
+        gpu_first_error("cuLaunchKernel failed: %s (grid %ux%ux%u, block %u, smem %u)",
+                        cu_err(r), gx, gy, gz, bx, smem);
+    return r == 0;
+}
+
 static void prof_report(void);
 
 // lazily allocate the event pool the first time profiling runs
@@ -3361,6 +3381,8 @@ unsigned long gpu_mv_dispatches(void) { return 0; }
 void gpu_attn_coop_force(int on) { (void)on; }
 unsigned long gpu_attn_coop_dispatches(void) { return 0; }
 unsigned long gpu_attn_tile_dispatches(void) { return 0; }
+static _Atomic unsigned long g_attn_tiled_dispatches;
+unsigned long gpu_attn_tiled_dispatches(void) { return g_attn_tiled_dispatches; }
 unsigned long gpu_attn_gqa_dispatches(void) { return 0; }
 
 static _Atomic unsigned long g_splitk_dispatches;
@@ -5297,8 +5319,86 @@ static bool tile_kv_store(gpu_t *g, model_t *m, int l, int tn, int hd,
     return ok;
 }
 
+// RUNNER_CUDA_ATTN_TILE: the tiled prefill attention (k_attn_tile*, C2
+// step 1). 1 selects it, 0 or unset keeps k_attn while its gates are run.
+static bool attn_tile_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_ATTN_TILE");
+        on = e && *e && strcmp(e, "0") != 0;
+    }
+    return on == 1;
+}
+
+// The tiled prefill attention over a whole tile of tn query columns, or
+// false (nothing launched) when it does not apply: switch off, kernel
+// absent from the PTX, a head width past 256, or a GQA ratio that does not
+// divide. Its launch shape and shared footprint are k_attn_tile's (see
+// kernels.cu): 32 query rows of 32-key tiles at head_dim <= 128, 16 of 16
+// at <= 256, the rows a block's heads times its strip of tokens.
+static bool tile_attn_tiled(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
+                            const attn_args *aa, CUdeviceptr sinks, bool *ok) {
+    if (!attn_tile_on() || hd % 2 || n_kv < 1 || m->n_head % n_kv) return false;
+    int R = hd <= 128 ? 32 : hd <= 256 ? 16 : 0;
+    CUfunction f = R == 32 ? g->sw->f_attn_tile32 : R == 16 ? g->sw->f_attn_tile16 : NULL;
+    if (!f) return false;
+    int G = m->n_head / n_kv;
+    int hb = G < R ? G : R, qs = R / hb, ngh = (G + hb - 1) / hb;
+    int kw = (model_kv_kind_k(m) == 2 ? hd / 16 * 9 : model_kv_kind_k(m) ? hd / 32 * 34 : 2 * hd);
+    int vw = (model_kv_kind_v(m) == 2 ? hd / 16 * 9 : model_kv_kind_v(m) ? hd / 32 * 34 : 2 * hd);
+    kw = ((kw + 3) / 4) | 1;
+    vw = ((vw + 3) / 4) | 1;
+    unsigned smem = (unsigned)sizeof(float) *
+                    (unsigned)(R * (hd + 1) + R * (kw > vw ? kw : vw) + R * R + 2 * R);
+    if (smem > 48 * 1024) return false;
+    attn_args a = *aa;
+    void *pa[] = { &g->q, &g->kc, &g->vc, &g->xb2, &a, &g->pos_dev, &sinks,
+                   &tn, &hb, &qs };
+    *ok = launch_smem(g, f, (unsigned)(n_kv * ngh), (unsigned)((tn + qs - 1) / qs), 1,
+                      256, smem, pa);
+    if (*ok) g_attn_tiled_dispatches++;
+    return true;
+}
+
+// RUNNER_CUDA_ATTN_DEC: the grouped decode attention (k_attn_dec_gqa, one
+// block per KV head and slice serving its query heads). 1 selects it, 0 or
+// unset keeps k_attn_dec while its gates are run.
+static bool attn_dec_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_ATTN_DEC");
+        on = e && *e && strcmp(e, "0") != 0;
+    }
+    return on == 1;
+}
+static _Atomic unsigned long g_attn_dec_gqa_dispatches;
+
+// The grouped decode attention for the single query column, or false
+// (nothing launched) when it does not apply. 32 fixed slices, so the grid
+// and the graph that captures it do not depend on the position.
+static bool tile_attn_dec_gqa(gpu_t *g, model_t *m, int hd, int n_kv,
+                              const attn_args *aa, CUdeviceptr sinks, bool *ok) {
+    enum { SPLITS = 32, TK = 32, GMAX = 8 };
+    if (!attn_dec_on() || !g->sw->f_attn_dec_gqa || !g->sw->f_attn_merge32 ||
+        hd % 2 || hd > 256 || n_kv < 1 || m->n_head % n_kv || m->n_head / n_kv > GMAX)
+        return false;
+    int kw = (model_kv_kind_k(m) == 2 ? hd / 16 * 9 : model_kv_kind_k(m) ? hd / 32 * 34 : 2 * hd);
+    int vw = (model_kv_kind_v(m) == 2 ? hd / 16 * 9 : model_kv_kind_v(m) ? hd / 32 * 34 : 2 * hd);
+    kw = ((kw + 3) / 4) | 1;
+    vw = ((vw + 3) / 4) | 1;
+    unsigned smem = (unsigned)sizeof(float) *
+                    (unsigned)(GMAX * (hd + 1) + TK * (kw > vw ? kw : vw) + GMAX * TK + GMAX);
+    attn_args a = *aa;
+    void *pd[] = { &g->q, &g->kc, &g->vc, &g->attn_part, &a, &g->pos_dev };
+    void *pm[] = { &g->xb2, &g->attn_part, &a, &g->pos_dev, &sinks };
+    *ok = launch_smem(g, g->sw->f_attn_dec_gqa, (unsigned)n_kv, SPLITS, 1, 256, smem, pd) &&
+          launch(g, g->sw->f_attn_merge32, (unsigned)m->n_head, 1, 1, 128, pm);
+    if (*ok) g_attn_dec_gqa_dispatches++;
+    return true;
+}
+
 // Attention over the cache: flash-decoding at a single token (split, then
-// merge), k_attn for a prompt tile.
+// merge), the tiled prefill kernel or k_attn for a prompt tile.
 static bool tile_attn(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
                       int q_dim, int xdim, bool local) {
     bool ok = true;
@@ -5320,12 +5420,16 @@ static bool tile_attn(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
         // single reduction, or at k_attn_merge's global merge (the split
         // partials carry no normalization, so k_attn_dec is untouched)
         CUdeviceptr sinks = g->sw->sinks[l];
-        if (tn == 1) {
+        if (tn == 1 && tile_attn_dec_gqa(g, m, hd, n_kv, &aa, sinks, &ok)) {
+            // ran (or failed): grouped slices, then their merge
+        } else if (tn == 1) {
             void *pd[] = { &g->q, &g->kc, &g->vc, &g->att, &g->attn_part,
                            &aa, &g->pos_dev };
             ok = ok && launch(g, g->sw->f_attn_dec, m->n_head, ATTN_SPLITS, 1, 128, pd);
             void *pm[] = { &g->xb2, &g->attn_part, &aa, &g->pos_dev, &sinks };
             ok = ok && launch(g, g->sw->f_attn_merge, m->n_head, 1, 1, 128, pm);
+        } else if (tile_attn_tiled(g, m, tn, hd, n_kv, &aa, sinks, &ok)) {
+            // ran (or failed) as one launch over the whole tile
         } else {
             // one launch per ATT_COLS query columns over the shared score
             // scratch; set_pos left each sub-tile's start at pos_dev[s/ATT_COLS]
@@ -6158,10 +6262,12 @@ const char *gpu_route_detail(const model_t *m) {
     // window: the prompt columns one pass of the device layers takes
     // (model_gpu_window); tc_cols: the column tile each tensor-core GEMM
     // launch covers inside it, so a window of 512 is 8 such launches
-    snprintf(buf, sizeof buf, "graph=%s tc=%s q8x=%s small_batch=%s window=%d tc_cols=%d%s%s",
+    snprintf(buf, sizeof buf, "graph=%s tc=%s q8x=%s small_batch=%s attn_tile=%s "
+             "window=%d tc_cols=%d%s%s",
              g->graph_bad ? "off" : g->gexec ? "replay" : "none",
              g_tc_state < 0 ? "promoted" : g_tc_state ? "forced" : "off",
              gpu_q8x_on() ? "on" : "off", gpu_small_batch_on() ? "on" : "off",
+             attn_tile_on() ? (attn_dec_on() ? "on+dec" : "on") : (attn_dec_on() ? "dec" : "off"),
              g->win, TC_N,
              m->n_expert > 0 ? " moe=" : "",
              m->n_expert > 0 ? (g->moe_fused_ok ? "fused" : "eager") : "");

@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA long-context attention, experimental and off by default.**
+  `RUNNER_CUDA_ATTN_TILE=1` runs prefill attention one strip of query rows
+  at a time over K and V tiles staged in shared memory (each score computed
+  as the existing kernel computes it), and `RUNNER_CUDA_ATTN_DEC=1` reads
+  each cached KV row once for all the query heads that share it in decode,
+  instead of once per head. On an RTX 3070 with Llama-3.2-3B Q4_K_M at a
+  16K-token prompt, prefill went from 101 to 303 tok/s and decode from 24.7
+  to 55.3 tok/s (Qwen2.5-7B Q4_K_M: 109 to 220 and 21.2 to 41.9). At short
+  context the grouped decode costs time instead (about 4% per token on
+  Llama-3.2-3B at 200 cached positions in a profiled run). Both stay off
+  until the promotion gates pass; `test-gpu-identity` holds them to the
+  CPU bound on every KV format (`GPU_ID_KV=q8|fp4|k8v4`).
+
 - **CUDA prefill reads the prompt in wider windows.** The device ran a
   prompt in tiles of at most 64 tokens, fixed at build time, so every weight
   matrix was read once per 64 tokens. The window is now chosen at load from
