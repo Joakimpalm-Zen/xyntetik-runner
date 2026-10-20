@@ -346,6 +346,7 @@ def main():
     env = dict(os.environ)
     env["RUNNER_CUDA_TC"] = "0"      # identity evidence is over the scalar path
     env["RUNNER_CUDA_ROUTE"] = "reference"   # and the reference attention kernels
+    env["RUNNER_GPU_FALLBACK"] = "fail"      # a mid-run device fault ends the run
     if not args.fused:
         env["RUNNER_MOE_EAGER"] = "1"
 

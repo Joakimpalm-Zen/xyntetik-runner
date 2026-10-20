@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Gates can see which route ran, and a device run that gives up says so
+  by failing.** `--score` ends with one stderr line, `score: route {...}`,
+  carrying the paths and counted kernels of its forwards, so a byte
+  comparison of two score files can show that the switched route ran (a
+  tensor-core route check had compared five files byte for byte with no
+  sign the new kernels launched). `RUNNER_GPU_FALLBACK=fail` ends the
+  process with exit status 3 when a device forward fails at runtime instead
+  of releasing the GPU and continuing on the CPU; the comparison and
+  certification scripts set it, so a fault part-way through a run (the Q3_K
+  fault below) can no longer be recorded as a device result.
+
 - **CUDA decode: the RMS norm takes a third of its time.** A decode
   token's norm is one 256-thread block on an otherwise idle card, run twice
   a layer. It now reads its row once into registers and reduces with five

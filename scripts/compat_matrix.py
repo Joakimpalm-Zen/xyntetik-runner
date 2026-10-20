@@ -212,8 +212,11 @@ def run_chat(runner, model, params, timeout, gpu_mode="auto"):
         cmd.append("--no-think")
     started = time.time()
     try:
+        # a device fault mid-answer ends the run instead of passing the smoke
+        # on the CPU (RUNNER_GPU_FALLBACK)
         proc = run_group(cmd, timeout, stdin_text=f"{prompt}\n/exit\n",
-                         capture_output=True, text=True, cwd=str(ROOT))
+                         capture_output=True, text=True, cwd=str(ROOT),
+                         env=dict(os.environ, RUNNER_GPU_FALLBACK="fail"))
     except subprocess.TimeoutExpired:
         return {"status": "not_executed", "reason": "chat_timeout"}
     out = proc.stdout or ""
@@ -329,9 +332,10 @@ def run_load(runner, model, gpu, timeout):
         (["--wait-for-vram", "300"] if gpu == "auto" else []),
         text=True, capture_output=True, timeout=timeout,
         # certification evidence is scalar-path (TC promotion is
-        # tolerance-gated separately; see docs/compatibility-program.md)
+        # tolerance-gated separately; see docs/compatibility-program.md), and
+        # computed where the row says (RUNNER_GPU_FALLBACK)
         env=dict(os.environ, RUNNER_CUDA_TC="0", RUNNER_CUDA_ROUTE="reference",
-                 RUNNER_MOE_EAGER="1"))
+                 RUNNER_MOE_EAGER="1", RUNNER_GPU_FALLBACK="fail"))
     return {
         "status": "pass" if proc.returncode == 0 else "fail",
         "returncode": proc.returncode,

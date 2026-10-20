@@ -201,6 +201,7 @@ def test_raw_sides_carry_their_own_flags_and_environment():
     assert cmd[-2:] == ["--kv", "q8"]
     assert cmd[cmd.index("-t") + 1] == "2"
     assert env["RUNNER_CUDA_TC"] == "0"
+    assert env["RUNNER_GPU_FALLBACK"] == "fail"     # a device side may not finish on the CPU
     cmd0, env0 = mod.server_cmd_env("./runner", "m.gguf", 1234)
     assert cmd0[cmd0.index("--gpu") + 1] == "off"   # the CPU scalar route by default
     assert "RUNNER_CUDA_TC" not in env0 or env0["RUNNER_CUDA_TC"] == os.environ.get("RUNNER_CUDA_TC")

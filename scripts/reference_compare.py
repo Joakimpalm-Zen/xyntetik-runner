@@ -81,8 +81,10 @@ def serve(command, log_path, startup_timeout):
     # Certification pins the scalar GEMM path: TC is default-on for promoted
     # (Q4_K, arch) combos since 2026-07-29, and it is tolerance-gated
     # (test_tc_tol), not byte-identical — exact-identity evidence must not
-    # silently become a TC-vs-scalar comparison. Inert for llama.cpp.
-    env = dict(os.environ, RUNNER_CUDA_TC="0", RUNNER_CUDA_ROUTE="reference", RUNNER_MOE_EAGER="1")
+    # silently become a TC-vs-scalar comparison, nor a device row computed on
+    # the CPU after a mid-run fault (RUNNER_GPU_FALLBACK). Inert for llama.cpp.
+    env = dict(os.environ, RUNNER_CUDA_TC="0", RUNNER_CUDA_ROUTE="reference", RUNNER_MOE_EAGER="1",
+               RUNNER_GPU_FALLBACK="fail")
     process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
                                env=env)
     try:

@@ -2430,6 +2430,12 @@ against a reference such as the publisher's float32 model, `scripts/gold-logits.
 --score-a`) then needs one pass over the text instead of a request per position, and with
 `RUNNER_SCORE_CHUNKED=1` every position comes from the batched prefill route.
 
+The run ends with one line on stderr, `score: route {...}`: the paths its forwards took
+(with counts and widest rows) and the counted kernels, the object `--bench-json` reports as
+`route`. Two score files that agree byte for byte say nothing about a route switch unless
+the route's kernels ran in one of them; the line shows whether they did, and stdout stays
+byte-comparable across routes.
+
 <a id="cli-gpu-route"></a>
 #### `--gpu-route R`
 
@@ -3077,6 +3083,10 @@ Beyond these, the binary reads a number of development switches -
 summary and per-phase timing),
 `RUNNER_SCHEMA_ALLOW_WS` (the pre-fix whitespace behaviour, for A/B runs),
 `RUNNER_MOE_GROUPED` (the grouped CUDA MoE experiment, off by measurement),
+`RUNNER_GPU_FALLBACK=fail` (a device forward that fails at runtime ends the process
+with exit status 3 instead of releasing the GPU and continuing on the CPU; the
+comparison and certification harnesses set it, so a device fault part-way through a
+run cannot be recorded as a device result),
 `RUNNER_REQUANT_ONLY` / `RUNNER_FORCE_REQUANT` (substring-scoped and
 size-check-bypassing requantization for experiments), the
 `RUNNER_METAL_*`/`RUNNER_CUDA_*` kernel knobs and failure injectors. They print

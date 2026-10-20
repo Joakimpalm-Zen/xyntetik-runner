@@ -78,6 +78,10 @@ def server_cmd_env(runner, model, port, threads=0, ctx=0, gpu="off",
         cmd += ["-c", str(ctx)]
     cmd += list(extra)
     env = dict(os.environ)
+    if gpu != "off":
+        # a device side that faults mid-run ends its server rather than
+        # scoring the rest of the corpus on the CPU under the device's label
+        env["RUNNER_GPU_FALLBACK"] = "fail"
     for kv in env_extra:
         k, sep, v = kv.partition("=")
         if not k or not sep:

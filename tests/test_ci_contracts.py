@@ -177,6 +177,27 @@ class ShutdownGate(unittest.TestCase):
             server.stop(strict=True)
 
 
+class DeviceHarnessPins(unittest.TestCase):
+    """Every harness that compares or certifies runner output computed on a
+    device sets RUNNER_GPU_FALLBACK=fail: without it a device fault part-way
+    through a run (the Q3_K decode fault of 2026-10-20) finishes the run on the
+    CPU and the harness records host rows under the device's name."""
+    HARNESSES = ("compare_llamacpp.py", "reference_compare.py", "compat_matrix.py",
+                 "cpu_cuda_check.py", "cpu_cuda_delta.py", "kld-compare-raw.py")
+
+    def test_device_harnesses_refuse_a_mid_run_fallback(self):
+        for name in self.HARNESSES:
+            src = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+            self.assertRegex(src, r"RUNNER_GPU_FALLBACK[\"']?\]?\s*[=:]\s*[\"']fail[\"']",
+                             f"{name} does not pin RUNNER_GPU_FALLBACK=fail")
+
+    def test_the_engine_reads_the_switch_at_its_one_release_site(self):
+        src = (ROOT / "src" / "model.c").read_text(encoding="utf-8")
+        self.assertIn('getenv("RUNNER_GPU_FALLBACK")', src)
+        self.assertEqual(src.count("gpu_disable(m);"), 1,
+                         "a second runtime release site must go through gpu_runtime_failure")
+
+
 class ScheduledEntryPoints(unittest.TestCase):
     """Scripts a lab host's scheduler runs from a copy of this repository.
     Nothing in the repository calls them, so a sweep for uncited files once

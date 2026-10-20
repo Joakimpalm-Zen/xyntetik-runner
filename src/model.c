@@ -10922,6 +10922,36 @@ static void forward_ple_before_split(model_t *m, const int32_t *tokens, int n) {
 // leaves the boundary activation in the host x buffer + the offloaded
 // layers' KV in the host cache, and the CPU loop below finishes the rest.
 // Returns the device's logits when it ran the whole stack (*done), else
+// RUNNER_GPU_FALLBACK=fail: a device forward that fails at runtime ends the
+// process instead of continuing on the CPU. For gates and comparison harnesses:
+// the fallback computes correct rows at host speed, so a device fault in the
+// middle of a run would otherwise be recorded as a device result.
+static bool gpu_fallback_fails(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("RUNNER_GPU_FALLBACK"); on = e && strcmp(e, "fail") == 0; }
+    return on;
+}
+
+// GPU failed at runtime: fall back to CPU permanently. Release the backend
+// rather than just forgetting it — with shared weights an orphaned context
+// also pins every other slot's copy of them. Say so: a silent fallback
+// produces correct output at a fraction of the speed and no gate can see it
+// (the fallback IS the CPU oracle) — the 69b8085 MoE slice-nbytes defect hid
+// exactly here.
+static void gpu_runtime_failure(model_t *m) {
+    if (gpu_fallback_fails()) {
+        fprintf(stderr, "gpu: forward failed at runtime; RUNNER_GPU_FALLBACK=fail "
+                "ends the process (exit status 3)\n");
+        fflush(NULL);
+        _Exit(3);
+    }
+    fprintf(stderr, "gpu: forward failed at runtime — releasing the "
+            "backend, continuing on CPU\n");
+    snprintf(m->route_fallback, sizeof m->route_fallback,
+             "forward failed at runtime");
+    gpu_disable(m);
+}
+
 // NULL with *start at the first layer the host runs.
 static float *forward_gpu_leading(model_t *m, const int32_t *tokens, int n,
                                   int pos, bool want_logits, int *start,
@@ -10936,25 +10966,11 @@ static float *forward_gpu_leading(model_t *m, const int32_t *tokens, int n,
                 *done = true;
                 return lg;
             }
-            // GPU failed at runtime: fall back to CPU permanently. Release the
-            // backend rather than just forgetting it — with shared weights an
-            // orphaned context also pins every other slot's copy of them.
-            // Say so: a silent fallback produces correct output at a fraction
-            // of the speed and no gate can see it (the fallback IS the CPU
-            // oracle) — the 69b8085 MoE slice-nbytes defect hid exactly here.
-            fprintf(stderr, "gpu: forward failed at runtime — releasing the "
-                    "backend, continuing on CPU\n");
-            snprintf(m->route_fallback, sizeof m->route_fallback,
-                     "forward failed at runtime");
-            gpu_disable(m);
+            gpu_runtime_failure(m);
         } else if (gpu_forward_batch(m, tokens, n, pos, false, NULL)) {
             *start = m->gpu_layers;
         } else {
-            fprintf(stderr, "gpu: forward failed at runtime — releasing the "
-                    "backend, continuing on CPU\n");
-            snprintf(m->route_fallback, sizeof m->route_fallback,
-                     "forward failed at runtime");
-            gpu_disable(m);
+            gpu_runtime_failure(m);
         }
     }
     return NULL;

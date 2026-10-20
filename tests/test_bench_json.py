@@ -138,6 +138,32 @@ def test_the_route_line_names_where_a_failed_forward_ended(runner_bin, model):
     assert lines and "backend=cpu" in lines[0], lines
 
 
+def test_gpu_fallback_fail_ends_the_run(runner_bin, model):
+    """RUNNER_GPU_FALLBACK=fail: a device forward that fails at runtime ends
+    the process with status 3 instead of finishing on the CPU, so a gate or a
+    comparison harness cannot record host-computed rows as the device's. The
+    default still releases the backend and continues."""
+    import os
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, check=True).stdout)
+    inject = {"cuda": {"RUNNER_CUDA_INJECT_FAILURE": "1"},
+              "metal": {"RUNNER_METAL_INJECT_FAILURE": "once"}}.get(
+                  (caps.get("gpu") or {}).get("backend"))
+    if inject is None:
+        pytest.skip("needs a CUDA or Metal device for the injected forward failure")
+    cmd = [runner_bin, "-m", str(model), "-p", "hello there", "-n", "3",
+           "--temp", "0", "--no-tray"]
+    soft = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=120, env=dict(os.environ, **inject))
+    assert soft.returncode == 0, soft.stderr.decode(errors="replace")
+    assert b"continuing on CPU" in soft.stderr
+    hard = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=120, env=dict(os.environ, RUNNER_GPU_FALLBACK="fail", **inject))
+    assert hard.returncode == 3, hard.stderr.decode(errors="replace")
+    assert b"RUNNER_GPU_FALLBACK=fail" in hard.stderr
+    assert b"continuing on CPU" not in hard.stderr
+
+
 def test_debug_route_prints_each_route_once(runner_bin, model):
     """RUNNER_DEBUG_ROUTE=1: one stderr line per route the forwards took (the
     batched prefill, then the one-row decode), not one per forward."""
