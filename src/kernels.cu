@@ -6902,7 +6902,11 @@ k_attn_dec_gqa(const float *q, const unsigned char *kc, const unsigned char *vc,
     int t0 = 0;
     if (a.window > 0 && pos - a.window + 1 > 0) t0 = pos - a.window + 1;
     const int total = pos + 1 - t0;
-    const int slice = (total + AD_SPLITS - 1) / AD_SPLITS;
+    // whole AD_TK tiles per slice: a short context then fills a few splits
+    // with full tiles (the rest take the empty-slice exit below) instead of
+    // giving all AD_SPLITS blocks a few rows each of a mostly idle tile
+    int slice = (total + AD_SPLITS - 1) / AD_SPLITS;
+    slice = (slice + AD_TK - 1) / AD_TK * AD_TK;
     const int s0 = t0 + sp * slice;
     int s1 = s0 + slice;
     if (s1 > pos + 1) s1 = pos + 1;

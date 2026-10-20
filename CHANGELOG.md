@@ -133,11 +133,14 @@ Current release and unreleased changes. Compatibility follows the
   each cached KV row once for all the query heads that share it in decode,
   instead of once per head. On an RTX 3070 with Llama-3.2-3B Q4_K_M at a
   16K-token prompt, prefill went from 101 to 303 tok/s and decode from 24.7
-  to 55.3 tok/s (Qwen2.5-7B Q4_K_M: 109 to 220 and 21.2 to 41.9). At short
-  context the grouped decode costs time instead (about 4% per token on
-  Llama-3.2-3B at 200 cached positions in a profiled run). Both stay off
-  until the promotion gates pass; `test-gpu-identity` holds them to the
-  CPU bound on every KV format (`GPU_ID_KV=q8|fp4|k8v4`).
+  to 55.3 tok/s (Qwen2.5-7B Q4_K_M: 109 to 220 and 21.2 to 41.9). The
+  grouped decode splits the cached rows into whole 32-row tiles, so a short
+  context fills a few splits with full tiles instead of giving each of the
+  32 a few rows: decode at a 512-token context is no longer slower (+6.3%
+  on Llama-3.2-3B, +3.3% on Qwen2.5-7B; it had cost about 4% per token), and
+  +49.6% / +28.3% at 4K. Both stay off until the promotion gates pass;
+  `test-gpu-identity` holds them to the CPU bound on every KV format
+  (`GPU_ID_KV=q8|fp4|k8v4`).
 
 - **CUDA prefill reads the prompt in wider windows.** The device ran a
   prompt in tiles of at most 64 tokens, fixed at build time, so every weight
