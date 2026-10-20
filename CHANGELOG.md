@@ -134,10 +134,14 @@ Current release and unreleased changes. Compatibility follows the
   matrix was read once per 64 tokens. The window is now chosen at load from
   the memory the layer split leaves spare: up to 512 tokens, never at the
   cost of a layer, still capped by `-b`, and `--fit` and the loader charge
-  the same scratch. On an RTX 3070 at a 512-token prompt, this window and the
-  bank-conflict padding below took prefill from 599 to 1091 tok/s on
-  Llama-3.2-3B Q4_K_M, 322 to 634 on Qwen2.5-7B Q4_K_M and 515 to 808 on
-  granite-4.1-3b Q8_0, with the same tokens. The window decides which kernel
+  the same scratch. The default tensor-core GEMM stages 64 token columns
+  per block whatever the window, so on its own the wider window measured
+  within 1% of the 64-token one on an RTX 3070 (512 to 8K tokens); what it
+  pays for is the pipelined GEMM (`RUNNER_CUDA_TC2=1`), which runs every
+  column of the window in one launch: with it and the experimental
+  attention kernels on, prefill at a 512-token prompt rose from 1692 to 2711
+  tok/s on Llama-3.2-3B Q4_K_M and at 8K from 1138 to 2044 (window 64
+  against 512). The window decides which kernel
   route a prompt's last partial tile takes, so transcripts and receipts
   record it (`profile.gpu_window`) and `--verify` rebuilds the instance at
   the recorded window, refusing as unverifiable when it cannot; a record
@@ -148,8 +152,10 @@ Current release and unreleased changes. Compatibility follows the
   row of a tile read from the same banks. Rows are now padded by 16 bytes.
   The arithmetic is unchanged and the output byte-identical (`test-tc-tol`
   deviations equal before and after; chunked `--score` logprobs over 1,540
-  to 1,605 positions on three models compared byte for byte). Its speedup
-  is reported with the wider prompt window.
+  to 1,605 positions on three models compared byte for byte). On an RTX
+  3070 prefill at a 512-token prompt went from 600 to 1086 tok/s on
+  Llama-3.2-3B Q4_K_M, 627 to 1091 on Qwen2.5-3B and 324 to 640 on
+  Qwen2.5-7B Q4_K_M (five interleaved rounds, the same prompt window).
 
 - **Qwen3.5/3.8 on CUDA: a race in the Gated DeltaNet kernel is closed.**
   The kernel read the query-norm sum from a shared reduction slot and then
