@@ -2827,9 +2827,12 @@ clean:
 #   make ptx NVCC_CCBIN=x86_64-conda-linux-gnu-gcc
 NVCC ?= nvcc
 NVCC_CCBIN ?=
-ptx: src/kernels.cu src/kernels_tc2.cuh src/iq_decode.h
+ptx: src/kernels.cu src/kernels_sm80.cu src/kernels_tc2.cuh src/iq_decode.h
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_75 -O3 -o src/kernels.ptx src/kernels.cu
+	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_80 -O3 -o src/kernels_sm80.ptx src/kernels_sm80.cu
 	python3 scripts/embed-ptx.py || python scripts/embed-ptx.py
+	EMBED_IN=src/kernels_sm80.ptx EMBED_OUT=src/kernels_ptx80.h EMBED_NAME=k_ptx80_src python3 scripts/embed-ptx.py || \
+	EMBED_IN=src/kernels_sm80.ptx EMBED_OUT=src/kernels_ptx80.h EMBED_NAME=k_ptx80_src python scripts/embed-ptx.py
 
 # A duplicate target name makes make DISCARD one recipe and say so — but only
 # as a warning, scrolling past in the build noise. That is exactly how

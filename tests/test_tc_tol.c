@@ -98,6 +98,7 @@ typedef struct {
     int32_t    *top1;        // [STEPS], owned
     unsigned long disp[TYPE_N];   // TC dispatches per weight type, this run
     unsigned long disp2;          // of those, the pipelined TC2 kernels' (RUNNER_CUDA_TC2)
+    unsigned long disp80;         // of those, the compute_80 kernels' (a CC >= 8.0 device)
 } config;
 
 // Which weight types the model carries in its blocks (blk.*), and which
@@ -141,7 +142,7 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
     gpu_tc_force(c->tc);
     unsigned long before[TYPE_N];
     for (int t = 0; t < TYPE_N; t++) before[t] = gpu_tc_dispatches_type(t);
-    unsigned long before2 = gpu_tc2_dispatches();
+    unsigned long before2 = gpu_tc2_dispatches(), before80 = gpu_tc2_80_dispatches();
 
     model_t m;
     memset(&m, 0, sizeof(m));
@@ -197,6 +198,7 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
     for (int t = 0; t < TYPE_N; t++)
         c->disp[t] = gpu_tc_dispatches_type(t) - before[t];
     c->disp2 = gpu_tc2_dispatches() - before2;
+    c->disp80 = gpu_tc2_80_dispatches() - before80;
 
     // anti-vacuity: a run that produced no logits proves nothing, and a
     // NaN or Inf is a defect that no tolerance may absorb (the detection
@@ -243,7 +245,7 @@ static void engagement_check(const config *cfgs, int n_cfg) {
         if (!total) printf(" none");
         for (int t = 0; t < TYPE_N; t++)
             if (c->disp[t]) printf(" %s=%lu", ggml_type_name(t), c->disp[t]);
-        if (c->disp2) printf(" (TC2 %lu)", c->disp2);
+        if (c->disp2) printf(" (TC2 %lu, compute_80 %lu)", c->disp2, c->disp80);
         printf("\n");
         if (!c->tc) {
             ck(total == 0, "a forced-off arm dispatched the batched GEMM");
@@ -445,9 +447,9 @@ int main(int argc, char **argv) {
 
     enum { N_CFG = 3 };
     config cfgs[N_CFG] = {
-        { "scalar-b64", 0, N_BATCH,      false, NULL, NULL, {0}, 0 },
-        { "scalar-b16", 0, N_BATCH_CTRL, false, NULL, NULL, {0}, 0 },
-        { "tc-b64",     1, N_BATCH,      false, NULL, NULL, {0}, 0 },
+        { "scalar-b64", 0, N_BATCH,      false, NULL, NULL, {0}, 0, 0 },
+        { "scalar-b16", 0, N_BATCH_CTRL, false, NULL, NULL, {0}, 0, 0 },
+        { "tc-b64",     1, N_BATCH,      false, NULL, NULL, {0}, 0, 0 },
     };
 
     int n_vocab = 0;

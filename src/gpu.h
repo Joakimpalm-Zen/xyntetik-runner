@@ -88,6 +88,8 @@ unsigned long gpu_tc_dispatches(void);
 unsigned long gpu_tc_dispatches_type(int type);
 // of those, the ones the pipelined TC2 kernels ran (CUDA, RUNNER_CUDA_TC2)
 unsigned long gpu_tc2_dispatches(void);
+// of those, the ones the compute_80 kernels ran (CUDA, a CC >= 8.0 device, E1)
+unsigned long gpu_tc2_80_dispatches(void);
 // the prompt window (columns) a CUDA instance was built for; 0 on other
 // backends and without a device. Transcripts record it and --verify restores it.
 int    gpu_prompt_window(const model_t *m);

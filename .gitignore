@@ -151,6 +151,7 @@ tests/compatibility/out/*.runner.log
 tests/compatibility/out/reference-*.log
 tests/compatibility/node/node_modules/
 src/kernels.ptx
+src/kernels_sm80.ptx
 src/kernels-*.ptx.tmp
 bench-out.*.txt
 bench-err.*.txt

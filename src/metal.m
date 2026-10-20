@@ -926,6 +926,7 @@ void gpu_tc_force(int on) {
 }
 
 unsigned long gpu_tc2_dispatches(void) { return 0; }   // CUDA's pipelined TC2 kernels
+unsigned long gpu_tc2_80_dispatches(void) { return 0; }
 int gpu_prompt_window(const model_t *m) { (void)m; return 0; }   // CUDA's prompt window
 void gpu_gemv2_force(int on) { (void)on; }              // CUDA's two-row decode GEMVs
 unsigned long gpu_gemv2_dispatches(void) { return 0; }

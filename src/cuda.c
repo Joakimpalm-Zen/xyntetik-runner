@@ -46,6 +46,7 @@ static void *dl_sym(dl_t h, const char *s) { return dlsym(h, s); }
 #endif
 
 #include "kernels_ptx.h"
+#include "kernels_ptx80.h"   // the compute_80 TC2 kernels (kernels_sm80.cu, E1)
 
 // ------------------------------------------------- driver API (what we use)
 
@@ -470,6 +471,8 @@ typedef struct gpu_weights {
     CUfunction  f_gemm[KT_N];           // prefill tiled-GEMM variants (Q8_0/Q4_K)
     CUfunction  f_gemm_tc[KT_N];        // tensor-core prefill GEMM (opt-in, Q4_K)
     CUfunction  f_gemm2[KT_N];          // pipelined tensor-core GEMM (TC2), by type
+    CUmodule    mod80;                  // the compute_80 module, on a CC >= 8.0 device
+    CUfunction  f_gemm2_80[KT_N];       // its TC2 kernels (m16n8k16), by type
     CUfunction  f_x_half;               // its scaled fp16 activations (k_x_half_scaled)
     CUfunction  f_gemv[KT_N];           // decode coalesced GEMV variants (Q8_0/Q4_K)
     CUfunction  f_gemv2[KT_N];          // their two-rows-a-warp twins (X8, RUNNER_CUDA_GEMV2)
@@ -654,6 +657,7 @@ typedef struct {
 #define G2_BK 64
 #define G2_SMEM ((2 * G2_BM * (G2_BK + 8) + 2 * G2_BN * (G2_BK + 8)) * 2)
 #define CU_FUNC_ATTR_MAX_DYN_SMEM 8   // CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES
+#define CU_DEV_ATTR_CC_MAJOR 75       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR
 #define TC_N    64   // tensor-core GEMM token tile (keep in sync)
 #define Q8_COLS 8    // k_gemm_q8_0 column tile (keep in sync)
 
@@ -1311,6 +1315,7 @@ static void shared_destroy(gpu_weights *w) {
                            w->mtp_head_norm };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++)
         if (bufs[i]) cu.MemFree(bufs[i]);
+    if (w->mod80) cu.ModuleUnload(w->mod80);
     if (w->mod) cu.ModuleUnload(w->mod);
     if (w->ctx) cu.PrimaryCtxRelease(w->dev);
     free(w->rope_inv_freq); free(w->rope_inv_freq_local);
@@ -1951,6 +1956,8 @@ static void shared_plan_upload(gpu_weights *w, model_t *m, const shared_plan *P)
 }
 
 // The embedded PTX module and every kernel the encoders launch.
+static bool gpu_sm80_on(void);
+static bool gpu_tc2_on(void);
 static bool shared_load_module(gpu_weights *w) {
     vram_probe("before module load");
     CK(cu.ModuleLoadData(&w->mod, k_ptx_src));
@@ -2208,6 +2215,32 @@ static bool shared_load_module(gpu_weights *w) {
                 cu.FuncSetAttribute(f, CU_FUNC_ATTR_MAX_DYN_SMEM, G2_SMEM) != 0)
                 f = NULL;
             w->f_gemm2[TC2_KERNELS[i].type] = f;
+        }
+        // E1: on a compute capability 8.0+ device, the same GEMM built for
+        // compute_80 (one m16n8k16 per 16-deep step), loaded only when TC2
+        // is on. Non-fatal: a module that does not load leaves the
+        // compute_75 kernels in place.
+        int ccmaj = 0;
+        if (gpu_tc2_on() && gpu_sm80_on() && w->f_x_half && cu.FuncSetAttribute &&
+            cu.DeviceGetAttribute &&
+            cu.DeviceGetAttribute(&ccmaj, CU_DEV_ATTR_CC_MAJOR, w->dev) == 0 && ccmaj >= 8) {
+            if (cu.ModuleLoadData(&w->mod80, k_ptx80_src) != 0) {
+                w->mod80 = NULL;
+                fprintf(stderr, "gpu: the compute_80 kernels did not load; TC2 keeps "
+                        "its compute_75 kernels\n");
+            } else {
+                static const struct { int type; const char *name; } TC2_80[] = {
+                    { T_Q4_K, "k_gemm2_80_q4_K" }, { T_Q6_K, "k_gemm2_80_q6_K" },
+                    { T_Q8_0, "k_gemm2_80_q8_0" }, { T_Q4_0, "k_gemm2_80_q4_0" },
+                };
+                for (size_t i = 0; i < sizeof TC2_80 / sizeof *TC2_80; i++) {
+                    CUfunction f = NULL;
+                    if (cu.ModuleGetFunction(&f, w->mod80, TC2_80[i].name) != 0 ||
+                        cu.FuncSetAttribute(f, CU_FUNC_ATTR_MAX_DYN_SMEM, G2_SMEM) != 0)
+                        f = NULL;
+                    w->f_gemm2_80[TC2_80[i].type] = f;
+                }
+            }
         }
     }
     // the tiled prefill attention: resolved non-fatally like the TC kernels,
@@ -3808,6 +3841,19 @@ static bool gpu_tc2_on(void) {
 static _Atomic unsigned long g_tc2_dispatches;
 unsigned long gpu_tc2_dispatches(void) { return g_tc2_dispatches; }
 
+// E1: RUNNER_CUDA_SM80=0 keeps TC2 on its compute_75 kernels on a device
+// that could run the compute_80 ones (a diagnostic and A/B control)
+static bool gpu_sm80_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_SM80");
+        on = !(e && e[0] == '0' && e[1] == 0);
+    }
+    return on == 1;
+}
+static _Atomic unsigned long g_tc2_80_dispatches;
+unsigned long gpu_tc2_80_dispatches(void) { return g_tc2_80_dispatches; }
+
 // X8: the two-rows-a-warp decode GEMVs (k_gemv2_*). RUNNER_CUDA_GEMV2=1
 // selects them, gpu_gemv2_force overrides the switch for a test (-1 returns
 // to it). Off by default until its byte gate and a measured gain both pass.
@@ -3915,8 +3961,13 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
         g_tc_dispatches++;
         g_tc_dispatches_type[w->type]++;
         g_tc2_dispatches++;
+        CUfunction f2 = g->sw->f_gemm2[w->type];
+        if (g->sw->f_gemm2_80[w->type]) {
+            f2 = g->sw->f_gemm2_80[w->type];
+            g_tc2_80_dispatches++;
+        }
         void *pg[] = { &weights, &g->xh, &y, &a, &b, &g->xsc };
-        return launch_smem(g, g->sw->f_gemm2[w->type], (unsigned)((n_out + G2_BM - 1) / G2_BM),
+        return launch_smem(g, f2, (unsigned)((n_out + G2_BM - 1) / G2_BM),
                            (unsigned)((batch + G2_BN - 1) / G2_BN), 1, 256, G2_SMEM, pg);
     }
     // Prefill (batch>1), tensor-core GEMM when promoted for this (type, arch)
@@ -6581,7 +6632,7 @@ const char *gpu_route_detail(const model_t *m) {
              "window=%d tc_cols=%d%s%s%s",
              g->graph_bad ? "off" : g->gexec ? "replay" : "none",
              g_tc_state < 0 ? "promoted" : g_tc_state ? "forced" : "off",
-             gpu_tc2_on() ? "on" : "off",
+             !gpu_tc2_on() ? "off" : g->sw->mod80 ? "on-sm80" : "on",
              gpu_q8x_on() ? "on" : "off", gpu_gemv2_on() ? "on" : "off",
              gpu_small_batch_on() ? "on" : "off",
              attn_tc_on() ? (attn_dec_on() ? "tc+dec" : "tc")

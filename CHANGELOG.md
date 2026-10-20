@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **TC2 on compute capability 8.0 and newer uses the newer tensor-core
+  instruction.** The embedded kernels target compute capability 7.5, so TC2
+  issued two `m16n8k8` multiplies per 16-deep step even on cards that have
+  the `m16n8k16` instruction its operands already match. A second, small
+  module built for compute capability 8.0 carries the TC2 kernels for Q4_K,
+  Q6_K, Q8_0 and Q4_0 and is loaded only on such a device with TC2 switched
+  on; every other kernel, and TC2 on cards below 8.0, keeps the existing
+  module. `RUNNER_CUDA_SM80=0` keeps TC2 on its compute_75 kernels for
+  comparison.
+
 - **The int8 CPU route runs on arm64.** `RUNNER_CPU_I8=1` now has
   dot-product (SDOT) kernels for Q8_0, Q4_0 and Q4_K on arm64 (every Apple
   M-series core) beside the x86 ones, and quantizes the activations with the

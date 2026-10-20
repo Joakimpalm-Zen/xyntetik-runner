@@ -27,6 +27,21 @@ static __device__ __forceinline__ void g2_mma(float *c, unsigned a0, unsigned a1
                  : "r"(a0), "r"(a1), "r"(b0));
 }
 
+#ifdef G2_MMA_K16
+// compute_80 and newer (kernels_sm80.cu): one m16n8k16 per 16-deep step. The
+// four registers the ldmatrix above returns are exactly its A operand (rows
+// 0-7 and 8-15 at k 0-7, then at k 8-15) and b0/b1 its B halves, so the step
+// that took two m16n8k8 takes one instruction.
+static __device__ __forceinline__ void g2_mma16(float *c, unsigned a0, unsigned a1,
+                                                unsigned a2, unsigned a3,
+                                                unsigned b0, unsigned b1) {
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                 "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                 : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+                 : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
+}
+#endif
+
 static __device__ __forceinline__ unsigned g2_pack(float lo, float hi) {
     __half2 h = __floats2half2_rn(lo, hi);
     return *(unsigned *)&h;
@@ -319,8 +334,13 @@ __device__ __forceinline__ void gemm2_body(const uchar *wb, const __half *xh, fl
                 #pragma unroll
                 for (int nt = 0; nt < 4; nt++) {
                     const unsigned *b = bf[nt >> 1] + (nt & 1) * 2;
+#ifdef G2_MMA_K16
+                    g2_mma16(acc[mt][nt], af[mt][0], af[mt][1], af[mt][2], af[mt][3],
+                             b[0], b[1]);
+#else
                     g2_mma(acc[mt][nt], af[mt][0], af[mt][1], b[0]);
                     g2_mma(acc[mt][nt], af[mt][2], af[mt][3], b[1]);
+#endif
                 }
         }
         if (!F::kDirect && s + 1 < nst) store(s + 1, cur ^ 1);
