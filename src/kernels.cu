@@ -6226,25 +6226,34 @@ G2_KERNEL(k_gemm2_iq4_nl, G2IQ4NL)
 //   pass 1: S = Q K^T (mma.sync m16n8k8, f16 in, f32 accumulate), the scale,
 //           the causal / sliding mask, each row's maximum;
 //   pass 2: S again, p = expf(s - max) in fp32, its row sum in fp32, then
-//           O += P V with P rounded to half in registers (an m16n8 accumulator
-//           tile is exactly the A operand of the next m16n8k8, so P never
-//           leaves the warp) and V read through ldmatrix.trans.
-// Q is rounded to half after an exact power-of-two scale per row (max|q|
-// brought to at most 2^14, undone on the score), so no row overflows fp16.
-// K and V are the fp16 cache rows themselves. Obligation: tolerance, like the
-// TC GEMM: operands rounded to half, fp32 accumulation, a different summation
-// order from k_attn_tile; gated by the CPU identity bound, the long-context
-// greedy rows and the fp32 distance rows before it can be anything but opt-in.
+//           O += P V with P as half operands in registers (an m16n8
+//           accumulator tile is exactly the A operand of the next m16n8k8,
+//           so P never leaves the warp) and V read through ldmatrix.trans.
+// Q is scaled by an exact power of two per row (max|q| brought to at most
+// 2^14, undone on the score), so no row overflows fp16. Q and P each go in
+// as two halves, hi = half(x) and lo = half(x - hi), both multiplied against
+// the exact fp16 K or V: a product carries about 22 bits of the operand
+// instead of 11. With one half each, Mistral-7B's long rows read further from
+// the float32 reference than k_attn's (Wilcoxon p 0.014; Q alone split, p
+// 0.009); with both split they do not (X23b). K and V are the fp16 cache rows
+// themselves. Obligation: tolerance, like the TC GEMM: fp32 accumulation in a
+// different summation order from k_attn_tile, gated by the CPU identity
+// bound, the long-context greedy rows and the fp32 distance rows. Shared
+// memory (dynamic, set by cuda.c): Q hi, Q lo and the K/V tile, 3 x 64 x 136
+// halves, plus the row scales: AQ_SMEM = 52,480 bytes.
 #define AQ_ROWS 64
 #define AQ_TK   64
 #define AQ_LD   (128 + 8)     // halves per staged row (head_dim <= 128, padded)
+#define AQ_SMEM (3 * AQ_ROWS * AQ_LD * 2 + AQ_ROWS * 4)
 
 extern "C" __global__ void __launch_bounds__(128)
 k_attn_tc(const float *q, const unsigned char *kc, const unsigned char *vc, float *out,
           attn_args a, const int *posp, const float *sinks, int tn, int hb, int qs) {
-    __shared__ __align__(16) __half Qs[AQ_ROWS * AQ_LD];
-    __shared__ __align__(16) __half KVs[AQ_TK * AQ_LD];
-    __shared__ float qscale[AQ_ROWS];
+    extern __shared__ __align__(16) unsigned char aq_dyn[];
+    __half *Qs  = (__half *)aq_dyn;
+    __half *Qlo = Qs + AQ_ROWS * AQ_LD;
+    __half *KVs = Qlo + AQ_ROWS * AQ_LD;
+    float *qscale = (float *)(KVs + AQ_TK * AQ_LD);
     const int hd = a.head_dim, tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
     const int G = a.n_head / a.n_head_kv;
     const int ngh = (G + hb - 1) / hb;
@@ -6271,8 +6280,12 @@ k_attn_tc(const float *q, const unsigned char *kc, const unsigned char *vc, floa
         if (mx > 0.0f) { frexpf(mx, &e); }              // mx < 2^e
         float s = mx > 0.0f ? ldexpf(1.0f, 14 - e) : 1.0f;
         if (lane == 0) qscale[r] = s;
-        for (int d = lane; d < AQ_LD - 8; d += 32)
-            Qs[r * AQ_LD + d] = __float2half(ok && d < hd ? qr[d] * s : 0.0f);
+        for (int d = lane; d < AQ_LD - 8; d += 32) {
+            float v = ok && d < hd ? qr[d] * s : 0.0f;
+            __half hi = __float2half(v);
+            Qs[r * AQ_LD + d] = hi;
+            Qlo[r * AQ_LD + d] = __float2half(v - __half2float(hi));
+        }
     }
     // the warp's 16 rows: g = lane / 4 holds rows g and g + 8 of each tile
     const int r0 = warp * 16 + (lane >> 2), r1 = r0 + 8;
@@ -6308,9 +6321,11 @@ k_attn_tc(const float *q, const unsigned char *kc, const unsigned char *vc, floa
         #pragma unroll
         for (int j = 0; j < 8; j++) S[j][0] = S[j][1] = S[j][2] = S[j][3] = 0.0f;
         for (int kk = 0; kk < nkh; kk += 2) {          // k16 per step
-            unsigned qa[4];
+            unsigned qa[4], ql[4];
             g2_ldsm_x4(qa[0], qa[1], qa[2], qa[3],
                        Qs + (warp * 16 + (lane & 15)) * AQ_LD + kk * 8 + (lane >> 4) * 8);
+            g2_ldsm_x4(ql[0], ql[1], ql[2], ql[3],
+                       Qlo + (warp * 16 + (lane & 15)) * AQ_LD + kk * 8 + (lane >> 4) * 8);
             #pragma unroll
             for (int np = 0; np < 4; np++) {           // two n8 key tiles a load
                 unsigned kb[4];
@@ -6319,8 +6334,12 @@ k_attn_tc(const float *q, const unsigned char *kc, const unsigned char *vc, floa
                                + kk * 8 + ((lane >> 3) & 1) * 8);
                 g2_mma(S[2 * np], qa[0], qa[1], kb[0]);
                 g2_mma(S[2 * np], qa[2], qa[3], kb[1]);
+                g2_mma(S[2 * np], ql[0], ql[1], kb[0]);
+                g2_mma(S[2 * np], ql[2], ql[3], kb[1]);
                 g2_mma(S[2 * np + 1], qa[0], qa[1], kb[2]);
                 g2_mma(S[2 * np + 1], qa[2], qa[3], kb[3]);
+                g2_mma(S[2 * np + 1], ql[0], ql[1], kb[2]);
+                g2_mma(S[2 * np + 1], ql[2], ql[3], kb[3]);
             }
         }
     };
@@ -6366,6 +6385,7 @@ k_attn_tc(const float *q, const unsigned char *kc, const unsigned char *vc, floa
         float S[8][4];
         scores(S);
         unsigned pa[8][2];                              // P as A operands, one k8 key chunk each
+        unsigned pl[8][2];                              // P's low halves
         #pragma unroll
         for (int j = 0; j < 8; j++) {
             float p[4];
@@ -6381,6 +6401,10 @@ k_attn_tc(const float *q, const unsigned char *kc, const unsigned char *vc, floa
             l1 += p[2] + p[3];
             pa[j][0] = g2_pack(p[0], p[1]);
             pa[j][1] = g2_pack(p[2], p[3]);
+            pl[j][0] = g2_pack(p[0] - __half2float(__float2half(p[0])),
+                               p[1] - __half2float(__float2half(p[1])));
+            pl[j][1] = g2_pack(p[2] - __half2float(__float2half(p[2])),
+                               p[3] - __half2float(__float2half(p[3])));
         }
         __syncthreads();
         stage(vc, base_v, kt);
@@ -6400,7 +6424,10 @@ k_attn_tc(const float *q, const unsigned char *kc, const unsigned char *vc, floa
                 // vb[i]: d tile dp + i (8 wide) for this key chunk; x4 covers 4 d tiles
                 #pragma unroll
                 for (int i = 0; i < 4; i++)
-                    if (dp + i < nkh) g2_mma(O[dp + i], pa[j][0], pa[j][1], vb[i]);
+                    if (dp + i < nkh) {
+                        g2_mma(O[dp + i], pa[j][0], pa[j][1], vb[i]);
+                        g2_mma(O[dp + i], pl[j][0], pl[j][1], vb[i]);
+                    }
             }
         }
     }

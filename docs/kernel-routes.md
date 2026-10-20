@@ -83,8 +83,10 @@ Around the matvec:
   context (2,000 positions at 4,000-6,000 tokens; Qwen3-4B, Mistral-7B, and
   gpt-oss-20b, whose attention has sinks and an alternating window). Gate:
   `test-gpu-identity` (with `GPU_ID_KV`). The tensor-core prefill attention
-  (`RUNNER_CUDA_ATTN_TC=1`, `k_attn_tc`) stays opt-in: it read 0.19% further
-  from the reference on Mistral-7B.
+  (`RUNNER_CUDA_ATTN_TC=1`, `k_attn_tc`, f16 caches) stays opt-in. With Q
+  and the softmax weights as single fp16 operands it read 0.19% further from
+  the reference on Mistral-7B; it now carries each in two halves (about 22
+  bits of the operand), which read the same as `k_attn` there.
 - **Byte movers, on by default.** The one-copy KV gather (decode with full
   offload: every layer's new K and V rows gathered on the device, one copy
   back, `RUNNER_CUDA_KV_GATHER=0` restores the per-layer copies) and the

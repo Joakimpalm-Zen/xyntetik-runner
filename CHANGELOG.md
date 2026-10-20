@@ -197,15 +197,20 @@ Current release and unreleased changes. Compatibility follows the
   per-layer copies.
 
 - **CUDA tensor-core prefill attention, experimental and off by default.**
-  It stays off: on Mistral-7B v0.3 its long-context float32-reference row
-  read 0.19% further from the reference than the default kernel's (a
-  significant paired difference, p 0.014, top-1 unchanged), which the
-  promotion rule does not admit.
+  With Q and the softmax weights rounded to single fp16 operands, Mistral-7B
+  v0.3's long-context float32-reference row read 0.19% further from the
+  reference than the default kernel's (a significant paired difference, p
+  0.014, top-1 unchanged), which the promotion rule does not admit. Both now
+  go in as two fp16 halves (the value and its rounding remainder, about 22
+  bits), and that row reads the same as the original kernel's (mean KL
+  0.02069 against 0.02069, p 0.60); on the datacenter MIG slice the split
+  costs 27% of the kernel's speed (a 7,841-token prompt on Llama-3.2-3B:
+  3,262 to 2,377 tok/s, against 781 with the tiled kernel).
   `RUNNER_CUDA_ATTN_TC=1` computes the prefill attention scores and the
   value sums of an f16 cache on the tensor cores (64 query rows a block, two
   passes over the cached rows), for head widths that are multiples of 16 up
-  to 128; quantized caches keep the tiled kernel. On an RTX 3070, a
-  Llama-3.2-3B Q4_K_M request with a 16K-token prompt and 64 generated
+  to 128; quantized caches keep the tiled kernel. Before the split, on an
+  RTX 3070, a Llama-3.2-3B Q4_K_M request with a 16K-token prompt and 64 generated
   tokens took 20.8 s against 59.5 s with the tiled kernel and 170 s with the
   original one, generating the same 64 tokens (one run each).
 

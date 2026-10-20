@@ -664,6 +664,9 @@ typedef struct {
 #define G2_SMEM ((2 * G2_BM * (G2_BK + 8) + 2 * G2_BN * (G2_BK + 8)) * 2)
 #define G2_BN_W 128   // the compute_80 module's 128-column tile (kernels_tc2.cuh)
 #define G2_SMEM_W ((2 * G2_BM * (G2_BK + 8) + 2 * G2_BN_W * (G2_BK + 8)) * 2)
+// k_attn_tc (kernels.cu AQ_*): Q hi, Q lo and one K/V tile of 64 rows of
+// 136 halves, plus 64 row scales, in dynamic shared memory
+#define AQ_SMEM (3 * 64 * (128 + 8) * 2 + 64 * 4)
 #define CU_FUNC_ATTR_MAX_DYN_SMEM 8   // CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES
 #define CU_DEV_ATTR_CC_MAJOR 75       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR
 #define CU_DEV_ATTR_CC_MINOR 76       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR
@@ -2387,7 +2390,11 @@ static bool shared_load_module(gpu_weights *w) {
     // so a PTX without it keeps k_attn
     cu.ModuleGetFunction(&w->f_attn_tile32, w->mod, "k_attn_tile32");
     cu.ModuleGetFunction(&w->f_attn_dec_gqa, w->mod, "k_attn_dec_gqa");
-    cu.ModuleGetFunction(&w->f_attn_tc, w->mod, "k_attn_tc");
+    // k_attn_tc stages Q in two halves beside the K/V tile: AQ_SMEM (kernels.cu)
+    // of dynamic shared memory, past the 48 KB a launch gets without asking
+    if (cu.ModuleGetFunction(&w->f_attn_tc, w->mod, "k_attn_tc") != 0 || !cu.FuncSetAttribute ||
+        cu.FuncSetAttribute(w->f_attn_tc, CU_FUNC_ATTR_MAX_DYN_SMEM, AQ_SMEM) != 0)
+        w->f_attn_tc = NULL;
     cu.ModuleGetFunction(&w->f_kv_gather, w->mod, "k_kv_gather");
     cu.ModuleGetFunction(&w->f_q35_conv_seq, w->mod, "k_q35_conv_seq");
     cu.ModuleGetFunction(&w->f_q35_delta_seq, w->mod, "k_q35_delta_seq");
@@ -6233,9 +6240,10 @@ static bool tile_attn_tiled(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
 
 // RUNNER_CUDA_ATTN_TC: the tensor-core prefill attention (k_attn_tc, C2
 // step 2) for fp16 caches. 1 selects it ahead of the tiled kernel; off by
-// default: on Mistral-7B its float32-reference row read 0.19% further from
-// the reference than k_attn's (Wilcoxon p 0.014), which the promotion rule
-// does not admit.
+// default. With Q and P as single halves its Mistral-7B float32-reference
+// row read 0.19% further from the reference than k_attn's (Wilcoxon p
+// 0.014); the kernel now carries both in two halves (X23b), which reads the
+// same as k_attn there (p 0.60).
 static bool attn_tc_on(void) {
     if (route_pinned(GR_ATTN_TC) >= 0) return route_pinned(GR_ATTN_TC);
     static _Atomic int on = -1;
@@ -6260,8 +6268,8 @@ static bool tile_attn_tc(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
     attn_args a = *aa;
     void *pa[] = { &g->q, &g->kc, &g->vc, &g->xb2, &a, &g->pos_dev, &sinks,
                    &tn, &hb, &qs };
-    *ok = launch(g, g->sw->f_attn_tc, (unsigned)(n_kv * ngh), (unsigned)((tn + qs - 1) / qs),
-                 1, 128, pa);
+    *ok = launch_smem(g, g->sw->f_attn_tc, (unsigned)(n_kv * ngh), (unsigned)((tn + qs - 1) / qs),
+                      1, 128, AQ_SMEM, pa);
     if (*ok) { g_attn_tc_dispatches++; g_attn_tiled_dispatches++; }
     return true;
 }
