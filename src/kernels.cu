@@ -6074,6 +6074,11 @@ extern "C" __global__ void k_q35_delta(float *cv, const float *z,
         __syncthreads();
     }
     float qscale = rsqrtf(red[0] + eps);
+    // every thread has read red[0] before any overwrites it with its k
+    // partial: without this barrier warp 0 could store its ks over the q sum
+    // while another warp had yet to read it (a silent wrong q scale, found
+    // 2026-10-20 while reading this kernel for a whole-tile variant)
+    __syncthreads();
     float ks = 0.0f;
     for (int i = tid; i < state_dim; i += blockDim.x) ks += k[i] * k[i];
     red[tid] = ks;

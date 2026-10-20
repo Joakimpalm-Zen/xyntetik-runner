@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Qwen3.5/3.8 on CUDA: a race in the Gated DeltaNet kernel is closed.**
+  The kernel read the query-norm sum from a shared reduction slot and then
+  let every thread store its share of the key-norm sum into the same slots
+  with no barrier between, so one warp could overwrite the query sum before
+  another warp had read it and give that head a wrong query scale. It needs
+  one warp to run a whole global load ahead of another, which is why no gate
+  had caught it. A barrier closes it; no other kernel reuses a reduction slot
+  without one.
+
 - **Unloading a model on CUDA frees all of its device memory.** Teardown
   frees device buffers from hand-kept lists, and those lists had fallen
   behind the allocation sites: a model with hyper-connections (Qwen3.8), a

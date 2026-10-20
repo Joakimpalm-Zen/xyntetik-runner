@@ -181802,6 +181802,7 @@ static const char *k_ptx_src =
     "	ld.shared.f32 	%f50, [_ZZ11k_q35_deltaE3red];\n"
     "	add.f32 	%f51, %f50, %f42;\n"
     "	rsqrt.approx.f32 	%f4, %f51;\n"
+    "	bar.sync 	0;\n"
     "	mov.f32 	%f290, 0f00000000;\n"
     "	@%p7 bra 	$L__BB226_12;\n"
     "\n"
