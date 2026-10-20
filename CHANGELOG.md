@@ -5,6 +5,24 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA MoE experts in Q4_0 and MXFP4 read their activations once per
+  block of rows, with the same bytes.** These two formats' expert matvec
+  gives each lane a whole 32-weight block, so a lane walked its block's 32
+  activations 128 bytes from its neighbours and every warp load touched 32
+  cache lines; MXFP4 also fetched its 16-entry codebook from global memory
+  for every nibble. The rows of a launch now copy 32 blocks of activations
+  at a time into shared memory with coalesced loads (padded so the lanes'
+  reads do not conflict) and keep the codebook there. Every lane still adds
+  the same blocks in the same order with the same expression, so the output
+  is unchanged bit for bit: `--score` (both routes) and 64 greedy tokens
+  are byte-identical to the previous kernels on gemma-4-26B-A4B Q4_0 and
+  gpt-oss-20b MXFP4. The expert matvec itself runs 5.1-7.0x faster on
+  those two models' shapes (RTX 3070 and the datacenter MIG slice), and on
+  the slice, with 512-token prompts, gemma-4-26B-A4B decoded at 75.6 tok/s
+  where it ran 39.6 and read prompts at 203.6 where it read 58.8, and
+  gpt-oss-20b decoded at 96.0 where it ran 32.6 and read prompts at 152.7
+  where it read 37.3 (three rounds each).
+
 - **Phi-3.5 ropes every layer with its LongRoPE factors.** phi3 exports
   publish a sliding window without a layer pattern (Phi-3.5: 262144 over a
   131072 context), and the loader read it as gemma2's alternation, so every

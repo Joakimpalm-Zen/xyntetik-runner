@@ -4851,7 +4851,12 @@ static bool enc_moe_mv(gpu_t *g, model_t *m, gguf_tensor *base,
     // the others read five and ignore the trailing entry
     float scale = base->scale;
     void *p[] = { &weights, &x, &y, &a, &sel, &scale };
-    return launch(g, f, (n_out + 3) / 4, nslots, 1, 128, p);
+    // Q4_0 and MXFP4 stage the slot's activations once per block of rows
+    // (kernels.cu, MOE_LANE_HEAD), so eight rows a block share each copy;
+    // each warp's row is computed the same either way
+    int rows = base->type == T_Q4_0 || base->type == T_MXFP4 ? 8 : 4;
+    return launch(g, f, (unsigned)((n_out + rows - 1) / rows), nslots, 1,
+                  (unsigned)(32 * rows), p);
 }
 
 // Gated activation + routing-weight fold for every slot in one launch.

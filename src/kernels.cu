@@ -440,22 +440,51 @@ extern "C" __global__ void k_mv_q2_0_b(MV_PARAMS) {
     MV_TAIL_B;
 }
 
+// One lane per 32-element block (k_mv_q4_0 and k_mv_mxfp4, their MoE copies
+// and their by-expert twins), with the activations staged. Read straight from
+// global memory, lane l walks its own block's 32 floats of x, 128 bytes from
+// its neighbours, so each warp load touched 32 cache lines. The block's warps
+// (four rows a block in the dense kernels, eight in the MoE copies and the
+// twins; every row of a launch reads the same column) copy 32 blocks of x at a time
+// into shared memory with coalesced loads, at a row stride of LANE_XPAD = 33
+// floats so lane l's element j sits in bank (l + j) % 32, conflict-free. Each
+// lane still takes blocks lane, lane + 32, ... in order with the same
+// expression, so the bits are the unstaged kernels'. No early return: a row
+// past n_out joins the barriers and skips the math and the store. 5-7x on the
+// gemma-4-26B Q4_0 and gpt-oss MXFP4 expert shapes (RTX 3070 microbench).
+#define LANE_XPAD 33
+#define LANE_STAGE_X(xsm, xsrc, b0, nblk)                                      \
+    for (int i_ = threadIdx.x; i_ < (nblk) * 32; i_ += blockDim.x)             \
+        (xsm)[(i_ >> 5) * LANE_XPAD + (i_ & 31)] = (xsrc)[(ulong64)(b0) * 32 + i_];
+
 extern "C" __global__ void k_mv_q4_0(MV_PARAMS) {
-    MV_HEAD;
+    __shared__ float xsm[32 * LANE_XPAD];
+    unsigned row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5);
+    unsigned lane = threadIdx.x & 31;
+    bool live = row < (unsigned)a.n_out;
     int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 18;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 18;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 18;
-        float d = f16f(blk);
-        const uchar *q = blk + 2;
-        const float *xp = x + b * 32;
-        float t = 0;
-        for (int j = 0; j < 16; j++)
-            t += ((int)(q[j] & 0xF) - 8) * xp[j] + ((int)(q[j] >> 4) - 8) * xp[j + 16];
-        s += d * t;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_X(xsm, x, b0, nblk)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            const uchar *blk = rw + (ulong64)(b0 + lane) * 18;
+            float d = f16f(blk);
+            const uchar *q = blk + 2;
+            const float *xp = xsm + lane * LANE_XPAD;
+            float t = 0;
+            for (int j = 0; j < 16; j++)
+                t += ((int)(q[j] & 0xF) - 8) * xp[j] + ((int)(q[j] >> 4) - 8) * xp[j + 16];
+            s += d * t;
+        }
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_q4_0_b(MV_PARAMS) {
@@ -2940,24 +2969,40 @@ static __device__ const float kv_mxfp4[16] = {
      0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
 };
 
+// activations staged as k_mv_q4_0's (LANE_XPAD), the codebook in shared
+// memory instead of a global load per nibble
 extern "C" __global__ void k_mv_mxfp4(MV_PARAMS) {
-    MV_HEAD;
+    __shared__ float xsm[32 * LANE_XPAD];
+    __shared__ float kv[16];
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];
+    unsigned row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5);
+    unsigned lane = threadIdx.x & 31;
+    bool live = row < (unsigned)a.n_out;
     int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 17;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 17;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 17;
-        float d = ldexpf(1.0f, (int)blk[0] - 127);
-        const uchar *q = blk + 1;
-        const float *xp = x + b * 32;
-        float t = 0;
-        for (int j = 0; j < 16; j++) {
-            t += kv_mxfp4[q[j] & 0xF] * xp[j];
-            t += kv_mxfp4[q[j] >> 4]  * xp[j + 16];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_X(xsm, x, b0, nblk)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            const uchar *blk = rw + (ulong64)(b0 + lane) * 17;
+            float d = ldexpf(1.0f, (int)blk[0] - 127);
+            const uchar *q = blk + 1;
+            const float *xp = xsm + lane * LANE_XPAD;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                t += kv[q[j] & 0xF] * xp[j];
+                t += kv[q[j] >> 4]  * xp[j + 16];
+            }
+            s += d * t;
         }
-        s += d * t;
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_mxfp4_b(MV_PARAMS) {
@@ -4760,42 +4805,72 @@ extern "C" __global__ void k_moe_mv_q8_0(MOE_MV_PARAMS) {
     MOE_MV_TAIL;
 }
 
+// The staged form of the lane-per-block bodies (LANE_XPAD, at k_mv_q4_0):
+// a launch's rows all read the slot's same x, so they share each copy.
+#define MOE_LANE_HEAD                                                          \
+    __shared__ float xsm[32 * LANE_XPAD];                                      \
+    unsigned row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5);        \
+    unsigned lane = threadIdx.x & 31;                                          \
+    bool live = row < (unsigned)a.n_out;                                       \
+    const uchar *wbase = wb + a.w_off + (ulong64)sel[blockIdx.y] * a.estride;  \
+    x += (ulong64)blockIdx.y * a.xs;                                           \
+    float s = 0;
+#define MOE_LANE_TAIL                                                          \
+    if (live) {                                                                \
+        s = warp_sum(s);                                                       \
+        if (lane == 0) y[(ulong64)blockIdx.y * a.ys + row] = s;                \
+    }
+
 // body of k_mv_q4_0 (no coalesced GEMV exists for Q4_0 yet)
 extern "C" __global__ void k_moe_mv_q4_0(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
+    MOE_LANE_HEAD;
     int nb = a.n_in / 32;
-    const uchar *rw = wbase + (ulong64)row * nb * 18;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 18;
-        float d = f16f(blk);
-        const uchar *q = blk + 2;
-        const float *xp = x + b * 32;
-        float t = 0;
-        for (int j = 0; j < 16; j++)
-            t += ((int)(q[j] & 0xF) - 8) * xp[j] + ((int)(q[j] >> 4) - 8) * xp[j + 16];
-        s += d * t;
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 18;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_X(xsm, x, b0, nblk)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            const uchar *blk = rw + (ulong64)(b0 + lane) * 18;
+            float d = f16f(blk);
+            const uchar *q = blk + 2;
+            const float *xp = xsm + lane * LANE_XPAD;
+            float t = 0;
+            for (int j = 0; j < 16; j++)
+                t += ((int)(q[j] & 0xF) - 8) * xp[j] + ((int)(q[j] >> 4) - 8) * xp[j + 16];
+            s += d * t;
+        }
+        __syncthreads();
     }
-    MOE_MV_TAIL;
+    MOE_LANE_TAIL;
 }
 
 // body of k_mv_mxfp4 (gpt-oss experts; no coalesced GEMV exists for MXFP4)
 extern "C" __global__ void k_moe_mv_mxfp4(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
+    __shared__ float kv[16];
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];
+    MOE_LANE_HEAD;
     int nb = a.n_in / 32;
-    const uchar *rw = wbase + (ulong64)row * nb * 17;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 17;
-        float d = ldexpf(1.0f, (int)blk[0] - 127);
-        const uchar *q = blk + 1;
-        const float *xp = x + b * 32;
-        float t = 0;
-        for (int j = 0; j < 16; j++) {
-            t += kv_mxfp4[q[j] & 0xF] * xp[j];
-            t += kv_mxfp4[q[j] >> 4]  * xp[j + 16];
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 17;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_X(xsm, x, b0, nblk)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            const uchar *blk = rw + (ulong64)(b0 + lane) * 17;
+            float d = ldexpf(1.0f, (int)blk[0] - 127);
+            const uchar *q = blk + 1;
+            const float *xp = xsm + lane * LANE_XPAD;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                t += kv[q[j] & 0xF] * xp[j];
+                t += kv[q[j] >> 4]  * xp[j + 16];
+            }
+            s += d * t;
         }
-        s += d * t;
+        __syncthreads();
     }
-    MOE_MV_TAIL;
+    MOE_LANE_TAIL;
 }
 
 // body of k_mv_nvfp4 (ModelOpt NVFP4 expert tensors)
