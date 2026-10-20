@@ -3940,6 +3940,15 @@ static bool recur_seq_on(void) {
 }
 static _Atomic unsigned long g_recur_seq_dispatches;
 unsigned long gpu_recur_seq_dispatches(void) { return g_recur_seq_dispatches; }
+// whether a prompt tile of this model's recurrent layers takes the whole-tile
+// kernels: both dispatch sites and the route detail ask it (a speculative
+// keep forward still takes the per-token loop, which files the snapshots)
+static bool recur_seq_admits(const gpu_t *g, const model_t *m) {
+    if (!recur_seq_on() || m->ssm.conv_kernel - 1 > RS_MAX_HIST || m->ssm.state > RS_MAX_SD)
+        return false;
+    return m->qwen35 ? g->sw->f_q35_conv_seq && g->sw->f_q35_delta_seq
+                     : m->ssm.v_heads > 0 && g->sw->f_mamba_conv_seq && g->sw->f_mamba_ssd_seq;
+}
 
 static bool gpu_small_batch_on(void) {
     static _Atomic int on = -1;
@@ -5455,8 +5464,7 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
     CUdeviceptr state = g->q35_state + (size_t)l * state_layer * sizeof(float);
     // the whole tile in one launch per kernel, when no row needs its own
     // checkpoint (speculative keep rows take the per-token loop below)
-    if (tn > 1 && !g->snap_on && recur_seq_on() && g->sw->f_q35_conv_seq &&
-        g->sw->f_q35_delta_seq && histn <= RS_MAX_HIST && sk <= RS_MAX_SD) {
+    if (tn > 1 && !g->snap_on && recur_seq_admits(g, m)) {
         int kernel = m->ssm.conv_kernel;
         float eps = m->rms_eps;
         int gate_sigmoid = m->hyper_conn ? 1 : 0;
@@ -5534,8 +5542,7 @@ static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
     CUdeviceptr Aw = g->sw->ssm_a[l], dtw = g->sw->ssm_dt[l];
     CUdeviceptr Dw = g->sw->ssm_D[l], cb = g->sw->ssm_conv_b[l];
     CUdeviceptr gn = g->sw->ssm_gnorm[l];
-    if (tn > 1 && recur_seq_on() && g->sw->f_mamba_conv_seq && g->sw->f_mamba_ssd_seq &&
-        histn <= RS_MAX_HIST && ds <= RS_MAX_SD) {
+    if (tn > 1 && recur_seq_admits(g, m)) {
         // conv and scan over the whole tile, one launch each; the gate and
         // norm read only their own token's row, so one launch per token of
         // the unchanged kernel keeps its bytes
@@ -6696,14 +6703,14 @@ const char *gpu_route_detail(const model_t *m) {
              "window=%d tc_cols=%d%s%s%s",
              g->graph_bad ? "off" : g->gexec ? "replay" : "none",
              g_tc_state < 0 ? "promoted" : g_tc_state ? "forced" : "off",
-             !tc2_can_run(g) ? "off" : g->sw->mod80 ? "on-sm80" : "on",
+             !g->xh ? "off" : g->sw->mod80 ? "on-sm80" : "on",
              gpu_q8x_on() ? "on" : "off", gpu_small_batch_on() ? "on" : "off",
              attn_tc_on() ? (attn_dec_on() ? "tc+dec" : "tc")
              : attn_tile_on() ? (attn_dec_on() ? "on+dec" : "on") : (attn_dec_on() ? "dec" : "off"),
-             g->win, tc2_can_run(g) ? G2_BN : TC_N,
+             g->win, g->xh ? G2_BN : TC_N,
              m->n_expert > 0 ? " moe=" : "",
              m->n_expert > 0 ? (g->moe_fused_ok ? "fused" : "eager") : "",
-             (m->qwen35 || m->ssm.v_heads > 0) && recur_seq_on() ? " recur=tile" : "");
+             recur_seq_admits(g, m) ? " recur=tile" : "");
     return buf;
 }
 float *gpu_spec_logits(model_t *m, int row) {
