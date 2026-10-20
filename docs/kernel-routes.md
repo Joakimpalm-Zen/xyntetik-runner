@@ -103,6 +103,21 @@ Around the matvec:
   as the eager host routing (`RUNNER_MOE_EAGER=1`) and keeps routing weights
   within about 2 ulp: device `expf` is not the host libm. Gate:
   `./test-moe-tol MODEL.gguf`.
+- **MoE families on the tensor cores (moe-tc) and grouped (moe-grouped).**
+  qwen3moe and gpt-oss run their dense projections through the tensor-core
+  GEMM (and TC2 on 8.0+), and qwen3moe's prefill groups a tile's columns by
+  expert and multiplies each expert's on the tensor cores
+  (`gpu_moe_ffn_grouped`) when its experts are Q4_K or Q6_K, the types
+  measured (Q8_0, Q5_K and Q4_0 experts take it on request). Both are
+  routes: recorded for those families only, pinned by `--verify`, off under
+  `reference`; `RUNNER_CUDA_TC` and `RUNNER_MOE_GROUPED` still set them when
+  no route is pinned. Obligation:
+  tolerance, no further from the publisher's float32 model than the route
+  they replace (2,000 positions, mean KL within 1.01x, paired Wilcoxon and
+  McNemar not worse at p < 0.05; the rows are in `tc_promoted`'s notes),
+  scored in 64-row chunks (`RUNNER_SPEC_BATCH=64`) so the grouped path's
+  batched expert GEMMs are what the rows measure.
+  Gates: `test-tc-tol`, `test-moe-tol`.
 - **MoE prefill by expert.** A prompt tile of more than 8 columns that
   averages at least four tokens an expert groups its (token, expert) pairs
   by expert (`k_moe_place`) and runs each expert's columns through the

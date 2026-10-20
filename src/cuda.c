@@ -968,9 +968,16 @@ static bool moe_indirect_type_ok(int type) {
 // 16-token tile routes, that waste more than cancels the weight-streaming
 // win (measured on the 3070: gemma-4 Q4_0 prefill -19% grouped vs fused).
 // Types outside this set keep the per-token fused prefill.
+// defined with the arithmetic routes and the TC promotion below
+static int route_pinned(int bit);
+static bool moe_grouped_family(const model_t *m);
+
 static bool moe_grouped_type_ok(int type) {
     switch (type) {
-        case T_Q8_0: case T_Q4_K: case T_Q5_K: case T_Q6_K:
+        // Q4_0 joined 2026-10-20: at the runtime prompt window an expert
+        // averages ~32 columns, which the tensor-core GEMM covers for Q4_0
+        // (excluded while tiles were 16 columns, ~1-2 an expert)
+        case T_Q8_0: case T_Q4_K: case T_Q5_K: case T_Q6_K: case T_Q4_0:
             return true;
         default:
             return false;
@@ -1050,9 +1057,19 @@ static bool moe_grouped_eligible(const model_t *m) {
     // more than it amortizes at these expert token counts). Grouping only
     // pays with many tokens per expert (large-tile / batched serving);
     // keep it reachable for those experiments via RUNNER_MOE_GROUPED=1.
-    const char *e = getenv("RUNNER_MOE_GROUPED");
-    if (!e || !*e || strcmp(e, "0") == 0 || strcmp(e, "off") == 0)
-        return false;
+    // 2026-10-20: at the runtime prompt window (up to 512 columns, ~32 tokens
+    // an expert) it is the moe-grouped route, on by default for the families
+    // measured for it (moe_grouped_family); a route pin decides first, then
+    // RUNNER_MOE_GROUPED (1 on any family, 0 on none).
+    int p = route_pinned(GR_MOE_GROUPED);
+    bool on, by_default = false;
+    if (p >= 0) on = p;
+    else {
+        const char *e = getenv("RUNNER_MOE_GROUPED");
+        if (e && *e) on = strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+        else on = by_default = moe_grouped_family(m);
+    }
+    if (!on) return false;
     if (!moe_fused_eligible(m)) return false;
     for (int l = 0; l < m->n_layer; l++) {
         const layer_t *ly = &m->layers[l];
@@ -1069,6 +1086,14 @@ static bool moe_grouped_eligible(const model_t *m) {
             if (!moe_grouped_type_ok(ly->ffn_gate_exps->type) ||
                 !moe_grouped_type_ok(ly->ffn_up_exps->type) ||
                 !moe_grouped_type_ok(ly->ffn_down_exps->type)) return false;
+            // the default covers the expert types its float32-reference row
+            // measured (Qwen3-30B-A3B Q4_K_M: Q4_K and Q6_K experts); other
+            // admitted types take it when asked for (route pin or env)
+            if (by_default &&
+                !((ly->ffn_gate_exps->type == T_Q4_K || ly->ffn_gate_exps->type == T_Q6_K) &&
+                  (ly->ffn_up_exps->type == T_Q4_K || ly->ffn_up_exps->type == T_Q6_K) &&
+                  (ly->ffn_down_exps->type == T_Q4_K || ly->ffn_down_exps->type == T_Q6_K)))
+                return false;
         }
     }
     return true;
@@ -3658,6 +3683,39 @@ static bool tc_codebook(int type) {
     }
 }
 
+// The types the tensor-core GEMM is promoted for (the per-type rows in
+// tc_promoted below).
+static bool tc_type_promotable(int type) {
+    return type == T_Q4_K || type == T_Q6_K || type == T_Q8_0 || type == T_Q4_0 ||
+           tc_codebook(type);
+}
+
+// MoE families measured against the publisher's float32 model (2,000
+// positions, the owner's rule of 2026-10-20: a tolerance route becomes a
+// family's default only when its mean KL is within 1.01x and neither a
+// paired Wilcoxon on per-position KL nor McNemar on margin-qualified top-1
+// finds it worse than the current route at p < 0.05). They run as named
+// routes, so a record names them and --verify pins them, and a record made
+// before them (no field, the reference set) replays without them.
+//   moe-tc       qwen3moe  Qwen3-30B-A3B Q4_K_M: KL 0.09167 vs 0.09157,
+//                          Wilcoxon p 0.36, McNemar p 0.48
+//                gpt-oss   gpt-oss-20b MXFP4: KL 0.08142 vs 0.08312 (closer,
+//                          p 1e-5), McNemar p 0.61
+//   moe-grouped  qwen3moe  with moe-tc, scored in 64-row chunks
+//                          (RUNNER_SPEC_BATCH=64, so its batched expert
+//                          GEMMs ran): KL 0.09178 vs 0.09170, Wilcoxon
+//                          p 0.83, McNemar p 1.0; Q4_K / Q6_K experts;
+//                          prefill 2.6-3.9x the fused path's at 512 / 2K
+// (TC alone on qwen3moe was once kept opt-in because its greedy text left
+// the scalar route's at token 20 on a free-running check; measured against
+// the reference instead, it reads no further from it.)
+static bool moe_tc_family(const model_t *m) {
+    return m && (strcmp(m->arch, "qwen3moe") == 0 || strcmp(m->arch, "gpt-oss") == 0);
+}
+static bool moe_grouped_family(const model_t *m) {
+    return m && strcmp(m->arch, "qwen3moe") == 0;
+}
+
 static bool tc_promoted(const model_t *m, int type) {
     // Q6_K joined 2026-08-08: the profile showed it was 26% of prefill running
     // on the SCALAR path, because attn_v/ffn_down are Q6_K in every Q4_K_M.
@@ -3749,8 +3807,7 @@ static bool tc_promoted(const model_t *m, int type) {
     // rows across every arch of the list and both device families, 1e-5 to
     // 6e-5 of range, at most one near-tie flip, free-running identical,
     // and the scaling costs under 2% of prefill on the RTX 3070.
-    if (type != T_Q4_K && type != T_Q6_K && type != T_Q8_0 && type != T_Q4_0 &&
-        !tc_codebook(type))
+    if (!tc_type_promotable(type))
         return false;
     // granite joined 2026-08-13 with a gate row for EVERY promoted type on
     // its own weights — the only arch here that has one — because it was
@@ -3844,6 +3901,13 @@ static bool tc_on(const model_t *m, int type) {
               : strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
         // only from unread: a forced value set meanwhile stands
         st = atomic_compare_exchange_strong(&g_tc_state, &(int){ TC_ENV_UNSET }, v) ? v : g_tc_state;
+    }
+    if (moe_tc_family(m)) {
+        // a route pin decides, then RUNNER_CUDA_TC, then the default (on)
+        int p = route_pinned(GR_MOE_TC);
+        if (p >= 0) return p && tc_type_promotable(type);
+        if (st >= 0) return st != 0;
+        return tc_type_promotable(type);
     }
     if (st >= 0) return st != 0;
     return tc_promoted(m, type);
@@ -3970,7 +4034,7 @@ static int route_env(void) {
         int v = e && *e ? gpu_route_parse(e) : -1;
         if (e && *e && v < 0)
             fprintf(stderr, "gpu: RUNNER_CUDA_ROUTE=%s is not reference or a list of tc2, "
-                    "sm80, attn-tile, attn-dec, attn-tc; ignored\n", e);
+                    "sm80, attn-tile, attn-dec, attn-tc, moe-tc, moe-grouped; ignored\n", e);
         env = v;
     }
     return env;
@@ -6230,9 +6294,14 @@ int gpu_route_active(const model_t *m) {
     bool loaded80 = g && g->sw && g->sw->mod80;
     bool tc2 = mode == TC2_FORCED || (mode == TC2_AUTO && loaded80);
     bool sm80 = tc2 && gpu_sm80_on() && (!g || loaded80);
+    // the MoE routes count only for their families: moe-tc where the TC
+    // route is on for the family (tc_on), moe-grouped where the instance
+    // took the grouped prefill (or, without one, where it would)
+    bool mtc = moe_tc_family(m) && tc_on(m, T_Q4_K);
+    bool mgr = moe_grouped_family(m) && (g ? g->moe_grouped_ok : moe_grouped_eligible(m));
     return (tc2 ? GR_TC2 : 0) | (sm80 ? GR_SM80 : 0) |
            (attn_tile_on() ? GR_ATTN_TILE : 0) | (attn_dec_on() ? GR_ATTN_DEC : 0) |
-           (attn_tc_on() ? GR_ATTN_TC : 0);
+           (attn_tc_on() ? GR_ATTN_TC : 0) | (mtc ? GR_MOE_TC : 0) | (mgr ? GR_MOE_GROUPED : 0);
 }
 
 // The grouped decode attention for the single query column, or false
@@ -7120,7 +7189,8 @@ bool gpu_hidden_rows_ok(const model_t *m) {
 // docs/kernel-routes.md has each one's obligation): whether one-token decode
 // replays its graph, the tensor-core GEMM's mode (promoted per type and
 // architecture, forced on, or off), the int8-activation GEMVs, the
-// small-batch twins, and fused or eager MoE routing.
+// small-batch twins, and the MoE prefill path (eager, fused, by-expert where
+// a tile admits it, or grouped).
 const char *gpu_route_detail(const model_t *m) {
     const gpu_t *g = m ? m->gpu : NULL;
     if (!g) return "";
@@ -7132,14 +7202,17 @@ const char *gpu_route_detail(const model_t *m) {
     snprintf(buf, sizeof buf, "graph=%s tc=%s tc2=%s q8x=%s small_batch=%s attn_tile=%s "
              "window=%d tc_cols=%d%s%s%s",
              g->graph_bad ? "off" : g->gexec ? "replay" : "none",
-             g_tc_state < 0 ? "promoted" : g_tc_state ? "forced" : "off",
+             g_tc_state < 0 || moe_tc_family(m)
+                 ? (moe_tc_family(m) ? (tc_on(m, T_Q4_K) ? "moe-tc" : "off") : "promoted")
+                 : g_tc_state ? "forced" : "off",
              !g->xh ? "off" : g->sw->mod80 ? "on-sm80" : "on",
              gpu_q8x_on() ? "on" : "off", gpu_small_batch_on() ? "on" : "off",
              attn_tc_on() ? (attn_dec_on() ? "tc+dec" : "tc")
              : attn_tile_on() ? (attn_dec_on() ? "on+dec" : "on") : (attn_dec_on() ? "dec" : "off"),
              g->win, g->xh ? G2_BN : TC_N,
              m->n_expert > 0 ? " moe=" : "",
-             m->n_expert > 0 ? (g->moe_fused_ok ? "fused" : "eager") : "",
+             m->n_expert > 0 ? (!g->moe_fused_ok ? "eager" : g->moe_grouped_ok ? "grouped"
+                                : g->moe_twin_ok && moe_twin_on(m) ? "by-expert" : "fused") : "",
              recur_seq_admits(g, m) ? " recur=tile" : "");
     return buf;
 }

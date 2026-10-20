@@ -333,7 +333,8 @@ def test_profile_gpu_route_is_validated_and_ignored_off_cuda(
         assert p.returncode == 3, (bad, p.stderr.decode(errors="replace"))
         assert b"malformed execution profile" in p.stderr, bad
 
-    for good in ("reference", "attn-tc,tc2", "tc2,sm80,attn-tile,attn-dec,attn-tc"):
+    for good in ("reference", "attn-tc,tc2", "tc2,sm80,attn-tile,attn-dec,attn-tc",
+                 "attn-tile,moe-tc,moe-grouped"):
         r3 = json.loads(json.dumps(r))
         r3["profile"]["gpu_route"] = good
         forged = tmp_path / "cpu-route.json"
@@ -374,6 +375,47 @@ def test_cuda_record_carries_and_replays_its_routes(runner_bin, base, tmp_path):
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
         assert v.returncode == 0, v.stderr.decode(errors="replace")
         assert json.loads(v.stdout)["verdict"] == "VERIFIED"
+
+
+def test_cuda_moe_family_routes_are_recorded_and_replayed(runner_bin, base, tmp_path):
+    """moe-tc and moe-grouped are routes of the MoE families measured for them
+    (gpt-oss: moe-tc only). A record of such a model names the ones that ran
+    and --verify replays it; the reference set names neither; and a pin of
+    them on a model outside those families never reaches its record."""
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, check=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("needs a CUDA device: only CUDA has these routes")
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-moe.py",
+                    str(tmp_path / "fx")], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    oss = tmp_path / "fx.gptoss-mxfp4.gguf"
+
+    def record(model, name, *route):
+        rec = tmp_path / name
+        p = subprocess.run(
+            [runner_bin, "-m", str(model), "-p", "the runner trains the", "-n", "12",
+             "--temp", "0", "-s", "7", "-t", "2", "--no-tray", "--transcript",
+             str(rec), *route], cwd=ROOT, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=120)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        r = json.loads(rec.read_bytes())
+        if not r["profile"]["gpu"]:
+            pytest.skip("the fixture did not run on the device")
+        return rec, r["profile"]["gpu_route"].split(",")
+
+    rec, routes = record(oss, "oss-default.json")
+    assert "moe-tc" in routes and "moe-grouped" not in routes, routes
+    v = subprocess.run([runner_bin, "-m", str(oss), "--verify", str(rec), "-t", "2",
+                        "--no-tray"], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=120)
+    assert v.returncode == 0, v.stderr.decode(errors="replace")
+    assert json.loads(v.stdout)["verdict"] == "VERIFIED"
+
+    _, routes = record(oss, "oss-ref.json", "--gpu-route", "reference")
+    assert routes == ["reference"], routes
+    _, routes = record(base, "dense-moe-pin.json", "--gpu-route", "moe-tc,moe-grouped")
+    assert routes == ["reference"], routes
 
 
 def test_recorded_adapter_scale_drives_replay(runner_bin, base, tmp_path):

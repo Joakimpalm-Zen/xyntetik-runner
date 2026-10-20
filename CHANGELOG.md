@@ -5,6 +5,23 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: Qwen3 MoE prefill groups its experts on the tensor cores, and
+  Qwen3 MoE and gpt-oss run their dense projections there too.** The
+  tensor-core route was kept off the MoE families because routing can
+  amplify its rounding. Held to the publisher's float32 models over 2,000
+  positions instead, under the rule fixed before the runs (mean KL within
+  1.01x, paired Wilcoxon and McNemar not worse at p < 0.05), neither read
+  further from the reference: Qwen3-30B-A3B mean KL 0.09167 against 0.09157
+  (p 0.36), gpt-oss-20b 0.08142 against 0.08312 (closer, p 1e-5), and
+  Qwen3-30B-A3B with its Q4_K / Q6_K experts grouped on the tensor cores as
+  well, scored in 64-row chunks so those GEMMs ran, 0.09178 against
+  0.09170 (p 0.83). On the datacenter MIG slice Qwen3-30B-A3B reads a
+  512-token prompt at 845 tok/s where it read 215 (454 against 174 at 2K)
+  and gpt-oss-20b at 216 where it read 174 by expert, three rounds each.
+  They run as the routes `moe-tc` and `moe-grouped`: a record of these models names
+  them, `--verify` replays them, and `--gpu-route reference` (or a record
+  made before them) runs without them.
+
 - **CUDA MoE prefill runs by expert on gemma-4 and gpt-oss, with the same
   bytes.** The fused MoE prefill computed each token's selected experts one
   token at a time, so a prompt tile read every routed expert's weights once

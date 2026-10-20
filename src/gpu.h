@@ -108,9 +108,13 @@ int    gpu_prompt_window(const model_t *m);
 // arithmetic a record was made with, so transcripts and receipts record the
 // set (profile.gpu_route) and --verify pins it. Routes that only move bytes
 // (the KV gather, the whole-tile recurrent kernels) are not listed: they
-// cannot change a token.
+// cannot change a token. moe-tc (the tensor-core GEMMs on a MoE family's
+// dense projections) and moe-grouped (the grouped expert prefill) count
+// only for the MoE families measured for them (qwen3moe and gpt-oss; the
+// grouped prefill qwen3moe only): a record of another model never names
+// them.
 enum { GR_TC2 = 1, GR_SM80 = 2, GR_ATTN_TILE = 4, GR_ATTN_DEC = 8, GR_ATTN_TC = 16,
-       GR_ALL = 31 };
+       GR_MOE_TC = 32, GR_MOE_GROUPED = 64, GR_ALL = 127 };
 // Pin the set for this process (--gpu-route, --verify): it then overrides
 // RUNNER_CUDA_ROUTE (the same set from the environment), the per-route
 // RUNNER_CUDA_* diagnostics and the defaults. -1 returns to them.
@@ -125,6 +129,7 @@ int    gpu_route_active(const model_t *m);
 static const struct { int bit; const char *name; } GPU_ROUTE_NAMES[] = {
     { GR_TC2, "tc2" }, { GR_SM80, "sm80" }, { GR_ATTN_TILE, "attn-tile" },
     { GR_ATTN_DEC, "attn-dec" }, { GR_ATTN_TC, "attn-tc" },
+    { GR_MOE_TC, "moe-tc" }, { GR_MOE_GROUPED, "moe-grouped" },
 };
 static inline void gpu_route_format(int mask, char *buf, size_t n) {
     size_t at = 0;
@@ -157,7 +162,7 @@ static inline int gpu_route_parse(const char *s) {
 // A record's gpu_route for an instance: NULL unless it runs on CUDA (the
 // backend with a prompt window), else the routes it runs with.
 static inline const char *gpu_route_record(const model_t *m) {
-    static _Thread_local char buf[64];
+    static _Thread_local char buf[96];
     if (gpu_prompt_window(m) <= 0) return NULL;
     gpu_route_format(gpu_route_active(m), buf, sizeof buf);
     return buf;

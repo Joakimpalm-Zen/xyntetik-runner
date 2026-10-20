@@ -2105,7 +2105,7 @@ instance instead.
 |---|---|
 | `--gpu auto\|off` | Auto-detect offload, or force CPU. |
 | `--gpu-layers N` | Force the first `N` layers onto the GPU; `0` means no GPU. Omit for auto-fit. On Metal it also overrides the residency veto: a model larger than available RAM is refused for auto-selected partial offload, because nothing pinned can be held resident and the measured result was 8-35x slower decode, but an explicit `--gpu-layers N` splits it anyway. |
-| `--gpu-route R` | CUDA only: which tensor-core and attention kernels whose sums differ from the reference kernels run, `reference` or a comma list of `tc2`, `sm80`, `attn-tile`, `attn-dec`, `attn-tc`. Transcripts and receipts record the set and `--verify` replays with the record's. [Details](#cli-gpu-route). |
+| `--gpu-route R` | CUDA only: which tensor-core, attention and MoE kernels whose sums differ from the reference kernels run, `reference` or a comma list of `tc2`, `sm80`, `attn-tile`, `attn-dec`, `attn-tc`, `moe-tc`, `moe-grouped`. Transcripts and receipts record the set and `--verify` replays with the record's. [Details](#cli-gpu-route). |
 | `--cpu-moe [N\|auto]` | CUDA hybrid placement: keep all, the deepest `N`, or an auto-fit set of expert FFNs in system RAM. |
 | `--wait-for-vram [S]` | Wait for another registered runner to release VRAM, default `300` seconds, instead of failing immediately. |
 | `--vram-priority N` | Advisory priority tag on this claim, default `0` (also `RUNNER_VRAM_PRIORITY`). See [VRAM registry: priority and cooperative yield](#vram-registry-priority-and-cooperative-yield). |
@@ -2446,14 +2446,18 @@ A few CUDA kernels compute the same quantities as the reference kernels in
 another order or at another precision, each held to a tolerance gate
 rather than to byte identity: the pipelined tensor-core GEMM (`tc2`), its
 compute capability 8.0 build (`sm80`), the tiled prefill attention
-(`attn-tile`), the grouped decode attention (`attn-dec`) and the
-tensor-core prefill attention for f16 caches (`attn-tc`). The default
-set is `attn-tile,attn-dec`, plus `tc2,sm80` on compute capability 8.0 and
-newer: the two attention routes measured no distance from the kernels they
-replace against the publisher's float32 model at long context, and the
-compute_80 GEMM kernels add in the tensor-core route's order and gave its
-bytes on every device measured; each stays a named route so that a replay
-cannot substitute other arithmetic. `--gpu-route`
+(`attn-tile`), the grouped decode attention (`attn-dec`), the
+tensor-core prefill attention for f16 caches (`attn-tc`), and for the MoE
+families measured for them the tensor-core GEMMs on their dense projections
+(`moe-tc`: qwen3moe and gpt-oss) and the grouped expert prefill
+(`moe-grouped`: qwen3moe). The default set is `attn-tile,attn-dec`, plus
+`tc2,sm80` on compute capability 8.0 and newer, plus the MoE routes on their
+families: the attention and MoE routes measured no further from the
+publisher's float32 model than the kernels they replace, and the compute_80
+GEMM kernels add in the tensor-core route's order and gave its bytes on
+every device measured; each stays a named route so that a replay cannot
+substitute other arithmetic. A record names the MoE routes only for a model
+of their families. `--gpu-route`
 names the set for the process: `reference` runs none of them, a comma list
 runs those. It overrides `RUNNER_CUDA_ROUTE` (the same set from the
 environment, which the CPU-against-GPU harnesses set to `reference`) and the

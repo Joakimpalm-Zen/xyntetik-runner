@@ -1274,8 +1274,9 @@ static void usage_to(FILE *f, const char *prog) {
         "  --gpu-layers N force N leading layers on the GPU, rest on CPU\n"
         "                 (0 = no GPU, same as --gpu off; omit for auto-fit)\n"
         "  --gpu-route R  CUDA arithmetic routes: reference, or a comma list of\n"
-        "                 tc2, sm80, attn-tile, attn-dec, attn-tc (recorded in\n"
-        "                 transcripts and receipts; --verify uses the record's)\n"
+        "                 tc2, sm80, attn-tile, attn-dec, attn-tc, moe-tc,\n"
+        "                 moe-grouped (recorded in transcripts and receipts;\n"
+        "                 --verify uses the record's)\n"
         "  --cpu-moe [N|auto]  keep sparse MoE expert FFNs in RAM while CUDA\n"
         "                 runs attention and other dense tensors on the GPU.\n"
         "                 Bare = every expert layer on the host; N = only the\n"
@@ -2116,7 +2117,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             int mask = gpu_route_parse(v);
             if (mask < 0) {
                 fprintf(stderr, "error: --gpu-route expects reference or a comma list of "
-                        "tc2, sm80, attn-tile, attn-dec, attn-tc\n");
+                        "tc2, sm80, attn-tile, attn-dec, attn-tc, moe-tc, moe-grouped\n");
                 *rc = 1;
                 return false;
             }
