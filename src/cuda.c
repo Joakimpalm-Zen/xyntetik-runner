@@ -1956,7 +1956,16 @@ static void shared_plan_upload(gpu_weights *w, model_t *m, const shared_plan *P)
 // The embedded PTX module and every kernel the encoders launch.
 static bool gpu_sm80_on(void);
 static bool gpu_tc2_on(void);
+static bool tc2_forced(void);
 static bool tc2_can_run(const gpu_t *g);
+// The compute_80 module loads on a compute capability 8.0+ device unless TC2
+// is off or RUNNER_CUDA_SM80=0. The window's charge for TC2's activations
+// (shared_build) asks the same question before the load.
+static bool sm80_module_wanted(const gpu_weights *w) {
+    int ccmaj = 0;
+    return gpu_tc2_on() && gpu_sm80_on() && cu.DeviceGetAttribute &&
+           cu.DeviceGetAttribute(&ccmaj, CU_DEV_ATTR_CC_MAJOR, w->dev) == 0 && ccmaj >= 8;
+}
 static bool shared_load_module(gpu_weights *w) {
     vram_probe("before module load");
     CK(cu.ModuleLoadData(&w->mod, k_ptx_src));
@@ -2219,10 +2228,7 @@ static bool shared_load_module(gpu_weights *w) {
         // compute_80 (one m16n8k16 per 16-deep step), loaded unless TC2 is
         // off. Non-fatal: a module that does not load leaves forced TC2 on
         // the compute_75 kernels and auto TC2 off (tc2_fn).
-        int ccmaj = 0;
-        if (gpu_tc2_on() && gpu_sm80_on() && w->f_x_half && cu.FuncSetAttribute &&
-            cu.DeviceGetAttribute &&
-            cu.DeviceGetAttribute(&ccmaj, CU_DEV_ATTR_CC_MAJOR, w->dev) == 0 && ccmaj >= 8) {
+        if (sm80_module_wanted(w) && w->f_x_half && cu.FuncSetAttribute) {
             if (cu.ModuleLoadData(&w->mod80, k_ptx80_src) != 0) {
                 w->mod80 = NULL;
                 fprintf(stderr, "gpu: the compute_80 kernels did not load; TC2 runs "
@@ -2630,8 +2636,8 @@ int gpu_prompt_window(const model_t *m) {
 }
 
 static gpu_weights *shared_build(model_t *m, size_t act_bytes, size_t per_col,
-                                 int max_hd, uint64_t fsize, uint64_t fino,
-                                 int64_t fmtime) {
+                                 size_t tc2_per_col, int max_hd, uint64_t fsize,
+                                 uint64_t fino, int64_t fmtime) {
     gpu_weights *w = calloc(1, sizeof(gpu_weights));
     if (!w) {
         fprintf(stderr, "gpu: CUDA shared-weight state allocation failed — "
@@ -2644,15 +2650,20 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, size_t per_col,
         !shared_plan_budget(w, m, act_bytes, &P) ||
         !shared_plan_split(w, m, &P))
         goto fail;
+    // TC2's fp16 activations take window columns only where TC2 will run:
+    // forced, or in auto mode where the compute_80 module is to load
+    bool tc2_charged = tc2_forced() || sm80_module_wanted(w);
+    if (tc2_charged) per_col += tc2_per_col;
     // The prompt window: wider columns only from what the split left spare,
     // so it can never cost a layer (model_gpu_window). Decided once here and
     // shared by every instance of the upload, like the split itself.
     w->win = model_gpu_window(P.vram_budget > P.used ? P.vram_budget - P.used : 0,
                               per_col, (int)P.instances, m->n_batch,
                               cuda_window_force(m));
-    fprintf(stderr, "gpu-split: prompt window %d columns (batch %d, %.2f GB spare)\n",
-            w->win, m->n_batch,
-            (P.vram_budget > P.used ? P.vram_budget - P.used : 0) / 1e9);
+    fprintf(stderr, "gpu-split: prompt window %d columns (batch %d, %.2f GB spare, "
+            "%zu bytes a column%s)\n", w->win, m->n_batch,
+            (P.vram_budget > P.used ? P.vram_budget - P.used : 0) / 1e9, per_col,
+            tc2_charged ? " with TC2's activations" : "");
     shared_plan_upload(w, m, &P);
     if (!shared_load_module(w) ||
         !shared_upload_weights(w, m, &P) ||
@@ -2675,7 +2686,7 @@ fail:
 }
 
 static gpu_weights *shared_acquire(model_t *m, size_t act_bytes, size_t per_col,
-                                   int max_hd) {
+                                   size_t tc2_per_col, int max_hd) {
     uint64_t fsize = 0, fino = 0;
     int64_t  fmtime = 0;
     // Every file gets an identity: part 1's (size, inode, mtime) plus, in
@@ -2697,7 +2708,7 @@ static gpu_weights *shared_acquire(model_t *m, size_t act_bytes, size_t per_col,
                 "%d instances)\n",
                 (w->bound ? w->bound_bytes : w->weights_len) / 1e9, w->refs);
     } else {
-        w = shared_build(m, act_bytes, per_col, max_hd, fsize, fino, fmtime);
+        w = shared_build(m, act_bytes, per_col, tc2_per_col, max_hd, fsize, fino, fmtime);
         // an entry with no file identity stays private — shared_matches never
         // returns it — but it is listed anyway so the split guard can compare
         // splits across it; shared_release unlinks it normally at refs 0
@@ -2718,6 +2729,7 @@ typedef struct {
     int q35_convdim, q35_mixdim;   // DeltaNet conv and mix widths
     size_t act_bytes;              // the plan's charge, at GPU_WINDOW_MIN columns
     size_t act_per_col;            // what each further window column allocates
+    size_t tc2_per_col;            // TC2's fp16 activations per column, where it runs
 } cuda_dims;
 
 // Every refusal that needs no driver: router shapes, per-layer expert
@@ -2889,7 +2901,7 @@ static bool cuda_open_driver(void) {
 // architectures) and the scratch bytes the split plan budgets for.
 // TC2's activation width: the widest matvec input it can receive, in
 // halves per window column (the Q8X buffer's sizing). Charged and allocated
-// only with TC2 switched on, so the default route holds no TC2 scratch.
+// only where TC2 can run, so a device that never runs it holds no TC2 scratch.
 static size_t tc2_xh_width(const model_t *m, int xdim, int q35_mixdim) {
     size_t mi = (size_t)xdim;
     if ((size_t)m->n_ff > mi) mi = (size_t)m->n_ff;
@@ -2922,8 +2934,10 @@ static void cuda_instance_dims(const model_t *m, cuda_dims *D) {
     // streams, the per-layer embeddings and the NextN/MTP rows. A wider
     // window spends only spare budget, so these are counted in full there.
     size_t per_col = ac.per_col;
-    // the column maxima (xsc), and TC2's fp16 activations (xh) when it is on
-    per_col += sizeof(float) + (gpu_tc2_on() ? 2 * tc2_xh_width(m, xdim, q35_mixdim) : 0);
+    // the column maxima (xsc); TC2's fp16 activations (xh) are charged by
+    // shared_build, which knows the device
+    per_col += sizeof(float);
+    D->tc2_per_col = 2 * tc2_xh_width(m, xdim, q35_mixdim);
     if (m->n_expert > 0) {
         size_t used = m->n_expert_used > 0 ? (size_t)m->n_expert_used : 1;
         size_t gw = (size_t)m->n_ff_exp * (m->moe_gemma ? 2 : 1);
@@ -3335,7 +3349,7 @@ bool gpu_init(model_t *m) {
     cuda_instance_dims(m, &D);
     // the weights (and the CPU/GPU split they imply) come from the registry:
     // a second instance of the same file reuses the first one's upload
-    g->sw = shared_acquire(m, D.act_bytes, D.act_per_col, D.max_hd);
+    g->sw = shared_acquire(m, D.act_bytes, D.act_per_col, D.tc2_per_col, D.max_hd);
     if (!g->sw) goto fail;
     m->gpu_layers = g->sw->gpu_layers;
     g->win = g->sw->win;
@@ -3854,6 +3868,7 @@ static int tc2_mode(void) {
 }
 // TC2 may run in this process (the module load and the window's charge ask)
 static bool gpu_tc2_on(void) { return tc2_mode() != TC2_OFF; }
+static bool tc2_forced(void) { return tc2_mode() == TC2_FORCED; }
 static _Atomic unsigned long g_tc2_dispatches;
 unsigned long gpu_tc2_dispatches(void) { return g_tc2_dispatches; }
 
