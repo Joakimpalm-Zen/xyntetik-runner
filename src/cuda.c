@@ -2902,6 +2902,19 @@ static bool cuda_open_driver(void) {
 
 // The instance's activation widths (per-layer maxima on heterogeneous
 // architectures) and the scratch bytes the split plan budgets for.
+// TC2's activation width: the widest matvec input it can receive, in
+// halves per window column (the Q8X buffer's sizing). Charged and allocated
+// only with TC2 switched on, so the default route holds no TC2 scratch.
+static size_t tc2_xh_width(const model_t *m, int xdim, int q35_mixdim) {
+    size_t mi = (size_t)xdim;
+    if ((size_t)m->n_ff > mi) mi = (size_t)m->n_ff;
+    if ((size_t)q35_mixdim > mi) mi = (size_t)q35_mixdim;
+    if (2 * (size_t)m->n_embd > mi) mi = 2 * (size_t)m->n_embd;
+    if ((size_t)m->ssm.inner > mi) mi = (size_t)m->ssm.inner;
+    if ((size_t)m->n_ff_shexp > mi) mi = (size_t)m->n_ff_shexp;
+    return mi;
+}
+
 static void cuda_instance_dims(const model_t *m, cuda_dims *D) {
     // heterogeneous archs (gemma4) vary q/kv widths per layer: size the
     // shared activation buffers to the maxima
@@ -2924,15 +2937,8 @@ static void cuda_instance_dims(const model_t *m, cuda_dims *D) {
     // streams, the per-layer embeddings and the NextN/MTP rows. A wider
     // window spends only spare budget, so these are counted in full there.
     size_t per_col = ac.per_col;
-    {   // TC2's fp16 activations (xh) and the column maxima (xsc)
-        size_t mi = (size_t)xdim;
-        if ((size_t)m->n_ff > mi) mi = (size_t)m->n_ff;
-        if ((size_t)q35_mixdim > mi) mi = (size_t)q35_mixdim;
-        if (2 * (size_t)m->n_embd > mi) mi = 2 * (size_t)m->n_embd;
-        if ((size_t)m->ssm.inner > mi) mi = (size_t)m->ssm.inner;
-        if ((size_t)m->n_ff_shexp > mi) mi = (size_t)m->n_ff_shexp;
-        per_col += 2 * mi + sizeof(float);
-    }
+    // the column maxima (xsc), and TC2's fp16 activations (xh) when it is on
+    per_col += sizeof(float) + (gpu_tc2_on() ? 2 * tc2_xh_width(m, xdim, q35_mixdim) : 0);
     if (m->n_expert > 0) {
         size_t used = m->n_expert_used > 0 ? (size_t)m->n_expert_used : 1;
         size_t gw = (size_t)m->n_ff_exp * (m->moe_gemma ? 2 : 1);
@@ -3090,17 +3096,10 @@ static bool cuda_alloc_activations(model_t *m, gpu_t *g, const cuda_dims *D) {
     // spec_batch rows: the speculative verify reads every row's head
     CK(cu.MemAlloc(&g->logits, sizeof(float) * (size_t)(m->spec_batch > 0 ? m->spec_batch : 1) * m->n_vocab));
     CK(cu.MemAlloc(&g->xsc,    sizeof(float) * (size_t)(g->win > TC_N ? g->win : TC_N)));
-    if (g->sw->f_x_half) {
-        // TC2's activations: the widest matvec input, as the Q8X buffer
-        // below sizes it, in half for every window column
-        int mi = xdim;
-        if (m->n_ff > mi) mi = m->n_ff;
-        if (q35_mixdim > mi) mi = q35_mixdim;
-        if (2 * m->n_embd > mi) mi = 2 * m->n_embd;
-        if (m->ssm.inner > mi) mi = m->ssm.inner;
-        if (m->n_ff_shexp > mi) mi = m->n_ff_shexp;
-        g->xh_cap = mi;
-        CK(cu.MemAlloc(&g->xh, 2 * (size_t)g->win * (size_t)mi));
+    if (g->sw->f_x_half && gpu_tc2_on()) {
+        // TC2's activations, in half for every window column
+        g->xh_cap = (int)tc2_xh_width(m, xdim, q35_mixdim);
+        CK(cu.MemAlloc(&g->xh, 2 * (size_t)g->win * (size_t)g->xh_cap));
     }
     CK(cu.MemAlloc(&g->pos_dev, sizeof(int) * (size_t)((g->win + ATT_COLS - 1) / ATT_COLS)));
     return true;
