@@ -54,13 +54,6 @@ Current release and unreleased changes. Compatibility follows the
   ./test-gpu-identity MODEL.gguf`, with boundary fixtures for an odd row
   count, Q8_0 tail blocks and an odd Q6_K block count).
 
-- **CUDA decode: page-locked logits staging, experimental and off by
-  default.** `RUNNER_CUDA_PINNED_LOGITS=1` reads each token's logits into
-  page-locked host memory (bounded at 64 MiB, released with the instance,
-  pageable whenever the driver declines). Its gain is within run-to-run
-  noise so far: in a profiled run on an RTX 3070 the host side of a decode
-  step shrank by 0.04 ms and the whole step did not measurably change.
-
 - **CUDA decode: one KV copy-back per token, experimental and off by
   default.** The host KV cache stays authoritative, so each decoded token's
   K and V rows went back to it as two copies per offloaded layer.
