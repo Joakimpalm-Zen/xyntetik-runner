@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA decode: the RMS norm takes a third of its time.** A decode
+  token's norm is one 256-thread block on an otherwise idle card, run twice
+  a layer. It now reads its row once into registers and reduces with five
+  fewer barriers, in the same order, so every output is unchanged. On an RTX
+  3070 the kernel went from 6-7 us to about 2 us and decode rose 1.1-2.6% on
+  three models (Llama-3.2-3B Q4_K_M 113.3 to 116.3 tok/s).
+
 - **`--gpu-route` names the CUDA arithmetic routes, and records keep them.**
   The tensor-core and attention kernels this release adds compute in another
   order or precision than the reference kernels (each held to a tolerance

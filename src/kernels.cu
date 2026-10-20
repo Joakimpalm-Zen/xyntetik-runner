@@ -29,6 +29,38 @@ static __device__ __forceinline__ float f16f(const uchar *p) {
 // ---------------------------------------------------------------- rmsnorm
 // grid.y = token column; xs/ys = element stride between columns
 
+// The RMS scale from the block's per-thread partials: their sum in the
+// pairwise order of a shared-memory tree (red[t] += red[t + off] for off =
+// tpg/2 down to 1). Levels of 32 and up go through shared memory; the last
+// five run as shuffles inside warp 0 on the same operands in the same order
+// (lane t adds lane t + off), so the sum is the all-shared tree's bit for
+// bit with five fewer barriers. tpg is a power of two from 32 to 256.
+static __device__ __forceinline__ float rms_scale(float s, float *red, int tid,
+                                                  int tpg, int n, float eps) {
+    red[tid] = s;
+    __syncthreads();
+    for (int off = tpg / 2; off >= 32; off >>= 1) {
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }
+    if (tid < 32) {
+        float v = red[tid];
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffffu, v, off);
+        if (tid == 0) red[0] = v;
+    }
+    __syncthreads();
+    return rsqrtf(red[0] / n + eps);
+}
+
+// RMSNorm of one row per block (blockIdx.y the column), 256 threads. A
+// decode token's norm is one block on an otherwise idle card, so its time
+// is latency: rows of up to RMS_REG elements a thread are read once, x and
+// the weights together, kept in registers across the reduction and scaled
+// from them, one round trip to memory instead of six. Each thread still sums
+// its elements tid, tid + tpg, ... in increasing order, so every output is
+// the reloading loop's bit for bit; longer rows take that loop.
+#define RMS_REG 16
 extern "C" __global__ void k_rmsnorm(const float *x, float *y, const float *w,
                                      int n, float eps, int xs, int ys) {
     __shared__ float red[256];
@@ -36,14 +68,27 @@ extern "C" __global__ void k_rmsnorm(const float *x, float *y, const float *w,
     x += (ulong64)blockIdx.y * xs;
     y += (ulong64)blockIdx.y * ys;
     float s = 0;
-    for (int i = tid; i < n; i += tpg) s += x[i] * x[i];
-    red[tid] = s;
-    __syncthreads();
-    for (int off = tpg / 2; off > 0; off >>= 1) {
-        if (tid < off) red[tid] += red[tid + off];
-        __syncthreads();
+    if (n <= RMS_REG * tpg) {
+        float xv[RMS_REG], wv[RMS_REG];
+        #pragma unroll
+        for (int k = 0; k < RMS_REG; k++) {
+            int i = tid + k * tpg;
+            xv[k] = i < n ? x[i] : 0.0f;
+            wv[k] = i < n ? w[i] : 0.0f;
+        }
+        #pragma unroll
+        for (int k = 0; k < RMS_REG; k++)
+            if (tid + k * tpg < n) s += xv[k] * xv[k];
+        float r = rms_scale(s, red, tid, tpg, n, eps);
+        #pragma unroll
+        for (int k = 0; k < RMS_REG; k++) {
+            int i = tid + k * tpg;
+            if (i < n) y[i] = xv[k] * r * wv[k];
+        }
+        return;
     }
-    float r = rsqrtf(red[0] / n + eps);
+    for (int i = tid; i < n; i += tpg) s += x[i] * x[i];
+    float r = rms_scale(s, red, tid, tpg, n, eps);
     for (int i = tid; i < n; i += tpg) y[i] = x[i] * r * w[i];
 }
 
