@@ -448,6 +448,8 @@ typedef struct gpu_weights {
                 f_swiglu, f_xielu, f_add, f_scale;
     CUfunction  f_q35_split, f_q35_gate, f_q35_conv, f_q35_delta;
     CUfunction  f_mamba_conv, f_mamba_ssd, f_mamba_gate_norm, f_relu2;
+    // whole-tile twins of the per-token recurrent kernels (C2.3, RUNNER_CUDA_RECUR_SEQ)
+    CUfunction  f_q35_conv_seq, f_q35_delta_seq, f_mamba_conv_seq, f_mamba_ssd_seq;
     CUfunction  f_colabsmax;            // per-column |x| max for the scaled TC GEMMs
     CUfunction  f_attn_dec, f_attn_merge;   // flash-decoding attention (decode)
     CUfunction  f_attn_tile32, f_attn_tile16; // tiled prefill attention (tile_attn)
@@ -2217,6 +2219,10 @@ static bool shared_load_module(gpu_weights *w) {
     cu.ModuleGetFunction(&w->f_gemv2[T_Q8_0], w->mod, "k_gemv2_q8_0");
     cu.ModuleGetFunction(&w->f_gemv2[T_Q4_K], w->mod, "k_gemv2_q4_K");
     cu.ModuleGetFunction(&w->f_gemv2[T_Q6_K], w->mod, "k_gemv2_q6_K");
+    cu.ModuleGetFunction(&w->f_q35_conv_seq, w->mod, "k_q35_conv_seq");
+    cu.ModuleGetFunction(&w->f_q35_delta_seq, w->mod, "k_q35_delta_seq");
+    cu.ModuleGetFunction(&w->f_mamba_conv_seq, w->mod, "k_mamba2_conv_seq");
+    cu.ModuleGetFunction(&w->f_mamba_ssd_seq, w->mod, "k_mamba2_ssd_seq");
     cu.ModuleGetFunction(&w->f_attn_merge32, w->mod, "k_attn_merge32");
     cu.ModuleGetFunction(&w->f_attn_tile16, w->mod, "k_attn_tile16");
     return true;
@@ -3819,6 +3825,27 @@ static bool gpu_gemv2_on(void) {
 static _Atomic unsigned long g_gemv2_dispatches;
 unsigned long gpu_gemv2_dispatches(void) { return g_gemv2_dispatches; }
 
+// C2.3: a prompt tile's recurrent steps (Gated DeltaNet conv + delta,
+// Mamba-2 conv + scan) as one launch per kernel over the whole tile
+// (k_*_seq) instead of one launch per token. Byte-equal to the per-token
+// kernels; RUNNER_CUDA_RECUR_SEQ=1 selects it, gpu_recur_seq_force overrides
+// for a test (-1 returns to the switch).
+#define RS_MAX_HIST 7     // kernels.cu: conv history taps a thread keeps
+#define RS_MAX_SD   128   // kernels.cu: state row a thread keeps
+static _Atomic int g_recur_seq_force = -1;
+void gpu_recur_seq_force(int on) { g_recur_seq_force = on < 0 ? -1 : on != 0; }
+static bool recur_seq_on(void) {
+    if (g_recur_seq_force >= 0) return g_recur_seq_force == 1;
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_RECUR_SEQ");
+        on = e && *e && strcmp(e, "0") != 0;
+    }
+    return on == 1;
+}
+static _Atomic unsigned long g_recur_seq_dispatches;
+unsigned long gpu_recur_seq_dispatches(void) { return g_recur_seq_dispatches; }
+
 static bool gpu_small_batch_on(void) {
     static _Atomic int on = -1;
     if (on < 0) {
@@ -5309,6 +5336,7 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
     if (!binding_find(g->sw, m, ly->ssm_conv, &weight_base, &weight_off))
         return false;
     CUdeviceptr conv_w = weight_base + weight_off;
+    int tn_done = 0;   // tokens the whole-tile kernels already advanced
 
     // each projection, then its adapter delta on its own output, as the
     // CPU walk (qwen35_linear) applies them
@@ -5334,7 +5362,25 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
     size_t state_layer = (size_t)nh * sk * sk;
     CUdeviceptr hist = g->q35_hist + (size_t)l * hist_layer * sizeof(float);
     CUdeviceptr state = g->q35_state + (size_t)l * state_layer * sizeof(float);
-    for (int t = 0; t < tn; t++) {
+    // the whole tile in one launch per kernel, when no row needs its own
+    // checkpoint (speculative keep rows take the per-token loop below)
+    if (tn > 1 && !g->snap_on && recur_seq_on() && g->sw->f_q35_conv_seq &&
+        g->sw->f_q35_delta_seq && histn <= RS_MAX_HIST && sk <= RS_MAX_SD) {
+        int kernel = m->ssm.conv_kernel;
+        float eps = m->rms_eps;
+        int gate_sigmoid = m->hyper_conn ? 1 : 0;
+        void *pc[] = { &g->q35_mix, &g->q35_cv, &conv_w, &hist, &convdim, &kernel, &tn };
+        void *pd[] = { &g->q35_cv, &g->q35_z, &g->q35_beta, &g->q35_alpha,
+                       &g->sw->ssm_dt[l], &g->sw->ssm_a[l], &g->sw->ssm_norm[l],
+                       &state, &g->xb2, &sk, &ng, &nh, &eps, &gate_sigmoid, &tn,
+                       &convdim, &inner, &xdim };
+        if (!launch(g, g->sw->f_q35_conv_seq, (convdim + 255) / 256, 1, 1, 256, pc) ||
+            !launch(g, g->sw->f_q35_delta_seq, nh, 1, 1, 128, pd))
+            return false;
+        g_recur_seq_dispatches++;
+        tn_done = tn;
+    }
+    for (int t = tn_done; t < tn; t++) {
         CUdeviceptr mix = g->q35_mix + (size_t)t * convdim * sizeof(float);
         CUdeviceptr cv = g->q35_cv + (size_t)t * convdim * sizeof(float);
         CUdeviceptr z = g->q35_z + (size_t)t * inner * sizeof(float);
@@ -5397,6 +5443,29 @@ static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
     CUdeviceptr Aw = g->sw->ssm_a[l], dtw = g->sw->ssm_dt[l];
     CUdeviceptr Dw = g->sw->ssm_D[l], cb = g->sw->ssm_conv_b[l];
     CUdeviceptr gn = g->sw->ssm_gnorm[l];
+    if (tn > 1 && recur_seq_on() && g->sw->f_mamba_conv_seq && g->sw->f_mamba_ssd_seq &&
+        histn <= RS_MAX_HIST && ds <= RS_MAX_SD) {
+        // conv and scan over the whole tile, one launch each; the gate and
+        // norm read only their own token's row, so one launch per token of
+        // the unchanged kernel keeps its bytes
+        void *pc[] = { &g->mamba_proj, &g->mamba_xBC, &conv_w, &cb, &ring,
+                       &conv_dim, &inner, &d_in_proj, &kk, &histn, &tn };
+        void *ps[] = { &g->mamba_xBC, &g->mamba_proj, &Aw, &dtw, &Dw, &state,
+                       &g->mamba_y, &inner, &hd, &ds, &ng, &gsz, &conv_dim,
+                       &d_in_proj, &tn };
+        if (!launch(g, g->sw->f_mamba_conv_seq, (conv_dim + 255) / 256, 1, 1, 256, pc) ||
+            !launch(g, g->sw->f_mamba_ssd_seq, nh, 1, 1, hd, ps))
+            return false;
+        for (int t = 0; t < tn; t++) {
+            void *pg[] = { &g->mamba_proj, &g->mamba_y, &gn, &inner, &ng, &per_g,
+                           &eps, &d_in_proj, &t };
+            if (!launch(g, g->sw->f_mamba_gate_norm, ng, 1, 1, 256, pg))
+                return false;
+        }
+        g_recur_seq_dispatches++;
+        return enc_mv(g, m, ly->ssm_out, g->mamba_y, g->xb, inner, m->n_embd,
+                      0, tn, inner, xdim);
+    }
     for (int t = 0; t < tn; t++) {
         void *pc[] = { &g->mamba_proj, &g->mamba_xBC, &conv_w, &cb, &ring,
                        &conv_dim, &inner, &d_in_proj, &kk, &histn, &t };
@@ -6509,7 +6578,7 @@ const char *gpu_route_detail(const model_t *m) {
     // (model_gpu_window); tc_cols: the column tile each tensor-core GEMM
     // launch covers inside it, so a window of 512 is 8 such launches
     snprintf(buf, sizeof buf, "graph=%s tc=%s tc2=%s q8x=%s gemv2=%s small_batch=%s attn_tile=%s "
-             "window=%d tc_cols=%d%s%s",
+             "window=%d tc_cols=%d%s%s%s",
              g->graph_bad ? "off" : g->gexec ? "replay" : "none",
              g_tc_state < 0 ? "promoted" : g_tc_state ? "forced" : "off",
              gpu_tc2_on() ? "on" : "off",
@@ -6519,7 +6588,8 @@ const char *gpu_route_detail(const model_t *m) {
              : attn_tile_on() ? (attn_dec_on() ? "on+dec" : "on") : (attn_dec_on() ? "dec" : "off"),
              g->win, gpu_tc2_on() ? G2_BN : TC_N,
              m->n_expert > 0 ? " moe=" : "",
-             m->n_expert > 0 ? (g->moe_fused_ok ? "fused" : "eager") : "");
+             m->n_expert > 0 ? (g->moe_fused_ok ? "fused" : "eager") : "",
+             (m->qwen35 || m->ssm.v_heads > 0) && recur_seq_on() ? " recur=tile" : "");
     return buf;
 }
 float *gpu_spec_logits(model_t *m, int row) {

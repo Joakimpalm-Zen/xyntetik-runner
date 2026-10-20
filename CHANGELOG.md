@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA prefill of Gated DeltaNet and Mamba-2 layers in one launch per
+  tile, experimental and off by default.** The recurrent layers of
+  Qwen3.5/3.8, granite-4.x-h and Nemotron-H advanced a prompt one token per
+  kernel launch, reloading each head's state from device memory every time.
+  `RUNNER_CUDA_RECUR_SEQ=1` runs a prompt tile's convolution and state
+  updates in one launch per kernel with the state held in registers, the
+  per-token arithmetic unchanged: byte-identical logits and state
+  (`GPU_ID_RECUR=1 ./test-gpu-identity`).
+
 - **CUDA decode: two rows per warp in the Q8_0, Q4_K and Q6_K decode GEMVs,
   experimental and off by default.** `RUNNER_CUDA_GEMV2=1` lets one warp
   compute two output rows, so each activation load serves both and twice the

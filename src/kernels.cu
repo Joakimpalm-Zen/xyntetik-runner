@@ -7697,3 +7697,222 @@ extern "C" __global__ void k_gemv2_q6_K(MV_PARAMS) {
     float sA = sA0 + sA1, sB = sB0 + sB1;
     MV2_TAIL;
 }
+
+// ---------------------------------------- whole-window recurrent prefill (C2.3)
+// RUNNER_CUDA_RECUR_SEQ (cuda.c gpu_q35_recurrent / gpu_mamba2_recurrent):
+// the per-token conv and state kernels above, run over all tn columns of a
+// prompt tile in ONE launch each. A thread keeps what it carried between
+// launches (its conv history, its state row) in registers across the tile and
+// writes it back once at the end, instead of a launch per token that reloads
+// and stores the whole state through global memory. The per-token arithmetic
+// is the per-token kernels' statement for statement (same reductions, same
+// block widths, same order), so the outputs and the state after the tile are
+// byte-equal to tn per-token launches; `make test-cuda-qwen4exp` and
+// test-recurrent-rewind hold the state, GPU_ID_RECUR the logits. Conv kernels
+// up to RS_MAX_HIST history taps; state rows up to RS_MAX_SD.
+#define RS_MAX_HIST 7
+#define RS_MAX_SD 128
+
+extern "C" __global__ void k_q35_conv_seq(const float *mix, float *cv,
+                                           const float *weight, float *history,
+                                           int convdim, int kernel, int tn) {
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= convdim) return;
+    int histn = kernel - 1;
+    const float *cw = weight + (ulong64)c * kernel;
+    float h[RS_MAX_HIST];
+    #pragma unroll
+    for (int k = 0; k < RS_MAX_HIST; k++)
+        if (k < histn) h[k] = history[(ulong64)k * convdim + c];
+    for (int t = 0; t < tn; t++) {
+        float mx = mix[(ulong64)t * convdim + c];
+        float sum = cw[histn] * mx;
+        #pragma unroll
+        for (int k = 0; k < RS_MAX_HIST; k++)
+            if (k < histn) sum += cw[k] * h[k];
+        cv[(ulong64)t * convdim + c] = sum / (1.0f + expf(-sum));
+        #pragma unroll
+        for (int k = 0; k + 1 < RS_MAX_HIST; k++)
+            if (k + 1 < histn) h[k] = h[k + 1];
+        #pragma unroll
+        for (int k = 0; k < RS_MAX_HIST; k++)
+            if (histn && k == histn - 1) h[k] = mx;
+    }
+    #pragma unroll
+    for (int k = 0; k < RS_MAX_HIST; k++)
+        if (k < histn) history[(ulong64)k * convdim + c] = h[k];
+}
+
+// k_q35_delta over tn tokens: one block per value head, 128 threads, thread j
+// holding state row j (state_dim <= RS_MAX_SD, so at most one row a thread,
+// as in k_q35_delta). cv/z/beta/alpha are [tn] rows of their per-token
+// strides, out rows are xdim apart.
+extern "C" __global__ void __launch_bounds__(128)
+k_q35_delta_seq(const float *cv, const float *z, const float *beta_in,
+                const float *alpha_in, const float *dt, const float *a,
+                const float *norm, float *state, float *out, int state_dim,
+                int groups, int heads, float eps, int gate_sigmoid, int tn,
+                int convdim, int inner, int xdim) {
+    __shared__ float red[256];
+    int tid = threadIdx.x, h = blockIdx.x;
+    if (h >= heads) return;
+    int keydim = state_dim * groups;
+    int group = h % groups;
+    float *st = state + (ulong64)h * state_dim * state_dim;
+    const bool owner = tid < state_dim;
+    float row[RS_MAX_SD];
+    if (owner) {
+        #pragma unroll
+        for (int i = 0; i < RS_MAX_SD; i++)
+            if (i < state_dim) row[i] = st[(ulong64)tid * state_dim + i];
+    }
+    for (int t = 0; t < tn; t++) {
+        const float *cvt = cv + (ulong64)t * convdim;
+        const float *q = cvt + group * state_dim;
+        const float *k = cvt + keydim + group * state_dim;
+        const float *v = cvt + 2 * keydim + h * state_dim;
+        float *yo = out + (ulong64)t * xdim + h * state_dim;
+
+        float qs = 0.0f;
+        for (int i = tid; i < state_dim; i += blockDim.x) qs += q[i] * q[i];
+        red[tid] = qs;
+        __syncthreads();
+        for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+            if (tid < off) red[tid] += red[tid + off];
+            __syncthreads();
+        }
+        float qscale = rsqrtf(red[0] + eps);
+        __syncthreads();
+        float ks = 0.0f;
+        for (int i = tid; i < state_dim; i += blockDim.x) ks += k[i] * k[i];
+        red[tid] = ks;
+        __syncthreads();
+        for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+            if (tid < off) red[tid] += red[tid + off];
+            __syncthreads();
+        }
+        float kscale = rsqrtf(red[0] + eps);
+        float beta = 1.0f / (1.0f + expf(-beta_in[(ulong64)t * heads + h]));
+        float av = alpha_in[(ulong64)t * heads + h] + dt[h];
+        float softplus = av > 20.0f ? av : log1pf(expf(av));
+        float decay = expf(a[h] * softplus);
+
+        if (owner) {
+            int j = tid;
+            float pred = 0.0f;
+            #pragma unroll
+            for (int i = 0; i < RS_MAX_SD; i++) {
+                if (i < state_dim) {
+                    row[i] *= decay;
+                    pred += row[i] * (k[i] * kscale);
+                }
+            }
+            float delta = (v[j] - pred) * beta;
+            float y = 0.0f;
+            #pragma unroll
+            for (int i = 0; i < RS_MAX_SD; i++) {
+                if (i < state_dim) {
+                    row[i] += delta * (k[i] * kscale);
+                    y += row[i] * (q[i] * qscale);
+                }
+            }
+            yo[j] = y * rsqrtf((float)state_dim);
+        }
+        __syncthreads();
+        float ss = 0.0f;
+        for (int j = tid; j < state_dim; j += blockDim.x) ss += yo[j] * yo[j];
+        red[tid] = ss;
+        __syncthreads();
+        for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+            if (tid < off) red[tid] += red[tid + off];
+            __syncthreads();
+        }
+        float rms = rsqrtf(red[0] / state_dim + eps);
+        const float *zt = z + (ulong64)t * inner;
+        for (int j = tid; j < state_dim; j += blockDim.x) {
+            int o = h * state_dim + j;
+            float zv = zt[o];
+            float sg = 1.0f / (1.0f + expf(-zv));
+            yo[j] = yo[j] * rms * norm[j] * (gate_sigmoid ? sg : zv * sg);
+        }
+        __syncthreads();   // red[] and yo[] are reused by the next token
+    }
+    if (owner) {
+        #pragma unroll
+        for (int i = 0; i < RS_MAX_SD; i++)
+            if (i < state_dim) st[(ulong64)tid * state_dim + i] = row[i];
+    }
+}
+
+// k_mamba2_conv over tn tokens (one thread per channel, its ring column in
+// registers)
+extern "C" __global__ void k_mamba2_conv_seq(
+        const float *proj, float *xBC, const float *conv_w, const float *conv_b,
+        float *ring, int conv_dim, int inner, int d_in_proj,
+        int conv_kernel, int histn, int tn) {
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= conv_dim) return;
+    const float *cw = conv_w + (size_t)c * conv_kernel;
+    float r[RS_MAX_HIST];
+    #pragma unroll
+    for (int k = 0; k < RS_MAX_HIST; k++)
+        if (k < histn) r[k] = ring[(size_t)k * conv_dim + c];
+    for (int t = 0; t < tn; t++) {
+        float cur = proj[(size_t)t * d_in_proj + inner + c];
+        float sum = conv_b[c] + cw[histn] * cur;
+        #pragma unroll
+        for (int k = 0; k < RS_MAX_HIST; k++)
+            if (k < histn) sum += cw[k] * r[k];
+        xBC[(size_t)t * conv_dim + c] = sum / (1.0f + expf(-sum));
+        #pragma unroll
+        for (int k = 0; k + 1 < RS_MAX_HIST; k++)
+            if (k < histn - 1) r[k] = r[k + 1];
+        #pragma unroll
+        for (int k = 0; k < RS_MAX_HIST; k++)
+            if (histn && k == histn - 1) r[k] = cur;
+    }
+    #pragma unroll
+    for (int k = 0; k < RS_MAX_HIST; k++)
+        if (k < histn) ring[(size_t)k * conv_dim + c] = r[k];
+}
+
+// k_mamba2_ssd over tn tokens: thread (h, p) keeps its d_state row in
+// registers (ds <= RS_MAX_SD)
+extern "C" __global__ void k_mamba2_ssd_seq(
+        const float *xBC, const float *proj, const float *A, const float *dt_b,
+        const float *D, float *state, float *y,
+        int inner, int hd, int ds, int ng, int gsz, int conv_dim,
+        int d_in_proj, int tn) {
+    int h = blockIdx.x;
+    int p = threadIdx.x;
+    if (p >= hd) return;
+    int g = h / gsz;
+    float *sp = state + ((size_t)h * hd + p) * ds;
+    float s_[RS_MAX_SD];
+    #pragma unroll
+    for (int j = 0; j < RS_MAX_SD; j++)
+        if (j < ds) s_[j] = sp[j];
+    for (int t = 0; t < tn; t++) {
+        float dtr = proj[(size_t)t * d_in_proj + inner + conv_dim + h] + dt_b[h];
+        float dt = dtr > 20.0f ? dtr : logf(1.0f + expf(dtr));
+        float dA = expf(dt * A[h]);
+        const float *xrow = xBC + (size_t)t * conv_dim;
+        const float *Bg = xrow + inner + (size_t)g * ds;
+        const float *Cg = xrow + inner + (size_t)ng * ds + (size_t)g * ds;
+        float x = xrow[(size_t)h * hd + p];
+        float x_dt = x * dt;
+        float sumf = 0.0f;
+        #pragma unroll
+        for (int j = 0; j < RS_MAX_SD; j++) {
+            if (j < ds) {
+                float s = s_[j] * dA + Bg[j] * x_dt;
+                sumf += s * Cg[j];
+                s_[j] = s;
+            }
+        }
+        y[(size_t)t * inner + (size_t)h * hd + p] = sumf + D[h] * x;
+    }
+    #pragma unroll
+    for (int j = 0; j < RS_MAX_SD; j++)
+        if (j < ds) sp[j] = s_[j];
+}

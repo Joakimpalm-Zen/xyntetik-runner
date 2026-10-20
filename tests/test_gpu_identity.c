@@ -354,8 +354,9 @@ int main(int argc, char **argv) {
         }
         printf("  split-K route: two device runs byte-identical\n");
     }
-    // GPU_ID_GEMV2=1: a CUDA route that keeps the arithmetic of the route it
-    // replaces (the two-rows-a-warp decode GEMVs) must give device logits equal to
+    // GPU_ID_GEMV2=1 / GPU_ID_RECUR=1: a CUDA route that keeps the arithmetic
+    // of the route it replaces (the two-rows-a-warp decode GEMVs, the
+    // whole-tile recurrent prefill kernels) must give device logits equal to
     // the forced-off run byte for byte, and must have run: a file without the
     // format or the layer kind would compare the old route with itself.
     // This pair has no absolute anchor of its own: it proves the new route is
@@ -363,6 +364,7 @@ int main(int argc, char **argv) {
     // reference gates (scripts/gold-logits.py) that route already answers to.
     struct { const char *env, *what; void (*force)(int); unsigned long (*count)(void); } pairs[] = {
         { "GPU_ID_GEMV2", "two-row decode GEMV", gpu_gemv2_force, gpu_gemv2_dispatches },
+        { "GPU_ID_RECUR", "whole-tile recurrent prefill", gpu_recur_seq_force, gpu_recur_seq_dispatches },
     };
     for (size_t pi = 0; pi < sizeof pairs / sizeof *pairs; pi++) {
         const char *ev = getenv(pairs[pi].env);

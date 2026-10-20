@@ -95,6 +95,10 @@ int    gpu_prompt_window(const model_t *m);
 // (1) or off (0) for a test, -1 returns to the switch; and their launches
 void   gpu_gemv2_force(int on);
 unsigned long gpu_gemv2_dispatches(void);
+// the whole-tile recurrent prefill kernels (CUDA, RUNNER_CUDA_RECUR_SEQ):
+// the same test override, and the layer-tiles they advanced
+void   gpu_recur_seq_force(int on);
+unsigned long gpu_recur_seq_dispatches(void);
 // Does this backend carry a batched (tensor-core or tiled) GEMM for the
 // type? A static fact about the backend's kernel table, answered without a
 // device, and the gate's only source for "TC-capable" (its own hand-kept

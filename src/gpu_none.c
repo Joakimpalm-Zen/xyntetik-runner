@@ -56,6 +56,8 @@ unsigned long gpu_tc2_dispatches(void) { return 0; }
 int gpu_prompt_window(const model_t *m) { (void)m; return 0; }
 void gpu_gemv2_force(int on) { (void)on; }
 unsigned long gpu_gemv2_dispatches(void) { return 0; }
+void gpu_recur_seq_force(int on) { (void)on; }
+unsigned long gpu_recur_seq_dispatches(void) { return 0; }
 bool gpu_tc_type_has_kernel(int type) { (void)type; return false; }
 
 // Same, for the fast decode matvec: the mv tolerance gate links here and
