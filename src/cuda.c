@@ -93,6 +93,9 @@ static struct {
                              unsigned, void *, void **, void **);
     CUresult (*CtxSynchronize)(void);
     CUresult (*GetErrorString)(CUresult, const char **);
+    // optional: a kernel asking for more than 48 KB of dynamic shared
+    // memory (TC2) opts in through it; absent, that kernel stays unused
+    CUresult (*FuncSetAttribute)(CUfunction, int, int);
     // optional: CUDA graphs for the single-token decode path (Experiment A).
     // Not required for the backend to function — see cu_graphs_ok().
     CUresult (*StreamCreate)(CUstream *, unsigned);
@@ -206,6 +209,7 @@ static bool cu_load_now(void) {
     cu.LaunchKernel      = dl_sym(cu.lib, "cuLaunchKernel");
     cu.CtxSynchronize    = dl_sym(cu.lib, "cuCtxSynchronize");
     cu.GetErrorString    = dl_sym(cu.lib, "cuGetErrorString");
+    cu.FuncSetAttribute  = dl_sym(cu.lib, "cuFuncSetAttribute");
     // optional graph entry points — absence just disables the graph path
     cu.StreamCreate       = dl_sym(cu.lib, "cuStreamCreate");
     cu.StreamDestroy      = sym2("cuStreamDestroy");
@@ -456,6 +460,8 @@ typedef struct gpu_weights {
     CUfunction  f_mvcanon[KT_N];        // canonical-order forward (R8.7.1)
     CUfunction  f_gemm[KT_N];           // prefill tiled-GEMM variants (Q8_0/Q4_K)
     CUfunction  f_gemm_tc[KT_N];        // tensor-core prefill GEMM (opt-in, Q4_K)
+    CUfunction  f_gemm2[KT_N];          // pipelined tensor-core GEMM (TC2), by type
+    CUfunction  f_x_half;               // its scaled fp16 activations (k_x_half_scaled)
     CUfunction  f_gemv[KT_N];           // decode coalesced GEMV variants (Q8_0/Q4_K)
     // cross-sequence decode microbatch (Phase 6): per-column position and KV
     CUfunction  f_rope_seq, f_store_seq, f_attn_dec_seq;
@@ -537,7 +543,9 @@ typedef struct {
     CUdeviceptr x_hc, hc_xn, hc_lo, hc_gate, hc_inject;  // qwen4exp wide residual + mixer scratch
     CUdeviceptr splitk;                                   // split-K partials, SPLITK_PARTIALS floats
     CUdeviceptr shexp_in, shexp_g, shexp_u, shexp_o, shexp_gate;  // shared expert on the device
-    CUdeviceptr xsc;                    // [TC_N] per-column |x| max for the scaled TC GEMMs
+    CUdeviceptr xsc;                    // [win] per-column |x| max for the scaled TC GEMMs
+    CUdeviceptr xh;                     // TC2: [win][xh_cap] scaled fp16 activations
+    int         xh_cap;                 // the widest GEMM input xh holds
     // sparse-MoE: router logits [MVB][n_expert], per-slot expert down-out
     // [rows][n_embd] (rows = max(used, MVB); the eager path uses column 0)
     CUdeviceptr moe_logits, moe_eout;
@@ -619,6 +627,13 @@ typedef struct {
 // not by the prompt window: a window of W tokens runs k_attn W/ATT_COLS
 // times over the same scratch. Its kernel and arithmetic are unchanged.
 #define ATT_COLS 64
+// TC2 (kernels.cu G2_*): 128-row x 64-column blocks, 256 threads, K in
+// stages of 64, two stages of padded fp16 tiles in dynamic shared memory
+#define G2_BM 128
+#define G2_BN 64
+#define G2_BK 64
+#define G2_SMEM ((2 * G2_BM * (G2_BK + 8) + 2 * G2_BN * (G2_BK + 8)) * 2)
+#define CU_FUNC_ATTR_MAX_DYN_SMEM 8   // CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES
 #define TC_N    64   // tensor-core GEMM token tile (keep in sync)
 #define Q8_COLS 8    // k_gemm_q8_0 column tile (keep in sync)
 
@@ -2153,6 +2168,28 @@ static bool shared_load_module(gpu_weights *w) {
     for (size_t i = 0; i < sizeof TC_KERNELS / sizeof *TC_KERNELS; i++)
         cu.ModuleGetFunction(&w->f_gemm_tc[TC_KERNELS[i].type], w->mod,
                              TC_KERNELS[i].name);
+    // TC2: non-fatal too, and usable only once its dynamic shared memory
+    // (G2_SMEM in kernels.cu) is granted
+    {
+        static const struct { int type; const char *name; } TC2_KERNELS[] = {
+            { T_Q4_K, "k_gemm2_q4_K" }, { T_Q6_K, "k_gemm2_q6_K" },
+            { T_Q8_0, "k_gemm2_q8_0" }, { T_Q4_0, "k_gemm2_q4_0" },
+            { T_IQ3_S, "k_gemm2_iq3_s" }, { T_IQ3_XXS, "k_gemm2_iq3_xxs" },
+            { T_IQ2_S, "k_gemm2_iq2_s" }, { T_IQ2_XS, "k_gemm2_iq2_xs" },
+            { T_IQ2_XXS, "k_gemm2_iq2_xxs" }, { T_IQ1_S, "k_gemm2_iq1_s" },
+            { T_IQ1_M, "k_gemm2_iq1_m" }, { T_IQ4_XS, "k_gemm2_iq4_xs" },
+            { T_IQ4_NL, "k_gemm2_iq4_nl" },
+        };
+        cu.ModuleGetFunction(&w->f_x_half, w->mod, "k_x_half_scaled");
+        for (size_t i = 0; i < sizeof TC2_KERNELS / sizeof *TC2_KERNELS; i++) {
+            CUfunction f = NULL;
+            if (!w->f_x_half || !cu.FuncSetAttribute ||
+                cu.ModuleGetFunction(&f, w->mod, TC2_KERNELS[i].name) != 0 ||
+                cu.FuncSetAttribute(f, CU_FUNC_ATTR_MAX_DYN_SMEM, G2_SMEM) != 0)
+                f = NULL;
+            w->f_gemm2[TC2_KERNELS[i].type] = f;
+        }
+    }
     // the tiled prefill attention: resolved non-fatally like the TC kernels,
     // so a PTX without it keeps k_attn
     cu.ModuleGetFunction(&w->f_attn_tile32, w->mod, "k_attn_tile32");
@@ -2825,6 +2862,15 @@ static void cuda_instance_dims(const model_t *m, cuda_dims *D) {
     // streams, the per-layer embeddings and the NextN/MTP rows. A wider
     // window spends only spare budget, so these are counted in full there.
     size_t per_col = ac.per_col;
+    {   // TC2's fp16 activations (xh) and the column maxima (xsc)
+        size_t mi = (size_t)xdim;
+        if ((size_t)m->n_ff > mi) mi = (size_t)m->n_ff;
+        if ((size_t)q35_mixdim > mi) mi = (size_t)q35_mixdim;
+        if (2 * (size_t)m->n_embd > mi) mi = 2 * (size_t)m->n_embd;
+        if ((size_t)m->ssm.inner > mi) mi = (size_t)m->ssm.inner;
+        if ((size_t)m->n_ff_shexp > mi) mi = (size_t)m->n_ff_shexp;
+        per_col += 2 * mi + sizeof(float);
+    }
     if (m->n_expert > 0) {
         size_t used = m->n_expert_used > 0 ? (size_t)m->n_expert_used : 1;
         size_t gw = (size_t)m->n_ff_exp * (m->moe_gemma ? 2 : 1);
@@ -2981,7 +3027,19 @@ static bool cuda_alloc_activations(model_t *m, gpu_t *g, const cuda_dims *D) {
                                   ATTN_SPLITS * (max_hd + 2)));
     // spec_batch rows: the speculative verify reads every row's head
     CK(cu.MemAlloc(&g->logits, sizeof(float) * (size_t)(m->spec_batch > 0 ? m->spec_batch : 1) * m->n_vocab));
-    CK(cu.MemAlloc(&g->xsc,    sizeof(float) * TC_N));
+    CK(cu.MemAlloc(&g->xsc,    sizeof(float) * (size_t)(g->win > TC_N ? g->win : TC_N)));
+    if (g->sw->f_x_half) {
+        // TC2's activations: the widest matvec input, as the Q8X buffer
+        // below sizes it, in half for every window column
+        int mi = xdim;
+        if (m->n_ff > mi) mi = m->n_ff;
+        if (q35_mixdim > mi) mi = q35_mixdim;
+        if (2 * m->n_embd > mi) mi = 2 * m->n_embd;
+        if (m->ssm.inner > mi) mi = m->ssm.inner;
+        if (m->n_ff_shexp > mi) mi = m->n_ff_shexp;
+        g->xh_cap = mi;
+        CK(cu.MemAlloc(&g->xh, 2 * (size_t)g->win * (size_t)mi));
+    }
     CK(cu.MemAlloc(&g->pos_dev, sizeof(int) * (size_t)((g->win + ATT_COLS - 1) / ATT_COLS)));
     return true;
 fail:
@@ -3697,6 +3755,17 @@ static bool gpu_q8x_on(void) {
     return on == 1;
 }
 
+// RUNNER_CUDA_TC2: the pipelined tensor-core GEMM (k_gemm2_*) wherever the
+// TC route is on for the type and a TC2 kernel exists. 1 selects it, 0 or
+// unset keeps the TC kernels while its gates are run.
+static bool gpu_tc2_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) { const char *e = getenv("RUNNER_CUDA_TC2"); on = e && *e && strcmp(e, "0") != 0; }
+    return on == 1;
+}
+static _Atomic unsigned long g_tc2_dispatches;
+unsigned long gpu_tc2_dispatches(void) { return g_tc2_dispatches; }
+
 static bool gpu_small_batch_on(void) {
     static _Atomic int on = -1;
     if (on < 0) {
@@ -3750,6 +3819,25 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                         1, xs, ys))
                 return false;
         return true;
+    }
+    // Prefill (batch>1) on the tensor-core route, the pipelined TC2 GEMM where
+    // it has a kernel for the type: the window's column maxima and its fp16
+    // activations once, then one launch over every column (kernels.cu TC2).
+    if (batch > 1 && w->scale == 1.0f && tc_on(m, w->type) && gpu_tc2_on() &&
+        g->sw->f_gemm2[w->type] && g->xh && n_in % G2_BK == 0 &&
+        n_in <= g->xh_cap && batch <= g->win) {
+        void *pm[] = { &x, &g->xsc, &n_in, &xs, &batch };
+        if (!launch(g, g->sw->f_colabsmax, (unsigned)batch, 1, 1, 256, pm)) return false;
+        void *ph[] = { &x, &g->xsc, &g->xh, &n_in, &xs, &batch };
+        if (!launch(g, g->sw->f_x_half, (unsigned)((n_in + 255) / 256), (unsigned)batch,
+                    1, 256, ph))
+            return false;
+        g_tc_dispatches++;
+        g_tc_dispatches_type[w->type]++;
+        g_tc2_dispatches++;
+        void *pg[] = { &weights, &g->xh, &y, &a, &b, &g->xsc };
+        return launch_smem(g, g->sw->f_gemm2[w->type], (unsigned)((n_out + G2_BM - 1) / G2_BM),
+                           (unsigned)((batch + G2_BN - 1) / G2_BN), 1, 256, G2_SMEM, pg);
     }
     // Prefill (batch>1), tensor-core GEMM when promoted for this (type, arch)
     // or forced by RUNNER_CUDA_TC: the block dequantizes a 64-row fp16 weight
@@ -3967,7 +4055,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
     if (g->stream && cu.StreamDestroy) cu.StreamDestroy(g->stream);
     CUdeviceptr bufs[] = { g->kc, g->vc, g->x, g->xb, g->xb2,
                            g->q, g->kt, g->vt, g->hb, g->hb2, g->att,
-                           g->attn_part, g->logits, g->xsc, g->pos_dev, g->q8x_q, g->q8x_d,
+                           g->attn_part, g->logits, g->xsc, g->xh, g->pos_dev, g->q8x_q, g->q8x_d,
                            g->moe_logits, g->moe_eout, g->moe_sel,
                            g->moe_selw, g->moe_hb, g->moe_hb2,
                            g->moe_gath, g->moe_dout, g->moe_gidx, g->moe_gw,
@@ -6262,13 +6350,14 @@ const char *gpu_route_detail(const model_t *m) {
     // window: the prompt columns one pass of the device layers takes
     // (model_gpu_window); tc_cols: the column tile each tensor-core GEMM
     // launch covers inside it, so a window of 512 is 8 such launches
-    snprintf(buf, sizeof buf, "graph=%s tc=%s q8x=%s small_batch=%s attn_tile=%s "
+    snprintf(buf, sizeof buf, "graph=%s tc=%s tc2=%s q8x=%s small_batch=%s attn_tile=%s "
              "window=%d tc_cols=%d%s%s",
              g->graph_bad ? "off" : g->gexec ? "replay" : "none",
              g_tc_state < 0 ? "promoted" : g_tc_state ? "forced" : "off",
+             gpu_tc2_on() ? "on" : "off",
              gpu_q8x_on() ? "on" : "off", gpu_small_batch_on() ? "on" : "off",
              attn_tile_on() ? (attn_dec_on() ? "on+dec" : "on") : (attn_dec_on() ? "dec" : "off"),
-             g->win, TC_N,
+             g->win, gpu_tc2_on() ? G2_BN : TC_N,
              m->n_expert > 0 ? " moe=" : "",
              m->n_expert > 0 ? (g->moe_fused_ok ? "fused" : "eager") : "");
     return buf;

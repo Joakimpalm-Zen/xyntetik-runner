@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA pipelined tensor-core prefill GEMM (TC2), experimental and off by
+  default.** `RUNNER_CUDA_TC2=1` runs the batched projections through a
+  128 x 64 tile GEMM that converts the next 64-deep stage of quantized
+  weights into shared memory while the tensor cores multiply the current
+  one, with the activations converted to scaled fp16 once per GEMM instead
+  of once per row block. Same numerical class as the tensor-core route it
+  replaces (fp16 operands, fp32 sums; `test-tc-tol` 0 flips of 64 and a
+  token-identical free-running arm on five files). On an RTX 3070 at a
+  512-token prompt, prefill went from 1202 to 2226 tok/s on Llama-3.2-3B
+  Q4_K_M and from 689 to 1329 on Qwen2.5-7B Q4_K_M (both with the attention
+  switches below). Covers Q4_K, Q6_K, Q8_0, Q4_0 and the IQ1-IQ4 i-quants.
+  `--bench-json` counts its launches (`route.kernels.cuda_tc2`).
+
 - **CUDA long-context attention, experimental and off by default.**
   `RUNNER_CUDA_ATTN_TILE=1` runs prefill attention one strip of query rows
   at a time over K and V tiles staged in shared memory (each score computed

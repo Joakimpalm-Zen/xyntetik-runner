@@ -86,6 +86,8 @@ unsigned long gpu_tc_dispatches(void);
 // format in a model dispatched, not just that something did: a total of a
 // mixed Q4_K/IQ file can be all Q4_K. 0 for a type outside the table.
 unsigned long gpu_tc_dispatches_type(int type);
+// of those, the ones the pipelined TC2 kernels ran (CUDA, RUNNER_CUDA_TC2)
+unsigned long gpu_tc2_dispatches(void);
 // the prompt window (columns) a CUDA instance was built for; 0 on other
 // backends and without a device. Transcripts record it and --verify restores it.
 int    gpu_prompt_window(const model_t *m);
