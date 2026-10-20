@@ -166,3 +166,47 @@ def test_score_rejects_too_short(runner_bin, models):
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
     assert p.returncode != 0
     assert b"--score" in p.stderr
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_score_top_reports_the_distribution_head(runner_bin, models, chunked):
+    """--score-top N: each position's N most likely tokens, best first.
+
+    Anchored in probability, not in this implementation: the first entry is
+    the position's reported argmax, the entries are sorted, their
+    probabilities sum to at most 1, and the scored token is listed with its
+    reported logprob whenever that logprob beats the Nth entry."""
+    env = dict(os.environ)
+    if chunked:
+        env["RUNNER_SCORE_CHUNKED"] = "1"
+    p = subprocess.run(
+        [runner_bin, "-m", str(models["dense"]), "--score", "--score-top", "5",
+         "-p", PROMPT, "-t", "2", "--gpu", "off"],
+        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    out = json.loads(p.stdout)
+    assert len(out["top"]) == out["n_scored"]
+    for i, row in enumerate(out["top"]):
+        assert len(row) == 5
+        ids = [e[0] for e in row]
+        lps = [e[1] for e in row]
+        assert len(set(ids)) == 5
+        assert all(0 <= t < out["n_vocab"] for t in ids)
+        assert ids[0] == out["argmax"][i]
+        assert all(lps[j] >= lps[j + 1] for j in range(4))
+        assert sum(math.exp(x) for x in lps) <= 1.0 + 1e-5
+        tok, lp = out["tokens"][i + 1], out["logprobs"][i]
+        if lp > lps[-1]:
+            assert tok in ids
+        if tok in ids:
+            assert lps[ids.index(tok)] == pytest.approx(lp, abs=1e-6)
+
+
+def test_score_top_needs_score(runner_bin, models):
+    p = subprocess.run(
+        [runner_bin, "-m", str(models["dense"]), "--score-top", "5",
+         "-p", PROMPT, "-n", "2", "--gpu", "off"],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode != 0
+    assert b"--score-top" in p.stderr and b"needs --score" in p.stderr

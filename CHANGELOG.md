@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--score-top N` reports each position's distribution head.** With
+  `--score`, a `top` array lists every position's N most likely next tokens
+  with their logprobs. `scripts/gold-logits.py --score-a FILE` compares such
+  a file with the publisher's float32 model in one pass over the text, and
+  with `RUNNER_SCORE_CHUNKED=1` every position comes from the batched prefill
+  route, which a request per position cannot reach.
+
 - **CUDA prefill of Gated DeltaNet and Mamba-2 layers in one launch per
   tile, experimental and off by default.** The recurrent layers of
   Qwen3.5/3.8, granite-4.x-h and Nemotron-H advanced a prompt one token per

@@ -1349,6 +1349,8 @@ static void usage_to(FILE *f, const char *prog) {
         "  --score        teacher-forced scoring: per-token log P(token|prefix)\n"
         "                 over the raw -p/-f text (no template, no sampling),\n"
         "                 printed as JSON with NLL and perplexity\n"
+        "  --score-top N  with --score: also print each position's N (1-256)\n"
+        "                 most likely tokens with their logprobs, best first\n"
         "  --decide FILE  typed decisions: one /v1/decide request per line of\n"
         "                 FILE (state, questions[{question, options}]), one\n"
         "                 response per line on stdout; options scored verbatim\n"
@@ -1880,6 +1882,7 @@ typedef struct {
     bool interactive, verbose, no_bos, ignore_eos, json_mode;
     // modes that answer without generating
     bool serve, caps, tool_info, bench_json, score, shadow_mode, shadow_yes;
+    int  score_top;   // --score-top: each scored position's N most likely tokens
     bool adapt_info;    // --adapt-info: adapter eligibility as JSON
     bool doctor;        // --doctor: one diagnostic report, then exit
     bool doctor_text;   // --doctor-include-text: keep the probe's text
@@ -2143,6 +2146,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "--doctor")) o->doctor = true;
         else if (!strcmp(a, "--doctor-include-text")) o->doctor = o->doctor_text = true;
         else if (!strcmp(a, "--score")) o->score = true;
+        else if (!strcmp(a, "--score-top")) o->score_top = (int)int_arg(a, NEXT, 1, 256);
         else if (!strcmp(a, "--decide")) o->decide_path = NEXT;
         else if (!strcmp(a, "--systemone")) o->systemone_path = NEXT;
         else if (!strcmp(a, "--lora")) o->lora_path = NEXT;
@@ -2984,6 +2988,10 @@ static void cli_resolve_threads(cli_opts *o) {
 // factor that is not one, or one beside --rope-scale, and an unknown
 // --chat-template, which *tmpl_override receives as a TMPL_* id.
 static bool cli_model_flags_ok(const cli_opts *o, int *tmpl_override) {
+    if (o->score_top && !o->score) {
+        fprintf(stderr, "error: --score-top adds to --score's report and needs --score\n");
+        return false;
+    }
     if (o->mp.yarn_factor > 0 && o->mp.yarn_factor <= 1.0f) {
         fprintf(stderr, "error: --yarn-factor must be greater than 1\n");
         return false;
@@ -4379,6 +4387,22 @@ static int run_systemone(cli_opts *o, cli_run *rt) {
     return run_jsonl(o, rt, o->systemone_path, systemone_line, "systemone failed");
 }
 
+// The n most likely tokens of one row: ids[] and lps[] best first, ties to
+// the lower id (the sampler's first-index rule), logprobs against lse.
+static void score_top_fill(const float *lg, int nv, float lse, int n, int *ids,
+                           float *lps) {
+    int k = 0;
+    for (int i = 0; i < nv; i++) {
+        float v = lg[i];
+        if (k == n && !(v > lps[n - 1])) continue;
+        int j = k < n ? k++ : n - 1;
+        while (j > 0 && v > lps[j - 1]) { lps[j] = lps[j - 1]; ids[j] = ids[j - 1]; j--; }
+        lps[j] = v;
+        ids[j] = i;
+    }
+    for (int j = 0; j < k; j++) lps[j] -= lse;
+}
+
 static int run_score(cli_opts *o, cli_run *rt) {
     int n_prompt;
     // Teacher-forced scoring (adaptation D1): per-position
@@ -4424,6 +4448,20 @@ static int run_score(cli_opts *o, cli_run *rt) {
     int pos = 0, emitted = 0, fail = 0, top1 = 0;
     int32_t *argmaxes = malloc(sizeof(int32_t) * (size_t)n_prompt);
     if (!argmaxes) return 1;
+    // --score-top: each position's distribution head, for a comparison at the
+    // distribution level (KL against a reference) in one pass of the text
+    int ntop = o->score_top < rt->m.n_vocab ? o->score_top : rt->m.n_vocab;
+    int *top_id = NULL;
+    float *top_lp = NULL;
+    if (ntop > 0) {
+        top_id = malloc(sizeof(int) * (size_t)ntop * (size_t)n_prompt);
+        top_lp = malloc(sizeof(float) * (size_t)ntop * (size_t)n_prompt);
+        if (!top_id || !top_lp) {
+            free(top_id); free(top_lp); free(argmaxes);
+            fprintf(stderr, "error: out of memory for --score-top\n");
+            return 1;
+        }
+    }
     while (pos < n_prompt - 1 && !fail) {
         int k = n_prompt - 1 - pos;
         int cap = rt->m.spec_batch < rt->m.n_batch ? rt->m.spec_batch : rt->m.n_batch;
@@ -4437,8 +4475,12 @@ static int run_score(cli_opts *o, cli_run *rt) {
                 int arg = 0;
                 for (int i = 1; i < rt->m.n_vocab; i++)
                     if (lg[i] > lg[arg]) arg = i;
-                float lp = lg[rt->toks[pos + b + 1]] -
-                           engine_logsumexp(lg, rt->m.n_vocab);
+                float lse = engine_logsumexp(lg, rt->m.n_vocab);
+                float lp = lg[rt->toks[pos + b + 1]] - lse;
+                if (ntop > 0)
+                    score_top_fill(lg, rt->m.n_vocab, lse, ntop,
+                                   top_id + (size_t)emitted * ntop,
+                                   top_lp + (size_t)emitted * ntop);
                 argmaxes[emitted] = arg;
                 printf("%s%.9g", emitted++ ? "," : "", (double)lp);
                 total += lp;
@@ -4451,7 +4493,12 @@ static int run_score(cli_opts *o, cli_run *rt) {
             int arg = 0;
             for (int i = 1; i < rt->m.n_vocab; i++)
                 if (lg[i] > lg[arg]) arg = i;
-            float lp = lg[rt->toks[pos + 1]] - engine_logsumexp(lg, rt->m.n_vocab);
+            float lse = engine_logsumexp(lg, rt->m.n_vocab);
+            float lp = lg[rt->toks[pos + 1]] - lse;
+            if (ntop > 0)
+                score_top_fill(lg, rt->m.n_vocab, lse, ntop,
+                               top_id + (size_t)emitted * ntop,
+                               top_lp + (size_t)emitted * ntop);
             argmaxes[emitted] = arg;
             printf("%s%.9g", emitted++ ? "," : "", (double)lp);
             total += lp;
@@ -4460,7 +4507,7 @@ static int run_score(cli_opts *o, cli_run *rt) {
         }
     }
     if (fail) {
-        free(argmaxes);
+        free(argmaxes); free(top_id); free(top_lp);
         printf("]}\n");
         fprintf(stderr, "error: forward pass failed at position %d\n", pos);
         return 1;
@@ -4478,6 +4525,18 @@ static int run_score(cli_opts *o, cli_run *rt) {
     for (int i = 0; i < emitted; i++)
         printf("%s%d", i ? "," : "", argmaxes[i]);
     free(argmaxes);
+    if (ntop > 0) {
+        // [[id, logprob], ...] per position, best first (additive field)
+        printf("],\"top\":[");
+        for (int i = 0; i < emitted; i++) {
+            printf("%s[", i ? "," : "");
+            for (int j = 0; j < ntop; j++)
+                printf("%s[%d,%.9g]", j ? "," : "", top_id[(size_t)i * ntop + j],
+                       (double)top_lp[(size_t)i * ntop + j]);
+            printf("]");
+        }
+        free(top_id); free(top_lp);
+    }
     printf("],\"n_vocab\":%d,\"top1\":%d,\"top1_rate\":%.9g,"
            "\"nll_total\":%.9g,\"nll_mean\":%.9g,\"ppl\":%.9g}\n",
            rt->m.n_vocab, top1, (double)top1 / (n_prompt - 1),

@@ -2242,6 +2242,7 @@ whether the draft is `active` there.
 | `--adapter NAME=PATH` | With `--serve`: load an adapter once and select it per request as `"model": "<model>:NAME"`. [Details](#cli-adapter). |
 | `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank` | Train a deterministic AdamW LoRA adapter from text or weighted prompt/completion JSONL. [Details](#cli-train). |
 | `--score` | Return teacher-forced token logprobs, NLL, perplexity and top-1 metrics as JSON. [Details](#cli-score). |
+| `--score-top N` | With `--score`, also report each position's N (1 to 256) most likely tokens as `[id, logprob]` pairs, best first, in a `top` array. [Details](#cli-score). |
 | `--transcript FILE` | Record a one-shot run’s hashes, settings, tokens, output bytes and chain hash for replay. [Details](#cli-transcript). |
 | `--verify FILE` | Replay a transcript against `-m` and report `VERIFIED` (exit 0), `DIVERGED` at a token or output byte (exit 2), or `UNVERIFIABLE` for an invalid record, an artifact mismatch, or output shaped by a constraint the replay would not reproduce (exit 3; `--json`, `--json-schema` and `--ignore-eos` must match the record's `constraints`). The recorded replay settings override conflicting CLI values. See [the exact determinism scope](docs/determinism-scope.md). |
 | `--keygen FILE` | Write a receipt-signing key (`xyntetik.runner.signkey.v1`: `algo`, the 32-byte seed and the public key as hex) to FILE and print the public key. Needs no `-m`; the seed comes from the OS generator. Keep the file private. |
@@ -2420,6 +2421,13 @@ it: a token with probability above 0.5 must be the argmax and an argmax token mu
 at least `1/n_vocab`, so the reported count is bracketed by the reported logprobs, and a
 scorer that disagrees with itself fails loudly rather than returning a confident wrong
 perplexity.
+
+`--score-top N` adds each position's distribution head: `top[i]` lists the N most likely
+next tokens after position i as `[id, logprob]`, best first, ties to the lower id, from the
+same logits as `logprobs` and `argmax`. A distribution-level comparison (KL divergence
+against a reference such as the publisher's float32 model, `scripts/gold-logits.py
+--score-a`) then needs one pass over the text instead of a request per position, and with
+`RUNNER_SCORE_CHUNKED=1` every position comes from the batched prefill route.
 
 <a id="cli-transcript"></a>
 #### `--transcript FILE`
