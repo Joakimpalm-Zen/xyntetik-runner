@@ -79,8 +79,8 @@ Current release and unreleased changes. Compatibility follows the
   issued two `m16n8k8` multiplies per 16-deep step even on cards that have
   the `m16n8k16` instruction its operands already match. A second, small
   module built for compute capability 8.0 carries the TC2 kernels for Q4_K,
-  Q6_K, Q8_0 and Q4_0 and is loaded on such a device unless TC2 is switched
-  off; every other kernel keeps the existing module. `RUNNER_CUDA_SM80=0` leaves the second module unloaded, so TC2
+  Q6_K, Q8_0, Q4_0 and the IQ1-IQ4 i-quants and is loaded on such a device
+  unless TC2 is switched off; every other kernel keeps the existing module. `RUNNER_CUDA_SM80=0` leaves the second module unloaded, so TC2
   runs only when forced (`RUNNER_CUDA_TC2=1`), on its compute_75 kernels.
 
 - **The int8 CPU route runs on arm64.** `RUNNER_CPU_I8=1` now has
@@ -170,10 +170,15 @@ Current release and unreleased changes. Compatibility follows the
   five files), and `RUNNER_CUDA_TC2=0` or `--gpu-route reference` switches
   TC2 off. A run records the kernels it took (`profile.gpu_route` reads
   `tc2,sm80` on a default 8.0+ run), and `--bench-json` counts the launches
-  (`route.kernels.cuda_tc2`). The compute_80 kernels cover Q4_K, Q6_K,
-  Q8_0 and Q4_0; the compute_75 ones also the IQ1-IQ4 i-quants, which TC2
-  therefore runs only when forced onto those kernels (below 8.0, or with
-  `RUNNER_CUDA_SM80=0`).
+  (`route.kernels.cuda_tc2`). The kernels cover Q4_K, Q6_K, Q8_0, Q4_0 and
+  the IQ1-IQ4 i-quants on both modules; the codebook decoders moved into
+  headers both modules share (the compute_75 PTX byte-identical after the
+  move), and the i-quants' compute_80 kernels give the tensor-core route's
+  bytes too (chunked `--score` on IQ3_S, IQ3_XXS, IQ2_XXS and IQ1_M on an RTX
+  3070 and IQ3_S on the datacenter MIG slice, launches counted; their
+  128-column twins byte-identical to the 64-column tile, IQ3_S and IQ2_XXS
+  on the RTX 3070 and IQ3_S on the slice). On an RTX 3070, granite-4.2-3b IQ3_S prefill went from 814
+  to 1265 tok/s at a 512-token prompt (513 to 663 at 2K).
 
 - **CUDA long-context attention, experimental and off by default.**
   `RUNNER_CUDA_ATTN_TILE=1` runs prefill attention one strip of query rows

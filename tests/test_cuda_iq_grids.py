@@ -32,7 +32,8 @@ def _table(text, decl, n):
 
 def test_device_grids_match_host_grids():
     host = (ROOT / "src" / "quants_iq_grids.h").read_text(encoding="utf-8")
-    dev = (ROOT / "src" / "kernels.cu").read_text(encoding="utf-8")
+    # the device copies live in one header both CUDA modules include
+    dev = (ROOT / "src" / "kernels_iq_grids.cuh").read_text(encoding="utf-8")
     for name, n in GRIDS:
         assert _table(host, name, n) == _table(dev, "k" + name, n), name
 

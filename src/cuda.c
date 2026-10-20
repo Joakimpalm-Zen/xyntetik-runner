@@ -2257,6 +2257,11 @@ static bool shared_load_module(gpu_weights *w) {
                 static const struct { int type; const char *name; } TC2_80[] = {
                     { T_Q4_K, "k_gemm2_80_q4_K" }, { T_Q6_K, "k_gemm2_80_q6_K" },
                     { T_Q8_0, "k_gemm2_80_q8_0" }, { T_Q4_0, "k_gemm2_80_q4_0" },
+                    { T_IQ3_S, "k_gemm2_80_iq3_s" }, { T_IQ3_XXS, "k_gemm2_80_iq3_xxs" },
+                    { T_IQ2_S, "k_gemm2_80_iq2_s" }, { T_IQ2_XS, "k_gemm2_80_iq2_xs" },
+                    { T_IQ2_XXS, "k_gemm2_80_iq2_xxs" }, { T_IQ1_S, "k_gemm2_80_iq1_s" },
+                    { T_IQ1_M, "k_gemm2_80_iq1_m" }, { T_IQ4_XS, "k_gemm2_80_iq4_xs" },
+                    { T_IQ4_NL, "k_gemm2_80_iq4_nl" },
                 };
                 for (size_t i = 0; i < sizeof TC2_80 / sizeof *TC2_80; i++) {
                     CUfunction f = NULL;
@@ -2270,6 +2275,11 @@ static bool shared_load_module(gpu_weights *w) {
                 static const struct { int type; const char *name; } TC2_80W[] = {
                     { T_Q4_K, "k_gemm2_80w_q4_K" }, { T_Q6_K, "k_gemm2_80w_q6_K" },
                     { T_Q8_0, "k_gemm2_80w_q8_0" }, { T_Q4_0, "k_gemm2_80w_q4_0" },
+                    { T_IQ3_S, "k_gemm2_80w_iq3_s" }, { T_IQ3_XXS, "k_gemm2_80w_iq3_xxs" },
+                    { T_IQ2_S, "k_gemm2_80w_iq2_s" }, { T_IQ2_XS, "k_gemm2_80w_iq2_xs" },
+                    { T_IQ2_XXS, "k_gemm2_80w_iq2_xxs" }, { T_IQ1_S, "k_gemm2_80w_iq1_s" },
+                    { T_IQ1_M, "k_gemm2_80w_iq1_m" }, { T_IQ4_XS, "k_gemm2_80w_iq4_xs" },
+                    { T_IQ4_NL, "k_gemm2_80w_iq4_nl" },
                 };
                 for (size_t i = 0; i < sizeof TC2_80W / sizeof *TC2_80W; i++) {
                     CUfunction f = NULL;
