@@ -1956,6 +1956,7 @@ static void shared_plan_upload(gpu_weights *w, model_t *m, const shared_plan *P)
 // The embedded PTX module and every kernel the encoders launch.
 static bool gpu_sm80_on(void);
 static bool gpu_tc2_on(void);
+static bool tc2_can_run(const gpu_t *g);
 static bool shared_load_module(gpu_weights *w) {
     vram_probe("before module load");
     CK(cu.ModuleLoadData(&w->mod, k_ptx_src));
@@ -2215,17 +2216,17 @@ static bool shared_load_module(gpu_weights *w) {
             w->f_gemm2[TC2_KERNELS[i].type] = f;
         }
         // E1: on a compute capability 8.0+ device, the same GEMM built for
-        // compute_80 (one m16n8k16 per 16-deep step), loaded only when TC2
-        // is on. Non-fatal: a module that does not load leaves the
-        // compute_75 kernels in place.
+        // compute_80 (one m16n8k16 per 16-deep step), loaded unless TC2 is
+        // off. Non-fatal: a module that does not load leaves forced TC2 on
+        // the compute_75 kernels and auto TC2 off (tc2_fn).
         int ccmaj = 0;
         if (gpu_tc2_on() && gpu_sm80_on() && w->f_x_half && cu.FuncSetAttribute &&
             cu.DeviceGetAttribute &&
             cu.DeviceGetAttribute(&ccmaj, CU_DEV_ATTR_CC_MAJOR, w->dev) == 0 && ccmaj >= 8) {
             if (cu.ModuleLoadData(&w->mod80, k_ptx80_src) != 0) {
                 w->mod80 = NULL;
-                fprintf(stderr, "gpu: the compute_80 kernels did not load; TC2 keeps "
-                        "its compute_75 kernels\n");
+                fprintf(stderr, "gpu: the compute_80 kernels did not load; TC2 runs "
+                        "only when forced, on its compute_75 kernels\n");
             } else {
                 static const struct { int type; const char *name; } TC2_80[] = {
                     { T_Q4_K, "k_gemm2_80_q4_K" }, { T_Q6_K, "k_gemm2_80_q6_K" },
@@ -3080,7 +3081,7 @@ static bool cuda_alloc_activations(model_t *m, gpu_t *g, const cuda_dims *D) {
     // spec_batch rows: the speculative verify reads every row's head
     CK(cu.MemAlloc(&g->logits, sizeof(float) * (size_t)(m->spec_batch > 0 ? m->spec_batch : 1) * m->n_vocab));
     CK(cu.MemAlloc(&g->xsc,    sizeof(float) * (size_t)(g->win > TC_N ? g->win : TC_N)));
-    if (g->sw->f_x_half && gpu_tc2_on()) {
+    if (g->sw->f_x_half && tc2_can_run(g)) {
         // TC2's activations, in half for every window column
         g->xh_cap = (int)tc2_xh_width(m, xdim, q35_mixdim);
         CK(cu.MemAlloc(&g->xh, 2 * (size_t)g->win * (size_t)g->xh_cap));
@@ -3831,15 +3832,28 @@ static int route_pinned(int bit) {
     return p < 0 ? -1 : (p & bit) != 0;
 }
 
-// RUNNER_CUDA_TC2: the pipelined tensor-core GEMM (k_gemm2_*) wherever the
-// TC route is on for the type and a TC2 kernel exists. 1 selects it, 0 or
-// unset keeps the TC kernels while its gates are run.
-static bool gpu_tc2_on(void) {
-    if (route_pinned(GR_TC2) >= 0) return route_pinned(GR_TC2);
-    static _Atomic int on = -1;
-    if (on < 0) { const char *e = getenv("RUNNER_CUDA_TC2"); on = e && *e && strcmp(e, "0") != 0; }
-    return on == 1;
+// The pipelined tensor-core GEMM (TC2, k_gemm2_*) wherever the TC route is
+// on for the type. Three modes. Auto, the default: TC2 runs only through the
+// compute_80 module's kernels (a compute capability 8.0+ device), whose fp32
+// sums are the tensor-core GEMM's own, so its outputs are byte for byte the
+// TC route's (chunked --score on sm_86 and sm_120); elsewhere the TC kernels
+// run. Forced (RUNNER_CUDA_TC2=1, or tc2 in a route pin): the same where the
+// compute_80 module loaded, and the compute_75 kernels where it did not
+// (below 8.0, or RUNNER_CUDA_SM80=0), which round between the two halves of
+// each 16-deep step and so differ from the TC route. Off (RUNNER_CUDA_TC2=0,
+// or a pin without tc2).
+enum { TC2_OFF = 0, TC2_FORCED = 1, TC2_AUTO = 2 };
+static int tc2_mode(void) {
+    if (route_pinned(GR_TC2) >= 0) return route_pinned(GR_TC2) ? TC2_FORCED : TC2_OFF;
+    static _Atomic int mode = -1;
+    if (mode < 0) {
+        const char *e = getenv("RUNNER_CUDA_TC2");
+        mode = !e || !*e ? TC2_AUTO : strcmp(e, "0") == 0 ? TC2_OFF : TC2_FORCED;
+    }
+    return mode;
 }
+// TC2 may run in this process (the module load and the window's charge ask)
+static bool gpu_tc2_on(void) { return tc2_mode() != TC2_OFF; }
 static _Atomic unsigned long g_tc2_dispatches;
 unsigned long gpu_tc2_dispatches(void) { return g_tc2_dispatches; }
 
@@ -3856,6 +3870,22 @@ static bool gpu_sm80_on(void) {
 }
 static _Atomic unsigned long g_tc2_80_dispatches;
 unsigned long gpu_tc2_80_dispatches(void) { return g_tc2_80_dispatches; }
+
+// The TC2 kernel for the type on this instance, or NULL for the TC route.
+// With the compute_80 module loaded (CC >= 8.0, RUNNER_CUDA_SM80 not 0) only
+// its kernels, forced or auto, so a run recorded as tc2,sm80 replays the same
+// kernels whichever mode wrote it; without it the compute_75 ones, forced only.
+static CUfunction tc2_fn(const gpu_t *g, int type) {
+    int mode = tc2_mode();
+    if (mode == TC2_OFF) return NULL;
+    if (g->sw->mod80) return g->sw->f_gemm2_80[type];
+    return mode == TC2_FORCED ? g->sw->f_gemm2[type] : NULL;
+}
+// whether any TC2 kernel can run on this instance (its activation buffer)
+static bool tc2_can_run(const gpu_t *g) {
+    int mode = tc2_mode();
+    return mode == TC2_FORCED || (mode == TC2_AUTO && g->sw && g->sw->mod80);
+}
 
 // C2.3: a prompt tile's recurrent steps (Gated DeltaNet conv + delta,
 // Mamba-2 conv + scan) as one launch per kernel over the whole tile
@@ -3936,8 +3966,8 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     // Prefill (batch>1) on the tensor-core route, the pipelined TC2 GEMM where
     // it has a kernel for the type: the window's column maxima and its fp16
     // activations once, then one launch over every column (kernels.cu TC2).
-    if (batch > 1 && w->scale == 1.0f && tc_on(m, w->type) && gpu_tc2_on() &&
-        g->sw->f_gemm2[w->type] && g->xh && n_in % G2_BK == 0 &&
+    CUfunction f2 = batch > 1 && w->scale == 1.0f && g->xh ? tc2_fn(g, w->type) : NULL;
+    if (f2 && tc_on(m, w->type) && n_in % G2_BK == 0 &&
         n_in <= g->xh_cap && batch <= g->win) {
         void *pm[] = { &x, &g->xsc, &n_in, &xs, &batch };
         if (!launch(g, g->sw->f_colabsmax, (unsigned)batch, 1, 1, 256, pm)) return false;
@@ -3948,11 +3978,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
         g_tc_dispatches++;
         g_tc_dispatches_type[w->type]++;
         g_tc2_dispatches++;
-        CUfunction f2 = g->sw->f_gemm2[w->type];
-        if (g->sw->f_gemm2_80[w->type]) {
-            f2 = g->sw->f_gemm2_80[w->type];
-            g_tc2_80_dispatches++;
-        }
+        if (f2 == g->sw->f_gemm2_80[w->type]) g_tc2_80_dispatches++;
         void *pg[] = { &weights, &g->xh, &y, &a, &b, &g->xsc };
         return launch_smem(g, f2, (unsigned)((n_out + G2_BM - 1) / G2_BM),
                            (unsigned)((batch + G2_BN - 1) / G2_BN), 1, 256, G2_SMEM, pg);
@@ -5728,8 +5754,14 @@ static _Atomic unsigned long g_attn_dec_gqa_dispatches;
 // compute_75 kernels whatever was asked).
 int gpu_route_active(const model_t *m) {
     const gpu_t *g = m ? m->gpu : NULL;
-    bool sm80 = gpu_tc2_on() && gpu_sm80_on() && (!g || (g->sw && g->sw->mod80));
-    return (gpu_tc2_on() ? GR_TC2 : 0) | (sm80 ? GR_SM80 : 0) |
+    // TC2 as this instance runs it: auto counts only where the compute_80
+    // kernels loaded (there it is the TC route's arithmetic, recorded so a
+    // replay elsewhere does not substitute the compute_75 rounding)
+    int mode = tc2_mode();
+    bool loaded80 = g && g->sw && g->sw->mod80;
+    bool tc2 = mode == TC2_FORCED || (mode == TC2_AUTO && loaded80);
+    bool sm80 = tc2 && gpu_sm80_on() && (!g || loaded80);
+    return (tc2 ? GR_TC2 : 0) | (sm80 ? GR_SM80 : 0) |
            (attn_tile_on() ? GR_ATTN_TILE : 0) | (attn_dec_on() ? GR_ATTN_DEC : 0) |
            (attn_tc_on() ? GR_ATTN_TC : 0);
 }
@@ -6632,11 +6664,11 @@ const char *gpu_route_detail(const model_t *m) {
              "window=%d tc_cols=%d%s%s%s",
              g->graph_bad ? "off" : g->gexec ? "replay" : "none",
              g_tc_state < 0 ? "promoted" : g_tc_state ? "forced" : "off",
-             !gpu_tc2_on() ? "off" : g->sw->mod80 ? "on-sm80" : "on",
+             !tc2_can_run(g) ? "off" : g->sw->mod80 ? "on-sm80" : "on",
              gpu_q8x_on() ? "on" : "off", gpu_small_batch_on() ? "on" : "off",
              attn_tc_on() ? (attn_dec_on() ? "tc+dec" : "tc")
              : attn_tile_on() ? (attn_dec_on() ? "on+dec" : "on") : (attn_dec_on() ? "dec" : "off"),
-             g->win, gpu_tc2_on() ? G2_BN : TC_N,
+             g->win, tc2_can_run(g) ? G2_BN : TC_N,
              m->n_expert > 0 ? " moe=" : "",
              m->n_expert > 0 ? (g->moe_fused_ok ? "fused" : "eager") : "",
              (m->qwen35 || m->ssm.v_heads > 0) && recur_seq_on() ? " recur=tile" : "");

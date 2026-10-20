@@ -68,10 +68,9 @@ Current release and unreleased changes. Compatibility follows the
   issued two `m16n8k8` multiplies per 16-deep step even on cards that have
   the `m16n8k16` instruction its operands already match. A second, small
   module built for compute capability 8.0 carries the TC2 kernels for Q4_K,
-  Q6_K, Q8_0 and Q4_0 and is loaded only on such a device with TC2 switched
-  on; every other kernel, and TC2 on cards below 8.0, keeps the existing
-  module. `RUNNER_CUDA_SM80=0` keeps TC2 on its compute_75 kernels for
-  comparison.
+  Q6_K, Q8_0 and Q4_0 and is loaded on such a device unless TC2 is switched
+  off; every other kernel keeps the existing module. `RUNNER_CUDA_SM80=0` leaves the second module unloaded, so TC2
+  runs only when forced (`RUNNER_CUDA_TC2=1`), on its compute_75 kernels.
 
 - **The int8 CPU route runs on arm64.** `RUNNER_CPU_I8=1` now has
   dot-product (SDOT) kernels for Q8_0, Q4_0 and Q4_K on arm64 (every Apple
@@ -129,18 +128,32 @@ Current release and unreleased changes. Compatibility follows the
   tokens took 20.8 s against 59.5 s with the tiled kernel and 170 s with the
   original one, generating the same 64 tokens (one run each).
 
-- **CUDA pipelined tensor-core prefill GEMM (TC2), experimental and off by
-  default.** `RUNNER_CUDA_TC2=1` runs the batched projections through a
+- **CUDA pipelined tensor-core prefill GEMM (TC2), on by default on
+  compute capability 8.0 and newer.** The batched projections run through a
   128 x 64 tile GEMM that converts the next 64-deep stage of quantized
   weights into shared memory while the tensor cores multiply the current
   one, with the activations converted to scaled fp16 once per GEMM instead
-  of once per row block. Same numerical class as the tensor-core route it
-  replaces (fp16 operands, fp32 sums; `test-tc-tol` 0 flips of 64 and a
-  token-identical free-running arm on five files). On an RTX 3070 at a
-  512-token prompt, prefill went from 1202 to 2226 tok/s on Llama-3.2-3B
-  Q4_K_M and from 689 to 1329 on Qwen2.5-7B Q4_K_M (both with the attention
-  switches below). Covers Q4_K, Q6_K, Q8_0, Q4_0 and the IQ1-IQ4 i-quants.
-  `--bench-json` counts its launches (`route.kernels.cuda_tc2`).
+  of once per row block. On a compute capability 8.0+ card it runs the
+  kernels built for that architecture (above), whose fp32 sums are the
+  tensor-core route's own: chunked `--score` logprobs came out byte for byte
+  the tensor-core route's, with TC2 launches counted, on four files
+  on an RTX 3070 and three on the datacenter MIG slice, and the CUDA gate
+  now checks the same on its device (`make test-cuda-tc2-bytes`). On an RTX
+  3070 at a 512-token prompt, the default route's prefill went from 1090 to
+  1824 tok/s on Llama-3.2-3B Q4_K_M and from 639 to 1159 on Qwen2.5-7B
+  Q4_K_M (2K: 653 to 862 and 453 to 667; 8K, where attention takes most of
+  the time: 235 to 259 and 197 to 231); decode is unchanged. Cards below
+  8.0 keep the tensor-core route by default;
+  `RUNNER_CUDA_TC2=1` forces the compute_75 TC2 kernels there (the same
+  numerical class as the tensor-core route, not the same bytes:
+  `test-tc-tol` 0 flips of 64 and a token-identical free-running arm on
+  five files), and `RUNNER_CUDA_TC2=0` or `--gpu-route reference` switches
+  TC2 off. A run records the kernels it took (`profile.gpu_route` reads
+  `tc2,sm80` on a default 8.0+ run), and `--bench-json` counts the launches
+  (`route.kernels.cuda_tc2`). The compute_80 kernels cover Q4_K, Q6_K,
+  Q8_0 and Q4_0; the compute_75 ones also the IQ1-IQ4 i-quants, which TC2
+  therefore runs only when forced onto those kernels (below 8.0, or with
+  `RUNNER_CUDA_SM80=0`).
 
 - **CUDA long-context attention, experimental and off by default.**
   `RUNNER_CUDA_ATTN_TILE=1` runs prefill attention one strip of query rows
@@ -166,8 +179,8 @@ Current release and unreleased changes. Compatibility follows the
   the same scratch. The default tensor-core GEMM stages 64 token columns
   per block whatever the window, so on its own the wider window measured
   within 1% of the 64-token one on an RTX 3070 (512 to 8K tokens); what it
-  pays for is the pipelined GEMM (`RUNNER_CUDA_TC2=1`), which runs every
-  column of the window in one launch: with it and the experimental
+  pays for is the pipelined GEMM (TC2, below), which runs every column of
+  the window in one launch: with it and the experimental
   attention kernels on, prefill at a 512-token prompt rose from 1692 to 2711
   tok/s on Llama-3.2-3B Q4_K_M and at 8K from 1138 to 2044 (window 64
   against 512). The window decides which kernel

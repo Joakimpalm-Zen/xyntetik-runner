@@ -1797,6 +1797,19 @@ test-cuda-varff: runner $(TEST_GPU_ID)
 	./$(TEST_GPU_ID) test-varff.gguf; \
 	./$(TEST_GPU_ID) test-varff-q8.gguf
 
+# TC2, on by default on compute capability 8.0+ (its compute_80 kernels),
+# against the tensor-core route on the device the gate runs on: chunked
+# --score byte for byte on a Q8_0 and a Q4_K fixture, with the launch counts
+# (scripts/cuda-tc2-bytes.py). The CPU-against-GPU harnesses pin the
+# reference route, so this is the step that checks the default kernels on a
+# card nobody has measured. Skips itself without a CUDA device.
+test-cuda-tc2-bytes: runner
+	@set -e; \
+	$(PYTHON) scripts/make-test-model.py --wide --quant q8_0 test-tc2b-q8.gguf > /dev/null; \
+	$(PYTHON) scripts/make-test-model.py --wide test-tc2b-src.gguf > /dev/null; \
+	./$(RUNNER_EXE) -m test-tc2b-src.gguf --quantize test-tc2b-q4k.gguf --quant q4_k > /dev/null 2>&1; \
+	$(PYTHON) scripts/cuda-tc2-bytes.py ./$(RUNNER_EXE) test-tc2b-q8.gguf test-tc2b-q4k.gguf
+
 # The same gate on a Mac: the Metal codebook i-quant kernels (2026-09-17)
 # against the CPU decoders at logit precision on the fixture set, which
 # tests/test_iquants.py builds with llama-quantize/llama-imatrix from

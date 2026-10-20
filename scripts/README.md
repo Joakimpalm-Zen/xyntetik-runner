@@ -57,6 +57,10 @@ runner; several are load-bearing gates for changing it.
   one model: greedy CPU output must be byte-identical to greedy CUDA output
   over several prompts, with the eager router pinned (MoE byte identity is
   defined over that path).
+- **`cuda-tc2-bytes.py`** - `make test-cuda-tc2-bytes` in the CUDA gate:
+  chunked `--score` with TC2 in its default mode against TC2 off must give
+  the same bytes on the gate's device, with TC2 launches exactly where the
+  compute_80 kernels loaded.
 - **`cuda-nightly.sh`** - the nightly CUDA job a lab host's scheduler runs
   (pull main, build, `cuda-gate.sh`, record a red night); its only consumer
   is outside this repository, see `docs/ci.md`.
