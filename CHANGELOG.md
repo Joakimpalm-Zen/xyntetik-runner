@@ -46,14 +46,6 @@ Current release and unreleased changes. Compatibility follows the
   per-token arithmetic unchanged: byte-identical logits and state
   (`GPU_ID_RECUR=1 ./test-gpu-identity`).
 
-- **CUDA decode: two rows per warp in the Q8_0, Q4_K and Q6_K decode GEMVs,
-  experimental and off by default.** `RUNNER_CUDA_GEMV2=1` lets one warp
-  compute two output rows, so each activation load serves both and twice the
-  weight bytes are in flight per step. Each row keeps its kernel's
-  arithmetic, so the logits are byte-identical (`GPU_ID_GEMV2=1
-  ./test-gpu-identity MODEL.gguf`, with boundary fixtures for an odd row
-  count, Q8_0 tail blocks and an odd Q6_K block count).
-
 - **CUDA decode: one KV copy-back per token, experimental and off by
   default.** The host KV cache stays authoritative, so each decoded token's
   K and V rows went back to it as two copies per offloaded layer.

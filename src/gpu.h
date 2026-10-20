@@ -93,12 +93,9 @@ unsigned long gpu_tc2_80_dispatches(void);
 // the prompt window (columns) a CUDA instance was built for; 0 on other
 // backends and without a device. Transcripts record it and --verify restores it.
 int    gpu_prompt_window(const model_t *m);
-// the two-rows-a-warp decode GEMVs (CUDA, RUNNER_CUDA_GEMV2): force them on
-// (1) or off (0) for a test, -1 returns to the switch; and their launches
-void   gpu_gemv2_force(int on);
-unsigned long gpu_gemv2_dispatches(void);
 // the whole-tile recurrent prefill kernels (CUDA, RUNNER_CUDA_RECUR_SEQ):
-// the same test override, and the layer-tiles they advanced
+// force them on (1) or off (0) for a test, -1 returns to the switch; and
+// the layer-tiles they advanced
 void   gpu_recur_seq_force(int on);
 unsigned long gpu_recur_seq_dispatches(void);
 // Does this backend carry a batched (tensor-core or tiled) GEMM for the

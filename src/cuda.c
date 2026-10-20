@@ -475,7 +475,6 @@ typedef struct gpu_weights {
     CUfunction  f_gemm2_80[KT_N];       // its TC2 kernels (m16n8k16), by type
     CUfunction  f_x_half;               // its scaled fp16 activations (k_x_half_scaled)
     CUfunction  f_gemv[KT_N];           // decode coalesced GEMV variants (Q8_0/Q4_K)
-    CUfunction  f_gemv2[KT_N];          // their two-rows-a-warp twins (X8, RUNNER_CUDA_GEMV2)
     // cross-sequence decode microbatch (Phase 6): per-column position and KV
     CUfunction  f_rope_seq, f_store_seq, f_attn_dec_seq;
     // multi-column twins of f_gemv, per microbatch width (see BW_* below):
@@ -2248,9 +2247,6 @@ static bool shared_load_module(gpu_weights *w) {
     cu.ModuleGetFunction(&w->f_attn_dec_gqa, w->mod, "k_attn_dec_gqa");
     cu.ModuleGetFunction(&w->f_attn_tc, w->mod, "k_attn_tc");
     cu.ModuleGetFunction(&w->f_kv_gather, w->mod, "k_kv_gather");
-    cu.ModuleGetFunction(&w->f_gemv2[T_Q8_0], w->mod, "k_gemv2_q8_0");
-    cu.ModuleGetFunction(&w->f_gemv2[T_Q4_K], w->mod, "k_gemv2_q4_K");
-    cu.ModuleGetFunction(&w->f_gemv2[T_Q6_K], w->mod, "k_gemv2_q6_K");
     cu.ModuleGetFunction(&w->f_q35_conv_seq, w->mod, "k_q35_conv_seq");
     cu.ModuleGetFunction(&w->f_q35_delta_seq, w->mod, "k_q35_delta_seq");
     cu.ModuleGetFunction(&w->f_mamba_conv_seq, w->mod, "k_mamba2_conv_seq");
@@ -3842,23 +3838,6 @@ static bool gpu_sm80_on(void) {
 static _Atomic unsigned long g_tc2_80_dispatches;
 unsigned long gpu_tc2_80_dispatches(void) { return g_tc2_80_dispatches; }
 
-// X8: the two-rows-a-warp decode GEMVs (k_gemv2_*). RUNNER_CUDA_GEMV2=1
-// selects them, gpu_gemv2_force overrides the switch for a test (-1 returns
-// to it). Off by default until its byte gate and a measured gain both pass.
-static _Atomic int g_gemv2_force = -1;
-void gpu_gemv2_force(int on) { g_gemv2_force = on < 0 ? -1 : on != 0; }
-static bool gpu_gemv2_on(void) {
-    if (g_gemv2_force >= 0) return g_gemv2_force == 1;
-    static _Atomic int on = -1;
-    if (on < 0) {
-        const char *e = getenv("RUNNER_CUDA_GEMV2");
-        on = e && *e && strcmp(e, "0") != 0;
-    }
-    return on == 1;
-}
-static _Atomic unsigned long g_gemv2_dispatches;
-unsigned long gpu_gemv2_dispatches(void) { return g_gemv2_dispatches; }
-
 // C2.3: a prompt tile's recurrent steps (Gated DeltaNet conv + delta,
 // Mamba-2 conv + scan) as one launch per kernel over the whole tile
 // (k_*_seq) instead of one launch per token. Byte-equal to the per-token
@@ -3996,12 +3975,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     }
     // Decode (batch==1) uses the coalesced lane-per-element GEMV where available
     // (Q8_0/Q4_K); same 4-rows/block shape, so capture-compatible with no
-    // host-side branching on per-token state. RUNNER_CUDA_GEMV2=1 takes its
-    // two-rows-a-warp twin (X8), byte-equal per row, 8 rows a block.
-    if (batch == 1 && w->scale == 1.0f && g->sw->f_gemv2[w->type] && gpu_gemv2_on()) {
-        g_gemv2_dispatches++;
-        return launch(g, g->sw->f_gemv2[w->type], (n_out + 7) / 8, 1, 1, 128, p);
-    }
+    // host-side branching on per-token state.
     if (batch == 1 && w->scale == 1.0f && g->sw->f_gemv[w->type])
         return launch(g, g->sw->f_gemv[w->type], (n_out + 3) / 4, 1, 1, 128, p);
     // 128 threads = 4 warps = 4 rows per block; the tile variant applies each
@@ -6614,13 +6588,12 @@ const char *gpu_route_detail(const model_t *m) {
     // window: the prompt columns one pass of the device layers takes
     // (model_gpu_window); tc_cols: the column tile each tensor-core GEMM
     // launch covers inside it, so a window of 512 is 8 such launches
-    snprintf(buf, sizeof buf, "graph=%s tc=%s tc2=%s q8x=%s gemv2=%s small_batch=%s attn_tile=%s "
+    snprintf(buf, sizeof buf, "graph=%s tc=%s tc2=%s q8x=%s small_batch=%s attn_tile=%s "
              "window=%d tc_cols=%d%s%s%s",
              g->graph_bad ? "off" : g->gexec ? "replay" : "none",
              g_tc_state < 0 ? "promoted" : g_tc_state ? "forced" : "off",
              !gpu_tc2_on() ? "off" : g->sw->mod80 ? "on-sm80" : "on",
-             gpu_q8x_on() ? "on" : "off", gpu_gemv2_on() ? "on" : "off",
-             gpu_small_batch_on() ? "on" : "off",
+             gpu_q8x_on() ? "on" : "off", gpu_small_batch_on() ? "on" : "off",
              attn_tc_on() ? (attn_dec_on() ? "tc+dec" : "tc")
              : attn_tile_on() ? (attn_dec_on() ? "on+dec" : "on") : (attn_dec_on() ? "dec" : "off"),
              g->win, gpu_tc2_on() ? G2_BN : TC_N,

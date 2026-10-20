@@ -67,7 +67,6 @@ The branches are tried in this order; the first that applies runs.
 | tiled GEMM (`f_gemm`, Q8_0 and Q4_K) | more than one column, unscaled, kernel present | bit-exact to the batched `_b` kernel: same lane ownership, same inner order, only the source of `x` moves to shared memory | `test-gpu-identity` (prefill against the CPU) |
 | BF16 split-K | one column, BF16, at most 1,024 rows of at least 2,048 | deterministic within the route: a fixed tree per split and an index-order sum, no atomics | `make test-cuda-qwen4exp`: launch count, the CPU bound, two device runs byte for byte |
 | coalesced GEMV (`f_gemv`) | one column, kernel present | the decode route; token-identical to the CPU scalar route | the CUDA gate's `cpu-cuda` step, `test-gpu-identity` |
-| two-row GEMV (`f_gemv2`) | one column, `RUNNER_CUDA_GEMV2=1` (experimental), Q8_0/Q4_K/Q6_K | bit-exact per row to `f_gemv` | `GPU_ID_GEMV2=1 ./test-gpu-identity MODEL.gguf` |
 | generic `f_mv` and `f_mvb` | otherwise | `f_mvb` is a bit-exact twin of `f_mv` only for F32, F16 and BF16 (`mvb_is_mv_twin`) | `test-batch` |
 
 Around the matvec:
