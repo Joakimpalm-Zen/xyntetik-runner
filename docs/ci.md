@@ -142,6 +142,13 @@ is the CUDA gate a lab box runs from a fresh build, and
 `scripts/check-ptx-source.py` compares regenerated PTX against the committed
 header with the pinned nvcc; both are run by hand on the box and their
 records committed. There is no hosted or self-hosted device workflow.
+`scripts/cuda-nightly.sh` is the entry point a scheduled task on the Windows
+CUDA host runs every night (a copy of it pulls main, builds and runs
+`cuda-gate.sh`). No workflow or document in this repository calls it, so its
+consumer is that scheduler: `tests/test_ci_contracts.py` keeps it present and
+working, because removing it turns every night red without any check here
+noticing (it was removed on 2026-10-13 as uncited and the nightly failed at
+startup for a week).
 
 `metadata.yml` runs on documentation-only changes too, checking generated
 source/document agreement and the existence of referenced evidence files.

@@ -57,6 +57,9 @@ runner; several are load-bearing gates for changing it.
   one model: greedy CPU output must be byte-identical to greedy CUDA output
   over several prompts, with the eager router pinned (MoE byte identity is
   defined over that path).
+- **`cuda-nightly.sh`** - the nightly CUDA job a lab host's scheduler runs
+  (pull main, build, `cuda-gate.sh`, record a red night); its only consumer
+  is outside this repository, see `docs/ci.md`.
 - **`cuda-smoke.py` / `cuda-smoke-remote.sh`** - the CUDA smoke gate CI cannot run
   (it has no GPU): `--caps` coherence on real hardware, the invariant that
   caught the v0.4.2 integrated-memory misreport, and a served generation. The

@@ -177,5 +177,42 @@ class ShutdownGate(unittest.TestCase):
             server.stop(strict=True)
 
 
+class ScheduledEntryPoints(unittest.TestCase):
+    """Scripts a lab host's scheduler runs from a copy of this repository.
+    Nothing in the repository calls them, so a sweep for uncited files once
+    removed cuda-nightly.sh and the nightly failed at startup for a week; the
+    consumer (the Windows CUDA host's scheduled task, docs/ci.md) is the
+    anchor this test stands in for."""
+
+    def test_cuda_nightly_is_present_and_executable(self):
+        p = ROOT / "scripts/cuda-nightly.sh"
+        self.assertTrue(p.is_file(), "the scheduled nightly runs scripts/cuda-nightly.sh")
+        self.assertTrue(p.stat().st_mode & 0o111, "the nightly copy is run with bash, keep it executable")
+        subprocess.run(["bash", "-n", str(p)], check=True)
+
+    def test_cuda_nightly_without_base_dir_is_a_usage_error(self):
+        r = subprocess.run(["bash", str(ROOT / "scripts/cuda-nightly.sh")],
+                           capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("usage", r.stderr)
+
+    def test_cuda_nightly_skips_a_held_lock_before_touching_the_checkout(self):
+        # a lock whose first number is a live pid (this test's own) means
+        # another user of the box is running: log a skip, exit 0, no git
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            lock = base / "box-gpu.lock"
+            lock.write_text(f"{__import__('os').getpid()} held by the test\n")
+            (base / "cuda-nightly.env").write_text(
+                f"NIGHTLY_SKIP_LOCKS={lock}\nNIGHTLY_SRC={base / 'no-checkout'}\n")
+            r = subprocess.run(["bash", str(ROOT / "scripts/cuda-nightly.sh"), str(base)],
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            hist = (base / "history.log").read_text()
+            self.assertIn("skip:", hist)
+            self.assertIn(str(lock), hist)
+            self.assertFalse((base / "logs/fetch.log").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
