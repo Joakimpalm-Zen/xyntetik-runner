@@ -2827,7 +2827,7 @@ clean:
 #   make ptx NVCC_CCBIN=x86_64-conda-linux-gnu-gcc
 NVCC ?= nvcc
 NVCC_CCBIN ?=
-ptx: src/kernels.cu src/iq_decode.h
+ptx: src/kernels.cu src/kernels_tc2.cuh src/iq_decode.h
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_75 -O3 -o src/kernels.ptx src/kernels.cu
 	python3 scripts/embed-ptx.py || python scripts/embed-ptx.py
 
