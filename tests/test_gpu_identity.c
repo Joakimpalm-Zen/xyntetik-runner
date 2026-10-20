@@ -104,7 +104,16 @@ static float *run(const char *path, int gpu_mode, int *n_vocab_out,
     // GPU_ID_KV=q8|fp4|k8v4: both arms keep that cache format, so the bound
     // also covers the device kernels that read compact rows (the tiled and
     // grouped attention stage them as raw bytes: a row whose length is not
-    // a whole number of words, fp4 at head width 48, was once left short)
+    // a whole number of words, fp4 at head width 48, was once left short).
+    // The bound holds for fp4 V rows on the fixtures, not on real files: the
+    // E2M1 codes have 15 levels, so each backend's own rounding of K and V
+    // flips some codes by a whole step, and the flips add up over the layers
+    // (Llama-3.2-3B Q4_K_M: 0.0047-0.0076 of range for fp4, 0.0022-0.0024
+    // for k8v4, the same before and after the 2026-10 CUDA work and with
+    // every route on the reference arithmetic; q8 0.0003). Measured against
+    // the publisher's float32 model instead (Qwen3-4B Q4_K_M, 2,000
+    // positions), the device's fp4 cache reads as close as the CPU's: mean
+    // KL 0.2500 against 0.2552, paired p 0.82, top-1 1315 against 1314.
     const char *kv = getenv("GPU_ID_KV");
     if (kv && !strcmp(kv, "q8")) p.kv_q8 = true;
     else if (kv && !strcmp(kv, "fp4")) p.kv_fp4 = true;
