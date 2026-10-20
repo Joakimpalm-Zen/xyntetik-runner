@@ -168,6 +168,14 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
                sizeof(float) * (size_t)n_vocab);
         c->top1[s] = (int32_t)argmax(lg, n_vocab);
     }
+    // the offload check above is at load; a device fault mid-run releases
+    // the backend and the rest of the run happens on the CPU, which would
+    // compare the CPU with itself (test-gpu-identity's g_fell_back)
+    if (!m.gpu) {
+        fprintf(stderr, "FAIL: %s lost its GPU backend part-way (a device fault; "
+                "see the gpu: lines above)\n", c->name);
+        g_fail = 1;
+    }
     model_free(&m);
 
     double absmax = 0;
