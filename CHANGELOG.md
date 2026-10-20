@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CPU decode on arm64: Q4_K and Q5_K dots widen their weights by table
+  lookup.** Most of the instructions in the NEON Q4_K/Q5_K dot went to
+  widening each weight byte to a float through two widening moves. A byte
+  table lookup now places four bytes into four 32-bit lanes in one
+  instruction; the integers, and so every float and every output, are the
+  same (CPU `--score` byte-identical, solo and chunked, on Q4_K_M files and
+  a Q5_K_M fixture). Apple M1, four threads, five interleaved rounds:
+  decode +4.0% on Llama-3.2-1B Q4_K_M, +6.5% on Llama-3.2-3B Q4_K_M and
+  +4.1% on Qwen2.5-1.5B Q4_K_M; prefill unchanged.
+
 - **Gates can see which route ran, and a device run that gives up says so
   by failing.** `--score` ends with one stderr line, `score: route {...}`,
   carrying the paths and counted kernels of its forwards, so a byte
