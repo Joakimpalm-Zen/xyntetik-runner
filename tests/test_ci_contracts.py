@@ -117,6 +117,16 @@ class CommandGate(unittest.TestCase):
             self.assertFalse(record["timed_out"])
             self.assertGreater(record["seconds"], 0)
 
+    def test_ptx_source_check_without_nvcc_fails_in_one_line(self):
+        # a machine without the toolkit: a named failure, not a traceback
+        with tempfile.TemporaryDirectory() as td:
+            missing = str(pathlib.Path(td) / "nvcc")
+            p = subprocess.run([sys.executable, str(ROOT / "scripts/check-ptx-source.py"),
+                                "--nvcc", missing], capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("not found", p.stderr)
+        self.assertNotIn("Traceback", p.stderr)
+
     def test_timeout_is_a_failure_with_a_record(self):
         with tempfile.TemporaryDirectory() as td:
             p = subprocess.run([sys.executable, str(ROOT / "scripts/ci-run.py"),

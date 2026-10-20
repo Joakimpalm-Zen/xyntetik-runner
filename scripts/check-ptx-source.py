@@ -29,7 +29,14 @@ def main():
                        if line.strip().startswith('"'))
     embedded = embedded_of("src/kernels_ptx.h")
     pin = re.search(r"Cuda compilation tools, release [^,]+, (V[\d.]+)", embedded)
-    actual = subprocess.check_output([args.nvcc, "--version"], text=True)
+    try:
+        actual = subprocess.check_output([args.nvcc, "--version"], text=True)
+    except FileNotFoundError:
+        # a machine without the CUDA toolkit cannot run this check: say so
+        # in one line instead of a traceback, and fail (a check that cannot
+        # run is not a pass)
+        raise SystemExit(f"{args.nvcc}: not found; this check needs the pinned nvcc "
+                         "(--nvcc PATH or NVCC=PATH)")
     if not pin or pin[1] not in actual:
         raise SystemExit(f"nvcc must match committed PTX compiler {pin[1] if pin else 'UNKNOWN'}; got {actual}")
     # both modules: the compute_75 kernels and the compute_80 TC2 kernels (E1)
