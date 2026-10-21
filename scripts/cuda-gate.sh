@@ -21,6 +21,8 @@
 #   q3k          make test-cuda-q3k (the Q3_K decode GEMV on a Q3_K fixture)
 #   varff        make test-cuda-varff (per-layer FFN widths, the gemma-4 E2B shape)
 #   moe-twin     make test-cuda-moe-twin (by-expert MoE prefill == the fused path)
+#   batch-id     make test-cuda-batch-identity (the decode microbatch == sequential
+#                decode, byte for byte, on the F32, Q8_0 and BF16 fixtures)
 #   cpu-cuda     scripts/cpu_cuda_check.py on one small model (byte identity)
 # Every make target the steps name is in DEVICE_STEPS below, and every
 # test-cuda-* target in the Makefile has to be there (tests/test_ci_contracts.py):
@@ -108,7 +110,7 @@ fi
 add_step caps pass 0
 
 FAIL=0
-DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp q3k:test-cuda-q3k varff:test-cuda-varff tc2-bytes:test-cuda-tc2-bytes moe-twin:test-cuda-moe-twin"
+DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp q3k:test-cuda-q3k varff:test-cuda-varff tc2-bytes:test-cuda-tc2-bytes moe-twin:test-cuda-moe-twin batch-id:test-cuda-batch-identity"
 for pair in $DEVICE_STEPS; do
   name=${pair%%:*}; target=${pair#*:}
   # shellcheck disable=SC2086

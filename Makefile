@@ -1810,6 +1810,29 @@ test-cuda-moe-twin: runner $(TEST_GPU_ID)
 	./$(RUNNER_EXE) -m test-moe-twin.gemma4-moe.gguf --quantize test-moe-twin-g4q40.gguf --quant q4_0 > /dev/null 2>&1; \
 	GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin-g4q40.gguf
 
+# The decode microbatch on CUDA, byte for byte against sequential decode
+# (docs/cuda-microbatch-identity-2026-08-18.md) on the F32, Q8_0 and BF16
+# fixtures and a 256-wide model at Q4_K, with the default routes and with the
+# grouped decode attention off (the two decode attentions the microbatch
+# twins). `make test` runs the
+# F32 case where it builds, which on a Mac is Metal, so until 2026-10-21 no
+# gate held the CUDA microbatch: making the grouped decode attention the
+# default left the microbatch on the old kernel, and no gate saw it. A host
+# without a CUDA device fails here, as a gate that did not run.
+test-cuda-batch-identity: runner $(TEST_BATCH_ID) test.gguf test-q8.gguf test-bf16.gguf
+	@set -e; \
+	$(PYTHON) scripts/make-test-model.py --wide test-batch-wide.gguf > /dev/null; \
+	./$(RUNNER_EXE) -m test-batch-wide.gguf --quantize test-batch-wide-q4k.gguf --quant q4_k > /dev/null 2>&1; \
+	for f in test.gguf test-q8.gguf test-bf16.gguf test-batch-wide-q4k.gguf; do \
+	  for dec in 1 0; do \
+	    RUNNER_CUDA_ATTN_DEC=$$dec ./$(TEST_BATCH_ID) $$f > test-cuda-batch-identity.out 2>&1 || \
+	      { cat test-cuda-batch-identity.out; echo "test-cuda-batch-identity: $$f attn-dec=$$dec FAILED"; exit 1; }; \
+	    if grep -q 'skipped' test-cuda-batch-identity.out; then \
+	      echo "test-cuda-batch-identity: skipped (no CUDA device)"; exit 1; fi; \
+	    echo "$$f attn-dec=$$dec: $$(tail -1 test-cuda-batch-identity.out)"; \
+	  done; \
+	done
+
 # Per-layer FFN widths on CUDA (the gemma-4 E2B export shape: widths that
 # alternate between layers, an ARRAY-typed feed_forward_length): the device
 # runs each layer at its own width against the CPU at logit precision, in
@@ -2980,7 +3003,7 @@ test-cuda-gated: runner
 	$(PYTHON) scripts/check-junit.py --no-skips-matching '(?i)cuda|device|gpu' \
 	    --allow-skip 'CUDA runtime is available' .build/ci/cuda-gated.xml
 
-.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-qwen4exp test-ts-client test-cuda-gated
+.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-qwen4exp test-ts-client test-cuda-gated test-cuda-batch-identity
 .PHONY: test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # The TypeScript client (R10.7): type-checked with the pinned compiler and run

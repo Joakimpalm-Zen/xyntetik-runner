@@ -296,7 +296,13 @@ Current release and unreleased changes. Compatibility follows the
   at 57.6 tok/s where it decoded 25.2 (Qwen2.5-7B: 264 against 120, and
   43.4 against 21.7); at a 512-token prompt prefill gains 17-28% and decode
   4-7% (three rounds). `test-gpu-identity` holds them to the CPU bound on
-  every KV format (`GPU_ID_KV=q8|fp4|k8v4`). A run records them
+  every KV format (`GPU_ID_KV=q8|fp4|k8v4`). The server's decode
+  microbatch (slots decoding together) runs the grouped decode attention's
+  multi-sequence twin, so a batched step stays byte-identical to the slots'
+  sequential steps; until the twin it kept the previous kernel and was not,
+  and no CUDA gate step held that contract (`make test-cuda-batch-identity`
+  now does: F32, Q8_0, BF16 and a Q4_K model, the grouped attention on and
+  off). A run records them
   (`profile.gpu_route`: `attn-tile`, `attn-dec`); `--gpu-route reference`,
   `RUNNER_CUDA_ATTN_TILE=0` and `RUNNER_CUDA_ATTN_DEC=0` switch them off.
 

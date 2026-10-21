@@ -478,6 +478,7 @@ typedef struct gpu_weights {
     CUfunction  f_gemv[KT_N];           // decode coalesced GEMV variants (Q8_0/Q4_K)
     // cross-sequence decode microbatch (Phase 6): per-column position and KV
     CUfunction  f_rope_seq, f_store_seq, f_attn_dec_seq;
+    CUfunction  f_attn_dec_gqa_seq, f_attn_merge32_seq; // f_attn_dec_gqa's twins
     // multi-column twins of f_gemv, per microbatch width (see BW_* below):
     // f_gemvb[w][type], w indexing the width class, not the width itself
     CUfunction  f_gemvb[BW_N][KT_N];
@@ -2419,6 +2420,8 @@ static bool shared_load_module(gpu_weights *w) {
     cu.ModuleGetFunction(&w->f_mamba_conv_seq, w->mod, "k_mamba2_conv_seq");
     cu.ModuleGetFunction(&w->f_mamba_ssd_seq, w->mod, "k_mamba2_ssd_seq");
     cu.ModuleGetFunction(&w->f_attn_merge32, w->mod, "k_attn_merge32");
+    cu.ModuleGetFunction(&w->f_attn_dec_gqa_seq, w->mod, "k_attn_dec_gqa_seq");
+    cu.ModuleGetFunction(&w->f_attn_merge32_seq, w->mod, "k_attn_merge32_seq");
     cu.ModuleGetFunction(&w->f_attn_tile16, w->mod, "k_attn_tile16");
     return true;
 fail:
@@ -6341,21 +6344,31 @@ int gpu_route_active(const model_t *m) {
            (attn_tc_on() ? GR_ATTN_TC : 0) | (mtc ? GR_MOE_TC : 0) | (mgr ? GR_MOE_GROUPED : 0);
 }
 
+// The dynamic shared memory k_attn_dec_gqa needs for a layer's geometry, or
+// 0 when the grouped decode attention does not apply there (off, or a shape
+// it does not take: k_attn_dec then). One answer for the solo decode and the
+// microbatch (fwd_batch), so a layer runs the same kernel arithmetic in both.
+static unsigned attn_dec_gqa_smem(const model_t *m, int hd, int n_kv) {
+    enum { TK = 32, GMAX = 8 };
+    if (!attn_dec_on() || hd % 2 || hd > 256 || n_kv < 1 || m->n_head % n_kv ||
+        m->n_head / n_kv > GMAX)
+        return 0;
+    int kw = (model_kv_kind_k(m) == 2 ? hd / 16 * 9 : model_kv_kind_k(m) ? hd / 32 * 34 : 2 * hd);
+    int vw = (model_kv_kind_v(m) == 2 ? hd / 16 * 9 : model_kv_kind_v(m) ? hd / 32 * 34 : 2 * hd);
+    kw = ((kw + 3) / 4) | 1;
+    vw = ((vw + 3) / 4) | 1;
+    return (unsigned)sizeof(float) *
+           (unsigned)(GMAX * (hd + 1) + TK * (kw > vw ? kw : vw) + GMAX * TK + GMAX);
+}
+
 // The grouped decode attention for the single query column, or false
 // (nothing launched) when it does not apply. 32 fixed slices, so the grid
 // and the graph that captures it do not depend on the position.
 static bool tile_attn_dec_gqa(gpu_t *g, model_t *m, int hd, int n_kv,
                               const attn_args *aa, CUdeviceptr sinks, bool *ok) {
-    enum { SPLITS = 32, TK = 32, GMAX = 8 };
-    if (!attn_dec_on() || !g->sw->f_attn_dec_gqa || !g->sw->f_attn_merge32 ||
-        hd % 2 || hd > 256 || n_kv < 1 || m->n_head % n_kv || m->n_head / n_kv > GMAX)
-        return false;
-    int kw = (model_kv_kind_k(m) == 2 ? hd / 16 * 9 : model_kv_kind_k(m) ? hd / 32 * 34 : 2 * hd);
-    int vw = (model_kv_kind_v(m) == 2 ? hd / 16 * 9 : model_kv_kind_v(m) ? hd / 32 * 34 : 2 * hd);
-    kw = ((kw + 3) / 4) | 1;
-    vw = ((vw + 3) / 4) | 1;
-    unsigned smem = (unsigned)sizeof(float) *
-                    (unsigned)(GMAX * (hd + 1) + TK * (kw > vw ? kw : vw) + GMAX * TK + GMAX);
+    enum { SPLITS = 32 };
+    unsigned smem = attn_dec_gqa_smem(m, hd, n_kv);
+    if (!smem || !g->sw->f_attn_dec_gqa || !g->sw->f_attn_merge32) return false;
     attn_args a = *aa;
     void *pd[] = { &g->q, &g->kc, &g->vc, &g->attn_part, &a, &g->pos_dev };
     void *pm[] = { &g->xb2, &g->attn_part, &a, &g->pos_dev, &sinks };
@@ -6363,6 +6376,20 @@ static bool tile_attn_dec_gqa(gpu_t *g, model_t *m, int hd, int n_kv,
           launch(g, g->sw->f_attn_merge32, (unsigned)m->n_head, 1, 1, 128, pm);
     if (*ok) g_attn_dec_gqa_dispatches++;
     return true;
+}
+
+// Which decode attention a microbatch column runs on a layer: the twin of
+// what tile_attn runs for the same column alone. 1: k_attn_dec_gqa_seq (the
+// solo decode takes k_attn_dec_gqa there), 0: k_attn_dec_seq (k_attn_dec),
+// -1: the solo kernel has no twin in this module, and the layer cannot batch.
+// The partials of a column sit at its own offset in attn_part, which the
+// grouped split count fills fastest: see the assertion beside it.
+_Static_assert(MODEL_BATCH_MAX * 32 <= MVB * ATTN_SPLITS,
+               "attn_part holds a full microbatch of grouped decode partials");
+static int batch_attn_gqa(const gpu_t *g, const model_t *m, int hd, int n_kv) {
+    if (!attn_dec_gqa_smem(m, hd, n_kv) || !g->sw->f_attn_dec_gqa || !g->sw->f_attn_merge32)
+        return 0;
+    return g->sw->f_attn_dec_gqa_seq && g->sw->f_attn_merge32_seq ? 1 : -1;
 }
 
 // Attention over the cache: flash-decoding at a single token (split, then
@@ -6839,6 +6866,9 @@ static bool batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
         if (!batch_mv_twin_ok(g->sw, m->output)) return false;
         for (int l = 0; l < m->n_layer; l++) {
             const layer_t *ly = &m->layers[l];
+            // the decode attention the layer runs alone needs its twin here
+            if (batch_attn_gqa(g, m, model_head_dim(m, l), model_n_head_kv(m, l)) < 0)
+                return false;
             // fwd_batch implements the gated dense transformer loop only.
             // Apertus is dense but deliberately has no w_gate (its FFN is
             // up -> xIELU -> down); admitting it would hand NULL to
@@ -7450,14 +7480,22 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
                              local ? m->swa_window : 0, model_kv_kind_k(m),
                              model_kv_is_ring(m, l) ? m->kv_ring : 0,
                              (uint64_t)model_v_byte_off(m, l), model_kv_kind_v(m) };
-            void *pd[] = { &g->q, &B->kcp_d, &B->vcp_d, &g->att, &g->attn_part,
-                           &aa, &B->pos_d };
-            ok = ok && launch(g, g->sw->f_attn_dec_seq, m->n_head, ATTN_SPLITS, tn, 128, pd);
-            // k_attn_merge reads neither position nor cache, so the unbatched
-            // kernel serves here unchanged
             CUdeviceptr sinks = g->sw->sinks[l];
             void *pm[] = { &g->xb2, &g->attn_part, &aa, &B->pos_d, &sinks };
-            ok = ok && launch(g, g->sw->f_attn_merge, m->n_head, tn, 1, 128, pm);
+            if (batch_attn_gqa(g, m, hd, n_kv) > 0) {
+                // the grouped decode attention, as tile_attn runs it alone
+                void *pg[] = { &g->q, &B->kcp_d, &B->vcp_d, &g->attn_part, &aa, &B->pos_d };
+                ok = ok && launch_smem(g, g->sw->f_attn_dec_gqa_seq, (unsigned)n_kv, 32,
+                                       (unsigned)tn, 256, attn_dec_gqa_smem(m, hd, n_kv), pg);
+                ok = ok && launch(g, g->sw->f_attn_merge32_seq, m->n_head, tn, 1, 128, pm);
+            } else {
+                void *pd[] = { &g->q, &B->kcp_d, &B->vcp_d, &g->att, &g->attn_part,
+                               &aa, &B->pos_d };
+                ok = ok && launch(g, g->sw->f_attn_dec_seq, m->n_head, ATTN_SPLITS, tn, 128, pd);
+                // k_attn_merge reads neither position nor cache, so the
+                // unbatched kernel serves here unchanged
+                ok = ok && launch(g, g->sw->f_attn_merge, m->n_head, tn, 1, 128, pm);
+            }
         }
 
         ok = ok && enc_mv_batch(g, m, ly->wo, g->xb2, g->xb, q_dim, n_embd, g->sw->bo[l], tn, xdim, xdim);

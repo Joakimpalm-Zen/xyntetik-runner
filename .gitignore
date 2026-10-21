@@ -24,6 +24,7 @@ test-dot-route.exe
 test-iq-decode
 test-iq-decode.exe
 tc-overflow.out
+test-cuda-batch-identity.out
 test-json-schema
 test-json-schema.exe
 test-sval-walk

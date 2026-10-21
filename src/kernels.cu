@@ -6052,13 +6052,15 @@ k_gemm2_q4_0(const uchar *wb, const __half *xh, float *y, mv_args a, const float
 #define AD_THREADS 256
 #define AD_GMAX 8   // query heads per KV head a block serves (larger: k_attn_dec)
 
-extern "C" __global__ void __launch_bounds__(AD_THREADS)
-k_attn_dec_gqa(const float *q, const unsigned char *kc, const unsigned char *vc,
-               float *part, attn_args a, const int *posp) {
+// The body for one query column: q, the cache pair, part and pos are that
+// column's own, so k_attn_dec_gqa (the solo decode) and k_attn_dec_gqa_seq
+// (the decode microbatch, one column per sequence) run the same arithmetic.
+__device__ __forceinline__ void
+attn_dec_gqa_body(const float *q, const unsigned char *kc, const unsigned char *vc,
+                  float *part, const attn_args &a, const int pos) {
     extern __shared__ float ad_sm[];
     const int kvh = blockIdx.x, sp = blockIdx.y, tid = threadIdx.x;
     const int hd = a.head_dim, G = a.n_head / a.n_head_kv, h0 = kvh * G;
-    const int pos = *posp;
     const int kv_dim = a.n_head_kv * hd;
     const ulong64 row_b = KV_ROW_BYTES(kv_dim, a.q8), row_v = KV_ROW_BYTES(kv_dim, a.vq8);
     const ulong64 base = a.l_off + kv_head_off(kvh, hd, a.q8);
@@ -6171,10 +6173,29 @@ k_attn_dec_gqa(const float *q, const unsigned char *kc, const unsigned char *vc,
     }
 }
 
-// k_attn_merge over AD_SPLITS partials (its arithmetic, a different count)
-extern "C" __global__ void k_attn_merge32(float *out, const float *part,
-                                          attn_args a, const int *posp,
-                                          const float *sinks) {
+extern "C" __global__ void __launch_bounds__(AD_THREADS)
+k_attn_dec_gqa(const float *q, const unsigned char *kc, const unsigned char *vc,
+               float *part, attn_args a, const int *posp) {
+    attn_dec_gqa_body(q, kc, vc, part, a, *posp);
+}
+
+// The decode microbatch's twin (fwd_batch): grid (KV head, slice, sequence),
+// each column at its own position over its own cache (posp, kcp, vcp are
+// per-column arrays, as k_attn_dec_seq takes them) and its own partials, so
+// every column is bitwise what k_attn_dec_gqa computes for it alone.
+extern "C" __global__ void __launch_bounds__(AD_THREADS)
+k_attn_dec_gqa_seq(const float *q, const ulong64 *kcp, const ulong64 *vcp,
+                   float *part, attn_args a, const int *posp) {
+    const int tk = blockIdx.z;
+    attn_dec_gqa_body(q + (ulong64)tk * a.qs, (const unsigned char *)kcp[tk],
+                      (const unsigned char *)vcp[tk],
+                      part + (ulong64)tk * a.n_head * AD_SPLITS * (a.head_dim + 2), a, posp[tk]);
+}
+
+// k_attn_merge over AD_SPLITS partials (its arithmetic, a different count),
+// for one column's partials into that column's output
+__device__ __forceinline__ void
+attn_merge32_body(float *out, const float *part, const attn_args &a, const float *sinks) {
     int h = blockIdx.x;
     int tid = threadIdx.x, tpg = blockDim.x;
     int hd = a.head_dim;
@@ -6200,6 +6221,22 @@ extern "C" __global__ void k_attn_merge32(float *out, const float *part,
         }
         out[h * hd + i] = acc / L;
     }
+}
+
+extern "C" __global__ void k_attn_merge32(float *out, const float *part,
+                                          attn_args a, const int *posp,
+                                          const float *sinks) {
+    attn_merge32_body(out, part, a, sinks);
+    (void)posp;
+}
+
+// k_attn_merge32 per microbatch column: grid (n_head, sequence)
+extern "C" __global__ void k_attn_merge32_seq(float *out, const float *part,
+                                              attn_args a, const int *posp,
+                                              const float *sinks) {
+    const int tk = blockIdx.y;
+    attn_merge32_body(out + (ulong64)tk * a.os,
+                      part + (ulong64)tk * a.n_head * AD_SPLITS * (a.head_dim + 2), a, sinks);
     (void)posp;
 }
 #define G2_KERNEL(NAME, F)                                                              \
