@@ -2486,7 +2486,7 @@ GEMM kernels add in the tensor-core route's order and gave its bytes on
 every device measured; each stays a named route so that a replay cannot
 substitute other arithmetic. A record names `moe-tc` only for a model of its
 families, and `moe-grouped` wherever the grouped prefill ran: by default its
-family, and any MoE model whose expert types it admits when asked for. `--gpu-route`
+family's measured expert types, and any MoE model whose expert types it admits when asked for. `--gpu-route`
 names the set for the process: `reference` runs none of them, a comma list
 runs those. It overrides `RUNNER_CUDA_ROUTE` (the same set from the
 environment, which the CPU-against-GPU harnesses set to `reference`) and the
@@ -3138,7 +3138,7 @@ Beyond these, the binary reads a number of development switches -
 `RUNNER_SPEC_STATS` / `RUNNER_SPEC_PROF` (the speculative walk's round
 summary and per-phase timing),
 `RUNNER_SCHEMA_ALLOW_WS` (the pre-fix whitespace behaviour, for A/B runs),
-`RUNNER_MOE_GROUPED` (the grouped CUDA MoE experiment, off by measurement),
+`RUNNER_MOE_GROUPED` (`1` runs the grouped CUDA MoE prefill on any MoE model whose expert types it admits, `0` or `off` on none; unset, the family and expert types measured for it, qwen3moe with Q4_K or Q6_K experts, take it),
 `RUNNER_GPU_FALLBACK=fail` (a device forward that fails at runtime ends the process
 with exit status 3 instead of releasing the GPU and continuing on the CPU; the
 comparison and certification harnesses set it, so a device fault part-way through a

@@ -3879,6 +3879,15 @@ static bool tc_type_promotable(int type) {
 //                          GEMMs ran): KL 0.09178 vs 0.09170, Wilcoxon
 //                          p 0.83, McNemar p 1.0; Q4_K / Q6_K experts;
 //                          prefill 2.6-3.9x the fused path's at 512 / 2K
+//                not gemma4: gemma-4-26B-A4B-it, a plain Q4_0 of the
+//                          float32 conversion, chat-formatted text (that
+//                          file's greedy replies, 2,000 positions): KL
+//                          0.30527 vs 0.29527, 1.034x, over the 1.01x bound
+//                          (Wilcoxon p 0.54, McNemar p 0.48); on raw text,
+//                          where it reads ~2.2 nats from its reference,
+//                          2.22047 vs 2.22727. Prefill would have been 4.9x
+//                          / 2.4x at 512 / 8K: RUNNER_MOE_GROUPED=1 or a
+//                          route pin runs it (2026-10-21)
 // (TC alone on qwen3moe was once kept opt-in because its greedy text left
 // the scalar route's at token 20 on a free-running check; measured against
 // the reference instead, it reads no further from it.)
@@ -5457,7 +5466,7 @@ static bool enc_moe_gemm(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     // Grouped expert prefill owes no such thing -- it is tolerance-gated
     // (test-moe-tol), not identity-gated -- so here the tile kernel is still a
     // legitimate fallback and enc_mv picks it. moe_grouped_eligible() admits
-    // only Q8_0/Q4_K/Q5_K/Q6_K today, all of which have twins, so this branch
+    // only Q8_0/Q4_K/Q5_K/Q6_K/Q4_0 today, all of which have twins, so this branch
     // is unreachable; it exists so widening that set cannot silently turn into
     // a hard failure at the first expert.
     if (!g->sw->f_gemvb[batch_width_class(cnt)][w->type])
