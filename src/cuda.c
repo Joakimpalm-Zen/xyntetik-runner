@@ -6160,11 +6160,12 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
     CUdeviceptr hist = g->q35_hist + (size_t)l * hist_layer * sizeof(float);
     CUdeviceptr state = g->q35_state + (size_t)l * state_layer * sizeof(float);
     // the whole tile in one launch per kernel, when no row needs its own
-    // checkpoint (speculative keep rows take the per-token loop below)
-    if (tn > 1 && !g->snap_on && recur_seq_admits(g, m)) {
-        int kernel = m->ssm.conv_kernel;
-        float eps = m->rms_eps;
-        int gate_sigmoid = m->hyper_conn ? 1 : 0;
+    // checkpoint (speculative keep rows take the loop below, a row a pass)
+    bool seq = recur_seq_admits(g, m);
+    int kernel = m->ssm.conv_kernel;
+    float eps = m->rms_eps;
+    int gate_sigmoid = m->hyper_conn ? 1 : 0;   // Qwen3.8's DeltaNet gate
+    if (tn > 1 && !g->snap_on && seq) {
         void *pc[] = { &g->q35_mix, &g->q35_cv, &conv_w, &hist, &convdim, &kernel, &tn };
         void *pd[] = { &g->q35_cv, &g->q35_z, &g->q35_beta, &g->q35_alpha,
                        &g->sw->ssm_dt[l], &g->sw->ssm_a[l], &g->sw->ssm_norm[l],
@@ -6183,16 +6184,33 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
         CUdeviceptr beta = g->q35_beta + (size_t)t * nh * sizeof(float);
         CUdeviceptr alpha = g->q35_alpha + (size_t)t * nh * sizeof(float);
         CUdeviceptr out = g->xb2 + (size_t)t * xdim * sizeof(float);
-        int kernel = m->ssm.conv_kernel;
-        void *pc[] = { &mix, &cv, &conv_w, &hist, &convdim, &kernel };
-        if (!launch(g, g->sw->f_q35_conv, (convdim + 255) / 256,
-                    1, 1, 256, pc)) return false;
-        float eps = m->rms_eps;
-        int gate_sigmoid = m->hyper_conn ? 1 : 0;   // Qwen3.8's DeltaNet gate
-        void *pd[] = { &cv, &z, &beta, &alpha, &g->sw->ssm_dt[l],
-                       &g->sw->ssm_a[l], &g->sw->ssm_norm[l], &state,
-                       &out, &sk, &ng, &nh, &eps, &gate_sigmoid };
-        if (!launch(g, g->sw->f_q35_delta, nh, 1, 1, Q35D_COLS, pd)) return false;
+        if (seq) {
+            // a one-token decode step, or a checkpointed row of a verify
+            // round: the whole-tile kernels over one token (the same
+            // arithmetic as the per-token pair, GPU_ID_RECUR's identity), with
+            // the state row a thread keeps in registers where the per-token
+            // kernel walks it in memory twice (RTX 3070, Qwen3.5-4B: 54 us a
+            // call against 59, decode +1.7%; the load and store of the state
+            // are most of either)
+            int one = 1;
+            void *pc[] = { &mix, &cv, &conv_w, &hist, &convdim, &kernel, &one };
+            void *pd[] = { &cv, &z, &beta, &alpha, &g->sw->ssm_dt[l],
+                           &g->sw->ssm_a[l], &g->sw->ssm_norm[l], &state, &out,
+                           &sk, &ng, &nh, &eps, &gate_sigmoid, &one,
+                           &convdim, &inner, &xdim };
+            if (!launch(g, g->sw->f_q35_conv_seq, (convdim + 255) / 256, 1, 1, 256, pc) ||
+                !launch(g, g->sw->f_q35_delta_seq, nh, 1, 1, 128, pd))
+                return false;
+            g_recur_seq_dispatches++;
+        } else {
+            void *pc[] = { &mix, &cv, &conv_w, &hist, &convdim, &kernel };
+            if (!launch(g, g->sw->f_q35_conv, (convdim + 255) / 256,
+                        1, 1, 256, pc)) return false;
+            void *pd[] = { &cv, &z, &beta, &alpha, &g->sw->ssm_dt[l],
+                           &g->sw->ssm_a[l], &g->sw->ssm_norm[l], &state,
+                           &out, &sk, &ng, &nh, &eps, &gate_sigmoid };
+            if (!launch(g, g->sw->f_q35_delta, nh, 1, 1, Q35D_COLS, pd)) return false;
+        }
         if (g->snap_on && t < g->snap_rows) {
             // checkpoint after this row, in stream order behind the kernels
             size_t hb = sizeof(float) * (size_t)m->n_layer * hist_layer;

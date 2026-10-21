@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: one-token Gated DeltaNet steps take the whole-tile kernels.** A
+  qwen35 decode step and each checkpointed row of a speculative verify round
+  ran the per-token kernel pair; they now run the whole-tile kernels over
+  one token, which keep a thread's state row in registers and compute the
+  same arithmetic (the identity `test-gpu-identity GPU_ID_RECUR` holds).
+  Output bytes are unchanged; on an RTX 3070 Qwen3.5-4B decodes at 88.7
+  tok/s where it ran 87.2, and `--mtp` at 79.6 where it ran 77.9.
+  `RUNNER_CUDA_RECUR_SEQ=0` keeps every step on the per-token pair.
+
 - **CUDA: the one-token Gated DeltaNet step reads its state coalesced.**
   `k_q35_delta`, the per-token step of the qwen35 recurrent layers (Qwen3.5,
   Qwen3.8), had each thread walk its own state row in device memory, with

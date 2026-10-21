@@ -96,9 +96,10 @@ Around the matvec:
   offload: every layer's new K and V rows gathered on the device, one copy
   back, `RUNNER_CUDA_KV_GATHER=0` restores the per-layer copies) and the
   whole-tile recurrent prefill (Gated DeltaNet and Mamba-2 tiles in one
-  launch per kernel, `RUNNER_CUDA_RECUR_SEQ=0` restores the per-token
-  launches) move the same bytes to the same places or repeat the per-token
-  arithmetic in order. Obligation: byte-identical. Gates: `GPU_ID_RECUR=1
+  launch per kernel; since 2026-10-21 a qwen35 decode step and each
+  checkpointed verify row run the same Gated DeltaNet kernels over one token,
+  `RUNNER_CUDA_RECUR_SEQ=0` restores the per-token launches) move the same
+  bytes to the same places or repeat the per-token arithmetic in order. Obligation: byte-identical. Gates: `GPU_ID_RECUR=1
   ./test-gpu-identity` (launch count required), the CUDA gate's identity,
   injected-failure and recovery steps (which now run through the gather).
 - **Slot microbatching.** `batch_mv_twin_ok()` admits a type to the
