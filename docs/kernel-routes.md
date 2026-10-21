@@ -132,8 +132,10 @@ Around the matvec:
   the per-token fused path. Gate: `GPU_ID_MOE_TWIN=1 ./test-gpu-identity`
   (launch count required), `make test-cuda-moe-twin`.
 - **Graph replay.** One-token decode with full offload replays a captured
-  graph of the same launches. `RUNNER_CUDA_GRAPH_OFF=1` runs them eagerly, to
-  separate a kernel from the graph path. See [buffer lifetimes](buffer-lifetimes.md)
+  graph of the same launches, qwen35's Gated DeltaNet steps included since
+  2026-10-21 (`RUNNER_CUDA_GRAPH_RECUR=0` keeps that family eager).
+  `RUNNER_CUDA_GRAPH_OFF=1` runs them eagerly, to separate a kernel from the
+  graph path. See [buffer lifetimes](buffer-lifetimes.md)
   for when capture is refused.
 - **Training primitives.** `gpu_mvcanon` (the forward matvec in the canonical
   order, F32, F16 and Q8_0) and the transposed matvec behind

@@ -3493,20 +3493,37 @@ fail:
     return false;
 }
 
+// Whether a qwen35 model's one-token decode may replay a captured graph
+// (RUNNER_CUDA_GRAPH_RECUR=0 keeps it eager, an A/B control).
+static bool cuda_graph_recur_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) { const char *e = getenv("RUNNER_CUDA_GRAPH_RECUR"); on = !(e && *e && strcmp(e, "0") == 0); }
+    return on == 1;
+}
+
 // The stream graphs are captured on, and whether this model can be captured.
 static void cuda_plan_graphs(model_t *m, gpu_t *g) {
     if (cu_graphs_ok() && cu.StreamCreate(&g->stream, 0) != 0)
         g->stream = NULL;
-    // gemma4's V-copy path (ly->wv == NULL) uses a synchronous MemsetD8
-    // that cannot be captured into a CUDA graph. MoE with device routing
-    // (moe_fused_ok) is fully capture-clean; only the eager fallback
-    // (split layout / uncovered expert type) still reads router logits
-    // back to the host mid-forward and must keep the graph off.
+    // gemma4's V-copy path (ly->wv == NULL on an attention layer) uses a
+    // synchronous MemsetD8 that cannot be captured into a CUDA graph. MoE
+    // with device routing (moe_fused_ok) is fully capture-clean; only the
+    // eager fallback (split layout / uncovered expert type) still reads
+    // router logits back to the host mid-forward and must keep the graph off.
+    // A qwen35 Gated DeltaNet layer's one-token step is two launches on
+    // buffers fixed for the instance (its conv history and state, advanced
+    // in place; the rollback copy is taken before the forward, outside any
+    // capture), so a qwen35 decode replays a graph since 2026-10-21: it had
+    // run eagerly since the family reached CUDA, with no hazard on record.
+    // The Mamba-2 hybrids, qwen4exp (host steps between layers) and any
+    // qwen35 file with routed experts (none measured) stay eager.
+    bool recur_graph = m->qwen35 && !m->hyper_conn && m->n_expert == 0 &&
+                       cuda_graph_recur_on();
     for (int l = 0; l < m->gpu_layers; l++)
-        if (!m->layers[l].wv ||
+        if ((!m->layers[l].wv && !(m->layers[l].recurrent && recur_graph)) ||
             (m->layers[l].is_moe && !g->moe_fused_ok) ||
-            m->layers[l].recurrent) g->graph_bad = true;
-    if (m->qwen35) g->graph_bad = true;
+            (m->layers[l].recurrent && !recur_graph)) g->graph_bad = true;
+    if (m->qwen35 && !recur_graph) g->graph_bad = true;
     if (moe_any_on_host(m)) g->graph_bad = true;
 }
 
@@ -8201,8 +8218,10 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     // trade-off is stated in the report header: eager decode carries the
     // launch overhead graphs exist to remove, so the absolute decode wall is
     // pessimistic and the phase SPLIT is what the profile is for.
+    // !snap_on: a keep-forward's per-row checkpoints are copies the decode
+    // graph does not hold
     if (n == 1 && want_logits && !partial && !g->graph_bad && g->stream &&
-        !prof.on && !getenv("RUNNER_CUDA_GRAPH_OFF")) {
+        !g->snap_on && !prof.on && !getenv("RUNNER_CUDA_GRAPH_OFF")) {
         int served = cuda_fwd_graph_decode(g, m, tokens, pos, logits, m_, t_fwd0);
         if (served) return served > 0;
     }

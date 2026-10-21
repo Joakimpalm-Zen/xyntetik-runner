@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: qwen35 models decode through a captured graph.** The qwen35
+  architecture (Qwen3.5 and Qwen3.8, with Gated DeltaNet layers) decoded
+  every token with eager launches since it reached CUDA: the recurrent
+  layers kept the graph off, with no hazard on record. A Gated DeltaNet step
+  is two launches on buffers fixed for the instance, and the rollback copy
+  is taken before the forward, so the one-token decode now replays the
+  captured graph like the other families (`RUNNER_CUDA_GRAPH_RECUR=0` keeps
+  it eager). A speculative keep-forward, whose per-row checkpoints the graph
+  does not hold, still runs eagerly. `make test-cuda-spec-identity` compares
+  the graph-decoded steps of its qwen35 fixture with the eager verify rows
+  byte for byte. On an RTX 3070 Qwen3.5-4B decodes at 83.8 tok/s where it
+  ran 79.1, with the greedy text identical to the eager build.
+
 - **CUDA: a wide prompt runs a small tile matvec as one launch.** The tile
   matvecs a prompt takes for weights without a GEMM (the F32 and BF16 Gated
   DeltaNet alpha/beta projections of the qwen35 family among them) ran one
