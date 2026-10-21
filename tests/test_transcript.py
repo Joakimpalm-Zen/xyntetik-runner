@@ -247,6 +247,197 @@ def test_profile_records_effective_runtime_and_drives_replay(
     assert "batch                    3" in err
 
 
+def test_profile_gpu_window_is_validated_and_ignored_off_cuda(
+        runner_bin, base, tmp_path):
+    """The CUDA prompt window (profile.gpu_window) decides which route a
+    prompt's last partial tile takes, so a CUDA record carries it and --verify
+    rebuilds the instance at it. A CPU run writes no window; a malformed one is
+    refused before any replay; a well-formed one is ignored by a backend that
+    has no such window (a CUDA record replays there at the token tier)."""
+    rec = tmp_path / "window.json"
+    r = _run(runner_bin, base, rec)
+    assert "gpu_window" not in r["profile"]
+
+    for bad in (100, 0, -64, 64.5, "64"):
+        r2 = json.loads(json.dumps(r))
+        r2["profile"]["gpu_window"] = bad
+        forged = tmp_path / "bad-window.json"
+        _forge_record(forged, r2)
+        p = _verify(runner_bin, base, forged)
+        assert p.returncode == 3, (bad, p.stderr.decode(errors="replace"))
+        assert b"malformed execution profile" in p.stderr, bad
+
+    r3 = json.loads(json.dumps(r))
+    r3["profile"]["gpu_window"] = 128
+    forged = tmp_path / "cpu-window.json"
+    _forge_record(forged, r3)
+    p = _verify(runner_bin, base, forged)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert json.loads(p.stdout)["verdict"] == "VERIFIED"
+
+
+def test_cuda_record_carries_and_enforces_its_prompt_window(
+        runner_bin, base, tmp_path):
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, check=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("needs a CUDA device: only CUDA sizes a prompt window")
+    rec = tmp_path / "cuda-window.json"
+    p = subprocess.run(
+        [runner_bin, "-m", str(base), "-p", "the runner trains the", "-n", "12",
+         "--temp", "0", "-s", "7", "-t", "2", "-b", "3", "--no-tray",
+         "--transcript", str(rec)],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    r = json.loads(rec.read_bytes())
+    if not r["profile"]["gpu"]:
+        pytest.skip("the fixture did not run on the device")
+    # -b 3 caps the window at its 64-column minimum
+    assert r["profile"]["gpu_window"] == 64
+
+    def verify(path):
+        return subprocess.run(
+            [runner_bin, "-m", str(base), "--verify", str(path), "-t", "2", "--no-tray"],
+            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    v = verify(rec)
+    assert v.returncode == 0, v.stderr.decode(errors="replace")
+    assert json.loads(v.stdout)["verdict"] == "VERIFIED"
+
+    # a window the recorded batch cannot reach: the replay would run at
+    # another window, so it must not claim the record
+    r["profile"]["gpu_window"] = 128
+    forged = tmp_path / "cuda-window-128.json"
+    _forge_record(forged, r)
+    v = verify(forged)
+    assert v.returncode == 3, v.stderr.decode(errors="replace")
+    assert b"could not reproduce the recorded execution profile" in v.stderr
+
+
+def test_profile_gpu_route_is_validated_and_ignored_off_cuda(
+        runner_bin, base, tmp_path):
+    """The CUDA arithmetic routes (profile.gpu_route) are part of a record's
+    arithmetic, so --verify pins them. A CPU run writes none; a malformed
+    value is refused before any replay; a well-formed one is ignored by a
+    backend without those kernels. --gpu-route itself refuses an unknown name
+    and is accepted, with no effect, off CUDA."""
+    rec = tmp_path / "route.json"
+    r = _run(runner_bin, base, rec, extra=("--gpu-route", "tc2,attn-tc"))
+    assert "gpu_route" not in r["profile"]
+
+    for bad in ("", "bogus", "tc2,", ",tc2", "tc2,,sm80", "TC2", 5, None):
+        r2 = json.loads(json.dumps(r))
+        r2["profile"]["gpu_route"] = bad
+        forged = tmp_path / "bad-route.json"
+        _forge_record(forged, r2)
+        p = _verify(runner_bin, base, forged)
+        assert p.returncode == 3, (bad, p.stderr.decode(errors="replace"))
+        assert b"malformed execution profile" in p.stderr, bad
+
+    for good in ("reference", "attn-tc,tc2", "tc2,sm80,attn-tile,attn-dec,attn-tc",
+                 "attn-tile,moe-tc,moe-grouped"):
+        r3 = json.loads(json.dumps(r))
+        r3["profile"]["gpu_route"] = good
+        forged = tmp_path / "cpu-route.json"
+        _forge_record(forged, r3)
+        p = _verify(runner_bin, base, forged)
+        assert p.returncode == 0, (good, p.stderr.decode(errors="replace"))
+        assert json.loads(p.stdout)["verdict"] == "VERIFIED"
+
+    p = subprocess.run([runner_bin, "-m", str(base), "-p", "x", "-n", "1",
+                        "--gpu-route", "warp9"], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=60)
+    assert p.returncode != 0
+    assert b"--gpu-route expects reference or a comma list" in p.stderr
+
+
+def test_cuda_record_carries_and_replays_its_routes(runner_bin, base, tmp_path):
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, check=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("needs a CUDA device: only CUDA has these routes")
+    for route in ("reference", "attn-tile"):
+        rec = tmp_path / f"cuda-route-{route}.json"
+        p = subprocess.run(
+            [runner_bin, "-m", str(base), "-p", "the runner trains the", "-n", "12",
+             "--temp", "0", "-s", "7", "-t", "2", "--gpu-route", route, "--no-tray",
+             "--transcript", str(rec)],
+            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        r = json.loads(rec.read_bytes())
+        if not r["profile"]["gpu"]:
+            pytest.skip("the fixture did not run on the device")
+        assert r["profile"]["gpu_route"] == route
+        # the replay pins the record's routes whatever the command line asks
+        v = subprocess.run(
+            [runner_bin, "-m", str(base), "--verify", str(rec), "-t", "2",
+             "--gpu-route", "reference" if route != "reference" else "attn-tile",
+             "--no-tray"],
+            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        assert v.returncode == 0, v.stderr.decode(errors="replace")
+        assert json.loads(v.stdout)["verdict"] == "VERIFIED"
+
+
+def test_cuda_moe_family_routes_are_recorded_and_replayed(runner_bin, base, tmp_path):
+    """moe-tc and moe-grouped are routes of the MoE families measured for them
+    (gpt-oss: moe-tc only). A record of such a model names the ones that ran
+    and --verify replays it; the reference set names neither; a pin of them on
+    a dense model never reaches its record; and the grouped prefill asked for
+    on another MoE family is named, so its record replays."""
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, check=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("needs a CUDA device: only CUDA has these routes")
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-moe.py",
+                    str(tmp_path / "fx")], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    oss = tmp_path / "fx.gptoss-mxfp4.gguf"
+
+    def record(model, name, *route):
+        rec = tmp_path / name
+        p = subprocess.run(
+            [runner_bin, "-m", str(model), "-p", "the runner trains the", "-n", "12",
+             "--temp", "0", "-s", "7", "-t", "2", "--no-tray", "--transcript",
+             str(rec), *route], cwd=ROOT, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=120)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        r = json.loads(rec.read_bytes())
+        if not r["profile"]["gpu"]:
+            pytest.skip("the fixture did not run on the device")
+        return rec, r["profile"]["gpu_route"].split(",")
+
+    rec, routes = record(oss, "oss-default.json")
+    assert "moe-tc" in routes and "moe-grouped" not in routes, routes
+    v = subprocess.run([runner_bin, "-m", str(oss), "--verify", str(rec), "-t", "2",
+                        "--no-tray"], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=120)
+    assert v.returncode == 0, v.stderr.decode(errors="replace")
+    assert json.loads(v.stdout)["verdict"] == "VERIFIED"
+
+    _, routes = record(oss, "oss-ref.json", "--gpu-route", "reference")
+    assert routes == ["reference"], routes
+    _, routes = record(base, "dense-moe-pin.json", "--gpu-route", "moe-tc,moe-grouped")
+    assert routes == ["reference"], routes
+
+    # the grouped prefill asked for on another family (gemma-4's MoE, Q8_0
+    # experts): the record must name it, or --verify replays another path
+    g4 = tmp_path / "fx-g4-q8.gguf"
+    q = subprocess.run([runner_bin, "-m", str(tmp_path / "fx.gemma4-moe.gguf"), "--quantize",
+                        str(g4), "--quant", "q8_0"], cwd=ROOT, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=120)
+    assert q.returncode == 0
+    os.environ["RUNNER_MOE_GROUPED"] = "1"
+    try:
+        rec, routes = record(g4, "g4-grouped.json")
+    finally:
+        del os.environ["RUNNER_MOE_GROUPED"]
+    assert "moe-grouped" in routes and "moe-tc" not in routes, routes
+    v = subprocess.run([runner_bin, "-m", str(g4), "--verify", str(rec), "-t", "2",
+                        "--no-tray"], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=120)
+    assert v.returncode == 0, v.stderr.decode(errors="replace")
+    assert json.loads(v.stdout)["verdict"] == "VERIFIED"
+
+
 def test_recorded_adapter_scale_drives_replay(runner_bin, base, tmp_path):
     prefix = tmp_path / "fx"
     subprocess.run([sys.executable, ROOT / "scripts/make-test-lora.py",

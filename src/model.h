@@ -453,9 +453,11 @@ typedef struct {
     void  *tape_logits_ud;
     float *all_logits;       // lazy [spec_batch][n_vocab] (speculative verify)
     int    spec_batch;       // rows all_logits can hold
+    bool   spec_exact;       // this keep-forward is a verify round: rows in decode arithmetic
     int    xdim;             // max(n_embd, per-layer q_dim); sizes xb/xb2/q
     int    reserve_vram_pct; // VRAM cap for the GPU backend (0 = free VRAM)
     int    gpu_layers_override; // forced leading GPU layer count (0 = auto)
+    int    gpu_window_req;   // model_params.gpu_window: the CUDA prompt window asked for
     int    gpu_instances;    // instances that will share one device upload
                              // (--parallel N): the CUDA split budgets each
                              // one's KV and scratch, the weights once
@@ -746,8 +748,8 @@ int       model_autofit_clamp(long long best, int n_ctx_train);
 #define GPU_PLAN_GRAN ((uint64_t)2 << 20)
 uint64_t  gpu_plan_binding_bytes(uint64_t nbytes, bool bound);
 uint64_t  gpu_plan_unified_cap(uint64_t budget, uint64_t ram_available);
-bool      gpu_plan_upload_spread(uint64_t prefix_end, uint64_t data_start,
-                                 uint64_t planned);
+int       gpu_plan_runs(const uint64_t *off, const uint64_t *len, int n, uint64_t gap,
+                        uint64_t *lo, uint64_t *hi);
 int       gpu_plan_prefix(const uint64_t *cost, int n, int cap, uint64_t budget,
                           uint64_t *used);
 bool      gpu_plan_full_split(int *layers, int n_layer, uint64_t used,
@@ -875,6 +877,11 @@ typedef struct {
     // force exactly this many leading layers onto the GPU (the rest run on the
     // CPU); 0 = auto-fit to available/reserved VRAM. Like llama.cpp's -ngl.
     int   gpu_layers_override;
+    // CUDA prompt window to build for, in columns (a multiple of 64): 0 picks
+    // it from the memory the split leaves spare (model_gpu_window). Set by
+    // --verify from the record, because the window decides which kernel route
+    // a prompt's last partial tile takes and so belongs to the arithmetic.
+    int   gpu_window;
     // Keep sparse MoE expert FFNs in system RAM while the CUDA backend runs
     // attention, norms, embeddings/output and any dense layers. This is
     // tensor-role placement, distinct from the leading-layer split above.
@@ -1211,7 +1218,7 @@ typedef struct {
     // format, in the order f16, q8, k8v4, fp4 (FIT_KV_*); a format that is
     // illegal for the model keeps gpu_layers -1.
     bool     gpu;
-    uint64_t gpu_budget, gpu_fixed;   // offload budget; embeddings, scratch, headroom
+    uint64_t gpu_budget, gpu_fixed;   // offload budget; scratch and headroom
     int      gpu_layers[4];
     uint64_t host_need[4];            // RAM the CPU side needs with that split
     uint64_t gpu_used[4];             // device bytes that split would hold
@@ -1233,6 +1240,24 @@ const char *model_fit_verdict(const model_fit *f);
 // Pure arithmetic over the header, so it is gated without a card.
 bool        model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
                           uint64_t headroom, int max_layers);
+// The device activation scratch of one CUDA instance (cuda.c allocates it),
+// split into what each prompt-window column costs and what is paid whatever
+// the window: the prefill score sub-tile (64 query columns over the
+// context) and one logits row. The split plan and --fit charge
+// `fixed + 64 * per_col`; a wider window spends only what that plan leaves
+// spare (model_gpu_window), so it never costs a layer.
+enum { GPU_WINDOW_MIN = 64, GPU_WINDOW_MAX = 512 };
+typedef struct { uint64_t per_col, fixed; } gpu_act_cost;
+gpu_act_cost model_gpu_act_cost(uint64_t n_embd, uint64_t xdim, uint64_t q_dim,
+                                uint64_t kv_dim, uint64_t n_ff, uint64_t n_head,
+                                uint64_t n_ctx, uint64_t n_vocab);
+// The prompt window, in columns, a device instance is built for: the widest
+// multiple of 64 up to min(n_batch, GPU_WINDOW_MAX) (and up to `force` when
+// that is positive, RUNNER_CUDA_WINDOW) whose scratch beyond 64 columns,
+// `per_col` bytes a column for each of `instances` slots, fits `spare`;
+// GPU_WINDOW_MIN otherwise.
+int model_gpu_window(uint64_t spare, uint64_t per_col, int instances,
+                     int n_batch, int force);
 // residency warning text; false when no warning is warranted (see model.c)
 // Should a load hint the WHOLE weight mapping to the OS (WILLNEED sweep)?
 // Cold-start page-in otherwise arrives as ~16 KB synchronous faults — 1.1M+
@@ -1256,9 +1281,23 @@ void   model_moe_place_host(model_t *m, int host_layers);
 // each row's logits lazily (false/NULL on full GPU offload, a device-resident
 // recurrent fold, or n > spec_batch)
 bool   model_forward_batch_keep(model_t *m, const int32_t *tokens, int n, int pos);
+// The speculative walk's verify round: model_forward_batch_keep with every
+// row computed as a solo decode step at its position would compute it, so
+// the walk's tokens are the plain path's (a backend whose batched rows are
+// not the solo step's bits switches to the decode arithmetic for the round).
+bool   model_forward_verify(model_t *m, const int32_t *tokens, int n, int pos);
+// The walk's re-fold of a round's kept rows after a recurrent fold was rolled
+// back (no per-row checkpoint): a forward without logits whose rows are the
+// solo steps' bits, as the verify's were, so the fold it leaves is the one
+// plain decoding would have.
+void   model_forward_refold(model_t *m, const int32_t *tokens, int n, int pos);
 // whether the batched verify path above can run at all for this model
 bool   model_spec_verify_ok(const model_t *m);
 float *model_spec_row_logits(model_t *m, int b);
+// The caller wrote KV rows [lo, ...) into the host cache itself (a prefix
+// snapshot or a session image installed): a device mirror of the cache takes
+// them from the host before it reads them (gpu_kv_host_wrote).
+void   model_kv_host_wrote(model_t *m, int lo);
 // Backbone final residual of verify/prefill row b (valid until the next
 // forward on the CPU path; NULL when the rows live on a GPU).
 const float *model_hidden_row(const model_t *m, int b);

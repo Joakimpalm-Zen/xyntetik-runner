@@ -5,6 +5,7 @@ The model is ~1 MB of random weights with a byte-fallback SPM vocabulary:
 output is gibberish, but loading, tokenization, the forward pass, sampling,
 and JSON-constrained decoding all execute the same code paths as a real model.
 """
+import random
 import struct
 import sys
 
@@ -39,6 +40,7 @@ ATTN_TEMP_SCALE = 0.0
 # the temperature is actually live at position 0.
 ATTN_TEMP_FLOOR = 8192
 SWA_WINDOW = 0
+SWA_WINDOW_ONLY = 0  # --swa-window: a window with no pattern key (phi3 exports)
 POST_NORMS = False
 SWA_PATTERN = 0
 ESERIES_SHARED_KV = 0
@@ -66,6 +68,9 @@ YARN_FACTOR = None # optional native YaRN metadata for CLI/rope tests
 YARN_ORIG_CTX = 0
 QK_NORM = False    # --qk-norm: per-head attn_q_norm/attn_k_norm (qwen3-style)
 WIDE = False       # 256-wide rows, large enough for an i-quant test block
+# --quant for the codebook i-quants: GGML type id and bytes per 256-value block
+CODEBOOK = {"iq2_xxs": (16, 66), "iq2_xs": (17, 74), "iq2_s": (22, 82),
+            "iq3_xxs": (18, 98), "iq3_s": (21, 110)}
 N_FF_SET = None    # --n-ff N: FFN width (an odd N gives odd ffn_gate/ffn_up row counts)
 GPU_UNSUPPORTED = None  # one named tensor stored as CPU-only IQ2_XXS
 ZERO_BRANCHES = False  # --zero-branches: attn_output/ffn_down all zero
@@ -126,6 +131,12 @@ while i < len(args):
         i += 1
         _win, _pat = args[i].split(",")
         SWA_WINDOW, SWA_PATTERN = int(_win), int(_pat)
+    elif a == "--swa-window":
+        # a sliding window with NO pattern key, as phi3 exports publish it
+        # (Phi-3.5: 262144 over a 131072 context): the architecture, not a
+        # pattern, decides which layers it covers
+        i += 1
+        SWA_WINDOW_ONLY = int(args[i])
     elif a == "--eseries":
         # --eseries SHARED_KV,PLE_DIM  (e.g. "3,16" on the default 6 layers)
         i += 1
@@ -219,9 +230,12 @@ while i < len(args):
         # model the batch gate ran on was F32.
         i += 1
         QUANT = args[i].lower()
-        if QUANT not in ("q8_0", "bf16", "nvfp4", "nvfp4-dequant", "nvfp4-fork40"):
+        if QUANT not in ("q8_0", "bf16", "nvfp4", "nvfp4-dequant", "nvfp4-fork40",
+                         *CODEBOOK):
             sys.exit(f"--quant: unsupported type {QUANT!r} "
-                     "(have: q8_0, bf16)")
+                     f"(have: q8_0, bf16, nvfp4, {', '.join(CODEBOOK)})")
+        if QUANT in CODEBOOK:
+            WIDE = True
     elif a == "--yarn":
         i += 1
         YARN_FACTOR, YARN_ORIG_CTX = map(float, args[i].split(","))
@@ -570,6 +584,28 @@ if ESERIES_PLE:
         ("per_layer_proj_norm.weight", [ESERIES_PLE], ones(ESERIES_PLE)),
     ]
 
+if ARCH == "phi3":
+    # phi3 fuses Q/K/V into attn_qkv and gate/up into ffn_up (gate rows
+    # first), and ships LongRoPE: two per-frequency factor sets, chosen by
+    # context, and an attention factor on the rotation. The factors are not
+    # identity (as the real short factors are not), so a layer that ropes
+    # without them is visible in the logits.
+    fused = []
+    by = {t[0]: t for t in tensors}
+    for i in range(N_LAYER):
+        q, k, v = (by.pop(f"blk.{i}.attn_{x}.weight") for x in "qkv")
+        g, u = by.pop(f"blk.{i}.ffn_gate.weight"), by.pop(f"blk.{i}.ffn_up.weight")
+        fused += [(f"blk.{i}.attn_qkv.weight", [N_EMBD, q[1][1] + k[1][1] + v[1][1]], q[2] + k[2] + v[2]),
+                  (f"blk.{i}.ffn_up.weight", [N_EMBD, 2 * g[1][1]], g[2] + u[2])]
+    tensors = [t for t in tensors if t[0] in by] + fused
+    half = (N_EMBD // N_HEAD) // 2
+    tensors += [
+        ("rope_factors_short.weight", [half],
+         struct.pack(f"<{half}f", *[1.0 + 0.75 * j / half for j in range(half)])),
+        ("rope_factors_long.weight", [half],
+         struct.pack(f"<{half}f", *[2.0 + 3.0 * j / half for j in range(half)])),
+    ]
+
 meta_kvs = [
     kv_str("general.architecture", ARCH),
     kv_u32(f"{ARCH}.block_count", N_LAYER + MTP_LAYERS),
@@ -720,6 +756,14 @@ if ATTN_NOPE_STEP:
         kv_f32(f"{ARCH}.attention.attn_temp_scale", ATTN_TEMP_SCALE),
         kv_f32(f"{ARCH}.attention.attn_temp_offset", 1.0),
     ]
+if ARCH == "phi3":
+    meta_kvs += [
+        kv_u32(f"{ARCH}.rope.scaling.original_context_length", 256),
+        kv_f32(f"{ARCH}.rope.scaling.attn_factor", 1.19),
+        kv_u32(f"{ARCH}.rope.dimension_count", N_EMBD // N_HEAD),
+    ]
+if SWA_WINDOW_ONLY:
+    meta_kvs.append(kv_u32(f"{ARCH}.attention.sliding_window", SWA_WINDOW_ONLY))
 if SWA_WINDOW:
     meta_kvs += [
         kv_u32(f"{ARCH}.attention.sliding_window", SWA_WINDOW),
@@ -865,6 +909,21 @@ def quantize(name, ne, data):
         return GGML_IQ2_XXS, bytes((ne[0] // 256) * ne[1] * 66)
     if QUANT is None or len(ne) != 2 or name == "token_embd.weight":
         return GGML_F32, data
+    if QUANT in CODEBOOK:
+        # Random grid indices, signs and sub-block scales under an f16 block
+        # scale: every bit pattern of these blocks decodes (each index field
+        # addresses its whole grid), so the file reaches the codebook kernels
+        # with no quantizer, where llama-quantize writes the IQ2 types only
+        # from an importance matrix. The scale follows the block's float
+        # absmax, keeping the fixture's weight magnitude to within a few times.
+        if ne[0] % 256:
+            return GGML_F32, data
+        ttype, bs = CODEBOOK[QUANT]
+        vals = struct.unpack(f"<{len(data) // 4}f", data)
+        rng = random.Random(name)
+        return ttype, b"".join(
+            struct.pack("<e", max(abs(v) for v in vals[b:b + 256]) / 128) +
+            rng.randbytes(bs - 2) for b in range(0, len(vals), 256))
     if QUANT == "bf16":
         return GGML_BF16, bf16_data(data)
     if QUANT in ("nvfp4", "nvfp4-dequant", "nvfp4-fork40"):

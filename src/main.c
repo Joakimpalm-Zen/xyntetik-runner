@@ -1273,6 +1273,10 @@ static void usage_to(FILE *f, const char *prog) {
         "  --gpu auto|off GPU offload if a backend is available (default auto)\n"
         "  --gpu-layers N force N leading layers on the GPU, rest on CPU\n"
         "                 (0 = no GPU, same as --gpu off; omit for auto-fit)\n"
+        "  --gpu-route R  CUDA arithmetic routes: reference, or a comma list of\n"
+        "                 tc2, sm80, attn-tile, attn-dec, attn-tc, moe-tc,\n"
+        "                 moe-grouped (recorded in transcripts and receipts;\n"
+        "                 --verify uses the record's)\n"
         "  --cpu-moe [N|auto]  keep sparse MoE expert FFNs in RAM while CUDA\n"
         "                 runs attention and other dense tensors on the GPU.\n"
         "                 Bare = every expert layer on the host; N = only the\n"
@@ -1349,6 +1353,8 @@ static void usage_to(FILE *f, const char *prog) {
         "  --score        teacher-forced scoring: per-token log P(token|prefix)\n"
         "                 over the raw -p/-f text (no template, no sampling),\n"
         "                 printed as JSON with NLL and perplexity\n"
+        "  --score-top N  with --score: also print each position's N (1-256)\n"
+        "                 most likely tokens with their logprobs, best first\n"
         "  --decide FILE  typed decisions: one /v1/decide request per line of\n"
         "                 FILE (state, questions[{question, options}]), one\n"
         "                 response per line on stdout; options scored verbatim\n"
@@ -1556,7 +1562,7 @@ static int run_fit_check(const char *path, int n_ctx_want,
         fit_gib(gb, sizeof gb, f.gpu_budget);
         fit_gib(fx, sizeof fx, f.gpu_fixed);
         printf("  gpu           %s, offload budget %s right now (%s of it for "
-               "embeddings, scratch and headroom)\n", gname, gb, fx);
+               "scratch and headroom)\n", gname, gb, fx);
         printf("  split        ");
         for (int k = 0, first = 1; k < 4; k++) {
             if (f.gpu_layers[k] < 0) continue;
@@ -1761,6 +1767,8 @@ static int run_caps(void) {
                "\"ptx_target\":\"%s\"",
                RUNNER_CUDA_MIN_CC, RUNNER_CUDA_MIN_GPU,
                RUNNER_CUDA_PTX_TARGET);
+        const char *cc = gpu_compute_capability();
+        if (cc) printf(",\"compute_capability\":\"%s\"", cc);
 #endif
         if (vm)
             printf(",\"vram_bytes\":%llu,\"vram_free_bytes\":%llu",
@@ -1880,6 +1888,7 @@ typedef struct {
     bool interactive, verbose, no_bos, ignore_eos, json_mode;
     // modes that answer without generating
     bool serve, caps, tool_info, bench_json, score, shadow_mode, shadow_yes;
+    int  score_top;   // --score-top: each scored position's N most likely tokens
     bool adapt_info;    // --adapt-info: adapter eligibility as JSON
     bool doctor;        // --doctor: one diagnostic report, then exit
     bool doctor_text;   // --doctor-include-text: keep the probe's text
@@ -1952,6 +1961,7 @@ typedef struct {
     receipt_sig_state rsig;   // the record's signature state
     char rec_pub[SIGN_PUBHEX_CAP];
     char prev[65];
+    int route;                // the CUDA arithmetic routes it pins (gpu.h GR_*)
 } cli_verify;
 
 // What a mode runs on once the model is loaded: the model and its tokenizer,
@@ -2102,6 +2112,17 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "--chat-template")) o->tmpl_arg = NEXT;
         else if (!strcmp(a, "--no-bos")) o->no_bos = true;
         else if (!strcmp(a, "--ignore-eos")) o->ignore_eos = true;
+        else if (!strcmp(a, "--gpu-route")) {
+            const char *v = NEXT;
+            int mask = gpu_route_parse(v);
+            if (mask < 0) {
+                fprintf(stderr, "error: --gpu-route expects reference or a comma list of "
+                        "tc2, sm80, attn-tile, attn-dec, attn-tc, moe-tc, moe-grouped\n");
+                *rc = 1;
+                return false;
+            }
+            gpu_route_pin(mask);   // the process's CUDA arithmetic, over RUNNER_CUDA_*
+        }
         else if (!strcmp(a, "--gpu")) {
             const char *v = NEXT;
             if (!strcmp(v, "auto")) o->mp.gpu_mode = GPU_AUTO;
@@ -2143,6 +2164,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "--doctor")) o->doctor = true;
         else if (!strcmp(a, "--doctor-include-text")) o->doctor = o->doctor_text = true;
         else if (!strcmp(a, "--score")) o->score = true;
+        else if (!strcmp(a, "--score-top")) o->score_top = (int)int_arg(a, NEXT, 1, 256);
         else if (!strcmp(a, "--decide")) o->decide_path = NEXT;
         else if (!strcmp(a, "--systemone")) o->systemone_path = NEXT;
         else if (!strcmp(a, "--lora")) o->lora_path = NEXT;
@@ -2842,6 +2864,11 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
         jv *ctx_v = jv_get(prof, "ctx"), *batch_v = jv_get(prof, "batch");
         jv *threads_v = jv_get(prof, "threads"), *gpu_v = jv_get(prof, "gpu");
         jv *gpu_layers_v = jv_get(prof, "gpu_layers");
+        jv *gpu_window_v = jv_get(prof, "gpu_window");
+        double gpu_window_d = jv_num(gpu_window_v, -1);
+        jv *gpu_route_v = jv_get(prof, "gpu_route");
+        int gpu_route_m = gpu_route_v && gpu_route_v->type == J_STR
+                        ? gpu_route_parse(jv_str(gpu_route_v, "")) : -1;
         const char *kv = jv_str(jv_get(prof, "kv"), NULL);
         double ctx_d = jv_num(ctx_v, -1), batch_d = jv_num(batch_v, -1);
         double threads_d = jv_num(threads_v, -1);
@@ -2857,6 +2884,10 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
              gpu_layers_d < 0 || gpu_layers_d > INT_MAX ||
              gpu_layers_d != (double)(int)gpu_layers_d ||
              (gpu_v->b != (gpu_layers_d > 0)))) ||
+            (gpu_window_v && (gpu_window_v->type != J_NUM || gpu_window_d < 64 ||
+             gpu_window_d > 4096 || gpu_window_d != (double)(int)gpu_window_d ||
+             (int)gpu_window_d % 64 != 0)) ||
+            (gpu_route_v && gpu_route_m < 0) ||
             (strcmp(kv, "f16") != 0 && strcmp(kv, "q8") != 0 &&
              strcmp(kv, "fp4") != 0 && strcmp(kv, "k8v4") != 0)) {
             fprintf(stderr, "UNVERIFIABLE: malformed execution profile\n");
@@ -2873,6 +2904,13 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
         o->mp.gpu_mode = gpu_v->b ? GPU_AUTO : GPU_OFF;
         if (gpu_layers_v && gpu_layers_d > 0)
             o->mp.gpu_layers_override = (int)gpu_layers_d;
+        // the CUDA prompt window the record ran at; a record without one was
+        // written before the window was memory-sized, when it was fixed at 64
+        o->mp.gpu_window = gpu_window_v ? (int)gpu_window_d : 64;
+        // and its arithmetic routes; a record without the field predates them
+        // and ran the reference kernels. The record wins over --gpu-route.
+        gpu_route_pin(gpu_route_v ? gpu_route_m : 0);
+        vr->route = gpu_route_v ? gpu_route_m : 0;
         jv *record_adapter = jv_get(vr->rec, "adapter");
         if (record_adapter && record_adapter->type != J_NULL) {
             jv *scale_v = record_adapter->type == J_OBJ
@@ -2976,6 +3014,10 @@ static void cli_resolve_threads(cli_opts *o) {
 // factor that is not one, or one beside --rope-scale, and an unknown
 // --chat-template, which *tmpl_override receives as a TMPL_* id.
 static bool cli_model_flags_ok(const cli_opts *o, int *tmpl_override) {
+    if (o->score_top && !o->score) {
+        fprintf(stderr, "error: --score-top adds to --score's report and needs --score\n");
+        return false;
+    }
     if (o->mp.yarn_factor > 0 && o->mp.yarn_factor <= 1.0f) {
         fprintf(stderr, "error: --yarn-factor must be greater than 1\n");
         return false;
@@ -4099,11 +4141,19 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     bool expected_split = strcmp(jv_str(jv_get(vprof, "kv"), ""), "k8v4") == 0;
     jv *expected_layers_v = jv_get(vprof, "gpu_layers");
     int expected_layers = (int)jv_num(expected_layers_v, -1);
+    // a CUDA replay must run at the record's prompt window (64 for a record
+    // that predates the field); other backends have no such window and replay
+    // a CUDA record at the token tier, so they do not check it
+    jv *expected_window_v = jv_get(vprof, "gpu_window");
+    int expected_window = expected_window_v ? (int)jv_num(expected_window_v, -1) : 64;
+    int got_window = gpu_prompt_window(&rt->m);
     if (rt->m.n_ctx != expected_ctx || rt->m.n_batch != expected_batch ||
         tpool_size(rt->m.tp) != expected_threads || rt->m.kv_q8 != expected_q8 ||
         rt->m.kv_fp4 != expected_fp4 || rt->m.kv_split != expected_split ||
         (rt->m.gpu != NULL) != expected_gpu ||
-        (expected_layers_v && rt->m.gpu_layers != expected_layers)) {
+        (expected_layers_v && rt->m.gpu_layers != expected_layers) ||
+        (got_window > 0 && got_window != expected_window) ||
+        (got_window > 0 && gpu_route_active(&rt->m) != vr->route)) {
         fprintf(stderr, "UNVERIFIABLE: runtime could not reproduce the "
                 "recorded execution profile\n");
         jv_free(vr->rec);
@@ -4364,6 +4414,22 @@ static int run_systemone(cli_opts *o, cli_run *rt) {
     return run_jsonl(o, rt, o->systemone_path, systemone_line, "systemone failed");
 }
 
+// The n most likely tokens of one row: ids[] and lps[] best first, ties to
+// the lower id (the sampler's first-index rule), logprobs against lse.
+static void score_top_fill(const float *lg, int nv, float lse, int n, int *ids,
+                           float *lps) {
+    int k = 0;
+    for (int i = 0; i < nv; i++) {
+        float v = lg[i];
+        if (k == n && !(v > lps[n - 1])) continue;
+        int j = k < n ? k++ : n - 1;
+        while (j > 0 && v > lps[j - 1]) { lps[j] = lps[j - 1]; ids[j] = ids[j - 1]; j--; }
+        lps[j] = v;
+        ids[j] = i;
+    }
+    for (int j = 0; j < k; j++) lps[j] -= lse;
+}
+
 static int run_score(cli_opts *o, cli_run *rt) {
     int n_prompt;
     // Teacher-forced scoring (adaptation D1): per-position
@@ -4409,6 +4475,20 @@ static int run_score(cli_opts *o, cli_run *rt) {
     int pos = 0, emitted = 0, fail = 0, top1 = 0;
     int32_t *argmaxes = malloc(sizeof(int32_t) * (size_t)n_prompt);
     if (!argmaxes) return 1;
+    // --score-top: each position's distribution head, for a comparison at the
+    // distribution level (KL against a reference) in one pass of the text
+    int ntop = o->score_top < rt->m.n_vocab ? o->score_top : rt->m.n_vocab;
+    int *top_id = NULL;
+    float *top_lp = NULL;
+    if (ntop > 0) {
+        top_id = malloc(sizeof(int) * (size_t)ntop * (size_t)n_prompt);
+        top_lp = malloc(sizeof(float) * (size_t)ntop * (size_t)n_prompt);
+        if (!top_id || !top_lp) {
+            free(top_id); free(top_lp); free(argmaxes);
+            fprintf(stderr, "error: out of memory for --score-top\n");
+            return 1;
+        }
+    }
     while (pos < n_prompt - 1 && !fail) {
         int k = n_prompt - 1 - pos;
         int cap = rt->m.spec_batch < rt->m.n_batch ? rt->m.spec_batch : rt->m.n_batch;
@@ -4422,8 +4502,12 @@ static int run_score(cli_opts *o, cli_run *rt) {
                 int arg = 0;
                 for (int i = 1; i < rt->m.n_vocab; i++)
                     if (lg[i] > lg[arg]) arg = i;
-                float lp = lg[rt->toks[pos + b + 1]] -
-                           engine_logsumexp(lg, rt->m.n_vocab);
+                float lse = engine_logsumexp(lg, rt->m.n_vocab);
+                float lp = lg[rt->toks[pos + b + 1]] - lse;
+                if (ntop > 0)
+                    score_top_fill(lg, rt->m.n_vocab, lse, ntop,
+                                   top_id + (size_t)emitted * ntop,
+                                   top_lp + (size_t)emitted * ntop);
                 argmaxes[emitted] = arg;
                 printf("%s%.9g", emitted++ ? "," : "", (double)lp);
                 total += lp;
@@ -4436,7 +4520,12 @@ static int run_score(cli_opts *o, cli_run *rt) {
             int arg = 0;
             for (int i = 1; i < rt->m.n_vocab; i++)
                 if (lg[i] > lg[arg]) arg = i;
-            float lp = lg[rt->toks[pos + 1]] - engine_logsumexp(lg, rt->m.n_vocab);
+            float lse = engine_logsumexp(lg, rt->m.n_vocab);
+            float lp = lg[rt->toks[pos + 1]] - lse;
+            if (ntop > 0)
+                score_top_fill(lg, rt->m.n_vocab, lse, ntop,
+                               top_id + (size_t)emitted * ntop,
+                               top_lp + (size_t)emitted * ntop);
             argmaxes[emitted] = arg;
             printf("%s%.9g", emitted++ ? "," : "", (double)lp);
             total += lp;
@@ -4445,7 +4534,7 @@ static int run_score(cli_opts *o, cli_run *rt) {
         }
     }
     if (fail) {
-        free(argmaxes);
+        free(argmaxes); free(top_id); free(top_lp);
         printf("]}\n");
         fprintf(stderr, "error: forward pass failed at position %d\n", pos);
         return 1;
@@ -4463,10 +4552,28 @@ static int run_score(cli_opts *o, cli_run *rt) {
     for (int i = 0; i < emitted; i++)
         printf("%s%d", i ? "," : "", argmaxes[i]);
     free(argmaxes);
+    if (ntop > 0) {
+        // [[id, logprob], ...] per position, best first (additive field)
+        printf("],\"top\":[");
+        for (int i = 0; i < emitted; i++) {
+            printf("%s[", i ? "," : "");
+            for (int j = 0; j < ntop; j++)
+                printf("%s[%d,%.9g]", j ? "," : "", top_id[(size_t)i * ntop + j],
+                       (double)top_lp[(size_t)i * ntop + j]);
+            printf("]");
+        }
+        free(top_id); free(top_lp);
+    }
     printf("],\"n_vocab\":%d,\"top1\":%d,\"top1_rate\":%.9g,"
            "\"nll_total\":%.9g,\"nll_mean\":%.9g,\"ppl\":%.9g}\n",
            rt->m.n_vocab, top1, (double)top1 / (n_prompt - 1),
            nll, mean, exp(mean));
+    // the paths and kernels the forwards took, on stderr so the record's
+    // bytes stay comparable across routes: two equal scores say nothing about
+    // a route switch unless the route's kernels are shown to have run
+    char route[4096];
+    model_route_json(&rt->m, route, sizeof route);
+    fprintf(stderr, "score: route %s\n", route);
     return 0;
 }
 
@@ -4933,6 +5040,8 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
             .device = rt->m.gpu ? gname : "cpu",
             .gpu = rt->m.gpu != NULL,
             .gpu_layers = rt->m.gpu_layers,
+            .gpu_window = gpu_prompt_window(&rt->m),
+            .gpu_route = gpu_route_record(&rt->m),
             .threads = tpool_size(rt->m.tp), .n_ctx = rt->m.n_ctx,
             .n_batch = rt->m.n_batch, .kv_q8 = rt->m.kv_q8, .kv_fp4 = rt->m.kv_fp4,
             .kv_split = rt->m.kv_split,

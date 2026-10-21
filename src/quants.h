@@ -153,9 +153,18 @@ float  vec_dot_i8(int type, const void *row, const void *xq, int n);
 // One weight row against up to VEC_DOT_MULTI_MAX activation columns, each
 // output byte-equal to vec_dot(type, row, xs[c], n): the weight block is
 // decoded once for every column (the small-batch win for codebook quants).
+// Eight: sixteen measured slower on an M1 (a 13-row verify round, 17.4 vs
+// 19.0 tok/s): the per-column accumulators spill.
 #define VEC_DOT_MULTI_MAX 8
 void   vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
                      int n, float *out);
+// The Q4_K/Q5_K row dots with the activation's per-32 group sums computed
+// once per matvec instead of once per row: vec_dot_xsums fills n / 32 floats
+// for x, vec_dot_xs takes them and is byte-equal to vec_dot. vec_dot_xs_ok
+// says whether a type (on this build) has such a kernel.
+bool   vec_dot_xs_ok(int type);
+void   vec_dot_xsums(const float *x, int n, float *xs);
+float  vec_dot_xs(int type, const void *row, const float *x, const float *xs, int n);
 // Force the route on (1) or off (0) regardless of RUNNER_CPU_I8; -1 returns
 // to the env default. Mirrors gpu_tc_force so one harness can drive both.
 void   i8_dot_force(int on);

@@ -29,6 +29,38 @@ static __device__ __forceinline__ float f16f(const uchar *p) {
 // ---------------------------------------------------------------- rmsnorm
 // grid.y = token column; xs/ys = element stride between columns
 
+// The RMS scale from the block's per-thread partials: their sum in the
+// pairwise order of a shared-memory tree (red[t] += red[t + off] for off =
+// tpg/2 down to 1). Levels of 32 and up go through shared memory; the last
+// five run as shuffles inside warp 0 on the same operands in the same order
+// (lane t adds lane t + off), so the sum is the all-shared tree's bit for
+// bit with five fewer barriers. tpg is a power of two from 32 to 256.
+static __device__ __forceinline__ float rms_scale(float s, float *red, int tid,
+                                                  int tpg, int n, float eps) {
+    red[tid] = s;
+    __syncthreads();
+    for (int off = tpg / 2; off >= 32; off >>= 1) {
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }
+    if (tid < 32) {
+        float v = red[tid];
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffffu, v, off);
+        if (tid == 0) red[0] = v;
+    }
+    __syncthreads();
+    return rsqrtf(red[0] / n + eps);
+}
+
+// RMSNorm of one row per block (blockIdx.y the column), 256 threads. A
+// decode token's norm is one block on an otherwise idle card, so its time
+// is latency: rows of up to RMS_REG elements a thread are read once, x and
+// the weights together, kept in registers across the reduction and scaled
+// from them, one round trip to memory instead of six. Each thread still sums
+// its elements tid, tid + tpg, ... in increasing order, so every output is
+// the reloading loop's bit for bit; longer rows take that loop.
+#define RMS_REG 16
 extern "C" __global__ void k_rmsnorm(const float *x, float *y, const float *w,
                                      int n, float eps, int xs, int ys) {
     __shared__ float red[256];
@@ -36,14 +68,27 @@ extern "C" __global__ void k_rmsnorm(const float *x, float *y, const float *w,
     x += (ulong64)blockIdx.y * xs;
     y += (ulong64)blockIdx.y * ys;
     float s = 0;
-    for (int i = tid; i < n; i += tpg) s += x[i] * x[i];
-    red[tid] = s;
-    __syncthreads();
-    for (int off = tpg / 2; off > 0; off >>= 1) {
-        if (tid < off) red[tid] += red[tid + off];
-        __syncthreads();
+    if (n <= RMS_REG * tpg) {
+        float xv[RMS_REG], wv[RMS_REG];
+        #pragma unroll
+        for (int k = 0; k < RMS_REG; k++) {
+            int i = tid + k * tpg;
+            xv[k] = i < n ? x[i] : 0.0f;
+            wv[k] = i < n ? w[i] : 0.0f;
+        }
+        #pragma unroll
+        for (int k = 0; k < RMS_REG; k++)
+            if (tid + k * tpg < n) s += xv[k] * xv[k];
+        float r = rms_scale(s, red, tid, tpg, n, eps);
+        #pragma unroll
+        for (int k = 0; k < RMS_REG; k++) {
+            int i = tid + k * tpg;
+            if (i < n) y[i] = xv[k] * r * wv[k];
+        }
+        return;
     }
-    float r = rsqrtf(red[0] / n + eps);
+    for (int i = tid; i < n; i += tpg) s += x[i] * x[i];
+    float r = rms_scale(s, red, tid, tpg, n, eps);
     for (int i = tid; i < n; i += tpg) y[i] = x[i] * r * w[i];
 }
 
@@ -94,8 +139,18 @@ static __device__ __forceinline__ float warp_sum(float s) {
     s = warp_sum(s); \
     if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
 
+// A prompt wider than one MVT-column tile runs as ONE launch with a tile per
+// blockIdx.y (cuda.c launch_tiled), not a launch per tile: a small matrix (a
+// Gated DeltaNet alpha/beta projection, 32 or 48 rows) was eight blocks a
+// launch and 128 launches per 2,048-token prompt. Each (row, column) is the
+// arithmetic of the per-tile launch it replaced; with one tile, blockIdx.y
+// is 0 and nothing moves.
 #define MV_HEAD_B \
     MV_HEAD; \
+    x += (ulong64)blockIdx.y * MVT * a.xs; \
+    y += (ulong64)blockIdx.y * MVT * a.ys; \
+    a.batch -= (int)blockIdx.y * MVT; \
+    if (a.batch > MVT) a.batch = MVT; \
     float s[MVT] = {0};
 
 // apply one decoded weight w at element index idx to every token column
@@ -112,6 +167,22 @@ static __device__ __forceinline__ float warp_sum(float s) {
     }
 
 #define MV_PARAMS const uchar *wb, const float *x, float *y, mv_args a, const float *bias
+
+// Activation staging for the one-lane-per-block matvecs (see LANE_XPAD at
+// k_mv_q4_0) at any block width: EL-element blocks in rows of
+// EL + 1 floats (lane l's element j in bank (l + j) % 32), for the remaining
+// one-lane-per-block kernels (X21b: the decode kernels of the types with no
+// coalesced GEMV, and their MoE copies). The block's rows share each copy;
+// dead rows join the barriers and skip the math and the store.
+#define LANE_STAGE_XN(xsm, xsrc, b0, nblk, EL)                                 \
+    for (int i_ = threadIdx.x; i_ < (nblk) * (EL); i_ += blockDim.x)           \
+        (xsm)[(i_ / (EL)) * ((EL) + 1) + (i_ % (EL))] = (xsrc)[(ulong64)(b0) * (EL) + i_];
+#define LANE_DENSE_HEAD(EL)                                                    \
+    __shared__ float xsm[32 * ((EL) + 1)];                                     \
+    unsigned row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5);        \
+    unsigned lane = threadIdx.x & 31;                                          \
+    bool live = row < (unsigned)a.n_out;
+
 
 extern "C" __global__ void k_mv_f32(MV_PARAMS) {
     MV_HEAD;
@@ -353,26 +424,37 @@ extern "C" __global__ void k_gemv_q4_0(MV_PARAMS) {
 // Q2_0 (ggml type 42): 64 codes per 18-byte block, code j at bits 2*(j%4) of
 // byte j/4, value (code - 1) * d; the device twin of quants.c dq_q2_0.
 extern "C" __global__ void k_mv_q2_0(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(64)
     int nb = a.n_in / 64;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 18;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 18;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 18;
-        float d = f16f(blk);
-        const uchar *q = blk + 2;
-        const float *xp = x + (ulong64)b * 64;
-        float t = 0;
-        for (int j = 0; j < 16; j++) {
-            uchar c = q[j];
-            t += ((int)(c & 3) - 1) * xp[4 * j]
-               + ((int)((c >> 2) & 3) - 1) * xp[4 * j + 1]
-               + ((int)((c >> 4) & 3) - 1) * xp[4 * j + 2]
-               + ((int)(c >> 6) - 1) * xp[4 * j + 3];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 64)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (64 + 1);
+            const uchar *blk = rw + (ulong64)b * 18;
+            float d = f16f(blk);
+            const uchar *q = blk + 2;
+            const float *xp = xs_;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                uchar c = q[j];
+                t += ((int)(c & 3) - 1) * xp[4 * j]
+                   + ((int)((c >> 2) & 3) - 1) * xp[4 * j + 1]
+                   + ((int)((c >> 4) & 3) - 1) * xp[4 * j + 2]
+                   + ((int)(c >> 6) - 1) * xp[4 * j + 3];
+            }
+            s += d * t;
         }
-        s += d * t;
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_q2_0_b(MV_PARAMS) {
@@ -395,22 +477,51 @@ extern "C" __global__ void k_mv_q2_0_b(MV_PARAMS) {
     MV_TAIL_B;
 }
 
+// One lane per 32-element block (k_mv_q4_0 and k_mv_mxfp4, their MoE copies
+// and their by-expert twins), with the activations staged. Read straight from
+// global memory, lane l walks its own block's 32 floats of x, 128 bytes from
+// its neighbours, so each warp load touched 32 cache lines. The block's warps
+// (four rows a block in the dense kernels, eight in the MoE copies and the
+// twins; every row of a launch reads the same column) copy 32 blocks of x at a time
+// into shared memory with coalesced loads, at a row stride of LANE_XPAD = 33
+// floats so lane l's element j sits in bank (l + j) % 32, conflict-free. Each
+// lane still takes blocks lane, lane + 32, ... in order with the same
+// expression, so the bits are the unstaged kernels'. No early return: a row
+// past n_out joins the barriers and skips the math and the store. 5-7x on the
+// gemma-4-26B Q4_0 and gpt-oss MXFP4 expert shapes (RTX 3070 microbench).
+#define LANE_XPAD 33
+#define LANE_STAGE_X(xsm, xsrc, b0, nblk)                                      \
+    for (int i_ = threadIdx.x; i_ < (nblk) * 32; i_ += blockDim.x)             \
+        (xsm)[(i_ >> 5) * LANE_XPAD + (i_ & 31)] = (xsrc)[(ulong64)(b0) * 32 + i_];
+
 extern "C" __global__ void k_mv_q4_0(MV_PARAMS) {
-    MV_HEAD;
+    __shared__ float xsm[32 * LANE_XPAD];
+    unsigned row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5);
+    unsigned lane = threadIdx.x & 31;
+    bool live = row < (unsigned)a.n_out;
     int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 18;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 18;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 18;
-        float d = f16f(blk);
-        const uchar *q = blk + 2;
-        const float *xp = x + b * 32;
-        float t = 0;
-        for (int j = 0; j < 16; j++)
-            t += ((int)(q[j] & 0xF) - 8) * xp[j] + ((int)(q[j] >> 4) - 8) * xp[j + 16];
-        s += d * t;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_X(xsm, x, b0, nblk)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            const uchar *blk = rw + (ulong64)(b0 + lane) * 18;
+            float d = f16f(blk);
+            const uchar *q = blk + 2;
+            const float *xp = xsm + lane * LANE_XPAD;
+            float t = 0;
+            for (int j = 0; j < 16; j++)
+                t += ((int)(q[j] & 0xF) - 8) * xp[j] + ((int)(q[j] >> 4) - 8) * xp[j + 16];
+            s += d * t;
+        }
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_q4_0_b(MV_PARAMS) {
@@ -431,24 +542,35 @@ extern "C" __global__ void k_mv_q4_0_b(MV_PARAMS) {
 }
 
 extern "C" __global__ void k_mv_q4_1(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(32)
     int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 20;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 20;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 20;
-        float d  = f16f(blk);
-        float mm = f16f(blk + 2);
-        const uchar *q = blk + 4;
-        const float *xp = x + b * 32;
-        float t = 0, sx = 0;
-        for (int j = 0; j < 16; j++) {
-            t += (float)(q[j] & 0xF) * xp[j] + (float)(q[j] >> 4) * xp[j + 16];
-            sx += xp[j] + xp[j + 16];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 20;
+            float d  = f16f(blk);
+            float mm = f16f(blk + 2);
+            const uchar *q = blk + 4;
+            const float *xp = xs_;
+            float t = 0, sx = 0;
+            for (int j = 0; j < 16; j++) {
+                t += (float)(q[j] & 0xF) * xp[j] + (float)(q[j] >> 4) * xp[j + 16];
+                sx += xp[j] + xp[j + 16];
+            }
+            s += d * t + mm * sx;
         }
-        s += d * t + mm * sx;
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_q4_1_b(MV_PARAMS) {
@@ -470,26 +592,37 @@ extern "C" __global__ void k_mv_q4_1_b(MV_PARAMS) {
 }
 
 extern "C" __global__ void k_mv_q5_0(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(32)
     int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 22;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 22;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 22;
-        float d = f16f(blk);
-        uint qh = (uint)blk[2] | ((uint)blk[3] << 8) |
-                  ((uint)blk[4] << 16) | ((uint)blk[5] << 24);
-        const uchar *q = blk + 6;
-        const float *xp = x + b * 32;
-        float t = 0;
-        for (int j = 0; j < 16; j++) {
-            int x0 = (int)((q[j] & 0xF) | (((qh >> j) & 1u) << 4)) - 16;
-            int x1 = (int)((q[j] >> 4)  | (((qh >> (j + 16)) & 1u) << 4)) - 16;
-            t += x0 * xp[j] + x1 * xp[j + 16];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 22;
+            float d = f16f(blk);
+            uint qh = (uint)blk[2] | ((uint)blk[3] << 8) |
+                      ((uint)blk[4] << 16) | ((uint)blk[5] << 24);
+            const uchar *q = blk + 6;
+            const float *xp = xs_;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                int x0 = (int)((q[j] & 0xF) | (((qh >> j) & 1u) << 4)) - 16;
+                int x1 = (int)((q[j] >> 4)  | (((qh >> (j + 16)) & 1u) << 4)) - 16;
+                t += x0 * xp[j] + x1 * xp[j + 16];
+            }
+            s += d * t;
         }
-        s += d * t;
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_q5_0_b(MV_PARAMS) {
@@ -514,27 +647,38 @@ extern "C" __global__ void k_mv_q5_0_b(MV_PARAMS) {
 }
 
 extern "C" __global__ void k_mv_q5_1(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(32)
     int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 24;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 24;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 24;
-        float d  = f16f(blk);
-        float mm = f16f(blk + 2);
-        uint qh = (uint)blk[4] | ((uint)blk[5] << 8) |
-                  ((uint)blk[6] << 16) | ((uint)blk[7] << 24);
-        const uchar *q = blk + 8;
-        const float *xp = x + b * 32;
-        float t = 0, sx = 0;
-        for (int j = 0; j < 16; j++) {
-            t += (float)((q[j] & 0xF) | (((qh >> j) & 1u) << 4)) * xp[j] +
-                 (float)((q[j] >> 4)  | (((qh >> (j + 16)) & 1u) << 4)) * xp[j + 16];
-            sx += xp[j] + xp[j + 16];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 24;
+            float d  = f16f(blk);
+            float mm = f16f(blk + 2);
+            uint qh = (uint)blk[4] | ((uint)blk[5] << 8) |
+                      ((uint)blk[6] << 16) | ((uint)blk[7] << 24);
+            const uchar *q = blk + 8;
+            const float *xp = xs_;
+            float t = 0, sx = 0;
+            for (int j = 0; j < 16; j++) {
+                t += (float)((q[j] & 0xF) | (((qh >> j) & 1u) << 4)) * xp[j] +
+                     (float)((q[j] >> 4)  | (((qh >> (j + 16)) & 1u) << 4)) * xp[j + 16];
+                sx += xp[j] + xp[j + 16];
+            }
+            s += d * t + mm * sx;
         }
-        s += d * t + mm * sx;
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_q5_1_b(MV_PARAMS) {
@@ -636,32 +780,43 @@ extern "C" __global__ void k_mv_bf16_b(MV_PARAMS) {
     const uchar *qbase = blk + 16;
 
 extern "C" __global__ void k_mv_q2_K(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(256)
     int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 84;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 84;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 84;
-        Q2K_SETUP;
-        const float *xp = x + (ulong64)b * 256;
-        int pos = 0, is = 0; const uchar *q = qbase;
-        for (int n = 0; n < 256; n += 128) {
-            int shift = 0;
-            for (int j = 0; j < 4; j++) {
-                uchar scb = q2scales[is++];
-                float dl = d * (scb & 0xF), ml = dmin * (scb >> 4);
-                for (int l = 0; l < 16; l++)
-                    s += (dl * (float)((q[l] >> shift) & 3) - ml) * xp[pos++];
-                scb = q2scales[is++];
-                dl = d * (scb & 0xF); ml = dmin * (scb >> 4);
-                for (int l = 0; l < 16; l++)
-                    s += (dl * (float)((q[l+16] >> shift) & 3) - ml) * xp[pos++];
-                shift += 2;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 256)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (256 + 1);
+            const uchar *blk = rw + (ulong64)b * 84;
+            Q2K_SETUP;
+            const float *xp = xs_;
+            int pos = 0, is = 0; const uchar *q = qbase;
+            for (int n = 0; n < 256; n += 128) {
+                int shift = 0;
+                for (int j = 0; j < 4; j++) {
+                    uchar scb = q2scales[is++];
+                    float dl = d * (scb & 0xF), ml = dmin * (scb >> 4);
+                    for (int l = 0; l < 16; l++)
+                        s += (dl * (float)((q[l] >> shift) & 3) - ml) * xp[pos++];
+                    scb = q2scales[is++];
+                    dl = d * (scb & 0xF); ml = dmin * (scb >> 4);
+                    for (int l = 0; l < 16; l++)
+                        s += (dl * (float)((q[l+16] >> shift) & 3) - ml) * xp[pos++];
+                    shift += 2;
+                }
+                q += 32;
             }
-            q += 32;
         }
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_q2_K_b(MV_PARAMS) {
@@ -930,16 +1085,24 @@ extern "C" __global__ void k_gemm_q4_K(MV_PARAMS) {
 #define TC_ROWS 64    // output rows per block (4 warps x 16-row fragments)
 #define TC_K    128   // K-elements staged per step (half a q4_K super-block)
 #define TC_N    64    // token columns per tile (was 16; widened to amortise the weight dequantisation)
+// Leading dimension of the staged tiles, in halves. A row of TC_K halves is
+// 256 bytes, so the eight 16-byte rows one ldmatrix phase reads (and the
+// lanes of a staging store, one row each) all fall in the same four banks:
+// every fragment load was an 8-way conflict and every scalar staging store
+// up to 32-way. Eight halves of padding moves row r by 4r banks. Only shared
+// addresses change: the operands, the MMAs and their order are the same, so
+// the outputs are bit-identical to the unpadded kernels.
+#define TC_KP   (TC_K + 8)
 
 extern "C" __global__ void k_gemm_q4_K_tc(MV_PARAMS, const float *xsc) {
     using namespace nvcuda::wmma;
     const int tid  = threadIdx.x;         // 128 threads = 4 warps
     const int warp = tid >> 5;
     const unsigned row0 = blockIdx.x * TC_ROWS;
-    __shared__ __half sh_w[TC_ROWS * TC_K];   // row-major, ldm = TC_K
-    __shared__ __half sh_x[TC_N * TC_K];      // col-major (k,t) at [t*TC_K+k]
-    // The epilogue tile ALIASES the weight tile: sh_w is 64*128 halves = 16 KB
-    // and sh_c needs TC_ROWS*TC_N floats, and their lifetimes are disjoint
+    __shared__ __align__(32) __half sh_w[TC_ROWS * TC_KP];   // row-major, ldm = TC_KP
+    __shared__ __align__(32) __half sh_x[TC_N * TC_KP];      // col-major (k,t) at [t*TC_KP+k]
+    // The epilogue tile ALIASES the weight tile: sh_w is 64*136 halves = 17 KB
+    // and sh_c needs TC_ROWS*TC_N floats = 16 KB; their lifetimes are disjoint
     // (weights are dead once the last MMA has run). Separate arrays would push
     // the block past the 48 KB static shared cap at a wide tile.
     float *sh_c = (float *)sh_w;
@@ -961,7 +1124,7 @@ extern "C" __global__ void k_gemm_q4_K_tc(MV_PARAMS, const float *xsc) {
             // ---- stage weights: 64 rows x 128 K, dequantized once ----
             {
                 unsigned gr = row0 + srow;
-                __half *dst = sh_w + srow * TC_K + sseg * 64;
+                __half *dst = sh_w + srow * TC_KP + sseg * 64;
                 if (gr < (unsigned)a.n_out) {
                     const uchar *blk = wb + a.w_off +
                                        (ulong64)gr * nb * 144 + (ulong64)b * 144;
@@ -1008,7 +1171,7 @@ extern "C" __global__ void k_gemm_q4_K_tc(MV_PARAMS, const float *xsc) {
             // Inf operand is a NaN logit. Scaled back in the epilogue.
             {
                 int col = tid / 2, part = tid % 2;
-                __half *dst = sh_x + col * TC_K + part * 64;
+                __half *dst = sh_x + col * TC_KP + part * 64;
                 if (col < a.batch) {
                     const float xinv = 16384.0f / xsc[col];
                     const float *xg = x + (ulong64)col * a.xs + b * 256 + koff
@@ -1028,15 +1191,15 @@ extern "C" __global__ void k_gemm_q4_K_tc(MV_PARAMS, const float *xsc) {
             }
             __syncthreads();
             // ---- 8 MMA K-steps over the staged tile ----
-            const __half *wt = sh_w + warp * 16 * TC_K;
+            const __half *wt = sh_w + warp * 16 * TC_KP;
             #pragma unroll
             for (int k = 0; k < TC_K; k += 16) {
-                load_matrix_sync(fa, wt + k, TC_K);
+                load_matrix_sync(fa, wt + k, TC_KP);
                 // one staged weight tile, reused across every n-tile: this is
                 // the entire point of widening TC_N
                 #pragma unroll
                 for (int n = 0; n < TC_N / 16; n++) {
-                    load_matrix_sync(fb, sh_x + n * 16 * TC_K + k, TC_K);
+                    load_matrix_sync(fb, sh_x + n * 16 * TC_KP + k, TC_KP);
                     mma_sync(fc[n], fa, fb, fc[n]);
                 }
             }
@@ -1173,9 +1336,11 @@ extern "C" __global__ void NAME(MV_PARAMS TC_XPARAM_##XSCALED) {               \
     const int tid  = threadIdx.x;                                              \
     const int warp = tid >> 5;                                                 \
     const unsigned row0 = blockIdx.x * TC_ROWS;                                \
-    __shared__ __half sh_w[TC_ROWS * TC_K];                                    \
-    __shared__ __half sh_x[TC_N * TC_K];                                       \
-    __shared__ float  sh_c[TC_ROWS * TC_N];                                    \
+    __shared__ __align__(32) __half sh_w[TC_ROWS * TC_KP];                     \
+    __shared__ __align__(32) __half sh_x[TC_N * TC_KP];                        \
+    /* the epilogue tile aliases the weight tile (dead after the last MMA, */  \
+    /* which the loop's closing barrier orders), as in k_gemm_q4_K_tc      */  \
+    float *sh_c = (float *)sh_w;                                               \
     fragment<matrix_a, 16, 16, 16, __half, row_major> fa;                      \
     fragment<matrix_b, 16, 16, 16, __half, col_major> fb;                      \
     fragment<accumulator, 16, 16, 16, float> fc[TC_N / 16];                    \
@@ -1186,7 +1351,7 @@ extern "C" __global__ void NAME(MV_PARAMS TC_XPARAM_##XSCALED) {               \
     for (int ks = 0; ks < a.n_in; ks += TC_K) {                                \
         {                                                                      \
             unsigned gr = row0 + srow;                                         \
-            __half *dst = sh_w + srow * TC_K + sseg * 64;                      \
+            __half *dst = sh_w + srow * TC_KP + sseg * 64;                     \
             if (gr < (unsigned)a.n_out) {                                      \
                 const uchar *rw = wb + a.w_off +                               \
                                   (ulong64)gr * nb * BLKBYTES;                 \
@@ -1202,7 +1367,7 @@ extern "C" __global__ void NAME(MV_PARAMS TC_XPARAM_##XSCALED) {               \
             /* n_in is a 32-multiple (quant blocks) but need not be a        */\
             /* 64-multiple — a 64-wide part can straddle the end of the row. */\
             int col = tid >> 1, part = tid & 1;                                \
-            __half *dst = sh_x + col * TC_K + part * 64;                       \
+            __half *dst = sh_x + col * TC_KP + part * 64;                      \
             TC_XSCALE_STAGE_##XSCALED(col < a.batch ? col : 0)                 \
             _Pragma("unroll")                                                  \
             for (int h = 0; h < 2; h++) {                                      \
@@ -1225,13 +1390,13 @@ extern "C" __global__ void NAME(MV_PARAMS TC_XPARAM_##XSCALED) {               \
             }                                                                  \
         }                                                                      \
         __syncthreads();                                                       \
-        const __half *wt = sh_w + warp * 16 * TC_K;                            \
+        const __half *wt = sh_w + warp * 16 * TC_KP;                           \
         _Pragma("unroll")                                                      \
         for (int k = 0; k < TC_K; k += 16) {                                   \
-            load_matrix_sync(fa, wt + k, TC_K);                                \
+            load_matrix_sync(fa, wt + k, TC_KP);                               \
             _Pragma("unroll")                                                  \
             for (int n = 0; n < TC_N / 16; n++) {                              \
-                load_matrix_sync(fb, sh_x + n * 16 * TC_K + k, TC_K);          \
+                load_matrix_sync(fb, sh_x + n * 16 * TC_KP + k, TC_KP);        \
                 mma_sync(fc[n], fa, fb, fc[n]);                                \
             }                                                                  \
         }                                                                      \
@@ -1402,6 +1567,15 @@ extern "C" __global__ void k_mv_q5_K_b(MV_PARAMS) {
 // j = (e%128)/32 (shift 2j, high-bit mask 1<<(4*half+j)), byte l = e%32 of
 // qs + 32*half, scale index 8*half + 2j + (l >= 16); value
 // ((q >> shift) & 3) - (hbit ? 0 : 4), times d_all * (scale - 32).
+// A Q3_K block is 110 bytes, so block k starts at 6k mod 8: only every
+// fourth block is 8-byte aligned and an 8-byte load faults on the rest (a
+// misaligned-address error, sticky for the context). The 8 quant and 8
+// high-mask bytes a lane takes are read as four 16-bit words instead (every
+// block offset is even); the same bytes, so the same values.
+static __device__ __forceinline__ uint2 ld8_a2(const uchar *p) {
+    const unsigned short *h = (const unsigned short *)p;
+    return make_uint2((uint)h[0] | ((uint)h[1] << 16), (uint)h[2] | ((uint)h[3] << 16));
+}
 extern "C" __global__ void k_gemv_q3_K(MV_PARAMS) {
     MV_HEAD;
     int nb = a.n_in / 256;
@@ -1416,8 +1590,8 @@ extern "C" __global__ void k_gemv_q3_K(MV_PARAMS) {
         const uchar *blk = rw + (ulong64)b * 110;
         Q3K_UNPACK_SCALES;
         float dl = d_all * (float)(q3scales[sidx] - 32);
-        uint2 qv = *(const uint2 *)(qbase + 32 * half + lseg);
-        uint2 hv = *(const uint2 *)(hm + lseg);
+        uint2 qv = ld8_a2(qbase + 32 * half + lseg);
+        uint2 hv = ld8_a2(hm + lseg);
         const float *xp = x + (ulong64)b * 256 + (int)lane * 8;
         float4 x0 = *(const float4 *)xp, x1 = *(const float4 *)(xp + 4);
         uint v0 = (qv.x >> shift) & 0x03030303u, v1 = (qv.y >> shift) & 0x03030303u;
@@ -2110,29 +2284,37 @@ extern "C" __global__ void k_mvt_q4_K(MV_PARAMS) {
     }
 }
 
-// IQ4: the nibble indexes a fixed 16-entry codebook
-static __device__ const signed char kv_iq4[16] = {
-    -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
-};
+#include "kernels_iq4_table.cuh"
 
 extern "C" __global__ void k_mv_iq4_nl(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(32)
     int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 18;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 18;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 18;
-        float d = f16f(blk);
-        const uchar *q = blk + 2;
-        const float *xp = x + b * 32;
-        float t = 0;
-        for (int j = 0; j < 16; j++) {
-            t += (float)kv_iq4[q[j] & 0xF] * xp[j];
-            t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 18;
+            float d = f16f(blk);
+            const uchar *q = blk + 2;
+            const float *xp = xs_;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                t += (float)kv_iq4[q[j] & 0xF] * xp[j];
+                t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+            }
+            s += d * t;
         }
-        s += d * t;
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_iq4_nl_b(MV_PARAMS) {
@@ -2217,1089 +2399,7 @@ extern "C" __global__ void k_mv_iq4_xs_b(MV_PARAMS) {
     MV_TAIL_B;
 }
 
-// ------------------------------------------------------ codebook i-quants
-// IQ1_S/IQ1_M/IQ2_XXS/IQ2_XS/IQ2_S/IQ3_XXS/IQ3_S: every 8 (IQ1/IQ2) or 4
-// (IQ3) weights are one index into a fixed grid of magnitude patterns, one
-// byte per weight, flipped by a sign bit per weight and scaled per sub-block
-// of 32. The grids are the formats' codebooks, copied verbatim from
-// quants_iq_grids.h (tests/test_cuda_iq_grids.py holds the two copies
-// equal); each kernel walks its block exactly as the matching dq_* in
-// quants.c does, one lane per block, in the shape of the k_mv_* kernels
-// above. Block bytes are 2-aligned (even block sizes, row = whole blocks),
-// so 32-bit fields are read as two 16-bit halves.
-static __device__ const ulong64 kiq2xxs_grid[256] = {
-    0x0808080808080808, 0x080808080808082b, 0x0808080808081919, 0x0808080808082b08,
-    0x0808080808082b2b, 0x0808080808190819, 0x0808080808191908, 0x08080808082b0808,
-    0x08080808082b082b, 0x08080808082b2b08, 0x08080808082b2b2b, 0x0808080819080819,
-    0x0808080819081908, 0x0808080819190808, 0x0808080819192b08, 0x08080808192b0819,
-    0x08080808192b1908, 0x080808082b080808, 0x080808082b08082b, 0x080808082b082b2b,
-    0x080808082b2b082b, 0x0808081908080819, 0x0808081908081908, 0x0808081908190808,
-    0x0808081908191919, 0x0808081919080808, 0x080808192b081908, 0x080808192b192b08,
-    0x0808082b08080808, 0x0808082b0808082b, 0x0808082b082b082b, 0x0808082b2b08082b,
-    0x0808190808080819, 0x0808190808081908, 0x0808190808190808, 0x08081908082b0819,
-    0x08081908082b1908, 0x0808190819080808, 0x080819081908082b, 0x0808190819082b08,
-    0x08081908192b0808, 0x080819082b080819, 0x080819082b081908, 0x080819082b190808,
-    0x080819082b2b1908, 0x0808191908080808, 0x080819190808082b, 0x0808191908082b08,
-    0x08081919082b0808, 0x080819191908192b, 0x08081919192b2b19, 0x080819192b080808,
-    0x080819192b190819, 0x0808192b08082b19, 0x0808192b08190808, 0x0808192b19080808,
-    0x0808192b2b081908, 0x0808192b2b2b1908, 0x08082b0808080808, 0x08082b0808081919,
-    0x08082b0808082b08, 0x08082b0808191908, 0x08082b08082b2b08, 0x08082b0819080819,
-    0x08082b0819081908, 0x08082b0819190808, 0x08082b081919082b, 0x08082b082b082b08,
-    0x08082b1908081908, 0x08082b1919080808, 0x08082b2b0808082b, 0x08082b2b08191908,
-    0x0819080808080819, 0x0819080808081908, 0x0819080808190808, 0x08190808082b0819,
-    0x0819080819080808, 0x08190808192b0808, 0x081908082b081908, 0x081908082b190808,
-    0x081908082b191919, 0x0819081908080808, 0x0819081908082b08, 0x08190819082b0808,
-    0x0819081919190808, 0x0819081919192b2b, 0x081908192b080808, 0x0819082b082b1908,
-    0x0819082b19081919, 0x0819190808080808, 0x0819190808082b08, 0x08191908082b0808,
-    0x08191908082b1919, 0x0819190819082b19, 0x081919082b080808, 0x0819191908192b08,
-    0x08191919192b082b, 0x0819192b08080808, 0x0819192b0819192b, 0x08192b0808080819,
-    0x08192b0808081908, 0x08192b0808190808, 0x08192b0819080808, 0x08192b082b080819,
-    0x08192b1908080808, 0x08192b1908081919, 0x08192b192b2b0808, 0x08192b2b19190819,
-    0x082b080808080808, 0x082b08080808082b, 0x082b080808082b2b, 0x082b080819081908,
-    0x082b0808192b0819, 0x082b08082b080808, 0x082b08082b08082b, 0x082b0819082b2b19,
-    0x082b081919082b08, 0x082b082b08080808, 0x082b082b0808082b, 0x082b190808080819,
-    0x082b190808081908, 0x082b190808190808, 0x082b190819080808, 0x082b19081919192b,
-    0x082b191908080808, 0x082b191919080819, 0x082b1919192b1908, 0x082b192b2b190808,
-    0x082b2b0808082b08, 0x082b2b08082b0808, 0x082b2b082b191908, 0x082b2b2b19081908,
-    0x1908080808080819, 0x1908080808081908, 0x1908080808190808, 0x1908080808192b08,
-    0x19080808082b0819, 0x19080808082b1908, 0x1908080819080808, 0x1908080819082b08,
-    0x190808081919192b, 0x19080808192b0808, 0x190808082b080819, 0x190808082b081908,
-    0x190808082b190808, 0x1908081908080808, 0x19080819082b0808, 0x19080819192b0819,
-    0x190808192b080808, 0x190808192b081919, 0x1908082b08080819, 0x1908082b08190808,
-    0x1908082b19082b08, 0x1908082b1919192b, 0x1908082b192b2b08, 0x1908190808080808,
-    0x1908190808082b08, 0x19081908082b0808, 0x190819082b080808, 0x190819082b192b19,
-    0x190819190819082b, 0x19081919082b1908, 0x1908192b08080808, 0x19082b0808080819,
-    0x19082b0808081908, 0x19082b0808190808, 0x19082b0819080808, 0x19082b0819081919,
-    0x19082b1908080808, 0x19082b1919192b08, 0x19082b19192b0819, 0x19082b192b08082b,
-    0x19082b2b19081919, 0x19082b2b2b190808, 0x1919080808080808, 0x1919080808082b08,
-    0x1919080808190819, 0x1919080808192b19, 0x19190808082b0808, 0x191908082b080808,
-    0x191908082b082b08, 0x1919081908081908, 0x191908191908082b, 0x191908192b2b1908,
-    0x1919082b2b190819, 0x191919082b190808, 0x191919082b19082b, 0x1919191908082b2b,
-    0x1919192b08080819, 0x1919192b19191908, 0x19192b0808080808, 0x19192b0808190819,
-    0x19192b0808192b19, 0x19192b08192b1908, 0x19192b1919080808, 0x19192b2b08082b08,
-    0x192b080808081908, 0x192b080808190808, 0x192b080819080808, 0x192b0808192b2b08,
-    0x192b081908080808, 0x192b081919191919, 0x192b082b08192b08, 0x192b082b192b0808,
-    0x192b190808080808, 0x192b190808081919, 0x192b191908190808, 0x192b19190819082b,
-    0x192b19192b081908, 0x192b2b081908082b, 0x2b08080808080808, 0x2b0808080808082b,
-    0x2b08080808082b2b, 0x2b08080819080819, 0x2b0808082b08082b, 0x2b08081908081908,
-    0x2b08081908192b08, 0x2b08081919080808, 0x2b08082b08190819, 0x2b08190808080819,
-    0x2b08190808081908, 0x2b08190808190808, 0x2b08190808191919, 0x2b08190819080808,
-    0x2b081908192b0808, 0x2b08191908080808, 0x2b0819191908192b, 0x2b0819192b191908,
-    0x2b08192b08082b19, 0x2b08192b19080808, 0x2b08192b192b0808, 0x2b082b080808082b,
-    0x2b082b1908081908, 0x2b082b2b08190819, 0x2b19080808081908, 0x2b19080808190808,
-    0x2b190808082b1908, 0x2b19080819080808, 0x2b1908082b2b0819, 0x2b1908190819192b,
-    0x2b1908192b080808, 0x2b19082b19081919, 0x2b19190808080808, 0x2b191908082b082b,
-    0x2b19190819081908, 0x2b19191919190819, 0x2b192b082b080819, 0x2b192b19082b0808,
-    0x2b2b08080808082b, 0x2b2b080819190808, 0x2b2b08082b081919, 0x2b2b081908082b19,
-    0x2b2b082b08080808, 0x2b2b190808192b08, 0x2b2b2b0819190808, 0x2b2b2b1908081908,
-};
-
-static __device__ const ulong64 kiq2xs_grid[512] = {
-    0x0808080808080808, 0x080808080808082b, 0x0808080808081919, 0x0808080808082b08,
-    0x0808080808082b2b, 0x0808080808190819, 0x0808080808191908, 0x080808080819192b,
-    0x0808080808192b19, 0x08080808082b0808, 0x08080808082b082b, 0x08080808082b1919,
-    0x08080808082b2b08, 0x0808080819080819, 0x0808080819081908, 0x080808081908192b,
-    0x0808080819082b19, 0x0808080819190808, 0x080808081919082b, 0x0808080819191919,
-    0x0808080819192b08, 0x08080808192b0819, 0x08080808192b1908, 0x080808082b080808,
-    0x080808082b08082b, 0x080808082b081919, 0x080808082b082b08, 0x080808082b190819,
-    0x080808082b191908, 0x080808082b192b19, 0x080808082b2b0808, 0x0808081908080819,
-    0x0808081908081908, 0x080808190808192b, 0x0808081908082b19, 0x0808081908190808,
-    0x080808190819082b, 0x0808081908191919, 0x0808081908192b08, 0x0808081908192b2b,
-    0x08080819082b0819, 0x08080819082b1908, 0x0808081919080808, 0x080808191908082b,
-    0x0808081919081919, 0x0808081919082b08, 0x0808081919190819, 0x0808081919191908,
-    0x08080819192b0808, 0x08080819192b2b08, 0x080808192b080819, 0x080808192b081908,
-    0x080808192b190808, 0x0808082b08080808, 0x0808082b0808082b, 0x0808082b08081919,
-    0x0808082b08082b08, 0x0808082b08190819, 0x0808082b08191908, 0x0808082b082b0808,
-    0x0808082b19080819, 0x0808082b19081908, 0x0808082b19190808, 0x0808082b19191919,
-    0x0808082b2b080808, 0x0808082b2b082b2b, 0x0808190808080819, 0x0808190808081908,
-    0x080819080808192b, 0x0808190808082b19, 0x0808190808190808, 0x080819080819082b,
-    0x0808190808191919, 0x0808190808192b08, 0x08081908082b0819, 0x08081908082b1908,
-    0x0808190819080808, 0x080819081908082b, 0x0808190819081919, 0x0808190819082b08,
-    0x0808190819190819, 0x0808190819191908, 0x080819081919192b, 0x08081908192b0808,
-    0x080819082b080819, 0x080819082b081908, 0x080819082b190808, 0x0808191908080808,
-    0x080819190808082b, 0x0808191908081919, 0x0808191908082b08, 0x0808191908190819,
-    0x0808191908191908, 0x08081919082b0808, 0x0808191919080819, 0x0808191919081908,
-    0x0808191919190808, 0x08081919192b0819, 0x080819192b080808, 0x0808192b08080819,
-    0x0808192b08081908, 0x0808192b08190808, 0x0808192b082b192b, 0x0808192b19080808,
-    0x0808192b1908082b, 0x0808192b2b081908, 0x08082b0808080808, 0x08082b080808082b,
-    0x08082b0808081919, 0x08082b0808082b08, 0x08082b0808082b2b, 0x08082b0808190819,
-    0x08082b0808191908, 0x08082b08082b0808, 0x08082b08082b1919, 0x08082b0819080819,
-    0x08082b0819081908, 0x08082b0819190808, 0x08082b0819192b08, 0x08082b082b080808,
-    0x08082b082b2b0808, 0x08082b082b2b2b2b, 0x08082b1908080819, 0x08082b1908081908,
-    0x08082b1908190808, 0x08082b1919080808, 0x08082b192b080819, 0x08082b192b082b19,
-    0x08082b2b08080808, 0x08082b2b082b0808, 0x08082b2b082b2b08, 0x08082b2b2b19192b,
-    0x08082b2b2b2b0808, 0x0819080808080819, 0x0819080808081908, 0x081908080808192b,
-    0x0819080808082b19, 0x0819080808190808, 0x081908080819082b, 0x0819080808191919,
-    0x0819080808192b08, 0x08190808082b0819, 0x08190808082b1908, 0x0819080819080808,
-    0x081908081908082b, 0x0819080819081919, 0x0819080819082b08, 0x0819080819190819,
-    0x0819080819191908, 0x08190808192b0808, 0x08190808192b2b2b, 0x081908082b080819,
-    0x081908082b081908, 0x081908082b190808, 0x0819081908080808, 0x081908190808082b,
-    0x0819081908081919, 0x0819081908082b08, 0x0819081908190819, 0x0819081908191908,
-    0x08190819082b0808, 0x0819081919080819, 0x0819081919081908, 0x0819081919190808,
-    0x081908192b080808, 0x081908192b191908, 0x081908192b19192b, 0x0819082b08080819,
-    0x0819082b08081908, 0x0819082b0808192b, 0x0819082b08190808, 0x0819082b19080808,
-    0x0819082b192b0808, 0x0819190808080808, 0x081919080808082b, 0x0819190808081919,
-    0x0819190808082b08, 0x0819190808190819, 0x0819190808191908, 0x08191908082b0808,
-    0x0819190819080819, 0x0819190819081908, 0x0819190819082b19, 0x0819190819190808,
-    0x08191908192b1908, 0x081919082b080808, 0x0819191908080819, 0x0819191908081908,
-    0x0819191908190808, 0x0819191919080808, 0x0819192b08080808, 0x0819192b08191908,
-    0x0819192b19082b19, 0x08192b0808080819, 0x08192b0808081908, 0x08192b0808190808,
-    0x08192b080819082b, 0x08192b0819080808, 0x08192b0819191908, 0x08192b082b08192b,
-    0x08192b1908080808, 0x08192b1908081919, 0x08192b19192b192b, 0x08192b2b19190819,
-    0x08192b2b2b2b2b19, 0x082b080808080808, 0x082b08080808082b, 0x082b080808081919,
-    0x082b080808082b08, 0x082b080808082b2b, 0x082b080808190819, 0x082b080808191908,
-    0x082b0808082b0808, 0x082b080819080819, 0x082b080819081908, 0x082b080819190808,
-    0x082b08082b080808, 0x082b08082b2b0808, 0x082b081908080819, 0x082b081908081908,
-    0x082b081908190808, 0x082b081919080808, 0x082b081919082b08, 0x082b0819192b1919,
-    0x082b082b08080808, 0x082b082b082b082b, 0x082b082b2b080808, 0x082b082b2b2b2b08,
-    0x082b190808080819, 0x082b190808081908, 0x082b190808190808, 0x082b1908082b2b19,
-    0x082b190819080808, 0x082b191908080808, 0x082b191919080819, 0x082b19191919082b,
-    0x082b19192b192b19, 0x082b192b08080819, 0x082b192b08192b2b, 0x082b192b2b2b192b,
-    0x082b2b0808080808, 0x082b2b0808082b08, 0x082b2b0808082b2b, 0x082b2b08082b0808,
-    0x082b2b0819191919, 0x082b2b082b082b08, 0x082b2b082b2b082b, 0x082b2b19192b2b08,
-    0x082b2b192b190808, 0x082b2b2b08082b08, 0x082b2b2b082b0808, 0x082b2b2b2b08082b,
-    0x082b2b2b2b082b08, 0x082b2b2b2b082b2b, 0x1908080808080819, 0x1908080808081908,
-    0x190808080808192b, 0x1908080808082b19, 0x1908080808190808, 0x190808080819082b,
-    0x1908080808191919, 0x1908080808192b08, 0x19080808082b0819, 0x19080808082b1908,
-    0x1908080819080808, 0x190808081908082b, 0x1908080819081919, 0x1908080819082b08,
-    0x1908080819082b2b, 0x1908080819190819, 0x1908080819191908, 0x19080808192b0808,
-    0x19080808192b1919, 0x190808082b080819, 0x190808082b081908, 0x190808082b190808,
-    0x1908081908080808, 0x190808190808082b, 0x1908081908081919, 0x1908081908082b08,
-    0x1908081908190819, 0x1908081908191908, 0x19080819082b0808, 0x1908081919080819,
-    0x1908081919081908, 0x1908081919190808, 0x190808192b080808, 0x190808192b081919,
-    0x190808192b2b082b, 0x1908082b08080819, 0x1908082b08081908, 0x1908082b08190808,
-    0x1908082b0819082b, 0x1908082b082b2b19, 0x1908082b19080808, 0x1908190808080808,
-    0x190819080808082b, 0x1908190808081919, 0x1908190808082b08, 0x1908190808190819,
-    0x1908190808191908, 0x1908190808192b19, 0x19081908082b0808, 0x1908190819080819,
-    0x1908190819081908, 0x1908190819190808, 0x190819082b080808, 0x190819082b191908,
-    0x1908191908080819, 0x1908191908081908, 0x1908191908190808, 0x19081919082b1908,
-    0x1908191919080808, 0x190819192b192b2b, 0x1908192b08080808, 0x1908192b08082b2b,
-    0x1908192b19081908, 0x1908192b19190808, 0x19082b0808080819, 0x19082b0808081908,
-    0x19082b0808190808, 0x19082b0819080808, 0x19082b0819081919, 0x19082b0819191908,
-    0x19082b08192b082b, 0x19082b1908080808, 0x19082b1908190819, 0x19082b1919081908,
-    0x19082b1919190808, 0x19082b19192b2b19, 0x19082b2b08081908, 0x1919080808080808,
-    0x191908080808082b, 0x1919080808081919, 0x1919080808082b08, 0x1919080808190819,
-    0x1919080808191908, 0x19190808082b0808, 0x19190808082b2b08, 0x1919080819080819,
-    0x1919080819081908, 0x1919080819190808, 0x191908082b080808, 0x1919081908080819,
-    0x1919081908081908, 0x1919081908190808, 0x1919081908191919, 0x1919081919080808,
-    0x191908191908082b, 0x1919082b08080808, 0x1919082b19081908, 0x1919082b2b2b2b2b,
-    0x1919190808080819, 0x1919190808081908, 0x1919190808190808, 0x19191908082b0819,
-    0x1919190819080808, 0x19191908192b0808, 0x191919082b080819, 0x191919082b2b0819,
-    0x1919191908080808, 0x1919191908082b08, 0x191919192b080808, 0x191919192b082b08,
-    0x1919192b082b0819, 0x1919192b192b2b08, 0x1919192b2b2b0819, 0x19192b0808080808,
-    0x19192b0808191908, 0x19192b0819080819, 0x19192b0819190808, 0x19192b082b192b19,
-    0x19192b1908192b2b, 0x19192b1919080808, 0x19192b191908082b, 0x19192b2b2b081919,
-    0x192b080808080819, 0x192b080808081908, 0x192b080808190808, 0x192b080819080808,
-    0x192b080819191908, 0x192b0808192b082b, 0x192b08082b08192b, 0x192b08082b2b2b19,
-    0x192b081908080808, 0x192b082b082b1908, 0x192b082b19082b2b, 0x192b082b2b19082b,
-    0x192b190808080808, 0x192b19080819192b, 0x192b191908190808, 0x192b191919080808,
-    0x192b191919081919, 0x192b19192b2b1908, 0x192b2b0808080819, 0x192b2b08192b2b2b,
-    0x192b2b19082b1919, 0x192b2b2b0808192b, 0x192b2b2b19191908, 0x192b2b2b192b082b,
-    0x2b08080808080808, 0x2b0808080808082b, 0x2b08080808081919, 0x2b08080808082b08,
-    0x2b08080808190819, 0x2b08080808191908, 0x2b080808082b0808, 0x2b080808082b2b2b,
-    0x2b08080819080819, 0x2b08080819081908, 0x2b08080819190808, 0x2b0808082b080808,
-    0x2b0808082b08082b, 0x2b0808082b2b2b08, 0x2b0808082b2b2b2b, 0x2b08081908080819,
-    0x2b08081908081908, 0x2b0808190808192b, 0x2b08081908190808, 0x2b08081919080808,
-    0x2b08081919190819, 0x2b08081919192b19, 0x2b08082b08080808, 0x2b08082b082b0808,
-    0x2b08082b2b080808, 0x2b08082b2b08082b, 0x2b08082b2b2b0808, 0x2b08082b2b2b2b08,
-    0x2b08190808080819, 0x2b08190808081908, 0x2b08190808190808, 0x2b0819080819082b,
-    0x2b08190808191919, 0x2b08190819080808, 0x2b081908192b0808, 0x2b0819082b082b19,
-    0x2b08191908080808, 0x2b08191919081908, 0x2b0819192b2b1919, 0x2b08192b08192b08,
-    0x2b08192b192b2b2b, 0x2b082b0808080808, 0x2b082b0808082b08, 0x2b082b08082b1919,
-    0x2b082b0819192b2b, 0x2b082b082b080808, 0x2b082b082b08082b, 0x2b082b082b2b2b08,
-    0x2b082b190808192b, 0x2b082b2b082b082b, 0x2b082b2b2b080808, 0x2b082b2b2b082b08,
-    0x2b082b2b2b19192b, 0x2b082b2b2b2b2b08, 0x2b19080808080819, 0x2b19080808081908,
-    0x2b19080808190808, 0x2b19080819080808, 0x2b1908081919192b, 0x2b1908082b081908,
-    0x2b19081908080808, 0x2b190819082b082b, 0x2b190819192b1908, 0x2b19082b1919192b,
-    0x2b19082b2b082b19, 0x2b19190808080808, 0x2b19190808081919, 0x2b19190819081908,
-    0x2b19190819190808, 0x2b19190819192b08, 0x2b191919082b2b19, 0x2b1919192b190808,
-    0x2b1919192b19082b, 0x2b19192b19080819, 0x2b192b0819190819, 0x2b192b082b2b192b,
-    0x2b192b1919082b19, 0x2b192b2b08191919, 0x2b192b2b192b0808, 0x2b2b080808080808,
-    0x2b2b08080808082b, 0x2b2b080808082b08, 0x2b2b080808082b2b, 0x2b2b0808082b0808,
-    0x2b2b0808082b2b2b, 0x2b2b08082b2b0808, 0x2b2b081919190819, 0x2b2b081919192b19,
-    0x2b2b08192b2b192b, 0x2b2b082b08080808, 0x2b2b082b0808082b, 0x2b2b082b08082b08,
-    0x2b2b082b082b2b2b, 0x2b2b082b2b080808, 0x2b2b082b2b2b0808, 0x2b2b190819080808,
-    0x2b2b19082b191919, 0x2b2b192b192b1919, 0x2b2b192b2b192b08, 0x2b2b2b0808082b2b,
-    0x2b2b2b08082b0808, 0x2b2b2b08082b082b, 0x2b2b2b08082b2b08, 0x2b2b2b082b2b0808,
-    0x2b2b2b082b2b2b08, 0x2b2b2b1908081908, 0x2b2b2b192b081908, 0x2b2b2b192b08192b,
-    0x2b2b2b2b082b2b08, 0x2b2b2b2b082b2b2b, 0x2b2b2b2b2b190819, 0x2b2b2b2b2b2b2b2b,
-};
-
-static __device__ const ulong64 kiq2s_grid[1024] = {
-    0x0808080808080808, 0x080808080808082b, 0x0808080808081919, 0x0808080808082b08,
-    0x0808080808082b2b, 0x0808080808190819, 0x0808080808191908, 0x080808080819192b,
-    0x0808080808192b19, 0x08080808082b0808, 0x08080808082b082b, 0x08080808082b1919,
-    0x08080808082b2b08, 0x0808080819080819, 0x0808080819081908, 0x080808081908192b,
-    0x0808080819082b19, 0x0808080819190808, 0x080808081919082b, 0x0808080819191919,
-    0x0808080819192b08, 0x08080808192b0819, 0x08080808192b1908, 0x08080808192b192b,
-    0x08080808192b2b19, 0x080808082b080808, 0x080808082b08082b, 0x080808082b081919,
-    0x080808082b082b08, 0x080808082b190819, 0x080808082b191908, 0x080808082b2b0808,
-    0x080808082b2b1919, 0x080808082b2b2b2b, 0x0808081908080819, 0x0808081908081908,
-    0x080808190808192b, 0x0808081908082b19, 0x0808081908190808, 0x080808190819082b,
-    0x0808081908191919, 0x0808081908192b08, 0x08080819082b0819, 0x08080819082b1908,
-    0x0808081919080808, 0x080808191908082b, 0x0808081919081919, 0x0808081919082b08,
-    0x0808081919190819, 0x0808081919191908, 0x080808191919192b, 0x0808081919192b19,
-    0x08080819192b0808, 0x08080819192b1919, 0x08080819192b2b08, 0x080808192b080819,
-    0x080808192b081908, 0x080808192b190808, 0x080808192b19082b, 0x080808192b191919,
-    0x080808192b2b0819, 0x080808192b2b1908, 0x0808082b08080808, 0x0808082b0808082b,
-    0x0808082b08081919, 0x0808082b08082b08, 0x0808082b08190819, 0x0808082b08191908,
-    0x0808082b082b0808, 0x0808082b082b2b2b, 0x0808082b19080819, 0x0808082b19081908,
-    0x0808082b1908192b, 0x0808082b19082b19, 0x0808082b19190808, 0x0808082b19191919,
-    0x0808082b2b080808, 0x0808082b2b081919, 0x0808082b2b082b2b, 0x0808082b2b191908,
-    0x0808082b2b2b082b, 0x0808190808080819, 0x0808190808081908, 0x080819080808192b,
-    0x0808190808082b19, 0x0808190808190808, 0x080819080819082b, 0x0808190808191919,
-    0x0808190808192b08, 0x08081908082b0819, 0x08081908082b1908, 0x08081908082b192b,
-    0x08081908082b2b19, 0x0808190819080808, 0x080819081908082b, 0x0808190819081919,
-    0x0808190819082b08, 0x0808190819082b2b, 0x0808190819190819, 0x0808190819191908,
-    0x080819081919192b, 0x0808190819192b19, 0x08081908192b0808, 0x08081908192b082b,
-    0x08081908192b1919, 0x080819082b080819, 0x080819082b081908, 0x080819082b08192b,
-    0x080819082b082b19, 0x080819082b190808, 0x080819082b191919, 0x080819082b192b08,
-    0x080819082b2b0819, 0x080819082b2b1908, 0x0808191908080808, 0x080819190808082b,
-    0x0808191908081919, 0x0808191908082b08, 0x0808191908082b2b, 0x0808191908190819,
-    0x0808191908191908, 0x080819190819192b, 0x0808191908192b19, 0x08081919082b0808,
-    0x08081919082b1919, 0x08081919082b2b08, 0x0808191919080819, 0x0808191919081908,
-    0x080819191908192b, 0x0808191919082b19, 0x0808191919190808, 0x080819191919082b,
-    0x0808191919191919, 0x0808191919192b08, 0x08081919192b0819, 0x08081919192b1908,
-    0x080819192b080808, 0x080819192b08082b, 0x080819192b081919, 0x080819192b082b08,
-    0x080819192b190819, 0x080819192b191908, 0x080819192b2b0808, 0x0808192b08080819,
-    0x0808192b08081908, 0x0808192b0808192b, 0x0808192b08082b19, 0x0808192b08190808,
-    0x0808192b08191919, 0x0808192b19080808, 0x0808192b19081919, 0x0808192b19082b08,
-    0x0808192b19190819, 0x0808192b19191908, 0x0808192b192b0808, 0x0808192b2b080819,
-    0x0808192b2b081908, 0x0808192b2b190808, 0x08082b0808080808, 0x08082b080808082b,
-    0x08082b0808081919, 0x08082b0808082b08, 0x08082b0808190819, 0x08082b0808191908,
-    0x08082b080819192b, 0x08082b0808192b19, 0x08082b08082b0808, 0x08082b08082b1919,
-    0x08082b08082b2b2b, 0x08082b0819080819, 0x08082b0819081908, 0x08082b081908192b,
-    0x08082b0819082b19, 0x08082b0819190808, 0x08082b081919082b, 0x08082b0819191919,
-    0x08082b0819192b08, 0x08082b08192b0819, 0x08082b08192b1908, 0x08082b082b080808,
-    0x08082b082b081919, 0x08082b082b191908, 0x08082b082b2b2b2b, 0x08082b1908080819,
-    0x08082b1908081908, 0x08082b1908190808, 0x08082b190819082b, 0x08082b1908191919,
-    0x08082b1908192b08, 0x08082b19082b0819, 0x08082b1919080808, 0x08082b1919081919,
-    0x08082b1919082b08, 0x08082b1919190819, 0x08082b1919191908, 0x08082b19192b0808,
-    0x08082b192b080819, 0x08082b192b190808, 0x08082b2b08080808, 0x08082b2b08190819,
-    0x08082b2b08191908, 0x08082b2b082b082b, 0x08082b2b082b2b08, 0x08082b2b082b2b2b,
-    0x08082b2b19190808, 0x08082b2b2b192b19, 0x0819080808080819, 0x0819080808081908,
-    0x081908080808192b, 0x0819080808082b19, 0x0819080808190808, 0x081908080819082b,
-    0x0819080808191919, 0x0819080808192b08, 0x08190808082b0819, 0x08190808082b1908,
-    0x08190808082b192b, 0x0819080819080808, 0x081908081908082b, 0x0819080819081919,
-    0x0819080819082b08, 0x0819080819190819, 0x0819080819191908, 0x081908081919192b,
-    0x0819080819192b19, 0x08190808192b0808, 0x08190808192b082b, 0x08190808192b1919,
-    0x08190808192b2b08, 0x081908082b080819, 0x081908082b081908, 0x081908082b08192b,
-    0x081908082b190808, 0x081908082b191919, 0x081908082b192b08, 0x081908082b2b0819,
-    0x081908082b2b1908, 0x0819081908080808, 0x081908190808082b, 0x0819081908081919,
-    0x0819081908082b08, 0x0819081908082b2b, 0x0819081908190819, 0x0819081908191908,
-    0x081908190819192b, 0x0819081908192b19, 0x08190819082b0808, 0x08190819082b082b,
-    0x08190819082b1919, 0x08190819082b2b08, 0x0819081919080819, 0x0819081919081908,
-    0x081908191908192b, 0x0819081919082b19, 0x0819081919190808, 0x081908191919082b,
-    0x0819081919191919, 0x0819081919192b08, 0x08190819192b0819, 0x08190819192b1908,
-    0x081908192b080808, 0x081908192b08082b, 0x081908192b081919, 0x081908192b082b08,
-    0x081908192b190819, 0x081908192b191908, 0x0819082b08080819, 0x0819082b08081908,
-    0x0819082b08082b19, 0x0819082b08190808, 0x0819082b08191919, 0x0819082b082b0819,
-    0x0819082b082b1908, 0x0819082b19080808, 0x0819082b19081919, 0x0819082b19190819,
-    0x0819082b19191908, 0x0819082b2b080819, 0x0819082b2b081908, 0x0819082b2b190808,
-    0x0819190808080808, 0x081919080808082b, 0x0819190808081919, 0x0819190808082b08,
-    0x0819190808190819, 0x0819190808191908, 0x081919080819192b, 0x0819190808192b19,
-    0x08191908082b0808, 0x08191908082b1919, 0x08191908082b2b08, 0x0819190819080819,
-    0x0819190819081908, 0x081919081908192b, 0x0819190819082b19, 0x0819190819190808,
-    0x081919081919082b, 0x0819190819191919, 0x0819190819192b08, 0x08191908192b0819,
-    0x08191908192b1908, 0x081919082b080808, 0x081919082b08082b, 0x081919082b081919,
-    0x081919082b082b08, 0x081919082b190819, 0x081919082b191908, 0x081919082b2b0808,
-    0x0819191908080819, 0x0819191908081908, 0x081919190808192b, 0x0819191908082b19,
-    0x0819191908190808, 0x081919190819082b, 0x0819191908191919, 0x0819191908192b08,
-    0x08191919082b0819, 0x08191919082b1908, 0x0819191919080808, 0x081919191908082b,
-    0x0819191919081919, 0x0819191919082b08, 0x0819191919190819, 0x0819191919191908,
-    0x08191919192b0808, 0x081919192b080819, 0x081919192b081908, 0x081919192b190808,
-    0x0819192b08080808, 0x0819192b08081919, 0x0819192b08082b08, 0x0819192b08190819,
-    0x0819192b08191908, 0x0819192b082b0808, 0x0819192b19080819, 0x0819192b19081908,
-    0x0819192b19190808, 0x0819192b2b080808, 0x0819192b2b2b2b2b, 0x08192b0808080819,
-    0x08192b0808081908, 0x08192b080808192b, 0x08192b0808082b19, 0x08192b0808190808,
-    0x08192b0808191919, 0x08192b0808192b08, 0x08192b08082b0819, 0x08192b0819080808,
-    0x08192b081908082b, 0x08192b0819081919, 0x08192b0819082b08, 0x08192b0819190819,
-    0x08192b0819191908, 0x08192b08192b0808, 0x08192b082b080819, 0x08192b082b081908,
-    0x08192b1908080808, 0x08192b190808082b, 0x08192b1908081919, 0x08192b1908082b08,
-    0x08192b1908190819, 0x08192b1908191908, 0x08192b19082b0808, 0x08192b1919080819,
-    0x08192b1919081908, 0x08192b1919190808, 0x08192b19192b2b19, 0x08192b192b2b082b,
-    0x08192b2b08081908, 0x08192b2b08190808, 0x08192b2b19080808, 0x08192b2b1919192b,
-    0x082b080808080808, 0x082b08080808082b, 0x082b080808081919, 0x082b080808082b08,
-    0x082b080808190819, 0x082b080808191908, 0x082b08080819192b, 0x082b080808192b19,
-    0x082b0808082b0808, 0x082b0808082b1919, 0x082b0808082b2b2b, 0x082b080819080819,
-    0x082b080819081908, 0x082b080819190808, 0x082b08081919082b, 0x082b080819191919,
-    0x082b0808192b1908, 0x082b08082b080808, 0x082b08082b082b2b, 0x082b08082b191908,
-    0x082b08082b2b2b2b, 0x082b081908080819, 0x082b081908081908, 0x082b081908190808,
-    0x082b08190819082b, 0x082b081908191919, 0x082b0819082b0819, 0x082b081919080808,
-    0x082b08191908082b, 0x082b081919081919, 0x082b081919190819, 0x082b081919191908,
-    0x082b0819192b0808, 0x082b08192b080819, 0x082b08192b081908, 0x082b08192b190808,
-    0x082b082b08080808, 0x082b082b08082b2b, 0x082b082b082b082b, 0x082b082b082b2b08,
-    0x082b082b082b2b2b, 0x082b082b19081908, 0x082b082b19190808, 0x082b082b2b082b08,
-    0x082b082b2b082b2b, 0x082b082b2b2b2b08, 0x082b190808080819, 0x082b190808081908,
-    0x082b19080808192b, 0x082b190808082b19, 0x082b190808190808, 0x082b190808191919,
-    0x082b190808192b08, 0x082b1908082b0819, 0x082b1908082b1908, 0x082b190819080808,
-    0x082b19081908082b, 0x082b190819081919, 0x082b190819082b08, 0x082b190819190819,
-    0x082b190819191908, 0x082b1908192b0808, 0x082b19082b080819, 0x082b19082b081908,
-    0x082b19082b190808, 0x082b191908080808, 0x082b191908081919, 0x082b191908082b08,
-    0x082b191908190819, 0x082b191908191908, 0x082b1919082b0808, 0x082b191919080819,
-    0x082b191919081908, 0x082b191919190808, 0x082b1919192b192b, 0x082b19192b080808,
-    0x082b192b08080819, 0x082b192b08081908, 0x082b192b08190808, 0x082b192b19080808,
-    0x082b192b19192b19, 0x082b2b0808080808, 0x082b2b0808081919, 0x082b2b0808190819,
-    0x082b2b0808191908, 0x082b2b0819080819, 0x082b2b0819081908, 0x082b2b0819190808,
-    0x082b2b082b082b2b, 0x082b2b082b2b2b2b, 0x082b2b1908080819, 0x082b2b1908081908,
-    0x082b2b1908190808, 0x082b2b192b191919, 0x082b2b2b08082b2b, 0x082b2b2b082b082b,
-    0x082b2b2b192b1908, 0x082b2b2b2b082b08, 0x082b2b2b2b082b2b, 0x1908080808080819,
-    0x1908080808081908, 0x190808080808192b, 0x1908080808082b19, 0x1908080808190808,
-    0x190808080819082b, 0x1908080808191919, 0x1908080808192b08, 0x1908080808192b2b,
-    0x19080808082b0819, 0x19080808082b1908, 0x19080808082b192b, 0x1908080819080808,
-    0x190808081908082b, 0x1908080819081919, 0x1908080819082b08, 0x1908080819082b2b,
-    0x1908080819190819, 0x1908080819191908, 0x190808081919192b, 0x1908080819192b19,
-    0x19080808192b0808, 0x19080808192b082b, 0x19080808192b1919, 0x190808082b080819,
-    0x190808082b081908, 0x190808082b190808, 0x190808082b191919, 0x190808082b192b08,
-    0x190808082b2b0819, 0x190808082b2b1908, 0x1908081908080808, 0x190808190808082b,
-    0x1908081908081919, 0x1908081908082b08, 0x1908081908190819, 0x1908081908191908,
-    0x190808190819192b, 0x1908081908192b19, 0x19080819082b0808, 0x19080819082b082b,
-    0x19080819082b1919, 0x1908081919080819, 0x1908081919081908, 0x190808191908192b,
-    0x1908081919082b19, 0x1908081919190808, 0x190808191919082b, 0x1908081919191919,
-    0x1908081919192b08, 0x19080819192b0819, 0x19080819192b1908, 0x190808192b080808,
-    0x190808192b08082b, 0x190808192b081919, 0x190808192b082b08, 0x190808192b190819,
-    0x190808192b191908, 0x190808192b2b0808, 0x1908082b08080819, 0x1908082b08081908,
-    0x1908082b08190808, 0x1908082b0819082b, 0x1908082b08191919, 0x1908082b08192b08,
-    0x1908082b082b1908, 0x1908082b19080808, 0x1908082b19081919, 0x1908082b19082b08,
-    0x1908082b19190819, 0x1908082b19191908, 0x1908082b192b0808, 0x1908082b2b080819,
-    0x1908082b2b081908, 0x1908190808080808, 0x190819080808082b, 0x1908190808081919,
-    0x1908190808082b08, 0x1908190808082b2b, 0x1908190808190819, 0x1908190808191908,
-    0x190819080819192b, 0x1908190808192b19, 0x19081908082b0808, 0x19081908082b082b,
-    0x19081908082b1919, 0x19081908082b2b08, 0x1908190819080819, 0x1908190819081908,
-    0x190819081908192b, 0x1908190819082b19, 0x1908190819190808, 0x190819081919082b,
-    0x1908190819191919, 0x1908190819192b08, 0x19081908192b0819, 0x19081908192b1908,
-    0x190819082b080808, 0x190819082b08082b, 0x190819082b081919, 0x190819082b082b08,
-    0x190819082b190819, 0x190819082b191908, 0x190819082b2b0808, 0x1908191908080819,
-    0x1908191908081908, 0x190819190808192b, 0x1908191908082b19, 0x1908191908190808,
-    0x190819190819082b, 0x1908191908191919, 0x1908191908192b08, 0x19081919082b0819,
-    0x19081919082b1908, 0x1908191919080808, 0x190819191908082b, 0x1908191919081919,
-    0x1908191919082b08, 0x1908191919190819, 0x1908191919191908, 0x19081919192b0808,
-    0x19081919192b2b2b, 0x190819192b080819, 0x190819192b081908, 0x190819192b190808,
-    0x1908192b08080808, 0x1908192b0808082b, 0x1908192b08081919, 0x1908192b08082b08,
-    0x1908192b08190819, 0x1908192b08191908, 0x1908192b082b0808, 0x1908192b19080819,
-    0x1908192b19081908, 0x1908192b19190808, 0x1908192b2b080808, 0x1908192b2b2b1919,
-    0x19082b0808080819, 0x19082b0808081908, 0x19082b0808082b19, 0x19082b0808190808,
-    0x19082b080819082b, 0x19082b0808191919, 0x19082b0808192b08, 0x19082b08082b0819,
-    0x19082b08082b1908, 0x19082b0819080808, 0x19082b081908082b, 0x19082b0819081919,
-    0x19082b0819082b08, 0x19082b0819190819, 0x19082b0819191908, 0x19082b08192b0808,
-    0x19082b082b081908, 0x19082b082b190808, 0x19082b1908080808, 0x19082b190808082b,
-    0x19082b1908081919, 0x19082b1908082b08, 0x19082b1908190819, 0x19082b1908191908,
-    0x19082b19082b0808, 0x19082b1919080819, 0x19082b1919081908, 0x19082b1919190808,
-    0x19082b192b080808, 0x19082b192b19192b, 0x19082b2b08080819, 0x19082b2b08081908,
-    0x19082b2b08190808, 0x19082b2b19080808, 0x1919080808080808, 0x191908080808082b,
-    0x1919080808081919, 0x1919080808082b08, 0x1919080808190819, 0x1919080808191908,
-    0x191908080819192b, 0x1919080808192b19, 0x19190808082b0808, 0x19190808082b082b,
-    0x19190808082b1919, 0x19190808082b2b08, 0x1919080819080819, 0x1919080819081908,
-    0x191908081908192b, 0x1919080819082b19, 0x1919080819190808, 0x191908081919082b,
-    0x1919080819191919, 0x1919080819192b08, 0x19190808192b0819, 0x19190808192b1908,
-    0x191908082b080808, 0x191908082b08082b, 0x191908082b081919, 0x191908082b082b08,
-    0x191908082b190819, 0x191908082b191908, 0x1919081908080819, 0x1919081908081908,
-    0x191908190808192b, 0x1919081908082b19, 0x1919081908190808, 0x191908190819082b,
-    0x1919081908191919, 0x1919081908192b08, 0x19190819082b0819, 0x19190819082b1908,
-    0x1919081919080808, 0x191908191908082b, 0x1919081919081919, 0x1919081919082b08,
-    0x1919081919190819, 0x1919081919191908, 0x19190819192b0808, 0x191908192b080819,
-    0x191908192b081908, 0x191908192b190808, 0x1919082b08080808, 0x1919082b08081919,
-    0x1919082b08082b08, 0x1919082b08190819, 0x1919082b08191908, 0x1919082b082b0808,
-    0x1919082b19080819, 0x1919082b19081908, 0x1919082b19190808, 0x1919082b192b2b19,
-    0x1919082b2b080808, 0x1919190808080819, 0x1919190808081908, 0x191919080808192b,
-    0x1919190808082b19, 0x1919190808190808, 0x191919080819082b, 0x1919190808191919,
-    0x1919190808192b08, 0x19191908082b0819, 0x19191908082b1908, 0x1919190819080808,
-    0x191919081908082b, 0x1919190819081919, 0x1919190819082b08, 0x1919190819190819,
-    0x1919190819191908, 0x19191908192b0808, 0x191919082b080819, 0x191919082b081908,
-    0x191919082b190808, 0x1919191908080808, 0x191919190808082b, 0x1919191908081919,
-    0x1919191908082b08, 0x1919191908190819, 0x1919191908191908, 0x19191919082b0808,
-    0x1919191919080819, 0x1919191919081908, 0x1919191919190808, 0x191919192b080808,
-    0x1919192b08080819, 0x1919192b08081908, 0x1919192b08190808, 0x1919192b082b192b,
-    0x1919192b19080808, 0x19192b0808080808, 0x19192b080808082b, 0x19192b0808081919,
-    0x19192b0808082b08, 0x19192b0808190819, 0x19192b0808191908, 0x19192b08082b0808,
-    0x19192b0819080819, 0x19192b0819081908, 0x19192b0819190808, 0x19192b0819192b2b,
-    0x19192b082b080808, 0x19192b1908080819, 0x19192b1908081908, 0x19192b1908190808,
-    0x19192b1919080808, 0x19192b2b08080808, 0x19192b2b08192b19, 0x19192b2b2b081919,
-    0x19192b2b2b2b2b08, 0x192b080808080819, 0x192b080808081908, 0x192b08080808192b,
-    0x192b080808190808, 0x192b08080819082b, 0x192b080808191919, 0x192b080808192b08,
-    0x192b0808082b0819, 0x192b0808082b1908, 0x192b080819080808, 0x192b080819081919,
-    0x192b080819082b08, 0x192b080819190819, 0x192b080819191908, 0x192b0808192b0808,
-    0x192b08082b081908, 0x192b08082b190808, 0x192b081908080808, 0x192b08190808082b,
-    0x192b081908081919, 0x192b081908082b08, 0x192b081908190819, 0x192b081908191908,
-    0x192b0819082b0808, 0x192b081919080819, 0x192b081919081908, 0x192b081919190808,
-    0x192b08192b080808, 0x192b08192b192b19, 0x192b082b08081908, 0x192b082b08190808,
-    0x192b082b19080808, 0x192b082b1919192b, 0x192b082b2b2b0819, 0x192b190808080808,
-    0x192b190808081919, 0x192b190808082b08, 0x192b190808190819, 0x192b190808191908,
-    0x192b1908082b0808, 0x192b190819080819, 0x192b190819081908, 0x192b190819190808,
-    0x192b19082b080808, 0x192b191908080819, 0x192b191908081908, 0x192b191908190808,
-    0x192b191919080808, 0x192b191919082b2b, 0x192b1919192b2b08, 0x192b19192b19082b,
-    0x192b192b08080808, 0x192b192b2b191908, 0x192b2b0808080819, 0x192b2b0808081908,
-    0x192b2b0808190808, 0x192b2b08192b1919, 0x192b2b082b192b08, 0x192b2b1908080808,
-    0x192b2b19082b2b2b, 0x192b2b2b1908082b, 0x192b2b2b2b2b0819, 0x2b08080808080808,
-    0x2b0808080808082b, 0x2b08080808081919, 0x2b08080808082b08, 0x2b08080808190819,
-    0x2b08080808191908, 0x2b08080808192b19, 0x2b080808082b0808, 0x2b080808082b1919,
-    0x2b08080819080819, 0x2b08080819081908, 0x2b08080819190808, 0x2b0808081919082b,
-    0x2b08080819191919, 0x2b08080819192b08, 0x2b080808192b0819, 0x2b0808082b080808,
-    0x2b0808082b081919, 0x2b0808082b190819, 0x2b0808082b191908, 0x2b08081908080819,
-    0x2b08081908081908, 0x2b08081908082b19, 0x2b08081908190808, 0x2b0808190819082b,
-    0x2b08081908191919, 0x2b08081908192b08, 0x2b080819082b0819, 0x2b080819082b1908,
-    0x2b08081919080808, 0x2b0808191908082b, 0x2b08081919081919, 0x2b08081919082b08,
-    0x2b08081919190819, 0x2b08081919191908, 0x2b0808192b080819, 0x2b0808192b081908,
-    0x2b0808192b190808, 0x2b0808192b2b2b19, 0x2b08082b08080808, 0x2b08082b08081919,
-    0x2b08082b08082b2b, 0x2b08082b08190819, 0x2b08082b08191908, 0x2b08082b19080819,
-    0x2b08082b19081908, 0x2b08082b19190808, 0x2b08190808080819, 0x2b08190808081908,
-    0x2b0819080808192b, 0x2b08190808082b19, 0x2b08190808190808, 0x2b0819080819082b,
-    0x2b08190808191919, 0x2b08190808192b08, 0x2b081908082b0819, 0x2b08190819080808,
-    0x2b0819081908082b, 0x2b08190819081919, 0x2b08190819082b08, 0x2b08190819190819,
-    0x2b08190819191908, 0x2b081908192b0808, 0x2b0819082b080819, 0x2b0819082b081908,
-    0x2b0819082b190808, 0x2b08191908080808, 0x2b0819190808082b, 0x2b08191908081919,
-    0x2b08191908082b08, 0x2b08191908190819, 0x2b08191908191908, 0x2b081919082b0808,
-    0x2b08191919080819, 0x2b08191919081908, 0x2b08191919190808, 0x2b0819192b080808,
-    0x2b0819192b082b2b, 0x2b08192b08080819, 0x2b08192b08081908, 0x2b08192b08190808,
-    0x2b08192b082b2b19, 0x2b08192b19080808, 0x2b082b0808080808, 0x2b082b0808081919,
-    0x2b082b0808190819, 0x2b082b0808191908, 0x2b082b0819080819, 0x2b082b0819081908,
-    0x2b082b0819190808, 0x2b082b082b2b082b, 0x2b082b1908080819, 0x2b082b1908081908,
-    0x2b082b1919080808, 0x2b082b19192b1919, 0x2b082b2b082b082b, 0x2b082b2b19192b08,
-    0x2b082b2b19192b2b, 0x2b082b2b2b08082b, 0x2b082b2b2b2b082b, 0x2b19080808080819,
-    0x2b19080808081908, 0x2b19080808082b19, 0x2b19080808190808, 0x2b1908080819082b,
-    0x2b19080808191919, 0x2b19080808192b08, 0x2b190808082b1908, 0x2b19080819080808,
-    0x2b1908081908082b, 0x2b19080819081919, 0x2b19080819082b08, 0x2b19080819190819,
-    0x2b19080819191908, 0x2b190808192b0808, 0x2b1908082b080819, 0x2b1908082b081908,
-    0x2b1908082b190808, 0x2b19081908080808, 0x2b19081908081919, 0x2b19081908190819,
-    0x2b19081908191908, 0x2b19081919080819, 0x2b19081919081908, 0x2b19081919190808,
-    0x2b19081919192b2b, 0x2b19082b08080819, 0x2b19082b08081908, 0x2b19082b08190808,
-    0x2b19082b19080808, 0x2b19082b2b2b192b, 0x2b19190808080808, 0x2b1919080808082b,
-    0x2b19190808081919, 0x2b19190808082b08, 0x2b19190808190819, 0x2b19190808191908,
-    0x2b191908082b0808, 0x2b19190819080819, 0x2b19190819081908, 0x2b19190819190808,
-    0x2b1919082b080808, 0x2b1919082b19192b, 0x2b19191908080819, 0x2b19191908081908,
-    0x2b19191908190808, 0x2b19191919080808, 0x2b1919192b192b08, 0x2b1919192b2b0819,
-    0x2b19192b08080808, 0x2b19192b1908192b, 0x2b19192b192b1908, 0x2b192b0808080819,
-    0x2b192b0808081908, 0x2b192b0808190808, 0x2b192b08082b192b, 0x2b192b0819080808,
-    0x2b192b082b2b2b19, 0x2b192b1908080808, 0x2b192b1919082b19, 0x2b192b191919082b,
-    0x2b192b2b2b190808, 0x2b2b080808080808, 0x2b2b080808081919, 0x2b2b080808082b2b,
-    0x2b2b080808191908, 0x2b2b0808082b082b, 0x2b2b0808082b2b2b, 0x2b2b080819080819,
-    0x2b2b080819081908, 0x2b2b080819190808, 0x2b2b08082b2b082b, 0x2b2b08082b2b2b2b,
-    0x2b2b081919080808, 0x2b2b0819192b1919, 0x2b2b082b0808082b, 0x2b2b082b08082b2b,
-    0x2b2b082b082b082b, 0x2b2b082b082b2b08, 0x2b2b082b082b2b2b, 0x2b2b082b2b08082b,
-    0x2b2b082b2b082b08, 0x2b2b082b2b082b2b, 0x2b2b082b2b2b2b08, 0x2b2b190808080819,
-    0x2b2b190808081908, 0x2b2b190808190808, 0x2b2b190819080808, 0x2b2b19082b082b19,
-    0x2b2b19082b2b1908, 0x2b2b191908080808, 0x2b2b191908192b19, 0x2b2b192b19190819,
-    0x2b2b2b0808082b2b, 0x2b2b2b08082b2b08, 0x2b2b2b082b2b082b, 0x2b2b2b1919191908,
-    0x2b2b2b192b08192b, 0x2b2b2b2b08082b08, 0x2b2b2b2b08082b2b, 0x2b2b2b2b082b0808,
-    0x2b2b2b2b082b082b, 0x2b2b2b2b082b2b08, 0x2b2b2b2b2b082b08, 0x2b2b2b2b2b2b2b2b,
-};
-
-static __device__ const unsigned kiq3xxs_grid[256] = {
-    0x04040404, 0x04040414, 0x04040424, 0x04040c0c, 0x04040c1c, 0x04040c3e, 0x04041404, 0x04041414,
-    0x04041c0c, 0x04042414, 0x04043e1c, 0x04043e2c, 0x040c040c, 0x040c041c, 0x040c0c04, 0x040c0c14,
-    0x040c140c, 0x040c142c, 0x040c1c04, 0x040c1c14, 0x040c240c, 0x040c2c24, 0x040c3e04, 0x04140404,
-    0x04140414, 0x04140424, 0x04140c0c, 0x04141404, 0x04141414, 0x04141c0c, 0x04141c1c, 0x04141c3e,
-    0x04142c0c, 0x04142c3e, 0x04143e2c, 0x041c040c, 0x041c043e, 0x041c0c04, 0x041c0c14, 0x041c142c,
-    0x041c3e04, 0x04240c1c, 0x04241c3e, 0x04242424, 0x04242c3e, 0x04243e1c, 0x04243e2c, 0x042c040c,
-    0x042c043e, 0x042c1c14, 0x042c2c14, 0x04341c2c, 0x04343424, 0x043e0c04, 0x043e0c24, 0x043e0c34,
-    0x043e241c, 0x043e340c, 0x0c04040c, 0x0c04041c, 0x0c040c04, 0x0c040c14, 0x0c04140c, 0x0c04141c,
-    0x0c041c04, 0x0c041c14, 0x0c041c24, 0x0c04243e, 0x0c042c04, 0x0c0c0404, 0x0c0c0414, 0x0c0c0c0c,
-    0x0c0c1404, 0x0c0c1414, 0x0c14040c, 0x0c14041c, 0x0c140c04, 0x0c140c14, 0x0c14140c, 0x0c141c04,
-    0x0c143e14, 0x0c1c0404, 0x0c1c0414, 0x0c1c1404, 0x0c1c1c0c, 0x0c1c2434, 0x0c1c3434, 0x0c24040c,
-    0x0c24042c, 0x0c242c04, 0x0c2c1404, 0x0c2c1424, 0x0c2c2434, 0x0c2c3e0c, 0x0c34042c, 0x0c3e1414,
-    0x0c3e2404, 0x14040404, 0x14040414, 0x14040c0c, 0x14040c1c, 0x14041404, 0x14041414, 0x14041434,
-    0x14041c0c, 0x14042414, 0x140c040c, 0x140c041c, 0x140c042c, 0x140c0c04, 0x140c0c14, 0x140c140c,
-    0x140c1c04, 0x140c341c, 0x140c343e, 0x140c3e04, 0x14140404, 0x14140414, 0x14140c0c, 0x14140c3e,
-    0x14141404, 0x14141414, 0x14141c3e, 0x14142404, 0x14142c2c, 0x141c040c, 0x141c0c04, 0x141c0c24,
-    0x141c3e04, 0x141c3e24, 0x14241c2c, 0x14242c1c, 0x142c041c, 0x142c143e, 0x142c240c, 0x142c3e24,
-    0x143e040c, 0x143e041c, 0x143e0c34, 0x143e242c, 0x1c04040c, 0x1c040c04, 0x1c040c14, 0x1c04140c,
-    0x1c04141c, 0x1c042c04, 0x1c04342c, 0x1c043e14, 0x1c0c0404, 0x1c0c0414, 0x1c0c1404, 0x1c0c1c0c,
-    0x1c0c2424, 0x1c0c2434, 0x1c14040c, 0x1c14041c, 0x1c140c04, 0x1c14142c, 0x1c142c14, 0x1c143e14,
-    0x1c1c0c0c, 0x1c1c1c1c, 0x1c241c04, 0x1c24243e, 0x1c243e14, 0x1c2c0404, 0x1c2c0434, 0x1c2c1414,
-    0x1c2c2c2c, 0x1c340c24, 0x1c341c34, 0x1c34341c, 0x1c3e1c1c, 0x1c3e3404, 0x24040424, 0x24040c3e,
-    0x24041c2c, 0x24041c3e, 0x24042c1c, 0x24042c3e, 0x240c3e24, 0x24141404, 0x24141c3e, 0x24142404,
-    0x24143404, 0x24143434, 0x241c043e, 0x241c242c, 0x24240424, 0x24242c0c, 0x24243424, 0x242c142c,
-    0x242c241c, 0x242c3e04, 0x243e042c, 0x243e0c04, 0x243e0c14, 0x243e1c04, 0x2c040c14, 0x2c04240c,
-    0x2c043e04, 0x2c0c0404, 0x2c0c0434, 0x2c0c1434, 0x2c0c2c2c, 0x2c140c24, 0x2c141c14, 0x2c143e14,
-    0x2c1c0414, 0x2c1c2c1c, 0x2c240c04, 0x2c24141c, 0x2c24143e, 0x2c243e14, 0x2c2c0414, 0x2c2c1c0c,
-    0x2c342c04, 0x2c3e1424, 0x2c3e2414, 0x34041424, 0x34042424, 0x34042434, 0x34043424, 0x340c140c,
-    0x340c340c, 0x34140c3e, 0x34143424, 0x341c1c04, 0x341c1c34, 0x34242424, 0x342c042c, 0x342c2c14,
-    0x34341c1c, 0x343e041c, 0x343e140c, 0x3e04041c, 0x3e04042c, 0x3e04043e, 0x3e040c04, 0x3e041c14,
-    0x3e042c14, 0x3e0c1434, 0x3e0c2404, 0x3e140c14, 0x3e14242c, 0x3e142c14, 0x3e1c0404, 0x3e1c0c2c,
-    0x3e1c1c1c, 0x3e1c3404, 0x3e24140c, 0x3e24240c, 0x3e2c0404, 0x3e2c0414, 0x3e2c1424, 0x3e341c04,
-};
-
-static __device__ const unsigned kiq3s_grid[512] = {
-    0x01010101, 0x01010103, 0x01010105, 0x0101010b, 0x0101010f, 0x01010301, 0x01010303, 0x01010305,
-    0x01010309, 0x0101030d, 0x01010501, 0x01010503, 0x0101050b, 0x01010707, 0x01010901, 0x01010905,
-    0x0101090b, 0x0101090f, 0x01010b03, 0x01010b07, 0x01010d01, 0x01010d05, 0x01010f03, 0x01010f09,
-    0x01010f0f, 0x01030101, 0x01030103, 0x01030105, 0x01030109, 0x01030301, 0x01030303, 0x0103030b,
-    0x01030501, 0x01030507, 0x0103050f, 0x01030703, 0x0103070b, 0x01030909, 0x01030d03, 0x01030d0b,
-    0x01030f05, 0x01050101, 0x01050103, 0x0105010b, 0x0105010f, 0x01050301, 0x01050307, 0x0105030d,
-    0x01050503, 0x0105050b, 0x01050701, 0x01050709, 0x01050905, 0x0105090b, 0x0105090f, 0x01050b03,
-    0x01050b07, 0x01050f01, 0x01050f07, 0x01070107, 0x01070303, 0x0107030b, 0x01070501, 0x01070505,
-    0x01070703, 0x01070707, 0x0107070d, 0x01070909, 0x01070b01, 0x01070b05, 0x01070d0f, 0x01070f03,
-    0x01070f0b, 0x01090101, 0x01090307, 0x0109030f, 0x01090503, 0x01090509, 0x01090705, 0x01090901,
-    0x01090907, 0x01090b03, 0x01090f01, 0x010b0105, 0x010b0109, 0x010b0501, 0x010b0505, 0x010b050d,
-    0x010b0707, 0x010b0903, 0x010b090b, 0x010b090f, 0x010b0d0d, 0x010b0f07, 0x010d010d, 0x010d0303,
-    0x010d0307, 0x010d0703, 0x010d0b05, 0x010d0f03, 0x010f0101, 0x010f0105, 0x010f0109, 0x010f0501,
-    0x010f0505, 0x010f050d, 0x010f0707, 0x010f0b01, 0x010f0b09, 0x03010101, 0x03010103, 0x03010105,
-    0x03010109, 0x03010301, 0x03010303, 0x03010307, 0x0301030b, 0x0301030f, 0x03010501, 0x03010505,
-    0x03010703, 0x03010709, 0x0301070d, 0x03010b09, 0x03010b0d, 0x03010d03, 0x03010f05, 0x03030101,
-    0x03030103, 0x03030107, 0x0303010d, 0x03030301, 0x03030309, 0x03030503, 0x03030701, 0x03030707,
-    0x03030903, 0x03030b01, 0x03030b05, 0x03030f01, 0x03030f0d, 0x03050101, 0x03050305, 0x0305030b,
-    0x0305030f, 0x03050501, 0x03050509, 0x03050705, 0x03050901, 0x03050907, 0x03050b0b, 0x03050d01,
-    0x03050f05, 0x03070103, 0x03070109, 0x0307010f, 0x03070301, 0x03070307, 0x03070503, 0x0307050f,
-    0x03070701, 0x03070709, 0x03070903, 0x03070d05, 0x03070f01, 0x03090107, 0x0309010b, 0x03090305,
-    0x03090309, 0x03090703, 0x03090707, 0x03090905, 0x0309090d, 0x03090b01, 0x03090b09, 0x030b0103,
-    0x030b0301, 0x030b0307, 0x030b0503, 0x030b0701, 0x030b0705, 0x030b0b03, 0x030d0501, 0x030d0509,
-    0x030d050f, 0x030d0909, 0x030d090d, 0x030f0103, 0x030f0107, 0x030f0301, 0x030f0305, 0x030f0503,
-    0x030f070b, 0x030f0903, 0x030f0d05, 0x030f0f01, 0x05010101, 0x05010103, 0x05010107, 0x0501010b,
-    0x0501010f, 0x05010301, 0x05010305, 0x05010309, 0x0501030d, 0x05010503, 0x05010507, 0x0501050f,
-    0x05010701, 0x05010705, 0x05010903, 0x05010907, 0x0501090b, 0x05010b01, 0x05010b05, 0x05010d0f,
-    0x05010f01, 0x05010f07, 0x05010f0b, 0x05030101, 0x05030105, 0x05030301, 0x05030307, 0x0503030f,
-    0x05030505, 0x0503050b, 0x05030703, 0x05030709, 0x05030905, 0x05030b03, 0x05050103, 0x05050109,
-    0x0505010f, 0x05050503, 0x05050507, 0x05050701, 0x0505070f, 0x05050903, 0x05050b07, 0x05050b0f,
-    0x05050f03, 0x05050f09, 0x05070101, 0x05070105, 0x0507010b, 0x05070303, 0x05070505, 0x05070509,
-    0x05070703, 0x05070707, 0x05070905, 0x05070b01, 0x05070d0d, 0x05090103, 0x0509010f, 0x05090501,
-    0x05090507, 0x05090705, 0x0509070b, 0x05090903, 0x05090f05, 0x05090f0b, 0x050b0109, 0x050b0303,
-    0x050b0505, 0x050b070f, 0x050b0901, 0x050b0b07, 0x050b0f01, 0x050d0101, 0x050d0105, 0x050d010f,
-    0x050d0503, 0x050d0b0b, 0x050d0d03, 0x050f010b, 0x050f0303, 0x050f050d, 0x050f0701, 0x050f0907,
-    0x050f0b01, 0x07010105, 0x07010303, 0x07010307, 0x0701030b, 0x0701030f, 0x07010505, 0x07010703,
-    0x07010707, 0x0701070b, 0x07010905, 0x07010909, 0x0701090f, 0x07010b03, 0x07010d07, 0x07010f03,
-    0x07030103, 0x07030107, 0x0703010b, 0x07030309, 0x07030503, 0x07030507, 0x07030901, 0x07030d01,
-    0x07030f05, 0x07030f0d, 0x07050101, 0x07050305, 0x07050501, 0x07050705, 0x07050709, 0x07050b01,
-    0x07070103, 0x07070301, 0x07070309, 0x07070503, 0x07070507, 0x0707050f, 0x07070701, 0x07070903,
-    0x07070907, 0x0707090f, 0x07070b0b, 0x07070f07, 0x07090107, 0x07090303, 0x0709030d, 0x07090505,
-    0x07090703, 0x07090b05, 0x07090d01, 0x07090d09, 0x070b0103, 0x070b0301, 0x070b0305, 0x070b050b,
-    0x070b0705, 0x070b0909, 0x070b0b0d, 0x070b0f07, 0x070d030d, 0x070d0903, 0x070f0103, 0x070f0107,
-    0x070f0501, 0x070f0505, 0x070f070b, 0x09010101, 0x09010109, 0x09010305, 0x09010501, 0x09010509,
-    0x0901050f, 0x09010705, 0x09010903, 0x09010b01, 0x09010f01, 0x09030105, 0x0903010f, 0x09030303,
-    0x09030307, 0x09030505, 0x09030701, 0x0903070b, 0x09030907, 0x09030b03, 0x09030b0b, 0x09050103,
-    0x09050107, 0x09050301, 0x0905030b, 0x09050503, 0x09050707, 0x09050901, 0x09050b0f, 0x09050d05,
-    0x09050f01, 0x09070109, 0x09070303, 0x09070307, 0x09070501, 0x09070505, 0x09070703, 0x0907070b,
-    0x09090101, 0x09090105, 0x09090509, 0x0909070f, 0x09090901, 0x09090f03, 0x090b010b, 0x090b010f,
-    0x090b0503, 0x090b0d05, 0x090d0307, 0x090d0709, 0x090d0d01, 0x090f0301, 0x090f030b, 0x090f0701,
-    0x090f0907, 0x090f0b03, 0x0b010105, 0x0b010301, 0x0b010309, 0x0b010505, 0x0b010901, 0x0b010909,
-    0x0b01090f, 0x0b010b05, 0x0b010d0d, 0x0b010f09, 0x0b030103, 0x0b030107, 0x0b03010b, 0x0b030305,
-    0x0b030503, 0x0b030705, 0x0b030f05, 0x0b050101, 0x0b050303, 0x0b050507, 0x0b050701, 0x0b05070d,
-    0x0b050b07, 0x0b070105, 0x0b07010f, 0x0b070301, 0x0b07050f, 0x0b070909, 0x0b070b03, 0x0b070d0b,
-    0x0b070f07, 0x0b090103, 0x0b090109, 0x0b090501, 0x0b090705, 0x0b09090d, 0x0b0b0305, 0x0b0b050d,
-    0x0b0b0b03, 0x0b0b0b07, 0x0b0d0905, 0x0b0f0105, 0x0b0f0109, 0x0b0f0505, 0x0d010303, 0x0d010307,
-    0x0d01030b, 0x0d010703, 0x0d010707, 0x0d010d01, 0x0d030101, 0x0d030501, 0x0d03050f, 0x0d030d09,
-    0x0d050305, 0x0d050709, 0x0d050905, 0x0d050b0b, 0x0d050d05, 0x0d050f01, 0x0d070101, 0x0d070309,
-    0x0d070503, 0x0d070901, 0x0d09050b, 0x0d090907, 0x0d090d05, 0x0d0b0101, 0x0d0b0107, 0x0d0b0709,
-    0x0d0b0d01, 0x0d0d010b, 0x0d0d0901, 0x0d0f0303, 0x0d0f0307, 0x0f010101, 0x0f010109, 0x0f01010f,
-    0x0f010501, 0x0f010505, 0x0f01070d, 0x0f010901, 0x0f010b09, 0x0f010d05, 0x0f030105, 0x0f030303,
-    0x0f030509, 0x0f030907, 0x0f03090b, 0x0f050103, 0x0f050109, 0x0f050301, 0x0f05030d, 0x0f050503,
-    0x0f050701, 0x0f050b03, 0x0f070105, 0x0f070705, 0x0f07070b, 0x0f070b07, 0x0f090103, 0x0f09010b,
-    0x0f090307, 0x0f090501, 0x0f090b01, 0x0f0b0505, 0x0f0b0905, 0x0f0d0105, 0x0f0d0703, 0x0f0f0101,
-};
-
-static __device__ const ulong64 kiq1s_grid[2048] = {
-    0xffffffffffffffff, 0xffffffffffffff01, 0xffffffffffff0000, 0xffffffffffff01ff,
-    0xffffffffffff0101, 0xffffffffff00ff00, 0xffffffffff000000, 0xffffffffff01ffff,
-    0xffffffffff01ff01, 0xffffffffff0101ff, 0xffffffffff010101, 0xffffffff00ff0000,
-    0xffffffff0000ff00, 0xffffffff000000ff, 0xffffffff00000001, 0xffffffff00010000,
-    0xffffffff01ffffff, 0xffffffff01ffff01, 0xffffffff01ff01ff, 0xffffffff01ff0101,
-    0xffffffff01000000, 0xffffffff0101ffff, 0xffffffff0101ff01, 0xffffffff010101ff,
-    0xffffffff01010101, 0xffffff00ffff00ff, 0xffffff00ffff0000, 0xffffff00ff00ff00,
-    0xffffff00ff0000ff, 0xffffff00ff000001, 0xffffff00ff000100, 0xffffff00ff000101,
-    0xffffff00ff010000, 0xffffff0000ffff00, 0xffffff0000ff0001, 0xffffff0000ff0100,
-    0xffffff000000ff01, 0xffffff0000000000, 0xffffff0000000101, 0xffffff000001ff00,
-    0xffffff00000100ff, 0xffffff0000010001, 0xffffff00000101ff, 0xffffff0001ff0000,
-    0xffffff000100ff00, 0xffffff00010000ff, 0xffffff0001000001, 0xffffff0001010000,
-    0xffffff01ffffffff, 0xffffff01ffffff01, 0xffffff01ffff01ff, 0xffffff01ffff0101,
-    0xffffff01ff000000, 0xffffff01ff01ffff, 0xffffff01ff01ff01, 0xffffff01ff0101ff,
-    0xffffff01ff010101, 0xffffff0100ff0000, 0xffffff010000ff00, 0xffffff0100000100,
-    0xffffff01000100ff, 0xffffff0100010100, 0xffffff0101ffffff, 0xffffff0101ffff01,
-    0xffffff0101ff01ff, 0xffffff0101ff0101, 0xffffff010100ff00, 0xffffff0101000000,
-    0xffffff0101000100, 0xffffff010101ffff, 0xffffff010101ff01, 0xffffff01010101ff,
-    0xffffff0101010101, 0xffff00ffff00ff00, 0xffff00ffff0000ff, 0xffff00ffff000001,
-    0xffff00ffff010000, 0xffff00ff00ffff00, 0xffff00ff00ff0100, 0xffff00ff00000000,
-    0xffff00ff00000101, 0xffff00ff000100ff, 0xffff00ff00010000, 0xffff00ff0100ff00,
-    0xffff00ff01000100, 0xffff00ff01010000, 0xffff0000ffffff00, 0xffff0000ffff00ff,
-    0xffff0000ffff0000, 0xffff0000ffff0001, 0xffff0000ff000000, 0xffff0000ff0001ff,
-    0xffff0000ff000101, 0xffff0000ff010100, 0xffff000000ffffff, 0xffff000000ff0000,
-    0xffff000000ff0101, 0xffff00000000ffff, 0xffff00000000ff00, 0xffff0000000000ff,
-    0xffff000000000000, 0xffff000000000001, 0xffff000000000100, 0xffff00000001ffff,
-    0xffff00000001ff01, 0xffff000000010000, 0xffff0000000101ff, 0xffff000000010101,
-    0xffff000001ffff00, 0xffff00000100ff00, 0xffff000001000000, 0xffff0000010001ff,
-    0xffff000001000101, 0xffff00000101ff00, 0xffff0000010100ff, 0xffff000001010000,
-    0xffff000001010001, 0xffff000001010100, 0xffff0001ff0000ff, 0xffff0001ff000100,
-    0xffff000100ffff00, 0xffff000100ff00ff, 0xffff00010000ffff, 0xffff00010000ff01,
-    0xffff000100000000, 0xffff0001000001ff, 0xffff00010001ffff, 0xffff00010001ff00,
-    0xffff000100010001, 0xffff000100010100, 0xffff000101ff0000, 0xffff00010100ff00,
-    0xffff0001010000ff, 0xffff000101000100, 0xffff01ffffffffff, 0xffff01ffffffff01,
-    0xffff01ffffff01ff, 0xffff01ffffff0101, 0xffff01ffff000000, 0xffff01ffff01ffff,
-    0xffff01ffff01ff01, 0xffff01ffff0101ff, 0xffff01ffff010101, 0xffff01ff00ff0000,
-    0xffff01ff0000ff00, 0xffff01ff00000001, 0xffff01ff00010000, 0xffff01ff01ffffff,
-    0xffff01ff01ffff01, 0xffff01ff01ff01ff, 0xffff01ff01ff0101, 0xffff01ff01000000,
-    0xffff01ff0101ffff, 0xffff01ff0101ff01, 0xffff01ff010101ff, 0xffff01ff01010101,
-    0xffff0100ffff0000, 0xffff0100ff00ff00, 0xffff0100ff0000ff, 0xffff0100ff000100,
-    0xffff0100ff0100ff, 0xffff0100ff010000, 0xffff010000ffff00, 0xffff01000000ffff,
-    0xffff01000000ff00, 0xffff010000000000, 0xffff01000001ff00, 0xffff0100000100ff,
-    0xffff010000010100, 0xffff01000100ff00, 0xffff0100010000ff, 0xffff010001000001,
-    0xffff010001000100, 0xffff010001010000, 0xffff0101ffffffff, 0xffff0101ffffff01,
-    0xffff0101ffff01ff, 0xffff0101ffff0101, 0xffff0101ff000000, 0xffff0101ff01ffff,
-    0xffff0101ff01ff01, 0xffff0101ff0101ff, 0xffff0101ff010101, 0xffff010100ff0000,
-    0xffff01010000ff00, 0xffff010100000100, 0xffff01010001ff00, 0xffff010100010000,
-    0xffff010101ffffff, 0xffff010101ffff01, 0xffff010101ff0000, 0xffff010101ff01ff,
-    0xffff010101ff0101, 0xffff010101000000, 0xffff01010101ffff, 0xffff01010101ff01,
-    0xffff0101010101ff, 0xffff010101010101, 0xff00ffffff00ffff, 0xff00ffffff00ff00,
-    0xff00ffffff0000ff, 0xff00ffffff000100, 0xff00ffffff0100ff, 0xff00ffffff010000,
-    0xff00ffff00ffff00, 0xff00ffff00ff00ff, 0xff00ffff0000ffff, 0xff00ffff00000000,
-    0xff00ffff000001ff, 0xff00ffff0001ff00, 0xff00ffff000100ff, 0xff00ffff00010000,
-    0xff00ffff00010100, 0xff00ffff0100ff00, 0xff00ffff010000ff, 0xff00ffff01000001,
-    0xff00ffff0101ff00, 0xff00ffff01010000, 0xff00ff00ffffff00, 0xff00ff00ffff00ff,
-    0xff00ff00ffff0001, 0xff00ff00ffff0100, 0xff00ff00ff00ffff, 0xff00ff00ff00ff01,
-    0xff00ff00ff000000, 0xff00ff00ff0001ff, 0xff00ff00ff01ff00, 0xff00ff00ff0100ff,
-    0xff00ff00ff010100, 0xff00ff0000ff0000, 0xff00ff0000ff0101, 0xff00ff000000ffff,
-    0xff00ff000000ff00, 0xff00ff000000ff01, 0xff00ff00000000ff, 0xff00ff0000000000,
-    0xff00ff0000000001, 0xff00ff0000000100, 0xff00ff000001ffff, 0xff00ff0000010000,
-    0xff00ff0001ff00ff, 0xff00ff000100ff01, 0xff00ff0001000000, 0xff00ff000101ff00,
-    0xff00ff00010100ff, 0xff00ff01ff00ff00, 0xff00ff01ff0000ff, 0xff00ff01ff000001,
-    0xff00ff01ff010000, 0xff00ff0100ffffff, 0xff00ff0100ff0001, 0xff00ff0100ff0100,
-    0xff00ff010000ff01, 0xff00ff0100000000, 0xff00ff01000001ff, 0xff00ff0100000101,
-    0xff00ff01000100ff, 0xff00ff0100010001, 0xff00ff0101ff0000, 0xff00ff010100ff00,
-    0xff00ff01010000ff, 0xff00ff0101000001, 0xff00ff0101010000, 0xff0000ffffffff00,
-    0xff0000ffffff0001, 0xff0000ffffff0100, 0xff0000ffff0000ff, 0xff0000ffff000000,
-    0xff0000ffff0001ff, 0xff0000ffff000100, 0xff0000ffff01ff00, 0xff0000ffff010001,
-    0xff0000ff00ffff00, 0xff0000ff00ff0000, 0xff0000ff00ff0001, 0xff0000ff00ff01ff,
-    0xff0000ff00ff0101, 0xff0000ff0000ff00, 0xff0000ff000000ff, 0xff0000ff00000000,
-    0xff0000ff00000001, 0xff0000ff00000100, 0xff0000ff0001ff01, 0xff0000ff00010000,
-    0xff0000ff000101ff, 0xff0000ff01ff00ff, 0xff0000ff01ff0100, 0xff0000ff0100ffff,
-    0xff0000ff010000ff, 0xff0000ff01000000, 0xff0000ff010001ff, 0xff0000ff01000100,
-    0xff0000ff01000101, 0xff0000ff0101ff00, 0xff0000ff010100ff, 0xff0000ff01010000,
-    0xff0000ff01010100, 0xff000000ffffff01, 0xff000000ffff0000, 0xff000000ffff0101,
-    0xff000000ff00ff00, 0xff000000ff0000ff, 0xff000000ff000000, 0xff000000ff000001,
-    0xff000000ff000100, 0xff000000ff01ffff, 0xff000000ff01ff01, 0xff000000ff010000,
-    0xff000000ff0101ff, 0xff000000ff010101, 0xff00000000ffff00, 0xff00000000ff00ff,
-    0xff00000000ff0000, 0xff00000000ff0001, 0xff0000000000ff00, 0xff0000000000ff01,
-    0xff000000000000ff, 0xff00000000000000, 0xff00000000000001, 0xff00000000000100,
-    0xff00000000000101, 0xff0000000001ff00, 0xff000000000100ff, 0xff00000000010000,
-    0xff00000000010001, 0xff00000000010100, 0xff00000001ffffff, 0xff00000001ffff01,
-    0xff00000001ff00ff, 0xff00000001ff0000, 0xff00000001ff01ff, 0xff00000001ff0101,
-    0xff0000000100ffff, 0xff0000000100ff00, 0xff000000010000ff, 0xff00000001000000,
-    0xff00000001000001, 0xff00000001000100, 0xff00000001000101, 0xff0000000101ffff,
-    0xff0000000101ff01, 0xff00000001010000, 0xff000001ffffff00, 0xff000001ffff00ff,
-    0xff000001ffff0000, 0xff000001ffff0001, 0xff000001ff000000, 0xff000001ff000001,
-    0xff000001ff0001ff, 0xff000001ff000101, 0xff000001ff01ff00, 0xff000001ff010001,
-    0xff00000100ffffff, 0xff00000100ffff01, 0xff00000100ff00ff, 0xff00000100ff0000,
-    0xff00000100ff01ff, 0xff00000100ff0101, 0xff0000010000ff00, 0xff00000100000000,
-    0xff00000100000001, 0xff000001000001ff, 0xff00000100000100, 0xff0000010001ff00,
-    0xff000001000100ff, 0xff00000100010000, 0xff000001000101ff, 0xff00000100010100,
-    0xff00000100010101, 0xff00000101ff0001, 0xff00000101ff0101, 0xff0000010100ff01,
-    0xff00000101000000, 0xff000001010100ff, 0xff00000101010100, 0xff0001ffff00ff00,
-    0xff0001ffff000001, 0xff0001ffff010000, 0xff0001ff00ffff00, 0xff0001ff00ff00ff,
-    0xff0001ff00ff0001, 0xff0001ff00ff0100, 0xff0001ff0000ffff, 0xff0001ff00000000,
-    0xff0001ff000001ff, 0xff0001ff00000101, 0xff0001ff0001ffff, 0xff0001ff0001ff00,
-    0xff0001ff000100ff, 0xff0001ff00010001, 0xff0001ff00010100, 0xff0001ff01ff0000,
-    0xff0001ff0100ff00, 0xff0001ff010000ff, 0xff0001ff01010000, 0xff000100ff00ffff,
-    0xff000100ff00ff01, 0xff000100ff000000, 0xff000100ff000101, 0xff000100ff01ff00,
-    0xff000100ff010000, 0xff00010000ffff01, 0xff00010000ff00ff, 0xff00010000ff0000,
-    0xff00010000ff01ff, 0xff0001000000ff00, 0xff000100000000ff, 0xff00010000000000,
-    0xff00010000000001, 0xff00010000000100, 0xff00010000000101, 0xff0001000001ffff,
-    0xff00010000010000, 0xff00010000010101, 0xff00010001ff0100, 0xff0001000100ff00,
-    0xff0001000100ff01, 0xff00010001000000, 0xff000100010001ff, 0xff0001000101ff00,
-    0xff00010001010001, 0xff00010001010100, 0xff000101ffff0100, 0xff000101ff000001,
-    0xff000101ff0100ff, 0xff000101ff010001, 0xff00010100ff00ff, 0xff00010100ff0001,
-    0xff00010100ff0100, 0xff0001010000ffff, 0xff0001010000ff01, 0xff00010100000000,
-    0xff000101000001ff, 0xff0001010001ff00, 0xff00010100010001, 0xff00010100010100,
-    0xff00010101ff0000, 0xff0001010100ff00, 0xff00010101000001, 0xff00010101000101,
-    0xff01ffffffffffff, 0xff01ffffffffff01, 0xff01ffffffff01ff, 0xff01ffffffff0101,
-    0xff01ffffff000000, 0xff01ffffff01ffff, 0xff01ffffff01ff01, 0xff01ffffff010000,
-    0xff01ffffff0101ff, 0xff01ffffff010101, 0xff01ffff00ff0000, 0xff01ffff0000ff00,
-    0xff01ffff00000100, 0xff01ffff0001ff00, 0xff01ffff00010000, 0xff01ffff01ffffff,
-    0xff01ffff01ffff01, 0xff01ffff01ff01ff, 0xff01ffff01ff0101, 0xff01ffff01000000,
-    0xff01ffff0101ffff, 0xff01ffff0101ff01, 0xff01ffff01010000, 0xff01ffff010101ff,
-    0xff01ffff01010101, 0xff01ff00ffff0000, 0xff01ff00ff00ff00, 0xff01ff00ff0000ff,
-    0xff01ff00ff000100, 0xff01ff00ff010000, 0xff01ff0000ffff01, 0xff01ff0000ff00ff,
-    0xff01ff0000ff0100, 0xff01ff0000000000, 0xff01ff00000001ff, 0xff01ff0000000101,
-    0xff01ff000001ff00, 0xff01ff00000100ff, 0xff01ff0000010000, 0xff01ff0000010001,
-    0xff01ff0001ff0000, 0xff01ff000100ffff, 0xff01ff0001000001, 0xff01ff0001000100,
-    0xff01ff0001010000, 0xff01ff01ffffff00, 0xff01ff01ffff01ff, 0xff01ff01ffff0101,
-    0xff01ff01ff00ff00, 0xff01ff01ff000000, 0xff01ff01ff01ffff, 0xff01ff01ff01ff01,
-    0xff01ff01ff0101ff, 0xff01ff01ff010101, 0xff01ff0100ff0000, 0xff01ff010000ff00,
-    0xff01ff0100000001, 0xff01ff0100000100, 0xff01ff0100010000, 0xff01ff0101ffff00,
-    0xff01ff0101ff01ff, 0xff01ff0101ff0101, 0xff01ff010100ff00, 0xff01ff0101000000,
-    0xff01ff010101ffff, 0xff01ff010101ff01, 0xff01ff01010101ff, 0xff01ff0101010101,
-    0xff0100ffffff0000, 0xff0100ffff0000ff, 0xff0100ffff000001, 0xff0100ffff000100,
-    0xff0100ffff010000, 0xff0100ff00ff00ff, 0xff0100ff00ff0000, 0xff0100ff00ff0001,
-    0xff0100ff00ff0100, 0xff0100ff0000ff01, 0xff0100ff00000000, 0xff0100ff000001ff,
-    0xff0100ff00000101, 0xff0100ff00010001, 0xff0100ff01ff0000, 0xff0100ff0100ff00,
-    0xff0100ff010000ff, 0xff0100ff01000100, 0xff0100ff0101ff00, 0xff0100ff01010000,
-    0xff010000ffff0100, 0xff010000ff000000, 0xff010000ff01ff00, 0xff010000ff010100,
-    0xff01000000ffffff, 0xff01000000ff0000, 0xff01000000ff01ff, 0xff0100000000ff00,
-    0xff010000000000ff, 0xff01000000000000, 0xff01000000000100, 0xff0100000001ff01,
-    0xff01000000010000, 0xff010000000101ff, 0xff01000001ff0100, 0xff0100000100ffff,
-    0xff010000010000ff, 0xff01000001000000, 0xff010000010001ff, 0xff01000001000101,
-    0xff0100000101ff00, 0xff010000010100ff, 0xff01000001010001, 0xff01000001010100,
-    0xff010001ffff0000, 0xff010001ff00ffff, 0xff010001ff00ff01, 0xff010001ff000100,
-    0xff010001ff010000, 0xff01000100ffff00, 0xff01000100ff0100, 0xff01000100000000,
-    0xff0100010001ffff, 0xff0100010001ff00, 0xff01000100010100, 0xff01000101ff00ff,
-    0xff01000101ff0001, 0xff0100010100ffff, 0xff01000101000101, 0xff0101ffffffffff,
-    0xff0101ffffffff01, 0xff0101ffffff01ff, 0xff0101ffffff0101, 0xff0101ffff000000,
-    0xff0101ffff01ffff, 0xff0101ffff01ff01, 0xff0101ffff0101ff, 0xff0101ffff010101,
-    0xff0101ff00ff0000, 0xff0101ff0000ff00, 0xff0101ff000000ff, 0xff0101ff00010000,
-    0xff0101ff01ffffff, 0xff0101ff01ffff01, 0xff0101ff01ff01ff, 0xff0101ff01ff0101,
-    0xff0101ff0101ffff, 0xff0101ff0101ff01, 0xff0101ff010101ff, 0xff0101ff01010101,
-    0xff010100ffff0100, 0xff010100ff00ff00, 0xff010100ff0000ff, 0xff010100ff000100,
-    0xff010100ff010000, 0xff01010000ff0001, 0xff01010000ff0100, 0xff0101000000ff01,
-    0xff01010000000000, 0xff0101000001ff00, 0xff010100000100ff, 0xff01010000010001,
-    0xff01010000010100, 0xff01010001ff0000, 0xff0101000100ffff, 0xff01010001000001,
-    0xff01010001000100, 0xff010100010100ff, 0xff01010001010000, 0xff010101ffffffff,
-    0xff010101ffffff01, 0xff010101ffff01ff, 0xff010101ffff0101, 0xff010101ff01ffff,
-    0xff010101ff01ff01, 0xff010101ff0101ff, 0xff010101ff010101, 0xff01010100ff0000,
-    0xff0101010000ff00, 0xff01010100000001, 0xff01010100000100, 0xff01010100010000,
-    0xff01010101ffffff, 0xff01010101ffff01, 0xff01010101ff01ff, 0xff01010101ff0101,
-    0xff01010101000000, 0xff0101010101ffff, 0xff0101010101ff01, 0xff010101010101ff,
-    0xff01010101010101, 0x00ffffffffff0000, 0x00ffffffff00ff00, 0x00ffffffff000001,
-    0x00ffffffff010000, 0x00ffffff00ff0100, 0x00ffffff0000ff01, 0x00ffffff00000000,
-    0x00ffffff000001ff, 0x00ffffff00000101, 0x00ffffff0001ff00, 0x00ffffff000100ff,
-    0x00ffffff00010001, 0x00ffffff010000ff, 0x00ffffff01000100, 0x00ffffff0101ff00,
-    0x00ffffff01010001, 0x00ffff00ffffffff, 0x00ffff00ffffff00, 0x00ffff00ffff00ff,
-    0x00ffff00ffff0001, 0x00ffff00ffff0100, 0x00ffff00ff00ff01, 0x00ffff00ff000000,
-    0x00ffff00ff000001, 0x00ffff00ff0001ff, 0x00ffff00ff000101, 0x00ffff00ff01ff00,
-    0x00ffff00ff010001, 0x00ffff00ff010100, 0x00ffff0000ff0000, 0x00ffff0000ff01ff,
-    0x00ffff0000ff0101, 0x00ffff000000ff00, 0x00ffff00000000ff, 0x00ffff0000000000,
-    0x00ffff0000000001, 0x00ffff0000000100, 0x00ffff0000000101, 0x00ffff0000010000,
-    0x00ffff00000101ff, 0x00ffff0000010101, 0x00ffff0001ffff00, 0x00ffff0001ff00ff,
-    0x00ffff0001ff0001, 0x00ffff000100ffff, 0x00ffff000100ff01, 0x00ffff0001000000,
-    0x00ffff000101ffff, 0x00ffff000101ff00, 0x00ffff000101ff01, 0x00ffff01ffff0000,
-    0x00ffff01ff00ff00, 0x00ffff01ff0000ff, 0x00ffff01ff000001, 0x00ffff01ff010000,
-    0x00ffff0100ffff00, 0x00ffff010000ff01, 0x00ffff0100000000, 0x00ffff0100000101,
-    0x00ffff01000100ff, 0x00ffff0100010100, 0x00ffff0101ff0100, 0x00ffff01010000ff,
-    0x00ffff0101010000, 0x00ff00ffffffff00, 0x00ff00ffff000000, 0x00ff00ffff000100,
-    0x00ff00ffff010100, 0x00ff00ff00ff0000, 0x00ff00ff00ff01ff, 0x00ff00ff00ff0101,
-    0x00ff00ff0000ff00, 0x00ff00ff000000ff, 0x00ff00ff00000000, 0x00ff00ff00000001,
-    0x00ff00ff0001ff00, 0x00ff00ff0001ff01, 0x00ff00ff00010000, 0x00ff00ff000101ff,
-    0x00ff00ff00010101, 0x00ff00ff01ffff00, 0x00ff00ff01ff0001, 0x00ff00ff01ff0100,
-    0x00ff00ff0100ffff, 0x00ff00ff0100ff01, 0x00ff00ff01000000, 0x00ff00ff0101ffff,
-    0x00ff00ff0101ff00, 0x00ff00ff01010100, 0x00ff0000ffffff00, 0x00ff0000ffffff01,
-    0x00ff0000ffff0000, 0x00ff0000ffff0101, 0x00ff0000ff00ff00, 0x00ff0000ff0000ff,
-    0x00ff0000ff000000, 0x00ff0000ff000001, 0x00ff0000ff000100, 0x00ff0000ff01ffff,
-    0x00ff0000ff010000, 0x00ff0000ff010101, 0x00ff000000ffff00, 0x00ff000000ff00ff,
-    0x00ff000000ff0000, 0x00ff000000ff0001, 0x00ff000000ff0100, 0x00ff00000000ffff,
-    0x00ff00000000ff00, 0x00ff0000000000ff, 0x00ff000000000000, 0x00ff000000000001,
-    0x00ff0000000001ff, 0x00ff000000000100, 0x00ff00000001ff00, 0x00ff0000000100ff,
-    0x00ff000000010000, 0x00ff000000010001, 0x00ff000000010100, 0x00ff000001ffff01,
-    0x00ff000001ff00ff, 0x00ff000001ff0000, 0x00ff000001ff01ff, 0x00ff00000100ff00,
-    0x00ff0000010000ff, 0x00ff000001000000, 0x00ff000001000001, 0x00ff000001000100,
-    0x00ff000001000101, 0x00ff000001010000, 0x00ff0000010101ff, 0x00ff000001010101,
-    0x00ff0001ffffff00, 0x00ff0001ffff0000, 0x00ff0001ffff0100, 0x00ff0001ff0000ff,
-    0x00ff0001ff000000, 0x00ff0001ff0001ff, 0x00ff0001ff000101, 0x00ff0001ff01ff00,
-    0x00ff0001ff0100ff, 0x00ff0001ff010100, 0x00ff000100ffffff, 0x00ff000100ffff01,
-    0x00ff000100ff0000, 0x00ff000100ff01ff, 0x00ff00010000ffff, 0x00ff00010000ff00,
-    0x00ff00010000ff01, 0x00ff000100000000, 0x00ff000100000001, 0x00ff000100000100,
-    0x00ff00010001ff01, 0x00ff000100010000, 0x00ff0001000101ff, 0x00ff000101ffff00,
-    0x00ff000101ff0000, 0x00ff000101ff0101, 0x00ff0001010000ff, 0x00ff000101000000,
-    0x00ff00010101ff00, 0x00ff0001010100ff, 0x00ff000101010001, 0x00ff01ffffff0000,
-    0x00ff01ffff00ff00, 0x00ff01ffff000000, 0x00ff01ffff000101, 0x00ff01ffff010000,
-    0x00ff01ff00ffff01, 0x00ff01ff00ff0100, 0x00ff01ff0000ffff, 0x00ff01ff00000000,
-    0x00ff01ff000001ff, 0x00ff01ff0001ff00, 0x00ff01ff000100ff, 0x00ff01ff00010001,
-    0x00ff01ff00010100, 0x00ff01ff01ff0000, 0x00ff01ff0100ff00, 0x00ff01ff010000ff,
-    0x00ff01ff01000001, 0x00ff01ff01000100, 0x00ff01ff01010000, 0x00ff0100ffffff00,
-    0x00ff0100ffff0000, 0x00ff0100ffff0001, 0x00ff0100ffff0101, 0x00ff0100ff00ffff,
-    0x00ff0100ff0000ff, 0x00ff0100ff000000, 0x00ff0100ff0001ff, 0x00ff0100ff01ff00,
-    0x00ff0100ff0100ff, 0x00ff0100ff010001, 0x00ff010000ffffff, 0x00ff010000ff0000,
-    0x00ff010000ff0101, 0x00ff01000000ff00, 0x00ff01000000ff01, 0x00ff0100000000ff,
-    0x00ff010000000000, 0x00ff010000000001, 0x00ff010000000100, 0x00ff01000001ffff,
-    0x00ff01000001ff01, 0x00ff010000010000, 0x00ff010000010001, 0x00ff010000010101,
-    0x00ff010001ff0001, 0x00ff010001ff0100, 0x00ff01000100ff01, 0x00ff010001000000,
-    0x00ff010001000001, 0x00ff0100010001ff, 0x00ff01000101ff00, 0x00ff0100010100ff,
-    0x00ff010001010001, 0x00ff010001010100, 0x00ff0101ff000001, 0x00ff010100ff00ff,
-    0x00ff010100ff0001, 0x00ff010100ff0100, 0x00ff010100000000, 0x00ff0101000001ff,
-    0x00ff010100000101, 0x00ff0101000100ff, 0x00ff010100010100, 0x00ff0101010000ff,
-    0x00ff010101010000, 0x0000ffffffffff00, 0x0000ffffffff00ff, 0x0000ffffffff0000,
-    0x0000ffffffff0001, 0x0000ffffffff0100, 0x0000ffffff00ff01, 0x0000ffffff000000,
-    0x0000ffffff000101, 0x0000ffffff01ff00, 0x0000ffffff0100ff, 0x0000ffffff010100,
-    0x0000ffff00ffffff, 0x0000ffff00ff0000, 0x0000ffff00ff01ff, 0x0000ffff0000ff00,
-    0x0000ffff000000ff, 0x0000ffff00000000, 0x0000ffff00000001, 0x0000ffff00000100,
-    0x0000ffff00010000, 0x0000ffff000101ff, 0x0000ffff01ff0001, 0x0000ffff01ff0100,
-    0x0000ffff01000000, 0x0000ffff010001ff, 0x0000ffff0101ffff, 0x0000ffff0101ff00,
-    0x0000ffff01010001, 0x0000ffff01010100, 0x0000ff00ffff0000, 0x0000ff00ffff01ff,
-    0x0000ff00ffff0100, 0x0000ff00ffff0101, 0x0000ff00ff00ff00, 0x0000ff00ff0000ff,
-    0x0000ff00ff000000, 0x0000ff00ff000001, 0x0000ff00ff0001ff, 0x0000ff00ff000100,
-    0x0000ff00ff01ffff, 0x0000ff00ff010000, 0x0000ff00ff010001, 0x0000ff00ff0101ff,
-    0x0000ff00ff010101, 0x0000ff0000ffff00, 0x0000ff0000ff00ff, 0x0000ff0000ff0000,
-    0x0000ff0000ff0001, 0x0000ff0000ff0100, 0x0000ff000000ffff, 0x0000ff000000ff00,
-    0x0000ff000000ff01, 0x0000ff00000000ff, 0x0000ff0000000000, 0x0000ff0000000001,
-    0x0000ff00000001ff, 0x0000ff0000000100, 0x0000ff0000000101, 0x0000ff000001ff00,
-    0x0000ff00000100ff, 0x0000ff0000010000, 0x0000ff0000010001, 0x0000ff0000010100,
-    0x0000ff0001ffff01, 0x0000ff0001ff0000, 0x0000ff000100ff00, 0x0000ff00010000ff,
-    0x0000ff0001000000, 0x0000ff0001000001, 0x0000ff0001000100, 0x0000ff000101ffff,
-    0x0000ff0001010000, 0x0000ff0001010101, 0x0000ff01ffffff00, 0x0000ff01ffff0001,
-    0x0000ff01ff00ff01, 0x0000ff01ff000000, 0x0000ff01ff000101, 0x0000ff01ff01ff00,
-    0x0000ff01ff0100ff, 0x0000ff0100ffff01, 0x0000ff0100ff0000, 0x0000ff0100ff0101,
-    0x0000ff010000ff00, 0x0000ff01000000ff, 0x0000ff0100000000, 0x0000ff0100000001,
-    0x0000ff0100000100, 0x0000ff010001ff01, 0x0000ff0100010000, 0x0000ff0101ff0000,
-    0x0000ff010100ffff, 0x0000ff010100ff01, 0x0000ff0101000000, 0x0000ff0101000100,
-    0x0000ff0101000101, 0x0000ff01010100ff, 0x000000ffffff00ff, 0x000000ffffff0000,
-    0x000000ffff00ff00, 0x000000ffff0000ff, 0x000000ffff000000, 0x000000ffff000001,
-    0x000000ffff0001ff, 0x000000ffff000100, 0x000000ffff01ff00, 0x000000ffff010000,
-    0x000000ffff0101ff, 0x000000ffff010101, 0x000000ff00ffff00, 0x000000ff00ff00ff,
-    0x000000ff00ff0000, 0x000000ff00ff0001, 0x000000ff00ff0100, 0x000000ff00ff0101,
-    0x000000ff0000ffff, 0x000000ff0000ff00, 0x000000ff000000ff, 0x000000ff00000000,
-    0x000000ff00000001, 0x000000ff000001ff, 0x000000ff00000100, 0x000000ff00000101,
-    0x000000ff0001ff00, 0x000000ff0001ff01, 0x000000ff000100ff, 0x000000ff00010000,
-    0x000000ff00010001, 0x000000ff00010100, 0x000000ff01ffffff, 0x000000ff01ff01ff,
-    0x000000ff01ff0101, 0x000000ff0100ff00, 0x000000ff010000ff, 0x000000ff01000000,
-    0x000000ff01000001, 0x000000ff01000100, 0x000000ff0101ff00, 0x000000ff010100ff,
-    0x000000ff01010000, 0x000000ff01010101, 0x00000000ffffff00, 0x00000000ffffff01,
-    0x00000000ffff00ff, 0x00000000ffff0000, 0x00000000ffff0001, 0x00000000ffff0100,
-    0x00000000ff00ffff, 0x00000000ff00ff00, 0x00000000ff00ff01, 0x00000000ff0000ff,
-    0x00000000ff000000, 0x00000000ff000001, 0x00000000ff000100, 0x00000000ff000101,
-    0x00000000ff01ff00, 0x00000000ff0100ff, 0x00000000ff010000, 0x00000000ff010001,
-    0x00000000ff010100, 0x0000000000ffffff, 0x0000000000ffff00, 0x0000000000ffff01,
-    0x0000000000ff00ff, 0x0000000000ff0000, 0x0000000000ff0001, 0x0000000000ff01ff,
-    0x0000000000ff0100, 0x000000000000ffff, 0x000000000000ff00, 0x000000000000ff01,
-    0x00000000000000ff, 0x0000000000000000, 0x0000000000000001, 0x00000000000001ff,
-    0x0000000000000100, 0x0000000000000101, 0x000000000001ffff, 0x000000000001ff00,
-    0x00000000000100ff, 0x0000000000010000, 0x0000000000010001, 0x00000000000101ff,
-    0x0000000000010100, 0x0000000000010101, 0x0000000001ffff00, 0x0000000001ff00ff,
-    0x0000000001ff0000, 0x0000000001ff0100, 0x0000000001ff0101, 0x000000000100ffff,
-    0x000000000100ff00, 0x00000000010000ff, 0x0000000001000000, 0x0000000001000001,
-    0x00000000010001ff, 0x0000000001000100, 0x000000000101ff00, 0x00000000010100ff,
-    0x0000000001010000, 0x0000000001010001, 0x0000000001010100, 0x00000001ffffffff,
-    0x00000001ffffff00, 0x00000001ffffff01, 0x00000001ffff00ff, 0x00000001ffff0001,
-    0x00000001ffff01ff, 0x00000001ffff0100, 0x00000001ff00ff00, 0x00000001ff0000ff,
-    0x00000001ff000000, 0x00000001ff0001ff, 0x00000001ff000100, 0x00000001ff01ffff,
-    0x00000001ff01ff00, 0x00000001ff01ff01, 0x00000001ff0100ff, 0x00000001ff010000,
-    0x00000001ff010001, 0x00000001ff0101ff, 0x00000001ff010100, 0x0000000100ffff00,
-    0x0000000100ff0000, 0x0000000100ff0001, 0x0000000100ff01ff, 0x0000000100ff0100,
-    0x0000000100ff0101, 0x000000010000ffff, 0x000000010000ff00, 0x000000010000ff01,
-    0x00000001000000ff, 0x0000000100000000, 0x0000000100000001, 0x00000001000001ff,
-    0x0000000100000100, 0x0000000100000101, 0x000000010001ff00, 0x00000001000100ff,
-    0x0000000100010000, 0x0000000100010100, 0x0000000101ffff01, 0x0000000101ff0000,
-    0x0000000101ff0001, 0x0000000101ff01ff, 0x0000000101ff0100, 0x0000000101ff0101,
-    0x000000010100ff00, 0x0000000101000000, 0x0000000101000101, 0x000000010101ff01,
-    0x0000000101010000, 0x0000000101010001, 0x00000001010101ff, 0x0000000101010100,
-    0x000001ffffff00ff, 0x000001ffffff0000, 0x000001ffffff0001, 0x000001ffffff0100,
-    0x000001ffff00ffff, 0x000001ffff000000, 0x000001ffff0001ff, 0x000001ffff01ff00,
-    0x000001ffff010101, 0x000001ff00ff0000, 0x000001ff00ff01ff, 0x000001ff00ff0101,
-    0x000001ff0000ff00, 0x000001ff000000ff, 0x000001ff00000000, 0x000001ff00000001,
-    0x000001ff000001ff, 0x000001ff00000100, 0x000001ff0001ffff, 0x000001ff0001ff01,
-    0x000001ff000100ff, 0x000001ff00010000, 0x000001ff01ffff01, 0x000001ff01ff0100,
-    0x000001ff0100ffff, 0x000001ff0100ff01, 0x000001ff01000000, 0x000001ff010001ff,
-    0x000001ff0101ff00, 0x000001ff01010100, 0x00000100ffffff00, 0x00000100ffffff01,
-    0x00000100ffff0000, 0x00000100ffff0101, 0x00000100ff00ff00, 0x00000100ff0000ff,
-    0x00000100ff000000, 0x00000100ff000001, 0x00000100ff000100, 0x00000100ff010000,
-    0x0000010000ffff00, 0x0000010000ff00ff, 0x0000010000ff0000, 0x0000010000ff0001,
-    0x0000010000ff0100, 0x000001000000ffff, 0x000001000000ff00, 0x000001000000ff01,
-    0x00000100000000ff, 0x0000010000000000, 0x0000010000000001, 0x00000100000001ff,
-    0x0000010000000100, 0x0000010000000101, 0x000001000001ff00, 0x00000100000100ff,
-    0x0000010000010000, 0x0000010000010001, 0x0000010000010100, 0x0000010001ffff00,
-    0x0000010001ff0000, 0x0000010001ff0100, 0x000001000100ff00, 0x00000100010000ff,
-    0x0000010001000000, 0x0000010001000001, 0x00000100010001ff, 0x0000010001000100,
-    0x0000010001010000, 0x00000101ffff00ff, 0x00000101ffff01ff, 0x00000101ff000000,
-    0x00000101ff000101, 0x00000101ff01ffff, 0x00000101ff010000, 0x00000101ff010001,
-    0x00000101ff010100, 0x0000010100ff0000, 0x0000010100ff01ff, 0x0000010100ff0100,
-    0x000001010000ff00, 0x0000010100000000, 0x0000010100000001, 0x00000101000001ff,
-    0x0000010100000100, 0x000001010001ff01, 0x0000010100010000, 0x00000101000101ff,
-    0x0000010100010101, 0x0000010101ffff00, 0x0000010101ff0101, 0x000001010100ff01,
-    0x0000010101000000, 0x0000010101000001, 0x00000101010001ff, 0x0000010101000101,
-    0x000001010101ff00, 0x0001ffffffff0000, 0x0001ffffff0000ff, 0x0001ffffff000001,
-    0x0001ffffff000100, 0x0001ffffff010000, 0x0001ffff00ff00ff, 0x0001ffff0000ffff,
-    0x0001ffff00000000, 0x0001ffff00000001, 0x0001ffff000001ff, 0x0001ffff00000101,
-    0x0001ffff0001ff00, 0x0001ffff000100ff, 0x0001ffff00010001, 0x0001ffff00010100,
-    0x0001ffff01ffff00, 0x0001ffff01000001, 0x0001ffff01010000, 0x0001ff00ffffff00,
-    0x0001ff00ffff00ff, 0x0001ff00ffff0001, 0x0001ff00ffff0100, 0x0001ff00ff00ff01,
-    0x0001ff00ff000000, 0x0001ff00ff01ff00, 0x0001ff00ff01ff01, 0x0001ff00ff010001,
-    0x0001ff00ff010100, 0x0001ff0000ff0000, 0x0001ff0000ff0100, 0x0001ff000000ff00,
-    0x0001ff0000000000, 0x0001ff0000000001, 0x0001ff0000000100, 0x0001ff0000010000,
-    0x0001ff0000010001, 0x0001ff0000010101, 0x0001ff0001ff00ff, 0x0001ff0001ff0101,
-    0x0001ff000100ff01, 0x0001ff0001000000, 0x0001ff000101ff00, 0x0001ff0001010001,
-    0x0001ff0001010100, 0x0001ff01ff00ff00, 0x0001ff01ff000001, 0x0001ff01ff000100,
-    0x0001ff0100ffffff, 0x0001ff0100ffff00, 0x0001ff0100ff0001, 0x0001ff0100000000,
-    0x0001ff0100000001, 0x0001ff01000001ff, 0x0001ff010001ffff, 0x0001ff0101ff0000,
-    0x0001ff010100ff00, 0x0001ff0101000001, 0x0001ff0101010000, 0x000100ffff00ff00,
-    0x000100ffff00ff01, 0x000100ffff000000, 0x000100ffff000001, 0x000100ffff000101,
-    0x000100ffff01ff00, 0x000100ffff010001, 0x000100ffff010100, 0x000100ff00ffffff,
-    0x000100ff00ffff01, 0x000100ff00ff0000, 0x000100ff00ff01ff, 0x000100ff00ff0101,
-    0x000100ff0000ff00, 0x000100ff000000ff, 0x000100ff00000000, 0x000100ff00000001,
-    0x000100ff00000100, 0x000100ff00000101, 0x000100ff0001ffff, 0x000100ff0001ff01,
-    0x000100ff00010000, 0x000100ff01ff00ff, 0x000100ff01ff0000, 0x000100ff01ff0100,
-    0x000100ff0100ffff, 0x000100ff0100ff01, 0x000100ff010000ff, 0x000100ff01000000,
-    0x000100ff01000001, 0x000100ff010001ff, 0x000100ff01000101, 0x000100ff0101ff00,
-    0x000100ff010100ff, 0x000100ff01010100, 0x00010000ffff0000, 0x00010000ffff01ff,
-    0x00010000ffff0101, 0x00010000ff00ff00, 0x00010000ff000000, 0x00010000ff000001,
-    0x00010000ff000100, 0x0001000000ff00ff, 0x0001000000ff0000, 0x0001000000ff0001,
-    0x0001000000ff0100, 0x000100000000ffff, 0x000100000000ff00, 0x00010000000000ff,
-    0x0001000000000000, 0x0001000000000001, 0x0001000000000100, 0x000100000001ff00,
-    0x00010000000100ff, 0x0001000000010000, 0x0001000000010001, 0x0001000000010100,
-    0x0001000001ff0001, 0x0001000001ff0100, 0x0001000001ff0101, 0x000100000100ff00,
-    0x0001000001000000, 0x0001000001000001, 0x0001000001000100, 0x0001000001000101,
-    0x000100000101ff01, 0x0001000001010000, 0x0001000001010001, 0x00010000010101ff,
-    0x00010001ffffff01, 0x00010001ffff0100, 0x00010001ff000000, 0x00010001ff01ffff,
-    0x00010001ff010001, 0x00010001ff0101ff, 0x00010001ff010100, 0x0001000100ffffff,
-    0x0001000100ff0000, 0x0001000100ff01ff, 0x0001000100ff0101, 0x000100010000ff00,
-    0x00010001000000ff, 0x0001000100000000, 0x0001000100000001, 0x00010001000001ff,
-    0x0001000100000101, 0x000100010001ffff, 0x0001000100010000, 0x00010001000101ff,
-    0x0001000101ffffff, 0x0001000101ffff01, 0x0001000101ff0000, 0x0001000101ff0101,
-    0x00010001010000ff, 0x0001000101000001, 0x00010001010001ff, 0x0001000101000100,
-    0x000100010101ffff, 0x00010001010100ff, 0x0001000101010001, 0x0001000101010101,
-    0x000101ffff000001, 0x000101ffff000100, 0x000101ffff010000, 0x000101ff00ffff00,
-    0x000101ff0000ff01, 0x000101ff00000000, 0x000101ff00000101, 0x000101ff0001ff00,
-    0x000101ff00010100, 0x000101ff01ff0000, 0x000101ff0100ff00, 0x000101ff010001ff,
-    0x000101ff01010001, 0x00010100ffffff00, 0x00010100ffff00ff, 0x00010100ff00ffff,
-    0x00010100ff000000, 0x00010100ff01ff00, 0x00010100ff0100ff, 0x00010100ff010001,
-    0x00010100ff010100, 0x0001010000ffffff, 0x0001010000ffff00, 0x0001010000ff0000,
-    0x0001010000ff0001, 0x0001010000ff01ff, 0x000101000000ff00, 0x00010100000000ff,
-    0x0001010000000000, 0x0001010000000001, 0x0001010000000100, 0x000101000001ffff,
-    0x0001010000010000, 0x0001010000010101, 0x0001010001ffff01, 0x0001010001ff00ff,
-    0x0001010001ff0101, 0x0001010001000000, 0x000101000101ff00, 0x00010100010100ff,
-    0x0001010001010000, 0x0001010001010100, 0x00010101ff00ff00, 0x00010101ff000001,
-    0x00010101ff0001ff, 0x0001010100ffff00, 0x0001010100ff00ff, 0x0001010100ff0100,
-    0x000101010000ffff, 0x0001010100000000, 0x00010101000001ff, 0x0001010100000101,
-    0x00010101000100ff, 0x0001010100010000, 0x0001010100010100, 0x0001010101ff0001,
-    0x00010101010000ff, 0x00010101010001ff, 0x0001010101000101, 0x0001010101010001,
-    0x01ffffffffffffff, 0x01ffffffffffff01, 0x01ffffffffff01ff, 0x01ffffffffff0101,
-    0x01ffffffff01ffff, 0x01ffffffff01ff01, 0x01ffffffff0101ff, 0x01ffffffff010101,
-    0x01ffffff00ff0000, 0x01ffffff0000ffff, 0x01ffffff0000ff00, 0x01ffffff000000ff,
-    0x01ffffff00000001, 0x01ffffff00000100, 0x01ffffff00010000, 0x01ffffff01ffffff,
-    0x01ffffff01ffff01, 0x01ffffff01ff01ff, 0x01ffffff01ff0101, 0x01ffffff01000000,
-    0x01ffffff0101ffff, 0x01ffffff0101ff01, 0x01ffffff010101ff, 0x01ffffff01010101,
-    0x01ffff00ffff0000, 0x01ffff00ff00ff00, 0x01ffff00ff0000ff, 0x01ffff00ff000001,
-    0x01ffff00ff000100, 0x01ffff00ff010000, 0x01ffff0000ffff00, 0x01ffff0000ff00ff,
-    0x01ffff0000ff0100, 0x01ffff000000ffff, 0x01ffff000000ff01, 0x01ffff0000000000,
-    0x01ffff0000000001, 0x01ffff00000001ff, 0x01ffff0000000100, 0x01ffff00000100ff,
-    0x01ffff0000010001, 0x01ffff0000010100, 0x01ffff0001ff0000, 0x01ffff0001ff0100,
-    0x01ffff00010000ff, 0x01ffff0001000001, 0x01ffff0001000100, 0x01ffff0001010000,
-    0x01ffff01ffffffff, 0x01ffff01ffffff01, 0x01ffff01ffff01ff, 0x01ffff01ffff0101,
-    0x01ffff01ff000000, 0x01ffff01ff01ffff, 0x01ffff01ff01ff01, 0x01ffff01ff0101ff,
-    0x01ffff01ff010101, 0x01ffff010000ff00, 0x01ffff01000000ff, 0x01ffff0100000100,
-    0x01ffff0100010000, 0x01ffff0101ffffff, 0x01ffff0101ffff01, 0x01ffff0101ff01ff,
-    0x01ffff0101ff0101, 0x01ffff0101000000, 0x01ffff010101ffff, 0x01ffff010101ff01,
-    0x01ffff01010101ff, 0x01ffff0101010101, 0x01ff00ffff0000ff, 0x01ff00ffff000100,
-    0x01ff00ff00ffff00, 0x01ff00ff00ff00ff, 0x01ff00ff0000ff00, 0x01ff00ff00000000,
-    0x01ff00ff00000101, 0x01ff00ff0001ff00, 0x01ff00ff000100ff, 0x01ff00ff00010100,
-    0x01ff00ff010000ff, 0x01ff00ff01000100, 0x01ff0000ffffff00, 0x01ff0000ffff0100,
-    0x01ff0000ff00ff01, 0x01ff0000ff000000, 0x01ff0000ff000101, 0x01ff0000ff010001,
-    0x01ff0000ff010100, 0x01ff000000ffffff, 0x01ff000000ffff00, 0x01ff000000ff0000,
-    0x01ff000000ff01ff, 0x01ff00000000ff00, 0x01ff0000000000ff, 0x01ff000000000000,
-    0x01ff000000000001, 0x01ff000000000100, 0x01ff000000000101, 0x01ff000000010000,
-    0x01ff000000010001, 0x01ff0000000101ff, 0x01ff000000010101, 0x01ff000001ffff00,
-    0x01ff000001ff00ff, 0x01ff000001ff0001, 0x01ff000001ff0100, 0x01ff00000100ffff,
-    0x01ff00000100ff01, 0x01ff000001000000, 0x01ff0000010001ff, 0x01ff000001010001,
-    0x01ff0001ff00ff00, 0x01ff0001ff000001, 0x01ff0001ff000100, 0x01ff0001ff010000,
-    0x01ff000100ffff00, 0x01ff000100ff00ff, 0x01ff000100ff0100, 0x01ff000100ff0101,
-    0x01ff00010000ffff, 0x01ff000100000000, 0x01ff000100000100, 0x01ff000100000101,
-    0x01ff00010001ff00, 0x01ff000100010001, 0x01ff000100010101, 0x01ff000101ff0000,
-    0x01ff00010100ff00, 0x01ff000101000101, 0x01ff0001010100ff, 0x01ff01ffffffffff,
-    0x01ff01ffffffff01, 0x01ff01ffffff01ff, 0x01ff01ffffff0101, 0x01ff01ffff000000,
-    0x01ff01ffff01ffff, 0x01ff01ffff01ff01, 0x01ff01ffff0101ff, 0x01ff01ffff010101,
-    0x01ff01ff00ffff00, 0x01ff01ff00ff0000, 0x01ff01ff0000ff00, 0x01ff01ff000000ff,
-    0x01ff01ff00000100, 0x01ff01ff00010000, 0x01ff01ff00010100, 0x01ff01ff01ffffff,
-    0x01ff01ff01ffff01, 0x01ff01ff01ff01ff, 0x01ff01ff01ff0101, 0x01ff01ff01000000,
-    0x01ff01ff0101ffff, 0x01ff01ff0101ff01, 0x01ff01ff010101ff, 0x01ff01ff01010101,
-    0x01ff0100ffff0000, 0x01ff0100ffff0001, 0x01ff0100ff00ff00, 0x01ff0100ff0000ff,
-    0x01ff0100ff000001, 0x01ff0100ff010000, 0x01ff010000ffff00, 0x01ff010000ff00ff,
-    0x01ff010000ff0001, 0x01ff010000ff0100, 0x01ff01000000ffff, 0x01ff01000000ff01,
-    0x01ff010000000000, 0x01ff010000000101, 0x01ff01000001ff00, 0x01ff0100000100ff,
-    0x01ff010001ff0000, 0x01ff010001000001, 0x01ff010001000100, 0x01ff010001010000,
-    0x01ff0101ffffffff, 0x01ff0101ffffff01, 0x01ff0101ffff01ff, 0x01ff0101ffff0101,
-    0x01ff0101ff000000, 0x01ff0101ff01ffff, 0x01ff0101ff01ff01, 0x01ff0101ff0101ff,
-    0x01ff0101ff010101, 0x01ff010100ff0000, 0x01ff01010000ff00, 0x01ff0101000000ff,
-    0x01ff010100000001, 0x01ff010101ffffff, 0x01ff010101ffff01, 0x01ff010101ff01ff,
-    0x01ff010101ff0101, 0x01ff010101000000, 0x01ff01010101ffff, 0x01ff01010101ff01,
-    0x01ff0101010101ff, 0x01ff010101010101, 0x0100ffffffff0000, 0x0100ffffff00ff00,
-    0x0100ffffff000001, 0x0100ffffff0001ff, 0x0100ffffff000100, 0x0100ffffff010000,
-    0x0100ffff00ffff00, 0x0100ffff00ff0001, 0x0100ffff00ff0100, 0x0100ffff00000000,
-    0x0100ffff000001ff, 0x0100ffff00000101, 0x0100ffff00010100, 0x0100ffff00010101,
-    0x0100ffff01ff0000, 0x0100ffff0100ff00, 0x0100ffff010000ff, 0x0100ffff01000001,
-    0x0100ffff01000100, 0x0100ffff01010000, 0x0100ff00ffffff00, 0x0100ff00ffff00ff,
-    0x0100ff00ffff0001, 0x0100ff00ffff0100, 0x0100ff00ff00ffff, 0x0100ff00ff000000,
-    0x0100ff00ff0001ff, 0x0100ff00ff000101, 0x0100ff00ff01ff00, 0x0100ff00ff0100ff,
-    0x0100ff00ff010001, 0x0100ff00ff010100, 0x0100ff0000ffffff, 0x0100ff0000ff0000,
-    0x0100ff000000ffff, 0x0100ff000000ff00, 0x0100ff00000000ff, 0x0100ff0000000000,
-    0x0100ff0000000001, 0x0100ff0000000100, 0x0100ff000001ff01, 0x0100ff0000010000,
-    0x0100ff0001ff00ff, 0x0100ff0001ff0001, 0x0100ff000100ff01, 0x0100ff0001000000,
-    0x0100ff00010001ff, 0x0100ff000101ff00, 0x0100ff00010100ff, 0x0100ff0001010001,
-    0x0100ff0001010100, 0x0100ff01ffff0000, 0x0100ff01ff00ff00, 0x0100ff01ff0000ff,
-    0x0100ff01ff000100, 0x0100ff01ff010000, 0x0100ff0100ff00ff, 0x0100ff0100ff0001,
-    0x0100ff0100ff0100, 0x0100ff010000ffff, 0x0100ff010000ff01, 0x0100ff0100000000,
-    0x0100ff01000001ff, 0x0100ff0100010001, 0x0100ff0100010100, 0x0100ff0101ff0000,
-    0x0100ff01010000ff, 0x0100ff0101000001, 0x0100ff0101010100, 0x010000ffffffff00,
-    0x010000ffffff00ff, 0x010000ffffff0001, 0x010000ffff00ffff, 0x010000ffff000000,
-    0x010000ffff0001ff, 0x010000ffff010001, 0x010000ff00ffffff, 0x010000ff00ff0101,
-    0x010000ff0000ff00, 0x010000ff000000ff, 0x010000ff00000000, 0x010000ff00000001,
-    0x010000ff000001ff, 0x010000ff00000100, 0x010000ff0001ffff, 0x010000ff0001ff00,
-    0x010000ff0001ff01, 0x010000ff00010000, 0x010000ff01ff00ff, 0x010000ff01ff0001,
-    0x010000ff0100ff01, 0x010000ff010000ff, 0x010000ff01000000, 0x010000ff010001ff,
-    0x010000ff0101ff00, 0x010000ff01010100, 0x01000000ffffffff, 0x01000000ffff0000,
-    0x01000000ffff01ff, 0x01000000ffff0101, 0x01000000ff00ffff, 0x01000000ff00ff00,
-    0x01000000ff0000ff, 0x01000000ff000000, 0x01000000ff000001, 0x01000000ff000100,
-    0x01000000ff01ff00, 0x01000000ff010000, 0x01000000ff010100, 0x01000000ff010101,
-    0x0100000000ffff00, 0x0100000000ff00ff, 0x0100000000ff0000, 0x0100000000ff0001,
-    0x0100000000ff0100, 0x010000000000ffff, 0x010000000000ff00, 0x010000000000ff01,
-    0x01000000000000ff, 0x0100000000000000, 0x0100000000000001, 0x01000000000001ff,
-    0x0100000000000100, 0x0100000000000101, 0x010000000001ff00, 0x01000000000100ff,
-    0x0100000000010000, 0x0100000000010001, 0x0100000000010100, 0x0100000001ffff00,
-    0x0100000001ff0000, 0x0100000001ff01ff, 0x010000000100ff00, 0x010000000100ff01,
-    0x01000000010000ff, 0x0100000001000000, 0x0100000001000001, 0x0100000001000100,
-    0x0100000001000101, 0x010000000101ffff, 0x010000000101ff01, 0x0100000001010000,
-    0x01000000010101ff, 0x0100000001010101, 0x01000001ffffff00, 0x01000001ffff00ff,
-    0x01000001ff00ffff, 0x01000001ff000000, 0x01000001ff000100, 0x01000001ff01ffff,
-    0x01000001ff010001, 0x01000001ff010100, 0x0100000100ff0000, 0x0100000100ff01ff,
-    0x0100000100ff0100, 0x010000010000ff00, 0x010000010000ff01, 0x0100000100000000,
-    0x0100000100000001, 0x0100000100000100, 0x0100000100010000, 0x01000001000101ff,
-    0x0100000101ffff01, 0x0100000101ff00ff, 0x0100000101ff0100, 0x0100000101ff0101,
-    0x010000010100ff01, 0x01000001010000ff, 0x0100000101000000, 0x01000001010100ff,
-    0x0100000101010001, 0x0100000101010100, 0x010001ffffff0000, 0x010001ffff000001,
-    0x010001ffff000100, 0x010001ffff010000, 0x010001ff00ffff00, 0x010001ff00ff0001,
-    0x010001ff0000ffff, 0x010001ff0000ff01, 0x010001ff00000000, 0x010001ff00000001,
-    0x010001ff00000101, 0x010001ff000100ff, 0x010001ff00010000, 0x010001ff01ff0000,
-    0x010001ff0100ff00, 0x010001ff01000001, 0x010001ff01000100, 0x010001ff01010000,
-    0x01000100ffff00ff, 0x01000100ffff0001, 0x01000100ffff0100, 0x01000100ff00ffff,
-    0x01000100ff00ff01, 0x01000100ff000000, 0x01000100ff0001ff, 0x01000100ff000101,
-    0x01000100ff01ffff, 0x01000100ff01ff00, 0x01000100ff0100ff, 0x01000100ff010001,
-    0x0100010000ffffff, 0x0100010000ffff01, 0x0100010000ff0000, 0x0100010000ff01ff,
-    0x0100010000ff0101, 0x010001000000ff00, 0x01000100000000ff, 0x0100010000000000,
-    0x0100010000000001, 0x0100010000000100, 0x010001000001ff01, 0x0100010000010000,
-    0x0100010000010001, 0x0100010000010101, 0x0100010001ffff00, 0x0100010001ff00ff,
-    0x010001000100ffff, 0x010001000100ff01, 0x0100010001000000, 0x0100010001000101,
-    0x010001000101ff00, 0x0100010001010001, 0x01000101ffff0000, 0x01000101ff000000,
-    0x01000101ff010000, 0x0100010100ff00ff, 0x0100010100ff0001, 0x0100010100ff0100,
-    0x010001010000ffff, 0x0100010100000000, 0x01000101000001ff, 0x010001010001ff00,
-    0x0100010101ff0000, 0x010001010100ff00, 0x01000101010000ff, 0x0100010101000000,
-    0x0100010101000001, 0x0101ffffffffffff, 0x0101ffffffffff01, 0x0101ffffffff01ff,
-    0x0101ffffffff0101, 0x0101ffffff000000, 0x0101ffffff01ffff, 0x0101ffffff01ff01,
-    0x0101ffffff0101ff, 0x0101ffffff010101, 0x0101ffff00ff0000, 0x0101ffff0000ff00,
-    0x0101ffff000000ff, 0x0101ffff00000001, 0x0101ffff00000100, 0x0101ffff01ffffff,
-    0x0101ffff01ffff01, 0x0101ffff01ff01ff, 0x0101ffff01ff0101, 0x0101ffff01000000,
-    0x0101ffff0101ffff, 0x0101ffff0101ff01, 0x0101ffff010101ff, 0x0101ffff01010101,
-    0x0101ff00ffff0000, 0x0101ff00ffff0100, 0x0101ff00ff00ff00, 0x0101ff00ff0000ff,
-    0x0101ff00ff000001, 0x0101ff00ff000100, 0x0101ff00ff000101, 0x0101ff0000ff0001,
-    0x0101ff0000ff0100, 0x0101ff000000ff00, 0x0101ff0000000000, 0x0101ff00000001ff,
-    0x0101ff0000000101, 0x0101ff000001ff00, 0x0101ff00000100ff, 0x0101ff0001ff0000,
-    0x0101ff000100ffff, 0x0101ff000100ff01, 0x0101ff0001000001, 0x0101ff0001000100,
-    0x0101ff01ffffff01, 0x0101ff01ffff01ff, 0x0101ff01ffff0101, 0x0101ff01ff00ffff,
-    0x0101ff01ff000100, 0x0101ff01ff01ff01, 0x0101ff01ff0101ff, 0x0101ff01ff010101,
-    0x0101ff0100ff0000, 0x0101ff010000ff00, 0x0101ff0100000001, 0x0101ff0100000100,
-    0x0101ff0100010000, 0x0101ff0101ffffff, 0x0101ff0101ffff01, 0x0101ff0101ff01ff,
-    0x0101ff0101ff0101, 0x0101ff0101000000, 0x0101ff010101ffff, 0x0101ff010101ff01,
-    0x0101ff01010101ff, 0x0101ff0101010101, 0x010100ffff000100, 0x010100ffff010000,
-    0x010100ff00ffff00, 0x010100ff00ff00ff, 0x010100ff0000ffff, 0x010100ff000000ff,
-    0x010100ff00000000, 0x010100ff000001ff, 0x010100ff00000101, 0x010100ff0001ff00,
-    0x010100ff00010000, 0x010100ff00010001, 0x010100ff000101ff, 0x010100ff00010100,
-    0x010100ff01ff0000, 0x01010000ffff0001, 0x01010000ffff0100, 0x01010000ff00ffff,
-    0x01010000ff00ff01, 0x01010000ff000000, 0x01010000ff0001ff, 0x01010000ff010001,
-    0x01010000ff010100, 0x0101000000ffff01, 0x0101000000ff0000, 0x010100000000ff00,
-    0x01010000000000ff, 0x0101000000000000, 0x0101000000000001, 0x0101000000000100,
-    0x0101000000010000, 0x0101000000010101, 0x0101000001ffff00, 0x0101000001ff00ff,
-    0x0101000001ff0000, 0x0101000001ff0001, 0x0101000001ff0100, 0x010100000100ff01,
-    0x0101000001000000, 0x01010000010001ff, 0x01010001ffff0000, 0x01010001ff00ff00,
-    0x01010001ff000001, 0x01010001ff000101, 0x01010001ff01ff00, 0x01010001ff010000,
-    0x0101000100ff00ff, 0x0101000100ff0001, 0x0101000100ff0101, 0x010100010000ff01,
-    0x0101000100000000, 0x0101000100000001, 0x01010001000001ff, 0x010100010001ffff,
-    0x010100010001ff01, 0x0101000101ff0001, 0x010100010100ffff, 0x0101000101000000,
-    0x0101000101000001, 0x0101000101000100, 0x010100010101ff00, 0x01010001010100ff,
-    0x0101000101010001, 0x010101ffffffffff, 0x010101ffffffff01, 0x010101ffffff01ff,
-    0x010101ffffff0101, 0x010101ffff01ffff, 0x010101ffff01ff01, 0x010101ffff0101ff,
-    0x010101ffff010101, 0x010101ff0000ff00, 0x010101ff000000ff, 0x010101ff00000001,
-    0x010101ff00000100, 0x010101ff01ffffff, 0x010101ff01ffff01, 0x010101ff01ff01ff,
-    0x010101ff01ff0101, 0x010101ff01000000, 0x010101ff0101ffff, 0x010101ff0101ff01,
-    0x010101ff010101ff, 0x010101ff01010101, 0x01010100ffff0000, 0x01010100ff0000ff,
-    0x01010100ff000100, 0x01010100ff01ff00, 0x01010100ff010000, 0x0101010000ffff00,
-    0x010101000000ffff, 0x0101010000000000, 0x0101010000000101, 0x010101000001ff00,
-    0x0101010000010001, 0x0101010000010100, 0x010101000100ffff, 0x0101010001000001,
-    0x01010101ffffffff, 0x01010101ffffff01, 0x01010101ffff01ff, 0x01010101ffff0101,
-    0x01010101ff01ffff, 0x01010101ff01ff01, 0x01010101ff0101ff, 0x01010101ff010101,
-    0x010101010000ff00, 0x01010101000000ff, 0x0101010100000001, 0x0101010101ffffff,
-    0x0101010101ffff01, 0x0101010101ff01ff, 0x0101010101ff0101, 0x0101010101000000,
-    0x010101010101ffff, 0x010101010101ff01, 0x01010101010101ff, 0x0101010101010101,
-};
+#include "kernels_iq_grids.cuh"
 
 
 // The decode primitives (sign expansion, grid-byte magnitudes, the 2-byte
@@ -3820,28 +2920,39 @@ extern "C" __global__ void k_mv_iq3_s_b(MV_PARAMS) {
 // scale (bits 12-14) decoded as 1 + 2*scale, and the sign of the shared
 // 1/8 delta (bit 15).
 extern "C" __global__ void k_mv_iq1_s(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(256)
     int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 50;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 50;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 50;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2, *qh = blk + 34;
-        const float *xp = x + b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 4) {
-            unsigned h = iq_ld16(qh + 2 * ib);
-            float dl = d * (float)(2 * ((h >> 12) & 7) + 1);
-            float delta = h & 0x8000 ? -IQ1_DELTA : IQ1_DELTA;
-            float t = 0;
-            for (int l = 0; l < 4; l++, xp += 8) {
-                ulong64 g = kiq1s_grid[qs[l] | (((h >> (3 * l)) & 7) << 8)];
-                for (int j = 0; j < 8; j++) t += iq1_w(g, j, delta) * xp[j];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 256)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (256 + 1);
+            const uchar *blk = rw + (ulong64)b * 50;
+            float d = f16f(blk);
+            const uchar *qs = blk + 2, *qh = blk + 34;
+            const float *xp = xs_;
+            for (int ib = 0; ib < 8; ib++, qs += 4) {
+                unsigned h = iq_ld16(qh + 2 * ib);
+                float dl = d * (float)(2 * ((h >> 12) & 7) + 1);
+                float delta = h & 0x8000 ? -IQ1_DELTA : IQ1_DELTA;
+                float t = 0;
+                for (int l = 0; l < 4; l++, xp += 8) {
+                    ulong64 g = kiq1s_grid[qs[l] | (((h >> (3 * l)) & 7) << 8)];
+                    for (int j = 0; j < 8; j++) t += iq1_w(g, j, delta) * xp[j];
+                }
+                s += dl * t;
             }
-            s += dl * t;
         }
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_iq1_s_b(MV_PARAMS) {
@@ -3872,34 +2983,45 @@ extern "C" __global__ void k_mv_iq1_s_b(MV_PARAMS) {
 // 32 (one per 16 weights, decoded as 1 + 2*scale) in its low 12 bits, and
 // the block's fp16 scale is scattered across the four top nibbles.
 extern "C" __global__ void k_mv_iq1_m(MV_PARAMS) {
-    MV_HEAD;
+    LANE_DENSE_HEAD(256)
     int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 56;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 56;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 56;
-        const uchar *qs = blk, *qh = blk + 32, *scb = blk + 48;
-        unsigned sc0 = iq_ld16(scb), sc1 = iq_ld16(scb + 2), sc2 = iq_ld16(scb + 4), sc3 = iq_ld16(scb + 6);
-        unsigned short sd = (sc0 >> 12) | ((sc1 >> 8) & 0x00f0) |
-                            ((sc2 >> 4) & 0x0f00) | (sc3 & 0xf000);
-        float d = __half2float(__ushort_as_half(sd));
-        const float *xp = x + b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 4, qh += 2) {
-            unsigned sw = iq_ld16(scb + 2 * (ib >> 1)) >> (6 * (ib & 1));
-            float dl0 = d * (float)(2 * (sw & 7) + 1);
-            float dl1 = d * (float)(2 * ((sw >> 3) & 7) + 1);
-            for (int l = 0; l < 4; l++, xp += 8) {
-                unsigned hb = qh[l >> 1];
-                unsigned idx = qs[l] | ((hb << ((l & 1) ? 4 : 8)) & 0x700);
-                float delta = hb & ((l & 1) ? 0x80 : 0x08) ? -IQ1_DELTA : IQ1_DELTA;
-                ulong64 g = kiq1s_grid[idx];
-                float t = 0;
-                for (int j = 0; j < 8; j++) t += iq1_w(g, j, delta) * xp[j];
-                s += (l < 2 ? dl0 : dl1) * t;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 256)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (256 + 1);
+            const uchar *blk = rw + (ulong64)b * 56;
+            const uchar *qs = blk, *qh = blk + 32, *scb = blk + 48;
+            unsigned sc0 = iq_ld16(scb), sc1 = iq_ld16(scb + 2), sc2 = iq_ld16(scb + 4), sc3 = iq_ld16(scb + 6);
+            unsigned short sd = (sc0 >> 12) | ((sc1 >> 8) & 0x00f0) |
+                                ((sc2 >> 4) & 0x0f00) | (sc3 & 0xf000);
+            float d = __half2float(__ushort_as_half(sd));
+            const float *xp = xs_;
+            for (int ib = 0; ib < 8; ib++, qs += 4, qh += 2) {
+                unsigned sw = iq_ld16(scb + 2 * (ib >> 1)) >> (6 * (ib & 1));
+                float dl0 = d * (float)(2 * (sw & 7) + 1);
+                float dl1 = d * (float)(2 * ((sw >> 3) & 7) + 1);
+                for (int l = 0; l < 4; l++, xp += 8) {
+                    unsigned hb = qh[l >> 1];
+                    unsigned idx = qs[l] | ((hb << ((l & 1) ? 4 : 8)) & 0x700);
+                    float delta = hb & ((l & 1) ? 0x80 : 0x08) ? -IQ1_DELTA : IQ1_DELTA;
+                    ulong64 g = kiq1s_grid[idx];
+                    float t = 0;
+                    for (int j = 0; j < 8; j++) t += iq1_w(g, j, delta) * xp[j];
+                    s += (l < 2 ? dl0 : dl1) * t;
+                }
             }
         }
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_iq1_m_b(MV_PARAMS) {
@@ -3940,97 +3062,29 @@ extern "C" __global__ void k_mv_iq1_m_b(MV_PARAMS) {
 // per-element weight values, fp16 operands, fp32 accumulation). Registered
 // in cuda.c's TC_KERNELS and promoted with the codebook family on
 // 2026-09-14 (tc_promoted); RUNNER_CUDA_TC=0 pins the scalar path.
-static __device__ __forceinline__ void tc_stage_iq3_s(__half *dst,
-                                                      const uchar *rw, int nb,
-                                                      int e0, int n_in) {
-    const uchar *blk = rw + (ulong64)(e0 >> 8) * 110;
-    iq3s_stage64(dst, blk, (e0 & 255) >> 6, kiq3s_grid);
-    (void)nb; (void)n_in;
-}
+#include "kernels_iq_stage.cuh"
 TC_GEMM_BLK_X(k_gemm_iq3_s_tc, tc_stage_iq3_s, 110, 256, 1)
-
-static __device__ __forceinline__ void tc_stage_iq3_xxs(__half *dst,
-                                                        const uchar *rw, int nb,
-                                                        int e0, int n_in) {
-    const uchar *blk = rw + (ulong64)(e0 >> 8) * 98;
-    iq3xxs_stage64(dst, blk, (e0 & 255) >> 6, kiq3xxs_grid);
-    (void)nb; (void)n_in;
-}
 TC_GEMM_BLK_X(k_gemm_iq3_xxs_tc, tc_stage_iq3_xxs, 98, 256, 1)
-
-static __device__ __forceinline__ void tc_stage_iq2_s(__half *dst,
-                                                      const uchar *rw, int nb,
-                                                      int e0, int n_in) {
-    const uchar *blk = rw + (ulong64)(e0 >> 8) * 82;
-    iq2s_stage64(dst, blk, (e0 & 255) >> 6, kiq2s_grid);
-    (void)nb; (void)n_in;
-}
 TC_GEMM_BLK_X(k_gemm_iq2_s_tc, tc_stage_iq2_s, 82, 256, 1)
-
-static __device__ __forceinline__ void tc_stage_iq2_xs(__half *dst,
-                                                       const uchar *rw, int nb,
-                                                       int e0, int n_in) {
-    const uchar *blk = rw + (ulong64)(e0 >> 8) * 74;
-    iq2xs_stage64(dst, blk, (e0 & 255) >> 6, kiq2xs_grid);
-    (void)nb; (void)n_in;
-}
 TC_GEMM_BLK_X(k_gemm_iq2_xs_tc, tc_stage_iq2_xs, 74, 256, 1)
-
-static __device__ __forceinline__ void tc_stage_iq2_xxs(__half *dst,
-                                                        const uchar *rw, int nb,
-                                                        int e0, int n_in) {
-    const uchar *blk = rw + (ulong64)(e0 >> 8) * 66;
-    iq2xxs_stage64(dst, blk, (e0 & 255) >> 6, kiq2xxs_grid);
-    (void)nb; (void)n_in;
-}
 TC_GEMM_BLK_X(k_gemm_iq2_xxs_tc, tc_stage_iq2_xxs, 66, 256, 1)
-
-static __device__ __forceinline__ void tc_stage_iq1_s(__half *dst,
-                                                      const uchar *rw, int nb,
-                                                      int e0, int n_in) {
-    const uchar *blk = rw + (ulong64)(e0 >> 8) * 50;
-    iq1s_stage64(dst, blk, (e0 & 255) >> 6, kiq1s_grid);
-    (void)nb; (void)n_in;
-}
 TC_GEMM_BLK_X(k_gemm_iq1_s_tc, tc_stage_iq1_s, 50, 256, 1)
-
-static __device__ __forceinline__ void tc_stage_iq1_m(__half *dst,
-                                                      const uchar *rw, int nb,
-                                                      int e0, int n_in) {
-    const uchar *blk = rw + (ulong64)(e0 >> 8) * 56;
-    iq1m_stage64(dst, blk, (e0 & 255) >> 6, kiq1s_grid);
-    (void)nb; (void)n_in;
-}
 TC_GEMM_BLK_X(k_gemm_iq1_m_tc, tc_stage_iq1_m, 56, 256, 1)
-
-// the IQ4 codebook types: the same shape, the nibble codebook kv_iq4
-static __device__ __forceinline__ void tc_stage_iq4_xs(__half *dst,
-                                                       const uchar *rw, int nb,
-                                                       int e0, int n_in) {
-    const uchar *blk = rw + (ulong64)(e0 >> 8) * 136;
-    iq4xs_stage64(dst, blk, (e0 & 255) >> 6, kv_iq4);
-    (void)nb; (void)n_in;
-}
 TC_GEMM_BLK_X(k_gemm_iq4_xs_tc, tc_stage_iq4_xs, 136, 256, 1)
-
-// IQ4_NL has 32-element blocks like Q4_0, so its stager is the Q4_0 one's
-// shape: two blocks per 64-element segment, tail-safe past n_in
-static __device__ __forceinline__ void tc_stage_iq4_nl(__half *dst,
-                                                       const uchar *rw, int nb,
-                                                       int e0, int n_in) {
-    #pragma unroll
-    for (int half = 0; half < 2; half++) {
-        int base = e0 + half * 32;
-        if (base >= n_in) {
-            #pragma unroll
-            for (int j = 0; j < 32; j++) dst[half * 32 + j] = __float2half(0.0f);
-            continue;
-        }
-        iq4nl_stage32(dst + half * 32, rw + (ulong64)(base / 32) * 18, kv_iq4);
-    }
-    (void)nb;
-}
 TC_GEMM_BLK_X(k_gemm_iq4_nl_tc, tc_stage_iq4_nl, 18, 32, 1)
+
+// The K-quants and legacy quants that had no tensor-core kernel (2026-10-21):
+// the same shape over the stagers of kernels_kq_stage.cuh (kq_stage.h,
+// held to dequant_row() by the host test), registered in TC_KERNELS. They
+// run by default where tc_promoted admits them (the float32-reference rows
+// of 2026-10-21 there); RUNNER_CUDA_TC=1 forces them elsewhere.
+#include "kernels_kq_stage.cuh"
+TC_GEMM_BLK_X(k_gemm_q5_K_tc, tc_stage_q5_K, 176, 256, 1)
+TC_GEMM_BLK_X(k_gemm_q3_K_tc, tc_stage_q3_K, 110, 256, 1)
+TC_GEMM_BLK_X(k_gemm_q2_K_tc, tc_stage_q2_K, 84, 256, 1)
+TC_GEMM_BLK_X(k_gemm_q4_1_tc, tc_stage_q4_1, 20, 32, 1)
+TC_GEMM_BLK_X(k_gemm_q5_0_tc, tc_stage_q5_0, 22, 32, 1)
+TC_GEMM_BLK_X(k_gemm_q5_1_tc, tc_stage_q5_1, 24, 32, 1)
 
 // MXFP4 (gpt-oss expert tensors): 17-byte block = one E8M0 scale byte (a
 // biased power-of-two exponent, 2^(e-127), NOT an fp16) + 32 packed E2M1
@@ -4042,24 +3096,40 @@ static __device__ const float kv_mxfp4[16] = {
      0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
 };
 
+// activations staged as k_mv_q4_0's (LANE_XPAD), the codebook in shared
+// memory instead of a global load per nibble
 extern "C" __global__ void k_mv_mxfp4(MV_PARAMS) {
-    MV_HEAD;
+    __shared__ float xsm[32 * LANE_XPAD];
+    __shared__ float kv[16];
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];
+    unsigned row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5);
+    unsigned lane = threadIdx.x & 31;
+    bool live = row < (unsigned)a.n_out;
     int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 17;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 17;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 17;
-        float d = ldexpf(1.0f, (int)blk[0] - 127);
-        const uchar *q = blk + 1;
-        const float *xp = x + b * 32;
-        float t = 0;
-        for (int j = 0; j < 16; j++) {
-            t += kv_mxfp4[q[j] & 0xF] * xp[j];
-            t += kv_mxfp4[q[j] >> 4]  * xp[j + 16];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_X(xsm, x, b0, nblk)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            const uchar *blk = rw + (ulong64)(b0 + lane) * 17;
+            float d = ldexpf(1.0f, (int)blk[0] - 127);
+            const uchar *q = blk + 1;
+            const float *xp = xsm + lane * LANE_XPAD;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                t += kv[q[j] & 0xF] * xp[j];
+                t += kv[q[j] >> 4]  * xp[j + 16];
+            }
+            s += d * t;
         }
-        s += d * t;
+        __syncthreads();
     }
-    MV_TAIL;
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_mxfp4_b(MV_PARAMS) {
@@ -4102,26 +3172,38 @@ static __device__ __forceinline__ float ue4m3f(uchar x) {
 }
 
 extern "C" __global__ void k_mv_nvfp4(MV_PARAMS, float scale) {
-    MV_HEAD;
+    __shared__ float kv[16];
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];
+    LANE_DENSE_HEAD(64)
     int nb = a.n_in / 64;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 36;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 36;
     float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 36;
-        for (int sub = 0; sub < 4; sub++) {
-            float d = ue4m3f(blk[sub]);
-            const uchar *q = blk + 4 + sub * 8;
-            const float *xp = x + b * 64 + sub * 16;
-            float t = 0;
-            for (int j = 0; j < 8; j++) {
-                t += kv_mxfp4[q[j] & 0xF] * xp[j];
-                t += kv_mxfp4[q[j] >> 4]  * xp[j + 8];
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 64)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (64 + 1);
+            const uchar *blk = rw + (ulong64)b * 36;
+            for (int sub = 0; sub < 4; sub++) {
+                float d = ue4m3f(blk[sub]);
+                const uchar *q = blk + 4 + sub * 8;
+                const float *xp = xs_ + sub * 16;
+                float t = 0;
+                for (int j = 0; j < 8; j++) {
+                    t += kv[q[j] & 0xF] * xp[j];
+                    t += kv[q[j] >> 4]  * xp[j + 8];
+                }
+                s += d * t;
             }
-            s += d * t;
         }
+        __syncthreads();
     }
-    s = warp_sum(s) * scale;
-    if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    if (live) {
+        s = warp_sum(s) * scale;
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
 }
 
 extern "C" __global__ void k_mv_nvfp4_b(MV_PARAMS, float scale) {
@@ -4456,6 +3538,236 @@ extern "C" __global__ void k_attn(const float *q, const unsigned char *kc,
     }
 }
 
+// ------------------------------------------------ tiled prefill attention
+// C2 step 1 (RUNNER_CUDA_ATTN_TILE, see tile_attn in cuda.c). k_attn above
+// runs one block per (head, token) and reads every K and V row of the
+// context from global memory for each of them: a prompt of L tokens on a
+// model with G query heads per KV head reads the cache G * L times, and the
+// scores make a round trip through global scratch. This kernel gives one
+// block a KV head, up to R / G of its query heads' rows (or R heads at one
+// token when G >= R) and a strip of query tokens, and walks the strip's key
+// range in tiles of TK rows staged in shared memory, so each cache row is
+// read once per R query rows.
+//
+// The tiling follows the design of the published flash-attention kernels
+// (tiles of keys staged on chip, every query row of the block reusing them);
+// the arithmetic is k_attn's own, kept to the same two passes:
+//   pass 1: every score q.k * scale, through the unchanged kv_dot on the
+//           staged row (the cache's own bytes, so q8_0 and fp4 rows keep
+//           their per-block association), and each row's maximum;
+//   pass 2: the same scores recomputed by the same call, expf(s - max),
+//           their sum, and the weighted V rows through kv_pair.
+// Scores and maxima are therefore bit-identical to k_attn's; only the order
+// of the softmax denominator's sum and of the V accumulation differ, so the
+// obligation is k_attn's: token-identical to the CPU scalar route, logits
+// not bit-identical, gated empirically (test-gpu-identity, cpu_cuda_check).
+// Keys a row may not see (causal, sliding window) contribute exp = 0, which
+// leaves an fp32 sum unchanged; rows past the strip are zero.
+//
+// Shared memory: q rows [R][hd+1] floats, one K or V tile [TK][bws] words
+// (row bytes rounded up to an odd word count so lanes reading different rows
+// hit different banks), the probabilities [R][TK] and the row max and sum.
+// Rows are r = hi * qs + ti (query head hi of the block, token ti of the
+// strip). Launch: 256 threads, grid (n_kv * ngh, ceil(tn / qs)).
+#define AT_THREADS 256
+template <int R, int TK>
+__device__ __forceinline__ void attn_tile_body(const float *q, const unsigned char *kc,
+                                               const unsigned char *vc, float *out,
+                                               const attn_args &a, const int *posp,
+                                               const float *sinks, int tn, int hb,
+                                               int qs) {
+    extern __shared__ float at_sm[];
+    const int hd = a.head_dim, tid = threadIdx.x;
+    const int G = a.n_head / a.n_head_kv;
+    const int ngh = (G + hb - 1) / hb;
+    const int kvh = blockIdx.x / ngh, hg = blockIdx.x % ngh;
+    const int h0 = kvh * G + hg * hb;
+    const int nh = G - hg * hb < hb ? G - hg * hb : hb;
+    const int tk0 = blockIdx.y * qs;
+    const int nt = tn - tk0 < qs ? tn - tk0 : qs;
+    const int pos0 = *posp;
+    const int kv_dim = a.n_head_kv * hd;
+    const ulong64 row_b = KV_ROW_BYTES(kv_dim, a.q8), row_v = KV_ROW_BYTES(kv_dim, a.vq8);
+    const ulong64 base = a.l_off + kv_head_off(kvh, hd, a.q8);
+    const ulong64 base_v = a.v_off + kv_head_off(kvh, hd, a.vq8);
+    const int kbytes = (int)KV_ROW_BYTES(hd, a.q8), vbytes = (int)KV_ROW_BYTES(hd, a.vq8);
+    const int kws = ((kbytes + 3) / 4) | 1, vws = ((vbytes + 3) / 4) | 1;
+    const int bws = kws > vws ? kws : vws;
+    const int qst = hd + 1;
+    float *Q = at_sm;                                 // [R][qst]
+    unsigned *KV = (unsigned *)(Q + R * qst);         // [TK][bws]
+    float *P = (float *)(KV + TK * bws);              // [R][TK]
+    float *rmax = P + R * TK;                         // [R]
+    float *rsum = rmax + R;                           // [R]
+
+    for (int i = tid; i < R * hd; i += AT_THREADS) {
+        int r = i / hd, d = i - r * hd;
+        int hi = r / qs, ti = r - hi * qs;
+        float v = 0.0f;
+        if (hi < nh && ti < nt) v = q[(ulong64)(tk0 + ti) * a.qs + (ulong64)(h0 + hi) * hd + d];
+        Q[r * qst + d] = v;
+    }
+    // the strip's key range: the first row's window start to the last row
+    const int plast = pos0 + tk0 + nt - 1;
+    int klo = 0;
+    if (a.window > 0) {
+        int f = pos0 + tk0 - a.window + 1;
+        klo = f > 0 ? f : 0;
+    }
+    enum { DPT = (R * TK + AT_THREADS - 1) / AT_THREADS };      // scores per thread
+    float mx[DPT];
+    #pragma unroll
+    for (int j = 0; j < DPT; j++) mx[j] = -1e30f;
+
+    // stage the cache rows [kt, kt + TK) of one side (K or V) as raw bytes
+    auto stage = [&](const unsigned char *cache, ulong64 b0, ulong64 rb, int nbytes,
+                     int ws, int kt) {
+        // whole words when the head slice is word aligned and a whole number
+        // of words long (fp16 always is; a q8_0 row at head width 96 or an
+        // fp4 row at 80 is not, and its tail bytes would go unstaged)
+        if (((b0 | rb | (ulong64)nbytes) & 3) == 0) {
+            int nw = nbytes / 4;
+            for (int i = tid; i < TK * nw; i += AT_THREADS) {
+                int k = i / nw, w = i - k * nw, t = kt + k;
+                unsigned v = 0u;
+                if (t <= plast)
+                    v = *(const unsigned *)(cache + b0 + kv_slot(t, a.ring) * rb + (ulong64)w * 4);
+                KV[k * ws + w] = v;
+            }
+        } else {
+            for (int i = tid; i < TK * nbytes; i += AT_THREADS) {
+                int k = i / nbytes, c = i - k * nbytes, t = kt + k;
+                unsigned char v = 0;
+                if (t <= plast) v = cache[b0 + kv_slot(t, a.ring) * rb + (ulong64)c];
+                ((unsigned char *)(KV + k * ws))[c] = v;
+            }
+        }
+    };
+
+    // ---- pass 1: row maxima ----
+    for (int kt = klo; kt <= plast; kt += TK) {
+        __syncthreads();
+        stage(kc, base, row_b, kbytes, bws, kt);
+        __syncthreads();
+        #pragma unroll
+        for (int j = 0; j < DPT; j++) {
+            int idx = tid + j * AT_THREADS;
+            if (idx >= R * TK) break;
+            int r = idx / TK, k = idx - r * TK, t = kt + k;
+            int hi = r / qs, ti = r - hi * qs;
+            int pr = pos0 + tk0 + ti;
+            int t0r = (a.window > 0 && pr - a.window + 1 > 0) ? pr - a.window + 1 : 0;
+            if (hi < nh && ti < nt && t >= t0r && t <= pr) {
+                float sc = kv_dot((const unsigned char *)(KV + k * bws), Q + r * qst, hd, a.q8) * a.scale;
+                mx[j] = fmaxf(mx[j], sc);
+            }
+        }
+    }
+    // rows share a lane group of TK consecutive lanes (TK divides 32)
+    #pragma unroll
+    for (int j = 0; j < DPT; j++) {
+        float v = mx[j];
+        for (int off = TK / 2; off > 0; off >>= 1)
+            v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, off));
+        int idx = tid + j * AT_THREADS;
+        if (idx < R * TK && idx % TK == 0) {
+            int r = idx / TK, hi = r / qs;
+            if (sinks && hi < nh && sinks[h0 + hi] > v) v = sinks[h0 + hi];
+            rmax[r] = v;
+        }
+    }
+
+    // ---- pass 2: probabilities, their sum and the weighted values ----
+    // (row, value pair) outputs per thread: the host launches only when
+    // R * head_dim <= 4096 (32 rows at <= 128, 16 rows at <= 256)
+    enum { OPT = 4096 / 2 / AT_THREADS };
+    const int P2 = hd / 2;
+    float2 acc[OPT];
+    #pragma unroll
+    for (int j = 0; j < OPT; j++) acc[j] = make_float2(0.0f, 0.0f);
+    float sm_[DPT];
+    #pragma unroll
+    for (int j = 0; j < DPT; j++) sm_[j] = 0.0f;
+    for (int kt = klo; kt <= plast; kt += TK) {
+        __syncthreads();
+        stage(kc, base, row_b, kbytes, bws, kt);
+        __syncthreads();
+        #pragma unroll
+        for (int j = 0; j < DPT; j++) {
+            int idx = tid + j * AT_THREADS;
+            if (idx >= R * TK) break;
+            int r = idx / TK, k = idx - r * TK, t = kt + k;
+            int hi = r / qs, ti = r - hi * qs;
+            int pr = pos0 + tk0 + ti;
+            int t0r = (a.window > 0 && pr - a.window + 1 > 0) ? pr - a.window + 1 : 0;
+            float pv = 0.0f;
+            if (hi < nh && ti < nt && t >= t0r && t <= pr) {
+                float sc = kv_dot((const unsigned char *)(KV + k * bws), Q + r * qst, hd, a.q8) * a.scale;
+                pv = expf(sc - rmax[r]);
+            }
+            sm_[j] += pv;
+            P[r * TK + k] = pv;
+        }
+        __syncthreads();
+        stage(vc, base_v, row_v, vbytes, bws, kt);
+        __syncthreads();
+        #pragma unroll
+        for (int j = 0; j < OPT; j++) {
+            int idx = tid + j * AT_THREADS;
+            if (idx >= R * P2) break;
+            int r = idx / P2, i2 = idx - r * P2;
+            float2 o = acc[j];
+            for (int k = 0; k < TK; k++) {
+                float pk = P[r * TK + k];
+                float2 vf = kv_pair((const unsigned char *)(KV + k * bws), i2, a.vq8);
+                o.x += pk * vf.x;
+                o.y += pk * vf.y;
+            }
+            acc[j] = o;
+        }
+    }
+    #pragma unroll
+    for (int j = 0; j < DPT; j++) {
+        float v = sm_[j];
+        for (int off = TK / 2; off > 0; off >>= 1)
+            v += __shfl_xor_sync(0xffffffffu, v, off);
+        int idx = tid + j * AT_THREADS;
+        if (idx < R * TK && idx % TK == 0) {
+            int r = idx / TK, hi = r / qs;
+            if (sinks && hi < nh) v += expf(sinks[h0 + hi] - rmax[r]);
+            rsum[r] = v;
+        }
+    }
+    __syncthreads();
+    #pragma unroll
+    for (int j = 0; j < OPT; j++) {
+        int idx = tid + j * AT_THREADS;
+        if (idx >= R * P2) break;
+        int r = idx / P2, i2 = idx - r * P2;
+        int hi = r / qs, ti = r - hi * qs;
+        if (hi >= nh || ti >= nt) continue;
+        float s = rsum[r];
+        ulong64 o = (ulong64)(tk0 + ti) * a.os + (ulong64)(h0 + hi) * hd + 2 * i2;
+        out[o]     = acc[j].x / s;
+        out[o + 1] = acc[j].y / s;
+    }
+}
+
+// head_dim <= 128: 32 query rows, 32-key tiles
+extern "C" __global__ void __launch_bounds__(AT_THREADS)
+k_attn_tile32(const float *q, const unsigned char *kc, const unsigned char *vc,
+              float *out, attn_args a, const int *posp, const float *sinks,
+              int tn, int hb, int qs) {
+    attn_tile_body<32, 32>(q, kc, vc, out, a, posp, sinks, tn, hb, qs);
+}
+// head_dim <= 256: 16 query rows, 16-key tiles (the same shared footprint)
+extern "C" __global__ void __launch_bounds__(AT_THREADS)
+k_attn_tile16(const float *q, const unsigned char *kc, const unsigned char *vc,
+              float *out, attn_args a, const int *posp, const float *sinks,
+              int tn, int hb, int qs) {
+    attn_tile_body<16, 16>(q, kc, vc, out, a, posp, sinks, tn, hb, qs);
+}
+
 // --------------------------------------------------- flash-decoding attention
 // Decode (batch==1, one query token, long KV) attention. The plain k_attn runs
 // one block per (head, token): a 4B decode step is 32 blocks on a 46-SM GPU,
@@ -4780,71 +4092,97 @@ extern "C" __global__ void k_attn_dec_seq(const float *q, const ulong64 *kcp,
 // Blocks are staged SMPAD floats apart, not 32: with a 32-float stride the
 // four block-groups of a warp land on the same eight banks (4-way conflict);
 // the odd stride spreads them across all 32.
-#define GEMVB_Q8_0(NAME, NC)                                                   \
+#define GEMVB_Q8_0_C(NAME, NC, CH)                                             \
 extern "C" __global__ void NAME(MV_PARAMS) {                                   \
-    __shared__ float xsm[NC][Q8_CHUNK * SMPAD];                                \
+    __shared__ float xsm[NC][(CH) * SMPAD];                                    \
+    enum { R = DQ_TWR(NC) };                                                   \
     unsigned warp = threadIdx.x >> 5;                                          \
     unsigned lane = threadIdx.x & 31;                                          \
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
+    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
     int nb = a.n_in / 32;                                                      \
-    const uchar *rw = wb + a.w_off +                                           \
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 34;  \
+    int nc = a.batch < (NC) ? a.batch : (NC);                                  \
+    const uchar *rw[R];                                                        \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        rw[r] = wb + a.w_off +                                                 \
+                (ulong64)(row0 + r < (unsigned)a.n_out ? row0 + r : 0) * nb * 34; \
     int bsub = (int)(lane >> 3);                                               \
     int boff = ((int)lane & 7) * 4;                                            \
-    float s[NC] = {0};                                                         \
-    for (int cs = 0; cs < nb; cs += Q8_CHUNK) {                                \
-        int cblocks = nb - cs < Q8_CHUNK ? nb - cs : Q8_CHUNK;                 \
+    float s[R][NC];                                                            \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        _Pragma("unroll") for (int t = 0; t < NC; t++) s[r][t] = 0.0f;         \
+    for (int cs = 0; cs < nb; cs += (CH)) {                                    \
+        int cblocks = nb - cs < (CH) ? nb - cs : (CH);                         \
         int celems  = cblocks * 32;                                            \
         int base_e  = cs * 32;                                                 \
         _Pragma("unroll")                                                      \
         for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
             const float *xg = x + (ulong64)t * a.xs + base_e;                  \
             for (int e = threadIdx.x; e < celems; e += blockDim.x)             \
                 xsm[t][(e >> 5) * SMPAD + (e & 31)] = xg[e];                   \
         }                                                                      \
         __syncthreads();                                                       \
-        if (row < (unsigned)a.n_out) {                                         \
-            /* chunks are Q8_CHUNK-aligned and Q8_CHUNK is a multiple of 4, so \
-               the batch-1 kernel's b4 = nb & ~3 boundary falls inside the     \
-               LAST chunk at exactly cblocks & ~3 — every lane therefore sees  \
-               the same four-block trips, then the same tail, in that order */ \
-            int c4 = cblocks & ~3;                                             \
-            for (int bi = 0; bi < c4; bi += 4) {                               \
-                const uchar *blk = rw + (ulong64)(cs + bi + bsub) * 34;        \
-                float d = f16f(blk);                                           \
+        /* chunks are CH-aligned and CH is a multiple of 4, so the batch-1     \
+           kernel's b4 = nb & ~3 boundary falls inside the LAST chunk at       \
+           exactly cblocks & ~3: every lane sees the same four-block trips,    \
+           then the same tail, in that order */                                \
+        int c4 = cblocks & ~3;                                                 \
+        for (int bi = 0; bi < c4; bi += 4) {                                   \
+            float d[R], q[R][4];                                               \
+            _Pragma("unroll")                                                  \
+            for (int r = 0; r < R; r++) {                                      \
+                const uchar *blk = rw[r] + (ulong64)(cs + bi + bsub) * 34;     \
+                d[r] = f16f(blk);                                              \
                 const uchar *qp = blk + 2 + boff;                              \
                 ushort16 u0 = *(const ushort16 *)qp,                           \
                          u1 = *(const ushort16 *)(qp + 2);                     \
-                float q0 = (float)(int)(signed char)(u0 & 0xFF);               \
-                float q1 = (float)(int)(signed char)(u0 >> 8);                 \
-                float q2 = (float)(int)(signed char)(u1 & 0xFF);               \
-                float q3 = (float)(int)(signed char)(u1 >> 8);                 \
-                int xo = (bi + bsub) * SMPAD + boff;                           \
-                _Pragma("unroll")                                              \
-                for (int t = 0; t < NC; t++) {                                 \
-                    const float *xp = xsm[t] + xo;                             \
-                    s[t] += d * (q0 * xp[0] + q1 * xp[1] +                     \
-                                 q2 * xp[2] + q3 * xp[3]);                     \
-                }                                                              \
+                q[r][0] = (float)(int)(signed char)(u0 & 0xFF);                \
+                q[r][1] = (float)(int)(signed char)(u0 >> 8);                  \
+                q[r][2] = (float)(int)(signed char)(u1 & 0xFF);                \
+                q[r][3] = (float)(int)(signed char)(u1 >> 8);                  \
             }                                                                  \
-            for (int bi = c4; bi < cblocks; bi++) {                            \
-                const uchar *blk = rw + (ulong64)(cs + bi) * 34;               \
-                float d = f16f(blk);                                           \
-                const signed char *q = (const signed char *)(blk + 2);         \
-                float qv = (float)q[lane];                                     \
+            int xo = (bi + bsub) * SMPAD + boff;                               \
+            _Pragma("unroll")                                                  \
+            for (int t = 0; t < NC; t++) {                                     \
+                if (t >= nc) continue;                                         \
+                const float *xp = xsm[t] + xo;                                 \
+                float x0 = xp[0], x1 = xp[1], x2 = xp[2], x3 = xp[3];          \
                 _Pragma("unroll")                                              \
-                for (int t = 0; t < NC; t++)                                   \
-                    s[t] += d * (qv * xsm[t][bi * SMPAD + lane]);              \
+                for (int r = 0; r < R; r++)                                    \
+                    s[r][t] += d[r] * (q[r][0] * x0 + q[r][1] * x1 +           \
+                                       q[r][2] * x2 + q[r][3] * x3);           \
+            }                                                                  \
+        }                                                                      \
+        for (int bi = c4; bi < cblocks; bi++) {                                \
+            float d[R], qv[R];                                                 \
+            _Pragma("unroll")                                                  \
+            for (int r = 0; r < R; r++) {                                      \
+                const uchar *blk = rw[r] + (ulong64)(cs + bi) * 34;            \
+                d[r] = f16f(blk);                                              \
+                qv[r] = (float)((const signed char *)(blk + 2))[lane];         \
+            }                                                                  \
+            _Pragma("unroll")                                                  \
+            for (int t = 0; t < NC; t++) {                                     \
+                if (t >= nc) continue;                                         \
+                float xv = xsm[t][bi * SMPAD + lane];                          \
+                _Pragma("unroll")                                              \
+                for (int r = 0; r < R; r++) s[r][t] += d[r] * (qv[r] * xv);    \
             }                                                                  \
         }                                                                      \
         __syncthreads();                                                       \
     }                                                                          \
-    if (row < (unsigned)a.n_out)                                               \
-        for (int t = 0; t < a.batch && t < NC; t++) {                          \
-            float r = warp_sum(s[t]);                                          \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        if (row >= (unsigned)a.n_out) continue;                                \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float v = warp_sum(s[r][t]);                                       \
             if (lane == 0) y[(ulong64)t * a.ys + row] =                        \
-                a.has_bias ? r + bias[row] : r;                                \
+                a.has_bias ? v + bias[row] : v;                                \
         }                                                                      \
+    }                                                                          \
 }
 
 // ---- Q4_0: k_gemv_q4_0's twin (2026-08-19). Q4_0 had no width-classed twin
@@ -4852,67 +4190,94 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
 // x staging, measured at 0.11x of sequential decode. Same four-blocks-in-
 // flight shape as Q8_0; a lane's two quant bytes carry elements boff, boff+1
 // (low nibbles) and boff+16, boff+17 (high nibbles).
-#define GEMVB_Q4_0(NAME, NC)                                                   \
+#define GEMVB_Q4_0_C(NAME, NC, CH)                                             \
 extern "C" __global__ void NAME(MV_PARAMS) {                                   \
-    __shared__ float xsm[NC][Q8_CHUNK * SMPAD];                                \
+    __shared__ float xsm[NC][(CH) * SMPAD];                                    \
+    enum { R = DQ_TWR(NC) };                                                   \
     unsigned warp = threadIdx.x >> 5;                                          \
     unsigned lane = threadIdx.x & 31;                                          \
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
+    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
     int nb = a.n_in / 32;                                                      \
-    const uchar *rw = wb + a.w_off +                                           \
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 18;  \
+    int nc = a.batch < (NC) ? a.batch : (NC);                                  \
+    const uchar *rw[R];                                                        \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        rw[r] = wb + a.w_off +                                                 \
+                (ulong64)(row0 + r < (unsigned)a.n_out ? row0 + r : 0) * nb * 18; \
     int bsub = (int)(lane >> 3);                                               \
     int boff = ((int)lane & 7) * 2;                                            \
-    float s[NC] = {0};                                                         \
-    for (int cs = 0; cs < nb; cs += Q8_CHUNK) {                                \
-        int cblocks = nb - cs < Q8_CHUNK ? nb - cs : Q8_CHUNK;                 \
+    float s[R][NC];                                                            \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        _Pragma("unroll") for (int t = 0; t < NC; t++) s[r][t] = 0.0f;         \
+    for (int cs = 0; cs < nb; cs += (CH)) {                                    \
+        int cblocks = nb - cs < (CH) ? nb - cs : (CH);                         \
         int celems  = cblocks * 32;                                            \
         int base_e  = cs * 32;                                                 \
         _Pragma("unroll")                                                      \
         for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
             const float *xg = x + (ulong64)t * a.xs + base_e;                  \
             for (int e = threadIdx.x; e < celems; e += blockDim.x)             \
                 xsm[t][(e >> 5) * SMPAD + (e & 31)] = xg[e];                   \
         }                                                                      \
         __syncthreads();                                                       \
-        if (row < (unsigned)a.n_out) {                                         \
-            int c4 = cblocks & ~3;                                             \
-            for (int bi = 0; bi < c4; bi += 4) {                               \
-                const uchar *blk = rw + (ulong64)(cs + bi + bsub) * 18;        \
-                float d = f16f(blk);                                           \
+        int c4 = cblocks & ~3;                                                 \
+        for (int bi = 0; bi < c4; bi += 4) {                                   \
+            float d[R], q[R][4];                                               \
+            _Pragma("unroll")                                                  \
+            for (int r = 0; r < R; r++) {                                      \
+                const uchar *blk = rw[r] + (ulong64)(cs + bi + bsub) * 18;     \
+                d[r] = f16f(blk);                                              \
                 ushort16 u = *(const ushort16 *)(blk + 2 + boff);              \
-                float q0 = (float)((int)( u        & 0xF) - 8);                \
-                float q1 = (float)((int)((u >>  4) & 0xF) - 8);                \
-                float q2 = (float)((int)((u >>  8) & 0xF) - 8);                \
-                float q3 = (float)((int)((u >> 12) & 0xF) - 8);                \
-                int xo = (bi + bsub) * SMPAD + boff;                           \
-                _Pragma("unroll")                                              \
-                for (int t = 0; t < NC; t++) {                                 \
-                    const float *xp = xsm[t] + xo;                             \
-                    s[t] += d * (q0 * xp[0] + q2 * xp[1] +                     \
-                                 q1 * xp[16] + q3 * xp[17]);                   \
-                }                                                              \
+                q[r][0] = (float)((int)( u        & 0xF) - 8);                 \
+                q[r][1] = (float)((int)((u >>  4) & 0xF) - 8);                 \
+                q[r][2] = (float)((int)((u >>  8) & 0xF) - 8);                 \
+                q[r][3] = (float)((int)((u >> 12) & 0xF) - 8);                 \
             }                                                                  \
-            for (int bi = c4; bi < cblocks; bi++) {                            \
-                const uchar *blk = rw + (ulong64)(cs + bi) * 18;               \
+            int xo = (bi + bsub) * SMPAD + boff;                               \
+            _Pragma("unroll")                                                  \
+            for (int t = 0; t < NC; t++) {                                     \
+                if (t >= nc) continue;                                         \
+                const float *xp = xsm[t] + xo;                                 \
+                float x0 = xp[0], x1 = xp[1], x16 = xp[16], x17 = xp[17];      \
+                _Pragma("unroll")                                              \
+                for (int r = 0; r < R; r++)                                    \
+                    s[r][t] += d[r] * (q[r][0] * x0 + q[r][2] * x1 +           \
+                                       q[r][1] * x16 + q[r][3] * x17);         \
+            }                                                                  \
+        }                                                                      \
+        for (int bi = c4; bi < cblocks; bi++) {                                \
+            float w[R];                                                        \
+            int j = (int)lane & 15, hi = (int)lane >> 4;                       \
+            _Pragma("unroll")                                                  \
+            for (int r = 0; r < R; r++) {                                      \
+                const uchar *blk = rw[r] + (ulong64)(cs + bi) * 18;            \
                 float d = f16f(blk);                                           \
                 const uchar *q = blk + 2;                                      \
-                int j = (int)lane & 15, hi = (int)lane >> 4;                   \
                 int qv = hi ? (q[j] >> 4) : (q[j] & 0xF);                      \
-                float w = d * (float)(qv - 8);                                 \
+                w[r] = d * (float)(qv - 8);                                    \
+            }                                                                  \
+            _Pragma("unroll")                                                  \
+            for (int t = 0; t < NC; t++) {                                     \
+                if (t >= nc) continue;                                         \
+                float xv = xsm[t][bi * SMPAD + lane];                          \
                 _Pragma("unroll")                                              \
-                for (int t = 0; t < NC; t++)                                   \
-                    s[t] += w * xsm[t][bi * SMPAD + lane];                     \
+                for (int r = 0; r < R; r++) s[r][t] += w[r] * xv;              \
             }                                                                  \
         }                                                                      \
         __syncthreads();                                                       \
     }                                                                          \
-    if (row < (unsigned)a.n_out)                                               \
-        for (int t = 0; t < a.batch && t < NC; t++) {                          \
-            float r = warp_sum(s[t]);                                          \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        if (row >= (unsigned)a.n_out) continue;                                \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float v = warp_sum(s[r][t]);                                       \
             if (lane == 0) y[(ulong64)t * a.ys + row] =                        \
-                a.has_bias ? r + bias[row] : r;                                \
+                a.has_bias ? v + bias[row] : v;                                \
         }                                                                      \
+    }                                                                          \
 }
 
 // Q4_K/Q5_K stage x in groups of the EIGHT elements a lane owns, one padding
@@ -4927,127 +4292,285 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
 // affine factored out as dg*Sum(nib*x) - mmg*Sum(x). The v1 form this macro
 // used to carry (a separate `dg*nib - mmg` FMA per element straight into s)
 // is a different expression, hence different bits.
-#define GEMVB_Q4_K(NAME, NC)                                                   \
+// Q5_K: k_gemv_q5_K v2, i.e. Q4_K's factored form with the fifth bit — bit g
+// of each qh byte, added as 16 before the conversion to float.
+//
+// R rows a warp (KQ_TWR, kernel_args.h; 2026-10-21). A block's staged x and
+// each column's Sum(x) are the same for every row, so a warp reads a lane's
+// eight x values and forms their sum ONCE per column and applies them to its
+// R rows. With one row a warp they were re-read and re-summed per row, and a
+// speculative verify pass over five columns cost about six batch-1 passes
+// (RTX 3070, Qwen2.5-7B Q4_K_M: 318 us a launch against 53 for k_gemv_q4_K).
+// Columns past a.batch are skipped rather than computed on stale x. Every
+// (row, column) keeps k_gemv_q4_K's (k_gemv_q5_K's) expressions in their
+// order, so its bits.
+#define KG_NIBS(n, v0, v1)                                                     \
+    n[0] = (float)(v0 & 0xFF);         n[1] = (float)((v0 >>  8) & 0xFF);       \
+    n[2] = (float)((v0 >> 16) & 0xFF); n[3] = (float)((v0 >> 24));              \
+    n[4] = (float)(v1 & 0xFF);         n[5] = (float)((v1 >>  8) & 0xFF);       \
+    n[6] = (float)((v1 >> 16) & 0xFF); n[7] = (float)((v1 >> 24));
+#define GEMVB_KQ(NAME, NC, BB, QOFF, HBIT)                                     \
 extern "C" __global__ void NAME(MV_PARAMS) {                                   \
     __shared__ float xsm[NC][KG8ROW];                                          \
+    enum { R = KQ_TWR(NC) };                                                   \
     unsigned warp = threadIdx.x >> 5;                                          \
     unsigned lane = threadIdx.x & 31;                                          \
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
+    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
     int nb = a.n_in / 256;                                                     \
-    const uchar *rw = wb + a.w_off +                                           \
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 144; \
-    float s[NC] = {0};                                                         \
+    int nc = a.batch < (NC) ? a.batch : (NC);                                  \
+    float s[R][NC];                                                            \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        _Pragma("unroll") for (int t = 0; t < NC; t++) s[r][t] = 0.0f;         \
     int g     = (int)(lane >> 2);                                              \
     int ji    = (int)(lane >> 3);                                              \
     int sh    = ((((int)lane >> 2) & 1) == 0) ? 0 : 4;                         \
     int bbase = ((int)lane & 3) * 8;                                           \
     int el    = (int)lane * KG8PAD;                                            \
     for (int b = 0; b < nb; b++) {                                             \
-        const uchar *blk = rw + (ulong64)b * 144;                              \
         int base_e = b * 256;                                                  \
         _Pragma("unroll")                                                      \
         for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
             const float *xg = x + (ulong64)t * a.xs + base_e;                  \
             for (int e = threadIdx.x; e < 256; e += blockDim.x)                \
                 xsm[t][(e >> 3) * KG8PAD + (e & 7)] = xg[e];                   \
         }                                                                      \
         __syncthreads();                                                       \
-        if (row < (unsigned)a.n_out) {                                         \
+        float dg[R], mmg[R], n[R][8];                                          \
+        _Pragma("unroll")                                                      \
+        for (int r = 0; r < R; r++) {                                          \
+            unsigned row = row0 + r;                                           \
+            const uchar *blk = wb + a.w_off +                                  \
+                (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * (BB) +     \
+                (ulong64)b * (BB);                                             \
             float dd   = f16f(blk);                                            \
             float dmin = f16f(blk + 2);                                        \
             uchar sg, mg;                                                      \
             get_scale_min_k4(g, blk + 4, &sg, &mg);                            \
-            float dg = dd * (float)sg, mmg = dmin * (float)mg;                 \
-            uint2 qv = *(const uint2 *)(blk + 16 + ji * 32 + bbase);           \
+            dg[r] = dd * (float)sg; mmg[r] = dmin * (float)mg;                 \
+            uint2 qv = *(const uint2 *)(blk + (QOFF) + ji * 32 + bbase);       \
             uint v0 = (qv.x >> sh) & 0x0F0F0F0Fu;                              \
             uint v1 = (qv.y >> sh) & 0x0F0F0F0Fu;                              \
-            float n0 = (float)(v0 & 0xFF),        n1 = (float)((v0 >>  8) & 0xFF); \
-            float n2 = (float)((v0 >> 16) & 0xFF), n3 = (float)((v0 >> 24));    \
-            float n4 = (float)(v1 & 0xFF),        n5 = (float)((v1 >>  8) & 0xFF); \
-            float n6 = (float)((v1 >> 16) & 0xFF), n7 = (float)((v1 >> 24));    \
+            if (HBIT) {                                                        \
+                uint2 hv = *(const uint2 *)(blk + 16 + bbase);                 \
+                v0 += ((hv.x >> g) & 0x01010101u) << 4;                        \
+                v1 += ((hv.y >> g) & 0x01010101u) << 4;                        \
+            }                                                                  \
+            KG_NIBS(n[r], v0, v1)                                              \
+        }                                                                      \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            const float *xp = xsm[t] + el;                                     \
+            float x0 = xp[0], x1 = xp[1], x2 = xp[2], x3 = xp[3];              \
+            float x4 = xp[4], x5 = xp[5], x6 = xp[6], x7 = xp[7];              \
+            float sx = x0 + x1 + x2 + x3 + x4 + x5 + x6 + x7;                  \
             _Pragma("unroll")                                                  \
-            for (int t = 0; t < NC; t++) {                                     \
-                const float *xp = xsm[t] + el;                                 \
-                float tt = n0 * xp[0] + n1 * xp[1] + n2 * xp[2] + n3 * xp[3]   \
-                         + n4 * xp[4] + n5 * xp[5] + n6 * xp[6] + n7 * xp[7];  \
-                float sx = xp[0] + xp[1] + xp[2] + xp[3]                       \
-                         + xp[4] + xp[5] + xp[6] + xp[7];                      \
-                s[t] += dg * tt - mmg * sx;                                    \
+            for (int r = 0; r < R; r++) {                                      \
+                float tt = n[r][0] * x0 + n[r][1] * x1 + n[r][2] * x2          \
+                         + n[r][3] * x3 + n[r][4] * x4 + n[r][5] * x5          \
+                         + n[r][6] * x6 + n[r][7] * x7;                        \
+                s[r][t] += dg[r] * tt - mmg[r] * sx;                           \
             }                                                                  \
         }                                                                      \
         __syncthreads();                                                       \
     }                                                                          \
-    if (row < (unsigned)a.n_out)                                               \
-        for (int t = 0; t < a.batch && t < NC; t++) {                          \
-            float r = warp_sum(s[t]);                                          \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        if (row >= (unsigned)a.n_out) continue;                                \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float v = warp_sum(s[r][t]);                                       \
             if (lane == 0) y[(ulong64)t * a.ys + row] =                        \
-                a.has_bias ? r + bias[row] : r;                                \
+                a.has_bias ? v + bias[row] : v;                                \
         }                                                                      \
+    }                                                                          \
+}
+#define GEMVB_Q4_K(NAME, NC) GEMVB_KQ(NAME, NC, 144, 16, 0)
+#define GEMVB_Q5_K(NAME, NC) GEMVB_KQ(NAME, NC, 176, 48, 1)
+
+// ---- IQ4_XS: k_gemv_iq4_xs's twin (2026-10-21). The batch-1 decode of
+// IQ4_XS runs that coalesced GEMV (lane L owns elements 8L..8L+7 of a block:
+// sub-block L/4, low or high nibbles of 8 bytes), but its width-classed
+// twins were the codebook family's lane kernels, twins of k_mv_iq4_xs, a
+// different reduction: a decode microbatch or a verify round on an IQ4_XS
+// file differed from single steps in the last bits. Same staging and R rows
+// a warp (KQ_TWR) as the K-quant twins; every (row, column) keeps
+// k_gemv_iq4_xs's expressions in their order.
+#define GEMVB_IQ4XS(NAME, NC)                                                  \
+extern "C" __global__ void NAME(MV_PARAMS) {                                   \
+    __shared__ float xsm[NC][KG8ROW];                                          \
+    enum { R = KQ_TWR(NC) };                                                   \
+    unsigned warp = threadIdx.x >> 5;                                          \
+    unsigned lane = threadIdx.x & 31;                                          \
+    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
+    int nb = a.n_in / 256;                                                     \
+    int nc = a.batch < (NC) ? a.batch : (NC);                                  \
+    float s[R][NC];                                                            \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        _Pragma("unroll") for (int t = 0; t < NC; t++) s[r][t] = 0.0f;         \
+    int ib = (int)(lane >> 2), qd = (int)(lane & 3);                           \
+    int boff = 16 * ib + 8 * (qd & 1);                                         \
+    int hi = qd >= 2;                                                          \
+    int el = (int)lane * KG8PAD;                                               \
+    for (int b = 0; b < nb; b++) {                                             \
+        int base_e = b * 256;                                                  \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            const float *xg = x + (ulong64)t * a.xs + base_e;                  \
+            for (int e = threadIdx.x; e < 256; e += blockDim.x)                \
+                xsm[t][(e >> 3) * KG8PAD + (e & 7)] = xg[e];                   \
+        }                                                                      \
+        __syncthreads();                                                       \
+        float dl[R], w[R][8];                                                  \
+        _Pragma("unroll")                                                      \
+        for (int r = 0; r < R; r++) {                                          \
+            unsigned row = row0 + r;                                           \
+            const uchar *blk = wb + a.w_off +                                  \
+                (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 136 +      \
+                (ulong64)b * 136;                                              \
+            float d = f16f(blk);                                               \
+            unsigned sh = (unsigned)blk[2] | ((unsigned)blk[3] << 8);          \
+            int ls = ((blk[4 + ib / 2] >> 4 * (ib % 2)) & 0xF) |               \
+                     (((sh >> 2 * ib) & 3) << 4);                              \
+            dl[r] = d * (float)(ls - 32);                                      \
+            uint2 qv = *(const uint2 *)(blk + 8 + boff);                       \
+            uint v0 = hi ? (qv.x >> 4) & 0x0F0F0F0Fu : qv.x & 0x0F0F0F0Fu;     \
+            uint v1 = hi ? (qv.y >> 4) & 0x0F0F0F0Fu : qv.y & 0x0F0F0F0Fu;     \
+            w[r][0] = (float)kv_iq4[v0 & 0xFF];                                \
+            w[r][1] = (float)kv_iq4[(v0 >>  8) & 0xFF];                        \
+            w[r][2] = (float)kv_iq4[(v0 >> 16) & 0xFF];                        \
+            w[r][3] = (float)kv_iq4[(v0 >> 24)       ];                        \
+            w[r][4] = (float)kv_iq4[v1 & 0xFF];                                \
+            w[r][5] = (float)kv_iq4[(v1 >>  8) & 0xFF];                        \
+            w[r][6] = (float)kv_iq4[(v1 >> 16) & 0xFF];                        \
+            w[r][7] = (float)kv_iq4[(v1 >> 24)       ];                        \
+        }                                                                      \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            const float *xp = xsm[t] + el;                                     \
+            float x0 = xp[0], x1 = xp[1], x2 = xp[2], x3 = xp[3];              \
+            float x4 = xp[4], x5 = xp[5], x6 = xp[6], x7 = xp[7];              \
+            _Pragma("unroll")                                                  \
+            for (int r = 0; r < R; r++) {                                      \
+                float tt = w[r][0] * x0 + w[r][1] * x1 + w[r][2] * x2          \
+                         + w[r][3] * x3 + w[r][4] * x4 + w[r][5] * x5          \
+                         + w[r][6] * x6 + w[r][7] * x7;                        \
+                s[r][t] += dl[r] * tt;                                         \
+            }                                                                  \
+        }                                                                      \
+        __syncthreads();                                                       \
+    }                                                                          \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        if (row >= (unsigned)a.n_out) continue;                                \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float v = warp_sum(s[r][t]);                                       \
+            if (lane == 0) y[(ulong64)t * a.ys + row] =                        \
+                a.has_bias ? v + bias[row] : v;                                \
+        }                                                                      \
+    }                                                                          \
 }
 
-// ---- Q5_K: k_gemv_q5_K v2, i.e. Q4_K's factored form with the fifth bit —
-// bit g of each qh byte, added as 16 before the conversion to float.
-#define GEMVB_Q5_K(NAME, NC)                                                   \
+// ---- Q3_K: k_gemv_q3_K's twin (2026-10-21). Q3_K had no width-classed
+// twin: its _b tile measured 0.17x-0.63x of sequential decode (cuda.c,
+// mvb_is_mv_twin), and a fast twin waited on a batch-1 kernel in the GEMV
+// geometry, which k_gemv_q3_K has been since #243. A Q3_K file therefore
+// decoded a microbatch's sequences one at a time and ran a verify round's
+// Q3_K rows a column at a time. Same staging and R rows a warp (KQ_TWR) as
+// the K-quant twins; every (row, column) keeps k_gemv_q3_K's expressions in
+// their order.
+// k_gemv_q3_K's per-element weight, q + 4 * hbit - 4, of byte k of the
+// packed words v (quant bits) and h (high-mask bits)
+#define Q3W(v, h, k) ((float)(((v) >> (8 * (k))) & 0xFF) + \
+                      4.0f * (float)(((h) >> (8 * (k))) & 0xFF) - 4.0f)
+#define GEMVB_Q3K(NAME, NC)                                                    \
 extern "C" __global__ void NAME(MV_PARAMS) {                                   \
     __shared__ float xsm[NC][KG8ROW];                                          \
+    enum { R = KQ_TWR(NC) };                                                   \
     unsigned warp = threadIdx.x >> 5;                                          \
     unsigned lane = threadIdx.x & 31;                                          \
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
+    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
     int nb = a.n_in / 256;                                                     \
-    const uchar *rw = wb + a.w_off +                                           \
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 176; \
-    float s[NC] = {0};                                                         \
-    int g     = (int)(lane >> 2);                                              \
-    int ji    = (int)(lane >> 3);                                              \
-    int sh    = ((((int)lane >> 2) & 1) == 0) ? 0 : 4;                         \
-    int bbase = ((int)lane & 3) * 8;                                           \
-    int hshift = g;                                                            \
+    int nc = a.batch < (NC) ? a.batch : (NC);                                  \
+    float s[R][NC];                                                            \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        _Pragma("unroll") for (int t = 0; t < NC; t++) s[r][t] = 0.0f;         \
+    int half  = (int)(lane >> 4);                                              \
+    int j     = (int)(lane >> 2) & 3;                                          \
+    int lseg  = ((int)lane & 3) * 8;                                           \
+    int shift = 2 * j, hsh = 4 * half + j;                                     \
+    int sidx  = 8 * half + 2 * j + (lseg >= 16 ? 1 : 0);                       \
     int el    = (int)lane * KG8PAD;                                            \
     for (int b = 0; b < nb; b++) {                                             \
-        const uchar *blk = rw + (ulong64)b * 176;                              \
         int base_e = b * 256;                                                  \
         _Pragma("unroll")                                                      \
         for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
             const float *xg = x + (ulong64)t * a.xs + base_e;                  \
             for (int e = threadIdx.x; e < 256; e += blockDim.x)                \
                 xsm[t][(e >> 3) * KG8PAD + (e & 7)] = xg[e];                   \
         }                                                                      \
         __syncthreads();                                                       \
-        if (row < (unsigned)a.n_out) {                                         \
-            float dd   = f16f(blk);                                            \
-            float dmin = f16f(blk + 2);                                        \
-            uchar sg, mg;                                                      \
-            get_scale_min_k4(g, blk + 4, &sg, &mg);                            \
-            float dg = dd * (float)sg, mmg = dmin * (float)mg;                 \
-            uint2 qv = *(const uint2 *)(blk + 48 + ji * 32 + bbase);           \
-            uint2 hv = *(const uint2 *)(blk + 16 + bbase);                     \
-            uint v0 = (qv.x >> sh) & 0x0F0F0F0Fu;                              \
-            uint v1 = (qv.y >> sh) & 0x0F0F0F0Fu;                              \
-            uint h0 = ((hv.x >> hshift) & 0x01010101u) << 4;                   \
-            uint h1 = ((hv.y >> hshift) & 0x01010101u) << 4;                   \
-            v0 += h0; v1 += h1;                                                \
-            float n0 = (float)(v0 & 0xFF),        n1 = (float)((v0 >>  8) & 0xFF); \
-            float n2 = (float)((v0 >> 16) & 0xFF), n3 = (float)((v0 >> 24));    \
-            float n4 = (float)(v1 & 0xFF),        n5 = (float)((v1 >>  8) & 0xFF); \
-            float n6 = (float)((v1 >> 16) & 0xFF), n7 = (float)((v1 >> 24));    \
+        float dl[R], w[R][8];                                                  \
+        _Pragma("unroll")                                                      \
+        for (int r = 0; r < R; r++) {                                          \
+            unsigned row = row0 + r;                                           \
+            const uchar *blk = wb + a.w_off +                                  \
+                (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 110 +      \
+                (ulong64)b * 110;                                              \
+            Q3K_UNPACK_SCALES;                                                 \
+            dl[r] = d_all * (float)(q3scales[sidx] - 32);                      \
+            uint2 qv = ld8_a2(qbase + 32 * half + lseg);                       \
+            uint2 hv = ld8_a2(hm + lseg);                                      \
+            uint v0 = (qv.x >> shift) & 0x03030303u;                           \
+            uint v1 = (qv.y >> shift) & 0x03030303u;                           \
+            uint h0 = (hv.x >> hsh) & 0x01010101u;                             \
+            uint h1 = (hv.y >> hsh) & 0x01010101u;                             \
+            w[r][0] = Q3W(v0, h0, 0);                                          \
+            w[r][1] = Q3W(v0, h0, 1);                                          \
+            w[r][2] = Q3W(v0, h0, 2);                                          \
+            w[r][3] = Q3W(v0, h0, 3);                                          \
+            w[r][4] = Q3W(v1, h1, 0);                                          \
+            w[r][5] = Q3W(v1, h1, 1);                                          \
+            w[r][6] = Q3W(v1, h1, 2);                                          \
+            w[r][7] = Q3W(v1, h1, 3);                                          \
+        }                                                                      \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            const float *xp = xsm[t] + el;                                     \
+            float x0 = xp[0], x1 = xp[1], x2 = xp[2], x3 = xp[3];              \
+            float x4 = xp[4], x5 = xp[5], x6 = xp[6], x7 = xp[7];              \
             _Pragma("unroll")                                                  \
-            for (int t = 0; t < NC; t++) {                                     \
-                const float *xp = xsm[t] + el;                                 \
-                float tt = n0 * xp[0] + n1 * xp[1] + n2 * xp[2] + n3 * xp[3]   \
-                         + n4 * xp[4] + n5 * xp[5] + n6 * xp[6] + n7 * xp[7];  \
-                float sx = xp[0] + xp[1] + xp[2] + xp[3]                       \
-                         + xp[4] + xp[5] + xp[6] + xp[7];                      \
-                s[t] += dg * tt - mmg * sx;                                    \
+            for (int r = 0; r < R; r++) {                                      \
+                float tt = w[r][0] * x0 + w[r][1] * x1 + w[r][2] * x2          \
+                         + w[r][3] * x3 + w[r][4] * x4 + w[r][5] * x5          \
+                         + w[r][6] * x6 + w[r][7] * x7;                        \
+                s[r][t] += dl[r] * tt;                                         \
             }                                                                  \
         }                                                                      \
         __syncthreads();                                                       \
     }                                                                          \
-    if (row < (unsigned)a.n_out)                                               \
-        for (int t = 0; t < a.batch && t < NC; t++) {                          \
-            float r = warp_sum(s[t]);                                          \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        if (row >= (unsigned)a.n_out) continue;                                \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float v = warp_sum(s[r][t]);                                       \
             if (lane == 0) y[(ulong64)t * a.ys + row] =                        \
-                a.has_bias ? r + bias[row] : r;                                \
+                a.has_bias ? v + bias[row] : v;                                \
         }                                                                      \
+    }                                                                          \
 }
 
 // ---- Q6_K: k_gemv_q6_K v2 — d factored out of the four-term group, a whole
@@ -5057,30 +4580,39 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
 // sum, as this macro used to, is a different reduction tree.
 // (k_gemm_q6_K premultiplies d into each weight instead, which agrees in exact
 // arithmetic but not necessarily in floating point, so it is not a twin.)
+// R rows a warp (Q6_TWR, as the K-quant twins above): a lane's four x values
+// of each half are read once per column for all R rows.
 #define GEMVB_Q6_K(NAME, NC)                                                   \
 extern "C" __global__ void NAME(MV_PARAMS) {                                   \
     __shared__ float xsm[NC][256];                                             \
+    enum { R = Q6_TWR(NC) };                                                   \
     unsigned warp = threadIdx.x >> 5;                                          \
     unsigned lane = threadIdx.x & 31;                                          \
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
+    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
     int nb = a.n_in / 256;                                                     \
-    const uchar *rw = wb + a.w_off +                                           \
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 210; \
-    float s0[NC] = {0}, s1[NC] = {0};                                          \
+    int nc = a.batch < (NC) ? a.batch : (NC);                                  \
+    float s0[R][NC], s1[R][NC];                                                \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        _Pragma("unroll") for (int t = 0; t < NC; t++) s0[r][t] = s1[r][t] = 0.0f; \
     int is = (int)(lane >> 4);                                                 \
     for (int b = 0; b < nb; b++) {                                             \
-        const uchar *blk = rw + (ulong64)b * 210;                              \
         int base_e = b * 256;                                                  \
         _Pragma("unroll")                                                      \
         for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
             const float *xg = x + (ulong64)t * a.xs + base_e;                  \
             for (int e = threadIdx.x; e < 256; e += blockDim.x)                \
                 xsm[t][e] = xg[e];                                             \
         }                                                                      \
         __syncthreads();                                                       \
-        if (row < (unsigned)a.n_out) {                                         \
-            float d = f16f(blk + 208);                                         \
-            float acc[NC] = {0};                                               \
+        float d[R], c[R][2][4];                                                \
+        _Pragma("unroll")                                                      \
+        for (int r = 0; r < R; r++) {                                          \
+            unsigned row = row0 + r;                                           \
+            const uchar *blk = wb + a.w_off +                                  \
+                (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 210 +      \
+                (ulong64)b * 210;                                              \
+            d[r] = f16f(blk + 208);                                            \
             _Pragma("unroll")                                                  \
             for (int half = 0; half < 2; half++) {                             \
                 const uchar *ql = blk + half * 64;                             \
@@ -5095,31 +4627,46 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
                                (((qh[lane] >> 4) & 3) << 4)) - 32;             \
                 int q4 = (int)((ql[lane + 32] >> 4)  |                         \
                                (((qh[lane] >> 6) & 3) << 4)) - 32;             \
-                float c1 = (float)(sc[0 + is] * q1);                           \
-                float c2 = (float)(sc[2 + is] * q2);                           \
-                float c3 = (float)(sc[4 + is] * q3);                           \
-                float c4 = (float)(sc[6 + is] * q4);                           \
-                int e0 = half * 128;                                           \
+                c[r][half][0] = (float)(sc[0 + is] * q1);                      \
+                c[r][half][1] = (float)(sc[2 + is] * q2);                      \
+                c[r][half][2] = (float)(sc[4 + is] * q3);                      \
+                c[r][half][3] = (float)(sc[6 + is] * q4);                      \
+            }                                                                  \
+        }                                                                      \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float acc[R];                                                      \
+            _Pragma("unroll") for (int r = 0; r < R; r++) acc[r] = 0.0f;       \
+            _Pragma("unroll")                                                  \
+            for (int half = 0; half < 2; half++) {                             \
+                const float *xp = xsm[t] + half * 128;                         \
+                float xa = xp[lane], xb = xp[lane + 32];                       \
+                float xc = xp[lane + 64], xd = xp[lane + 96];                  \
                 _Pragma("unroll")                                              \
-                for (int t = 0; t < NC; t++) {                                 \
-                    const float *xp = xsm[t] + e0;                             \
-                    acc[t] += d * (c1 * xp[lane]      + c2 * xp[lane + 32] +   \
-                                   c3 * xp[lane + 64] + c4 * xp[lane + 96]);   \
-                }                                                              \
+                for (int r = 0; r < R; r++)                                    \
+                    acc[r] += d[r] * (c[r][half][0] * xa + c[r][half][1] * xb + \
+                                      c[r][half][2] * xc + c[r][half][3] * xd); \
             }                                                                  \
             _Pragma("unroll")                                                  \
-            for (int t = 0; t < NC; t++) {                                     \
-                if (b & 1) s1[t] += acc[t]; else s0[t] += acc[t];              \
+            for (int r = 0; r < R; r++) {                                      \
+                if (b & 1) s1[r][t] += acc[r]; else s0[r][t] += acc[r];        \
             }                                                                  \
         }                                                                      \
         __syncthreads();                                                       \
     }                                                                          \
-    if (row < (unsigned)a.n_out)                                               \
-        for (int t = 0; t < a.batch && t < NC; t++) {                          \
-            float r = warp_sum(s0[t] + s1[t]);                                 \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        if (row >= (unsigned)a.n_out) continue;                                \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float v = warp_sum(s0[r][t] + s1[r][t]);                           \
             if (lane == 0) y[(ulong64)t * a.ys + row] =                        \
-                a.has_bias ? r + bias[row] : r;                                \
+                a.has_bias ? v + bias[row] : v;                                \
         }                                                                      \
+    }                                                                          \
 }
 
 // ---- BF16: k_mv_bf16's twin (2026-08-20). bf16 decodes at batch 1 through
@@ -5133,42 +4680,68 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
 // scattered global x-loads measured well below sequential decode (the same
 // 0.11x-class loss the Q4_0 comment above records).
 #define BF16_CHUNK 1024
-#define GEMVB_BF16(NAME, NC)                                                   \
+#define GEMVB_BF16_C(NAME, NC, CH)                                             \
 extern "C" __global__ void NAME(MV_PARAMS) {                                   \
-    __shared__ float xsm[NC][BF16_CHUNK];                                      \
+    __shared__ float xsm[NC][(CH)];                                            \
+    enum { R = DQ_TWR(NC) };                                                   \
     unsigned warp = threadIdx.x >> 5;                                          \
     unsigned lane = threadIdx.x & 31;                                          \
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
-    const unsigned short *rw = (const unsigned short *)(wb + a.w_off) +        \
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * a.n_in;   \
-    float s[NC] = {0};                                                         \
-    for (int cs = 0; cs < a.n_in; cs += BF16_CHUNK) {                          \
-        int celems = a.n_in - cs < BF16_CHUNK ? a.n_in - cs : BF16_CHUNK;      \
+    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
+    int nc = a.batch < (NC) ? a.batch : (NC);                                  \
+    const unsigned short *rw[R];                                               \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        rw[r] = (const unsigned short *)(wb + a.w_off) +                       \
+                (ulong64)(row0 + r < (unsigned)a.n_out ? row0 + r : 0) * a.n_in; \
+    float s[R][NC];                                                            \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        _Pragma("unroll") for (int t = 0; t < NC; t++) s[r][t] = 0.0f;         \
+    for (int cs = 0; cs < a.n_in; cs += (CH)) {                                \
+        int celems = a.n_in - cs < (CH) ? a.n_in - cs : (CH);                  \
         _Pragma("unroll")                                                      \
         for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
             const float *xg = x + (ulong64)t * a.xs + cs;                      \
             for (int e = threadIdx.x; e < celems; e += blockDim.x)             \
                 xsm[t][e] = xg[e];                                             \
         }                                                                      \
         __syncthreads();                                                       \
-        if (row < (unsigned)a.n_out)                                           \
-            for (int i = lane; i < celems; i += 32) {                          \
-                float w = bf16f(rw[cs + i]);                                   \
-                _Pragma("unroll")                                              \
-                for (int t = 0; t < NC; t++) s[t] += w * xsm[t][i];            \
+        for (int i = lane; i < celems; i += 32) {                              \
+            float w[R];                                                        \
+            _Pragma("unroll") for (int r = 0; r < R; r++) w[r] = bf16f(rw[r][cs + i]); \
+            _Pragma("unroll")                                                  \
+            for (int t = 0; t < NC; t++) {                                     \
+                if (t >= nc) continue;                                         \
+                float xv = xsm[t][i];                                          \
+                _Pragma("unroll") for (int r = 0; r < R; r++) s[r][t] += w[r] * xv; \
             }                                                                  \
+        }                                                                      \
         __syncthreads();                                                       \
     }                                                                          \
-    if (row < (unsigned)a.n_out)                                               \
-        for (int t = 0; t < a.batch && t < NC; t++) {                          \
-            float r = warp_sum(s[t]);                                          \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        if (row >= (unsigned)a.n_out) continue;                                \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float v = warp_sum(s[r][t]);                                       \
             if (lane == 0) y[(ulong64)t * a.ys + row] =                        \
-                a.has_bias ? r + bias[row] : r;                                \
+                a.has_bias ? v + bias[row] : v;                                \
         }                                                                      \
+    }                                                                          \
 }
+
+#define GEMVB_Q8_0(NAME, NC) GEMVB_Q8_0_C(NAME, NC, Q8_CHUNK)
+#define GEMVB_Q4_0(NAME, NC) GEMVB_Q4_0_C(NAME, NC, Q8_CHUNK)
+#define GEMVB_BF16(NAME, NC) GEMVB_BF16_C(NAME, NC, BF16_CHUNK)
 
 // Widths cuda.c can pick from. Two are enough to cover 2..8 without a
 // half-empty batch paying much: a microbatch of 3 runs the 4-wide kernel.
+// The 16-wide ones serve a speculative verify round of 9 to 16 rows in one
+// pass over the weights (cuda.c exact_rows); they stage fewer elements per
+// pass so sixteen columns stay inside the static shared memory: Q8_0 and
+// Q4_0 sixteen blocks (any multiple of four keeps every lane's trips and
+// tail), BF16 512 elements (a lane's elements stay lane, lane + 32, ...).
 GEMVB_BF16(k_gemvb_bf16_x4, 4)
 GEMVB_BF16(k_gemvb_bf16_x8, 8)
 GEMVB_Q8_0(k_gemvb_q8_0_x4, 4)
@@ -5181,6 +4754,161 @@ GEMVB_Q5_K(k_gemvb_q5_K_x4, 4)
 GEMVB_Q5_K(k_gemvb_q5_K_x8, 8)
 GEMVB_Q6_K(k_gemvb_q6_K_x4, 4)
 GEMVB_Q6_K(k_gemvb_q6_K_x8, 8)
+GEMVB_Q3K(k_gemvb_q3_K_x4, 4)
+GEMVB_Q3K(k_gemvb_q3_K_x8, 8)
+GEMVB_BF16_C(k_gemvb_bf16_x16, 16, 512)
+GEMVB_Q8_0_C(k_gemvb_q8_0_x16, 16, 16)
+GEMVB_Q4_0_C(k_gemvb_q4_0_x16, 16, 16)
+GEMVB_Q4_K(k_gemvb_q4_K_x16, 16)
+GEMVB_Q5_K(k_gemvb_q5_K_x16, 16)
+GEMVB_Q6_K(k_gemvb_q6_K_x16, 16)
+GEMVB_Q3K(k_gemvb_q3_K_x16, 16)
+
+// ---- MXFP4: k_mv_mxfp4's twin (gpt-oss experts; the by-expert MoE prefill
+// runs their columns through it). The batch-1 kernel gives each lane whole
+// blocks (b = lane, lane + 32, ...) and reads x from global; so does this one,
+// with one accumulator per column and the same inner order and warp_sum.
+#define GEMVB_MXFP4(NAME, NC)                                                  \
+extern "C" __global__ void NAME(MV_PARAMS) {                                   \
+    __shared__ float xsm[NC][32 * LANE_XPAD];                                  \
+    __shared__ float kv[16];                                                   \
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];             \
+    unsigned warp = threadIdx.x >> 5;                                          \
+    unsigned lane = threadIdx.x & 31;                                          \
+    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
+    bool live = row < (unsigned)a.n_out;                                       \
+    int nb = a.n_in / 32;                                                      \
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 17;      \
+    float s[NC] = {0};                                                         \
+    for (int b0 = 0; b0 < nb; b0 += 32) {                                      \
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;                                \
+        for (int c = 0; c < NC && c < a.batch; c++)                            \
+            LANE_STAGE_X(xsm[c], x + (ulong64)c * a.xs, b0, nblk)              \
+        __syncthreads();                                                       \
+        if (live && (int)lane < nblk) {                                        \
+            const uchar *blk = rw + (ulong64)(b0 + lane) * 17;                 \
+            float d = ldexpf(1.0f, (int)blk[0] - 127);                         \
+            const uchar *q = blk + 1;                                          \
+            _Pragma("unroll")                                                  \
+            for (int c = 0; c < NC; c++) {                                     \
+                if (c >= a.batch) break;                                       \
+                const float *xp = xsm[c] + lane * LANE_XPAD;                   \
+                float t = 0;                                                   \
+                for (int j = 0; j < 16; j++) {                                 \
+                    t += kv[q[j] & 0xF] * xp[j];                               \
+                    t += kv[q[j] >> 4]  * xp[j + 16];                          \
+                }                                                              \
+                s[c] += d * t;                                                 \
+            }                                                                  \
+        }                                                                      \
+        __syncthreads();                                                       \
+    }                                                                          \
+    if (live)                                                                  \
+        for (int c = 0; c < a.batch && c < NC; c++) {                          \
+            float r = warp_sum(s[c]);                                          \
+            if (lane == 0) y[(ulong64)c * a.ys + row] =                        \
+                a.has_bias ? r + bias[row] : r;                                \
+        }                                                                      \
+}
+GEMVB_MXFP4(k_gemvb_mxfp4_x4, 4)
+GEMVB_MXFP4(k_gemvb_mxfp4_x8, 8)
+// Sixteen columns: a lane owns whole blocks (block b0 + lane), so the group
+// of 32 blocks cannot shrink without moving blocks between lanes; the columns
+// are staged eight at a time instead, each block's scale and quants read once
+// per half. A column's sum is the same terms in the same order either way.
+#define GEMVB_MXFP4_HALVES(NAME, NC)                                           \
+extern "C" __global__ void NAME(MV_PARAMS) {                                   \
+    __shared__ float xsm[(NC) / 2][32 * LANE_XPAD];                            \
+    __shared__ float kv[16];                                                   \
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];             \
+    unsigned warp = threadIdx.x >> 5;                                          \
+    unsigned lane = threadIdx.x & 31;                                          \
+    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
+    bool live = row < (unsigned)a.n_out;                                       \
+    int nb = a.n_in / 32;                                                      \
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 17;      \
+    float s[NC] = {0};                                                         \
+    for (int b0 = 0; b0 < nb; b0 += 32) {                                      \
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;                                \
+        _Pragma("unroll")                                                      \
+        for (int h = 0; h < 2; h++) {                                          \
+            for (int c = 0; c < (NC) / 2 && h * ((NC) / 2) + c < a.batch; c++) \
+                LANE_STAGE_X(xsm[c], x + (ulong64)(h * ((NC) / 2) + c) * a.xs, b0, nblk) \
+            __syncthreads();                                                   \
+            if (live && (int)lane < nblk) {                                    \
+                const uchar *blk = rw + (ulong64)(b0 + lane) * 17;             \
+                float d = ldexpf(1.0f, (int)blk[0] - 127);                     \
+                const uchar *q = blk + 1;                                      \
+                _Pragma("unroll")                                              \
+                for (int c = 0; c < (NC) / 2; c++) {                           \
+                    int cc = h * ((NC) / 2) + c;                               \
+                    if (cc >= a.batch) break;                                  \
+                    const float *xp = xsm[c] + lane * LANE_XPAD;               \
+                    float t = 0;                                               \
+                    for (int j = 0; j < 16; j++) {                             \
+                        t += kv[q[j] & 0xF] * xp[j];                           \
+                        t += kv[q[j] >> 4]  * xp[j + 16];                      \
+                    }                                                          \
+                    s[cc] += d * t;                                            \
+                }                                                              \
+            }                                                                  \
+            __syncthreads();                                                   \
+        }                                                                      \
+    }                                                                          \
+    if (live)                                                                  \
+        for (int c = 0; c < a.batch && c < NC; c++) {                          \
+            float r = warp_sum(s[c]);                                          \
+            if (lane == 0) y[(ulong64)c * a.ys + row] =                        \
+                a.has_bias ? r + bias[row] : r;                                \
+        }                                                                      \
+}
+GEMVB_MXFP4_HALVES(k_gemvb_mxfp4_x16, 16)
+
+// ---- Q4_0: k_mv_q4_0's twin. The fused MoE prefill's Q4_0 expert kernel is
+// k_mv_q4_0's lane-per-block body (k_moe_mv_q4_0), not the coalesced
+// k_gemv_q4_0 that k_gemvb_q4_0_x* reproduce; the by-expert prefill runs Q4_0
+// expert columns through this one: whole blocks per lane (b = lane, lane +
+// 32, ...), one accumulator per column, the same inner expression and warp_sum.
+#define GEMVB_Q4_0_MV(NAME, NC)                                                \
+extern "C" __global__ void NAME(MV_PARAMS) {                                   \
+    __shared__ float xsm[NC][32 * LANE_XPAD];                                  \
+    unsigned warp = threadIdx.x >> 5;                                          \
+    unsigned lane = threadIdx.x & 31;                                          \
+    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
+    bool live = row < (unsigned)a.n_out;                                       \
+    int nb = a.n_in / 32;                                                      \
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 18;      \
+    float s[NC] = {0};                                                         \
+    for (int b0 = 0; b0 < nb; b0 += 32) {                                      \
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;                                \
+        for (int c = 0; c < NC && c < a.batch; c++)                            \
+            LANE_STAGE_X(xsm[c], x + (ulong64)c * a.xs, b0, nblk)              \
+        __syncthreads();                                                       \
+        if (live && (int)lane < nblk) {                                        \
+            const uchar *blk = rw + (ulong64)(b0 + lane) * 18;                 \
+            float d = f16f(blk);                                               \
+            const uchar *q = blk + 2;                                          \
+            _Pragma("unroll")                                                  \
+            for (int c = 0; c < NC; c++) {                                     \
+                if (c >= a.batch) break;                                       \
+                const float *xp = xsm[c] + lane * LANE_XPAD;                   \
+                float t = 0;                                                   \
+                for (int j = 0; j < 16; j++)                                   \
+                    t += ((int)(q[j] & 0xF) - 8) * xp[j] + ((int)(q[j] >> 4) - 8) * xp[j + 16]; \
+                s[c] += d * t;                                                 \
+            }                                                                  \
+        }                                                                      \
+        __syncthreads();                                                       \
+    }                                                                          \
+    if (live)                                                                  \
+        for (int c = 0; c < a.batch && c < NC; c++) {                          \
+            float r = warp_sum(s[c]);                                          \
+            if (lane == 0) y[(ulong64)c * a.ys + row] =                        \
+                a.has_bias ? r + bias[row] : r;                                \
+        }                                                                      \
+}
+GEMVB_Q4_0_MV(k_gemvb_q4_0_mv_x4, 4)
+GEMVB_Q4_0_MV(k_gemvb_q4_0_mv_x8, 8)
 
 extern "C" __global__ void k_mv_iq4_xs(MV_PARAMS) {
     IQ_LANE_MV1(iq4xs_lane_n, 136)
@@ -5198,8 +4926,14 @@ IQ_LANE_MVB(k_gemvb_iq3_xxs_x4, iq3xxs_lane_n, 98, 4)
 IQ_LANE_MVB(k_gemvb_iq3_xxs_x8, iq3xxs_lane_n, 98, 8)
 IQ_LANE_MVB(k_gemvb_iq3_s_x4, iq3s_lane_n, 110, 4)
 IQ_LANE_MVB(k_gemvb_iq3_s_x8, iq3s_lane_n, 110, 8)
-IQ_LANE_MVB(k_gemvb_iq4_xs_x4, iq4xs_lane_n, 136, 4)
-IQ_LANE_MVB(k_gemvb_iq4_xs_x8, iq4xs_lane_n, 136, 8)
+GEMVB_IQ4XS(k_gemvb_iq4_xs_x4, 4)
+GEMVB_IQ4XS(k_gemvb_iq4_xs_x8, 8)
+IQ_LANE_MVB(k_gemvb_iq2_xxs_x16, iq2xxs_lane_n, 66, 16)
+IQ_LANE_MVB(k_gemvb_iq2_xs_x16, iq2xs_lane_n, 74, 16)
+IQ_LANE_MVB(k_gemvb_iq2_s_x16, iq2s_lane_n, 82, 16)
+IQ_LANE_MVB(k_gemvb_iq3_xxs_x16, iq3xxs_lane_n, 98, 16)
+IQ_LANE_MVB(k_gemvb_iq3_s_x16, iq3s_lane_n, 110, 16)
+GEMVB_IQ4XS(k_gemvb_iq4_xs_x16, 16)
 
 // ---- int8-activation codebook GEMVs (RUNNER_CUDA_Q8X=1, EXPERIMENTAL) ------
 // x is quantized once per call to int8 in 32-element blocks (scale amax/127),
@@ -5424,11 +5158,6 @@ IQ_LANE_MVB(k_gemvx_iq3_s_x3, iq3s_lane_n, 110, 3)
 IQ_LANE_MVB(k_gemvx_iq3_s_x5, iq3s_lane_n, 110, 5)
 IQ_LANE_MVB(k_gemvx_iq3_s_x6, iq3s_lane_n, 110, 6)
 IQ_LANE_MVB(k_gemvx_iq3_s_x7, iq3s_lane_n, 110, 7)
-IQ_LANE_MVB(k_gemvx_iq4_xs_x2, iq4xs_lane_n, 136, 2)
-IQ_LANE_MVB(k_gemvx_iq4_xs_x3, iq4xs_lane_n, 136, 3)
-IQ_LANE_MVB(k_gemvx_iq4_xs_x5, iq4xs_lane_n, 136, 5)
-IQ_LANE_MVB(k_gemvx_iq4_xs_x6, iq4xs_lane_n, 136, 6)
-IQ_LANE_MVB(k_gemvx_iq4_xs_x7, iq4xs_lane_n, 136, 7)
 
 // ---------------------------------------------------------------- elementwise
 // grid.y = token column for k_add (different x/d strides); silu operates on
@@ -5632,65 +5361,117 @@ extern "C" __global__ void k_moe_mv_q8_0(MOE_MV_PARAMS) {
     MOE_MV_TAIL;
 }
 
-// body of k_mv_q4_0 (no coalesced GEMV exists for Q4_0 yet)
-extern "C" __global__ void k_moe_mv_q4_0(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
-    int nb = a.n_in / 32;
-    const uchar *rw = wbase + (ulong64)row * nb * 18;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 18;
-        float d = f16f(blk);
-        const uchar *q = blk + 2;
-        const float *xp = x + b * 32;
-        float t = 0;
-        for (int j = 0; j < 16; j++)
-            t += ((int)(q[j] & 0xF) - 8) * xp[j] + ((int)(q[j] >> 4) - 8) * xp[j + 16];
-        s += d * t;
+// The staged form of the lane-per-block bodies (LANE_XPAD, at k_mv_q4_0):
+// a launch's rows all read the slot's same x, so they share each copy.
+#define MOE_LANE_HEAD                                                          \
+    __shared__ float xsm[32 * LANE_XPAD];                                      \
+    unsigned row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5);        \
+    unsigned lane = threadIdx.x & 31;                                          \
+    bool live = row < (unsigned)a.n_out;                                       \
+    const uchar *wbase = wb + a.w_off + (ulong64)sel[blockIdx.y] * a.estride;  \
+    x += (ulong64)blockIdx.y * a.xs;                                           \
+    float s = 0;
+#define MOE_LANE_HEAD_N(EL)                                                    \
+    __shared__ float xsm[32 * ((EL) + 1)];                                     \
+    unsigned row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5);        \
+    unsigned lane = threadIdx.x & 31;                                          \
+    bool live = row < (unsigned)a.n_out;                                       \
+    const uchar *wbase = wb + a.w_off + (ulong64)sel[blockIdx.y] * a.estride;  \
+    x += (ulong64)blockIdx.y * a.xs;                                           \
+    float s = 0;
+#define MOE_LANE_TAIL                                                          \
+    if (live) {                                                                \
+        s = warp_sum(s);                                                       \
+        if (lane == 0) y[(ulong64)blockIdx.y * a.ys + row] = s;                \
     }
-    MOE_MV_TAIL;
+
+// body of k_mv_q4_0, lane per block (k_gemv_q4_0, the coalesced GEMV, came
+// later and sums in another order; the by-expert prefill's Q4_0 twins below
+// reproduce this body, not that one)
+extern "C" __global__ void k_moe_mv_q4_0(MOE_MV_PARAMS) {
+    MOE_LANE_HEAD;
+    int nb = a.n_in / 32;
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 18;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_X(xsm, x, b0, nblk)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            const uchar *blk = rw + (ulong64)(b0 + lane) * 18;
+            float d = f16f(blk);
+            const uchar *q = blk + 2;
+            const float *xp = xsm + lane * LANE_XPAD;
+            float t = 0;
+            for (int j = 0; j < 16; j++)
+                t += ((int)(q[j] & 0xF) - 8) * xp[j] + ((int)(q[j] >> 4) - 8) * xp[j + 16];
+            s += d * t;
+        }
+        __syncthreads();
+    }
+    MOE_LANE_TAIL;
 }
 
 // body of k_mv_mxfp4 (gpt-oss experts; no coalesced GEMV exists for MXFP4)
 extern "C" __global__ void k_moe_mv_mxfp4(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
+    __shared__ float kv[16];
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];
+    MOE_LANE_HEAD;
     int nb = a.n_in / 32;
-    const uchar *rw = wbase + (ulong64)row * nb * 17;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 17;
-        float d = ldexpf(1.0f, (int)blk[0] - 127);
-        const uchar *q = blk + 1;
-        const float *xp = x + b * 32;
-        float t = 0;
-        for (int j = 0; j < 16; j++) {
-            t += kv_mxfp4[q[j] & 0xF] * xp[j];
-            t += kv_mxfp4[q[j] >> 4]  * xp[j + 16];
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 17;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_X(xsm, x, b0, nblk)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            const uchar *blk = rw + (ulong64)(b0 + lane) * 17;
+            float d = ldexpf(1.0f, (int)blk[0] - 127);
+            const uchar *q = blk + 1;
+            const float *xp = xsm + lane * LANE_XPAD;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                t += kv[q[j] & 0xF] * xp[j];
+                t += kv[q[j] >> 4]  * xp[j + 16];
+            }
+            s += d * t;
         }
-        s += d * t;
+        __syncthreads();
     }
-    MOE_MV_TAIL;
+    MOE_LANE_TAIL;
 }
 
 // body of k_mv_nvfp4 (ModelOpt NVFP4 expert tensors)
 extern "C" __global__ void k_moe_mv_nvfp4(MOE_MV_PARAMS, float scale) {
-    MOE_MV_HEAD;
+    __shared__ float kv[16];
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];
+    MOE_LANE_HEAD_N(64)
     int nb = a.n_in / 64;
-    const uchar *rw = wbase + (ulong64)row * nb * 36;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 36;
-        for (int sub = 0; sub < 4; sub++) {
-            float d = ue4m3f(blk[sub]);
-            const uchar *q = blk + 4 + sub * 8;
-            const float *xp = x + b * 64 + sub * 16;
-            float t = 0;
-            for (int j = 0; j < 8; j++) {
-                t += kv_mxfp4[q[j] & 0xF] * xp[j];
-                t += kv_mxfp4[q[j] >> 4]  * xp[j + 8];
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 36;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 64)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (64 + 1);
+            const uchar *blk = rw + (ulong64)b * 36;
+            for (int sub = 0; sub < 4; sub++) {
+                float d = ue4m3f(blk[sub]);
+                const uchar *q = blk + 4 + sub * 8;
+                const float *xp = xs_ + sub * 16;
+                float t = 0;
+                for (int j = 0; j < 8; j++) {
+                    t += kv[q[j] & 0xF] * xp[j];
+                    t += kv[q[j] >> 4]  * xp[j + 8];
+                }
+                s += d * t;
             }
-            s += d * t;
         }
+        __syncthreads();
     }
-    s = warp_sum(s) * scale;
-    if (lane == 0) y[(ulong64)blockIdx.y * a.ys + row] = s;
+    if (live) {
+        s = warp_sum(s) * scale;
+        if (lane == 0) y[(ulong64)blockIdx.y * a.ys + row] = s;
+    }
 }
 
 // body of k_gemv_q4_K
@@ -5734,22 +5515,124 @@ extern "C" __global__ void k_moe_mv_iq3_xxs(MOE_MV_PARAMS) {
 
 // body of k_mv_iq4_nl (Qwen3.8-Flash-Next down experts)
 extern "C" __global__ void k_moe_mv_iq4_nl(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
+    MOE_LANE_HEAD_N(32)
     int nb = a.n_in / 32;
-    const uchar *rw = wbase + (ulong64)row * nb * 18;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 18;
-        float d = f16f(blk);
-        const uchar *q = blk + 2;
-        const float *xp = x + b * 32;
-        float t = 0;
-        for (int j = 0; j < 16; j++) {
-            t += (float)kv_iq4[q[j] & 0xF] * xp[j];
-            t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 18;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 18;
+            float d = f16f(blk);
+            const uchar *q = blk + 2;
+            const float *xp = xs_;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                t += (float)kv_iq4[q[j] & 0xF] * xp[j];
+                t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+            }
+            s += d * t;
         }
-        s += d * t;
+        __syncthreads();
     }
-    MOE_MV_TAIL;
+    MOE_LANE_TAIL;
+}
+
+// The legacy 32-element types (2026-10-21): llama-quantize's Q4_K_M mix of
+// gemma-4-26B-A4B stores some expert tensors as Q5_0 (a width its K-quants
+// do not divide), and with no indirect kernel for it the whole model left
+// the fused device routing for the eager path. Each is the body of its
+// lane-per-block batch-1 kernel (k_mv_q5_0 / k_mv_q4_1 / k_mv_q5_1).
+extern "C" __global__ void k_moe_mv_q5_0(MOE_MV_PARAMS) {
+    MOE_LANE_HEAD_N(32)
+    int nb = a.n_in / 32;
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 22;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 22;
+            float d = f16f(blk);
+            uint qh = (uint)blk[2] | ((uint)blk[3] << 8) |
+                      ((uint)blk[4] << 16) | ((uint)blk[5] << 24);
+            const uchar *q = blk + 6;
+            const float *xp = xs_;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                int x0 = (int)((q[j] & 0xF) | (((qh >> j) & 1u) << 4)) - 16;
+                int x1 = (int)((q[j] >> 4)  | (((qh >> (j + 16)) & 1u) << 4)) - 16;
+                t += x0 * xp[j] + x1 * xp[j + 16];
+            }
+            s += d * t;
+        }
+        __syncthreads();
+    }
+    MOE_LANE_TAIL;
+}
+
+extern "C" __global__ void k_moe_mv_q4_1(MOE_MV_PARAMS) {
+    MOE_LANE_HEAD_N(32)
+    int nb = a.n_in / 32;
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 20;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 20;
+            float d  = f16f(blk);
+            float mm = f16f(blk + 2);
+            const uchar *q = blk + 4;
+            const float *xp = xs_;
+            float t = 0, sx = 0;
+            for (int j = 0; j < 16; j++) {
+                t += (float)(q[j] & 0xF) * xp[j] + (float)(q[j] >> 4) * xp[j + 16];
+                sx += xp[j] + xp[j + 16];
+            }
+            s += d * t + mm * sx;
+        }
+        __syncthreads();
+    }
+    MOE_LANE_TAIL;
+}
+
+extern "C" __global__ void k_moe_mv_q5_1(MOE_MV_PARAMS) {
+    MOE_LANE_HEAD_N(32)
+    int nb = a.n_in / 32;
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 24;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 24;
+            float d  = f16f(blk);
+            float mm = f16f(blk + 2);
+            uint qh = (uint)blk[4] | ((uint)blk[5] << 8) |
+                      ((uint)blk[6] << 16) | ((uint)blk[7] << 24);
+            const uchar *q = blk + 8;
+            const float *xp = xs_;
+            float t = 0, sx = 0;
+            for (int j = 0; j < 16; j++) {
+                t += (float)((q[j] & 0xF) | (((qh >> j) & 1u) << 4)) * xp[j] +
+                     (float)((q[j] >> 4)  | (((qh >> (j + 16)) & 1u) << 4)) * xp[j + 16];
+                sx += xp[j] + xp[j + 16];
+            }
+            s += d * t + mm * sx;
+        }
+        __syncthreads();
+    }
+    MOE_LANE_TAIL;
 }
 
 // body of k_mv_iq2_s (Qwen3.8-Flash-Next gate/up experts on 20 of 48 blocks)
@@ -5772,52 +5655,68 @@ extern "C" __global__ void k_moe_mv_iq3_s(MOE_MV_PARAMS) {
 
 // body of k_mv_iq4_xs (Qwen3.8-Flash-Next gate/up experts on its last block)
 extern "C" __global__ void k_moe_mv_iq4_xs(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
+    MOE_LANE_HEAD_N(256)
     int nb = a.n_in / 256;
-    const uchar *rw = wbase + (ulong64)row * nb * 136;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 136;
-        float d = f16f(blk);
-        unsigned sh = (unsigned)blk[2] | ((unsigned)blk[3] << 8);
-        const uchar *sl = blk + 4;
-        const uchar *q  = blk + 8;
-        const float *xp = x + b * 256;
-        for (int ib = 0; ib < 8; ib++) {
-            int ls = ((sl[ib / 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4);
-            float dl = d * (ls - 32);
-            float t = 0;
-            for (int j = 0; j < 16; j++) {
-                t += (float)kv_iq4[q[j] & 0xF] * xp[j];
-                t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 136;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 256)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (256 + 1);
+            const uchar *blk = rw + (ulong64)b * 136;
+            float d = f16f(blk);
+            unsigned sh = (unsigned)blk[2] | ((unsigned)blk[3] << 8);
+            const uchar *sl = blk + 4;
+            const uchar *q  = blk + 8;
+            const float *xp = xs_;
+            for (int ib = 0; ib < 8; ib++) {
+                int ls = ((sl[ib / 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4);
+                float dl = d * (ls - 32);
+                float t = 0;
+                for (int j = 0; j < 16; j++) {
+                    t += (float)kv_iq4[q[j] & 0xF] * xp[j];
+                    t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+                }
+                s += dl * t;
+                q += 16; xp += 32;
             }
-            s += dl * t;
-            q += 16; xp += 32;
         }
+        __syncthreads();
     }
-    MOE_MV_TAIL;
+    MOE_LANE_TAIL;
 }
 
 // body of k_mv_q2_0 (some blocks' down experts in the GSQ release)
 extern "C" __global__ void k_moe_mv_q2_0(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
+    MOE_LANE_HEAD_N(64)
     int nb = a.n_in / 64;
-    const uchar *rw = wbase + (ulong64)row * nb * 18;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 18;
-        float d = f16f(blk);
-        const uchar *q = blk + 2;
-        const float *xp = x + (ulong64)b * 64;
-        float t = 0;
-        for (int j = 0; j < 16; j++) {
-            uchar c = q[j];
-            t += ((int)(c & 3) - 1) * xp[4 * j]
-               + ((int)((c >> 2) & 3) - 1) * xp[4 * j + 1]
-               + ((int)((c >> 4) & 3) - 1) * xp[4 * j + 2]
-               + ((int)(c >> 6) - 1) * xp[4 * j + 3];
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 18;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 64)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (64 + 1);
+            const uchar *blk = rw + (ulong64)b * 18;
+            float d = f16f(blk);
+            const uchar *q = blk + 2;
+            const float *xp = xs_;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                uchar c = q[j];
+                t += ((int)(c & 3) - 1) * xp[4 * j]
+                   + ((int)((c >> 2) & 3) - 1) * xp[4 * j + 1]
+                   + ((int)((c >> 4) & 3) - 1) * xp[4 * j + 2]
+                   + ((int)(c >> 6) - 1) * xp[4 * j + 3];
+            }
+            s += d * t;
         }
-        s += d * t;
+        __syncthreads();
     }
-    MOE_MV_TAIL;
+    MOE_LANE_TAIL;
 }
 
 // body of k_gemv_q5_K
@@ -5924,11 +5823,9 @@ extern "C" __global__ void k_moe_actmul(float *gbuf, const float *ubuf,
 // The routing weight was folded into the hidden before the down matvec, so
 // each slot's eout is already w*down(h); the CPU computes w*(down(h)+db),
 // and w*down(h) + selw*db is the same quantity with the fold's association.
-extern "C" __global__ void k_moe_sum(float *out, const float *eout, int n,
-                                     int nslots, int es, const float *db,
-                                     const int *sel, const float *selw) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
+static __device__ __forceinline__ void moe_sum_body(float *out, const float *eout, int n,
+                                                    int nslots, int es, const float *db,
+                                                    const int *sel, const float *selw, int i) {
     float s = eout[i];
     if (db) s += selw[0] * db[(ulong64)sel[0] * n + i];
     for (int sl = 1; sl < nslots; sl++) {
@@ -5936,6 +5833,37 @@ extern "C" __global__ void k_moe_sum(float *out, const float *eout, int n,
         if (db) s += selw[sl] * db[(ulong64)sel[sl] * n + i];
     }
     out[i] = s;
+}
+extern "C" __global__ void k_moe_sum(float *out, const float *eout, int n,
+                                     int nslots, int es, const float *db,
+                                     const int *sel, const float *selw) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    moe_sum_body(out, eout, n, nslots, es, db, sel, selw, i);
+}
+
+// k_moe_sum for every token of a tile in one launch, grid.y = token: token
+// t's slots are eout rows t * nslots .. t * nslots + nslots - 1 (es apart) and
+// its routing at sel/selw + t * nslots; the sum lands in column t of out
+// (stride os). Each token's arithmetic is k_moe_sum's (one body).
+extern "C" __global__ void k_moe_sum_tile(float *out, const float *eout, int n,
+                                          int nslots, int es, const float *db,
+                                          const int *sel, const float *selw,
+                                          int os) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    ulong64 t = blockIdx.y;
+    moe_sum_body(out + t * os, eout + t * (ulong64)nslots * es, n, nslots, es, db,
+                 sel + t * nslots, selw + t * nslots, i);
+}
+
+// dst[pos[c]][i] = src[c][i]: an expert's per-column outputs placed at their
+// (token, slot) rows of the tile's slot buffer, for k_moe_sum_tile. A copy.
+extern "C" __global__ void k_moe_place(float *dst, const float *src,
+                                       const int *pos, int n, int ss) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dst[(ulong64)pos[blockIdx.y] * n + i] = src[(ulong64)blockIdx.y * ss + i];
 }
 
 // ---------------------------------------- expert-grouped prefill (MoE P2)
@@ -6047,6 +5975,16 @@ extern "C" __global__ void k_q35_conv(const float *mix, float *cv,
 
 // One block per value head. The model geometry guarantees hv == state/key
 // width. State is [head][value-column][key-row], matching the CPU reference.
+//
+// Each thread owns a value column and walks its key row in order, twice
+// (decay and prediction, then the update and the output). The rows go through
+// a shared tile Q35D_KEYS keys at a time, loaded and stored by the whole block
+// with consecutive threads on consecutive keys of one row: a thread reading
+// its own row straight from global memory touched a different 128-byte line
+// at every step (rows lie 4 * state_dim bytes apart), and the kernel moved its
+// 2 MB of Qwen3.5-4B state per call at about a tenth of an RTX 3070's
+// bandwidth (82 us a call, 2026-10-21). Every element takes the same
+// operations in the same order as it did, so the bits are unchanged.
 extern "C" __global__ void k_q35_delta(float *cv, const float *z,
                                         const float *beta_in,
                                         const float *alpha_in,
@@ -6074,6 +6012,11 @@ extern "C" __global__ void k_q35_delta(float *cv, const float *z,
         __syncthreads();
     }
     float qscale = rsqrtf(red[0] + eps);
+    // every thread has read red[0] before any overwrites it with its k
+    // partial: without this barrier warp 0 could store its ks over the q sum
+    // while another warp had yet to read it (a silent wrong q scale, found
+    // 2026-10-20 while reading this kernel for a whole-tile variant)
+    __syncthreads();
     float ks = 0.0f;
     for (int i = tid; i < state_dim; i += blockDim.x) ks += k[i] * k[i];
     red[tid] = ks;
@@ -6088,20 +6031,45 @@ extern "C" __global__ void k_q35_delta(float *cv, const float *z,
     float softplus = av > 20.0f ? av : log1pf(expf(av));
     float decay = expf(a[h] * softplus);
 
-    for (int j = tid; j < state_dim; j += blockDim.x) {
-        float *row = st + (ulong64)j * state_dim;
-        float pred = 0.0f;
-        for (int i = 0; i < state_dim; i++) {
-            row[i] *= decay;
-            pred += row[i] * (k[i] * kscale);
+    // tile[c][i]: key i of the chunk for column c of the pass; the pad keeps
+    // a warp's column-wise reads on 32 different banks
+    __shared__ float tile[Q35D_COLS][Q35D_KEYS + 1];
+    for (int j0 = 0; j0 < state_dim; j0 += Q35D_COLS) {
+        int ncol = min(Q35D_COLS, state_dim - j0), j = j0 + tid;
+        bool mine = tid < ncol;
+        float pred = 0.0f, delta = 0.0f, y = 0.0f;
+        for (int pass = 0; pass < 2; pass++) {
+            if (pass == 1 && mine) delta = (v[j] - pred) * beta;
+            for (int c0 = 0; c0 < state_dim; c0 += Q35D_KEYS) {
+                int nk = min(Q35D_KEYS, state_dim - c0);
+                for (int e = tid; e < ncol * Q35D_KEYS; e += Q35D_COLS) {
+                    int c = e / Q35D_KEYS, i = e % Q35D_KEYS;
+                    if (i < nk) tile[c][i] = st[(ulong64)(j0 + c) * state_dim + c0 + i];
+                }
+                __syncthreads();
+                if (mine) {
+                    if (pass == 0)
+                        for (int i = 0; i < nk; i++) {
+                            float r = tile[tid][i] * decay;
+                            tile[tid][i] = r;
+                            pred += r * (k[c0 + i] * kscale);
+                        }
+                    else
+                        for (int i = 0; i < nk; i++) {
+                            float r = tile[tid][i] + delta * (k[c0 + i] * kscale);
+                            tile[tid][i] = r;
+                            y += r * (q[c0 + i] * qscale);
+                        }
+                }
+                __syncthreads();
+                for (int e = tid; e < ncol * Q35D_KEYS; e += Q35D_COLS) {
+                    int c = e / Q35D_KEYS, i = e % Q35D_KEYS;
+                    if (i < nk) st[(ulong64)(j0 + c) * state_dim + c0 + i] = tile[c][i];
+                }
+                __syncthreads();
+            }
         }
-        float delta = (v[j] - pred) * beta;
-        float y = 0.0f;
-        for (int i = 0; i < state_dim; i++) {
-            row[i] += delta * (k[i] * kscale);
-            y += row[i] * (q[i] * qscale);
-        }
-        yo[j] = y * rsqrtf((float)state_dim);
+        if (mine) yo[j] = y * rsqrtf((float)state_dim);
     }
     __syncthreads();
     float ss = 0.0f;
@@ -6118,6 +6086,119 @@ extern "C" __global__ void k_q35_delta(float *cv, const float *z,
         float zv = z[o];
         // Qwen3.5 gates the normed output with silu(z); Qwen3.8 (qwen4exp)
         // with sigmoid(z), mirroring the CPU path's one numerical difference
+        float sg = 1.0f / (1.0f + expf(-zv));
+        yo[j] = yo[j] * rms * norm[j] * (gate_sigmoid ? sg : zv * sg);
+    }
+}
+
+// The one-token step again, with each head's value columns split over
+// blocks of Q35D1_COLS (grid heads x state_dim / Q35D1_COLS): k_q35_delta
+// and the one-token k_q35_delta_seq both run one block of four warps per
+// head (32 blocks on Qwen3.5-4B, against an RTX 3070's 46 SMs) and spent
+// about 55 us a call on 2 MB of state. Each block recomputes the head's q
+// and k scales with k_q35_delta's 128-thread tree, stages its rows through a
+// padded shared tile with coalesced loads and stores, and its first warp
+// walks each row's keys in order with k_q35_delta's operations (k * kscale
+// and q * qscale are formed once per key, the same rounded products the
+// loops formed). The output RMS norm needs every column of the head, so it
+// is k_q35_delta_norm, k_q35_delta's epilogue in its own launch. Together
+// they give k_q35_delta's bytes. state_dim a multiple of Q35D1_COLS up to
+// Q35D1_MAX_SD (the dispatch checks).
+extern "C" __global__ void __launch_bounds__(128)
+k_q35_delta1(const float *cv, const float *beta_in, const float *alpha_in,
+             const float *dt, const float *a, float *state, float *out,
+             int state_dim, int groups, int heads, float eps) {
+    __shared__ float red[128];
+    __shared__ float kk[Q35D1_MAX_SD], qq[Q35D1_MAX_SD];
+    __shared__ float tile[Q35D1_COLS][Q35D1_MAX_SD + 1];
+    int tid = threadIdx.x, h = blockIdx.x, j0 = blockIdx.y * Q35D1_COLS;
+    if (h >= heads || j0 >= state_dim) return;
+    int keydim = state_dim * groups;
+    int group = h % groups;
+    const float *q = cv + group * state_dim;
+    const float *k = cv + keydim + group * state_dim;
+    const float *v = cv + 2 * keydim + h * state_dim;
+    float *st = state + (ulong64)h * state_dim * state_dim;
+    float *yo = out + h * state_dim;
+
+    float qs = 0.0f;
+    for (int i = tid; i < state_dim; i += blockDim.x) qs += q[i] * q[i];
+    red[tid] = qs;
+    __syncthreads();
+    for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }
+    float qscale = rsqrtf(red[0] + eps);
+    __syncthreads();
+    float ks = 0.0f;
+    for (int i = tid; i < state_dim; i += blockDim.x) ks += k[i] * k[i];
+    red[tid] = ks;
+    __syncthreads();
+    for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }
+    float kscale = rsqrtf(red[0] + eps);
+    float beta = 1.0f / (1.0f + expf(-beta_in[h]));
+    float av = alpha_in[h] + dt[h];
+    float softplus = av > 20.0f ? av : log1pf(expf(av));
+    float decay = expf(a[h] * softplus);
+
+    for (int i = tid; i < state_dim; i += blockDim.x) {
+        kk[i] = k[i] * kscale;
+        qq[i] = q[i] * qscale;
+    }
+    for (int e = tid; e < Q35D1_COLS * state_dim; e += blockDim.x) {
+        int c = e / state_dim, i = e % state_dim;
+        tile[c][i] = st[(ulong64)(j0 + c) * state_dim + i];
+    }
+    __syncthreads();
+    if (tid < Q35D1_COLS) {
+        int j = j0 + tid;
+        float pred = 0.0f;
+        for (int i = 0; i < state_dim; i++) {
+            float r = tile[tid][i] * decay;
+            tile[tid][i] = r;
+            pred += r * kk[i];
+        }
+        float delta = (v[j] - pred) * beta;
+        float y = 0.0f;
+        for (int i = 0; i < state_dim; i++) {
+            float r = tile[tid][i] + delta * kk[i];
+            tile[tid][i] = r;
+            y += r * qq[i];
+        }
+        yo[j] = y * rsqrtf((float)state_dim);
+    }
+    __syncthreads();
+    for (int e = tid; e < Q35D1_COLS * state_dim; e += blockDim.x) {
+        int c = e / state_dim, i = e % state_dim;
+        st[(ulong64)(j0 + c) * state_dim + i] = tile[c][i];
+    }
+}
+
+// k_q35_delta's epilogue for k_q35_delta1: the head's output RMS norm (the
+// same 128-thread tree over yo[j] * yo[j]) and the silu / sigmoid gate.
+extern "C" __global__ void __launch_bounds__(128)
+k_q35_delta_norm(const float *z, const float *norm, float *out, int state_dim,
+                 int heads, float eps, int gate_sigmoid) {
+    __shared__ float red[128];
+    int tid = threadIdx.x, h = blockIdx.x;
+    if (h >= heads) return;
+    float *yo = out + h * state_dim;
+    float ss = 0.0f;
+    for (int j = tid; j < state_dim; j += blockDim.x) ss += yo[j] * yo[j];
+    red[tid] = ss;
+    __syncthreads();
+    for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }
+    float rms = rsqrtf(red[0] / state_dim + eps);
+    for (int j = tid; j < state_dim; j += blockDim.x) {
+        int o = h * state_dim + j;
+        float zv = z[o];
         float sg = 1.0f / (1.0f + expf(-zv));
         yo[j] = yo[j] * rms * norm[j] * (gate_sigmoid ? sg : zv * sg);
     }
@@ -6263,8 +6344,8 @@ extern "C" __global__ void k_gemm_q6_K_tc(MV_PARAMS, const float *xsc) {
     const int tid  = threadIdx.x;
     const int warp = tid >> 5;
     const unsigned row0 = blockIdx.x * TC_ROWS;
-    __shared__ __half sh_w[TC_ROWS * TC_K];
-    __shared__ __half sh_x[TC_N * TC_K];
+    __shared__ __align__(32) __half sh_w[TC_ROWS * TC_KP];
+    __shared__ __align__(32) __half sh_x[TC_N * TC_KP];
     float *sh_c = (float *)sh_w;
 
     fragment<matrix_a, 16, 16, 16, __half, row_major> fa;
@@ -6281,7 +6362,7 @@ extern "C" __global__ void k_gemm_q6_K_tc(MV_PARAMS, const float *xsc) {
         for (int koff = 0; koff < 256; koff += TC_K) {
             {   // ---- stage weights: 64 rows x 128 K, dequantized once ----
                 unsigned gr = row0 + srow;
-                __half *dst = sh_w + srow * TC_K + sseg * 64;
+                __half *dst = sh_w + srow * TC_KP + sseg * 64;
                 if (gr < (unsigned)a.n_out) {
                     const uchar *blk = wb + a.w_off +
                                        (ulong64)gr * nb * 210 + (ulong64)b * 210;
@@ -6314,7 +6395,7 @@ extern "C" __global__ void k_gemm_q6_K_tc(MV_PARAMS, const float *xsc) {
             {   // ---- stage activations: 128 K x TC_N tokens, each column
                 //      scaled to fp16's range (see k_gemm_q4_K_tc) ----
                 int col = tid / 2, part = tid % 2;
-                __half *dst = sh_x + col * TC_K + part * 64;
+                __half *dst = sh_x + col * TC_KP + part * 64;
                 if (col < a.batch) {
                     const float xinv = 16384.0f / xsc[col];
                     const float *xg = x + (ulong64)col * a.xs + b * 256 + koff
@@ -6333,13 +6414,13 @@ extern "C" __global__ void k_gemm_q6_K_tc(MV_PARAMS, const float *xsc) {
                 }
             }
             __syncthreads();
-            const __half *wt = sh_w + warp * 16 * TC_K;
+            const __half *wt = sh_w + warp * 16 * TC_KP;
             #pragma unroll
             for (int k = 0; k < TC_K; k += 16) {
-                load_matrix_sync(fa, wt + k, TC_K);
+                load_matrix_sync(fa, wt + k, TC_KP);
                 #pragma unroll
                 for (int n = 0; n < TC_N / 16; n++) {
-                    load_matrix_sync(fb, sh_x + n * 16 * TC_K + k, TC_K);
+                    load_matrix_sync(fb, sh_x + n * 16 * TC_KP + k, TC_KP);
                     mma_sync(fc[n], fa, fb, fc[n]);
                 }
             }
@@ -6468,4 +6549,782 @@ extern "C" __global__ void k_relu2(float *x, int n) {
     if (i >= n) return;
     float r = x[i] > 0.0f ? x[i] : 0.0f;
     x[i] = r * r;
+}
+
+// ------------------------------------------- pipelined tensor-core GEMM (TC2)
+// C1 of the performance campaign (RUNNER_CUDA_TC2, see enc_mv in cuda.c).
+// The same numerical class as the TC kernels above, built for throughput:
+//
+//   operands  every weight element is dequantized by the arithmetic the TC
+//             kernel of its type uses, every activation is
+//             half(x * 16384 / max|x|) of its column (k_x_half_scaled, run
+//             once per GEMM input instead of once per row block), and the
+//             products accumulate in fp32. Only the order of the fp32 sums
+//             differs from the TC kernels, so the obligation is theirs:
+//             tolerance (test-tc-tol), with RUNNER_CUDA_TC2=0 restoring them.
+//   tiles     a block owns 128 rows x 64 token columns, its eight warps
+//             32 x 32 each, and walks K in stages of 64. Two stages of
+//             shared tiles alternate: while the warps multiply stage s, the
+//             raw bytes of stage s + 1 are already in registers (loaded
+//             before the multiplies), and are converted into the other
+//             buffer after them, so the global load latency hides under the
+//             tensor work. Rows are padded by 8 halves so ldmatrix and the
+//             staging stores are free of bank conflicts.
+//   mma       mma.sync m16n8k8 (f16 in, f32 accumulate) with ldmatrix,
+//             both available on the compute_75 target the PTX is built for.
+//
+// The design follows the published register-prefetch double-buffered GEMMs
+// for Turing-class tensor cores (no cp.async before compute_80); the
+// layouts, the dequantization and the epilogue are this file's own.
+#include "kernels_tc2.cuh"
+
+// The scaled fp16 activations of a GEMM input: xh[c][k] =
+// half(x[c * xs + k] * (16384 / xsc[c])), the TC kernels' staging value.
+// grid (ceil(n_in / 256), batch), 256 threads.
+extern "C" __global__ void k_x_half_scaled(const float *x, const float *xsc, __half *xh,
+                                           int n_in, int xs, int batch) {
+    int c = blockIdx.y;
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= batch || k >= n_in) return;
+    const float xinv = 16384.0f / xsc[c];
+    xh[(ulong64)c * n_in + k] = __float2half(x[(ulong64)c * xs + k] * xinv);
+}
+
+#include "kernels_tc2_iq.cuh"
+#include "kernels_tc2_kq.cuh"
+
+// the activations arrive pre-scaled in half (k_x_half_scaled), so the
+// kernel's x parameter is that buffer
+extern "C" __global__ void __launch_bounds__(256)
+k_gemm2_q4_K(const uchar *wb, const __half *xh, float *y, mv_args a, const float *bias,
+             const float *xsc) {
+    gemm2_body<G2Q4K>(wb, xh, y, a, bias, xsc);
+}
+extern "C" __global__ void __launch_bounds__(256)
+k_gemm2_q6_K(const uchar *wb, const __half *xh, float *y, mv_args a, const float *bias,
+             const float *xsc) {
+    gemm2_body<G2Q6K>(wb, xh, y, a, bias, xsc);
+}
+extern "C" __global__ void __launch_bounds__(256)
+k_gemm2_q8_0(const uchar *wb, const __half *xh, float *y, mv_args a, const float *bias,
+             const float *xsc) {
+    gemm2_body<G2Q80>(wb, xh, y, a, bias, xsc);
+}
+extern "C" __global__ void __launch_bounds__(256)
+k_gemm2_q4_0(const uchar *wb, const __half *xh, float *y, mv_args a, const float *bias,
+             const float *xsc) {
+    gemm2_body<G2Q40>(wb, xh, y, a, bias, xsc);
+}
+
+// ------------------------------------------ grouped decode attention (C2)
+// RUNNER_CUDA_ATTN_DEC (cuda.c tile_attn, tn == 1). k_attn_dec gives each
+// QUERY head its own blocks, and every one of them reads the whole K and V
+// of its KV head from global memory: a model with G query heads per KV head
+// reads the cache G times per token (8 on Qwen2.5-3B, where decode at a 16K
+// context fell to 17% of another engine's rate in the 2026-10-20 baseline).
+// This kernel gives one block a KV head and a slice of the positions, stages
+// each tile of TK cache rows once in shared memory (the cache's own bytes),
+// and serves all G query heads from it:
+//   pass 1: every score through the unchanged kv_dot, each head's maximum;
+//   pass 2: the same scores recomputed, expf(s - max), their sum, and the
+//           weighted V rows through kv_pair;
+// then writes k_attn_dec's partial (un-normalised V, max, sum) per head, so
+// the merge is k_attn_dec's arithmetic over AD_SPLITS slices.
+// Splits: AD_SPLITS is fixed (the decode graph's grid must not depend on the
+// position), the slice length computed on the device from pos as before.
+// Obligation: k_attn_dec's (deterministic within the route; the slice and
+// reduction grouping differ, so token-identical to the CPU scalar route and
+// gated empirically, not bit-identical to k_attn_dec).
+#define AD_SPLITS 32
+#define AD_TK 32
+#define AD_THREADS 256
+#define AD_GMAX 8   // query heads per KV head a block serves (larger: k_attn_dec)
+
+// The body for one query column: q, the cache pair, part and pos are that
+// column's own, so k_attn_dec_gqa (the solo decode) and k_attn_dec_gqa_seq
+// (the decode microbatch, one column per sequence) run the same arithmetic.
+__device__ __forceinline__ void
+attn_dec_gqa_body(const float *q, const unsigned char *kc, const unsigned char *vc,
+                  float *part, const attn_args &a, const int pos) {
+    extern __shared__ float ad_sm[];
+    const int kvh = blockIdx.x, sp = blockIdx.y, tid = threadIdx.x;
+    const int hd = a.head_dim, G = a.n_head / a.n_head_kv, h0 = kvh * G;
+    const int kv_dim = a.n_head_kv * hd;
+    const ulong64 row_b = KV_ROW_BYTES(kv_dim, a.q8), row_v = KV_ROW_BYTES(kv_dim, a.vq8);
+    const ulong64 base = a.l_off + kv_head_off(kvh, hd, a.q8);
+    const ulong64 base_v = a.v_off + kv_head_off(kvh, hd, a.vq8);
+    const int kbytes = (int)KV_ROW_BYTES(hd, a.q8), vbytes = (int)KV_ROW_BYTES(hd, a.vq8);
+    const int kws = ((kbytes + 3) / 4) | 1, vws = ((vbytes + 3) / 4) | 1;
+    const int bws = kws > vws ? kws : vws;
+    int t0 = 0;
+    if (a.window > 0 && pos - a.window + 1 > 0) t0 = pos - a.window + 1;
+    const int total = pos + 1 - t0;
+    // whole AD_TK tiles per slice: a short context then fills a few splits
+    // with full tiles (the rest take the empty-slice exit below) instead of
+    // giving all AD_SPLITS blocks a few rows each of a mostly idle tile
+    int slice = (total + AD_SPLITS - 1) / AD_SPLITS;
+    slice = (slice + AD_TK - 1) / AD_TK * AD_TK;
+    const int s0 = t0 + sp * slice;
+    int s1 = s0 + slice;
+    if (s1 > pos + 1) s1 = pos + 1;
+    if (s0 >= s1) {                      // empty slice: the merge's sentinel
+        if (tid < G) {
+            float *P = part + ((ulong64)(h0 + tid) * AD_SPLITS + sp) * (hd + 2);
+            P[hd] = -1e30f;
+            P[hd + 1] = 0.0f;
+        }
+        return;
+    }
+    float *Q = ad_sm;                                   // [G][hd + 1]
+    unsigned *KV = (unsigned *)(Q + AD_GMAX * (hd + 1)); // [AD_TK][bws]
+    float *Pr = (float *)(KV + AD_TK * bws);            // [G][AD_TK]
+    float *hmax = Pr + AD_GMAX * AD_TK;                 // [G]
+    for (int i = tid; i < G * hd; i += AD_THREADS) {
+        int g = i / hd, d = i - g * hd;
+        Q[g * (hd + 1) + d] = q[(ulong64)(h0 + g) * hd + d];
+    }
+    auto stage = [&](const unsigned char *cache, ulong64 b0, ulong64 rb, int nbytes, int kt) {
+        // words only for a word-aligned slice of whole words (see attn_tile_body)
+        if (((b0 | rb | (ulong64)nbytes) & 3) == 0) {
+            int nw = nbytes / 4;
+            for (int i = tid; i < AD_TK * nw; i += AD_THREADS) {
+                int k = i / nw, w = i - k * nw, t = kt + k;
+                KV[k * bws + w] = t < s1 ? *(const unsigned *)(cache + b0 + kv_slot(t, a.ring) * rb + (ulong64)w * 4)
+                                         : 0u;
+            }
+        } else {
+            for (int i = tid; i < AD_TK * nbytes; i += AD_THREADS) {
+                int k = i / nbytes, c = i - k * nbytes, t = kt + k;
+                ((unsigned char *)(KV + k * bws))[c] = t < s1 ? cache[b0 + kv_slot(t, a.ring) * rb + (ulong64)c] : 0;
+            }
+        }
+    };
+    // score thread mapping: head g = tid / AD_TK, key k = tid % AD_TK
+    const int sg = tid / AD_TK, sk = tid - sg * AD_TK;
+    float mx = -1e30f;
+    for (int kt = s0; kt < s1; kt += AD_TK) {
+        __syncthreads();
+        stage(kc, base, row_b, kbytes, kt);
+        __syncthreads();
+        if (sg < G && kt + sk < s1)
+            mx = fmaxf(mx, kv_dot((const unsigned char *)(KV + sk * bws), Q + sg * (hd + 1), hd, a.q8) * a.scale);
+    }
+    for (int off = AD_TK / 2; off > 0; off >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, off));
+    if (sk == 0 && sg < G) hmax[sg] = mx;
+    // value mapping: (head, pair) outputs, AD_GMAX * 128 pairs at most
+    const int P2 = hd / 2;
+    float2 acc[4];
+    #pragma unroll
+    for (int j = 0; j < 4; j++) acc[j] = make_float2(0.0f, 0.0f);
+    float sum = 0.0f;
+    for (int kt = s0; kt < s1; kt += AD_TK) {
+        __syncthreads();
+        stage(kc, base, row_b, kbytes, kt);
+        __syncthreads();
+        float pv = 0.0f;
+        if (sg < G && kt + sk < s1)
+            pv = expf(kv_dot((const unsigned char *)(KV + sk * bws), Q + sg * (hd + 1), hd, a.q8) * a.scale - hmax[sg]);
+        sum += pv;
+        if (sg < G) Pr[sg * AD_TK + sk] = pv;
+        __syncthreads();
+        stage(vc, base_v, row_v, vbytes, kt);
+        __syncthreads();
+        #pragma unroll
+        for (int j = 0; j < 4; j++) {
+            int idx = tid + j * AD_THREADS;
+            if (idx >= G * P2) break;
+            int g = idx / P2, i2 = idx - g * P2;
+            float2 o = acc[j];
+            for (int k = 0; k < AD_TK; k++) {
+                float pk = Pr[g * AD_TK + k];
+                float2 vf = kv_pair((const unsigned char *)(KV + k * bws), i2, a.vq8);
+                o.x += pk * vf.x;
+                o.y += pk * vf.y;
+            }
+            acc[j] = o;
+        }
+    }
+    for (int off = AD_TK / 2; off > 0; off >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, off);
+    if (sk == 0 && sg < G) {
+        float *P = part + ((ulong64)(h0 + sg) * AD_SPLITS + sp) * (hd + 2);
+        P[hd] = hmax[sg];
+        P[hd + 1] = sum;
+    }
+    #pragma unroll
+    for (int j = 0; j < 4; j++) {
+        int idx = tid + j * AD_THREADS;
+        if (idx >= G * P2) break;
+        int g = idx / P2, i2 = idx - g * P2;
+        float *P = part + ((ulong64)(h0 + g) * AD_SPLITS + sp) * (hd + 2);
+        P[2 * i2] = acc[j].x;
+        P[2 * i2 + 1] = acc[j].y;
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(AD_THREADS)
+k_attn_dec_gqa(const float *q, const unsigned char *kc, const unsigned char *vc,
+               float *part, attn_args a, const int *posp) {
+    attn_dec_gqa_body(q, kc, vc, part, a, *posp);
+}
+
+// The decode microbatch's twin (fwd_batch): grid (KV head, slice, sequence),
+// each column at its own position over its own cache (posp, kcp, vcp are
+// per-column arrays, as k_attn_dec_seq takes them) and its own partials, so
+// every column is bitwise what k_attn_dec_gqa computes for it alone.
+extern "C" __global__ void __launch_bounds__(AD_THREADS)
+k_attn_dec_gqa_seq(const float *q, const ulong64 *kcp, const ulong64 *vcp,
+                   float *part, attn_args a, const int *posp) {
+    const int tk = blockIdx.z;
+    attn_dec_gqa_body(q + (ulong64)tk * a.qs, (const unsigned char *)kcp[tk],
+                      (const unsigned char *)vcp[tk],
+                      part + (ulong64)tk * a.n_head * AD_SPLITS * (a.head_dim + 2), a, posp[tk]);
+}
+
+// k_attn_merge over AD_SPLITS partials (its arithmetic, a different count),
+// for one column's partials into that column's output
+__device__ __forceinline__ void
+attn_merge32_body(float *out, const float *part, const attn_args &a, const float *sinks) {
+    int h = blockIdx.x;
+    int tid = threadIdx.x, tpg = blockDim.x;
+    int hd = a.head_dim;
+    const float *base = part + (ulong64)h * AD_SPLITS * (hd + 2);
+    float M = -1e30f;
+    for (int sp = 0; sp < AD_SPLITS; sp++)
+        M = fmaxf(M, base[sp * (hd + 2) + hd]);
+    if (sinks && sinks[h] > M) M = sinks[h];
+    float L = 0.f;
+    for (int sp = 0; sp < AD_SPLITS; sp++) {
+        float m = base[sp * (hd + 2) + hd];
+        if (m <= -1e29f) continue;
+        L += base[sp * (hd + 2) + hd + 1] * expf(m - M);
+    }
+    if (sinks) L += expf(sinks[h] - M);
+    for (int i = tid; i < hd; i += tpg) {
+        float acc = 0.f;
+        for (int sp = 0; sp < AD_SPLITS; sp++) {
+            const float *P = base + sp * (hd + 2);
+            float m = P[hd];
+            if (m <= -1e29f) continue;
+            acc += P[i] * expf(m - M);
+        }
+        out[h * hd + i] = acc / L;
+    }
+}
+
+extern "C" __global__ void k_attn_merge32(float *out, const float *part,
+                                          attn_args a, const int *posp,
+                                          const float *sinks) {
+    attn_merge32_body(out, part, a, sinks);
+    (void)posp;
+}
+
+// k_attn_merge32 per microbatch column: grid (n_head, sequence)
+extern "C" __global__ void k_attn_merge32_seq(float *out, const float *part,
+                                              attn_args a, const int *posp,
+                                              const float *sinks) {
+    const int tk = blockIdx.y;
+    attn_merge32_body(out + (ulong64)tk * a.os,
+                      part + (ulong64)tk * a.n_head * AD_SPLITS * (a.head_dim + 2), a, sinks);
+    (void)posp;
+}
+#define G2_KERNEL(NAME, F)                                                              \
+extern "C" __global__ void __launch_bounds__(256)                                       \
+NAME(const uchar *wb, const __half *xh, float *y, mv_args a, const float *bias,          \
+     const float *xsc) {                                                                 \
+    gemm2_body<F>(wb, xh, y, a, bias, xsc);                                              \
+}
+G2_KERNEL(k_gemm2_iq3_s, G2IQ3S)
+G2_KERNEL(k_gemm2_iq3_xxs, G2IQ3XXS)
+G2_KERNEL(k_gemm2_iq2_s, G2IQ2S)
+G2_KERNEL(k_gemm2_iq2_xs, G2IQ2XS)
+G2_KERNEL(k_gemm2_iq2_xxs, G2IQ2XXS)
+G2_KERNEL(k_gemm2_iq1_s, G2IQ1S)
+G2_KERNEL(k_gemm2_iq1_m, G2IQ1M)
+G2_KERNEL(k_gemm2_iq4_xs, G2IQ4XS)
+G2_KERNEL(k_gemm2_iq4_nl, G2IQ4NL)
+G2_KERNEL(k_gemm2_q5_K, G2Q5K)
+G2_KERNEL(k_gemm2_q3_K, G2Q3K)
+G2_KERNEL(k_gemm2_q2_K, G2Q2K)
+G2_KERNEL(k_gemm2_q4_1, G2Q41)
+G2_KERNEL(k_gemm2_q5_0, G2Q50)
+G2_KERNEL(k_gemm2_q5_1, G2Q51)
+
+// --------------------------------------- tensor-core prefill attention (C2)
+// C2 step 2 (RUNNER_CUDA_ATTN_TC, tile_attn in cuda.c): k_attn_tile's two
+// passes with both products on tensor cores, for fp16 caches. A block owns 64
+// query rows (heads of one KV group times a strip of tokens, k_attn_tile's
+// rows), four warps of 16, and walks the strip's keys in tiles of 64:
+//   pass 1: S = Q K^T (mma.sync m16n8k8, f16 in, f32 accumulate), the scale,
+//           the causal / sliding mask, each row's maximum;
+//   pass 2: S again, p = expf(s - max) in fp32, its row sum in fp32, then
+//           O += P V with P as half operands in registers (an m16n8
+//           accumulator tile is exactly the A operand of the next m16n8k8,
+//           so P never leaves the warp) and V read through ldmatrix.trans.
+// Q is scaled by an exact power of two per row (max|q| brought to at most
+// 2^14, undone on the score), so no row overflows fp16. Q and P each go in
+// as two halves, hi = half(x) and lo = half(x - hi), both multiplied against
+// the exact fp16 K or V: a product carries about 22 bits of the operand
+// instead of 11. With one half each, Mistral-7B's long rows read further from
+// the float32 reference than k_attn's (Wilcoxon p 0.014; Q alone split, p
+// 0.009); with both split they do not (X23b). K and V are the fp16 cache rows
+// themselves. Obligation: tolerance, like the TC GEMM: fp32 accumulation in a
+// different summation order from k_attn_tile, gated by the CPU identity
+// bound, the long-context greedy rows and the fp32 distance rows. Shared
+// memory (dynamic, set by cuda.c): Q hi, Q lo and the K/V tile, 3 x 64 x 136
+// halves, plus the row scales: AQ_SMEM = 52,480 bytes.
+#define AQ_ROWS 64
+#define AQ_TK   64
+#define AQ_LD   (128 + 8)     // halves per staged row (head_dim <= 128, padded)
+#define AQ_SMEM (3 * AQ_ROWS * AQ_LD * 2 + AQ_ROWS * 4)
+
+extern "C" __global__ void __launch_bounds__(128)
+k_attn_tc(const float *q, const unsigned char *kc, const unsigned char *vc, float *out,
+          attn_args a, const int *posp, const float *sinks, int tn, int hb, int qs) {
+    extern __shared__ __align__(16) unsigned char aq_dyn[];
+    __half *Qs  = (__half *)aq_dyn;
+    __half *Qlo = Qs + AQ_ROWS * AQ_LD;
+    __half *KVs = Qlo + AQ_ROWS * AQ_LD;
+    float *qscale = (float *)(KVs + AQ_TK * AQ_LD);
+    const int hd = a.head_dim, tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    const int G = a.n_head / a.n_head_kv;
+    const int ngh = (G + hb - 1) / hb;
+    const int kvh = blockIdx.x / ngh, hg = blockIdx.x % ngh;
+    const int h0 = kvh * G + hg * hb;
+    const int nh = G - hg * hb < hb ? G - hg * hb : hb;
+    const int tk0 = blockIdx.y * qs;
+    const int nt = tn - tk0 < qs ? tn - tk0 : qs;
+    const int pos0 = *posp;
+    const int kv_dim = a.n_head_kv * hd;
+    const ulong64 row_b = (ulong64)kv_dim * 2;            // fp16 rows only
+    const ulong64 base = a.l_off + (ulong64)kvh * hd * 2;
+    const ulong64 base_v = a.v_off + (ulong64)kvh * hd * 2;
+
+    // ---- Q rows, each scaled by an exact power of two into fp16's range ----
+    for (int r = warp; r < AQ_ROWS; r += 4) {
+        int hi = r / qs, ti = r - hi * qs;
+        bool ok = hi < nh && ti < nt;
+        const float *qr = q + (ulong64)(tk0 + ti) * a.qs + (ulong64)(h0 + hi) * hd;
+        float mx = 0.0f;
+        if (ok) for (int d = lane; d < hd; d += 32) mx = fmaxf(mx, fabsf(qr[d]));
+        for (int off = 16; off > 0; off >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, off));
+        int e = 0;
+        if (mx > 0.0f) { frexpf(mx, &e); }              // mx < 2^e
+        float s = mx > 0.0f ? ldexpf(1.0f, 14 - e) : 1.0f;
+        if (lane == 0) qscale[r] = s;
+        for (int d = lane; d < AQ_LD - 8; d += 32) {
+            float v = ok && d < hd ? qr[d] * s : 0.0f;
+            __half hi = __float2half(v);
+            Qs[r * AQ_LD + d] = hi;
+            Qlo[r * AQ_LD + d] = __float2half(v - __half2float(hi));
+        }
+    }
+    // the warp's 16 rows: g = lane / 4 holds rows g and g + 8 of each tile
+    const int r0 = warp * 16 + (lane >> 2), r1 = r0 + 8;
+    auto rowpos = [&](int r, int *lo, int *hi_) {
+        int hi = r / qs, ti = r - hi * qs;
+        bool ok = hi < nh && ti < nt;
+        int pr = pos0 + tk0 + ti;
+        int t0r = (a.window > 0 && pr - a.window + 1 > 0) ? pr - a.window + 1 : 0;
+        *lo = ok ? t0r : 1;
+        *hi_ = ok ? pr : 0;                              // empty range for unused rows
+    };
+    int lo0, hi0, lo1, hi1;
+    rowpos(r0, &lo0, &hi0);
+    rowpos(r1, &lo1, &hi1);
+    const int plast = pos0 + tk0 + nt - 1;
+    int klo = 0;
+    if (a.window > 0) { int f = pos0 + tk0 - a.window + 1; klo = f > 0 ? f : 0; }
+    const int nkh = hd / 8;      // k8 steps over head_dim
+    __syncthreads();
+    const float qs0 = qscale[r0], qs1 = qscale[r1];
+    auto stage = [&](const unsigned char *cache, ulong64 b0, int kt) {
+        // 64 rows x hd halves, 16 bytes a thread a step
+        const int per_row = hd / 8;
+        for (int i = tid; i < AQ_TK * per_row; i += 128) {
+            int k = i / per_row, c = i - k * per_row, t = kt + k;
+            uint4 v = make_uint4(0u, 0u, 0u, 0u);
+            if (t <= plast) v = *(const uint4 *)(cache + b0 + kv_slot(t, a.ring) * row_b + (ulong64)c * 16);
+            *(uint4 *)(KVs + k * AQ_LD + c * 8) = v;
+        }
+    };
+    // S for this warp's 16 rows against the 64 staged keys: 8 n8 tiles
+    auto scores = [&](float (&S)[8][4]) {
+        #pragma unroll
+        for (int j = 0; j < 8; j++) S[j][0] = S[j][1] = S[j][2] = S[j][3] = 0.0f;
+        for (int kk = 0; kk < nkh; kk += 2) {          // k16 per step
+            unsigned qa[4], ql[4];
+            g2_ldsm_x4(qa[0], qa[1], qa[2], qa[3],
+                       Qs + (warp * 16 + (lane & 15)) * AQ_LD + kk * 8 + (lane >> 4) * 8);
+            g2_ldsm_x4(ql[0], ql[1], ql[2], ql[3],
+                       Qlo + (warp * 16 + (lane & 15)) * AQ_LD + kk * 8 + (lane >> 4) * 8);
+            #pragma unroll
+            for (int np = 0; np < 4; np++) {           // two n8 key tiles a load
+                unsigned kb[4];
+                g2_ldsm_x4(kb[0], kb[1], kb[2], kb[3],
+                           KVs + (np * 16 + (lane & 7) + ((lane >> 4) << 3)) * AQ_LD
+                               + kk * 8 + ((lane >> 3) & 1) * 8);
+                g2_mma(S[2 * np], qa[0], qa[1], kb[0]);
+                g2_mma(S[2 * np], qa[2], qa[3], kb[1]);
+                g2_mma(S[2 * np], ql[0], ql[1], kb[0]);
+                g2_mma(S[2 * np], ql[2], ql[3], kb[1]);
+                g2_mma(S[2 * np + 1], qa[0], qa[1], kb[2]);
+                g2_mma(S[2 * np + 1], qa[2], qa[3], kb[3]);
+                g2_mma(S[2 * np + 1], ql[0], ql[1], kb[2]);
+                g2_mma(S[2 * np + 1], ql[2], ql[3], kb[3]);
+            }
+        }
+    };
+    // ---- pass 1: row maxima ----
+    float m0 = -1e30f, m1 = -1e30f;
+    for (int kt = klo; kt <= plast; kt += AQ_TK) {
+        __syncthreads();
+        stage(kc, base, kt);
+        __syncthreads();
+        float S[8][4];
+        scores(S);
+        #pragma unroll
+        for (int j = 0; j < 8; j++)
+            #pragma unroll
+            for (int e = 0; e < 4; e++) {
+                int t = kt + j * 8 + (lane & 3) * 2 + (e & 1);
+                bool top = e < 2;
+                int lo = top ? lo0 : lo1, hi = top ? hi0 : hi1;
+                if (t >= lo && t <= hi) {
+                    float v = S[j][e] / (top ? qs0 : qs1) * a.scale;
+                    if (top) m0 = fmaxf(m0, v); else m1 = fmaxf(m1, v);
+                }
+            }
+    }
+    for (int off = 1; off < 4; off <<= 1) {
+        m0 = fmaxf(m0, __shfl_xor_sync(0xffffffffu, m0, off));
+        m1 = fmaxf(m1, __shfl_xor_sync(0xffffffffu, m1, off));
+    }
+    if (sinks) {
+        int hiA = r0 / qs, hiB = r1 / qs;
+        if (hiA < nh && sinks[h0 + hiA] > m0) m0 = sinks[h0 + hiA];
+        if (hiB < nh && sinks[h0 + hiB] > m1) m1 = sinks[h0 + hiB];
+    }
+    // ---- pass 2: probabilities, sums, O = P V ----
+    float O[16][4];                                     // hd / 8 n8 tiles (hd <= 128)
+    #pragma unroll
+    for (int j = 0; j < 16; j++) O[j][0] = O[j][1] = O[j][2] = O[j][3] = 0.0f;
+    float l0 = 0.0f, l1 = 0.0f;
+    for (int kt = klo; kt <= plast; kt += AQ_TK) {
+        __syncthreads();
+        stage(kc, base, kt);
+        __syncthreads();
+        float S[8][4];
+        scores(S);
+        unsigned pa[8][2];                              // P as A operands, one k8 key chunk each
+        unsigned pl[8][2];                              // P's low halves
+        #pragma unroll
+        for (int j = 0; j < 8; j++) {
+            float p[4];
+            #pragma unroll
+            for (int e = 0; e < 4; e++) {
+                int t = kt + j * 8 + (lane & 3) * 2 + (e & 1);
+                bool top = e < 2;
+                int lo = top ? lo0 : lo1, hi = top ? hi0 : hi1;
+                p[e] = (t >= lo && t <= hi)
+                     ? expf(S[j][e] / (top ? qs0 : qs1) * a.scale - (top ? m0 : m1)) : 0.0f;
+            }
+            l0 += p[0] + p[1];
+            l1 += p[2] + p[3];
+            pa[j][0] = g2_pack(p[0], p[1]);
+            pa[j][1] = g2_pack(p[2], p[3]);
+            pl[j][0] = g2_pack(p[0] - __half2float(__float2half(p[0])),
+                               p[1] - __half2float(__float2half(p[1])));
+            pl[j][1] = g2_pack(p[2] - __half2float(__float2half(p[2])),
+                               p[3] - __half2float(__float2half(p[3])));
+        }
+        __syncthreads();
+        stage(vc, base_v, kt);
+        __syncthreads();
+        // V as B operands: ldmatrix.trans of [key][d], one k8 key chunk x
+        // two n8 d tiles per load
+        #pragma unroll
+        for (int dp = 0; dp < 16; dp += 4) {        // compile-time trip, so O stays in registers
+            if (dp >= nkh) break;
+            #pragma unroll
+            for (int j = 0; j < 8; j++) {
+                unsigned vb[4];
+                unsigned addr = (unsigned)__cvta_generic_to_shared(
+                    KVs + (j * 8 + (lane & 7)) * AQ_LD + dp * 8 + (lane >> 3) * 8);
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];\n"
+                             : "=r"(vb[0]), "=r"(vb[1]), "=r"(vb[2]), "=r"(vb[3]) : "r"(addr));
+                // vb[i]: d tile dp + i (8 wide) for this key chunk; x4 covers 4 d tiles
+                #pragma unroll
+                for (int i = 0; i < 4; i++)
+                    if (dp + i < nkh) {
+                        g2_mma(O[dp + i], pa[j][0], pa[j][1], vb[i]);
+                        g2_mma(O[dp + i], pl[j][0], pl[j][1], vb[i]);
+                    }
+            }
+        }
+    }
+    for (int off = 1; off < 4; off <<= 1) {
+        l0 += __shfl_xor_sync(0xffffffffu, l0, off);
+        l1 += __shfl_xor_sync(0xffffffffu, l1, off);
+    }
+    if (sinks) {
+        int hiA = r0 / qs, hiB = r1 / qs;
+        if (hiA < nh) l0 += expf(sinks[h0 + hiA] - m0);
+        if (hiB < nh) l1 += expf(sinks[h0 + hiB] - m1);
+    }
+    // ---- O / sum into the row's token and head ----
+    #pragma unroll
+    for (int half_ = 0; half_ < 2; half_++) {
+        int r = half_ ? r1 : r0;
+        int hi = r / qs, ti = r - hi * qs;
+        if (hi >= nh || ti >= nt) continue;
+        float inv = 1.0f / (half_ ? l1 : l0);
+        float *o = out + (ulong64)(tk0 + ti) * a.os + (ulong64)(h0 + hi) * hd;
+        #pragma unroll
+        for (int j = 0; j < 16; j++) {
+            if (j >= nkh) break;
+            int d = j * 8 + (lane & 3) * 2;
+            o[d]     = O[j][half_ * 2 + 0] * inv;
+            o[d + 1] = O[j][half_ * 2 + 1] * inv;
+        }
+    }
+}
+
+// ------------------------------------------------ decode KV row gather (X3)
+// RUNNER_CUDA_KV_GATHER (cuda.c kv_gather_*): the host KV cache stays
+// authoritative, so every decoded token's K and V rows go back to it. That
+// was two synchronous copies per offloaded layer (and a whole ring for a ring
+// layer); this kernel, the last node of the decode graph, copies each
+// layer's single new row (slot kv_slot(pos)) of both caches into one staging
+// buffer, which one copy then brings to the host. Bytes move unchanged.
+// tab: per layer {k byte offset, v byte offset, k row bytes, v row bytes,
+// ring rows, staging offset}; grid (n_layers, 2), 256 threads.
+extern "C" __global__ void k_kv_gather(const unsigned char *kc, const unsigned char *vc,
+                                       const kvg_entry *tab, const int *posp,
+                                       unsigned char *out) {
+    const kvg_entry e = tab[blockIdx.x];
+    const bool v = blockIdx.y == 1;
+    const unsigned n = v ? e.vrow : e.krow;
+    const ulong64 slot = kv_slot(*posp, e.ring);
+    const unsigned char *src = (v ? vc + e.voff : kc + e.koff) + slot * n;
+    unsigned char *dst = out + e.stage + (v ? e.krow : 0u);
+    for (unsigned i = threadIdx.x; i < n; i += blockDim.x) dst[i] = src[i];
+}
+
+// ---------------------------------------- whole-window recurrent prefill (C2.3)
+// RUNNER_CUDA_RECUR_SEQ (cuda.c gpu_q35_recurrent / gpu_mamba2_recurrent):
+// the per-token conv and state kernels above, run over all tn columns of a
+// prompt tile in ONE launch each. A thread keeps what it carried between
+// launches (its conv history, its state row) in registers across the tile and
+// writes it back once at the end, instead of a launch per token that reloads
+// and stores the whole state through global memory. The per-token arithmetic
+// is the per-token kernels' statement for statement (same reductions, same
+// block widths, same order), so the outputs and the state after the tile are
+// byte-equal to tn per-token launches; `make test-cuda-qwen4exp` and
+// test-recurrent-rewind hold the state, GPU_ID_RECUR the logits. Conv kernels
+// up to RS_MAX_HIST history taps; state rows up to RS_MAX_SD.
+#define RS_MAX_HIST 7
+#define RS_MAX_SD 128
+
+extern "C" __global__ void k_q35_conv_seq(const float *mix, float *cv,
+                                           const float *weight, float *history,
+                                           int convdim, int kernel, int tn) {
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= convdim) return;
+    int histn = kernel - 1;
+    const float *cw = weight + (ulong64)c * kernel;
+    float h[RS_MAX_HIST];
+    #pragma unroll
+    for (int k = 0; k < RS_MAX_HIST; k++)
+        if (k < histn) h[k] = history[(ulong64)k * convdim + c];
+    for (int t = 0; t < tn; t++) {
+        float mx = mix[(ulong64)t * convdim + c];
+        float sum = cw[histn] * mx;
+        #pragma unroll
+        for (int k = 0; k < RS_MAX_HIST; k++)
+            if (k < histn) sum += cw[k] * h[k];
+        cv[(ulong64)t * convdim + c] = sum / (1.0f + expf(-sum));
+        #pragma unroll
+        for (int k = 0; k + 1 < RS_MAX_HIST; k++)
+            if (k + 1 < histn) h[k] = h[k + 1];
+        #pragma unroll
+        for (int k = 0; k < RS_MAX_HIST; k++)
+            if (histn && k == histn - 1) h[k] = mx;
+    }
+    #pragma unroll
+    for (int k = 0; k < RS_MAX_HIST; k++)
+        if (k < histn) history[(ulong64)k * convdim + c] = h[k];
+}
+
+// k_q35_delta over tn tokens: one block per value head, 128 threads, thread j
+// holding state row j (state_dim <= RS_MAX_SD, so at most one row a thread,
+// as in k_q35_delta). cv/z/beta/alpha are [tn] rows of their per-token
+// strides, out rows are xdim apart.
+extern "C" __global__ void __launch_bounds__(128)
+k_q35_delta_seq(const float *cv, const float *z, const float *beta_in,
+                const float *alpha_in, const float *dt, const float *a,
+                const float *norm, float *state, float *out, int state_dim,
+                int groups, int heads, float eps, int gate_sigmoid, int tn,
+                int convdim, int inner, int xdim) {
+    __shared__ float red[256];
+    int tid = threadIdx.x, h = blockIdx.x;
+    if (h >= heads) return;
+    int keydim = state_dim * groups;
+    int group = h % groups;
+    float *st = state + (ulong64)h * state_dim * state_dim;
+    const bool owner = tid < state_dim;
+    float row[RS_MAX_SD];
+    if (owner) {
+        #pragma unroll
+        for (int i = 0; i < RS_MAX_SD; i++)
+            if (i < state_dim) row[i] = st[(ulong64)tid * state_dim + i];
+    }
+    for (int t = 0; t < tn; t++) {
+        const float *cvt = cv + (ulong64)t * convdim;
+        const float *q = cvt + group * state_dim;
+        const float *k = cvt + keydim + group * state_dim;
+        const float *v = cvt + 2 * keydim + h * state_dim;
+        float *yo = out + (ulong64)t * xdim + h * state_dim;
+
+        float qs = 0.0f;
+        for (int i = tid; i < state_dim; i += blockDim.x) qs += q[i] * q[i];
+        red[tid] = qs;
+        __syncthreads();
+        for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+            if (tid < off) red[tid] += red[tid + off];
+            __syncthreads();
+        }
+        float qscale = rsqrtf(red[0] + eps);
+        __syncthreads();
+        float ks = 0.0f;
+        for (int i = tid; i < state_dim; i += blockDim.x) ks += k[i] * k[i];
+        red[tid] = ks;
+        __syncthreads();
+        for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+            if (tid < off) red[tid] += red[tid + off];
+            __syncthreads();
+        }
+        float kscale = rsqrtf(red[0] + eps);
+        float beta = 1.0f / (1.0f + expf(-beta_in[(ulong64)t * heads + h]));
+        float av = alpha_in[(ulong64)t * heads + h] + dt[h];
+        float softplus = av > 20.0f ? av : log1pf(expf(av));
+        float decay = expf(a[h] * softplus);
+
+        if (owner) {
+            int j = tid;
+            float pred = 0.0f;
+            #pragma unroll
+            for (int i = 0; i < RS_MAX_SD; i++) {
+                if (i < state_dim) {
+                    row[i] *= decay;
+                    pred += row[i] * (k[i] * kscale);
+                }
+            }
+            float delta = (v[j] - pred) * beta;
+            float y = 0.0f;
+            #pragma unroll
+            for (int i = 0; i < RS_MAX_SD; i++) {
+                if (i < state_dim) {
+                    row[i] += delta * (k[i] * kscale);
+                    y += row[i] * (q[i] * qscale);
+                }
+            }
+            yo[j] = y * rsqrtf((float)state_dim);
+        }
+        __syncthreads();
+        float ss = 0.0f;
+        for (int j = tid; j < state_dim; j += blockDim.x) ss += yo[j] * yo[j];
+        red[tid] = ss;
+        __syncthreads();
+        for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+            if (tid < off) red[tid] += red[tid + off];
+            __syncthreads();
+        }
+        float rms = rsqrtf(red[0] / state_dim + eps);
+        const float *zt = z + (ulong64)t * inner;
+        for (int j = tid; j < state_dim; j += blockDim.x) {
+            int o = h * state_dim + j;
+            float zv = zt[o];
+            float sg = 1.0f / (1.0f + expf(-zv));
+            yo[j] = yo[j] * rms * norm[j] * (gate_sigmoid ? sg : zv * sg);
+        }
+        __syncthreads();   // red[] and yo[] are reused by the next token
+    }
+    if (owner) {
+        #pragma unroll
+        for (int i = 0; i < RS_MAX_SD; i++)
+            if (i < state_dim) st[(ulong64)tid * state_dim + i] = row[i];
+    }
+}
+
+// k_mamba2_conv over tn tokens (one thread per channel, its ring column in
+// registers)
+extern "C" __global__ void k_mamba2_conv_seq(
+        const float *proj, float *xBC, const float *conv_w, const float *conv_b,
+        float *ring, int conv_dim, int inner, int d_in_proj,
+        int conv_kernel, int histn, int tn) {
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= conv_dim) return;
+    const float *cw = conv_w + (size_t)c * conv_kernel;
+    float r[RS_MAX_HIST];
+    #pragma unroll
+    for (int k = 0; k < RS_MAX_HIST; k++)
+        if (k < histn) r[k] = ring[(size_t)k * conv_dim + c];
+    for (int t = 0; t < tn; t++) {
+        float cur = proj[(size_t)t * d_in_proj + inner + c];
+        float sum = conv_b[c] + cw[histn] * cur;
+        #pragma unroll
+        for (int k = 0; k < RS_MAX_HIST; k++)
+            if (k < histn) sum += cw[k] * r[k];
+        xBC[(size_t)t * conv_dim + c] = sum / (1.0f + expf(-sum));
+        #pragma unroll
+        for (int k = 0; k + 1 < RS_MAX_HIST; k++)
+            if (k < histn - 1) r[k] = r[k + 1];
+        #pragma unroll
+        for (int k = 0; k < RS_MAX_HIST; k++)
+            if (histn && k == histn - 1) r[k] = cur;
+    }
+    #pragma unroll
+    for (int k = 0; k < RS_MAX_HIST; k++)
+        if (k < histn) ring[(size_t)k * conv_dim + c] = r[k];
+}
+
+// k_mamba2_ssd over tn tokens: thread (h, p) keeps its d_state row in
+// registers (ds <= RS_MAX_SD)
+extern "C" __global__ void k_mamba2_ssd_seq(
+        const float *xBC, const float *proj, const float *A, const float *dt_b,
+        const float *D, float *state, float *y,
+        int inner, int hd, int ds, int ng, int gsz, int conv_dim,
+        int d_in_proj, int tn) {
+    int h = blockIdx.x;
+    int p = threadIdx.x;
+    if (p >= hd) return;
+    int g = h / gsz;
+    float *sp = state + ((size_t)h * hd + p) * ds;
+    float s_[RS_MAX_SD];
+    #pragma unroll
+    for (int j = 0; j < RS_MAX_SD; j++)
+        if (j < ds) s_[j] = sp[j];
+    for (int t = 0; t < tn; t++) {
+        float dtr = proj[(size_t)t * d_in_proj + inner + conv_dim + h] + dt_b[h];
+        float dt = dtr > 20.0f ? dtr : logf(1.0f + expf(dtr));
+        float dA = expf(dt * A[h]);
+        const float *xrow = xBC + (size_t)t * conv_dim;
+        const float *Bg = xrow + inner + (size_t)g * ds;
+        const float *Cg = xrow + inner + (size_t)ng * ds + (size_t)g * ds;
+        float x = xrow[(size_t)h * hd + p];
+        float x_dt = x * dt;
+        float sumf = 0.0f;
+        #pragma unroll
+        for (int j = 0; j < RS_MAX_SD; j++) {
+            if (j < ds) {
+                float s = s_[j] * dA + Bg[j] * x_dt;
+                sumf += s * Cg[j];
+                s_[j] = s;
+            }
+        }
+        y[(size_t)t * inner + (size_t)h * hd + p] = sumf + D[h] * x;
+    }
+    #pragma unroll
+    for (int j = 0; j < RS_MAX_SD; j++)
+        if (j < ds) sp[j] = s_[j];
 }

@@ -18,6 +18,17 @@
 #   nvfp4        make test-cuda-nvfp4 (NVFP4 kernels and their scale companion)
 #   qwen4exp     make test-cuda-qwen4exp (the family's placements, the shared
 #                split GGUF, the MTP head, the BF16 split-K decode route)
+#   q3k          make test-cuda-q3k (the Q3_K decode GEMV on a Q3_K fixture)
+#   tc-kq        make test-cuda-tc-kq (the tensor-core prefill of Q5_K, Q3_K,
+#                Q2_K, Q4_1, Q5_0 and Q5_1, teacher-forced tolerance)
+#   moe-legacy   make test-cuda-moe-legacy (MoE experts in Q5_0, Q4_1 and
+#                Q5_1 on the fused device routing, against the eager path)
+#   varff        make test-cuda-varff (per-layer FFN widths, the gemma-4 E2B shape)
+#   moe-twin     make test-cuda-moe-twin (by-expert MoE prefill == the fused path)
+#   batch-id     make test-cuda-batch-identity (the decode microbatch == sequential
+#                decode, byte for byte, on the F32, Q8_0 and BF16 fixtures)
+#   spec-id      make test-cuda-spec-identity (a speculative verify round's rows
+#                == solo decode steps, byte for byte, dense, MoE and hybrid)
 #   cpu-cuda     scripts/cpu_cuda_check.py on one small model (byte identity)
 # Every make target the steps name is in DEVICE_STEPS below, and every
 # test-cuda-* target in the Makefile has to be there (tests/test_ci_contracts.py):
@@ -34,6 +45,7 @@
 #   GATE_MODEL       GGUF for the cpu-cuda step
 #   GATE_MAKE_ARGS   extra make arguments, e.g. CC=... or OS=Windows_NT
 #   RUNNER_IQ_FIXTURES / RUNNER_LLAMA_CPP_BIN   as tests/test_iquants.py reads
+#                    (moe-legacy needs llama-quantize there and fails without it)
 #   GATE_LOCK        lock file to hold while running (optional)
 #   GATE_SKIP_IF     shell command; when it exits 0 the gate SKIPS, logged
 # A box keeps its values in a file beside its copy of this script
@@ -105,7 +117,7 @@ fi
 add_step caps pass 0
 
 FAIL=0
-DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp"
+DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp q3k:test-cuda-q3k tc-kq:test-cuda-tc-kq moe-legacy:test-cuda-moe-legacy varff:test-cuda-varff tc2-bytes:test-cuda-tc2-bytes moe-twin:test-cuda-moe-twin batch-id:test-cuda-batch-identity spec-id:test-cuda-spec-identity"
 for pair in $DEVICE_STEPS; do
   name=${pair%%:*}; target=${pair#*:}
   # shellcheck disable=SC2086

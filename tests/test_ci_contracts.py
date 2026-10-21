@@ -1,5 +1,7 @@
 """Build/gate contracts that must not silently turn a red run green."""
+import os
 import pathlib
+import shutil
 import subprocess
 import json
 import sys
@@ -117,6 +119,16 @@ class CommandGate(unittest.TestCase):
             self.assertFalse(record["timed_out"])
             self.assertGreater(record["seconds"], 0)
 
+    def test_ptx_source_check_without_nvcc_fails_in_one_line(self):
+        # a machine without the toolkit: a named failure, not a traceback
+        with tempfile.TemporaryDirectory() as td:
+            missing = str(pathlib.Path(td) / "nvcc")
+            p = subprocess.run([sys.executable, str(ROOT / "scripts/check-ptx-source.py"),
+                                "--nvcc", missing], capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("not found", p.stderr)
+        self.assertNotIn("Traceback", p.stderr)
+
     def test_timeout_is_a_failure_with_a_record(self):
         with tempfile.TemporaryDirectory() as td:
             p = subprocess.run([sys.executable, str(ROOT / "scripts/ci-run.py"),
@@ -175,6 +187,110 @@ class ShutdownGate(unittest.TestCase):
         server.sample_rss = lambda: None
         with self.assertRaises(TransportError):
             server.stop(strict=True)
+
+
+class DeviceHarnessPins(unittest.TestCase):
+    """Every harness that compares or certifies runner output computed on a
+    device sets RUNNER_GPU_FALLBACK=fail: without it a device fault part-way
+    through a run (the Q3_K decode fault of 2026-10-20) finishes the run on the
+    CPU and the harness records host rows under the device's name."""
+    HARNESSES = ("compare_llamacpp.py", "reference_compare.py", "compat_matrix.py",
+                 "cpu_cuda_check.py", "cpu_cuda_delta.py", "kld-compare-raw.py")
+
+    def test_device_harnesses_refuse_a_mid_run_fallback(self):
+        for name in self.HARNESSES:
+            src = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+            self.assertRegex(src, r"RUNNER_GPU_FALLBACK[\"']?\]?\s*[=:]\s*[\"']fail[\"']",
+                             f"{name} does not pin RUNNER_GPU_FALLBACK=fail")
+
+    def test_the_engine_reads_the_switch_at_its_one_release_site(self):
+        src = (ROOT / "src" / "model.c").read_text(encoding="utf-8")
+        self.assertIn('getenv("RUNNER_GPU_FALLBACK")', src)
+        self.assertEqual(src.count("gpu_disable(m);"), 1,
+                         "a second runtime release site must go through gpu_runtime_failure")
+
+
+class HostedT3Skips(unittest.TestCase):
+    """The t3 job runs its test files with --no-skips on hosted runners, which
+    have no CUDA device, so every case there that skips for want of one must
+    be deselected by t3's -k: a CUDA-only case added to test_transcript.py
+    (b72a553b) without that kept t3 red for a day."""
+
+    def test_cuda_only_cases_are_deselected(self):
+        import ast
+        import re
+        wf = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        m = re.search(r"(tests/test_transcript\.py tests/test_train\.py "
+                      r"tests/test_session_images\.py) \\\s*\n\s*-k \"([^\"]+)\"", wf)
+        self.assertIsNotNone(m, "t3's pytest line moved: update this test with it")
+        terms = re.findall(r"not (\S+)", m.group(2))
+        for f in m.group(1).split():
+            tree = ast.parse((ROOT / f).read_text(encoding="utf-8"))
+            for fn in (n for n in tree.body if isinstance(n, ast.FunctionDef)
+                       and n.name.startswith("test_")):
+                cuda_skip = any(
+                    isinstance(c, ast.Call) and getattr(c.func, "attr", "") == "skip"
+                    and c.args and isinstance(c.args[0], ast.Constant)
+                    and "CUDA" in str(c.args[0].value)
+                    for c in ast.walk(fn))
+                if cuda_skip:
+                    self.assertTrue(any(t in fn.name for t in terms),
+                                    f"{f}::{fn.name} skips without CUDA but t3's -k keeps it")
+
+
+# The bash on PATH, which is the one the scheduled task runs the nightly
+# with. A bare "bash" is not that on Windows: CreateProcess looks in System32
+# before PATH and finds WSL's launcher, which cannot see C:/ paths (the
+# Windows run of these tests once failed on exactly that). Paths go to it in
+# forward-slash form, which MSYS2's bash reads and its sourced env file keeps.
+BASH = shutil.which("bash") or "bash"
+
+
+class ScheduledEntryPoints(unittest.TestCase):
+    """Scripts a lab host's scheduler runs from a copy of this repository.
+    Nothing in the repository calls them, so a sweep for uncited files once
+    removed cuda-nightly.sh and the nightly failed at startup for a week; the
+    consumer (the Windows CUDA host's scheduled task, docs/ci.md) is the
+    anchor this test stands in for."""
+
+    def test_cuda_nightly_is_present_and_executable(self):
+        p = ROOT / "scripts/cuda-nightly.sh"
+        self.assertTrue(p.is_file(), "the scheduled nightly runs scripts/cuda-nightly.sh")
+        # NTFS keeps no mode bits (Python reports none for a .sh there); the
+        # Windows host runs the script through bash, so the bit is checked
+        # where a filesystem has one
+        if sys.platform != "win32":
+            self.assertTrue(p.stat().st_mode & 0o111, "the nightly copy is run with bash, keep it executable")
+        subprocess.run([BASH, "-n", p.as_posix()], check=True)
+
+    def test_cuda_nightly_without_base_dir_is_a_usage_error(self):
+        r = subprocess.run([BASH, (ROOT / "scripts/cuda-nightly.sh").as_posix()],
+                           capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("usage", r.stderr)
+
+    def test_cuda_nightly_skips_a_held_lock_before_touching_the_checkout(self):
+        # a lock whose first number is a live pid (this test's own) means
+        # another user of the box is running: log a skip, exit 0, no git
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            lock = base / "box-gpu.lock"
+            lock.write_text(f"{__import__('os').getpid()} held by the test\n")
+            (base / "cuda-nightly.env").write_text(
+                f"NIGHTLY_SKIP_LOCKS={lock.as_posix()}\nNIGHTLY_SRC={(base / 'no-checkout').as_posix()}\n")
+            # on Windows, the minimal PATH a bare MSYS2 bash can start with:
+            # no Windows directory on it, so the script must still find the
+            # lock's (Windows) pid alive
+            env = dict(os.environ)
+            if sys.platform == "win32":
+                env["PATH"] = str(pathlib.Path(BASH).parent)
+            r = subprocess.run([BASH, (ROOT / "scripts/cuda-nightly.sh").as_posix(), base.as_posix()],
+                               capture_output=True, text=True, timeout=60, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            hist = (base / "history.log").read_text()
+            self.assertIn("skip:", hist)
+            self.assertIn(lock.as_posix(), hist)
+            self.assertFalse((base / "logs/fetch.log").exists())
 
 
 if __name__ == "__main__":

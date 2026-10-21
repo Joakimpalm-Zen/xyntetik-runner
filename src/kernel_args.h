@@ -64,4 +64,33 @@ typedef struct {
     int    vq8;      // V cache KIND; differs from q8 under --kv k8v4
 } attn_args;
 
+// One offloaded layer's entry in the decode KV gather table (k_kv_gather,
+// cuda.c kv_gather_*): where its K and V rows live, how long they are, its
+// ring length (0: flat) and where they land in the staging buffer.
+typedef struct {
+    ka_u64   koff, voff;   // byte offsets of the layer's K and V regions
+    unsigned krow, vrow;   // row bytes of each
+    int      ring;         // rows a ring layer recycles, 0 for a flat layer
+    unsigned stage;        // byte offset of the layer's K row in the staging buffer (V follows)
+} kvg_entry;
+
+// Rows a warp takes in the width-classed decode twins (k_gemvb_q4_K / q5_K /
+// q3_K / q6_K / iq4_xs / q8_0 / q4_0 / bf16 _x4, _x8, _x16): every row of a warp
+// reuses the staged x it reads. Kernels and launches (cuda.c enc_mv_batch) both
+// read these, so the grid always covers what the kernels compute.
+#define KQ_TWR(nc) ((nc) <= 8 ? 4 : 2)   // Q4_K, Q5_K, Q3_K, IQ4_XS
+#define Q6_TWR(nc) ((nc) <= 4 ? 4 : 2)   // Q6_K
+#define DQ_TWR(nc) ((nc) <= 8 ? 4 : 2)   // Q8_0, Q4_0, BF16
+
+// k_q35_delta (the one-token Gated DeltaNet step): threads a block, one value
+// column each per pass, and the key rows its shared tile stages at a time.
+// The launch (cuda.c gpu_q35_recurrent) uses Q35D_COLS as its block size.
+#define Q35D_COLS 128
+#define Q35D_KEYS 32
+// k_q35_delta1 (the one-token step with a head's columns over several
+// blocks): value columns a block, and the widest state it takes (its shared
+// tile holds Q35D1_COLS rows of that width; cuda.c checks both)
+#define Q35D1_COLS 32
+#define Q35D1_MAX_SD 128
+
 #endif // RUNNER_KERNEL_ARGS_H

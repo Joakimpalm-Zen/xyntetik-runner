@@ -665,6 +665,31 @@ static void test_vec_dot_multi(int type, int n) {
     free(row); free(x);
 }
 
+// vec_dot_xs with vec_dot_xsums' group sums: byte-equal to vec_dot on every
+// trial, the deterministic fills (extreme codes, zero blocks, scale
+// extremes) included. Its anchor is test_vec_dot's double-precision
+// reference, which vec_dot answers to; this proves the hoisted form is it.
+static void test_vec_dot_xs(int type, int n) {
+    if (!vec_dot_xs_ok(type)) return;
+    size_t rowsz = ggml_row_size(type, n);
+    uint8_t *row = malloc(rowsz);
+    float *x = malloc((size_t)n * sizeof(float));
+    float *xs = malloc((size_t)(n / 32) * sizeof(float));
+    for (int trial = 0; trial < RANDOM_TRIALS + FILL_TRIALS; trial++) {
+        set_trial(trial);
+        make_row(type, row, n);
+        if (trial < RANDOM_TRIALS) for (int i = 0; i < n; i++) x[i] = frnd();
+        else fill_x(trial, x, n);
+        vec_dot_xsums(x, n, xs);
+        float got = vec_dot_xs(type, row, x, xs, n), one = vec_dot(type, row, x, n);
+        uint32_t a, b; memcpy(&a, &got, 4); memcpy(&b, &one, 4);
+        CHECK(a == b, "vec_dot_xs %s n=%d trial=%d: %.9g vs vec_dot %.9g",
+              ggml_type_name(type), n, trial, (double)got, (double)one);
+    }
+    g_fill = -1;
+    free(row); free(x); free(xs);
+}
+
 static void test_dequant(int type, int n) {
     size_t rowsz = ggml_row_size(type, n);
     uint8_t *row = malloc(rowsz);
@@ -751,6 +776,36 @@ static void test_dequant_exact(int type, int n) {
         if (g_fail > 20) break;
     }
     free(row); free(got); free(want);
+}
+
+// A one-hot activation turns a "scale times code" dot into its weight: the
+// fused kernels multiply the code by x (exact: x is 1 or 0), sum it with exact
+// zeros and round once at the scale, which is the one rounding the dequantizer
+// makes. So vec_dot(row, e_j) equals dequant_row(row)[j] bit for bit for these
+// formats, and the check pins every decode table, sign mask and grid index of
+// the fused dots (IQ3_S and IQ3_XXS read float twins of their byte grids)
+// against the dequantizer's byte path, lane by lane. Formats with a separate
+// min term (the K-quants) round twice and are not in this list.
+static void test_dot_onehot(int type, int n) {
+    size_t rowsz = ggml_row_size(type, n);
+    uint8_t *row = malloc(rowsz);
+    float *w = malloc((size_t)n * sizeof(float));
+    float *x = calloc((size_t)n, sizeof(float));
+    for (int trial = 0; trial < 8; trial++) {
+        set_trial(trial);
+        make_row(type, row, n);
+        dequant_row(type, row, w, n);
+        for (int j = 0; j < n; j++) {
+            x[j] = 1.0f;
+            float got = vec_dot(type, row, x, n);
+            x[j] = 0.0f;
+            CHECK(got == w[j], "vec_dot %s one-hot trial=%d j=%d: %.9g, dequant %.9g",
+                  ggml_type_name(type), trial, j, (double)got, (double)w[j]);
+            if (g_fail > 20) { g_fill = -1; free(row); free(w); free(x); return; }
+        }
+    }
+    g_fill = -1;
+    free(row); free(w); free(x);
 }
 
 // scalar q8_quant_row, verbatim semantics — the SIMD path must match exactly
@@ -1185,7 +1240,16 @@ int main(void) {
         test_vec_dot(types[t], 256);   // single K-block / few 32-blocks
         test_vec_dot_multi(types[t], 4096);
         test_vec_dot_multi(types[t], 256);
+        test_vec_dot_xs(types[t], 4096);
+        test_vec_dot_xs(types[t], 256);
     }
+    // BF16 rows of any length: 1003 leaves a tail after the 16-wide NEON
+    // and 8-wide AVX2 steps, which every column must sum in the single
+    // kernel's order
+    test_vec_dot(T_BF16, 1003);
+    test_vec_dot_multi(T_BF16, 1003);
+    CHECK(vec_dot_xs_ok(T_Q4_K) == vec_dot_xs_ok(T_Q5_K) && !vec_dot_xs_ok(T_Q6_K),
+          "vec_dot_xs covers exactly the min-term K-quants");
     test_dequant(T_Q8_0, 4096);
     test_dequant(T_Q4_0, 4096);
     test_dequant(T_IQ4_NL, 4096);
@@ -1193,6 +1257,12 @@ int main(void) {
     test_dequant_exact(T_Q4_0, 4096);
     test_dequant_exact(T_IQ4_NL, 4096);
     test_dequant_exact(T_IQ4_XS, 4096);
+    {
+        static const int onehot[] = { T_Q8_0, T_Q4_0, T_IQ4_NL, T_MXFP4, T_IQ3_XXS, T_IQ3_S,
+                                      T_IQ2_XXS, T_IQ2_XS, T_IQ2_S };
+        for (size_t t = 0; t < sizeof(onehot) / sizeof(onehot[0]); t++)
+            test_dot_onehot(onehot[t], 512);
+    }
     test_dequant(T_Q2_K, 4096);
     test_dequant(T_Q3_K, 4096);
     test_dequant(T_Q4_K, 4096);
@@ -1233,6 +1303,15 @@ int main(void) {
     // q4_K -- but the predicate tested the 16-element ACTIVATION block for the
     // first two, so a row that is a multiple of 16 and not of 32 was admitted
     // and its last 16 elements silently dropped.
+    CHECK(!i8_dot_ok(T_Q8_0, 48), "i8_dot_ok must decline a partial q8_0 block");
+    CHECK(!i8_dot_ok(T_Q4_0, 48), "i8_dot_ok must decline a partial q4_0 block");
+    CHECK(i8_dot_ok(T_Q8_0, 64) && i8_dot_ok(T_Q4_0, 64),
+          "a whole-block row is still admitted");
+#elif defined(__aarch64__) && defined(__ARM_FEATURE_DOTPROD)
+    // the arm64 kernels: q8_0, q4_0 and q4_K at both row lengths, with the
+    // same whole-weight-block rule
+    CHECK(g_i8_checked == 6, "fused int8 route (arm64): %d combos exercised, expected 6",
+          g_i8_checked);
     CHECK(!i8_dot_ok(T_Q8_0, 48), "i8_dot_ok must decline a partial q8_0 block");
     CHECK(!i8_dot_ok(T_Q4_0, 48), "i8_dot_ok must decline a partial q4_0 block");
     CHECK(i8_dot_ok(T_Q8_0, 64) && i8_dot_ok(T_Q4_0, 64),

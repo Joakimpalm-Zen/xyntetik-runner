@@ -576,6 +576,7 @@ bool gpu_mem_info(size_t *free_bytes, size_t *total_bytes) {
 // k_metal_sha is generated into kernels_metal.h alongside the source string
 // itself, so it can only agree with the shaders this binary actually holds.
 const char *gpu_shader_source_sha(void) { return k_metal_sha; }
+const char *gpu_compute_capability(void) { return NULL; }   // a CUDA notion
 
 bool gpu_max_working_set(size_t *bytes) {
     id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
@@ -925,6 +926,18 @@ void gpu_tc_force(int on) {
     g_tensor_state = on < 0 ? MM_ENV_UNSET : (on != 0);
 }
 
+unsigned long gpu_tc2_dispatches(void) { return 0; }   // CUDA's pipelined TC2 kernels
+unsigned long gpu_tc2_80_dispatches(void) { return 0; }
+unsigned long gpu_moe_twin_tiles(void) { return 0; }   // CUDA's by-expert MoE prefill
+void gpu_moe_twin_force(int on) { (void)on; }
+unsigned long gpu_tc2_wide_dispatches(void) { return 0; }   // CUDA's 128-column TC2 tile
+void gpu_tc2_wide_force(int on) { (void)on; }
+int gpu_prompt_window(const model_t *m) { (void)m; return 0; }   // CUDA's prompt window
+void gpu_route_pin(int mask) { (void)mask; }             // CUDA's arithmetic routes
+int gpu_route_active(const model_t *m) { (void)m; return 0; }
+void gpu_recur_seq_force(int on) { (void)on; }          // CUDA's whole-tile recurrent kernels
+unsigned long gpu_recur_seq_dispatches(void) { return 0; }
+unsigned long gpu_exact_verify_tiles(void) { return 0; }  // CUDA's exact verify rows
 unsigned long gpu_tc_dispatches(void) { return g_tc_dispatches; }
 // per weight type, both tiled branches (tensor and mm) counted together
 enum { MM_TYPE_N = 64 };
@@ -951,6 +964,8 @@ static const struct { int type; const char *name; } MM_KERNELS[] = {
     { T_IQ2_XXS, "k_mm_iq2_xxs" }, { T_IQ2_XS, "k_mm_iq2_xs" },
     { T_IQ2_S,  "k_mm_iq2_s" },  { T_IQ3_XXS, "k_mm_iq3_xxs" },
     { T_IQ3_S,  "k_mm_iq3_s" },
+    { T_Q5_K,   "k_mm_q5_K" },   { T_Q4_1,   "k_mm_q4_1" },
+    { T_Q5_0,   "k_mm_q5_0" },   { T_Q5_1,   "k_mm_q5_1" },
 };
 bool gpu_tc_type_has_kernel(int type) {
     for (size_t i = 0; i < sizeof MM_KERNELS / sizeof *MM_KERNELS; i++)
@@ -1022,6 +1037,7 @@ static _Atomic unsigned long g_coop_dispatches = 0;
 void gpu_attn_coop_force(int on) {
     g_coop_state = on < 0 ? COOP_ENV_UNSET : (on != 0);
 }
+unsigned long gpu_attn_tiled_dispatches(void) { return 0; }   // CUDA's tiled prefill attention
 unsigned long gpu_attn_coop_dispatches(void) { return g_coop_dispatches; }
 
 // Decode attention under grouped-query attention serves every query head of
@@ -1032,6 +1048,7 @@ static _Atomic unsigned long g_gqa_dispatches;
 unsigned long gpu_attn_gqa_dispatches(void) { return g_gqa_dispatches; }
 // CUDA-only route; present so its gate links and reports 'never here'.
 unsigned long gpu_splitk_dispatches(void) { return 0; }
+long gpu_live_buffers(void) { return -1; }
 static bool metal_attn_gqa_on(void) {
     static _Atomic int v = -1;
     if (v < 0) {
@@ -2857,6 +2874,42 @@ static void metal_handoff_boundary(model_t *m, int n) {
     memcpy(m->x, g->x.contents, sizeof(float) * (size_t)n * m->n_embd);
 }
 
+// A speculative verify round (model_forward_verify): the walk's tokens are
+// the plain path's only if each row is a solo step's bits, and for n > 1 the
+// encoder takes other kernels than a decode step (the fused decode stages,
+// the decode attention variants), so a round's rows differ from its steps
+// in the last bits (measured on the fixtures: from the first 2-row round).
+// So the round runs as its solo steps, in order, each writing its KV row
+// before the next reads it, as decoding would; the rows' logits (or, on a
+// partial split, their boundary activations) are kept for the walk. Running
+// the rows as one decode microbatch instead (its kernels are the steps'
+// twins) measured no faster on an M1 (2026-10-21: Qwen2.5-1.5B lookup 21.3
+// vs 21.8 tok/s, Llama-3.2-3B with a 1B draft 6.4 vs 6.7): the identity
+// matvecs and unfused stages it runs per column cost what the fused decode
+// steps do there, so a round still costs about a decode step a row.
+static float *metal_forward_rows(model_t *m, const int32_t *tokens, int n, int pos,
+                                 bool partial) {
+    gpu_t *g = (gpu_t *)m->gpu;
+    size_t nv = (size_t)m->n_vocab;
+    float *rows = partial ? NULL : malloc(sizeof(float) * nv * (size_t)n);
+    if (!partial && !rows) return NULL;
+    float *lg = NULL;
+    for (int c = 0; c < n; c++) {
+        lg = gpu_forward_native_batch(m, tokens + c, 1, pos + c);
+        if (!lg) { free(rows); return NULL; }
+        if (partial || (m->want_hidden && !m->hyper_conn))
+            memcpy(m->x + (size_t)c * m->n_embd, g->x.contents,
+                   sizeof(float) * (size_t)m->n_embd);
+        if (rows) memcpy(rows + (size_t)c * nv, lg, sizeof(float) * nv);
+    }
+    if (rows) {
+        memcpy(g->logits.contents, rows, sizeof(float) * nv * (size_t)n);
+        free(rows);
+        lg = (float *)g->logits.contents + (size_t)(n - 1) * nv;
+    }
+    return lg;
+}
+
 bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                        bool want_logits, float **logits) {
     // One encoder for every n, decode included. There used to be a second,
@@ -2871,14 +2924,16 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
         return false;
     }
     bool partial = m->gpu_layers > 0 && m->gpu_layers < m->n_layer;
-    float *lg = gpu_forward_native_batch(m, tokens, n, pos);
+    bool rows = m->spec_exact && n > 1;
+    float *lg = rows ? metal_forward_rows(m, tokens, n, pos, partial)
+                     : gpu_forward_native_batch(m, tokens, n, pos);
     if (!lg) return false;
     if (partial) {
-        metal_handoff_boundary(m, n);
+        if (!rows) metal_handoff_boundary(m, n);
         if (logits) *logits = NULL;
         return true;
     }
-    if (m->want_hidden && !m->hyper_conn) metal_handoff_boundary(m, n);
+    if (m->want_hidden && !m->hyper_conn && !rows) metal_handoff_boundary(m, n);
     if (logits) *logits = want_logits ? lg : NULL;
     return true;
 }
@@ -3530,17 +3585,17 @@ static void metal_enc_rope_store(metal_fwd *F, int l, const metal_layer_plan *P)
 }
 
 // Attention over the cache: the chunked decode kernels when the span is long
-// enough, else the single-pass (decode) or tiled (prefill) kernel.
-static void metal_enc_attention(metal_fwd *F, int l, const metal_layer_plan *P) {
-    gpu_t *g = F->g;
-    model_t *m = F->m;
-    int n = F->n;
-    int pos = F->pos;
-    int q_dim = F->q_dim;
-    int xdim = F->xdim;
-    int hd = P->hd;
-    int n_kv = P->n_kv;
-    int window = P->window;
+// enough, else the single-pass (decode) or tiled (prefill) kernel. q, the
+// cache and the output are arguments so the decode microbatch encodes each of
+// its columns through the very selection a decode step makes (it ran the
+// single-pass kernel for every column until 2026-10-21, so past the first
+// chunk boundary, 128 positions, a slot's step differed from its sequential
+// step in the last bits).
+static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
+                                int l, int n, int pos, int q_dim, int xdim, int hd,
+                                int n_kv, int window, id<MTLBuffer> q, NSUInteger q_off,
+                                id<MTLBuffer> kc, id<MTLBuffer> vc,
+                                id<MTLBuffer> out, NSUInteger out_off, bool timing) {
     int q8 = model_kv_kind_k(m), vq8 = model_kv_kind_v(m);   // cache KINDS
 
     // Chunked path: decode only (n == 1), long enough range to be
@@ -3594,30 +3649,30 @@ static void metal_enc_attention(metal_fwd *F, int l, const metal_layer_plan *P) 
         bool coopc = metal_attn_coop_on() && g->p_attn_chunk_coop;
         if (coopc) g_coop_dispatches++;
         if (gqa) g_gqa_dispatches++;
-        [F->e setComputePipelineState:gqa ? g->p_attn_chunk_gqa
+        [e setComputePipelineState:gqa ? g->p_attn_chunk_gqa
                                  : coopc ? g->p_attn_chunk_coop
                                          : g->p_attn_chunk];
-        [F->e setBuffer:g->q       offset:0 atIndex:0];
-        [F->e setBuffer:g->kc      offset:0 atIndex:1];
-        [F->e setBuffer:g->vc      offset:0 atIndex:2];
-        [F->e setBuffer:g->att     offset:0 atIndex:3];
-        [F->e setBuffer:g->att_acc offset:0 atIndex:4];
-        [F->e setBuffer:g->att_ms  offset:0 atIndex:5];
-        [F->e setBytes:&ca length:sizeof(ca) atIndex:6];
+        [e setBuffer:q          offset:q_off atIndex:0];
+        [e setBuffer:kc         offset:0 atIndex:1];
+        [e setBuffer:vc         offset:0 atIndex:2];
+        [e setBuffer:g->att     offset:0 atIndex:3];
+        [e setBuffer:g->att_acc offset:0 atIndex:4];
+        [e setBuffer:g->att_ms  offset:0 atIndex:5];
+        [e setBytes:&ca length:sizeof(ca) atIndex:6];
         g_disp.attn_chunk++;
-        [F->e dispatchThreadgroups:MTLSizeMake(gqa ? n_kv : m->n_head, a_nch, 1)
+        [e dispatchThreadgroups:MTLSizeMake(gqa ? n_kv : m->n_head, a_nch, 1)
           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 
         attn_comb_args cb = { hd, m->n_head, a_nch,
                               g->sinks[l] != nil };
-        [F->e setComputePipelineState:g->p_attn_comb];
-        [F->e setBuffer:g->att_acc offset:0 atIndex:0];
-        [F->e setBuffer:g->att_ms  offset:0 atIndex:1];
-        [F->e setBuffer:g->xb2     offset:0 atIndex:2];
-        [F->e setBytes:&cb length:sizeof(cb) atIndex:3];
-        [F->e setBuffer:g->sinks[l] ? g->sinks[l] : g->dummy offset:0 atIndex:4];
+        [e setComputePipelineState:g->p_attn_comb];
+        [e setBuffer:g->att_acc offset:0 atIndex:0];
+        [e setBuffer:g->att_ms  offset:0 atIndex:1];
+        [e setBuffer:out        offset:out_off atIndex:2];
+        [e setBytes:&cb length:sizeof(cb) atIndex:3];
+        [e setBuffer:g->sinks[l] ? g->sinks[l] : g->dummy offset:0 atIndex:4];
         g_disp.attn_chunk++;
-        [F->e dispatchThreadgroups:MTLSizeMake(m->n_head, 1, 1)
+        [e dispatchThreadgroups:MTLSizeMake(m->n_head, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         return;
     }
@@ -3639,27 +3694,27 @@ static void metal_enc_attention(metal_fwd *F, int l, const metal_layer_plan *P) 
     enum { ATTN_TILE = 8 };
     bool tile = (n > 1) && hd <= 256 && metal_attn_tile_on() &&
                 g->p_attn_tile;
-    [F->e setComputePipelineState:tile ? g->p_attn_tile
-                             : coop ? g->p_attn_coop : g->p_attn];
-    [F->e setBuffer:g->q   offset:0 atIndex:0];
-    [F->e setBuffer:g->kc  offset:0 atIndex:1];
-    [F->e setBuffer:g->vc  offset:0 atIndex:2];
-    [F->e setBuffer:g->att offset:0 atIndex:3];
-    [F->e setBuffer:g->xb2 offset:0 atIndex:4];
-    [F->e setBytes:&aa length:sizeof(aa) atIndex:5];
-    [F->e setBuffer:g->sinks[l] ? g->sinks[l] : g->dummy offset:0 atIndex:6];
+    [e setComputePipelineState:tile ? g->p_attn_tile
+                          : coop ? g->p_attn_coop : g->p_attn];
+    [e setBuffer:q      offset:q_off atIndex:0];
+    [e setBuffer:kc     offset:0 atIndex:1];
+    [e setBuffer:vc     offset:0 atIndex:2];
+    [e setBuffer:g->att offset:0 atIndex:3];
+    [e setBuffer:out    offset:out_off atIndex:4];
+    [e setBytes:&aa length:sizeof(aa) atIndex:5];
+    [e setBuffer:g->sinks[l] ? g->sinks[l] : g->dummy offset:0 atIndex:6];
     // Widest power-of-two threadgroup this pipeline allows, capped
     // at the red[] scratch in the kernel. The reduction halves tpg
     // each step, so a non-power-of-two would drop lanes silently.
     int32_t tile_cols = n;
-    if (tile) [F->e setBytes:&tile_cols length:sizeof(tile_cols) atIndex:7];
+    if (tile) [e setBytes:&tile_cols length:sizeof(tile_cols) atIndex:7];
     NSUInteger amax = (tile ? g->p_attn_tile
                             : coop ? g->p_attn_coop : g->p_attn)
                           .maxTotalThreadsPerThreadgroup;
     if (amax > 256) amax = 256;   // measured optimum; red[] is sized to match
     NSUInteger atpg = 1;
     while (atpg * 2 <= amax) atpg *= 2;
-    if (F->timing) {
+    if (timing) {
         static _Atomic bool told;   // any slot may get here first (compat.h)
         if (plat_once(&told)) {
             fprintf(stderr, "metal-timing attn threadgroups=%d x %llu "
@@ -3671,13 +3726,20 @@ static void metal_enc_attention(metal_fwd *F, int l, const metal_layer_plan *P) 
     g_disp.attn++;
     if (tile) {
         g_tile_dispatches++;
-        [F->e dispatchThreadgroups:MTLSizeMake(m->n_head,
-                                            (n + ATTN_TILE - 1) / ATTN_TILE, 1)
+        [e dispatchThreadgroups:MTLSizeMake(m->n_head,
+                                         (n + ATTN_TILE - 1) / ATTN_TILE, 1)
           threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
     } else {
-        [F->e dispatchThreadgroups:MTLSizeMake(m->n_head, n, 1)
+        [e dispatchThreadgroups:MTLSizeMake(m->n_head, n, 1)
           threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
     }
+}
+
+static void metal_enc_attention(metal_fwd *F, int l, const metal_layer_plan *P) {
+    gpu_t *g = F->g;
+    metal_enc_attn_core(g, F->e, F->m, l, F->n, F->pos, F->q_dim, F->xdim, P->hd,
+                        P->n_kv, P->window, g->q, 0, g->kc, g->vc, g->xb2, 0,
+                        F->timing);
 }
 
 // The attention output: gate, output projection, post-norm, scale and the
@@ -4075,6 +4137,9 @@ bool gpu_spec_keep_ok(const model_t *m) {
     return true;
 }
 
+// The KV buffer is the host cache: a host write is already the device's.
+void gpu_kv_host_wrote(model_t *m, int lo) { (void)m; (void)lo; }
+
 // g->x holds every column's residual after the last layer (the head norms
 // into xb), and the buffer is host-visible: the same copy a partial split
 // makes at its boundary. The wide hyper-connection residual is not handed.
@@ -4244,29 +4309,11 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                   threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
             }
 
-            attn_args aa = { hd, m0->n_head, n_kv, m0->n_ctx, p,
-                             (uint64_t)model_k_byte_off(ms, l),
-                             model_attn_scale(m0, l), q8, window,
-                             false, q_dim, m0->n_head * m0->n_ctx, xdim, 0,
-                             (uint64_t)model_v_byte_off(ms, l), vq8 };
-            bool coop = metal_attn_coop_on() && g->p_attn_coop;
-            if (coop) g_coop_dispatches++;
-            [e setComputePipelineState:coop ? g->p_attn_coop : g->p_attn];
-            [e setBuffer:g->q   offset:foff((size_t)c * q_dim) atIndex:0];
-            [e setBuffer:gs->kc offset:0 atIndex:1];
-            [e setBuffer:gs->vc offset:0 atIndex:2];
-            [e setBuffer:g->att offset:0 atIndex:3];
-            [e setBuffer:g->xb2 offset:foff((size_t)c * xdim) atIndex:4];
-            [e setBytes:&aa length:sizeof(aa) atIndex:5];
-            [e setBuffer:g->dummy offset:0 atIndex:6];
-            NSUInteger amax = (coop ? g->p_attn_coop : g->p_attn)
-                                  .maxTotalThreadsPerThreadgroup;
-            if (amax > 256) amax = 256;
-            NSUInteger atpg = 1;
-            while (atpg * 2 <= amax) atpg *= 2;
-            g_disp.attn++;
-            [e dispatchThreadgroups:MTLSizeMake(m0->n_head, 1, 1)
-              threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+            // the decode step's own selection (chunked past the first
+            // chunk boundary, grouped or cooperative where it would be)
+            metal_enc_attn_core(g, e, ms, l, 1, p, q_dim, xdim, hd, n_kv, window,
+                                g->q, foff((size_t)c * q_dim), gs->kc, gs->vc,
+                                g->xb2, foff((size_t)c * xdim), false);
         }
 
         enc_mv_cols(g, e, ly->wo, g->xb2, 0, g->xb, 0,

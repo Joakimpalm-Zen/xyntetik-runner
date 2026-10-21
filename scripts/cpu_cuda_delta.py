@@ -54,7 +54,8 @@ def main():
         idx = a.prompt if a.prompt is not None else 0
     prompt = PROMPTS[idx]
 
-    env = dict(os.environ, RUNNER_CUDA_TC="0", RUNNER_MOE_EAGER="1")
+    env = dict(os.environ, RUNNER_CUDA_TC="0", RUNNER_CUDA_ROUTE="reference", RUNNER_MOE_EAGER="1",
+               RUNNER_GPU_FALLBACK="fail")
     cont = run(a.runner, ["-m", a.model, "-p", prompt, "-n", str(a.tokens),
                           "--temp", "0", "--gpu", "off"], env).decode("utf-8", "replace")
     text = prompt + cont

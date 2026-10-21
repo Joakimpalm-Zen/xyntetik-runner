@@ -836,12 +836,35 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
     return true;
 }
 
+gpu_act_cost model_gpu_act_cost(uint64_t n_embd, uint64_t xdim, uint64_t q_dim,
+                                uint64_t kv_dim, uint64_t n_ff, uint64_t n_head,
+                                uint64_t n_ctx, uint64_t n_vocab) {
+    gpu_act_cost c;
+    // per column: x, the three xdim-wide buffers, q, k, v and the FFN pair
+    c.per_col = 4ull * (n_embd + 3 * xdim + q_dim + 2 * kv_dim + 2 * n_ff);
+    // the score sub-tile (cuda.c ATT_COLS) and one logits row
+    c.fixed = 4ull * (64ull * n_head * n_ctx + n_vocab);
+    return c;
+}
+
+int model_gpu_window(uint64_t spare, uint64_t per_col, int instances,
+                     int n_batch, int force) {
+    int cap = n_batch < GPU_WINDOW_MAX ? n_batch : GPU_WINDOW_MAX;
+    if (force > 0 && force < cap) cap = force;
+    uint64_t inst = instances > 1 ? (uint64_t)instances : 1;
+    for (int w = cap / GPU_WINDOW_MIN * GPU_WINDOW_MIN; w > GPU_WINDOW_MIN;
+         w -= GPU_WINDOW_MIN)
+        if ((uint64_t)(w - GPU_WINDOW_MIN) * per_col * inst <= spare) return w;
+    return GPU_WINDOW_MIN;
+}
+
 // The leading-layer split a CUDA load makes (cuda.c shared_build), from the
 // header alone. Each layer costs its `blk.N.` tensors plus its share of the
 // KV cache; the device first holds the token embedding, the activation
-// scratch (the loader's own formula at MVB 64 columns, without the SSM
-// extras of the hybrid architectures) and the headroom. A full split also
-// owes the output projection, and when it does not fit the last layer goes
+// scratch (model_gpu_act_cost at the narrowest window, the loader's own
+// charge, without the SSM extras of the hybrid architectures) and the
+// headroom. A full split also owes the output projection, and when it does
+// not fit the last layer goes
 // back to the CPU, as the loader does. What stays on the host is the rest of
 // the file (scaled to the hot set for a sparse MoE) and the whole KV cache:
 // the host copy is the authoritative one on a CUDA load, allocated for every
@@ -877,37 +900,45 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
         } else if (!strcmp(t->name, "output.weight"))
             out = t->nbytes;
     }
-    if (!out) out = tok;   // tied embeddings: the loader's output IS token_embd
+    // tied embeddings: the loader's output IS token_embd. The table is not
+    // charged otherwise (cuda.c shared_plan_budget): the forward stages its
+    // rows from the host, so the device holds it only as a full split's head
+    if (!out) out = tok;
+    const uint64_t full_extra = out;
     uint64_t q_dim = n_head * head_dim, kv_dim = geo.kv_dim_max;
     uint64_t xdim = q_dim > n_embd ? q_dim : n_embd;
-    uint64_t act = 4ull * (64ull * (n_embd + 3 * xdim + q_dim + 2 * kv_dim +
-                                    2 * n_ff + n_head * (uint64_t)f->n_ctx) +
-                           n_vocab);
+    gpu_act_cost ac = model_gpu_act_cost(n_embd, xdim, q_dim, kv_dim, n_ff, n_head,
+                                         (uint64_t)f->n_ctx, n_vocab);
+    // the plan's charge at the narrowest window; a wider one is paid from
+    // what the split leaves spare and moves no layer, so the counts below
+    // are the loader's whatever window it then picks
+    uint64_t act = ac.fixed + GPU_WINDOW_MIN * ac.per_col;
     const uint64_t slots = f->n_seq > 1 ? (uint64_t)f->n_seq : 1;
     f->gpu = true;
     f->gpu_budget = budget;
-    f->gpu_fixed = tok + act * slots + headroom;
+    f->gpu_fixed = act * slots + headroom;
     const uint64_t per_tok[4] = { f->kv_f16_per_tok, f->kv_q8_per_tok,
                                   f->kv_k8v4_per_tok, f->kv_fp4_per_tok };
     for (int k = 0; k < 4; k++) {
         f->gpu_layers[k] = -1;
         if (!per_tok[k]) continue;
         int G = 0;
-        uint64_t used = f->gpu_fixed, dev_w = tok;
+        uint64_t used = f->gpu_fixed, dev_w = 0;
         if (used <= budget) {
             // each layer pays its own KV rows (fit_geometry), not an average
             for (int l = 0; l < f->n_layer; l++)
                 cost[l] = lb[l] + fit_kv_row(geo.kv_dim[l], k) * (uint64_t)f->n_ctx * slots;
             G = gpu_plan_prefix(cost, f->n_layer, max_layers, budget, &used);
             for (int l = 0; l < G; l++) dev_w += lb[l];
-            // The loader's full-split test is `used + token_embd + output`
-            // with token_embd already inside `used` (it is in the fixed
-            // charge): it charges the embedding twice. Mirrored, because
-            // this must predict the split the loader makes; RTX 3070,
-            // granite-4.2-8b, --kv q8 at 16k: 39 of 40, not 40.
+            // The loader's full-split test: the output head, once (a tied
+            // head is the embedding table, which nothing else charges). It
+            // used to add the embedding on top of a fixed charge that held it
+            // already (charged twice; RTX 3070, granite-4.2-8b, --kv q8 at
+            // 16k: 39 of 40); mirrored either way, because this must predict
+            // the split the loader makes.
             bool gave_back;
-            if (gpu_plan_full_split(&G, f->n_layer, used, tok + out, budget, &gave_back)) {
-                used += out; if (out != tok) dev_w += out;
+            if (gpu_plan_full_split(&G, f->n_layer, used, full_extra, budget, &gave_back)) {
+                used += full_extra; dev_w += full_extra;
             } else if (gave_back) {
                 used -= cost[G]; dev_w -= lb[G];
             }
@@ -2232,18 +2263,30 @@ static bool bind_mtp_layers(model_t *m, gguf_file *g, const char *arch, const mo
 }
 
 // The sliding window and its pattern, for an architecture whose block above
-// set none.
+// set none. Without a pattern key the default alternates (gemma2's layout).
+// phi3 is not alternating: its window covers every layer alike, under the
+// one LongRoPE rotation, and Phi-3.5 publishes a 262144 window over a 131072
+// context. Read as gemma2's, every other layer roped from the raw local table
+// (no short factors, no attention factor) and Phi-3.5 sat at mean KL 0.275
+// from its float32 reference, against 0.049 for another engine on the same
+// file. A phi3 window at least the trained context masks nothing and binds
+// no layer; a shorter one binds them all, sharing the global rope.
 static bool bind_swa_default(model_t *m, gguf_file *g, const char *arch) {
     char key[128];
     int sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
+    bool uniform = strcmp(arch, "phi3") == 0;
+    if (uniform && sw >= m->n_ctx_train) sw = 0;
     if (sw > 0) {
         int pattern = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 2);
         if (pattern < 1) pattern = 2;
         m->swa_window = sw;
         m->l_is_swa = calloc(m->n_layer, sizeof(bool));
         if (!m->l_is_swa) return false;
-        if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
-                               m->l_is_swa, m->n_layer))
+        if (uniform) {
+            for (int i = 0; i < m->n_layer; i++) m->l_is_swa[i] = true;
+            m->swa_rope_global = true;
+        } else if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
+                                      m->l_is_swa, m->n_layer))
             for (int i = 0; i < m->n_layer; i++)
                 m->l_is_swa[i] = ((i + 1) % pattern) != 0;
     }
@@ -4344,21 +4387,27 @@ uint64_t gpu_plan_binding_bytes(uint64_t nbytes, bool bound) {
                  : nbytes;
 }
 
-// Whether a partial split's one contiguous upload, a prefix of the file
-// ending at prefix_end, overshoots the plan's weights enough to upload per
-// tensor instead. Only the prefix's tensor bytes count: the header and
-// metadata before data_start are no layer's spread, and on a small model
-// with a large vocabulary they alone exceeded the slack, so its contiguous
-// upload became a per-tensor one for nothing. The slack is relative and
-// small: the norms and biases outside a layer's big tensors are kilobytes,
-// never a sixty-fourth of the plan, while a real overshoot can be modest
-// and still fatal (a file with output.weight at its head overshot by 8%,
-// 1.9 GB on a 24 GB slice). An absolute margin would hide the spread on a
-// small file.
-bool gpu_plan_upload_spread(uint64_t prefix_end, uint64_t data_start,
-                            uint64_t planned) {
-    uint64_t tensor_bytes = prefix_end > data_start ? prefix_end - data_start : 0;
-    return tensor_bytes > planned + planned / 64;
+// The stretches of the file a set of tensors occupies (the CUDA weights,
+// cuda.c tensor_runs): the tensors sorted by offset (off[i], len[i]), a gap
+// of up to `gap` bytes joined into the stretch around it, since a separate
+// allocation would round up by as much. Writes each stretch to lo[k], hi[k]
+// when they are not NULL; returns how many. One stretch is uploaded as the
+// contiguous image, several as one binding each. (A device image once ran
+// from the file's first tensor through its last device tensor, and a file
+// with output.weight at its head overshot the plan by 8%, 1.9 GB on a 24 GB
+// slice.)
+int gpu_plan_runs(const uint64_t *off, const uint64_t *len, int n, uint64_t gap,
+                  uint64_t *lo, uint64_t *hi) {
+    int k = 0;
+    uint64_t a = 0, e = 0;
+    for (int i = 0; i < n; i++) {
+        uint64_t o = off[i], end = off[i] + len[i];
+        if (i > 0 && o <= e + gap) { if (end > e) e = end; continue; }
+        if (i > 0) { if (lo) { lo[k] = a; hi[k] = e; } k++; }
+        a = o; e = end;
+    }
+    if (n > 0) { if (lo) { lo[k] = a; hi[k] = e; } k++; }
+    return k;
 }
 
 // An integrated device's "VRAM" is system RAM: its offload budget is also
@@ -4416,6 +4465,7 @@ static int model_gpu_batch_default(void) {
 static bool runtime_placement(model_t *m, const model_params *p) {
     m->reserve_vram_pct = p->reserve_vram_pct;
     m->gpu_layers_override = p->gpu_layers_override;
+    m->gpu_window_req = p->gpu_window;
     m->gpu_instances = p->n_seq > 1 ? p->n_seq : 1;
     m->cpu_moe = p->cpu_moe && m->n_expert > 0;
     m->cpu_moe_layers = p->cpu_moe_layers;
@@ -4720,6 +4770,19 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
     m->att    = malloc(sizeof(float) * (size_t)m->n_head * n_ctx);
     m->logits = malloc(sizeof(float) * m->n_vocab);
     m->spec_batch = 16; // all_logits rows, allocated lazily on first use
+    // RUNNER_SPEC_BATCH (1-64): the rows a chunked --score forward carries
+    // (a verify round stays inside the engine's 16-row draft window), for
+    // scoring at a device's real prefill widths (a 16-row chunk
+    // gives a 128-expert MoE about one column an expert, so expert paths
+    // that take the batched GEMM from two or more columns never ran in a
+    // fidelity run). A wider chunk changes which MoE paths a tile admits, as
+    // the prompt window does; within a path a row's arithmetic does not
+    // depend on the chunk. 64 is CUDA's keep limit (MVB).
+    {
+        const char *e = getenv("RUNNER_SPEC_BATCH");
+        int v = e && *e ? atoi(e) : 0;
+        if (v >= 1 && v <= 64) m->spec_batch = v;
+    }
     if (m->n_expert > 0) {
         // per-token MoE scratch (decode routes each token independently)
         m->moe_logits = malloc(sizeof(float) * (size_t)m->n_expert);
@@ -5135,6 +5198,9 @@ typedef struct {
     size_t rsz;
     const void *xq;   // int8-quantized activations, or NULL for the f32 route
     size_t xq_stride; // bytes between quantized columns (small batches)
+    const float *xs;  // per-32 sums of x for vec_dot_xs (one column), or NULL
+    bool exact;       // a verify round's columns: the per-column route up to
+                      // VEC_DOT_MULTI_MAX wide (matvec_b, t_mv_exact)
 } mv_job;
 
 // Batches narrower than this take the per-column native dot (see mv_rows);
@@ -5150,7 +5216,7 @@ static void mv_rows(void *ctx, int i0, int i1) {
     // the weights, so dot(w * s, x) = s * dot(w, x), before the bias.
     const float sc = j->w->scale;
 
-    if (j->n_batch < MV_SMALL_BATCH) {
+    if (j->n_batch < MV_SMALL_BATCH || (j->exact && j->n_batch <= VEC_DOT_MULTI_MAX)) {
         // Solo step and small batches (the speculative verify, a few server
         // slots decoding together): every column takes the SAME native dot
         // the solo step takes, rows outer so a weight row is streamed from
@@ -5173,6 +5239,14 @@ static void mv_rows(void *ctx, int i0, int i1) {
             // the vec_dot_multi commit). Two to seven rows stay on the multi
             // route, where it still wins (MTP verify tiles 4.57 vs 4.19 tok/s
             // at four threads against a per-column loop). Byte-equal either way.
+            if (j->xs) {
+                for (int r = i0; r < i1; r++) {
+                    const void *row = base + (size_t)r * j->rsz;
+                    j->y[r] = vec_dot_xs(type, row, j->x, j->xs, n_in) * sc +
+                              (j->bias ? j->bias[r] : 0.0f);
+                }
+                return;
+            }
             for (int r = i0; r < i1; r++) {
                 const void *row = base + (size_t)r * j->rsz;
                 j->y[r] = vec_dot(type, row, j->x, n_in) * sc + (j->bias ? j->bias[r] : 0.0f);
@@ -5318,19 +5392,59 @@ static void *mv_quant_act(const float *x, int x_stride, int n_in, int n_batch) {
     return xq;
 }
 
+// The per-32 sums vec_dot_xs takes, for a single column whose rows take the
+// native dot: in `stack` when they fit, else allocated (*heap, freed by the
+// caller); NULL leaves every row on vec_dot.
+enum { MV_XS_STACK = 1024 };
+static const float *mv_xsums(const gguf_tensor *w, const float *x, int n_in,
+                             int n_batch, float *stack, float **heap) {
+    *heap = NULL;
+    if (n_batch != 1 || !vec_dot_xs_ok(w->type) || n_in % 32) return NULL;
+    float *xs = n_in / 32 <= MV_XS_STACK ? stack
+              : (*heap = malloc(sizeof(float) * (size_t)(n_in / 32)));
+    if (xs) vec_dot_xsums(x, n_in, xs);
+    return xs;
+}
+
+// A speculative verify round (model_forward_verify) on this thread: its rows
+// are the walk's tokens only if each is the solo step's bits, and a batch of
+// MV_SMALL_BATCH or more columns takes the dequantized f32 tile, whose sums
+// run in another order. So the round's projections take the per-column route
+// (every column the solo step's dot, each weight block decoded once for all
+// of them), VEC_DOT_MULTI_MAX columns a pass. With the int8 activations
+// pinned on, the solo step's route is the int8 dot, which the per-column
+// route takes below MV_SMALL_BATCH only (mv_takes_i8).
+static _Thread_local bool t_mv_exact;
+static int mv_exact_cols(void) {
+    return i8_dot_enabled() ? MV_SMALL_BATCH - 1 : VEC_DOT_MULTI_MAX;
+}
+
 static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
                      const float *x, int x_stride, int n_in, int n_out,
                      const float *bias, int n_batch) {
+    int ec = mv_exact_cols();
+    if (t_mv_exact && n_batch > ec) {
+        for (int c = 0; c < n_batch; c += ec) {
+            int cn = n_batch - c < ec ? n_batch - c : ec;
+            matvec_b(tp, y + (size_t)c * y_stride, y_stride, w, x + (size_t)c * x_stride,
+                     x_stride, n_in, n_out, bias, cn);
+        }
+        return;
+    }
     mv_job j = { w, x, bias, y, n_in, n_batch, x_stride, y_stride,
-                 ggml_row_size(w->type, n_in), NULL, 0 };
+                 ggml_row_size(w->type, n_in), NULL, 0, NULL, t_mv_exact };
     void *xq = NULL;
+    float xs_stack[MV_XS_STACK], *xs_heap = NULL;
     if (mv_takes_i8(w, n_in, n_out, n_batch) &&
         (xq = mv_quant_act(x, x_stride, n_in, n_batch))) {
         j.xq = xq;
         j.xq_stride = i8_act_size(n_in);
+    } else {
+        j.xs = mv_xsums(w, x, n_in, n_batch, xs_stack, &xs_heap);
     }
     tpool_run(tp, mv_rows, &j, n_out);
     free(xq);
+    free(xs_heap);
 }
 
 // Several projections of ONE input in one pool dispatch (R3.1.6). Q, K and V
@@ -5380,6 +5494,20 @@ static bool mv_fuse_enabled(void) {
 
 static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
                            int x_stride, int n_in, int n_batch) {
+    int ec = mv_exact_cols();
+    if (t_mv_exact && n_batch > ec && np <= MV_MAX_PARTS) {
+        // a verify round: in chunks the per-column route takes (matvec_b)
+        for (int c = 0; c < n_batch; c += ec) {
+            int cn = n_batch - c < ec ? n_batch - c : ec;
+            mv_part pc[MV_MAX_PARTS];
+            for (int s = 0; s < np; s++) {
+                pc[s] = p[s];
+                pc[s].y = p[s].y + (size_t)c * p[s].y_stride;
+            }
+            matvec_b_parts(tp, pc, np, x + (size_t)c * x_stride, x_stride, n_in, cn);
+        }
+        return;
+    }
     if (np == 1 || !mv_fuse_enabled()) {
         for (int s = 0; s < np; s++)
             matvec_b(tp, p[s].y, p[s].y_stride, p[s].w, x, x_stride, n_in,
@@ -5389,9 +5517,15 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
     mv_multi mm = { .n = np };
     void *xq = NULL;
     bool xq_tried = false;
+    // the parts read one input, so its group sums serve every part that
+    // takes them
+    float xs_stack[MV_XS_STACK], *xs_heap = NULL;
+    const float *xsum = NULL;
+    bool xs_tried = false;
     for (int s = 0; s < np; s++) {
         mv_job j = { p[s].w, x, p[s].bias, p[s].y, n_in, n_batch, x_stride,
-                     p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0 };
+                     p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL,
+                     t_mv_exact };
         if (mv_takes_i8(p[s].w, n_in, p[s].n_out, n_batch)) {
             if (!xq_tried) {
                 xq = mv_quant_act(x, x_stride, n_in, n_batch);
@@ -5402,11 +5536,19 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
                 j.xq_stride = i8_act_size(n_in);
             }
         }
+        if (!j.xq && n_batch == 1 && vec_dot_xs_ok(p[s].w->type)) {
+            if (!xs_tried) {
+                xsum = mv_xsums(p[s].w, x, n_in, n_batch, xs_stack, &xs_heap);
+                xs_tried = true;
+            }
+            j.xs = xsum;
+        }
         mm.job[s] = j;
         mm.start[s + 1] = mm.start[s] + p[s].n_out;
     }
     tpool_run(tp, mv_multi_rows, &mm, mm.start[np]);
     free(xq);
+    free(xs_heap);
 }
 
 // The same fusion for parts that each read their OWN input (the selected
@@ -5423,18 +5565,30 @@ static void matvec_b_parts_x(tpool *tp, const mv_part *p, const float *const *xs
     }
     mv_multi mm = { .n = np };
     void *xq[MV_MAX_PARTS] = {0};
+    // each part's own group sums (vec_dot_xs), one block for all parts
+    float *xsum = NULL;
+    for (int s = 0; s < np && !xsum; s++)
+        if (vec_dot_xs_ok(p[s].w->type) && n_in % 32 == 0)
+            xsum = malloc(sizeof(float) * (size_t)np * (size_t)(n_in / 32));
     for (int s = 0; s < np; s++) {
         mv_job j = { p[s].w, xs[s], p[s].bias, p[s].y, n_in, 1, n_in,
-                     p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0 };
+                     p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL,
+                     false };
         if (mv_takes_i8(p[s].w, n_in, p[s].n_out, 1)) {
             xq[s] = mv_quant_act(xs[s], n_in, n_in, 1);
             if (xq[s]) { j.xq = xq[s]; j.xq_stride = i8_act_size(n_in); }
+        }
+        if (!j.xq && xsum && vec_dot_xs_ok(p[s].w->type)) {
+            float *own = xsum + (size_t)s * (size_t)(n_in / 32);
+            vec_dot_xsums(xs[s], n_in, own);
+            j.xs = own;
         }
         mm.job[s] = j;
         mm.start[s + 1] = mm.start[s] + p[s].n_out;
     }
     tpool_run(tp, mv_multi_rows, &mm, mm.start[np]);
     for (int s = 0; s < np; s++) free(xq[s]);
+    free(xsum);
 }
 
 // qwen3-style per-head RMSNorm on Q or K (weight is one head_dim vector)
@@ -5962,11 +6116,14 @@ static int route_kernels(char *out, int cap) {
     }
     if (n < cap)
         n += snprintf(out + n, (size_t)(cap - n),
-                      "},\"cuda_splitk\":%lu,\"metal_fast_mv\":%lu,\"metal_attn_coop\":%lu,"
-                      "\"metal_attn_tile\":%lu,\"metal_attn_gqa\":%lu,\"cpu_dot_multi\":%lu}",
-                      gpu_splitk_dispatches(), gpu_mv_dispatches(), gpu_attn_coop_dispatches(),
-                      gpu_attn_tile_dispatches(), gpu_attn_gqa_dispatches(),
-                      vec_dot_multi_calls());
+                      "},\"cuda_tc2\":%lu,\"cuda_moe_twin\":%lu,\"cuda_splitk\":%lu,\"cuda_attn_tile\":%lu,\"metal_fast_mv\":%lu,"
+                      "\"metal_attn_coop\":%lu,\"metal_attn_tile\":%lu,\"metal_attn_gqa\":%lu,"
+                      "\"cpu_dot_multi\":%lu}",
+                      gpu_tc2_dispatches(), gpu_moe_twin_tiles(), gpu_splitk_dispatches(),
+                      gpu_attn_tiled_dispatches(),
+                      gpu_mv_dispatches(),
+                      gpu_attn_coop_dispatches(), gpu_attn_tile_dispatches(),
+                      gpu_attn_gqa_dispatches(), vec_dot_multi_calls());
     return n;
 }
 
@@ -10842,6 +10999,36 @@ static void forward_ple_before_split(model_t *m, const int32_t *tokens, int n) {
 // leaves the boundary activation in the host x buffer + the offloaded
 // layers' KV in the host cache, and the CPU loop below finishes the rest.
 // Returns the device's logits when it ran the whole stack (*done), else
+// RUNNER_GPU_FALLBACK=fail: a device forward that fails at runtime ends the
+// process instead of continuing on the CPU. For gates and comparison harnesses:
+// the fallback computes correct rows at host speed, so a device fault in the
+// middle of a run would otherwise be recorded as a device result.
+static bool gpu_fallback_fails(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("RUNNER_GPU_FALLBACK"); on = e && strcmp(e, "fail") == 0; }
+    return on;
+}
+
+// GPU failed at runtime: fall back to CPU permanently. Release the backend
+// rather than just forgetting it — with shared weights an orphaned context
+// also pins every other slot's copy of them. Say so: a silent fallback
+// produces correct output at a fraction of the speed and no gate can see it
+// (the fallback IS the CPU oracle) — the 69b8085 MoE slice-nbytes defect hid
+// exactly here.
+static void gpu_runtime_failure(model_t *m) {
+    if (gpu_fallback_fails()) {
+        fprintf(stderr, "gpu: forward failed at runtime; RUNNER_GPU_FALLBACK=fail "
+                "ends the process (exit status 3)\n");
+        fflush(NULL);
+        _Exit(3);
+    }
+    fprintf(stderr, "gpu: forward failed at runtime — releasing the "
+            "backend, continuing on CPU\n");
+    snprintf(m->route_fallback, sizeof m->route_fallback,
+             "forward failed at runtime");
+    gpu_disable(m);
+}
+
 // NULL with *start at the first layer the host runs.
 static float *forward_gpu_leading(model_t *m, const int32_t *tokens, int n,
                                   int pos, bool want_logits, int *start,
@@ -10856,25 +11043,11 @@ static float *forward_gpu_leading(model_t *m, const int32_t *tokens, int n,
                 *done = true;
                 return lg;
             }
-            // GPU failed at runtime: fall back to CPU permanently. Release the
-            // backend rather than just forgetting it — with shared weights an
-            // orphaned context also pins every other slot's copy of them.
-            // Say so: a silent fallback produces correct output at a fraction
-            // of the speed and no gate can see it (the fallback IS the CPU
-            // oracle) — the 69b8085 MoE slice-nbytes defect hid exactly here.
-            fprintf(stderr, "gpu: forward failed at runtime — releasing the "
-                    "backend, continuing on CPU\n");
-            snprintf(m->route_fallback, sizeof m->route_fallback,
-                     "forward failed at runtime");
-            gpu_disable(m);
+            gpu_runtime_failure(m);
         } else if (gpu_forward_batch(m, tokens, n, pos, false, NULL)) {
             *start = m->gpu_layers;
         } else {
-            fprintf(stderr, "gpu: forward failed at runtime — releasing the "
-                    "backend, continuing on CPU\n");
-            snprintf(m->route_fallback, sizeof m->route_fallback,
-                     "forward failed at runtime");
-            gpu_disable(m);
+            gpu_runtime_failure(m);
         }
     }
     return NULL;
@@ -10990,6 +11163,10 @@ bool model_spec_verify_ok(const model_t *m) {
     return true;
 }
 
+void model_kv_host_wrote(model_t *m, int lo) {
+    if (m->gpu) gpu_kv_host_wrote(m, lo);
+}
+
 bool model_forward_batch_keep(model_t *m, const int32_t *tokens, int n, int pos) {
     if (!model_spec_verify_ok(m)) return false;
     if (!m->all_logits)
@@ -11003,6 +11180,23 @@ bool model_forward_batch_keep(model_t *m, const int32_t *tokens, int n, int pos)
     model_forward_batch(m, tokens, n, pos, false); // leaves hidden states in x
     m->spec_want_all = 0;
     return true;
+}
+
+bool model_forward_verify(model_t *m, const int32_t *tokens, int n, int pos) {
+    m->spec_exact = true;
+    t_mv_exact = true;
+    bool ok = model_forward_batch_keep(m, tokens, n, pos);
+    t_mv_exact = false;
+    m->spec_exact = false;
+    return ok;
+}
+
+void model_forward_refold(model_t *m, const int32_t *tokens, int n, int pos) {
+    m->spec_exact = true;
+    t_mv_exact = true;
+    model_forward_batch(m, tokens, n, pos, false);
+    t_mv_exact = false;
+    m->spec_exact = false;
 }
 
 // logits for one row of the last model_forward_batch_keep — computed lazily

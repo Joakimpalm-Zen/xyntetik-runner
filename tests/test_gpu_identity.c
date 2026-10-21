@@ -53,7 +53,13 @@
 #endif
 
 
-enum { STEPS = 24, MAX_TOK = 96, N_BATCH = 32 };
+enum { STEPS = 24, MAX_TOK = 512, N_TOK = 96, N_BATCH = 32 };
+
+// Prompt length, settable (fourth argument) for a route that only a wide
+// prefill reaches: the context is the prompt plus eight, and the device's
+// prompt window cannot exceed it, so the default 96 tokens never give a GEMM
+// more than 64 columns (the 128-column TC2 tile needs more).
+static int g_n_tok = N_TOK;
 
 // Prefill batch. Settable because "every forward this backend ever sees is a
 // single token" is a distinct backend STATE, not just a slower schedule: a
@@ -82,6 +88,9 @@ static const char *TEXT =
     "The quick brown fox jumps over the lazy dog while the observatory "
     "published a revised catalogue listing four thousand objects in 1929.";
 
+// set by run() when a device run lost its backend part-way (see run())
+static bool g_fell_back;
+
 static float *run(const char *path, int gpu_mode, int *n_vocab_out,
                   bool *used_gpu, const int32_t *toks, int n_tok) {
     model_t m;
@@ -92,6 +101,23 @@ static float *run(const char *path, int gpu_mode, int *n_vocab_out,
     p.n_ctx    = n_tok + 8;
     p.n_batch  = g_n_batch;
     p.gpu_layers_override = gpu_mode == GPU_OFF ? 0 : g_gpu_layers;
+    // GPU_ID_KV=q8|fp4|k8v4: both arms keep that cache format, so the bound
+    // also covers the device kernels that read compact rows (the tiled and
+    // grouped attention stage them as raw bytes: a row whose length is not
+    // a whole number of words, fp4 at head width 48, was once left short).
+    // The bound holds for fp4 V rows on the fixtures, not on real files: the
+    // E2M1 codes have 15 levels, so each backend's own rounding of K and V
+    // flips some codes by a whole step, and the flips add up over the layers
+    // (Llama-3.2-3B Q4_K_M: 0.0047-0.0076 of range for fp4, 0.0022-0.0024
+    // for k8v4, the same before and after the 2026-10 CUDA work and with
+    // every route on the reference arithmetic; q8 0.0003). Measured against
+    // the publisher's float32 model instead (Qwen3-4B Q4_K_M, 2,000
+    // positions), the device's fp4 cache reads as close as the CPU's: mean
+    // KL 0.2500 against 0.2552, paired p 0.82, top-1 1315 against 1314.
+    const char *kv = getenv("GPU_ID_KV");
+    if (kv && !strcmp(kv, "q8")) p.kv_q8 = true;
+    else if (kv && !strcmp(kv, "fp4")) p.kv_fp4 = true;
+    else if (kv && !strcmp(kv, "k8v4")) p.kv_split = true;
 
     if (!model_load(&m, path, &p)) {
         fprintf(stderr, "cannot load %s\n", path);
@@ -99,6 +125,7 @@ static float *run(const char *path, int gpu_mode, int *n_vocab_out,
     }
     *used_gpu = m.gpu != NULL;
     *n_vocab_out = m.n_vocab;
+    const bool loaded_on_gpu = m.gpu != NULL;
 
     float *out = malloc(sizeof(float) * (size_t)STEPS * (size_t)m.n_vocab);
     if (!out) { model_free(&m); return NULL; }
@@ -118,6 +145,12 @@ static float *run(const char *path, int gpu_mode, int *n_vocab_out,
         memcpy(out + (size_t)s * m.n_vocab, lg,
                sizeof(float) * (size_t)m.n_vocab);
     }
+    // A device fault mid-run releases the backend and the forward continues
+    // on the CPU (model.c), so a run that loaded on the GPU and ends without
+    // it compared the CPU with itself for the rest of the steps. That is a
+    // failure of the device route, not a skip: the Q3_K decode GEMV faulted
+    // on every misaligned block this way and the comparison still read ok.
+    if (loaded_on_gpu && !m.gpu) g_fell_back = true;
     model_free(&m);
     return out;
 }
@@ -269,6 +302,10 @@ int main(int argc, char **argv) {
     const char *path = argc > 1 ? argv[1] : "test.gguf";
     if (argc > 2) g_gpu_layers = atoi(argv[2]);
     if (argc > 3) g_n_batch = atoi(argv[3]) > 0 ? atoi(argv[3]) : N_BATCH;
+    if (argc > 4) {
+        int n = atoi(argv[4]);
+        g_n_tok = n < STEPS + 8 ? STEPS + 8 : n > MAX_TOK ? MAX_TOK : n;
+    }
 
     f16_init();
     // Pin the identity route. The tiled prefill GEMM (RUNNER_METAL_MM), the
@@ -290,12 +327,12 @@ int main(int argc, char **argv) {
         gguf_close(&gf); return 1;
     }
     static int32_t toks[MAX_TOK];
-    int n_tok = tok_encode(&tk, TEXT, toks, MAX_TOK, true, false);
+    int n_tok = tok_encode(&tk, TEXT, toks, g_n_tok, true, false);
     tokenizer_free(&tk);
     gguf_close(&gf);
     if (n_tok < 8) { fprintf(stderr, "text tokenized to %d tokens\n", n_tok); return 1; }
-    for (int i = n_tok; i < MAX_TOK; i++) toks[i] = toks[i - n_tok + 1];
-    n_tok = MAX_TOK;
+    for (int i = n_tok; i < g_n_tok; i++) toks[i] = toks[i - n_tok + 1];
+    n_tok = g_n_tok;
 
     printf("gpu-identity: %s | %d tokens, %d teacher-forced positions, "
            "prefill batch %d\n", path, n_tok, STEPS, g_n_batch);
@@ -306,6 +343,12 @@ int main(int argc, char **argv) {
     if (!cpu) { printf("gpu-identity: FAILED (cpu run)\n"); return 1; }
     float *gpu = run(path, GPU_AUTO, &nv_gpu, &gpu_used_gpu, toks, n_tok);
     if (!gpu) { free(cpu); printf("gpu-identity: FAILED (gpu run)\n"); return 1; }
+    if (g_fell_back) {
+        printf("FAIL: the device run lost its backend part-way and finished on the CPU "
+               "(a device fault; see the gpu: lines above)\ngpu-identity: FAILED\n");
+        free(cpu); free(gpu);
+        return 1;
+    }
 
     // GPU_ID_REQUIRE_SPLITK=1 (make test-cuda-qwen4exp, on a fixture built to
     // reach it): CUDA's BF16 split-K decode GEMV reduces in its own fixed tree,
@@ -345,6 +388,78 @@ int main(int argc, char **argv) {
             return 1;
         }
         printf("  split-K route: two device runs byte-identical\n");
+    }
+    // GPU_ID_RECUR=1: a CUDA route that keeps the arithmetic of the route it
+    // replaces (the whole-tile recurrent prefill kernels) must give device
+    // logits equal to
+    // the forced-off run byte for byte, and must have run: a file without the
+    // format or the layer kind would compare the old route with itself.
+    // This pair has no absolute anchor of its own: it proves the new route is
+    // the old one, whose anchor is the CPU bound below and the publisher
+    // reference gates (scripts/gold-logits.py) that route already answers to.
+    //
+    // GPU_ID_TC2_WIDE=1 (with RUNNER_CUDA_TC2=1 and a prefill batch over 64,
+    // the third argument): TC2's 128-column tile against its 64-column one.
+    // Both arms run the tensor-core route (tc), which the CPU bound below
+    // switches off; the pair compares the two widths with each other.
+    //
+    // `quiet` names a switch held at 0 for both arms of a pair: one that
+    // would otherwise take the pair's tiles from both routes, so a gate run
+    // with every opt-in on still compares what the pair names. A route pin
+    // (--gpu-route or RUNNER_CUDA_ROUTE naming moe-grouped) decides before
+    // the switch; a run that pins it gets "never ran on this file".
+    struct { const char *env, *what; void (*force)(int); unsigned long (*count)(void); bool tc;
+             const char *quiet; } pairs[] = {
+        { "GPU_ID_RECUR", "whole-tile recurrent prefill", gpu_recur_seq_force, gpu_recur_seq_dispatches, false, NULL },
+        { "GPU_ID_TC2_WIDE", "128-column TC2 tile", gpu_tc2_wide_force, gpu_tc2_wide_dispatches, true, NULL },
+        // GPU_ID_MOE_TWIN=1: the by-expert MoE prefill against the fused
+        // per-token path it reproduces (a prefill tile averaging four or more
+        // tokens an expert, experts of a type with GEMV twins). The grouped
+        // prefill, where on, takes the tile ahead of both.
+        { "GPU_ID_MOE_TWIN", "by-expert MoE prefill", gpu_moe_twin_force, gpu_moe_twin_tiles, false,
+          "RUNNER_MOE_GROUPED" },
+    };
+    for (size_t pi = 0; pi < sizeof pairs / sizeof *pairs; pi++) {
+        const char *ev = getenv(pairs[pi].env);
+        if (!ev || !*ev || strcmp(ev, "0") == 0) continue;
+        int nv_off = 0, nv_on = 0;
+        bool off_used = false, on_used = false;
+        char quiet_was[64] = "";
+        if (pairs[pi].quiet) {
+            const char *q = getenv(pairs[pi].quiet);
+            snprintf(quiet_was, sizeof quiet_was, "%s", q ? q : "");
+            setenv_compat(pairs[pi].quiet, "0");
+        }
+        if (pairs[pi].tc) gpu_tc_force(1);
+        pairs[pi].force(0);
+        unsigned long d0 = pairs[pi].count();
+        float *off = run(path, GPU_AUTO, &nv_off, &off_used, toks, n_tok);
+        unsigned long d1 = pairs[pi].count();
+        pairs[pi].force(1);
+        float *on = off ? run(path, GPU_AUTO, &nv_on, &on_used, toks, n_tok) : NULL;
+        unsigned long d2 = pairs[pi].count();
+        pairs[pi].force(-1);
+        if (pairs[pi].tc) gpu_tc_force(0);
+        if (pairs[pi].quiet) setenv_compat(pairs[pi].quiet, quiet_was);   // "" reads as unset
+        bool same = off && on && off_used && on_used && nv_off == nv_on &&
+                    memcmp(off, on, sizeof(float) * (size_t)STEPS * (size_t)nv_on) == 0;
+        free(off); free(on);
+        printf("  %s: %lu launches (forced-off arm %lu), %s\n", pairs[pi].what,
+               d2 - d1, d1 - d0, same ? "byte-identical to the route it replaces" : "DIFFERENT");
+        if (d2 == d1 || d1 != d0 || !same) {
+            printf("FAIL: the %s %s\ngpu-identity: FAILED\n", pairs[pi].what,
+                   d2 == d1 ? "never ran on this file"
+                   : d1 != d0 ? "ran in the forced-off arm"
+                   : "changed the logits");
+            free(cpu); free(gpu);
+            return 1;
+        }
+    }
+    if (g_fell_back) {
+        printf("FAIL: a device run of the pair checks lost its backend part-way\n"
+               "gpu-identity: FAILED\n");
+        free(cpu); free(gpu);
+        return 1;
     }
     if (nv_cpu != nv_gpu) {
         printf("FAIL: vocab size differs (%d vs %d)\n", nv_cpu, nv_gpu);

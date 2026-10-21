@@ -22,8 +22,9 @@ logit-bit-identical**: the CPU sums a row with SIMD lanes and the GPU with a
 32-lane reduction tree, and those round differently. `test-gpu-identity`
 states that bound. A route promoted to a default keeps an opt-out switch that
 restores the reference route; every CPU-against-GPU byte comparison in the
-suite sets those switches (`RUNNER_CUDA_TC=0`, `RUNNER_METAL_MM=0`,
-`RUNNER_METAL_ATTN_COOP=0`, `RUNNER_METAL_MOE_MM=0`, `RUNNER_MOE_EAGER=1`).
+suite sets those switches (`RUNNER_CUDA_TC=0`, `RUNNER_CUDA_ROUTE=reference`,
+`RUNNER_METAL_MM=0`, `RUNNER_METAL_ATTN_COOP=0`, `RUNNER_METAL_MOE_MM=0`,
+`RUNNER_MOE_EAGER=1`).
 
 Several tolerance gates take a real model as an argument (`./test-tc-tol
 MODEL.gguf`). They run on a promotion, not on every change; the rows they
@@ -62,6 +63,7 @@ The branches are tried in this order; the first that applies runs.
 | --- | --- | --- | --- |
 | int8-activation `dp4a` GEMV | `RUNNER_CUDA_Q8X=1`, 1 to 8 columns, unscaled, `n_in` a multiple of 256, a kernel for the type (IQ3_S, IQ3_XXS, IQ4_XS, Q4_K, Q8_0) | tolerance against CPU `--score`; experimental and off | measured by hand (0 to 3 argmax flips in 480 positions) |
 | small batch | 2 to `GPU_SMALL_BATCH` columns, unscaled, `RUNNER_CUDA_SMALL_BATCH` not `0` | bit-exact per column to the batch-1 kernel: a width-classed GEMV twin (`f_gemvb`), or the batch-1 kernel once per column | `test-batch` on a CUDA build |
+| pipelined tensor-core GEMM (TC2) | the tensor-core GEMM's conditions, `n_in` a multiple of 64, at most the window's columns, and a kernel from `tc2_fn()`: by default the compute_80 module's (`k_gemm2_80_*`, one m16n8k16 per 16-deep step) on compute capability 8.0+ and none below; `RUNNER_CUDA_TC2=1` (or `tc2` in `--gpu-route`) also the compute_75 kernels where that module did not load (below 8.0, `RUNNER_CUDA_SM80=0`, or a route set with `tc2` and without `sm80`, which keeps it unloaded); `RUNNER_CUDA_TC2=0` or a route set without `tc2` none; a GEMM over more than 64 columns takes the compute_80 module's 128-column twin (`k_gemm2_80w_*`) unless `RUNNER_CUDA_TC2_WIDE=0` | compute_80 kernels: byte-identical to the tensor-core GEMM (the same fp32 sums; chunked `--score` on sm_86 and sm_120 with launch counts); compute_75 kernels: the tensor-core GEMM's tolerance class (fp32 rounding between the two m16n8k8 halves of a step); the 128-column twin: byte-identical to the 64-column tile (`GPU_ID_TC2_WIDE=1 ./test-gpu-identity`, prompt longer than 64 columns) | `make test-cuda-tc2-bytes` in the CUDA gate (chunked `--score` against `RUNNER_CUDA_TC2=0`, byte for byte, with the launch counts); `./test-tc-tol MODEL.gguf` (prints the TC2 and compute_80 launch counts) |
 | tensor-core GEMM | more than one column, unscaled, `tc_on()` (the `RUNNER_CUDA_TC` override, else `tc_promoted()` per type and architecture), kernel present | tolerance per promoted (type, architecture) row; token columns are staged scaled to the fp16 range | `./test-tc-tol MODEL.gguf`; `make test-tc-overflow` on the CUDA gate |
 | tiled GEMM (`f_gemm`, Q8_0 and Q4_K) | more than one column, unscaled, kernel present | bit-exact to the batched `_b` kernel: same lane ownership, same inner order, only the source of `x` moves to shared memory | `test-gpu-identity` (prefill against the CPU) |
 | BF16 split-K | one column, BF16, at most 1,024 rows of at least 2,048 | deterministic within the route: a fixed tree per split and an index-order sum, no atomics | `make test-cuda-qwen4exp`: launch count, the CPU bound, two device runs byte for byte |
@@ -70,6 +72,37 @@ The branches are tried in this order; the first that applies runs.
 
 Around the matvec:
 
+- **Prefill and decode attention (on by default).** Prefill attention takes
+  `k_attn_tile32`/`16` (query strips over shared-memory K and V tiles; each
+  score is `k_attn`'s, the softmax and the V sum reassociate) unless
+  `RUNNER_CUDA_ATTN_TILE=0`, and single-token attention `k_attn_dec_gqa` and
+  `k_attn_merge32` (a KV row read once per head group, whole 32-row tiles
+  per split) unless `RUNNER_CUDA_ATTN_DEC=0`; both recorded as routes
+  (`attn-tile`, `attn-dec`). Obligation: tolerance, and no measurable
+  distance from the replaced kernels against the float32 reference at long
+  context (2,000 positions at 4,000-6,000 tokens; Qwen3-4B, Mistral-7B, and
+  gpt-oss-20b, whose attention has sinks and an alternating window). Gate:
+  `test-gpu-identity` (with `GPU_ID_KV`). The tensor-core prefill attention
+  (`k_attn_tc`, f16 caches, route `attn-tc`) is on by default for the llama,
+  qwen2, qwen3 and granite families without a sliding window, whose
+  long-context rows (Llama-3.2-3B, Mistral-7B, Qwen2.5-3B, Qwen3-4B,
+  granite-4.2-8b) read no further from the float32 reference than the tiled
+  kernel's; gpt-oss's row read further and the windowed families have none,
+  so they keep the tile (`RUNNER_CUDA_ATTN_TC=1` / `0` forces it on / off).
+  With Q and the softmax weights as single fp16 operands it read 0.19%
+  further from the reference on Mistral-7B; it carries each in two halves
+  (about 22 bits of the operand), which read the same as `k_attn` there.
+- **Byte movers, on by default.** The one-copy KV gather (decode with full
+  offload: every layer's new K and V rows gathered on the device, one copy
+  back, `RUNNER_CUDA_KV_GATHER=0` restores the per-layer copies) and the
+  whole-tile recurrent prefill (Gated DeltaNet and Mamba-2 tiles in one
+  launch per kernel; since 2026-10-21 a qwen35 decode step and each
+  checkpointed verify row run the conv over one token and the per-token step
+  with each head's columns over several blocks, `k_q35_delta1` and its norm,
+  `RUNNER_CUDA_RECUR_SEQ=0` restores the per-token launches) move the same
+  bytes to the same places or repeat the per-token arithmetic in order. Obligation: byte-identical. Gates: `GPU_ID_RECUR=1
+  ./test-gpu-identity` (launch count required), the CUDA gate's identity,
+  injected-failure and recovery steps (which now run through the gather).
 - **Slot microbatching.** `batch_mv_twin_ok()` admits a type to the
   shared-weight decode microbatch only when its batched kernels are twins
   of the batch-1 kernel. A refusal decodes the sequences one at a time; it
@@ -79,9 +112,37 @@ Around the matvec:
   as the eager host routing (`RUNNER_MOE_EAGER=1`) and keeps routing weights
   within about 2 ulp: device `expf` is not the host libm. Gate:
   `./test-moe-tol MODEL.gguf`.
+- **MoE families on the tensor cores (moe-tc) and grouped (moe-grouped).**
+  qwen3moe and gpt-oss run their dense projections through the tensor-core
+  GEMM (and TC2 on 8.0+), and qwen3moe's prefill groups a tile's columns by
+  expert and multiplies each expert's on the tensor cores
+  (`gpu_moe_ffn_grouped`) when its experts are Q4_K or Q6_K, the types
+  measured (Q8_0, Q5_K and Q4_0 experts take it on request). Both are
+  routes: `moe-tc` recorded for those families, `moe-grouped` wherever the
+  grouped prefill ran (a pin or `RUNNER_MOE_GROUPED=1` admits other MoE
+  models), pinned by `--verify`, off under `reference`; `RUNNER_CUDA_TC` and `RUNNER_MOE_GROUPED` still set them when
+  no route is pinned. Obligation:
+  tolerance, no further from the publisher's float32 model than the route
+  they replace (2,000 positions, mean KL within 1.01x, paired Wilcoxon and
+  McNemar not worse at p < 0.05; the rows are in `tc_promoted`'s notes),
+  scored in 64-row chunks (`RUNNER_SPEC_BATCH=64`) so the grouped path's
+  batched expert GEMMs are what the rows measure.
+  Gates: `test-tc-tol`, `test-moe-tol`.
+- **MoE prefill by expert.** A prompt tile of more than 8 columns that
+  averages at least four tokens an expert groups its (token, expert) pairs
+  by expert (`k_moe_place`) and runs each expert's columns through the
+  width-classed twins of the kernel the fused path uses for that weight
+  (an expert slice: `k_moe_mv_<type>`'s body; gemma-4's dense shared MLP:
+  the batch-1 dispatch), then `k_moe_sum_tile` adds each token's outputs in
+  router order. On by default for gemma4 and gpt-oss, where it measured
+  faster; `RUNNER_MOE_TWIN=1|0` overrides. Obligation: byte-identical to
+  the per-token fused path. Gate: `GPU_ID_MOE_TWIN=1 ./test-gpu-identity`
+  (launch count required), `make test-cuda-moe-twin`.
 - **Graph replay.** One-token decode with full offload replays a captured
-  graph of the same launches. `RUNNER_CUDA_GRAPH_OFF=1` runs them eagerly, to
-  separate a kernel from the graph path. See [buffer lifetimes](buffer-lifetimes.md)
+  graph of the same launches, qwen35's Gated DeltaNet steps included since
+  2026-10-21 (`RUNNER_CUDA_GRAPH_RECUR=0` keeps that family eager).
+  `RUNNER_CUDA_GRAPH_OFF=1` runs them eagerly, to separate a kernel from the
+  graph path. See [buffer lifetimes](buffer-lifetimes.md)
   for when capture is refused.
 - **Training primitives.** `gpu_mvcanon` (the forward matvec in the canonical
   order, F32, F16 and Q8_0) and the transposed matvec behind

@@ -168,6 +168,14 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
                sizeof(float) * (size_t)n_vocab);
         c->top1[s] = (int32_t)argmax(lg, n_vocab);
     }
+    // the offload check above is at load; a device fault mid-run releases
+    // the backend and the rest of the run happens on the CPU, which would
+    // compare the CPU with itself (test-gpu-identity's g_fell_back)
+    if (!m.gpu) {
+        fprintf(stderr, "FAIL: %s lost its GPU backend part-way (a device fault; "
+                "see the gpu: lines above)\n", c->name);
+        g_fail = 1;
+    }
     model_free(&m);
 
     double absmax = 0;
@@ -189,6 +197,16 @@ int main(int argc, char **argv) {
     if (argc > 2) g_reserve_vram_pct = atoi(argv[2]);
 
     f16_init();
+
+    // Instrument isolation, as in test_kv_tol.c: this gate measures the
+    // ROUTING, and the two configurations run the same dense prefill GEMMs.
+    // On the tensor-core route those round their activations to fp16, which
+    // turns the routing's ulp-level differences into whole fp16 steps and
+    // compounds them layer by layer: gemma-4-26B-A4B Q4_K_M read 6.1e-3 of
+    // the logit range with the tensor cores on and 4.3e-5 with them off
+    // (2026-10-21). The TC path has its own gates (test_tc_tol.c and the
+    // float32-reference rows), so the GEMM path is pinned scalar here.
+    gpu_tc_force(0);
 
     gguf_file gf;
     if (!gguf_open(&gf, path)) {

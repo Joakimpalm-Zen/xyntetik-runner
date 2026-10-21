@@ -237,7 +237,9 @@ static void spec_fold_sync(engine *e, const int32_t *d, int acc, int nd,
     // the accepted drafts), so the state after row acc-1
     if (acc >= 1 && model_recurrent_restore_row(m, acc - 1)) return;
     if (model_recurrent_restore(m, round_pos)) {
-        if (acc > 0) model_forward_batch(m, d, acc, round_pos, false);
+        // the kept rows again, as the verify computed them: the solo steps'
+        // arithmetic, so the fold is the plain path's
+        if (acc > 0) model_forward_refold(m, d, acc, round_pos);
         return;
     }
     model_recurrent_reset(m);
@@ -388,10 +390,11 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
 //   leading run of tokens with it, rather than only exact repeats.
 //
 //   Fact 2 — on every backend the host kcache/vcache is the authoritative
-//   copy. CUDA keeps a device mirror and resyncs it from the host whenever a
-//   forward's position is not the previous one plus 1 (see kv_upload in
-//   cuda.c); Metal's unified buffer *is* the host cache. So a snapshot is a
-//   plain memcpy in both directions, with one caveat handled at the install.
+//   copy. CUDA keeps a device mirror that knows how many leading rows it
+//   shares with the host and uploads the rest before a forward reads them
+//   (kv_rows, kv_upload in cuda.c); Metal's unified buffer *is* the host
+//   cache. So a snapshot is a plain memcpy in both directions, and the
+//   install tells the mirror its rows changed (model_kv_host_wrote).
 //
 //   Hazard — a fork that does not match the new prompt's true prefix silently
 //   conditions generation on another request's context. It does not fail; it
@@ -532,7 +535,7 @@ static void pfx_save(const model_t *m, uint8_t *dst, int n) {
 }
 
 // install the first `n` rows of a snapshot taken over `stride` rows
-static void pfx_load(const model_t *m, const uint8_t *src, int stride, int n) {
+static void pfx_load(model_t *m, const uint8_t *src, int stride, int n) {
     size_t off = 0;
     for (int l = 0; l < m->n_layer; l++) {
         if (model_kv_owner(m, l) != l) continue;
@@ -542,11 +545,11 @@ static void pfx_load(const model_t *m, const uint8_t *src, int stride, int n) {
         memcpy((uint8_t *)m->vcache + model_v_byte_off(m, l), src + off + blk_k, (size_t)n * row_v);
         off += blk_k + blk_v;
     }
+    model_kv_host_wrote(m, 0);
 }
 
 // A prefix shorter than this is not worth a snapshot: the copy costs more than
-// the prefill it saves, and it must be at least 2 for the GPU resync argument
-// at the install site to hold.
+// the prefill it saves.
 #define PFX_MIN_TOKENS  16
 #define PFX_MAX_ENTRIES 64
 
@@ -738,23 +741,13 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
     // recurrent model may fork ONLY an exact full-prefix hit (best == hit->n).
     // A device-resident fold (qwen35/qwen4exp on CUDA) is pulled and pushed
     // through the host buffers by blob_save/blob_load (R4.26.7), so the fork
-    // now holds on the device too; the load below runs AFTER the pos-0 resync
-    // forward, whose recurrent reset it overwrites. A partial recurrent hit
-    // likewise declines above.
+    // holds on the device too. A partial recurrent hit likewise declines above.
     bool recur = model_has_recurrent(e->m);
     bool recur_ok = !recur || (hit && best == hit->n);
     if (recur_ok && hit && best >= PFX_MIN_TOKENS && best > r.keep) {
-        // CUDA's device KV is a mirror that only resyncs when a forward's
-        // position is not the previous one plus 1. A fork writes host rows
-        // behind the device's back, so it has to *create* that discontinuity
-        // rather than hope for one: without this, a slot whose previous
-        // generation happened to stop at position best-1 would keep decoding
-        // against the previous request's device rows. One forward of toks[0]
-        // at position 0 recomputes a row the snapshot overwrites with
-        // identical bytes a moment later and leaves the mirror at position 0,
-        // so the next forward at `best` (>= PFX_MIN_TOKENS) always uploads.
-        // (Recurrent forks are CPU-only, so this GPU branch never runs for them.)
-        if (e->m->gpu) model_forward_batch(e->m, toks, 1, 0, false);
+        // pfx_load writes host rows behind CUDA's device mirror and tells it
+        // so (model_kv_host_wrote), so the next forward uploads them rather
+        // than decoding against the previous request's device rows.
         pfx_load(e->m, hit->kv, hit->n, best);
         if (recur) {
             // exact hit: the fold blob sits right after the KV data (entry bytes
@@ -1326,14 +1319,15 @@ bool prefix_context_origin(const char *name, char *out, size_t cap) {
 model_t *spec_draft_load(const char *path, const model_t *target,
                          const model_params *mp) {
     if (!model_spec_verify_ok(target)) {
-        // Covers both refusals with one capability question: a discrete-VRAM
-        // full offload (hidden states unreadable) and CUDA-resident
-        // recurrent state (no host-visible fold rollback). Unified-memory
-        // Metal full offload passes: the verify walk reads the backend's own
-        // buffers and the per-column heads the forward emits for it.
+        // One capability question for the refusals: a partial CUDA split with
+        // a recurrent layer on the device (no host-visible fold rollback), or
+        // a full offload whose backend cannot hand the walk its rows
+        // (gpu_spec_keep_ok). Metal and CUDA full offload pass: the forward
+        // emits every row's head for the walk, each row the solo step's bits
+        // (model_forward_verify), so the walk is target-exact there too.
         fprintf(stderr, "draft: this target's backend cannot serve the "
-                "speculative verify walk (discrete-VRAM offload or "
-                "device-resident recurrent state) — ignoring --draft\n");
+                "speculative verify walk (device-resident recurrent state "
+                "under a partial split) — ignoring --draft\n");
         return NULL;
     }
     model_params dmp = *mp;
@@ -2519,7 +2513,9 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
     // (rows = drafts + the pending token), and — defensively — by the fixed
     // stack buffer b[] so a future spec_batch bump can never overflow it
     // (RNC-4: d[] used to be a bare 16 unlinked to spec_batch).
-    enum { SPEC_DRAFT_MAX = 16 };  // capacity of b[]; must be >= any spec_batch
+    enum { SPEC_DRAFT_MAX = 16 };  // capacity of b[]; the clamps below keep the
+                                   // window inside it (RUNNER_SPEC_BATCH can raise
+                                   // spec_batch to 64 for chunked --score)
     int K = e->draft_k;
     if (K < 1) K = 1;
     if (K > m->spec_batch - 1) K = m->spec_batch - 1;
@@ -2689,7 +2685,15 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         // token instead: plain decoding, one row.
         float *row0 = NULL;
         if (prof) tp = now_s();
-        if (!model_forward_batch_keep(m, b, nb, e->pos)) {
+        // Nothing drafted: the round is one decode step, so it takes the
+        // decode path itself, the same bits (test-spec-identity) and on CUDA
+        // the captured graph the keep-forward does not use (a one-row verify
+        // ran eager launches; lookup rounds with no match are most rounds on
+        // text unlike the prompt). MTP reads the round's hidden rows, so it
+        // keeps the verify forward.
+        if (nd == 0 && !e->mtp_on) {
+            row0 = model_forward(m, cur, e->pos);
+        } else if (!model_forward_verify(m, b, nb, e->pos)) {
             nd = 0; nb = 1;
             row0 = model_forward(m, cur, e->pos);
         }

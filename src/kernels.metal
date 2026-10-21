@@ -2415,6 +2415,85 @@ kernel void k_mm_q4_K(MM_PARAMS) {
     })
 }
 
+// Q5_K and the 32-element legacy quants with a minimum or a fifth bit
+// (Q4_1, Q5_0, Q5_1): until 2026-10-21 their prompts ran the matvec, which
+// re-reads every weight once per token column (the gap the tiled variants
+// above closed for q2_K and iq4_xs). Each value is its dequantizer's (quants.c
+// dq_q5_K / dq_q4_1 / dq_q5_0 / dq_q5_1); a chunk of 8 at k = k0 + sub stays
+// inside one 32-element (sub-)block and one nibble half.
+kernel void k_mm_q5_K(MM_PARAMS) {
+    MM_BODY({
+        int nsb = a.n_in / 256;
+        int sb  = k0 / 256;              /* superblock */
+        int j32 = (k0 % 256) / 32;       /* which 32-lane sub-block */
+        device const uchar *blk = wb + a.w_off + ((ulong)row * nsb + sb) * 176;
+        float dall = (float)*(device const half *)blk;
+        float dmin = (float)*(device const half *)(blk + 2);
+        uchar s1, m1;
+        get_scale_min_k4(j32, blk + 4, &s1, &m1);
+        float d = dall * s1, mm = dmin * m1;
+        device const uchar *q  = blk + 48 + (j32 / 2) * 32;
+        device const uchar *qh = blk + 16;
+        bool hi = (j32 & 1) != 0;
+        for (int j = 0; j < 8; j++) {
+            int lane = sub + j;
+            int v = (hi ? (int)(q[lane] >> 4) : (int)(q[lane] & 0xF)) +
+                    (((qh[lane] >> j32) & 1) ? 16 : 0);
+            dst[j] = d * (float)v - mm;
+        }
+    })
+}
+
+kernel void k_mm_q4_1(MM_PARAMS) {
+    MM_BODY({
+        int nb = a.n_in / 32;
+        device const uchar *blk = wb + a.w_off + ((ulong)row * nb + k0 / 32) * 20;
+        float d = (float)*(device const half *)blk;
+        float m = (float)*(device const half *)(blk + 2);
+        device const uchar *q = blk + 4;
+        for (int j = 0; j < 8; j++) {
+            int lane = sub + j;
+            int v = lane < 16 ? (int)(q[lane] & 0xF) : (int)(q[lane - 16] >> 4);
+            dst[j] = (float)v * d + m;
+        }
+    })
+}
+
+kernel void k_mm_q5_0(MM_PARAMS) {
+    MM_BODY({
+        int nb = a.n_in / 32;
+        device const uchar *blk = wb + a.w_off + ((ulong)row * nb + k0 / 32) * 22;
+        float d = (float)*(device const half *)blk;
+        uint qh = (uint)blk[2] | ((uint)blk[3] << 8) |
+                  ((uint)blk[4] << 16) | ((uint)blk[5] << 24);
+        device const uchar *q = blk + 6;
+        for (int j = 0; j < 8; j++) {
+            int lane = sub + j;
+            int v = (lane < 16 ? (int)(q[lane] & 0xF) : (int)(q[lane - 16] >> 4)) |
+                    (int)(((qh >> lane) & 1u) << 4);
+            dst[j] = (float)(v - 16) * d;
+        }
+    })
+}
+
+kernel void k_mm_q5_1(MM_PARAMS) {
+    MM_BODY({
+        int nb = a.n_in / 32;
+        device const uchar *blk = wb + a.w_off + ((ulong)row * nb + k0 / 32) * 24;
+        float d = (float)*(device const half *)blk;
+        float m = (float)*(device const half *)(blk + 2);
+        uint qh = (uint)blk[4] | ((uint)blk[5] << 8) |
+                  ((uint)blk[6] << 16) | ((uint)blk[7] << 24);
+        device const uchar *q = blk + 8;
+        for (int j = 0; j < 8; j++) {
+            int lane = sub + j;
+            int v = (lane < 16 ? (int)(q[lane] & 0xF) : (int)(q[lane - 16] >> 4)) |
+                    (int)(((qh >> lane) & 1u) << 4);
+            dst[j] = (float)v * d + m;
+        }
+    })
+}
+
 kernel void k_mm_q6_K(MM_PARAMS) {
     MM_BODY({
         int nsb = a.n_in / 256;

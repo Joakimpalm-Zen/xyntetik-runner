@@ -23,7 +23,13 @@ test-residency-release.tmp
 test-dot-route.exe
 test-iq-decode
 test-iq-decode.exe
+test-kq-stage
+test-kq-stage.exe
+test-cuda-tc-kq.out
+test-cuda-moe-legacy.out
 tc-overflow.out
+test-cuda-batch-identity.out
+test-cuda-spec-identity.out
 test-json-schema
 test-json-schema.exe
 test-sval-walk
@@ -57,6 +63,8 @@ test-host-header.exe
 test-batch
 test-batch-identity
 test-batch-identity.exe
+test-spec-identity
+test-spec-identity.exe
 test-batch.exe
 test-prefix
 test-prefix.exe
@@ -151,6 +159,7 @@ tests/compatibility/out/*.runner.log
 tests/compatibility/out/reference-*.log
 tests/compatibility/node/node_modules/
 src/kernels.ptx
+src/kernels_sm80.ptx
 src/kernels-*.ptx.tmp
 bench-out.*.txt
 bench-err.*.txt
@@ -226,6 +235,8 @@ test-autofit
 test-autofit.exe
 test-gpu-identity
 test-gpu-identity.exe
+test-cuda-teardown
+test-cuda-teardown.exe
 test-attn-tol
 test-attn-tol.exe
 test-instances-oom

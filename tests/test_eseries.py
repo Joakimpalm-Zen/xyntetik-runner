@@ -247,8 +247,9 @@ def test_array_ffn_widths_greedy_is_deterministic(runner_bin, tmp_path):
 
 
 def test_array_ffn_widths_on_gpu_are_identical_or_refused_loudly(runner_bin, tmp_path):
-    """Per-layer FFN widths landed on Metal (0.1.11); CUDA still has no device
-    path for them. Either is fine — computing with one global width is not.
+    """Per-layer FFN widths landed on Metal (0.1.11) and on CUDA (2026-10-20,
+    `make test-cuda-varff` in the CUDA gate). Computing with one global width
+    is never fine.
 
     So: if a backend engaged, its output must match the CPU byte for byte; if
     it declined, it must say so rather than fall back silently.

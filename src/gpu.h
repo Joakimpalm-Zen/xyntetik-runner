@@ -3,6 +3,8 @@
 #define RUNNER_GPU_H
 
 #include "model.h"
+#include <stdio.h>
+#include <string.h>
 
 
 enum { GPU_AUTO = 0, GPU_OFF = 1 };
@@ -40,6 +42,8 @@ bool   gpu_max_working_set(size_t *bytes);
 // drift check cannot see a stale binary, and twice on 2026-08-07 a kernel
 // change was measured against a build that did not contain it.
 const char *gpu_shader_source_sha(void);
+// the CUDA device's compute capability as "major.minor" (--caps); NULL elsewhere
+const char *gpu_compute_capability(void);
 // does this backend's attention read a q8_0 KV cache? The CPU path always
 // can; a backend that cannot forces the cache back to f16 rather than
 // handing q8_0 blocks to kernels that would read them as fp16.
@@ -86,6 +90,91 @@ unsigned long gpu_tc_dispatches(void);
 // format in a model dispatched, not just that something did: a total of a
 // mixed Q4_K/IQ file can be all Q4_K. 0 for a type outside the table.
 unsigned long gpu_tc_dispatches_type(int type);
+// of those, the ones the pipelined TC2 kernels ran (CUDA, RUNNER_CUDA_TC2)
+unsigned long gpu_tc2_dispatches(void);
+// of those, the ones the compute_80 kernels ran (CUDA, a CC >= 8.0 device, E1)
+unsigned long gpu_tc2_80_dispatches(void);
+// MoE prefill tiles run by expert (moe_twin), and the test override of its switch
+unsigned long gpu_moe_twin_tiles(void);
+void gpu_moe_twin_force(int on);
+// TC2 GEMMs that ran the 128-column tile, and the test override of its switch
+unsigned long gpu_tc2_wide_dispatches(void);
+void gpu_tc2_wide_force(int on);
+// the prompt window (columns) a CUDA instance was built for; 0 on other
+// backends and without a device. Transcripts record it and --verify restores it.
+int    gpu_prompt_window(const model_t *m);
+// The CUDA routes whose sums differ from the reference kernels' (each is
+// tolerance-gated, not byte-identical): which of them are on is part of the
+// arithmetic a record was made with, so transcripts and receipts record the
+// set (profile.gpu_route) and --verify pins it. Routes that only move bytes
+// (the KV gather, the whole-tile recurrent kernels) are not listed: they
+// cannot change a token. moe-tc (the tensor-core GEMMs on a MoE family's
+// dense projections) and moe-grouped (the grouped expert prefill) count
+// only for the MoE families measured for them (qwen3moe and gpt-oss; the
+// grouped prefill qwen3moe only): a record of another model never names
+// them.
+enum { GR_TC2 = 1, GR_SM80 = 2, GR_ATTN_TILE = 4, GR_ATTN_DEC = 8, GR_ATTN_TC = 16,
+       GR_MOE_TC = 32, GR_MOE_GROUPED = 64, GR_ALL = 127 };
+// Pin the set for this process (--gpu-route, --verify): it then overrides
+// RUNNER_CUDA_ROUTE (the same set from the environment), the per-route
+// RUNNER_CUDA_* diagnostics and the defaults. -1 returns to them.
+// No-op on the other backends.
+void   gpu_route_pin(int mask);
+// The set in force: the pin, else the environment and the defaults; with a
+// loaded instance, sm80 only where its compute_80 module loaded. 0 on the
+// other backends.
+int    gpu_route_active(const model_t *m);
+// "reference" (no route) or the names joined by commas, in GR_ order; and
+// back. gpu_route_parse returns -1 for an unknown name or an empty item.
+static const struct { int bit; const char *name; } GPU_ROUTE_NAMES[] = {
+    { GR_TC2, "tc2" }, { GR_SM80, "sm80" }, { GR_ATTN_TILE, "attn-tile" },
+    { GR_ATTN_DEC, "attn-dec" }, { GR_ATTN_TC, "attn-tc" },
+    { GR_MOE_TC, "moe-tc" }, { GR_MOE_GROUPED, "moe-grouped" },
+};
+static inline void gpu_route_format(int mask, char *buf, size_t n) {
+    size_t at = 0;
+    buf[0] = 0;
+    for (size_t i = 0; i < sizeof GPU_ROUTE_NAMES / sizeof *GPU_ROUTE_NAMES; i++)
+        if (mask & GPU_ROUTE_NAMES[i].bit && at < n)
+            at += (size_t)snprintf(buf + at, n - at, "%s%s", at ? "," : "",
+                                   GPU_ROUTE_NAMES[i].name);
+    if (!at) snprintf(buf, n, "reference");
+}
+static inline int gpu_route_parse(const char *s) {
+    if (!s || !*s) return -1;
+    if (!strcmp(s, "reference")) return 0;
+    int mask = 0;
+    while (*s) {
+        const char *e = strchr(s, ',');
+        size_t len = e ? (size_t)(e - s) : strlen(s);
+        int bit = 0;
+        for (size_t i = 0; i < sizeof GPU_ROUTE_NAMES / sizeof *GPU_ROUTE_NAMES; i++)
+            if (strlen(GPU_ROUTE_NAMES[i].name) == len &&
+                !strncmp(GPU_ROUTE_NAMES[i].name, s, len)) bit = GPU_ROUTE_NAMES[i].bit;
+        if (!bit) return -1;
+        mask |= bit;
+        if (!e) break;
+        s = e + 1;
+        if (!*s) return -1;
+    }
+    return mask;
+}
+// A record's gpu_route for an instance: NULL unless it runs on CUDA (the
+// backend with a prompt window), else the routes it runs with.
+static inline const char *gpu_route_record(const model_t *m) {
+    static _Thread_local char buf[96];
+    if (gpu_prompt_window(m) <= 0) return NULL;
+    gpu_route_format(gpu_route_active(m), buf, sizeof buf);
+    return buf;
+}
+// the whole-tile recurrent prefill kernels (CUDA, RUNNER_CUDA_RECUR_SEQ):
+// force them on (1) or off (0) for a test, -1 returns to the switch; and
+// the layer-tiles they advanced
+void   gpu_recur_seq_force(int on);
+unsigned long gpu_recur_seq_dispatches(void);
+// speculative verify tiles run with the one-token decode kernels' arithmetic
+// per row (CUDA, model_forward_verify), so each row is a solo step's bits
+unsigned long gpu_exact_verify_tiles(void);
 // Does this backend carry a batched (tensor-core or tiled) GEMM for the
 // type? A static fact about the backend's kernel table, answered without a
 // device, and the gate's only source for "TC-capable" (its own hand-kept
@@ -113,10 +202,15 @@ unsigned long gpu_mv_dispatches(void);
 void   gpu_attn_coop_force(int on);
 unsigned long gpu_attn_coop_dispatches(void);
 unsigned long gpu_attn_tile_dispatches(void);  // prefill tiles (Metal), 0 elsewhere
+unsigned long gpu_attn_tiled_dispatches(void); // tiled prefill attention (CUDA), 0 elsewhere
 unsigned long gpu_attn_gqa_dispatches(void);   // grouped-query decode groups (Metal), 0 elsewhere
 // CUDA's BF16 split-K decode GEMV (k_mv_bf16_splitk) launches, so its gate
 // can prove the route ran; 0 on every other backend.
 unsigned long gpu_splitk_dispatches(void);
+// Device allocations the engine holds right now (every cuMemAlloc it made
+// and has not freed), or -1 where the backend does not count them. A model
+// loaded and freed must leave it where it was (tests/test_cuda_teardown.c).
+long gpu_live_buffers(void);
 // test hook: force (1) or forbid (0) the eager MoE routing path; -1 = env
 void   gpu_moe_eager_force(int on);
 bool   gpu_init(model_t *m);                     // false = unsupported, use CPU
@@ -231,6 +325,11 @@ typedef struct gpu_batch gpu_batch;
 // gpu_spec_keep_ok says whether THIS backend supports it; gpu_spec_logits
 // returns row b of the logits the last spec-flagged forward produced.
 bool       gpu_spec_keep_ok(const model_t *m);
+// The host wrote KV rows from `lo` on behind the backend's back (a prefix
+// snapshot or a session image installed into the host cache): a backend that
+// mirrors the cache on the device takes them from the host before it reads
+// them again. A unified-memory backend's buffer is the host cache.
+void       gpu_kv_host_wrote(model_t *m, int lo);
 // Whether a full offload copies every row's final residual into m->x
 // when m->want_hidden is set (model_hidden_states). A backend that
 // says no is run on the CPU for that forward instead.

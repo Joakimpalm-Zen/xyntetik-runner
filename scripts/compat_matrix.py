@@ -212,8 +212,11 @@ def run_chat(runner, model, params, timeout, gpu_mode="auto"):
         cmd.append("--no-think")
     started = time.time()
     try:
+        # a device fault mid-answer ends the run instead of passing the smoke
+        # on the CPU (RUNNER_GPU_FALLBACK)
         proc = run_group(cmd, timeout, stdin_text=f"{prompt}\n/exit\n",
-                         capture_output=True, text=True, cwd=str(ROOT))
+                         capture_output=True, text=True, cwd=str(ROOT),
+                         env=dict(os.environ, RUNNER_GPU_FALLBACK="fail"))
     except subprocess.TimeoutExpired:
         return {"status": "not_executed", "reason": "chat_timeout"}
     out = proc.stdout or ""
@@ -329,8 +332,10 @@ def run_load(runner, model, gpu, timeout):
         (["--wait-for-vram", "300"] if gpu == "auto" else []),
         text=True, capture_output=True, timeout=timeout,
         # certification evidence is scalar-path (TC promotion is
-        # tolerance-gated separately; see docs/compatibility-program.md)
-        env=dict(os.environ, RUNNER_CUDA_TC="0", RUNNER_MOE_EAGER="1"))
+        # tolerance-gated separately; see docs/compatibility-program.md), and
+        # computed where the row says (RUNNER_GPU_FALLBACK)
+        env=dict(os.environ, RUNNER_CUDA_TC="0", RUNNER_CUDA_ROUTE="reference",
+                 RUNNER_MOE_EAGER="1", RUNNER_GPU_FALLBACK="fail"))
     return {
         "status": "pass" if proc.returncode == 0 else "fail",
         "returncode": proc.returncode,
@@ -345,7 +350,10 @@ def scrub_paths(obj, roots):
     committed as public evidence: a path into the box's workspace, the
     user's home or a scratch directory says nothing about the model and
     something about the machine (R6.2.x). Applied to every string, so the
-    paths inside captured stderr and stdout tails go too."""
+    paths inside captured stderr and stdout tails go too. The part of a path
+    below its root is written with forward slashes whatever separator the
+    host used, so a report made on Windows names its files as one made
+    anywhere else does (and `out.parent / report` opens them everywhere)."""
     pairs = []
     for r in (r for r in roots if r):
         r = Path(r).resolve()
@@ -356,8 +364,9 @@ def scrub_paths(obj, roots):
 
     def fix(text):
         for root, repl in pairs:
-            text = text.replace(root + "/", repl + "/" if repl else "")
-            text = text.replace(root + "\\", repl + "\\" if repl else "")
+            text = re.sub(re.escape(root) + r"[\\/]([^\s\"']*)",
+                          lambda mo: (repl + "/" if repl else "") + mo.group(1).replace("\\", "/"),
+                          text)
             if text == root:
                 text = repl or "."
         return text

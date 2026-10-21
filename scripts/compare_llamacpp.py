@@ -56,10 +56,10 @@ def relativize_command(cmd: list[str]) -> list[str]:
     return result
 
 
-def run(cmd, timeout=20):
+def run(cmd, timeout=20, env=None):
     try:
         return subprocess.run(cmd, text=True, capture_output=True,
-                              timeout=timeout)
+                              timeout=timeout, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         return exc
 
@@ -181,8 +181,11 @@ def vram_delta(before, after):
 def serve(command, log_path, startup_timeout):
     log = log_path.open("w", encoding="utf-8")
     # Certification pins the scalar GEMM path (TC default-on for promoted
-    # combos is tolerance-gated, not byte-identical). Inert for llama.cpp.
-    env = dict(os.environ, RUNNER_CUDA_TC="0", RUNNER_MOE_EAGER="1")
+    # combos is tolerance-gated, not byte-identical), and a device forward that
+    # fails mid-run ends the server instead of answering from the CPU. Inert
+    # for llama.cpp.
+    env = dict(os.environ, RUNNER_CUDA_TC="0", RUNNER_CUDA_ROUTE="reference", RUNNER_MOE_EAGER="1",
+               RUNNER_GPU_FALLBACK="fail")
     process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
                                text=True, env=env)
     try:
@@ -405,7 +408,8 @@ def first_token_divergence(runner, llama):
 def runner_bench_json(runner, model, prompt, ctx, tokens, runner_gpu):
     cmd = [str(runner), "-m", str(model), "-p", prompt, "-c", str(ctx),
            "-n", str(tokens), "--temp", "0", "--bench-json", "--gpu", runner_gpu]
-    proc = run(cmd, timeout=600)
+    # a device fault mid-run would otherwise report a host rate as the device's
+    proc = run(cmd, timeout=600, env=dict(os.environ, RUNNER_GPU_FALLBACK="fail"))
     if isinstance(proc, Exception):
         return {"command": relativize_command(cmd), "error": str(proc)}
     try:

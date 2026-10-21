@@ -20,13 +20,20 @@
 // first one's rows -- which served one request another request's next-token
 // distribution on the lab's 16-slot CUDA server (garbled code, 25% of
 // same-seed pairs different) and reproduced on Metal at 4 of 12.
+//
+// Twice since 2026-10-21: once from the short prompts above and once behind a
+// LONG_PREFIX-token prefix, so the steps run past position 128, where a Metal
+// decode step's attention switches to its chunked kernels. The microbatch ran
+// the single-pass kernel for every column there, so a slot's step differed
+// from its sequential step in the last bits, and decoding never got that far
+// in this gate (a speculative verify through the microbatch found it).
 #include "runner.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-enum { NSEQ = 11, STEPS = 12, PROMPT_MAX = 8 };
+enum { NSEQ = 11, STEPS = 12, PROMPT_MAX = 8, LONG_PREFIX = 300, CTX = 512 };
 
 static int g_fail = 0;
 
@@ -55,7 +62,7 @@ static bool load_all(const char *path, model_t *m, int n) {
         model_params p;
         memset(&p, 0, sizeof(p));
         p.gpu_mode = GPU_AUTO;
-        p.n_ctx = 64;
+        p.n_ctx = CTX;
         if (!model_load(&m[i], path, &p)) {
             fprintf(stderr, "cannot load %s (instance %d)\n", path, i);
             return false;
@@ -64,12 +71,20 @@ static bool load_all(const char *path, model_t *m, int n) {
     return true;
 }
 
-// prefill each sequence with its prompt; return per-seq next position
-static bool prefill(model_t *m, int *pos) {
+// prefill each sequence with `prefix` filler tokens (distinct per sequence)
+// and then its prompt; return per-seq next position
+static bool prefill(model_t *m, int *pos, int prefix) {
+    static int32_t fill[LONG_PREFIX];
     for (int i = 0; i < NSEQ; i++) {
+        int nv = m[i].n_vocab;
+        for (int t = 0; t < prefix; t++) fill[t] = (int32_t)((t * 37 + i * 11 + 5) % nv);
+        for (int t = 0; t < prefix; t += 32) {
+            int k = prefix - t < 32 ? prefix - t : 32;
+            if (!model_forward_batch(&m[i], fill + t, k, t, true)) return false;
+        }
         for (int t = 0; t < PLEN[i]; t++)
-            if (!model_forward(&m[i], PROMPTS[i][t], t)) return false;
-        pos[i] = PLEN[i];
+            if (!model_forward(&m[i], PROMPTS[i][t], prefix + t)) return false;
+        pos[i] = prefix + PLEN[i];
     }
     return true;
 }
@@ -80,16 +95,14 @@ static int argmax(const float *v, int n) {
     return b;
 }
 
-int main(int argc, char **argv) {
-    const char *path = argc > 1 ? argv[1] : "test.gguf";
-    f16_init();
-
+// one microbatch-vs-sequential comparison behind `prefix` filler tokens;
+// returns 0 on a pass, 1 on a failure, 2 when no GPU backend loaded
+static int run(const char *path, int prefix) {
     model_t m[NSEQ];
     if (!load_all(path, m, NSEQ)) return 1;
     if (!m[0].gpu) {
-        printf("batch-identity: ok (skipped — no GPU backend for %s)\n", path);
         for (int i = 0; i < NSEQ; i++) model_free(&m[i]);
-        return 0;
+        return 2;
     }
     int nv = m[0].n_vocab;
     float *cap = malloc(sizeof(float) * (size_t)STEPS * NSEQ * nv);
@@ -98,7 +111,7 @@ int main(int argc, char **argv) {
 
     // ---- pass A: microbatch ------------------------------------------------
     int pos[NSEQ];
-    if (!prefill(m, pos)) return 1;
+    if (!prefill(m, pos, prefix)) return 1;
     model_t *seqp[NSEQ];
     for (int i = 0; i < NSEQ; i++) seqp[i] = &m[i];
     model_batch *mb = model_batch_create(seqp, NSEQ);
@@ -126,7 +139,7 @@ int main(int argc, char **argv) {
 
     // ---- pass B: sequential reference, fresh state -------------------------
     if (!load_all(path, m, NSEQ)) return 1;
-    if (!prefill(m, pos)) return 1;
+    if (!prefill(m, pos, prefix)) return 1;
     for (int i = 0; i < NSEQ; i++) cur[i] = PROMPTS[i][PLEN[i] - 1] % nv;
     size_t n_diff = 0;
     for (int s = 0; s < STEPS; s++) {
@@ -140,9 +153,10 @@ int main(int argc, char **argv) {
                 if (n_diff == 1)
                     for (int k = 0; k < nv; k++)
                         if (lg[k] != want[k]) {
-                            fprintf(stderr, "first diff: step %d seq %d "
-                                    "elem %d: seq=%g batch=%g\n",
-                                    s, i, k, lg[k], want[k]);
+                            fprintf(stderr, "first diff: prefix %d step %d "
+                                    "seq %d (position %d) elem %d: seq=%g "
+                                    "batch=%g\n", prefix, s, i, pos[i], k,
+                                    lg[k], want[k]);
                             break;
                         }
             }
@@ -164,8 +178,21 @@ int main(int argc, char **argv) {
                "sequential path against itself\nbatch-identity: FAILED\n");
         return 1;
     }
-    if (g_fail) { printf("batch-identity: FAILED\n"); return 1; }
-    printf("batch-identity: ok (%d seqs x %d steps, byte-identical, "
-           "microbatch engaged)\n", NSEQ, STEPS);
+    return g_fail ? 1 : 0;
+}
+
+int main(int argc, char **argv) {
+    const char *path = argc > 1 ? argv[1] : "test.gguf";
+    f16_init();
+    int r = run(path, 0);
+    if (r == 2) {
+        printf("batch-identity: ok (skipped — no GPU backend for %s)\n", path);
+        return 0;
+    }
+    if (r == 0) r = run(path, LONG_PREFIX);
+    if (r != 0 || g_fail) { printf("batch-identity: FAILED\n"); return 1; }
+    printf("batch-identity: ok (%d seqs x %d steps at positions from %d and "
+           "from %d, byte-identical, microbatch engaged)\n", NSEQ, STEPS,
+           PROMPT_MAX, LONG_PREFIX);
     return 0;
 }

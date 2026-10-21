@@ -97,6 +97,9 @@ typedef struct {
     float      *logits;      // [STEPS][n_vocab], owned
     int32_t    *top1;        // [STEPS], owned
     unsigned long disp[TYPE_N];   // TC dispatches per weight type, this run
+    unsigned long disp2;          // of those, the pipelined TC2 kernels' (RUNNER_CUDA_TC2)
+    unsigned long disp80;         // of those, the compute_80 kernels' (a CC >= 8.0 device)
+    unsigned long dispw;          // of those, the 128-column tile's (a GEMM over 64 columns)
 } config;
 
 // Which weight types the model carries in its blocks (blk.*), and which
@@ -140,6 +143,8 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
     gpu_tc_force(c->tc);
     unsigned long before[TYPE_N];
     for (int t = 0; t < TYPE_N; t++) before[t] = gpu_tc_dispatches_type(t);
+    unsigned long before2 = gpu_tc2_dispatches(), before80 = gpu_tc2_80_dispatches(),
+                  beforew = gpu_tc2_wide_dispatches();
 
     model_t m;
     memset(&m, 0, sizeof(m));
@@ -191,9 +196,20 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
                sizeof(float) * (size_t)n_vocab);
         c->top1[s] = (int32_t)argmax(lg, n_vocab);
     }
+    // the offload check above is at load; a device fault mid-run releases
+    // the backend and the rest of the run happens on the CPU, which would
+    // compare the CPU with itself (test-gpu-identity's g_fell_back)
+    if (!m.gpu) {
+        fprintf(stderr, "FAIL: %s lost its GPU backend part-way (a device fault; "
+                "see the gpu: lines above)\n", c->name);
+        g_fail = 1;
+    }
     model_free(&m);
     for (int t = 0; t < TYPE_N; t++)
         c->disp[t] = gpu_tc_dispatches_type(t) - before[t];
+    c->disp2 = gpu_tc2_dispatches() - before2;
+    c->disp80 = gpu_tc2_80_dispatches() - before80;
+    c->dispw = gpu_tc2_wide_dispatches() - beforew;
 
     // anti-vacuity: a run that produced no logits proves nothing, and a
     // NaN or Inf is a defect that no tolerance may absorb (the detection
@@ -240,6 +256,7 @@ static void engagement_check(const config *cfgs, int n_cfg) {
         if (!total) printf(" none");
         for (int t = 0; t < TYPE_N; t++)
             if (c->disp[t]) printf(" %s=%lu", ggml_type_name(t), c->disp[t]);
+        if (c->disp2) printf(" (TC2 %lu, compute_80 %lu, 128-column %lu)", c->disp2, c->disp80, c->dispw);
         printf("\n");
         if (!c->tc) {
             ck(total == 0, "a forced-off arm dispatched the batched GEMM");
@@ -278,8 +295,10 @@ static void engagement_check(const config *cfgs, int n_cfg) {
 // legitimate near-tie flip, which deserves to stop a promotion and be looked at.
 enum { FR_CTX = 4096, FR_GEN = 32 };
 
+// keep: when non-NULL, the logits of every greedy step (n_gen rows of
+// n_vocab, allocated here), so a divergence can be read as a margin
 static int free_run(int tc, const char *path, const int32_t *toks, int n_tok,
-                    int32_t *out, int n_gen) {
+                    int32_t *out, int n_gen, float **keep, int *n_vocab_out) {
     gpu_tc_force(tc);
     model_t m;
     memset(&m, 0, sizeof(m));
@@ -302,9 +321,15 @@ static int free_run(int tc, const char *path, const int32_t *toks, int n_tok,
     }
     if (!lg) { model_free(&m); return -1; }
     int pos = n_tok;
+    if (keep) {
+        *keep = malloc(sizeof(float) * (size_t)n_gen * m.n_vocab);
+        if (n_vocab_out) *n_vocab_out = m.n_vocab;
+    }
     for (int i = 0; i < n_gen; i++) {
         int32_t t = (int32_t)argmax(lg, m.n_vocab);
         out[i] = t;
+        if (keep && *keep)
+            memcpy(*keep + (size_t)i * m.n_vocab, lg, sizeof(float) * m.n_vocab);
         if (i + 1 < n_gen) {
             lg = model_forward(&m, t, pos++);
             if (!lg) { model_free(&m); return -1; }
@@ -320,8 +345,10 @@ static int free_run(int tc, const char *path, const int32_t *toks, int n_tok,
 static void free_running_arm(const char *path, const int32_t *toks, int n_tok) {
     static int32_t fr_scalar[FR_GEN], fr_tc[FR_GEN];
     int prompt_n = n_tok - STEPS;   // a long prefill at a production ctx
-    int a_ok = free_run(0, path, toks, prompt_n, fr_scalar, FR_GEN);
-    int b_ok = free_run(1, path, toks, prompt_n, fr_tc, FR_GEN);
+    float *rows = NULL;
+    int nv = 0;
+    int a_ok = free_run(0, path, toks, prompt_n, fr_scalar, FR_GEN, &rows, &nv);
+    int b_ok = free_run(1, path, toks, prompt_n, fr_tc, FR_GEN, NULL, NULL);
     gpu_tc_force(-1);
     if (a_ok != FR_GEN || b_ok != FR_GEN) {
         printf("  free-running   : skipped (model would not load at ctx %d)\n",
@@ -334,9 +361,23 @@ static void free_running_arm(const char *path, const int32_t *toks, int n_tok) {
     printf("  free-running   : %d prompt tokens, %d greedy tokens at batch %d "
            "/ ctx %d -> %s\n", prompt_n, FR_GEN, N_BATCH, FR_CTX,
            at < 0 ? "token-identical" : "DIVERGED");
-    if (at >= 0)
+    if (at >= 0) {
         printf("                   first divergence at token %d "
-               "(scalar %d, tc %d)\n", at, fr_scalar[at], fr_tc[at]);
+               "(scalar %d, tc %d)", at, fr_scalar[at], fr_tc[at]);
+        // where the scalar run chose: how far its pick led the TC run's
+        // pick, as a fraction of that step's logit range (the teacher-forced
+        // arm's near-tie measure); the verdict stays token identity
+        if (rows && nv > 0) {
+            const float *r = rows + (size_t)at * nv;
+            float lo = r[0], hi = r[0];
+            for (int v = 1; v < nv; v++) { if (r[v] < lo) lo = r[v]; if (r[v] > hi) hi = r[v]; }
+            double gap = (double)r[fr_scalar[at]] - r[fr_tc[at]];
+            printf(", scalar margin %.4f = %.5f of range %.2f", gap,
+                   hi > lo ? gap / (hi - lo) : 0.0, (double)(hi - lo));
+        }
+        printf("\n");
+    }
+    free(rows);
     ck(at < 0, "TC and scalar free-running greedy output agree at the "
                "production batch and context");
 }
@@ -441,9 +482,9 @@ int main(int argc, char **argv) {
 
     enum { N_CFG = 3 };
     config cfgs[N_CFG] = {
-        { "scalar-b64", 0, N_BATCH,      false, NULL, NULL, {0} },
-        { "scalar-b16", 0, N_BATCH_CTRL, false, NULL, NULL, {0} },
-        { "tc-b64",     1, N_BATCH,      false, NULL, NULL, {0} },
+        { "scalar-b64", 0, N_BATCH,      false, NULL, NULL, {0}, 0, 0, 0 },
+        { "scalar-b16", 0, N_BATCH_CTRL, false, NULL, NULL, {0}, 0, 0, 0 },
+        { "tc-b64",     1, N_BATCH,      false, NULL, NULL, {0}, 0, 0, 0 },
     };
 
     int n_vocab = 0;

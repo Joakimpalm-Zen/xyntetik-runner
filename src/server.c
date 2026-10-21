@@ -2087,12 +2087,15 @@ static void send_provenance(sock_t fd) {
         sb_lit(&r, "{\"device\":\"");
         sb_esc(&r, gname, strlen(gname));
         sb_fmt(&r, "\",\"gpu\":%s,\"gpu_layers\":%d,\"threads\":%d,"
-                   "\"ctx\":%d,\"kv\":\"%s\",\"batch\":%d,\"slots\":%d}",
+                   "\"ctx\":%d,\"kv\":\"%s\",\"batch\":%d,\"slots\":%d",
                m->gpu ? "true" : "false", m->gpu_layers,
                m->tp ? tpool_size(m->tp) : 0, m->n_ctx,
                m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4"
                          : m->kv_q8 ? "q8" : "f16",
                m->n_batch, SV.n_slots);
+        if (gpu_prompt_window(m) > 0) sb_fmt(&r, ",\"gpu_window\":%d", gpu_prompt_window(m));
+        if (gpu_route_record(m)) sb_fmt(&r, ",\"gpu_route\":\"%s\"", gpu_route_record(m));
+        sb_lit(&r, "}");
     }
     sb_lit(&r, ",\"config\":{");
     if (m) {

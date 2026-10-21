@@ -5,6 +5,671 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was
+  started.** It checks a lock's Windows pid with `tasklist`, found only
+  through `PATH`; a bash started from a minimal environment has no Windows
+  directory there, fell back to `kill -0`, which cannot see a Windows pid,
+  and read a held lock as free, so the guest job could start over another
+  user's run. It now reaches `tasklist` by its own path under MSYS2.
+
+- **`scripts/compat_matrix.py`: a report made on Windows names its evidence
+  files as one made anywhere else does.** Rewriting a machine path relative
+  to its root kept the host's separator below it, so a ledger written on
+  Windows recorded `cpu_cuda\m.json`, the same evidence under another name,
+  and its own per-row reference did not open. The part below the root is now
+  written with forward slashes.
+
+- **CUDA: MoE experts in Q5_0, Q4_1 and Q5_1 take the fused device
+  routing.** The fused MoE path had no indirect expert kernel for the
+  32-element legacy types, so a model with any such expert tensor ran every
+  MoE layer on the eager path (host routing, no decode graph).
+  llama-quantize's Q4_K_M of gemma-4-26B-A4B keeps 17% of its experts in
+  Q5_0, so a file quantized that way did. `k_moe_mv_q5_0`, `_q4_1` and
+  `_q5_1` are the bodies of the types' batch-1 kernels; `make
+  test-cuda-moe-legacy` (in the CUDA gate) holds each to the eager path with
+  `test-moe-tol` and fails if the fused path does not engage. On the
+  datacenter MIG slice, gemma-4-26B-A4B Q4_K_M reads a 2,048-token prompt at
+  175 tok/s instead of 139 and decodes at 69.5 tok/s instead of 63.
+
+- **CUDA: tensor-core prefill for Q5_K, Q3_K, Q2_K, Q4_1, Q5_0 and Q5_1.**
+  These six types had no tensor-core kernel, so a prompt ran their weights
+  through the scalar GEMM (Q5_K, Q3_K) or the matvec a column at a time
+  (Q4_1, Q5_0, Q5_1, Q2_K): every Q5_K_M and Q3_K_M file, and the Q4_1 and
+  Q5_K tensors that Q4_0 exports carry, prefilled far slower than the types
+  beside them. They now have the TC route's kernels and TC2's (compute_75
+  and compute_80), over decoders shared with a host test that holds each one
+  to the CPU dequantizer bit for bit (`test-kq-stage`), and `make
+  test-cuda-tc-kq` (in the CUDA gate) holds each type to the tensor-core
+  tolerance gate on all three kernel families. They are the default on every
+  family of the tensor-core list except the experimental qwen4exp: on 2,000
+  positions of Qwen3-4B quantized to each type, and of Llama-3.2-3B at
+  Q5_K_M and Q3_K_M, the tensor-core route read no further from the
+  publisher's float32 model than the scalar one (closer on Q5_K_M, Q4_1 and
+  Q5_1). Qwen3-4B on the datacenter MIG slice at 2,048 tokens: Q5_K_M 234 ->
+  985 tok/s, Q3_K_M 282 -> 1,231-1,269, Q2_K 41 -> 1,118-1,281, Q4_1 22 ->
+  1,235, Q5_0 22 -> 1,231-1,268, Q5_1 19 -> 1,033-1,060 (two rounds).
+  Qwen3.8-27B Q4_0, whose Q4_1 and Q5_K tensors held its whole prompt back,
+  prefills 2,048 tokens at 326 tok/s where it ran 60, and the 6,406-token
+  tool call that timed out at a client's 90 seconds takes 27 (116 before).
+
+- **CUDA: the one-token Gated DeltaNet step spreads each head over four
+  blocks.** A qwen35 decode step and each checkpointed row of a verify round
+  now run `k_q35_delta1`, which gives each block 32 of a head's value
+  columns (four times the blocks of the one-block-a-head kernels, which kept
+  32 of an RTX 3070's 46 SMs busy), and `k_q35_delta_norm`, the head's
+  output norm in its own launch; each block repeats the head's q and k
+  scales with the same reduction, so the output bytes are unchanged. The
+  step went from 54 to 25 microseconds a call; Qwen3.5-4B decodes at 93.7
+  tok/s where it ran 88.7, and `--mtp` at 85.0 where it ran 79.9.
+
+- **CUDA: one-token Gated DeltaNet steps take the whole-tile kernels.** A
+  qwen35 decode step and each checkpointed row of a speculative verify round
+  ran the per-token kernel pair; they now run the whole-tile kernels over
+  one token, which keep a thread's state row in registers and compute the
+  same arithmetic (the identity `test-gpu-identity GPU_ID_RECUR` holds).
+  Output bytes are unchanged; on an RTX 3070 Qwen3.5-4B decodes at 88.7
+  tok/s where it ran 87.2, and `--mtp` at 79.6 where it ran 77.9.
+  `RUNNER_CUDA_RECUR_SEQ=0` keeps every step on the per-token pair.
+
+- **CUDA: the one-token Gated DeltaNet step reads its state coalesced.**
+  `k_q35_delta`, the per-token step of the qwen35 recurrent layers (Qwen3.5,
+  Qwen3.8), had each thread walk its own state row in device memory, with
+  rows 512 bytes apart, so every access of a warp touched 32 cache lines.
+  The rows now pass through a shared tile 32 keys at a time, loaded and
+  stored by the whole block in order; every element takes the same
+  operations in the same order, so the output bytes are unchanged. On an RTX
+  3070 the step went from 82 to 59 microseconds a call and Qwen3.5-4B
+  decodes at 87.2 tok/s where it ran 83.3.
+
+- **CUDA: the tensor-core prefill attention is the default for the llama,
+  qwen2, qwen3 and granite families.** `attn-tc` (`k_attn_tc` with Q and P
+  carried as two fp16 halves, f16 caches) prefills an 8,000-token prompt
+  2.5-3.2x faster than the tiled kernel and a 2,048-token one 1.5-1.6x:
+  Llama-3.2-3B 620 -> 1,660 tok/s and Qwen2.5-7B 460 -> 1,165 at 8,192
+  tokens on an RTX 3070. On each family's row of 2,000 positions between
+  4,000 and 6,000 tokens it measured no further from the publisher's float32
+  model than the tiled kernel it replaces (Llama-3.2-3B, Mistral-7B,
+  Qwen2.5-3B, Qwen3-4B, granite-4.2-8b), and it does not touch the decode
+  step. gpt-oss (attention sinks: its row read further, Wilcoxon p 0.017)
+  and every sliding-window family keep the tiled kernel, as does a quantized
+  KV cache. `RUNNER_CUDA_ATTN_TC=1` or `0` forces it on or off for every
+  model; records name the route as before, and `--verify` replays a record
+  with the route it names.
+
+- **CUDA: qwen35 models decode through a captured graph.** The qwen35
+  architecture (Qwen3.5 and Qwen3.8, with Gated DeltaNet layers) decoded
+  every token with eager launches since it reached CUDA: the recurrent
+  layers kept the graph off, with no hazard on record. A Gated DeltaNet step
+  is two launches on buffers fixed for the instance, and the rollback copy
+  is taken before the forward, so the one-token decode now replays the
+  captured graph like the other families (`RUNNER_CUDA_GRAPH_RECUR=0` keeps
+  it eager). A speculative keep-forward, whose per-row checkpoints the graph
+  does not hold, still runs eagerly. `make test-cuda-spec-identity` compares
+  the graph-decoded steps of its qwen35 fixture with the eager verify rows
+  byte for byte. On an RTX 3070 Qwen3.5-4B decodes at 83.8 tok/s where it
+  ran 79.1, with the greedy text identical to the eager build.
+
+- **CUDA: a wide prompt runs a small tile matvec as one launch.** The tile
+  matvecs a prompt takes for weights without a GEMM (the F32 and BF16 Gated
+  DeltaNet alpha/beta projections of the qwen35 family among them) ran one
+  launch per 16 prompt columns, eight blocks each for a 32-row matrix, so a
+  2,048-token prompt issued 128 nearly empty launches per projection; they
+  were 15% of a Qwen3.5-4B prefill on an RTX 3070. A wide prompt now runs as
+  one launch with a column tile per grid row, the same arithmetic per
+  element (scores byte-identical): Qwen3.5-4B prefills at 1,060, 976 and 710
+  tok/s at 512, 2,048 and 8,192 tokens where it ran 888, 839 and 633.
+
+- **`test-tc-tol` says how close a free-running divergence was.** When the
+  tensor-core and scalar prefill paths' greedy outputs part, the gate still
+  fails, and now prints how far the scalar pick led the other at that step
+  as a fraction of the logit range, so a dead tie reads as one without
+  rerunning both paths.
+
+- **Metal: `--parallel` slots decoding together stay bit-identical to
+  sequential decoding past 128 tokens.** A Metal decode step's attention
+  switches to its chunked kernels once a layer's span passes 128 positions,
+  but the decode microbatch ran the single-pass kernel for every column, so
+  past that point a slot's step differed from its sequential step in the
+  last bits (logit 9.64625 against 9.64631 at position 303 on Qwen2.5-1.5B),
+  against the microbatch's documented contract. The microbatch's columns now
+  take the decode step's own attention selection, and `test-batch-identity`
+  (in `make test` and the CUDA gate) decodes behind a 300-token prefix as
+  well as from short prompts; it never reached position 20 before, which is
+  how the break stayed hidden.
+
+- **CUDA: batched decode reaches the codebook i-quants and Q3_K.** The
+  decode microbatch (`--parallel` slots decoding together) admitted a weight
+  type only beside a coalesced single-step GEMV, so files in IQ2_XXS,
+  IQ2_XS, IQ2_S, IQ3_XXS or IQ3_S decoded their slots one at a time,
+  although the width-classed twins of those types' single-step kernels were
+  there and a speculative verify round already ran them. Q3_K had no twin at
+  all: a note from 2026-08-20 declined it until a single-step kernel in the
+  GEMV geometry existed, and `k_gemv_q3_K` has been that kernel since
+  qwen4exp; so a Q3_K_M file decoded its slots one at a time and ran a
+  verify round's Q3_K rows a column at a time. The microbatch now asks what
+  the verify rows ask (is the tensor on the single-step route the twins
+  reproduce: no per-tensor scale, not the experimental int8-activation
+  route, which also closes a latent mismatch for IQ4_XS under
+  `RUNNER_CUDA_Q8X=1`), and `k_gemvb_q3_K` mirrors `k_gemv_q3_K`. On an RTX
+  3070 (Qwen3-4B, every slot's text equal to sequential decoding) four and
+  eight slots decode at 134 and 170 tok/s together where they ran 78 one at
+  a time at Q3_K_M, and 114 and 130 against 75 at IQ3_S; prompt lookup on a
+  Q3_K_M file decodes at 83-90 tok/s where it ran 71 (plain 79-81). `make
+  test-cuda-batch-identity` runs all five codebook types from new
+  random-block fixtures (`scripts/make-test-model.py --quant iq2_xxs` and
+  the others, which need no quantizer; llama-quantize writes IQ2 only from
+  an importance matrix) and a Q3_K fixture, and `make
+  test-cuda-spec-identity` adds Q3_K, IQ2_XXS and IQ3_S.
+
+- **Metal: tiled prefill GEMMs for Q5_K, Q4_1, Q5_0 and Q5_1.** Metal's
+  tiled GEMM covered every common type but these four, so a Q5_K_M file (and
+  the Q4_1 / Q5 legacy tensors some exports carry) prefilled through the
+  matvec, which reads every weight once per token column. `k_mm_q5_K`,
+  `k_mm_q4_1`, `k_mm_q5_0` and `k_mm_q5_1` decode each value as the CPU
+  dequantizer does, and `test-metal-kquants` sweeps them with the other
+  types. On an Apple M1 (Qwen3-0.6B quantized from the publisher's weights)
+  prompt processing runs at 520 tok/s where it ran 97-102 at Q5_K_M (512
+  tokens; 291 against 87-89 at 2K), and at 377-384 where it ran 97-106 at
+  Q4_1, Q5_0 and Q5_1 (243-249 against 90-92 at 2K). Against the publisher's
+  float32 model over 2,000 positions each type reads as the matvec route did
+  (mean KL within 0.03%, top-1 equal or one apart, no paired test at p <
+  0.05), which is the bar a tolerance route meets before it becomes a
+  default.
+
+- **CUDA: a speculative round that drafted nothing runs as a plain decode
+  step.** With `--draft-lookup`, most rounds on text unlike the prompt find
+  no match and verify a single row. That row went through the verify
+  forward, which runs its kernels without the captured decode graph, so it
+  cost more than the plain step it equals. Such a round now takes the decode
+  step itself: the same bits (the verify rows are the decode step's), and on
+  an RTX 3070 Qwen3-4B with lookup where about one token a round is accepted
+  decodes at 102 tok/s where it ran 94 (plain 106), and Qwen2.5-7B at 73
+  where it ran 71 (plain 71). MTP rounds keep the verify forward, since the
+  head reads the round's hidden rows.
+
+- **Speculative decoding gives the plain path's output on every backend, bit
+  for bit, and pays on CUDA where drafts are accepted.** The draft only
+  proposes; the target's verify round decides every token, so the output is
+  the plain path's only if each verify row is the bits a single decode step
+  at that position would produce. They were not: a CUDA round ran the
+  batched prompt kernels (on the datacenter MIG slice the drafted text
+  differed from plain decoding in 4 of 12 runs on the mixture-of-experts
+  pairs), a Metal round took other kernels than a decode step from its
+  second row on, and a CPU round of 8 or more rows (`--draft-k` 7 and up,
+  grammar fast-forward) took the batched f32 tile. Now a CUDA round runs the
+  decode kernels' multi-row twins (the GEMVs, the decode attention per row
+  at its own position, the per-token MoE), up to 16 rows a pass; a Metal
+  round runs its rows as decode steps; a CPU round takes the single-step dot
+  per column; and the re-fold after a recurrent model rolls a round back
+  runs the same way. `test-spec-identity` (in `make test`) and `make
+  test-cuda-spec-identity` (in the CUDA gate) hold every row of rounds 2 to
+  16 rows wide, with the walk's rewinds and fold rollbacks, byte-identical
+  to single steps on dense, mixture-of-experts (Q8_0, Q4_0, MXFP4, gemma-4's
+  dual branch), 256-wide K-quant and i-quant, and recurrent fixtures. Speed
+  on an RTX 3070 (256 greedy tokens, two rounds within 1%): prompt lookup on
+  an input-grounded prompt decodes Qwen3-4B at 143 tok/s with `--draft-k 4`
+  and 137 with `--draft-k 12`, where the batched verify gave 69 and 134, and
+  Qwen2.5-7B at 84, against 103 and 71 for plain decoding; the Qwen3.5-4B
+  MTP head runs at 54 where it ran 33, against 79 plain, and gemma-3-4b with
+  lookup at 105 where it ran 75 (with the two KV changes below), against
+  102. Where about one token a round is accepted speculation still costs
+  more than it saves (Qwen3-4B at 93-94 against 106). Metal is unchanged
+  (its batched verify already cost about a decode step a row).
+
+- **CUDA: an IQ4_XS decode microbatch gives single-step bits.** Since IQ4_XS
+  gained its coalesced single-step GEMV (`k_gemv_iq4_xs`, with qwen4exp),
+  its width-classed twins were still the twins of the lane kernel it
+  replaced, a different reduction, so `--parallel` slots decoding an IQ4_XS
+  file together differed from single steps in the last bits. The twins now
+  mirror `k_gemv_iq4_xs` (four rows a warp, as the K-quant twins), and `make
+  test-cuda-batch-identity` runs 256-wide Q4_K, Q6_K and Q4_0 fixtures, and
+  Q5_K and IQ4_XS ones where llama.cpp's quantizer is at hand; no gate had
+  an IQ4_XS file before.
+
+- **CUDA decode twins take several rows a warp.** The decode microbatch
+  (`--parallel` slots decoding together) runs width-classed twins of the
+  decode GEMVs, each column the single step's bits. They staged every
+  column's activations once per eight rows and had each row re-read them,
+  re-forming each column's activation sum per row, and an 8-wide pass
+  computed all eight columns whatever the batch held. A warp now takes four
+  rows (two in the new 16-column class) and reads each staged value once for
+  all of them, and a pass computes only the columns it has. With four
+  Qwen3-4B Q4_K_M slots an RTX 3070 serves 159 tok/s where it served 135,
+  and 178 where it served 147 with eight; every slot's text equals its
+  single-request run.
+
+- **CUDA keeps the token embedding in RAM and uploads only the tensors it
+  reads.** The forward stages each token's embedding row from the host, yet
+  the device held the whole embedding table, and its weight image ran from
+  the file's first tensor (through the end of the file on a full split), so
+  whatever lay in front of the layers rode along without being planned:
+  gemma-4-E4B's 1.94 GB per-layer embedding table, which only the host's
+  pre-pass reads. The image is now the stretch of the tensors the device
+  reads (the layers, and on a full split the output head; a tied head is the
+  embedding table); where they do not lie together (a head stored in front
+  of the embedding, a name-ordered file) they upload as one allocation per
+  stretch. On an RTX 3070, Xyntetik-Kvist-14B at an 8K context holds 51 of
+  its 52 layers where it held 47 and reads the prompt at 105.2 tok/s where
+  it read 34.4, decoding at 10.25 where it ran 5.78 (two rounds);
+  gemma-4-E4B leaves 4.48 GB free where it left 2.47; granite-4.2-8b at a
+  16K context places 36 of 40 layers where it placed 35, and all 40 with
+  `--kv q8` where 39 fitted. `--score` is byte-identical to the previous
+  upload at equal splits on thirteen files and splits, and `--fit` predicts
+  the loader's split in 48 of 48 cases (six models, two contexts, four KV
+  formats).
+
+- **CPU IQ3_S dot fused.** IQ3_S was the slowest format on the CPU: its dot
+  dequantized each block into a 256-float scratch row, multiplying every
+  code by its sub-block scale, and then took a second pass to dot it. It now
+  reads the grid as floats into the multiply-adds and applies the sub-block
+  scale once per 32 weights, as the IQ3_XXS dot does: one core 1.44x on the
+  Linux host and 1.49x on an M1, and an M1 decodes Llama-3.2-1B IQ3_S on its
+  CPU at 18.3-19.3 tok/s where it decoded 14.0-14.4. Applying the scale once
+  reorders the arithmetic; against the publisher's float32 forward over
+  2,000 positions granite-4.2-3b IQ3_S reads mean KL 0.76508 against 0.76502
+  (Wilcoxon p 0.85), not distinguishable.
+
+- **CPU verify rounds and small batches decode each weight block once.** A
+  speculative verify round on the CPU computes every row with the decode
+  step's own dot, one column at a time, and a format without a multi-column
+  form of that dot decoded each weight block again for every column: Q8_0,
+  Q4_0 and MXFP4 on both architectures, and on arm64 also the K-quants,
+  IQ4_NL, IQ4_XS, Q2_0, BF16 and IQ3_XXS. Each now has one that widens a
+  block once and gives every column the single dot's operations, so the rows
+  keep their bits. On an M1's CPU, prompt lookup (`--draft-lookup --draft-k
+  4`) runs Qwen2.5-1.5B Q8_0 at 25.0 and 29.4 tok/s on two prompts where it
+  ran 22.2 and 22.7 (plain decoding 22.6-24.1), and Llama-3.2-1B Q4_K_M at
+  28.7-29.9 where it ran 19.5-20.4 (plain 21.0-23.2).
+
+- **CPU MXFP4 and IQ3_XXS dots read their scales and codes from tables, bit
+  for bit as before.** The MXFP4 dots evaluated each block's E8M0 scale with
+  a libm `ldexpf` call every 32 weights; the scale now comes from a
+  256-entry table of the same values, and one core reads MXFP4 rows 3.1x as
+  fast on the Linux host (7.3 to 22.8 G weights/s) and 1.7x on an M1. The
+  IQ3_XXS dot assembled each grid word's bytes into a vector and widened
+  them to floats; it now loads the grid as floats and applies the signs as a
+  bit mask: 1.28x on the Linux host, 1.12x on an M1. The same values meet
+  the same operations, so the outputs are unchanged; a new test pins every
+  table entry against the dequantizer (a one-hot activation turns a dot into
+  the weight it multiplies).
+
+- **CPU K-quant dots keep one accumulator a row.** The Q4_K, Q5_K and Q6_K
+  dot products (the AVX2 and NEON single and group-sum forms, and the AVX2
+  multi-column ones) added each 32-weight sub-block into the row's sum with
+  a horizontal reduction, two of them per 64 weights; each sub-block's sum
+  is now scaled into one vector accumulator (the min term kept apart) and
+  the row reduced once. One core of the Linux host reads Q4_K rows on the
+  decode route 1.44x as fast (14.4 to 20.7 G weights/s), an M1 core 1.17x,
+  and an M1 prefills Llama-3.2-1B Q4_K_M on its CPU at 88 tok/s where it
+  read 75 (decode up to 3% faster). The same terms in another order move the
+  last bits (about 1e-6 in a logprob); against the publishers' float32
+  forwards over 2,000 positions the two orders are not distinguishable
+  (Qwen3-4B Q4_K_M mean KL 0.13987 against 0.13988, Wilcoxon p 0.50;
+  Llama-3.2-3B Q4_K_M 0.04391 against 0.04389, p 0.07).
+
+- **Llama 3 files without an add-BOS flag get their BOS token.** A GGUF
+  that does not carry `tokenizer.ggml.add_bos_token` was read as "no BOS"
+  for every BPE vocabulary, and Llama 3 conversions commonly omit the key
+  (both Llama-3.2 files on our hosts do). The runner's Llama 3 chat format
+  leaves `<|begin_of_text|>` to the tokenizer, so chat prompts on such a
+  file started without it, as did `--score` and raw prompts. A missing key
+  now means what the family's own tokenizer does: a BOS for SentencePiece
+  vocabularies and for the Llama 3 (`llama-bpe`) and Mistral Tekken BPE
+  families; an explicit key still decides. Llama-3.2-1B's perplexity on
+  the manual's first 6,000 characters (`--score`, CPU) is 18.64 with the
+  token where it read 19.02 without it.
+
+- **CUDA sliding-window layers copy only the rows a forward writes.** A
+  layer that keeps its KV in a ring mirrored the whole ring between host
+  and device on every copy, so a speculative round or a microbatch step on
+  a gemma model moved every slot of every sliding layer across the bus;
+  the copies now move the slots the forward's positions occupy (at most
+  two stretches when they wrap). `--score` and generation are
+  byte-identical to the previous copies on gemma-3-4b, gemma-4-E4B and
+  gemma-4-E2B at an 8K context.
+
+- **CUDA no longer re-uploads the KV cache when a sequence rewinds, and a
+  resumed session is never decoded against the previous request's rows.**
+  The device keeps a mirror of the host's KV cache and took the host's
+  rows again whenever a forward did not continue at the previous position
+  plus one: every speculative round that kept only part of its draft, and
+  every request reusing a slot's own prompt prefix, re-uploaded the whole
+  cache. A forward continuing exactly there was trusted instead, so a
+  session image (`/v1/runner/sessions/.../resume`) installed into the host
+  cache of a slot whose previous request had stopped one row short of it
+  decoded against that request's device rows. The mirror now counts the
+  leading rows it holds as the host does, uploads only the rows past them,
+  and is told when the host writes rows itself (a prefix fork, a session
+  image). `tests/test_server_sessions.py` resumes an image on a slot left
+  one row short by another session (it failed on the previous build).
+
+- **CUDA: Qwen3 MoE prefill groups its experts on the tensor cores, and
+  Qwen3 MoE and gpt-oss run their dense projections there too.** The
+  tensor-core route was kept off the MoE families because routing can
+  amplify its rounding. Held to the publisher's float32 models over 2,000
+  positions instead, under the rule fixed before the runs (mean KL within
+  1.01x, paired Wilcoxon and McNemar not worse at p < 0.05), neither read
+  further from the reference: Qwen3-30B-A3B mean KL 0.09167 against 0.09157
+  (p 0.36), gpt-oss-20b 0.08142 against 0.08312 (closer, p 1e-5), and
+  Qwen3-30B-A3B with its Q4_K / Q6_K experts grouped on the tensor cores as
+  well, scored in 64-row chunks so those GEMMs ran, 0.09178 against
+  0.09170 (p 0.83). On the datacenter MIG slice Qwen3-30B-A3B reads a
+  512-token prompt at 845 tok/s where it read 215 (454 against 174 at 2K)
+  and gpt-oss-20b at 216 where it read 174 by expert, three rounds each.
+  They run as the routes `moe-tc` and `moe-grouped`: a record of these models names
+  them, `--verify` replays them, and `--gpu-route reference` (or a record
+  made before them) runs without them.
+
+- **CUDA MoE prefill runs by expert on gemma-4 and gpt-oss, with the same
+  bytes.** The fused MoE prefill computed each token's selected experts one
+  token at a time, so a prompt tile read every routed expert's weights once
+  for each token that chose it. On gemma-4 MoE and gpt-oss the prefill now
+  groups the tile's (token, expert) pairs by expert, runs each expert's
+  columns eight at a time through matvec twins that give every column the
+  single-token kernel's arithmetic, and sums each token's expert outputs in
+  its router order, so the output is the fused path's bit for bit
+  (`GPU_ID_MOE_TWIN=1 ./test-gpu-identity`, launch count required; `make
+  test-cuda-moe-twin` in the CUDA gate on routed Q8_0 and Q4_0 fixtures,
+  the gpt-oss MXFP4 fixture and gemma-4's dual-branch layout at Q8_0 and
+  Q4_0). On the datacenter MIG slice prefill rose 13-14% at a 512-token
+  prompt on gemma-4-26B-A4B and gpt-oss-20b (11-13% at 2K, three rounds).
+  Qwen3-30B-A3B measured 8-9% slower by expert, so qwen3moe, and families
+  not yet measured, keep the per-token path; `RUNNER_MOE_TWIN=1` takes the
+  by-expert prefill on any family and `=0` on none.
+- **CUDA decode for IQ4_NL, NVFP4, Q2_K, IQ1_S, IQ1_M, Q4_1, Q5_0, Q5_1
+  and Q2_0 reads the activations once per block of rows, with the same
+  bytes.** These formats have no coalesced decode kernel; their matvec,
+  like Q4_0's and MXFP4's before the previous change, gave each lane a
+  whole quant block and read its activations 128 bytes or more from the
+  next lane's. They, and the MoE expert copies for NVFP4, IQ4_NL, IQ4_XS
+  and Q2_0, now take the same staging through shared memory, eight rows a
+  block, every lane adding the same blocks in the same order. On an RTX
+  3070, Xyntetik-Kvist-14B IQ4_NL decodes at 22.9 tok/s where it ran 6.8
+  and granite-4.2-3b IQ1_M at 60.8 where it ran 24.6 (three rounds); the
+  matvecs themselves run 3.5-9.0x faster. `--score` is byte-identical to
+  the previous kernels on Kvist-14B IQ4_NL-mix, Qwen3.5-4B NVFP4 and
+  granite-4.2-3b IQ1_M and IQ2_XXS.
+
+- **CUDA MoE experts in Q4_0 and MXFP4 read their activations once per
+  block of rows, with the same bytes.** These two formats' expert matvec
+  gives each lane a whole 32-weight block, so a lane walked its block's 32
+  activations 128 bytes from its neighbours and every warp load touched 32
+  cache lines; MXFP4 also fetched its 16-entry codebook from global memory
+  for every nibble. The rows of a launch now copy 32 blocks of activations
+  at a time into shared memory with coalesced loads (padded so the lanes'
+  reads do not conflict) and keep the codebook there. Every lane still adds
+  the same blocks in the same order with the same expression, so the output
+  is unchanged bit for bit: `--score` (both routes) and 64 greedy tokens
+  are byte-identical to the previous kernels on gemma-4-26B-A4B Q4_0 and
+  gpt-oss-20b MXFP4. The expert matvec itself runs 5.1-7.0x faster on
+  those two models' shapes (RTX 3070 and the datacenter MIG slice), and on
+  the slice, with 512-token prompts, gemma-4-26B-A4B decoded at 75.6 tok/s
+  where it ran 39.6 and read prompts at 203.6 where it read 58.8, and
+  gpt-oss-20b decoded at 96.0 where it ran 32.6 and read prompts at 152.7
+  where it read 37.3 (three rounds each).
+
+- **Phi-3.5 ropes every layer with its LongRoPE factors.** phi3 exports
+  publish a sliding window without a layer pattern (Phi-3.5: 262144 over a
+  131072 context), and the loader read it as gemma2's alternation, so every
+  other layer roped without the LongRoPE short factors and attention
+  factor. Against the publisher's float32 model over 2,000 positions,
+  Phi-3.5-mini Q4_K_M went from mean KL 0.275 to 0.045 (another engine on
+  the same file: 0.049) and margin-qualified top-1 from 85.6% to 98.5%. A
+  phi3 window now covers every layer alike under the one rotation, and a
+  window at least the trained context covers none; `tests/test_phi3_rope.py`
+  holds a phi3 fixture with non-identity factors to that.
+
+- **gemma-4 E2B runs on CUDA.** E2B publishes a different FFN width per
+  layer, and the CUDA backend sized its FFN path off one global width, so it
+  refused these files and they ran on the CPU. Every FFN projection now takes
+  its layer's width (the buffers keep the widest layer's stride). On an RTX
+  3070, gemma-4-E2B went from 24-33 to 800 tok/s prefill and from 11 to 104
+  tok/s decode; 64 greedy tokens on the device match the CPU byte for byte on
+  E2B and E4B, and `make test-cuda-varff` holds a fixture with alternating
+  widths to the CPU in the CUDA gate.
+
+- **CPU decode on arm64: Q4_K and Q5_K dots widen their weights by table
+  lookup.** Most of the instructions in the NEON Q4_K/Q5_K dot went to
+  widening each weight byte to a float through two widening moves. A byte
+  table lookup now places four bytes into four 32-bit lanes in one
+  instruction; the integers, and so every float and every output, are the
+  same (CPU `--score` byte-identical, solo and chunked, on Q4_K_M files and
+  a Q5_K_M fixture). Apple M1, four threads, five interleaved rounds:
+  decode +4.0% on Llama-3.2-1B Q4_K_M, +6.5% on Llama-3.2-3B Q4_K_M and
+  +4.1% on Qwen2.5-1.5B Q4_K_M; prefill unchanged.
+
+- **Gates can see which route ran, and a device run that gives up says so
+  by failing.** `--score` ends with one stderr line, `score: route {...}`,
+  carrying the paths and counted kernels of its forwards, so a byte
+  comparison of two score files can show that the switched route ran (a
+  tensor-core route check had compared five files byte for byte with no
+  sign the new kernels launched). `RUNNER_GPU_FALLBACK=fail` ends the
+  process with exit status 3 when a device forward fails at runtime instead
+  of releasing the GPU and continuing on the CPU; the comparison and
+  certification scripts set it, so a fault part-way through a run (the Q3_K
+  fault below) can no longer be recorded as a device result.
+
+- **CUDA decode: the RMS norm takes a third of its time.** A decode
+  token's norm is one 256-thread block on an otherwise idle card, run twice
+  a layer. It now reads its row once into registers and reduces with five
+  fewer barriers, in the same order, so every output is unchanged. On an RTX
+  3070 the kernel went from 6-7 us to about 2 us and decode rose 1.1-2.6% on
+  three models (Llama-3.2-3B Q4_K_M 113.3 to 116.3 tok/s).
+
+- **`--gpu-route` names the CUDA arithmetic routes, and records keep them.**
+  The tensor-core and attention kernels this release adds compute in another
+  order or precision than the reference kernels (each held to a tolerance
+  gate). `--gpu-route reference` runs none of them, a comma list of `tc2`,
+  `sm80`, `attn-tile`, `attn-dec`, `attn-tc` runs those, and
+  `RUNNER_CUDA_ROUTE` takes the same value from the environment. The set a
+  CUDA run used goes into transcripts and receipts (`profile.gpu_route`), and
+  `--verify` replays with the record's set; older records replay with
+  `reference`. Off CUDA the flag is accepted and does nothing.
+
+- **Q3_K models decode on CUDA again.** The Q3_K decode kernel read its
+  quant and high-mask bytes eight at a time from 110-byte blocks, so three
+  of every four loads were misaligned and the first decoded token raised a
+  device fault; the runner then released the GPU and decoded on the CPU
+  (Qwen2.5-32B Q3_K_S at 0.85 tok/s on the datacenter MIG slice, where
+  another engine decodes 26). The bytes are now read as 16-bit words, the
+  same values. `test-gpu-identity` had read ok throughout, because it
+  recorded GPU use at load and the faulted run finished on the CPU; it now
+  fails a run that loses its backend part-way, and `make test-cuda-q3k`
+  (in the CUDA gate) runs a Q3_K fixture on the device.
+
+- **TC2 on compute capability 8.0 and newer uses the newer tensor-core
+  instruction.** The embedded kernels target compute capability 7.5, so TC2
+  issued two `m16n8k8` multiplies per 16-deep step even on cards that have
+  the `m16n8k16` instruction its operands already match. A second, small
+  module built for compute capability 8.0 carries the TC2 kernels for Q4_K,
+  Q6_K, Q8_0, Q4_0 and the IQ1-IQ4 i-quants and is loaded on such a device
+  unless TC2 is switched off; every other kernel keeps the existing module. `RUNNER_CUDA_SM80=0` leaves the second module unloaded, so TC2
+  runs only when forced (`RUNNER_CUDA_TC2=1`), on its compute_75 kernels.
+
+- **The int8 CPU route runs on arm64.** `RUNNER_CPU_I8=1` now has
+  dot-product (SDOT) kernels for Q8_0, Q4_0 and Q4_K on arm64 (every Apple
+  M-series core) beside the x86 ones, and quantizes the activations with the
+  same bytes as the scalar definition. It stays off by default under the
+  same tolerance gate (`./test-i8-tol MODEL.gguf`).
+
+- **CPU decode: Q4_K and Q5_K rows no longer re-sum the activations.** The
+  dot subtracts each 32-element group's minimum times the sum of the
+  activations in that group, and that sum was recomputed for every row of a
+  matrix. A decode matvec now computes the sums once and every row reuses
+  them, byte-identical (`test-quants-simd` compares the two on random and
+  boundary inputs). On an Apple M1 at four threads, decode went from 20.27
+  to 20.79 tok/s on Llama-3.2-1B Q4_K_M and from 16.01 to 16.49 on
+  Qwen2.5-1.5B Q4_K_M.
+
+- **`--score-top N` reports each position's distribution head.** With
+  `--score`, a `top` array lists every position's N most likely next tokens
+  with their logprobs. `scripts/gold-logits.py --score-a FILE` compares such
+  a file with the publisher's float32 model in one pass over the text, and
+  with `RUNNER_SCORE_CHUNKED=1` every position comes from the batched prefill
+  route, which a request per position cannot reach.
+
+- **CUDA prefill of Gated DeltaNet and Mamba-2 layers in one launch per
+  tile.** The recurrent layers of Qwen3.5/3.8, granite-4.x-h and Nemotron-H
+  advanced a prompt one token per kernel launch, reloading each head's state
+  from device memory every time. A prompt tile's convolution and state
+  updates now run in one launch per kernel with the state held in
+  registers, the per-token arithmetic unchanged: byte-identical logits and
+  state (`GPU_ID_RECUR=1 ./test-gpu-identity`). With the experimental
+  tensor-core and attention kernels on, Qwen3.5-4B Q4_K_M prefill went from
+  333 to 869 tok/s at a 512-token prompt and from 288 to 622 at 8K on an
+  RTX 3070, and from 434 to 791 and 375 to 612 on the datacenter MIG slice,
+  where Qwen3.8-27B IQ3_S went from 53 to 66 and 50 to 61; decode is
+  unchanged. `RUNNER_CUDA_RECUR_SEQ=0` keeps the per-token launches.
+
+- **CUDA decode: one KV copy-back per token.** The host KV cache stays
+  authoritative, so each decoded token's K and V rows went back to it as two
+  copies per offloaded layer. With every layer on the device, the new rows
+  are now gathered there as the last node of the decode graph and brought
+  back in one copy, the same bytes to the same host slots. On an RTX 3070
+  the copies per token went from 57 to 2, and with the experimental
+  attention kernels on, decode rose 5.5% on Llama-3.2-3B Q4_K_M (120.3 to
+  127.0 tok/s), 7.2% on Qwen2.5-3B and 3.5% on Qwen2.5-7B. On the
+  datacenter MIG slice, default route, decode rose 5.0% on Llama-3.2-3B,
+  4.3% on granite-4.1-3b Q8_0 and 2.6% on Qwen2.5-7B at a 512-token context
+  (2.6%, 2.5% and 1.7% at 4K). `RUNNER_CUDA_KV_GATHER=0` keeps the
+  per-layer copies.
+
+- **CUDA tensor-core prefill attention (`attn-tc`), Q and the softmax
+  weights in two fp16 halves.** It was added opt-in and is now the default
+  for the llama, qwen2, qwen3 and granite families (the entry above). With
+  Q and the softmax weights rounded to single fp16 operands, Mistral-7B
+  v0.3's long-context float32-reference row read 0.19% further from the
+  reference than the default kernel's (a significant paired difference, p
+  0.014, top-1 unchanged), which the promotion rule does not admit. Both now
+  go in as two fp16 halves (the value and its rounding remainder, about 22
+  bits), and that row reads the same as the original kernel's (mean KL
+  0.02069 against 0.02069, p 0.60); on the datacenter MIG slice the split
+  costs 27% of the kernel's speed (a 7,841-token prompt on Llama-3.2-3B:
+  3,262 to 2,377 tok/s, against 781 with the tiled kernel).
+  `RUNNER_CUDA_ATTN_TC=1` computes the prefill attention scores and the
+  value sums of an f16 cache on the tensor cores (64 query rows a block, two
+  passes over the cached rows), for head widths that are multiples of 16 up
+  to 128; quantized caches keep the tiled kernel. Before the split, on an
+  RTX 3070, a Llama-3.2-3B Q4_K_M request with a 16K-token prompt and 64 generated
+  tokens took 20.8 s against 59.5 s with the tiled kernel and 170 s with the
+  original one, generating the same 64 tokens (one run each).
+
+- **CUDA pipelined tensor-core prefill GEMM (TC2), on by default on
+  compute capability 8.0 and newer.** The batched projections run through a
+  128 x 64 tile GEMM that converts the next 64-deep stage of quantized
+  weights into shared memory while the tensor cores multiply the current
+  one, with the activations converted to scaled fp16 once per GEMM instead
+  of once per row block. On a compute capability 8.0+ card it runs the
+  kernels built for that architecture (above), whose fp32 sums are the
+  tensor-core route's own: chunked `--score` logprobs came out byte for byte
+  the tensor-core route's, with TC2 launches counted, on four files
+  on an RTX 3070 and three on the datacenter MIG slice, and the CUDA gate
+  now checks the same on its device (`make test-cuda-tc2-bytes`, which reads
+  the device's `compute_capability`, now in `--caps`). On an RTX
+  3070 at a 512-token prompt, the default route's prefill went from 1090 to
+  1824 tok/s on Llama-3.2-3B Q4_K_M and from 639 to 1159 on Qwen2.5-7B
+  Q4_K_M (2K: 653 to 862 and 453 to 667; 8K, where attention takes most of
+  the time: 235 to 259 and 197 to 231); decode is unchanged. Where a GEMM
+  spans more than 64 prompt columns, the compute_80 kernels take a
+  128-column tile, which converts each weight stage once for twice the
+  columns with each column's sums unchanged (`GPU_ID_TC2_WIDE=1
+  ./test-gpu-identity`: byte-identical to the 64-column tile with launches
+  counted, four files on the RTX 3070 and three on the datacenter MIG slice):
+  another 3.6-6.1% at a 512-token prompt on four files (0.6-0.8% at 8K);
+  `RUNNER_CUDA_TC2_WIDE=0` keeps the 64-column tile. Cards below
+  8.0 keep the tensor-core route by default;
+  `RUNNER_CUDA_TC2=1` forces the compute_75 TC2 kernels there (the same
+  numerical class as the tensor-core route, not the same bytes:
+  `test-tc-tol` 0 flips of 64 and a token-identical free-running arm on
+  five files), and `RUNNER_CUDA_TC2=0` or `--gpu-route reference` switches
+  TC2 off. A run records the kernels it took (`profile.gpu_route` reads
+  `tc2,sm80` on a default 8.0+ run), and `--bench-json` counts the launches
+  (`route.kernels.cuda_tc2`). The kernels cover Q4_K, Q6_K, Q8_0, Q4_0 and
+  the IQ1-IQ4 i-quants on both modules; the codebook decoders moved into
+  headers both modules share (the compute_75 PTX byte-identical after the
+  move), and the i-quants' compute_80 kernels give the tensor-core route's
+  bytes too (chunked `--score` on IQ3_S, IQ3_XXS, IQ2_XXS and IQ1_M on an RTX
+  3070 and IQ3_S on the datacenter MIG slice, launches counted; their
+  128-column twins byte-identical to the 64-column tile, IQ3_S and IQ2_XXS
+  on the RTX 3070 and IQ3_S on the slice). On an RTX 3070, granite-4.2-3b IQ3_S prefill went from 814
+  to 1265 tok/s at a 512-token prompt (513 to 663 at 2K).
+
+- **CUDA long-context attention, on by default.** Prefill attention runs
+  one strip of query rows at a time over K and V tiles staged in shared
+  memory (each score computed as the existing kernel computes it), and
+  decode attention reads each cached KV row once for all the query heads
+  that share it, instead of once per head; the grouped decode splits the
+  cached rows into whole 32-row tiles, so a short context costs nothing.
+  Both add in another order than the kernels they replace, so they were
+  held to the publisher's float32 model first: at positions 4,000 to 6,000
+  of a long document (2,000 positions; Qwen3-4B, Mistral-7B v0.3, and
+  gpt-oss-20b with its attention sinks and alternating 128-token window),
+  mean KL and margin-qualified top-1 were never worse than the previous
+  kernels' (paired tests p 0.15 to 0.60 on the first two; on gpt-oss-20b
+  the tiled prefill read closer to the reference, p 4e-6, and the grouped
+  decode matched it, p 0.24). On an RTX 3070 at a 16K-token prompt,
+  Llama-3.2-3B read the prompt at 347 tok/s where it read 106 and decoded
+  at 57.6 tok/s where it decoded 25.2 (Qwen2.5-7B: 264 against 120, and
+  43.4 against 21.7); at a 512-token prompt prefill gains 17-28% and decode
+  4-7% (three rounds). `test-gpu-identity` holds them to the CPU bound on
+  every KV format (`GPU_ID_KV=q8|fp4|k8v4`). The server's decode
+  microbatch (slots decoding together) runs the grouped decode attention's
+  multi-sequence twin, so a batched step stays byte-identical to the slots'
+  sequential steps; until the twin it kept the previous kernel and was not,
+  and no CUDA gate step held that contract (`make test-cuda-batch-identity`
+  now does: F32, Q8_0, BF16 and a Q4_K model, the grouped attention on and
+  off). A run records them
+  (`profile.gpu_route`: `attn-tile`, `attn-dec`); `--gpu-route reference`,
+  `RUNNER_CUDA_ATTN_TILE=0` and `RUNNER_CUDA_ATTN_DEC=0` switch them off.
+
+- **CUDA prefill reads the prompt in wider windows.** The device ran a
+  prompt in tiles of at most 64 tokens, fixed at build time, so every weight
+  matrix was read once per 64 tokens. The window is now chosen at load from
+  the memory the layer split leaves spare: up to 512 tokens, never at the
+  cost of a layer, still capped by `-b`, and `--fit` and the loader charge
+  the same scratch. The default tensor-core GEMM stages 64 token columns
+  per block whatever the window, so on its own the wider window measured
+  within 1% of the 64-token one on an RTX 3070 (512 to 8K tokens); what it
+  pays for is the pipelined GEMM (TC2, below), which runs every column of
+  the window in one launch: with it and the experimental
+  attention kernels on, prefill at a 512-token prompt rose from 1692 to 2711
+  tok/s on Llama-3.2-3B Q4_K_M and at 8K from 1138 to 2044 (window 64
+  against 512). The window decides which kernel
+  route a prompt's last partial tile takes, so transcripts and receipts
+  record it (`profile.gpu_window`) and `--verify` rebuilds the instance at
+  the recorded window, refusing as unverifiable when it cannot; a record
+  written before this change replays at the old window of 64.
+
+- **CUDA prefill: the tensor-core GEMMs no longer conflict on shared-memory
+  banks.** They staged 128-element fp16 rows at a 256-byte stride, so every
+  row of a tile read from the same banks. Rows are now padded by 16 bytes.
+  The arithmetic is unchanged and the output byte-identical (`test-tc-tol`
+  deviations equal before and after; chunked `--score` logprobs over 1,540
+  to 1,605 positions on three models compared byte for byte). On an RTX
+  3070 prefill at a 512-token prompt went from 600 to 1086 tok/s on
+  Llama-3.2-3B Q4_K_M, 627 to 1091 on Qwen2.5-3B and 324 to 640 on
+  Qwen2.5-7B Q4_K_M (five interleaved rounds, the same prompt window).
+
+- **Qwen3.5/3.8 on CUDA: a race in the Gated DeltaNet kernel is closed.**
+  The kernel read the query-norm sum from a shared reduction slot and then
+  let every thread store its share of the key-norm sum into the same slots
+  with no barrier between, so one warp could overwrite the query sum before
+  another warp had read it and give that head a wrong query scale. It needs
+  one warp to run a whole global load ahead of another, which is why no gate
+  had caught it. A barrier closes it; no other kernel reuses a reduction slot
+  without one.
+
+- **Unloading a model on CUDA frees all of its device memory.** Teardown
+  frees device buffers from hand-kept lists, and those lists had fallen
+  behind the allocation sites: a model with hyper-connections (Qwen3.8), a
+  shared expert, Mamba-2 layers or an MTP block left device buffers behind
+  on every unload, in the context every model on the card shares, so a
+  server that swaps models lost VRAM until it exited. Teardown now frees
+  them. A count of live device allocations shows the lists agreeing
+  (`test-cuda-teardown`: three load and free cycles of the qwen4exp test
+  model return to the starting count, in the CUDA gate), and a source test
+  holds each free list against its allocation sites.
+
 - **CUDA runs a file with a removed sublayer.** A file made by
   `--remove-sublayer`, such as the released Gemma 4 31B with block 48's
   attention removed, ran only on the CPU under a CUDA build. The CUDA walk

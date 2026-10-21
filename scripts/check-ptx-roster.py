@@ -13,11 +13,15 @@ import sys
 
 src = open(sys.argv[1] if len(sys.argv) > 1 else "src/cuda.c").read()
 ptx = open(sys.argv[2] if len(sys.argv) > 2 else "src/kernels_ptx.h").read()
+# the compute_80 module (kernels_sm80.cu, E1) is a second embed; its kernels
+# are resolved from it, so a name may live in either
+ptx += open(sys.argv[3] if len(sys.argv) > 3 else "src/kernels_ptx80.h").read()
 names = sorted(set(re.findall(r'"(k_[A-Za-z0-9_]+)"', src)))
 entries = set(re.findall(r"\.entry (k_[A-Za-z0-9_]+)\(", ptx))
 missing = [n for n in names if n not in entries]
 if missing:
-    print("FAIL: kernels named in src/cuda.c are missing from src/kernels_ptx.h "
+    print("FAIL: kernels named in src/cuda.c are missing from src/kernels_ptx.h and "
+          "src/kernels_ptx80.h "
           "(regenerate it with `make ptx` on a CUDA box):")
     for n in missing:
         print("  " + n)

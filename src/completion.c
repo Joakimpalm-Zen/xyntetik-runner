@@ -2769,6 +2769,8 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
 #endif
         .device = m->gpu ? gname : "cpu", .gpu = m->gpu != NULL,
         .gpu_layers = m->gpu_layers,
+        .gpu_window = gpu_prompt_window(m),
+        .gpu_route = gpu_route_record(m),
         .threads = m->tp ? tpool_size(m->tp) : 0, .n_ctx = m->n_ctx,
         .n_batch = m->n_batch, .kv_q8 = m->kv_q8, .kv_fp4 = m->kv_fp4,
         .kv_split = m->kv_split,
@@ -4785,8 +4787,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // is this slot's own model_forward_batch, so it must not overlap a
     // microbatch containing this sequence. It cannot — the sequence only joins
     // a batch below, after prefill has returned. Forking a prefix is prefill
-    // work (it touches this slot's KV, and on CUDA it issues a forward), so it
-    // belongs inside the same device turn.
+    // work (it rewrites this slot's KV, which a CUDA mirror then uploads), so
+    // it belongs inside the same device turn.
     // Yield the device turn between prefill chunks. Without it a long prompt
     // holds it for the whole prefill and every other slot waits: measured at
     // 26.2 s for a short request arriving during a 2,300-token prefill.

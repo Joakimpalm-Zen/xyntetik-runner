@@ -7,7 +7,9 @@ and CI need no CUDA toolkit.
 """
 import os
 
-src = os.path.join(os.path.dirname(__file__), "..", "src", "kernels.ptx")
+# EMBED_IN / EMBED_NAME select the compute_80 module (kernels_sm80.ptx ->
+# k_ptx80_src) that make ptx embeds beside the compute_75 one.
+src = os.environ.get("EMBED_IN") or os.path.join(os.path.dirname(__file__), "..", "src", "kernels.ptx")
 # EMBED_OUT redirects the output (used by the drift check to generate to a temp
 # without touching the committed header).
 dst = os.environ.get("EMBED_OUT") or os.path.join(
@@ -29,8 +31,9 @@ for i, ln in enumerate(lines):
         lines[i] = ".version 7.8"
         break
 
-out = ["// Generated from kernels.cu via scripts/embed-ptx.py — do not edit.",
-       "static const char *k_ptx_src ="]
+name = os.environ.get("EMBED_NAME") or "k_ptx_src"
+out = [f"// Generated from {os.path.basename(src).replace('.ptx', '.cu')} via scripts/embed-ptx.py — do not edit.",
+       f"static const char *{name} ="]
 for ln in lines:
     esc = ln.replace("\\", "\\\\").replace('"', '\\"')
     out.append(f'    "{esc}\\n"')

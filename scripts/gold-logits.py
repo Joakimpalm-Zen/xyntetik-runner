@@ -28,8 +28,16 @@ for the same reason.
         --max-positions 100 --out gold.json
 
 Endpoints speak /v1/completions with `logprobs` (llama-server and the runner
-both do). The tokenizer is the HF one; the prefix at each position is the
-decoded token prefix, so every side sees the same text.
+both do). A server reuses the KV of the prefix it scored one position earlier,
+so each position is one decoded token; `--fresh-prompt` sends
+`cache_prompt: false`, and every position is then a full prefill of its
+prefix. A side can instead be a runner score file (`--score-a FILE`, from
+`runner --score --score-top N -f CORPUS`): one pass over the text gives every
+position, and with `RUNNER_SCORE_CHUNKED=1` each comes from the batched
+prefill route, the arithmetic a prompt takes. The file's token ids must equal
+the reference's tokenization of the corpus (BOS included), or the run stops.
+The tokenizer is the HF one; the prefix at each position is the decoded
+token prefix, so every side sees the same text.
 
 Tokens are matched by id wherever the endpoint gives ids (the runner's
 `top_token_ids`, llama-server's `id`), and by spelling otherwise. Spelling
@@ -131,15 +139,44 @@ def parse_top(d):
     return None
 
 
-def query(endpoint, model_name, prompt, top_n=20):
+def query(endpoint, model_name, prompt, top_n=20, fresh=False):
     payload = {"model": model_name, "prompt": prompt, "max_tokens": 1,
                "temperature": 0, "logprobs": top_n}
+    if fresh:
+        payload["cache_prompt"] = False
     req = urllib.request.Request(
         f"{endpoint}/v1/completions", data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as r:
         d = json.loads(r.read(), object_pairs_hook=_Obj)
     return parse_top(d)
+
+
+def load_score(path, span, top_n):
+    """A runner --score --score-top report as a side: per reference row, the
+    Top the endpoint would have answered. Refuses a file whose tokens are not
+    the reference's span, or whose head is narrower than --top-n."""
+    d = json.load(open(path))
+    toks = d.get("tokens") or []
+    if "top" not in d:
+        sys.exit(f"{path}: no 'top' array; score with --score-top N")
+    if toks[:len(span)] != list(span):
+        first = next((i for i in range(min(len(toks), len(span)))
+                      if toks[i] != span[i]), min(len(toks), len(span)))
+        sys.exit(f"{path}: token ids differ from the reference at index {first} "
+                 f"(file {toks[first:first + 4]}, reference {list(span)[first:first + 4]}); "
+                 "score the same corpus with the same BOS handling (--force-bos)")
+    if d["top"] and len(d["top"][0]) < min(top_n, d.get("n_vocab", top_n)):
+        sys.exit(f"{path}: --score-top {len(d['top'][0])} is narrower than --top-n {top_n}")
+    return d["top"]
+
+
+def score_side(rows_top, row, spell):
+    """Top for one reference row from a score file's head."""
+    head = rows_top[row]
+    by_id = {int(i): float(v) for i, v in head}
+    i0, v0 = head[0]
+    return Top({}, by_id, None, spell(int(i0)), int(i0))
 
 
 def token_speller(tok):
@@ -277,10 +314,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--hf", required=True, help="HF model directory")
     ap.add_argument("--corpus", required=True)
-    ap.add_argument("--endpoint-a", required=True)
-    ap.add_argument("--model-name-a", required=True)
+    ap.add_argument("--endpoint-a")
+    ap.add_argument("--model-name-a")
     ap.add_argument("--endpoint-b")
     ap.add_argument("--model-name-b")
+    ap.add_argument("--score-a", help="side a from a runner --score --score-top file")
+    ap.add_argument("--score-b", help="side b from a runner --score --score-top file")
+    ap.add_argument("--fresh-prompt", action="store_true",
+                    help="send cache_prompt:false, so every position is a full prefill")
     ap.add_argument("--max-positions", type=int, default=100)
     ap.add_argument("--min-prefix", type=int, default=8)
     ap.add_argument("--stride", type=int, default=3)
@@ -299,6 +340,14 @@ def main():
                          "must see the same prefix or the two are compared "
                          "across a one-token offset.")
     args = ap.parse_args()
+    if bool(args.endpoint_a) == bool(args.score_a):
+        ap.error("side a needs exactly one of --endpoint-a/--model-name-a or --score-a")
+    if args.endpoint_a and not args.model_name_a:
+        ap.error("--endpoint-a needs --model-name-a")
+    if args.endpoint_b and args.score_b:
+        ap.error("side b takes --endpoint-b or --score-b, not both")
+    if args.endpoint_b and not args.model_name_b:
+        ap.error("--endpoint-b needs --model-name-b")
 
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -355,9 +404,13 @@ def main():
             unlistable.add(int(i))
     rows = []
     skipped = 0
-    sides = [("a", args.endpoint_a, args.model_name_a)]
-    if args.endpoint_b:
-        sides.append(("b", args.endpoint_b, args.model_name_b))
+    files = {}
+    for name, path in (("a", args.score_a), ("b", args.score_b)):
+        if path:
+            files[name] = load_score(path, span, args.top_n)
+    sides = [("a", args.endpoint_a or args.score_a, args.model_name_a or "score file")]
+    if args.endpoint_b or args.score_b:
+        sides.append(("b", args.endpoint_b or args.score_b, args.model_name_b or "score file"))
     for n in range(args.max_positions):
         pos = args.min_prefix + n * args.stride
         prefix = tok.decode(body[:pos])
@@ -372,7 +425,10 @@ def main():
         gold_top1 = gold_rows[0][1]
         row = {"pos": pos, "gold_top1": gold_top1, "gold_margin":
                float(top.values[0] - top.values[1])}
-        got = {name: query(ep, mn, prefix, args.top_n) for name, ep, mn in sides}
+        got = {name: (score_side(files[name], len(special) + pos - 1, spell)
+                      if name in files else
+                      query(ep, mn, prefix, args.top_n, args.fresh_prompt))
+               for name, ep, mn in sides}
         if any(v is None for v in got.values()):
             skipped += 1
             continue
@@ -397,6 +453,7 @@ def main():
                "token_match": "by id where the endpoint gives ids, else by "
                               "spelling with unlisted special tokens dropped",
                "positions_skipped_no_logprobs": skipped,
+               "fresh_prompt": bool(args.fresh_prompt),
                "reference_dtype": "float32", "reference_device": "cpu",
                "sides": {}}
     for name, ep, mn in sides:

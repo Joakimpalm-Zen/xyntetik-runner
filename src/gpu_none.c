@@ -34,6 +34,7 @@ bool gpu_max_working_set(size_t *bytes) {
 }
 
 const char *gpu_shader_source_sha(void) { return NULL; }   // no shaders here
+const char *gpu_compute_capability(void) { return NULL; }
 
 bool gpu_kv_q8_ok(void) {
     return false;   // no backend here; the CPU path handles q8 on its own
@@ -52,6 +53,18 @@ bool gpu_quant_ok(int type) {
 void gpu_tc_force(int on) { (void)on; }
 unsigned long gpu_tc_dispatches(void) { return 0; }
 unsigned long gpu_tc_dispatches_type(int type) { (void)type; return 0; }
+unsigned long gpu_tc2_dispatches(void) { return 0; }
+unsigned long gpu_tc2_80_dispatches(void) { return 0; }
+unsigned long gpu_moe_twin_tiles(void) { return 0; }
+void gpu_moe_twin_force(int on) { (void)on; }
+unsigned long gpu_tc2_wide_dispatches(void) { return 0; }
+void gpu_tc2_wide_force(int on) { (void)on; }
+int gpu_prompt_window(const model_t *m) { (void)m; return 0; }
+void gpu_route_pin(int mask) { (void)mask; }
+int gpu_route_active(const model_t *m) { (void)m; return 0; }
+void gpu_recur_seq_force(int on) { (void)on; }
+unsigned long gpu_recur_seq_dispatches(void) { return 0; }
+unsigned long gpu_exact_verify_tiles(void) { return 0; }
 bool gpu_tc_type_has_kernel(int type) { (void)type; return false; }
 
 // Same, for the fast decode matvec: the mv tolerance gate links here and
@@ -63,8 +76,10 @@ unsigned long gpu_mv_dispatches(void) { return 0; }
 void gpu_attn_coop_force(int on) { (void)on; }
 unsigned long gpu_attn_coop_dispatches(void) { return 0; }
 unsigned long gpu_attn_tile_dispatches(void) { return 0; }
+unsigned long gpu_attn_tiled_dispatches(void) { return 0; }
 unsigned long gpu_attn_gqa_dispatches(void) { return 0; }
 unsigned long gpu_splitk_dispatches(void) { return 0; }
+long gpu_live_buffers(void) { return -1; }
 
 // Same, for the fused-vs-eager MoE routing gate.
 void gpu_moe_eager_force(int on) { (void)on; }
@@ -143,6 +158,7 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
 }
 
 bool gpu_spec_keep_ok(const model_t *m) { (void)m; return false; }
+void gpu_kv_host_wrote(model_t *m, int lo) { (void)m; (void)lo; }
 bool gpu_hidden_rows_ok(const model_t *m) { (void)m; return false; }
 const char *gpu_route_detail(const model_t *m) { (void)m; return ""; }
 float *gpu_spec_logits(model_t *m, int row) { (void)m; (void)row; return NULL; }

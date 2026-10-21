@@ -179,3 +179,51 @@ def test_endpoint_mode_refuses_an_unserved_model_name(runner_bin, small_model, c
     finally:
         proc.kill()
         proc.wait()
+
+
+# The A/B controls (plan S7, restored from the archived scorer branch): one
+# scorer run compares two settings of one switch on the same file, each side
+# served with its own flags and environment, and the record says which side
+# ran what.
+def _raw_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("kld_raw_ab", RAW_SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_raw_sides_carry_their_own_flags_and_environment():
+    mod = _raw_module()
+    cmd, env = mod.server_cmd_env("./runner", "m.gguf", 1234, threads=2, gpu="auto",
+                                  extra=["--kv", "q8"], env_extra=["RUNNER_CUDA_TC=0"])
+    assert cmd[cmd.index("--gpu") + 1] == "auto"
+    assert cmd[-2:] == ["--kv", "q8"]
+    assert cmd[cmd.index("-t") + 1] == "2"
+    assert env["RUNNER_CUDA_TC"] == "0"
+    assert env["RUNNER_GPU_FALLBACK"] == "fail"     # a device side may not finish on the CPU
+    cmd0, env0 = mod.server_cmd_env("./runner", "m.gguf", 1234)
+    assert cmd0[cmd0.index("--gpu") + 1] == "off"   # the CPU scalar route by default
+    assert "RUNNER_CUDA_TC" not in env0 or env0["RUNNER_CUDA_TC"] == os.environ.get("RUNNER_CUDA_TC")
+    with pytest.raises(SystemExit):
+        mod.server_cmd_env("./runner", "m.gguf", 1234, env_extra=["RUNNER_CUDA_TC"])
+
+
+def test_raw_ab_run_records_each_side(runner_bin, corpus):
+    model = ROOT / "test.gguf"
+    if not model.exists():
+        pytest.skip("test.gguf fixture not built")
+    out = ROOT / ".build" / "kld-raw-ab-test.json"
+    out.parent.mkdir(exist_ok=True)
+    proc = subprocess.run(
+        [sys.executable, str(RAW_SCRIPT), "--runner", str(runner_bin),
+         "--model-a", str(model), "--model-b", str(model),
+         "--port-a", "58721", "--port-b", "58722",
+         "--env-a", "RUNNER_SCORE_AB_SIDE=a", "--args-b", "-t 1", "--gpu-b", "off",
+         "--corpus", str(corpus), "--max-positions", "3", "--out", str(out)],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(out.read_text())
+    assert result["positions_scored"] == 3
+    assert result["sides"]["a"] == {"gpu": "off", "args": [], "env": ["RUNNER_SCORE_AB_SIDE=a"]}
+    assert result["sides"]["b"] == {"gpu": "off", "args": ["-t", "1"], "env": []}

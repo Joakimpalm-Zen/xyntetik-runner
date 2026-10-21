@@ -345,6 +345,8 @@ def main():
 
     env = dict(os.environ)
     env["RUNNER_CUDA_TC"] = "0"      # identity evidence is over the scalar path
+    env["RUNNER_CUDA_ROUTE"] = "reference"   # and the reference attention kernels
+    env["RUNNER_GPU_FALLBACK"] = "fail"      # a mid-run device fault ends the run
     if not args.fused:
         env["RUNNER_MOE_EAGER"] = "1"
 
@@ -411,6 +413,15 @@ def main():
         print("cpu_cuda: the GPU arm ran on the CPU (no gpu-split line in "
               f"{gpu_log}); a comparison of the CPU with itself is not a "
               "pass", flush=True)
+    # reaching the device at load is not enough: a device fault later
+    # releases the backend and the server keeps answering from the CPU
+    # (the Q3_K decode GEMV did this on every Q3_K file, 2026-10-20)
+    lost = re.search(r"^gpu: (forward failed|kernel launch failed)", gpu_text, re.M)
+    if lost and not gpu_fell_back:
+        gpu_fell_back = True
+        result = "fail"
+        print(f"cpu_cuda: the GPU arm lost its backend part-way ({lost.group(0)!r} in "
+              f"{gpu_log}); the rest of the comparison ran on the CPU", flush=True)
     report = {"model": str(args.model), "tokens": args.tokens,
               "context": args.ctx,
               "routing": "fused" if args.fused else "eager",

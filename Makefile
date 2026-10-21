@@ -178,6 +178,7 @@ TEST_ATTN_TOL = $(TEST_BATCH:test-batch%=test-attn-tol%)
 TEST_GPU_ID = $(TEST_BATCH:test-batch%=test-gpu-identity%)
 TEST_MOE_MM_AB = $(TEST_BATCH:test-batch%=test-moe-mm-ab%)
 TEST_BATCH_ID = $(TEST_BATCH:test-batch%=test-batch-identity%)
+TEST_SPEC_ID = $(TEST_BATCH:test-batch%=test-spec-identity%)
 TEST_ATTN_SPLIT = $(TEST_BATCH:test-batch%=test-attn-split-bin%)
 TEST_MOE_TOL = $(TEST_BATCH:test-batch%=test-moe-tol%)
 TEST_MOE_ROUTER = $(TEST_BATCH:test-batch%=test-moe-router%)
@@ -780,6 +781,12 @@ TEST_QUANTS_SIMD_SRC = tests/test_quants_simd.c $(QUANTS_OBJ)
 TEST_IQ_DECODE = $(TEST_BATCH:test-batch%=test-iq-decode%)
 $(TEST_IQ_DECODE): tests/test_iq_decode.c src/iq_decode.h src/quants_iq_grids.h $(QUANTS_OBJ)
 	$(CC) $(QUANTS_CFLAGS) -I src tests/test_iq_decode.c $(QUANTS_OBJ) -o $@ -lm -lpthread
+# The same for the tensor-core stagers of the K-quants and legacy quants
+# without a raw-register loader (src/kq_stage.h): every element of random and
+# corner blocks against dequant_row(), bit for bit.
+TEST_KQ_STAGE = $(TEST_BATCH:test-batch%=test-kq-stage%)
+$(TEST_KQ_STAGE): tests/test_kq_stage.c src/kq_stage.h src/iq_decode.h $(QUANTS_OBJ)
+	$(CC) $(QUANTS_CFLAGS) -I src tests/test_kq_stage.c $(QUANTS_OBJ) -o $@ -lm -lpthread
 
 # QUANTS_CFLAGS, not CFLAGS: this test carries inline scalar REFERENCE
 # implementations of the quant kernels, and a reference compiled under
@@ -1021,6 +1028,12 @@ $(TEST_ATTN_TOL): $(TEST_ATTN_TOL_SRC) $(HDR)
 # fixtures, where greedy argmax absorbs large numeric differences -- so a
 # fixture-scale backend feature could be wrong and pass everything. This
 # compares the logit vectors themselves.
+TEST_CUDA_TEARDOWN = $(TEST_BATCH:test-batch%=test-cuda-teardown%)
+TEST_CUDA_TEARDOWN_SRC = tests/test_cuda_teardown.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+$(TEST_CUDA_TEARDOWN): $(TEST_CUDA_TEARDOWN_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src -I tests $(TEST_CUDA_TEARDOWN_SRC) -o $@ $(LDFLAGS)
+
 TEST_GPU_ID_SRC = tests/test_gpu_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ) \
                   $(FINITE_CHECK_OBJ)
@@ -1041,6 +1054,13 @@ TEST_BATCH_ID_SRC = tests/test_batch_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compa
                     $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_BATCH_ID): $(TEST_BATCH_ID_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_BATCH_ID_SRC) -o $@ $(LDFLAGS)
+
+# Speculative verify rows vs solo decode steps: byte identity on every row of
+# rounds 2..16 wide with rewinds (tests/test_spec_identity.c).
+TEST_SPEC_ID_SRC = tests/test_spec_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+$(TEST_SPEC_ID): $(TEST_SPEC_ID_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_SPEC_ID_SRC) -o $@ $(LDFLAGS)
 
 # Split attention (R3.1.7): the (head, chunk) / (head, slice) split is
 # bit-identical to the head-parallel path at 1-7 threads, forced and
@@ -1766,6 +1786,206 @@ endif
 test-cuda-iquants: runner $(TEST_GPU_ID)
 	RUNNER_REQUIRE_IQ_GATES=gpu $(PYTHON) -m pytest -q tests/test_iquants.py
 
+# CUDA Q3_K decode (k_gemv_q3_K): a fixture quantized to Q3_K, the device
+# against the CPU at logit precision. Q3_K's 110-byte blocks put three of
+# every four at an address that is not 8-byte aligned; the GEMV read them
+# with 8-byte loads and faulted, every Q3_K file then decoded on the CPU
+# (Qwen2.5-32B Q3_K_S at 0.85 tok/s on the datacenter MIG slice), and no
+# gate saw it because the identity run finished on the CPU and compared it
+# with itself. test-gpu-identity now fails a run that loses its backend.
+test-cuda-q3k: runner $(TEST_GPU_ID)
+	@set -e; \
+	$(PYTHON) scripts/make-test-model.py --wide test-q3k-src.gguf > /dev/null; \
+	./$(RUNNER_EXE) -m test-q3k-src.gguf --quantize test-q3k.gguf --quant q3_k > /dev/null 2>&1; \
+	./$(TEST_GPU_ID) test-q3k.gguf
+
+# The tensor-core prefill of the K-quants and legacy quants that had none
+# until 2026-10-21 (kernels_kq_stage.cuh, decoders held to dequant_row by
+# test-kq-stage), through test-tc-tol's teacher-forced tolerance gate: a
+# 256-wide fixture at Q3_K (runner --quantize) and, where RUNNER_LLAMA_CPP_BIN
+# has llama-quantize, at Q5_K, Q2_K, Q4_1, Q5_0 and Q5_1, each on the TC2
+# kernels TC2's auto mode picks (compute_80 at 8.0 and up), on the
+# compute_75 TC2 kernels and on the TC route's kernels. test-tc-tol forces
+# the tensor-core route on, so the legs run whether or not a type is
+# promoted.
+test-cuda-tc-kq: runner $(TEST_TC_TOL)
+	@set -e; \
+	$(PYTHON) scripts/make-test-model.py --wide test-tckq-wide.gguf > /dev/null; \
+	./$(RUNNER_EXE) -m test-tckq-wide.gguf --quantize test-tckq-q3_k.gguf --quant q3_k > /dev/null 2>&1; \
+	files="test-tckq-q3_k.gguf"; \
+	lq=$$(ls "$$RUNNER_LLAMA_CPP_BIN"/llama-quantize* 2>/dev/null | head -1); \
+	if [ -n "$$lq" ]; then \
+	  for q in Q5_K_S Q2_K Q4_1 Q5_0 Q5_1; do \
+	    "$$lq" test-tckq-wide.gguf test-tckq-$$q.gguf $$q > /dev/null 2>&1 && files="$$files test-tckq-$$q.gguf"; \
+	  done; \
+	else echo "test-cuda-tc-kq: no llama-quantize in RUNNER_LLAMA_CPP_BIN, only Q3_K exercised"; fi; \
+	for f in $$files; do \
+	  for leg in default "RUNNER_CUDA_TC2=1 RUNNER_CUDA_SM80=0" RUNNER_CUDA_TC2=0; do \
+	    e=$$leg; [ "$$leg" = default ] && e=; \
+	    env $$e ./$(TEST_TC_TOL) $$f > test-cuda-tc-kq.out 2>&1 || \
+	      { cat test-cuda-tc-kq.out; echo "test-cuda-tc-kq: $$f [$$leg] FAILED"; exit 1; }; \
+	    if ! grep -q 'tc-tol: ok' test-cuda-tc-kq.out || grep -q 'skipped' test-cuda-tc-kq.out; then \
+	      cat test-cuda-tc-kq.out; echo "test-cuda-tc-kq: $$f [$$leg] did not run"; exit 1; fi; \
+	    echo "$$f $$leg: $$(grep 'tc-tol: ok' test-cuda-tc-kq.out)"; \
+	  done; \
+	done
+
+# MoE experts in the 32-element legacy types on the fused device routing
+# (k_moe_mv_q5_0 / q4_1 / q5_1, 2026-10-21; until then a model with such
+# experts, llama-quantize's Q4_K_M of gemma-4-26B-A4B among them, ran its MoE
+# layers on the eager path): the moe4 fixture quantized to each type with
+# llama-quantize (RUNNER_LLAMA_CPP_BIN), held to the eager path by
+# test-moe-tol's teacher-forced gate. test-moe-tol skips when the two paths
+# are bit-identical, which here means the fused path never engaged, so a skip
+# fails the step. Without llama-quantize there is no fixture, so the step
+# fails rather than narrowing its coverage as the other llama-quantize steps
+# do: a CUDA gate host needs it.
+test-cuda-moe-legacy: runner $(TEST_MOE_TOL)
+	@set -e; \
+	lq=$$(ls "$$RUNNER_LLAMA_CPP_BIN"/llama-quantize* 2>/dev/null | head -1); \
+	if [ -z "$$lq" ]; then echo "test-cuda-moe-legacy: needs llama-quantize in RUNNER_LLAMA_CPP_BIN"; exit 1; fi; \
+	$(PYTHON) scripts/make-test-moe.py test-moe-legacy > /dev/null; \
+	for q in Q5_0 Q4_1 Q5_1; do \
+	  f=test-moe-legacy-$$q.gguf; \
+	  "$$lq" test-moe-legacy.moe4.gguf $$f $$q > /dev/null 2>&1 || { echo "test-cuda-moe-legacy: llama-quantize $$q failed"; exit 1; }; \
+	  ./$(TEST_MOE_TOL) $$f > test-cuda-moe-legacy.out 2>&1 || \
+	    { cat test-cuda-moe-legacy.out; echo "test-cuda-moe-legacy: $$q FAILED"; exit 1; }; \
+	  if ! grep -q 'moe-tol: ok' test-cuda-moe-legacy.out || grep -qi 'skip' test-cuda-moe-legacy.out; then \
+	    cat test-cuda-moe-legacy.out; echo "test-cuda-moe-legacy: $$q did not run the fused path"; exit 1; fi; \
+	  echo "$$f: $$(grep 'moe-tol: ok' test-cuda-moe-legacy.out)"; \
+	done
+
+# The by-expert MoE prefill (moe_twin) against the fused per-token path it
+# must reproduce byte for byte, on a 32-row prefill: the routed top-2-of-4
+# fixture with its experts requantized to Q8_0, the gpt-oss fixture (MXFP4
+# experts, per-expert gate, up and down biases) and gemma-4's dual-branch
+# fixture at Q8_0 (dense shared MLP plus routed experts), and both again at
+# Q4_0, whose fused expert kernel is the lane-per-block k_mv_q4_0 body rather
+# than the coalesced GEMV the other types share (gemma-4-26B-A4B's Q4_0
+# experts once came out of the by-expert path with other bytes). The Q8_0
+# pair runs once more under RUNNER_MOE_GROUPED=1: the grouped prefill takes a
+# tile ahead of both routes, so the pair holds it off for its own runs (a
+# gate with every opt-in on once found the pair with nothing to compare).
+test-cuda-moe-twin: runner $(TEST_GPU_ID)
+	@set -e; \
+	$(PYTHON) scripts/make-test-moe.py test-moe-twin > /dev/null; \
+	./$(RUNNER_EXE) -m test-moe-twin.moe4.gguf --quantize test-moe-twin-q8.gguf --quant q8_0 > /dev/null 2>&1; \
+	GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin-q8.gguf; \
+	RUNNER_MOE_GROUPED=1 GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin-q8.gguf; \
+	GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin.gptoss-mxfp4.gguf; \
+	./$(RUNNER_EXE) -m test-moe-twin.gemma4-moe.gguf --quantize test-moe-twin-g4.gguf --quant q8_0 > /dev/null 2>&1; \
+	GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin-g4.gguf; \
+	./$(RUNNER_EXE) -m test-moe-twin.moe4.gguf --quantize test-moe-twin-q40.gguf --quant q4_0 > /dev/null 2>&1; \
+	GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin-q40.gguf; \
+	./$(RUNNER_EXE) -m test-moe-twin.gemma4-moe.gguf --quantize test-moe-twin-g4q40.gguf --quant q4_0 > /dev/null 2>&1; \
+	GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin-g4q40.gguf
+
+# The decode microbatch on CUDA, byte for byte against sequential decode
+# (docs/cuda-microbatch-identity-2026-08-18.md) on the F32, Q8_0 and BF16
+# fixtures, a 256-wide model at Q4_K, Q6_K, Q4_0 and Q3_K, the five codebook
+# i-quants (make-test-model.py --quant) and, where RUNNER_LLAMA_CPP_BIN has
+# llama-quantize, Q5_K and IQ4_XS, with the default routes and with the
+# grouped decode attention off (the two decode attentions the microbatch
+# twins). `make test` runs the F32 case where it builds, which on a Mac is
+# Metal, so until 2026-10-21 no gate held the CUDA microbatch: making the
+# grouped decode attention the default left the microbatch on the old kernel,
+# and no gate saw it; IQ4_XS's twins were the lane kernels' twins while its
+# single step ran the coalesced GEMV (since #243), and no gate had an IQ4_XS
+# file; a codebook i-quant file never batched at all. A host without a CUDA
+# device fails here, as a gate that did not run.
+test-cuda-batch-identity: runner $(TEST_BATCH_ID) test.gguf test-q8.gguf test-bf16.gguf
+	@set -e; \
+	$(PYTHON) scripts/make-test-model.py --wide test-batch-wide.gguf > /dev/null; \
+	files="test.gguf test-q8.gguf test-bf16.gguf"; \
+	for q in q4_k q6_k q4_0 q3_k; do \
+	  ./$(RUNNER_EXE) -m test-batch-wide.gguf --quantize test-batch-wide-$$q.gguf --quant $$q > /dev/null 2>&1; \
+	  files="$$files test-batch-wide-$$q.gguf"; \
+	done; \
+	for q in iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s; do \
+	  $(PYTHON) scripts/make-test-model.py --quant $$q test-batch-$$q.gguf > /dev/null; \
+	  files="$$files test-batch-$$q.gguf"; \
+	done; \
+	lq=$$(ls "$$RUNNER_LLAMA_CPP_BIN"/llama-quantize* 2>/dev/null | head -1); \
+	if [ -n "$$lq" ]; then \
+	  for q in Q5_K_S IQ4_XS; do \
+	    "$$lq" test-batch-wide.gguf test-batch-wide-$$q.gguf $$q > /dev/null 2>&1 && files="$$files test-batch-wide-$$q.gguf"; \
+	  done; \
+	else echo "test-cuda-batch-identity: no llama-quantize in RUNNER_LLAMA_CPP_BIN, the Q5_K and IQ4_XS twins not exercised"; fi; \
+	for f in $$files; do \
+	  for dec in 1 0; do \
+	    RUNNER_CUDA_ATTN_DEC=$$dec ./$(TEST_BATCH_ID) $$f > test-cuda-batch-identity.out 2>&1 || \
+	      { cat test-cuda-batch-identity.out; echo "test-cuda-batch-identity: $$f attn-dec=$$dec FAILED"; exit 1; }; \
+	    if grep -q 'skipped' test-cuda-batch-identity.out; then \
+	      echo "test-cuda-batch-identity: skipped (no CUDA device)"; exit 1; fi; \
+	    echo "$$f attn-dec=$$dec: $$(tail -1 test-cuda-batch-identity.out)"; \
+	  done; \
+	done
+
+# A speculative verify round's rows on CUDA, byte for byte against solo
+# decode steps (tests/test_spec_identity.c, rounds 2 to 16 rows with the
+# walk's rollback): the dense fixtures (F32, Q8_0, BF16), a 256-wide model at
+# Q4_K, Q6_K and Q3_K, the codebook i-quants IQ2_XXS and IQ3_S (and IQ4_XS
+# where RUNNER_LLAMA_CPP_BIN has llama-quantize), the MoE ones (Q8_0, Q4_0, gpt-oss MXFP4, gemma-4's dual
+# branch), the Gated DeltaNet tracer and a dense Mamba-2 hybrid, with the
+# default routes, then the grouped MoE prefill and the grouped decode
+# attention forced each way. Until 2026-10-21 a CUDA verify row ran the
+# prompt kernels, so a drafted run equalled the plain one only up to
+# near-ties (4 of 12 runs differed on the MoE pairs).
+SPEC_ID_RUN = ./$(TEST_SPEC_ID) $$f > test-cuda-spec-identity.out 2>&1 || { cat test-cuda-spec-identity.out; exit 1; }; \
+	  if grep -q 'cpu,\|skipped' test-cuda-spec-identity.out; then \
+	    cat test-cuda-spec-identity.out; echo "test-cuda-spec-identity: skipped (no CUDA device for $$f)"; exit 1; fi; \
+	  echo "$$f $$env: $$(tail -1 test-cuda-spec-identity.out)"
+test-cuda-spec-identity: runner $(TEST_SPEC_ID) test.gguf test-q8.gguf test-bf16.gguf test-ornith-draft.gguf
+	@set -e; \
+	$(PYTHON) scripts/make-test-moe.py test-spec-moe > /dev/null; \
+	./$(RUNNER_EXE) -m test-spec-moe.moe4.gguf --quantize test-spec-moe-q8.gguf --quant q8_0 > /dev/null 2>&1; \
+	./$(RUNNER_EXE) -m test-spec-moe.moe4.gguf --quantize test-spec-moe-q40.gguf --quant q4_0 > /dev/null 2>&1; \
+	./$(RUNNER_EXE) -m test-spec-moe.gemma4-moe.gguf --quantize test-spec-moe-g4.gguf --quant q8_0 > /dev/null 2>&1; \
+	$(PYTHON) scripts/make-test-model.py --wide test-spec-wide.gguf > /dev/null; \
+	./$(RUNNER_EXE) -m test-spec-wide.gguf --quantize test-spec-wide-q4k.gguf --quant q4_k > /dev/null 2>&1; \
+	./$(RUNNER_EXE) -m test-spec-wide.gguf --quantize test-spec-wide-q6k.gguf --quant q6_k > /dev/null 2>&1; \
+	./$(RUNNER_EXE) -m test-spec-wide.gguf --quantize test-spec-wide-q3k.gguf --quant q3_k > /dev/null 2>&1; \
+	$(PYTHON) scripts/make-test-model.py --quant iq2_xxs test-spec-iq2_xxs.gguf > /dev/null; \
+	$(PYTHON) scripts/make-test-model.py --quant iq3_s test-spec-iq3_s.gguf > /dev/null; \
+	$(PYTHON) scripts/make-test-hybrid.py test-spec-hybrid --dense --rope > /dev/null; \
+	files="test.gguf test-q8.gguf test-bf16.gguf test-spec-wide-q4k.gguf test-spec-wide-q6k.gguf \
+	       test-spec-wide-q3k.gguf test-spec-iq2_xxs.gguf test-spec-iq3_s.gguf \
+	       test-spec-moe-q8.gguf test-spec-moe-q40.gguf test-spec-moe.gptoss-mxfp4.gguf test-spec-moe-g4.gguf \
+	       test-ornith-draft.gguf test-spec-hybrid.gguf"; \
+	lq=$$(ls "$$RUNNER_LLAMA_CPP_BIN"/llama-quantize* 2>/dev/null | head -1); \
+	if [ -n "$$lq" ]; then \
+	  "$$lq" test-spec-wide.gguf test-spec-wide-IQ4_XS.gguf IQ4_XS > /dev/null 2>&1 && files="$$files test-spec-wide-IQ4_XS.gguf"; \
+	else echo "test-cuda-spec-identity: no llama-quantize in RUNNER_LLAMA_CPP_BIN, the IQ4_XS twins not exercised"; fi; \
+	env=default; for f in $$files; do $(SPEC_ID_RUN); done; \
+	env=RUNNER_MOE_GROUPED=1; f=test-spec-moe-q8.gguf; export RUNNER_MOE_GROUPED=1; $(SPEC_ID_RUN); unset RUNNER_MOE_GROUPED; \
+	export RUNNER_CUDA_ATTN_DEC=0; env=RUNNER_CUDA_ATTN_DEC=0; \
+	for f in test-q8.gguf test-spec-moe.gptoss-mxfp4.gguf; do $(SPEC_ID_RUN); done
+
+# Per-layer FFN widths on CUDA (the gemma-4 E2B export shape: widths that
+# alternate between layers, an ARRAY-typed feed_forward_length): the device
+# runs each layer at its own width against the CPU at logit precision, in
+# f32 and requantized to q8_0 (the tensor-core prefill and the q8 decode
+# kernels). Until 2026-10-20 CUDA refused these files and they ran on the CPU.
+test-cuda-varff: runner $(TEST_GPU_ID)
+	@set -e; \
+	$(PYTHON) scripts/make-test-model.py --eseries 3,16 --ffn-widths 96,96,192,96,96,192 test-varff.gguf > /dev/null; \
+	./$(RUNNER_EXE) -m test-varff.gguf --quantize test-varff-q8.gguf --quant q8_0 > /dev/null 2>&1; \
+	./$(TEST_GPU_ID) test-varff.gguf; \
+	./$(TEST_GPU_ID) test-varff-q8.gguf
+
+# TC2, on by default on compute capability 8.0+ (its compute_80 kernels),
+# against the tensor-core route on the device the gate runs on: chunked
+# --score byte for byte on a Q8_0 and a Q4_K fixture, with the launch counts
+# (scripts/cuda-tc2-bytes.py). The CPU-against-GPU harnesses pin the
+# reference route, so this is the step that checks the default kernels on a
+# card nobody has measured. Skips itself without a CUDA device.
+test-cuda-tc2-bytes: runner
+	@set -e; \
+	$(PYTHON) scripts/make-test-model.py --wide --quant q8_0 test-tc2b-q8.gguf > /dev/null; \
+	$(PYTHON) scripts/make-test-model.py --wide test-tc2b-src.gguf > /dev/null; \
+	./$(RUNNER_EXE) -m test-tc2b-src.gguf --quantize test-tc2b-q4k.gguf --quant q4_k > /dev/null 2>&1; \
+	$(PYTHON) scripts/cuda-tc2-bytes.py ./$(RUNNER_EXE) test-tc2b-q8.gguf test-tc2b-q4k.gguf
+
 # The same gate on a Mac: the Metal codebook i-quant kernels (2026-09-17)
 # against the CPU decoders at logit precision on the fixture set, which
 # tests/test_iquants.py builds with llama-quantize/llama-imatrix from
@@ -1812,7 +2032,7 @@ test-tc-overflow: runner $(TEST_TC_TOL)
 # CPU bound, and give the same bytes on a second device run. Skips itself
 # without a CUDA device. 2e-5 is reduction-order residue on the fixture
 # (measured 4.8e-7).
-test-cuda-qwen4exp: runner $(TEST_GPU_ID)
+test-cuda-qwen4exp: runner $(TEST_GPU_ID) $(TEST_CUDA_TEARDOWN) test.gguf
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'cuda' else 1)"; then \
 		$(PYTHON) scripts/make-test-qwen4exp.py test-qwen4exp.gguf > /dev/null; \
@@ -1828,6 +2048,7 @@ test-cuda-qwen4exp: runner $(TEST_GPU_ID)
 		  done; \
 		done; \
 		rm -f cuda-q4e-cpu.score cuda-q4e-gpu.score cuda-q4e-gpu.err test-qwen4exp-512.gguf; \
+		./$(TEST_CUDA_TEARDOWN) test.gguf test-qwen4exp.gguf 3; \
 		QWEN4EXP_TEST_MTP=1 $(PYTHON) scripts/make-test-qwen4exp.py test-q4e-mtp.gguf > /dev/null; \
 		P="hello world one two three four five six seven eight nine ten"; \
 		rm -f cuda-q4e-mtp-cpu.dump cuda-q4e-mtp-gpu.dump; \
@@ -2325,9 +2546,9 @@ test-metal:
 test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_DPO_GRAD) $(TEST_MVT) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
-      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_ATTN_SPLIT) $(TEST_BIND) $(TEST_HOST_HEADER) \
+      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_SPEC_ID) $(TEST_ATTN_SPLIT) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
-      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) \
+      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_FPCLASS) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) \
@@ -2462,6 +2683,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_GPU_ID)
 	./$(TEST_QUANTS_SIMD)
 	./$(TEST_IQ_DECODE)
+	./$(TEST_KQ_STAGE)
 	./$(TEST_INSTANCES)
 	./$(TEST_INSTANCES_OOM)
 	./$(TEST_METAL_ADMISSION)
@@ -2573,10 +2795,12 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(MAKE) --no-print-directory test-shader-embed
 	$(MAKE) --no-print-directory test-metal PYTHON="$(PYTHON)"
 	./$(TEST_BATCH_ID) test.gguf
+	@for f in test.gguf test-q8.gguf test-bf16.gguf; do \
+	  ./$(TEST_SPEC_ID) $$f || exit 1; ./$(TEST_SPEC_ID) $$f cpu || exit 1; done
 	$(MAKE) --no-print-directory test-attn-split
 	$(PYTHON) scripts/check-generated.py
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
-	$(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_hf_fetch.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_decide.py tests/test_clef.py tests/test_hf_spec_bounds.py tests/test_lora.py tests/test_lora_qwen35.py tests/test_train.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_difftok.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_cuda_tensor_roles.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_session_images.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_cli_lifecycle.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py
+	$(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_hf_fetch.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_decide.py tests/test_clef.py tests/test_hf_spec_bounds.py tests/test_lora.py tests/test_lora_qwen35.py tests/test_train.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_difftok.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_session_images.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_cli_lifecycle.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py
 	$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"
 
@@ -2820,9 +3044,14 @@ clean:
 #   make ptx NVCC_CCBIN=x86_64-conda-linux-gnu-gcc
 NVCC ?= nvcc
 NVCC_CCBIN ?=
-ptx: src/kernels.cu src/iq_decode.h
+ptx: src/kernels.cu src/kernels_sm80.cu src/kernels_tc2.cuh src/kernels_tc2_iq.cuh \
+     src/kernels_iq4_table.cuh src/kernels_iq_grids.cuh src/kernels_iq_stage.cuh src/iq_decode.h \
+     src/kernels_kq_stage.cuh src/kernels_tc2_kq.cuh src/kq_stage.h
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_75 -O3 -o src/kernels.ptx src/kernels.cu
+	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_80 -O3 -o src/kernels_sm80.ptx src/kernels_sm80.cu
 	python3 scripts/embed-ptx.py || python scripts/embed-ptx.py
+	EMBED_IN=src/kernels_sm80.ptx EMBED_OUT=src/kernels_ptx80.h EMBED_NAME=k_ptx80_src python3 scripts/embed-ptx.py || \
+	EMBED_IN=src/kernels_sm80.ptx EMBED_OUT=src/kernels_ptx80.h EMBED_NAME=k_ptx80_src python scripts/embed-ptx.py
 
 # A duplicate target name makes make DISCARD one recipe and say so — but only
 # as a warning, scrolling past in the build noise. That is exactly how
@@ -2898,14 +3127,19 @@ CUDA_GATED_TESTS = tests/test_apertus.py tests/test_gpu_declines.py \
                    tests/test_gpu_split_order.py tests/test_hybrid_admission.py \
                    tests/test_moe.py tests/test_ornith_cpu.py tests/test_train.py \
                    tests/test_bench_json.py tests/test_clef.py \
-                   tests/test_remove_sublayer.py tests/test_lora_qwen35.py
-test-cuda-gated: runner
+                   tests/test_remove_sublayer.py tests/test_lora_qwen35.py \
+                   tests/test_transcript.py tests/test_spec_gpu.py \
+                   tests/test_server_sessions.py
+# test_spec_gpu.py reads test.gguf from the tree root (the others build their
+# fixtures in a temporary directory), so the target builds it: on a fresh
+# tree the gate's first run otherwise fails the three spec cases.
+test-cuda-gated: runner test.gguf
 	@mkdir -p .build/ci
 	$(PYTHON) -m pytest -q -rs --junitxml=.build/ci/cuda-gated.xml $(CUDA_GATED_TESTS)
 	$(PYTHON) scripts/check-junit.py --no-skips-matching '(?i)cuda|device|gpu' \
 	    --allow-skip 'CUDA runtime is available' .build/ci/cuda-gated.xml
 
-.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-qwen4exp test-ts-client test-cuda-gated
+.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-qwen4exp test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity
 .PHONY: test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # The TypeScript client (R10.7): type-checked with the pinned compiler and run

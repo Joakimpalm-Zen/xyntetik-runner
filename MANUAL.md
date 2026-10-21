@@ -1396,15 +1396,15 @@ of the reports stay up with a pointer to the canonical dataset.
 Open the architecture table below for model-specific paths and limitations.
 
 **Metal quant-type coverage.** Both a matvec and a matmul kernel exist for
-`q2_K`, `q3_K`, `q4_0`, `q4_K`, `q6_K`, `q8_0`, `iq4_nl`, `iq4_xs`, `mxfp4`,
-`f16`, `bf16` and `f32`. **`q4_1`, `q5_0`, `q5_1` and `q5_K` ship `k_mv_*`
-only** — they decode on Metal but have no `k_mm_*`, so prefill on those types
-does not use the Metal matmul path. Requantizing such a file to `q4_K` or
-`q8_0` (`--quantize OUT --quant q4_k`) is the fix when prompt throughput
-matters. Quantization changes only the weight encoding: it cannot give an
-architecture a Metal path it lacks, because those gaps are missing kernels for
-operations (SSM scan, Gated DeltaNet, weight-normed routers, gate-less shared
-experts), not missing quant support.
+every type the Metal backend loads: `q2_K`, `q3_K`, `q4_0`, `q4_1`, `q5_0`,
+`q5_1`, `q4_K`, `q5_K`, `q6_K`, `q8_0`, `iq4_nl`, `iq4_xs`, `mxfp4`, the
+codebook i-quants (`iq1_s`, `iq1_m`, `iq2_xxs`, `iq2_xs`, `iq2_s`, `iq3_xxs`,
+`iq3_s`), `f16`, `bf16` and `f32`. `q4_1`, `q5_0`, `q5_1` and `q5_K` gained
+their `k_mm_*` on 2026-10-21; until then they prefilled through the matvec,
+three to five times slower on an M1. Quantization changes only the weight
+encoding: it cannot give an architecture a Metal path it lacks, because those
+gaps are missing kernels for operations (SSM scan, Gated DeltaNet,
+weight-normed routers, gate-less shared experts), not missing quant support.
 
 A **sharded** GGUF takes a full Metal offload directly: each part's mapping
 gets its own tensor-boundary wraps, gated byte-identical to both the CPU path
@@ -1708,9 +1708,15 @@ for that development step.
 Scalar-path CPU/GPU identity is an evidence result, not a property inferred
 from a backend name. CUDA tensor-core and Metal tiled prefill kernels
 reassociate floating-point sums, so they are promoted by teacher-forced
-tolerance tests. CUDA currently promotes Q4_K/Q6_K/Q8_0 on the gated dense
-families and Q4_0 on Gemma 4; the latter was bit-identical over 820 tensor-core
-dispatches on the real 31B QAT artifact. The nine codebook i-quants (IQ1_S,
+tolerance tests. CUDA currently promotes Q4_K, Q6_K, Q8_0 and Q4_0 on the
+gated dense families. Q5_K, Q3_K, Q2_K, Q4_1, Q5_0 and Q5_1, which had no
+tensor-core kernel until 2026-10-21, joined on float32-reference rows: on
+2,000 positions of Qwen3-4B quantized to each type (and of Llama-3.2-3B at
+Q5_K and Q3_K) the tensor-core route read no further from the publisher's model than the
+scalar one, and their decoders equal the CPU dequantizer bit for bit
+(`make test-kq-stage`); the experimental qwen4exp family keeps those six on
+the scalar GEMM until a row on its release file exists (`RUNNER_CUDA_TC=1`
+forces them). The nine codebook i-quants (IQ1_S,
 IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_XS, IQ4_NL) are promoted
 on the same list, each measured as the forced path against
 the scalar one on Granite 4.2 3B requantized to the format with all layers
@@ -1739,7 +1745,8 @@ pins CUDA's eager MoE routing (the fused path's device `expf` differs from the
 host libm by 1-2 ulp by construction); every CPU-vs-GPU byte comparison in the
 test suite sets them. `RUNNER_CUDA_GRAPH_OFF=1` disables CUDA graph capture
 for decode steps, which isolates a kernel from the graph launch path when a
-result looks graph-dependent. `./test-attn-tol MODEL.gguf` is the
+result looks graph-dependent; `RUNNER_CUDA_GRAPH_RECUR=0` does it for the
+qwen35 family alone, whose decode replays a graph since 2026-10-21. `./test-attn-tol MODEL.gguf` is the
 attention gate.
 Weights are wrapped zero-copy from the model mmap. A file larger than the
 device's `maxBufferLength` - 4.29 GB on an M1, against a 5.73 GB working set -
@@ -2041,7 +2048,7 @@ per step, measured faster in aggregate at 4-8 slots on Metal, and
 | `-n N` | Maximum generated tokens, default `256`; `-1` runs until EOS. |
 | `-c N` | Context length; default is the smaller of model maximum and 4096. `0` auto-fits with a reservation. |
 | `-b N` | Prompt batch size: `64` with `--gpu off`; otherwise `64`, `256` or `512` by total RAM. Explicit `-b` overrides. [Details](#cli-b). |
-| `-t N` | Worker threads; defaults to physical cores and is capped at `32`. The cap is measured, not assumed: decode PEAKS at 32 threads and regresses above it on many-core hardware (a 64-core Zen 5 box in 2026-08, and a 128-core sweep in 2026-08 where both models peaked at 32 while the previous default of 64 cost up to -41% decode and -55% prefill). Only machines with more than 64 logical CPUs are affected; below that the default is unchanged. An explicit `-t` is honoured up to 64. |
+| `-t N` | Worker threads; defaults to physical cores and is capped at `32`. The cap is measured, not assumed: decode PEAKS at 32 threads and regresses above it on many-core hardware (a 64-core Zen 5 box in 2026-08, and a 128-core sweep in 2026-08 where both models peaked at 32 while the previous default of 64 cost up to -41% decode and -55% prefill). Only machines with more than 64 logical CPUs are affected; below that the default is unchanged. An explicit `-t` is honoured up to 64. The default leaves the logical CPUs past the physical cores to the rest of the machine, and it is not the fastest setting everywhere (2026-10-20, one model file at a time, CPU only): on an Apple M1, 8 threads (performance and efficiency cores) read prompts 11-18% faster than the default 4 and decoded 2-11% faster; on a 4-core, 8-thread desktop CPU, 8 threads decoded 5-22% faster than 4; on 16 cores of a shared server, 32 threads read prompts 18-23% faster than 16 and decoded between 17% slower and 9% faster. A machine that runs nothing else can set `-t` to its logical CPU count; measure on the workload first. |
 | `-s N` | RNG seed; default is time-based. `0` is refused: it is the sampler RNG's fixed point, so it cannot produce a stream. With `--serve`, each request that samples takes the next place in one server-wide order, and an unseeded one draws from the seed and that place, so the same requests in the same order sample the same output at any `--parallel`. A request's own `seed` wins; a greedy or refused request takes no place. |
 | `--think` / `--no-think` | Select thinking or non-thinking prompt shape in interactive chat only; family support varies. [Details](#cli-think). |
 | `--temp F` | Temperature; `0` is greedy and disables repeat penalty. |
@@ -2054,7 +2061,7 @@ per step, measured faster in aggregate at 4-8 slots on Metal, and
 | `--rope-base F` | Override the rope frequency base. |
 | `--system TEXT` | System prompt in interactive chat (`-i`) only; refused in raw one-shot and server modes. |
 | `--chat-template NAME` | Override the chat template. See the complete list and family-specific thinking behavior below. [Details](#cli-chat-template). |
-| `--no-bos` | Do not add the beginning-of-sequence token. |
+| `--no-bos` | Do not add the beginning-of-sequence token (the file's `tokenizer.ggml.add_bos_token`, or without that key its family's default: SentencePiece, Llama 3 and Mistral Tekken add one). A raw prompt that already starts with the token gets it twice unless this is set. |
 | `--ignore-eos` | Continue generation past end-of-text tokens. |
 
 <a id="cli-b"></a>
@@ -2105,6 +2112,7 @@ instance instead.
 |---|---|
 | `--gpu auto\|off` | Auto-detect offload, or force CPU. |
 | `--gpu-layers N` | Force the first `N` layers onto the GPU; `0` means no GPU. Omit for auto-fit. On Metal it also overrides the residency veto: a model larger than available RAM is refused for auto-selected partial offload, because nothing pinned can be held resident and the measured result was 8-35x slower decode, but an explicit `--gpu-layers N` splits it anyway. |
+| `--gpu-route R` | CUDA only: which tensor-core, attention and MoE kernels whose sums differ from the reference kernels run, `reference` or a comma list of `tc2`, `sm80`, `attn-tile`, `attn-dec`, `attn-tc`, `moe-tc`, `moe-grouped`. Transcripts and receipts record the set and `--verify` replays with the record's. [Details](#cli-gpu-route). |
 | `--cpu-moe [N\|auto]` | CUDA hybrid placement: keep all, the deepest `N`, or an auto-fit set of expert FFNs in system RAM. |
 | `--wait-for-vram [S]` | Wait for another registered runner to release VRAM, default `300` seconds, instead of failing immediately. |
 | `--vram-priority N` | Advisory priority tag on this claim, default `0` (also `RUNNER_VRAM_PRIORITY`). See [VRAM registry: priority and cooperative yield](#vram-registry-priority-and-cooperative-yield). |
@@ -2152,16 +2160,34 @@ with `scripts/kld-compare-raw.py` against the same file's f16 cache. f16 is the 
 #### `--draft PATH`
 
 Same-vocabulary draft GGUF for speculative decoding in one-shot, chat, or single-model
-serve mode. A draft is refused at load on a vocabulary mismatch, a discrete-VRAM (CUDA)
-fully-offloaded target or CUDA-resident recurrent state (the verify walk needs
-host-readable hidden work; unified-memory Metal full offload qualifies
-and speculates correctly, target-exact and gated byte-identical against the plain path —
-but measure before relying on it there: on Apple Silicon the batched verify costs roughly a
-full decode step per column, because the dequant ALU that hides under the bandwidth
-floor at batch 1 becomes the critical path with columns added, and a measured large
-dense target with a small draft decoded slower speculative than plain despite a good
-acceptance rate; the root cause is in docs/metal-decode-dispatch-budget-2026-09-01.md), or out of memory, and
-is dropped in swap mode; the run continues without it. In serve mode `GET
+serve mode. A draft is refused at load on a vocabulary mismatch, on a partial CUDA split
+that puts a recurrent layer on the device (the verify walk's rollback checkpoints the
+host fold), or out of memory, and is dropped in swap mode; the run continues without it.
+The output is the plain path's on every backend, bit for bit: the draft only proposes,
+and each row of the target's verify round is computed as a single decode step at that
+position computes it (on the CPU the step's own dot per column, on Metal the decode step
+itself row by row, on CUDA the decode kernels' multi-row twins, up to 16 rows a pass),
+as is the re-fold after a recurrent model rolls a round back. `test-spec-identity` (in
+`make test`) and `make test-cuda-spec-identity` hold every row of rounds 2 to 16 rows
+wide byte-identical to single steps on dense, mixture-of-experts and recurrent fixtures.
+Until 2026-10-21 a CUDA round ran the batched prompt kernels, a Metal round other kernels
+from its second row, and a CPU round of 8 or more rows the batched f32 tile, so drafted
+output could differ from plain decoding at near-ties (4 of 12 runs on the
+mixture-of-experts pairs of a datacenter MIG slice). Measure before relying on the speed:
+on Apple Silicon a verify row costs about a decode step, because the dequant ALU that
+hides under the bandwidth floor at batch 1 becomes the critical path with columns added,
+and a large dense target with a small draft decoded slower speculative than plain
+despite a good acceptance rate (docs/metal-decode-dispatch-budget-2026-09-01.md); on the
+CPU a wide round costs its per-column dots; on an RTX 3070 it pays where most of a
+window is accepted and costs where little is: `--draft-lookup` on an input-grounded
+prompt decodes Qwen3-4B at 143 tok/s against 103 plain and Qwen2.5-7B at 84 against 71,
+but where about one token a round is accepted Qwen3-4B runs at 102 against 106; a
+Qwen2.5-7B target with a 1.5B draft model runs at 65 against 71, and the Qwen3.5-4B MTP
+head at 61 against 94. A mixture-of-experts target pays most for a round, which runs
+every row through the per-token expert path: on the datacenter MIG slice
+Qwen3-30B-A3B with Qwen3-0.6B as the draft decodes at 64 to 108 tok/s against 117 to 119
+plain on three prompts, while Qwen2.5-7B with a 0.5B draft gains (89 against 76 where
+most of a window is accepted). The same holds for `--mtp` and `--draft-lookup`. In serve mode `GET
 /v1/capabilities` reports whether the draft is actually `active`, so a harness never
 measures the fallback as speculative decoding.
 
@@ -2172,17 +2198,22 @@ Draft from the model's own NextN/MTP predictor block instead of a second model.
 Single-model serving preserves the head and draft width after `/unload`, `keep_alive:
 0`, and TTL expiry. The export must declare exactly one block
 (`<arch>.nextn_predict_layers = 1`, as the MTP-preserved Qwen3.5/3.6 GGUFs do); the head
-runs on the CPU path only for now (`--gpu off`; a GPU-resident target is refused rather
-than silently decoded plain), on dense-attention or Gated DeltaNet backbones. Output is
-token-identical to plain decoding: the head only proposes, the target's verify walk
-decides, and on the CPU path a verify row is computed with the same dot the solo step
-uses, so the agreement is by construction. Measured 2026-09-02 on Qwen3.5-4B Q8_0 (32
+runs on the CPU, and on CUDA when the whole trunk is on the device (a partial split is
+refused with an error naming `--gpu off`), on dense-attention or Gated DeltaNet
+backbones. The output is the plain path's on every backend: the head only proposes,
+the target's verify walk decides, and each verify row is a single decode step's bits
+(see [`--draft`](#cli-draft)). Measured 2026-09-02 on Qwen3.5-4B Q8_0 (32
 threads, AVX-512): 1.31x decode on code and 1.08x on prose at `--draft-k 1` with
 `RUNNER_CPU_I8=1`, 1.17x and parity on the default f32 route, acceptance 75-94% for the
 first draft; wider windows lose on this hybrid model because every divergent round
 re-folds its recurrent state, and a 4-core AVX2 desktop is compute-bound in the dot
 itself and decodes SLOWER with `--mtp` at every width. Numbers, the profile, and the two
-walk fixes it took are in `docs/performance.md`.
+walk fixes it took are in `docs/performance.md`. With every layer on a CUDA device
+`--mtp` is slower than plain decoding on Qwen3.5 too: on an RTX 3070 (Qwen3.5-4B
+Q4_K_M, 256 greedy tokens, three prompts, 2026-10-21) plain decode runs at 94 tok/s
+and `--mtp` at 61 to 84 while accepting 2.8 to 3.7 tokens a round: a verify
+round costs more than the plain steps of the tokens it accepts. The text is the
+plain path's either way.
 
 <a id="cli-draft-lookup"></a>
 #### `--draft-lookup`
@@ -2193,9 +2224,10 @@ far, n from 5 down to 3, longest match first) are searched for in the context it
 and the tokens that followed their most recent earlier occurrence are proposed, up to
 `--draft-k`; no match proposes nothing, so that round is plain decoding plus one integer
 search. Good for input-grounded output: repeating or quoting a document, summaries that
-reuse the source's wording, small code edits, tool results echoed back. Output is
-token-identical to plain decoding, greedy and seeded alike, because the target's verify
-walk decides every token (pinned in `make test` on three prompt shapes; the search
+reuse the source's wording, small code edits, tool results echoed back. The output is
+the plain path's on every backend, greedy and seeded alike, because the target's verify
+walk decides every token from rows that are single decode steps' bits (see
+[`--draft`](#cli-draft); pinned in `make test` on three prompt shapes; the search
 itself is pinned against hand-computed proposals). One draft source per run: combining
 it with `--draft` or `--mtp` is refused at startup rather than silently ignored; grammar
 fast-forward still composes, as it does with the others. In serve mode a request may
@@ -2242,6 +2274,7 @@ whether the draft is `active` there.
 | `--adapter NAME=PATH` | With `--serve`: load an adapter once and select it per request as `"model": "<model>:NAME"`. [Details](#cli-adapter). |
 | `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank` | Train a deterministic AdamW LoRA adapter from text or weighted prompt/completion JSONL. [Details](#cli-train). |
 | `--score` | Return teacher-forced token logprobs, NLL, perplexity and top-1 metrics as JSON. [Details](#cli-score). |
+| `--score-top N` | With `--score`, also report each position's N (1 to 256) most likely tokens as `[id, logprob]` pairs, best first, in a `top` array. [Details](#cli-score). |
 | `--transcript FILE` | Record a one-shot run’s hashes, settings, tokens, output bytes and chain hash for replay. [Details](#cli-transcript). |
 | `--verify FILE` | Replay a transcript against `-m` and report `VERIFIED` (exit 0), `DIVERGED` at a token or output byte (exit 2), or `UNVERIFIABLE` for an invalid record, an artifact mismatch, or output shaped by a constraint the replay would not reproduce (exit 3; `--json`, `--json-schema` and `--ignore-eos` must match the record's `constraints`). The recorded replay settings override conflicting CLI values. See [the exact determinism scope](docs/determinism-scope.md). |
 | `--keygen FILE` | Write a receipt-signing key (`xyntetik.runner.signkey.v1`: `algo`, the 32-byte seed and the public key as hex) to FILE and print the public key. Needs no `-m`; the seed comes from the OS generator. Keep the file private. |
@@ -2421,13 +2454,71 @@ at least `1/n_vocab`, so the reported count is bracketed by the reported logprob
 scorer that disagrees with itself fails loudly rather than returning a confident wrong
 perplexity.
 
+`--score-top N` adds each position's distribution head: `top[i]` lists the N most likely
+next tokens after position i as `[id, logprob]`, best first, ties to the lower id, from the
+same logits as `logprobs` and `argmax`. A distribution-level comparison (KL divergence
+against a reference such as the publisher's float32 model, `scripts/gold-logits.py
+--score-a`) then needs one pass over the text instead of a request per position, and with
+`RUNNER_SCORE_CHUNKED=1` every position comes from the batched prefill route,
+in chunks of 16 rows; `RUNNER_SPEC_BATCH=N` (up to 64 on CUDA) widens them,
+so a MoE model's batched expert paths, which a wider prompt window admits,
+are the ones scored.
+
+The run ends with one line on stderr, `score: route {...}`: the paths its forwards took
+(with counts and widest rows) and the counted kernels, the object `--bench-json` reports as
+`route`. Two score files that agree byte for byte say nothing about a route switch unless
+the route's kernels ran in one of them; the line shows whether they did, and stdout stays
+byte-comparable across routes.
+
+<a id="cli-gpu-route"></a>
+#### `--gpu-route R`
+
+A few CUDA kernels compute the same quantities as the reference kernels in
+another order or at another precision, each held to a tolerance gate
+rather than to byte identity: the pipelined tensor-core GEMM (`tc2`), its
+compute capability 8.0 build (`sm80`), the tiled prefill attention
+(`attn-tile`), the grouped decode attention (`attn-dec`), the
+tensor-core prefill attention for f16 caches (`attn-tc`), and for the MoE
+families measured for them the tensor-core GEMMs on their dense projections
+(`moe-tc`: qwen3moe and gpt-oss) and the grouped expert prefill
+(`moe-grouped`: qwen3moe). The default set is `attn-tile,attn-dec`, plus
+`attn-tc` on the llama, qwen2, qwen3 and granite families without a sliding
+window, plus `tc2,sm80` on compute capability 8.0 and newer, plus the MoE
+routes on their families: the attention and MoE routes measured no further from the
+publisher's float32 model than the kernels they replace, and the compute_80
+GEMM kernels add in the tensor-core route's order and gave its bytes on
+every device measured; each stays a named route so that a replay cannot
+substitute other arithmetic. A record names `moe-tc` only for a model of its
+families, and `moe-grouped` wherever the grouped prefill ran: by default its
+family's measured expert types, and any MoE model whose expert types it admits when asked for. `--gpu-route`
+names the set for the process: `reference` runs none of them, a comma list
+runs those. It overrides `RUNNER_CUDA_ROUTE` (the same set from the
+environment, which the CPU-against-GPU harnesses set to `reference`) and the
+per-route `RUNNER_CUDA_*` diagnostics. The set in force
+goes into transcripts and receipts as `profile.gpu_route`, and `--verify`
+replays with the record's set whatever the command line says; a record
+without the field predates these kernels and replays with `reference`.
+The set is the configuration, not a trace: where a route does not apply,
+the kernel it replaces runs (`attn-tc` with a quantized KV cache or a head
+width it does not take runs the tiled attention), and a replay with the
+same set falls back the same way; the stderr route line and `--bench-json`'s kernel
+counters say what ran.
+Kernels that only move bytes (the KV gather, the whole-tile recurrent
+prefill) are not routes in this sense: they cannot change a token, and they
+are on by default (`RUNNER_CUDA_KV_GATHER=0` and `RUNNER_CUDA_RECUR_SEQ=0`
+switch them off for a comparison). The by-expert MoE prefill gives the fused
+path's bytes and is not a route either: it is on for gemma-4 MoE and gpt-oss
+(`RUNNER_MOE_TWIN=1` on any family, `=0` on none). Other backends accept the
+flag and ignore it.
+
 <a id="cli-transcript"></a>
 #### `--transcript FILE`
 
 Record a one-shot `-p` run as `xyntetik.runner.transcript.v1`: model, adapter and binary
-hashes; the effective execution profile (including fallback KV type and GPU layer
-count); the exact 64-bit seed and sampling config; prompt/output text and token ids; the
-exact streamed output bytes as `output.bytes_hex` (tokenizer pieces need not
+hashes; the effective execution profile (including fallback KV type, GPU layer
+count and, on CUDA, the prompt window); the exact 64-bit seed and sampling
+config; prompt/output text and token ids; the exact streamed output bytes as
+`output.bytes_hex` (tokenizer pieces need not
 individually be valid UTF-8); a `speculation` object naming the draft source (`model`,
 `mtp` or `lookup`) with its round, drafted and accepted counts when one was configured
 (absent for plain decoding, so those records are unchanged); and a chain hash over the
@@ -2633,19 +2724,22 @@ hold the rest. `--fit` then reads the same offload budget the loader splits
 against (the driver's free memory, the OS video-memory budget on Windows,
 `--reserve-vram` and the loader's headroom), computes the loader's split from
 the header for each KV format, and gives the verdict from what stays on the
-host. Measured against the loader's own split on an RTX 3070 (2026-10-03, six
-models from 8B to 14B, contexts 4k and 16k, all four KV formats): the same
-layer count in 70 of 72 cases and one layer fewer in the other two; never
-more. On Apple silicon and integrated CUDA devices the GPU shares RAM, and
-the RAM answer above is the whole answer.
+host. The card holds only what the forward reads there: the layers' weights,
+the output head on a full split (a tied head is the embedding table) and the
+scratch; the token embedding stays in RAM (the forward reads each token's row
+there) and so does a per-layer embedding table. Measured against the loader's
+own split on an RTX 3070 (2026-10-21, six models from 4B to 14B, contexts 4k
+and 16k, all four KV formats): the same layer count in 48 of 48 cases. On
+Apple silicon and integrated CUDA devices the GPU shares RAM, and the RAM
+answer above is the whole answer.
 
 ```console
 $ runner --fit granite-4.2-8b-Q4_K_M.gguf -c 16384
   ...
-  available RAM 9.46 GiB right now
-  gpu           NVIDIA GeForce RTX 3070, offload budget 6.95 GiB right now (0.85 GiB of it for embeddings, scratch and headroom)
-  split         f16: 35 of 40 layers on the GPU, 1.22 GiB in RAM  | --kv q8: 39 of 40 layers on the GPU, 0.47 GiB in RAM  | --kv k8v4: 40 of 40 ...
-  verdict       FITS — 35 of 40 layers on the GPU, 8.24 GiB of RAM to spare at ctx 16384
+  available RAM 9.43 GiB right now
+  gpu           NVIDIA GeForce RTX 3070, offload budget 6.95 GiB right now (0.64 GiB of it for scratch and headroom)
+  split         f16: 36 of 40 layers on the GPU, 3.50 GiB in RAM  | --kv q8: 40 of 40 layers on the GPU, 1.55 GiB in RAM  | --kv k8v4: 40 of 40 ...
+  verdict       FITS — 36 of 40 layers on the GPU, 5.92 GiB of RAM to spare at ctx 16384
 ```
 
 The answer is "right now": a server already holding the GPU or the RAM is
@@ -2992,7 +3086,9 @@ bits a lone step would have, so such a model decodes its sequences one at a
 time rather than batching them into different numbers. The current CUDA
 microbatch loop covers gated dense transformer layers; recurrent, MoE, NoPE,
 attention-gated, and ungated xIELU models use sequential GPU forwards. Within
-the covered family Q8_0, Q4_0, Q4_K, Q5_K, Q6_K, F32 and F16 batch; the rest do
+the covered family F32, F16, BF16, Q8_0, Q4_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_XS,
+MXFP4 and the codebook i-quants (IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S)
+batch; the rest (Q2_K, Q2_0, Q4_1, Q5_0, Q5_1, IQ4_NL, the IQ1 types, NVFP4) do
 not.
 
 Those are deliberately raw counters rather than a tokens-per-second field: a
@@ -3046,7 +3142,11 @@ Beyond these, the binary reads a number of development switches -
 `RUNNER_SPEC_STATS` / `RUNNER_SPEC_PROF` (the speculative walk's round
 summary and per-phase timing),
 `RUNNER_SCHEMA_ALLOW_WS` (the pre-fix whitespace behaviour, for A/B runs),
-`RUNNER_MOE_GROUPED` (the grouped CUDA MoE experiment, off by measurement),
+`RUNNER_MOE_GROUPED` (`1` runs the grouped CUDA MoE prefill on any MoE model whose expert types it admits, `0` or `off` on none; unset, the family and expert types measured for it, qwen3moe with Q4_K or Q6_K experts, take it),
+`RUNNER_GPU_FALLBACK=fail` (a device forward that fails at runtime ends the process
+with exit status 3 instead of releasing the GPU and continuing on the CPU; the
+comparison and certification harnesses set it, so a device fault part-way through a
+run cannot be recorded as a device result),
 `RUNNER_REQUANT_ONLY` / `RUNNER_FORCE_REQUANT` (substring-scoped and
 size-check-bypassing requantization for experiments), the
 `RUNNER_METAL_*`/`RUNNER_CUDA_*` kernel knobs and failure injectors. They print

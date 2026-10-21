@@ -83,11 +83,18 @@ boundary activation back through the host `x` buffer.
 - **What the graph assumes.** Every device address it recorded stays valid
   and unmoved for the life of the `gpu_t`. All per-instance device buffers
   are allocated at init and released only by `gpu_ctx_free()`, which
-  destroys the graph first.
+  destroys the graph first. `gpu_live_buffers()` counts every device
+  allocation the backend holds, and `test-cuda-teardown` requires load and
+  free cycles to return it to its starting value.
 - **When capture is refused** (`graph_bad`): no stream; a layer without
   `attn_v.weight` (a synchronous memset that cannot be captured); a MoE layer
-  without fused device routing; recurrent layers; qwen35; experts on the
-  host; a partial split; the profiler on; `RUNNER_CUDA_GRAPH_OFF`.
+  without fused device routing; the Mamba-2 hybrids' recurrent layers;
+  qwen4exp; a qwen35 model with routed experts or under
+  `RUNNER_CUDA_GRAPH_RECUR=0` (its Gated DeltaNet steps replay since
+  2026-10-21); experts on the host; a partial split; the profiler on;
+  `RUNNER_CUDA_GRAPH_OFF`. A speculative keep-forward, whose per-row
+  checkpoints are copies the graph does not hold, runs its step eagerly on
+  an instance that otherwise replays.
 - **When a graph is dropped.** Binding or unbinding an adapter
   (`gpu_lora_bind`, `gpu_lora_unbind`) turns graphs off for that instance,
   because the captured launches predate the adapter.
@@ -100,11 +107,12 @@ boundary activation back through the host `x` buffer.
 alone. It separates the whole file (`weights`), the bytes touched per token
 (`hot`, smaller for a sparse MoE), KV per token and at the requested context
 for each KV format, and on a discrete GPU a fixed charge for the token
-embedding and headroom plus each slot's activation scratch (`gpu_fixed`)
-before it counts how many leading layers fit. With `--parallel N`
-(`model_fit.n_seq`) every slot pays its own KV cache, on the host and for
-the offloaded layers on the device, and its own scratch; the weights are
-paid once. The CUDA loader plans its split the same way
+embedding and headroom plus each slot's activation scratch at a 64-column
+prompt window (`gpu_fixed`; the loader widens the window only into what its
+split leaves spare) before it counts how many leading layers fit. With
+`--parallel N` (`model_fit.n_seq`) every slot pays its own KV cache, on the
+host and for the offloaded layers on the device, and its own scratch; the
+weights are paid once. The CUDA loader plans its split the same way
 (`shared_plan_budget()`, `m->gpu_instances`), so every slot fits the split
 the first one decides. The host bill includes every layer's KV, because the
 host copy is the authoritative one.
