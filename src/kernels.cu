@@ -5984,6 +5984,119 @@ extern "C" __global__ void k_q35_delta(float *cv, const float *z,
     }
 }
 
+// The one-token step again, with each head's value columns split over
+// blocks of Q35D1_COLS (grid heads x state_dim / Q35D1_COLS): k_q35_delta
+// and the one-token k_q35_delta_seq both run one block of four warps per
+// head (32 blocks on Qwen3.5-4B, against an RTX 3070's 46 SMs) and spent
+// about 55 us a call on 2 MB of state. Each block recomputes the head's q
+// and k scales with k_q35_delta's 128-thread tree, stages its rows through a
+// padded shared tile with coalesced loads and stores, and its first warp
+// walks each row's keys in order with k_q35_delta's operations (k * kscale
+// and q * qscale are formed once per key, the same rounded products the
+// loops formed). The output RMS norm needs every column of the head, so it
+// is k_q35_delta_norm, k_q35_delta's epilogue in its own launch. Together
+// they give k_q35_delta's bytes. state_dim a multiple of Q35D1_COLS up to
+// Q35D1_MAX_SD (the dispatch checks).
+extern "C" __global__ void __launch_bounds__(128)
+k_q35_delta1(const float *cv, const float *beta_in, const float *alpha_in,
+             const float *dt, const float *a, float *state, float *out,
+             int state_dim, int groups, int heads, float eps) {
+    __shared__ float red[128];
+    __shared__ float kk[Q35D1_MAX_SD], qq[Q35D1_MAX_SD];
+    __shared__ float tile[Q35D1_COLS][Q35D1_MAX_SD + 1];
+    int tid = threadIdx.x, h = blockIdx.x, j0 = blockIdx.y * Q35D1_COLS;
+    if (h >= heads || j0 >= state_dim) return;
+    int keydim = state_dim * groups;
+    int group = h % groups;
+    const float *q = cv + group * state_dim;
+    const float *k = cv + keydim + group * state_dim;
+    const float *v = cv + 2 * keydim + h * state_dim;
+    float *st = state + (ulong64)h * state_dim * state_dim;
+    float *yo = out + h * state_dim;
+
+    float qs = 0.0f;
+    for (int i = tid; i < state_dim; i += blockDim.x) qs += q[i] * q[i];
+    red[tid] = qs;
+    __syncthreads();
+    for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }
+    float qscale = rsqrtf(red[0] + eps);
+    __syncthreads();
+    float ks = 0.0f;
+    for (int i = tid; i < state_dim; i += blockDim.x) ks += k[i] * k[i];
+    red[tid] = ks;
+    __syncthreads();
+    for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }
+    float kscale = rsqrtf(red[0] + eps);
+    float beta = 1.0f / (1.0f + expf(-beta_in[h]));
+    float av = alpha_in[h] + dt[h];
+    float softplus = av > 20.0f ? av : log1pf(expf(av));
+    float decay = expf(a[h] * softplus);
+
+    for (int i = tid; i < state_dim; i += blockDim.x) {
+        kk[i] = k[i] * kscale;
+        qq[i] = q[i] * qscale;
+    }
+    for (int e = tid; e < Q35D1_COLS * state_dim; e += blockDim.x) {
+        int c = e / state_dim, i = e % state_dim;
+        tile[c][i] = st[(ulong64)(j0 + c) * state_dim + i];
+    }
+    __syncthreads();
+    if (tid < Q35D1_COLS) {
+        int j = j0 + tid;
+        float pred = 0.0f;
+        for (int i = 0; i < state_dim; i++) {
+            float r = tile[tid][i] * decay;
+            tile[tid][i] = r;
+            pred += r * kk[i];
+        }
+        float delta = (v[j] - pred) * beta;
+        float y = 0.0f;
+        for (int i = 0; i < state_dim; i++) {
+            float r = tile[tid][i] + delta * kk[i];
+            tile[tid][i] = r;
+            y += r * qq[i];
+        }
+        yo[j] = y * rsqrtf((float)state_dim);
+    }
+    __syncthreads();
+    for (int e = tid; e < Q35D1_COLS * state_dim; e += blockDim.x) {
+        int c = e / state_dim, i = e % state_dim;
+        st[(ulong64)(j0 + c) * state_dim + i] = tile[c][i];
+    }
+}
+
+// k_q35_delta's epilogue for k_q35_delta1: the head's output RMS norm (the
+// same 128-thread tree over yo[j] * yo[j]) and the silu / sigmoid gate.
+extern "C" __global__ void __launch_bounds__(128)
+k_q35_delta_norm(const float *z, const float *norm, float *out, int state_dim,
+                 int heads, float eps, int gate_sigmoid) {
+    __shared__ float red[128];
+    int tid = threadIdx.x, h = blockIdx.x;
+    if (h >= heads) return;
+    float *yo = out + h * state_dim;
+    float ss = 0.0f;
+    for (int j = tid; j < state_dim; j += blockDim.x) ss += yo[j] * yo[j];
+    red[tid] = ss;
+    __syncthreads();
+    for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }
+    float rms = rsqrtf(red[0] / state_dim + eps);
+    for (int j = tid; j < state_dim; j += blockDim.x) {
+        int o = h * state_dim + j;
+        float zv = z[o];
+        float sg = 1.0f / (1.0f + expf(-zv));
+        yo[j] = yo[j] * rms * norm[j] * (gate_sigmoid ? sg : zv * sg);
+    }
+}
+
 // ---- qwen4exp hyper-connections (CPU twins: hc_mix / hc_combine in model.c)
 // Grouped RMSNorm: row r of x is `groups` streams of n values, each normed
 // over its own n and scaled by that stream's gamma slice (w has groups*n).

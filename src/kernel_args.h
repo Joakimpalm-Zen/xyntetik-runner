@@ -87,5 +87,10 @@ typedef struct {
 // The launch (cuda.c gpu_q35_recurrent) uses Q35D_COLS as its block size.
 #define Q35D_COLS 128
 #define Q35D_KEYS 32
+// k_q35_delta1 (the one-token step with a head's columns over several
+// blocks): value columns a block, and the widest state it takes (its shared
+// tile holds Q35D1_COLS rows of that width; cuda.c checks both)
+#define Q35D1_COLS 32
+#define Q35D1_MAX_SD 128
 
 #endif // RUNNER_KERNEL_ARGS_H

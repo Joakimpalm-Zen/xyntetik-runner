@@ -452,6 +452,7 @@ typedef struct gpu_weights {
     CUfunction  f_mamba_conv, f_mamba_ssd, f_mamba_gate_norm, f_relu2;
     // whole-tile twins of the per-token recurrent kernels (C2.3, RUNNER_CUDA_RECUR_SEQ)
     CUfunction  f_q35_conv_seq, f_q35_delta_seq, f_mamba_conv_seq, f_mamba_ssd_seq;
+    CUfunction  f_q35_delta1, f_q35_delta_norm;   // the column-split one-token step
     CUfunction  f_colabsmax;            // per-column |x| max for the scaled TC GEMMs
     CUfunction  f_attn_dec, f_attn_merge;   // flash-decoding attention (decode)
     CUfunction  f_attn_tile32, f_attn_tile16; // tiled prefill attention (tile_attn)
@@ -2542,6 +2543,8 @@ static bool shared_load_module(gpu_weights *w) {
     cu.ModuleGetFunction(&w->f_kv_gather, w->mod, "k_kv_gather");
     cu.ModuleGetFunction(&w->f_q35_conv_seq, w->mod, "k_q35_conv_seq");
     cu.ModuleGetFunction(&w->f_q35_delta_seq, w->mod, "k_q35_delta_seq");
+    cu.ModuleGetFunction(&w->f_q35_delta1, w->mod, "k_q35_delta1");
+    cu.ModuleGetFunction(&w->f_q35_delta_norm, w->mod, "k_q35_delta_norm");
     cu.ModuleGetFunction(&w->f_mamba_conv_seq, w->mod, "k_mamba2_conv_seq");
     cu.ModuleGetFunction(&w->f_mamba_ssd_seq, w->mod, "k_mamba2_ssd_seq");
     cu.ModuleGetFunction(&w->f_attn_merge32, w->mod, "k_attn_merge32");
@@ -6162,6 +6165,8 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
     // the whole tile in one launch per kernel, when no row needs its own
     // checkpoint (speculative keep rows take the loop below, a row a pass)
     bool seq = recur_seq_admits(g, m);
+    bool q35_split_ok = seq && sk % Q35D1_COLS == 0 && sk <= Q35D1_MAX_SD &&
+                        g->sw->f_q35_delta1 && g->sw->f_q35_delta_norm;
     int kernel = m->ssm.conv_kernel;
     float eps = m->rms_eps;
     int gate_sigmoid = m->hyper_conn ? 1 : 0;   // Qwen3.8's DeltaNet gate
@@ -6186,21 +6191,31 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
         CUdeviceptr out = g->xb2 + (size_t)t * xdim * sizeof(float);
         if (seq) {
             // a one-token decode step, or a checkpointed row of a verify
-            // round: the whole-tile kernels over one token (the same
-            // arithmetic as the per-token pair, GPU_ID_RECUR's identity), with
-            // the state row a thread keeps in registers where the per-token
-            // kernel walks it in memory twice (RTX 3070, Qwen3.5-4B: 54 us a
-            // call against 59, decode +1.7%; the load and store of the state
-            // are most of either)
+            // round: the whole-tile conv over one token, then the step with
+            // each head's columns over several blocks (k_q35_delta1 and its
+            // norm, k_q35_delta's arithmetic) where the state width allows,
+            // else the whole-tile kernel over one token (GPU_ID_RECUR's
+            // identity). One block a head, as both single-block kernels run,
+            // left an RTX 3070 at about 55 us a call for 2 MB of state.
             int one = 1;
             void *pc[] = { &mix, &cv, &conv_w, &hist, &convdim, &kernel, &one };
-            void *pd[] = { &cv, &z, &beta, &alpha, &g->sw->ssm_dt[l],
-                           &g->sw->ssm_a[l], &g->sw->ssm_norm[l], &state, &out,
-                           &sk, &ng, &nh, &eps, &gate_sigmoid, &one,
-                           &convdim, &inner, &xdim };
-            if (!launch(g, g->sw->f_q35_conv_seq, (convdim + 255) / 256, 1, 1, 256, pc) ||
-                !launch(g, g->sw->f_q35_delta_seq, nh, 1, 1, 128, pd))
+            if (!launch(g, g->sw->f_q35_conv_seq, (convdim + 255) / 256, 1, 1, 256, pc))
                 return false;
+            if (q35_split_ok) {
+                void *p1[] = { &cv, &beta, &alpha, &g->sw->ssm_dt[l], &g->sw->ssm_a[l],
+                               &state, &out, &sk, &ng, &nh, &eps };
+                void *p2[] = { &z, &g->sw->ssm_norm[l], &out, &sk, &nh, &eps, &gate_sigmoid };
+                if (!launch(g, g->sw->f_q35_delta1, nh, (unsigned)(sk / Q35D1_COLS), 1, 128, p1) ||
+                    !launch(g, g->sw->f_q35_delta_norm, nh, 1, 1, 128, p2))
+                    return false;
+            } else {
+                void *pd[] = { &cv, &z, &beta, &alpha, &g->sw->ssm_dt[l],
+                               &g->sw->ssm_a[l], &g->sw->ssm_norm[l], &state, &out,
+                               &sk, &ng, &nh, &eps, &gate_sigmoid, &one,
+                               &convdim, &inner, &xdim };
+                if (!launch(g, g->sw->f_q35_delta_seq, nh, 1, 1, 128, pd))
+                    return false;
+            }
             g_recur_seq_dispatches++;
         } else {
             void *pc[] = { &mix, &cv, &conv_w, &hist, &convdim, &kernel };

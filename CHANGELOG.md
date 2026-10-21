@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: the one-token Gated DeltaNet step spreads each head over four
+  blocks.** A qwen35 decode step and each checkpointed row of a verify round
+  now run `k_q35_delta1`, which gives each block 32 of a head's value
+  columns (four times the blocks of the one-block-a-head kernels, which kept
+  32 of an RTX 3070's 46 SMs busy), and `k_q35_delta_norm`, the head's
+  output norm in its own launch; each block repeats the head's q and k
+  scales with the same reduction, so the output bytes are unchanged. The
+  step went from 54 to 25 microseconds a call; Qwen3.5-4B decodes at 93.7
+  tok/s where it ran 88.7, and `--mtp` at 85.0 where it ran 79.9.
+
 - **CUDA: one-token Gated DeltaNet steps take the whole-tile kernels.** A
   qwen35 decode step and each checkpointed row of a speculative verify round
   ran the per-token kernel pair; they now run the whole-tile kernels over
