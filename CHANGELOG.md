@@ -534,8 +534,10 @@ Current release and unreleased changes. Compatibility follows the
   (2.6%, 2.5% and 1.7% at 4K). `RUNNER_CUDA_KV_GATHER=0` keeps the
   per-layer copies.
 
-- **CUDA tensor-core prefill attention, experimental and off by default.**
-  With Q and the softmax weights rounded to single fp16 operands, Mistral-7B
+- **CUDA tensor-core prefill attention (`attn-tc`), Q and the softmax
+  weights in two fp16 halves.** It was added opt-in and is now the default
+  for the llama, qwen2, qwen3 and granite families (the entry above). With
+  Q and the softmax weights rounded to single fp16 operands, Mistral-7B
   v0.3's long-context float32-reference row read 0.19% further from the
   reference than the default kernel's (a significant paired difference, p
   0.014, top-1 unchanged), which the promotion rule does not admit. Both now
