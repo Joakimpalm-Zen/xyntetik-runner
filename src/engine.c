@@ -547,8 +547,7 @@ static void pfx_load(model_t *m, const uint8_t *src, int stride, int n) {
 }
 
 // A prefix shorter than this is not worth a snapshot: the copy costs more than
-// the prefill it saves, and it must be at least 2 for the GPU resync argument
-// at the install site to hold.
+// the prefill it saves.
 #define PFX_MIN_TOKENS  16
 #define PFX_MAX_ENTRIES 64
 
@@ -740,9 +739,7 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
     // recurrent model may fork ONLY an exact full-prefix hit (best == hit->n).
     // A device-resident fold (qwen35/qwen4exp on CUDA) is pulled and pushed
     // through the host buffers by blob_save/blob_load (R4.26.7), so the fork
-    // now holds on the device too; the load below runs AFTER the pos-0 resync
-    // forward, whose recurrent reset it overwrites. A partial recurrent hit
-    // likewise declines above.
+    // holds on the device too. A partial recurrent hit likewise declines above.
     bool recur = model_has_recurrent(e->m);
     bool recur_ok = !recur || (hit && best == hit->n);
     if (recur_ok && hit && best >= PFX_MIN_TOKENS && best > r.keep) {
