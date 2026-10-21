@@ -2054,7 +2054,7 @@ per step, measured faster in aggregate at 4-8 slots on Metal, and
 | `--rope-base F` | Override the rope frequency base. |
 | `--system TEXT` | System prompt in interactive chat (`-i`) only; refused in raw one-shot and server modes. |
 | `--chat-template NAME` | Override the chat template. See the complete list and family-specific thinking behavior below. [Details](#cli-chat-template). |
-| `--no-bos` | Do not add the beginning-of-sequence token. |
+| `--no-bos` | Do not add the beginning-of-sequence token (the file's `tokenizer.ggml.add_bos_token`, or without that key its family's default: SentencePiece, Llama 3 and Mistral Tekken add one). A raw prompt that already starts with the token gets it twice unless this is set. |
 | `--ignore-eos` | Continue generation past end-of-text tokens. |
 
 <a id="cli-b"></a>

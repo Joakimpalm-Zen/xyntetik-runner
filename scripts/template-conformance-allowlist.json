@@ -41,7 +41,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1487-1492",
+        "lines": "1498-1503",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -51,7 +51,7 @@
     {
       "id": "llama3/bos",
       "family": "llama3",
-      "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time from tokenizer.ggml.add_bos_token, so a template that also emitted it would double it.",
+      "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time from tokenizer.ggml.add_bos_token (a Llama 3 file without the key gets it by default, as its own tokenizer does), so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
         "lines": "2176-2182",
@@ -59,7 +59,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1487-1492",
+        "lines": "1498-1503",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -106,7 +106,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1487-1492",
+        "lines": "1498-1503",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -124,7 +124,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1487-1492",
+        "lines": "1498-1503",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -142,7 +142,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1487-1492",
+        "lines": "1498-1503",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -160,7 +160,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1487-1492",
+        "lines": "1498-1503",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -178,7 +178,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1487-1492",
+        "lines": "1498-1503",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -196,7 +196,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1487-1492",
+        "lines": "1498-1503",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -229,7 +229,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1487-1492",
+        "lines": "1498-1503",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -275,7 +275,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1487-1492",
+        "lines": "1498-1503",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {

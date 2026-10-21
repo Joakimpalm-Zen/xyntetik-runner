@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Llama 3 files without an add-BOS flag get their BOS token.** A GGUF
+  that does not carry `tokenizer.ggml.add_bos_token` was read as "no BOS"
+  for every BPE vocabulary, and Llama 3 conversions commonly omit the key
+  (both Llama-3.2 files on our hosts do). The runner's Llama 3 chat format
+  leaves `<|begin_of_text|>` to the tokenizer, so chat prompts on such a
+  file started without it, as did `--score` and raw prompts. A missing key
+  now means what the family's own tokenizer does: a BOS for SentencePiece
+  vocabularies and for the Llama 3 (`llama-bpe`) and Mistral Tekken BPE
+  families; an explicit key still decides. Llama-3.2-1B's perplexity on
+  the manual's first 6,000 characters (`--score`, CPU) is 18.64 with the
+  token where it read 19.02 without it.
+
 - **CUDA sliding-window layers copy only the rows a forward writes.** A
   layer that keeps its KV in a ring mirrored the whole ring between host
   and device on every copy, so a speculative round or a microbatch step on

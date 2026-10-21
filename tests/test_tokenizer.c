@@ -521,8 +521,89 @@ static void test_special_matching_across_first_bytes(void) {
     remove(path);
 }
 
+// Whether a file without tokenizer.ggml.add_bos_token gets a BOS: what its
+// family's own tokenizer does. SentencePiece and the Llama 3 ("llama-bpe")
+// and Tekken BPE families prepend one; the other BPE families do not; an
+// explicit key wins either way. Llama 3 conversions commonly omit the key,
+// and until 2026-10-21 that ran their prompts with no BOS at all.
+static void write_bos_fixture(const char *path, const char *model, const char *pre,
+                              int add_bos /* -1: no key */) {
+    static const char *const toks[] = { "<s>", "h", "o", "ho" };
+    gbuf kv = {0};
+    uint64_t nkv = 0;
+    gkey(&kv, "general.architecture", GGUF_T_STR); gstr(&kv, "llama"); nkv++;
+    gkey(&kv, "tokenizer.ggml.model", GGUF_T_STR); gstr(&kv, model); nkv++;
+    if (pre) { gkey(&kv, "tokenizer.ggml.pre", GGUF_T_STR); gstr(&kv, pre); nkv++; }
+    gkey(&kv, "tokenizer.ggml.tokens", GGUF_T_ARR);
+    gu32(&kv, GGUF_T_STR); gu64(&kv, 4);
+    for (int i = 0; i < 4; i++) gstr(&kv, toks[i]);
+    nkv++;
+    gkey(&kv, "tokenizer.ggml.token_type", GGUF_T_ARR);
+    gu32(&kv, GGUF_T_I32); gu64(&kv, 4);
+    gu32(&kv, 3); gu32(&kv, 1); gu32(&kv, 1); gu32(&kv, 1);   // control, normal x3
+    nkv++;
+    gkey(&kv, "tokenizer.ggml.scores", GGUF_T_ARR);
+    gu32(&kv, GGUF_T_F32); gu64(&kv, 4);
+    for (int i = 0; i < 4; i++) { float z = (float)i; gput(&kv, &z, 4); }
+    nkv++;
+    gkey(&kv, "tokenizer.ggml.merges", GGUF_T_ARR);
+    gu32(&kv, GGUF_T_STR); gu64(&kv, 1); gstr(&kv, "h o");
+    nkv++;
+    gkey(&kv, "tokenizer.ggml.bos_token_id", GGUF_T_U32); gu32(&kv, 0); nkv++;
+    gkey(&kv, "tokenizer.ggml.eos_token_id", GGUF_T_U32); gu32(&kv, 0); nkv++;
+    if (add_bos >= 0) {
+        gkey(&kv, "tokenizer.ggml.add_bos_token", GGUF_T_BOOL);
+        unsigned char f = (unsigned char)add_bos; gput(&kv, &f, 1); nkv++;
+    }
+    gbuf w = {0};
+    gu32(&w, 0x46554747); gu32(&w, 3); gu64(&w, 0); gu64(&w, nkv);
+    gput(&w, kv.b, kv.n);
+    while (w.n % 32) { unsigned char z = 0; gput(&w, &z, 1); }
+    FILE *f = fopen(path, "wb");
+    assert(f);
+    assert(fwrite(w.b, 1, w.n, f) == w.n);
+    fclose(f);
+    free(kv.b); free(w.b);
+}
+
+static void test_bos_default_follows_the_family(void) {
+    static const struct { const char *model, *pre; int key; bool bos; } cases[] = {
+        { "gpt2",  "llama-bpe", -1, true  },   // Llama 3, no key: <|begin_of_text|>
+        { "gpt2",  "tekken",    -1, true  },   // Mistral Tekken, no key: <s>
+        { "gpt2",  "qwen2",     -1, false },   // Qwen: no BOS
+        { "gpt2",  "smollm",    -1, false },
+        { "gpt2",  NULL,        -1, false },   // plain GPT-2
+        { "gpt2",  "llama-bpe",  0, false },   // the key wins
+        { "gpt2",  "qwen2",      1, true  },
+        { "llama", NULL,        -1, true  },   // SentencePiece
+        { "llama", NULL,         0, false },
+    };
+    const char *path = "tok-bos.gguf";
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        write_bos_fixture(path, cases[i].model, cases[i].pre, cases[i].key);
+        current = path;
+        gguf_file g;
+        assert(gguf_open(&g, path));
+        tokenizer t;
+        assert(tokenizer_init(&t, &g));
+        int32_t ids[8];
+        int n = tok_encode(&t, "ho", ids, 8, true, false);
+        bool got = n > 0 && ids[0] == 0;
+        if (t.add_bos != cases[i].bos || got != cases[i].bos) {
+            fprintf(stderr, "bos default: model %s pre %s key %d: add_bos %d, first id %d, want %d\n",
+                    cases[i].model, cases[i].pre ? cases[i].pre : "(none)", cases[i].key,
+                    t.add_bos, n > 0 ? ids[0] : -1, cases[i].bos);
+            abort();
+        }
+        tokenizer_free(&t);
+        gguf_close(&g);
+    }
+    remove(path);
+}
+
 int main(void) {
     test_special_matching_across_first_bytes();
+    test_bos_default_follows_the_family();
 
     for (size_t i = 0; i < sizeof(fixtures) / sizeof(*fixtures); i++) {
         current = fixtures[i];

@@ -497,7 +497,18 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
         !special_id_ok(t, "tokenizer.ggml.eos_token_id", t->eos_id) ||
         !special_id_ok(t, "tokenizer.ggml.unknown_token_id", t->unk_id))
         return false;
-    t->add_bos = gguf_get_bool(g, "tokenizer.ggml.add_bos_token", t->model == TOK_SPM);
+    // A file that does not say whether to prepend BOS gets what its family's
+    // own tokenizer does: SentencePiece vocabularies, and the two BPE families
+    // whose publishers' tokenizers prepend it, Llama 3 (<|begin_of_text|>,
+    // tokenizer.ggml.pre "llama-bpe") and Mistral's Tekken (<s>). Llama 3
+    // conversions commonly carry no add_bos_token key, and reading that as
+    // "no BOS" ran their chat and raw prompts without the token the model
+    // always saw first (the chat template leaves BOS to the tokenizer);
+    // llama.cpp reads a missing key the same way. An explicit key wins.
+    bool bos_default = t->model == TOK_SPM ||
+                       (t->model == TOK_BPE && (strcmp(pre, "llama-bpe") == 0 ||
+                                                strcmp(pre, "tekken") == 0));
+    t->add_bos = gguf_get_bool(g, "tokenizer.ggml.add_bos_token", bos_default);
     t->add_space_prefix = gguf_get_bool(g, "tokenizer.ggml.add_space_prefix", true);
     t->add_eos = gguf_get_bool(g, "tokenizer.ggml.add_eos_token", false);
 
