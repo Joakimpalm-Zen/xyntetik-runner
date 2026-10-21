@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: an IQ4_XS decode microbatch gives single-step bits.** Since IQ4_XS
+  gained its coalesced single-step GEMV (`k_gemv_iq4_xs`, with qwen4exp),
+  its width-classed twins were still the twins of the lane kernel it
+  replaced, a different reduction, so `--parallel` slots decoding an IQ4_XS
+  file together differed from single steps in the last bits. The twins now
+  mirror `k_gemv_iq4_xs` (four rows a warp, as the K-quant twins), and `make
+  test-cuda-batch-identity` runs 256-wide Q4_K, Q6_K and Q4_0 fixtures, and
+  Q5_K and IQ4_XS ones where llama.cpp's quantizer is at hand; no gate had
+  an IQ4_XS file before.
+
 - **CUDA decode twins take several rows a warp.** The decode microbatch
   (`--parallel` slots decoding together) runs width-classed twins of the
   decode GEMVs, each column the single step's bits. They staged every

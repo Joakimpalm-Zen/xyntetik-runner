@@ -1812,18 +1812,31 @@ test-cuda-moe-twin: runner $(TEST_GPU_ID)
 
 # The decode microbatch on CUDA, byte for byte against sequential decode
 # (docs/cuda-microbatch-identity-2026-08-18.md) on the F32, Q8_0 and BF16
-# fixtures and a 256-wide model at Q4_K, with the default routes and with the
-# grouped decode attention off (the two decode attentions the microbatch
-# twins). `make test` runs the
-# F32 case where it builds, which on a Mac is Metal, so until 2026-10-21 no
-# gate held the CUDA microbatch: making the grouped decode attention the
-# default left the microbatch on the old kernel, and no gate saw it. A host
-# without a CUDA device fails here, as a gate that did not run.
+# fixtures and a 256-wide model at Q4_K, Q6_K and Q4_0 (and Q5_K and IQ4_XS
+# where RUNNER_LLAMA_CPP_BIN has llama-quantize), with the default routes and
+# with the grouped decode attention off (the two decode attentions the
+# microbatch twins). `make test` runs the F32 case where it builds, which
+# on a Mac is Metal, so until 2026-10-21 no gate held the CUDA microbatch:
+# making the grouped decode attention the default left the microbatch on the
+# old kernel, and no gate saw it; IQ4_XS's twins were the lane kernels' twins
+# while its single step ran the coalesced GEMV (since #243), and no gate had
+# an IQ4_XS file. A host without a CUDA device fails here, as a gate that did
+# not run.
 test-cuda-batch-identity: runner $(TEST_BATCH_ID) test.gguf test-q8.gguf test-bf16.gguf
 	@set -e; \
 	$(PYTHON) scripts/make-test-model.py --wide test-batch-wide.gguf > /dev/null; \
-	./$(RUNNER_EXE) -m test-batch-wide.gguf --quantize test-batch-wide-q4k.gguf --quant q4_k > /dev/null 2>&1; \
-	for f in test.gguf test-q8.gguf test-bf16.gguf test-batch-wide-q4k.gguf; do \
+	files="test.gguf test-q8.gguf test-bf16.gguf"; \
+	for q in q4_k q6_k q4_0; do \
+	  ./$(RUNNER_EXE) -m test-batch-wide.gguf --quantize test-batch-wide-$$q.gguf --quant $$q > /dev/null 2>&1; \
+	  files="$$files test-batch-wide-$$q.gguf"; \
+	done; \
+	lq=$$(ls "$$RUNNER_LLAMA_CPP_BIN"/llama-quantize* 2>/dev/null | head -1); \
+	if [ -n "$$lq" ]; then \
+	  for q in Q5_K_S IQ4_XS; do \
+	    "$$lq" test-batch-wide.gguf test-batch-wide-$$q.gguf $$q > /dev/null 2>&1 && files="$$files test-batch-wide-$$q.gguf"; \
+	  done; \
+	else echo "test-cuda-batch-identity: no llama-quantize in RUNNER_LLAMA_CPP_BIN, the Q5_K and IQ4_XS twins not exercised"; fi; \
+	for f in $$files; do \
 	  for dec in 1 0; do \
 	    RUNNER_CUDA_ATTN_DEC=$$dec ./$(TEST_BATCH_ID) $$f > test-cuda-batch-identity.out 2>&1 || \
 	      { cat test-cuda-batch-identity.out; echo "test-cuda-batch-identity: $$f attn-dec=$$dec FAILED"; exit 1; }; \

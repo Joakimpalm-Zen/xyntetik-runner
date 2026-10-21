@@ -2372,13 +2372,6 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_gemvx[6][T_IQ3_S], "k_gemvx_iq3_s_x6" },
         { &w->f_gemvx[7][T_IQ3_S], "k_gemvx_iq3_s_x7" },
         { &w->f_gemvx[8][T_IQ3_S], "k_gemvb_iq3_s_x8" },
-        { &w->f_gemvx[2][T_IQ4_XS], "k_gemvx_iq4_xs_x2" },
-        { &w->f_gemvx[3][T_IQ4_XS], "k_gemvx_iq4_xs_x3" },
-        { &w->f_gemvx[4][T_IQ4_XS], "k_gemvb_iq4_xs_x4" },
-        { &w->f_gemvx[5][T_IQ4_XS], "k_gemvx_iq4_xs_x5" },
-        { &w->f_gemvx[6][T_IQ4_XS], "k_gemvx_iq4_xs_x6" },
-        { &w->f_gemvx[7][T_IQ4_XS], "k_gemvx_iq4_xs_x7" },
-        { &w->f_gemvx[8][T_IQ4_XS], "k_gemvb_iq4_xs_x8" },
         // sparse-MoE device routing + indirect expert matvecs
         { &w->f_moe_route,        "k_moe_route" },
         { &w->f_moe_actmul,       "k_moe_actmul" },
@@ -7488,13 +7481,14 @@ static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                  ? g->sw->f_gemvx[batch][w->type]
                  : g->sw->f_gemvb[batch_width_class(batch)][w->type];
     // rows a warp: the codebook i-quant twins take IQ_TWR (2) (kernels.cu),
-    // the K-quant, Q8_0, Q4_0 and BF16 ones KQ_TWR / Q6_TWR / DQ_TWR of their
-    // class width (kernel_args.h)
+    // the K-quant, IQ4_XS, Q8_0, Q4_0 and BF16 ones KQ_TWR / Q6_TWR / DQ_TWR
+    // of their class width (kernel_args.h)
     bool iq2r = w->type == T_IQ2_XXS || w->type == T_IQ2_XS || w->type == T_IQ2_S ||
-                w->type == T_IQ3_XXS || w->type == T_IQ3_S || w->type == T_IQ4_XS;
+                w->type == T_IQ3_XXS || w->type == T_IQ3_S;
     int cls_nc = 4 << batch_width_class(batch);
     unsigned rpw = iq2r ? 2
-                 : w->type == T_Q4_K || w->type == T_Q5_K ? KQ_TWR(cls_nc)
+                 : w->type == T_Q4_K || w->type == T_Q5_K || w->type == T_IQ4_XS
+                   ? KQ_TWR(cls_nc)
                  : w->type == T_Q6_K ? Q6_TWR(cls_nc)
                  : w->type == T_Q8_0 || w->type == T_Q4_0 || w->type == T_BF16
                    ? DQ_TWR(cls_nc) : 1;

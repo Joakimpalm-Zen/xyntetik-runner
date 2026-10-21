@@ -4368,6 +4368,93 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
 #define GEMVB_Q4_K(NAME, NC) GEMVB_KQ(NAME, NC, 144, 16, 0)
 #define GEMVB_Q5_K(NAME, NC) GEMVB_KQ(NAME, NC, 176, 48, 1)
 
+// ---- IQ4_XS: k_gemv_iq4_xs's twin (2026-10-21). The batch-1 decode of
+// IQ4_XS runs that coalesced GEMV (lane L owns elements 8L..8L+7 of a block:
+// sub-block L/4, low or high nibbles of 8 bytes), but its width-classed
+// twins were the codebook family's lane kernels, twins of k_mv_iq4_xs, a
+// different reduction: a decode microbatch or a verify round on an IQ4_XS
+// file differed from single steps in the last bits. Same staging and R rows
+// a warp (KQ_TWR) as the K-quant twins; every (row, column) keeps
+// k_gemv_iq4_xs's expressions in their order.
+#define GEMVB_IQ4XS(NAME, NC)                                                  \
+extern "C" __global__ void NAME(MV_PARAMS) {                                   \
+    __shared__ float xsm[NC][KG8ROW];                                          \
+    enum { R = KQ_TWR(NC) };                                                   \
+    unsigned warp = threadIdx.x >> 5;                                          \
+    unsigned lane = threadIdx.x & 31;                                          \
+    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
+    int nb = a.n_in / 256;                                                     \
+    int nc = a.batch < (NC) ? a.batch : (NC);                                  \
+    float s[R][NC];                                                            \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        _Pragma("unroll") for (int t = 0; t < NC; t++) s[r][t] = 0.0f;         \
+    int ib = (int)(lane >> 2), qd = (int)(lane & 3);                           \
+    int boff = 16 * ib + 8 * (qd & 1);                                         \
+    int hi = qd >= 2;                                                          \
+    int el = (int)lane * KG8PAD;                                               \
+    for (int b = 0; b < nb; b++) {                                             \
+        int base_e = b * 256;                                                  \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            const float *xg = x + (ulong64)t * a.xs + base_e;                  \
+            for (int e = threadIdx.x; e < 256; e += blockDim.x)                \
+                xsm[t][(e >> 3) * KG8PAD + (e & 7)] = xg[e];                   \
+        }                                                                      \
+        __syncthreads();                                                       \
+        float dl[R], w[R][8];                                                  \
+        _Pragma("unroll")                                                      \
+        for (int r = 0; r < R; r++) {                                          \
+            unsigned row = row0 + r;                                           \
+            const uchar *blk = wb + a.w_off +                                  \
+                (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 136 +      \
+                (ulong64)b * 136;                                              \
+            float d = f16f(blk);                                               \
+            unsigned sh = (unsigned)blk[2] | ((unsigned)blk[3] << 8);          \
+            int ls = ((blk[4 + ib / 2] >> 4 * (ib % 2)) & 0xF) |               \
+                     (((sh >> 2 * ib) & 3) << 4);                              \
+            dl[r] = d * (float)(ls - 32);                                      \
+            uint2 qv = *(const uint2 *)(blk + 8 + boff);                       \
+            uint v0 = hi ? (qv.x >> 4) & 0x0F0F0F0Fu : qv.x & 0x0F0F0F0Fu;     \
+            uint v1 = hi ? (qv.y >> 4) & 0x0F0F0F0Fu : qv.y & 0x0F0F0F0Fu;     \
+            w[r][0] = (float)kv_iq4[v0 & 0xFF];                                \
+            w[r][1] = (float)kv_iq4[(v0 >>  8) & 0xFF];                        \
+            w[r][2] = (float)kv_iq4[(v0 >> 16) & 0xFF];                        \
+            w[r][3] = (float)kv_iq4[(v0 >> 24)       ];                        \
+            w[r][4] = (float)kv_iq4[v1 & 0xFF];                                \
+            w[r][5] = (float)kv_iq4[(v1 >>  8) & 0xFF];                        \
+            w[r][6] = (float)kv_iq4[(v1 >> 16) & 0xFF];                        \
+            w[r][7] = (float)kv_iq4[(v1 >> 24)       ];                        \
+        }                                                                      \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            const float *xp = xsm[t] + el;                                     \
+            float x0 = xp[0], x1 = xp[1], x2 = xp[2], x3 = xp[3];              \
+            float x4 = xp[4], x5 = xp[5], x6 = xp[6], x7 = xp[7];              \
+            _Pragma("unroll")                                                  \
+            for (int r = 0; r < R; r++) {                                      \
+                float tt = w[r][0] * x0 + w[r][1] * x1 + w[r][2] * x2          \
+                         + w[r][3] * x3 + w[r][4] * x4 + w[r][5] * x5          \
+                         + w[r][6] * x6 + w[r][7] * x7;                        \
+                s[r][t] += dl[r] * tt;                                         \
+            }                                                                  \
+        }                                                                      \
+        __syncthreads();                                                       \
+    }                                                                          \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        if (row >= (unsigned)a.n_out) continue;                                \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float v = warp_sum(s[r][t]);                                       \
+            if (lane == 0) y[(ulong64)t * a.ys + row] =                        \
+                a.has_bias ? v + bias[row] : v;                                \
+        }                                                                      \
+    }                                                                          \
+}
 
 // ---- Q6_K: k_gemv_q6_K v2 — d factored out of the four-term group, a whole
 // BLOCK reduced into its own accumulator, and those block sums split across
@@ -4719,14 +4806,14 @@ IQ_LANE_MVB(k_gemvb_iq3_xxs_x4, iq3xxs_lane_n, 98, 4)
 IQ_LANE_MVB(k_gemvb_iq3_xxs_x8, iq3xxs_lane_n, 98, 8)
 IQ_LANE_MVB(k_gemvb_iq3_s_x4, iq3s_lane_n, 110, 4)
 IQ_LANE_MVB(k_gemvb_iq3_s_x8, iq3s_lane_n, 110, 8)
-IQ_LANE_MVB(k_gemvb_iq4_xs_x4, iq4xs_lane_n, 136, 4)
-IQ_LANE_MVB(k_gemvb_iq4_xs_x8, iq4xs_lane_n, 136, 8)
+GEMVB_IQ4XS(k_gemvb_iq4_xs_x4, 4)
+GEMVB_IQ4XS(k_gemvb_iq4_xs_x8, 8)
 IQ_LANE_MVB(k_gemvb_iq2_xxs_x16, iq2xxs_lane_n, 66, 16)
 IQ_LANE_MVB(k_gemvb_iq2_xs_x16, iq2xs_lane_n, 74, 16)
 IQ_LANE_MVB(k_gemvb_iq2_s_x16, iq2s_lane_n, 82, 16)
 IQ_LANE_MVB(k_gemvb_iq3_xxs_x16, iq3xxs_lane_n, 98, 16)
 IQ_LANE_MVB(k_gemvb_iq3_s_x16, iq3s_lane_n, 110, 16)
-IQ_LANE_MVB(k_gemvb_iq4_xs_x16, iq4xs_lane_n, 136, 16)
+GEMVB_IQ4XS(k_gemvb_iq4_xs_x16, 16)
 
 // ---- int8-activation codebook GEMVs (RUNNER_CUDA_Q8X=1, EXPERIMENTAL) ------
 // x is quantized once per call to int8 in 32-element blocks (scale amax/127),
@@ -4951,11 +5038,6 @@ IQ_LANE_MVB(k_gemvx_iq3_s_x3, iq3s_lane_n, 110, 3)
 IQ_LANE_MVB(k_gemvx_iq3_s_x5, iq3s_lane_n, 110, 5)
 IQ_LANE_MVB(k_gemvx_iq3_s_x6, iq3s_lane_n, 110, 6)
 IQ_LANE_MVB(k_gemvx_iq3_s_x7, iq3s_lane_n, 110, 7)
-IQ_LANE_MVB(k_gemvx_iq4_xs_x2, iq4xs_lane_n, 136, 2)
-IQ_LANE_MVB(k_gemvx_iq4_xs_x3, iq4xs_lane_n, 136, 3)
-IQ_LANE_MVB(k_gemvx_iq4_xs_x5, iq4xs_lane_n, 136, 5)
-IQ_LANE_MVB(k_gemvx_iq4_xs_x6, iq4xs_lane_n, 136, 6)
-IQ_LANE_MVB(k_gemvx_iq4_xs_x7, iq4xs_lane_n, 136, 7)
 
 // ---------------------------------------------------------------- elementwise
 // grid.y = token column for k_add (different x/d strides); silu operates on
