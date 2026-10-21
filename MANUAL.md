@@ -2198,7 +2198,12 @@ threads, AVX-512): 1.31x decode on code and 1.08x on prose at `--draft-k 1` with
 first draft; wider windows lose on this hybrid model because every divergent round
 re-folds its recurrent state, and a 4-core AVX2 desktop is compute-bound in the dot
 itself and decodes SLOWER with `--mtp` at every width. Numbers, the profile, and the two
-walk fixes it took are in `docs/performance.md`.
+walk fixes it took are in `docs/performance.md`. With every layer on a CUDA device
+`--mtp` is slower than plain decoding on Qwen3.5 too: on an RTX 3070 (Qwen3.5-4B
+Q4_K_M, 256 greedy tokens, three prompts, 2026-10-21) plain decode runs at 84 tok/s
+and `--mtp` at 54 to 74 while accepting 2.8 to 3.7 tokens a round: a verify
+round costs more than the plain steps of the tokens it accepts. The text is the
+plain path's either way.
 
 <a id="cli-draft-lookup"></a>
 #### `--draft-lookup`
