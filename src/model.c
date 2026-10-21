@@ -4759,8 +4759,9 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
     m->att    = malloc(sizeof(float) * (size_t)m->n_head * n_ctx);
     m->logits = malloc(sizeof(float) * m->n_vocab);
     m->spec_batch = 16; // all_logits rows, allocated lazily on first use
-    // RUNNER_SPEC_BATCH (1-64): the rows a verify or chunked --score forward
-    // carries, for scoring at a device's real prefill widths (a 16-row chunk
+    // RUNNER_SPEC_BATCH (1-64): the rows a chunked --score forward carries
+    // (a verify round stays inside the engine's 16-row draft window), for
+    // scoring at a device's real prefill widths (a 16-row chunk
     // gives a 128-expert MoE about one column an expert, so expert paths
     // that take the batched GEMM from two or more columns never ran in a
     // fidelity run). A wider chunk changes which MoE paths a tile admits, as

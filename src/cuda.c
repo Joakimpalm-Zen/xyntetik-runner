@@ -5566,7 +5566,8 @@ static bool moe_twin_gemm(gpu_t *g, model_t *m, gguf_tensor *w, bool expert,
         bool ok;
         if (lane_q40) {
             // k_moe_mv_q4_0's own body: k_mv_q4_0 for one column (4 rows a
-            // block, as enc_mv launches it), its twins for 2 to 8
+            // block; enc_mv launches it at 8, and a row's bits do not depend
+            // on the rows a block holds), its twins for 2 to 8
             mv_args a = { n_in, n_out, w_off, false, wd, xs, ys };
             void *p[] = { &weights, &xc, &yc, &a, &nob };
             ok = wd == 1

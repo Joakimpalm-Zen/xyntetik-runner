@@ -405,7 +405,9 @@ int main(int argc, char **argv) {
     //
     // `quiet` names a switch held at 0 for both arms of a pair: one that
     // would otherwise take the pair's tiles from both routes, so a gate run
-    // with every opt-in on still compares what the pair names.
+    // with every opt-in on still compares what the pair names. A route pin
+    // (--gpu-route or RUNNER_CUDA_ROUTE naming moe-grouped) decides before
+    // the switch; a run that pins it gets "never ran on this file".
     struct { const char *env, *what; void (*force)(int); unsigned long (*count)(void); bool tc;
              const char *quiet; } pairs[] = {
         { "GPU_ID_RECUR", "whole-tile recurrent prefill", gpu_recur_seq_force, gpu_recur_seq_dispatches, false, NULL },
