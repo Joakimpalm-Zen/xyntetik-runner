@@ -937,6 +937,7 @@ void gpu_route_pin(int mask) { (void)mask; }             // CUDA's arithmetic ro
 int gpu_route_active(const model_t *m) { (void)m; return 0; }
 void gpu_recur_seq_force(int on) { (void)on; }          // CUDA's whole-tile recurrent kernels
 unsigned long gpu_recur_seq_dispatches(void) { return 0; }
+unsigned long gpu_exact_verify_tiles(void) { return 0; }  // CUDA's exact verify rows
 unsigned long gpu_tc_dispatches(void) { return g_tc_dispatches; }
 // per weight type, both tiled branches (tensor and mm) counted together
 enum { MM_TYPE_N = 64 };
@@ -2871,6 +2872,37 @@ static void metal_handoff_boundary(model_t *m, int n) {
     memcpy(m->x, g->x.contents, sizeof(float) * (size_t)n * m->n_embd);
 }
 
+// A speculative verify round (model_forward_verify): the walk's tokens are
+// the plain path's only if each row is a solo step's bits, and for n > 1 the
+// encoder takes other kernels than a decode step (the fused decode stages,
+// the decode attention variants), so a round's rows differ from its steps
+// in the last bits (measured on the fixtures: from the first 2-row round).
+// So the round runs as its solo steps, in order, each writing its KV row
+// before the next reads it, as decoding would; the rows' logits (or, on a
+// partial split, their boundary activations) are kept for the walk.
+static float *metal_forward_rows(model_t *m, const int32_t *tokens, int n, int pos,
+                                 bool partial) {
+    gpu_t *g = (gpu_t *)m->gpu;
+    size_t nv = (size_t)m->n_vocab;
+    float *rows = partial ? NULL : malloc(sizeof(float) * nv * (size_t)n);
+    if (!partial && !rows) return NULL;
+    float *lg = NULL;
+    for (int c = 0; c < n; c++) {
+        lg = gpu_forward_native_batch(m, tokens + c, 1, pos + c);
+        if (!lg) { free(rows); return NULL; }
+        if (partial || (m->want_hidden && !m->hyper_conn))
+            memcpy(m->x + (size_t)c * m->n_embd, g->x.contents,
+                   sizeof(float) * (size_t)m->n_embd);
+        if (rows) memcpy(rows + (size_t)c * nv, lg, sizeof(float) * nv);
+    }
+    if (rows) {
+        memcpy(g->logits.contents, rows, sizeof(float) * nv * (size_t)n);
+        free(rows);
+        lg = (float *)g->logits.contents + (size_t)(n - 1) * nv;
+    }
+    return lg;
+}
+
 bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                        bool want_logits, float **logits) {
     // One encoder for every n, decode included. There used to be a second,
@@ -2885,14 +2917,16 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
         return false;
     }
     bool partial = m->gpu_layers > 0 && m->gpu_layers < m->n_layer;
-    float *lg = gpu_forward_native_batch(m, tokens, n, pos);
+    bool rows = m->spec_exact && n > 1;
+    float *lg = rows ? metal_forward_rows(m, tokens, n, pos, partial)
+                     : gpu_forward_native_batch(m, tokens, n, pos);
     if (!lg) return false;
     if (partial) {
-        metal_handoff_boundary(m, n);
+        if (!rows) metal_handoff_boundary(m, n);
         if (logits) *logits = NULL;
         return true;
     }
-    if (m->want_hidden && !m->hyper_conn) metal_handoff_boundary(m, n);
+    if (m->want_hidden && !m->hyper_conn && !rows) metal_handoff_boundary(m, n);
     if (logits) *logits = want_logits ? lg : NULL;
     return true;
 }

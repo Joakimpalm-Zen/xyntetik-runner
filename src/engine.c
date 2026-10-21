@@ -237,7 +237,9 @@ static void spec_fold_sync(engine *e, const int32_t *d, int acc, int nd,
     // the accepted drafts), so the state after row acc-1
     if (acc >= 1 && model_recurrent_restore_row(m, acc - 1)) return;
     if (model_recurrent_restore(m, round_pos)) {
-        if (acc > 0) model_forward_batch(m, d, acc, round_pos, false);
+        // the kept rows again, as the verify computed them: the solo steps'
+        // arithmetic, so the fold is the plain path's
+        if (acc > 0) model_forward_refold(m, d, acc, round_pos);
         return;
     }
     model_recurrent_reset(m);
@@ -1321,8 +1323,8 @@ model_t *spec_draft_load(const char *path, const model_t *target,
         // a recurrent layer on the device (no host-visible fold rollback), or
         // a full offload whose backend cannot hand the walk its rows
         // (gpu_spec_keep_ok). Metal and CUDA full offload pass: the forward
-        // emits every row's head for the walk (on CUDA through the batched
-        // kernels, so the walk is target-exact only up to near-ties there).
+        // emits every row's head for the walk, each row the solo step's bits
+        // (model_forward_verify), so the walk is target-exact there too.
         fprintf(stderr, "draft: this target's backend cannot serve the "
                 "speculative verify walk (device-resident recurrent state "
                 "under a partial split) — ignoring --draft\n");
@@ -2683,7 +2685,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         // token instead: plain decoding, one row.
         float *row0 = NULL;
         if (prof) tp = now_s();
-        if (!model_forward_batch_keep(m, b, nb, e->pos)) {
+        if (!model_forward_verify(m, b, nb, e->pos)) {
             nd = 0; nb = 1;
             row0 = model_forward(m, cur, e->pos);
         }

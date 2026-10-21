@@ -5199,6 +5199,8 @@ typedef struct {
     const void *xq;   // int8-quantized activations, or NULL for the f32 route
     size_t xq_stride; // bytes between quantized columns (small batches)
     const float *xs;  // per-32 sums of x for vec_dot_xs (one column), or NULL
+    bool exact;       // a verify round's columns: the per-column route up to
+                      // VEC_DOT_MULTI_MAX wide (matvec_b, t_mv_exact)
 } mv_job;
 
 // Batches narrower than this take the per-column native dot (see mv_rows);
@@ -5214,7 +5216,7 @@ static void mv_rows(void *ctx, int i0, int i1) {
     // the weights, so dot(w * s, x) = s * dot(w, x), before the bias.
     const float sc = j->w->scale;
 
-    if (j->n_batch < MV_SMALL_BATCH) {
+    if (j->n_batch < MV_SMALL_BATCH || (j->exact && j->n_batch <= VEC_DOT_MULTI_MAX)) {
         // Solo step and small batches (the speculative verify, a few server
         // slots decoding together): every column takes the SAME native dot
         // the solo step takes, rows outer so a weight row is streamed from
@@ -5404,11 +5406,33 @@ static const float *mv_xsums(const gguf_tensor *w, const float *x, int n_in,
     return xs;
 }
 
+// A speculative verify round (model_forward_verify) on this thread: its rows
+// are the walk's tokens only if each is the solo step's bits, and a batch of
+// MV_SMALL_BATCH or more columns takes the dequantized f32 tile, whose sums
+// run in another order. So the round's projections take the per-column route
+// (every column the solo step's dot, each weight block decoded once for all
+// of them), VEC_DOT_MULTI_MAX columns a pass. With the int8 activations
+// pinned on, the solo step's route is the int8 dot, which the per-column
+// route takes below MV_SMALL_BATCH only (mv_takes_i8).
+static _Thread_local bool t_mv_exact;
+static int mv_exact_cols(void) {
+    return i8_dot_enabled() ? MV_SMALL_BATCH - 1 : VEC_DOT_MULTI_MAX;
+}
+
 static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
                      const float *x, int x_stride, int n_in, int n_out,
                      const float *bias, int n_batch) {
+    int ec = mv_exact_cols();
+    if (t_mv_exact && n_batch > ec) {
+        for (int c = 0; c < n_batch; c += ec) {
+            int cn = n_batch - c < ec ? n_batch - c : ec;
+            matvec_b(tp, y + (size_t)c * y_stride, y_stride, w, x + (size_t)c * x_stride,
+                     x_stride, n_in, n_out, bias, cn);
+        }
+        return;
+    }
     mv_job j = { w, x, bias, y, n_in, n_batch, x_stride, y_stride,
-                 ggml_row_size(w->type, n_in), NULL, 0, NULL };
+                 ggml_row_size(w->type, n_in), NULL, 0, NULL, t_mv_exact };
     void *xq = NULL;
     float xs_stack[MV_XS_STACK], *xs_heap = NULL;
     if (mv_takes_i8(w, n_in, n_out, n_batch) &&
@@ -5470,6 +5494,20 @@ static bool mv_fuse_enabled(void) {
 
 static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
                            int x_stride, int n_in, int n_batch) {
+    int ec = mv_exact_cols();
+    if (t_mv_exact && n_batch > ec && np <= MV_MAX_PARTS) {
+        // a verify round: in chunks the per-column route takes (matvec_b)
+        for (int c = 0; c < n_batch; c += ec) {
+            int cn = n_batch - c < ec ? n_batch - c : ec;
+            mv_part pc[MV_MAX_PARTS];
+            for (int s = 0; s < np; s++) {
+                pc[s] = p[s];
+                pc[s].y = p[s].y + (size_t)c * p[s].y_stride;
+            }
+            matvec_b_parts(tp, pc, np, x + (size_t)c * x_stride, x_stride, n_in, cn);
+        }
+        return;
+    }
     if (np == 1 || !mv_fuse_enabled()) {
         for (int s = 0; s < np; s++)
             matvec_b(tp, p[s].y, p[s].y_stride, p[s].w, x, x_stride, n_in,
@@ -5486,7 +5524,8 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
     bool xs_tried = false;
     for (int s = 0; s < np; s++) {
         mv_job j = { p[s].w, x, p[s].bias, p[s].y, n_in, n_batch, x_stride,
-                     p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL };
+                     p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL,
+                     t_mv_exact };
         if (mv_takes_i8(p[s].w, n_in, p[s].n_out, n_batch)) {
             if (!xq_tried) {
                 xq = mv_quant_act(x, x_stride, n_in, n_batch);
@@ -5533,7 +5572,8 @@ static void matvec_b_parts_x(tpool *tp, const mv_part *p, const float *const *xs
             xsum = malloc(sizeof(float) * (size_t)np * (size_t)(n_in / 32));
     for (int s = 0; s < np; s++) {
         mv_job j = { p[s].w, xs[s], p[s].bias, p[s].y, n_in, 1, n_in,
-                     p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL };
+                     p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL,
+                     false };
         if (mv_takes_i8(p[s].w, n_in, p[s].n_out, 1)) {
             xq[s] = mv_quant_act(xs[s], n_in, n_in, 1);
             if (xq[s]) { j.xq = xq[s]; j.xq_stride = i8_act_size(n_in); }
@@ -11140,6 +11180,23 @@ bool model_forward_batch_keep(model_t *m, const int32_t *tokens, int n, int pos)
     model_forward_batch(m, tokens, n, pos, false); // leaves hidden states in x
     m->spec_want_all = 0;
     return true;
+}
+
+bool model_forward_verify(model_t *m, const int32_t *tokens, int n, int pos) {
+    m->spec_exact = true;
+    t_mv_exact = true;
+    bool ok = model_forward_batch_keep(m, tokens, n, pos);
+    t_mv_exact = false;
+    m->spec_exact = false;
+    return ok;
+}
+
+void model_forward_refold(model_t *m, const int32_t *tokens, int n, int pos) {
+    m->spec_exact = true;
+    t_mv_exact = true;
+    model_forward_batch(m, tokens, n, pos, false);
+    t_mv_exact = false;
+    m->spec_exact = false;
 }
 
 // logits for one row of the last model_forward_batch_keep — computed lazily

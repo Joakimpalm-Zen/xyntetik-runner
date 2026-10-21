@@ -178,6 +178,7 @@ TEST_ATTN_TOL = $(TEST_BATCH:test-batch%=test-attn-tol%)
 TEST_GPU_ID = $(TEST_BATCH:test-batch%=test-gpu-identity%)
 TEST_MOE_MM_AB = $(TEST_BATCH:test-batch%=test-moe-mm-ab%)
 TEST_BATCH_ID = $(TEST_BATCH:test-batch%=test-batch-identity%)
+TEST_SPEC_ID = $(TEST_BATCH:test-batch%=test-spec-identity%)
 TEST_ATTN_SPLIT = $(TEST_BATCH:test-batch%=test-attn-split-bin%)
 TEST_MOE_TOL = $(TEST_BATCH:test-batch%=test-moe-tol%)
 TEST_MOE_ROUTER = $(TEST_BATCH:test-batch%=test-moe-router%)
@@ -1048,6 +1049,13 @@ TEST_BATCH_ID_SRC = tests/test_batch_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compa
 $(TEST_BATCH_ID): $(TEST_BATCH_ID_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_BATCH_ID_SRC) -o $@ $(LDFLAGS)
 
+# Speculative verify rows vs solo decode steps: byte identity on every row of
+# rounds 2..16 wide with rewinds (tests/test_spec_identity.c).
+TEST_SPEC_ID_SRC = tests/test_spec_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+$(TEST_SPEC_ID): $(TEST_SPEC_ID_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_SPEC_ID_SRC) -o $@ $(LDFLAGS)
+
 # Split attention (R3.1.7): the (head, chunk) / (head, slice) split is
 # bit-identical to the head-parallel path at 1-7 threads, forced and
 # automatic, solo and batched, on every cache kind and attention variant:
@@ -1846,6 +1854,44 @@ test-cuda-batch-identity: runner $(TEST_BATCH_ID) test.gguf test-q8.gguf test-bf
 	  done; \
 	done
 
+# A speculative verify round's rows on CUDA, byte for byte against solo
+# decode steps (tests/test_spec_identity.c, rounds 2 to 16 rows with the
+# walk's rollback): the dense fixtures (F32, Q8_0, BF16), a 256-wide model at
+# Q4_K and Q6_K (and IQ4_XS / IQ3_S where RUNNER_LLAMA_CPP_BIN has
+# llama-quantize), the MoE ones (Q8_0, Q4_0, gpt-oss MXFP4, gemma-4's dual
+# branch), the Gated DeltaNet tracer and a dense Mamba-2 hybrid, with the
+# default routes, then the grouped MoE prefill and the grouped decode
+# attention forced each way. Until 2026-10-21 a CUDA verify row ran the
+# prompt kernels, so a drafted run equalled the plain one only up to
+# near-ties (4 of 12 runs differed on the MoE pairs).
+SPEC_ID_RUN = ./$(TEST_SPEC_ID) $$f > test-cuda-spec-identity.out 2>&1 || { cat test-cuda-spec-identity.out; exit 1; }; \
+	  if grep -q 'cpu,\|skipped' test-cuda-spec-identity.out; then \
+	    cat test-cuda-spec-identity.out; echo "test-cuda-spec-identity: skipped (no CUDA device for $$f)"; exit 1; fi; \
+	  echo "$$f $$env: $$(tail -1 test-cuda-spec-identity.out)"
+test-cuda-spec-identity: runner $(TEST_SPEC_ID) test.gguf test-q8.gguf test-bf16.gguf test-ornith-draft.gguf
+	@set -e; \
+	$(PYTHON) scripts/make-test-moe.py test-spec-moe > /dev/null; \
+	./$(RUNNER_EXE) -m test-spec-moe.moe4.gguf --quantize test-spec-moe-q8.gguf --quant q8_0 > /dev/null 2>&1; \
+	./$(RUNNER_EXE) -m test-spec-moe.moe4.gguf --quantize test-spec-moe-q40.gguf --quant q4_0 > /dev/null 2>&1; \
+	./$(RUNNER_EXE) -m test-spec-moe.gemma4-moe.gguf --quantize test-spec-moe-g4.gguf --quant q8_0 > /dev/null 2>&1; \
+	$(PYTHON) scripts/make-test-model.py --wide test-spec-wide.gguf > /dev/null; \
+	./$(RUNNER_EXE) -m test-spec-wide.gguf --quantize test-spec-wide-q4k.gguf --quant q4_k > /dev/null 2>&1; \
+	./$(RUNNER_EXE) -m test-spec-wide.gguf --quantize test-spec-wide-q6k.gguf --quant q6_k > /dev/null 2>&1; \
+	$(PYTHON) scripts/make-test-hybrid.py test-spec-hybrid --dense --rope > /dev/null; \
+	files="test.gguf test-q8.gguf test-bf16.gguf test-spec-wide-q4k.gguf test-spec-wide-q6k.gguf \
+	       test-spec-moe-q8.gguf test-spec-moe-q40.gguf test-spec-moe.gptoss-mxfp4.gguf test-spec-moe-g4.gguf \
+	       test-ornith-draft.gguf test-spec-hybrid.gguf"; \
+	lq=$$(ls "$$RUNNER_LLAMA_CPP_BIN"/llama-quantize* 2>/dev/null | head -1); \
+	if [ -n "$$lq" ]; then \
+	  for q in IQ4_XS IQ3_S; do \
+	    "$$lq" test-spec-wide.gguf test-spec-wide-$$q.gguf $$q > /dev/null 2>&1 && files="$$files test-spec-wide-$$q.gguf"; \
+	  done; \
+	else echo "test-cuda-spec-identity: no llama-quantize in RUNNER_LLAMA_CPP_BIN, the IQ twins not exercised"; fi; \
+	env=default; for f in $$files; do $(SPEC_ID_RUN); done; \
+	env=RUNNER_MOE_GROUPED=1; f=test-spec-moe-q8.gguf; export RUNNER_MOE_GROUPED=1; $(SPEC_ID_RUN); unset RUNNER_MOE_GROUPED; \
+	export RUNNER_CUDA_ATTN_DEC=0; env=RUNNER_CUDA_ATTN_DEC=0; \
+	for f in test-q8.gguf test-spec-moe.gptoss-mxfp4.gguf; do $(SPEC_ID_RUN); done
+
 # Per-layer FFN widths on CUDA (the gemma-4 E2B export shape: widths that
 # alternate between layers, an ARRAY-typed feed_forward_length): the device
 # runs each layer at its own width against the CPU at logit precision, in
@@ -2431,7 +2477,7 @@ test-metal:
 test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_DPO_GRAD) $(TEST_MVT) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
-      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_ATTN_SPLIT) $(TEST_BIND) $(TEST_HOST_HEADER) \
+      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_SPEC_ID) $(TEST_ATTN_SPLIT) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) test-lora.full.gguf \
@@ -2679,6 +2725,8 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(MAKE) --no-print-directory test-shader-embed
 	$(MAKE) --no-print-directory test-metal PYTHON="$(PYTHON)"
 	./$(TEST_BATCH_ID) test.gguf
+	@for f in test.gguf test-q8.gguf test-bf16.gguf; do \
+	  ./$(TEST_SPEC_ID) $$f || exit 1; ./$(TEST_SPEC_ID) $$f cpu || exit 1; done
 	$(MAKE) --no-print-directory test-attn-split
 	$(PYTHON) scripts/check-generated.py
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
@@ -3009,14 +3057,15 @@ CUDA_GATED_TESTS = tests/test_apertus.py tests/test_gpu_declines.py \
                    tests/test_moe.py tests/test_ornith_cpu.py tests/test_train.py \
                    tests/test_bench_json.py tests/test_clef.py \
                    tests/test_remove_sublayer.py tests/test_lora_qwen35.py \
-                   tests/test_transcript.py tests/test_server_sessions.py
+                   tests/test_transcript.py tests/test_spec_gpu.py \
+                   tests/test_server_sessions.py
 test-cuda-gated: runner
 	@mkdir -p .build/ci
 	$(PYTHON) -m pytest -q -rs --junitxml=.build/ci/cuda-gated.xml $(CUDA_GATED_TESTS)
 	$(PYTHON) scripts/check-junit.py --no-skips-matching '(?i)cuda|device|gpu' \
 	    --allow-skip 'CUDA runtime is available' .build/ci/cuda-gated.xml
 
-.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-qwen4exp test-ts-client test-cuda-gated test-cuda-batch-identity
+.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-qwen4exp test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity
 .PHONY: test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # The TypeScript client (R10.7): type-checked with the pinned compiler and run

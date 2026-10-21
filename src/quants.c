@@ -3864,7 +3864,7 @@ void vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
     if (nc < 1) return;
     atomic_fetch_add_explicit(&g_vdm_calls, 1, memory_order_relaxed);
     if (nc > VEC_DOT_MULTI_MAX) {
-        // never asked for (mv_rows caps at MV_SMALL_BATCH); stay correct anyway
+        // never asked for (mv_rows caps its columns at this); stay correct anyway
         for (int c = 0; c < nc; c++) out[c] = vec_dot(type, row, xs[c], n);
         return;
     }

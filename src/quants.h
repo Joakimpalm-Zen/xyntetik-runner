@@ -153,6 +153,8 @@ float  vec_dot_i8(int type, const void *row, const void *xq, int n);
 // One weight row against up to VEC_DOT_MULTI_MAX activation columns, each
 // output byte-equal to vec_dot(type, row, xs[c], n): the weight block is
 // decoded once for every column (the small-batch win for codebook quants).
+// Eight: sixteen measured slower on an M1 (a 13-row verify round, 17.4 vs
+// 19.0 tok/s): the per-column accumulators spill.
 #define VEC_DOT_MULTI_MAX 8
 void   vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
                      int n, float *out);

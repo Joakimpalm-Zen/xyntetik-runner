@@ -2156,24 +2156,27 @@ Same-vocabulary draft GGUF for speculative decoding in one-shot, chat, or single
 serve mode. A draft is refused at load on a vocabulary mismatch, on a partial CUDA split
 that puts a recurrent layer on the device (the verify walk's rollback checkpoints the
 host fold), or out of memory, and is dropped in swap mode; the run continues without it.
-On the CPU a verify row takes the same dot as the solo step, so the output is the plain
-path's by construction. Unified-memory Metal full offload is target-exact too, gated
-byte-identical against the plain path, but measure before relying on it there: on Apple
-Silicon the batched verify costs roughly a full decode step per column, because the
-dequant ALU that hides under the bandwidth floor at batch 1 becomes the critical path
-with columns added, and a measured large dense target with a small draft decoded slower
-speculative than plain despite a good acceptance rate; the root cause is in
-docs/metal-decode-dispatch-budget-2026-09-01.md. With every layer on a CUDA device the
-verify rows run the batched prompt kernels, which add in another order than the
-one-token decode kernels, so the output is the target's only up to near-ties: on a
-datacenter MIG slice (2026-10-20, greedy, 256 tokens, three prompts, two builds) the
-drafted text equalled the plain text in all 12 runs on the dense and MTP pairs, and
-differed in 4 of 12 runs on the mixture-of-experts pairs (Qwen3-30B-A3B with a
-Qwen3-0.6B draft, gpt-oss-20b with `--draft-lookup`), where routing amplifies the
-rounding. Speculation decoded at 0.3 to 0.9x of plain decoding's speed in 23 of those
-24 runs (the other's plain run was slowed by other load on the host), and below plain
-on an RTX 3070 with prompt lookup and the MTP head. The same holds for `--mtp` and
-`--draft-lookup` on a CUDA target. In serve mode `GET
+The output is the plain path's on every backend, bit for bit: the draft only proposes,
+and each row of the target's verify round is computed as a single decode step at that
+position computes it (on the CPU the step's own dot per column, on Metal the decode step
+itself row by row, on CUDA the decode kernels' multi-row twins, up to 16 rows a pass),
+as is the re-fold after a recurrent model rolls a round back. `test-spec-identity` (in
+`make test`) and `make test-cuda-spec-identity` hold every row of rounds 2 to 16 rows
+wide byte-identical to single steps on dense, mixture-of-experts and recurrent fixtures.
+Until 2026-10-21 a CUDA round ran the batched prompt kernels, a Metal round other kernels
+from its second row, and a CPU round of 8 or more rows the batched f32 tile, so drafted
+output could differ from plain decoding at near-ties (4 of 12 runs on the
+mixture-of-experts pairs of a datacenter MIG slice). Measure before relying on the speed:
+on Apple Silicon a verify row costs about a decode step, because the dequant ALU that
+hides under the bandwidth floor at batch 1 becomes the critical path with columns added,
+and a large dense target with a small draft decoded slower speculative than plain
+despite a good acceptance rate (docs/metal-decode-dispatch-budget-2026-09-01.md); on the
+CPU a wide round costs its per-column dots; on an RTX 3070 it pays where most of a
+window is accepted and costs where little is: `--draft-lookup` on an input-grounded
+prompt decodes Qwen3-4B at 143 tok/s against 103 plain and Qwen2.5-7B at 84 against 71,
+but where about one token a round is accepted Qwen3-4B runs at 93-94 against 106; a
+Qwen2.5-7B target with a 1.5B draft model runs at 65 against 71, and the Qwen3.5-4B MTP
+head at 54 against 79. The same holds for `--mtp` and `--draft-lookup`. In serve mode `GET
 /v1/capabilities` reports whether the draft is actually `active`, so a harness never
 measures the fallback as speculative decoding.
 
@@ -2186,10 +2189,9 @@ Single-model serving preserves the head and draft width after `/unload`, `keep_a
 (`<arch>.nextn_predict_layers = 1`, as the MTP-preserved Qwen3.5/3.6 GGUFs do); the head
 runs on the CPU, and on CUDA when the whole trunk is on the device (a partial split is
 refused with an error naming `--gpu off`), on dense-attention or Gated DeltaNet
-backbones. On the CPU the output is token-identical to plain decoding: the head only
-proposes, the target's verify walk decides, and a verify row is computed with the same
-dot the solo step uses, so the agreement is by construction; on CUDA see
-[`--draft`](#cli-draft) (the verify rows run the batched kernels). Measured 2026-09-02 on Qwen3.5-4B Q8_0 (32
+backbones. The output is the plain path's on every backend: the head only proposes,
+the target's verify walk decides, and each verify row is a single decode step's bits
+(see [`--draft`](#cli-draft)). Measured 2026-09-02 on Qwen3.5-4B Q8_0 (32
 threads, AVX-512): 1.31x decode on code and 1.08x on prose at `--draft-k 1` with
 `RUNNER_CPU_I8=1`, 1.17x and parity on the default f32 route, acceptance 75-94% for the
 first draft; wider windows lose on this hybrid model because every divergent round
@@ -2206,10 +2208,10 @@ far, n from 5 down to 3, longest match first) are searched for in the context it
 and the tokens that followed their most recent earlier occurrence are proposed, up to
 `--draft-k`; no match proposes nothing, so that round is plain decoding plus one integer
 search. Good for input-grounded output: repeating or quoting a document, summaries that
-reuse the source's wording, small code edits, tool results echoed back. On the CPU and
-Metal the output is token-identical to plain decoding, greedy and seeded alike, because
-the target's verify walk decides every token (on a fully offloaded CUDA target, up to
-near-ties: see [`--draft`](#cli-draft)) (pinned in `make test` on three prompt shapes; the search
+reuse the source's wording, small code edits, tool results echoed back. The output is
+the plain path's on every backend, greedy and seeded alike, because the target's verify
+walk decides every token from rows that are single decode steps' bits (see
+[`--draft`](#cli-draft); pinned in `make test` on three prompt shapes; the search
 itself is pinned against hand-computed proposals). One draft source per run: combining
 it with `--draft` or `--mtp` is refused at startup rather than silently ignored; grammar
 fast-forward still composes, as it does with the others. In serve mode a request may

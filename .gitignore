@@ -25,6 +25,7 @@ test-iq-decode
 test-iq-decode.exe
 tc-overflow.out
 test-cuda-batch-identity.out
+test-cuda-spec-identity.out
 test-json-schema
 test-json-schema.exe
 test-sval-walk
@@ -58,6 +59,8 @@ test-host-header.exe
 test-batch
 test-batch-identity
 test-batch-identity.exe
+test-spec-identity
+test-spec-identity.exe
 test-batch.exe
 test-prefix
 test-prefix.exe

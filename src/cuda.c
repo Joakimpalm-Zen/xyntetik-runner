@@ -405,8 +405,8 @@ static const char *cu_err(CUresult r) {
 // simply runs the smallest one that covers it. Two classes are enough: the
 // step cost is flat within a class, so the only widths that pay for a column
 // they are not using are 3 (runs 4-wide) and 5..7 (run 8-wide).
-// BW_16 takes 9 to 16 columns; the decode microbatch and the small-batch
-// routing stay within BW_8
+// BW_16 serves only a speculative verify round's 9 to 16 rows (exact_rows);
+// the decode microbatch and the small-batch routing stay within BW_8
 enum { BW_4 = 0, BW_8 = 1, BW_16 = 2, BW_N = 3 };
 static inline int batch_width_class(int n) { return n <= 4 ? BW_4 : n <= 8 ? BW_8 : BW_16; }
 enum { GPU_SMALL_BATCH = 8 };   // the widest f_gemvb class (BW_8): small-batch routing in enc_mv
@@ -557,6 +557,12 @@ typedef struct {
     gpu_weights *sw;                    // shared weights, refcounted
     CUdeviceptr kc, vc;
     CUdeviceptr x, xb, xb2, q, kt, vt, hb, hb2, att, attn_part, logits;
+    // a speculative verify round (model_forward_verify) runs its tile in the
+    // one-token decode arithmetic per row (exact_rows); its decode attention
+    // reads each row's position and cache from these, as the microbatch's
+    // per-column arrays (MVB entries)
+    bool        exact_rows;
+    CUdeviceptr vcol_pos, vcol_kcp, vcol_vcp;
     CUdeviceptr q8x_q, q8x_d;   // RUNNER_CUDA_Q8X: int8 x [MVB][q8x_cap] and its per-32 scales
     int q8x_cap;
     CUdeviceptr x_hc, hc_xn, hc_lo, hc_gate, hc_inject;  // qwen4exp wide residual + mixer scratch
@@ -3344,6 +3350,9 @@ static bool cuda_alloc_activations(model_t *m, gpu_t *g, const cuda_dims *D) {
         CK(cu.MemAlloc(&g->shexp_gate, sizeof(float) * (size_t)g->win));
     }
     CK(cu.MemAlloc(&g->att,    sizeof(float) * ATT_COLS * (size_t)m->n_head * m->n_ctx));
+    CK(cu.MemAlloc(&g->vcol_pos, sizeof(int) * MVB));
+    CK(cu.MemAlloc(&g->vcol_kcp, sizeof(uint64_t) * MVB));
+    CK(cu.MemAlloc(&g->vcol_vcp, sizeof(uint64_t) * MVB));
     // flash-decoding partials: per (token, head, split) -> hd weighted-V + max + sum
     CK(cu.MemAlloc(&g->attn_part, sizeof(float) * MVB * (size_t)m->n_head *
                                   ATTN_SPLITS * (max_hd + 2)));
@@ -4272,9 +4281,48 @@ static bool gpu_small_batch_on(void) {
     return on > 0;
 }
 
+// The batch-1 routes with no width-classed twin: the int8-activation GEMV
+// (RUNNER_CUDA_Q8X) and BF16's split-K for a few long rows. enc_mv takes
+// them in this order; a row of an exact-rows tile (a speculative verify
+// round) on such a tensor runs the batch-1 call itself.
+static bool mv_route_q8x(const gpu_t *g, const gguf_tensor *w, int n_in, int batch) {
+    return batch >= 1 && batch <= 8 && w->scale == 1.0f && g->q8x_q &&
+           n_in <= g->q8x_cap && n_in % 256 == 0 && g->sw->f_q8x[batch][w->type];
+}
+static bool mv_route_splitk(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out) {
+    return w->type == T_BF16 && w->scale == 1.0f && g->splitk &&
+           n_out <= 1024 && n_in >= 2048 && g->sw->f_mv_bf16_splitk;
+}
+
 static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                    CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias,
                    int batch, int xs, int ys) {
+    // Exact rows (a speculative verify round, model_forward_verify): every
+    // column the batch-1 call's bits. Up to sixteen columns a pass through
+    // the width-classed twins where the batch-1 route is the GEMV they twin
+    // (the decode microbatch's contract; eight where a type has no 16-wide
+    // twin), else the batch-1 call a column.
+    if (batch > 1 && g->exact_rows) {
+        bool twin = w->scale == 1.0f && !mv_route_q8x(g, w, n_in, 1) &&
+                    !mv_route_splitk(g, w, n_in, n_out);
+        int step = g->sw->f_gemvb[BW_16][w->type] ? 16 : GPU_SMALL_BATCH;
+        for (int c0 = 0; c0 < batch; c0 += step) {
+            int cn = batch - c0 < step ? batch - c0 : step;
+            CUdeviceptr xc = x + (size_t)c0 * xs * sizeof(float);
+            CUdeviceptr yc = y + (size_t)c0 * ys * sizeof(float);
+            if (cn > 1 && twin && g->sw->f_gemvb[batch_width_class(cn)][w->type]) {
+                if (!enc_mv_batch(g, m, w, xc, yc, n_in, n_out, bias, cn, xs, ys))
+                    return false;
+                continue;
+            }
+            for (int c = 0; c < cn; c++)
+                if (!enc_mv(g, m, w, xc + (size_t)c * xs * sizeof(float),
+                            yc + (size_t)c * ys * sizeof(float), n_in, n_out, bias,
+                            1, xs, ys))
+                    return false;
+        }
+        return true;
+    }
     CUdeviceptr weights = 0;
     uint64_t w_off = 0;
     if (!binding_find(g->sw, m, w, &weights, &w_off)) {
@@ -4287,8 +4335,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     void *p[] = { &weights, &x, &y, &a, &b };
     // RUNNER_CUDA_Q8X: quantize x to int8 once (per 32), then the dp4a GEMV;
     // batch 1..8 of IQ3_S / IQ3_XXS / IQ4_XS
-    if (batch >= 1 && batch <= 8 && w->scale == 1.0f && g->q8x_q &&
-        n_in <= g->q8x_cap && n_in % 256 == 0 && g->sw->f_q8x[batch][w->type]) {
+    if (mv_route_q8x(g, w, n_in, batch)) {
         int nbk = n_in / 32 * batch;
         void *pq[] = { &x, &g->q8x_q, &g->q8x_d, &n_in, &batch, &xs };
         if (!launch(g, g->sw->f_quant_q8x, (nbk + 3) / 4, 1, 1, 128, pq)) return false;
@@ -4371,8 +4418,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     // Decode (batch==1), few long BF16 rows (n_out <= 1024, n_in >= 2048):
     // split-K, see k_mv_bf16_splitk. splits is a power of two dividing n_in/32
     // with n_out*splits around 4,096 blocks, bounded by the partials buffer.
-    if (batch == 1 && w->type == T_BF16 && w->scale == 1.0f && g->splitk &&
-        n_out <= 1024 && n_in >= 2048 && g->sw->f_mv_bf16_splitk) {
+    if (batch == 1 && mv_route_splitk(g, w, n_in, n_out)) {
         int splits = 1;
         while (splits < 64 && n_out * splits * 2 <= 4096 &&
                (n_in % (splits * 2 * 32)) == 0 &&
@@ -4588,7 +4634,8 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            // the shared context (tests/test_cuda_teardown.c)
                            g->x_hc, g->hc_xn, g->hc_gate, g->hc_lo, g->hc_inject,
                            g->splitk, g->shexp_in, g->shexp_g, g->shexp_u,
-                           g->shexp_o, g->shexp_gate, g->kvg_tab, g->kvg_dev };
+                           g->shexp_o, g->shexp_gate, g->kvg_tab, g->kvg_dev,
+                           g->vcol_pos, g->vcol_kcp, g->vcol_vcp };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++)
         if (bufs[i]) cu.MemFree(bufs[i]);
     free(g->h_x); free(g->h_logits); free(g->h_moe_logits);
@@ -5313,8 +5360,10 @@ static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
 static bool enc_moe_gemm(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                          CUdeviceptr y, int n_in, int n_out, int cnt,
                          int xs, int ys) {
-    if (cnt == 1)
-        return enc_mv(g, m, w, x, y, n_in, n_out, 0, 1, xs, ys);
+    // a verify round's rows never reach the grouped prefill (gpu_moe_ffn), and
+    // if one did, enc_mv's exact block gives every column the batch-1 bits
+    if (cnt == 1 || g->exact_rows)
+        return enc_mv(g, m, w, x, y, n_in, n_out, 0, cnt, xs, ys);
     if (cnt > 8 || (tc_on(m, w->type) && g->sw->f_gemm_tc[w->type]))
         return enc_mv(g, m, w, x, y, n_in, n_out, 0, cnt, xs, ys);
     // enc_mv_batch REFUSES a type with no width-classed twin, because the
@@ -5766,7 +5815,8 @@ static bool gpu_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly, int tn,
 static bool gpu_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int tn,
                         int xdim) {
     if (g->moe_fused_ok) {
-        if (tn > 1 && g->moe_grouped_ok)
+        // grouped: tolerance arithmetic, never a verify round's rows
+        if (tn > 1 && g->moe_grouped_ok && !g->exact_rows)
             return gpu_moe_ffn_grouped(g, m, ly, tn, xdim);
         // by expert once the tile averages four or more tokens an expert, the
         // fused path's own bits either way (the int8 activation route has no
@@ -6025,7 +6075,7 @@ static bool gpu_gemma_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly,
 static bool gpu_gemma_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int l,
                               int tn, int xdim) {
     if (g->moe_fused_ok) {
-        if (tn > 1 && g->moe_grouped_ok)
+        if (tn > 1 && g->moe_grouped_ok && !g->exact_rows)
             return gpu_gemma_moe_ffn_grouped(g, m, ly, l, tn, xdim);
         if (tn > 8 && g->moe_twin_ok && moe_twin_on(m) && !gpu_q8x_on() &&
             (long)tn * m->n_expert_used >= 4L * m->n_expert)
@@ -6482,6 +6532,49 @@ static int batch_attn_gqa(const gpu_t *g, const model_t *m, int hd, int n_kv) {
     return g->sw->f_attn_dec_gqa_seq && g->sw->f_attn_merge32_seq ? 1 : -1;
 }
 
+static _Atomic unsigned long g_exact_verify_tiles;
+unsigned long gpu_exact_verify_tiles(void) { return g_exact_verify_tiles; }
+
+// A verify round's attention (exact_rows): every row through the decode
+// attention a solo step at its position runs (the grouped kernel where
+// tile_attn_dec_gqa takes the layer, else k_attn_dec), as that kernel's
+// multi-column twin over the rows' own positions and the one cache
+// (vcol_*). Each layer stored all the tile's rows before any row attends,
+// and a row reads only up to its own position, so it sees exactly the rows
+// its solo step would. Sixteen rows a launch: the grouped partials of
+// sixteen fill attn_part.
+static bool tile_attn_rows(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
+                           const attn_args *aa, CUdeviceptr sinks) {
+    int gq = batch_attn_gqa(g, m, hd, n_kv);
+    if (gq < 0 || !g->sw->f_attn_dec_seq) {
+        gpu_first_error("the decode attention has no multi-row twin in this "
+                        "module; refusing the exact verify tile");
+        return false;
+    }
+    attn_args a = *aa;
+    bool ok = true;
+    for (int c0 = 0; c0 < tn && ok; c0 += 16) {
+        unsigned cn = (unsigned)(tn - c0 < 16 ? tn - c0 : 16);
+        CUdeviceptr q   = g->q + (size_t)c0 * a.qs * sizeof(float);
+        CUdeviceptr out = g->xb2 + (size_t)c0 * a.os * sizeof(float);
+        CUdeviceptr pos = g->vcol_pos + (size_t)c0 * sizeof(int);
+        CUdeviceptr kcp = g->vcol_kcp + (size_t)c0 * sizeof(uint64_t);
+        CUdeviceptr vcp = g->vcol_vcp + (size_t)c0 * sizeof(uint64_t);
+        void *pm[] = { &out, &g->attn_part, &a, &pos, &sinks };
+        if (gq) {
+            void *pg[] = { &q, &kcp, &vcp, &g->attn_part, &a, &pos };
+            ok = launch_smem(g, g->sw->f_attn_dec_gqa_seq, (unsigned)n_kv, 32, cn, 256,
+                             attn_dec_gqa_smem(m, hd, n_kv), pg) &&
+                 launch(g, g->sw->f_attn_merge32_seq, (unsigned)m->n_head, cn, 1, 128, pm);
+        } else {
+            void *pd[] = { &q, &kcp, &vcp, &g->att, &g->attn_part, &a, &pos };
+            ok = launch(g, g->sw->f_attn_dec_seq, (unsigned)m->n_head, ATTN_SPLITS, cn, 128, pd) &&
+                 launch(g, g->sw->f_attn_merge, (unsigned)m->n_head, cn, 1, 128, pm);
+        }
+    }
+    return ok;
+}
+
 // Attention over the cache: flash-decoding at a single token (split, then
 // merge), the tiled prefill kernel or k_attn for a prompt tile.
 static bool tile_attn(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
@@ -6505,7 +6598,9 @@ static bool tile_attn(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
         // single reduction, or at k_attn_merge's global merge (the split
         // partials carry no normalization, so k_attn_dec is untouched)
         CUdeviceptr sinks = g->sw->sinks[l];
-        if (tn == 1 && tile_attn_dec_gqa(g, m, hd, n_kv, &aa, sinks, &ok)) {
+        if (tn > 1 && g->exact_rows) {
+            ok = tile_attn_rows(g, m, tn, hd, n_kv, &aa, sinks);
+        } else if (tn == 1 && tile_attn_dec_gqa(g, m, hd, n_kv, &aa, sinks, &ok)) {
             // ran (or failed): grouped slices, then their merge
         } else if (tn == 1) {
             void *pd[] = { &g->q, &g->kc, &g->vc, &g->att, &g->attn_part,
@@ -7926,11 +8021,41 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
     return 0;
 }
 
+// A verify round's rows (tile_attn_rows): position pos + c and the
+// instance's own cache for row c; the unused entries repeat row 0's.
+static bool set_rows(gpu_t *g, int pos, int tn) {
+    int hp[MVB];
+    uint64_t hk[MVB], hv[MVB];
+    for (int c = 0; c < MVB; c++) {
+        hp[c] = pos + (c < tn ? c : 0);
+        hk[c] = (uint64_t)g->kc;
+        hv[c] = (uint64_t)g->vc;
+    }
+    return cu.MemcpyHtoD(g->vcol_pos, hp, sizeof hp) == 0 &&
+           cu.MemcpyHtoD(g->vcol_kcp, hk, sizeof hk) == 0 &&
+           cu.MemcpyHtoD(g->vcol_vcp, hv, sizeof hv) == 0;
+}
+
+static bool cuda_fwd_tiles_run(gpu_t *g, model_t *m, const int32_t *tokens, int n,
+                               int pos, bool want_logits, bool partial, int m_);
+
 // The batch in tiles of the instance's prompt window (model_gpu_window):
 // stage, run the device layers, hand a partial split's boundary activation
 // to the host.
 static bool cuda_fwd_tiles(gpu_t *g, model_t *m, const int32_t *tokens, int n,
                            int pos, bool want_logits, bool partial, int m_) {
+    // a speculative verify round (model_forward_verify) or the walk's re-fold
+    // of its kept rows (model_forward_refold) in one tile: its rows in the
+    // one-token decode arithmetic (enc_mv, tile_attn_rows, the MoE dispatch),
+    // so each row's bits are a solo step's at its position
+    g->exact_rows = m->spec_exact && n > 1 && n <= g->win && n <= MVB;
+    bool ok = cuda_fwd_tiles_run(g, m, tokens, n, pos, want_logits, partial, m_);
+    g->exact_rows = false;
+    return ok;
+}
+
+static bool cuda_fwd_tiles_run(gpu_t *g, model_t *m, const int32_t *tokens, int n,
+                               int pos, bool want_logits, bool partial, int m_) {
     for (int i = 0; i < n; i += g->win) {
         int tn = n - i < g->win ? n - i : g->win;
         bool last = i + tn == n;
@@ -7938,7 +8063,9 @@ static bool cuda_fwd_tiles(gpu_t *g, model_t *m, const int32_t *tokens, int n,
         // device runs layers [0, gpu_layers); logits only when it owns the whole
         // model (partial hands the boundary activation back to the CPU)
         double ts0 = prof.on ? prof_now() : 0;
-        bool sok = stage_x(g, m, tokens + i, tn) && set_pos(g, p, tn);
+        bool sok = stage_x(g, m, tokens + i, tn) && set_pos(g, p, tn) &&
+                   (!g->exact_rows || set_rows(g, p, tn));
+        if (sok && g->exact_rows) g_exact_verify_tiles++;
         if (prof.on) { prof.t_stage[m_] += prof_now() - ts0; prof.n_tiles[m_] += 1;
                        prof.n_tokens[m_] += tn; }
         if (!sok ||

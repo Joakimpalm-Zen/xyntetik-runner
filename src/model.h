@@ -453,6 +453,7 @@ typedef struct {
     void  *tape_logits_ud;
     float *all_logits;       // lazy [spec_batch][n_vocab] (speculative verify)
     int    spec_batch;       // rows all_logits can hold
+    bool   spec_exact;       // this keep-forward is a verify round: rows in decode arithmetic
     int    xdim;             // max(n_embd, per-layer q_dim); sizes xb/xb2/q
     int    reserve_vram_pct; // VRAM cap for the GPU backend (0 = free VRAM)
     int    gpu_layers_override; // forced leading GPU layer count (0 = auto)
@@ -1280,6 +1281,16 @@ void   model_moe_place_host(model_t *m, int host_layers);
 // each row's logits lazily (false/NULL on full GPU offload, a device-resident
 // recurrent fold, or n > spec_batch)
 bool   model_forward_batch_keep(model_t *m, const int32_t *tokens, int n, int pos);
+// The speculative walk's verify round: model_forward_batch_keep with every
+// row computed as a solo decode step at its position would compute it, so
+// the walk's tokens are the plain path's (a backend whose batched rows are
+// not the solo step's bits switches to the decode arithmetic for the round).
+bool   model_forward_verify(model_t *m, const int32_t *tokens, int n, int pos);
+// The walk's re-fold of a round's kept rows after a recurrent fold was rolled
+// back (no per-row checkpoint): a forward without logits whose rows are the
+// solo steps' bits, as the verify's were, so the fold it leaves is the one
+// plain decoding would have.
+void   model_forward_refold(model_t *m, const int32_t *tokens, int n, int pos);
 // whether the batched verify path above can run at all for this model
 bool   model_spec_verify_ok(const model_t *m);
 float *model_spec_row_logits(model_t *m, int b);

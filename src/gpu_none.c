@@ -64,6 +64,7 @@ void gpu_route_pin(int mask) { (void)mask; }
 int gpu_route_active(const model_t *m) { (void)m; return 0; }
 void gpu_recur_seq_force(int on) { (void)on; }
 unsigned long gpu_recur_seq_dispatches(void) { return 0; }
+unsigned long gpu_exact_verify_tiles(void) { return 0; }
 bool gpu_tc_type_has_kernel(int type) { (void)type; return false; }
 
 // Same, for the fast decode matvec: the mv tolerance gate links here and

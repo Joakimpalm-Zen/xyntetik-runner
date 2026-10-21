@@ -5,6 +5,35 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Speculative decoding gives the plain path's output on every backend, bit
+  for bit, and pays on CUDA where drafts are accepted.** The draft only
+  proposes; the target's verify round decides every token, so the output is
+  the plain path's only if each verify row is the bits a single decode step
+  at that position would produce. They were not: a CUDA round ran the
+  batched prompt kernels (on the datacenter MIG slice the drafted text
+  differed from plain decoding in 4 of 12 runs on the mixture-of-experts
+  pairs), a Metal round took other kernels than a decode step from its
+  second row on, and a CPU round of 8 or more rows (`--draft-k` 7 and up,
+  grammar fast-forward) took the batched f32 tile. Now a CUDA round runs the
+  decode kernels' multi-row twins (the GEMVs, the decode attention per row
+  at its own position, the per-token MoE), up to 16 rows a pass; a Metal
+  round runs its rows as decode steps; a CPU round takes the single-step dot
+  per column; and the re-fold after a recurrent model rolls a round back
+  runs the same way. `test-spec-identity` (in `make test`) and `make
+  test-cuda-spec-identity` (in the CUDA gate) hold every row of rounds 2 to
+  16 rows wide, with the walk's rewinds and fold rollbacks, byte-identical
+  to single steps on dense, mixture-of-experts (Q8_0, Q4_0, MXFP4, gemma-4's
+  dual branch), 256-wide K-quant and i-quant, and recurrent fixtures. Speed
+  on an RTX 3070 (256 greedy tokens, two rounds within 1%): prompt lookup on
+  an input-grounded prompt decodes Qwen3-4B at 143 tok/s with `--draft-k 4`
+  and 137 with `--draft-k 12`, where the batched verify gave 69 and 134, and
+  Qwen2.5-7B at 84, against 103 and 71 for plain decoding; the Qwen3.5-4B
+  MTP head runs at 54 where it ran 33, against 79 plain, and gemma-3-4b with
+  lookup at 105 where it ran 75 (with the two KV changes below), against
+  102. Where about one token a round is accepted speculation still costs
+  more than it saves (Qwen3-4B at 93-94 against 106). Metal is unchanged
+  (its batched verify already cost about a decode step a row).
+
 - **CUDA: an IQ4_XS decode microbatch gives single-step bits.** Since IQ4_XS
   gained its coalesced single-step GEMV (`k_gemv_iq4_xs`, with qwen4exp),
   its width-classed twins were still the twins of the lane kernel it

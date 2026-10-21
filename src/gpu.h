@@ -172,6 +172,9 @@ static inline const char *gpu_route_record(const model_t *m) {
 // the layer-tiles they advanced
 void   gpu_recur_seq_force(int on);
 unsigned long gpu_recur_seq_dispatches(void);
+// speculative verify tiles run with the one-token decode kernels' arithmetic
+// per row (CUDA, model_forward_verify), so each row is a solo step's bits
+unsigned long gpu_exact_verify_tiles(void);
 // Does this backend carry a batched (tensor-core or tiled) GEMM for the
 // type? A static fact about the backend's kernel table, answered without a
 // device, and the gate's only source for "TC-capable" (its own hand-kept
