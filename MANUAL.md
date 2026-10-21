@@ -1708,9 +1708,15 @@ for that development step.
 Scalar-path CPU/GPU identity is an evidence result, not a property inferred
 from a backend name. CUDA tensor-core and Metal tiled prefill kernels
 reassociate floating-point sums, so they are promoted by teacher-forced
-tolerance tests. CUDA currently promotes Q4_K/Q6_K/Q8_0 on the gated dense
-families and Q4_0 on Gemma 4; the latter was bit-identical over 820 tensor-core
-dispatches on the real 31B QAT artifact. The nine codebook i-quants (IQ1_S,
+tolerance tests. CUDA currently promotes Q4_K, Q6_K, Q8_0 and Q4_0 on the
+gated dense families. Q5_K, Q3_K, Q2_K, Q4_1, Q5_0 and Q5_1, which had no
+tensor-core kernel until 2026-10-21, joined on float32-reference rows: on
+2,000 positions of Qwen3-4B quantized to each type (and of Llama-3.2-3B at
+Q5_K and Q3_K) the tensor-core route read no further from the publisher's model than the
+scalar one, and their decoders equal the CPU dequantizer bit for bit
+(`make test-kq-stage`); the experimental qwen4exp family keeps those six on
+the scalar GEMM until a row on its release file exists (`RUNNER_CUDA_TC=1`
+forces them). The nine codebook i-quants (IQ1_S,
 IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_XS, IQ4_NL) are promoted
 on the same list, each measured as the forced path against
 the scalar one on Granite 4.2 3B requantized to the format with all layers

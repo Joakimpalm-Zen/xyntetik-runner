@@ -19,6 +19,8 @@
 #   qwen4exp     make test-cuda-qwen4exp (the family's placements, the shared
 #                split GGUF, the MTP head, the BF16 split-K decode route)
 #   q3k          make test-cuda-q3k (the Q3_K decode GEMV on a Q3_K fixture)
+#   tc-kq        make test-cuda-tc-kq (the tensor-core prefill of Q5_K, Q3_K,
+#                Q2_K, Q4_1, Q5_0 and Q5_1, teacher-forced tolerance)
 #   varff        make test-cuda-varff (per-layer FFN widths, the gemma-4 E2B shape)
 #   moe-twin     make test-cuda-moe-twin (by-expert MoE prefill == the fused path)
 #   batch-id     make test-cuda-batch-identity (the decode microbatch == sequential
@@ -112,7 +114,7 @@ fi
 add_step caps pass 0
 
 FAIL=0
-DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp q3k:test-cuda-q3k varff:test-cuda-varff tc2-bytes:test-cuda-tc2-bytes moe-twin:test-cuda-moe-twin batch-id:test-cuda-batch-identity spec-id:test-cuda-spec-identity"
+DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp q3k:test-cuda-q3k tc-kq:test-cuda-tc-kq varff:test-cuda-varff tc2-bytes:test-cuda-tc2-bytes moe-twin:test-cuda-moe-twin batch-id:test-cuda-batch-identity spec-id:test-cuda-spec-identity"
 for pair in $DEVICE_STEPS; do
   name=${pair%%:*}; target=${pair#*:}
   # shellcheck disable=SC2086

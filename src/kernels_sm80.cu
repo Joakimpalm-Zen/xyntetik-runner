@@ -18,16 +18,19 @@ typedef unsigned short ushort16;
 typedef unsigned int   uint;
 typedef unsigned long long ulong64;
 
-// the codebook i-quants: their tables, decoders and stagers, shared with
+// the codebook i-quants and the K-quants / legacy quants without a
+// raw-register loader: their tables, decoders and stagers, shared with
 // kernels.cu, then their direct-staging TC2 loaders
 #include "kernels_iq4_table.cuh"
 #include "kernels_iq_grids.cuh"
 #include "iq_decode.h"
 #include "kernels_iq_stage.cuh"
+#include "kernels_kq_stage.cuh"
 
 #define G2_MMA_K16 1
 #include "kernels_tc2.cuh"
 #include "kernels_tc2_iq.cuh"
+#include "kernels_tc2_kq.cuh"
 
 #define G2_80(NAME, F)                                                              \
 extern "C" __global__ void __launch_bounds__(256)                                   \
@@ -48,6 +51,12 @@ G2_80(k_gemm2_80_iq1_s, G2IQ1S)
 G2_80(k_gemm2_80_iq1_m, G2IQ1M)
 G2_80(k_gemm2_80_iq4_xs, G2IQ4XS)
 G2_80(k_gemm2_80_iq4_nl, G2IQ4NL)
+G2_80(k_gemm2_80_q5_K, G2Q5K)
+G2_80(k_gemm2_80_q3_K, G2Q3K)
+G2_80(k_gemm2_80_q2_K, G2Q2K)
+G2_80(k_gemm2_80_q4_1, G2Q41)
+G2_80(k_gemm2_80_q5_0, G2Q50)
+G2_80(k_gemm2_80_q5_1, G2Q51)
 
 // The 128-column tile: each weight dequantized once for 128 token columns
 // instead of 64, the integer work that bounds the 64-column kernel halved per
@@ -73,3 +82,9 @@ G2_80W(k_gemm2_80w_iq1_s, G2IQ1S)
 G2_80W(k_gemm2_80w_iq1_m, G2IQ1M)
 G2_80W(k_gemm2_80w_iq4_xs, G2IQ4XS)
 G2_80W(k_gemm2_80w_iq4_nl, G2IQ4NL)
+G2_80W(k_gemm2_80w_q5_K, G2Q5K)
+G2_80W(k_gemm2_80w_q3_K, G2Q3K)
+G2_80W(k_gemm2_80w_q2_K, G2Q2K)
+G2_80W(k_gemm2_80w_q4_1, G2Q41)
+G2_80W(k_gemm2_80w_q5_0, G2Q50)
+G2_80W(k_gemm2_80w_q5_1, G2Q51)

@@ -781,6 +781,12 @@ TEST_QUANTS_SIMD_SRC = tests/test_quants_simd.c $(QUANTS_OBJ)
 TEST_IQ_DECODE = $(TEST_BATCH:test-batch%=test-iq-decode%)
 $(TEST_IQ_DECODE): tests/test_iq_decode.c src/iq_decode.h src/quants_iq_grids.h $(QUANTS_OBJ)
 	$(CC) $(QUANTS_CFLAGS) -I src tests/test_iq_decode.c $(QUANTS_OBJ) -o $@ -lm -lpthread
+# The same for the tensor-core stagers of the K-quants and legacy quants
+# without a raw-register loader (src/kq_stage.h): every element of random and
+# corner blocks against dequant_row(), bit for bit.
+TEST_KQ_STAGE = $(TEST_BATCH:test-batch%=test-kq-stage%)
+$(TEST_KQ_STAGE): tests/test_kq_stage.c src/kq_stage.h src/iq_decode.h $(QUANTS_OBJ)
+	$(CC) $(QUANTS_CFLAGS) -I src tests/test_kq_stage.c $(QUANTS_OBJ) -o $@ -lm -lpthread
 
 # QUANTS_CFLAGS, not CFLAGS: this test carries inline scalar REFERENCE
 # implementations of the quant kernels, and a reference compiled under
@@ -1793,6 +1799,37 @@ test-cuda-q3k: runner $(TEST_GPU_ID)
 	./$(RUNNER_EXE) -m test-q3k-src.gguf --quantize test-q3k.gguf --quant q3_k > /dev/null 2>&1; \
 	./$(TEST_GPU_ID) test-q3k.gguf
 
+# The tensor-core prefill of the K-quants and legacy quants that had none
+# until 2026-10-21 (kernels_kq_stage.cuh, decoders held to dequant_row by
+# test-kq-stage), through test-tc-tol's teacher-forced tolerance gate: a
+# 256-wide fixture at Q3_K (runner --quantize) and, where RUNNER_LLAMA_CPP_BIN
+# has llama-quantize, at Q5_K, Q2_K, Q4_1, Q5_0 and Q5_1, each on the TC2
+# kernels TC2's auto mode picks (compute_80 at 8.0 and up), on the
+# compute_75 TC2 kernels and on the TC route's kernels. test-tc-tol forces
+# the tensor-core route on, so the legs run whether or not a type is
+# promoted.
+test-cuda-tc-kq: runner $(TEST_TC_TOL)
+	@set -e; \
+	$(PYTHON) scripts/make-test-model.py --wide test-tckq-wide.gguf > /dev/null; \
+	./$(RUNNER_EXE) -m test-tckq-wide.gguf --quantize test-tckq-q3_k.gguf --quant q3_k > /dev/null 2>&1; \
+	files="test-tckq-q3_k.gguf"; \
+	lq=$$(ls "$$RUNNER_LLAMA_CPP_BIN"/llama-quantize* 2>/dev/null | head -1); \
+	if [ -n "$$lq" ]; then \
+	  for q in Q5_K_S Q2_K Q4_1 Q5_0 Q5_1; do \
+	    "$$lq" test-tckq-wide.gguf test-tckq-$$q.gguf $$q > /dev/null 2>&1 && files="$$files test-tckq-$$q.gguf"; \
+	  done; \
+	else echo "test-cuda-tc-kq: no llama-quantize in RUNNER_LLAMA_CPP_BIN, only Q3_K exercised"; fi; \
+	for f in $$files; do \
+	  for leg in default "RUNNER_CUDA_TC2=1 RUNNER_CUDA_SM80=0" RUNNER_CUDA_TC2=0; do \
+	    e=$$leg; [ "$$leg" = default ] && e=; \
+	    env $$e ./$(TEST_TC_TOL) $$f > test-cuda-tc-kq.out 2>&1 || \
+	      { cat test-cuda-tc-kq.out; echo "test-cuda-tc-kq: $$f [$$leg] FAILED"; exit 1; }; \
+	    if ! grep -q 'tc-tol: ok' test-cuda-tc-kq.out || grep -q 'skipped' test-cuda-tc-kq.out; then \
+	      cat test-cuda-tc-kq.out; echo "test-cuda-tc-kq: $$f [$$leg] did not run"; exit 1; fi; \
+	    echo "$$f $$leg: $$(grep 'tc-tol: ok' test-cuda-tc-kq.out)"; \
+	  done; \
+	done
+
 # The by-expert MoE prefill (moe_twin) against the fused per-token path it
 # must reproduce byte for byte, on a 32-row prefill: the routed top-2-of-4
 # fixture with its experts requantized to Q8_0, the gpt-oss fixture (MXFP4
@@ -2486,7 +2523,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_SPEC_ID) $(TEST_ATTN_SPLIT) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
-      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) \
+      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_FPCLASS) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) \
@@ -2621,6 +2658,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_GPU_ID)
 	./$(TEST_QUANTS_SIMD)
 	./$(TEST_IQ_DECODE)
+	./$(TEST_KQ_STAGE)
 	./$(TEST_INSTANCES)
 	./$(TEST_INSTANCES_OOM)
 	./$(TEST_METAL_ADMISSION)
@@ -2982,7 +3020,8 @@ clean:
 NVCC ?= nvcc
 NVCC_CCBIN ?=
 ptx: src/kernels.cu src/kernels_sm80.cu src/kernels_tc2.cuh src/kernels_tc2_iq.cuh \
-     src/kernels_iq4_table.cuh src/kernels_iq_grids.cuh src/kernels_iq_stage.cuh src/iq_decode.h
+     src/kernels_iq4_table.cuh src/kernels_iq_grids.cuh src/kernels_iq_stage.cuh src/iq_decode.h \
+     src/kernels_kq_stage.cuh src/kernels_tc2_kq.cuh src/kq_stage.h
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_75 -O3 -o src/kernels.ptx src/kernels.cu
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_80 -O3 -o src/kernels_sm80.ptx src/kernels_sm80.cu
 	python3 scripts/embed-ptx.py || python scripts/embed-ptx.py

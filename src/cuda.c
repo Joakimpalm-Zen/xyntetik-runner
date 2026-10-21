@@ -945,6 +945,14 @@ static const struct { int type; const char *name; } TC_KERNELS[] = {
     { T_IQ1_M,   "k_gemm_iq1_m_tc" },
     { T_IQ4_XS,  "k_gemm_iq4_xs_tc" },
     { T_IQ4_NL,  "k_gemm_iq4_nl_tc" },
+    // the K-quants and legacy quants that prefilled on the scalar kernels
+    // until 2026-10-21 (kernels_kq_stage.cuh)
+    { T_Q5_K, "k_gemm_q5_K_tc" },
+    { T_Q3_K, "k_gemm_q3_K_tc" },
+    { T_Q2_K, "k_gemm_q2_K_tc" },
+    { T_Q4_1, "k_gemm_q4_1_tc" },
+    { T_Q5_0, "k_gemm_q5_0_tc" },
+    { T_Q5_1, "k_gemm_q5_1_tc" },
 };
 bool gpu_tc_type_has_kernel(int type) {
     for (size_t i = 0; i < sizeof TC_KERNELS / sizeof *TC_KERNELS; i++)
@@ -2473,6 +2481,9 @@ static bool shared_load_module(gpu_weights *w) {
             { T_IQ2_XXS, "k_gemm2_iq2_xxs" }, { T_IQ1_S, "k_gemm2_iq1_s" },
             { T_IQ1_M, "k_gemm2_iq1_m" }, { T_IQ4_XS, "k_gemm2_iq4_xs" },
             { T_IQ4_NL, "k_gemm2_iq4_nl" },
+            { T_Q5_K, "k_gemm2_q5_K" }, { T_Q3_K, "k_gemm2_q3_K" },
+            { T_Q2_K, "k_gemm2_q2_K" }, { T_Q4_1, "k_gemm2_q4_1" },
+            { T_Q5_0, "k_gemm2_q5_0" }, { T_Q5_1, "k_gemm2_q5_1" },
         };
         cu.ModuleGetFunction(&w->f_x_half, w->mod, "k_x_half_scaled");
         for (size_t i = 0; i < sizeof TC2_KERNELS / sizeof *TC2_KERNELS; i++) {
@@ -2501,6 +2512,9 @@ static bool shared_load_module(gpu_weights *w) {
                     { T_IQ2_XXS, "k_gemm2_80_iq2_xxs" }, { T_IQ1_S, "k_gemm2_80_iq1_s" },
                     { T_IQ1_M, "k_gemm2_80_iq1_m" }, { T_IQ4_XS, "k_gemm2_80_iq4_xs" },
                     { T_IQ4_NL, "k_gemm2_80_iq4_nl" },
+                    { T_Q5_K, "k_gemm2_80_q5_K" }, { T_Q3_K, "k_gemm2_80_q3_K" },
+                    { T_Q2_K, "k_gemm2_80_q2_K" }, { T_Q4_1, "k_gemm2_80_q4_1" },
+                    { T_Q5_0, "k_gemm2_80_q5_0" }, { T_Q5_1, "k_gemm2_80_q5_1" },
                 };
                 for (size_t i = 0; i < sizeof TC2_80 / sizeof *TC2_80; i++) {
                     CUfunction f = NULL;
@@ -2519,6 +2533,9 @@ static bool shared_load_module(gpu_weights *w) {
                     { T_IQ2_XXS, "k_gemm2_80w_iq2_xxs" }, { T_IQ1_S, "k_gemm2_80w_iq1_s" },
                     { T_IQ1_M, "k_gemm2_80w_iq1_m" }, { T_IQ4_XS, "k_gemm2_80w_iq4_xs" },
                     { T_IQ4_NL, "k_gemm2_80w_iq4_nl" },
+                    { T_Q5_K, "k_gemm2_80w_q5_K" }, { T_Q3_K, "k_gemm2_80w_q3_K" },
+                    { T_Q2_K, "k_gemm2_80w_q2_K" }, { T_Q4_1, "k_gemm2_80w_q4_1" },
+                    { T_Q5_0, "k_gemm2_80w_q5_0" }, { T_Q5_1, "k_gemm2_80w_q5_1" },
                 };
                 for (size_t i = 0; i < sizeof TC2_80W / sizeof *TC2_80W; i++) {
                     CUfunction f = NULL;
@@ -3831,11 +3848,19 @@ static bool tc_codebook(int type) {
     }
 }
 
+// The six types whose tensor-core kernels arrived 2026-10-21
+// (kernels_kq_stage.cuh): K-quants and legacy quants that prefilled on the
+// scalar GEMM or a column tile at a time until then.
+static bool tc_kq_type(int type) {
+    return type == T_Q5_K || type == T_Q3_K || type == T_Q2_K ||
+           type == T_Q4_1 || type == T_Q5_0 || type == T_Q5_1;
+}
+
 // The types the tensor-core GEMM is promoted for (the per-type rows in
 // tc_promoted below).
 static bool tc_type_promotable(int type) {
     return type == T_Q4_K || type == T_Q6_K || type == T_Q8_0 || type == T_Q4_0 ||
-           tc_codebook(type);
+           tc_codebook(type) || tc_kq_type(type);
 }
 
 // MoE families measured against the publisher's float32 model (2,000
@@ -3957,6 +3982,28 @@ static bool tc_promoted(const model_t *m, int type) {
     // and the scaling costs under 2% of prefill on the RTX 3070.
     if (!tc_type_promotable(type))
         return false;
+    // The tc_kq_type six joined 2026-10-21 on float32-reference rows (owner
+    // rule D1: 2,000 positions against the publisher's model, mean KL within
+    // 1.01x of the scalar route's and neither a paired Wilcoxon nor McNemar
+    // on margin-qualified top-1 worse at p < 0.05; the datacenter MIG slice,
+    // 64-row chunks so the GEMMs ran), Qwen3-4B quantized to each type:
+    //   Q5_K_M  0.02327 vs 0.02329  Wilcoxon p 0.019, TC closer
+    //   Q3_K_M  0.27870 vs 0.27869  p 0.50
+    //   Q2_K    0.91540 vs 0.91524  p 0.81
+    //   Q4_1    0.11899 vs 0.11908  p 0.002, TC closer
+    //   Q5_0    0.03736 vs 0.03731  p 0.997
+    //   Q5_1    0.03338 vs 0.03338  p 0.025, TC closer
+    // and the two types most files carry on a second family, Llama-3.2-3B:
+    //   Q5_K_M  0.02395 vs 0.02398  p 0.14
+    //   Q3_K_M  0.16235 vs 0.16226  p 0.997
+    // Their stagers equal dequant_row bit for bit on the host
+    // (test-kq-stage) and test-cuda-tc-kq holds each on the TC, TC2 and
+    // compute_80 kernels. qwen4exp keeps them on the scalar GEMM: its
+    // admission (below) covers what the TC prefill touched on its release
+    // file, which these types did not, and that file is too large for the
+    // page cache of the one host that holds it, so its row is not measured.
+    if (tc_kq_type(type) && strcmp(m->arch, "qwen4exp") == 0)
+        return false;
     // granite joined 2026-08-13 with a gate row for EVERY promoted type on
     // its own weights — the only arch here that has one — because it was
     // the arch that showed what the missing coverage costs: granite-4.1-8b
@@ -4025,8 +4072,10 @@ static bool tc_promoted(const model_t *m, int type) {
     // greedy-32 on the 481-token prompt and greedy-64 on the 3,675-token
     // prompt (docs/qwen4exp-admission-evidence/). The promotion covers what
     // the TC prefill touched there: of the dense projections (Q5_K, Q3_K,
-    // IQ4_XS, BF16 mixers) only IQ4_XS has a tensor-core kernel (TC_KERNELS);
-    // the others take their scalar batched kernels whatever this returns.
+    // IQ4_XS, BF16 mixers) only IQ4_XS took it; Q5_K and Q3_K have
+    // tensor-core kernels since 2026-10-21, promoted elsewhere but held off
+    // here (above) until a row on this file exists, RUNNER_CUDA_TC=1 forcing
+    // them.
     // With expert layers on the device the codebook
     // expert GEMMs would join the TC path under the same arch flag; that
     // placement was measured only through the eager route today, so a

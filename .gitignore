@@ -23,6 +23,9 @@ test-residency-release.tmp
 test-dot-route.exe
 test-iq-decode
 test-iq-decode.exe
+test-kq-stage
+test-kq-stage.exe
+test-cuda-tc-kq.out
 tc-overflow.out
 test-cuda-batch-identity.out
 test-cuda-spec-identity.out

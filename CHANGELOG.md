@@ -5,6 +5,27 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: tensor-core prefill for Q5_K, Q3_K, Q2_K, Q4_1, Q5_0 and Q5_1.**
+  These six types had no tensor-core kernel, so a prompt ran their weights
+  through the scalar GEMM (Q5_K, Q3_K) or the matvec a column at a time
+  (Q4_1, Q5_0, Q5_1, Q2_K): every Q5_K_M and Q3_K_M file, and the Q4_1 and
+  Q5_K tensors that Q4_0 exports carry, prefilled far slower than the types
+  beside them. They now have the TC route's kernels and TC2's (compute_75
+  and compute_80), over decoders shared with a host test that holds each one
+  to the CPU dequantizer bit for bit (`test-kq-stage`), and `make
+  test-cuda-tc-kq` (in the CUDA gate) holds each type to the tensor-core
+  tolerance gate on all three kernel families. They are the default on every
+  family of the tensor-core list except the experimental qwen4exp: on 2,000
+  positions of Qwen3-4B quantized to each type, and of Llama-3.2-3B at
+  Q5_K_M and Q3_K_M, the tensor-core route read no further from the
+  publisher's float32 model than the scalar one (closer on Q5_K_M, Q4_1 and
+  Q5_1). Qwen3-4B on the datacenter MIG slice at 2,048 tokens: Q5_K_M 234 ->
+  985 tok/s, Q3_K_M 282 -> 1,231-1,269, Q2_K 41 -> 1,118-1,281, Q4_1 22 ->
+  1,235, Q5_0 22 -> 1,231-1,268, Q5_1 19 -> 1,033-1,060 (two rounds).
+  Qwen3.8-27B Q4_0, whose Q4_1 and Q5_K tensors held its whole prompt back,
+  prefills 2,048 tokens at 326 tok/s where it ran 60, and the 6,406-token
+  tool call that timed out at a client's 90 seconds takes 27 (116 before).
+
 - **CUDA: the one-token Gated DeltaNet step spreads each head over four
   blocks.** A qwen35 decode step and each checkpointed row of a verify round
   now run `k_q35_delta1`, which gives each block 32 of a head's value

@@ -3073,6 +3073,19 @@ TC_GEMM_BLK_X(k_gemm_iq1_m_tc, tc_stage_iq1_m, 56, 256, 1)
 TC_GEMM_BLK_X(k_gemm_iq4_xs_tc, tc_stage_iq4_xs, 136, 256, 1)
 TC_GEMM_BLK_X(k_gemm_iq4_nl_tc, tc_stage_iq4_nl, 18, 32, 1)
 
+// The K-quants and legacy quants that had no tensor-core kernel (2026-10-21):
+// the same shape over the stagers of kernels_kq_stage.cuh (kq_stage.h,
+// held to dequant_row() by the host test), registered in TC_KERNELS. They
+// run by default where tc_promoted admits them (the float32-reference rows
+// of 2026-10-21 there); RUNNER_CUDA_TC=1 forces them elsewhere.
+#include "kernels_kq_stage.cuh"
+TC_GEMM_BLK_X(k_gemm_q5_K_tc, tc_stage_q5_K, 176, 256, 1)
+TC_GEMM_BLK_X(k_gemm_q3_K_tc, tc_stage_q3_K, 110, 256, 1)
+TC_GEMM_BLK_X(k_gemm_q2_K_tc, tc_stage_q2_K, 84, 256, 1)
+TC_GEMM_BLK_X(k_gemm_q4_1_tc, tc_stage_q4_1, 20, 32, 1)
+TC_GEMM_BLK_X(k_gemm_q5_0_tc, tc_stage_q5_0, 22, 32, 1)
+TC_GEMM_BLK_X(k_gemm_q5_1_tc, tc_stage_q5_1, 24, 32, 1)
+
 // MXFP4 (gpt-oss expert tensors): 17-byte block = one E8M0 scale byte (a
 // biased power-of-two exponent, 2^(e-127), NOT an fp16) + 32 packed E2M1
 // nibbles indexing a fixed signed codebook. Table and decode are 1:1 with
@@ -6484,6 +6497,7 @@ extern "C" __global__ void k_x_half_scaled(const float *x, const float *xsc, __h
 }
 
 #include "kernels_tc2_iq.cuh"
+#include "kernels_tc2_kq.cuh"
 
 // the activations arrive pre-scaled in half (k_x_half_scaled), so the
 // kernel's x parameter is that buffer
@@ -6734,6 +6748,12 @@ G2_KERNEL(k_gemm2_iq1_s, G2IQ1S)
 G2_KERNEL(k_gemm2_iq1_m, G2IQ1M)
 G2_KERNEL(k_gemm2_iq4_xs, G2IQ4XS)
 G2_KERNEL(k_gemm2_iq4_nl, G2IQ4NL)
+G2_KERNEL(k_gemm2_q5_K, G2Q5K)
+G2_KERNEL(k_gemm2_q3_K, G2Q3K)
+G2_KERNEL(k_gemm2_q2_K, G2Q2K)
+G2_KERNEL(k_gemm2_q4_1, G2Q41)
+G2_KERNEL(k_gemm2_q5_0, G2Q50)
+G2_KERNEL(k_gemm2_q5_1, G2Q51)
 
 // --------------------------------------- tensor-core prefill attention (C2)
 // C2 step 2 (RUNNER_CUDA_ATTN_TC, tile_attn in cuda.c): k_attn_tile's two
