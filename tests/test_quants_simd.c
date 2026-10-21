@@ -1243,6 +1243,11 @@ int main(void) {
         test_vec_dot_xs(types[t], 4096);
         test_vec_dot_xs(types[t], 256);
     }
+    // BF16 rows of any length: 1003 leaves a tail after the 16-wide NEON
+    // and 8-wide AVX2 steps, which every column must sum in the single
+    // kernel's order
+    test_vec_dot(T_BF16, 1003);
+    test_vec_dot_multi(T_BF16, 1003);
     CHECK(vec_dot_xs_ok(T_Q4_K) == vec_dot_xs_ok(T_Q5_K) && !vec_dot_xs_ok(T_Q6_K),
           "vec_dot_xs covers exactly the min-term K-quants");
     test_dequant(T_Q8_0, 4096);

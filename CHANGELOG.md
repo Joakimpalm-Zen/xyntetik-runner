@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CPU verify rounds and small batches decode each weight block once.** A
+  speculative verify round on the CPU computes every row with the decode
+  step's own dot, one column at a time, and a format without a multi-column
+  form of that dot decoded each weight block again for every column: Q8_0,
+  Q4_0 and MXFP4 on both architectures, and on arm64 also the K-quants,
+  IQ4_NL, IQ4_XS, Q2_0, BF16 and IQ3_XXS. Each now has one that widens a
+  block once and gives every column the single dot's operations, so the rows
+  keep their bits. On an M1's CPU, prompt lookup (`--draft-lookup --draft-k
+  4`) runs Qwen2.5-1.5B Q8_0 at 25.0 and 29.4 tok/s on two prompts where it
+  ran 22.2 and 22.7 (plain decoding 22.6-24.1), and Llama-3.2-1B Q4_K_M at
+  28.7-29.9 where it ran 19.5-20.4 (plain 21.0-23.2).
+
 - **CPU MXFP4 and IQ3_XXS dots read their scales and codes from tables, bit
   for bit as before.** The MXFP4 dots evaluated each block's E8M0 scale with
   a libm `ldexpf` call every 32 weights; the scale now comes from a
