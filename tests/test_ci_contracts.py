@@ -1,5 +1,6 @@
 """Build/gate contracts that must not silently turn a red run green."""
 import pathlib
+import shutil
 import subprocess
 import json
 import sys
@@ -208,6 +209,14 @@ class DeviceHarnessPins(unittest.TestCase):
                          "a second runtime release site must go through gpu_runtime_failure")
 
 
+# The bash on PATH, which is the one the scheduled task runs the nightly
+# with. A bare "bash" is not that on Windows: CreateProcess looks in System32
+# before PATH and finds WSL's launcher, which cannot see C:/ paths (the
+# Windows run of these tests once failed on exactly that). Paths go to it in
+# forward-slash form, which MSYS2's bash reads and its sourced env file keeps.
+BASH = shutil.which("bash") or "bash"
+
+
 class ScheduledEntryPoints(unittest.TestCase):
     """Scripts a lab host's scheduler runs from a copy of this repository.
     Nothing in the repository calls them, so a sweep for uncited files once
@@ -218,11 +227,15 @@ class ScheduledEntryPoints(unittest.TestCase):
     def test_cuda_nightly_is_present_and_executable(self):
         p = ROOT / "scripts/cuda-nightly.sh"
         self.assertTrue(p.is_file(), "the scheduled nightly runs scripts/cuda-nightly.sh")
-        self.assertTrue(p.stat().st_mode & 0o111, "the nightly copy is run with bash, keep it executable")
-        subprocess.run(["bash", "-n", str(p)], check=True)
+        # NTFS keeps no mode bits (Python reports none for a .sh there); the
+        # Windows host runs the script through bash, so the bit is checked
+        # where a filesystem has one
+        if sys.platform != "win32":
+            self.assertTrue(p.stat().st_mode & 0o111, "the nightly copy is run with bash, keep it executable")
+        subprocess.run([BASH, "-n", p.as_posix()], check=True)
 
     def test_cuda_nightly_without_base_dir_is_a_usage_error(self):
-        r = subprocess.run(["bash", str(ROOT / "scripts/cuda-nightly.sh")],
+        r = subprocess.run([BASH, (ROOT / "scripts/cuda-nightly.sh").as_posix()],
                            capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("usage", r.stderr)
@@ -235,13 +248,13 @@ class ScheduledEntryPoints(unittest.TestCase):
             lock = base / "box-gpu.lock"
             lock.write_text(f"{__import__('os').getpid()} held by the test\n")
             (base / "cuda-nightly.env").write_text(
-                f"NIGHTLY_SKIP_LOCKS={lock}\nNIGHTLY_SRC={base / 'no-checkout'}\n")
-            r = subprocess.run(["bash", str(ROOT / "scripts/cuda-nightly.sh"), str(base)],
+                f"NIGHTLY_SKIP_LOCKS={lock.as_posix()}\nNIGHTLY_SRC={(base / 'no-checkout').as_posix()}\n")
+            r = subprocess.run([BASH, (ROOT / "scripts/cuda-nightly.sh").as_posix(), base.as_posix()],
                                capture_output=True, text=True, timeout=60)
             self.assertEqual(r.returncode, 0, r.stderr)
             hist = (base / "history.log").read_text()
             self.assertIn("skip:", hist)
-            self.assertIn(str(lock), hist)
+            self.assertIn(lock.as_posix(), hist)
             self.assertFalse((base / "logs/fetch.log").exists())
 
 
