@@ -4091,13 +4091,15 @@ static bool lane_staged_type(int type) {
     }
 }
 
+// ytile: the kernel takes its column tile from blockIdx.y (the _b tile
+// matvecs, MV_HEAD_B), so a batch wider than one tile is one launch
 static bool launch_tiled(gpu_t *g, CUfunction f, unsigned grid, unsigned block,
                          CUdeviceptr weights, CUdeviceptr x, CUdeviceptr y,
                          mv_args a, CUdeviceptr bias, int tile,
-                         bool scaled, float scale) {
-    if (a.batch <= tile) {
+                         bool scaled, float scale, bool ytile) {
+    if (a.batch <= tile || ytile) {
         void *p[] = { &weights, &x, &y, &a, &bias, &scale };
-        return launch(g, f, grid, 1, 1, block, p);
+        return launch(g, f, grid, (unsigned)((a.batch + tile - 1) / tile), 1, block, p);
     }
     for (int off = 0; off < a.batch; off += tile) {
         mv_args ai = a;
@@ -4424,7 +4426,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
         // slower — so a wider tile runs as two launches of the proven shape.
         return launch_tiled(g, g->sw->f_gemm[w->type], (n_out + 7) / 8, 8 * 32,
                             weights, x, y, a, b,
-                            w->type == T_Q8_0 ? Q8_COLS : MVT, false, 1.0f);
+                            w->type == T_Q8_0 ? Q8_COLS : MVT, false, 1.0f, false);
     }
     // Decode (batch==1), few long BF16 rows (n_out <= 1024, n_in >= 2048):
     // split-K, see k_mv_bf16_splitk. splits is a power of two dividing n_in/32
@@ -4460,7 +4462,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     if (batch == 1 && lane_staged_type(w->type)) { rpb = 8; block = 256; }
     return launch_tiled(g, f, (n_out + rpb - 1) / rpb, block, weights, x, y, a, b,
                         batch > 1 ? MVT : MVB,
-                        w->type == T_NVFP4, w->scale);
+                        w->type == T_NVFP4, w->scale, batch > 1);
 }
 
 // ------------------------------------------- adapter at a projection site

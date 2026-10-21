@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: a wide prompt runs a small tile matvec as one launch.** The tile
+  matvecs a prompt takes for weights without a GEMM (the F32 and BF16 Gated
+  DeltaNet alpha/beta projections of the qwen35 family among them) ran one
+  launch per 16 prompt columns, eight blocks each for a 32-row matrix, so a
+  2,048-token prompt issued 128 nearly empty launches per projection; they
+  were 15% of a Qwen3.5-4B prefill on an RTX 3070. A wide prompt now runs as
+  one launch with a column tile per grid row, the same arithmetic per
+  element (scores byte-identical): Qwen3.5-4B prefills at 1,060, 976 and 710
+  tok/s at 512, 2,048 and 8,192 tokens where it ran 888, 839 and 633.
+
 - **`test-tc-tol` says how close a free-running divergence was.** When the
   tensor-core and scalar prefill paths' greedy outputs part, the gate still
   fails, and now prints how far the scalar pick led the other at that step

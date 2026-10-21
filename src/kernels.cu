@@ -139,8 +139,18 @@ static __device__ __forceinline__ float warp_sum(float s) {
     s = warp_sum(s); \
     if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
 
+// A prompt wider than one MVT-column tile runs as ONE launch with a tile per
+// blockIdx.y (cuda.c launch_tiled), not a launch per tile: a small matrix (a
+// Gated DeltaNet alpha/beta projection, 32 or 48 rows) was eight blocks a
+// launch and 128 launches per 2,048-token prompt. Each (row, column) is the
+// arithmetic of the per-tile launch it replaced; with one tile, blockIdx.y
+// is 0 and nothing moves.
 #define MV_HEAD_B \
     MV_HEAD; \
+    x += (ulong64)blockIdx.y * MVT * a.xs; \
+    y += (ulong64)blockIdx.y * MVT * a.ys; \
+    a.batch -= (int)blockIdx.y * MVT; \
+    if (a.batch > MVT) a.batch = MVT; \
     float s[MVT] = {0};
 
 // apply one decoded weight w at element index idx to every token column
