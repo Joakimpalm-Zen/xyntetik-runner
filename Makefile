@@ -3105,7 +3105,10 @@ CUDA_GATED_TESTS = tests/test_apertus.py tests/test_gpu_declines.py \
                    tests/test_remove_sublayer.py tests/test_lora_qwen35.py \
                    tests/test_transcript.py tests/test_spec_gpu.py \
                    tests/test_server_sessions.py
-test-cuda-gated: runner
+# test_spec_gpu.py reads test.gguf from the tree root (the others build their
+# fixtures in a temporary directory), so the target builds it: on a fresh
+# tree the gate's first run otherwise fails the three spec cases.
+test-cuda-gated: runner test.gguf
 	@mkdir -p .build/ci
 	$(PYTHON) -m pytest -q -rs --junitxml=.build/ci/cuda-gated.xml $(CUDA_GATED_TESTS)
 	$(PYTHON) scripts/check-junit.py --no-skips-matching '(?i)cuda|device|gpu' \
