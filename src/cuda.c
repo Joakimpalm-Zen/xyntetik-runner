@@ -4898,34 +4898,49 @@ static bool kv_gather_finish(gpu_t *g, model_t *m, int pos) {
     return true;
 }
 
-// upload host KV rows [lo, hi) for every layer (CPU prompt processing wrote them)
-// Former flat-row sites (model.h, model_kv_byte_off): rows [lo, hi) are
-// mirrored at absolute offsets on both sides. They only run on the resync path
-// of a PARTIAL split, so a full-offload sweep never exercises either.
-//
-// A ring layer's rows are not addressed by absolute position, so [lo, hi) does
-// not name them and following it would read past the host allocation and write
-// past the device one. Mirror the WHOLE ring instead: both sides use identical
-// slot addressing, so it is byte-for-byte the same object, and it is small by
-// construction (that is the point of the ring).
-static void kv_span(const model_t *m, int l, int lo, int hi, int *o_lo, int *o_hi) {
-    if (model_kv_is_ring(m, l)) { *o_lo = 0; *o_hi = m->kv_ring; }
-    else                        { *o_lo = lo; *o_hi = hi; }
+// The rows positions [lo, hi) of layer l occupy, as at most two spans of
+// its storage. A flat layer's are the rows themselves, at absolute offsets on
+// both sides. A ring layer's rows are not addressed by absolute position
+// (following [lo, hi) would read past the host allocation and write past the
+// device one): they are the slots those positions write, p % kv_ring, which
+// run contiguously unless they wrap, and the whole ring once the span is as
+// long as it. Both sides address the slots the same way, so a span is the
+// same bytes on each. (Until 2026-10-21 a ring layer always mirrored its
+// whole ring: a 16-row verify round or a microbatch member's one row moved
+// every slot of every sliding layer across the bus.)
+static int kv_spans(const model_t *m, int l, int lo, int hi, int s_lo[2], int s_hi[2]) {
+    if (lo >= hi) return 0;
+    if (!model_kv_is_ring(m, l)) { s_lo[0] = lo; s_hi[0] = hi; return 1; }
+    int r = m->kv_ring;
+    if (hi - lo >= r) { s_lo[0] = 0; s_hi[0] = r; return 1; }
+    int a = lo % r, b = (hi - 1) % r + 1;   // slots [a, b), or [a, r) + [0, b)
+    if (a < b) { s_lo[0] = a; s_hi[0] = b; return 1; }
+    s_lo[0] = a; s_hi[0] = r;
+    s_lo[1] = 0; s_hi[1] = b;
+    return 2;
 }
 
+// one span of layer l's K and V rows between the host cache and the device
+static bool kv_move(gpu_t *g, model_t *m, int l, int lo, int hi, bool up) {
+    size_t krow = model_k_row_bytes(m, l), vrow = model_v_row_bytes(m, l);
+    size_t koff = model_k_byte_off(m, l) + (size_t)lo * krow;
+    size_t voff = model_v_byte_off(m, l) + (size_t)lo * vrow;
+    size_t kb = (size_t)(hi - lo) * krow, vb = (size_t)(hi - lo) * vrow;
+    if (up)
+        return cu.MemcpyHtoD(g->kc + koff, (uint8_t *)m->kcache + koff, kb) == 0 &&
+               cu.MemcpyHtoD(g->vc + voff, (uint8_t *)m->vcache + voff, vb) == 0;
+    return cu.MemcpyDtoH((uint8_t *)m->kcache + koff, g->kc + koff, kb) == 0 &&
+           cu.MemcpyDtoH((uint8_t *)m->vcache + voff, g->vc + voff, vb) == 0;
+}
+
+// upload host KV rows [lo, hi) for every device layer: rows the device does
+// not hold as the host does (gpu_forward_batch's kv_rows)
 static bool kv_upload(gpu_t *g, model_t *m, int lo, int hi) {
     if (lo >= hi) return true;
     for (int l = 0; l < m->gpu_layers; l++) {
-        int llo, lhi;
-        kv_span(m, l, lo, hi, &llo, &lhi);
-        size_t krow = model_k_row_bytes(m, l), vrow = model_v_row_bytes(m, l);
-        size_t koff = model_k_byte_off(m, l) + (size_t)llo * krow;
-        size_t voff = model_v_byte_off(m, l) + (size_t)llo * vrow;
-        if (cu.MemcpyHtoD(g->kc + koff, (uint8_t *)m->kcache + koff,
-                          (size_t)(lhi - llo) * krow) != 0 ||
-            cu.MemcpyHtoD(g->vc + voff, (uint8_t *)m->vcache + voff,
-                          (size_t)(lhi - llo) * vrow) != 0)
-            return false;
+        int a[2], b[2], ns = kv_spans(m, l, lo, hi, a, b);
+        for (int s = 0; s < ns; s++)
+            if (!kv_move(g, m, l, a[s], b[s], true)) return false;
     }
     return true;
 }
@@ -4934,16 +4949,9 @@ static bool kv_upload(gpu_t *g, model_t *m, int lo, int hi) {
 static bool kv_copyback(gpu_t *g, model_t *m, int lo, int hi) {
     if (lo >= hi) return true;
     for (int l = 0; l < m->gpu_layers; l++) {
-        int llo, lhi;
-        kv_span(m, l, lo, hi, &llo, &lhi);
-        size_t krow = model_k_row_bytes(m, l), vrow = model_v_row_bytes(m, l);
-        size_t koff = model_k_byte_off(m, l) + (size_t)llo * krow;
-        size_t voff = model_v_byte_off(m, l) + (size_t)llo * vrow;
-        if (cu.MemcpyDtoH((uint8_t *)m->kcache + koff, g->kc + koff,
-                          (size_t)(lhi - llo) * krow) != 0 ||
-            cu.MemcpyDtoH((uint8_t *)m->vcache + voff, g->vc + voff,
-                          (size_t)(lhi - llo) * vrow) != 0)
-            return false;
+        int a[2], b[2], ns = kv_spans(m, l, lo, hi, a, b);
+        for (int s = 0; s < ns; s++)
+            if (!kv_move(g, m, l, a[s], b[s], false)) return false;
     }
     return true;
 }

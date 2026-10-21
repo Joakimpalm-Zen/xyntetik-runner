@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA sliding-window layers copy only the rows a forward writes.** A
+  layer that keeps its KV in a ring mirrored the whole ring between host
+  and device on every copy, so a speculative round or a microbatch step on
+  a gemma model moved every slot of every sliding layer across the bus;
+  the copies now move the slots the forward's positions occupy (at most
+  two stretches when they wrap). `--score` and generation are
+  byte-identical to the previous copies on gemma-3-4b, gemma-4-E4B and
+  gemma-4-E2B at an 8K context.
+
 - **CUDA no longer re-uploads the KV cache when a sequence rewinds, and a
   resumed session is never decoded against the previous request's rows.**
   The device keeps a mirror of the host's KV cache and took the host's
