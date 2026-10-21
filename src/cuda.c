@@ -1946,13 +1946,25 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
     }
     // an explicit --gpu-layers overrides the budget-based fit (the user
     // takes responsibility for VRAM; used for testing partial offload and
-    // for manual control). It can only lower the count below what fits, or
-    // request a specific split.
+    // for manual control): any split, below or above what fits. Above it,
+    // say so: a discrete card cannot hold the excess, so the allocation
+    // fails or, under a Windows driver, is paged to system memory and runs
+    // several times slower without an error (Xyntetik-Kvist-14B at an 8K
+    // context on an 8 GB RTX 3070: 47 of 52 layers fit; all 52 forced put
+    // ~0.5 GB in shared system memory and decoded 2.9-3.6 tok/s against 5.6
+    // at the fitted split).
     int natural_G = G;
     if (m->gpu_layers_override > 0) {
         G = m->gpu_layers_override;
         if (G > m->n_layer) G = m->n_layer;
         full = (G == m->n_layer);
+        if (G > natural_G)
+            fprintf(stderr, "gpu: --gpu-layers %d places %d layers past the %d the "
+                            "offload budget holds (%.2f GB); the excess may fail to "
+                            "allocate or be paged to system memory, which runs far "
+                            "slower. Omit --gpu-layers to use the fitted split.\n",
+                    m->gpu_layers_override, G - natural_G, natural_G,
+                    (double)vram_budget / 1e9);
     }
     // Composition warning (no silent worst-of-both). Under tensor-role
     // placement the expert banks are what fill VRAM, so capping the
