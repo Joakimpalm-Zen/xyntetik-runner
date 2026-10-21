@@ -68,3 +68,26 @@ def test_name_order_partial_split_uploads_per_tensor_and_matches(fixtures):
     assert "uploading per tensor" not in err_block
     assert "uploading per tensor" in err_alpha, err_alpha
     assert gpu_alpha == gpu_block, (gpu_alpha, gpu_block)
+
+
+def test_gpu_layers_past_the_fitted_split_says_so(fixtures):
+    # An explicit --gpu-layers is honoured whatever the offload budget holds;
+    # past it a discrete card fails the allocation or, under a Windows
+    # driver, pages the excess to system memory (an 8 GB RTX 3070 decoded
+    # 2.9 tok/s against 5.6 at the fitted split). A small --reserve-vram
+    # stands in for a model that does not fit.
+    block, _ = fixtures
+    _, fitted = _run(block, "--gpu", "auto", "--reserve-vram", "1")
+    split = next((l for l in fitted.splitlines() if l.startswith("gpu-split:") and " G=" in l), "")
+    if split:
+        g, n = split.split(" G=")[1].split()[0].split("/")
+        if g == n:
+            pytest.skip("1% of this device's memory holds the whole fixture")
+    else:
+        assert "not even one layer fits" in fitted, fitted
+        g = "0"
+    assert "past the" not in fitted, fitted
+    _, forced = _run(block, "--gpu", "auto", "--reserve-vram", "1", "--gpu-layers", "99")
+    assert "--gpu-layers 99 places" in forced and f"past the {g} the offload budget holds" in forced, forced
+    _, unforced = _run(block, "--gpu", "auto")
+    assert "past the" not in unforced, unforced
