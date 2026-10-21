@@ -1988,10 +1988,20 @@ static float dot_q4_0_avx2(const block_q4_0 *b, const float *x, int n) {
     return hsum8(acc);
 }
 
-static inline float dot_q4_K_avx2_xs(const block_q4_K *b, const float *x,
-                                     const float *xs, int n) {
+// The K-quant dots keep one vector accumulator per row: each 32-weight
+// sub-block's eight-lane sum t is scaled into it (acc += d*sc * t) and the
+// min term is summed apart from the per-32 activation sums, one horizontal
+// reduction a row. They used to reduce horizontally twice per 64 weights
+// (hsum8 of each sub-block, then a scalar chain), which held the Q4_K dot to
+// about 60% of Q4_0's rate per weight; 1.44x faster on an x86 core, 1.17x
+// on an M1 (2026-10-21), a different order of the same fp32 terms. The
+// group sums come from the caller (vec_dot_xsums) or are formed here in the
+// same order, so vec_dot_xs, vec_dot and vec_dot_multi stay byte-equal.
+static inline float dot_q4_K_avx2_core(const block_q4_K *b, const float *x,
+                                       const float *xs, int n, const int own_sums) {
     const __m128i mF = _mm_set1_epi8(0xF);
-    float s = 0;
+    __m256 acc = _mm256_setzero_ps();
+    float msum = 0;
     for (int i = 0; i < n / QK_K; i++, b++) {
         float d = f16_to_f32(b->d), dmin = f16_to_f32(b->dmin);
         const uint8_t *q = b->qs;
@@ -2015,25 +2025,35 @@ static inline float dot_q4_K_avx2_xs(const block_q4_K *b, const float *x,
                 t1 = _mm256_fmadd_ps(i8hi_ps(lo), x1, t1);
                 t2 = _mm256_fmadd_ps(i8lo_ps(hi), x2, t2);
                 t2 = _mm256_fmadd_ps(i8hi_ps(hi), x3, t2);
-                s1 = _mm256_add_ps(s1, _mm256_add_ps(x0, x1));
-                s2 = _mm256_add_ps(s2, _mm256_add_ps(x2, x3));
+                if (own_sums) {
+                    s1 = _mm256_add_ps(s1, _mm256_add_ps(x0, x1));
+                    s2 = _mm256_add_ps(s2, _mm256_add_ps(x2, x3));
+                }
             }
             const int g = (i * QK_K + j) / 32;
-            float sx1 = xs ? xs[g] : hsum8(s1), sx2 = xs ? xs[g + 1] : hsum8(s2);
-            s += d1 * hsum8(t1) - m1 * sx1 + d2 * hsum8(t2) - m2 * sx2;
+            float sx1 = own_sums ? hsum8(s1) : xs[g], sx2 = own_sums ? hsum8(s2) : xs[g + 1];
+            acc = _mm256_fmadd_ps(_mm256_set1_ps(d1), t1, acc);
+            acc = _mm256_fmadd_ps(_mm256_set1_ps(d2), t2, acc);
+            msum += m1 * sx1 + m2 * sx2;
             q += 32; is += 2; xp += 64;
         }
     }
-    return s;
+    return hsum8(acc) - msum;
+}
+static inline float dot_q4_K_avx2_xs(const block_q4_K *b, const float *x,
+                                     const float *xs, int n) {
+    return xs ? dot_q4_K_avx2_core(b, x, xs, n, 0) : dot_q4_K_avx2_core(b, x, NULL, n, 1);
 }
 static float dot_q4_K_avx2(const block_q4_K *b, const float *x, int n) {
     return dot_q4_K_avx2_xs(b, x, NULL, n);
 }
 
-static inline float dot_q5_K_avx2_xs(const block_q5_K *b, const float *x,
-                                     const float *xs, int n) {
+// Q5_K: Q4_K's accumulation (dot_q4_K_avx2_core) with the fifth bit
+static inline float dot_q5_K_avx2_core(const block_q5_K *b, const float *x,
+                                       const float *xs, int n, const int own_sums) {
     const __m128i mF = _mm_set1_epi8(0xF), m16 = _mm_set1_epi8(16);
-    float s = 0;
+    __m256 acc = _mm256_setzero_ps();
+    float msum = 0;
     for (int i = 0; i < n / QK_K; i++, b++) {
         float d = f16_to_f32(b->d), dmin = f16_to_f32(b->dmin);
         const uint8_t *q = b->qs, *qh = b->qh;
@@ -2064,16 +2084,24 @@ static inline float dot_q5_K_avx2_xs(const block_q5_K *b, const float *x,
                 t1 = _mm256_fmadd_ps(i8hi_ps(lo), x1, t1);
                 t2 = _mm256_fmadd_ps(i8lo_ps(hi), x2, t2);
                 t2 = _mm256_fmadd_ps(i8hi_ps(hi), x3, t2);
-                s1 = _mm256_add_ps(s1, _mm256_add_ps(x0, x1));
-                s2 = _mm256_add_ps(s2, _mm256_add_ps(x2, x3));
+                if (own_sums) {
+                    s1 = _mm256_add_ps(s1, _mm256_add_ps(x0, x1));
+                    s2 = _mm256_add_ps(s2, _mm256_add_ps(x2, x3));
+                }
             }
             const int g = (i * QK_K + j) / 32;
-            float sx1 = xs ? xs[g] : hsum8(s1), sx2 = xs ? xs[g + 1] : hsum8(s2);
-            s += d1 * hsum8(t1) - m1 * sx1 + d2 * hsum8(t2) - m2 * sx2;
+            float sx1 = own_sums ? hsum8(s1) : xs[g], sx2 = own_sums ? hsum8(s2) : xs[g + 1];
+            acc = _mm256_fmadd_ps(_mm256_set1_ps(d1), t1, acc);
+            acc = _mm256_fmadd_ps(_mm256_set1_ps(d2), t2, acc);
+            msum += m1 * sx1 + m2 * sx2;
             q += 32; is += 2; xp += 64; u1 <<= 2; u2 <<= 2;
         }
     }
-    return s;
+    return hsum8(acc) - msum;
+}
+static inline float dot_q5_K_avx2_xs(const block_q5_K *b, const float *x,
+                                     const float *xs, int n) {
+    return xs ? dot_q5_K_avx2_core(b, x, xs, n, 0) : dot_q5_K_avx2_core(b, x, NULL, n, 1);
 }
 static float dot_q5_K_avx2(const block_q5_K *b, const float *x, int n) {
     return dot_q5_K_avx2_xs(b, x, NULL, n);
@@ -2081,14 +2109,15 @@ static float dot_q5_K_avx2(const block_q5_K *b, const float *x, int n) {
 
 static float dot_q6_K_avx2(const block_q6_K *b, const float *x, int n) {
     const __m128i mF = _mm_set1_epi8(0xF), m3 = _mm_set1_epi8(3), m32 = _mm_set1_epi8(32);
-    float s = 0;
+    // the K-quant accumulation (dot_q4_K_avx2_core): each 16-weight
+    // sub-block's sum scaled into one vector accumulator, one reduction a row
+    __m256 acc = _mm256_setzero_ps();
     for (int i = 0; i < n / QK_K; i++, b++) {
         float d = f16_to_f32(b->d);
         const uint8_t *ql = b->ql, *qh = b->qh;
         const int8_t *sc = b->scales;
         const float *xp = x + i * QK_K;
         for (int half = 0; half < 2; half++) {
-            float t[8];
             for (int base = 0; base < 32; base += 16) {
                 int is = base / 16;
                 __m128i l0 = _mm_loadu_si128((const __m128i *)(ql + base));
@@ -2112,17 +2141,15 @@ static float dot_q6_K_avx2(const block_q6_K *b, const float *x, int n) {
                 a3 = _mm256_fmadd_ps(i8hi_ps(q3), _mm256_loadu_ps(xp + 64 + base + 8), a3);
                 __m256 a4 = _mm256_mul_ps(i8lo_ps(q4), _mm256_loadu_ps(xp + 96 + base));
                 a4 = _mm256_fmadd_ps(i8hi_ps(q4), _mm256_loadu_ps(xp + 96 + base + 8), a4);
-                t[is * 4 + 0] = hsum8(a1);
-                t[is * 4 + 1] = hsum8(a2);
-                t[is * 4 + 2] = hsum8(a3);
-                t[is * 4 + 3] = hsum8(a4);
+                acc = _mm256_fmadd_ps(_mm256_set1_ps(d * sc[is]), a1, acc);
+                acc = _mm256_fmadd_ps(_mm256_set1_ps(d * sc[2 + is]), a2, acc);
+                acc = _mm256_fmadd_ps(_mm256_set1_ps(d * sc[4 + is]), a3, acc);
+                acc = _mm256_fmadd_ps(_mm256_set1_ps(d * sc[6 + is]), a4, acc);
             }
-            s += d * (sc[0] * t[0] + sc[2] * t[1] + sc[4] * t[2] + sc[6] * t[3] +
-                      sc[1] * t[4] + sc[3] * t[5] + sc[5] * t[6] + sc[7] * t[7]);
             ql += 64; qh += 32; sc += 8; xp += 128;
         }
     }
-    return s;
+    return hsum8(acc);
 }
 // IQ4: the nibble is an index into the 16-entry kvalues table — pshufb does
 // the whole lookup in one instruction
@@ -2329,10 +2356,13 @@ static float dot_bf16_neon(const uint16_t *w, const float *x, int n) {
 // those sums are the same for every row of a matvec, so the decode matvec
 // computes them once instead of once per row, and the dot is byte-equal
 // either way (the same value enters the same expression).
+// the AVX2 kernels' accumulation (dot_q4_K_avx2_core): one vector
+// accumulator a row, the min term apart
 static inline float dot_q4_K_neon_xs(const block_q4_K *b, const float *x,
                                      const float *xs, int n) {
     const uint8x16_t mF = vdupq_n_u8(0xF);
-    float s = 0;
+    float32x4_t acc = vdupq_n_f32(0);
+    float msum = 0;
     for (int i = 0; i < n / QK_K; i++, b++) {
         float d = f16_to_f32(b->d), dmin = f16_to_f32(b->dmin);
         const uint8_t *q = b->qs;
@@ -2350,12 +2380,13 @@ static inline float dot_q4_K_neon_xs(const block_q4_K *b, const float *x,
             const int g = (i * QK_K + j) / 32;
             float sx1 = xs ? xs[g] : vaddvq_f32(sum32(xp));
             float sx2 = xs ? xs[g + 1] : vaddvq_f32(sum32(xp + 32));
-            s += d1 * vaddvq_f32(t1) - m1 * sx1
-               + d2 * vaddvq_f32(t2) - m2 * sx2;
+            acc = vfmaq_n_f32(acc, t1, d1);
+            acc = vfmaq_n_f32(acc, t2, d2);
+            msum += m1 * sx1 + m2 * sx2;
             q += 32; is += 2; xp += 64;
         }
     }
-    return s;
+    return vaddvq_f32(acc) - msum;
 }
 static float dot_q4_K_neon(const block_q4_K *b, const float *x, int n) {
     return dot_q4_K_neon_xs(b, x, NULL, n);
@@ -2432,7 +2463,8 @@ static float dot_iq3_xxs_neon(const block_iq3_xxs *b, const float *x, int n) {
 static inline float dot_q5_K_neon_xs(const block_q5_K *b, const float *x,
                                      const float *xs, int n) {
     const uint8x16_t mF = vdupq_n_u8(0xF), m16 = vdupq_n_u8(16);
-    float s = 0;
+    float32x4_t acc = vdupq_n_f32(0);
+    float msum = 0;
     for (int i = 0; i < n / QK_K; i++, b++) {
         float d = f16_to_f32(b->d), dmin = f16_to_f32(b->dmin);
         const uint8_t *q = b->qs, *qh = b->qh;
@@ -2461,12 +2493,13 @@ static inline float dot_q5_K_neon_xs(const block_q5_K *b, const float *x,
             const int g = (i * QK_K + j) / 32;
             float sx1 = xs ? xs[g] : vaddvq_f32(sum32(xp));
             float sx2 = xs ? xs[g + 1] : vaddvq_f32(sum32(xp + 32));
-            s += d1 * vaddvq_f32(t1) - m1 * sx1
-               + d2 * vaddvq_f32(t2) - m2 * sx2;
+            acc = vfmaq_n_f32(acc, t1, d1);
+            acc = vfmaq_n_f32(acc, t2, d2);
+            msum += m1 * sx1 + m2 * sx2;
             q += 32; is += 2; xp += 64; u1 <<= 2; u2 <<= 2;
         }
     }
-    return s;
+    return vaddvq_f32(acc) - msum;
 }
 static float dot_q5_K_neon(const block_q5_K *b, const float *x, int n) {
     return dot_q5_K_neon_xs(b, x, NULL, n);
@@ -2475,14 +2508,13 @@ static float dot_q5_K_neon(const block_q5_K *b, const float *x, int n) {
 static float dot_q6_K_neon(const block_q6_K *b, const float *x, int n) {
     const uint8x16_t mF = vdupq_n_u8(0xF), m3 = vdupq_n_u8(3);
     const int8x16_t m32 = vdupq_n_s8(32);
-    float s = 0;
+    float32x4_t acc = vdupq_n_f32(0);   // as dot_q6_K_avx2
     for (int i = 0; i < n / QK_K; i++, b++) {
         float d = f16_to_f32(b->d);
         const uint8_t *ql = b->ql, *qh = b->qh;
         const int8_t *sc = b->scales;
         const float *xp = x + i * QK_K;
         for (int half = 0; half < 2; half++) {
-            float t[8];
             for (int base = 0; base < 32; base += 16) {
                 int is = base / 16;
                 uint8x16_t l0 = vld1q_u8(ql + base);
@@ -2500,17 +2532,15 @@ static float dot_q6_K_neon(const block_q6_K *b, const float *x, int n) {
                 int8x16_t q4 = vsubq_s8(vreinterpretq_s8_u8(vorrq_u8(
                         vshrq_n_u8(l1, 4),
                         vshlq_n_u8(vshrq_n_u8(h, 6), 4))), m32);
-                t[is * 4 + 0] = vaddvq_f32(dot16(q1, xp + base));
-                t[is * 4 + 1] = vaddvq_f32(dot16(q2, xp + 32 + base));
-                t[is * 4 + 2] = vaddvq_f32(dot16(q3, xp + 64 + base));
-                t[is * 4 + 3] = vaddvq_f32(dot16(q4, xp + 96 + base));
+                acc = vfmaq_n_f32(acc, dot16(q1, xp + base), d * sc[is]);
+                acc = vfmaq_n_f32(acc, dot16(q2, xp + 32 + base), d * sc[2 + is]);
+                acc = vfmaq_n_f32(acc, dot16(q3, xp + 64 + base), d * sc[4 + is]);
+                acc = vfmaq_n_f32(acc, dot16(q4, xp + 96 + base), d * sc[6 + is]);
             }
-            s += d * (sc[0] * t[0] + sc[2] * t[1] + sc[4] * t[2] + sc[6] * t[3] +
-                      sc[1] * t[4] + sc[3] * t[5] + sc[5] * t[6] + sc[7] * t[7]);
             ql += 64; qh += 32; sc += 8; xp += 128;
         }
     }
-    return s;
+    return vaddvq_f32(acc);
 }
 
 static float dot_iq4_nl_neon(const block_iq4_nl *b, const float *x, int n) {
@@ -3139,8 +3169,9 @@ static void dot_bf16_avx2_multi(const uint16_t *w, const float *const *xs, int n
 static void dot_q4_K_avx2_multi(const block_q4_K *b, const float *const *xs, int nc,
                                 int n, float *out) {
     const __m128i mF = _mm_set1_epi8(0xF);
-    float s[VEC_DOT_MULTI_MAX];
-    for (int c = 0; c < nc; c++) s[c] = 0;
+    __m256 acc[VEC_DOT_MULTI_MAX];
+    float msum[VEC_DOT_MULTI_MAX];
+    for (int c = 0; c < nc; c++) { acc[c] = _mm256_setzero_ps(); msum[c] = 0; }
     for (int i = 0; i < n / QK_K; i++, b++) {
         float d = f16_to_f32(b->d), dmin = f16_to_f32(b->dmin);
         const uint8_t *q = b->qs;
@@ -3173,19 +3204,23 @@ static void dot_q4_K_avx2_multi(const block_q4_K *b, const float *const *xs, int
                     s1 = _mm256_add_ps(s1, _mm256_add_ps(x0, x1));
                     s2 = _mm256_add_ps(s2, _mm256_add_ps(x2, x3));
                 }
-                s[c] += d1 * hsum8(t1) - m1 * hsum8(s1) + d2 * hsum8(t2) - m2 * hsum8(s2);
+                float sx1 = hsum8(s1), sx2 = hsum8(s2);
+                acc[c] = _mm256_fmadd_ps(_mm256_set1_ps(d1), t1, acc[c]);
+                acc[c] = _mm256_fmadd_ps(_mm256_set1_ps(d2), t2, acc[c]);
+                msum[c] += m1 * sx1 + m2 * sx2;
             }
             q += 32; is += 2; xo += 64;
         }
     }
-    for (int c = 0; c < nc; c++) out[c] = s[c];
+    for (int c = 0; c < nc; c++) out[c] = hsum8(acc[c]) - msum[c];
 }
 
 static void dot_q5_K_avx2_multi(const block_q5_K *b, const float *const *xs, int nc,
                                 int n, float *out) {
     const __m128i mF = _mm_set1_epi8(0xF), m16 = _mm_set1_epi8(16);
-    float s[VEC_DOT_MULTI_MAX];
-    for (int c = 0; c < nc; c++) s[c] = 0;
+    __m256 acc[VEC_DOT_MULTI_MAX];
+    float msum[VEC_DOT_MULTI_MAX];
+    for (int c = 0; c < nc; c++) { acc[c] = _mm256_setzero_ps(); msum[c] = 0; }
     for (int i = 0; i < n / QK_K; i++, b++) {
         float d = f16_to_f32(b->d), dmin = f16_to_f32(b->dmin);
         const uint8_t *q = b->qs, *qh = b->qh;
@@ -3225,19 +3260,22 @@ static void dot_q5_K_avx2_multi(const block_q5_K *b, const float *const *xs, int
                     s1 = _mm256_add_ps(s1, _mm256_add_ps(x0, x1));
                     s2 = _mm256_add_ps(s2, _mm256_add_ps(x2, x3));
                 }
-                s[c] += d1 * hsum8(t1) - m1 * hsum8(s1) + d2 * hsum8(t2) - m2 * hsum8(s2);
+                float sx1 = hsum8(s1), sx2 = hsum8(s2);
+                acc[c] = _mm256_fmadd_ps(_mm256_set1_ps(d1), t1, acc[c]);
+                acc[c] = _mm256_fmadd_ps(_mm256_set1_ps(d2), t2, acc[c]);
+                msum[c] += m1 * sx1 + m2 * sx2;
             }
             q += 32; is += 2; xo += 64; u1 <<= 2; u2 <<= 2;
         }
     }
-    for (int c = 0; c < nc; c++) out[c] = s[c];
+    for (int c = 0; c < nc; c++) out[c] = hsum8(acc[c]) - msum[c];
 }
 
 static void dot_q6_K_avx2_multi(const block_q6_K *b, const float *const *xs, int nc,
                                 int n, float *out) {
     const __m128i mF = _mm_set1_epi8(0xF), m3 = _mm_set1_epi8(3), m32 = _mm_set1_epi8(32);
-    float s[VEC_DOT_MULTI_MAX];
-    for (int c = 0; c < nc; c++) s[c] = 0;
+    __m256 acc[VEC_DOT_MULTI_MAX];
+    for (int c = 0; c < nc; c++) acc[c] = _mm256_setzero_ps();
     for (int i = 0; i < n / QK_K; i++, b++) {
         float d = f16_to_f32(b->d);
         const uint8_t *ql = b->ql, *qh = b->qh;
@@ -3268,22 +3306,19 @@ static void dot_q6_K_avx2_multi(const block_q6_K *b, const float *const *xs, int
             }
             for (int c = 0; c < nc; c++) {
                 const float *xp = xs[c] + xo;
-                float t[8];
                 for (int base = 0; base < 32; base += 16) {
                     int is = base / 16;
                     for (int k = 0; k < 4; k++) {
                         __m256 a = _mm256_mul_ps(w[is][k][0], _mm256_loadu_ps(xp + 32 * k + base));
                         a = _mm256_fmadd_ps(w[is][k][1], _mm256_loadu_ps(xp + 32 * k + base + 8), a);
-                        t[is * 4 + k] = hsum8(a);
+                        acc[c] = _mm256_fmadd_ps(_mm256_set1_ps(d * sc[2 * k + is]), a, acc[c]);
                     }
                 }
-                s[c] += d * (sc[0] * t[0] + sc[2] * t[1] + sc[4] * t[2] + sc[6] * t[3] +
-                             sc[1] * t[4] + sc[3] * t[5] + sc[5] * t[6] + sc[7] * t[7]);
             }
             ql += 64; qh += 32; sc += 8; xo += 128;
         }
     }
-    for (int c = 0; c < nc; c++) out[c] = s[c];
+    for (int c = 0; c < nc; c++) out[c] = hsum8(acc[c]);
 }
 #endif // RUNNER_AVX2
 

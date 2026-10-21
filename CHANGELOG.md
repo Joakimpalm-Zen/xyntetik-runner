@@ -5,6 +5,20 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CPU K-quant dots keep one accumulator a row.** The Q4_K, Q5_K and Q6_K
+  dot products (the AVX2 and NEON single and group-sum forms, and the AVX2
+  multi-column ones) added each 32-weight sub-block into the row's sum with
+  a horizontal reduction, two of them per 64 weights; each sub-block's sum
+  is now scaled into one vector accumulator (the min term kept apart) and
+  the row reduced once. One core of the Linux host reads Q4_K rows on the
+  decode route 1.44x as fast (14.4 to 20.7 G weights/s), an M1 core 1.17x,
+  and an M1 prefills Llama-3.2-1B Q4_K_M on its CPU at 88 tok/s where it
+  read 75 (decode up to 3% faster). The same terms in another order move the
+  last bits (about 1e-6 in a logprob); against the publishers' float32
+  forwards over 2,000 positions the two orders are not distinguishable
+  (Qwen3-4B Q4_K_M mean KL 0.13987 against 0.13988, Wilcoxon p 0.50;
+  Llama-3.2-3B Q4_K_M 0.04391 against 0.04389, p 0.07).
+
 - **Llama 3 files without an add-BOS flag get their BOS token.** A GGUF
   that does not carry `tokenizer.ggml.add_bos_token` was read as "no BOS"
   for every BPE vocabulary, and Llama 3 conversions commonly omit the key
