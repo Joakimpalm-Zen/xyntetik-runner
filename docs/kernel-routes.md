@@ -54,6 +54,12 @@ tokens sampled after a 60-token prompt. Batches of 2 to 7 stay on
 prefill speed (37 against 129 to 143 tok/s on that model, 422 tokens, 4
 threads). Training rollouts therefore read the prompt with `-b 1`
 (`scripts/train-grpo-lite.py`, gated by `tests/test_rollout_identity.py`).
+A server's prefix cache meets the same contract: a request that continues a
+cached prefix reads only its new tokens, so its logprobs can differ from the
+same request on a fresh slot (measured with the 1.5.0 and 1.4.2 Linux builds:
+every repeat, rewind and one-token extension of a cached SmolLM2-135M Q8_0
+prompt moved the answer, by at most 4e-5, and a BF16 file's never did;
+`"cache_prompt": false` reproduces the fresh slot, and so does a restart).
 
 ## CUDA: `enc_mv` in `src/cuda.c`
 
