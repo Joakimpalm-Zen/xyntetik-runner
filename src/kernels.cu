@@ -5868,6 +5868,16 @@ extern "C" __global__ void k_q35_conv(const float *mix, float *cv,
 
 // One block per value head. The model geometry guarantees hv == state/key
 // width. State is [head][value-column][key-row], matching the CPU reference.
+//
+// Each thread owns a value column and walks its key row in order, twice
+// (decay and prediction, then the update and the output). The rows go through
+// a shared tile Q35D_KEYS keys at a time, loaded and stored by the whole block
+// with consecutive threads on consecutive keys of one row: a thread reading
+// its own row straight from global memory touched a different 128-byte line
+// at every step (rows lie 4 * state_dim bytes apart), and the kernel moved its
+// 2 MB of Qwen3.5-4B state per call at about a tenth of an RTX 3070's
+// bandwidth (82 us a call, 2026-10-21). Every element takes the same
+// operations in the same order as it did, so the bits are unchanged.
 extern "C" __global__ void k_q35_delta(float *cv, const float *z,
                                         const float *beta_in,
                                         const float *alpha_in,
@@ -5914,20 +5924,45 @@ extern "C" __global__ void k_q35_delta(float *cv, const float *z,
     float softplus = av > 20.0f ? av : log1pf(expf(av));
     float decay = expf(a[h] * softplus);
 
-    for (int j = tid; j < state_dim; j += blockDim.x) {
-        float *row = st + (ulong64)j * state_dim;
-        float pred = 0.0f;
-        for (int i = 0; i < state_dim; i++) {
-            row[i] *= decay;
-            pred += row[i] * (k[i] * kscale);
+    // tile[c][i]: key i of the chunk for column c of the pass; the pad keeps
+    // a warp's column-wise reads on 32 different banks
+    __shared__ float tile[Q35D_COLS][Q35D_KEYS + 1];
+    for (int j0 = 0; j0 < state_dim; j0 += Q35D_COLS) {
+        int ncol = min(Q35D_COLS, state_dim - j0), j = j0 + tid;
+        bool mine = tid < ncol;
+        float pred = 0.0f, delta = 0.0f, y = 0.0f;
+        for (int pass = 0; pass < 2; pass++) {
+            if (pass == 1 && mine) delta = (v[j] - pred) * beta;
+            for (int c0 = 0; c0 < state_dim; c0 += Q35D_KEYS) {
+                int nk = min(Q35D_KEYS, state_dim - c0);
+                for (int e = tid; e < ncol * Q35D_KEYS; e += Q35D_COLS) {
+                    int c = e / Q35D_KEYS, i = e % Q35D_KEYS;
+                    if (i < nk) tile[c][i] = st[(ulong64)(j0 + c) * state_dim + c0 + i];
+                }
+                __syncthreads();
+                if (mine) {
+                    if (pass == 0)
+                        for (int i = 0; i < nk; i++) {
+                            float r = tile[tid][i] * decay;
+                            tile[tid][i] = r;
+                            pred += r * (k[c0 + i] * kscale);
+                        }
+                    else
+                        for (int i = 0; i < nk; i++) {
+                            float r = tile[tid][i] + delta * (k[c0 + i] * kscale);
+                            tile[tid][i] = r;
+                            y += r * (q[c0 + i] * qscale);
+                        }
+                }
+                __syncthreads();
+                for (int e = tid; e < ncol * Q35D_KEYS; e += Q35D_COLS) {
+                    int c = e / Q35D_KEYS, i = e % Q35D_KEYS;
+                    if (i < nk) st[(ulong64)(j0 + c) * state_dim + c0 + i] = tile[c][i];
+                }
+                __syncthreads();
+            }
         }
-        float delta = (v[j] - pred) * beta;
-        float y = 0.0f;
-        for (int i = 0; i < state_dim; i++) {
-            row[i] += delta * (k[i] * kscale);
-            y += row[i] * (q[i] * qscale);
-        }
-        yo[j] = y * rsqrtf((float)state_dim);
+        if (mine) yo[j] = y * rsqrtf((float)state_dim);
     }
     __syncthreads();
     float ss = 0.0f;

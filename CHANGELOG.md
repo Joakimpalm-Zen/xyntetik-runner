@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: the one-token Gated DeltaNet step reads its state coalesced.**
+  `k_q35_delta`, the per-token step of the qwen35 recurrent layers (Qwen3.5,
+  Qwen3.8), had each thread walk its own state row in device memory, with
+  rows 512 bytes apart, so every access of a warp touched 32 cache lines.
+  The rows now pass through a shared tile 32 keys at a time, loaded and
+  stored by the whole block in order; every element takes the same
+  operations in the same order, so the output bytes are unchanged. On an RTX
+  3070 the step went from 82 to 59 microseconds a call and Qwen3.5-4B
+  decodes at 87.2 tok/s where it ran 83.3.
+
 - **CUDA: the tensor-core prefill attention is the default for the llama,
   qwen2, qwen3 and granite families.** `attn-tc` (`k_attn_tc` with Q and P
   carried as two fp16 halves, f16 caches) prefills an 8,000-token prompt

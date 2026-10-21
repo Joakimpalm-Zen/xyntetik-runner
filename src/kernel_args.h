@@ -82,4 +82,10 @@ typedef struct {
 #define Q6_TWR(nc) ((nc) <= 4 ? 4 : 2)   // Q6_K
 #define DQ_TWR(nc) ((nc) <= 8 ? 4 : 2)   // Q8_0, Q4_0, BF16
 
+// k_q35_delta (the one-token Gated DeltaNet step): threads a block, one value
+// column each per pass, and the key rows its shared tile stages at a time.
+// The launch (cuda.c gpu_q35_recurrent) uses Q35D_COLS as its block size.
+#define Q35D_COLS 128
+#define Q35D_KEYS 32
+
 #endif // RUNNER_KERNEL_ARGS_H

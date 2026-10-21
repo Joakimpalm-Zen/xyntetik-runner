@@ -6192,7 +6192,7 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
         void *pd[] = { &cv, &z, &beta, &alpha, &g->sw->ssm_dt[l],
                        &g->sw->ssm_a[l], &g->sw->ssm_norm[l], &state,
                        &out, &sk, &ng, &nh, &eps, &gate_sigmoid };
-        if (!launch(g, g->sw->f_q35_delta, nh, 1, 1, 128, pd)) return false;
+        if (!launch(g, g->sw->f_q35_delta, nh, 1, 1, Q35D_COLS, pd)) return false;
         if (g->snap_on && t < g->snap_rows) {
             // checkpoint after this row, in stream order behind the kernels
             size_t hb = sizeof(float) * (size_t)m->n_layer * hist_layer;
