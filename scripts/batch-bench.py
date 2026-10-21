@@ -48,6 +48,22 @@ def free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def request_body(prompt, max_tokens):
+    """One chat request. The model is named by the server's own alias for
+    whatever it serves: a single-model server answers an unknown name with
+    404 model_not_found, and an arbitrary name made every request of this
+    gate fail before it measured anything."""
+    return {
+        "model": "runner",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": 0,
+        # each request must stand alone: a shared prefix cache would make
+        # the second run of a prompt faster for reasons unrelated to batching
+        "cache_prompt": False,
+    }
+
+
 class Server:
     def __init__(self, exe, model, parallel, ctx, extra):
         self.port = free_port()
@@ -80,15 +96,7 @@ class Server:
             self.p.kill()
 
     def chat(self, prompt, max_tokens):
-        body = json.dumps({
-            "model": "m",
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": 0,
-            # each request must stand alone: a shared prefix cache would make
-            # the second run of a prompt faster for reasons unrelated to batching
-            "cache_prompt": False,
-        }).encode()
+        body = json.dumps(request_body(prompt, max_tokens)).encode()
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}/v1/chat/completions", data=body,
             headers={"Content-Type": "application/json"})

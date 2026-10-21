@@ -47,3 +47,15 @@ def test_the_solo_request_is_made_once_per_distinct_prompt():
     MOD.identity_rows(prompts, ["x"] * 12, lambda p: asked.append(p) or "x")
 
     assert len(asked) == len(set(prompts)) == 8
+
+
+def test_requests_name_a_model_the_server_answers():
+    """A single-model server answers a model name it does not serve with 404
+    model_not_found (src/registry.c request_model_matches: empty, the GGUF's
+    name, or one of its aliases). The gate named "m", so every request failed
+    before anything was measured."""
+    aliases = ("runner", "default", "local", "test", "thane", "clu")
+    registry = (ROOT / "src/registry.c").read_text()
+    body = MOD.request_body("hello", 8)
+    assert body["model"] in aliases
+    assert '"%s"' % body["model"] in registry
