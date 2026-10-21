@@ -3065,8 +3065,9 @@ bits a lone step would have, so such a model decodes its sequences one at a
 time rather than batching them into different numbers. The current CUDA
 microbatch loop covers gated dense transformer layers; recurrent, MoE, NoPE,
 attention-gated, and ungated xIELU models use sequential GPU forwards. Within
-the covered family Q8_0, Q4_0, Q4_K, Q5_K, Q6_K, F32 and F16 batch; the rest do
-not.
+the covered family F32, F16, BF16, Q8_0, Q4_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_XS,
+MXFP4 and the codebook i-quants (IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S)
+batch; the rest (Q2_K, Q4_1, Q5_0, Q5_1, IQ4_NL, the IQ1 types, NVFP4) do not.
 
 Those are deliberately raw counters rather than a tokens-per-second field: a
 rate needs an averaging window, and the runner has no business choosing one for
