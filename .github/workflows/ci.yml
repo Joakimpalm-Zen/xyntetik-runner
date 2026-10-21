@@ -792,9 +792,12 @@ jobs:
           .venv/bin/pip install -r tests/ci/requirements.txt
       - name: deterministic generation, training and replay
         run: |
+          # the CUDA-only cases (test_cuda_*, the GPU training pair) run in the
+          # CUDA gate (make test-cuda-gated); a hosted runner has no device and
+          # --no-skips would fail on them (tests/test_ci_contracts.py checks)
           .venv/bin/python scripts/ci-run.py --timeout 1500 t3 -- .venv/bin/python -m pytest -q \
             tests/test_transcript.py tests/test_train.py tests/test_session_images.py \
-            -k "not gpu_training_matches_cpu_bytes and not cuda_record_carries" \
+            -k "not gpu_training_matches_cpu_bytes and not test_cuda_" \
             --junitxml=.build/ci/t3.xml
           .venv/bin/python scripts/check-junit.py --no-skips .build/ci/t3.xml
       - uses: actions/upload-artifact@v7

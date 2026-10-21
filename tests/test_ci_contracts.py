@@ -210,6 +210,34 @@ class DeviceHarnessPins(unittest.TestCase):
                          "a second runtime release site must go through gpu_runtime_failure")
 
 
+class HostedT3Skips(unittest.TestCase):
+    """The t3 job runs its test files with --no-skips on hosted runners, which
+    have no CUDA device, so every case there that skips for want of one must
+    be deselected by t3's -k: a CUDA-only case added to test_transcript.py
+    (b72a553b) without that kept t3 red for a day."""
+
+    def test_cuda_only_cases_are_deselected(self):
+        import ast
+        import re
+        wf = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        m = re.search(r"(tests/test_transcript\.py tests/test_train\.py "
+                      r"tests/test_session_images\.py) \\\s*\n\s*-k \"([^\"]+)\"", wf)
+        self.assertIsNotNone(m, "t3's pytest line moved: update this test with it")
+        terms = re.findall(r"not (\S+)", m.group(2))
+        for f in m.group(1).split():
+            tree = ast.parse((ROOT / f).read_text(encoding="utf-8"))
+            for fn in (n for n in tree.body if isinstance(n, ast.FunctionDef)
+                       and n.name.startswith("test_")):
+                cuda_skip = any(
+                    isinstance(c, ast.Call) and getattr(c.func, "attr", "") == "skip"
+                    and c.args and isinstance(c.args[0], ast.Constant)
+                    and "CUDA" in str(c.args[0].value)
+                    for c in ast.walk(fn))
+                if cuda_skip:
+                    self.assertTrue(any(t in fn.name for t in terms),
+                                    f"{f}::{fn.name} skips without CUDA but t3's -k keeps it")
+
+
 # The bash on PATH, which is the one the scheduled task runs the nightly
 # with. A bare "bash" is not that on Windows: CreateProcess looks in System32
 # before PATH and finds WSL's launcher, which cannot see C:/ paths (the
