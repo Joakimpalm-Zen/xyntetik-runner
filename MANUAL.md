@@ -2483,6 +2483,11 @@ per-route `RUNNER_CUDA_*` diagnostics. The set in force
 goes into transcripts and receipts as `profile.gpu_route`, and `--verify`
 replays with the record's set whatever the command line says; a record
 without the field predates these kernels and replays with `reference`.
+The set is the configuration, not a trace: where a route does not apply,
+the kernel it replaces runs (`attn-tc` with a quantized KV cache or a head
+width it does not take runs the tiled attention), and a replay with the
+same set falls back the same way; the stderr route line and `--bench-json`'s kernel
+counters say what ran.
 Kernels that only move bytes (the KV gather, the whole-tile recurrent
 prefill) are not routes in this sense: they cannot change a token, and they
 are on by default (`RUNNER_CUDA_KV_GATHER=0` and `RUNNER_CUDA_RECUR_SEQ=0`
@@ -3068,7 +3073,8 @@ microbatch loop covers gated dense transformer layers; recurrent, MoE, NoPE,
 attention-gated, and ungated xIELU models use sequential GPU forwards. Within
 the covered family F32, F16, BF16, Q8_0, Q4_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_XS,
 MXFP4 and the codebook i-quants (IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S)
-batch; the rest (Q2_K, Q4_1, Q5_0, Q5_1, IQ4_NL, the IQ1 types, NVFP4) do not.
+batch; the rest (Q2_K, Q2_0, Q4_1, Q5_0, Q5_1, IQ4_NL, the IQ1 types, NVFP4) do
+not.
 
 Those are deliberately raw counters rather than a tokens-per-second field: a
 rate needs an averaging window, and the runner has no business choosing one for
