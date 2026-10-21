@@ -164,6 +164,30 @@ def test_a_session_does_not_inherit_the_previous_request(exe, model, tmp_path):
         assert after["generated"] == clean["generated"] == 40
 
 
+def test_a_resumed_image_is_not_decoded_against_the_previous_rows(exe, model, tmp_path):
+    """A resume installs the image's KV into the host cache. CUDA keeps a
+    device mirror of that cache, which re-read the host only when a forward's
+    position was not the previous one plus 1, so a resume landing exactly
+    there decoded against the rows the slot's previous request left on the
+    device: two sessions with prompts of one length, suspended at one point,
+    leave the slot one row short of each other's resume (found 2026-10-21).
+    The anchor is the straight run; the device is the host's (the test runs
+    on whatever backend the host has, and the CUDA gate runs it there)."""
+    other = dict(START, prompt="the lazy yellow dog")   # one byte a token: same length
+    assert len(other["prompt"]) == len(START["prompt"])
+    with RunnerServer(exe, model, ctx=256, extra_args=[
+            "-t", "2", "--parallel", "1", "--sessions", str(tmp_path / "s")]) as srv:
+        code, straight = _post(srv, "/v1/runner/sessions", START)
+        assert code == 200 and straight["generated"] == 40
+        code, a = _post(srv, "/v1/runner/sessions", dict(START, suspend_after=15))
+        assert code == 200 and a["finish_reason"] == "suspended"
+        code, b = _post(srv, "/v1/runner/sessions", dict(other, suspend_after=15))
+        assert code == 200 and b["tokens"] == a["tokens"]
+        code, rest = _post(srv, f"/v1/runner/sessions/{a['id']}/resume", {})
+        assert code == 200
+        assert a["text"] + rest["text"] == straight["text"]
+
+
 @pytest.mark.parametrize("field,value", [
     ("temperature", "hot"), ("temperature", -1), ("temperature", 11),
     ("top_p", 1.5), ("min_p", -0.1), ("repeat_penalty", "2"),

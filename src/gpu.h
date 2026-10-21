@@ -322,6 +322,11 @@ typedef struct gpu_batch gpu_batch;
 // gpu_spec_keep_ok says whether THIS backend supports it; gpu_spec_logits
 // returns row b of the logits the last spec-flagged forward produced.
 bool       gpu_spec_keep_ok(const model_t *m);
+// The host wrote KV rows from `lo` on behind the backend's back (a prefix
+// snapshot or a session image installed into the host cache): a backend that
+// mirrors the cache on the device takes them from the host before it reads
+// them again. A unified-memory backend's buffer is the host cache.
+void       gpu_kv_host_wrote(model_t *m, int lo);
 // Whether a full offload copies every row's final residual into m->x
 // when m->want_hidden is set (model_hidden_states). A backend that
 // says no is run on the CPU for that forward instead.

@@ -4787,8 +4787,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // is this slot's own model_forward_batch, so it must not overlap a
     // microbatch containing this sequence. It cannot — the sequence only joins
     // a batch below, after prefill has returned. Forking a prefix is prefill
-    // work (it touches this slot's KV, and on CUDA it issues a forward), so it
-    // belongs inside the same device turn.
+    // work (it rewrites this slot's KV, which a CUDA mirror then uploads), so
+    // it belongs inside the same device turn.
     // Yield the device turn between prefill chunks. Without it a long prompt
     // holds it for the whole prefill and every other slot waits: measured at
     // 26.2 s for a short request arriving during a 2,300-token prefill.

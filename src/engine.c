@@ -388,10 +388,11 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
 //   leading run of tokens with it, rather than only exact repeats.
 //
 //   Fact 2 — on every backend the host kcache/vcache is the authoritative
-//   copy. CUDA keeps a device mirror and resyncs it from the host whenever a
-//   forward's position is not the previous one plus 1 (see kv_upload in
-//   cuda.c); Metal's unified buffer *is* the host cache. So a snapshot is a
-//   plain memcpy in both directions, with one caveat handled at the install.
+//   copy. CUDA keeps a device mirror that knows how many leading rows it
+//   shares with the host and uploads the rest before a forward reads them
+//   (kv_rows, kv_upload in cuda.c); Metal's unified buffer *is* the host
+//   cache. So a snapshot is a plain memcpy in both directions, and the
+//   install tells the mirror its rows changed (model_kv_host_wrote).
 //
 //   Hazard — a fork that does not match the new prompt's true prefix silently
 //   conditions generation on another request's context. It does not fail; it
@@ -532,7 +533,7 @@ static void pfx_save(const model_t *m, uint8_t *dst, int n) {
 }
 
 // install the first `n` rows of a snapshot taken over `stride` rows
-static void pfx_load(const model_t *m, const uint8_t *src, int stride, int n) {
+static void pfx_load(model_t *m, const uint8_t *src, int stride, int n) {
     size_t off = 0;
     for (int l = 0; l < m->n_layer; l++) {
         if (model_kv_owner(m, l) != l) continue;
@@ -542,6 +543,7 @@ static void pfx_load(const model_t *m, const uint8_t *src, int stride, int n) {
         memcpy((uint8_t *)m->vcache + model_v_byte_off(m, l), src + off + blk_k, (size_t)n * row_v);
         off += blk_k + blk_v;
     }
+    model_kv_host_wrote(m, 0);
 }
 
 // A prefix shorter than this is not worth a snapshot: the copy costs more than
@@ -744,17 +746,9 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
     bool recur = model_has_recurrent(e->m);
     bool recur_ok = !recur || (hit && best == hit->n);
     if (recur_ok && hit && best >= PFX_MIN_TOKENS && best > r.keep) {
-        // CUDA's device KV is a mirror that only resyncs when a forward's
-        // position is not the previous one plus 1. A fork writes host rows
-        // behind the device's back, so it has to *create* that discontinuity
-        // rather than hope for one: without this, a slot whose previous
-        // generation happened to stop at position best-1 would keep decoding
-        // against the previous request's device rows. One forward of toks[0]
-        // at position 0 recomputes a row the snapshot overwrites with
-        // identical bytes a moment later and leaves the mirror at position 0,
-        // so the next forward at `best` (>= PFX_MIN_TOKENS) always uploads.
-        // (Recurrent forks are CPU-only, so this GPU branch never runs for them.)
-        if (e->m->gpu) model_forward_batch(e->m, toks, 1, 0, false);
+        // pfx_load writes host rows behind CUDA's device mirror and tells it
+        // so (model_kv_host_wrote), so the next forward uploads them rather
+        // than decoding against the previous request's device rows.
         pfx_load(e->m, hit->kv, hit->n, best);
         if (recur) {
             // exact hit: the fold blob sits right after the KV data (entry bytes

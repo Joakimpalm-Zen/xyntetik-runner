@@ -1283,6 +1283,10 @@ bool   model_forward_batch_keep(model_t *m, const int32_t *tokens, int n, int po
 // whether the batched verify path above can run at all for this model
 bool   model_spec_verify_ok(const model_t *m);
 float *model_spec_row_logits(model_t *m, int b);
+// The caller wrote KV rows [lo, ...) into the host cache itself (a prefix
+// snapshot or a session image installed): a device mirror of the cache takes
+// them from the host before it reads them (gpu_kv_host_wrote).
+void   model_kv_host_wrote(model_t *m, int lo);
 // Backbone final residual of verify/prefill row b (valid until the next
 // forward on the CPU path; NULL when the rows live on a GPU).
 const float *model_hidden_row(const model_t *m, int b);

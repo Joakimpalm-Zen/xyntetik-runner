@@ -4089,6 +4089,9 @@ bool gpu_spec_keep_ok(const model_t *m) {
     return true;
 }
 
+// The KV buffer is the host cache: a host write is already the device's.
+void gpu_kv_host_wrote(model_t *m, int lo) { (void)m; (void)lo; }
+
 // g->x holds every column's residual after the last layer (the head norms
 // into xb), and the buffer is host-visible: the same copy a partial split
 // makes at its boundary. The wide hyper-connection residual is not handed.

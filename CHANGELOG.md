@@ -5,6 +5,21 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA no longer re-uploads the KV cache when a sequence rewinds, and a
+  resumed session is never decoded against the previous request's rows.**
+  The device keeps a mirror of the host's KV cache and took the host's
+  rows again whenever a forward did not continue at the previous position
+  plus one: every speculative round that kept only part of its draft, and
+  every request reusing a slot's own prompt prefix, re-uploaded the whole
+  cache. A forward continuing exactly there was trusted instead, so a
+  session image (`/v1/runner/sessions/.../resume`) installed into the host
+  cache of a slot whose previous request had stopped one row short of it
+  decoded against that request's device rows. The mirror now counts the
+  leading rows it holds as the host does, uploads only the rows past them,
+  and is told when the host writes rows itself (a prefix fork, a session
+  image). `tests/test_server_sessions.py` resumes an image on a slot left
+  one row short by another session (it failed on the previous build).
+
 - **CUDA: Qwen3 MoE prefill groups its experts on the tensor cores, and
   Qwen3 MoE and gpt-oss run their dense projections there too.** The
   tensor-core route was kept off the MoE families because routing can

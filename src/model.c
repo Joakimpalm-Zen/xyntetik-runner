@@ -11112,6 +11112,10 @@ bool model_spec_verify_ok(const model_t *m) {
     return true;
 }
 
+void model_kv_host_wrote(model_t *m, int lo) {
+    if (m->gpu) gpu_kv_host_wrote(m, lo);
+}
+
 bool model_forward_batch_keep(model_t *m, const int32_t *tokens, int n, int pos) {
     if (!model_spec_verify_ok(m)) return false;
     if (!m->all_logits)

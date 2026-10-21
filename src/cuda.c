@@ -620,7 +620,13 @@ typedef struct {
     int          lora_r;                // widest rank bound, 0 = no adapter
     float       *h_x, *h_logits, *h_moe_logits; // host staging
     float       *h_ple, *h_ple_tmp;             // E-series pre-pass staging
-    int          last_pos;              // -2 = nothing synced yet
+    // the leading KV rows [0, kv_rows) the device holds as the host does:
+    // every forward leaves [0, pos + n) so (its own rows copied back), a
+    // host write lowers it (gpu_kv_host_wrote), and a forward uploads only
+    // [kv_rows, pos) before it reads them, so a rewind (a speculative round
+    // that kept part of its draft, a slot reusing its own prefix) uploads
+    // nothing
+    int          kv_rows;
     // CUDA graphs for the single-token decode path (Experiment A)
     CUstream     stream;
     CUgraph      graph;
@@ -3509,7 +3515,6 @@ bool gpu_init(model_t *m) {
                 "CPU\n");
         return false;
     }
-    g->last_pos = -2;
 
     cuda_dims D;
     cuda_instance_dims(m, &D);
@@ -7240,6 +7245,11 @@ const char *gpu_route_detail(const model_t *m) {
              recur_seq_admits(g, m) ? " recur=tile" : "");
     return buf;
 }
+void gpu_kv_host_wrote(model_t *m, int lo) {
+    gpu_t *g = m ? m->gpu : NULL;
+    if (g && lo < g->kv_rows) g->kv_rows = lo < 0 ? 0 : lo;
+}
+
 float *gpu_spec_logits(model_t *m, int row) {
     gpu_t *g = m ? m->gpu : NULL;
     if (!g || !g->h_logits || row < 0 || row >= m->spec_batch) return NULL;
@@ -7534,7 +7544,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         gpu_t   *gi = m->gpu;
         if (!gi || gi->sw != b->sw || m->gpu_layers < m->n_layer) return false;
         if (pos[i] < 0 || pos[i] >= m->n_ctx) return false;
-        if (pos[i] != gi->last_pos + 1 && !kv_upload(gi, m, 0, pos[i])) return false;
+        if (pos[i] > gi->kv_rows && !kv_upload(gi, m, gi->kv_rows, pos[i])) return false;
         b->h_pos[i] = pos[i];
         b->h_kcp[i] = (uint64_t)gi->kc;
         b->h_vcp[i] = (uint64_t)gi->vc;
@@ -7596,7 +7606,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         model_t *m = b->seqs[idx[i]];
         gpu_t   *gi = m->gpu;
         if (!kv_copyback(gi, m, pos[i], pos[i] + 1)) return false;
-        gi->last_pos = pos[i];
+        gi->kv_rows = pos[i] + 1;
     }
     if (cu.MemcpyDtoH(b->h_logits, b->logits_n,
                       sizeof(float) * (size_t)n * b->n_vocab) != 0)
@@ -7742,7 +7752,7 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
             if (g->kvg_dev ? !kv_gather_finish(g, m, pos) : !kv_copyback(g, m, pos, pos + 1))
                 return -1;
             if (prof.on) prof.t_copyback[m_] += prof_now() - tc0;
-            g->last_pos = pos;
+            g->kv_rows = pos + 1;
             double tl0 = prof.on ? prof_now() : 0;
             if (cu.MemcpyDtoH(g->h_logits, g->logits, sizeof(float) * m->n_vocab) != 0)
                 return -1;
@@ -7851,7 +7861,7 @@ static bool cuda_fwd_finish(gpu_t *g, model_t *m, int n, int pos, bool want_logi
                                          : !kv_copyback(g, m, pos, pos + n))
         return false;
     if (prof.on) prof.t_copyback[m_] += prof_now() - tc0;
-    g->last_pos = pos + n - 1;
+    g->kv_rows = pos + n;
 
     if (want_logits && !partial) {
         double tl0 = prof.on ? prof_now() : 0;
@@ -7884,11 +7894,12 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     int m_ = prof.cur_mode;
     double t_fwd0 = prof.on ? prof_now() : 0;
 
-    // a non-contiguous position step means the host KV holds rows the device
-    // hasn't seen (a CPU-run batch, or a reset + new prompt): resync [0, pos)
-    if (pos != g->last_pos + 1) {
-        if (!kv_upload(g, m, 0, pos)) return false;
-    }
+    // the rows this forward reads that the device does not hold as the host
+    // does (rows past its last forward, a snapshot the host installed):
+    // [kv_rows, pos).
+    // A position at or below kv_rows needs none: the rows under it are the
+    // host's, and the forward writes its own.
+    if (pos > g->kv_rows && !kv_upload(g, m, g->kv_rows, pos)) return false;
 
     bool partial = m->gpu_layers < m->n_layer;
     // !prof.on: a replayed CUDA graph never re-enters the instrumented launch
