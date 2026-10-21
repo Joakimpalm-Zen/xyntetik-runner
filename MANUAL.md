@@ -2958,7 +2958,17 @@ A streamed chat or legacy completions turn carries the same
 `stream_options.include_usage` chunk carries it too), so a streaming client reads what the turn was served with, its
 closure and its decision summary without opting in.
 `GET /v1/capabilities` reports `features.request_telemetry` as
-`{"buffered": true, "streamed": true}`. Set request field `"cache_prompt": false` to bypass prefix reuse. Streaming clients
+`{"buffered": true, "streamed": true}`. Set request field `"cache_prompt": false` to bypass prefix reuse. Which
+kernels read a prompt's rows depends on how they arrive: a fresh slot reads
+the prompt in batches through the prefill kernels, a request that continues
+a cached prefix reads only its new tokens, and on several routes the batched
+and the one-token kernels add in another order (the dequantized f32 tile on
+the CPU, the tensor-core routes on CUDA: [kernel routes](docs/kernel-routes.md)).
+So the same request can return slightly different logprobs from a warm slot
+and from a fresh one (measured on the CPU route: at most 4.7e-4 on a
+Qwen2.5-0.5B Q4_K_M file, 4e-5 on SmolLM2-135M Q8_0, none on BF16), and
+with `"cache_prompt": false` it reads the prompt as a fresh slot does.
+Streaming clients
 whose writes fail cancel generation. An orderly client socket close on any
 completion surface also cancels at the next complete prefill chunk or decode
 step, so an abandoned long prompt does not keep its slot busy; the probe is
