@@ -38,8 +38,15 @@ SRC=${NIGHTLY_SRC:-$(cd "$(dirname "$0")/.." && pwd)}
 log() { echo "$(date '+%F %T') $*" >> "$BASE/history.log"; }
 
 pid_alive() {
-  if command -v tasklist > /dev/null 2>&1; then
-    tasklist //FI "PID eq $1" 2> /dev/null | grep -q "[[:space:]]$1[[:space:]]"
+  local tl=tasklist
+  # MSYS2 started from a minimal environment has no Windows directory on
+  # PATH, and kill -0 cannot see a Windows pid, so a held lock would read as
+  # free: reach tasklist by its own path there
+  if ! command -v tasklist > /dev/null 2>&1 && [ -r "/proc/$$/winpid" ]; then
+    tl="$(cygpath -u "${SYSTEMROOT:-C:\\Windows}" 2> /dev/null)/System32/tasklist.exe"
+  fi
+  if command -v "$tl" > /dev/null 2>&1; then
+    "$tl" //FI "PID eq $1" 2> /dev/null | grep -q "[[:space:]]$1[[:space:]]"
   else
     kill -0 "$1" 2> /dev/null
   fi

@@ -1,4 +1,5 @@
 """Build/gate contracts that must not silently turn a red run green."""
+import os
 import pathlib
 import shutil
 import subprocess
@@ -249,8 +250,14 @@ class ScheduledEntryPoints(unittest.TestCase):
             lock.write_text(f"{__import__('os').getpid()} held by the test\n")
             (base / "cuda-nightly.env").write_text(
                 f"NIGHTLY_SKIP_LOCKS={lock.as_posix()}\nNIGHTLY_SRC={(base / 'no-checkout').as_posix()}\n")
+            # on Windows, the minimal PATH a bare MSYS2 bash can start with:
+            # no Windows directory on it, so the script must still find the
+            # lock's (Windows) pid alive
+            env = dict(os.environ)
+            if sys.platform == "win32":
+                env["PATH"] = str(pathlib.Path(BASH).parent)
             r = subprocess.run([BASH, (ROOT / "scripts/cuda-nightly.sh").as_posix(), base.as_posix()],
-                               capture_output=True, text=True, timeout=60)
+                               capture_output=True, text=True, timeout=60, env=env)
             self.assertEqual(r.returncode, 0, r.stderr)
             hist = (base / "history.log").read_text()
             self.assertIn("skip:", hist)

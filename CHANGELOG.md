@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was
+  started.** It checks a lock's Windows pid with `tasklist`, found only
+  through `PATH`; a bash started from a minimal environment has no Windows
+  directory there, fell back to `kill -0`, which cannot see a Windows pid,
+  and read a held lock as free, so the guest job could start over another
+  user's run. It now reaches `tasklist` by its own path under MSYS2.
+
 - **`scripts/compat_matrix.py`: a report made on Windows names its evidence
   files as one made anywhere else does.** Rewriting a machine path relative
   to its root kept the host's separator below it, so a ledger written on
