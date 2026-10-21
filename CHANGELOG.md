@@ -29,7 +29,7 @@ Current release and unreleased changes. Compatibility follows the
   test-cuda-moe-legacy` (in the CUDA gate) holds each to the eager path with
   `test-moe-tol` and fails if the fused path does not engage. On the
   datacenter MIG slice, gemma-4-26B-A4B Q4_K_M reads a 2,048-token prompt at
-  175 tok/s instead of 139 and decodes at 69.5 tok/s instead of 63.
+  175 tok/s instead of 139 and decodes at 69.6 tok/s instead of 63.1.
 
 - **CUDA: tensor-core prefill for Q5_K, Q3_K, Q2_K, Q4_1, Q5_0 and Q5_1.**
   These six types had no tensor-core kernel, so a prompt ran their weights
@@ -263,11 +263,11 @@ Current release and unreleased changes. Compatibility follows the
   code by its sub-block scale, and then took a second pass to dot it. It now
   reads the grid as floats into the multiply-adds and applies the sub-block
   scale once per 32 weights, as the IQ3_XXS dot does: one core 1.44x on the
-  Linux host and 1.49x on an M1, and an M1 decodes Llama-3.2-1B IQ3_S on its
-  CPU at 18.3-19.3 tok/s where it decoded 14.0-14.4. Applying the scale once
-  reorders the arithmetic; against the publisher's float32 forward over
-  2,000 positions granite-4.2-3b IQ3_S reads mean KL 0.76508 against 0.76502
-  (Wilcoxon p 0.85), not distinguishable.
+  Linux host and 1.49x on an Apple M1, and an Apple M1 decodes Llama-3.2-1B
+  IQ3_S on its CPU at 18.3-19.3 tok/s where it decoded 14.0-14.4. Applying
+  the scale once reorders the arithmetic; against the publisher's float32
+  forward over 2,000 positions granite-4.2-3b IQ3_S reads mean KL 0.76508
+  against 0.76502 (Wilcoxon p 0.85), not distinguishable.
 
 - **CPU verify rounds and small batches decode each weight block once.** A
   speculative verify round on the CPU computes every row with the decode
@@ -276,22 +276,22 @@ Current release and unreleased changes. Compatibility follows the
   Q4_0 and MXFP4 on both architectures, and on arm64 also the K-quants,
   IQ4_NL, IQ4_XS, Q2_0, BF16 and IQ3_XXS. Each now has one that widens a
   block once and gives every column the single dot's operations, so the rows
-  keep their bits. On an M1's CPU, prompt lookup (`--draft-lookup --draft-k
-  4`) runs Qwen2.5-1.5B Q8_0 at 25.0 and 29.4 tok/s on two prompts where it
-  ran 22.2 and 22.7 (plain decoding 22.6-24.1), and Llama-3.2-1B Q4_K_M at
-  28.7-29.9 where it ran 19.5-20.4 (plain 21.0-23.2).
+  keep their bits. On an Apple M1's CPU, prompt lookup (`--draft-lookup
+  --draft-k 4`) runs Qwen2.5-1.5B Q8_0 at 25.0 and 29.4 tok/s on two prompts
+  where it ran 22.2 and 22.7 (plain decoding 22.6-24.1), and Llama-3.2-1B
+  Q4_K_M at 28.7-29.9 where it ran 19.5-20.4 (plain 21.0-23.2).
 
 - **CPU MXFP4 and IQ3_XXS dots read their scales and codes from tables, bit
   for bit as before.** The MXFP4 dots evaluated each block's E8M0 scale with
   a libm `ldexpf` call every 32 weights; the scale now comes from a
   256-entry table of the same values, and one core reads MXFP4 rows 3.1x as
-  fast on the Linux host (7.3 to 22.8 G weights/s) and 1.7x on an M1. The
-  IQ3_XXS dot assembled each grid word's bytes into a vector and widened
+  fast on the Linux host (7.3 to 22.8 G weights/s) and 1.7x on an Apple M1.
+  The IQ3_XXS dot assembled each grid word's bytes into a vector and widened
   them to floats; it now loads the grid as floats and applies the signs as a
-  bit mask: 1.28x on the Linux host, 1.12x on an M1. The same values meet
-  the same operations, so the outputs are unchanged; a new test pins every
-  table entry against the dequantizer (a one-hot activation turns a dot into
-  the weight it multiplies).
+  bit mask: 1.28x on the Linux host, 1.12x on an Apple M1. The same values
+  meet the same operations, so the outputs are unchanged; a new test pins
+  every table entry against the dequantizer (a one-hot activation turns a
+  dot into the weight it multiplies).
 
 - **CPU K-quant dots keep one accumulator a row.** The Q4_K, Q5_K and Q6_K
   dot products (the AVX2 and NEON single and group-sum forms, and the AVX2
@@ -299,13 +299,13 @@ Current release and unreleased changes. Compatibility follows the
   a horizontal reduction, two of them per 64 weights; each sub-block's sum
   is now scaled into one vector accumulator (the min term kept apart) and
   the row reduced once. One core of the Linux host reads Q4_K rows on the
-  decode route 1.44x as fast (14.4 to 20.7 G weights/s), an M1 core 1.17x,
-  and an M1 prefills Llama-3.2-1B Q4_K_M on its CPU at 88 tok/s where it
-  read 75 (decode up to 3% faster). The same terms in another order move the
-  last bits (about 1e-6 in a logprob); against the publishers' float32
-  forwards over 2,000 positions the two orders are not distinguishable
-  (Qwen3-4B Q4_K_M mean KL 0.13987 against 0.13988, Wilcoxon p 0.50;
-  Llama-3.2-3B Q4_K_M 0.04391 against 0.04389, p 0.07).
+  decode route 1.44x as fast (14.4 to 20.7 G weights/s), an Apple M1 core
+  1.17x, and an Apple M1 prefills Llama-3.2-1B Q4_K_M on its CPU at 88 tok/s
+  where it read 75 (decode up to 3% faster). The same terms in another order
+  move the last bits (about 1e-6 in a logprob); against the publishers'
+  float32 forwards over 2,000 positions the two orders are not
+  distinguishable (Qwen3-4B Q4_K_M mean KL 0.13987 against 0.13988, Wilcoxon
+  p 0.50; Llama-3.2-3B Q4_K_M 0.04391 against 0.04389, p 0.07).
 
 - **Llama 3 files without an add-BOS flag get their BOS token.** A GGUF
   that does not carry `tokenizer.ggml.add_bos_token` was read as "no BOS"
