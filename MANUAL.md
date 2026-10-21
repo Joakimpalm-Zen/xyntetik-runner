@@ -1396,15 +1396,15 @@ of the reports stay up with a pointer to the canonical dataset.
 Open the architecture table below for model-specific paths and limitations.
 
 **Metal quant-type coverage.** Both a matvec and a matmul kernel exist for
-`q2_K`, `q3_K`, `q4_0`, `q4_K`, `q6_K`, `q8_0`, `iq4_nl`, `iq4_xs`, `mxfp4`,
-`f16`, `bf16` and `f32`. **`q4_1`, `q5_0`, `q5_1` and `q5_K` ship `k_mv_*`
-only** — they decode on Metal but have no `k_mm_*`, so prefill on those types
-does not use the Metal matmul path. Requantizing such a file to `q4_K` or
-`q8_0` (`--quantize OUT --quant q4_k`) is the fix when prompt throughput
-matters. Quantization changes only the weight encoding: it cannot give an
-architecture a Metal path it lacks, because those gaps are missing kernels for
-operations (SSM scan, Gated DeltaNet, weight-normed routers, gate-less shared
-experts), not missing quant support.
+every type the Metal backend loads: `q2_K`, `q3_K`, `q4_0`, `q4_1`, `q5_0`,
+`q5_1`, `q4_K`, `q5_K`, `q6_K`, `q8_0`, `iq4_nl`, `iq4_xs`, `mxfp4`, the
+codebook i-quants (`iq1_s`, `iq1_m`, `iq2_xxs`, `iq2_xs`, `iq2_s`, `iq3_xxs`,
+`iq3_s`), `f16`, `bf16` and `f32`. `q4_1`, `q5_0`, `q5_1` and `q5_K` gained
+their `k_mm_*` on 2026-10-21; until then they prefilled through the matvec,
+three to five times slower on an M1. Quantization changes only the weight
+encoding: it cannot give an architecture a Metal path it lacks, because those
+gaps are missing kernels for operations (SSM scan, Gated DeltaNet,
+weight-normed routers, gate-less shared experts), not missing quant support.
 
 A **sharded** GGUF takes a full Metal offload directly: each part's mapping
 gets its own tensor-boundary wraps, gated byte-identical to both the CPU path

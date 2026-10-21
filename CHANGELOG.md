@@ -5,6 +5,21 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Metal: tiled prefill GEMMs for Q5_K, Q4_1, Q5_0 and Q5_1.** Metal's
+  tiled GEMM covered every common type but these four, so a Q5_K_M file (and
+  the Q4_1 / Q5 legacy tensors some exports carry) prefilled through the
+  matvec, which reads every weight once per token column. `k_mm_q5_K`,
+  `k_mm_q4_1`, `k_mm_q5_0` and `k_mm_q5_1` decode each value as the CPU
+  dequantizer does, and `test-metal-kquants` sweeps them with the other
+  types. On an Apple M1 (Qwen3-0.6B quantized from the publisher's weights)
+  prompt processing runs at 520 tok/s where it ran 97-102 at Q5_K_M (512
+  tokens; 291 against 87-89 at 2K), and at 377-384 where it ran 97-106 at
+  Q4_1, Q5_0 and Q5_1 (243-249 against 90-92 at 2K). Against the publisher's
+  float32 model over 2,000 positions each type reads as the matvec route did
+  (mean KL within 0.03%, top-1 equal or one apart, no paired test at p <
+  0.05), which is the bar a tolerance route meets before it becomes a
+  default.
+
 - **CUDA: a speculative round that drafted nothing runs as a plain decode
   step.** With `--draft-lookup`, most rounds on text unlike the prompt find
   no match and verify a single row. That row went through the verify

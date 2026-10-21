@@ -2,7 +2,8 @@
 // Identity columns reconstruct every weight, so an index error cannot hide in
 // a dot-product sum. Additional shapes cover grid tails and superblock strides.
 //
-// The sweep covers q4_0, q8_0, q4_K, q6_K, f16 and f32 as well as q2_K/q3_K.
+// The sweep covers q4_0, q8_0, q4_K, q6_K, f16 and f32 as well as q2_K/q3_K,
+// and (since their tiled GEMMs, 2026-10-21) q5_K, q4_1, q5_0 and q5_1.
 // Only the last two had a direct parity test; the rest were covered solely by
 // end-to-end CPU-vs-GPU runs, which cannot say WHICH kernel drifted and cannot
 // reach a shape a shipped model does not happen to have. Every n_out below is
@@ -77,7 +78,8 @@ static float rnd_float(void) {
 static void make_weights(int type, uint8_t *weights, int n_in, int n_out) {
     size_t row_size = ggml_row_size(type, n_in);
     size_t block_size = ggml_type_size(type);
-    int per_block = (type == T_Q4_0 || type == T_Q8_0) ? 32 : 256;
+    int per_block = (type == T_Q4_0 || type == T_Q8_0 || type == T_Q4_1 ||
+                     type == T_Q5_0 || type == T_Q5_1) ? 32 : 256;
     int n_block = n_in / per_block;
     for (int row = 0; row < n_out; row++) {
         uint8_t *row_data = weights + (size_t)row * row_size;
@@ -103,11 +105,11 @@ static void make_weights(int type, uint8_t *weights, int n_in, int n_out) {
                 break;
             case T_Q3_K: memcpy(b + 108, &d, sizeof d); break;
             case T_Q6_K: memcpy(b + 208, &d, sizeof d); break;
-            case T_Q4_K:
+            case T_Q4_K: case T_Q5_K: case T_Q4_1: case T_Q5_1:
                 memcpy(b + 0, &d, sizeof d);
                 memcpy(b + 2, &dmin, sizeof dmin);
                 break;
-            case T_Q4_0:
+            case T_Q4_0: case T_Q5_0:
             case T_Q8_0: memcpy(b + 0, &d, sizeof d); break;
             // codebook i-quants: the half scale leads the block (every grid
             // index is bounded by construction, so the random payload is a
@@ -408,6 +410,8 @@ int main(void) {
             { T_IQ2_XXS, "iq2_xxs", 256 }, { T_IQ2_XS, "iq2_xs", 256 },
             { T_IQ2_S, "iq2_s", 256 }, { T_IQ3_XXS, "iq3_xxs", 256 },
             { T_IQ3_S, "iq3_s", 256 },
+            { T_Q5_K, "q5_K", 256 }, { T_Q4_1, "q4_1", 32 },
+            { T_Q5_0, "q5_0", 32 }, { T_Q5_1, "q5_1", 32 },
         };
         for (size_t i = 0; i < sizeof kinds / sizeof *kinds; i++) {
             int type = kinds[i].type, step = kinds[i].step;
@@ -455,8 +459,8 @@ int main(void) {
         fprintf(stderr, "metal kquant kernels: %d failures\n", failures);
         return 1;
     }
-    printf("metal kernels: q2_K/q3_K/q4_K/q6_K/q4_0/q8_0/f16/f32 + the seven "
-           "codebook i-quants, mv+mm shape sweep; q2_K/q3_K MoE expert-offset "
-           "parity ok\n");
+    printf("metal kernels: q2_K/q3_K/q4_K/q5_K/q6_K/q4_0/q4_1/q5_0/q5_1/q8_0/f16/f32 "
+           "+ the seven codebook i-quants, mv+mm shape sweep; q2_K/q3_K MoE "
+           "expert-offset parity ok\n");
     return 0;
 }
