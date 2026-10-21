@@ -2469,8 +2469,9 @@ families: the attention and MoE routes measured no further from the
 publisher's float32 model than the kernels they replace, and the compute_80
 GEMM kernels add in the tensor-core route's order and gave its bytes on
 every device measured; each stays a named route so that a replay cannot
-substitute other arithmetic. A record names the MoE routes only for a model
-of their families. `--gpu-route`
+substitute other arithmetic. A record names `moe-tc` only for a model of its
+families, and `moe-grouped` wherever the grouped prefill ran: by default its
+family, and any MoE model whose expert types it admits when asked for. `--gpu-route`
 names the set for the process: `reference` runs none of them, a comma list
 runs those. It overrides `RUNNER_CUDA_ROUTE` (the same set from the
 environment, which the CPU-against-GPU harnesses set to `reference`) and the

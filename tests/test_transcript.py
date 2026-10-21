@@ -380,8 +380,9 @@ def test_cuda_record_carries_and_replays_its_routes(runner_bin, base, tmp_path):
 def test_cuda_moe_family_routes_are_recorded_and_replayed(runner_bin, base, tmp_path):
     """moe-tc and moe-grouped are routes of the MoE families measured for them
     (gpt-oss: moe-tc only). A record of such a model names the ones that ran
-    and --verify replays it; the reference set names neither; and a pin of
-    them on a model outside those families never reaches its record."""
+    and --verify replays it; the reference set names neither; a pin of them on
+    a dense model never reaches its record; and the grouped prefill asked for
+    on another MoE family is named, so its record replays."""
     caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
                                      stdout=subprocess.PIPE, check=True).stdout)
     if (caps.get("gpu") or {}).get("backend") != "cuda":
@@ -416,6 +417,25 @@ def test_cuda_moe_family_routes_are_recorded_and_replayed(runner_bin, base, tmp_
     assert routes == ["reference"], routes
     _, routes = record(base, "dense-moe-pin.json", "--gpu-route", "moe-tc,moe-grouped")
     assert routes == ["reference"], routes
+
+    # the grouped prefill asked for on another family (gemma-4's MoE, Q8_0
+    # experts): the record must name it, or --verify replays another path
+    g4 = tmp_path / "fx-g4-q8.gguf"
+    q = subprocess.run([runner_bin, "-m", str(tmp_path / "fx.gemma4-moe.gguf"), "--quantize",
+                        str(g4), "--quant", "q8_0"], cwd=ROOT, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=120)
+    assert q.returncode == 0
+    os.environ["RUNNER_MOE_GROUPED"] = "1"
+    try:
+        rec, routes = record(g4, "g4-grouped.json")
+    finally:
+        del os.environ["RUNNER_MOE_GROUPED"]
+    assert "moe-grouped" in routes and "moe-tc" not in routes, routes
+    v = subprocess.run([runner_bin, "-m", str(g4), "--verify", str(rec), "-t", "2",
+                        "--no-tray"], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=120)
+    assert v.returncode == 0, v.stderr.decode(errors="replace")
+    assert json.loads(v.stdout)["verdict"] == "VERIFIED"
 
 
 def test_recorded_adapter_scale_drives_replay(runner_bin, base, tmp_path):

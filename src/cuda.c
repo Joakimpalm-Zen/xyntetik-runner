@@ -6314,11 +6314,14 @@ int gpu_route_active(const model_t *m) {
     bool loaded80 = g && g->sw && g->sw->mod80;
     bool tc2 = mode == TC2_FORCED || (mode == TC2_AUTO && loaded80);
     bool sm80 = tc2 && gpu_sm80_on() && (!g || loaded80);
-    // the MoE routes count only for their families: moe-tc where the TC
-    // route is on for the family (tc_on), moe-grouped where the instance
-    // took the grouped prefill (or, without one, where it would)
+    // moe-tc counts only for its families (elsewhere the TC route's own
+    // bits record it), where the TC route is on for the family (tc_on);
+    // moe-grouped wherever the instance took the grouped prefill (or,
+    // without one, where it would): by default only its family, but a pin
+    // or RUNNER_MOE_GROUPED=1 admits any MoE model whose expert types it
+    // takes, and a record that left it out replayed another path
     bool mtc = moe_tc_family(m) && tc_on(m, T_Q4_K);
-    bool mgr = moe_grouped_family(m) && (g ? g->moe_grouped_ok : moe_grouped_eligible(m));
+    bool mgr = g ? g->moe_grouped_ok : moe_grouped_eligible(m);
     return (tc2 ? GR_TC2 : 0) | (sm80 ? GR_SM80 : 0) |
            (attn_tile_on() ? GR_ATTN_TILE : 0) | (attn_dec_on() ? GR_ATTN_DEC : 0) |
            (attn_tc_on() ? GR_ATTN_TC : 0) | (mtc ? GR_MOE_TC : 0) | (mgr ? GR_MOE_GROUPED : 0);

@@ -111,8 +111,9 @@ Around the matvec:
   expert and multiplies each expert's on the tensor cores
   (`gpu_moe_ffn_grouped`) when its experts are Q4_K or Q6_K, the types
   measured (Q8_0, Q5_K and Q4_0 experts take it on request). Both are
-  routes: recorded for those families only, pinned by `--verify`, off under
-  `reference`; `RUNNER_CUDA_TC` and `RUNNER_MOE_GROUPED` still set them when
+  routes: `moe-tc` recorded for those families, `moe-grouped` wherever the
+  grouped prefill ran (a pin or `RUNNER_MOE_GROUPED=1` admits other MoE
+  models), pinned by `--verify`, off under `reference`; `RUNNER_CUDA_TC` and `RUNNER_MOE_GROUPED` still set them when
   no route is pinned. Obligation:
   tolerance, no further from the publisher's float32 model than the route
   they replace (2,000 positions, mean KL within 1.01x, paired Wilcoxon and
