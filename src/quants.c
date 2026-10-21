@@ -51,9 +51,20 @@ static float f16_decode(uint16_t h) {
     return v.fl;
 }
 
+static void dot_tables_init(void);
+
 void f16_init(void) {
     for (uint32_t i = 0; i < 65536; i++) g_f16_table[i] = f16_decode((uint16_t)i);
+    dot_tables_init();
 }
+
+// MXFP4's E8M0 block scale, 2^(e-127), and the half of it the SIMD kernels
+// use with their doubled-integer value table, one entry per scale byte and
+// computed by the expressions the kernels used to evaluate per block: a
+// libm ldexpf call per 32 weights was most of the arm64 dot's time (an M1
+// core read MXFP4 rows 1.67x faster from the table).
+static float g_e8m0[256], g_e8m0_half[256];
+
 
 // ---------------------------------------------------------------- block defs
 
@@ -97,6 +108,28 @@ typedef struct { f16_t d; uint8_t qs[QK_K / 8]; uint16_t qh[QK_K / 32]; } block_
 typedef struct { uint8_t qs[QK_K / 8]; uint8_t qh[QK_K / 16]; uint8_t scales[QK_K / 32]; } block_iq1_m; // 56
 #define IQ1S_DELTA 0.125f
 #include "quants_iq_grids.h"
+
+// A float twin of the IQ3_XXS grid, and an 8-lane float sign mask per sign
+// byte, for the fused IQ3_XXS dots: a grid word's four magnitudes load as
+// four floats and a sign byte becomes an XOR of the float sign bits. These
+// are the values the int8 decode widened to (the magnitudes are small
+// nonzero integers, exact in float, and negating one is exact), without the
+// byte assembly and widening on the hot path. Built once by f16_init.
+static _Alignas(32) float g_iq3xxs_gridf[256][4];
+static _Alignas(32) uint32_t g_iq_sign8[256][8];
+
+static void dot_tables_init(void) {
+    for (int e = 0; e < 256; e++) {
+        g_e8m0[e] = ldexpf(1.0f, e - 127);
+        g_e8m0_half[e] = 0.5f * ldexpf(1.0f, e - 127);
+    }
+    for (int g = 0; g < 256; g++) {
+        const uint8_t *m = (const uint8_t *)(iq3xxs_grid + g);
+        for (int j = 0; j < 4; j++) g_iq3xxs_gridf[g][j] = m[j];
+    }
+    for (int v = 0; v < 256; v++)
+        for (int j = 0; j < 8; j++) g_iq_sign8[v][j] = (v >> j & 1) ? 0x80000000u : 0;
+}
 
 
 static const int8_t kvalues_iq4nl[16] = {
@@ -212,7 +245,7 @@ static void dq_q2_0(const block_q2_0 *b, float *y) {
 
 static void dq_mxfp4(const block_mxfp4 *b, float *y) {
     // E8M0 block scale: the byte is a biased power-of-two exponent, 2^(e-127).
-    float d = ldexpf(1.0f, (int)b->e - 127);
+    float d = g_e8m0[b->e];
     for (int j = 0; j < 16; j++) {
         y[j]      = kvalues_mxfp4[b->qs[j] & 0xF] * d;
         y[j + 16] = kvalues_mxfp4[b->qs[j] >> 4]  * d;
@@ -699,6 +732,14 @@ static inline __m128i avx2_iq_signed16(const uint8_t *mag, uint8_t s0, uint8_t s
     return _mm_blendv_epi8(m, _mm_sub_epi8(_mm_setzero_si128(), m), neg);
 }
 
+// eight IQ3 weights from the float grids: grid words a then b, signed by the
+// eight bits of sign byte s
+static inline __m256 avx2_iq_w8(const float *a, const float *b, uint8_t s) {
+    __m256 m = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_load_ps(a)),
+                                    _mm_load_ps(b), 1);
+    return _mm256_xor_ps(m, _mm256_load_ps((const float *)g_iq_sign8[s]));
+}
+
 static inline void avx2_iq1_16(const int8_t *g16, float dl, float d0, float d1,
                                float *y) {
     __m128i v = _mm_loadu_si128((const __m128i *)g16);
@@ -946,10 +987,10 @@ static inline float32x4_t dot32(int8x16_t qa, int8x16_t qb, const float *x) {
     return vaddq_f32(vaddq_f32(t0, t1), vaddq_f32(t2, t3));
 }
 // same shape for unsigned nibble values, widened by table lookup
-static inline float32x4_t dot32u(uint8x16_t qa, uint8x16_t qb, const float *x) {
-    float32x4_t fa[4], fb[4];
-    u8_to_f32x4(qa, fa);
-    u8_to_f32x4(qb, fb);
+// dot32u on weights already widened to floats: the multi-column kernels
+// widen a block once and give every column this same sequence
+static inline float32x4_t dot32f(const float32x4_t fa[4], const float32x4_t fb[4],
+                                 const float *x) {
     float32x4_t t0 = vmulq_f32(fa[0], vld1q_f32(x));
     float32x4_t t1 = vmulq_f32(fa[1], vld1q_f32(x + 4));
     float32x4_t t2 = vmulq_f32(fa[2], vld1q_f32(x + 8));
@@ -960,6 +1001,12 @@ static inline float32x4_t dot32u(uint8x16_t qa, uint8x16_t qb, const float *x) {
     t3 = vfmaq_f32(t3, fb[3], vld1q_f32(x + 28));
     return vaddq_f32(vaddq_f32(t0, t1), vaddq_f32(t2, t3));
 }
+static inline float32x4_t dot32u(uint8x16_t qa, uint8x16_t qb, const float *x) {
+    float32x4_t fa[4], fb[4];
+    u8_to_f32x4(qa, fa);
+    u8_to_f32x4(qb, fb);
+    return dot32f(fa, fb, x);
+}
 static inline float32x4_t sum32(const float *x) {
     float32x4_t t0 = vaddq_f32(vld1q_f32(x),      vld1q_f32(x + 16));
     float32x4_t t1 = vaddq_f32(vld1q_f32(x + 4),  vld1q_f32(x + 20));
@@ -968,14 +1015,17 @@ static inline float32x4_t sum32(const float *x) {
     return vaddq_f32(vaddq_f32(t0, t1), vaddq_f32(t2, t3));
 }
 // dot of one 16-byte vector with x[0..15], two chains
-static inline float32x4_t dot16(int8x16_t q, const float *x) {
-    float32x4_t f[4];
-    i8_to_f32x4(q, f);
+static inline float32x4_t dot16f(const float32x4_t f[4], const float *x) {
     float32x4_t t0 = vmulq_f32(f[0], vld1q_f32(x));
     float32x4_t t1 = vmulq_f32(f[1], vld1q_f32(x + 4));
     t0 = vfmaq_f32(t0, f[2], vld1q_f32(x + 8));
     t1 = vfmaq_f32(t1, f[3], vld1q_f32(x + 12));
     return vaddq_f32(t0, t1);
+}
+static inline float32x4_t dot16(int8x16_t q, const float *x) {
+    float32x4_t f[4];
+    i8_to_f32x4(q, f);
+    return dot16f(f, x);
 }
 static inline void st16f(float *y, const float32x4_t f[4], float d) {
     vst1q_f32(y,      vmulq_n_f32(f[0], d));
@@ -1076,7 +1126,7 @@ static void dq_q2_0_neon(const block_q2_0 *b, float *y) {
 static void dq_mxfp4_neon(const block_mxfp4 *b, float *y) {
     const int8x16_t tbl = vld1q_s8(kvalues_mxfp4_i8);
     const uint8x16_t mF = vdupq_n_u8(0xF);
-    float d = 0.5f * ldexpf(1.0f, (int)b->e - 127);
+    float d = g_e8m0_half[b->e];
     uint8x16_t q = vld1q_u8(b->qs);
     float32x4_t f[4];
     i8_to_f32x4(vqtbl1q_s8(tbl, vandq_u8(q, mF)), f);      st16f(y, f, d);
@@ -1214,14 +1264,14 @@ static void dq_q6_K_neon(const block_q6_K *b, float *y) {
 static const uint8_t neon_iq_kmask[16] = { 1, 2, 4, 8, 16, 32, 64, 128,
                                            1, 2, 4, 8, 16, 32, 64, 128 };
 
-// y[0..15] = db * +/-mag[0..15], sign bit j of s0 (first 8) / s1 (second 8)
-static inline int8x16_t neon_iq_signed16(const uint8_t *mag, uint8_t s0, uint8_t s1) {
-    int8x16_t m = vld1q_s8((const int8_t *)mag);
-    uint8x16_t neg = vtstq_u8(vcombine_u8(vdup_n_u8(s0), vdup_n_u8(s1)),
-                              vld1q_u8(neon_iq_kmask));
-    return vbslq_s8(neg, vnegq_s8(m), m);
+// four IQ3 weights from the float grids: grid word a, signed by bits
+// 4*hi .. 4*hi+3 of sign byte s
+static inline float32x4_t neon_iq_w4(const float *a, uint8_t s, int hi) {
+    return vreinterpretq_f32_u32(veorq_u32(vreinterpretq_u32_f32(vld1q_f32(a)),
+                                           vld1q_u32(g_iq_sign8[s] + 4 * hi)));
 }
 
+// y[0..15] = db * +/-mag[0..15], sign bit j of s0 (first 8) / s1 (second 8)
 static inline void neon_iq_sign16(const uint8_t *mag, uint8_t s0, uint8_t s1,
                                   float *y, float db) {
     int8x16_t m = vld1q_s8((const int8_t *)mag);
@@ -2186,8 +2236,7 @@ static float dot_mxfp4_avx2(const block_mxfp4 *b, const float *x, int n) {
         t = _mm256_fmadd_ps(i8hi_ps(lo), _mm256_loadu_ps(xp + 8), t);
         t = _mm256_fmadd_ps(i8lo_ps(hi), _mm256_loadu_ps(xp + 16), t);
         t = _mm256_fmadd_ps(i8hi_ps(hi), _mm256_loadu_ps(xp + 24), t);
-        float d = 0.5f * ldexpf(1.0f, (int)b[i].e - 127);
-        acc = _mm256_fmadd_ps(_mm256_set1_ps(d), t, acc);
+        acc = _mm256_fmadd_ps(_mm256_set1_ps(g_e8m0_half[b[i].e]), t, acc);
     }
     return hsum8(acc);
 }
@@ -2217,9 +2266,10 @@ static float dot_q2_0_avx2(const block_q2_0 *b, const float *x, int n) {
 // dots it: two passes over the row and a store/reload per value). The
 // routed experts of Qwen3.8-Flash-Next are IQ3_XXS gate/up; on the Linux CUDA host
 // CPUs they were 45% of the token through the default path.
+// (the weights come from the float grid since 2026-10-21: the same values in
+// the same FMAs, so the same bits, without assembling and widening bytes)
 static float dot_iq3_xxs_avx2(const block_iq3_xxs *b, const float *x, int n) {
     __m256 acc = _mm256_setzero_ps();
-    uint8_t mag[16];
     for (int i = 0; i < n / QK_K; i++, b++) {
         float d = f16_to_f32(b->d);
         const uint8_t *qs = b->qs, *sas = b->qs + QK_K / 4;
@@ -2228,20 +2278,12 @@ static float dot_iq3_xxs_avx2(const block_iq3_xxs *b, const float *x, int n) {
             uint32_t aux32;
             memcpy(&aux32, sas + 4 * ib32, sizeof(uint32_t));
             float db = d * (0.5f + (aux32 >> 28)) * 0.5f;
+            const float *xb = xp + 32 * ib32;
             __m256 t = _mm256_setzero_ps();
-            for (int half = 0; half < 2; half++) {
-                const uint8_t *q = qs + 4 * half;
-                memcpy(mag,      iq3xxs_grid + q[0], 4);
-                memcpy(mag + 4,  iq3xxs_grid + q[1], 4);
-                memcpy(mag + 8,  iq3xxs_grid + q[2], 4);
-                memcpy(mag + 12, iq3xxs_grid + q[3], 4);
-                __m128i v = avx2_iq_signed16(mag,
-                                ksigns_iq2xs[(aux32 >> (14 * half)) & 127],
-                                ksigns_iq2xs[(aux32 >> (14 * half + 7)) & 127]);
-                const float *xh = xp + 32 * ib32 + 16 * half;
-                t = _mm256_fmadd_ps(i8lo_ps(v), _mm256_loadu_ps(xh), t);
-                t = _mm256_fmadd_ps(i8hi_ps(v), _mm256_loadu_ps(xh + 8), t);
-            }
+            for (int k = 0; k < 4; k++)
+                t = _mm256_fmadd_ps(avx2_iq_w8(g_iq3xxs_gridf[qs[2 * k]], g_iq3xxs_gridf[qs[2 * k + 1]],
+                                               ksigns_iq2xs[(aux32 >> (7 * k)) & 127]),
+                                    _mm256_loadu_ps(xb + 8 * k), t);
             acc = _mm256_fmadd_ps(_mm256_set1_ps(db), t, acc);
             qs += 8;
         }
@@ -2413,7 +2455,7 @@ static float dot_mxfp4_neon(const block_mxfp4 *b, const float *x, int n) {
         uint8x16_t q = vld1q_u8(b[i].qs);
         float32x4_t t = dot32(vqtbl1q_s8(tbl, vandq_u8(q, mF)),
                               vqtbl1q_s8(tbl, vshrq_n_u8(q, 4)), x + i * QK);
-        acc = vfmaq_n_f32(acc, t, 0.5f * ldexpf(1.0f, (int)b[i].e - 127));
+        acc = vfmaq_n_f32(acc, t, g_e8m0_half[b[i].e]);
     }
     return vaddvq_f32(acc);
 }
@@ -2430,10 +2472,22 @@ static float dot_q2_0_neon(const block_q2_0 *b, const float *x, int n) {
     return vaddvq_f32(acc);
 }
 
-// IQ3_XXS fused dot on NEON (same construction as dq_iq3_xxs_neon)
+// the eight 4-weight groups of an IQ3_XXS sub-block from the float grid, in
+// dot32f's layout; sign byte k covers groups 2k and 2k+1
+static inline void neon_iq3xxs_w32(const uint8_t *qs, uint32_t aux32,
+                                   float32x4_t fa[4], float32x4_t fb[4]) {
+    uint8_t sg[4];
+    for (int k = 0; k < 4; k++) sg[k] = ksigns_iq2xs[(aux32 >> (7 * k)) & 127];
+    for (int g = 0; g < 4; g++) {
+        fa[g] = neon_iq_w4(g_iq3xxs_gridf[qs[g]], sg[g >> 1], g & 1);
+        fb[g] = neon_iq_w4(g_iq3xxs_gridf[qs[4 + g]], sg[2 + (g >> 1)], g & 1);
+    }
+}
+
+// IQ3_XXS fused dot on NEON: dot_iq3_xxs_avx2's construction, the weights
+// from the float grid (the same bits as the byte decode it replaced)
 static float dot_iq3_xxs_neon(const block_iq3_xxs *b, const float *x, int n) {
     float32x4_t acc = vdupq_n_f32(0);
-    uint8_t mag[16];
     for (int i = 0; i < n / QK_K; i++, b++) {
         float d = f16_to_f32(b->d);
         const uint8_t *qs = b->qs, *sas = b->qs + QK_K / 4;
@@ -2442,18 +2496,9 @@ static float dot_iq3_xxs_neon(const block_iq3_xxs *b, const float *x, int n) {
             uint32_t aux32;
             memcpy(&aux32, sas + 4 * ib32, sizeof(uint32_t));
             float db = d * (0.5f + (aux32 >> 28)) * 0.5f;
-            int8x16_t v[2];
-            for (int half = 0; half < 2; half++) {
-                const uint8_t *q = qs + 4 * half;
-                memcpy(mag,      iq3xxs_grid + q[0], 4);
-                memcpy(mag + 4,  iq3xxs_grid + q[1], 4);
-                memcpy(mag + 8,  iq3xxs_grid + q[2], 4);
-                memcpy(mag + 12, iq3xxs_grid + q[3], 4);
-                v[half] = neon_iq_signed16(mag,
-                              ksigns_iq2xs[(aux32 >> (14 * half)) & 127],
-                              ksigns_iq2xs[(aux32 >> (14 * half + 7)) & 127]);
-            }
-            acc = vfmaq_n_f32(acc, dot32(v[0], v[1], xp + 32 * ib32), db);
+            float32x4_t fa[4], fb[4];
+            neon_iq3xxs_w32(qs, aux32, fa, fb);
+            acc = vfmaq_n_f32(acc, dot32f(fa, fb, xp + 32 * ib32), db);
             qs += 8;
         }
     }
@@ -2949,7 +2994,7 @@ float vec_dot(int type, const void *row, const float *x, int n) {
                 for (int j = 0; j < 16; j++)
                     t += kvalues_mxfp4[q[j] & 0xF] * xp[j]
                        + kvalues_mxfp4[q[j] >> 4]  * xp[j + 16];
-                s += ldexpf(1.0f, (int)b[i].e - 127) * t;
+                s += g_e8m0[b[i].e] * t;
             }
             return s;
         }
@@ -3083,7 +3128,6 @@ static void dot_iq3_xxs_avx2_multi(const block_iq3_xxs *b, const float *const *x
                                    int nc, int n, float *out) {
     __m256 acc[VEC_DOT_MULTI_MAX], t[VEC_DOT_MULTI_MAX];
     for (int c = 0; c < nc; c++) acc[c] = _mm256_setzero_ps();
-    uint8_t mag[16];
     for (int i = 0; i < n / QK_K; i++, b++) {
         float d = f16_to_f32(b->d);
         const uint8_t *qs = b->qs, *sas = b->qs + QK_K / 4;
@@ -3091,23 +3135,13 @@ static void dot_iq3_xxs_avx2_multi(const block_iq3_xxs *b, const float *const *x
             uint32_t aux32;
             memcpy(&aux32, sas + 4 * ib32, sizeof(uint32_t));
             __m256 db = _mm256_set1_ps(d * (0.5f + (aux32 >> 28)) * 0.5f);
+            int off = i * QK_K + 32 * ib32;
             for (int c = 0; c < nc; c++) t[c] = _mm256_setzero_ps();
-            for (int half = 0; half < 2; half++) {
-                const uint8_t *q = qs + 4 * half;
-                memcpy(mag,      iq3xxs_grid + q[0], 4);
-                memcpy(mag + 4,  iq3xxs_grid + q[1], 4);
-                memcpy(mag + 8,  iq3xxs_grid + q[2], 4);
-                memcpy(mag + 12, iq3xxs_grid + q[3], 4);
-                __m128i v = avx2_iq_signed16(mag,
-                                ksigns_iq2xs[(aux32 >> (14 * half)) & 127],
-                                ksigns_iq2xs[(aux32 >> (14 * half + 7)) & 127]);
-                __m256 wl = i8lo_ps(v), wh = i8hi_ps(v);
-                int off = i * QK_K + 32 * ib32 + 16 * half;
-                for (int c = 0; c < nc; c++) {
-                    const float *xh = xs[c] + off;
-                    t[c] = _mm256_fmadd_ps(wl, _mm256_loadu_ps(xh), t[c]);
-                    t[c] = _mm256_fmadd_ps(wh, _mm256_loadu_ps(xh + 8), t[c]);
-                }
+            for (int k = 0; k < 4; k++) {
+                __m256 w = avx2_iq_w8(g_iq3xxs_gridf[qs[2 * k]], g_iq3xxs_gridf[qs[2 * k + 1]],
+                                      ksigns_iq2xs[(aux32 >> (7 * k)) & 127]);
+                for (int c = 0; c < nc; c++)
+                    t[c] = _mm256_fmadd_ps(w, _mm256_loadu_ps(xs[c] + off + 8 * k), t[c]);
             }
             for (int c = 0; c < nc; c++) acc[c] = _mm256_fmadd_ps(db, t[c], acc[c]);
             qs += 8;

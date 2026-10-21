@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CPU MXFP4 and IQ3_XXS dots read their scales and codes from tables, bit
+  for bit as before.** The MXFP4 dots evaluated each block's E8M0 scale with
+  a libm `ldexpf` call every 32 weights; the scale now comes from a
+  256-entry table of the same values, and one core reads MXFP4 rows 3.1x as
+  fast on the Linux host (7.3 to 22.8 G weights/s) and 1.7x on an M1. The
+  IQ3_XXS dot assembled each grid word's bytes into a vector and widened
+  them to floats; it now loads the grid as floats and applies the signs as a
+  bit mask: 1.28x on the Linux host, 1.12x on an M1. The same values meet
+  the same operations, so the outputs are unchanged; a new test pins every
+  table entry against the dequantizer (a one-hot activation turns a dot into
+  the weight it multiplies).
+
 - **CPU K-quant dots keep one accumulator a row.** The Q4_K, Q5_K and Q6_K
   dot products (the AVX2 and NEON single and group-sum forms, and the AVX2
   multi-column ones) added each 32-weight sub-block into the row's sum with

@@ -778,6 +778,36 @@ static void test_dequant_exact(int type, int n) {
     free(row); free(got); free(want);
 }
 
+// A one-hot activation turns a "scale times code" dot into its weight: the
+// fused kernels multiply the code by x (exact: x is 1 or 0), sum it with exact
+// zeros and round once at the scale, which is the one rounding the dequantizer
+// makes. So vec_dot(row, e_j) equals dequant_row(row)[j] bit for bit for these
+// formats, and the check pins every decode table, sign mask and grid index of
+// the fused dots (IQ3_S and IQ3_XXS read float twins of their byte grids)
+// against the dequantizer's byte path, lane by lane. Formats with a separate
+// min term (the K-quants) round twice and are not in this list.
+static void test_dot_onehot(int type, int n) {
+    size_t rowsz = ggml_row_size(type, n);
+    uint8_t *row = malloc(rowsz);
+    float *w = malloc((size_t)n * sizeof(float));
+    float *x = calloc((size_t)n, sizeof(float));
+    for (int trial = 0; trial < 8; trial++) {
+        set_trial(trial);
+        make_row(type, row, n);
+        dequant_row(type, row, w, n);
+        for (int j = 0; j < n; j++) {
+            x[j] = 1.0f;
+            float got = vec_dot(type, row, x, n);
+            x[j] = 0.0f;
+            CHECK(got == w[j], "vec_dot %s one-hot trial=%d j=%d: %.9g, dequant %.9g",
+                  ggml_type_name(type), trial, j, (double)got, (double)w[j]);
+            if (g_fail > 20) { g_fill = -1; free(row); free(w); free(x); return; }
+        }
+    }
+    g_fill = -1;
+    free(row); free(w); free(x);
+}
+
 // scalar q8_quant_row, verbatim semantics — the SIMD path must match exactly
 static void ref_q8_quant_row(const float *x, block_q8_0 *b, int n) {
     for (int i = 0; i < n / QK; i++, b++, x += QK) {
@@ -1222,6 +1252,12 @@ int main(void) {
     test_dequant_exact(T_Q4_0, 4096);
     test_dequant_exact(T_IQ4_NL, 4096);
     test_dequant_exact(T_IQ4_XS, 4096);
+    {
+        static const int onehot[] = { T_Q8_0, T_Q4_0, T_IQ4_NL, T_MXFP4, T_IQ3_XXS, T_IQ3_S,
+                                      T_IQ2_XXS, T_IQ2_XS, T_IQ2_S };
+        for (size_t t = 0; t < sizeof(onehot) / sizeof(onehot[0]); t++)
+            test_dot_onehot(onehot[t], 512);
+    }
     test_dequant(T_Q2_K, 4096);
     test_dequant(T_Q3_K, 4096);
     test_dequant(T_Q4_K, 4096);
