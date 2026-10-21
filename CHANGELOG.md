@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Metal: `--parallel` slots decoding together stay bit-identical to
+  sequential decoding past 128 tokens.** A Metal decode step's attention
+  switches to its chunked kernels once a layer's span passes 128 positions,
+  but the decode microbatch ran the single-pass kernel for every column, so
+  past that point a slot's step differed from its sequential step in the
+  last bits (logit 9.64625 against 9.64631 at position 303 on Qwen2.5-1.5B),
+  against the microbatch's documented contract. The microbatch's columns now
+  take the decode step's own attention selection, and `test-batch-identity`
+  (in `make test` and the CUDA gate) decodes behind a 300-token prefix as
+  well as from short prompts; it never reached position 20 before, which is
+  how the break stayed hidden.
+
 - **CUDA: batched decode reaches the codebook i-quants and Q3_K.** The
   decode microbatch (`--parallel` slots decoding together) admitted a weight
   type only beside a coalesced single-step GEMV, so files in IQ2_XXS,
