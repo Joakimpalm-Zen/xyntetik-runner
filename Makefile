@@ -1820,23 +1820,28 @@ test-cuda-moe-twin: runner $(TEST_GPU_ID)
 
 # The decode microbatch on CUDA, byte for byte against sequential decode
 # (docs/cuda-microbatch-identity-2026-08-18.md) on the F32, Q8_0 and BF16
-# fixtures and a 256-wide model at Q4_K, Q6_K and Q4_0 (and Q5_K and IQ4_XS
-# where RUNNER_LLAMA_CPP_BIN has llama-quantize), with the default routes and
-# with the grouped decode attention off (the two decode attentions the
-# microbatch twins). `make test` runs the F32 case where it builds, which
-# on a Mac is Metal, so until 2026-10-21 no gate held the CUDA microbatch:
-# making the grouped decode attention the default left the microbatch on the
-# old kernel, and no gate saw it; IQ4_XS's twins were the lane kernels' twins
-# while its single step ran the coalesced GEMV (since #243), and no gate had
-# an IQ4_XS file. A host without a CUDA device fails here, as a gate that did
-# not run.
+# fixtures, a 256-wide model at Q4_K, Q6_K, Q4_0 and Q3_K, the five codebook
+# i-quants (make-test-model.py --quant) and, where RUNNER_LLAMA_CPP_BIN has
+# llama-quantize, Q5_K and IQ4_XS, with the default routes and with the
+# grouped decode attention off (the two decode attentions the microbatch
+# twins). `make test` runs the F32 case where it builds, which on a Mac is
+# Metal, so until 2026-10-21 no gate held the CUDA microbatch: making the
+# grouped decode attention the default left the microbatch on the old kernel,
+# and no gate saw it; IQ4_XS's twins were the lane kernels' twins while its
+# single step ran the coalesced GEMV (since #243), and no gate had an IQ4_XS
+# file; a codebook i-quant file never batched at all. A host without a CUDA
+# device fails here, as a gate that did not run.
 test-cuda-batch-identity: runner $(TEST_BATCH_ID) test.gguf test-q8.gguf test-bf16.gguf
 	@set -e; \
 	$(PYTHON) scripts/make-test-model.py --wide test-batch-wide.gguf > /dev/null; \
 	files="test.gguf test-q8.gguf test-bf16.gguf"; \
-	for q in q4_k q6_k q4_0; do \
+	for q in q4_k q6_k q4_0 q3_k; do \
 	  ./$(RUNNER_EXE) -m test-batch-wide.gguf --quantize test-batch-wide-$$q.gguf --quant $$q > /dev/null 2>&1; \
 	  files="$$files test-batch-wide-$$q.gguf"; \
+	done; \
+	for q in iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s; do \
+	  $(PYTHON) scripts/make-test-model.py --quant $$q test-batch-$$q.gguf > /dev/null; \
+	  files="$$files test-batch-$$q.gguf"; \
 	done; \
 	lq=$$(ls "$$RUNNER_LLAMA_CPP_BIN"/llama-quantize* 2>/dev/null | head -1); \
 	if [ -n "$$lq" ]; then \
@@ -1857,8 +1862,8 @@ test-cuda-batch-identity: runner $(TEST_BATCH_ID) test.gguf test-q8.gguf test-bf
 # A speculative verify round's rows on CUDA, byte for byte against solo
 # decode steps (tests/test_spec_identity.c, rounds 2 to 16 rows with the
 # walk's rollback): the dense fixtures (F32, Q8_0, BF16), a 256-wide model at
-# Q4_K and Q6_K (and IQ4_XS / IQ3_S where RUNNER_LLAMA_CPP_BIN has
-# llama-quantize), the MoE ones (Q8_0, Q4_0, gpt-oss MXFP4, gemma-4's dual
+# Q4_K, Q6_K and Q3_K, the codebook i-quants IQ2_XXS and IQ3_S (and IQ4_XS
+# where RUNNER_LLAMA_CPP_BIN has llama-quantize), the MoE ones (Q8_0, Q4_0, gpt-oss MXFP4, gemma-4's dual
 # branch), the Gated DeltaNet tracer and a dense Mamba-2 hybrid, with the
 # default routes, then the grouped MoE prefill and the grouped decode
 # attention forced each way. Until 2026-10-21 a CUDA verify row ran the
@@ -1877,16 +1882,18 @@ test-cuda-spec-identity: runner $(TEST_SPEC_ID) test.gguf test-q8.gguf test-bf16
 	$(PYTHON) scripts/make-test-model.py --wide test-spec-wide.gguf > /dev/null; \
 	./$(RUNNER_EXE) -m test-spec-wide.gguf --quantize test-spec-wide-q4k.gguf --quant q4_k > /dev/null 2>&1; \
 	./$(RUNNER_EXE) -m test-spec-wide.gguf --quantize test-spec-wide-q6k.gguf --quant q6_k > /dev/null 2>&1; \
+	./$(RUNNER_EXE) -m test-spec-wide.gguf --quantize test-spec-wide-q3k.gguf --quant q3_k > /dev/null 2>&1; \
+	$(PYTHON) scripts/make-test-model.py --quant iq2_xxs test-spec-iq2_xxs.gguf > /dev/null; \
+	$(PYTHON) scripts/make-test-model.py --quant iq3_s test-spec-iq3_s.gguf > /dev/null; \
 	$(PYTHON) scripts/make-test-hybrid.py test-spec-hybrid --dense --rope > /dev/null; \
 	files="test.gguf test-q8.gguf test-bf16.gguf test-spec-wide-q4k.gguf test-spec-wide-q6k.gguf \
+	       test-spec-wide-q3k.gguf test-spec-iq2_xxs.gguf test-spec-iq3_s.gguf \
 	       test-spec-moe-q8.gguf test-spec-moe-q40.gguf test-spec-moe.gptoss-mxfp4.gguf test-spec-moe-g4.gguf \
 	       test-ornith-draft.gguf test-spec-hybrid.gguf"; \
 	lq=$$(ls "$$RUNNER_LLAMA_CPP_BIN"/llama-quantize* 2>/dev/null | head -1); \
 	if [ -n "$$lq" ]; then \
-	  for q in IQ4_XS IQ3_S; do \
-	    "$$lq" test-spec-wide.gguf test-spec-wide-$$q.gguf $$q > /dev/null 2>&1 && files="$$files test-spec-wide-$$q.gguf"; \
-	  done; \
-	else echo "test-cuda-spec-identity: no llama-quantize in RUNNER_LLAMA_CPP_BIN, the IQ twins not exercised"; fi; \
+	  "$$lq" test-spec-wide.gguf test-spec-wide-IQ4_XS.gguf IQ4_XS > /dev/null 2>&1 && files="$$files test-spec-wide-IQ4_XS.gguf"; \
+	else echo "test-cuda-spec-identity: no llama-quantize in RUNNER_LLAMA_CPP_BIN, the IQ4_XS twins not exercised"; fi; \
 	env=default; for f in $$files; do $(SPEC_ID_RUN); done; \
 	env=RUNNER_MOE_GROUPED=1; f=test-spec-moe-q8.gguf; export RUNNER_MOE_GROUPED=1; $(SPEC_ID_RUN); unset RUNNER_MOE_GROUPED; \
 	export RUNNER_CUDA_ATTN_DEC=0; env=RUNNER_CUDA_ATTN_DEC=0; \

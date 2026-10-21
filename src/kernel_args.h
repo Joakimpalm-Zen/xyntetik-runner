@@ -75,10 +75,10 @@ typedef struct {
 } kvg_entry;
 
 // Rows a warp takes in the width-classed decode twins (k_gemvb_q4_K / q5_K /
-// q6_K / iq4_xs / q8_0 / q4_0 / bf16 _x4, _x8, _x16): every row of a warp
+// q3_K / q6_K / iq4_xs / q8_0 / q4_0 / bf16 _x4, _x8, _x16): every row of a warp
 // reuses the staged x it reads. Kernels and launches (cuda.c enc_mv_batch) both
 // read these, so the grid always covers what the kernels compute.
-#define KQ_TWR(nc) ((nc) <= 8 ? 4 : 2)   // Q4_K, Q5_K, IQ4_XS
+#define KQ_TWR(nc) ((nc) <= 8 ? 4 : 2)   // Q4_K, Q5_K, Q3_K, IQ4_XS
 #define Q6_TWR(nc) ((nc) <= 4 ? 4 : 2)   // Q6_K
 #define DQ_TWR(nc) ((nc) <= 8 ? 4 : 2)   // Q8_0, Q4_0, BF16
 

@@ -5,6 +5,30 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: batched decode reaches the codebook i-quants and Q3_K.** The
+  decode microbatch (`--parallel` slots decoding together) admitted a weight
+  type only beside a coalesced single-step GEMV, so files in IQ2_XXS,
+  IQ2_XS, IQ2_S, IQ3_XXS or IQ3_S decoded their slots one at a time,
+  although the width-classed twins of those types' single-step kernels were
+  there and a speculative verify round already ran them. Q3_K had no twin at
+  all: a note from 2026-08-20 declined it until a single-step kernel in the
+  GEMV geometry existed, and `k_gemv_q3_K` has been that kernel since
+  qwen4exp; so a Q3_K_M file decoded its slots one at a time and ran a
+  verify round's Q3_K rows a column at a time. The microbatch now asks what
+  the verify rows ask (is the tensor on the single-step route the twins
+  reproduce: no per-tensor scale, not the experimental int8-activation
+  route, which also closes a latent mismatch for IQ4_XS under
+  `RUNNER_CUDA_Q8X=1`), and `k_gemvb_q3_K` mirrors `k_gemv_q3_K`. On an RTX
+  3070 (Qwen3-4B, every slot's text equal to sequential decoding) four and
+  eight slots decode at 134 and 170 tok/s together where they ran 78 one at
+  a time at Q3_K_M, and 114 and 130 against 75 at IQ3_S; prompt lookup on a
+  Q3_K_M file decodes at 83-90 tok/s where it ran 71 (plain 79-81). `make
+  test-cuda-batch-identity` runs all five codebook types from new
+  random-block fixtures (`scripts/make-test-model.py --quant iq2_xxs` and
+  the others, which need no quantizer; llama-quantize writes IQ2 only from
+  an importance matrix) and a Q3_K fixture, and `make
+  test-cuda-spec-identity` adds Q3_K, IQ2_XXS and IQ3_S.
+
 - **Metal: tiled prefill GEMMs for Q5_K, Q4_1, Q5_0 and Q5_1.** Metal's
   tiled GEMM covered every common type but these four, so a Q5_K_M file (and
   the Q4_1 / Q5 legacy tensors some exports carry) prefilled through the

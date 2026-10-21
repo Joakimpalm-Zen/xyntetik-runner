@@ -4456,6 +4456,100 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
     }                                                                          \
 }
 
+// ---- Q3_K: k_gemv_q3_K's twin (2026-10-21). Q3_K had no width-classed
+// twin: its _b tile measured 0.17x-0.63x of sequential decode (cuda.c,
+// mvb_is_mv_twin), and a fast twin waited on a batch-1 kernel in the GEMV
+// geometry, which k_gemv_q3_K has been since #243. A Q3_K file therefore
+// decoded a microbatch's sequences one at a time and ran a verify round's
+// Q3_K rows a column at a time. Same staging and R rows a warp (KQ_TWR) as
+// the K-quant twins; every (row, column) keeps k_gemv_q3_K's expressions in
+// their order.
+// k_gemv_q3_K's per-element weight, q + 4 * hbit - 4, of byte k of the
+// packed words v (quant bits) and h (high-mask bits)
+#define Q3W(v, h, k) ((float)(((v) >> (8 * (k))) & 0xFF) + \
+                      4.0f * (float)(((h) >> (8 * (k))) & 0xFF) - 4.0f)
+#define GEMVB_Q3K(NAME, NC)                                                    \
+extern "C" __global__ void NAME(MV_PARAMS) {                                   \
+    __shared__ float xsm[NC][KG8ROW];                                          \
+    enum { R = KQ_TWR(NC) };                                                   \
+    unsigned warp = threadIdx.x >> 5;                                          \
+    unsigned lane = threadIdx.x & 31;                                          \
+    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
+    int nb = a.n_in / 256;                                                     \
+    int nc = a.batch < (NC) ? a.batch : (NC);                                  \
+    float s[R][NC];                                                            \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        _Pragma("unroll") for (int t = 0; t < NC; t++) s[r][t] = 0.0f;         \
+    int half  = (int)(lane >> 4);                                              \
+    int j     = (int)(lane >> 2) & 3;                                          \
+    int lseg  = ((int)lane & 3) * 8;                                           \
+    int shift = 2 * j, hsh = 4 * half + j;                                     \
+    int sidx  = 8 * half + 2 * j + (lseg >= 16 ? 1 : 0);                       \
+    int el    = (int)lane * KG8PAD;                                            \
+    for (int b = 0; b < nb; b++) {                                             \
+        int base_e = b * 256;                                                  \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            const float *xg = x + (ulong64)t * a.xs + base_e;                  \
+            for (int e = threadIdx.x; e < 256; e += blockDim.x)                \
+                xsm[t][(e >> 3) * KG8PAD + (e & 7)] = xg[e];                   \
+        }                                                                      \
+        __syncthreads();                                                       \
+        float dl[R], w[R][8];                                                  \
+        _Pragma("unroll")                                                      \
+        for (int r = 0; r < R; r++) {                                          \
+            unsigned row = row0 + r;                                           \
+            const uchar *blk = wb + a.w_off +                                  \
+                (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 110 +      \
+                (ulong64)b * 110;                                              \
+            Q3K_UNPACK_SCALES;                                                 \
+            dl[r] = d_all * (float)(q3scales[sidx] - 32);                      \
+            uint2 qv = ld8_a2(qbase + 32 * half + lseg);                       \
+            uint2 hv = ld8_a2(hm + lseg);                                      \
+            uint v0 = (qv.x >> shift) & 0x03030303u;                           \
+            uint v1 = (qv.y >> shift) & 0x03030303u;                           \
+            uint h0 = (hv.x >> hsh) & 0x01010101u;                             \
+            uint h1 = (hv.y >> hsh) & 0x01010101u;                             \
+            w[r][0] = Q3W(v0, h0, 0);                                          \
+            w[r][1] = Q3W(v0, h0, 1);                                          \
+            w[r][2] = Q3W(v0, h0, 2);                                          \
+            w[r][3] = Q3W(v0, h0, 3);                                          \
+            w[r][4] = Q3W(v1, h1, 0);                                          \
+            w[r][5] = Q3W(v1, h1, 1);                                          \
+            w[r][6] = Q3W(v1, h1, 2);                                          \
+            w[r][7] = Q3W(v1, h1, 3);                                          \
+        }                                                                      \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            const float *xp = xsm[t] + el;                                     \
+            float x0 = xp[0], x1 = xp[1], x2 = xp[2], x3 = xp[3];              \
+            float x4 = xp[4], x5 = xp[5], x6 = xp[6], x7 = xp[7];              \
+            _Pragma("unroll")                                                  \
+            for (int r = 0; r < R; r++) {                                      \
+                float tt = w[r][0] * x0 + w[r][1] * x1 + w[r][2] * x2          \
+                         + w[r][3] * x3 + w[r][4] * x4 + w[r][5] * x5          \
+                         + w[r][6] * x6 + w[r][7] * x7;                        \
+                s[r][t] += dl[r] * tt;                                         \
+            }                                                                  \
+        }                                                                      \
+        __syncthreads();                                                       \
+    }                                                                          \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        if (row >= (unsigned)a.n_out) continue;                                \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float v = warp_sum(s[r][t]);                                       \
+            if (lane == 0) y[(ulong64)t * a.ys + row] =                        \
+                a.has_bias ? v + bias[row] : v;                                \
+        }                                                                      \
+    }                                                                          \
+}
+
 // ---- Q6_K: k_gemv_q6_K v2 — d factored out of the four-term group, a whole
 // BLOCK reduced into its own accumulator, and those block sums split across
 // TWO running accumulators (even blocks into s0, odd into s1, s0 + s1 at the
@@ -4637,12 +4731,15 @@ GEMVB_Q5_K(k_gemvb_q5_K_x4, 4)
 GEMVB_Q5_K(k_gemvb_q5_K_x8, 8)
 GEMVB_Q6_K(k_gemvb_q6_K_x4, 4)
 GEMVB_Q6_K(k_gemvb_q6_K_x8, 8)
+GEMVB_Q3K(k_gemvb_q3_K_x4, 4)
+GEMVB_Q3K(k_gemvb_q3_K_x8, 8)
 GEMVB_BF16_C(k_gemvb_bf16_x16, 16, 512)
 GEMVB_Q8_0_C(k_gemvb_q8_0_x16, 16, 16)
 GEMVB_Q4_0_C(k_gemvb_q4_0_x16, 16, 16)
 GEMVB_Q4_K(k_gemvb_q4_K_x16, 16)
 GEMVB_Q5_K(k_gemvb_q5_K_x16, 16)
 GEMVB_Q6_K(k_gemvb_q6_K_x16, 16)
+GEMVB_Q3K(k_gemvb_q3_K_x16, 16)
 
 // ---- MXFP4: k_mv_mxfp4's twin (gpt-oss experts; the by-expert MoE prefill
 // runs their columns through it). The batch-1 kernel gives each lane whole

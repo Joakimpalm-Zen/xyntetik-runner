@@ -2466,8 +2466,9 @@ tensor-core prefill attention for f16 caches (`attn-tc`), and for the MoE
 families measured for them the tensor-core GEMMs on their dense projections
 (`moe-tc`: qwen3moe and gpt-oss) and the grouped expert prefill
 (`moe-grouped`: qwen3moe). The default set is `attn-tile,attn-dec`, plus
-`tc2,sm80` on compute capability 8.0 and newer, plus the MoE routes on their
-families: the attention and MoE routes measured no further from the
+`attn-tc` on the llama, qwen2, qwen3 and granite families without a sliding
+window, plus `tc2,sm80` on compute capability 8.0 and newer, plus the MoE
+routes on their families: the attention and MoE routes measured no further from the
 publisher's float32 model than the kernels they replace, and the compute_80
 GEMM kernels add in the tensor-core route's order and gave its bytes on
 every device measured; each stays a named route so that a replay cannot

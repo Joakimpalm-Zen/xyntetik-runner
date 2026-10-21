@@ -5,6 +5,7 @@ The model is ~1 MB of random weights with a byte-fallback SPM vocabulary:
 output is gibberish, but loading, tokenization, the forward pass, sampling,
 and JSON-constrained decoding all execute the same code paths as a real model.
 """
+import random
 import struct
 import sys
 
@@ -67,6 +68,9 @@ YARN_FACTOR = None # optional native YaRN metadata for CLI/rope tests
 YARN_ORIG_CTX = 0
 QK_NORM = False    # --qk-norm: per-head attn_q_norm/attn_k_norm (qwen3-style)
 WIDE = False       # 256-wide rows, large enough for an i-quant test block
+# --quant for the codebook i-quants: GGML type id and bytes per 256-value block
+CODEBOOK = {"iq2_xxs": (16, 66), "iq2_xs": (17, 74), "iq2_s": (22, 82),
+            "iq3_xxs": (18, 98), "iq3_s": (21, 110)}
 N_FF_SET = None    # --n-ff N: FFN width (an odd N gives odd ffn_gate/ffn_up row counts)
 GPU_UNSUPPORTED = None  # one named tensor stored as CPU-only IQ2_XXS
 ZERO_BRANCHES = False  # --zero-branches: attn_output/ffn_down all zero
@@ -226,9 +230,12 @@ while i < len(args):
         # model the batch gate ran on was F32.
         i += 1
         QUANT = args[i].lower()
-        if QUANT not in ("q8_0", "bf16", "nvfp4", "nvfp4-dequant", "nvfp4-fork40"):
+        if QUANT not in ("q8_0", "bf16", "nvfp4", "nvfp4-dequant", "nvfp4-fork40",
+                         *CODEBOOK):
             sys.exit(f"--quant: unsupported type {QUANT!r} "
-                     "(have: q8_0, bf16)")
+                     f"(have: q8_0, bf16, nvfp4, {', '.join(CODEBOOK)})")
+        if QUANT in CODEBOOK:
+            WIDE = True
     elif a == "--yarn":
         i += 1
         YARN_FACTOR, YARN_ORIG_CTX = map(float, args[i].split(","))
@@ -902,6 +909,21 @@ def quantize(name, ne, data):
         return GGML_IQ2_XXS, bytes((ne[0] // 256) * ne[1] * 66)
     if QUANT is None or len(ne) != 2 or name == "token_embd.weight":
         return GGML_F32, data
+    if QUANT in CODEBOOK:
+        # Random grid indices, signs and sub-block scales under an f16 block
+        # scale: every bit pattern of these blocks decodes (each index field
+        # addresses its whole grid), so the file reaches the codebook kernels
+        # with no quantizer, where llama-quantize writes the IQ2 types only
+        # from an importance matrix. The scale follows the block's float
+        # absmax, keeping the fixture's weight magnitude to within a few times.
+        if ne[0] % 256:
+            return GGML_F32, data
+        ttype, bs = CODEBOOK[QUANT]
+        vals = struct.unpack(f"<{len(data) // 4}f", data)
+        rng = random.Random(name)
+        return ttype, b"".join(
+            struct.pack("<e", max(abs(v) for v in vals[b:b + 256]) / 128) +
+            rng.randbytes(bs - 2) for b in range(0, len(vals), 256))
     if QUANT == "bf16":
         return GGML_BF16, bf16_data(data)
     if QUANT in ("nvfp4", "nvfp4-dequant", "nvfp4-fork40"):

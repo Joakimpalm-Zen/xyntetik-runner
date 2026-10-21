@@ -410,7 +410,6 @@ static const char *cu_err(CUresult r) {
 enum { BW_4 = 0, BW_8 = 1, BW_16 = 2, BW_N = 3 };
 static inline int batch_width_class(int n) { return n <= 4 ? BW_4 : n <= 8 ? BW_8 : BW_16; }
 enum { GPU_SMALL_BATCH = 8 };   // the widest f_gemvb class (BW_8): small-batch routing in enc_mv
-struct gpu_weights; static bool batch_mv_twin_ok(const struct gpu_weights *sw, const gguf_tensor *t);
 // The widest microbatch those kernels actually COMPUTE. Every width class
 // stops at its own column count (`t < a.batch && t < NC`), so a call wider
 // than the widest class does not fail — it leaves columns NC.. holding
@@ -2314,6 +2313,8 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_gemvb[BW_8][T_Q4_K], "k_gemvb_q4_K_x8" },
         { &w->f_gemvb[BW_8][T_Q5_K], "k_gemvb_q5_K_x8" },
         { &w->f_gemvb[BW_8][T_Q6_K], "k_gemvb_q6_K_x8" },
+        { &w->f_gemvb[BW_4][T_Q3_K], "k_gemvb_q3_K_x4" },
+        { &w->f_gemvb[BW_8][T_Q3_K], "k_gemvb_q3_K_x8" },
         { &w->f_gemvb[BW_4][T_MXFP4], "k_gemvb_mxfp4_x4" },
         { &w->f_gemvb[BW_8][T_MXFP4], "k_gemvb_mxfp4_x8" },
         { &w->f_gemvb[BW_16][T_BF16], "k_gemvb_bf16_x16" },
@@ -2322,6 +2323,7 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_gemvb[BW_16][T_Q4_K], "k_gemvb_q4_K_x16" },
         { &w->f_gemvb[BW_16][T_Q5_K], "k_gemvb_q5_K_x16" },
         { &w->f_gemvb[BW_16][T_Q6_K], "k_gemvb_q6_K_x16" },
+        { &w->f_gemvb[BW_16][T_Q3_K], "k_gemvb_q3_K_x16" },
         { &w->f_gemvb[BW_16][T_MXFP4], "k_gemvb_mxfp4_x16" },
         { &w->f_gemvb[BW_16][T_IQ2_XXS], "k_gemvb_iq2_xxs_x16" },
         { &w->f_gemvb[BW_16][T_IQ2_XS], "k_gemvb_iq2_xs_x16" },
@@ -4293,6 +4295,16 @@ static bool mv_route_splitk(const gpu_t *g, const gguf_tensor *w, int n_in, int 
     return w->type == T_BF16 && w->scale == 1.0f && g->splitk &&
            n_out <= 1024 && n_in >= 2048 && g->sw->f_mv_bf16_splitk;
 }
+// The route the width-classed twins (f_gemvb, and the codebook i-quants'
+// in-between f_gemvx widths) reproduce: the batch-1 kernel enc_mv picks for
+// an unscaled tensor off the two routes above, f_gemv where a type has one and
+// f_mv otherwise. A verify round's exact rows and the decode microbatch
+// (batch_mv_twin_ok) both ask here.
+static bool mv_twin_route(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out) {
+    return w->scale == 1.0f && !mv_route_q8x(g, w, n_in, 1) &&
+           !mv_route_splitk(g, w, n_in, n_out);
+}
+static bool batch_mv_twin_ok(const gpu_t *g, const gguf_tensor *t);
 
 static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                    CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias,
@@ -4303,8 +4315,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     // (the decode microbatch's contract; eight where a type has no 16-wide
     // twin), else the batch-1 call a column.
     if (batch > 1 && g->exact_rows) {
-        bool twin = w->scale == 1.0f && !mv_route_q8x(g, w, n_in, 1) &&
-                    !mv_route_splitk(g, w, n_in, n_out);
+        bool twin = mv_twin_route(g, w, n_in, n_out);
         int step = g->sw->f_gemvb[BW_16][w->type] ? 16 : GPU_SMALL_BATCH;
         for (int c0 = 0; c0 < batch; c0 += step) {
             int cn = batch - c0 < step ? batch - c0 : step;
@@ -5550,7 +5561,7 @@ static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, i
     // logits are the bits the per-row launch would have produced (the eager
     // path's byte contract); wider tiles keep the per-row route.
     bool batched_router = tn > 1 && tn <= GPU_SMALL_BATCH &&
-                          batch_mv_twin_ok(g->sw, ly->ffn_gate_inp) &&
+                          batch_mv_twin_ok(g, ly->ffn_gate_inp) &&
                           g->sw->f_gemvb[batch_width_class(tn)][ly->ffn_gate_inp->type];
     if (batched_router) {
         if (!enc_mv(g, m, ly->ffn_gate_inp, g->xb, g->moe_logits, n_embd, ne,
@@ -6993,9 +7004,8 @@ struct gpu_batch {
 // in kernels.cu warned about. A batched path that loses to sequential is a
 // regression, and a FAST twin for a 256-element superblock type cannot stage x
 // in k_mv's lane order within shared-memory limits — it needs a gemv-geometry
-// batch-1 kernel first, which would change those types' batch-1 bits and
-// invalidate their standing CPU==GPU verification. Sequential decode remains
-// their path until that is done deliberately.
+// batch-1 kernel first. Q3_K got one in #243 (k_gemv_q3_K) and its f_gemvb
+// twin on 2026-10-21; Q2_K still decodes its sequences one at a time.
 // Q8_0/Q4_0/Q4_1/Q5_0/Q5_1/MXFP4 are not twins at all — their mv sums a whole
 // block into t before scaling (s += d*t), while their _b folds the scale per
 // term; those either batch via f_gemvb or refuse.
@@ -7003,13 +7013,21 @@ static inline bool mvb_is_mv_twin(int type) {
     return type == T_F32 || type == T_F16 || type == T_BF16;
 }
 
-static bool batch_mv_twin_ok(const gpu_weights *sw, const gguf_tensor *t) {
+// Every f_gemvb is the twin of the batch-1 kernel enc_mv picks: f_gemv where a
+// type has one (the K-quants, Q8_0, Q4_0, IQ4_XS), f_mv otherwise (BF16, MXFP4
+// and the codebook i-quants' lane kernels). Until 2026-10-21 this asked for
+// f_gemvb only beside an f_gemv, so a file with IQ2/IQ3 codebook or dense
+// MXFP4 tensors decoded its sequences one at a time although the twins the
+// verify rows already ran were there.
+static bool batch_mv_twin_ok(const gpu_t *g, const gguf_tensor *t) {
     if (!t) return true;
     int type = t->type;
     if (type < 0 || type >= KT_N) return false;
-    if (!sw->f_gemv[type]) return mvb_is_mv_twin(type) && sw->f_mvb[type];
+    if (!mv_twin_route(g, t, (int)t->ne[0], (int)t->ne[1])) return false;
+    const gpu_weights *sw = g->sw;
     // the microbatch is at most MODEL_BATCH_MAX (8) columns: BW_4 and BW_8
-    return sw->f_gemvb[BW_4][type] && sw->f_gemvb[BW_8][type];
+    if (sw->f_gemvb[BW_4][type] && sw->f_gemvb[BW_8][type]) return true;
+    return !sw->f_gemv[type] && mvb_is_mv_twin(type) && sw->f_mvb[type];
 }
 
 // Every member must be decodable in one launch against one weight upload:
@@ -7047,7 +7065,7 @@ static bool batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
         if (!g->sw->f_rope_seq || !g->sw->f_store_seq || !g->sw->f_attn_dec_seq)
             return false;
         // every tensor fwd_batch hands to enc_mv_batch must have a real twin
-        if (!batch_mv_twin_ok(g->sw, m->output)) return false;
+        if (!batch_mv_twin_ok(g, m->output)) return false;
         for (int l = 0; l < m->n_layer; l++) {
             const layer_t *ly = &m->layers[l];
             // the decode attention the layer runs alone needs its twin here
@@ -7065,7 +7083,7 @@ static bool batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
             const gguf_tensor *ws[] = { ly->wq, ly->wk, ly->wv, ly->wo,
                                         ly->w_gate, ly->w_up, ly->w_down };
             for (size_t k = 0; k < sizeof(ws) / sizeof(*ws); k++)
-                if (!batch_mv_twin_ok(g->sw, ws[k])) return false;
+                if (!batch_mv_twin_ok(g, ws[k])) return false;
         }
         if (!lead) lead = g;
         // one upload, one geometry: a member from a different registry entry
@@ -7582,8 +7600,8 @@ static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                 w->type == T_IQ3_XXS || w->type == T_IQ3_S;
     int cls_nc = 4 << batch_width_class(batch);
     unsigned rpw = iq2r ? 2
-                 : w->type == T_Q4_K || w->type == T_Q5_K || w->type == T_IQ4_XS
-                   ? KQ_TWR(cls_nc)
+                 : w->type == T_Q4_K || w->type == T_Q5_K || w->type == T_Q3_K ||
+                   w->type == T_IQ4_XS ? KQ_TWR(cls_nc)
                  : w->type == T_Q6_K ? Q6_TWR(cls_nc)
                  : w->type == T_Q8_0 || w->type == T_Q4_0 || w->type == T_BF16
                    ? DQ_TWR(cls_nc) : 1;
