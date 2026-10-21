@@ -3,11 +3,13 @@
 The work that shipped in 1.5.0 is in the [CHANGELOG](../CHANGELOG.md) and the
 [benchmark report](benchmarks.md). This page keeps what did not ship, with
 the bar each idea had to clear and the number that stopped it, so that
-nobody spends the same week again. Every bar was written before the
-measurement. Hosts: an RTX 3070 8 GB, a datacenter MIG 1g.24gb slice of an
-RTX PRO 6000 (compute capability 12.0), an Apple M1 8 GB and an x86 desktop
-CPU. "A/A" is the same build measured against itself in the same session,
-the noise floor a result has to clear.
+nobody spends the same week again. Every numeric bar was written into the
+plan before the measurement; the ideas found along the way had to beat the
+code they would replace, with the same output bytes. Hosts: an RTX 3070
+8 GB, a datacenter MIG 1g.24gb slice of an RTX PRO 6000 (compute capability
+12.0), an Apple M1 8 GB and an x86 desktop CPU. "A/A" is the same build
+measured against itself in the same session, the noise floor a result has
+to clear.
 
 ## Rejected for fidelity
 
@@ -105,14 +107,15 @@ bar written into the plan.
   bandwidth. The cheapest sound per-row bound (Cauchy-Schwarz on stored
   residual norms) on a 4-bit base leaves tens to hundreds of rows to refine
   per token, and even with free refinement the saving is at most 2.4% and
-  3.2% of a decode step, under the 3% bar on one file and at it on the
-  other.
+  3.2% of a decode step: under the 3% bar on one file and 0.2 points over
+  it on the other, before the cost of the bound and the refinement pass,
+  which that estimate leaves out. Not built.
 - **Expert streaming for host-resident MoE prompts, tile by tile or layer
   by layer:** the tile-major design failed its fixture gate (a layer's
   router and shared tensors were never resident), and the layer-major
   pre-check put the upload floor at 0.30 to 1.06 s against a device MoE
-  prefill floor of 87 s on Qwen3-30B-A3B at the time (another engine: 2.9 s
-  with its experts on the CPU). The lever was the device MoE prefill itself,
+  prefill floor of 87 s on Qwen3-30B-A3B at the time (llama.cpp: 2.9 s with
+  its experts on the CPU). The lever was the device MoE prefill itself,
   which the by-expert and grouped tensor-core routes then moved.
 
 ## Blocked
@@ -121,8 +124,8 @@ bar written into the plan.
   that holds the file could not keep it in its page cache (two back-to-back
   reads at about 92 MB/s, about 8 GB cached afterwards), so three attempts
   ran disk-bound. One clean warm round stands as single-round evidence
-  (prefill 1.71x the previous engine at 16K). The new tensor-core types
-  stay off for its architecture until it has a row.
+  (prefill 1.71x the build before this work, at 16K). The new tensor-core
+  types stay off for its architecture until it has a row.
 - **Full-card measurement windows:** the shared datacenter host gives a MIG
   slice, not the whole card, so every promotion rests on the slice and the
   RTX 3070.
