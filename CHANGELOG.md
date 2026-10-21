@@ -5,6 +5,21 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: the tensor-core prefill attention is the default for the llama,
+  qwen2, qwen3 and granite families.** `attn-tc` (`k_attn_tc` with Q and P
+  carried as two fp16 halves, f16 caches) prefills an 8,000-token prompt
+  2.5-3.2x faster than the tiled kernel and a 2,048-token one 1.5-1.6x:
+  Llama-3.2-3B 620 -> 1,660 tok/s and Qwen2.5-7B 460 -> 1,165 at 8,192
+  tokens on an RTX 3070. On each family's row of 2,000 positions between
+  4,000 and 6,000 tokens it measured no further from the publisher's float32
+  model than the tiled kernel it replaces (Llama-3.2-3B, Mistral-7B,
+  Qwen2.5-3B, Qwen3-4B, granite-4.2-8b), and it does not touch the decode
+  step. gpt-oss (attention sinks: its row read further, Wilcoxon p 0.017)
+  and every sliding-window family keep the tiled kernel, as does a quantized
+  KV cache. `RUNNER_CUDA_ATTN_TC=1` or `0` forces it on or off for every
+  model; records name the route as before, and `--verify` replays a record
+  with the route it names.
+
 - **CUDA: qwen35 models decode through a captured graph.** The qwen35
   architecture (Qwen3.5 and Qwen3.8, with Gated DeltaNet layers) decoded
   every token with eager launches since it reached CUDA: the recurrent

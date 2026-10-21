@@ -6438,19 +6438,35 @@ static bool tile_attn_tiled(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
 }
 
 // RUNNER_CUDA_ATTN_TC: the tensor-core prefill attention (k_attn_tc, C2
-// step 2) for fp16 caches. 1 selects it ahead of the tiled kernel; off by
-// default. With Q and P as single halves its Mistral-7B float32-reference
-// row read 0.19% further from the reference than k_attn's (Wilcoxon p
-// 0.014); the kernel now carries both in two halves (X23b), which reads the
-// same as k_attn there (p 0.60).
-static bool attn_tc_on(void) {
+// step 2) for fp16 caches, ahead of the tiled kernel. With Q and P as single
+// halves its Mistral-7B float32-reference row read 0.19% further from the
+// reference than k_attn's (Wilcoxon p 0.014); the kernel carries both in two
+// halves (X23b), which reads the same as k_attn there (p 0.60).
+// On by default for the families whose long-context rows (positions 4,000 to
+// 6,000 against the publisher's float32 model) passed the owner's rule
+// against the current route, attn-tile (2026-10-21): llama (Llama-3.2-3B
+// 0.03833 vs 0.03832, Wilcoxon p 0.76; Mistral-7B 0.02069 vs 0.02068, p
+// 0.43), qwen2 (Qwen2.5-3B 0.03644 vs 0.03643, p 0.47), qwen3 (Qwen3-4B
+// 0.11199 vs 0.11197, p 0.14) and granite (granite-4.2-8b 0.01106 vs
+// 0.01126, p 0.87), about 3x the tile's prefill at 8K. gpt-oss failed its
+// row (0.04275 vs 0.04205, p 0.017) and the sliding-window families (gemma,
+// phi3, a windowed llama file) have none, so they keep the tile; 1 / 0 force
+// it on / off everywhere.
+static bool attn_tc_family(const model_t *m) {
+    static const char *const fam[] = { "llama", "qwen2", "qwen3", "granite" };
+    if (!m || m->swa_window > 0) return false;
+    for (size_t i = 0; i < sizeof fam / sizeof *fam; i++)
+        if (strcmp(m->arch, fam[i]) == 0) return true;
+    return false;
+}
+static bool attn_tc_on(const model_t *m) {
     if (route_pinned(GR_ATTN_TC) >= 0) return route_pinned(GR_ATTN_TC);
-    static _Atomic int on = -1;
+    static _Atomic int on = -1;   // -1 unread, 2 unset (the family default)
     if (on < 0) {
         const char *e = getenv("RUNNER_CUDA_ATTN_TC");
-        on = e && *e && strcmp(e, "0") != 0;
+        on = !e || !*e ? 2 : strcmp(e, "0") != 0;
     }
-    return on == 1;
+    return on == 2 ? attn_tc_family(m) : on == 1;
 }
 static _Atomic unsigned long g_attn_tc_dispatches;
 
@@ -6459,7 +6475,7 @@ static _Atomic unsigned long g_attn_tc_dispatches;
 // width that is not a multiple of 16 up to 128. 64 query rows a block.
 static bool tile_attn_tc(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
                          const attn_args *aa, CUdeviceptr sinks, bool *ok) {
-    if (!attn_tc_on() || !g->sw->f_attn_tc || model_kv_kind_k(m) || model_kv_kind_v(m) ||
+    if (!attn_tc_on(m) || !g->sw->f_attn_tc || model_kv_kind_k(m) || model_kv_kind_v(m) ||
         hd % 16 || hd > 128 || n_kv < 1 || m->n_head % n_kv)
         return false;
     int G = m->n_head / n_kv, R = 64;
@@ -6511,7 +6527,7 @@ int gpu_route_active(const model_t *m) {
     bool mgr = g ? g->moe_grouped_ok : moe_grouped_eligible(m);
     return (tc2 ? GR_TC2 : 0) | (sm80 ? GR_SM80 : 0) |
            (attn_tile_on() ? GR_ATTN_TILE : 0) | (attn_dec_on() ? GR_ATTN_DEC : 0) |
-           (attn_tc_on() ? GR_ATTN_TC : 0) | (mtc ? GR_MOE_TC : 0) | (mgr ? GR_MOE_GROUPED : 0);
+           (attn_tc_on(m) ? GR_ATTN_TC : 0) | (mtc ? GR_MOE_TC : 0) | (mgr ? GR_MOE_GROUPED : 0);
 }
 
 // The dynamic shared memory k_attn_dec_gqa needs for a layer's geometry, or
@@ -7495,7 +7511,7 @@ const char *gpu_route_detail(const model_t *m) {
                  : g_tc_state ? "forced" : "off",
              !g->xh ? "off" : g->sw->mod80 ? "on-sm80" : "on",
              gpu_q8x_on() ? "on" : "off", gpu_small_batch_on() ? "on" : "off",
-             attn_tc_on() ? (attn_dec_on() ? "tc+dec" : "tc")
+             attn_tc_on(m) ? (attn_dec_on() ? "tc+dec" : "tc")
              : attn_tile_on() ? (attn_dec_on() ? "on+dec" : "on") : (attn_dec_on() ? "dec" : "off"),
              g->win, g->xh ? G2_BN : TC_N,
              m->n_expert > 0 ? " moe=" : "",
