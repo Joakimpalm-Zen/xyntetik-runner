@@ -1792,12 +1792,16 @@ test-cuda-q3k: runner $(TEST_GPU_ID)
 # fixture at Q8_0 (dense shared MLP plus routed experts), and both again at
 # Q4_0, whose fused expert kernel is the lane-per-block k_mv_q4_0 body rather
 # than the coalesced GEMV the other types share (gemma-4-26B-A4B's Q4_0
-# experts once came out of the by-expert path with other bytes).
+# experts once came out of the by-expert path with other bytes). The Q8_0
+# pair runs once more under RUNNER_MOE_GROUPED=1: the grouped prefill takes a
+# tile ahead of both routes, so the pair holds it off for its own runs (a
+# gate with every opt-in on once found the pair with nothing to compare).
 test-cuda-moe-twin: runner $(TEST_GPU_ID)
 	@set -e; \
 	$(PYTHON) scripts/make-test-moe.py test-moe-twin > /dev/null; \
 	./$(RUNNER_EXE) -m test-moe-twin.moe4.gguf --quantize test-moe-twin-q8.gguf --quant q8_0 > /dev/null 2>&1; \
 	GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin-q8.gguf; \
+	RUNNER_MOE_GROUPED=1 GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin-q8.gguf; \
 	GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin.gptoss-mxfp4.gguf; \
 	./$(RUNNER_EXE) -m test-moe-twin.gemma4-moe.gguf --quantize test-moe-twin-g4.gguf --quant q8_0 > /dev/null 2>&1; \
 	GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-moe-twin-g4.gguf; \

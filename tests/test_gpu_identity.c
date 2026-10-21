@@ -402,19 +402,32 @@ int main(int argc, char **argv) {
     // the third argument): TC2's 128-column tile against its 64-column one.
     // Both arms run the tensor-core route (tc), which the CPU bound below
     // switches off; the pair compares the two widths with each other.
-    struct { const char *env, *what; void (*force)(int); unsigned long (*count)(void); bool tc; } pairs[] = {
-        { "GPU_ID_RECUR", "whole-tile recurrent prefill", gpu_recur_seq_force, gpu_recur_seq_dispatches, false },
-        { "GPU_ID_TC2_WIDE", "128-column TC2 tile", gpu_tc2_wide_force, gpu_tc2_wide_dispatches, true },
+    //
+    // `quiet` names a switch held at 0 for both arms of a pair: one that
+    // would otherwise take the pair's tiles from both routes, so a gate run
+    // with every opt-in on still compares what the pair names.
+    struct { const char *env, *what; void (*force)(int); unsigned long (*count)(void); bool tc;
+             const char *quiet; } pairs[] = {
+        { "GPU_ID_RECUR", "whole-tile recurrent prefill", gpu_recur_seq_force, gpu_recur_seq_dispatches, false, NULL },
+        { "GPU_ID_TC2_WIDE", "128-column TC2 tile", gpu_tc2_wide_force, gpu_tc2_wide_dispatches, true, NULL },
         // GPU_ID_MOE_TWIN=1: the by-expert MoE prefill against the fused
         // per-token path it reproduces (a prefill tile averaging four or more
-        // tokens an expert, experts of a type with GEMV twins)
-        { "GPU_ID_MOE_TWIN", "by-expert MoE prefill", gpu_moe_twin_force, gpu_moe_twin_tiles, false },
+        // tokens an expert, experts of a type with GEMV twins). The grouped
+        // prefill, where on, takes the tile ahead of both.
+        { "GPU_ID_MOE_TWIN", "by-expert MoE prefill", gpu_moe_twin_force, gpu_moe_twin_tiles, false,
+          "RUNNER_MOE_GROUPED" },
     };
     for (size_t pi = 0; pi < sizeof pairs / sizeof *pairs; pi++) {
         const char *ev = getenv(pairs[pi].env);
         if (!ev || !*ev || strcmp(ev, "0") == 0) continue;
         int nv_off = 0, nv_on = 0;
         bool off_used = false, on_used = false;
+        char quiet_was[64] = "";
+        if (pairs[pi].quiet) {
+            const char *q = getenv(pairs[pi].quiet);
+            snprintf(quiet_was, sizeof quiet_was, "%s", q ? q : "");
+            setenv_compat(pairs[pi].quiet, "0");
+        }
         if (pairs[pi].tc) gpu_tc_force(1);
         pairs[pi].force(0);
         unsigned long d0 = pairs[pi].count();
@@ -425,6 +438,7 @@ int main(int argc, char **argv) {
         unsigned long d2 = pairs[pi].count();
         pairs[pi].force(-1);
         if (pairs[pi].tc) gpu_tc_force(0);
+        if (pairs[pi].quiet) setenv_compat(pairs[pi].quiet, quiet_was);   // "" reads as unset
         bool same = off && on && off_used && on_used && nv_off == nv_on &&
                     memcmp(off, on, sizeof(float) * (size_t)STEPS * (size_t)nv_on) == 0;
         free(off); free(on);
