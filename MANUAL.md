@@ -2174,7 +2174,7 @@ despite a good acceptance rate (docs/metal-decode-dispatch-budget-2026-09-01.md)
 CPU a wide round costs its per-column dots; on an RTX 3070 it pays where most of a
 window is accepted and costs where little is: `--draft-lookup` on an input-grounded
 prompt decodes Qwen3-4B at 143 tok/s against 103 plain and Qwen2.5-7B at 84 against 71,
-but where about one token a round is accepted Qwen3-4B runs at 93-94 against 106; a
+but where about one token a round is accepted Qwen3-4B runs at 102 against 106; a
 Qwen2.5-7B target with a 1.5B draft model runs at 65 against 71, and the Qwen3.5-4B MTP
 head at 54 against 79. The same holds for `--mtp` and `--draft-lookup`. In serve mode `GET
 /v1/capabilities` reports whether the draft is actually `active`, so a harness never

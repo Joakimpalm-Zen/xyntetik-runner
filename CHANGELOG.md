@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: a speculative round that drafted nothing runs as a plain decode
+  step.** With `--draft-lookup`, most rounds on text unlike the prompt find
+  no match and verify a single row. That row went through the verify
+  forward, which runs its kernels without the captured decode graph, so it
+  cost more than the plain step it equals. Such a round now takes the decode
+  step itself: the same bits (the verify rows are the decode step's), and on
+  an RTX 3070 Qwen3-4B with lookup where about one token a round is accepted
+  decodes at 102 tok/s where it ran 94 (plain 106), and Qwen2.5-7B at 73
+  where it ran 71 (plain 71). MTP rounds keep the verify forward, since the
+  head reads the round's hidden rows.
+
 - **Speculative decoding gives the plain path's output on every backend, bit
   for bit, and pays on CUDA where drafts are accepted.** The draft only
   proposes; the target's verify round decides every token, so the output is

@@ -2685,7 +2685,15 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         // token instead: plain decoding, one row.
         float *row0 = NULL;
         if (prof) tp = now_s();
-        if (!model_forward_verify(m, b, nb, e->pos)) {
+        // Nothing drafted: the round is one decode step, so it takes the
+        // decode path itself, the same bits (test-spec-identity) and on CUDA
+        // the captured graph the keep-forward does not use (a one-row verify
+        // ran eager launches; lookup rounds with no match are most rounds on
+        // text unlike the prompt). MTP reads the round's hidden rows, so it
+        // keeps the verify forward.
+        if (nd == 0 && !e->mtp_on) {
+            row0 = model_forward(m, cur, e->pos);
+        } else if (!model_forward_verify(m, b, nb, e->pos)) {
             nd = 0; nb = 1;
             row0 = model_forward(m, cur, e->pos);
         }
