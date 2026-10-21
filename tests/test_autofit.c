@@ -299,11 +299,11 @@ static void test_fit_gpu(const char *fixture) {
 }
 
 // The split's boundaries, to the byte. The fit is the loader's leading-layer
-// placement read off the header: a fixed charge (embedding, scratch,
-// headroom), then whole layers, each its weights plus its KV, while they fit;
-// a split that took every layer also owes the output projection and charges
-// the embedding a second time, as the loader does, else the last layer goes
-// back. These cases rebuild each figure from the header the way the fit does
+// placement read off the header: a fixed charge (scratch and headroom; the
+// token embedding is staged from the host), then whole layers, each its
+// weights plus its KV, while they fit; a split that took every layer also
+// owes the output projection, once (a tied head is the embedding table),
+// else the last layer goes back. These cases rebuild each figure from the header the way the fit does
 // and check the decision one byte either side of every boundary, so a change
 // to the placement arithmetic (the CUDA and Metal loaders keep their own
 // copies of it) shows up as a moved boundary, not a vague "fits".
@@ -328,6 +328,7 @@ static void test_fit_gpu_boundaries(const char *fixture) {
         else if (!strcmp(t->name, "output.weight")) out = t->nbytes;
     }
     if (!out) out = tok;
+    const uint64_t extra = out;
     const uint64_t kvl = base.kv_f16_per_tok / (uint64_t)nl * (uint64_t)base.n_ctx;
     model_fit f = base;
     model_fit_gpu(&g, &f, 1ull << 40, 0, 0);
@@ -352,14 +353,14 @@ static void test_fit_gpu_boundaries(const char *fixture) {
     f = base; model_fit_gpu(&g, &f, all, 0, 0);
     ck(f.gpu_layers[K] == nl - 1 && f.gpu_used[K] == all - lb[nl - 1] - kvl,
        "fit gpu boundaries: all layers without the output charge give one back");
-    f = base; model_fit_gpu(&g, &f, all + tok + out - 1, 0, 0);
+    f = base; model_fit_gpu(&g, &f, all + extra - 1, 0, 0);
     ck(f.gpu_layers[K] == nl - 1,
-       "fit gpu boundaries: a byte short of the full split (embedding charged twice)");
-    f = base; model_fit_gpu(&g, &f, all + tok + out, 0, 0);
-    ck(f.gpu_layers[K] == nl && f.gpu_used[K] == all + out,
+       "fit gpu boundaries: a byte short of the full split (output charged once)");
+    f = base; model_fit_gpu(&g, &f, all + extra, 0, 0);
+    ck(f.gpu_layers[K] == nl && f.gpu_used[K] == all + extra,
        "fit gpu boundaries: exactly the full split, output included");
     // --gpu-layers below the natural split caps it; at or above, changes nothing
-    f = base; model_fit_gpu(&g, &f, all + tok + out, 0, nl - 1);
+    f = base; model_fit_gpu(&g, &f, all + extra, 0, nl - 1);
     ck(f.gpu_layers[K] == nl - 1, "fit gpu boundaries: max_layers caps a full split");
     f = base; model_fit_gpu(&g, &f, fixed + lb[0] + kvl, 0, nl);
     ck(f.gpu_layers[K] == 1, "fit gpu boundaries: a cap above the split changes nothing");
@@ -480,20 +481,26 @@ static void test_gpu_plan(void) {
     ck(gpu_plan_unified_cap(8ull << 30, 10ull << 30) == 8ull << 30,
        "plan unified: more RAM than the driver's view changes nothing");
 
-    // the spread check counts the prefix's tensor bytes, not the header: the
-    // block-order fixture (7,584 header bytes against a 3,340-byte slack)
-    // read as spread when the header counted
-    uint64_t plan = 3340ull * 64;
-    ck(!gpu_plan_upload_spread(7584 + plan, 7584, plan),
-       "plan spread: a prefix of exactly the planned tensors is not spread");
-    ck(!gpu_plan_upload_spread(7584 + plan + plan / 64, 7584, plan),
-       "plan spread: the slack itself is not spread");
-    ck(gpu_plan_upload_spread(7584 + plan + plan / 64 + 1, 7584, plan),
-       "plan spread: one byte past the slack is");
-    ck(gpu_plan_upload_spread(plan + plan / 64 + 1, 0, plan),
-       "plan spread: with no header the prefix is all tensor bytes");
-    ck(!gpu_plan_upload_spread(100, 7584, plan),
-       "plan spread: a prefix inside the header has no tensor bytes");
+    // the device tensors' stretches: a gap up to the granularity joins
+    // the stretch around it, one byte more starts a new one; overlapping or
+    // touching tensors are one stretch; the count without the arrays
+    {
+        const uint64_t off[5] = { 100, 200, 300 + GPU_PLAN_GRAN, 400 + 2 * GPU_PLAN_GRAN + 1, 450 + 2 * GPU_PLAN_GRAN };
+        const uint64_t len[5] = { 100, 100, 100, 50, 10 };
+        uint64_t lo[5], hi[5];
+        int k = gpu_plan_runs(off, len, 5, GPU_PLAN_GRAN, lo, hi);
+        ck(k == 2 && lo[0] == 100 && hi[0] == 400 + GPU_PLAN_GRAN,
+           "plan runs: touching tensors and a gap of exactly the granularity join");
+        ck(k == 2 && lo[1] == 400 + 2 * GPU_PLAN_GRAN + 1 && hi[1] == 460 + 2 * GPU_PLAN_GRAN,
+           "plan runs: one byte past the granularity starts a stretch, a later tensor joins it");
+        ck(gpu_plan_runs(off, len, 5, GPU_PLAN_GRAN, NULL, NULL) == 2,
+           "plan runs: counting without the arrays");
+        ck(gpu_plan_runs(off, len, 0, GPU_PLAN_GRAN, NULL, NULL) == 0,
+           "plan runs: no tensors, no stretch");
+        const uint64_t ov[2] = { 0, 50 }, ol[2] = { 100, 10 };
+        ck(gpu_plan_runs(ov, ol, 2, 0, lo, hi) == 1 && hi[0] == 100,
+           "plan runs: a tensor inside another adds nothing");
+    }
 }
 
 // The CUDA prompt window (C1 step 2): the scratch charge is the loader's

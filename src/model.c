@@ -900,7 +900,11 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
         } else if (!strcmp(t->name, "output.weight"))
             out = t->nbytes;
     }
-    if (!out) out = tok;   // tied embeddings: the loader's output IS token_embd
+    // tied embeddings: the loader's output IS token_embd. The table is not
+    // charged otherwise (cuda.c shared_plan_budget): the forward stages its
+    // rows from the host, so the device holds it only as a full split's head
+    if (!out) out = tok;
+    const uint64_t full_extra = out;
     uint64_t q_dim = n_head * head_dim, kv_dim = geo.kv_dim_max;
     uint64_t xdim = q_dim > n_embd ? q_dim : n_embd;
     gpu_act_cost ac = model_gpu_act_cost(n_embd, xdim, q_dim, kv_dim, n_ff, n_head,
@@ -912,28 +916,29 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     const uint64_t slots = f->n_seq > 1 ? (uint64_t)f->n_seq : 1;
     f->gpu = true;
     f->gpu_budget = budget;
-    f->gpu_fixed = tok + act * slots + headroom;
+    f->gpu_fixed = act * slots + headroom;
     const uint64_t per_tok[4] = { f->kv_f16_per_tok, f->kv_q8_per_tok,
                                   f->kv_k8v4_per_tok, f->kv_fp4_per_tok };
     for (int k = 0; k < 4; k++) {
         f->gpu_layers[k] = -1;
         if (!per_tok[k]) continue;
         int G = 0;
-        uint64_t used = f->gpu_fixed, dev_w = tok;
+        uint64_t used = f->gpu_fixed, dev_w = 0;
         if (used <= budget) {
             // each layer pays its own KV rows (fit_geometry), not an average
             for (int l = 0; l < f->n_layer; l++)
                 cost[l] = lb[l] + fit_kv_row(geo.kv_dim[l], k) * (uint64_t)f->n_ctx * slots;
             G = gpu_plan_prefix(cost, f->n_layer, max_layers, budget, &used);
             for (int l = 0; l < G; l++) dev_w += lb[l];
-            // The loader's full-split test is `used + token_embd + output`
-            // with token_embd already inside `used` (it is in the fixed
-            // charge): it charges the embedding twice. Mirrored, because
-            // this must predict the split the loader makes; RTX 3070,
-            // granite-4.2-8b, --kv q8 at 16k: 39 of 40, not 40.
+            // The loader's full-split test: the output head, once (a tied
+            // head is the embedding table, which nothing else charges). It
+            // used to add the embedding on top of a fixed charge that held it
+            // already (charged twice; RTX 3070, granite-4.2-8b, --kv q8 at
+            // 16k: 39 of 40); mirrored either way, because this must predict
+            // the split the loader makes.
             bool gave_back;
-            if (gpu_plan_full_split(&G, f->n_layer, used, tok + out, budget, &gave_back)) {
-                used += out; if (out != tok) dev_w += out;
+            if (gpu_plan_full_split(&G, f->n_layer, used, full_extra, budget, &gave_back)) {
+                used += full_extra; dev_w += full_extra;
             } else if (gave_back) {
                 used -= cost[G]; dev_w -= lb[G];
             }
@@ -4382,21 +4387,27 @@ uint64_t gpu_plan_binding_bytes(uint64_t nbytes, bool bound) {
                  : nbytes;
 }
 
-// Whether a partial split's one contiguous upload, a prefix of the file
-// ending at prefix_end, overshoots the plan's weights enough to upload per
-// tensor instead. Only the prefix's tensor bytes count: the header and
-// metadata before data_start are no layer's spread, and on a small model
-// with a large vocabulary they alone exceeded the slack, so its contiguous
-// upload became a per-tensor one for nothing. The slack is relative and
-// small: the norms and biases outside a layer's big tensors are kilobytes,
-// never a sixty-fourth of the plan, while a real overshoot can be modest
-// and still fatal (a file with output.weight at its head overshot by 8%,
-// 1.9 GB on a 24 GB slice). An absolute margin would hide the spread on a
-// small file.
-bool gpu_plan_upload_spread(uint64_t prefix_end, uint64_t data_start,
-                            uint64_t planned) {
-    uint64_t tensor_bytes = prefix_end > data_start ? prefix_end - data_start : 0;
-    return tensor_bytes > planned + planned / 64;
+// The stretches of the file a set of tensors occupies (the CUDA weights,
+// cuda.c tensor_runs): the tensors sorted by offset (off[i], len[i]), a gap
+// of up to `gap` bytes joined into the stretch around it, since a separate
+// allocation would round up by as much. Writes each stretch to lo[k], hi[k]
+// when they are not NULL; returns how many. One stretch is uploaded as the
+// contiguous image, several as one binding each. (A device image once ran
+// from the file's first tensor through its last device tensor, and a file
+// with output.weight at its head overshot the plan by 8%, 1.9 GB on a 24 GB
+// slice.)
+int gpu_plan_runs(const uint64_t *off, const uint64_t *len, int n, uint64_t gap,
+                  uint64_t *lo, uint64_t *hi) {
+    int k = 0;
+    uint64_t a = 0, e = 0;
+    for (int i = 0; i < n; i++) {
+        uint64_t o = off[i], end = off[i] + len[i];
+        if (i > 0 && o <= e + gap) { if (end > e) e = end; continue; }
+        if (i > 0) { if (lo) { lo[k] = a; hi[k] = e; } k++; }
+        a = o; e = end;
+    }
+    if (n > 0) { if (lo) { lo[k] = a; hi[k] = e; } k++; }
+    return k;
 }
 
 // An integrated device's "VRAM" is system RAM: its offload budget is also

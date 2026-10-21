@@ -5,6 +5,26 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA keeps the token embedding in RAM and uploads only the tensors it
+  reads.** The forward stages each token's embedding row from the host, yet
+  the device held the whole embedding table, and its weight image ran from
+  the file's first tensor (through the end of the file on a full split), so
+  whatever lay in front of the layers rode along without being planned:
+  gemma-4-E4B's 1.94 GB per-layer embedding table, which only the host's
+  pre-pass reads. The image is now the stretch of the tensors the device
+  reads (the layers, and on a full split the output head; a tied head is the
+  embedding table); where they do not lie together (a head stored in front
+  of the embedding, a name-ordered file) they upload as one allocation per
+  stretch. On an RTX 3070, Xyntetik-Kvist-14B at an 8K context holds 51 of
+  its 52 layers where it held 47 and reads the prompt at 105.2 tok/s where
+  it read 34.4, decoding at 10.25 where it ran 5.78 (two rounds);
+  gemma-4-E4B leaves 4.48 GB free where it left 2.47; granite-4.2-8b at a
+  16K context places 36 of 40 layers where it placed 35, and all 40 with
+  `--kv q8` where 39 fitted. `--score` is byte-identical to the previous
+  upload at equal splits on thirteen files and splits, and `--fit` predicts
+  the loader's split in 48 of 48 cases (six models, two contexts, four KV
+  formats).
+
 - **CPU IQ3_S dot fused.** IQ3_S was the slowest format on the CPU: its dot
   dequantized each block into a 256-float scratch row, multiplying every
   code by its sub-block scale, and then took a second pass to dot it. It now

@@ -497,6 +497,7 @@ typedef struct gpu_weights {
     CUfunction  f_moe_gather, f_moe_scatter, f_moe_actmul_plain, f_moe_copy;
     CUdeviceptr weights;
     size_t      weights_len;
+    size_t      img_off;                // file offset the contiguous image starts at
     bool        cpu_moe;                // sparse tensor-role placement mode
     int         cpu_moe_layers;         // requested host-expert count (share key)
     gpu_weight_binding *bindings;       // packed non-expert tensors in this mode
@@ -1471,9 +1472,9 @@ static size_t expert_plan_bytes(const layer_t *ly, int n_expert, bool bound) {
 }
 
 // A layer's device tensors, listed once. The split plan's bytes
-// (layer_weight_bytes), the prefix upload's reach (layer_weight_end), the
-// per-tensor bindings (shared_upload_weights) and admission's type check
-// (cuda_admit) all walk these two lists. Each used to keep its own, and they
+// (layer_weight_bytes), the image's stretch and the per-tensor bindings
+// (device_tensors_each) and admission's type check (cuda_admit) all walk
+// these two lists. Each used to keep its own, and they
 // had drifted: none had ssm_in, so a Mamba-2 hybrid's input projection was
 // never budgeted or bound and its first layer failed on the device, and the
 // prefix's reach had neither the hyper-connection mixers nor the shared
@@ -1557,18 +1558,6 @@ static void vram_probe(const char *stage) {
         fprintf(stderr, "vram: %-28s free %.3f GB\n", stage, f / 1e9);
 }
 
-// Where the main mapping's tensor data begins: the header and metadata
-// before it are no tensor's bytes.
-static size_t map_data_start(const model_t *m) {
-    const uint8_t *base = (const uint8_t *)m->gf.map;
-    size_t start = m->gf.map_size;
-    for (uint64_t i = 0; i < m->gf.n_tensors; i++) {
-        const uint8_t *d = (const uint8_t *)m->gf.tensors[i].data;
-        if (d >= base && d < base + m->gf.map_size && (size_t)(d - base) < start)
-            start = (size_t)(d - base);
-    }
-    return start;
-}
 
 static uint64_t tensor_file_off(const model_t *m, const gguf_tensor *t) {
     return (uint64_t)((const uint8_t *)t->data - (const uint8_t *)m->gf.map);
@@ -1578,16 +1567,6 @@ static uint64_t tensor_file_off(const model_t *m, const gguf_tensor *t) {
 // hyper-connection stream.
 static int mtp_streams(const model_t *m) { return m->hyper_conn ? m->hc_count : 1; }
 
-// A head loaded with --mtp-file lives in its own mapping, outside the one
-// contiguous upload a full split makes of the main file.
-static bool mtp_outside_main_map(const model_t *m) {
-    const gguf_tensor *ts[] = { m->mtp_eh_proj, m->layers[m->n_layer].wo, m->mtp_head };
-    const uint8_t *b = (const uint8_t *)m->gf.map;
-    for (size_t i = 0; i < sizeof ts / sizeof *ts; i++)
-        if (ts[i] && ((const uint8_t *)ts[i]->data < b ||
-                      (const uint8_t *)ts[i]->data >= b + m->gf.map_size)) return true;
-    return false;
-}
 
 // Tensor-role placement cannot preserve mmap offsets in one compact device
 // allocation: the skipped experts are the holes. Upload each retained tensor
@@ -1633,19 +1612,56 @@ static bool binding_add(gpu_weights *w, const model_t *m, gguf_tensor *t) {
 
 typedef struct { gpu_weights *w; const model_t *m; } binding_ctx;
 
-static bool binding_add_each(gguf_tensor *t, void *ctx) {
+// One binding over the file stretch [lo, hi) of the main mapping: every
+// tensor inside it resolves to it (binding_find), one allocation for all.
+static bool binding_add_range(uint64_t lo, uint64_t hi, void *ctx) {
     binding_ctx *c = ctx;
-    return binding_add(c->w, c->m, t);
+    gpu_weights *w = c->w;
+    size_t len = (size_t)(hi - lo);
+    if (w->n_bindings == w->cap_bindings) {
+        int cap = w->cap_bindings ? w->cap_bindings * 2 : 64;
+        gpu_weight_binding *nb = realloc(w->bindings, sizeof(*nb) * (size_t)cap);
+        if (!nb) {
+            fprintf(stderr, "gpu: CUDA binding-table growth failed — using CPU\n");
+            return false;
+        }
+        w->bindings = nb;
+        w->cap_bindings = cap;
+    }
+    CUdeviceptr d = 0;
+    CUresult rc = cu.MemAlloc(&d, len);
+    if (rc != 0) {
+        fprintf(stderr, "gpu: CUDA allocation for a %.1f MB run of weights failed: %s — "
+                "using CPU\n", len / 1e6, cu_err(rc));
+        return false;
+    }
+    rc = cu.MemcpyHtoD(d, (const uint8_t *)c->m->gf.map + lo, len);
+    if (rc != 0) {
+        fprintf(stderr, "gpu: CUDA upload of a weight run failed: %s — using CPU\n",
+                cu_err(rc));
+        cu.MemFree(d);
+        return false;
+    }
+    w->bound_bytes += len;
+    if (getenv("RUNNER_DEBUG_VRAM") && atoi(getenv("RUNNER_DEBUG_VRAM")) >= 2)
+        fprintf(stderr, "vram-bind run at %llu %zu\n", (unsigned long long)lo, len);
+    w->bindings[w->n_bindings++] = (gpu_weight_binding){ lo, len, d };
+    w->weights_len += len;
+    return true;
 }
+
 
 static bool binding_find(const gpu_weights *w, const model_t *m,
                          const gguf_tensor *t, CUdeviceptr *base,
                          uint64_t *relative_off) {
     uint64_t off = tensor_file_off(m, t);
     if (!w->bound) {
+        // the image starts at img_off: the first device tensor (shared_plan_upload)
+        if (off < w->img_off) return false;
         *base = w->weights;
-        *relative_off = off;
-        return off <= w->weights_len && t->nbytes <= w->weights_len - (size_t)off;
+        *relative_off = off - w->img_off;
+        return *relative_off <= w->weights_len &&
+               t->nbytes <= w->weights_len - (size_t)*relative_off;
     }
     for (int i = 0; i < w->n_bindings; i++) {
         const gpu_weight_binding *b = &w->bindings[i];
@@ -1659,26 +1675,6 @@ static bool binding_find(const gpu_weights *w, const model_t *m,
     return false;
 }
 
-// Highest file offset (data end) touched by any of a layer's weight tensors —
-// the partial-offload upload must reach this so a GPU MoE layer's expert slices
-// are all inside the uploaded prefix.
-typedef struct { const uint8_t *map; size_t end; } weight_end_ctx;
-
-static bool weight_end_of(gguf_tensor *t, void *ctx) {
-    weight_end_ctx *c = ctx;
-    size_t e = (size_t)((const uint8_t *)t->data - c->map) + t->nbytes;
-    if (e > c->end) c->end = e;
-    return true;
-}
-
-static size_t layer_weight_end(const layer_t *ly, int n_expert, const uint8_t *map) {
-    weight_end_ctx c = { map, 0 };
-    gguf_tensor *mix[LAYER_MIXER_MAX];
-    int nmix = layer_mixer_tensors(ly, mix);
-    for (int i = 0; i < nmix; i++) weight_end_of(mix[i], &c);
-    layer_ffn_tensors_each(ly, n_expert, weight_end_of, &c);
-    return c.end;
-}
 
 // shared_build()'s split plan, carried between its stages.
 typedef struct {
@@ -1801,11 +1797,13 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
                         "this device; offload budget %.2f GB from the "
                         "driver's free view, headroom %.2f GB\n",
                 vram_budget / 1e9, headroom / 1e9);
-    // fixed device overhead regardless of split: the token-embedding weights
-    // (always uploaded) and the headroom covering the CUDA context + PTX JIT
-    // + allocator slack + the OS reserve, once; and per instance its
-    // activation scratch and the state below (`inst`).
-    size_t fixed = (m->cpu_moe ? 0 : m->tok_embd->nbytes) + (size_t)headroom;
+    // fixed device overhead regardless of split: the headroom covering the
+    // CUDA context + PTX JIT + allocator slack + the OS reserve, once; and per
+    // instance its activation scratch and the state below (`inst`). The token
+    // embedding is not charged: the forward stages its rows from the host
+    // (stage_x), and the device holds the table only as a tied head, which a
+    // full split pays for as its head (plan_full_extra).
+    size_t fixed = (size_t)headroom;
     size_t inst = act_bytes;
     if (m->qwen35) {
         // the DeltaNet fold lives on the device: window + state, their
@@ -1861,6 +1859,13 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
     return true;
 fail:
     return false;
+}
+
+// What a full split adds to the plan: the output head, once (a tied head is
+// the embedding table, which nothing else puts on the device).
+static size_t plan_full_extra(const model_t *m, const shared_plan *P) {
+    (void)P;
+    return m->output->nbytes;
 }
 
 // How many leading layers go on the device, and which expert banks: the
@@ -1922,9 +1927,7 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
         // Reserving here is also the better trade: the output projection
         // runs every token over the full vocabulary, an expert bank only
         // when its layer is routed to.
-        size_t owed = G == m->n_layer
-                    ? (m->cpu_moe ? 0 : m->tok_embd->nbytes) + m->output->nbytes
-                    : 0;
+        size_t owed = G == m->n_layer ? plan_full_extra(m, P) : 0;
         // A retry after an out-of-memory init holds back the deepest
         // banks: the plan is an estimate (on a 24 GB MIG slice it
         // undercounted the device by ~2 GB, so a smaller KV that bought a
@@ -1943,9 +1946,8 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
     // reserve above could not be met, hand the last layer back to the CPU
     // so the split is honestly partial rather than internally inconsistent.
     bool gave_back = false;
-    bool full = gpu_plan_full_split(&G, m->n_layer, used,
-                                    (m->cpu_moe ? 0 : m->tok_embd->nbytes) +
-                                    m->output->nbytes, vram_budget, &gave_back);
+    bool full = gpu_plan_full_split(&G, m->n_layer, used, plan_full_extra(m, P),
+                                    vram_budget, &gave_back);
     if (gave_back) {
         fprintf(stderr, "gpu: output weights do not fit alongside the "
                         "layer split — running the last layer on the CPU "
@@ -2033,51 +2035,158 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
     w->gpu_layers = full ? m->n_layer : G;
     P->G = G;
     P->full = full;
-    // the full-split test's own charge (token_embd counted twice, as there)
-    P->used = used + (full ? (m->cpu_moe ? 0 : m->tok_embd->nbytes) + m->output->nbytes : 0);
+    // the full-split test's own charge
+    P->used = used + (full ? plan_full_extra(m, P) : 0);
     return true;
 }
 
 // One contiguous prefix of the file, or one binding per tensor.
+// Every tensor the device reads through its weights, for a split of G
+// leading layers (and on a full split the head, the hyper-connection head
+// and the NextN/MTP block): the per-tensor upload binds exactly these, and
+// the contiguous image is the stretch of the file they span. Nothing else
+// is read on the device: norms, biases, rope factors and scales go up as
+// their own buffers, the token embedding is staged from the host, and the
+// per-layer embedding table runs on the host (the E-series pre-pass).
+static bool device_tensors_each(model_t *m, int G, bool full, bool mtp_dev,
+                                bool (*fn)(gguf_tensor *, void *), void *ctx) {
+    for (int l = 0; l < G; l++) {
+        layer_t *ly = &m->layers[l];
+        gguf_tensor *mix[LAYER_MIXER_MAX];
+        int nmix = layer_mixer_tensors(ly, mix);
+        for (int i = 0; i < nmix; i++)
+            if (!fn(mix[i], ctx)) return false;
+        // A dense FFN, and under a partial expert offload a device-
+        // resident bank, upload as ordinary bindings, so the same
+        // offset-resolved matvec path serves them; a host bank stays home.
+        if (!(ly->is_moe && moe_on_host(m, l)) &&
+            !layer_ffn_tensors_each(ly, m->n_expert, fn, ctx))
+            return false;
+    }
+    if (!full) return true;
+    gguf_tensor *head[] = { m->output, m->hyper_conn ? m->hc_head_down : NULL,
+                            m->hyper_conn ? m->hc_head_up : NULL };
+    for (size_t i = 0; i < sizeof head / sizeof *head; i++)
+        if (head[i] && !fn(head[i], ctx)) return false;
+    if (!mtp_dev) return true;
+    layer_t *ly = &m->layers[m->n_layer];
+    gguf_tensor *mt[] = { ly->wq, ly->wk, ly->wv, ly->wo, ly->hc_attn_down, ly->hc_attn_up,
+                          ly->hc_attn_inject, ly->hc_ffn_down, ly->hc_ffn_up,
+                          ly->hc_ffn_inject, m->mtp_eh_proj, m->mtp_hc_head_down,
+                          m->mtp_hc_head_up, ly->wqkv, ly->wq_gate, m->mtp_head };
+    for (size_t i = 0; i < sizeof mt / sizeof *mt; i++)
+        if (mt[i] && !fn(mt[i], ctx)) return false;
+    if (!ly->is_moe) {
+        gguf_tensor *d[] = { ly->w_gate, ly->w_up, ly->w_down };
+        for (int i = 0; i < 3; i++)
+            if (d[i] && !fn(d[i], ctx)) return false;
+    } else if (!moe_on_host(m, m->n_layer)) {
+        gguf_tensor *e[] = { ly->ffn_gate_inp, ly->ffn_gate_exps, ly->ffn_up_exps,
+                             ly->ffn_down_exps, ly->w_gate_shexp, ly->w_up_shexp,
+                             ly->w_down_shexp, ly->ffn_gate_inp_shexp };
+        for (size_t i = 0; i < sizeof e / sizeof *e; i++)
+            if (e[i] && !fn(e[i], ctx)) return false;
+    } else {
+        if ((ly->ffn_gate_inp && !fn(ly->ffn_gate_inp, ctx)) ||
+            (ly->ffn_gate_inp_shexp && !fn(ly->ffn_gate_inp_shexp, ctx)))
+            return false;
+    }
+    return true;
+}
+
+// The device tensors, collected (device_tensors_each), and their runs in the
+// main mapping: tensors that lie together in the file, gaps of up to
+// GPU_PLAN_GRAN (the allocator's granularity, so a separate allocation would
+// waste as much) riding along. A tensor in another mapping (a split GGUF's
+// other part, an --mtp-file head) has no place in a run.
+typedef struct {
+    const model_t *m;
+    gguf_tensor **t;
+    int n, cap;
+    bool oom;
+} tensor_list;
+
+static bool list_add(gguf_tensor *t, void *ctx) {
+    tensor_list *L = ctx;
+    if (L->n == L->cap) {
+        int cap = L->cap ? 2 * L->cap : 256;
+        gguf_tensor **nt = realloc(L->t, sizeof(*nt) * (size_t)cap);
+        if (!nt) { L->oom = true; return false; }
+        L->t = nt;
+        L->cap = cap;
+    }
+    L->t[L->n++] = t;
+    return true;
+}
+
+static bool in_main_map(const model_t *m, const gguf_tensor *t) {
+    const uint8_t *b = (const uint8_t *)m->gf.map, *d = (const uint8_t *)t->data;
+    return d >= b && d < b + m->gf.map_size;
+}
+
+static int cmp_tensor_data(const void *a, const void *b) {
+    const uint8_t *x = (const uint8_t *)(*(gguf_tensor *const *)a)->data;
+    const uint8_t *y = (const uint8_t *)(*(gguf_tensor *const *)b)->data;
+    return x < y ? -1 : x > y;
+}
+
+// The main-mapping tensors of L sorted by file offset (the others moved to
+// the end and counted in *n_out), then fn on each of their runs [lo, hi)
+// (gpu_plan_runs). Returns the number of runs, or -1 when fn refused one or
+// the scratch could not be had.
+static int tensor_runs(const model_t *m, tensor_list *L, int *n_out,
+                       bool (*fn)(uint64_t lo, uint64_t hi, void *), void *ctx) {
+    int k = 0;
+    for (int i = 0; i < L->n; i++)
+        if (in_main_map(m, L->t[i])) { gguf_tensor *t = L->t[i]; L->t[i] = L->t[k]; L->t[k++] = t; }
+    *n_out = L->n - k;
+    qsort(L->t, (size_t)k, sizeof *L->t, cmp_tensor_data);
+    uint64_t *buf = malloc(sizeof(uint64_t) * 4 * (size_t)(k ? k : 1));
+    if (!buf) return -1;
+    uint64_t *off = buf, *len = buf + k, *lo = buf + 2 * k, *hi = buf + 3 * k;
+    for (int i = 0; i < k; i++) { off[i] = tensor_file_off(m, L->t[i]); len[i] = L->t[i]->nbytes; }
+    int runs = gpu_plan_runs(off, len, k, GPU_PLAN_GRAN, lo, hi);
+    for (int r = 0; r < runs; r++)
+        if (fn && !fn(lo[r], hi[r], ctx)) { free(buf); return -1; }
+    free(buf);
+    return runs;
+}
+
+typedef struct { uint64_t lo, hi; } span_ctx;
+static bool span_take(uint64_t lo, uint64_t hi, void *ctx) {
+    span_ctx *c = ctx;
+    c->lo = lo; c->hi = hi;
+    return true;
+}
+
 static void shared_plan_upload(gpu_weights *w, model_t *m, const shared_plan *P) {
     int G = P->G;
     bool full = P->full;
     bool mtp_dev = P->mtp_dev;
-    // weight bytes to upload: whole file for a full split (output/embedding
-    // offsets stay valid), else the prefix covering token_embd + [0, G)
-    size_t upload_len = m->gf.map_size;
-    if (!full) {
-        upload_len = (size_t)((uint8_t *)m->tok_embd->data - (uint8_t *)m->gf.map)
-                   + m->tok_embd->nbytes;
-        for (int l = 0; l < G; l++) {
-            size_t end = layer_weight_end(&m->layers[l], m->n_expert,
-                                          (const uint8_t *)m->gf.map);
-            if (end > upload_len) upload_len = end;
-        }
-    }
-    // The plan above summed the offloaded layers' own bytes; the prefix
-    // upload below is bounded by the FARTHEST tensor any of them owns. A
-    // file whose tensors are not stored block by block (alphabetical
-    // blk.1, blk.10, blk.11 ... or grouped by role) makes that prefix
-    // reach most of the file, and the one contiguous allocation then
-    // asks for far more than the plan: a 14B bf16 planned at 24.8 GB on
-    // a 24 GB slice failed its weight allocation four times and served
-    // from the CPU (the lab, 2026-09-23). Measure the spread and upload
-    // per tensor when it is real, the path the MoE split already uses.
-    size_t sum_w = 0;
-    for (int l = 0; l < G; l++)
-        sum_w += layer_weight_bytes(&m->layers[l], m->n_expert, moe_on_host(m, l), false);
-    size_t planned_upload = sum_w + m->tok_embd->nbytes + (full ? m->output->nbytes : 0);
-    bool spread = !m->cpu_moe && !full &&
-                  gpu_plan_upload_spread(upload_len, map_data_start(m),
-                                         planned_upload);
-    if (spread)
-        fprintf(stderr, "gpu: the file's tensor order spreads the %d offloaded "
-                        "layers over %.2f GB of the file against %.2f GB of "
-                        "weights; uploading per tensor\n",
-                G, upload_len / 1e9, planned_upload / 1e9);
-    w->bound = m->cpu_moe || spread || (full && mtp_dev && mtp_outside_main_map(m));
-    w->weights_len = w->bound ? 0 : upload_len;
+    // The image: one contiguous stretch of the file, so offsets inside it
+    // stay valid relative to its start (img_off), from the first tensor the
+    // device reads to the end of the last (device_tensors_each). It used to
+    // run from the first tensor in the file, through the end of the file on
+    // a full split: whatever sat in front of the layers or among them rode
+    // along unplanned (gemma-4-E4B's 1.94 GB per-layer embedding table, read
+    // only by the host pre-pass; the token embedding the forward stages from
+    // the host). The planner charges only the device tensors, so where they
+    // do not lie together in the file (a name-ordered file, a table between
+    // the head and the layers) they upload as runs instead (bindings, one
+    // allocation a run: shared_upload_weights), as the MoE split's do.
+    tensor_list L = { m, NULL, 0, 0, false };
+    device_tensors_each(m, G, full, mtp_dev, list_add, &L);
+    int outside = 0;
+    span_ctx sp = { 0, 0 };
+    int runs = L.oom ? -1 : tensor_runs(m, &L, &outside, span_take, &sp);
+    free(L.t);
+    bool one = runs == 1 && outside == 0;
+    if (!one && !m->cpu_moe && runs > 1)
+        fprintf(stderr, "gpu: the device's tensors (%d layers%s) lie in %d stretches of "
+                        "the file; uploading them as runs\n", G, full ? " and the head" : "", runs);
+    w->bound = m->cpu_moe || !one;
+    w->weights_len = w->bound ? 0 : (size_t)(sp.hi - sp.lo);
+    w->img_off = w->bound ? 0 : (size_t)sp.lo;
 }
 
 // The embedded PTX module and every kernel the encoders launch.
@@ -2450,54 +2559,27 @@ static bool shared_upload_weights(gpu_weights *w, model_t *m, const shared_plan 
             w->weights = 0;
             w->bound = true;
             w->weights_len = 0;
+            w->img_off = 0;
         } else {
-            CK(cu.MemcpyHtoD(w->weights, m->gf.map, w->weights_len));
+            CK(cu.MemcpyHtoD(w->weights, (const uint8_t *)m->gf.map + w->img_off,
+                             w->weights_len));
         }
     }
     if (w->bound) {
-        // Pack only tensors used by the CUDA half. Every MoE FFN stays on
-        // the host; attention and dense layers remain device resident.
+        // Pack only tensors used by the CUDA half (device_tensors_each), in
+        // runs: the tensors that lie together share one allocation (a
+        // per-tensor allocation each cost the allocator's granularity: a
+        // granite-4.2-8b full split held 0.48 GB less free that way), and a
+        // tensor in another mapping is bound alone.
         binding_ctx bc = { w, m };
-        for (int l = 0; l < G; l++) {
-            layer_t *ly = &m->layers[l];
-            gguf_tensor *mix[LAYER_MIXER_MAX];
-            int nmix = layer_mixer_tensors(ly, mix);
-            for (int i = 0; i < nmix; i++)
-                if (!binding_add(w, m, mix[i])) goto fail;
-            // A dense FFN, and under a partial expert offload a device-
-            // resident bank, upload as ordinary bindings, so the same
-            // offset-resolved matvec path serves them; a host bank stays home.
-            if (!(ly->is_moe && moe_on_host(m, l)) &&
-                !layer_ffn_tensors_each(ly, m->n_expert, binding_add_each, &bc))
-                goto fail;
-        }
-        if (full && !binding_add(w, m, m->output)) goto fail;
-        if (full && m->hyper_conn &&
-            (!binding_add(w, m, m->hc_head_down) ||
-             !binding_add(w, m, m->hc_head_up))) goto fail;
-        if (full && mtp_dev) {
-            layer_t *ly = &m->layers[m->n_layer];
-            if (!binding_add(w, m, ly->wq) || !binding_add(w, m, ly->wk) ||
-                !binding_add(w, m, ly->wv) || !binding_add(w, m, ly->wo) ||
-                !binding_add(w, m, ly->hc_attn_down) || !binding_add(w, m, ly->hc_attn_up) ||
-                !binding_add(w, m, ly->hc_attn_inject) || !binding_add(w, m, ly->hc_ffn_down) ||
-                !binding_add(w, m, ly->hc_ffn_up) || !binding_add(w, m, ly->hc_ffn_inject) ||
-                !binding_add(w, m, m->mtp_eh_proj) || !binding_add(w, m, m->mtp_hc_head_down) ||
-                !binding_add(w, m, m->mtp_hc_head_up) || !binding_add(w, m, ly->wqkv) ||
-                !binding_add(w, m, ly->wq_gate) || !binding_add(w, m, m->mtp_head)) goto fail;
-            if (!ly->is_moe &&
-                (!binding_add(w, m, ly->w_gate) || !binding_add(w, m, ly->w_up) ||
-                 !binding_add(w, m, ly->w_down))) goto fail;
-            if (ly->is_moe && !moe_on_host(m, m->n_layer) &&
-                (!binding_add(w, m, ly->ffn_gate_inp) || !binding_add(w, m, ly->ffn_gate_exps) ||
-                 !binding_add(w, m, ly->ffn_up_exps) || !binding_add(w, m, ly->ffn_down_exps) ||
-                 !binding_add(w, m, ly->w_gate_shexp) || !binding_add(w, m, ly->w_up_shexp) ||
-                 !binding_add(w, m, ly->w_down_shexp) || !binding_add(w, m, ly->ffn_gate_inp_shexp)))
-                goto fail;
-            if (ly->is_moe && moe_on_host(m, m->n_layer) &&
-                (!binding_add(w, m, ly->ffn_gate_inp) || !binding_add(w, m, ly->ffn_gate_inp_shexp)))
-                goto fail;
-        }
+        tensor_list L = { m, NULL, 0, 0, false };
+        device_tensors_each(m, G, full, mtp_dev, list_add, &L);
+        int outside = 0;
+        bool ok = !L.oom && tensor_runs(m, &L, &outside, binding_add_range, &bc) >= 0;
+        for (int i = L.n - outside; ok && i < L.n; i++)
+            ok = binding_add(w, m, L.t[i]);
+        free(L.t);
+        if (!ok) goto fail;
     }
     return true;
 fail:

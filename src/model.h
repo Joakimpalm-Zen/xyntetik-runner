@@ -747,8 +747,8 @@ int       model_autofit_clamp(long long best, int n_ctx_train);
 #define GPU_PLAN_GRAN ((uint64_t)2 << 20)
 uint64_t  gpu_plan_binding_bytes(uint64_t nbytes, bool bound);
 uint64_t  gpu_plan_unified_cap(uint64_t budget, uint64_t ram_available);
-bool      gpu_plan_upload_spread(uint64_t prefix_end, uint64_t data_start,
-                                 uint64_t planned);
+int       gpu_plan_runs(const uint64_t *off, const uint64_t *len, int n, uint64_t gap,
+                        uint64_t *lo, uint64_t *hi);
 int       gpu_plan_prefix(const uint64_t *cost, int n, int cap, uint64_t budget,
                           uint64_t *used);
 bool      gpu_plan_full_split(int *layers, int n_layer, uint64_t used,
@@ -1217,7 +1217,7 @@ typedef struct {
     // format, in the order f16, q8, k8v4, fp4 (FIT_KV_*); a format that is
     // illegal for the model keeps gpu_layers -1.
     bool     gpu;
-    uint64_t gpu_budget, gpu_fixed;   // offload budget; embeddings, scratch, headroom
+    uint64_t gpu_budget, gpu_fixed;   // offload budget; scratch and headroom
     int      gpu_layers[4];
     uint64_t host_need[4];            // RAM the CPU side needs with that split
     uint64_t gpu_used[4];             // device bytes that split would hold

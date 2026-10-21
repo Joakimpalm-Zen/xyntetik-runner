@@ -2700,19 +2700,22 @@ hold the rest. `--fit` then reads the same offload budget the loader splits
 against (the driver's free memory, the OS video-memory budget on Windows,
 `--reserve-vram` and the loader's headroom), computes the loader's split from
 the header for each KV format, and gives the verdict from what stays on the
-host. Measured against the loader's own split on an RTX 3070 (2026-10-03, six
-models from 8B to 14B, contexts 4k and 16k, all four KV formats): the same
-layer count in 70 of 72 cases and one layer fewer in the other two; never
-more. On Apple silicon and integrated CUDA devices the GPU shares RAM, and
-the RAM answer above is the whole answer.
+host. The card holds only what the forward reads there: the layers' weights,
+the output head on a full split (a tied head is the embedding table) and the
+scratch; the token embedding stays in RAM (the forward reads each token's row
+there) and so does a per-layer embedding table. Measured against the loader's
+own split on an RTX 3070 (2026-10-21, six models from 4B to 14B, contexts 4k
+and 16k, all four KV formats): the same layer count in 48 of 48 cases. On
+Apple silicon and integrated CUDA devices the GPU shares RAM, and the RAM
+answer above is the whole answer.
 
 ```console
 $ runner --fit granite-4.2-8b-Q4_K_M.gguf -c 16384
   ...
-  available RAM 9.46 GiB right now
-  gpu           NVIDIA GeForce RTX 3070, offload budget 6.95 GiB right now (0.85 GiB of it for embeddings, scratch and headroom)
-  split         f16: 35 of 40 layers on the GPU, 1.22 GiB in RAM  | --kv q8: 39 of 40 layers on the GPU, 0.47 GiB in RAM  | --kv k8v4: 40 of 40 ...
-  verdict       FITS — 35 of 40 layers on the GPU, 8.24 GiB of RAM to spare at ctx 16384
+  available RAM 9.43 GiB right now
+  gpu           NVIDIA GeForce RTX 3070, offload budget 6.95 GiB right now (0.64 GiB of it for scratch and headroom)
+  split         f16: 36 of 40 layers on the GPU, 3.50 GiB in RAM  | --kv q8: 40 of 40 layers on the GPU, 1.55 GiB in RAM  | --kv k8v4: 40 of 40 ...
+  verdict       FITS — 36 of 40 layers on the GPU, 5.92 GiB of RAM to spare at ctx 16384
 ```
 
 The answer is "right now": a server already holding the GPU or the RAM is

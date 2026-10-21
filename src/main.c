@@ -1562,7 +1562,7 @@ static int run_fit_check(const char *path, int n_ctx_want,
         fit_gib(gb, sizeof gb, f.gpu_budget);
         fit_gib(fx, sizeof fx, f.gpu_fixed);
         printf("  gpu           %s, offload budget %s right now (%s of it for "
-               "embeddings, scratch and headroom)\n", gname, gb, fx);
+               "scratch and headroom)\n", gname, gb, fx);
         printf("  split        ");
         for (int k = 0, first = 1; k < 4; k++) {
             if (f.gpu_layers[k] < 0) continue;
