@@ -295,8 +295,10 @@ static void engagement_check(const config *cfgs, int n_cfg) {
 // legitimate near-tie flip, which deserves to stop a promotion and be looked at.
 enum { FR_CTX = 4096, FR_GEN = 32 };
 
+// keep: when non-NULL, the logits of every greedy step (n_gen rows of
+// n_vocab, allocated here), so a divergence can be read as a margin
 static int free_run(int tc, const char *path, const int32_t *toks, int n_tok,
-                    int32_t *out, int n_gen) {
+                    int32_t *out, int n_gen, float **keep, int *n_vocab_out) {
     gpu_tc_force(tc);
     model_t m;
     memset(&m, 0, sizeof(m));
@@ -319,9 +321,15 @@ static int free_run(int tc, const char *path, const int32_t *toks, int n_tok,
     }
     if (!lg) { model_free(&m); return -1; }
     int pos = n_tok;
+    if (keep) {
+        *keep = malloc(sizeof(float) * (size_t)n_gen * m.n_vocab);
+        if (n_vocab_out) *n_vocab_out = m.n_vocab;
+    }
     for (int i = 0; i < n_gen; i++) {
         int32_t t = (int32_t)argmax(lg, m.n_vocab);
         out[i] = t;
+        if (keep && *keep)
+            memcpy(*keep + (size_t)i * m.n_vocab, lg, sizeof(float) * m.n_vocab);
         if (i + 1 < n_gen) {
             lg = model_forward(&m, t, pos++);
             if (!lg) { model_free(&m); return -1; }
@@ -337,8 +345,10 @@ static int free_run(int tc, const char *path, const int32_t *toks, int n_tok,
 static void free_running_arm(const char *path, const int32_t *toks, int n_tok) {
     static int32_t fr_scalar[FR_GEN], fr_tc[FR_GEN];
     int prompt_n = n_tok - STEPS;   // a long prefill at a production ctx
-    int a_ok = free_run(0, path, toks, prompt_n, fr_scalar, FR_GEN);
-    int b_ok = free_run(1, path, toks, prompt_n, fr_tc, FR_GEN);
+    float *rows = NULL;
+    int nv = 0;
+    int a_ok = free_run(0, path, toks, prompt_n, fr_scalar, FR_GEN, &rows, &nv);
+    int b_ok = free_run(1, path, toks, prompt_n, fr_tc, FR_GEN, NULL, NULL);
     gpu_tc_force(-1);
     if (a_ok != FR_GEN || b_ok != FR_GEN) {
         printf("  free-running   : skipped (model would not load at ctx %d)\n",
@@ -351,9 +361,23 @@ static void free_running_arm(const char *path, const int32_t *toks, int n_tok) {
     printf("  free-running   : %d prompt tokens, %d greedy tokens at batch %d "
            "/ ctx %d -> %s\n", prompt_n, FR_GEN, N_BATCH, FR_CTX,
            at < 0 ? "token-identical" : "DIVERGED");
-    if (at >= 0)
+    if (at >= 0) {
         printf("                   first divergence at token %d "
-               "(scalar %d, tc %d)\n", at, fr_scalar[at], fr_tc[at]);
+               "(scalar %d, tc %d)", at, fr_scalar[at], fr_tc[at]);
+        // where the scalar run chose: how far its pick led the TC run's
+        // pick, as a fraction of that step's logit range (the teacher-forced
+        // arm's near-tie measure); the verdict stays token identity
+        if (rows && nv > 0) {
+            const float *r = rows + (size_t)at * nv;
+            float lo = r[0], hi = r[0];
+            for (int v = 1; v < nv; v++) { if (r[v] < lo) lo = r[v]; if (r[v] > hi) hi = r[v]; }
+            double gap = (double)r[fr_scalar[at]] - r[fr_tc[at]];
+            printf(", scalar margin %.4f = %.5f of range %.2f", gap,
+                   hi > lo ? gap / (hi - lo) : 0.0, (double)(hi - lo));
+        }
+        printf("\n");
+    }
+    free(rows);
     ck(at < 0, "TC and scalar free-running greedy output agree at the "
                "production batch and context");
 }

@@ -5,6 +5,12 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`test-tc-tol` says how close a free-running divergence was.** When the
+  tensor-core and scalar prefill paths' greedy outputs part, the gate still
+  fails, and now prints how far the scalar pick led the other at that step
+  as a fraction of the logit range, so a dead tie reads as one without
+  rerunning both paths.
+
 - **Metal: `--parallel` slots decoding together stay bit-identical to
   sequential decoding past 128 tokens.** A Metal decode step's attention
   switches to its chunked kernels once a layer's span passes 128 positions,
