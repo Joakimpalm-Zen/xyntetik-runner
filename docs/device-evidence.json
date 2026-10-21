@@ -19,19 +19,19 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-10-17",
-        "commit": "3fed02a65c508ba37c3f62562669e035b4ed4563",
-        "ran": "build142.sh on the Windows CUDA host: make OS=Windows_NT -j8 runner from release-1.4.2 (0 warnings); tests/test_native_xml_routing.py 28/28; scripts/cuda-smoke-remote.sh 13/13 on the 1.4.2 candidate; clean-setup walkthrough (docs/workflow-opencode.md, empty model cache) pass",
+        "date": "2026-10-21",
+        "commit": "8d680cf7dc09cded4271316882e28c6feec3735e",
+        "ran": "build150.sh on the Windows CUDA host: make OS=Windows_NT -j8 runner from release-1.5.0 (0 warnings); tests/test_native_xml_routing.py 28/28; scripts/cuda-smoke-remote.sh 13/13 on the 1.5.0 candidate; clean-setup walkthrough (docs/workflow-opencode.md, empty model cache) pass",
         "result": "pass",
         "caps": {
-          "version": "1.4.2",
+          "version": "1.5.0",
           "os": "windows",
           "arch": "x86_64",
           "cpu_cores": 8,
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA GeForce RTX 3070"
         },
-        "evidence": "docs/compat-reports/cuda-smoke-1.4.2-2026-10-17-rtx3070.json"
+        "evidence": "docs/compat-reports/cuda-smoke-1.5.0-2026-10-22-rtx3070.json"
       }
     },
     {
@@ -46,19 +46,18 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-10-17",
-        "commit": "3fed02a65c508ba37c3f62562669e035b4ed4563",
-        "ran": "scripts/cuda-gate.sh on a clone of release-1.4.2 (clang CUDA build): --caps, test-tc-overflow, test-cuda-iquants, test-cuda-gated, test-cuda-kv-fp4, test-cuda-nvfp4, test-cuda-qwen4exp, cpu_cuda_check (Qwen3-0.6B-q4_0.gguf, 64 tokens)",
+        "date": "2026-10-21",
+        "commit": "a3a60134104d555bc181b62d3016a31f3179c8c5",
+        "ran": "scripts/cuda-gate.sh on a clang CUDA build of a3a60134, the engine code 1.5.0 ships (the release adds the version string): every step (tc-overflow, iquants, cuda-gated, kv-fp4, nvfp4, qwen4exp, q3k, tc-kq, moe-legacy, varff, tc2-bytes, moe-twin, batch-id, spec-id, cpu-cuda) with the default routes and again with every opt-in route on; not rerun on the release commit because the device was then running a 29-hour study",
         "result": "pass",
         "caps": {
           "version": "1.4.2",
           "os": "linux",
           "arch": "x86_64",
-          "cpu_cores": 16,
+          "cpu_cores": 32,
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA RTX PRO 6000 Max-Q Workstation Edition MIG 1g.24gb"
-        },
-        "evidence": "docs/device-runs-2026-10-17/linux-x86_64-cuda/cuda-gate-20261017T091924Z.json"
+        }
       }
     },
     {
@@ -73,19 +72,19 @@
         "gpu_backend": "metal"
       },
       "last_verified": {
-        "date": "2026-10-17",
-        "commit": "3fed02a65c508ba37c3f62562669e035b4ed4563",
-        "ran": "make test PYTHON=venv python (every C gate and the pytest suites); scripts/conformance.sh 504/15; compat_matrix.py gemma-4-e4b-it-qat-q4_0 --verify-files --load --execute-checks complete; make release-check",
+        "date": "2026-10-21",
+        "commit": "8d680cf7dc09cded4271316882e28c6feec3735e",
+        "ran": "make test PYTHON=python with pytest (every C gate and the pytest suites: 1,626 + 208 + 26 + 20 passed); scripts/conformance.sh 512/7; compat_matrix.py gemma-4-e4b-it-qat-q4_0 --verify-files --load --execute-checks complete; make release-check",
         "result": "pass",
         "caps": {
-          "version": "1.4.2",
+          "version": "1.5.0",
           "os": "macos",
           "arch": "arm64",
           "cpu_cores": 8,
           "gpu_backend": "metal",
           "gpu_name": "Apple M1"
         },
-        "evidence": "docs/compat-reports/1.4.2-2026-10-17-macos-arm64-gemma-4-e4b-it-qat-q4_0.json"
+        "evidence": "docs/compat-reports/1.5.0-2026-10-22-macos-arm64-gemma-4-e4b-it-qat-q4_0.json"
       }
     }
   ]
