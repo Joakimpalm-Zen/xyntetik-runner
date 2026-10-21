@@ -4116,7 +4116,11 @@ static bool launch_tiled(gpu_t *g, CUfunction f, unsigned grid, unsigned block,
                          bool scaled, float scale, bool ytile) {
     if (a.batch <= tile || ytile) {
         void *p[] = { &weights, &x, &y, &a, &bias, &scale };
-        return launch(g, f, grid, (unsigned)((a.batch + tile - 1) / tile), 1, block, p);
+        // one grid row for a batch up to a tile, an empty one included (no
+        // caller passes 0 columns; a 0-row grid would be a launch error where
+        // the one-row launch is the no-op it was before ytile)
+        unsigned rows = a.batch > tile ? (unsigned)((a.batch + tile - 1) / tile) : 1;
+        return launch(g, f, grid, rows, 1, block, p);
     }
     for (int off = 0; off < a.batch; off += tile) {
         mv_args ai = a;
