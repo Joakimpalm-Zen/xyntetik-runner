@@ -405,8 +405,10 @@ static const char *cu_err(CUresult r) {
 // simply runs the smallest one that covers it. Two classes are enough: the
 // step cost is flat within a class, so the only widths that pay for a column
 // they are not using are 3 (runs 4-wide) and 5..7 (run 8-wide).
-enum { BW_4 = 0, BW_8 = 1, BW_N = 2 };
-static inline int batch_width_class(int n) { return n <= 4 ? BW_4 : BW_8; }
+// BW_16 takes 9 to 16 columns; the decode microbatch and the small-batch
+// routing stay within BW_8
+enum { BW_4 = 0, BW_8 = 1, BW_16 = 2, BW_N = 3 };
+static inline int batch_width_class(int n) { return n <= 4 ? BW_4 : n <= 8 ? BW_8 : BW_16; }
 enum { GPU_SMALL_BATCH = 8 };   // the widest f_gemvb class (BW_8): small-batch routing in enc_mv
 struct gpu_weights; static bool batch_mv_twin_ok(const struct gpu_weights *sw, const gguf_tensor *t);
 // The widest microbatch those kernels actually COMPUTE. Every width class
@@ -2308,6 +2310,19 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_gemvb[BW_8][T_Q6_K], "k_gemvb_q6_K_x8" },
         { &w->f_gemvb[BW_4][T_MXFP4], "k_gemvb_mxfp4_x4" },
         { &w->f_gemvb[BW_8][T_MXFP4], "k_gemvb_mxfp4_x8" },
+        { &w->f_gemvb[BW_16][T_BF16], "k_gemvb_bf16_x16" },
+        { &w->f_gemvb[BW_16][T_Q8_0], "k_gemvb_q8_0_x16" },
+        { &w->f_gemvb[BW_16][T_Q4_0], "k_gemvb_q4_0_x16" },
+        { &w->f_gemvb[BW_16][T_Q4_K], "k_gemvb_q4_K_x16" },
+        { &w->f_gemvb[BW_16][T_Q5_K], "k_gemvb_q5_K_x16" },
+        { &w->f_gemvb[BW_16][T_Q6_K], "k_gemvb_q6_K_x16" },
+        { &w->f_gemvb[BW_16][T_MXFP4], "k_gemvb_mxfp4_x16" },
+        { &w->f_gemvb[BW_16][T_IQ2_XXS], "k_gemvb_iq2_xxs_x16" },
+        { &w->f_gemvb[BW_16][T_IQ2_XS], "k_gemvb_iq2_xs_x16" },
+        { &w->f_gemvb[BW_16][T_IQ2_S], "k_gemvb_iq2_s_x16" },
+        { &w->f_gemvb[BW_16][T_IQ3_XXS], "k_gemvb_iq3_xxs_x16" },
+        { &w->f_gemvb[BW_16][T_IQ3_S], "k_gemvb_iq3_s_x16" },
+        { &w->f_gemvb[BW_16][T_IQ4_XS], "k_gemvb_iq4_xs_x16" },
         { &w->f_moe_q4_0_mvb[BW_4], "k_gemvb_q4_0_mv_x4" },
         { &w->f_moe_q4_0_mvb[BW_8], "k_gemvb_q4_0_mv_x8" },
         { &w->f_gemvb[BW_4][T_IQ2_XXS], "k_gemvb_iq2_xxs_x4" },
@@ -6905,9 +6920,8 @@ static bool batch_mv_twin_ok(const gpu_weights *sw, const gguf_tensor *t) {
     int type = t->type;
     if (type < 0 || type >= KT_N) return false;
     if (!sw->f_gemv[type]) return mvb_is_mv_twin(type) && sw->f_mvb[type];
-    for (int w = 0; w < BW_N; w++)
-        if (!sw->f_gemvb[w][type]) return false;
-    return true;
+    // the microbatch is at most MODEL_BATCH_MAX (8) columns: BW_4 and BW_8
+    return sw->f_gemvb[BW_4][type] && sw->f_gemvb[BW_8][type];
 }
 
 // Every member must be decodable in one launch against one weight upload:
@@ -7473,10 +7487,18 @@ static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     CUfunction f = batch >= 2 && batch <= 8 && g->sw->f_gemvx[batch][w->type]
                  ? g->sw->f_gemvx[batch][w->type]
                  : g->sw->f_gemvb[batch_width_class(batch)][w->type];
-    // the codebook i-quant twins take IQ_TWR (2) rows per warp (kernels.cu)
+    // rows a warp: the codebook i-quant twins take IQ_TWR (2) (kernels.cu),
+    // the K-quant, Q8_0, Q4_0 and BF16 ones KQ_TWR / Q6_TWR / DQ_TWR of their
+    // class width (kernel_args.h)
     bool iq2r = w->type == T_IQ2_XXS || w->type == T_IQ2_XS || w->type == T_IQ2_S ||
                 w->type == T_IQ3_XXS || w->type == T_IQ3_S || w->type == T_IQ4_XS;
-    unsigned rpb = GEMM_WARPS * (iq2r ? 2 : 1);
+    int cls_nc = 4 << batch_width_class(batch);
+    unsigned rpw = iq2r ? 2
+                 : w->type == T_Q4_K || w->type == T_Q5_K ? KQ_TWR(cls_nc)
+                 : w->type == T_Q6_K ? Q6_TWR(cls_nc)
+                 : w->type == T_Q8_0 || w->type == T_Q4_0 || w->type == T_BF16
+                   ? DQ_TWR(cls_nc) : 1;
+    unsigned rpb = GEMM_WARPS * rpw;
     if (f) return launch(g, f, (n_out + rpb - 1) / rpb, 1, 1,
                          GEMM_WARPS * 32, p);
     // No width-classed twin. f_mvb is the right answer only where it really is

@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA decode twins take several rows a warp.** The decode microbatch
+  (`--parallel` slots decoding together) runs width-classed twins of the
+  decode GEMVs, each column the single step's bits. They staged every
+  column's activations once per eight rows and had each row re-read them,
+  re-forming each column's activation sum per row, and an 8-wide pass
+  computed all eight columns whatever the batch held. A warp now takes four
+  rows (two in the new 16-column class) and reads each staged value once for
+  all of them, and a pass computes only the columns it has. With four
+  Qwen3-4B Q4_K_M slots an RTX 3070 serves 159 tok/s where it served 135,
+  and 178 where it served 147 with eight; every slot's text equals its
+  single-request run.
+
 - **CUDA keeps the token embedding in RAM and uploads only the tensors it
   reads.** The forward stages each token's embedding row from the host, yet
   the device held the whole embedding table, and its weight image ran from

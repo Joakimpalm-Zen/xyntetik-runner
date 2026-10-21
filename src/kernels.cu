@@ -4069,71 +4069,97 @@ extern "C" __global__ void k_attn_dec_seq(const float *q, const ulong64 *kcp,
 // Blocks are staged SMPAD floats apart, not 32: with a 32-float stride the
 // four block-groups of a warp land on the same eight banks (4-way conflict);
 // the odd stride spreads them across all 32.
-#define GEMVB_Q8_0(NAME, NC)                                                   \
+#define GEMVB_Q8_0_C(NAME, NC, CH)                                             \
 extern "C" __global__ void NAME(MV_PARAMS) {                                   \
-    __shared__ float xsm[NC][Q8_CHUNK * SMPAD];                                \
+    __shared__ float xsm[NC][(CH) * SMPAD];                                    \
+    enum { R = DQ_TWR(NC) };                                                   \
     unsigned warp = threadIdx.x >> 5;                                          \
     unsigned lane = threadIdx.x & 31;                                          \
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
+    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
     int nb = a.n_in / 32;                                                      \
-    const uchar *rw = wb + a.w_off +                                           \
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 34;  \
+    int nc = a.batch < (NC) ? a.batch : (NC);                                  \
+    const uchar *rw[R];                                                        \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        rw[r] = wb + a.w_off +                                                 \
+                (ulong64)(row0 + r < (unsigned)a.n_out ? row0 + r : 0) * nb * 34; \
     int bsub = (int)(lane >> 3);                                               \
     int boff = ((int)lane & 7) * 4;                                            \
-    float s[NC] = {0};                                                         \
-    for (int cs = 0; cs < nb; cs += Q8_CHUNK) {                                \
-        int cblocks = nb - cs < Q8_CHUNK ? nb - cs : Q8_CHUNK;                 \
+    float s[R][NC];                                                            \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        _Pragma("unroll") for (int t = 0; t < NC; t++) s[r][t] = 0.0f;         \
+    for (int cs = 0; cs < nb; cs += (CH)) {                                    \
+        int cblocks = nb - cs < (CH) ? nb - cs : (CH);                         \
         int celems  = cblocks * 32;                                            \
         int base_e  = cs * 32;                                                 \
         _Pragma("unroll")                                                      \
         for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
             const float *xg = x + (ulong64)t * a.xs + base_e;                  \
             for (int e = threadIdx.x; e < celems; e += blockDim.x)             \
                 xsm[t][(e >> 5) * SMPAD + (e & 31)] = xg[e];                   \
         }                                                                      \
         __syncthreads();                                                       \
-        if (row < (unsigned)a.n_out) {                                         \
-            /* chunks are Q8_CHUNK-aligned and Q8_CHUNK is a multiple of 4, so \
-               the batch-1 kernel's b4 = nb & ~3 boundary falls inside the     \
-               LAST chunk at exactly cblocks & ~3 — every lane therefore sees  \
-               the same four-block trips, then the same tail, in that order */ \
-            int c4 = cblocks & ~3;                                             \
-            for (int bi = 0; bi < c4; bi += 4) {                               \
-                const uchar *blk = rw + (ulong64)(cs + bi + bsub) * 34;        \
-                float d = f16f(blk);                                           \
+        /* chunks are CH-aligned and CH is a multiple of 4, so the batch-1     \
+           kernel's b4 = nb & ~3 boundary falls inside the LAST chunk at       \
+           exactly cblocks & ~3: every lane sees the same four-block trips,    \
+           then the same tail, in that order */                                \
+        int c4 = cblocks & ~3;                                                 \
+        for (int bi = 0; bi < c4; bi += 4) {                                   \
+            float d[R], q[R][4];                                               \
+            _Pragma("unroll")                                                  \
+            for (int r = 0; r < R; r++) {                                      \
+                const uchar *blk = rw[r] + (ulong64)(cs + bi + bsub) * 34;     \
+                d[r] = f16f(blk);                                              \
                 const uchar *qp = blk + 2 + boff;                              \
                 ushort16 u0 = *(const ushort16 *)qp,                           \
                          u1 = *(const ushort16 *)(qp + 2);                     \
-                float q0 = (float)(int)(signed char)(u0 & 0xFF);               \
-                float q1 = (float)(int)(signed char)(u0 >> 8);                 \
-                float q2 = (float)(int)(signed char)(u1 & 0xFF);               \
-                float q3 = (float)(int)(signed char)(u1 >> 8);                 \
-                int xo = (bi + bsub) * SMPAD + boff;                           \
-                _Pragma("unroll")                                              \
-                for (int t = 0; t < NC; t++) {                                 \
-                    const float *xp = xsm[t] + xo;                             \
-                    s[t] += d * (q0 * xp[0] + q1 * xp[1] +                     \
-                                 q2 * xp[2] + q3 * xp[3]);                     \
-                }                                                              \
+                q[r][0] = (float)(int)(signed char)(u0 & 0xFF);                \
+                q[r][1] = (float)(int)(signed char)(u0 >> 8);                  \
+                q[r][2] = (float)(int)(signed char)(u1 & 0xFF);                \
+                q[r][3] = (float)(int)(signed char)(u1 >> 8);                  \
             }                                                                  \
-            for (int bi = c4; bi < cblocks; bi++) {                            \
-                const uchar *blk = rw + (ulong64)(cs + bi) * 34;               \
-                float d = f16f(blk);                                           \
-                const signed char *q = (const signed char *)(blk + 2);         \
-                float qv = (float)q[lane];                                     \
+            int xo = (bi + bsub) * SMPAD + boff;                               \
+            _Pragma("unroll")                                                  \
+            for (int t = 0; t < NC; t++) {                                     \
+                if (t >= nc) continue;                                         \
+                const float *xp = xsm[t] + xo;                                 \
+                float x0 = xp[0], x1 = xp[1], x2 = xp[2], x3 = xp[3];          \
                 _Pragma("unroll")                                              \
-                for (int t = 0; t < NC; t++)                                   \
-                    s[t] += d * (qv * xsm[t][bi * SMPAD + lane]);              \
+                for (int r = 0; r < R; r++)                                    \
+                    s[r][t] += d[r] * (q[r][0] * x0 + q[r][1] * x1 +           \
+                                       q[r][2] * x2 + q[r][3] * x3);           \
+            }                                                                  \
+        }                                                                      \
+        for (int bi = c4; bi < cblocks; bi++) {                                \
+            float d[R], qv[R];                                                 \
+            _Pragma("unroll")                                                  \
+            for (int r = 0; r < R; r++) {                                      \
+                const uchar *blk = rw[r] + (ulong64)(cs + bi) * 34;            \
+                d[r] = f16f(blk);                                              \
+                qv[r] = (float)((const signed char *)(blk + 2))[lane];         \
+            }                                                                  \
+            _Pragma("unroll")                                                  \
+            for (int t = 0; t < NC; t++) {                                     \
+                if (t >= nc) continue;                                         \
+                float xv = xsm[t][bi * SMPAD + lane];                          \
+                _Pragma("unroll")                                              \
+                for (int r = 0; r < R; r++) s[r][t] += d[r] * (qv[r] * xv);    \
             }                                                                  \
         }                                                                      \
         __syncthreads();                                                       \
     }                                                                          \
-    if (row < (unsigned)a.n_out)                                               \
-        for (int t = 0; t < a.batch && t < NC; t++) {                          \
-            float r = warp_sum(s[t]);                                          \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        if (row >= (unsigned)a.n_out) continue;                                \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float v = warp_sum(s[r][t]);                                       \
             if (lane == 0) y[(ulong64)t * a.ys + row] =                        \
-                a.has_bias ? r + bias[row] : r;                                \
+                a.has_bias ? v + bias[row] : v;                                \
         }                                                                      \
+    }                                                                          \
 }
 
 // ---- Q4_0: k_gemv_q4_0's twin (2026-08-19). Q4_0 had no width-classed twin
@@ -4141,67 +4167,94 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
 // x staging, measured at 0.11x of sequential decode. Same four-blocks-in-
 // flight shape as Q8_0; a lane's two quant bytes carry elements boff, boff+1
 // (low nibbles) and boff+16, boff+17 (high nibbles).
-#define GEMVB_Q4_0(NAME, NC)                                                   \
+#define GEMVB_Q4_0_C(NAME, NC, CH)                                             \
 extern "C" __global__ void NAME(MV_PARAMS) {                                   \
-    __shared__ float xsm[NC][Q8_CHUNK * SMPAD];                                \
+    __shared__ float xsm[NC][(CH) * SMPAD];                                    \
+    enum { R = DQ_TWR(NC) };                                                   \
     unsigned warp = threadIdx.x >> 5;                                          \
     unsigned lane = threadIdx.x & 31;                                          \
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
+    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
     int nb = a.n_in / 32;                                                      \
-    const uchar *rw = wb + a.w_off +                                           \
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 18;  \
+    int nc = a.batch < (NC) ? a.batch : (NC);                                  \
+    const uchar *rw[R];                                                        \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        rw[r] = wb + a.w_off +                                                 \
+                (ulong64)(row0 + r < (unsigned)a.n_out ? row0 + r : 0) * nb * 18; \
     int bsub = (int)(lane >> 3);                                               \
     int boff = ((int)lane & 7) * 2;                                            \
-    float s[NC] = {0};                                                         \
-    for (int cs = 0; cs < nb; cs += Q8_CHUNK) {                                \
-        int cblocks = nb - cs < Q8_CHUNK ? nb - cs : Q8_CHUNK;                 \
+    float s[R][NC];                                                            \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        _Pragma("unroll") for (int t = 0; t < NC; t++) s[r][t] = 0.0f;         \
+    for (int cs = 0; cs < nb; cs += (CH)) {                                    \
+        int cblocks = nb - cs < (CH) ? nb - cs : (CH);                         \
         int celems  = cblocks * 32;                                            \
         int base_e  = cs * 32;                                                 \
         _Pragma("unroll")                                                      \
         for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
             const float *xg = x + (ulong64)t * a.xs + base_e;                  \
             for (int e = threadIdx.x; e < celems; e += blockDim.x)             \
                 xsm[t][(e >> 5) * SMPAD + (e & 31)] = xg[e];                   \
         }                                                                      \
         __syncthreads();                                                       \
-        if (row < (unsigned)a.n_out) {                                         \
-            int c4 = cblocks & ~3;                                             \
-            for (int bi = 0; bi < c4; bi += 4) {                               \
-                const uchar *blk = rw + (ulong64)(cs + bi + bsub) * 18;        \
-                float d = f16f(blk);                                           \
+        int c4 = cblocks & ~3;                                                 \
+        for (int bi = 0; bi < c4; bi += 4) {                                   \
+            float d[R], q[R][4];                                               \
+            _Pragma("unroll")                                                  \
+            for (int r = 0; r < R; r++) {                                      \
+                const uchar *blk = rw[r] + (ulong64)(cs + bi + bsub) * 18;     \
+                d[r] = f16f(blk);                                              \
                 ushort16 u = *(const ushort16 *)(blk + 2 + boff);              \
-                float q0 = (float)((int)( u        & 0xF) - 8);                \
-                float q1 = (float)((int)((u >>  4) & 0xF) - 8);                \
-                float q2 = (float)((int)((u >>  8) & 0xF) - 8);                \
-                float q3 = (float)((int)((u >> 12) & 0xF) - 8);                \
-                int xo = (bi + bsub) * SMPAD + boff;                           \
-                _Pragma("unroll")                                              \
-                for (int t = 0; t < NC; t++) {                                 \
-                    const float *xp = xsm[t] + xo;                             \
-                    s[t] += d * (q0 * xp[0] + q2 * xp[1] +                     \
-                                 q1 * xp[16] + q3 * xp[17]);                   \
-                }                                                              \
+                q[r][0] = (float)((int)( u        & 0xF) - 8);                 \
+                q[r][1] = (float)((int)((u >>  4) & 0xF) - 8);                 \
+                q[r][2] = (float)((int)((u >>  8) & 0xF) - 8);                 \
+                q[r][3] = (float)((int)((u >> 12) & 0xF) - 8);                 \
             }                                                                  \
-            for (int bi = c4; bi < cblocks; bi++) {                            \
-                const uchar *blk = rw + (ulong64)(cs + bi) * 18;               \
+            int xo = (bi + bsub) * SMPAD + boff;                               \
+            _Pragma("unroll")                                                  \
+            for (int t = 0; t < NC; t++) {                                     \
+                if (t >= nc) continue;                                         \
+                const float *xp = xsm[t] + xo;                                 \
+                float x0 = xp[0], x1 = xp[1], x16 = xp[16], x17 = xp[17];      \
+                _Pragma("unroll")                                              \
+                for (int r = 0; r < R; r++)                                    \
+                    s[r][t] += d[r] * (q[r][0] * x0 + q[r][2] * x1 +           \
+                                       q[r][1] * x16 + q[r][3] * x17);         \
+            }                                                                  \
+        }                                                                      \
+        for (int bi = c4; bi < cblocks; bi++) {                                \
+            float w[R];                                                        \
+            int j = (int)lane & 15, hi = (int)lane >> 4;                       \
+            _Pragma("unroll")                                                  \
+            for (int r = 0; r < R; r++) {                                      \
+                const uchar *blk = rw[r] + (ulong64)(cs + bi) * 18;            \
                 float d = f16f(blk);                                           \
                 const uchar *q = blk + 2;                                      \
-                int j = (int)lane & 15, hi = (int)lane >> 4;                   \
                 int qv = hi ? (q[j] >> 4) : (q[j] & 0xF);                      \
-                float w = d * (float)(qv - 8);                                 \
+                w[r] = d * (float)(qv - 8);                                    \
+            }                                                                  \
+            _Pragma("unroll")                                                  \
+            for (int t = 0; t < NC; t++) {                                     \
+                if (t >= nc) continue;                                         \
+                float xv = xsm[t][bi * SMPAD + lane];                          \
                 _Pragma("unroll")                                              \
-                for (int t = 0; t < NC; t++)                                   \
-                    s[t] += w * xsm[t][bi * SMPAD + lane];                     \
+                for (int r = 0; r < R; r++) s[r][t] += w[r] * xv;              \
             }                                                                  \
         }                                                                      \
         __syncthreads();                                                       \
     }                                                                          \
-    if (row < (unsigned)a.n_out)                                               \
-        for (int t = 0; t < a.batch && t < NC; t++) {                          \
-            float r = warp_sum(s[t]);                                          \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        if (row >= (unsigned)a.n_out) continue;                                \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float v = warp_sum(s[r][t]);                                       \
             if (lane == 0) y[(ulong64)t * a.ys + row] =                        \
-                a.has_bias ? r + bias[row] : r;                                \
+                a.has_bias ? v + bias[row] : v;                                \
         }                                                                      \
+    }                                                                          \
 }
 
 // Q4_K/Q5_K stage x in groups of the EIGHT elements a lane owns, one padding
@@ -4216,128 +4269,105 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
 // affine factored out as dg*Sum(nib*x) - mmg*Sum(x). The v1 form this macro
 // used to carry (a separate `dg*nib - mmg` FMA per element straight into s)
 // is a different expression, hence different bits.
-#define GEMVB_Q4_K(NAME, NC)                                                   \
+// Q5_K: k_gemv_q5_K v2, i.e. Q4_K's factored form with the fifth bit — bit g
+// of each qh byte, added as 16 before the conversion to float.
+//
+// R rows a warp (KQ_TWR, kernel_args.h; 2026-10-21). A block's staged x and
+// each column's Sum(x) are the same for every row, so a warp reads a lane's
+// eight x values and forms their sum ONCE per column and applies them to its
+// R rows. With one row a warp they were re-read and re-summed per row, and a
+// speculative verify pass over five columns cost about six batch-1 passes
+// (RTX 3070, Qwen2.5-7B Q4_K_M: 318 us a launch against 53 for k_gemv_q4_K).
+// Columns past a.batch are skipped rather than computed on stale x. Every
+// (row, column) keeps k_gemv_q4_K's (k_gemv_q5_K's) expressions in their
+// order, so its bits.
+#define KG_NIBS(n, v0, v1)                                                     \
+    n[0] = (float)(v0 & 0xFF);         n[1] = (float)((v0 >>  8) & 0xFF);       \
+    n[2] = (float)((v0 >> 16) & 0xFF); n[3] = (float)((v0 >> 24));              \
+    n[4] = (float)(v1 & 0xFF);         n[5] = (float)((v1 >>  8) & 0xFF);       \
+    n[6] = (float)((v1 >> 16) & 0xFF); n[7] = (float)((v1 >> 24));
+#define GEMVB_KQ(NAME, NC, BB, QOFF, HBIT)                                     \
 extern "C" __global__ void NAME(MV_PARAMS) {                                   \
     __shared__ float xsm[NC][KG8ROW];                                          \
+    enum { R = KQ_TWR(NC) };                                                   \
     unsigned warp = threadIdx.x >> 5;                                          \
     unsigned lane = threadIdx.x & 31;                                          \
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
+    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
     int nb = a.n_in / 256;                                                     \
-    const uchar *rw = wb + a.w_off +                                           \
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 144; \
-    float s[NC] = {0};                                                         \
+    int nc = a.batch < (NC) ? a.batch : (NC);                                  \
+    float s[R][NC];                                                            \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        _Pragma("unroll") for (int t = 0; t < NC; t++) s[r][t] = 0.0f;         \
     int g     = (int)(lane >> 2);                                              \
     int ji    = (int)(lane >> 3);                                              \
     int sh    = ((((int)lane >> 2) & 1) == 0) ? 0 : 4;                         \
     int bbase = ((int)lane & 3) * 8;                                           \
     int el    = (int)lane * KG8PAD;                                            \
     for (int b = 0; b < nb; b++) {                                             \
-        const uchar *blk = rw + (ulong64)b * 144;                              \
         int base_e = b * 256;                                                  \
         _Pragma("unroll")                                                      \
         for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
             const float *xg = x + (ulong64)t * a.xs + base_e;                  \
             for (int e = threadIdx.x; e < 256; e += blockDim.x)                \
                 xsm[t][(e >> 3) * KG8PAD + (e & 7)] = xg[e];                   \
         }                                                                      \
         __syncthreads();                                                       \
-        if (row < (unsigned)a.n_out) {                                         \
+        float dg[R], mmg[R], n[R][8];                                          \
+        _Pragma("unroll")                                                      \
+        for (int r = 0; r < R; r++) {                                          \
+            unsigned row = row0 + r;                                           \
+            const uchar *blk = wb + a.w_off +                                  \
+                (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * (BB) +     \
+                (ulong64)b * (BB);                                             \
             float dd   = f16f(blk);                                            \
             float dmin = f16f(blk + 2);                                        \
             uchar sg, mg;                                                      \
             get_scale_min_k4(g, blk + 4, &sg, &mg);                            \
-            float dg = dd * (float)sg, mmg = dmin * (float)mg;                 \
-            uint2 qv = *(const uint2 *)(blk + 16 + ji * 32 + bbase);           \
+            dg[r] = dd * (float)sg; mmg[r] = dmin * (float)mg;                 \
+            uint2 qv = *(const uint2 *)(blk + (QOFF) + ji * 32 + bbase);       \
             uint v0 = (qv.x >> sh) & 0x0F0F0F0Fu;                              \
             uint v1 = (qv.y >> sh) & 0x0F0F0F0Fu;                              \
-            float n0 = (float)(v0 & 0xFF),        n1 = (float)((v0 >>  8) & 0xFF); \
-            float n2 = (float)((v0 >> 16) & 0xFF), n3 = (float)((v0 >> 24));    \
-            float n4 = (float)(v1 & 0xFF),        n5 = (float)((v1 >>  8) & 0xFF); \
-            float n6 = (float)((v1 >> 16) & 0xFF), n7 = (float)((v1 >> 24));    \
+            if (HBIT) {                                                        \
+                uint2 hv = *(const uint2 *)(blk + 16 + bbase);                 \
+                v0 += ((hv.x >> g) & 0x01010101u) << 4;                        \
+                v1 += ((hv.y >> g) & 0x01010101u) << 4;                        \
+            }                                                                  \
+            KG_NIBS(n[r], v0, v1)                                              \
+        }                                                                      \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            const float *xp = xsm[t] + el;                                     \
+            float x0 = xp[0], x1 = xp[1], x2 = xp[2], x3 = xp[3];              \
+            float x4 = xp[4], x5 = xp[5], x6 = xp[6], x7 = xp[7];              \
+            float sx = x0 + x1 + x2 + x3 + x4 + x5 + x6 + x7;                  \
             _Pragma("unroll")                                                  \
-            for (int t = 0; t < NC; t++) {                                     \
-                const float *xp = xsm[t] + el;                                 \
-                float tt = n0 * xp[0] + n1 * xp[1] + n2 * xp[2] + n3 * xp[3]   \
-                         + n4 * xp[4] + n5 * xp[5] + n6 * xp[6] + n7 * xp[7];  \
-                float sx = xp[0] + xp[1] + xp[2] + xp[3]                       \
-                         + xp[4] + xp[5] + xp[6] + xp[7];                      \
-                s[t] += dg * tt - mmg * sx;                                    \
+            for (int r = 0; r < R; r++) {                                      \
+                float tt = n[r][0] * x0 + n[r][1] * x1 + n[r][2] * x2          \
+                         + n[r][3] * x3 + n[r][4] * x4 + n[r][5] * x5          \
+                         + n[r][6] * x6 + n[r][7] * x7;                        \
+                s[r][t] += dg[r] * tt - mmg[r] * sx;                           \
             }                                                                  \
         }                                                                      \
         __syncthreads();                                                       \
     }                                                                          \
-    if (row < (unsigned)a.n_out)                                               \
-        for (int t = 0; t < a.batch && t < NC; t++) {                          \
-            float r = warp_sum(s[t]);                                          \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        if (row >= (unsigned)a.n_out) continue;                                \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float v = warp_sum(s[r][t]);                                       \
             if (lane == 0) y[(ulong64)t * a.ys + row] =                        \
-                a.has_bias ? r + bias[row] : r;                                \
+                a.has_bias ? v + bias[row] : v;                                \
         }                                                                      \
+    }                                                                          \
 }
+#define GEMVB_Q4_K(NAME, NC) GEMVB_KQ(NAME, NC, 144, 16, 0)
+#define GEMVB_Q5_K(NAME, NC) GEMVB_KQ(NAME, NC, 176, 48, 1)
 
-// ---- Q5_K: k_gemv_q5_K v2, i.e. Q4_K's factored form with the fifth bit —
-// bit g of each qh byte, added as 16 before the conversion to float.
-#define GEMVB_Q5_K(NAME, NC)                                                   \
-extern "C" __global__ void NAME(MV_PARAMS) {                                   \
-    __shared__ float xsm[NC][KG8ROW];                                          \
-    unsigned warp = threadIdx.x >> 5;                                          \
-    unsigned lane = threadIdx.x & 31;                                          \
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
-    int nb = a.n_in / 256;                                                     \
-    const uchar *rw = wb + a.w_off +                                           \
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 176; \
-    float s[NC] = {0};                                                         \
-    int g     = (int)(lane >> 2);                                              \
-    int ji    = (int)(lane >> 3);                                              \
-    int sh    = ((((int)lane >> 2) & 1) == 0) ? 0 : 4;                         \
-    int bbase = ((int)lane & 3) * 8;                                           \
-    int hshift = g;                                                            \
-    int el    = (int)lane * KG8PAD;                                            \
-    for (int b = 0; b < nb; b++) {                                             \
-        const uchar *blk = rw + (ulong64)b * 176;                              \
-        int base_e = b * 256;                                                  \
-        _Pragma("unroll")                                                      \
-        for (int t = 0; t < NC; t++) {                                         \
-            const float *xg = x + (ulong64)t * a.xs + base_e;                  \
-            for (int e = threadIdx.x; e < 256; e += blockDim.x)                \
-                xsm[t][(e >> 3) * KG8PAD + (e & 7)] = xg[e];                   \
-        }                                                                      \
-        __syncthreads();                                                       \
-        if (row < (unsigned)a.n_out) {                                         \
-            float dd   = f16f(blk);                                            \
-            float dmin = f16f(blk + 2);                                        \
-            uchar sg, mg;                                                      \
-            get_scale_min_k4(g, blk + 4, &sg, &mg);                            \
-            float dg = dd * (float)sg, mmg = dmin * (float)mg;                 \
-            uint2 qv = *(const uint2 *)(blk + 48 + ji * 32 + bbase);           \
-            uint2 hv = *(const uint2 *)(blk + 16 + bbase);                     \
-            uint v0 = (qv.x >> sh) & 0x0F0F0F0Fu;                              \
-            uint v1 = (qv.y >> sh) & 0x0F0F0F0Fu;                              \
-            uint h0 = ((hv.x >> hshift) & 0x01010101u) << 4;                   \
-            uint h1 = ((hv.y >> hshift) & 0x01010101u) << 4;                   \
-            v0 += h0; v1 += h1;                                                \
-            float n0 = (float)(v0 & 0xFF),        n1 = (float)((v0 >>  8) & 0xFF); \
-            float n2 = (float)((v0 >> 16) & 0xFF), n3 = (float)((v0 >> 24));    \
-            float n4 = (float)(v1 & 0xFF),        n5 = (float)((v1 >>  8) & 0xFF); \
-            float n6 = (float)((v1 >> 16) & 0xFF), n7 = (float)((v1 >> 24));    \
-            _Pragma("unroll")                                                  \
-            for (int t = 0; t < NC; t++) {                                     \
-                const float *xp = xsm[t] + el;                                 \
-                float tt = n0 * xp[0] + n1 * xp[1] + n2 * xp[2] + n3 * xp[3]   \
-                         + n4 * xp[4] + n5 * xp[5] + n6 * xp[6] + n7 * xp[7];  \
-                float sx = xp[0] + xp[1] + xp[2] + xp[3]                       \
-                         + xp[4] + xp[5] + xp[6] + xp[7];                      \
-                s[t] += dg * tt - mmg * sx;                                    \
-            }                                                                  \
-        }                                                                      \
-        __syncthreads();                                                       \
-    }                                                                          \
-    if (row < (unsigned)a.n_out)                                               \
-        for (int t = 0; t < a.batch && t < NC; t++) {                          \
-            float r = warp_sum(s[t]);                                          \
-            if (lane == 0) y[(ulong64)t * a.ys + row] =                        \
-                a.has_bias ? r + bias[row] : r;                                \
-        }                                                                      \
-}
 
 // ---- Q6_K: k_gemv_q6_K v2 — d factored out of the four-term group, a whole
 // BLOCK reduced into its own accumulator, and those block sums split across
@@ -4346,30 +4376,39 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
 // sum, as this macro used to, is a different reduction tree.
 // (k_gemm_q6_K premultiplies d into each weight instead, which agrees in exact
 // arithmetic but not necessarily in floating point, so it is not a twin.)
+// R rows a warp (Q6_TWR, as the K-quant twins above): a lane's four x values
+// of each half are read once per column for all R rows.
 #define GEMVB_Q6_K(NAME, NC)                                                   \
 extern "C" __global__ void NAME(MV_PARAMS) {                                   \
     __shared__ float xsm[NC][256];                                             \
+    enum { R = Q6_TWR(NC) };                                                   \
     unsigned warp = threadIdx.x >> 5;                                          \
     unsigned lane = threadIdx.x & 31;                                          \
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
+    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
     int nb = a.n_in / 256;                                                     \
-    const uchar *rw = wb + a.w_off +                                           \
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 210; \
-    float s0[NC] = {0}, s1[NC] = {0};                                          \
+    int nc = a.batch < (NC) ? a.batch : (NC);                                  \
+    float s0[R][NC], s1[R][NC];                                                \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        _Pragma("unroll") for (int t = 0; t < NC; t++) s0[r][t] = s1[r][t] = 0.0f; \
     int is = (int)(lane >> 4);                                                 \
     for (int b = 0; b < nb; b++) {                                             \
-        const uchar *blk = rw + (ulong64)b * 210;                              \
         int base_e = b * 256;                                                  \
         _Pragma("unroll")                                                      \
         for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
             const float *xg = x + (ulong64)t * a.xs + base_e;                  \
             for (int e = threadIdx.x; e < 256; e += blockDim.x)                \
                 xsm[t][e] = xg[e];                                             \
         }                                                                      \
         __syncthreads();                                                       \
-        if (row < (unsigned)a.n_out) {                                         \
-            float d = f16f(blk + 208);                                         \
-            float acc[NC] = {0};                                               \
+        float d[R], c[R][2][4];                                                \
+        _Pragma("unroll")                                                      \
+        for (int r = 0; r < R; r++) {                                          \
+            unsigned row = row0 + r;                                           \
+            const uchar *blk = wb + a.w_off +                                  \
+                (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 210 +      \
+                (ulong64)b * 210;                                              \
+            d[r] = f16f(blk + 208);                                            \
             _Pragma("unroll")                                                  \
             for (int half = 0; half < 2; half++) {                             \
                 const uchar *ql = blk + half * 64;                             \
@@ -4384,31 +4423,46 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
                                (((qh[lane] >> 4) & 3) << 4)) - 32;             \
                 int q4 = (int)((ql[lane + 32] >> 4)  |                         \
                                (((qh[lane] >> 6) & 3) << 4)) - 32;             \
-                float c1 = (float)(sc[0 + is] * q1);                           \
-                float c2 = (float)(sc[2 + is] * q2);                           \
-                float c3 = (float)(sc[4 + is] * q3);                           \
-                float c4 = (float)(sc[6 + is] * q4);                           \
-                int e0 = half * 128;                                           \
+                c[r][half][0] = (float)(sc[0 + is] * q1);                      \
+                c[r][half][1] = (float)(sc[2 + is] * q2);                      \
+                c[r][half][2] = (float)(sc[4 + is] * q3);                      \
+                c[r][half][3] = (float)(sc[6 + is] * q4);                      \
+            }                                                                  \
+        }                                                                      \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float acc[R];                                                      \
+            _Pragma("unroll") for (int r = 0; r < R; r++) acc[r] = 0.0f;       \
+            _Pragma("unroll")                                                  \
+            for (int half = 0; half < 2; half++) {                             \
+                const float *xp = xsm[t] + half * 128;                         \
+                float xa = xp[lane], xb = xp[lane + 32];                       \
+                float xc = xp[lane + 64], xd = xp[lane + 96];                  \
                 _Pragma("unroll")                                              \
-                for (int t = 0; t < NC; t++) {                                 \
-                    const float *xp = xsm[t] + e0;                             \
-                    acc[t] += d * (c1 * xp[lane]      + c2 * xp[lane + 32] +   \
-                                   c3 * xp[lane + 64] + c4 * xp[lane + 96]);   \
-                }                                                              \
+                for (int r = 0; r < R; r++)                                    \
+                    acc[r] += d[r] * (c[r][half][0] * xa + c[r][half][1] * xb + \
+                                      c[r][half][2] * xc + c[r][half][3] * xd); \
             }                                                                  \
             _Pragma("unroll")                                                  \
-            for (int t = 0; t < NC; t++) {                                     \
-                if (b & 1) s1[t] += acc[t]; else s0[t] += acc[t];              \
+            for (int r = 0; r < R; r++) {                                      \
+                if (b & 1) s1[r][t] += acc[r]; else s0[r][t] += acc[r];        \
             }                                                                  \
         }                                                                      \
         __syncthreads();                                                       \
     }                                                                          \
-    if (row < (unsigned)a.n_out)                                               \
-        for (int t = 0; t < a.batch && t < NC; t++) {                          \
-            float r = warp_sum(s0[t] + s1[t]);                                 \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        if (row >= (unsigned)a.n_out) continue;                                \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float v = warp_sum(s0[r][t] + s1[r][t]);                           \
             if (lane == 0) y[(ulong64)t * a.ys + row] =                        \
-                a.has_bias ? r + bias[row] : r;                                \
+                a.has_bias ? v + bias[row] : v;                                \
         }                                                                      \
+    }                                                                          \
 }
 
 // ---- BF16: k_mv_bf16's twin (2026-08-20). bf16 decodes at batch 1 through
@@ -4422,42 +4476,68 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
 // scattered global x-loads measured well below sequential decode (the same
 // 0.11x-class loss the Q4_0 comment above records).
 #define BF16_CHUNK 1024
-#define GEMVB_BF16(NAME, NC)                                                   \
+#define GEMVB_BF16_C(NAME, NC, CH)                                             \
 extern "C" __global__ void NAME(MV_PARAMS) {                                   \
-    __shared__ float xsm[NC][BF16_CHUNK];                                      \
+    __shared__ float xsm[NC][(CH)];                                            \
+    enum { R = DQ_TWR(NC) };                                                   \
     unsigned warp = threadIdx.x >> 5;                                          \
     unsigned lane = threadIdx.x & 31;                                          \
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
-    const unsigned short *rw = (const unsigned short *)(wb + a.w_off) +        \
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * a.n_in;   \
-    float s[NC] = {0};                                                         \
-    for (int cs = 0; cs < a.n_in; cs += BF16_CHUNK) {                          \
-        int celems = a.n_in - cs < BF16_CHUNK ? a.n_in - cs : BF16_CHUNK;      \
+    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
+    int nc = a.batch < (NC) ? a.batch : (NC);                                  \
+    const unsigned short *rw[R];                                               \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        rw[r] = (const unsigned short *)(wb + a.w_off) +                       \
+                (ulong64)(row0 + r < (unsigned)a.n_out ? row0 + r : 0) * a.n_in; \
+    float s[R][NC];                                                            \
+    _Pragma("unroll") for (int r = 0; r < R; r++)                              \
+        _Pragma("unroll") for (int t = 0; t < NC; t++) s[r][t] = 0.0f;         \
+    for (int cs = 0; cs < a.n_in; cs += (CH)) {                                \
+        int celems = a.n_in - cs < (CH) ? a.n_in - cs : (CH);                  \
         _Pragma("unroll")                                                      \
         for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
             const float *xg = x + (ulong64)t * a.xs + cs;                      \
             for (int e = threadIdx.x; e < celems; e += blockDim.x)             \
                 xsm[t][e] = xg[e];                                             \
         }                                                                      \
         __syncthreads();                                                       \
-        if (row < (unsigned)a.n_out)                                           \
-            for (int i = lane; i < celems; i += 32) {                          \
-                float w = bf16f(rw[cs + i]);                                   \
-                _Pragma("unroll")                                              \
-                for (int t = 0; t < NC; t++) s[t] += w * xsm[t][i];            \
+        for (int i = lane; i < celems; i += 32) {                              \
+            float w[R];                                                        \
+            _Pragma("unroll") for (int r = 0; r < R; r++) w[r] = bf16f(rw[r][cs + i]); \
+            _Pragma("unroll")                                                  \
+            for (int t = 0; t < NC; t++) {                                     \
+                if (t >= nc) continue;                                         \
+                float xv = xsm[t][i];                                          \
+                _Pragma("unroll") for (int r = 0; r < R; r++) s[r][t] += w[r] * xv; \
             }                                                                  \
+        }                                                                      \
         __syncthreads();                                                       \
     }                                                                          \
-    if (row < (unsigned)a.n_out)                                               \
-        for (int t = 0; t < a.batch && t < NC; t++) {                          \
-            float r = warp_sum(s[t]);                                          \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        if (row >= (unsigned)a.n_out) continue;                                \
+        _Pragma("unroll")                                                      \
+        for (int t = 0; t < NC; t++) {                                         \
+            if (t >= nc) continue;                                             \
+            float v = warp_sum(s[r][t]);                                       \
             if (lane == 0) y[(ulong64)t * a.ys + row] =                        \
-                a.has_bias ? r + bias[row] : r;                                \
+                a.has_bias ? v + bias[row] : v;                                \
         }                                                                      \
+    }                                                                          \
 }
+
+#define GEMVB_Q8_0(NAME, NC) GEMVB_Q8_0_C(NAME, NC, Q8_CHUNK)
+#define GEMVB_Q4_0(NAME, NC) GEMVB_Q4_0_C(NAME, NC, Q8_CHUNK)
+#define GEMVB_BF16(NAME, NC) GEMVB_BF16_C(NAME, NC, BF16_CHUNK)
 
 // Widths cuda.c can pick from. Two are enough to cover 2..8 without a
 // half-empty batch paying much: a microbatch of 3 runs the 4-wide kernel.
+// The 16-wide ones serve a speculative verify round of 9 to 16 rows in one
+// pass over the weights (cuda.c exact_rows); they stage fewer elements per
+// pass so sixteen columns stay inside the static shared memory: Q8_0 and
+// Q4_0 sixteen blocks (any multiple of four keeps every lane's trips and
+// tail), BF16 512 elements (a lane's elements stay lane, lane + 32, ...).
 GEMVB_BF16(k_gemvb_bf16_x4, 4)
 GEMVB_BF16(k_gemvb_bf16_x8, 8)
 GEMVB_Q8_0(k_gemvb_q8_0_x4, 4)
@@ -4470,6 +4550,12 @@ GEMVB_Q5_K(k_gemvb_q5_K_x4, 4)
 GEMVB_Q5_K(k_gemvb_q5_K_x8, 8)
 GEMVB_Q6_K(k_gemvb_q6_K_x4, 4)
 GEMVB_Q6_K(k_gemvb_q6_K_x8, 8)
+GEMVB_BF16_C(k_gemvb_bf16_x16, 16, 512)
+GEMVB_Q8_0_C(k_gemvb_q8_0_x16, 16, 16)
+GEMVB_Q4_0_C(k_gemvb_q4_0_x16, 16, 16)
+GEMVB_Q4_K(k_gemvb_q4_K_x16, 16)
+GEMVB_Q5_K(k_gemvb_q5_K_x16, 16)
+GEMVB_Q6_K(k_gemvb_q6_K_x16, 16)
 
 // ---- MXFP4: k_mv_mxfp4's twin (gpt-oss experts; the by-expert MoE prefill
 // runs their columns through it). The batch-1 kernel gives each lane whole
@@ -4519,6 +4605,57 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
 }
 GEMVB_MXFP4(k_gemvb_mxfp4_x4, 4)
 GEMVB_MXFP4(k_gemvb_mxfp4_x8, 8)
+// Sixteen columns: a lane owns whole blocks (block b0 + lane), so the group
+// of 32 blocks cannot shrink without moving blocks between lanes; the columns
+// are staged eight at a time instead, each block's scale and quants read once
+// per half. A column's sum is the same terms in the same order either way.
+#define GEMVB_MXFP4_HALVES(NAME, NC)                                           \
+extern "C" __global__ void NAME(MV_PARAMS) {                                   \
+    __shared__ float xsm[(NC) / 2][32 * LANE_XPAD];                            \
+    __shared__ float kv[16];                                                   \
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];             \
+    unsigned warp = threadIdx.x >> 5;                                          \
+    unsigned lane = threadIdx.x & 31;                                          \
+    unsigned row  = blockIdx.x * GEMM_WARPS + warp;                            \
+    bool live = row < (unsigned)a.n_out;                                       \
+    int nb = a.n_in / 32;                                                      \
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 17;      \
+    float s[NC] = {0};                                                         \
+    for (int b0 = 0; b0 < nb; b0 += 32) {                                      \
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;                                \
+        _Pragma("unroll")                                                      \
+        for (int h = 0; h < 2; h++) {                                          \
+            for (int c = 0; c < (NC) / 2 && h * ((NC) / 2) + c < a.batch; c++) \
+                LANE_STAGE_X(xsm[c], x + (ulong64)(h * ((NC) / 2) + c) * a.xs, b0, nblk) \
+            __syncthreads();                                                   \
+            if (live && (int)lane < nblk) {                                    \
+                const uchar *blk = rw + (ulong64)(b0 + lane) * 17;             \
+                float d = ldexpf(1.0f, (int)blk[0] - 127);                     \
+                const uchar *q = blk + 1;                                      \
+                _Pragma("unroll")                                              \
+                for (int c = 0; c < (NC) / 2; c++) {                           \
+                    int cc = h * ((NC) / 2) + c;                               \
+                    if (cc >= a.batch) break;                                  \
+                    const float *xp = xsm[c] + lane * LANE_XPAD;               \
+                    float t = 0;                                               \
+                    for (int j = 0; j < 16; j++) {                             \
+                        t += kv[q[j] & 0xF] * xp[j];                           \
+                        t += kv[q[j] >> 4]  * xp[j + 16];                      \
+                    }                                                          \
+                    s[cc] += d * t;                                            \
+                }                                                              \
+            }                                                                  \
+            __syncthreads();                                                   \
+        }                                                                      \
+    }                                                                          \
+    if (live)                                                                  \
+        for (int c = 0; c < a.batch && c < NC; c++) {                          \
+            float r = warp_sum(s[c]);                                          \
+            if (lane == 0) y[(ulong64)c * a.ys + row] =                        \
+                a.has_bias ? r + bias[row] : r;                                \
+        }                                                                      \
+}
+GEMVB_MXFP4_HALVES(k_gemvb_mxfp4_x16, 16)
 
 // ---- Q4_0: k_mv_q4_0's twin. The fused MoE prefill's Q4_0 expert kernel is
 // k_mv_q4_0's lane-per-block body (k_moe_mv_q4_0), not the coalesced
@@ -4584,6 +4721,12 @@ IQ_LANE_MVB(k_gemvb_iq3_s_x4, iq3s_lane_n, 110, 4)
 IQ_LANE_MVB(k_gemvb_iq3_s_x8, iq3s_lane_n, 110, 8)
 IQ_LANE_MVB(k_gemvb_iq4_xs_x4, iq4xs_lane_n, 136, 4)
 IQ_LANE_MVB(k_gemvb_iq4_xs_x8, iq4xs_lane_n, 136, 8)
+IQ_LANE_MVB(k_gemvb_iq2_xxs_x16, iq2xxs_lane_n, 66, 16)
+IQ_LANE_MVB(k_gemvb_iq2_xs_x16, iq2xs_lane_n, 74, 16)
+IQ_LANE_MVB(k_gemvb_iq2_s_x16, iq2s_lane_n, 82, 16)
+IQ_LANE_MVB(k_gemvb_iq3_xxs_x16, iq3xxs_lane_n, 98, 16)
+IQ_LANE_MVB(k_gemvb_iq3_s_x16, iq3s_lane_n, 110, 16)
+IQ_LANE_MVB(k_gemvb_iq4_xs_x16, iq4xs_lane_n, 136, 16)
 
 // ---- int8-activation codebook GEMVs (RUNNER_CUDA_Q8X=1, EXPERIMENTAL) ------
 // x is quantized once per call to int8 in 32-element blocks (scale amax/127),
