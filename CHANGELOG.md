@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: MoE experts in Q5_0, Q4_1 and Q5_1 take the fused device
+  routing.** The fused MoE path had no indirect expert kernel for the
+  32-element legacy types, so a model with any such expert tensor ran every
+  MoE layer on the eager path (host routing, no decode graph).
+  llama-quantize's Q4_K_M of gemma-4-26B-A4B keeps 17% of its experts in
+  Q5_0, so a file quantized that way did. `k_moe_mv_q5_0`, `_q4_1` and
+  `_q5_1` are the bodies of the types' batch-1 kernels; `make
+  test-cuda-moe-legacy` (in the CUDA gate) holds each to the eager path with
+  `test-moe-tol` and fails if the fused path does not engage. On the
+  datacenter MIG slice, gemma-4-26B-A4B Q4_K_M reads a 2,048-token prompt at
+  175 tok/s instead of 139 and decodes at 69.5 tok/s instead of 63.
+
 - **CUDA: tensor-core prefill for Q5_K, Q3_K, Q2_K, Q4_1, Q5_0 and Q5_1.**
   These six types had no tensor-core kernel, so a prompt ran their weights
   through the scalar GEMM (Q5_K, Q3_K) or the matvec a column at a time

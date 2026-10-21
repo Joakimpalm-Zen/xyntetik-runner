@@ -26,6 +26,7 @@ test-iq-decode.exe
 test-kq-stage
 test-kq-stage.exe
 test-cuda-tc-kq.out
+test-cuda-moe-legacy.out
 tc-overflow.out
 test-cuda-batch-identity.out
 test-cuda-spec-identity.out

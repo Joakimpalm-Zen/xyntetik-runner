@@ -976,6 +976,9 @@ static bool moe_indirect_type_ok(int type) {
         case T_Q4_K: case T_Q5_K: case T_Q6_K: case T_MXFP4:
         case T_NVFP4: case T_IQ3_XXS: case T_IQ4_NL: case T_Q2_0:
         case T_IQ2_S: case T_IQ3_S: case T_IQ4_XS:
+        // 2026-10-21: llama-quantize's Q4_K_M of gemma-4-26B-A4B keeps some
+        // experts in Q5_0, which sent the whole model to the eager path
+        case T_Q5_0: case T_Q4_1: case T_Q5_1:
             return true;
         // IQ2_XS/IQ2_XXS have indirect twins (k_moe_mv_iq2_xs/_xxs) but the
         // fused path measured 6.0 tok/s against 19.1 eager on the IQ2_XS
@@ -2407,6 +2410,9 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_moe_mv[T_IQ3_XXS], "k_moe_mv_iq3_xxs" },
         { &w->f_moe_mv[T_IQ4_NL],  "k_moe_mv_iq4_nl" },
         { &w->f_moe_mv[T_Q2_0],    "k_moe_mv_q2_0" },
+        { &w->f_moe_mv[T_Q5_0],    "k_moe_mv_q5_0" },
+        { &w->f_moe_mv[T_Q4_1],    "k_moe_mv_q4_1" },
+        { &w->f_moe_mv[T_Q5_1],    "k_moe_mv_q5_1" },
         { &w->f_moe_mv[T_IQ2_S],   "k_moe_mv_iq2_s" },
         { &w->f_moe_mv[T_IQ3_S],   "k_moe_mv_iq3_s" },
         { &w->f_moe_mv[T_IQ4_XS],  "k_moe_mv_iq4_xs" },

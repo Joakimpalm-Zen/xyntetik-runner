@@ -5541,6 +5541,100 @@ extern "C" __global__ void k_moe_mv_iq4_nl(MOE_MV_PARAMS) {
     MOE_LANE_TAIL;
 }
 
+// The legacy 32-element types (2026-10-21): llama-quantize's Q4_K_M mix of
+// gemma-4-26B-A4B stores some expert tensors as Q5_0 (a width its K-quants
+// do not divide), and with no indirect kernel for it the whole model left
+// the fused device routing for the eager path. Each is the body of its
+// lane-per-block batch-1 kernel (k_mv_q5_0 / k_mv_q4_1 / k_mv_q5_1).
+extern "C" __global__ void k_moe_mv_q5_0(MOE_MV_PARAMS) {
+    MOE_LANE_HEAD_N(32)
+    int nb = a.n_in / 32;
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 22;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 22;
+            float d = f16f(blk);
+            uint qh = (uint)blk[2] | ((uint)blk[3] << 8) |
+                      ((uint)blk[4] << 16) | ((uint)blk[5] << 24);
+            const uchar *q = blk + 6;
+            const float *xp = xs_;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                int x0 = (int)((q[j] & 0xF) | (((qh >> j) & 1u) << 4)) - 16;
+                int x1 = (int)((q[j] >> 4)  | (((qh >> (j + 16)) & 1u) << 4)) - 16;
+                t += x0 * xp[j] + x1 * xp[j + 16];
+            }
+            s += d * t;
+        }
+        __syncthreads();
+    }
+    MOE_LANE_TAIL;
+}
+
+extern "C" __global__ void k_moe_mv_q4_1(MOE_MV_PARAMS) {
+    MOE_LANE_HEAD_N(32)
+    int nb = a.n_in / 32;
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 20;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 20;
+            float d  = f16f(blk);
+            float mm = f16f(blk + 2);
+            const uchar *q = blk + 4;
+            const float *xp = xs_;
+            float t = 0, sx = 0;
+            for (int j = 0; j < 16; j++) {
+                t += (float)(q[j] & 0xF) * xp[j] + (float)(q[j] >> 4) * xp[j + 16];
+                sx += xp[j] + xp[j + 16];
+            }
+            s += d * t + mm * sx;
+        }
+        __syncthreads();
+    }
+    MOE_LANE_TAIL;
+}
+
+extern "C" __global__ void k_moe_mv_q5_1(MOE_MV_PARAMS) {
+    MOE_LANE_HEAD_N(32)
+    int nb = a.n_in / 32;
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 24;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 24;
+            float d  = f16f(blk);
+            float mm = f16f(blk + 2);
+            uint qh = (uint)blk[4] | ((uint)blk[5] << 8) |
+                      ((uint)blk[6] << 16) | ((uint)blk[7] << 24);
+            const uchar *q = blk + 8;
+            const float *xp = xs_;
+            float t = 0, sx = 0;
+            for (int j = 0; j < 16; j++) {
+                t += (float)((q[j] & 0xF) | (((qh >> j) & 1u) << 4)) * xp[j] +
+                     (float)((q[j] >> 4)  | (((qh >> (j + 16)) & 1u) << 4)) * xp[j + 16];
+                sx += xp[j] + xp[j + 16];
+            }
+            s += d * t + mm * sx;
+        }
+        __syncthreads();
+    }
+    MOE_LANE_TAIL;
+}
+
 // body of k_mv_iq2_s (Qwen3.8-Flash-Next gate/up experts on 20 of 48 blocks)
 extern "C" __global__ void k_moe_mv_iq2_s(MOE_MV_PARAMS) {
     IQ_LANE_MOE_MV(iq2s_lane, 82)

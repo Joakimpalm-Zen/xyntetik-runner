@@ -1830,6 +1830,31 @@ test-cuda-tc-kq: runner $(TEST_TC_TOL)
 	  done; \
 	done
 
+# MoE experts in the 32-element legacy types on the fused device routing
+# (k_moe_mv_q5_0 / q4_1 / q5_1, 2026-10-21; until then a model with such
+# experts, llama-quantize's Q4_K_M of gemma-4-26B-A4B among them, ran its MoE
+# layers on the eager path): the moe4 fixture quantized to each type with
+# llama-quantize (RUNNER_LLAMA_CPP_BIN), held to the eager path by
+# test-moe-tol's teacher-forced gate. test-moe-tol skips when the two paths
+# are bit-identical, which here means the fused path never engaged, so a skip
+# fails the step. Without llama-quantize there is no fixture, so the step
+# fails rather than narrowing its coverage as the other llama-quantize steps
+# do: a CUDA gate host needs it.
+test-cuda-moe-legacy: runner $(TEST_MOE_TOL)
+	@set -e; \
+	lq=$$(ls "$$RUNNER_LLAMA_CPP_BIN"/llama-quantize* 2>/dev/null | head -1); \
+	if [ -z "$$lq" ]; then echo "test-cuda-moe-legacy: needs llama-quantize in RUNNER_LLAMA_CPP_BIN"; exit 1; fi; \
+	$(PYTHON) scripts/make-test-moe.py test-moe-legacy > /dev/null; \
+	for q in Q5_0 Q4_1 Q5_1; do \
+	  f=test-moe-legacy-$$q.gguf; \
+	  "$$lq" test-moe-legacy.moe4.gguf $$f $$q > /dev/null 2>&1 || { echo "test-cuda-moe-legacy: llama-quantize $$q failed"; exit 1; }; \
+	  ./$(TEST_MOE_TOL) $$f > test-cuda-moe-legacy.out 2>&1 || \
+	    { cat test-cuda-moe-legacy.out; echo "test-cuda-moe-legacy: $$q FAILED"; exit 1; }; \
+	  if ! grep -q 'moe-tol: ok' test-cuda-moe-legacy.out || grep -qi 'skip' test-cuda-moe-legacy.out; then \
+	    cat test-cuda-moe-legacy.out; echo "test-cuda-moe-legacy: $$q did not run the fused path"; exit 1; fi; \
+	  echo "$$f: $$(grep 'moe-tol: ok' test-cuda-moe-legacy.out)"; \
+	done
+
 # The by-expert MoE prefill (moe_twin) against the fused per-token path it
 # must reproduce byte for byte, on a 32-row prefill: the routed top-2-of-4
 # fixture with its experts requantized to Q8_0, the gpt-oss fixture (MXFP4
