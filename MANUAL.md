@@ -2183,7 +2183,11 @@ window is accepted and costs where little is: `--draft-lookup` on an input-groun
 prompt decodes Qwen3-4B at 143 tok/s against 103 plain and Qwen2.5-7B at 84 against 71,
 but where about one token a round is accepted Qwen3-4B runs at 102 against 106; a
 Qwen2.5-7B target with a 1.5B draft model runs at 65 against 71, and the Qwen3.5-4B MTP
-head at 54 against 79. The same holds for `--mtp` and `--draft-lookup`. In serve mode `GET
+head at 61 against 94. A mixture-of-experts target pays most for a round, which runs
+every row through the per-token expert path: on the datacenter MIG slice
+Qwen3-30B-A3B with Qwen3-0.6B as the draft decodes at 64 to 108 tok/s against 117 to 119
+plain on three prompts, while Qwen2.5-7B with a 0.5B draft gains (89 against 76 where
+most of a window is accepted). The same holds for `--mtp` and `--draft-lookup`. In serve mode `GET
 /v1/capabilities` reports whether the draft is actually `active`, so a harness never
 measures the fallback as speculative decoding.
 
