@@ -198,6 +198,16 @@ int main(int argc, char **argv) {
 
     f16_init();
 
+    // Instrument isolation, as in test_kv_tol.c: this gate measures the
+    // ROUTING, and the two configurations run the same dense prefill GEMMs.
+    // On the tensor-core route those round their activations to fp16, which
+    // turns the routing's ulp-level differences into whole fp16 steps and
+    // compounds them layer by layer: gemma-4-26B-A4B Q4_K_M read 6.1e-3 of
+    // the logit range with the tensor cores on and 4.3e-5 with them off
+    // (2026-10-21). The TC path has its own gates (test_tc_tol.c and the
+    // float32-reference rows), so the GEMM path is pinned scalar here.
+    gpu_tc_force(0);
+
     gguf_file gf;
     if (!gguf_open(&gf, path)) {
         fprintf(stderr, "cannot open %s\n", path);
