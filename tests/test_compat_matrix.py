@@ -762,7 +762,10 @@ def test_reports_carry_no_machine_paths(tmp_path):
     models = tmp_path / "shelf"
     report = {"load": {"stderr_tail": f"loaded {models}/m.gguf | llama"},
               "report": str(cm.ROOT / "docs/compat-reports/cpu_cuda/m.json"),
-              "note": f"cache in {home}/.cache/x", "plain": "no paths here"}
+              "note": f"cache in {home}/.cache/x", "plain": "no paths here",
+              # a Windows host writes the part below the root with
+              # backslashes; the report names it with forward slashes
+              "winsep": f"{models}\\cpu_cuda\\m.json"}
     out = cm.scrub_paths(report, [models, cm.ROOT, None, home])
     text = repr(out)
     assert str(models) not in text and str(cm.ROOT) not in text
@@ -770,4 +773,5 @@ def test_reports_carry_no_machine_paths(tmp_path):
     assert out["load"]["stderr_tail"] == "loaded m.gguf | llama"
     assert out["report"] == "docs/compat-reports/cpu_cuda/m.json"
     assert out["note"] == "cache in ~/.cache/x"
+    assert out["winsep"] == "cpu_cuda/m.json"
     assert out["plain"] == "no paths here"

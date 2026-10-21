@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`scripts/compat_matrix.py`: a report made on Windows names its evidence
+  files as one made anywhere else does.** Rewriting a machine path relative
+  to its root kept the host's separator below it, so a ledger written on
+  Windows recorded `cpu_cuda\m.json`, the same evidence under another name,
+  and its own per-row reference did not open. The part below the root is now
+  written with forward slashes.
+
 - **CUDA: MoE experts in Q5_0, Q4_1 and Q5_1 take the fused device
   routing.** The fused MoE path had no indirect expert kernel for the
   32-element legacy types, so a model with any such expert tensor ran every
