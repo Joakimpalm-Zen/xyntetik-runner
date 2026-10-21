@@ -2,7 +2,9 @@
 
 Use the [benchmark report](benchmarks.md) for measured speed comparisons.
 Its model bytes, build, hardware, route, and date define each result; a
-number from that report is not a throughput guarantee for another setup.
+number from that report is not a throughput guarantee for another setup. What the 2026-10 performance work tried and did not ship, with the
+number that stopped each idea, is in
+[negative results of the 2026-10 work](negative-results-2026-10.md).
 
 ## Choosing and measuring a route
 
