@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CPU IQ3_S dot fused.** IQ3_S was the slowest format on the CPU: its dot
+  dequantized each block into a 256-float scratch row, multiplying every
+  code by its sub-block scale, and then took a second pass to dot it. It now
+  reads the grid as floats into the multiply-adds and applies the sub-block
+  scale once per 32 weights, as the IQ3_XXS dot does: one core 1.44x on the
+  Linux host and 1.49x on an M1, and an M1 decodes Llama-3.2-1B IQ3_S on its
+  CPU at 18.3-19.3 tok/s where it decoded 14.0-14.4. Applying the scale once
+  reorders the arithmetic; against the publisher's float32 forward over
+  2,000 positions granite-4.2-3b IQ3_S reads mean KL 0.76508 against 0.76502
+  (Wilcoxon p 0.85), not distinguishable.
+
 - **CPU verify rounds and small batches decode each weight block once.** A
   speculative verify round on the CPU computes every row with the decode
   step's own dot, one column at a time, and a format without a multi-column

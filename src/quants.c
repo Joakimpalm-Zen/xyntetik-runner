@@ -109,12 +109,13 @@ typedef struct { uint8_t qs[QK_K / 8]; uint8_t qh[QK_K / 16]; uint8_t scales[QK_
 #define IQ1S_DELTA 0.125f
 #include "quants_iq_grids.h"
 
-// A float twin of the IQ3_XXS grid, and an 8-lane float sign mask per sign
-// byte, for the fused IQ3_XXS dots: a grid word's four magnitudes load as
+// Float twins of the IQ3 grids, and an 8-lane float sign mask per sign byte,
+// for the fused IQ3_S / IQ3_XXS dots: a grid word's four magnitudes load as
 // four floats and a sign byte becomes an XOR of the float sign bits. These
 // are the values the int8 decode widened to (the magnitudes are small
 // nonzero integers, exact in float, and negating one is exact), without the
 // byte assembly and widening on the hot path. Built once by f16_init.
+static _Alignas(32) float g_iq3s_gridf[512][4];
 static _Alignas(32) float g_iq3xxs_gridf[256][4];
 static _Alignas(32) uint32_t g_iq_sign8[256][8];
 
@@ -123,12 +124,22 @@ static void dot_tables_init(void) {
         g_e8m0[e] = ldexpf(1.0f, e - 127);
         g_e8m0_half[e] = 0.5f * ldexpf(1.0f, e - 127);
     }
+    for (int g = 0; g < 512; g++) {
+        const uint8_t *m = (const uint8_t *)(iq3s_grid + g);
+        for (int j = 0; j < 4; j++) g_iq3s_gridf[g][j] = m[j];
+    }
     for (int g = 0; g < 256; g++) {
         const uint8_t *m = (const uint8_t *)(iq3xxs_grid + g);
         for (int j = 0; j < 4; j++) g_iq3xxs_gridf[g][j] = m[j];
     }
     for (int v = 0; v < 256; v++)
         for (int j = 0; j < 8; j++) g_iq_sign8[v][j] = (v >> j & 1) ? 0x80000000u : 0;
+}
+
+// IQ3_S: group g (0..7) of a 32-weight sub-block indexes the grid with qs[g]
+// and bit g of the sub-block's qh byte as its ninth bit (dq_iq3_s's shifts)
+static inline const float *iq3s_wf(const uint8_t *qs, unsigned h, int g) {
+    return g_iq3s_gridf[qs[g] | (((h >> g) & 1) << 8)];
 }
 
 
@@ -2291,6 +2302,35 @@ static float dot_iq3_xxs_avx2(const block_iq3_xxs *b, const float *x, int n) {
     return hsum8(acc);
 }
 
+// IQ3_S fused dot: the 32 signed weights of a sub-block, read from the float
+// grid, go straight into the FMAs and the sub-block's scale multiplies their
+// sum once (the IQ3_XXS kernel's construction). vec_dot's generic route
+// decoded every block to a 256-float scratch row first, then dotted it, and
+// multiplied each code by the scale on the way: IQ3_S was the slowest CPU
+// format (9.1 G weights/s on one core of the Linux CUDA host, IQ3_XXS 12.9).
+static float dot_iq3_s_avx2(const block_iq3_s *b, const float *x, int n) {
+    __m256 acc = _mm256_setzero_ps();
+    for (int i = 0; i < n / QK_K; i++, b++) {
+        float d = f16_to_f32(b->d);
+        const uint8_t *qs = b->qs, *signs = b->signs;
+        const float *xp = x + i * QK_K;
+        for (int ib32 = 0; ib32 < QK_K / 32; ib32++) {
+            float db = d * (1 + 2 * ((b->scales[ib32 / 2] >> (4 * (ib32 & 1))) & 0xf));
+            unsigned h = b->qh[ib32];
+            const float *xb = xp + 32 * ib32;
+            __m256 t = _mm256_setzero_ps();
+            for (int k = 0; k < 4; k++)
+                t = _mm256_fmadd_ps(avx2_iq_w8(iq3s_wf(qs, h, 2 * k), iq3s_wf(qs, h, 2 * k + 1),
+                                               signs[k]),
+                                    _mm256_loadu_ps(xb + 8 * k), t);
+            acc = _mm256_fmadd_ps(_mm256_set1_ps(db), t, acc);
+            qs += 8;
+            signs += 4;
+        }
+    }
+    return hsum8(acc);
+}
+
 static float dot_iq4_xs_avx2(const block_iq4_xs *b, const float *x, int n) {
     const __m128i tbl = _mm_loadu_si128((const __m128i *)kvalues_iq4nl);
     const __m128i mF  = _mm_set1_epi8(0xF);
@@ -2500,6 +2540,35 @@ static float dot_iq3_xxs_neon(const block_iq3_xxs *b, const float *x, int n) {
             neon_iq3xxs_w32(qs, aux32, fa, fb);
             acc = vfmaq_n_f32(acc, dot32f(fa, fb, xp + 32 * ib32), db);
             qs += 8;
+        }
+    }
+    return vaddvq_f32(acc);
+}
+
+// the eight 4-weight groups of an IQ3_S sub-block from the float grid, in
+// dot32f's layout (groups 0-3 in fa, 4-7 in fb)
+static inline void neon_iq3s_w32(const uint8_t *qs, unsigned h, const uint8_t *signs,
+                                 float32x4_t fa[4], float32x4_t fb[4]) {
+    for (int g = 0; g < 4; g++) {
+        fa[g] = neon_iq_w4(iq3s_wf(qs, h, g), signs[g >> 1], g & 1);
+        fb[g] = neon_iq_w4(iq3s_wf(qs, h, g + 4), signs[2 + (g >> 1)], g & 1);
+    }
+}
+
+// IQ3_S fused dot on NEON (dot_iq3_s_avx2's construction)
+static float dot_iq3_s_neon(const block_iq3_s *b, const float *x, int n) {
+    float32x4_t acc = vdupq_n_f32(0);
+    for (int i = 0; i < n / QK_K; i++, b++) {
+        float d = f16_to_f32(b->d);
+        const uint8_t *qs = b->qs, *signs = b->signs;
+        const float *xp = x + i * QK_K;
+        for (int ib32 = 0; ib32 < QK_K / 32; ib32++) {
+            float db = d * (1 + 2 * ((b->scales[ib32 / 2] >> (4 * (ib32 & 1))) & 0xf));
+            float32x4_t fa[4], fb[4];
+            neon_iq3s_w32(qs, b->qh[ib32], signs, fa, fb);
+            acc = vfmaq_n_f32(acc, dot32f(fa, fb, xp + 32 * ib32), db);
+            qs += 8;
+            signs += 4;
         }
     }
     return vaddvq_f32(acc);
@@ -2973,11 +3042,15 @@ float vec_dot(int type, const void *row, const float *x, int n) {
             return dot_q2_0_avx2(row, x, n);
         case T_IQ3_XXS:
             return dot_iq3_xxs_avx2(row, x, n);
+        case T_IQ3_S:
+            return dot_iq3_s_avx2(row, x, n);
 #elif RUNNER_NEON
         case T_Q2_0:
             return dot_q2_0_neon(row, x, n);
         case T_IQ3_XXS:
             return dot_iq3_xxs_neon(row, x, n);
+        case T_IQ3_S:
+            return dot_iq3_s_neon(row, x, n);
 #endif
         case T_MXFP4: {
 #if RUNNER_AVX2
@@ -3215,6 +3288,31 @@ static void dot_mxfp4_avx2_multi(const block_mxfp4 *b, const float *const *xs,
             t = _mm256_fmadd_ps(w2, _mm256_loadu_ps(xp + 16), t);
             t = _mm256_fmadd_ps(w3, _mm256_loadu_ps(xp + 24), t);
             acc[c] = _mm256_fmadd_ps(d, t, acc[c]);
+        }
+    }
+    for (int c = 0; c < nc; c++) out[c] = hsum8(acc[c]);
+}
+
+static void dot_iq3_s_avx2_multi(const block_iq3_s *b, const float *const *xs,
+                                 int nc, int n, float *out) {
+    __m256 acc[VEC_DOT_MULTI_MAX], t[VEC_DOT_MULTI_MAX];
+    for (int c = 0; c < nc; c++) acc[c] = _mm256_setzero_ps();
+    for (int i = 0; i < n / QK_K; i++, b++) {
+        float d = f16_to_f32(b->d);
+        const uint8_t *qs = b->qs, *signs = b->signs;
+        for (int ib32 = 0; ib32 < QK_K / 32; ib32++) {
+            __m256 db = _mm256_set1_ps(d * (1 + 2 * ((b->scales[ib32 / 2] >> (4 * (ib32 & 1))) & 0xf)));
+            unsigned h = b->qh[ib32];
+            int off = i * QK_K + 32 * ib32;
+            for (int c = 0; c < nc; c++) t[c] = _mm256_setzero_ps();
+            for (int k = 0; k < 4; k++) {
+                __m256 w = avx2_iq_w8(iq3s_wf(qs, h, 2 * k), iq3s_wf(qs, h, 2 * k + 1), signs[k]);
+                for (int c = 0; c < nc; c++)
+                    t[c] = _mm256_fmadd_ps(w, _mm256_loadu_ps(xs[c] + off + 8 * k), t[c]);
+            }
+            for (int c = 0; c < nc; c++) acc[c] = _mm256_fmadd_ps(db, t[c], acc[c]);
+            qs += 8;
+            signs += 4;
         }
     }
     for (int c = 0; c < nc; c++) out[c] = hsum8(acc[c]);
@@ -3731,6 +3829,26 @@ static void dot_iq3_xxs_neon_multi(const block_iq3_xxs *b, const float *const *x
     for (int c = 0; c < nc; c++) out[c] = vaddvq_f32(acc[c]);
 }
 
+static void dot_iq3_s_neon_multi(const block_iq3_s *b, const float *const *xs, int nc,
+                                 int n, float *out) {
+    float32x4_t acc[VEC_DOT_MULTI_MAX];
+    for (int c = 0; c < nc; c++) acc[c] = vdupq_n_f32(0);
+    for (int i = 0; i < n / QK_K; i++, b++) {
+        float d = f16_to_f32(b->d);
+        const uint8_t *qs = b->qs, *signs = b->signs;
+        for (int ib32 = 0; ib32 < QK_K / 32; ib32++) {
+            float db = d * (1 + 2 * ((b->scales[ib32 / 2] >> (4 * (ib32 & 1))) & 0xf));
+            float32x4_t fa[4], fb[4];
+            neon_iq3s_w32(qs, b->qh[ib32], signs, fa, fb);
+            int off = i * QK_K + 32 * ib32;
+            for (int c = 0; c < nc; c++)
+                acc[c] = vfmaq_n_f32(acc[c], dot32f(fa, fb, xs[c] + off), db);
+            qs += 8;
+            signs += 4;
+        }
+    }
+    for (int c = 0; c < nc; c++) out[c] = vaddvq_f32(acc[c]);
+}
 #endif
 
 // calls into vec_dot_multi, for the route gate (tests/test_dot_route.c): a
@@ -3760,6 +3878,7 @@ void vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
         case T_IQ4_XS:  dot_iq4_xs_avx2_multi(row, xs, nc, n, out);  return;
         case T_Q2_0:    dot_q2_0_avx2_multi(row, xs, nc, n, out);    return;
         case T_IQ3_XXS: dot_iq3_xxs_avx2_multi(row, xs, nc, n, out); return;
+        case T_IQ3_S:   dot_iq3_s_avx2_multi(row, xs, nc, n, out);   return;
         case T_BF16:    dot_bf16_avx2_multi(row, xs, nc, n, out);    return;
         case T_Q4_K:    dot_q4_K_avx2_multi(row, xs, nc, n, out);    return;
         case T_Q5_K:    dot_q5_K_avx2_multi(row, xs, nc, n, out);    return;
@@ -3776,12 +3895,13 @@ void vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
         case T_Q5_K:    dot_q5_K_neon_multi(row, xs, nc, n, out);    return;
         case T_Q6_K:    dot_q6_K_neon_multi(row, xs, nc, n, out);    return;
         case T_IQ3_XXS: dot_iq3_xxs_neon_multi(row, xs, nc, n, out); return;
+        case T_IQ3_S:   dot_iq3_s_neon_multi(row, xs, nc, n, out);   return;
 #endif
         // the types vec_dot sends down its generic dequant-per-block route
-        case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S: case T_IQ3_S:
+        case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S:
         case T_IQ1_S: case T_IQ1_M:
 #if !RUNNER_AVX2 && !RUNNER_NEON
-        case T_IQ4_NL: case T_IQ4_XS: case T_Q2_0: case T_IQ3_XXS:
+        case T_IQ4_NL: case T_IQ4_XS: case T_Q2_0: case T_IQ3_XXS: case T_IQ3_S:
 #endif
             dot_generic_multi(type, row, xs, nc, n, out);
             return;
