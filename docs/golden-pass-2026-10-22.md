@@ -19,8 +19,14 @@ the script that ran: [`gold1022-run.sh`](golden-pass-evidence/gold-2k/gold1022-r
 ## The rows where 1.5.0 does not read closer
 
 They come first, because they are the rows the claim has to survive.
+Mean KL is the divergence from the reference's distribution, averaged
+over the positions (lower is closer). Margin-qualified top-1 is the
+"chosen token" measure: at positions where the reference's top token leads
+its second by more than 0.5 nats of log-probability, the share where the
+engine picks the same token. McNemar tests that measure, Wilcoxon the paired
+per-position KL.
 
-| row | 1.5.0 mean KL | llama.cpp mean KL | 1.5.0 chosen token | llama.cpp chosen token | McNemar p | Wilcoxon p | verdict |
+| row | 1.5.0 mean KL | llama.cpp mean KL | 1.5.0 margin-qualified top-1 | llama.cpp margin-qualified top-1 | McNemar p | Wilcoxon p | verdict |
 |---|---|---|---|---|---|---|---|
 | gemma-4-E2B, served (q4_0) | 0.8126 | 0.7910 | 69.44% | 68.88% | 0.37 | 1.8e-09 | llama.cpp closer |
 | Qwen3-0.6B, served | 0.3041 | 0.3046 | 81.33% | 81.25% | 1 | 0.096 | not distinguishable |
@@ -97,7 +103,7 @@ the Wilcoxon verdict on 20, level or ahead on the reference's chosen token
 on 22, and has the lower mean KL on 20. On the 22 rows the 09-07 table
 measured: 19 closer, 21 level or ahead.
 
-| row | 1.5.0 mean KL | llama.cpp mean KL | 1.5.0 chosen token | llama.cpp chosen token | McNemar p | Wilcoxon p | verdict |
+| row | 1.5.0 mean KL | llama.cpp mean KL | 1.5.0 margin-qualified top-1 | llama.cpp margin-qualified top-1 | McNemar p | Wilcoxon p | verdict |
 |---|---|---|---|---|---|---|---|
 | Qwen3-0.6B, served | 0.3041 | 0.3046 | 81.33% | 81.25% | 1 | 0.096 | not distinguishable |
 | Trinity Nano, bf16 | 0.0460 | 0.0453 | 98.60% | 98.60% | 1 | 0.28 | not distinguishable |
@@ -145,7 +151,7 @@ against 0.05072, p 0.0036), and not distinguishable on granite-4.2-3B and
 gemma-3-4B. In size it is at most 0.1% of mean KL, and on none of the four
 files did it change the chosen token at a single qualified position.
 
-| row | 1.5.0 mean KL | 1.4.2 mean KL | 1.5.0 chosen token | 1.4.2 chosen token | Wilcoxon p | verdict |
+| row | 1.5.0 mean KL | 1.4.2 mean KL | 1.5.0 margin-qualified top-1 | 1.4.2 margin-qualified top-1 | Wilcoxon p | verdict |
 |---|---|---|---|---|---|---|
 | SmolLM2-135M, bf16 | 1.4e-4 | 1.4e-4 | 100.00% | 100.00% |  | identical at every position |
 | SmolLM2-135M, served | 7.5e-3 | 7.5e-3 | 100.00% | 100.00% |  | identical at every position |
