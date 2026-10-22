@@ -164,6 +164,16 @@ Current release and unreleased changes. Compatibility follows the
   chunks over 16 (5 interleaved rounds, medians), byte-identical; on x86
   (Zen 5, i7-7700K) 8 and 32 columns read within noise of 16, which stays.
 
+- **`-f FILE` reads the prompt file as written.** The file's text was
+  appended to the `-p` text before `-p`'s escapes (`\n`, `\t`, `\r`, `\\`)
+  were applied to the whole prompt, so a backslash sequence in a prompt file
+  was rewritten: a scored corpus's `\times` reached the tokenizer as a tab
+  and `imes`, and code or LaTeX in a one-shot or `--bench` prompt file
+  changed the same way. `-p` text still takes the escapes; a file's bytes
+  are now the prompt. `--score` comparisons against a reference tokenizer
+  (`scripts/gold-logits.py`) refused such files rather than scoring them,
+  which is how this was found.
+
 - **CPU: a native AVX-512 build takes the 4 x 4 register tile.** AVX-512VL
   doubles the vector registers to 32, enough for the 4 x 4 tile's 21 live
   values, so a build for such a host (`-march=native` on Zen 4 / Zen 5 or a

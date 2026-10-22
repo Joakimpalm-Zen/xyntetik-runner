@@ -71,6 +71,31 @@ def test_readable_prompt_file_loads(runner_bin, model, tmp_path):
     assert proc.returncode == 0, proc.stderr.decode(errors="replace")
 
 
+def _score_tokens(runner_bin, model, *args):
+    proc = _run(runner_bin, model, "--score", *args)
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    return json.loads(proc.stdout)["tokens"]
+
+
+def test_prompt_file_is_read_as_written(runner_bin, model, tmp_path):
+    """-p takes \\n, \\t, \\r and \\\\ escapes; a -f file's backslashes are
+    its text. The file used to be appended before the escapes ran, so a
+    scored corpus's "\\times" reached the tokenizer as a tab and "imes"
+    (the byte-fallback fixture spells a tab and a backslash differently)."""
+    text = "x \\times y\\n\\\\ z\\r"
+    pf = tmp_path / "prompt.txt"
+    pf.write_bytes(text.encode())
+    from_file = _score_tokens(runner_bin, model, "-f", str(pf))
+    # the same bytes through -p, each backslash escaped once
+    assert from_file == _score_tokens(runner_bin, model, "-p", text.replace("\\", "\\\\"))
+    # and not what the escapes make of the same characters
+    assert from_file != _score_tokens(runner_bin, model, "-p", text)
+    # -p text before the file still takes its escapes; the file does not
+    both = _score_tokens(runner_bin, model, "-p", "a\\tb ", "-f", str(pf))
+    assert both == _score_tokens(runner_bin, model, "-p",
+                                 "a\\tb " + text.replace("\\", "\\\\"))
+
+
 def test_gpu_off_also_applies_to_speculative_draft(runner_bin, model):
     proc = _run(runner_bin, model, "-p", "hi", "--draft", str(model),
                 "--draft-k", "2", "-n", "2", "--temp", "0")

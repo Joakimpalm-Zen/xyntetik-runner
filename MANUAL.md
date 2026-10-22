@@ -2027,7 +2027,7 @@ flags into unrelated feature sections.
 |---|---|
 | `-m PATH` | GGUF path. In serve mode, `name=path,name2=path2` enables multi-model swap mode. |
 | `-p TEXT` | One-shot prompt; escaped sequences such as `\n` are unescaped. |
-| `-f FILE` | Append file contents to the prompt. |
+| `-f FILE` | Append the file's contents to the prompt as written; escapes are unescaped only in `-p` text. |
 | `-i` | Stateful interactive chat. |
 | `--serve` | Start the HTTP server. |
 | `--tray` | Be the macOS/Windows tray controller instead of running a model. Required where there is no terminal. See [Desktop tray](#desktop-tray). |
