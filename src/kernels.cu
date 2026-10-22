@@ -6483,7 +6483,7 @@ extern "C" __global__ void k_mamba2_conv(
 // matches. dt/A/D are per head; B/C are per group g = h/gsz.
 extern "C" __global__ void k_mamba2_ssd(
         const float *xBC, const float *proj, const float *A, const float *dt_b,
-        const float *D, float *state, float *y,
+        const float *D, const float *state_in, float *state, float *y,
         int inner, int hd, int ds, int ng, int gsz, int conv_dim,
         int d_in_proj, int t) {
     int h = blockIdx.x;
@@ -6498,10 +6498,13 @@ extern "C" __global__ void k_mamba2_ssd(
     const float *Cg = xrow + inner + (size_t)ng * ds + (size_t)g * ds;
     float x = xrow[(size_t)h * hd + p];
     float x_dt = x * dt;
+    // the row is read from state_in and written to state (the other half of
+    // the double-buffered fold, or the same row on a forward's later tiles)
+    const float *si = state_in + ((size_t)h * hd + p) * ds;
     float *sp = state + ((size_t)h * hd + p) * ds;
     float sumf = 0.0f;
     for (int j = 0; j < ds; j++) {
-        float s = sp[j] * dA + Bg[j] * x_dt;
+        float s = si[j] * dA + Bg[j] * x_dt;
         sumf += s * Cg[j];
         sp[j] = s;
     }
@@ -7295,18 +7298,20 @@ extern "C" __global__ void k_mamba2_conv_seq(
 // registers (ds <= RS_MAX_SD)
 extern "C" __global__ void k_mamba2_ssd_seq(
         const float *xBC, const float *proj, const float *A, const float *dt_b,
-        const float *D, float *state, float *y,
+        const float *D, const float *state_in, float *state, float *y,
         int inner, int hd, int ds, int ng, int gsz, int conv_dim,
         int d_in_proj, int tn) {
     int h = blockIdx.x;
     int p = threadIdx.x;
     if (p >= hd) return;
     int g = h / gsz;
+    // read from state_in, written to state (see k_mamba2_ssd)
+    const float *si = state_in + ((size_t)h * hd + p) * ds;
     float *sp = state + ((size_t)h * hd + p) * ds;
     float s_[RS_MAX_SD];
     #pragma unroll
     for (int j = 0; j < RS_MAX_SD; j++)
-        if (j < ds) s_[j] = sp[j];
+        if (j < ds) s_[j] = si[j];
     for (int t = 0; t < tn; t++) {
         float dtr = proj[(size_t)t * d_in_proj + inner + conv_dim + h] + dt_b[h];
         float dt = dtr > 20.0f ? dtr : logf(1.0f + expf(dtr));

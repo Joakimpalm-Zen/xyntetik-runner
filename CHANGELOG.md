@@ -95,6 +95,20 @@ Current release and unreleased changes. Compatibility follows the
   +2.6% and +2.1% (best of five: that file's runs scattered under host
   load); decode unchanged.
 
+- **CUDA: a Mamba-2 hybrid's scan state is double-buffered instead of
+  copied before every forward.** The engine copied every layer's SSD scan
+  state to a rollback snapshot before each forward (4.8% of
+  granite-4.0-h-micro's and 5.5% of Nemotron-Nano-9B-v2's decode time on the
+  datacenter MIG slice). The state is now two halves: a forward's first tile
+  reads the half the previous forward wrote and writes the other, a rollback
+  returns to the half the forward read, and the decode graph keeps one
+  capture per half. The scan's arithmetic is unchanged: greedy text with the
+  graph on and off, a 2,600-token prompt, and token-by-token and chunked
+  `--score` are byte-identical before and after on granite-4.0-h-micro,
+  granite-4.0-h-tiny and Nemotron-Nano-9B-v2 (granite-4.0-h-micro also on an
+  RTX 3070). Decode on the slice (5 interleaved rounds): granite-4.0-h-micro
+  +6.9%, Nemotron-Nano-9B-v2 +5.7%; prefill unchanged.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was

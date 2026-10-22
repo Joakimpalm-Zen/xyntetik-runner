@@ -47,7 +47,10 @@ falls back to the buffer-free dot, so a forward never writes through NULL.
 done. One forward runs in this order:
 
 1. `cuda_fwd_prepare()`: per-forward state, and the recurrent checkpoints
-   (device-to-device copies) a rollback needs.
+   a rollback needs: device-to-device copies of the conv rings and of
+   qwen35's state. A Mamba-2 hybrid's SSD state is two halves instead: a
+   forward reads the half the last one wrote and writes the other, so the
+   half it read is the rollback point and the state is not copied.
 2. If the position does not follow the last one (a CPU-run batch, a reset,
    a rewind), `kv_upload()` copies host KV rows `[0, pos)` to the device.
 3. `stage_x()` copies the token embeddings to the device.
@@ -79,7 +82,8 @@ boundary activation back through the host `x` buffer.
   first use and replayed for every later token. The position lives in device
   memory (`pos_dev`), so one capture serves every position. The microbatch
   keeps one graph per width, with positions and KV pointers in device
-  tables.
+  tables. A Mamba-2 hybrid keeps one graph per SSD state half, the half the
+  step writes, since its state alternates halves between forwards.
 - **What the graph assumes.** Every device address it recorded stays valid
   and unmoved for the life of the `gpu_t`. All per-instance device buffers
   are allocated at init and released only by `gpu_ctx_free()`, which

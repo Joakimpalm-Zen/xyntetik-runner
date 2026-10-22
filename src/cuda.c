@@ -629,7 +629,15 @@ typedef struct {
     // Mamba-2 recurrent buffers (granitehybrid/nemotron_h)
     CUdeviceptr mamba_proj, mamba_xBC, mamba_y;         // per-tile scratch
     CUdeviceptr mamba_conv, mamba_state;                // persistent conv ring + SSD state
-    CUdeviceptr mamba_conv_prev, mamba_state_prev;      // pre-forward rollback snapshot
+    CUdeviceptr mamba_conv_prev;                        // pre-forward rollback snapshot (ring)
+    // The SSD state is two halves of mamba_state. Each forward reads the
+    // committed half (rec_prev, set in cuda_fwd_prepare) and writes the other
+    // (rec_cur), so the pre-forward state the rollback and the failure rescue
+    // need is still there afterwards: no per-forward copy of the state.
+    // rec_tile0: the forward's first tile is running (later tiles of the
+    // same forward update rec_cur in place).
+    int         rec_cur, rec_prev;
+    bool        rec_tile0;
     // R8.7.2, the loaded adapter on the device: lora_a/lora_b are
     // [n_layer * LW_SLOTS] device pointers (0 = no adapter on that slot, or
     // the layer is CPU-resident and the host hook covers it), lora_t the
@@ -651,10 +659,12 @@ typedef struct {
     // that kept part of its draft, a slot reusing its own prefix) uploads
     // nothing
     int          kv_rows;
-    // CUDA graphs for the single-token decode path (Experiment A)
+    // CUDA graphs for the single-token decode path (Experiment A); a
+    // double-buffered recurrent state (mamba_db) needs one per buffer parity,
+    // the captured scan kernels baking in which half they read and write
     CUstream     stream;
-    CUgraph      graph;
-    CUgraphExec  gexec;
+    CUgraph      graph[2];
+    CUgraphExec  gexec[2];
     // the window's first position, then one per later ATT_COLS-column
     // attention sub-tile (set_pos): k_attn finds its sub-tile's start
     // through the pointer it is handed
@@ -3449,13 +3459,12 @@ static bool cuda_alloc_recurrent(model_t *m, gpu_t *g, const cuda_dims *D) {
         CK(cu.MemAlloc(&g->mamba_xBC,   sizeof(float) * (size_t)g->win * cd));
         CK(cu.MemAlloc(&g->mamba_y,     sizeof(float) * (size_t)g->win * m->ssm.inner));
         CK(cu.MemAlloc(&g->mamba_conv,       sizeof(float) * conv_alloc));
-        CK(cu.MemAlloc(&g->mamba_state,      sizeof(float) * state_elems));
+        CK(cu.MemAlloc(&g->mamba_state,      2 * sizeof(float) * state_elems));
         CK(cu.MemAlloc(&g->mamba_conv_prev,  sizeof(float) * conv_alloc));
-        CK(cu.MemAlloc(&g->mamba_state_prev, sizeof(float) * state_elems));
         CK(cu.MemsetD8(g->mamba_conv, 0, sizeof(float) * conv_alloc));
-        CK(cu.MemsetD8(g->mamba_state, 0, sizeof(float) * state_elems));
+        CK(cu.MemsetD8(g->mamba_state, 0, 2 * sizeof(float) * state_elems));
         CK(cu.MemsetD8(g->mamba_conv_prev, 0, sizeof(float) * conv_alloc));
-        CK(cu.MemsetD8(g->mamba_state_prev, 0, sizeof(float) * state_elems));
+        g->rec_cur = g->rec_prev = 0;
     }
     // gated attention without the rest of qwen35 (afmoe, muse-glimmer):
     // only the gate scratch is needed
@@ -4765,8 +4774,10 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
     if (!g) return;
     if (g->sw && g->sw->ctx) cu.CtxSetCurrent(g->sw->ctx);
     lora_dev_release(g);
-    if (g->gexec && cu.GraphExecDestroy) cu.GraphExecDestroy(g->gexec);
-    if (g->graph && cu.GraphDestroy) cu.GraphDestroy(g->graph);
+    for (int i = 0; i < 2; i++) {
+        if (g->gexec[i] && cu.GraphExecDestroy) cu.GraphExecDestroy(g->gexec[i]);
+        if (g->graph[i] && cu.GraphDestroy) cu.GraphDestroy(g->graph[i]);
+    }
     if (g->stream && cu.StreamDestroy) cu.StreamDestroy(g->stream);
     CUdeviceptr bufs[] = { g->kc, g->vc, g->x, g->xb, g->xb2,
                            g->q, g->kt, g->vt, g->hb, g->hb2, g->att,
@@ -4783,7 +4794,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            g->mtp_en, g->mtp_hn, g->mtp_rows, g->snap_state, g->snap_hist,
                            g->mamba_proj, g->mamba_xBC, g->mamba_y,
                            g->mamba_conv, g->mamba_state,
-                           g->mamba_conv_prev, g->mamba_state_prev,
+                           g->mamba_conv_prev,
                            // the hyper-connection streams, the split-K partials
                            // and the shared expert: missing from this list until
                            // 2026-10-20, so every such instance leaked them into
@@ -4874,6 +4885,12 @@ void gpu_free(model_t *m) {
 // x state] DeltaNet matrix, Mamba-2 an [inner x state] one, and both keep the
 // (conv_kernel - 1) x conv_dim ring. The host layout is the same (model.c
 // recurrent_conv_bytes / recurrent_state_bytes).
+// The base of half h of the double-buffered Mamba-2 SSD state.
+static CUdeviceptr mamba_half(const gpu_t *g, const model_t *m, int h) {
+    return g->mamba_state +
+           (CUdeviceptr)h * sizeof(float) * (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
+}
+
 static bool recurrent_xfer(gpu_t *g, model_t *m, bool to_host, bool prev) {
     CUdeviceptr dconv, dstate;
     size_t conv_layer, state_layer;
@@ -4888,7 +4905,7 @@ static bool recurrent_xfer(gpu_t *g, model_t *m, bool to_host, bool prev) {
         conv_layer  = (size_t)(m->ssm.conv_kernel - 1) * cd;
         state_layer = (size_t)m->ssm.inner * m->ssm.state;
         dconv  = prev ? g->mamba_conv_prev  : g->mamba_conv;
-        dstate = prev ? g->mamba_state_prev : g->mamba_state;
+        dstate = mamba_half(g, m, prev ? g->rec_prev : g->rec_cur);
     } else {
         return true;   // no device-resident fold in this context
     }
@@ -5112,10 +5129,9 @@ bool gpu_recurrent_rollback(model_t *m) {
     } else if ((m->granite_hybrid || m->nemotron_h) && g->mamba_state) {
         int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
         size_t conv_bytes = sizeof(float) * (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * cd;
-        size_t state_bytes = sizeof(float) * (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
-        if (cu.MemcpyDtoD(g->mamba_conv, g->mamba_conv_prev, conv_bytes) != 0 ||
-            cu.MemcpyDtoD(g->mamba_state, g->mamba_state_prev, state_bytes) != 0)
+        if (cu.MemcpyDtoD(g->mamba_conv, g->mamba_conv_prev, conv_bytes) != 0)
             return false;
+        g->rec_cur = g->rec_prev;   // the forward's input half, untouched by it
     }
     // the restored state is now also the pre-forward state of the next forward
     g->fwd_snap = g->fwd_count;
@@ -6418,8 +6434,11 @@ static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
         return false;
     CUdeviceptr ring  = g->mamba_conv +
                         (size_t)l * histn * conv_dim * sizeof(float);
-    CUdeviceptr state = g->mamba_state +
-                        (size_t)l * nh * hd * ds * sizeof(float);
+    // the layer's SSD state: read from the forward's input half on its first
+    // tile (later tiles continue in the half it writes), written to rec_cur
+    size_t soff = (size_t)l * nh * hd * ds * sizeof(float);
+    CUdeviceptr state = mamba_half(g, m, g->rec_cur) + soff;
+    CUdeviceptr state_in = mamba_half(g, m, g->rec_tile0 ? g->rec_prev : g->rec_cur) + soff;
     CUdeviceptr Aw = g->sw->ssm_a[l], dtw = g->sw->ssm_dt[l];
     CUdeviceptr Dw = g->sw->ssm_D[l], cb = g->sw->ssm_conv_b[l];
     CUdeviceptr gn = g->sw->ssm_gnorm[l];
@@ -6429,7 +6448,7 @@ static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
         // row per token keeps each token's bytes
         void *pc[] = { &g->mamba_proj, &g->mamba_xBC, &conv_w, &cb, &ring,
                        &conv_dim, &inner, &d_in_proj, &kk, &histn, &tn };
-        void *ps[] = { &g->mamba_xBC, &g->mamba_proj, &Aw, &dtw, &Dw, &state,
+        void *ps[] = { &g->mamba_xBC, &g->mamba_proj, &Aw, &dtw, &Dw, &state_in, &state,
                        &g->mamba_y, &inner, &hd, &ds, &ng, &gsz, &conv_dim,
                        &d_in_proj, &tn };
         if (!launch(g, g->sw->f_mamba_conv_seq, (conv_dim + 255) / 256, 1, 1, 256, pc) ||
@@ -6449,7 +6468,9 @@ static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
                        &conv_dim, &inner, &d_in_proj, &kk, &histn, &t };
         if (!launch(g, g->sw->f_mamba_conv, (conv_dim + 255) / 256, 1, 1,
                     256, pc)) return false;
-        void *ps[] = { &g->mamba_xBC, &g->mamba_proj, &Aw, &dtw, &Dw, &state,
+        // token t > 0 continues from the row token t - 1 wrote
+        CUdeviceptr sin = t == 0 ? state_in : state;
+        void *ps[] = { &g->mamba_xBC, &g->mamba_proj, &Aw, &dtw, &Dw, &sin, &state,
                        &g->mamba_y, &inner, &hd, &ds, &ng, &gsz, &conv_dim,
                        &d_in_proj, &t };
         if (!launch(g, g->sw->f_mamba_ssd, nh, 1, 1, hd, ps)) return false;
@@ -7700,7 +7721,7 @@ const char *gpu_route_detail(const model_t *m) {
     // launch covers inside it, so a window of 512 is 8 such launches
     snprintf(buf, sizeof buf, "graph=%s tc=%s tc2=%s q8x=%s small_batch=%s attn_tile=%s "
              "window=%d tc_cols=%d%s%s%s",
-             g->graph_bad ? "off" : g->gexec ? "replay" : "none",
+             g->graph_bad ? "off" : g->gexec[0] || g->gexec[1] ? "replay" : "none",
              g_tc_state < 0 || moe_tc_family(m)
                  ? (moe_tc_family(m) ? (tc_on(m, T_Q4_K) ? "moe-tc" : "off") : "promoted")
                  : g_tc_state ? "forced" : "off",
@@ -8183,14 +8204,19 @@ static bool cuda_fwd_prepare(gpu_t *g, model_t *m, int n, int pos) {
                             (m->ssm.conv_kernel - 1) * cd;
         size_t state_bytes = sizeof(float) * (size_t)m->n_layer *
                              m->ssm.inner * m->ssm.state;
+        int src = g->rec_cur;
         if (pos == 0) {
             if ((conv_bytes && cu.MemsetD8(g->mamba_conv, 0, conv_bytes) != 0) ||
-                cu.MemsetD8(g->mamba_state, 0, state_bytes) != 0) return false;
+                cu.MemsetD8(mamba_half(g, m, src), 0, state_bytes) != 0) return false;
         }
-        if ((conv_bytes && cu.MemcpyDtoD(g->mamba_conv_prev, g->mamba_conv,
-                                        conv_bytes) != 0) ||
-            cu.MemcpyDtoD(g->mamba_state_prev, g->mamba_state, state_bytes) != 0)
+        if (conv_bytes && cu.MemcpyDtoD(g->mamba_conv_prev, g->mamba_conv,
+                                        conv_bytes) != 0)
             return false;
+        // the state is double-buffered instead of copied: read src, write
+        // the other half (see gpu_t.rec_cur)
+        g->rec_prev = src;
+        g->rec_cur = 1 - src;
+        g->rec_tile0 = true;
     }
     return true;
 }
@@ -8202,7 +8228,10 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
     double ts0 = prof.on ? prof_now() : 0;
     if (!stage_x(g, m, tokens, 1) || !set_pos(g, pos, 1)) return -1;
     if (prof.on) prof.t_stage[m_] += prof_now() - ts0;
-    if (!g->gexec) {
+    // a double-buffered Mamba-2 state alternates halves every forward: one
+    // graph per parity (the half this forward writes)
+    int gi = (m->granite_hybrid || m->nemotron_h) && g->mamba_state ? g->rec_cur : 0;
+    if (!g->gexec[gi]) {
         prof.capturing = 1;
         // capture records the launch sequence without executing it; the
         // recorded graph is position-invariant because pos lives in
@@ -8219,19 +8248,19 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
         if (capture_begin(g->stream) != 0 ||
             !fwd_tile(g, m, tokens, 1, pos, true, 0, m->gpu_layers) ||
             (g->kvg_dev && !kv_gather_launch(g, m)) ||
-            capture_end(g->stream, &g->graph) != 0 ||
-            cu.GraphInstantiateWithFlags(&g->gexec, g->graph, 0) != 0) {
+            capture_end(g->stream, &g->graph[gi]) != 0 ||
+            cu.GraphInstantiateWithFlags(&g->gexec[gi], g->graph[gi], 0) != 0) {
             CUgraph junk = NULL;
             capture_end(g->stream, &junk); // ensure capture ended
-            if (junk && junk != g->graph) cu.GraphDestroy(junk);
+            if (junk && junk != g->graph[gi]) cu.GraphDestroy(junk);
             fprintf(stderr, "gpu: graph capture failed — plain launches\n");
             g->graph_bad = true;
         }
         prof.capturing = 0;
     }
-    if (g->gexec) {
+    if (g->gexec[gi]) {
         double tg0 = prof.on ? prof_now() : 0;
-        bool gl = cu.GraphLaunch(g->gexec, g->stream) == 0 &&
+        bool gl = cu.GraphLaunch(g->gexec[gi], g->stream) == 0 &&
                   cu.StreamSynchronize(g->stream) == 0;
         if (prof.on) prof.t_sync[m_] += prof_now() - tg0;
         if (gl) {
@@ -8323,6 +8352,7 @@ static bool cuda_fwd_tiles_run(gpu_t *g, model_t *m, const int32_t *tokens, int 
             fprintf(stderr, "gpu: kernel launch failed — falling back to CPU\n");
             return false;
         }
+        g->rec_tile0 = false;
         if (!mtp_save_rows(g, m, i, tn)) return false;
         if (n == 1 && !partial && g->kvg_dev && !kv_gather_launch(g, m)) return false;
         int inj = inject_fail_ordinal();
