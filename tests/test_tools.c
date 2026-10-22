@@ -2316,6 +2316,41 @@ static void test_gemma4_native_turn_constrains_names_and_arguments(void) {
     jv_free(tools);
 }
 
+// The reference template's format_argument (jinja:124-155, transliterated in
+// template.c) joins list items with ',' and writes key:value with no space, so
+// a space after ',' or ':' is a spelling the reference never renders -- and
+// one template.c's call reader refuses, which handed the whole call back as
+// text: gemma-4-E4B under tool_choice wrote `{values:[9, 0, 0]}` and the
+// client received the native framing as content with finish_reason "stop"
+// (agent torture, 2 of 120, the same on 1.5.0). Booleans and nulls already
+// refused a leading space; numbers did not.
+static void test_gemma4_numbers_take_no_whitespace(void) {
+    jv *tools = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"sum_values\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"values\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"},"
+        "\"minItems\":1},"
+        "\"scale\":{\"type\":\"number\"},"
+        "\"strict\":{\"type\":\"boolean\"}},"
+        "\"required\":[\"values\",\"scale\",\"strict\"]}}}]");
+    char err[192];
+    snode *root = schema_compile_gemma4_turn(
+        tools, false, "sum_values", NULL, false, false, err, sizeof(err));
+    if (!root) fprintf(stderr, "gemma4 turn did not compile: %s\n", err);
+    assert(root != NULL);
+    assert(accepts(root,
+        "<|tool_call>call:sum_values{scale:1.5,strict:true,values:[9,0,0]}<tool_call|>"));
+    assert(!accepts(root,
+        "<|tool_call>call:sum_values{scale:1.5,strict:true,values:[9, 0, 0]}<tool_call|>"));
+    assert(!accepts(root,
+        "<|tool_call>call:sum_values{scale: 1.5,strict:true,values:[9]}<tool_call|>"));
+    // the boolean already refused it: the anchor for what the numbers now do
+    assert(!accepts(root,
+        "<|tool_call>call:sum_values{scale:1.5,strict: true,values:[9]}<tool_call|>"));
+    schema_free(root);
+    jv_free(tools);
+}
+
 static void test_gemma4_native_turn_preserves_optional_parameters(void) {
     jv *tools = parse(
         "[{\"type\":\"function\",\"function\":{\"name\":\"rank\","
@@ -3286,6 +3321,7 @@ int main(void) {
     test_harmony_truncation_pairs_the_name_it_emits();
     test_harmony_native_mapping_and_stream_boundaries();
     test_gemma4_native_turn_constrains_names_and_arguments();
+    test_gemma4_numbers_take_no_whitespace();
     test_gemma4_native_turn_preserves_optional_parameters();
     test_native_optional_member_property_ceiling();
     test_gemma4_thought_block_precedes_either_branch();

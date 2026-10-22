@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **gemma4: a forced tool call with a number argument is returned as a call,
+  not as text.** The native grammar let a number start with a space
+  (`[9, 0, 0]`, `scale: 1.5`) where booleans and nulls already could not,
+  and format_argument never writes one; the call reader refused the spelling, so
+  the whole call came back as `content` in gemma4's native framing with
+  finish_reason "stop". gemma-4-E4B did this on 2 of 120 agent-torture
+  cases under a named tool_choice, on 1.5.0 as well. Number values now
+  refuse leading whitespace like the other bare values;
+  `tests/test_tools.c` holds the spaced spellings unreachable and the
+  reference spelling reachable.
+
 - **CUDA: a MoE prompt tile routes its tokens in one launch.** Every MoE
   prefill route (fused, grouped and by-expert, and gemma-4's grouped and
   by-expert routes) ran the router as one matvec launch per prompt token.
