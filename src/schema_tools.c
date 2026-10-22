@@ -1635,8 +1635,14 @@ static snode *g4_value(jv *schema, const char *what, int depth, int *budget,
     if (!strcmp(type, "integer") || !strcmp(type, "number")) {
         // Numbers are spelled identically in JSON and in format_argument, so
         // the ordinary compiler's bounded node applies unchanged -- including
-        // minimum/maximum enforcement, which a raw run would drop.
-        return compile_node(schema, err, errcap, 0);
+        // minimum/maximum enforcement, which a raw run would drop. Like the
+        // boolean and null above, it refuses a leading space: format_argument
+        // writes none after ',' or ':', template.c's call reader refuses one,
+        // and without this flag a model could spell `[9, 0, 0]` under the
+        // constraint and have its call handed back as text.
+        snode *n = compile_node(schema, err, errcap, 0);
+        if (n) n->whitespace_significant = true;
+        return n;
     }
     if (!strcmp(type, "array"))
         return g4_array(schema, what, depth, budget, err, errcap);
