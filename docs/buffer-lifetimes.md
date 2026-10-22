@@ -87,7 +87,9 @@ boundary activation back through the host `x` buffer.
   allocation the backend holds, and `test-cuda-teardown` requires load and
   free cycles to return it to its starting value.
 - **When capture is refused** (`graph_bad`): no stream; a layer without
-  `attn_v.weight` (a synchronous memset that cannot be captured); a MoE layer
+  `attn_v.weight` that is not an attention layer reusing K as V (gemma-4's
+  global layers zero V with `cuMemsetD8Async` in stream order, which a graph
+  records; a driver without that call keeps them eager); a MoE layer
   without fused device routing; the Mamba-2 hybrids' recurrent layers;
   qwen4exp; a qwen35 model with routed experts or under
   `RUNNER_CUDA_GRAPH_RECUR=0` (its Gated DeltaNet steps replay since

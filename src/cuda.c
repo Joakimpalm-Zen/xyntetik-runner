@@ -86,6 +86,7 @@ static struct {
     CUresult (*MemcpyDtoD)(CUdeviceptr, CUdeviceptr, size_t);
     CUresult (*MemcpyDtoDAsync)(CUdeviceptr, CUdeviceptr, size_t, CUstream);
     CUresult (*MemsetD8)(CUdeviceptr, unsigned char, size_t);
+    CUresult (*MemsetD8Async)(CUdeviceptr, unsigned char, size_t, CUstream);  // optional
     CUresult (*ModuleLoadData)(CUmodule *, const void *);
     CUresult (*ModuleUnload)(CUmodule);
     CUresult (*ModuleGetFunction)(CUfunction *, CUmodule, const char *);
@@ -207,6 +208,7 @@ static bool cu_load_now(void) {
     cu.MemcpyDtoD        = sym2("cuMemcpyDtoD");
     cu.MemcpyDtoDAsync   = sym2("cuMemcpyDtoDAsync");
     cu.MemsetD8          = sym2("cuMemsetD8");
+    cu.MemsetD8Async     = sym2("cuMemsetD8Async");
     cu.ModuleLoadData    = dl_sym(cu.lib, "cuModuleLoadData");
     cu.ModuleUnload      = dl_sym(cu.lib, "cuModuleUnload");
     cu.ModuleGetFunction = dl_sym(cu.lib, "cuModuleGetFunction");
@@ -3527,6 +3529,20 @@ static bool cuda_graph_recur_on(void) {
     return on == 1;
 }
 
+// An attention layer with no V projection (gemma4's global layers) builds V
+// as zero plus K: enc_zero, then enc_add. On the instance's stream the
+// zeroing is a memset node a decode graph can capture; the synchronous
+// cuMemsetD8 it replaces could not be captured, so such a model decoded
+// eagerly. Same bytes either way: the same zeroing, then the same add. A
+// driver without cuMemsetD8Async keeps the synchronous call and the eager
+// decode. Other layers without wv (no attention at all, a removed attention
+// sublayer, a recurrent layer) keep their own rules.
+static bool v_from_k_capturable(const model_t *m, int l) {
+    const layer_t *ly = &m->layers[l];
+    return cu.MemsetD8Async && !ly->wv && !ly->recurrent && !ly->skip_mixer &&
+           !(m->l_no_attn && m->l_no_attn[l]);
+}
+
 // The stream graphs are captured on, and whether this model can be captured.
 static void cuda_plan_graphs(model_t *m, gpu_t *g) {
     if (cu_graphs_ok() && cu.StreamCreate(&g->stream, 0) != 0)
@@ -3546,7 +3562,8 @@ static void cuda_plan_graphs(model_t *m, gpu_t *g) {
     bool recur_graph = m->qwen35 && !m->hyper_conn && m->n_expert == 0 &&
                        cuda_graph_recur_on();
     for (int l = 0; l < m->gpu_layers; l++)
-        if ((!m->layers[l].wv && !(m->layers[l].recurrent && recur_graph)) ||
+        if ((!m->layers[l].wv && !(m->layers[l].recurrent && recur_graph) &&
+             !v_from_k_capturable(m, l)) ||
             (m->layers[l].is_moe && !g->moe_fused_ok) ||
             (m->layers[l].recurrent && !recur_graph)) g->graph_bad = true;
     if (m->qwen35 && !recur_graph) g->graph_bad = true;
@@ -6461,6 +6478,13 @@ static bool tile_q(gpu_t *g, model_t *m, layer_t *ly, int l, int tn,
     return ok;
 }
 
+// Zero a device buffer in stream order (capturable), or synchronously where
+// the driver has no cuMemsetD8Async (see v_from_k_capturable).
+static bool enc_zero(gpu_t *g, CUdeviceptr p, size_t bytes) {
+    if (cu.MemsetD8Async && g->stream) return cu.MemsetD8Async(p, 0, bytes, g->stream) == 0;
+    return cu.MemsetD8(p, 0, bytes) == 0;
+}
+
 // K and V with their adapter deltas; gemma4 global layers copy K as V.
 static bool tile_kv_proj(gpu_t *g, model_t *m, layer_t *ly, int l, int tn,
                          int n_embd, int xdim, int kv_dim) {
@@ -6473,7 +6497,7 @@ static bool tile_kv_proj(gpu_t *g, model_t *m, layer_t *ly, int l, int tn,
     } else {
         // gemma4 global layers have no V projection: V is the raw K
         // (zero + add = device-side copy with the kernels we have)
-        ok = ok && cu.MemsetD8(g->vt, 0, sizeof(float) * (size_t)tn * kv_dim) == 0;
+        ok = ok && enc_zero(g, g->vt, sizeof(float) * (size_t)tn * kv_dim);
         ok = ok && enc_add(g, g->vt, g->kt, kv_dim, tn, kv_dim, kv_dim);
     }
     return ok;
@@ -7698,7 +7722,7 @@ gpu_batch *gpu_batch_create(model_t **seqs, int n) {
     // cannot be captured, same as the solo decode graph refuses it.
     b->graph_bad = lead->stream == NULL || !cu_graphs_ok();
     for (int l = 0; l < m0->n_layer; l++)
-        if (!m0->layers[l].wv) b->graph_bad = true;
+        if (!m0->layers[l].wv && !v_from_k_capturable(m0, l)) b->graph_bad = true;
     return b;
 
 fail:
@@ -7813,7 +7837,7 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
         if (ly->wv) {
             ok = ok && enc_mv_batch(g, m, ly->wv, g->xb, g->vt, n_embd, kv_dim, g->sw->bv[l], tn, xdim, kv_dim);
         } else {
-            ok = ok && cu.MemsetD8(g->vt, 0, sizeof(float) * (size_t)tn * kv_dim) == 0;
+            ok = ok && enc_zero(g, g->vt, sizeof(float) * (size_t)tn * kv_dim);
             ok = ok && enc_add(g, g->vt, g->kt, kv_dim, tn, kv_dim, kv_dim);
         }
         if (m->v_rmsnorm)

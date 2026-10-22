@@ -16,6 +16,16 @@ Current release and unreleased changes. Compatibility follows the
   Qwen3-30B-A3B, gpt-oss-20b and gemma-4-26B-A4B across every MoE route, and
   an 875-token Qwen3-30B-A3B prefill makes about 42,000 fewer launches.
 
+- **CUDA: gemma-4 files whose global layers reuse K as V decode through the
+  CUDA graph.** Such a layer builds V from K by zeroing it and adding K, and
+  the zeroing was a synchronous memset, which a graph capture cannot record,
+  so these files (gemma-4-12B and gemma-4-26B-A4B among them) decoded with
+  plain launches, and their decode microbatch did too. The zeroing now runs
+  in stream order (`cuMemsetD8Async`) before the same add, so V is the same
+  bits and both graphs capture; a driver without that call keeps the
+  previous path. Greedy output is byte-identical with the graph on and off on
+  gemma-4-12B and gemma-4-26B-A4B.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was
