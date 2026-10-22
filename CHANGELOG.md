@@ -120,6 +120,19 @@ Current release and unreleased changes. Compatibility follows the
   prefill on an RTX 3070, 3 rounds: gemma-4-E4B +41.8% with the first; phi3
   +135.6% under the existing `RUNNER_CUDA_ATTN_TC=1`.
 
+- **CUDA: the tensor-core prefill GEMM reads Q6_K weights eight bytes at a
+  time.** A Q6_K block is 210 bytes, so its rows are only 2-byte aligned,
+  and the pipelined tensor-core GEMM (TC2) read each segment's low and high
+  bits as 48 two-byte loads; a profile on an RTX 3070 showed 4.1 of every
+  32 bytes a sector used. It now reads them as 14 aligned 8-byte loads and
+  shifts the same words into place, so the dequantized values, the
+  tensor-core operands and every output are unchanged: greedy text and
+  token-by-token and chunked `--score` are byte-identical on Q4_K_M, Q5_K_M
+  and Q6_K files on an RTX 3070. Prefill there, 10 interleaved rounds
+  (medians):
+  Qwen3-4B Q6_K +12.6%, Qwen2.5-7B Q4_K_M +4.4%, Llama-3.2-3B Q4_K_M +4.1%;
+  decode unchanged.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was

@@ -113,6 +113,36 @@ struct G2Q4K {
     static __device__ __forceinline__ ulong64 row_bytes(int n_in) { return (ulong64)(n_in / 256) * 144; }
 };
 
+// N little-endian words of the bytes at p, which is only 2-byte aligned, from
+// 8-byte loads at p rounded down: (N + 2) / 2 loads where 2N two-byte loads
+// took one sector access each (an RTX 3070 profile, 2026-10-22: 4.1 of every
+// 32 bytes a sector used). The words equal the two-byte reads'. The loads
+// reach at most 6 bytes before p and 8 past p + 4N. The callers keep the far
+// end inside the 210-byte block; the near end stays in the allocation,
+// because a device allocation starts 256-byte aligned at a tensor's first
+// byte, so a block at an allocation's start has p aligned (off 0) and any
+// other block has earlier bytes of the same allocation before it.
+template <int N>
+static __device__ __forceinline__ void g2_words_a2(uint (&out)[N], const uchar *p) {
+    const ulong64 a = (ulong64)p & ~(ulong64)7;
+    const int off = (int)((ulong64)p & 7);      // 0, 2, 4 or 6
+    const uint2 *q = (const uint2 *)a;
+    uint w[N + 2];
+    #pragma unroll
+    for (int i = 0; i < (N + 2) / 2; i++) {
+        uint2 v = q[i];
+        w[2 * i] = v.x;
+        w[2 * i + 1] = v.y;
+    }
+    const bool skip = off >= 4;                 // start in the second word
+    const uint sh = (uint)(off & 3) * 8;        // 0 or 16
+    #pragma unroll
+    for (int i = 0; i < N; i++) {
+        uint lo = skip ? w[i + 1] : w[i], hi = skip ? w[i + 2] : w[i + 1];
+        out[i] = __funnelshift_r(lo, hi, sh);
+    }
+}
+
 // Q6_K: 210-byte blocks of 256, so rows are only 2-byte aligned and the raw
 // bytes come in halves. A 64-element segment reads 64 low-bit bytes (ql, both
 // the l and l + 32 halves of its 128-element half), 32 high-bit bytes (qh),
@@ -125,13 +155,12 @@ struct G2Q6K {
         (void)n_in;
         const uchar *blk = rowp + (ulong64)(ks >> 8) * 210;
         const int half_ = (ks >> 7) & 1;
-        const unsigned short *ql = (const unsigned short *)(blk + half_ * 64);
-        const unsigned short *qh = (const unsigned short *)(blk + 128 + half_ * 32);
         const unsigned short *sc = (const unsigned short *)(blk + 192 + half_ * 8);
-        #pragma unroll
-        for (int i = 0; i < 16; i++) r.ql[i] = (uint)ql[2 * i] | ((uint)ql[2 * i + 1] << 16);
-        #pragma unroll
-        for (int i = 0; i < 8; i++) r.qh[i] = (uint)qh[2 * i] | ((uint)qh[2 * i + 1] << 16);
+        // ql spans block bytes 0-127 and qh 128-191: the wide loads stay
+        // within bytes -6 to 199 of the block (see g2_words_a2 for the bytes
+        // before the block)
+        g2_words_a2<16>(r.ql, blk + half_ * 64);
+        g2_words_a2<8>(r.qh, blk + 128 + half_ * 32);
         r.sc[0] = (uint)sc[0] | ((uint)sc[1] << 16);
         r.sc[1] = (uint)sc[2] | ((uint)sc[3] << 16);
         r.d = *(const unsigned short *)(blk + 208);
