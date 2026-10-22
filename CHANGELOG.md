@@ -109,6 +109,17 @@ Current release and unreleased changes. Compatibility follows the
   RTX 3070). Decode on the slice (5 interleaved rounds): granite-4.0-h-micro
   +6.9%, Nemotron-Nano-9B-v2 +5.7%; prefill unchanged.
 
+- **CUDA: two attention opt-ins for layers the default leaves alone.**
+  `RUNNER_CUDA_ATTN_TILE512=1` lets the tiled prefill attention take head
+  widths 257-512 (`k_attn_tile8`, 8 query rows of 8-key tiles), so gemma-4's
+  global layers stop falling back to the one-row `k_attn`;
+  `RUNNER_CUDA_ATTN_TC_FULL=1` puts the tensor-core attention on the layers
+  without a window in a family the default keeps on the tile (gpt-oss's
+  full-attention layers). Both are tolerance class and off by default until
+  their long-context rows against the float32 reference pass. 8,191-token
+  prefill on an RTX 3070, 3 rounds: gemma-4-E4B +41.8% with the first; phi3
+  +135.6% under the existing `RUNNER_CUDA_ATTN_TC=1`.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was

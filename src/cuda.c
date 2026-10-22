@@ -457,7 +457,7 @@ typedef struct gpu_weights {
     CUfunction  f_q35_delta1, f_q35_delta_norm;   // the column-split one-token step
     CUfunction  f_colabsmax;            // per-column |x| max for the scaled TC GEMMs
     CUfunction  f_attn_dec, f_attn_merge;   // flash-decoding attention (decode)
-    CUfunction  f_attn_tile32, f_attn_tile16; // tiled prefill attention (tile_attn)
+    CUfunction  f_attn_tile32, f_attn_tile16, f_attn_tile8; // tiled prefill attention (tile_attn)
     CUfunction  f_attn_dec_gqa, f_attn_merge32; // grouped decode attention (tile_attn)
     CUfunction  f_attn_tc;                  // tensor-core prefill attention (tile_attn)
     CUfunction  f_kv_gather;                // one-copy decode KV write-back (X3)
@@ -2598,6 +2598,7 @@ static bool shared_load_module(gpu_weights *w) {
     cu.ModuleGetFunction(&w->f_attn_dec_gqa_seq, w->mod, "k_attn_dec_gqa_seq");
     cu.ModuleGetFunction(&w->f_attn_merge32_seq, w->mod, "k_attn_merge32_seq");
     cu.ModuleGetFunction(&w->f_attn_tile16, w->mod, "k_attn_tile16");
+    cu.ModuleGetFunction(&w->f_attn_tile8, w->mod, "k_attn_tile8");
     return true;
 fail:
     return false;
@@ -6613,6 +6614,18 @@ static bool tile_kv_store(gpu_t *g, model_t *m, int l, int tn, int hd,
 // with its sinks and alternating window) were never further from the
 // reference than k_attn's; 0 keeps k_attn. A tolerance route: recorded as
 // attn-tile, and --gpu-route reference runs k_attn.
+// RUNNER_CUDA_ATTN_TILE512=1: the tiled prefill attention also takes head
+// widths 257-512 (gemma-4's global layers, k_attn_tile8). Opt-in until its
+// long-context P3 rows pass the owner's D1 rule against k_attn.
+static bool attn_tile512_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_ATTN_TILE512");
+        on = e && *e && strcmp(e, "0") != 0;
+    }
+    return on == 1;
+}
+
 static bool attn_tile_on(void) {
     if (route_pinned(GR_ATTN_TILE) >= 0) return route_pinned(GR_ATTN_TILE);
     static _Atomic int on = -1;
@@ -6625,15 +6638,17 @@ static bool attn_tile_on(void) {
 
 // The tiled prefill attention over a whole tile of tn query columns, or
 // false (nothing launched) when it does not apply: switch off, kernel
-// absent from the PTX, a head width past 256, or a GQA ratio that does not
-// divide. Its launch shape and shared footprint are k_attn_tile's (see
-// kernels.cu): 32 query rows of 32-key tiles at head_dim <= 128, 16 of 16
-// at <= 256, the rows a block's heads times its strip of tokens.
+// absent from the PTX, a head width past 256 (512 under
+// RUNNER_CUDA_ATTN_TILE512), or a GQA ratio that does not divide. Its launch
+// shape and shared footprint are k_attn_tile's (see kernels.cu): 32 query
+// rows of 32-key tiles at head_dim <= 128, 16 of 16 at <= 256, 8 of 8 at
+// <= 512, the rows a block's heads times its strip of tokens.
 static bool tile_attn_tiled(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
                             const attn_args *aa, CUdeviceptr sinks, bool *ok) {
     if (!attn_tile_on() || hd % 2 || n_kv < 1 || m->n_head % n_kv) return false;
-    int R = hd <= 128 ? 32 : hd <= 256 ? 16 : 0;
-    CUfunction f = R == 32 ? g->sw->f_attn_tile32 : R == 16 ? g->sw->f_attn_tile16 : NULL;
+    int R = hd <= 128 ? 32 : hd <= 256 ? 16 : hd <= 512 && attn_tile512_on() ? 8 : 0;
+    CUfunction f = R == 32 ? g->sw->f_attn_tile32 : R == 16 ? g->sw->f_attn_tile16 :
+                   R == 8 ? g->sw->f_attn_tile8 : NULL;
     if (!f) return false;
     int G = m->n_head / n_kv;
     int hb = G < R ? G : R, qs = R / hb, ngh = (G + hb - 1) / hb;
@@ -6684,6 +6699,18 @@ static bool attn_tc_on(const model_t *m) {
     }
     return on == 2 ? attn_tc_family(m) : on == 1;
 }
+// RUNNER_CUDA_ATTN_TC_FULL=1: the tensor cores also take the layers without a
+// window in a family the default leaves out (gpt-oss's full-attention layers;
+// its windowed layers, where attention is short by construction, keep the
+// tile). Opt-in until a long-context P3 row passes the owner's D1 rule.
+static bool attn_tc_full_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_ATTN_TC_FULL");
+        on = e && *e && strcmp(e, "0") != 0;
+    }
+    return on == 1;
+}
 static _Atomic unsigned long g_attn_tc_dispatches;
 
 // The tensor-core prefill attention over a whole tile, or false when it does
@@ -6691,7 +6718,8 @@ static _Atomic unsigned long g_attn_tc_dispatches;
 // width that is not a multiple of 16 up to 128. 64 query rows a block.
 static bool tile_attn_tc(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
                          const attn_args *aa, CUdeviceptr sinks, bool *ok) {
-    if (!attn_tc_on(m) || !g->sw->f_attn_tc || model_kv_kind_k(m) || model_kv_kind_v(m) ||
+    if (!(attn_tc_on(m) || (attn_tc_full_on() && aa->window == 0)) ||
+        !g->sw->f_attn_tc || model_kv_kind_k(m) || model_kv_kind_v(m) ||
         hd % 16 || hd > 128 || n_kv < 1 || m->n_head % n_kv)
         return false;
     int G = m->n_head / n_kv, R = 64;

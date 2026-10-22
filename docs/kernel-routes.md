@@ -98,6 +98,14 @@ Around the matvec:
   With Q and the softmax weights as single fp16 operands it read 0.19%
   further from the reference on Mistral-7B; it carries each in two halves
   (about 22 bits of the operand), which read the same as `k_attn` there.
+  Two opt-ins reach layers the default leaves alone, tolerance class and off
+  until their long-context rows pass: `RUNNER_CUDA_ATTN_TILE512=1` lets the
+  tiled prefill attention take head widths 257-512 (`k_attn_tile8`, 8 query
+  rows of 8-key tiles; gemma-4's global layers otherwise run `k_attn`), and
+  `RUNNER_CUDA_ATTN_TC_FULL=1` puts the tensor-core attention on the layers
+  without a window in a family the default keeps on the tile (gpt-oss's
+  full-attention layers). 8,191-token prefill on an RTX 3070: gemma-4-E4B
+  +41.8% with the first; phi3 +135.6% under `RUNNER_CUDA_ATTN_TC=1`.
 - **Byte movers, on by default.** The one-copy KV gather (decode with full
   offload: every layer's new K and V rows gathered on the device, one copy
   back, `RUNNER_CUDA_KV_GATHER=0` restores the per-layer copies) and the

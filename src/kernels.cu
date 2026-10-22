@@ -3767,6 +3767,14 @@ k_attn_tile16(const float *q, const unsigned char *kc, const unsigned char *vc,
               int tn, int hb, int qs) {
     attn_tile_body<16, 16>(q, kc, vc, out, a, posp, sinks, tn, hb, qs);
 }
+// head_dim <= 512 (gemma-4's global layers): 8 query rows, 8-key tiles, still
+// R * head_dim <= 4096 outputs a block
+extern "C" __global__ void __launch_bounds__(AT_THREADS)
+k_attn_tile8(const float *q, const unsigned char *kc, const unsigned char *vc,
+             float *out, attn_args a, const int *posp, const float *sinks,
+             int tn, int hb, int qs) {
+    attn_tile_body<8, 8>(q, kc, vc, out, a, posp, sinks, tn, hb, qs);
+}
 
 // --------------------------------------------------- flash-decoding attention
 // Decode (batch==1, one query token, long KV) attention. The plain k_attn runs
