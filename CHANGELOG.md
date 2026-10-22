@@ -164,6 +164,16 @@ Current release and unreleased changes. Compatibility follows the
   chunks over 16 (5 interleaved rounds, medians), byte-identical; on x86
   (Zen 5, i7-7700K) 8 and 32 columns read within noise of 16, which stays.
 
+- **CPU: a native AVX-512 build takes the 4 x 4 register tile.** AVX-512VL
+  doubles the vector registers to 32, enough for the 4 x 4 tile's 21 live
+  values, so a build for such a host (`-march=native` on Zen 4 / Zen 5 or a
+  recent Xeon) runs its prompt matvecs in 4 x 4 tiles; the x86-64-v3 release
+  build keeps the 4 x 3 tile. Each output is the same dot in the same order:
+  chunked `--score` is byte-identical on Llama-3.2-3B Q4_K_M and Qwen3-8B
+  Q8_0. 512-token prefill on 12 Zen 5 cores, native builds, 7 interleaved
+  rounds (medians): +4.5% (Llama-3.2-3B Q4_K_M), +8.1% (Qwen2.5-7B Q4_K_M)
+  and +8.9% (Qwen3-8B Q8_0) over the 4 x 3 tile, A/A within 1.6%.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was

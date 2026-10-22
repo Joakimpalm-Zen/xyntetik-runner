@@ -1595,17 +1595,25 @@ static inline float f32_dot_tail(float s, const float *w, const float *x, int i,
     return s;
 }
 
+// AVX2's register tile takes three columns where only the 16 ymm registers
+// exist and four where AVX-512VL adds sixteen more (a native build on such a
+// host: 21 values then fit, and the wider tile reuses each weight load more)
+#if defined(__AVX512VL__)
+enum { F32_TILE_ROWS = 4, F32_TILE_COLS = 4, F32_TILE_COLS_AVX2 = 4 };
+#else
 enum { F32_TILE_ROWS = 4, F32_TILE_COLS = 4, F32_TILE_COLS_AVX2 = 3 };
+#endif
 
 #if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
-// One AVX2 register tile: the F32_TILE_ROWS weight rows against nc <= 3
-// activation columns. Every call passes nc as a literal, so the loops unroll
-// and the accumulators stay in registers. Three columns, not NEON's four:
-// 4 x 4 needs 16 accumulators + 4 activation + 1 weight vector = 21 against
-// 16 ymm registers, and the inner loop compiled at -march=x86-64-v3 kept 5
-// accumulators in memory under GCC 15 and 8 under clang, each reloaded and
-// stored again on every step (disassembly, 2026-10-22). 4 x 3 needs 16 and
-// both compilers keep it all in registers.
+// One AVX2 register tile: the F32_TILE_ROWS weight rows against nc <=
+// F32_TILE_COLS_AVX2 activation columns. Every call passes nc as a literal,
+// so the loops unroll and the accumulators stay in registers. Three columns
+// on plain AVX2, not NEON's four: 4 x 4 needs 16 accumulators + 4 activation
+// + 1 weight vector = 21 against 16 ymm registers, and the inner loop
+// compiled at -march=x86-64-v3 kept 5 accumulators in memory under GCC 15
+// and 8 under clang, each reloaded and stored again on every step
+// (disassembly, 2026-10-22). 4 x 3 needs 16 and both compilers keep it all
+// in registers. With AVX-512VL (32 ymm registers) the 4 x 4 tile fits.
 static inline __attribute__((always_inline))
 void f32_tile_avx2(const float *const *w, const float *x, int x_stride, int nc,
                    int n, float *out, int out_stride) {
@@ -1681,14 +1689,25 @@ void vec_dot_f32_tile(const float *const *w, int nrow, const float *x,
     if (nrow % F32_TILE_ROWS == 0 && nrow <= VEC_DOT_F32_TILE_ROWS) {
         // threes, with a remainder of four taken as two twos (8 accumulator
         // chains each, enough to keep both FMA ports busy): a sixteen-column
-        // chunk runs 3,3,3,3,2,2 and only nb == 1 takes the one-column tile;
+        // chunk runs 3,3,3,3,2,2 (4,4,4,4 with AVX-512VL's registers) and
+        // only nb == 1 takes the one-column tile;
         // every four-row quad of the group runs against a column group while
         // its activations are still in L1
         for (int b = 0; b < nb;) {
-            int left = nb - b, nc = left >= 5 || left == 3 ? 3 : left >= 2 ? 2 : 1;
+            int left = nb - b;
+#if defined(__AVX512VL__)
+            int nc = left >= 4 ? 4 : left;
+#else
+            int nc = left >= 5 || left == 3 ? 3 : left >= 2 ? 2 : 1;
+#endif
             const float *xb = x + (size_t)b * x_stride;
             for (int r = 0; r < nrow; r += F32_TILE_ROWS) {
                 float *ob = out + (size_t)r * out_stride + b;
+#if defined(__AVX512VL__)
+                if (nc == 4)
+                    f32_tile_avx2(w + r, xb, x_stride, 4, n, ob, out_stride);
+                else
+#endif
                 if (nc == 3)
                     f32_tile_avx2(w + r, xb, x_stride, 3, n, ob, out_stride);
                 else if (nc == 2)
