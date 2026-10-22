@@ -6,7 +6,12 @@ pins is the mode: nothing is loaded, stdout carries the result and only the
 result, and every claim about a file is anchored on the fixture's own size
 and SHA-256 computed here, outside Runner.
 """
+import hashlib
 import json
+import os
+import sys
+
+import pytest
 
 from test_hf_fetch import (  # noqa: F401  (fixtures)
     calls, fixture_model, hub, resolve_calls, run, runner_bin, sha256)
@@ -171,3 +176,59 @@ def test_bad_specs_name_the_flag(runner_bin, hub):
     assert r.returncode == 1 and "--pull REPO:TAG" in r.stderr
     assert resolve_calls(hub["log"]) == []
 
+
+SPARSE_CURL = r'''
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_HUB_LOG"], "a") as log:
+    log.write(json.dumps(args) + "\n")
+out, url = args[args.index("-o") + 1], args[-1]
+if "/api/models/" in url:
+    with open(os.environ["FAKE_HUB_FILES"]) as src, open(out, "w") as dst:
+        dst.write(src.read())
+    sys.exit(0)
+# the model: zeros of the listed length, written sparse (no 2 GB of I/O)
+with open(out, "wb") as f:
+    f.truncate(int(os.environ["FAKE_HUB_SIZE"]))
+sys.exit(0)
+'''
+
+
+@pytest.mark.skipif(sys.platform != "win32" and not os.environ.get("RUNNER_TEST_LARGE"),
+                    reason="the 32-bit stat lives on Windows; elsewhere opt in with "
+                           "RUNNER_TEST_LARGE=1 (hashes 2 GiB three times, ~25 s)")
+def test_a_file_over_2_gib_is_sized_and_reused(runner_bin, tmp_path):
+    """A real checkpoint is larger than 2 GiB. MinGW's stat() keeps the size
+    in 32 bits and fails there (model.c's file identity documents it), and
+    the cache check and the size check sized files with it: on Windows such
+    a file was never seen as cached, and --pull could not report it. Zeros of
+    a length past 2^31, whose SHA-256 is computed here, anchor the size, the
+    digest and the reuse."""
+    size = (1 << 31) + 4096
+    h = hashlib.sha256()
+    block = bytes(1 << 20)
+    for _ in range(size // len(block)):
+        h.update(block)
+    h.update(bytes(size % len(block)))
+    files = tmp_path / "files.json"
+    files.write_text(json.dumps({"siblings": [{"rfilename": "big-Q8_0.gguf", "size": size}]}))
+    script = tmp_path / "sparsecurl.py"
+    script.write_text(SPARSE_CURL)
+    if sys.platform == "win32":
+        curl = tmp_path / "sparsecurl.cmd"
+        curl.write_text(f'@"{sys.executable}" "{script}" %*\r\n')
+    else:
+        curl = tmp_path / "sparsecurl"
+        curl.write_text(f"#!/bin/sh\nexec {sys.executable} {script} \"$@\"\n")
+        curl.chmod(0o755)
+    log = tmp_path / "curl.log"
+    env = dict(os.environ, RUNNER_CURL=str(curl), RUNNER_HF_CACHE=str(tmp_path / "cache"),
+               FAKE_HUB_FILES=str(files), FAKE_HUB_SIZE=str(size), FAKE_HUB_LOG=str(log))
+    env.pop("HF_TOKEN", None)
+    first, _ = pull_json(runner_bin, env, "fake/big:Q8_0")
+    assert first["size_bytes"] == size
+    assert first["files"][0]["sha256"] == h.hexdigest()
+    assert first["files"][0]["verification"] == "hub_size"
+    second, r = pull_json(runner_bin, env, "fake/big:Q8_0")
+    assert second == first and "cached" in r.stderr
+    assert len(resolve_calls(log)) == 1
