@@ -413,7 +413,10 @@ static bool report_file(hf_files *out, const char *repodir, const char *rfilenam
                         const char hex[65], const char *how, char *err, size_t errcap) {
     char rel[1024], target[2048];
     local_name(rfilename, rel, sizeof rel);
-    snprintf(target, sizeof target, "%s%c%s", repodir, HF_SEP, rel);
+    if (snprintf(target, sizeof target, "%s%c%s", repodir, HF_SEP, rel) >= (int)sizeof target) {
+        snprintf(err, errcap, "cache path too long for %s", rfilename);
+        return false;
+    }
     long long size = 0;
     hf_file *grown = realloc(out->files, (size_t)(out->n + 1) * sizeof *grown);
     if (!grown || !file_size(target, &size)) {
