@@ -41,6 +41,18 @@ Current release and unreleased changes. Compatibility follows the
   rounds): granite-4.0-h-micro +135% at about 600 tokens and +145% at 2,500,
   Nemotron-Nano-9B-v2 +17% and +19%.
 
+- **CUDA: the dense Mamba-2 hybrids decode through the CUDA graph.**
+  granitehybrid and nemotron_h files without experts (granite-4.0-h-micro,
+  Nemotron-Nano-9B-v2) decoded with plain launches: the graph plan admitted
+  qwen35 alone among the recurrent families. Their one-token step advances
+  the conv ring and the scan state in place on buffers held for the
+  instance, with the rollback copy taken before the forward, the ownership
+  qwen35's graph relies on, and nemotron_h's MLP-only blocks run no
+  attention; both now replay. Greedy output is byte-identical with the graph
+  on and off; `RUNNER_CUDA_GRAPH_RECUR=0` keeps every recurrent family eager.
+  Decode on the datacenter MIG slice (5 interleaved rounds):
+  granite-4.0-h-micro +1.2%, Nemotron-Nano-9B-v2 +0.4%.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was

@@ -3557,12 +3557,20 @@ static void cuda_plan_graphs(model_t *m, gpu_t *g) {
     // in place; the rollback copy is taken before the forward, outside any
     // capture), so a qwen35 decode replays a graph since 2026-10-21: it had
     // run eagerly since the family reached CUDA, with no hazard on record.
-    // The Mamba-2 hybrids, qwen4exp (host steps between layers) and any
-    // qwen35 file with routed experts (none measured) stay eager.
-    bool recur_graph = m->qwen35 && !m->hyper_conn && m->n_expert == 0 &&
+    // The dense Mamba-2 hybrids (granitehybrid, nemotron_h without experts)
+    // follow the same argument: a one-token step is three launches on the
+    // conv ring and SSD state fixed for the instance, advanced in place, the
+    // rollback copy taken before the forward (cuda_fwd_prepare); nemotron_h's
+    // MLP-only blocks run no attention, so no V memset. qwen4exp (host steps
+    // between layers), MoE hybrids and any qwen35 file with routed experts
+    // (none measured) stay eager. RUNNER_CUDA_GRAPH_RECUR=0 keeps every
+    // recurrent family eager.
+    bool mamba_dense = (m->granite_hybrid || m->nemotron_h) && m->n_expert == 0;
+    bool recur_graph = (m->qwen35 || mamba_dense) && !m->hyper_conn && m->n_expert == 0 &&
                        cuda_graph_recur_on();
     for (int l = 0; l < m->gpu_layers; l++)
         if ((!m->layers[l].wv && !(m->layers[l].recurrent && recur_graph) &&
+             !(m->layers[l].skip_mixer && recur_graph) &&
              !v_from_k_capturable(m, l)) ||
             (m->layers[l].is_moe && !g->moe_fused_ok) ||
             (m->layers[l].recurrent && !recur_graph)) g->graph_bad = true;
