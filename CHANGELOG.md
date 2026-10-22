@@ -3,6 +3,19 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **`--pull owner/repo[:TAG]` downloads a model without loading it.** It
+  fetches into the cache exactly what `-hf` would (same selection, cache,
+  `HF_TOKEN`, multipart handling and verification), prints the path to give
+  `-m` and the total size, and exits; `--pull ... --json` prints one JSON
+  object instead, with each file's path, size, local SHA-256 and the Hub
+  record that verified it (`hub_sha256` or `hub_size`). Where `-hf` loads a
+  file the Hub lists with neither a digest nor a size, `--pull` refuses it.
+  It is a mode of its own: any other option beside it is refused by name.
+  `tests/test_pull.py` pins it against a fake hub, every assertion anchored
+  on the fixtures' own sizes and digests.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was
