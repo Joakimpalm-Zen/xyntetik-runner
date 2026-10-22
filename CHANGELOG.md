@@ -148,6 +148,16 @@ Current release and unreleased changes. Compatibility follows the
   and Qwen2.5-3B Q4_K_M +4.1% on an i7-7700K; Llama-3.2-3B +6.1%,
   Qwen2.5-1.5B Q4_K_M +10.6% and Q8_0 +10.1% on an Apple M1.
 
+- **CPU: the AVX2 multi-column dots keep their accumulators in registers.**
+  The 2- to 7-column K-quant and codebook dots that speculative verify
+  rounds and the CPU decode microbatch run kept one accumulator per column
+  in an array indexed by the column count, a runtime value, so the compiler
+  kept the array in memory. Each count from two to seven now has its own
+  instantiation with the same per-column operations, and the outputs are
+  unchanged. Q4_K dot on an i7-7700K: +12 to +14% at two columns, +27% at
+  four; `--draft-lookup` decode +3.9% on Llama-3.2-3B Q4_K_M, with the same
+  text as plain decoding. NEON measured no gain and keeps its form.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was
