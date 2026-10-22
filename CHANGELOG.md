@@ -158,6 +158,12 @@ Current release and unreleased changes. Compatibility follows the
   four; `--draft-lookup` decode +3.9% on Llama-3.2-3B Q4_K_M, with the same
   text as plain decoding. NEON measured no gain and keeps its form.
 
+- **CPU: on NEON a prompt matvec walks 32 activation columns a pass.** With
+  the row groups above, an Apple M1 read prefill +2.5% (Llama-3.2-3B
+  Q4_K_M), +3.5% (Qwen2.5-1.5B Q4_K_M) and +4.2% (Q8_0) with 32-column
+  chunks over 16 (5 interleaved rounds, medians), byte-identical; on x86
+  (Zen 5, i7-7700K) 8 and 32 columns read within noise of 16, which stays.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was

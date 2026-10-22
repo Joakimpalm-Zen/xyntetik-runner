@@ -5307,12 +5307,18 @@ static void mv_rows(void *ctx, int i0, int i1) {
                 }
                 // one tile writes g x n_batch outputs; y is column-major in
                 // slots of y_stride, so a row's outputs are strided by y_stride.
-                // 16-column chunks: 16 x n_in floats is 256 KB at n_in 4,096,
-                // an L2-sized block on every host measured (L1 is 32-128 KB),
-                // served to the whole row group while it is there. 8 and 32
-                // measured within noise of 16 on Zen 5 and an i7-7700K
-                // (2026-10-22); 64 would be a megabyte.
+                // Activation chunks of TCOLS columns: 16 x n_in floats is 256
+                // KB at n_in 4,096, an L2-sized block on every host measured
+                // (L1 is 32-128 KB), served to the whole row group while it is
+                // there. 32 columns read +2.5 to +4.2% over 16 on an M1 (three
+                // files), and 8 and 32 within noise of 16 on Zen 5 and an
+                // i7-7700K (2026-10-22), so NEON takes 32 and the rest 16.
+#if defined(__aarch64__) && defined(__ARM_NEON) && \
+    !(defined(__AVX2__) && defined(__FMA__) && defined(__F16C__))
+                enum { TCOLS = 32 };
+#else
                 enum { TCOLS = 16 };
+#endif
                 for (int c = 0; c < j->n_batch; c += TCOLS) {
                     int nb = j->n_batch - c < TCOLS ? j->n_batch - c : TCOLS;
                     float tout[TROWS][TCOLS];
