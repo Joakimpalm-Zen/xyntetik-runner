@@ -7,7 +7,8 @@ or device. The [coverage inventory](../tests/compatibility/coverage.json)
 separates executed evidence from missing checks.
 
 The primary numerical anchor is the publisher's float32 implementation.
-The [golden reference comparison](golden-pass-2026-09-07.md) and its
+The [golden reference comparison](golden-pass-2026-10-22.md) (first pass
+[2026-09-07](golden-pass-2026-09-07.md)) and its
 [evidence](golden-pass-evidence/) record the measured model/configuration
 rows. The [Granite 4.2/Qwen 3.8 admission](granite-42-qwen38-cert-2026-09-06.md)
 records the corresponding tokenizer/template/reference cases.
