@@ -117,6 +117,20 @@ float vec_dot(int type, const void *row, const float *x, int n);
 // result is bit-identical to calling the single-column dot R*nb times.
 void  vec_dot_f32_tile(const float *const *w, int nrow, const float *x,
                        int x_stride, int nb, int n, float *out, int out_stride);
+// The most rows mv_rows dequantizes for one vec_dot_f32_tile call (a row
+// group); the tile takes any multiple of its register tile's rows up to this.
+// Sixteen on AVX2: four 4 x 3 quads run against each column group while its
+// activations are in L1 (512-token prefill +4 to +6% over four rows on an
+// i7-7700K). Eight on NEON: one 8 x 3 tile a column group (+6 to +11% on an
+// M1; sixteen rows, 512 KB of dequantized rows at n_in 8,192, overflowed its
+// L1 on a 3B file). Four elsewhere. Any count is bit-identical per output.
+#if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
+#define VEC_DOT_F32_TILE_ROWS 16
+#elif defined(__aarch64__) && defined(__ARM_NEON)
+#define VEC_DOT_F32_TILE_ROWS 8
+#else
+#define VEC_DOT_F32_TILE_ROWS 4
+#endif
 void  vec_dot_f32_multi(const float *w, const float *x, int x_stride,
                         int nb, int n, float *out);
 void  q8_quant_row(const float *x, void *dst, int n); // n % 32 == 0

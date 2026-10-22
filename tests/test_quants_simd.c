@@ -1394,24 +1394,27 @@ int main(void) {
         }
     }
 
-    // and the 4-row tile it feeds: same contract, one accumulator per output
+    // and the row tiles it feeds (4, 8 and 16 rows: the register tile and the
+    // row groups mv_rows hands it): same contract, one accumulator per output
     // walking the row in one order, so every element must equal that column
     // computed alone.
     {
-        enum { MAXN = 300, MAXB = 19, NROW = 4 };
-        static float wrows[NROW][MAXN], xv2[MAXB * MAXN], tout[NROW * MAXB];
-        const float *wp[NROW];
-        for (int r = 0; r < NROW; r++) {
+        enum { MAXN = 300, MAXB = 19, MAXR = 16 };
+        static float wrows[MAXR][MAXN], xv2[MAXB * MAXN], tout[MAXR * MAXB];
+        const float *wp[MAXR];
+        for (int r = 0; r < MAXR; r++) {
             for (int i = 0; i < MAXN; i++) wrows[r][i] = frnd();
             wp[r] = wrows[r];
         }
         for (int i = 0; i < MAXB * MAXN; i++) xv2[i] = frnd();
         const int ns2[] = { 1, 4, 7, 8, 16, 33, 64, 300 };
         const int bs2[] = { 1, 4, 7, 8, 9, 16, 19 };
+        const int rs2[] = { 4, 8, 16 };
+        for (size_t ri = 0; ri < sizeof(rs2) / sizeof(*rs2); ri++)
         for (size_t ni = 0; ni < sizeof(ns2) / sizeof(*ns2); ni++)
             for (size_t bi = 0; bi < sizeof(bs2) / sizeof(*bs2); bi++) {
-                int n = ns2[ni], nb = bs2[bi];
-                for (int k = 0; k < NROW * MAXB; k++) tout[k] = 4321.5f;
+                int n = ns2[ni], nb = bs2[bi], NROW = rs2[ri];
+                for (int k = 0; k < MAXR * MAXB; k++) tout[k] = 4321.5f;
                 vec_dot_f32_tile(wp, NROW, xv2, MAXN, nb, n, tout, MAXB);
                 for (int r = 0; r < NROW; r++)
                     for (int k = 0; k < nb; k++) {
@@ -1419,13 +1422,19 @@ int main(void) {
                         vec_dot_f32_multi(wrows[r], xv2 + (size_t)k * MAXN,
                                           MAXN, 1, n, &want);
                         CHECK(tout[r * MAXB + k] == want,
-                              "vec_dot_f32_tile n=%d nb=%d row=%d col=%d: %.9g != %.9g",
-                              n, nb, r, k, (double)tout[r * MAXB + k], (double)want);
+                              "vec_dot_f32_tile rows=%d n=%d nb=%d row=%d col=%d: %.9g != %.9g",
+                              NROW, n, nb, r, k, (double)tout[r * MAXB + k], (double)want);
                         float spec = ref_dot_f32_fixed(wrows[r], xv2 + (size_t)k * MAXN, n);
                         CHECK(tout[r * MAXB + k] == spec,
-                              "vec_dot_f32_tile n=%d nb=%d row=%d col=%d: %.9g != fixed-order %.9g",
-                              n, nb, r, k, (double)tout[r * MAXB + k], (double)spec);
+                              "vec_dot_f32_tile rows=%d n=%d nb=%d row=%d col=%d: %.9g != fixed-order %.9g",
+                              NROW, n, nb, r, k, (double)tout[r * MAXB + k], (double)spec);
                     }
+                // and nothing outside the NROW x nb outputs it owns
+                for (int r = 0; r < MAXR; r++)
+                    for (int k = (r < NROW ? nb : 0); k < MAXB; k++)
+                        CHECK(tout[r * MAXB + k] == 4321.5f,
+                              "vec_dot_f32_tile rows=%d n=%d nb=%d wrote outside its outputs at row=%d col=%d",
+                              NROW, n, nb, r, k);
             }
     }
 

@@ -92,6 +92,7 @@ unsigned long gpu_tc_dispatches(void);
 unsigned long gpu_tc_dispatches_type(int type);
 // of those, the ones the pipelined TC2 kernels ran (CUDA, RUNNER_CUDA_TC2)
 unsigned long gpu_tc2_dispatches(void);
+unsigned long gpu_tc2_reused(void);   // TC2 GEMMs that reused the previous GEMM's staging
 // of those, the ones the compute_80 kernels ran (CUDA, a CC >= 8.0 device, E1)
 unsigned long gpu_tc2_80_dispatches(void);
 // MoE prefill tiles run by expert (moe_twin), and the test override of its switch
@@ -196,6 +197,7 @@ void   gpu_mv_force(int on);
 // an exactly-matching one, and a gate that cannot see its own subject passes
 // vacuously.
 unsigned long gpu_mv_dispatches(void);
+unsigned long gpu_mv2_dispatches(void);   // Metal two-row identity decode matvecs
 // test hook for the cooperative-KV attention gate: force the reassociating
 // score read on (1) or off (0) regardless of RUNNER_METAL_ATTN_COOP; -1
 // returns to the env default. A no-op on backends without one.

@@ -3767,6 +3767,14 @@ k_attn_tile16(const float *q, const unsigned char *kc, const unsigned char *vc,
               int tn, int hb, int qs) {
     attn_tile_body<16, 16>(q, kc, vc, out, a, posp, sinks, tn, hb, qs);
 }
+// head_dim <= 512 (gemma-4's global layers): 8 query rows, 8-key tiles, still
+// R * head_dim <= 4096 outputs a block
+extern "C" __global__ void __launch_bounds__(AT_THREADS)
+k_attn_tile8(const float *q, const unsigned char *kc, const unsigned char *vc,
+             float *out, attn_args a, const int *posp, const float *sinks,
+             int tn, int hb, int qs) {
+    attn_tile_body<8, 8>(q, kc, vc, out, a, posp, sinks, tn, hb, qs);
+}
 
 // --------------------------------------------------- flash-decoding attention
 // Decode (batch==1, one query token, long KV) attention. The plain k_attn runs
@@ -6483,7 +6491,7 @@ extern "C" __global__ void k_mamba2_conv(
 // matches. dt/A/D are per head; B/C are per group g = h/gsz.
 extern "C" __global__ void k_mamba2_ssd(
         const float *xBC, const float *proj, const float *A, const float *dt_b,
-        const float *D, float *state, float *y,
+        const float *D, const float *state_in, float *state, float *y,
         int inner, int hd, int ds, int ng, int gsz, int conv_dim,
         int d_in_proj, int t) {
     int h = blockIdx.x;
@@ -6498,10 +6506,13 @@ extern "C" __global__ void k_mamba2_ssd(
     const float *Cg = xrow + inner + (size_t)ng * ds + (size_t)g * ds;
     float x = xrow[(size_t)h * hd + p];
     float x_dt = x * dt;
+    // the row is read from state_in and written to state (the other half of
+    // the double-buffered fold, or the same row on a forward's later tiles)
+    const float *si = state_in + ((size_t)h * hd + p) * ds;
     float *sp = state + ((size_t)h * hd + p) * ds;
     float sumf = 0.0f;
     for (int j = 0; j < ds; j++) {
-        float s = sp[j] * dA + Bg[j] * x_dt;
+        float s = si[j] * dA + Bg[j] * x_dt;
         sumf += s * Cg[j];
         sp[j] = s;
     }
@@ -6509,13 +6520,16 @@ extern "C" __global__ void k_mamba2_ssd(
 }
 
 // Phase 3: gate by silu(z) then grouped RMS norm (Mamba-2 RMSNormGated) for
-// token t. grid = n_group blocks (blockIdx.x = group), block 256. The group's
+// token t + blockIdx.y. grid = n_group blocks (blockIdx.x = group) by one row
+// per token (a single token's launch has one row), block 256. The group's
 // per_g = inner/n_group activations are gated then normalized together; the
 // gate is elementwise so restricting it to the group's slice is exact. Sum of
 // squares is accumulated in double, matching the CPU norm (tree order differs).
+// A token's arithmetic does not depend on the row it is launched in.
 extern "C" __global__ void k_mamba2_gate_norm(
         const float *proj, float *y, const float *gnorm_w,
         int inner, int ng, int per_g, float eps, int d_in_proj, int t) {
+    t += (int)blockIdx.y;
     int gidx = blockIdx.x;
     int tid = threadIdx.x, blk = blockDim.x;
     const float *zg = proj + (size_t)t * d_in_proj + (size_t)gidx * per_g;
@@ -7257,11 +7271,12 @@ k_q35_delta_seq(const float *cv, const float *z, const float *beta_in,
 }
 
 // k_mamba2_conv over tn tokens (one thread per channel, its ring column in
-// registers)
+// registers). snap (a speculative verify round's checkpoints, else NULL):
+// the window after each row but the last, row t's at snap + t * snap_stride.
 extern "C" __global__ void k_mamba2_conv_seq(
         const float *proj, float *xBC, const float *conv_w, const float *conv_b,
         float *ring, int conv_dim, int inner, int d_in_proj,
-        int conv_kernel, int histn, int tn) {
+        int conv_kernel, int histn, int tn, float *snap, int snap_stride) {
     int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= conv_dim) return;
     const float *cw = conv_w + (size_t)c * conv_kernel;
@@ -7282,6 +7297,11 @@ extern "C" __global__ void k_mamba2_conv_seq(
         #pragma unroll
         for (int k = 0; k < RS_MAX_HIST; k++)
             if (histn && k == histn - 1) r[k] = cur;
+        if (snap && t < tn - 1) {
+            #pragma unroll
+            for (int k = 0; k < RS_MAX_HIST; k++)
+                if (k < histn) snap[(size_t)t * snap_stride + (size_t)k * conv_dim + c] = r[k];
+        }
     }
     #pragma unroll
     for (int k = 0; k < RS_MAX_HIST; k++)
@@ -7289,21 +7309,24 @@ extern "C" __global__ void k_mamba2_conv_seq(
 }
 
 // k_mamba2_ssd over tn tokens: thread (h, p) keeps its d_state row in
-// registers (ds <= RS_MAX_SD)
+// registers (ds <= RS_MAX_SD). snap as k_mamba2_conv_seq's: the state after
+// each row but the last (the last is written to state).
 extern "C" __global__ void k_mamba2_ssd_seq(
         const float *xBC, const float *proj, const float *A, const float *dt_b,
-        const float *D, float *state, float *y,
+        const float *D, const float *state_in, float *state, float *y,
         int inner, int hd, int ds, int ng, int gsz, int conv_dim,
-        int d_in_proj, int tn) {
+        int d_in_proj, int tn, float *snap, int snap_stride) {
     int h = blockIdx.x;
     int p = threadIdx.x;
     if (p >= hd) return;
     int g = h / gsz;
+    // read from state_in, written to state (see k_mamba2_ssd)
+    const float *si = state_in + ((size_t)h * hd + p) * ds;
     float *sp = state + ((size_t)h * hd + p) * ds;
     float s_[RS_MAX_SD];
     #pragma unroll
     for (int j = 0; j < RS_MAX_SD; j++)
-        if (j < ds) s_[j] = sp[j];
+        if (j < ds) s_[j] = si[j];
     for (int t = 0; t < tn; t++) {
         float dtr = proj[(size_t)t * d_in_proj + inner + conv_dim + h] + dt_b[h];
         float dt = dtr > 20.0f ? dtr : logf(1.0f + expf(dtr));
@@ -7323,6 +7346,12 @@ extern "C" __global__ void k_mamba2_ssd_seq(
             }
         }
         y[(size_t)t * inner + (size_t)h * hd + p] = sumf + D[h] * x;
+        if (snap && t < tn - 1) {
+            float *sr = snap + (size_t)t * snap_stride + ((size_t)h * hd + p) * ds;
+            #pragma unroll
+            for (int j = 0; j < RS_MAX_SD; j++)
+                if (j < ds) sr[j] = s_[j];
+        }
     }
     #pragma unroll
     for (int j = 0; j < RS_MAX_SD; j++)

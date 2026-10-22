@@ -47,7 +47,10 @@ falls back to the buffer-free dot, so a forward never writes through NULL.
 done. One forward runs in this order:
 
 1. `cuda_fwd_prepare()`: per-forward state, and the recurrent checkpoints
-   (device-to-device copies) a rollback needs.
+   a rollback needs: device-to-device copies of the conv rings and of
+   qwen35's state. A Mamba-2 hybrid's SSD state is two halves instead: a
+   forward reads the half the last one wrote and writes the other, so the
+   half it read is the rollback point and the state is not copied.
 2. If the position does not follow the last one (a CPU-run batch, a reset,
    a rewind), `kv_upload()` copies host KV rows `[0, pos)` to the device.
 3. `stage_x()` copies the token embeddings to the device.
@@ -61,9 +64,10 @@ done. One forward runs in this order:
 The synchronize in step 4 is the completion signal: after it, every device
 scratch buffer may be reused by the next forward. The logits pointer a
 forward returns belongs to the instance and is overwritten by its next
-forward. The only asynchronous copies are the qwen35 per-row checkpoints
-(`cuMemcpyDtoDAsync` on the forward's stream), which the same synchronize
-orders.
+forward. The only asynchronous copies are a verify round's per-row
+checkpoints (qwen35's states and windows, a Mamba-2 hybrid's conv windows
+where its per-token kernels run; `cuMemcpyDtoDAsync` on the forward's
+stream), which the same synchronize orders.
 
 **Metal.** Unified memory and shared storage: the CPU and the GPU read the
 same bytes, so there are no weight or KV transfers. Each forward encodes into
@@ -79,19 +83,28 @@ boundary activation back through the host `x` buffer.
   first use and replayed for every later token. The position lives in device
   memory (`pos_dev`), so one capture serves every position. The microbatch
   keeps one graph per width, with positions and KV pointers in device
-  tables.
+  tables. A Mamba-2 hybrid keeps one graph per SSD state half, the half the
+  step writes, since its state alternates halves between forwards.
 - **What the graph assumes.** Every device address it recorded stays valid
   and unmoved for the life of the `gpu_t`. All per-instance device buffers
   are allocated at init and released only by `gpu_ctx_free()`, which
-  destroys the graph first. `gpu_live_buffers()` counts every device
+  destroys the graph first. One set is allocated later: a Mamba-2 hybrid's
+  verify checkpoint slots (`snap_state`, `snap_hist`), by its first
+  speculative verify round (`mamba_snap_ready()`), so plain decoding never
+  holds them; only verify forwards, which are never captured, write them,
+  and `gpu_ctx_free()` releases them with the rest. `gpu_live_buffers()` counts every device
   allocation the backend holds, and `test-cuda-teardown` requires load and
   free cycles to return it to its starting value.
 - **When capture is refused** (`graph_bad`): no stream; a layer without
-  `attn_v.weight` (a synchronous memset that cannot be captured); a MoE layer
-  without fused device routing; the Mamba-2 hybrids' recurrent layers;
-  qwen4exp; a qwen35 model with routed experts or under
-  `RUNNER_CUDA_GRAPH_RECUR=0` (its Gated DeltaNet steps replay since
-  2026-10-21); experts on the host; a partial split; the profiler on;
+  `attn_v.weight` that is not an attention layer reusing K as V (gemma-4's
+  global layers zero V with `cuMemsetD8Async` in stream order, which a graph
+  records; a driver without that call keeps them eager); a MoE layer
+  without fused device routing; a Mamba-2 hybrid with experts; qwen4exp; a
+  qwen35 model with routed experts; any recurrent model under
+  `RUNNER_CUDA_GRAPH_RECUR=0` (qwen35's Gated DeltaNet steps replay since
+  2026-10-21, the dense Mamba-2 hybrids' steps and nemotron_h's MLP-only
+  blocks since 2026-10-22); experts on the host; a partial split; the
+  profiler on;
   `RUNNER_CUDA_GRAPH_OFF`. A speculative keep-forward, whose per-row
   checkpoints are copies the graph does not hold, runs its step eagerly on
   an instance that otherwise replays.

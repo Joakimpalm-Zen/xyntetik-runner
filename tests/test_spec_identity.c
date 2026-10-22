@@ -27,7 +27,9 @@
 // and R runs several forwards before it rolls back.
 //
 // Anti-vacuity: on a CUDA build with a device, the exact verify tiles must
-// have run (gpu_exact_verify_tiles), or the rows came from some other path.
+// have run (gpu_exact_verify_tiles), or the rows came from some other path,
+// and a Mamba-2 hybrid there must have restored some partial rounds from its
+// per-row checkpoints (rounds of up to 8 rows file them; wider ones re-fold).
 //
 //   test-spec-identity MODEL.gguf [cpu]
 #include "runner.h"
@@ -89,7 +91,7 @@ int main(int argc, char **argv) {
     int32_t cur = argmax(lv, nv);
     int pos = PROMPT;
     uint32_t lcg = 12345u;
-    int fails = 0, checked = 0;
+    int fails = 0, checked = 0, restored = 0;
     for (int round = 0; round < ROUNDS && !fails; round++) {
         int n = 2 + round % (ROWS_MAX - 1);
         if (n > V.spec_batch) n = V.spec_batch;
@@ -136,7 +138,9 @@ int main(int argc, char **argv) {
         int a = round % n;
         int acc = a + 1;
         if (recur && acc < n) {
-            if (!model_recurrent_restore_row(&V, acc - 1)) {
+            if (model_recurrent_restore_row(&V, acc - 1)) {
+                restored++;
+            } else {
                 if (!model_recurrent_restore(&V, pos)) {
                     fprintf(stderr, "FAIL: no fold to roll back to at %d\n", pos);
                     return 1;
@@ -157,6 +161,9 @@ int main(int argc, char **argv) {
         pos += acc;
     }
     unsigned long tiles = gpu_exact_verify_tiles() - tiles0;
+#ifndef __APPLE__
+    const bool mamba2 = V.granite_hybrid || V.nemotron_h;
+#endif
     free(rows);
     free(blob);
     model_free(&V);
@@ -171,8 +178,15 @@ int main(int argc, char **argv) {
                "another path\nspec-identity: FAILED\n");
         return 1;
     }
+    if (!cpu && strcmp(where, "gpu") == 0 && mamba2 && restored == 0) {
+        printf("FAIL: no partial round restored a per-row checkpoint on the "
+               "device: every rollback re-folded (the filing path did not run, "
+               "or the slots did not fit: see a 'no room for the verify "
+               "checkpoints' line above)\nspec-identity: FAILED\n");
+        return 1;
+    }
 #endif
-    printf("spec-identity: ok (%s, %d rows byte-identical to solo steps, %lu exact tiles)\n",
-           where, checked, tiles);
+    printf("spec-identity: ok (%s, %d rows byte-identical to solo steps, %lu exact tiles, "
+           "%d rounds restored a row)\n", where, checked, tiles, restored);
     return 0;
 }

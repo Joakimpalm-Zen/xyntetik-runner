@@ -37,6 +37,11 @@ LDFLAGS += -lws2_32 -lpsapi -static   # psapi: QueryWorkingSetEx / GetProcessMem
 # tray: gdi32 (icon painting) and comdlg32 (GetOpenFileName) are not in the
 # MinGW default lib set; shell32/advapi32 are but stay explicit for clarity
 LDFLAGS += -lshell32 -lgdi32 -lcomdlg32 -ladvapi32
+# The Python suites read and write UTF-8 (the runner's output, fixtures,
+# records); without UTF-8 mode Windows decodes them as cp1252 and a test
+# fails on whatever bytes the model happened to print. CI sets it per job;
+# here a local `make test` gets it too.
+export PYTHONUTF8 = 1
 GPU_SRC  = src/cuda.c
 GPU_BACKEND_DEF = -DRUNNER_GPU_CUDA
 TRAY_SRC = src/tray.c src/tray_win.c

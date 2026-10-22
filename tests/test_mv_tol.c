@@ -9,7 +9,9 @@
 // levers it admits are load width (neutral) and row assignment (zero-sum) —
 // and concluded that closing the roofline gap needs the REASSOCIATING
 // transformations, on a second kernel promoted by teacher-forced tolerance
-// the way the tiled prefill GEMM already is.
+// the way the tiled prefill GEMM already is. (2026-10-22: the two-row Q6_K
+// kernel, k_mv2_q6_K, which shares each lane's activation loads between two
+// rows, keeps the identity and measured +3 to +16% decode on an M1.)
 //
 // This is that gate. The fast route factors the q4_0 zero-point out of the
 // inner loop (sum(q-8)*y*d becomes d*sum(q*y) - 8d*sum(y)) and accumulates in
@@ -212,11 +214,13 @@ int main(int argc, char **argv) {
         fprintf(stderr, "cannot open %s\n", path);
         return 1;
     }
-    // The fast kernels exist for Q4_0 and Q8_0. Without one of those types the
-    // two configurations run the same code and the gate measures nothing.
+    // The fast kernels exist for Q4_0, Q8_0 and Q4_K. Without one of those
+    // types the two configurations run the same code and the gate measures
+    // nothing.
     bool has_mv_type = false;
     for (uint64_t i = 0; i < gf.n_tensors; i++)
-        if (gf.tensors[i].type == T_Q4_0 || gf.tensors[i].type == T_Q8_0)
+        if (gf.tensors[i].type == T_Q4_0 || gf.tensors[i].type == T_Q8_0 ||
+            gf.tensors[i].type == T_Q4_K)
             has_mv_type = true;
 
     tokenizer tk;
@@ -241,7 +245,7 @@ int main(int argc, char **argv) {
            path, n_tok, STEPS);
     if (!has_mv_type) {
         printf("  skipped: no fast-capable tensor in this model (kernels: "
-               "Q4_0/Q8_0)\n" "mv-tol: ok (skipped)\n");
+               "Q4_0/Q8_0/Q4_K)\n" "mv-tol: ok (skipped)\n");
         return 0;
     }
 

@@ -1012,6 +1012,15 @@ static char *read_line(FILE *f, bool *oom) {
     }
 }
 
+// A mode's own copy of the resolved prompt (cli_resolve_inputs unescaped
+// the -p part once; unescaping again would rewrite the result)
+static char *prompt_copy(const char *s) {
+    size_t n = strlen(s) + 1;
+    char *out = malloc(n);
+    if (!out) { fprintf(stderr, "error: out of memory\n"); exit(1); }
+    return memcpy(out, s, n);
+}
+
 static char *unescape(const char *s) {
     char *out = malloc(strlen(s) + 1);
     if (!out) { fprintf(stderr, "error: out of memory\n"); exit(1); }
@@ -1049,7 +1058,7 @@ static void usage_to(FILE *f, const char *prog) {
         "                 its path and size (with --json, one JSON object) and\n"
         "                 exit; nothing is loaded\n"
         "  -p TEXT        prompt (one-shot completion; \\n etc. are unescaped)\n"
-        "  -f FILE        read prompt from file (appended after -p text)\n"
+        "  -f FILE        read prompt from file, as written (appended after -p text)\n"
         "  -i             interactive chat mode\n"
         "  --serve        HTTP server mode (OpenAI-compatible API)\n"
         "  --tray         BE the desktop tray/menu-bar controller (macOS,\n"
@@ -2582,9 +2591,9 @@ static bool cli_draft_flags_ok(const cli_opts *o) {
 }
 
 // Where the model comes from (-m, or -hf fetched to a cached path), the
-// prompt (-p, then -f appended into a buffer *owned_prompt owns), whether
-// there is anything to do at all, and the seed. True when the process
-// exits with *rc.
+// prompt (-p unescaped, then -f appended as written, into a buffer
+// *owned_prompt owns), whether there is anything to do at all, and the seed.
+// True when the process exits with *rc.
 static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_text,
                                char **owned_prompt, int *rc) {
     // -hf resolves to a cached local file before anything reads model_path,
@@ -2606,6 +2615,11 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         o->model_path = fetched;   // lives for the process
     }
     if (!o->model_path) { usage(prog); *rc = 1; return true; }
+    // The escapes are -p's (a shell argument cannot hold a newline easily);
+    // a file's bytes are the prompt as written. Unescaping after the append
+    // rewrote a file's own backslash sequences, so a scored corpus's
+    // "\times" reached the tokenizer as a tab and "imes".
+    if (o->prompt) o->prompt = *owned_prompt = unescape(o->prompt);
     if (o->prompt_file) {
         size_t flen = 0;
         char *fdata = read_file(o->prompt_file, &flen);
@@ -2623,6 +2637,7 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         memcpy(fbuf + plen, fdata, flen);
         fbuf[plen + flen] = 0;
         free(fdata);
+        free(*owned_prompt);
         o->prompt = *owned_prompt = fbuf;
     }
     if (!o->prompt && !o->interactive && !o->serve && !o->quant_out && !o->merge_out &&
@@ -4495,7 +4510,7 @@ static int run_score(cli_opts *o, cli_run *rt) {
         fprintf(stderr, "error: --score needs a prompt (-p or -f)\n");
         return 1;
     }
-    char *p = unescape(o->prompt);
+    char *p = prompt_copy(o->prompt);
     n_prompt = tok_encode(&rt->tok, p, rt->toks, (int)rt->tok_cap, !o->no_bos, true);
     free(p);
     if (n_prompt < 0) {
@@ -4834,7 +4849,7 @@ static int run_bench(cli_opts *o, cli_run *rt) {
     enum { BENCH_PROMPT_TOKENS = 512 };
     char *p = NULL;
     if (o->prompt) {
-        p = unescape(o->prompt);
+        p = prompt_copy(o->prompt);
     } else {
         static const char para[] =
             "The lighthouse keeper recorded the weather every morning: "
@@ -4972,7 +4987,7 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
     double ptime, gtime, t0;
     int n_prompt, n_gen;
     // one-shot completion
-    char *p = unescape(o->prompt);
+    char *p = prompt_copy(o->prompt);
     n_prompt = tok_encode(&rt->tok, p, rt->toks, (int)rt->tok_cap, !o->no_bos, true);
     if (n_prompt < 0) { fprintf(stderr, "error: out of memory tokenizing prompt\n"); free(p); return 1; }
     if (n_prompt == 0) { fprintf(stderr, "error: empty prompt\n"); free(p); return 1; }
@@ -5227,8 +5242,10 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
     return 0;
 }
 
-int main(int argc, char **argv) {
-    char *owned_prompt = NULL;
+// The prompt buffer cli_resolve_inputs builds (-p unescaped, -f appended)
+// is the caller's: main frees it after every exit of the run, the refusals
+// between resolving the inputs and loading the model included.
+static int cli_main(int argc, char **argv, char **owned_prompt) {
     // the model, tokenizer and engine the modes run on, and what the load
     // decided about them; cli_cleanup frees them on every exit after the load
     cli_run rt_state;
@@ -5278,7 +5295,7 @@ int main(int argc, char **argv) {
 
     if (o->shadow_mode) return run_shadow_mode(o->model_path, o->shadow_yes);
     if (o->caps) return run_caps();
-    if (cli_resolve_inputs(o, argv[0], detect_text != NULL, &owned_prompt, &rc))
+    if (cli_resolve_inputs(o, argv[0], detect_text != NULL, owned_prompt, &rc))
         return rc;
     if (cli_prepare_session(o, &simg, &rc)) return rc;
     if (cli_prepare_verify(o, &wmk, wm_on, &vr, &rc)) return rc;
@@ -5323,9 +5340,7 @@ int main(int argc, char **argv) {
         return rc;
 
     if (o->serve) {
-        rc = run_serve(o, rt, &wmk, wm_on, registry, tmpl_override, &signing);
-        free(owned_prompt);
-        return rc;
+        return run_serve(o, rt, &wmk, wm_on, registry, tmpl_override, &signing);
     }
 
     // cli_wm outlives the engine that points at it
@@ -5349,6 +5364,12 @@ int main(int argc, char **argv) {
     // 237,668 bytes in 19 allocations and an over-long prompt 30,186 in 21,
     // while the successful run was clean.
     cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
+    return rc;
+}
+
+int main(int argc, char **argv) {
+    char *owned_prompt = NULL;
+    int rc = cli_main(argc, argv, &owned_prompt);
     free(owned_prompt);
     return rc;
 }

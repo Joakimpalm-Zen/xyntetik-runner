@@ -86,6 +86,7 @@ static struct {
     CUresult (*MemcpyDtoD)(CUdeviceptr, CUdeviceptr, size_t);
     CUresult (*MemcpyDtoDAsync)(CUdeviceptr, CUdeviceptr, size_t, CUstream);
     CUresult (*MemsetD8)(CUdeviceptr, unsigned char, size_t);
+    CUresult (*MemsetD8Async)(CUdeviceptr, unsigned char, size_t, CUstream);  // optional
     CUresult (*ModuleLoadData)(CUmodule *, const void *);
     CUresult (*ModuleUnload)(CUmodule);
     CUresult (*ModuleGetFunction)(CUfunction *, CUmodule, const char *);
@@ -207,6 +208,7 @@ static bool cu_load_now(void) {
     cu.MemcpyDtoD        = sym2("cuMemcpyDtoD");
     cu.MemcpyDtoDAsync   = sym2("cuMemcpyDtoDAsync");
     cu.MemsetD8          = sym2("cuMemsetD8");
+    cu.MemsetD8Async     = sym2("cuMemsetD8Async");
     cu.ModuleLoadData    = dl_sym(cu.lib, "cuModuleLoadData");
     cu.ModuleUnload      = dl_sym(cu.lib, "cuModuleUnload");
     cu.ModuleGetFunction = dl_sym(cu.lib, "cuModuleGetFunction");
@@ -455,7 +457,7 @@ typedef struct gpu_weights {
     CUfunction  f_q35_delta1, f_q35_delta_norm;   // the column-split one-token step
     CUfunction  f_colabsmax;            // per-column |x| max for the scaled TC GEMMs
     CUfunction  f_attn_dec, f_attn_merge;   // flash-decoding attention (decode)
-    CUfunction  f_attn_tile32, f_attn_tile16; // tiled prefill attention (tile_attn)
+    CUfunction  f_attn_tile32, f_attn_tile16, f_attn_tile8; // tiled prefill attention (tile_attn)
     CUfunction  f_attn_dec_gqa, f_attn_merge32; // grouped decode attention (tile_attn)
     CUfunction  f_attn_tc;                  // tensor-core prefill attention (tile_attn)
     CUfunction  f_kv_gather;                // one-copy decode KV write-back (X3)
@@ -571,6 +573,18 @@ typedef struct {
     CUdeviceptr xsc;                    // [win] per-column |x| max for the scaled TC GEMMs
     CUdeviceptr xh;                     // TC2: [win][xh_cap] scaled fp16 activations
     int         xh_cap;                 // the widest GEMM input xh holds
+    // The input TC2 staged last into xsc / xh, by address and shape, and the
+    // enc_mv call that did it (mv_seq counts every enc_mv). A call site whose
+    // next GEMM reads the same columns, unwritten since (K and V after Q, up
+    // after gate), sets xh_reuse around that one call; the GEMM skips
+    // restaging only if the staging came from the enc_mv right before it
+    // (another route in between, or an older staging of the same buffer,
+    // restages) -- same bytes: staging is a pure function of the columns.
+    // Any other writer of xsc clears xh_src.
+    CUdeviceptr xh_src;
+    int         xh_n, xh_xs, xh_batch;
+    bool        xh_reuse;
+    unsigned long mv_seq, xh_seq;
     // sparse-MoE: router logits [MVB][n_expert], per-slot expert down-out
     // [rows][n_embd] (rows = max(used, MVB); the eager path uses column 0)
     CUdeviceptr moe_logits, moe_eout;
@@ -610,12 +624,27 @@ typedef struct {
     int         snap_rows;              // slots (0: off)
     int         snap_on;                // the current forward files them (a keep-forward)
     int         snap_valid;             // rows filed by the last keep-forward
+    // A Mamba-2 hybrid files rows 0 .. n-2 (its last row's state is the live
+    // half) in slots allocated by its first verify round (mamba_snap_ready),
+    // one per recurrent layer: snap_ord[l] is layer l's slot, -1 for the
+    // others. snap_failed: that allocation failed, so its rounds re-fold.
+    int        *snap_ord;
+    int         snap_nrec;
+    bool        snap_failed;
     unsigned long fwd_count;            // forwards run (recurrent rollback validity)
     unsigned long fwd_snap;             // fwd_count when the rollback point was taken
     // Mamba-2 recurrent buffers (granitehybrid/nemotron_h)
     CUdeviceptr mamba_proj, mamba_xBC, mamba_y;         // per-tile scratch
     CUdeviceptr mamba_conv, mamba_state;                // persistent conv ring + SSD state
-    CUdeviceptr mamba_conv_prev, mamba_state_prev;      // pre-forward rollback snapshot
+    CUdeviceptr mamba_conv_prev;                        // pre-forward rollback snapshot (ring)
+    // The SSD state is two halves of mamba_state. Each forward reads the
+    // committed half (rec_prev, set in cuda_fwd_prepare) and writes the other
+    // (rec_cur), so the pre-forward state the rollback and the failure rescue
+    // need is still there afterwards: no per-forward copy of the state.
+    // rec_tile0: the forward's first tile is running (later tiles of the
+    // same forward update rec_cur in place).
+    int         rec_cur, rec_prev;
+    bool        rec_tile0;
     // R8.7.2, the loaded adapter on the device: lora_a/lora_b are
     // [n_layer * LW_SLOTS] device pointers (0 = no adapter on that slot, or
     // the layer is CPU-resident and the host hook covers it), lora_t the
@@ -637,10 +666,12 @@ typedef struct {
     // that kept part of its draft, a slot reusing its own prefix) uploads
     // nothing
     int          kv_rows;
-    // CUDA graphs for the single-token decode path (Experiment A)
+    // CUDA graphs for the single-token decode path (Experiment A); a
+    // double-buffered recurrent state (mamba_db) needs one per buffer parity,
+    // the captured scan kernels baking in which half they read and write
     CUstream     stream;
-    CUgraph      graph;
-    CUgraphExec  gexec;
+    CUgraph      graph[2];
+    CUgraphExec  gexec[2];
     // the window's first position, then one per later ATT_COLS-column
     // attention sub-tile (set_pos): k_attn finds its sub-tile's start
     // through the pointer it is handed
@@ -2574,6 +2605,7 @@ static bool shared_load_module(gpu_weights *w) {
     cu.ModuleGetFunction(&w->f_attn_dec_gqa_seq, w->mod, "k_attn_dec_gqa_seq");
     cu.ModuleGetFunction(&w->f_attn_merge32_seq, w->mod, "k_attn_merge32_seq");
     cu.ModuleGetFunction(&w->f_attn_tile16, w->mod, "k_attn_tile16");
+    cu.ModuleGetFunction(&w->f_attn_tile8, w->mod, "k_attn_tile8");
     return true;
 fail:
     return false;
@@ -3435,13 +3467,12 @@ static bool cuda_alloc_recurrent(model_t *m, gpu_t *g, const cuda_dims *D) {
         CK(cu.MemAlloc(&g->mamba_xBC,   sizeof(float) * (size_t)g->win * cd));
         CK(cu.MemAlloc(&g->mamba_y,     sizeof(float) * (size_t)g->win * m->ssm.inner));
         CK(cu.MemAlloc(&g->mamba_conv,       sizeof(float) * conv_alloc));
-        CK(cu.MemAlloc(&g->mamba_state,      sizeof(float) * state_elems));
+        CK(cu.MemAlloc(&g->mamba_state,      2 * sizeof(float) * state_elems));
         CK(cu.MemAlloc(&g->mamba_conv_prev,  sizeof(float) * conv_alloc));
-        CK(cu.MemAlloc(&g->mamba_state_prev, sizeof(float) * state_elems));
         CK(cu.MemsetD8(g->mamba_conv, 0, sizeof(float) * conv_alloc));
-        CK(cu.MemsetD8(g->mamba_state, 0, sizeof(float) * state_elems));
+        CK(cu.MemsetD8(g->mamba_state, 0, 2 * sizeof(float) * state_elems));
         CK(cu.MemsetD8(g->mamba_conv_prev, 0, sizeof(float) * conv_alloc));
-        CK(cu.MemsetD8(g->mamba_state_prev, 0, sizeof(float) * state_elems));
+        g->rec_cur = g->rec_prev = 0;
     }
     // gated attention without the rest of qwen35 (afmoe, muse-glimmer):
     // only the gate scratch is needed
@@ -3527,6 +3558,20 @@ static bool cuda_graph_recur_on(void) {
     return on == 1;
 }
 
+// An attention layer with no V projection (gemma4's global layers) builds V
+// as zero plus K: enc_zero, then enc_add. On the instance's stream the
+// zeroing is a memset node a decode graph can capture; the synchronous
+// cuMemsetD8 it replaces could not be captured, so such a model decoded
+// eagerly. Same bytes either way: the same zeroing, then the same add. A
+// driver without cuMemsetD8Async keeps the synchronous call and the eager
+// decode. Other layers without wv (no attention at all, a removed attention
+// sublayer, a recurrent layer) keep their own rules.
+static bool v_from_k_capturable(const model_t *m, int l) {
+    const layer_t *ly = &m->layers[l];
+    return cu.MemsetD8Async && !ly->wv && !ly->recurrent && !ly->skip_mixer &&
+           !(m->l_no_attn && m->l_no_attn[l]);
+}
+
 // The stream graphs are captured on, and whether this model can be captured.
 static void cuda_plan_graphs(model_t *m, gpu_t *g) {
     if (cu_graphs_ok() && cu.StreamCreate(&g->stream, 0) != 0)
@@ -3541,12 +3586,21 @@ static void cuda_plan_graphs(model_t *m, gpu_t *g) {
     // in place; the rollback copy is taken before the forward, outside any
     // capture), so a qwen35 decode replays a graph since 2026-10-21: it had
     // run eagerly since the family reached CUDA, with no hazard on record.
-    // The Mamba-2 hybrids, qwen4exp (host steps between layers) and any
-    // qwen35 file with routed experts (none measured) stay eager.
-    bool recur_graph = m->qwen35 && !m->hyper_conn && m->n_expert == 0 &&
+    // The dense Mamba-2 hybrids (granitehybrid, nemotron_h without experts)
+    // follow the same argument: a one-token step is three launches on the
+    // conv ring and SSD state fixed for the instance, advanced in place, the
+    // rollback copy taken before the forward (cuda_fwd_prepare); nemotron_h's
+    // MLP-only blocks run no attention, so no V memset. qwen4exp (host steps
+    // between layers), MoE hybrids and any qwen35 file with routed experts
+    // (none measured) stay eager. RUNNER_CUDA_GRAPH_RECUR=0 keeps every
+    // recurrent family eager.
+    bool mamba_dense = (m->granite_hybrid || m->nemotron_h) && m->n_expert == 0;
+    bool recur_graph = (m->qwen35 || mamba_dense) && !m->hyper_conn && m->n_expert == 0 &&
                        cuda_graph_recur_on();
     for (int l = 0; l < m->gpu_layers; l++)
-        if ((!m->layers[l].wv && !(m->layers[l].recurrent && recur_graph)) ||
+        if ((!m->layers[l].wv && !(m->layers[l].recurrent && recur_graph) &&
+             !(m->layers[l].skip_mixer && recur_graph) &&
+             !v_from_k_capturable(m, l)) ||
             (m->layers[l].is_moe && !g->moe_fused_ok) ||
             (m->layers[l].recurrent && !recur_graph)) g->graph_bad = true;
     if (m->qwen35 && !recur_graph) g->graph_bad = true;
@@ -3815,6 +3869,7 @@ void gpu_tc_force(int on) {
 // the mv gate links and can say "never dispatched here".
 void gpu_mv_force(int on) { (void)on; }
 unsigned long gpu_mv_dispatches(void) { return 0; }
+unsigned long gpu_mv2_dispatches(void) { return 0; }
 
 // Metal-only lever; present so the gate links and reports 'never here'.
 void gpu_attn_coop_force(int on) { (void)on; }
@@ -4216,6 +4271,7 @@ static bool launch_tiled_xscaled(gpu_t *g, CUfunction f, unsigned grid,
         CUdeviceptr xi = x + (CUdeviceptr)((uint64_t)off * (uint64_t)a.xs * sizeof(float));
         CUdeviceptr yi = y + (CUdeviceptr)((uint64_t)off * (uint64_t)a.ys * sizeof(float));
         void *pm[] = { &xi, &g->xsc, &ai.n_in, &ai.xs, &ai.batch };
+        g->xh_src = 0;                   // xsc no longer holds TC2's staging
         if (!launch(g, g->sw->f_colabsmax, (unsigned)ai.batch, 1, 1, 256, pm))
             return false;
         void *pi[] = { &weights, &xi, &yi, &ai, &bias, &g->xsc };
@@ -4288,6 +4344,14 @@ static bool gpu_tc2_on(void) { return tc2_mode() != TC2_OFF; }
 static bool tc2_forced(void) { return tc2_mode() == TC2_FORCED; }
 static _Atomic unsigned long g_tc2_dispatches;
 unsigned long gpu_tc2_dispatches(void) { return g_tc2_dispatches; }
+static _Atomic unsigned long g_tc2_reused;
+unsigned long gpu_tc2_reused(void) { return g_tc2_reused; }
+// RUNNER_CUDA_XH_REUSE=0: every TC2 GEMM stages its own columns (the A/B)
+static bool xh_reuse_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) { const char *e = getenv("RUNNER_CUDA_XH_REUSE"); on = !(e && *e == '0'); }
+    return on == 1;
+}
 
 // E1: RUNNER_CUDA_SM80=0 keeps TC2 on its compute_75 kernels on a device
 // that could run the compute_80 ones (a diagnostic and A/B control)
@@ -4399,6 +4463,7 @@ static bool batch_mv_twin_ok(const gpu_t *g, const gguf_tensor *t);
 static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                    CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias,
                    int batch, int xs, int ys) {
+    unsigned long seq = ++g->mv_seq;
     // Exact rows (a speculative verify round, model_forward_verify): every
     // column the batch-1 call's bits. Up to sixteen columns a pass through
     // the width-classed twins where the batch-1 route is the GEMV they twin
@@ -4471,12 +4536,19 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     CUfunction f2 = batch > 1 && w->scale == 1.0f && g->xh ? tc2_fn(g, w->type) : NULL;
     if (f2 && tc_on(m, w->type) && n_in % G2_BK == 0 &&
         n_in <= g->xh_cap && batch <= g->win) {
-        void *pm[] = { &x, &g->xsc, &n_in, &xs, &batch };
-        if (!launch(g, g->sw->f_colabsmax, (unsigned)batch, 1, 1, 256, pm)) return false;
-        void *ph[] = { &x, &g->xsc, &g->xh, &n_in, &xs, &batch };
-        if (!launch(g, g->sw->f_x_half, (unsigned)((n_in + 255) / 256), (unsigned)batch,
-                    1, 256, ph))
-            return false;
+        if (g->xh_reuse && xh_reuse_on() && g->xh_seq == seq - 1 && g->xh_src == x &&
+            g->xh_n == n_in && g->xh_xs == xs && g->xh_batch == batch) {
+            g_tc2_reused++;
+        } else {
+            void *pm[] = { &x, &g->xsc, &n_in, &xs, &batch };
+            if (!launch(g, g->sw->f_colabsmax, (unsigned)batch, 1, 1, 256, pm)) return false;
+            void *ph[] = { &x, &g->xsc, &g->xh, &n_in, &xs, &batch };
+            if (!launch(g, g->sw->f_x_half, (unsigned)((n_in + 255) / 256), (unsigned)batch,
+                        1, 256, ph))
+                return false;
+            g->xh_src = x; g->xh_n = n_in; g->xh_xs = xs; g->xh_batch = batch;
+        }
+        g->xh_seq = seq;
         g_tc_dispatches++;
         g_tc_dispatches_type[w->type]++;
         g_tc2_dispatches++;
@@ -4710,8 +4782,10 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
     if (!g) return;
     if (g->sw && g->sw->ctx) cu.CtxSetCurrent(g->sw->ctx);
     lora_dev_release(g);
-    if (g->gexec && cu.GraphExecDestroy) cu.GraphExecDestroy(g->gexec);
-    if (g->graph && cu.GraphDestroy) cu.GraphDestroy(g->graph);
+    for (int i = 0; i < 2; i++) {
+        if (g->gexec[i] && cu.GraphExecDestroy) cu.GraphExecDestroy(g->gexec[i]);
+        if (g->graph[i] && cu.GraphDestroy) cu.GraphDestroy(g->graph[i]);
+    }
     if (g->stream && cu.StreamDestroy) cu.StreamDestroy(g->stream);
     CUdeviceptr bufs[] = { g->kc, g->vc, g->x, g->xb, g->xb2,
                            g->q, g->kt, g->vt, g->hb, g->hb2, g->att,
@@ -4728,7 +4802,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            g->mtp_en, g->mtp_hn, g->mtp_rows, g->snap_state, g->snap_hist,
                            g->mamba_proj, g->mamba_xBC, g->mamba_y,
                            g->mamba_conv, g->mamba_state,
-                           g->mamba_conv_prev, g->mamba_state_prev,
+                           g->mamba_conv_prev,
                            // the hyper-connection streams, the split-K partials
                            // and the shared expert: missing from this list until
                            // 2026-10-20, so every such instance leaked them into
@@ -4749,6 +4823,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
         else free(g->kvg_host);
     }
     free(g->h_kvg_tab);
+    free(g->snap_ord);
     shared_release(g->sw);
     free(g);
 }
@@ -4819,6 +4894,12 @@ void gpu_free(model_t *m) {
 // x state] DeltaNet matrix, Mamba-2 an [inner x state] one, and both keep the
 // (conv_kernel - 1) x conv_dim ring. The host layout is the same (model.c
 // recurrent_conv_bytes / recurrent_state_bytes).
+// The base of half h of the double-buffered Mamba-2 SSD state.
+static CUdeviceptr mamba_half(const gpu_t *g, const model_t *m, int h) {
+    return g->mamba_state +
+           (CUdeviceptr)h * sizeof(float) * (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
+}
+
 static bool recurrent_xfer(gpu_t *g, model_t *m, bool to_host, bool prev) {
     CUdeviceptr dconv, dstate;
     size_t conv_layer, state_layer;
@@ -4833,7 +4914,7 @@ static bool recurrent_xfer(gpu_t *g, model_t *m, bool to_host, bool prev) {
         conv_layer  = (size_t)(m->ssm.conv_kernel - 1) * cd;
         state_layer = (size_t)m->ssm.inner * m->ssm.state;
         dconv  = prev ? g->mamba_conv_prev  : g->mamba_conv;
-        dstate = prev ? g->mamba_state_prev : g->mamba_state;
+        dstate = mamba_half(g, m, prev ? g->rec_prev : g->rec_cur);
     } else {
         return true;   // no device-resident fold in this context
     }
@@ -5030,8 +5111,34 @@ bool gpu_recurrent_rollback_mark(model_t *m) {
 // no re-fold. false = no checkpoint for that row (caller rolls back instead).
 bool gpu_recurrent_restore_row(model_t *m, int r) {
     gpu_t *g = m ? m->gpu : NULL;
-    if (!g || !g->snap_rows || !m->qwen35 || r < 0 || r >= g->snap_valid) return false;
+    if (!g || !g->snap_rows || r < 0 || r >= g->snap_valid) return false;
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    if ((m->granite_hybrid || m->nemotron_h) && g->mamba_state && g->snap_ord) {
+        // the round's last row wrote the live half; an earlier row's state
+        // and conv window come back from its slot into the half the next
+        // forward reads (rec_cur) and the ring
+        if (r < g->snap_valid - 1) {
+            int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
+            size_t sl = (size_t)m->ssm.inner * m->ssm.state;
+            size_t hl = (size_t)(m->ssm.conv_kernel - 1) * cd;
+            for (int l = 0; l < m->n_layer; l++) {
+                int o = g->snap_ord[l];
+                if (o < 0) continue;
+                size_t slot = (size_t)r * g->snap_nrec + o;
+                if (cu.MemcpyDtoDAsync(mamba_half(g, m, g->rec_cur) + l * sl * sizeof(float),
+                                       g->snap_state + slot * sl * sizeof(float),
+                                       sl * sizeof(float), g->stream) != 0 ||
+                    (hl && cu.MemcpyDtoDAsync(g->mamba_conv + l * hl * sizeof(float),
+                                              g->snap_hist + slot * hl * sizeof(float),
+                                              hl * sizeof(float), g->stream) != 0))
+                    return false;
+            }
+            if (cu.StreamSynchronize(g->stream) != 0) return false;
+        }
+        g->snap_valid = 0;
+        return true;
+    }
+    if (!m->qwen35) return false;
     int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
     size_t hb = sizeof(float) * (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * convdim;
     size_t sb = sizeof(float) * (size_t)m->n_layer * m->ssm.v_heads * m->ssm.state * m->ssm.state;
@@ -5057,10 +5164,9 @@ bool gpu_recurrent_rollback(model_t *m) {
     } else if ((m->granite_hybrid || m->nemotron_h) && g->mamba_state) {
         int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
         size_t conv_bytes = sizeof(float) * (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * cd;
-        size_t state_bytes = sizeof(float) * (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
-        if (cu.MemcpyDtoD(g->mamba_conv, g->mamba_conv_prev, conv_bytes) != 0 ||
-            cu.MemcpyDtoD(g->mamba_state, g->mamba_state_prev, state_bytes) != 0)
+        if (cu.MemcpyDtoD(g->mamba_conv, g->mamba_conv_prev, conv_bytes) != 0)
             return false;
+        g->rec_cur = g->rec_prev;   // the forward's input half, untouched by it
     }
     // the restored state is now also the pre-forward state of the next forward
     g->fwd_snap = g->fwd_count;
@@ -5330,6 +5436,38 @@ static bool enc_moe_sum(gpu_t *g, CUdeviceptr out, CUdeviceptr eout, int n,
 // tile, then per token gate/up/actmul/down/sum — six launches a token and
 // zero host round-trips, vs the eager path's ~49 launches and one
 // sync+DtoH per token.
+static inline bool mvb_is_mv_twin(int type);
+
+// The router over a prompt tile, every column the batch-1 call's bits. For
+// F32 and F16 (and BF16 off its split-K route) the batch-1 call is f_mv, and
+// f_mvb is its twin (mvb_is_mv_twin): one launch over the tile, sixteen
+// columns per grid row. enc_mv(batch = tn) would not do it below nine
+// columns, where these types have no f_gemvb and its small-batch branch runs
+// the batch-1 kernel once per column. Any other type keeps one batch-1 call
+// per column.
+static bool enc_router(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x, int xs,
+                       CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias, int tn) {
+    if (tn > 1 && w->scale == 1.0f && mvb_is_mv_twin(w->type) && g->sw->f_mvb[w->type] &&
+        !mv_route_splitk(g, w, n_in, n_out)) {
+        CUdeviceptr weights = 0;
+        uint64_t w_off = 0;
+        if (!binding_find(g->sw, m, w, &weights, &w_off)) {
+            gpu_first_error("tensor '%s' is not resident on the device "
+                            "(no binding covers it)", w->name);
+            return false;
+        }
+        mv_args a = { n_in, n_out, w_off, bias != 0, tn, xs, n_out };
+        return launch_tiled(g, g->sw->f_mvb[w->type], (unsigned)((n_out + 3) / 4), 128,
+                            weights, x, y, a, bias ? bias : g->sw->dummy, MVT,
+                            false, w->scale, true);
+    }
+    for (int t = 0; t < tn; t++)
+        if (!enc_mv(g, m, w, x + (size_t)t * xs * sizeof(float),
+                    y + (size_t)t * n_out * sizeof(float), n_in, n_out, bias, 1, xs, n_out))
+            return false;
+    return true;
+}
+
 static bool gpu_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
                               int tn, int xdim) {
     int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used;
@@ -5344,17 +5482,13 @@ static bool gpu_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
                        ggml_row_size(ly->ffn_up_exps->type, n_embd);
     uint64_t dstride = (uint64_t)n_embd *
                        ggml_row_size(ly->ffn_down_exps->type, nff);
-    for (int t = 0; t < tn; t++) {
-        CUdeviceptr xin = g->xb + (size_t)t * xdim * sizeof(float);
-        CUdeviceptr lg  = g->moe_logits + (size_t)t * ne * sizeof(float);
-        // gib: the gpt-oss router bias, which applies to the LOGITS before
-        // gating (model.c moe_route). k_moe_route takes no bias input, so it
-        // has to ride the router matvec — as it already does on the eager and
-        // grouped paths and in metal.m.
-        if (!enc_mv(g, m, ly->ffn_gate_inp, xin, lg, n_embd, ne,
-                    g->sw->gib[l], 1, xdim, ne))
-            return false;
-    }
+    // gib: the gpt-oss router bias, which applies to the LOGITS before
+    // gating (model.c moe_route). k_moe_route takes no bias input, so it
+    // has to ride the router matvec, as it already does on the eager and
+    // grouped paths and in metal.m.
+    if (!enc_router(g, m, ly->ffn_gate_inp, g->xb, xdim, g->moe_logits, n_embd, ne,
+                    g->sw->gib[l], tn))
+        return false;
     if (!enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used,
                        tn, ne))
         return false;
@@ -5458,6 +5592,17 @@ static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
 // cnt==1, the width-classed f_gemvb twins up to 8, the full GEMM beyond —
 // and the TC GEMM whenever it is promoted/forced for this (type, arch),
 // since tensor-core MACs make the unused columns nearly free.
+// enc_mv for a GEMM whose input columns the previous TC2 GEMM staged, with
+// nothing written to them since (the caller's knowledge, scoped to this call)
+static bool enc_mv_same_x(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
+                          CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias,
+                          int batch, int xs, int ys) {
+    g->xh_reuse = true;
+    bool ok = enc_mv(g, m, w, x, y, n_in, n_out, bias, batch, xs, ys);
+    g->xh_reuse = false;
+    return ok;
+}
+
 static bool enc_moe_gemm(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                          CUdeviceptr y, int n_in, int n_out, int cnt,
                          int xs, int ys) {
@@ -5504,13 +5649,9 @@ static bool gpu_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
-    for (int t = 0; t < tn; t++) {
-        CUdeviceptr xin = g->xb + (size_t)t * xdim * sizeof(float);
-        CUdeviceptr lg  = g->moe_logits + (size_t)t * ne * sizeof(float);
-        if (!enc_mv(g, m, ly->ffn_gate_inp, xin, lg, n_embd, ne,
-                    g->sw->gib[l], 1, xdim, ne))
-            return false;
-    }
+    if (!enc_router(g, m, ly->ffn_gate_inp, g->xb, xdim, g->moe_logits, n_embd, ne,
+                    g->sw->gib[l], tn))
+        return false;
     if (!enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used,
                        tn, ne))
         return false;
@@ -5530,9 +5671,13 @@ static bool gpu_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
         bool ok = enc_moe_gather(g, g->moe_gath, g->xb, idx, n_embd, cnt,
                                  xdim, n_embd)
                && enc_moe_gemm(g, m, &gv, g->moe_gath, g->moe_hb, n_embd,
-                               nff, cnt, n_embd, nff)
-               && enc_moe_gemm(g, m, &uv, g->moe_gath, g->moe_hb2, n_embd,
-                               nff, cnt, n_embd, nff)
+                               nff, cnt, n_embd, nff);
+        // up reads the gathered columns gate just staged
+        g->xh_reuse = true;
+        ok = ok && enc_moe_gemm(g, m, &uv, g->moe_gath, g->moe_hb2, n_embd,
+                                nff, cnt, n_embd, nff);
+        g->xh_reuse = false;
+        ok = ok
                && enc_actmul(g, m, g->moe_hb, g->moe_hb2, cnt * nff)
                && enc_moe_gemm(g, m, &dv, g->moe_hb, g->moe_dout, nff,
                                n_embd, cnt, nff, n_embd)
@@ -5565,8 +5710,8 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
                           tn, n_embd, n_embd)
            && enc_mv(g, m, ly->w_gate, xn_b, g->hb,  n_embd, dff, 0, tn,
                      n_embd, dff)
-           && enc_mv(g, m, ly->w_up,   xn_b, g->hb2, n_embd, dff, 0, tn,
-                     n_embd, dff)
+           && enc_mv_same_x(g, m, ly->w_up, xn_b, g->hb2, n_embd, dff, 0, tn,
+                            n_embd, dff)
            && enc_actmul(g, m, g->hb, g->hb2, tn * dff)
            && enc_mv(g, m, ly->w_down, g->hb, g->xb, dff, n_embd, 0, tn,
                      dff, xdim)
@@ -5578,12 +5723,8 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
                      n_embd, n_embd)
       && enc_rmsnorm(g, g->x, rin_b, g->sw->g_gis[l], n_embd, eps, tn,
                      n_embd, n_embd);
-    for (int t = 0; ok && t < tn; t++) {
-        CUdeviceptr rin = rin_b + (size_t)t * n_embd * sizeof(float);
-        CUdeviceptr lg  = g->moe_logits + (size_t)t * ne * sizeof(float);
-        ok = enc_mv(g, m, ly->ffn_gate_inp, rin, lg, n_embd, ne, 0, 1,
-                    n_embd, ne);
-    }
+    ok = ok && enc_router(g, m, ly->ffn_gate_inp, rin_b, n_embd, g->moe_logits,
+                          n_embd, ne, 0, tn);
     ok = ok && enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne,
                              used, tn, ne);
     if (!ok) return false;
@@ -5848,15 +5989,12 @@ static bool gpu_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly, int tn,
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
-    // routing as the fused path does it: the batch-1 router per token (the
-    // gpt-oss router bias riding it), then the routing kernel for the tile
-    for (int t = 0; t < tn; t++) {
-        CUdeviceptr xin = g->xb + (size_t)t * xdim * sizeof(float);
-        CUdeviceptr lg  = g->moe_logits + (size_t)t * ne * sizeof(float);
-        if (!enc_mv(g, m, ly->ffn_gate_inp, xin, lg, n_embd, ne,
-                    g->sw->gib[l], 1, xdim, ne))
-            return false;
-    }
+    // routing as the fused path does it: the router with each column's
+    // batch-1 bits (the gpt-oss router bias riding it), then the routing
+    // kernel for the tile
+    if (!enc_router(g, m, ly->ffn_gate_inp, g->xb, xdim, g->moe_logits, n_embd, ne,
+                    g->sw->gib[l], tn))
+        return false;
     if (!enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used,
                        tn, ne))
         return false;
@@ -6105,12 +6243,12 @@ static bool gpu_gemma_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly,
            && enc_actmul(g, m, g->hb, g->hb2, tn * dff)
            && moe_twin_gemm(g, m, ly->w_down, false, g->hb, g->xb, dff, n_embd, tn, dff, xdim)
            && enc_rmsnorm(g, g->xb, g->xb, g->sw->g_pn1[l], n_embd, eps, tn, xdim, xdim);
-    // --- routed branch: the two norms, the batch-1 router per token, routing
+    // --- routed branch: the two norms, the router (each column's batch-1
+    //     bits), routing
     ok = ok && enc_rmsnorm(g, g->x, xn2_b, g->sw->g_prn2[l], n_embd, eps, tn, n_embd, n_embd)
             && enc_rmsnorm(g, g->x, rin_b, g->sw->g_gis[l], n_embd, eps, tn, n_embd, n_embd);
-    for (int t = 0; ok && t < tn; t++)
-        ok = enc_mv(g, m, ly->ffn_gate_inp, rin_b + (size_t)t * n_embd * sizeof(float),
-                    g->moe_logits + (size_t)t * ne * sizeof(float), n_embd, ne, 0, 1, n_embd, ne);
+    ok = ok && enc_router(g, m, ly->ffn_gate_inp, rin_b, n_embd, g->moe_logits,
+                          n_embd, ne, 0, tn);
     ok = ok && enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used, tn, ne);
     if (!ok) return false;
     if (cu.StreamSynchronize(g->stream) != 0 ||
@@ -6331,29 +6469,41 @@ static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
         return false;
     CUdeviceptr ring  = g->mamba_conv +
                         (size_t)l * histn * conv_dim * sizeof(float);
-    CUdeviceptr state = g->mamba_state +
-                        (size_t)l * nh * hd * ds * sizeof(float);
+    // the layer's SSD state: read from the forward's input half on its first
+    // tile (later tiles continue in the half it writes), written to rec_cur
+    size_t soff = (size_t)l * nh * hd * ds * sizeof(float);
+    CUdeviceptr state = mamba_half(g, m, g->rec_cur) + soff;
+    CUdeviceptr state_in = mamba_half(g, m, g->rec_tile0 ? g->rec_prev : g->rec_cur) + soff;
     CUdeviceptr Aw = g->sw->ssm_a[l], dtw = g->sw->ssm_dt[l];
     CUdeviceptr Dw = g->sw->ssm_D[l], cb = g->sw->ssm_conv_b[l];
     CUdeviceptr gn = g->sw->ssm_gnorm[l];
+    // a verify round filing its rows (mamba_snap_ready): rows before the
+    // last leave their state and conv window in their slots (row t's at
+    // slot t * snap_nrec + this layer's ordinal), the last row writes the
+    // live half, on the tile kernels or the per-token ones alike
+    bool snap = g->snap_on && g->snap_ord && g->snap_ord[l] >= 0;
+    size_t sl = (size_t)nh * hd * ds, hl = (size_t)histn * conv_dim;
+    CUdeviceptr ssnap = snap ? g->snap_state + (size_t)g->snap_ord[l] * sl * sizeof(float) : 0;
+    CUdeviceptr hsnap = snap && hl ? g->snap_hist + (size_t)g->snap_ord[l] * hl * sizeof(float) : 0;
+    int sstride = snap ? (int)((size_t)g->snap_nrec * sl) : 0;
+    int hstride = snap ? (int)((size_t)g->snap_nrec * hl) : 0;
     if (tn > 1 && recur_seq_admits(g, m)) {
         // conv and scan over the whole tile, one launch each; the gate and
-        // norm read only their own token's row, so one launch per token of
-        // the unchanged kernel keeps its bytes
+        // norm read only their own token's row, so one launch with a grid
+        // row per token keeps each token's bytes
         void *pc[] = { &g->mamba_proj, &g->mamba_xBC, &conv_w, &cb, &ring,
-                       &conv_dim, &inner, &d_in_proj, &kk, &histn, &tn };
-        void *ps[] = { &g->mamba_xBC, &g->mamba_proj, &Aw, &dtw, &Dw, &state,
+                       &conv_dim, &inner, &d_in_proj, &kk, &histn, &tn, &hsnap, &hstride };
+        void *ps[] = { &g->mamba_xBC, &g->mamba_proj, &Aw, &dtw, &Dw, &state_in, &state,
                        &g->mamba_y, &inner, &hd, &ds, &ng, &gsz, &conv_dim,
-                       &d_in_proj, &tn };
+                       &d_in_proj, &tn, &ssnap, &sstride };
         if (!launch(g, g->sw->f_mamba_conv_seq, (conv_dim + 255) / 256, 1, 1, 256, pc) ||
             !launch(g, g->sw->f_mamba_ssd_seq, nh, 1, 1, hd, ps))
             return false;
-        for (int t = 0; t < tn; t++) {
-            void *pg[] = { &g->mamba_proj, &g->mamba_y, &gn, &inner, &ng, &per_g,
-                           &eps, &d_in_proj, &t };
-            if (!launch(g, g->sw->f_mamba_gate_norm, ng, 1, 1, 256, pg))
-                return false;
-        }
+        int t0 = 0;
+        void *pg[] = { &g->mamba_proj, &g->mamba_y, &gn, &inner, &ng, &per_g,
+                       &eps, &d_in_proj, &t0 };
+        if (!launch(g, g->sw->f_mamba_gate_norm, ng, tn, 1, 256, pg))
+            return false;
         g_recur_seq_dispatches++;
         return enc_mv(g, m, ly->ssm_out, g->mamba_y, g->xb, inner, m->n_embd,
                       0, tn, inner, xdim);
@@ -6363,7 +6513,17 @@ static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
                        &conv_dim, &inner, &d_in_proj, &kk, &histn, &t };
         if (!launch(g, g->sw->f_mamba_conv, (conv_dim + 255) / 256, 1, 1,
                     256, pc)) return false;
-        void *ps[] = { &g->mamba_xBC, &g->mamba_proj, &Aw, &dtw, &Dw, &state,
+        // a filed row writes its slot (the window copied after its conv
+        // step), and token t > 0 continues from the row token t - 1 wrote
+        bool filed = snap && t < tn - 1;
+        if (filed && hl &&
+            cu.MemcpyDtoDAsync(hsnap + (size_t)t * hstride * sizeof(float), ring,
+                               hl * sizeof(float), g->stream) != 0)
+            return false;
+        CUdeviceptr sin = t == 0 ? state_in :
+                          snap ? ssnap + (size_t)(t - 1) * sstride * sizeof(float) : state;
+        CUdeviceptr sout = filed ? ssnap + (size_t)t * sstride * sizeof(float) : state;
+        void *ps[] = { &g->mamba_xBC, &g->mamba_proj, &Aw, &dtw, &Dw, &sin, &sout,
                        &g->mamba_y, &inner, &hd, &ds, &ng, &gsz, &conv_dim,
                        &d_in_proj, &t };
         if (!launch(g, g->sw->f_mamba_ssd, nh, 1, 1, hd, ps)) return false;
@@ -6438,25 +6598,33 @@ static bool tile_q(gpu_t *g, model_t *m, layer_t *ly, int l, int tn,
         // the output gate projects the same normed input as Q, and xb is
         // overwritten by wo below, so this must run before attention
         if (m->attn_out_gate && ly->wq_gate)
-            ok = ok && enc_mv(g, m, ly->wq_gate, g->xb, g->q35_gate,
-                              n_embd, q_dim, 0, tn, xdim, q_dim);
+            ok = ok && enc_mv_same_x(g, m, ly->wq_gate, g->xb, g->q35_gate,
+                                     n_embd, q_dim, 0, tn, xdim, q_dim);
     }
     return ok;
+}
+
+// Zero a device buffer in stream order (capturable), or synchronously where
+// the driver has no cuMemsetD8Async (see v_from_k_capturable).
+static bool enc_zero(gpu_t *g, CUdeviceptr p, size_t bytes) {
+    if (cu.MemsetD8Async && g->stream) return cu.MemsetD8Async(p, 0, bytes, g->stream) == 0;
+    return cu.MemsetD8(p, 0, bytes) == 0;
 }
 
 // K and V with their adapter deltas; gemma4 global layers copy K as V.
 static bool tile_kv_proj(gpu_t *g, model_t *m, layer_t *ly, int l, int tn,
                          int n_embd, int xdim, int kv_dim) {
     bool ok = true;
-    ok = ok && enc_mv(g, m, ly->wk, g->xb, g->kt, n_embd, kv_dim, g->sw->bk[l], tn, xdim, kv_dim)
+    // xb is Q's input (tile_q, just before): K and V reuse its staging
+    ok = ok && enc_mv_same_x(g, m, ly->wk, g->xb, g->kt, n_embd, kv_dim, g->sw->bk[l], tn, xdim, kv_dim)
             && enc_lora(g, l, LW_K, g->xb, g->kt, n_embd, kv_dim, tn, xdim, kv_dim);
     if (ly->wv) {
-        ok = ok && enc_mv(g, m, ly->wv, g->xb, g->vt, n_embd, kv_dim, g->sw->bv[l], tn, xdim, kv_dim)
+        ok = ok && enc_mv_same_x(g, m, ly->wv, g->xb, g->vt, n_embd, kv_dim, g->sw->bv[l], tn, xdim, kv_dim)
                 && enc_lora(g, l, LW_V, g->xb, g->vt, n_embd, kv_dim, tn, xdim, kv_dim);
     } else {
         // gemma4 global layers have no V projection: V is the raw K
         // (zero + add = device-side copy with the kernels we have)
-        ok = ok && cu.MemsetD8(g->vt, 0, sizeof(float) * (size_t)tn * kv_dim) == 0;
+        ok = ok && enc_zero(g, g->vt, sizeof(float) * (size_t)tn * kv_dim);
         ok = ok && enc_add(g, g->vt, g->kt, kv_dim, tn, kv_dim, kv_dim);
     }
     return ok;
@@ -6498,6 +6666,21 @@ static bool tile_kv_store(gpu_t *g, model_t *m, int l, int tn, int hd,
 // with its sinks and alternating window) were never further from the
 // reference than k_attn's; 0 keeps k_attn. A tolerance route: recorded as
 // attn-tile, and --gpu-route reference runs k_attn.
+// RUNNER_CUDA_ATTN_TILE512: the tiled prefill attention also takes head
+// widths 257-512 (gemma-4's global layers, k_attn_tile8), on by default since
+// its long-context rows passed the owner's rule against k_attn (2026-10-22,
+// the chat corpus at positions 4,000 to 6,000: gemma-4-26B-A4B 0.31995 vs
+// 0.32108, Wilcoxon p 0.72; the dense gemma-4-E2B 0.14722 vs 0.14714, p
+// 0.41); 0 keeps k_attn for those layers.
+static bool attn_tile512_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_ATTN_TILE512");
+        on = !(e && *e && strcmp(e, "0") == 0);
+    }
+    return on == 1;
+}
+
 static bool attn_tile_on(void) {
     if (route_pinned(GR_ATTN_TILE) >= 0) return route_pinned(GR_ATTN_TILE);
     static _Atomic int on = -1;
@@ -6510,15 +6693,17 @@ static bool attn_tile_on(void) {
 
 // The tiled prefill attention over a whole tile of tn query columns, or
 // false (nothing launched) when it does not apply: switch off, kernel
-// absent from the PTX, a head width past 256, or a GQA ratio that does not
-// divide. Its launch shape and shared footprint are k_attn_tile's (see
-// kernels.cu): 32 query rows of 32-key tiles at head_dim <= 128, 16 of 16
-// at <= 256, the rows a block's heads times its strip of tokens.
+// absent from the PTX, a head width past 512 (256 under
+// RUNNER_CUDA_ATTN_TILE512=0), or a GQA ratio that does not divide. Its launch
+// shape and shared footprint are k_attn_tile's (see kernels.cu): 32 query
+// rows of 32-key tiles at head_dim <= 128, 16 of 16 at <= 256, 8 of 8 at
+// <= 512, the rows a block's heads times its strip of tokens.
 static bool tile_attn_tiled(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
                             const attn_args *aa, CUdeviceptr sinks, bool *ok) {
     if (!attn_tile_on() || hd % 2 || n_kv < 1 || m->n_head % n_kv) return false;
-    int R = hd <= 128 ? 32 : hd <= 256 ? 16 : 0;
-    CUfunction f = R == 32 ? g->sw->f_attn_tile32 : R == 16 ? g->sw->f_attn_tile16 : NULL;
+    int R = hd <= 128 ? 32 : hd <= 256 ? 16 : hd <= 512 && attn_tile512_on() ? 8 : 0;
+    CUfunction f = R == 32 ? g->sw->f_attn_tile32 : R == 16 ? g->sw->f_attn_tile16 :
+                   R == 8 ? g->sw->f_attn_tile8 : NULL;
     if (!f) return false;
     int G = m->n_head / n_kv;
     int hb = G < R ? G : R, qs = R / hb, ngh = (G + hb - 1) / hb;
@@ -6549,12 +6734,16 @@ static bool tile_attn_tiled(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
 // 0.03833 vs 0.03832, Wilcoxon p 0.76; Mistral-7B 0.02069 vs 0.02068, p
 // 0.43), qwen2 (Qwen2.5-3B 0.03644 vs 0.03643, p 0.47), qwen3 (Qwen3-4B
 // 0.11199 vs 0.11197, p 0.14) and granite (granite-4.2-8b 0.01106 vs
-// 0.01126, p 0.87), about 3x the tile's prefill at 8K. gpt-oss failed its
-// row (0.04275 vs 0.04205, p 0.017) and the sliding-window families (gemma,
-// phi3, a windowed llama file) have none, so they keep the tile; 1 / 0 force
-// it on / off everywhere.
+// 0.01126, p 0.87), about 3x the tile's prefill at 8K; and (2026-10-22)
+// qwen3moe (Qwen3-30B-A3B 0.07584 vs 0.07580, p 0.86) and phi3
+// (Phi-3.5-mini 0.07912 vs 0.07912, p 0.12; Phi-4-mini 0.13998 vs 0.13996,
+// p 0.21), whose published 262144 window over a 131072 context is no window
+// (bind_swa_default). gpt-oss failed its row (0.04275 vs 0.04205, p 0.017;
+// its full-attention layers alone, RUNNER_CUDA_ATTN_TC_FULL, 0.04065 vs
+// 0.04039, p 3e-18) and the windowed files (gemma, a windowed phi3 or llama
+// file) have none, so they keep the tile; 1 / 0 force it on / off everywhere.
 static bool attn_tc_family(const model_t *m) {
-    static const char *const fam[] = { "llama", "qwen2", "qwen3", "granite" };
+    static const char *const fam[] = { "llama", "qwen2", "qwen3", "qwen3moe", "granite", "phi3" };
     if (!m || m->swa_window > 0) return false;
     for (size_t i = 0; i < sizeof fam / sizeof *fam; i++)
         if (strcmp(m->arch, fam[i]) == 0) return true;
@@ -6569,6 +6758,19 @@ static bool attn_tc_on(const model_t *m) {
     }
     return on == 2 ? attn_tc_family(m) : on == 1;
 }
+// RUNNER_CUDA_ATTN_TC_FULL=1: the tensor cores also take the layers without a
+// window in a family the default leaves out (gpt-oss's full-attention layers;
+// its windowed layers, where attention is short by construction, keep the
+// tile). Opt-in: gpt-oss-20b's long-context row read further from the
+// float32 reference than the tile's (0.04065 vs 0.04039, Wilcoxon p 3e-18).
+static bool attn_tc_full_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_ATTN_TC_FULL");
+        on = e && *e && strcmp(e, "0") != 0;
+    }
+    return on == 1;
+}
 static _Atomic unsigned long g_attn_tc_dispatches;
 
 // The tensor-core prefill attention over a whole tile, or false when it does
@@ -6576,7 +6778,8 @@ static _Atomic unsigned long g_attn_tc_dispatches;
 // width that is not a multiple of 16 up to 128. 64 query rows a block.
 static bool tile_attn_tc(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
                          const attn_args *aa, CUdeviceptr sinks, bool *ok) {
-    if (!attn_tc_on(m) || !g->sw->f_attn_tc || model_kv_kind_k(m) || model_kv_kind_v(m) ||
+    if (!(attn_tc_on(m) || (attn_tc_full_on() && aa->window == 0)) ||
+        !g->sw->f_attn_tc || model_kv_kind_k(m) || model_kv_kind_v(m) ||
         hd % 16 || hd > 128 || n_kv < 1 || m->n_head % n_kv)
         return false;
     int G = m->n_head / n_kv, R = 64;
@@ -6848,8 +7051,8 @@ static bool tile_ffn_in(gpu_t *g, model_t *m, layer_t *ly, int l, int tn, int xd
                           n_embd, nff, 0, tn, xdim, m->n_ff)
                 && enc_lora(g, l, LW_GATE, g->xb, g->hb, n_embd, nff,
                             tn, xdim, m->n_ff);
-        ok = ok && enc_mv(g, m, ly->w_up, g->xb, g->hb2,
-                          n_embd, nff, 0, tn, xdim, m->n_ff)
+        ok = ok && enc_mv_same_x(g, m, ly->w_up, g->xb, g->hb2,
+                                 n_embd, nff, 0, tn, xdim, m->n_ff)
                 && enc_lora(g, l, LW_UP, g->xb, g->hb2, n_embd, nff,
                             tn, xdim, m->n_ff);
     }
@@ -7606,7 +7809,7 @@ const char *gpu_route_detail(const model_t *m) {
     // launch covers inside it, so a window of 512 is 8 such launches
     snprintf(buf, sizeof buf, "graph=%s tc=%s tc2=%s q8x=%s small_batch=%s attn_tile=%s "
              "window=%d tc_cols=%d%s%s%s",
-             g->graph_bad ? "off" : g->gexec ? "replay" : "none",
+             g->graph_bad ? "off" : g->gexec[0] || g->gexec[1] ? "replay" : "none",
              g_tc_state < 0 || moe_tc_family(m)
                  ? (moe_tc_family(m) ? (tc_on(m, T_Q4_K) ? "moe-tc" : "off") : "promoted")
                  : g_tc_state ? "forced" : "off",
@@ -7681,7 +7884,7 @@ gpu_batch *gpu_batch_create(model_t **seqs, int n) {
     // cannot be captured, same as the solo decode graph refuses it.
     b->graph_bad = lead->stream == NULL || !cu_graphs_ok();
     for (int l = 0; l < m0->n_layer; l++)
-        if (!m0->layers[l].wv) b->graph_bad = true;
+        if (!m0->layers[l].wv && !v_from_k_capturable(m0, l)) b->graph_bad = true;
     return b;
 
 fail:
@@ -7796,7 +7999,7 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
         if (ly->wv) {
             ok = ok && enc_mv_batch(g, m, ly->wv, g->xb, g->vt, n_embd, kv_dim, g->sw->bv[l], tn, xdim, kv_dim);
         } else {
-            ok = ok && cu.MemsetD8(g->vt, 0, sizeof(float) * (size_t)tn * kv_dim) == 0;
+            ok = ok && enc_zero(g, g->vt, sizeof(float) * (size_t)tn * kv_dim);
             ok = ok && enc_add(g, g->vt, g->kt, kv_dim, tn, kv_dim, kv_dim);
         }
         if (m->v_rmsnorm)
@@ -8052,11 +8255,63 @@ static bool set_pos(gpu_t *g, int pos, int tn) {
     return cu.MemcpyHtoD(g->pos_dev, hp, sizeof(int) * (size_t)n) == 0;
 }
 
+// Whether an n-row keep-forward on a Mamba-2 hybrid files its rows (9.e):
+// rows 0 .. n-2 write their SSD state into per-row slots and the last row
+// the live half, so a partially accepted round restores the state after its
+// last kept row (gpu_recurrent_restore_row) instead of rolling back and
+// re-folding the kept rows with another forward, which took 169 of 1,249 ms
+// of a granite-4.0-h-micro lookup run. The slots, one per recurrent layer
+// and row up to the verify window qwen35's checkpoints use, are allocated by
+// the first verify round, so plain decoding never holds them; a failed
+// allocation leaves the re-fold.
+static bool mamba_snap_ready(gpu_t *g, model_t *m, int n) {
+    int rows = (m->spec_batch < 8 ? m->spec_batch : 8) - 1;
+    if (n < 2 || n - 1 > rows || g->snap_failed || m->gpu_layers < m->n_layer ||
+        !cu.MemcpyDtoDAsync)
+        return false;
+    if (g->snap_rows) return true;
+    int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
+    size_t sl = (size_t)m->ssm.inner * m->ssm.state;
+    size_t hl = (size_t)(m->ssm.conv_kernel - 1) * cd;
+    int nrec = 0;
+    g->snap_ord = malloc(sizeof(int) * (size_t)m->n_layer);
+    if (g->snap_ord)
+        for (int l = 0; l < m->n_layer; l++)
+            g->snap_ord[l] = m->layers[l].recurrent ? nrec++ : -1;
+    size_t slots = (size_t)rows * nrec;
+    if ((size_t)nrec * sl > INT_MAX || (size_t)nrec * hl > INT_MAX) {
+        // the tile kernels take a row's stride (nrec slots) as an int
+        free(g->snap_ord);
+        g->snap_ord = NULL;
+        g->snap_failed = true;
+        fprintf(stderr, "gpu: a verify row's recurrent state passes 2^31 floats; a "
+                "partially accepted speculative round re-folds its kept rows\n");
+        return false;
+    }
+    if (!g->snap_ord || !nrec ||
+        cu.MemAlloc(&g->snap_state, sizeof(float) * sl * slots) != 0 ||
+        cu.MemAlloc(&g->snap_hist, sizeof(float) * (hl ? hl : 1) * slots) != 0) {
+        if (g->snap_state) cu.MemFree(g->snap_state);
+        free(g->snap_ord);
+        g->snap_state = 0;
+        g->snap_ord = NULL;
+        g->snap_failed = true;
+        fprintf(stderr, "gpu: no room for the verify checkpoints (%.0f MB); a partially "
+                "accepted speculative round re-folds its kept rows\n",
+                (double)sizeof(float) * (sl + hl) * (double)slots / 1e6);
+        return false;
+    }
+    g->snap_nrec = nrec;
+    g->snap_rows = rows;
+    return true;
+}
+
 // The recurrent state reset at a new sequence and snapshot before every
 // forward (the rollback a failed or rejected forward restores), the
 // keep-forward's checkpoint flags.
 static bool cuda_fwd_prepare(gpu_t *g, model_t *m, int n, int pos) {
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    g->xh_src = 0;
     if (m->qwen35 && pos == 0) {
         int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
         size_t hist_elems = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * convdim;
@@ -8080,7 +8335,10 @@ static bool cuda_fwd_prepare(gpu_t *g, model_t *m, int n, int pos) {
     }
     g->fwd_count++;
     // a keep-forward (speculative verify) files per-row checkpoints
-    g->snap_on = g->snap_rows > 0 && m->spec_want_all >= n && n <= g->snap_rows && m->qwen35;
+    g->snap_on = m->spec_want_all >= n &&
+                 (m->qwen35 ? g->snap_rows > 0 && n <= g->snap_rows
+                            : (m->granite_hybrid || m->nemotron_h) && g->mamba_state &&
+                              mamba_snap_ready(g, m, n));
     g->snap_valid = 0;
     if ((m->granite_hybrid || m->nemotron_h) && g->mamba_state) {
         int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
@@ -8088,14 +8346,19 @@ static bool cuda_fwd_prepare(gpu_t *g, model_t *m, int n, int pos) {
                             (m->ssm.conv_kernel - 1) * cd;
         size_t state_bytes = sizeof(float) * (size_t)m->n_layer *
                              m->ssm.inner * m->ssm.state;
+        int src = g->rec_cur;
         if (pos == 0) {
             if ((conv_bytes && cu.MemsetD8(g->mamba_conv, 0, conv_bytes) != 0) ||
-                cu.MemsetD8(g->mamba_state, 0, state_bytes) != 0) return false;
+                cu.MemsetD8(mamba_half(g, m, src), 0, state_bytes) != 0) return false;
         }
-        if ((conv_bytes && cu.MemcpyDtoD(g->mamba_conv_prev, g->mamba_conv,
-                                        conv_bytes) != 0) ||
-            cu.MemcpyDtoD(g->mamba_state_prev, g->mamba_state, state_bytes) != 0)
+        if (conv_bytes && cu.MemcpyDtoD(g->mamba_conv_prev, g->mamba_conv,
+                                        conv_bytes) != 0)
             return false;
+        // the state is double-buffered instead of copied: read src, write
+        // the other half (see gpu_t.rec_cur)
+        g->rec_prev = src;
+        g->rec_cur = 1 - src;
+        g->rec_tile0 = true;
     }
     return true;
 }
@@ -8107,7 +8370,10 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
     double ts0 = prof.on ? prof_now() : 0;
     if (!stage_x(g, m, tokens, 1) || !set_pos(g, pos, 1)) return -1;
     if (prof.on) prof.t_stage[m_] += prof_now() - ts0;
-    if (!g->gexec) {
+    // a double-buffered Mamba-2 state alternates halves every forward: one
+    // graph per parity (the half this forward writes)
+    int gi = (m->granite_hybrid || m->nemotron_h) && g->mamba_state ? g->rec_cur : 0;
+    if (!g->gexec[gi]) {
         prof.capturing = 1;
         // capture records the launch sequence without executing it; the
         // recorded graph is position-invariant because pos lives in
@@ -8124,19 +8390,19 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
         if (capture_begin(g->stream) != 0 ||
             !fwd_tile(g, m, tokens, 1, pos, true, 0, m->gpu_layers) ||
             (g->kvg_dev && !kv_gather_launch(g, m)) ||
-            capture_end(g->stream, &g->graph) != 0 ||
-            cu.GraphInstantiateWithFlags(&g->gexec, g->graph, 0) != 0) {
+            capture_end(g->stream, &g->graph[gi]) != 0 ||
+            cu.GraphInstantiateWithFlags(&g->gexec[gi], g->graph[gi], 0) != 0) {
             CUgraph junk = NULL;
             capture_end(g->stream, &junk); // ensure capture ended
-            if (junk && junk != g->graph) cu.GraphDestroy(junk);
+            if (junk && junk != g->graph[gi]) cu.GraphDestroy(junk);
             fprintf(stderr, "gpu: graph capture failed — plain launches\n");
             g->graph_bad = true;
         }
         prof.capturing = 0;
     }
-    if (g->gexec) {
+    if (g->gexec[gi]) {
         double tg0 = prof.on ? prof_now() : 0;
-        bool gl = cu.GraphLaunch(g->gexec, g->stream) == 0 &&
+        bool gl = cu.GraphLaunch(g->gexec[gi], g->stream) == 0 &&
                   cu.StreamSynchronize(g->stream) == 0;
         if (prof.on) prof.t_sync[m_] += prof_now() - tg0;
         if (gl) {
@@ -8228,6 +8494,7 @@ static bool cuda_fwd_tiles_run(gpu_t *g, model_t *m, const int32_t *tokens, int 
             fprintf(stderr, "gpu: kernel launch failed — falling back to CPU\n");
             return false;
         }
+        g->rec_tile0 = false;
         if (!mtp_save_rows(g, m, i, tn)) return false;
         if (n == 1 && !partial && g->kvg_dev && !kv_gather_launch(g, m)) return false;
         int inj = inject_fail_ordinal();

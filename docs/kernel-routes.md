@@ -69,7 +69,7 @@ The branches are tried in this order; the first that applies runs.
 | --- | --- | --- | --- |
 | int8-activation `dp4a` GEMV | `RUNNER_CUDA_Q8X=1`, 1 to 8 columns, unscaled, `n_in` a multiple of 256, a kernel for the type (IQ3_S, IQ3_XXS, IQ4_XS, Q4_K, Q8_0) | tolerance against CPU `--score`; experimental and off | measured by hand (0 to 3 argmax flips in 480 positions) |
 | small batch | 2 to `GPU_SMALL_BATCH` columns, unscaled, `RUNNER_CUDA_SMALL_BATCH` not `0` | bit-exact per column to the batch-1 kernel: a width-classed GEMV twin (`f_gemvb`), or the batch-1 kernel once per column | `test-batch` on a CUDA build |
-| pipelined tensor-core GEMM (TC2) | the tensor-core GEMM's conditions, `n_in` a multiple of 64, at most the window's columns, and a kernel from `tc2_fn()`: by default the compute_80 module's (`k_gemm2_80_*`, one m16n8k16 per 16-deep step) on compute capability 8.0+ and none below; `RUNNER_CUDA_TC2=1` (or `tc2` in `--gpu-route`) also the compute_75 kernels where that module did not load (below 8.0, `RUNNER_CUDA_SM80=0`, or a route set with `tc2` and without `sm80`, which keeps it unloaded); `RUNNER_CUDA_TC2=0` or a route set without `tc2` none; a GEMM over more than 64 columns takes the compute_80 module's 128-column twin (`k_gemm2_80w_*`) unless `RUNNER_CUDA_TC2_WIDE=0` | compute_80 kernels: byte-identical to the tensor-core GEMM (the same fp32 sums; chunked `--score` on sm_86 and sm_120 with launch counts); compute_75 kernels: the tensor-core GEMM's tolerance class (fp32 rounding between the two m16n8k8 halves of a step); the 128-column twin: byte-identical to the 64-column tile (`GPU_ID_TC2_WIDE=1 ./test-gpu-identity`, prompt longer than 64 columns) | `make test-cuda-tc2-bytes` in the CUDA gate (chunked `--score` against `RUNNER_CUDA_TC2=0`, byte for byte, with the launch counts); `./test-tc-tol MODEL.gguf` (prints the TC2 and compute_80 launch counts) |
+| pipelined tensor-core GEMM (TC2) | the tensor-core GEMM's conditions, `n_in` a multiple of 64, at most the window's columns, and a kernel from `tc2_fn()`: by default the compute_80 module's (`k_gemm2_80_*`, one m16n8k16 per 16-deep step) on compute capability 8.0+ and none below; `RUNNER_CUDA_TC2=1` (or `tc2` in `--gpu-route`) also the compute_75 kernels where that module did not load (below 8.0, `RUNNER_CUDA_SM80=0`, or a route set with `tc2` and without `sm80`, which keeps it unloaded); `RUNNER_CUDA_TC2=0` or a route set without `tc2` none; a GEMM over more than 64 columns takes the compute_80 module's 128-column twin (`k_gemm2_80w_*`) unless `RUNNER_CUDA_TC2_WIDE=0`; a GEMM whose input columns the previous TC2 GEMM staged, unwritten since (K and V after Q, up after gate, a grouped MoE up after its gate), reuses that staging unless `RUNNER_CUDA_XH_REUSE=0` | compute_80 kernels: byte-identical to the tensor-core GEMM (the same fp32 sums; chunked `--score` on sm_86 and sm_120 with launch counts); compute_75 kernels: the tensor-core GEMM's tolerance class (fp32 rounding between the two m16n8k8 halves of a step); the 128-column twin: byte-identical to the 64-column tile (`GPU_ID_TC2_WIDE=1 ./test-gpu-identity`, prompt longer than 64 columns); the staging reuse: byte-identical to each GEMM staging its own columns (the same staged values) | `make test-cuda-tc2-bytes` in the CUDA gate (chunked `--score` against `RUNNER_CUDA_TC2=0`, byte for byte, with the launch counts, and on 8.0+ against `RUNNER_CUDA_XH_REUSE=0` with the reuse count); `./test-tc-tol MODEL.gguf` (prints the TC2 and compute_80 launch counts) |
 | tensor-core GEMM | more than one column, unscaled, `tc_on()` (the `RUNNER_CUDA_TC` override, else `tc_promoted()` per type and architecture), kernel present | tolerance per promoted (type, architecture) row; token columns are staged scaled to the fp16 range | `./test-tc-tol MODEL.gguf`; `make test-tc-overflow` on the CUDA gate |
 | tiled GEMM (`f_gemm`, Q8_0 and Q4_K) | more than one column, unscaled, kernel present | bit-exact to the batched `_b` kernel: same lane ownership, same inner order, only the source of `x` moves to shared memory | `test-gpu-identity` (prefill against the CPU) |
 | BF16 split-K | one column, BF16, at most 1,024 rows of at least 2,048 | deterministic within the route: a fixed tree per split and an index-order sum, no atomics | `make test-cuda-qwen4exp`: launch count, the CPU bound, two device runs byte for byte |
@@ -90,14 +90,29 @@ Around the matvec:
   gpt-oss-20b, whose attention has sinks and an alternating window). Gate:
   `test-gpu-identity` (with `GPU_ID_KV`). The tensor-core prefill attention
   (`k_attn_tc`, f16 caches, route `attn-tc`) is on by default for the llama,
-  qwen2, qwen3 and granite families without a sliding window, whose
-  long-context rows (Llama-3.2-3B, Mistral-7B, Qwen2.5-3B, Qwen3-4B,
-  granite-4.2-8b) read no further from the float32 reference than the tiled
-  kernel's; gpt-oss's row read further and the windowed families have none,
-  so they keep the tile (`RUNNER_CUDA_ATTN_TC=1` / `0` forces it on / off).
-  With Q and the softmax weights as single fp16 operands it read 0.19%
-  further from the reference on Mistral-7B; it carries each in two halves
-  (about 22 bits of the operand), which read the same as `k_attn` there.
+  qwen2, qwen3, qwen3moe, granite and phi3 families without a sliding
+  window, whose long-context rows (Llama-3.2-3B, Mistral-7B, Qwen2.5-3B,
+  Qwen3-4B, Qwen3-30B-A3B, granite-4.2-8b, Phi-3.5-mini, Phi-4-mini) read no
+  further from the float32 reference than the tiled kernel's; Phi-3.5 and
+  Phi-4 publish a window longer than their context, which is no window.
+  gpt-oss's row read further and the windowed files have none, so they keep
+  the tile (`RUNNER_CUDA_ATTN_TC=1` / `0` forces it on / off). With Q and the
+  softmax weights as single fp16 operands it read 0.19% further from the
+  reference on Mistral-7B; it carries each in two halves (about 22 bits of
+  the operand), which read the same as `k_attn` there. The tiled prefill
+  attention also takes head widths 257-512 (`k_attn_tile8`, 8 query rows of
+  8-key tiles: gemma-4's global layers), whose long-context rows on
+  gemma-4-26B-A4B and the dense gemma-4-E2B read no further from the
+  reference than `k_attn`'s (`RUNNER_CUDA_ATTN_TILE512=0` keeps `k_attn`).
+  One opt-in stays off: `RUNNER_CUDA_ATTN_TC_FULL=1` puts the tensor-core
+  attention on the layers without a window in a family the default keeps on
+  the tile (gpt-oss's full-attention layers), whose gpt-oss-20b row read
+  further from the reference than the tile's. 8,191-token prefill on the
+  datacenter MIG slice: gemma-4-12B +36.5% and gemma-4-E4B +50.6% with the
+  512-wide tile, Phi-3.5-mini +124.6%, Phi-4-mini +213.6% and Qwen3-30B-A3B
+  +206% (one round) with the tensor-core attention; on an RTX 3070,
+  gemma-4-E4B +41.8% and Phi-3.5-mini +135.6%. At about 3,500 tokens on the
+  MIG slice: +21% to +121%, and +1.5% to +31% at about 700 (4 rounds).
 - **Byte movers, on by default.** The one-copy KV gather (decode with full
   offload: every layer's new K and V rows gathered on the device, one copy
   back, `RUNNER_CUDA_KV_GATHER=0` restores the per-layer copies) and the
@@ -165,7 +180,8 @@ Around the matvec:
 | Metal 4 tensor GEMM | more than one column, `RUNNER_METAL_TENSOR=1`, an M5 or newer GPU on macOS 26.2 or newer, the per-type self-test passed at load, `n_in` a multiple of 256 | tolerance; opt-in, a failing type falls back alone | the load-time self-test, then `./test-tc-tol` |
 | simdgroup GEMM (`k_mm_*`) | more than one column, `RUNNER_METAL_MM` not `0` (promoted), `n_in` a whole number of k-steps and of superblocks | tolerance; activations staged scaled by the column maximum | `./test-tc-tol MODEL.gguf`, `make test-tc-overflow` on Darwin |
 | identity matvec (`k_mv`) | otherwise | token-identical to the CPU scalar route | `test-gpu-identity`, `make test-metal-kquant` and the other `test-metal-*` text gates |
-| fast decode matvec (`k_mvf_*`) | one column, `RUNNER_METAL_MV=1`, kernel present | tolerance; off by default (neutral when measured), never on prefill | `./test-mv-tol MODEL.gguf` |
+| fast decode matvec (`k_mvf_*`: Q4_0, Q8_0, Q4_K) | one column, `RUNNER_METAL_MV=1`, kernel present | tolerance; off by default (Q4_0 / Q8_0 neutral when measured, Q4_K +11-13% decode on the Llama 1B / 3B files over the default path), never on prefill | `./test-mv-tol MODEL.gguf` |
+| two-row identity matvec (`k_mv2_q6_K`) | one column, a Q6_K tensor, not the fast route, `RUNNER_METAL_MV2` not `0`, the load-time self-test passed | bit-exact to `k_mv_q6_K` (the self-test runs both on pseudo-random blocks and refuses the kernel on a device where any bit differs) | the load-time self-test; the identity and `test-metal-*` gates through the default route |
 
 Around the matvec:
 

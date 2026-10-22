@@ -1965,6 +1965,119 @@ kernel void k_mv_q6_K(MV_PARAMS) {
     MV_TAIL;
 }
 
+// Two rows a simdgroup for Q6_K decode (one column). Each row runs
+// k_mv_q6_K's arithmetic, its vector multiply-adds written as explicit fma,
+// which is what the compiler emits for k_mv_q6_K's `a += w * x`; the lane's
+// activation loads are shared by the two rows. On an M1 (2026-10-22, the
+// Llama 1B-14B projection shapes) +3 to +67%. Written as k_mv_q6_K's text it
+// was NOT bit-identical (the compiler chose differently inside the two-row
+// loop), so the engine admits this kernel only after metal_mv2_self_test has
+// found it bit-identical to k_mv_q6_K on the running device; otherwise decode
+// keeps k_mv_q6_K.
+kernel void k_mv2_q6_K(MV_PARAMS) {
+    enum { NR = 2 };
+    uint row0 = (tgpig.x * (ntg.x / 32) + sgitg) * NR;
+    if (row0 >= (uint)a.n_out) return;
+    device const float *x = x_all;
+    device float *y = y_all;
+    int nb = a.n_in / 256;
+    float s[NR] = {0, 0};
+    int nh = nb * 2;                       // half-superblocks on this row
+    for (int u = tiisg; u < nh; u += 32) {
+        int b = u >> 1, half_i = u & 1;
+        device const float *xp = x + b * 256 + half_i * 128;
+        float t[NR][8];
+        for (int is = 0; is < 2; is++) {
+            device const packed_float4 *x0 = (device const packed_float4 *)(xp + is * 16);
+            device const packed_float4 *x1 = (device const packed_float4 *)(xp + 32 + is * 16);
+            device const packed_float4 *x2 = (device const packed_float4 *)(xp + 64 + is * 16);
+            device const packed_float4 *x3 = (device const packed_float4 *)(xp + 96 + is * 16);
+            float4 xa[4], xb[4], xc[4], xd[4];
+            for (int k = 0; k < 4; k++) { xa[k] = x0[k]; xb[k] = x1[k]; xc[k] = x2[k]; xd[k] = x3[k]; }
+            for (int r = 0; r < NR; r++) {
+                uint row = row0 + r;
+                if (row >= (uint)a.n_out) break;
+                device const uchar *blk = wb + a.w_off + ((ulong)row * nb + b) * 210;
+                device const packed_uchar4 *l4  = (device const packed_uchar4 *)(blk + half_i * 64 + is * 16);
+                device const packed_uchar4 *l4b = (device const packed_uchar4 *)(blk + half_i * 64 + 32 + is * 16);
+                device const packed_uchar4 *h4  = (device const packed_uchar4 *)(blk + 128 + half_i * 32 + is * 16);
+                float4 a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+                for (int k = 0; k < 4; k++) {
+                    uchar4 lo = l4[k], hi = l4b[k], h = h4[k];
+                    a0 = fma(float4(lo & 0xF) + float4((h >> 0) & 3) * 16.0f - 32.0f, xa[k], a0);
+                    a1 = fma(float4(hi & 0xF) + float4((h >> 2) & 3) * 16.0f - 32.0f, xb[k], a1);
+                    a2 = fma(float4(lo >> 4)  + float4((h >> 4) & 3) * 16.0f - 32.0f, xc[k], a2);
+                    a3 = fma(float4(hi >> 4)  + float4((h >> 6) & 3) * 16.0f - 32.0f, xd[k], a3);
+                }
+                t[r][is * 4 + 0] = a0.x + a0.y + a0.z + a0.w;
+                t[r][is * 4 + 1] = a1.x + a1.y + a1.z + a1.w;
+                t[r][is * 4 + 2] = a2.x + a2.y + a2.z + a2.w;
+                t[r][is * 4 + 3] = a3.x + a3.y + a3.z + a3.w;
+            }
+        }
+        for (int r = 0; r < NR; r++) {
+            uint row = row0 + r;
+            if (row >= (uint)a.n_out) break;
+            device const uchar *blk = wb + a.w_off + ((ulong)row * nb + b) * 210;
+            device const char *sc = (device const char *)(blk + 192) + half_i * 8;
+            float d = (float)*(device const half *)(blk + 208);
+            s[r] += d * (sc[0] * t[r][0] + sc[2] * t[r][1] + sc[4] * t[r][2] + sc[6] * t[r][3] +
+                         sc[1] * t[r][4] + sc[3] * t[r][5] + sc[5] * t[r][6] + sc[7] * t[r][7]);
+        }
+    }
+    for (int r = 0; r < NR; r++) {
+        uint row = row0 + r;
+        float v = simd_sum(s[r]);
+        if (tiisg == 0 && row < (uint)a.n_out) y[row] = a.has_bias ? v + bias[row] : v;
+    }
+}
+
+// The opt-in fast decode matvec for Q4_K (RUNNER_METAL_MV=1, beside
+// k_mvf_q4_0 / k_mvf_q8_0): two rows a simdgroup sharing the lane's
+// activation loads, vector accumulation. TOLERANCE class (about 1e-7 of the
+// output range from k_mv_q4_K), not the identity kernel's bits; +3 to +49% on
+// the M1 shapes. Making it a default is an owner decision (D1).
+kernel void k_mvf_q4_K(MV_PARAMS) {
+    enum { NR = 2 };
+    uint row0 = (tgpig.x * (ntg.x / 32) + sgitg) * NR;
+    if (row0 >= (uint)a.n_out) return;
+    device const float *x = x_all;
+    device float *y = y_all;
+    int nb = a.n_in / 256, nq = nb * 4;
+    float s[NR] = {0, 0};
+    for (int u = tiisg; u < nq; u += 32) {
+        int b = u >> 2, jj = u & 3;
+        device const packed_float4 *xp4 = (device const packed_float4 *)(x + b * 256 + jj * 64);
+        float4 xl[8], xh[8], sl = 0, sh = 0;
+        for (int k = 0; k < 8; k++) { xl[k] = xp4[k]; xh[k] = xp4[k + 8]; sl += xl[k]; sh += xh[k]; }
+        float sx1 = sl.x + sl.y + sl.z + sl.w, sx2 = sh.x + sh.y + sh.z + sh.w;
+        for (int r = 0; r < NR; r++) {
+            uint row = row0 + r;
+            if (row >= (uint)a.n_out) break;
+            device const uchar *blk = wb + a.w_off + ((ulong)row * nb + b) * 144;
+            float d = (float)*(device const half *)blk;
+            float dmin = (float)*(device const half *)(blk + 2);
+            uchar s1, m1, s2, m2;
+            get_scale_min_k4(jj * 2 + 0, blk + 4, &s1, &m1);
+            get_scale_min_k4(jj * 2 + 1, blk + 4, &s2, &m2);
+            device const packed_uchar4 *q4 = (device const packed_uchar4 *)(blk + 16 + jj * 32);
+            float4 t1 = 0, t2 = 0;
+            for (int k = 0; k < 8; k++) {
+                uchar4 qq = q4[k];
+                t1 = fma(float4(qq & 0xF), xl[k], t1);
+                t2 = fma(float4(qq >> 4), xh[k], t2);
+            }
+            s[r] += d * s1 * (t1.x + t1.y + t1.z + t1.w) - dmin * m1 * sx1 +
+                    d * s2 * (t2.x + t2.y + t2.z + t2.w) - dmin * m2 * sx2;
+        }
+    }
+    for (int r = 0; r < NR; r++) {
+        uint row = row0 + r;
+        float v = simd_sum(s[r]);
+        if (tiisg == 0 && row < (uint)a.n_out) y[row] = a.has_bias ? v + bias[row] : v;
+    }
+}
+
 constant float kv_mxfp4[16] = {
      0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
      0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,

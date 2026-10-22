@@ -1595,45 +1595,154 @@ static inline float f32_dot_tail(float s, const float *w, const float *x, int i,
     return s;
 }
 
-enum { F32_TILE_ROWS = 4, F32_TILE_COLS = 4 };
+// AVX2's register tile takes three columns where only the 16 ymm registers
+// exist and four where AVX-512VL adds sixteen more (a native build on such a
+// host: 21 values then fit, and the wider tile reuses each weight load more)
+#if defined(__AVX512VL__)
+enum { F32_TILE_ROWS = 4, F32_TILE_COLS = 4, F32_TILE_COLS_AVX2 = 4 };
+#else
+enum { F32_TILE_ROWS = 4, F32_TILE_COLS = 4, F32_TILE_COLS_AVX2 = 3 };
+#endif
+
+#if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
+// One AVX2 register tile: the F32_TILE_ROWS weight rows against nc <=
+// F32_TILE_COLS_AVX2 activation columns. Every call passes nc as a literal,
+// so the loops unroll and the accumulators stay in registers. Three columns
+// on plain AVX2, not NEON's four: 4 x 4 needs 16 accumulators + 4 activation
+// + 1 weight vector = 21 against 16 ymm registers, and the inner loop
+// compiled at -march=x86-64-v3 kept 5 accumulators in memory under GCC 15
+// and 8 under clang, each reloaded and stored again on every step
+// (disassembly, 2026-10-22). 4 x 3 needs 16 and both compilers keep it all
+// in registers. With AVX-512VL (32 ymm registers) the 4 x 4 tile fits.
+static inline __attribute__((always_inline))
+void f32_tile_avx2(const float *const *w, const float *x, int x_stride, int nc,
+                   int n, float *out, int out_stride) {
+    const float *xp[F32_TILE_COLS_AVX2];
+    for (int c = 0; c < nc; c++)
+        xp[c] = x + (size_t)c * x_stride;
+    __m256 acc[F32_TILE_ROWS][F32_TILE_COLS_AVX2];
+    for (int r = 0; r < F32_TILE_ROWS; r++)
+        for (int c = 0; c < nc; c++)
+            acc[r][c] = _mm256_setzero_ps();
+    int i = 0;
+    for (; i + 8 <= n; i += 8) {
+        __m256 xv[F32_TILE_COLS_AVX2];
+        for (int c = 0; c < nc; c++)
+            xv[c] = _mm256_loadu_ps(xp[c] + i);
+        for (int r = 0; r < F32_TILE_ROWS; r++) {
+            __m256 wv = _mm256_loadu_ps(w[r] + i);
+            for (int c = 0; c < nc; c++)
+                acc[r][c] = _mm256_fmadd_ps(wv, xv[c], acc[r][c]);
+        }
+    }
+    for (int r = 0; r < F32_TILE_ROWS; r++)
+        for (int c = 0; c < nc; c++) {
+            __m128 l = _mm_add_ps(_mm256_castps256_ps128(acc[r][c]),
+                                  _mm256_extractf128_ps(acc[r][c], 1));
+            l = _mm_add_ps(l, _mm_movehl_ps(l, l));
+            l = _mm_add_ss(l, _mm_shuffle_ps(l, l, 1));
+            float s = _mm_cvtss_f32(l);
+            s = f32_dot_tail(s, w[r], xp[c], i, n);
+            out[(size_t)r * out_stride + c] = s;
+        }
+}
+#endif
+
+#if defined(__aarch64__) && defined(__ARM_NEON) && \
+    !(defined(__AVX2__) && defined(__FMA__) && defined(__F16C__))
+// One NEON register tile of eight weight rows against nc <= 3 activation
+// columns (24 accumulators + 3 activation + 1 weight register of 32).
+static inline __attribute__((always_inline))
+void f32_tile_neon8(const float *const *w, const float *x, int x_stride, int nc,
+                    int n, float *out, int out_stride) {
+    enum { R = 2 * F32_TILE_ROWS };
+    const float *xp[3];
+    for (int c = 0; c < nc; c++)
+        xp[c] = x + (size_t)c * x_stride;
+    float32x4_t acc[R][3];
+    for (int r = 0; r < R; r++)
+        for (int c = 0; c < nc; c++)
+            acc[r][c] = vdupq_n_f32(0);
+    int i = 0;
+    for (; i + 4 <= n; i += 4) {
+        float32x4_t xv[3];
+        for (int c = 0; c < nc; c++)
+            xv[c] = vld1q_f32(xp[c] + i);
+        for (int r = 0; r < R; r++) {
+            float32x4_t wv = vld1q_f32(w[r] + i);
+            for (int c = 0; c < nc; c++)
+                acc[r][c] = vfmaq_f32(acc[r][c], wv, xv[c]);
+        }
+    }
+    for (int r = 0; r < R; r++)
+        for (int c = 0; c < nc; c++) {
+            float s = vaddvq_f32(acc[r][c]);
+            s = f32_dot_tail(s, w[r], xp[c], i, n);
+            out[(size_t)r * out_stride + c] = s;
+        }
+}
+#endif
 
 void vec_dot_f32_tile(const float *const *w, int nrow, const float *x,
                       int x_stride, int nb, int n, float *out, int out_stride) {
-#if (defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)) || \
-    (defined(__aarch64__) && defined(__ARM_NEON))
+#if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
+    if (nrow % F32_TILE_ROWS == 0 && nrow <= VEC_DOT_F32_TILE_ROWS) {
+        // threes, with a remainder of four taken as two twos (8 accumulator
+        // chains each, enough to keep both FMA ports busy): a sixteen-column
+        // chunk runs 3,3,3,3,2,2 (4,4,4,4 with AVX-512VL's registers) and
+        // only nb == 1 takes the one-column tile;
+        // every four-row quad of the group runs against a column group while
+        // its activations are still in L1
+        for (int b = 0; b < nb;) {
+            int left = nb - b;
+#if defined(__AVX512VL__)
+            int nc = left >= 4 ? 4 : left;
+#else
+            int nc = left >= 5 || left == 3 ? 3 : left >= 2 ? 2 : 1;
+#endif
+            const float *xb = x + (size_t)b * x_stride;
+            for (int r = 0; r < nrow; r += F32_TILE_ROWS) {
+                float *ob = out + (size_t)r * out_stride + b;
+#if defined(__AVX512VL__)
+                if (nc == 4)
+                    f32_tile_avx2(w + r, xb, x_stride, 4, n, ob, out_stride);
+                else
+#endif
+                if (nc == 3)
+                    f32_tile_avx2(w + r, xb, x_stride, 3, n, ob, out_stride);
+                else if (nc == 2)
+                    f32_tile_avx2(w + r, xb, x_stride, 2, n, ob, out_stride);
+                else
+                    f32_tile_avx2(w + r, xb, x_stride, 1, n, ob, out_stride);
+            }
+            b += nc;
+        }
+        return;
+    }
+#elif defined(__aarch64__) && defined(__ARM_NEON)
+    if (nrow % (2 * F32_TILE_ROWS) == 0 && nrow <= VEC_DOT_F32_TILE_ROWS) {
+        for (int b = 0; b < nb;) {
+            int left = nb - b, nc = left >= 5 || left == 3 ? 3 : left >= 2 ? 2 : 1;
+            const float *xb = x + (size_t)b * x_stride;
+            for (int r = 0; r < nrow; r += 2 * F32_TILE_ROWS) {
+                float *ob = out + (size_t)r * out_stride + b;
+                if (nc == 3)
+                    f32_tile_neon8(w + r, xb, x_stride, 3, n, ob, out_stride);
+                else if (nc == 2)
+                    f32_tile_neon8(w + r, xb, x_stride, 2, n, ob, out_stride);
+                else
+                    f32_tile_neon8(w + r, xb, x_stride, 1, n, ob, out_stride);
+            }
+            b += nc;
+        }
+        return;
+    }
     if (nrow == F32_TILE_ROWS) {
         int b = 0;
         for (; b + F32_TILE_COLS <= nb; b += F32_TILE_COLS) {
             const float *xp[F32_TILE_COLS];
             for (int c = 0; c < F32_TILE_COLS; c++)
                 xp[c] = x + (size_t)(b + c) * x_stride;
-#if defined(__AVX2__)
-            __m256 acc[F32_TILE_ROWS][F32_TILE_COLS];
-            for (int r = 0; r < F32_TILE_ROWS; r++)
-                for (int c = 0; c < F32_TILE_COLS; c++)
-                    acc[r][c] = _mm256_setzero_ps();
-            int i = 0;
-            for (; i + 8 <= n; i += 8) {
-                __m256 xv[F32_TILE_COLS];
-                for (int c = 0; c < F32_TILE_COLS; c++)
-                    xv[c] = _mm256_loadu_ps(xp[c] + i);
-                for (int r = 0; r < F32_TILE_ROWS; r++) {
-                    __m256 wv = _mm256_loadu_ps(w[r] + i);
-                    for (int c = 0; c < F32_TILE_COLS; c++)
-                        acc[r][c] = _mm256_fmadd_ps(wv, xv[c], acc[r][c]);
-                }
-            }
-            for (int r = 0; r < F32_TILE_ROWS; r++)
-                for (int c = 0; c < F32_TILE_COLS; c++) {
-                    __m128 l = _mm_add_ps(_mm256_castps256_ps128(acc[r][c]),
-                                          _mm256_extractf128_ps(acc[r][c], 1));
-                    l = _mm_add_ps(l, _mm_movehl_ps(l, l));
-                    l = _mm_add_ss(l, _mm_shuffle_ps(l, l, 1));
-                    float s = _mm_cvtss_f32(l);
-                    s = f32_dot_tail(s, w[r], xp[c], i, n);
-                    out[(size_t)r * out_stride + b + c] = s;
-                }
-#else
             float32x4_t acc[F32_TILE_ROWS][F32_TILE_COLS];
             for (int r = 0; r < F32_TILE_ROWS; r++)
                 for (int c = 0; c < F32_TILE_COLS; c++)
@@ -1655,7 +1764,6 @@ void vec_dot_f32_tile(const float *const *w, int nrow, const float *x,
                     s = f32_dot_tail(s, w[r], xp[c], i, n);
                     out[(size_t)r * out_stride + b + c] = s;
                 }
-#endif
         }
         for (int r = 0; r < nrow; r++)
             if (b < nb)
@@ -3152,7 +3260,7 @@ float vec_dot(int type, const void *row, const float *x, int n) {
 // twin fall back to vec_dot per column, so the contract holds for every type
 // (test_quants_simd pins the equality on every format, both ISAs).
 #if RUNNER_AVX2
-static void dot_iq4_nl_avx2_multi(const block_iq4_nl *b, const float *const *xs,
+static inline __attribute__((always_inline)) void dot_iq4_nl_avx2_multi(const block_iq4_nl *b, const float *const *xs,
                                   int nc, int n, float *out) {
     const __m128i tbl = _mm_loadu_si128((const __m128i *)kvalues_iq4nl);
     const __m128i mF  = _mm_set1_epi8(0xF);
@@ -3176,7 +3284,7 @@ static void dot_iq4_nl_avx2_multi(const block_iq4_nl *b, const float *const *xs,
     for (int c = 0; c < nc; c++) out[c] = hsum8(acc[c]);
 }
 
-static void dot_q2_0_avx2_multi(const block_q2_0 *b, const float *const *xs,
+static inline __attribute__((always_inline)) void dot_q2_0_avx2_multi(const block_q2_0 *b, const float *const *xs,
                                 int nc, int n, float *out) {
     __m256 acc[VEC_DOT_MULTI_MAX];
     for (int c = 0; c < nc; c++) acc[c] = _mm256_setzero_ps();
@@ -3197,7 +3305,7 @@ static void dot_q2_0_avx2_multi(const block_q2_0 *b, const float *const *xs,
     for (int c = 0; c < nc; c++) out[c] = hsum8(acc[c]);
 }
 
-static void dot_iq3_xxs_avx2_multi(const block_iq3_xxs *b, const float *const *xs,
+static inline __attribute__((always_inline)) void dot_iq3_xxs_avx2_multi(const block_iq3_xxs *b, const float *const *xs,
                                    int nc, int n, float *out) {
     __m256 acc[VEC_DOT_MULTI_MAX], t[VEC_DOT_MULTI_MAX];
     for (int c = 0; c < nc; c++) acc[c] = _mm256_setzero_ps();
@@ -3225,7 +3333,7 @@ static void dot_iq3_xxs_avx2_multi(const block_iq3_xxs *b, const float *const *x
 
 // Q8_0 / Q4_0 / MXFP4: each block widened once, every column the single
 // kernel's mul + three fmadd and its fmadd by the block scale
-static void dot_q8_0_avx2_multi(const block_q8_0 *b, const float *const *xs,
+static inline __attribute__((always_inline)) void dot_q8_0_avx2_multi(const block_q8_0 *b, const float *const *xs,
                                 int nc, int n, float *out) {
     __m256 acc[VEC_DOT_MULTI_MAX];
     for (int c = 0; c < nc; c++) acc[c] = _mm256_setzero_ps();
@@ -3246,7 +3354,7 @@ static void dot_q8_0_avx2_multi(const block_q8_0 *b, const float *const *xs,
     for (int c = 0; c < nc; c++) out[c] = hsum8(acc[c]);
 }
 
-static void dot_q4_0_avx2_multi(const block_q4_0 *b, const float *const *xs,
+static inline __attribute__((always_inline)) void dot_q4_0_avx2_multi(const block_q4_0 *b, const float *const *xs,
                                 int nc, int n, float *out) {
     const __m128i mF = _mm_set1_epi8(0xF), m8 = _mm_set1_epi8(8);
     __m256 acc[VEC_DOT_MULTI_MAX];
@@ -3269,7 +3377,7 @@ static void dot_q4_0_avx2_multi(const block_q4_0 *b, const float *const *xs,
     for (int c = 0; c < nc; c++) out[c] = hsum8(acc[c]);
 }
 
-static void dot_mxfp4_avx2_multi(const block_mxfp4 *b, const float *const *xs,
+static inline __attribute__((always_inline)) void dot_mxfp4_avx2_multi(const block_mxfp4 *b, const float *const *xs,
                                  int nc, int n, float *out) {
     const __m128i tbl = _mm_loadu_si128((const __m128i *)kvalues_mxfp4_i8);
     const __m128i mF  = _mm_set1_epi8(0xF);
@@ -3293,7 +3401,7 @@ static void dot_mxfp4_avx2_multi(const block_mxfp4 *b, const float *const *xs,
     for (int c = 0; c < nc; c++) out[c] = hsum8(acc[c]);
 }
 
-static void dot_iq3_s_avx2_multi(const block_iq3_s *b, const float *const *xs,
+static inline __attribute__((always_inline)) void dot_iq3_s_avx2_multi(const block_iq3_s *b, const float *const *xs,
                                  int nc, int n, float *out) {
     __m256 acc[VEC_DOT_MULTI_MAX], t[VEC_DOT_MULTI_MAX];
     for (int c = 0; c < nc; c++) acc[c] = _mm256_setzero_ps();
@@ -3318,7 +3426,7 @@ static void dot_iq3_s_avx2_multi(const block_iq3_s *b, const float *const *xs,
     for (int c = 0; c < nc; c++) out[c] = hsum8(acc[c]);
 }
 
-static void dot_iq4_xs_avx2_multi(const block_iq4_xs *b, const float *const *xs,
+static inline __attribute__((always_inline)) void dot_iq4_xs_avx2_multi(const block_iq4_xs *b, const float *const *xs,
                                   int nc, int n, float *out) {
     const __m128i tbl = _mm_loadu_si128((const __m128i *)kvalues_iq4nl);
     const __m128i mF  = _mm_set1_epi8(0xF);
@@ -3350,7 +3458,7 @@ static void dot_iq4_xs_avx2_multi(const block_iq4_xs *b, const float *const *xs,
     for (int c = 0; c < nc; c++) out[c] = s[c];
 }
 
-static void dot_bf16_avx2_multi(const uint16_t *w, const float *const *xs, int nc,
+static inline __attribute__((always_inline)) void dot_bf16_avx2_multi(const uint16_t *w, const float *const *xs, int nc,
                                 int n, float *out) {
     __m256 acc[VEC_DOT_MULTI_MAX];
     for (int c = 0; c < nc; c++) acc[c] = _mm256_setzero_ps();
@@ -3368,7 +3476,7 @@ static void dot_bf16_avx2_multi(const uint16_t *w, const float *const *xs, int n
     }
 }
 
-static void dot_q4_K_avx2_multi(const block_q4_K *b, const float *const *xs, int nc,
+static inline __attribute__((always_inline)) void dot_q4_K_avx2_multi(const block_q4_K *b, const float *const *xs, int nc,
                                 int n, float *out) {
     const __m128i mF = _mm_set1_epi8(0xF);
     __m256 acc[VEC_DOT_MULTI_MAX];
@@ -3417,7 +3525,7 @@ static void dot_q4_K_avx2_multi(const block_q4_K *b, const float *const *xs, int
     for (int c = 0; c < nc; c++) out[c] = hsum8(acc[c]) - msum[c];
 }
 
-static void dot_q5_K_avx2_multi(const block_q5_K *b, const float *const *xs, int nc,
+static inline __attribute__((always_inline)) void dot_q5_K_avx2_multi(const block_q5_K *b, const float *const *xs, int nc,
                                 int n, float *out) {
     const __m128i mF = _mm_set1_epi8(0xF), m16 = _mm_set1_epi8(16);
     __m256 acc[VEC_DOT_MULTI_MAX];
@@ -3473,7 +3581,7 @@ static void dot_q5_K_avx2_multi(const block_q5_K *b, const float *const *xs, int
     for (int c = 0; c < nc; c++) out[c] = hsum8(acc[c]) - msum[c];
 }
 
-static void dot_q6_K_avx2_multi(const block_q6_K *b, const float *const *xs, int nc,
+static inline __attribute__((always_inline)) void dot_q6_K_avx2_multi(const block_q6_K *b, const float *const *xs, int nc,
                                 int n, float *out) {
     const __m128i mF = _mm_set1_epi8(0xF), m3 = _mm_set1_epi8(3), m32 = _mm_set1_epi8(32);
     __m256 acc[VEC_DOT_MULTI_MAX];
@@ -3859,6 +3967,21 @@ unsigned long vec_dot_multi_calls(void) {
     return atomic_load_explicit(&g_vdm_calls, memory_order_relaxed);
 }
 
+// The AVX2 multi-column dots keep one accumulator per column in an array
+// indexed by the column count; with the count a runtime value the compiler
+// keeps that array in memory. Each count from two to seven gets its own
+// inlined copy with the count a literal, so the loops unroll and the
+// accumulators stay in registers: Q4_K, 256 rows of 4,096 on an i7-7700K
+// (GCC 16, x86-64-v3) +13% at two columns, +27% at four, +2% at eight (left
+// at the runtime count). The same operations per column either way. NEON
+// measured no consistent gain (an M1: +5% at two, -4% at four) and keeps the
+// runtime count.
+#define AVX2_MULTI(fn, row, xs, nc, n, out) do { switch (nc) {                 \
+    case 2: fn(row, xs, 2, n, out); break; case 3: fn(row, xs, 3, n, out); break; \
+    case 4: fn(row, xs, 4, n, out); break; case 5: fn(row, xs, 5, n, out); break; \
+    case 6: fn(row, xs, 6, n, out); break; case 7: fn(row, xs, 7, n, out); break; \
+    default: fn(row, xs, nc, n, out); } } while (0)
+
 void vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
                    int n, float *out) {
     if (nc < 1) return;
@@ -3871,18 +3994,18 @@ void vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
 #ifndef RUNNER_CANON_KERNELS
     switch (type) {
 #if RUNNER_AVX2
-        case T_Q8_0:    dot_q8_0_avx2_multi(row, xs, nc, n, out);    return;
-        case T_Q4_0:    dot_q4_0_avx2_multi(row, xs, nc, n, out);    return;
-        case T_MXFP4:   dot_mxfp4_avx2_multi(row, xs, nc, n, out);   return;
-        case T_IQ4_NL:  dot_iq4_nl_avx2_multi(row, xs, nc, n, out);  return;
-        case T_IQ4_XS:  dot_iq4_xs_avx2_multi(row, xs, nc, n, out);  return;
-        case T_Q2_0:    dot_q2_0_avx2_multi(row, xs, nc, n, out);    return;
-        case T_IQ3_XXS: dot_iq3_xxs_avx2_multi(row, xs, nc, n, out); return;
-        case T_IQ3_S:   dot_iq3_s_avx2_multi(row, xs, nc, n, out);   return;
-        case T_BF16:    dot_bf16_avx2_multi(row, xs, nc, n, out);    return;
-        case T_Q4_K:    dot_q4_K_avx2_multi(row, xs, nc, n, out);    return;
-        case T_Q5_K:    dot_q5_K_avx2_multi(row, xs, nc, n, out);    return;
-        case T_Q6_K:    dot_q6_K_avx2_multi(row, xs, nc, n, out);    return;
+        case T_Q8_0:    AVX2_MULTI(dot_q8_0_avx2_multi, row, xs, nc, n, out);    return;
+        case T_Q4_0:    AVX2_MULTI(dot_q4_0_avx2_multi, row, xs, nc, n, out);    return;
+        case T_MXFP4:   AVX2_MULTI(dot_mxfp4_avx2_multi, row, xs, nc, n, out);   return;
+        case T_IQ4_NL:  AVX2_MULTI(dot_iq4_nl_avx2_multi, row, xs, nc, n, out);  return;
+        case T_IQ4_XS:  AVX2_MULTI(dot_iq4_xs_avx2_multi, row, xs, nc, n, out);  return;
+        case T_Q2_0:    AVX2_MULTI(dot_q2_0_avx2_multi, row, xs, nc, n, out);    return;
+        case T_IQ3_XXS: AVX2_MULTI(dot_iq3_xxs_avx2_multi, row, xs, nc, n, out); return;
+        case T_IQ3_S:   AVX2_MULTI(dot_iq3_s_avx2_multi, row, xs, nc, n, out);   return;
+        case T_BF16:    AVX2_MULTI(dot_bf16_avx2_multi, row, xs, nc, n, out);    return;
+        case T_Q4_K:    AVX2_MULTI(dot_q4_K_avx2_multi, row, xs, nc, n, out);    return;
+        case T_Q5_K:    AVX2_MULTI(dot_q5_K_avx2_multi, row, xs, nc, n, out);    return;
+        case T_Q6_K:    AVX2_MULTI(dot_q6_K_avx2_multi, row, xs, nc, n, out);    return;
 #elif RUNNER_NEON
         case T_Q8_0:    dot_q8_0_neon_multi(row, xs, nc, n, out);    return;
         case T_Q4_0:    dot_q4_0_neon_multi(row, xs, nc, n, out);    return;

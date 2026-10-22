@@ -1806,9 +1806,17 @@ float4 accumulation and the q4_0 zero-point factored out of the inner loop).
 It clears the 0/64 teacher-forced flip bar on both formats but measured
 neutral on an 8-core M1 - −0.16 % bandwidth-bound, −0.01 % dispatch-bound - so
 it is **off by default**, leaving the byte-identical kernel on the default
-path. `./test-mv-tol MODEL.gguf` is the gate; see
+path. Since 2026-10-22 it also covers Q4_K (two rows a simdgroup, vector
+accumulation): decode +10.8% on Llama-3.2-1B and +12.5% on Llama-3.2-3B
+Q4_K_M over the default path on the M1, -0.9% on Qwen2.5-1.5B. It stays off
+by default: it is not the identity kernel's bits, and a tolerance default is
+a fidelity decision. `./test-mv-tol MODEL.gguf` is the gate; see
 `docs/negative-result-metal-multirow-matvec.md` for the matvec numerical
 contract and its verification gates.
+
+Q6_K decode matvecs run two rows a simdgroup on the default path
+(`k_mv2_q6_K`): the one-row kernel's bits, checked against it at load on the
+running device. `RUNNER_METAL_MV2=0` keeps the one-row kernel.
 The CPU quant dot/dequant module is a separate translation unit compiled with
 `-fno-fast-math`; fast math remains enabled for the rest of the engine.
 
@@ -2021,7 +2029,7 @@ flags into unrelated feature sections.
 |---|---|
 | `-m PATH` | GGUF path. In serve mode, `name=path,name2=path2` enables multi-model swap mode. |
 | `-p TEXT` | One-shot prompt; escaped sequences such as `\n` are unescaped. |
-| `-f FILE` | Append file contents to the prompt. |
+| `-f FILE` | Append the file's contents to the prompt as written; escapes are unescaped only in `-p` text. |
 | `--pull REPO[:TAG]` | Download and verify what `-hf` would fetch, print the result and exit; no model is loaded. A mode of its own. [Details](#cli-pull). |
 | `-i` | Stateful interactive chat. |
 | `--serve` | Start the HTTP server. |
@@ -3048,6 +3056,14 @@ snapshotting a prefix rather than holding a slot - and every entry is bound to
 the model, geometry, tokenizer, context length and KV element type it was
 taken from, so another model cannot install one. There is no on-disk warm
 start: a restarted server prefills from cold.
+
+A snapshot holds the prefix's KV, so size the budget to the prefixes you
+reuse. At f16 KV a token costs 2 x layers x KV heads x head width x 2 bytes:
+114 KB on Llama-3.2-3B, so a 4,000-token system prompt and tool list is
+about 460 MB, and the default 512 MB holds one. Measured on an Apple M1 with
+three conversations sharing such a prefix over two slots (`--parallel 2`,
+nine turns): 294 s with no cache, 232 s at 512 MB, 115 s at 1,024 MB, where
+the later turns ran 4.1 times faster than uncached.
 
 `--parallel N` creates independent KV caches and thread pools while sharing
 mapped weights. Threads are divided across slots. On CUDA the slots share one

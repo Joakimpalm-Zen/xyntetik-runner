@@ -5,6 +5,224 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: a MoE prompt tile routes its tokens in one launch.** Every MoE
+  prefill route (fused, grouped and by-expert, and gemma-4's grouped and
+  by-expert routes) ran the router as one matvec launch per prompt token.
+  An F32 or F16 router, and a BF16 one off its split-K route, now runs through
+  the batched twin of its one-token kernel, so each token's router logits are
+  the same bits from one launch per MoE layer per tile; other router types
+  keep the per-token launches, and gemma-4's fused per-token path is
+  unchanged. Chunked `--score` is byte-identical before and after on
+  Qwen3-30B-A3B, gpt-oss-20b and gemma-4-26B-A4B across every MoE route, and
+  an 875-token Qwen3-30B-A3B prefill makes about 42,000 fewer launches.
+  Prefill on the datacenter MIG slice at about 600 and 2,600 tokens (5
+  interleaved rounds): Qwen3-30B-A3B +7.4% and +6.0%, gemma-4-26B-A4B +2.5%
+  and +2.3%, gpt-oss-20b +2.0% at both; decode unchanged.
+
+- **CUDA: gemma-4 files whose global layers reuse K as V decode through the
+  CUDA graph.** Such a layer builds V from K by zeroing it and adding K, and
+  the zeroing was a synchronous memset, which a graph capture cannot record,
+  so these files (gemma-4-12B and gemma-4-26B-A4B among them) decoded with
+  plain launches, and their decode microbatch did too. The zeroing now runs
+  in stream order (`cuMemsetD8Async`) before the same add, so V is the same
+  bits and both graphs capture; a driver without that call keeps the
+  previous path. Greedy output is byte-identical with the graph on and off on
+  gemma-4-12B and gemma-4-26B-A4B. Decode on the datacenter MIG slice (5
+  interleaved rounds): gemma-4-12B +1.2% at about 700 and 2,800 prompt
+  tokens, gemma-4-26B-A4B +0.2% and +1.6%.
+
+- **CUDA: a Mamba-2 prompt tile gates and normalizes its tokens in one
+  launch.** The tile path ran the convolution and the scan once over the
+  tile but the gate and group norm once per token, a launch per token in
+  every Mamba layer. One launch with a grid row per token runs the same
+  arithmetic for each token: greedy text, `--score` and chunked `--score` are
+  byte-identical on granite-4.0-h-micro, granite-4.0-h-tiny and
+  Nemotron-Nano-9B-v2. Prefill on the datacenter MIG slice (5 interleaved
+  rounds): granite-4.0-h-micro +135% at about 600 tokens and +145% at 2,500,
+  Nemotron-Nano-9B-v2 +17% and +19%.
+
+- **CUDA: the dense Mamba-2 hybrids decode through the CUDA graph.**
+  granitehybrid and nemotron_h files without experts (granite-4.0-h-micro,
+  Nemotron-Nano-9B-v2) decoded with plain launches: the graph plan admitted
+  qwen35 alone among the recurrent families. Their one-token step advances
+  the conv ring and the scan state in place on buffers held for the
+  instance, with the rollback copy taken before the forward, the ownership
+  qwen35's graph relies on, and nemotron_h's MLP-only blocks run no
+  attention; both now replay. Greedy output is byte-identical with the graph
+  on and off; `RUNNER_CUDA_GRAPH_RECUR=0` keeps every recurrent family eager.
+  Decode on the datacenter MIG slice (5 interleaved rounds):
+  granite-4.0-h-micro +1.2%, Nemotron-Nano-9B-v2 +0.4%.
+
+- **Metal: Q6_K decode matvecs compute two rows a simdgroup.** A Q4_K_M file
+  keeps some tensors in Q6_K (the output head and part of the V and FFN-down
+  tensors), and their one-column matvec computed one row a simdgroup, each
+  row loading the same activations again. `k_mv2_q6_K` computes two rows from
+  one activation load a lane, with each row's multiply-adds written as the
+  `fma` the one-row kernel compiles to, so the outputs are the same bits. The
+  engine checks that at load against the one-row kernel on the running device
+  and keeps the one-row kernel where any bit differs; `RUNNER_METAL_MV2=0`
+  keeps it everywhere. Greedy text and token-by-token `--score` are
+  byte-identical with it on and off on Llama-3.2-1B, Llama-3.2-3B and
+  Qwen2.5-1.5B Q4_K_M. Decode on an Apple M1 (5 interleaved rounds, 512-token
+  prompt, 128 tokens): Llama-3.2-1B +8.6%, Llama-3.2-3B +16.1%, Qwen2.5-1.5B
+  +3.4%; prefill unchanged.
+
+- **Metal: the opt-in fast decode matvec covers Q4_K.** `RUNNER_METAL_MV=1`
+  (tolerance class, off by default) had kernels for Q4_0 and Q8_0 only; a
+  Q4_K kernel now computes two rows a simdgroup with vector accumulation.
+  Over the new default on the M1: Llama-3.2-1B +10.8%, Llama-3.2-3B +12.5%,
+  Qwen2.5-1.5B -0.9%. `./test-mv-tol` now runs on Q4_K files (it skipped
+  them before) and passes on all three: no top-1 change in 64
+  teacher-forced positions, mean logit change 1e-5 of the logit range. It
+  stays off by default because it does not reproduce the identity kernel's
+  bits.
+
+- **CUDA: K and V reuse the activations TC2 staged for Q.** The pipelined
+  tensor-core GEMM (TC2) prepares a prompt tile's input before every GEMM:
+  each column's largest magnitude, then fp16 copies scaled by it. K and V
+  read the same columns Q just prepared (so does qwen35's output gate), as
+  do up after gate and a grouped MoE up after its gate, and prepared them
+  again. Such a GEMM now reuses the preparation when nothing has written
+  those columns since, which the GEMM checks by address, shape and that the
+  preparation came from the call right before it. The prepared values are
+  the same, so chunked `--score` is byte-identical with the reuse on and off
+  on Qwen2.5-7B, Llama-3.2-3B, Qwen3-30B-A3B and gemma-4-26B-A4B (grouped),
+  with 4,452 to 11,902 reuses a run (Llama-3.2-3B and Qwen2.5-7B also on an
+  RTX 3070), and `make test-cuda-tc2-bytes` now checks it.
+  `RUNNER_CUDA_XH_REUSE=0` prepares every GEMM's input. Prefill on the
+  datacenter MIG slice (5 interleaved rounds, about 600 and 2,600 tokens):
+  Llama-3.2-3B +1.7% and +1.3%, Qwen2.5-7B +1.2% and +1.0%, Qwen3-30B-A3B
+  +2.6% and +2.1% (best of five: that file's runs scattered under host
+  load); decode unchanged.
+
+- **CUDA: a Mamba-2 hybrid's scan state is double-buffered instead of
+  copied before every forward.** The engine copied every layer's SSD scan
+  state to a rollback snapshot before each forward (4.8% of
+  granite-4.0-h-micro's and 5.5% of Nemotron-Nano-9B-v2's decode time on the
+  datacenter MIG slice). The state is now two halves: a forward's first tile
+  reads the half the previous forward wrote and writes the other, a rollback
+  returns to the half the forward read, and the decode graph keeps one
+  capture per half. The scan's arithmetic is unchanged: greedy text with the
+  graph on and off, a 2,600-token prompt, and token-by-token and chunked
+  `--score` are byte-identical before and after on granite-4.0-h-micro,
+  granite-4.0-h-tiny and Nemotron-Nano-9B-v2 (granite-4.0-h-micro also on an
+  RTX 3070). Decode on the slice (5 interleaved rounds): granite-4.0-h-micro
+  +6.9%, Nemotron-Nano-9B-v2 +5.7%; prefill unchanged.
+
+- **CUDA: two attention opt-ins for layers the default leaves alone.**
+  `RUNNER_CUDA_ATTN_TILE512=1` lets the tiled prefill attention take head
+  widths 257-512 (`k_attn_tile8`, 8 query rows of 8-key tiles), so gemma-4's
+  global layers stop falling back to the one-row `k_attn`;
+  `RUNNER_CUDA_ATTN_TC_FULL=1` puts the tensor-core attention on the layers
+  without a window in a family the default keeps on the tile (gpt-oss's
+  full-attention layers). Both are tolerance class and off by default until
+  their long-context rows against the float32 reference pass. 8,191-token
+  prefill on an RTX 3070, 3 rounds: gemma-4-E4B +41.8% with the first; phi3
+  +135.6% under the existing `RUNNER_CUDA_ATTN_TC=1`.
+
+- **CUDA: the tensor-core prefill GEMM reads Q6_K weights eight bytes at a
+  time.** A Q6_K block is 210 bytes, so its rows are only 2-byte aligned,
+  and the pipelined tensor-core GEMM (TC2) read each segment's low and high
+  bits as 48 two-byte loads; a profile on an RTX 3070 showed 4.1 of every
+  32 bytes a sector used. It now reads them as 14 aligned 8-byte loads and
+  shifts the same words into place, so the dequantized values, the
+  tensor-core operands and every output are unchanged: greedy text and
+  token-by-token and chunked `--score` are byte-identical on Q4_K_M, Q5_K_M
+  and Q6_K files on an RTX 3070. Prefill there, 10 interleaved rounds
+  (medians):
+  Qwen3-4B Q6_K +12.6%, Qwen2.5-7B Q4_K_M +4.4%, Llama-3.2-3B Q4_K_M +4.1%;
+  decode unchanged.
+
+- **CPU: a prompt matvec serves each activation chunk to more weight rows.**
+  The batched CPU matvec dequantized four weight rows at a time and ran
+  them against the prompt's activations in 16-column chunks, so each chunk
+  was fetched from cache again for every four rows. Rows now go in groups
+  of sixteen on AVX2 (four 4 x 3 register tiles against each chunk; the
+  4 x 4 tile kept five to eight of its sixteen accumulators in memory at
+  x86-64-v3) and eight on NEON (one 8 x 3 tile), then smaller groups for a
+  range's remainder. Every output is the same dot in the same order, so
+  chunked and token-by-token `--score` and greedy text are byte-identical.
+  512-token CPU prefill, 5 interleaved rounds: Llama-3.2-3B Q4_K_M +26.0% and
+  Qwen2.5-7B Q4_K_M +40.7% on 12 Zen 5 cores at x86-64-v3, the release
+  build (medians; the 4 x 3 tile alone +15.8% and +7.3%); Llama-3.2-3B +5.8%
+  and Qwen2.5-3B Q4_K_M +4.1% on an i7-7700K; Llama-3.2-3B +6.1%,
+  Qwen2.5-1.5B Q4_K_M +10.6% and Q8_0 +10.1% on an Apple M1.
+
+- **CPU: the AVX2 multi-column dots keep their accumulators in registers.**
+  The 2- to 7-column K-quant and codebook dots that speculative verify
+  rounds and the CPU decode microbatch run kept one accumulator per column
+  in an array indexed by the column count, a runtime value, so the compiler
+  kept the array in memory. Each count from two to seven now has its own
+  instantiation with the same per-column operations, and the outputs are
+  unchanged. Q4_K dot on an i7-7700K: +12 to +14% at two columns, +27% at
+  four; `--draft-lookup` decode +3.9% on Llama-3.2-3B Q4_K_M, with the same
+  text as plain decoding. NEON measured no gain and keeps its form.
+
+- **CPU: on NEON a prompt matvec walks 32 activation columns a pass.** With
+  the row groups above, an Apple M1 read prefill +2.5% (Llama-3.2-3B
+  Q4_K_M), +3.5% (Qwen2.5-1.5B Q4_K_M) and +4.2% (Q8_0) with 32-column
+  chunks over 16 (5 interleaved rounds, medians), byte-identical; on x86
+  (Zen 5, i7-7700K) 8 and 32 columns read within noise of 16, which stays.
+
+- **CUDA: a speculative round on a Mamba-2 hybrid restores its kept rows
+  instead of running them again.** With `--draft-lookup` or a draft model on
+  a granite-4.0-h or Nemotron-H hybrid, a round whose drafts were partly
+  rejected rolled the recurrent state back to the round's start and ran the
+  kept tokens through the model a second time. A verify round now files the
+  state after each of its rows (the tile scan writes them as it goes; the
+  last row's state is the live one), and a partial round restores the row
+  it kept, as Qwen3.5 models already did. The slots are allocated by the
+  first verify round (about 0.5 GB on granite-4.0-h-micro, 1 GB on
+  Nemotron-Nano-9B-v2), so plain decoding holds none, and without room a
+  round re-runs its kept tokens as before. Output is unchanged: greedy text
+  with and without lookup is byte-identical on three hybrids, and every
+  verify row is byte-identical to solo steps in
+  `make test-cuda-spec-identity`. Lookup decode on the datacenter MIG slice
+  (5 interleaved rounds, medians): granite-4.0-h-micro +8.1% on a
+  repetitive prompt (now 7.8% faster than plain decoding, from 0.3% slower)
+  and +4.7% on an open one, Nemotron-Nano-9B-v2 +5.0% and +0.8%; plain
+  decoding unchanged.
+
+- **CUDA: three prefill attention routes become defaults.** The
+  tensor-core prefill attention now also covers the qwen3moe and phi3
+  families (the phi3 files that publish a window longer than their context,
+  Phi-3.5-mini and Phi-4-mini, load without one), and the tiled prefill
+  attention takes gemma-4's 512-wide global layers (`k_attn_tile8`) instead
+  of the plain kernel. Each passed the long-context rule against the route
+  it replaces (2,000 positions at 4,000 to 6,000 tokens of context against
+  the publisher's float32 weights): mean KL 0.07584 vs 0.07580 on
+  Qwen3-30B-A3B, 0.07912 vs 0.07912 on Phi-3.5-mini, 0.13998 vs 0.13996 on
+  Phi-4-mini, 0.31995 vs 0.32108 on gemma-4-26B-A4B and 0.14722 vs 0.14714
+  on gemma-4-E2B, with no paired test separating them. Prefill on the
+  datacenter MIG slice at about 700 and 3,500 tokens (4 interleaved rounds,
+  medians): Phi-3.5-mini +21% and +78%, Phi-4-mini +31% and +121%,
+  Qwen3-30B-A3B +13% and +60%, gemma-4-E4B +8% and +26%, gemma-4-12B +6%
+  and +21%, gemma-4-26B-A4B +1.5% and +6%; decode unchanged.
+  `RUNNER_CUDA_ATTN_TC=0` and `RUNNER_CUDA_ATTN_TILE512=0` restore the
+  previous routes. gpt-oss keeps the tile: its full-attention layers on the
+  tensor cores (`RUNNER_CUDA_ATTN_TC_FULL=1`, still opt-in) read further
+  from the reference (0.04065 vs 0.04039, Wilcoxon p 3e-18).
+
+- **`-f FILE` reads the prompt file as written.** The file's text was
+  appended to the `-p` text before `-p`'s escapes (`\n`, `\t`, `\r`, `\\`)
+  were applied to the whole prompt, so a backslash sequence in a prompt file
+  was rewritten: a scored corpus's `\times` reached the tokenizer as a tab
+  and `imes`, and code or LaTeX in a one-shot or `--bench` prompt file
+  changed the same way. `-p` text still takes the escapes; a file's bytes
+  are now the prompt. `--score` comparisons against a reference tokenizer
+  (`scripts/gold-logits.py`) refused such files rather than scoring them,
+  which is how this was found.
+
+- **CPU: a native AVX-512 build takes the 4 x 4 register tile.** AVX-512VL
+  doubles the vector registers to 32, enough for the 4 x 4 tile's 21 live
+  values, so a build for such a host (`-march=native` on Zen 4 / Zen 5 or a
+  recent Xeon) runs its prompt matvecs in 4 x 4 tiles; the x86-64-v3 release
+  build keeps the 4 x 3 tile. Each output is the same dot in the same order:
+  chunked `--score` is byte-identical on Llama-3.2-3B Q4_K_M and Qwen3-8B
+  Q8_0. 512-token prefill on 12 Zen 5 cores, native builds, 7 interleaved
+  rounds (medians): +4.5% (Llama-3.2-3B Q4_K_M), +8.1% (Qwen2.5-7B Q4_K_M)
+  and +8.9% (Qwen3-8B Q8_0) over the 4 x 3 tile, A/A within 1.6%.
+
 - **`--pull owner/repo[:TAG]` downloads a model without loading it.** It
   fetches into the cache exactly what `-hf` would (same selection, cache,
   `HF_TOKEN`, multipart handling and verification), prints the path to give
