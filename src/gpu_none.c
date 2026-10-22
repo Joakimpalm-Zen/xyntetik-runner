@@ -54,6 +54,7 @@ void gpu_tc_force(int on) { (void)on; }
 unsigned long gpu_tc_dispatches(void) { return 0; }
 unsigned long gpu_tc_dispatches_type(int type) { (void)type; return 0; }
 unsigned long gpu_tc2_dispatches(void) { return 0; }
+unsigned long gpu_tc2_reused(void) { return 0; }
 unsigned long gpu_tc2_80_dispatches(void) { return 0; }
 unsigned long gpu_moe_twin_tiles(void) { return 0; }
 void gpu_moe_twin_force(int on) { (void)on; }

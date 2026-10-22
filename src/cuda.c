@@ -573,6 +573,18 @@ typedef struct {
     CUdeviceptr xsc;                    // [win] per-column |x| max for the scaled TC GEMMs
     CUdeviceptr xh;                     // TC2: [win][xh_cap] scaled fp16 activations
     int         xh_cap;                 // the widest GEMM input xh holds
+    // The input TC2 staged last into xsc / xh, by address and shape, and the
+    // enc_mv call that did it (mv_seq counts every enc_mv). A call site whose
+    // next GEMM reads the same columns, unwritten since (K and V after Q, up
+    // after gate), sets xh_reuse around that one call; the GEMM skips
+    // restaging only if the staging came from the enc_mv right before it
+    // (another route in between, or an older staging of the same buffer,
+    // restages) -- same bytes: staging is a pure function of the columns.
+    // Any other writer of xsc clears xh_src.
+    CUdeviceptr xh_src;
+    int         xh_n, xh_xs, xh_batch;
+    bool        xh_reuse;
+    unsigned long mv_seq, xh_seq;
     // sparse-MoE: router logits [MVB][n_expert], per-slot expert down-out
     // [rows][n_embd] (rows = max(used, MVB); the eager path uses column 0)
     CUdeviceptr moe_logits, moe_eout;
@@ -4242,6 +4254,7 @@ static bool launch_tiled_xscaled(gpu_t *g, CUfunction f, unsigned grid,
         CUdeviceptr xi = x + (CUdeviceptr)((uint64_t)off * (uint64_t)a.xs * sizeof(float));
         CUdeviceptr yi = y + (CUdeviceptr)((uint64_t)off * (uint64_t)a.ys * sizeof(float));
         void *pm[] = { &xi, &g->xsc, &ai.n_in, &ai.xs, &ai.batch };
+        g->xh_src = 0;                   // xsc no longer holds TC2's staging
         if (!launch(g, g->sw->f_colabsmax, (unsigned)ai.batch, 1, 1, 256, pm))
             return false;
         void *pi[] = { &weights, &xi, &yi, &ai, &bias, &g->xsc };
@@ -4314,6 +4327,14 @@ static bool gpu_tc2_on(void) { return tc2_mode() != TC2_OFF; }
 static bool tc2_forced(void) { return tc2_mode() == TC2_FORCED; }
 static _Atomic unsigned long g_tc2_dispatches;
 unsigned long gpu_tc2_dispatches(void) { return g_tc2_dispatches; }
+static _Atomic unsigned long g_tc2_reused;
+unsigned long gpu_tc2_reused(void) { return g_tc2_reused; }
+// RUNNER_CUDA_XH_REUSE=0: every TC2 GEMM stages its own columns (the A/B)
+static bool xh_reuse_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) { const char *e = getenv("RUNNER_CUDA_XH_REUSE"); on = !(e && *e == '0'); }
+    return on == 1;
+}
 
 // E1: RUNNER_CUDA_SM80=0 keeps TC2 on its compute_75 kernels on a device
 // that could run the compute_80 ones (a diagnostic and A/B control)
@@ -4425,6 +4446,7 @@ static bool batch_mv_twin_ok(const gpu_t *g, const gguf_tensor *t);
 static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                    CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias,
                    int batch, int xs, int ys) {
+    unsigned long seq = ++g->mv_seq;
     // Exact rows (a speculative verify round, model_forward_verify): every
     // column the batch-1 call's bits. Up to sixteen columns a pass through
     // the width-classed twins where the batch-1 route is the GEMV they twin
@@ -4497,12 +4519,19 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     CUfunction f2 = batch > 1 && w->scale == 1.0f && g->xh ? tc2_fn(g, w->type) : NULL;
     if (f2 && tc_on(m, w->type) && n_in % G2_BK == 0 &&
         n_in <= g->xh_cap && batch <= g->win) {
-        void *pm[] = { &x, &g->xsc, &n_in, &xs, &batch };
-        if (!launch(g, g->sw->f_colabsmax, (unsigned)batch, 1, 1, 256, pm)) return false;
-        void *ph[] = { &x, &g->xsc, &g->xh, &n_in, &xs, &batch };
-        if (!launch(g, g->sw->f_x_half, (unsigned)((n_in + 255) / 256), (unsigned)batch,
-                    1, 256, ph))
-            return false;
+        if (g->xh_reuse && xh_reuse_on() && g->xh_seq == seq - 1 && g->xh_src == x &&
+            g->xh_n == n_in && g->xh_xs == xs && g->xh_batch == batch) {
+            g_tc2_reused++;
+        } else {
+            void *pm[] = { &x, &g->xsc, &n_in, &xs, &batch };
+            if (!launch(g, g->sw->f_colabsmax, (unsigned)batch, 1, 1, 256, pm)) return false;
+            void *ph[] = { &x, &g->xsc, &g->xh, &n_in, &xs, &batch };
+            if (!launch(g, g->sw->f_x_half, (unsigned)((n_in + 255) / 256), (unsigned)batch,
+                        1, 256, ph))
+                return false;
+            g->xh_src = x; g->xh_n = n_in; g->xh_xs = xs; g->xh_batch = batch;
+        }
+        g->xh_seq = seq;
         g_tc_dispatches++;
         g_tc_dispatches_type[w->type]++;
         g_tc2_dispatches++;
@@ -5512,6 +5541,17 @@ static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
 // cnt==1, the width-classed f_gemvb twins up to 8, the full GEMM beyond —
 // and the TC GEMM whenever it is promoted/forced for this (type, arch),
 // since tensor-core MACs make the unused columns nearly free.
+// enc_mv for a GEMM whose input columns the previous TC2 GEMM staged, with
+// nothing written to them since (the caller's knowledge, scoped to this call)
+static bool enc_mv_same_x(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
+                          CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias,
+                          int batch, int xs, int ys) {
+    g->xh_reuse = true;
+    bool ok = enc_mv(g, m, w, x, y, n_in, n_out, bias, batch, xs, ys);
+    g->xh_reuse = false;
+    return ok;
+}
+
 static bool enc_moe_gemm(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                          CUdeviceptr y, int n_in, int n_out, int cnt,
                          int xs, int ys) {
@@ -5580,9 +5620,13 @@ static bool gpu_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
         bool ok = enc_moe_gather(g, g->moe_gath, g->xb, idx, n_embd, cnt,
                                  xdim, n_embd)
                && enc_moe_gemm(g, m, &gv, g->moe_gath, g->moe_hb, n_embd,
-                               nff, cnt, n_embd, nff)
-               && enc_moe_gemm(g, m, &uv, g->moe_gath, g->moe_hb2, n_embd,
-                               nff, cnt, n_embd, nff)
+                               nff, cnt, n_embd, nff);
+        // up reads the gathered columns gate just staged
+        g->xh_reuse = true;
+        ok = ok && enc_moe_gemm(g, m, &uv, g->moe_gath, g->moe_hb2, n_embd,
+                                nff, cnt, n_embd, nff);
+        g->xh_reuse = false;
+        ok = ok
                && enc_actmul(g, m, g->moe_hb, g->moe_hb2, cnt * nff)
                && enc_moe_gemm(g, m, &dv, g->moe_hb, g->moe_dout, nff,
                                n_embd, cnt, nff, n_embd)
@@ -5615,8 +5659,8 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
                           tn, n_embd, n_embd)
            && enc_mv(g, m, ly->w_gate, xn_b, g->hb,  n_embd, dff, 0, tn,
                      n_embd, dff)
-           && enc_mv(g, m, ly->w_up,   xn_b, g->hb2, n_embd, dff, 0, tn,
-                     n_embd, dff)
+           && enc_mv_same_x(g, m, ly->w_up, xn_b, g->hb2, n_embd, dff, 0, tn,
+                            n_embd, dff)
            && enc_actmul(g, m, g->hb, g->hb2, tn * dff)
            && enc_mv(g, m, ly->w_down, g->hb, g->xb, dff, n_embd, 0, tn,
                      dff, xdim)
@@ -6480,8 +6524,8 @@ static bool tile_q(gpu_t *g, model_t *m, layer_t *ly, int l, int tn,
         // the output gate projects the same normed input as Q, and xb is
         // overwritten by wo below, so this must run before attention
         if (m->attn_out_gate && ly->wq_gate)
-            ok = ok && enc_mv(g, m, ly->wq_gate, g->xb, g->q35_gate,
-                              n_embd, q_dim, 0, tn, xdim, q_dim);
+            ok = ok && enc_mv_same_x(g, m, ly->wq_gate, g->xb, g->q35_gate,
+                                     n_embd, q_dim, 0, tn, xdim, q_dim);
     }
     return ok;
 }
@@ -6497,10 +6541,11 @@ static bool enc_zero(gpu_t *g, CUdeviceptr p, size_t bytes) {
 static bool tile_kv_proj(gpu_t *g, model_t *m, layer_t *ly, int l, int tn,
                          int n_embd, int xdim, int kv_dim) {
     bool ok = true;
-    ok = ok && enc_mv(g, m, ly->wk, g->xb, g->kt, n_embd, kv_dim, g->sw->bk[l], tn, xdim, kv_dim)
+    // xb is Q's input (tile_q, just before): K and V reuse its staging
+    ok = ok && enc_mv_same_x(g, m, ly->wk, g->xb, g->kt, n_embd, kv_dim, g->sw->bk[l], tn, xdim, kv_dim)
             && enc_lora(g, l, LW_K, g->xb, g->kt, n_embd, kv_dim, tn, xdim, kv_dim);
     if (ly->wv) {
-        ok = ok && enc_mv(g, m, ly->wv, g->xb, g->vt, n_embd, kv_dim, g->sw->bv[l], tn, xdim, kv_dim)
+        ok = ok && enc_mv_same_x(g, m, ly->wv, g->xb, g->vt, n_embd, kv_dim, g->sw->bv[l], tn, xdim, kv_dim)
                 && enc_lora(g, l, LW_V, g->xb, g->vt, n_embd, kv_dim, tn, xdim, kv_dim);
     } else {
         // gemma4 global layers have no V projection: V is the raw K
@@ -6897,8 +6942,8 @@ static bool tile_ffn_in(gpu_t *g, model_t *m, layer_t *ly, int l, int tn, int xd
                           n_embd, nff, 0, tn, xdim, m->n_ff)
                 && enc_lora(g, l, LW_GATE, g->xb, g->hb, n_embd, nff,
                             tn, xdim, m->n_ff);
-        ok = ok && enc_mv(g, m, ly->w_up, g->xb, g->hb2,
-                          n_embd, nff, 0, tn, xdim, m->n_ff)
+        ok = ok && enc_mv_same_x(g, m, ly->w_up, g->xb, g->hb2,
+                                 n_embd, nff, 0, tn, xdim, m->n_ff)
                 && enc_lora(g, l, LW_UP, g->xb, g->hb2, n_embd, nff,
                             tn, xdim, m->n_ff);
     }
@@ -8106,6 +8151,7 @@ static bool set_pos(gpu_t *g, int pos, int tn) {
 // keep-forward's checkpoint flags.
 static bool cuda_fwd_prepare(gpu_t *g, model_t *m, int n, int pos) {
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    g->xh_src = 0;
     if (m->qwen35 && pos == 0) {
         int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
         size_t hist_elems = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * convdim;

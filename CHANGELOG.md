@@ -77,6 +77,24 @@ Current release and unreleased changes. Compatibility follows the
   stays off by default because it does not reproduce the identity kernel's
   bits.
 
+- **CUDA: K and V reuse the activations TC2 staged for Q.** The pipelined
+  tensor-core GEMM (TC2) prepares a prompt tile's input before every GEMM:
+  each column's largest magnitude, then fp16 copies scaled by it. K and V
+  read the same columns Q just prepared (so does qwen35's output gate), as
+  do up after gate and a grouped MoE up after its gate, and prepared them
+  again. Such a GEMM now reuses the preparation when nothing has written
+  those columns since, which the GEMM checks by address, shape and that the
+  preparation came from the call right before it. The prepared values are
+  the same, so chunked `--score` is byte-identical with the reuse on and off
+  on Qwen2.5-7B, Llama-3.2-3B, Qwen3-30B-A3B and gemma-4-26B-A4B (grouped),
+  with 4,452 to 11,902 reuses a run (Llama-3.2-3B and Qwen2.5-7B also on an
+  RTX 3070), and `make test-cuda-tc2-bytes` now checks it.
+  `RUNNER_CUDA_XH_REUSE=0` prepares every GEMM's input. Prefill on the
+  datacenter MIG slice (5 interleaved rounds, about 600 and 2,600 tokens):
+  Llama-3.2-3B +1.7% and +1.3%, Qwen2.5-7B +1.2% and +1.0%, Qwen3-30B-A3B
+  +2.6% and +2.1% (best of five: that file's runs scattered under host
+  load); decode unchanged.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was

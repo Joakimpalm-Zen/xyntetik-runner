@@ -996,6 +996,7 @@ void gpu_tc_force(int on) {
 }
 
 unsigned long gpu_tc2_dispatches(void) { return 0; }   // CUDA's pipelined TC2 kernels
+unsigned long gpu_tc2_reused(void) { return 0; }
 unsigned long gpu_tc2_80_dispatches(void) { return 0; }
 unsigned long gpu_moe_twin_tiles(void) { return 0; }   // CUDA's by-expert MoE prefill
 void gpu_moe_twin_force(int on) { (void)on; }
