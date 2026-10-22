@@ -5279,48 +5279,54 @@ static void mv_rows(void *ctx, int i0, int i1) {
         return;
     }
     // batched: dequantize weight rows once, reuse for every token, and run
-    // FOUR rows against EIGHT activation columns per register tile — the
+    // them against a few activation columns per register tile (quants.c's
+    // vec_dot_f32_tile: 4 x 3 on AVX2, 8 x 3 and 4 x 4 on NEON) - the
     // arithmetic-intensity fix for a prefill inner loop that was issuing one
-    // load per FMA (quants.c's vec_dot_f32_tile). Bit-identical per output.
-    enum { TROWS = 4 };
+    // load per FMA. Bit-identical per output. Rows go in groups of
+    // VEC_DOT_F32_TILE_ROWS (quants.h: 16 on AVX2, 8 on NEON), then halving
+    // groups down to four for what is left of this thread's range.
+    enum { TROWS = VEC_DOT_F32_TILE_ROWS };
     float *tbuf = NULL;
     const float *trow[TROWS];
-    if (j->n_batch >= 8 && i1 - i0 >= TROWS)
+    if (j->n_batch >= 8 && i1 - i0 >= 4)
         tbuf = malloc(sizeof(float) * (size_t)n_in * TROWS);
     if (tbuf) {
-        for (int r = i0; r + TROWS <= i1; r += TROWS) {
-            for (int k = 0; k < TROWS; k++) {
-                float *dst = tbuf + (size_t)k * n_in;
-                if (type == T_F32)
-                    memcpy(dst, base + (size_t)(r + k) * j->rsz,
-                           sizeof(float) * n_in);
-                else
-                    dequant_row(type, base + (size_t)(r + k) * j->rsz, dst, n_in);
-                if (sc != 1.0f)
-                    for (int i = 0; i < n_in; i++) dst[i] *= sc;
-                trow[k] = dst;
-            }
-            // one tile writes TROWS x n_batch outputs; y is column-major in
-            // slots of y_stride, so a row's outputs are strided by y_stride
-            // 16-column chunks, not 64: the activation block a tile pass
-            // walks must stay in L1 (16 x 4096 floats is 256 KB at the widest
-            // row this engine serves; 64 would be a megabyte and every row
-            // would re-stream it from L2).
-            enum { TCOLS = 16 };
-            for (int c = 0; c < j->n_batch; c += TCOLS) {
-                int nb = j->n_batch - c < TCOLS ? j->n_batch - c : TCOLS;
-                float tout[TROWS][TCOLS];
-                vec_dot_f32_tile(trow, TROWS, j->x + (size_t)c * j->x_stride,
-                                 j->x_stride, nb, n_in, &tout[0][0], TCOLS);
-                for (int k = 0; k < TROWS; k++) {
-                    float b0 = j->bias ? j->bias[r + k] : 0.0f;
-                    for (int b = 0; b < nb; b++)
-                        j->y[(size_t)(c + b) * j->y_stride + r + k] =
-                            tout[k][b] + b0;
+        int r = i0;
+        for (int g = TROWS; g >= 4; g /= 2)
+            for (; r + g <= i1; r += g) {
+                for (int k = 0; k < g; k++) {
+                    float *dst = tbuf + (size_t)k * n_in;
+                    if (type == T_F32)
+                        memcpy(dst, base + (size_t)(r + k) * j->rsz,
+                               sizeof(float) * n_in);
+                    else
+                        dequant_row(type, base + (size_t)(r + k) * j->rsz, dst, n_in);
+                    if (sc != 1.0f)
+                        for (int i = 0; i < n_in; i++) dst[i] *= sc;
+                    trow[k] = dst;
+                }
+                // one tile writes g x n_batch outputs; y is column-major in
+                // slots of y_stride, so a row's outputs are strided by y_stride.
+                // 16-column chunks: 16 x n_in floats is 256 KB at n_in 4,096,
+                // an L2-sized block on every host measured (L1 is 32-128 KB),
+                // served to the whole row group while it is there. 8 and 32
+                // measured within noise of 16 on Zen 5 and an i7-7700K
+                // (2026-10-22); 64 would be a megabyte.
+                enum { TCOLS = 16 };
+                for (int c = 0; c < j->n_batch; c += TCOLS) {
+                    int nb = j->n_batch - c < TCOLS ? j->n_batch - c : TCOLS;
+                    float tout[TROWS][TCOLS];
+                    vec_dot_f32_tile(trow, g, j->x + (size_t)c * j->x_stride,
+                                     j->x_stride, nb, n_in, &tout[0][0], TCOLS);
+                    for (int k = 0; k < g; k++) {
+                        float b0 = j->bias ? j->bias[r + k] : 0.0f;
+                        for (int b = 0; b < nb; b++)
+                            j->y[(size_t)(c + b) * j->y_stride + r + k] =
+                                tout[k][b] + b0;
+                    }
                 }
             }
-        }
-        i0 += ((i1 - i0) / TROWS) * TROWS;   // tail rows fall through below
+        i0 = r;   // tail rows fall through below
         free(tbuf);
         if (i0 >= i1) return;
     }

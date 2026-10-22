@@ -1595,45 +1595,135 @@ static inline float f32_dot_tail(float s, const float *w, const float *x, int i,
     return s;
 }
 
-enum { F32_TILE_ROWS = 4, F32_TILE_COLS = 4 };
+enum { F32_TILE_ROWS = 4, F32_TILE_COLS = 4, F32_TILE_COLS_AVX2 = 3 };
+
+#if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
+// One AVX2 register tile: the F32_TILE_ROWS weight rows against nc <= 3
+// activation columns. Every call passes nc as a literal, so the loops unroll
+// and the accumulators stay in registers. Three columns, not NEON's four:
+// 4 x 4 needs 16 accumulators + 4 activation + 1 weight vector = 21 against
+// 16 ymm registers, and the inner loop compiled at -march=x86-64-v3 kept 5
+// accumulators in memory under GCC 15 and 8 under clang, each reloaded and
+// stored again on every step (disassembly, 2026-10-22). 4 x 3 needs 16 and
+// both compilers keep it all in registers.
+static inline __attribute__((always_inline))
+void f32_tile_avx2(const float *const *w, const float *x, int x_stride, int nc,
+                   int n, float *out, int out_stride) {
+    const float *xp[F32_TILE_COLS_AVX2];
+    for (int c = 0; c < nc; c++)
+        xp[c] = x + (size_t)c * x_stride;
+    __m256 acc[F32_TILE_ROWS][F32_TILE_COLS_AVX2];
+    for (int r = 0; r < F32_TILE_ROWS; r++)
+        for (int c = 0; c < nc; c++)
+            acc[r][c] = _mm256_setzero_ps();
+    int i = 0;
+    for (; i + 8 <= n; i += 8) {
+        __m256 xv[F32_TILE_COLS_AVX2];
+        for (int c = 0; c < nc; c++)
+            xv[c] = _mm256_loadu_ps(xp[c] + i);
+        for (int r = 0; r < F32_TILE_ROWS; r++) {
+            __m256 wv = _mm256_loadu_ps(w[r] + i);
+            for (int c = 0; c < nc; c++)
+                acc[r][c] = _mm256_fmadd_ps(wv, xv[c], acc[r][c]);
+        }
+    }
+    for (int r = 0; r < F32_TILE_ROWS; r++)
+        for (int c = 0; c < nc; c++) {
+            __m128 l = _mm_add_ps(_mm256_castps256_ps128(acc[r][c]),
+                                  _mm256_extractf128_ps(acc[r][c], 1));
+            l = _mm_add_ps(l, _mm_movehl_ps(l, l));
+            l = _mm_add_ss(l, _mm_shuffle_ps(l, l, 1));
+            float s = _mm_cvtss_f32(l);
+            s = f32_dot_tail(s, w[r], xp[c], i, n);
+            out[(size_t)r * out_stride + c] = s;
+        }
+}
+#endif
+
+#if defined(__aarch64__) && defined(__ARM_NEON) && \
+    !(defined(__AVX2__) && defined(__FMA__) && defined(__F16C__))
+// One NEON register tile of eight weight rows against nc <= 3 activation
+// columns (24 accumulators + 3 activation + 1 weight register of 32).
+static inline __attribute__((always_inline))
+void f32_tile_neon8(const float *const *w, const float *x, int x_stride, int nc,
+                    int n, float *out, int out_stride) {
+    enum { R = 2 * F32_TILE_ROWS };
+    const float *xp[3];
+    for (int c = 0; c < nc; c++)
+        xp[c] = x + (size_t)c * x_stride;
+    float32x4_t acc[R][3];
+    for (int r = 0; r < R; r++)
+        for (int c = 0; c < nc; c++)
+            acc[r][c] = vdupq_n_f32(0);
+    int i = 0;
+    for (; i + 4 <= n; i += 4) {
+        float32x4_t xv[3];
+        for (int c = 0; c < nc; c++)
+            xv[c] = vld1q_f32(xp[c] + i);
+        for (int r = 0; r < R; r++) {
+            float32x4_t wv = vld1q_f32(w[r] + i);
+            for (int c = 0; c < nc; c++)
+                acc[r][c] = vfmaq_f32(acc[r][c], wv, xv[c]);
+        }
+    }
+    for (int r = 0; r < R; r++)
+        for (int c = 0; c < nc; c++) {
+            float s = vaddvq_f32(acc[r][c]);
+            s = f32_dot_tail(s, w[r], xp[c], i, n);
+            out[(size_t)r * out_stride + c] = s;
+        }
+}
+#endif
 
 void vec_dot_f32_tile(const float *const *w, int nrow, const float *x,
                       int x_stride, int nb, int n, float *out, int out_stride) {
-#if (defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)) || \
-    (defined(__aarch64__) && defined(__ARM_NEON))
+#if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
+    if (nrow % F32_TILE_ROWS == 0 && nrow <= VEC_DOT_F32_TILE_ROWS) {
+        // threes, with a remainder of four taken as two twos (8 accumulator
+        // chains each, enough to keep both FMA ports busy): a sixteen-column
+        // chunk runs 3,3,3,3,2,2 and only nb == 1 takes the one-column tile;
+        // every four-row quad of the group runs against a column group while
+        // its activations are still in L1
+        for (int b = 0; b < nb;) {
+            int left = nb - b, nc = left >= 5 || left == 3 ? 3 : left >= 2 ? 2 : 1;
+            const float *xb = x + (size_t)b * x_stride;
+            for (int r = 0; r < nrow; r += F32_TILE_ROWS) {
+                float *ob = out + (size_t)r * out_stride + b;
+                if (nc == 3)
+                    f32_tile_avx2(w + r, xb, x_stride, 3, n, ob, out_stride);
+                else if (nc == 2)
+                    f32_tile_avx2(w + r, xb, x_stride, 2, n, ob, out_stride);
+                else
+                    f32_tile_avx2(w + r, xb, x_stride, 1, n, ob, out_stride);
+            }
+            b += nc;
+        }
+        return;
+    }
+#elif defined(__aarch64__) && defined(__ARM_NEON)
+    if (nrow % (2 * F32_TILE_ROWS) == 0 && nrow <= VEC_DOT_F32_TILE_ROWS) {
+        for (int b = 0; b < nb;) {
+            int left = nb - b, nc = left >= 5 || left == 3 ? 3 : left >= 2 ? 2 : 1;
+            const float *xb = x + (size_t)b * x_stride;
+            for (int r = 0; r < nrow; r += 2 * F32_TILE_ROWS) {
+                float *ob = out + (size_t)r * out_stride + b;
+                if (nc == 3)
+                    f32_tile_neon8(w + r, xb, x_stride, 3, n, ob, out_stride);
+                else if (nc == 2)
+                    f32_tile_neon8(w + r, xb, x_stride, 2, n, ob, out_stride);
+                else
+                    f32_tile_neon8(w + r, xb, x_stride, 1, n, ob, out_stride);
+            }
+            b += nc;
+        }
+        return;
+    }
     if (nrow == F32_TILE_ROWS) {
         int b = 0;
         for (; b + F32_TILE_COLS <= nb; b += F32_TILE_COLS) {
             const float *xp[F32_TILE_COLS];
             for (int c = 0; c < F32_TILE_COLS; c++)
                 xp[c] = x + (size_t)(b + c) * x_stride;
-#if defined(__AVX2__)
-            __m256 acc[F32_TILE_ROWS][F32_TILE_COLS];
-            for (int r = 0; r < F32_TILE_ROWS; r++)
-                for (int c = 0; c < F32_TILE_COLS; c++)
-                    acc[r][c] = _mm256_setzero_ps();
-            int i = 0;
-            for (; i + 8 <= n; i += 8) {
-                __m256 xv[F32_TILE_COLS];
-                for (int c = 0; c < F32_TILE_COLS; c++)
-                    xv[c] = _mm256_loadu_ps(xp[c] + i);
-                for (int r = 0; r < F32_TILE_ROWS; r++) {
-                    __m256 wv = _mm256_loadu_ps(w[r] + i);
-                    for (int c = 0; c < F32_TILE_COLS; c++)
-                        acc[r][c] = _mm256_fmadd_ps(wv, xv[c], acc[r][c]);
-                }
-            }
-            for (int r = 0; r < F32_TILE_ROWS; r++)
-                for (int c = 0; c < F32_TILE_COLS; c++) {
-                    __m128 l = _mm_add_ps(_mm256_castps256_ps128(acc[r][c]),
-                                          _mm256_extractf128_ps(acc[r][c], 1));
-                    l = _mm_add_ps(l, _mm_movehl_ps(l, l));
-                    l = _mm_add_ss(l, _mm_shuffle_ps(l, l, 1));
-                    float s = _mm_cvtss_f32(l);
-                    s = f32_dot_tail(s, w[r], xp[c], i, n);
-                    out[(size_t)r * out_stride + b + c] = s;
-                }
-#else
             float32x4_t acc[F32_TILE_ROWS][F32_TILE_COLS];
             for (int r = 0; r < F32_TILE_ROWS; r++)
                 for (int c = 0; c < F32_TILE_COLS; c++)
@@ -1655,7 +1745,6 @@ void vec_dot_f32_tile(const float *const *w, int nrow, const float *x,
                     s = f32_dot_tail(s, w[r], xp[c], i, n);
                     out[(size_t)r * out_stride + b + c] = s;
                 }
-#endif
         }
         for (int r = 0; r < nrow; r++)
             if (b < nb)

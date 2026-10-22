@@ -133,6 +133,21 @@ Current release and unreleased changes. Compatibility follows the
   Qwen3-4B Q6_K +12.6%, Qwen2.5-7B Q4_K_M +4.4%, Llama-3.2-3B Q4_K_M +4.1%;
   decode unchanged.
 
+- **CPU: a prompt matvec serves each activation chunk to more weight rows.**
+  The batched CPU matvec dequantized four weight rows at a time and ran
+  them against the prompt's activations in 16-column chunks, so each chunk
+  was fetched from cache again for every four rows. Rows now go in groups
+  of sixteen on AVX2 (four 4 x 3 register tiles against each chunk; the
+  4 x 4 tile kept five to eight of its sixteen accumulators in memory at
+  x86-64-v3) and eight on NEON (one 8 x 3 tile), then smaller groups for a
+  range's remainder. Every output is the same dot in the same order, so
+  chunked and token-by-token `--score` and greedy text are byte-identical.
+  512-token CPU prefill, 5 interleaved rounds: Llama-3.2-3B Q4_K_M +26.0% and
+  Qwen2.5-7B Q4_K_M +40.7% on 12 Zen 5 cores at x86-64-v3, the release
+  build (medians; the 4 x 3 tile alone +15.8% and +7.3%); Llama-3.2-3B +5.8%
+  and Qwen2.5-3B Q4_K_M +4.1% on an i7-7700K; Llama-3.2-3B +6.1%,
+  Qwen2.5-1.5B Q4_K_M +10.6% and Q8_0 +10.1% on an Apple M1.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was
