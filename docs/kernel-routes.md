@@ -90,22 +90,29 @@ Around the matvec:
   gpt-oss-20b, whose attention has sinks and an alternating window). Gate:
   `test-gpu-identity` (with `GPU_ID_KV`). The tensor-core prefill attention
   (`k_attn_tc`, f16 caches, route `attn-tc`) is on by default for the llama,
-  qwen2, qwen3 and granite families without a sliding window, whose
-  long-context rows (Llama-3.2-3B, Mistral-7B, Qwen2.5-3B, Qwen3-4B,
-  granite-4.2-8b) read no further from the float32 reference than the tiled
-  kernel's; gpt-oss's row read further and the windowed families have none,
-  so they keep the tile (`RUNNER_CUDA_ATTN_TC=1` / `0` forces it on / off).
-  With Q and the softmax weights as single fp16 operands it read 0.19%
-  further from the reference on Mistral-7B; it carries each in two halves
-  (about 22 bits of the operand), which read the same as `k_attn` there.
-  Two opt-ins reach layers the default leaves alone, tolerance class and off
-  until their long-context rows pass: `RUNNER_CUDA_ATTN_TILE512=1` lets the
-  tiled prefill attention take head widths 257-512 (`k_attn_tile8`, 8 query
-  rows of 8-key tiles; gemma-4's global layers otherwise run `k_attn`), and
-  `RUNNER_CUDA_ATTN_TC_FULL=1` puts the tensor-core attention on the layers
-  without a window in a family the default keeps on the tile (gpt-oss's
-  full-attention layers). 8,191-token prefill on an RTX 3070: gemma-4-E4B
-  +41.8% with the first; phi3 +135.6% under `RUNNER_CUDA_ATTN_TC=1`.
+  qwen2, qwen3, qwen3moe, granite and phi3 families without a sliding
+  window, whose long-context rows (Llama-3.2-3B, Mistral-7B, Qwen2.5-3B,
+  Qwen3-4B, Qwen3-30B-A3B, granite-4.2-8b, Phi-3.5-mini, Phi-4-mini) read no
+  further from the float32 reference than the tiled kernel's; Phi-3.5 and
+  Phi-4 publish a window longer than their context, which is no window.
+  gpt-oss's row read further and the windowed files have none, so they keep
+  the tile (`RUNNER_CUDA_ATTN_TC=1` / `0` forces it on / off). With Q and the
+  softmax weights as single fp16 operands it read 0.19% further from the
+  reference on Mistral-7B; it carries each in two halves (about 22 bits of
+  the operand), which read the same as `k_attn` there. The tiled prefill
+  attention also takes head widths 257-512 (`k_attn_tile8`, 8 query rows of
+  8-key tiles: gemma-4's global layers), whose long-context rows on
+  gemma-4-26B-A4B and the dense gemma-4-E2B read no further from the
+  reference than `k_attn`'s (`RUNNER_CUDA_ATTN_TILE512=0` keeps `k_attn`).
+  One opt-in stays off: `RUNNER_CUDA_ATTN_TC_FULL=1` puts the tensor-core
+  attention on the layers without a window in a family the default keeps on
+  the tile (gpt-oss's full-attention layers), whose gpt-oss-20b row read
+  further from the reference than the tile's. 8,191-token prefill on the
+  datacenter MIG slice: gemma-4-12B +36.5% and gemma-4-E4B +50.6% with the
+  512-wide tile, Phi-3.5-mini +124.6%, Phi-4-mini +213.6% and Qwen3-30B-A3B
+  +206% (one round) with the tensor-core attention; on an RTX 3070,
+  gemma-4-E4B +41.8% and Phi-3.5-mini +135.6%. At about 3,500 tokens on the
+  MIG slice: +21% to +121%, and +1.5% to +31% at about 700 (4 rounds).
 - **Byte movers, on by default.** The one-copy KV gather (decode with full
   offload: every layer's new K and V rows gathered on the device, one copy
   back, `RUNNER_CUDA_KV_GATHER=0` restores the per-layer copies) and the

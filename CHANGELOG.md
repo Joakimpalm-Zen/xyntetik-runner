@@ -164,6 +164,26 @@ Current release and unreleased changes. Compatibility follows the
   chunks over 16 (5 interleaved rounds, medians), byte-identical; on x86
   (Zen 5, i7-7700K) 8 and 32 columns read within noise of 16, which stays.
 
+- **CUDA: three prefill attention routes become defaults.** The
+  tensor-core prefill attention now also covers the qwen3moe and phi3
+  families (the phi3 files that publish a window longer than their context,
+  Phi-3.5-mini and Phi-4-mini, load without one), and the tiled prefill
+  attention takes gemma-4's 512-wide global layers (`k_attn_tile8`) instead
+  of the plain kernel. Each passed the long-context rule against the route
+  it replaces (2,000 positions at 4,000 to 6,000 tokens of context against
+  the publisher's float32 weights): mean KL 0.07584 vs 0.07580 on
+  Qwen3-30B-A3B, 0.07912 vs 0.07912 on Phi-3.5-mini, 0.13998 vs 0.13996 on
+  Phi-4-mini, 0.31995 vs 0.32108 on gemma-4-26B-A4B and 0.14722 vs 0.14714
+  on gemma-4-E2B, with no paired test separating them. Prefill on the
+  datacenter MIG slice at about 700 and 3,500 tokens (4 interleaved rounds,
+  medians): Phi-3.5-mini +21% and +78%, Phi-4-mini +31% and +121%,
+  Qwen3-30B-A3B +13% and +60%, gemma-4-E4B +8% and +26%, gemma-4-12B +6%
+  and +21%, gemma-4-26B-A4B +1.5% and +6%; decode unchanged.
+  `RUNNER_CUDA_ATTN_TC=0` and `RUNNER_CUDA_ATTN_TILE512=0` restore the
+  previous routes. gpt-oss keeps the tile: its full-attention layers on the
+  tensor cores (`RUNNER_CUDA_ATTN_TC_FULL=1`, still opt-in) read further
+  from the reference (0.04065 vs 0.04039, Wilcoxon p 3e-18).
+
 - **`-f FILE` reads the prompt file as written.** The file's text was
   appended to the `-p` text before `-p`'s escapes (`\n`, `\t`, `\r`, `\\`)
   were applied to the whole prompt, so a backslash sequence in a prompt file

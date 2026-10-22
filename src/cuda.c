@@ -6614,14 +6614,17 @@ static bool tile_kv_store(gpu_t *g, model_t *m, int l, int tn, int hd,
 // with its sinks and alternating window) were never further from the
 // reference than k_attn's; 0 keeps k_attn. A tolerance route: recorded as
 // attn-tile, and --gpu-route reference runs k_attn.
-// RUNNER_CUDA_ATTN_TILE512=1: the tiled prefill attention also takes head
-// widths 257-512 (gemma-4's global layers, k_attn_tile8). Opt-in until its
-// long-context P3 rows pass the owner's D1 rule against k_attn.
+// RUNNER_CUDA_ATTN_TILE512: the tiled prefill attention also takes head
+// widths 257-512 (gemma-4's global layers, k_attn_tile8), on by default since
+// its long-context rows passed the owner's rule against k_attn (2026-10-22,
+// the chat corpus at positions 4,000 to 6,000: gemma-4-26B-A4B 0.31995 vs
+// 0.32108, Wilcoxon p 0.72; the dense gemma-4-E2B 0.14722 vs 0.14714, p
+// 0.41); 0 keeps k_attn for those layers.
 static bool attn_tile512_on(void) {
     static _Atomic int on = -1;
     if (on < 0) {
         const char *e = getenv("RUNNER_CUDA_ATTN_TILE512");
-        on = e && *e && strcmp(e, "0") != 0;
+        on = !(e && *e && strcmp(e, "0") == 0);
     }
     return on == 1;
 }
@@ -6638,8 +6641,8 @@ static bool attn_tile_on(void) {
 
 // The tiled prefill attention over a whole tile of tn query columns, or
 // false (nothing launched) when it does not apply: switch off, kernel
-// absent from the PTX, a head width past 256 (512 under
-// RUNNER_CUDA_ATTN_TILE512), or a GQA ratio that does not divide. Its launch
+// absent from the PTX, a head width past 512 (256 under
+// RUNNER_CUDA_ATTN_TILE512=0), or a GQA ratio that does not divide. Its launch
 // shape and shared footprint are k_attn_tile's (see kernels.cu): 32 query
 // rows of 32-key tiles at head_dim <= 128, 16 of 16 at <= 256, 8 of 8 at
 // <= 512, the rows a block's heads times its strip of tokens.
@@ -6679,12 +6682,16 @@ static bool tile_attn_tiled(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
 // 0.03833 vs 0.03832, Wilcoxon p 0.76; Mistral-7B 0.02069 vs 0.02068, p
 // 0.43), qwen2 (Qwen2.5-3B 0.03644 vs 0.03643, p 0.47), qwen3 (Qwen3-4B
 // 0.11199 vs 0.11197, p 0.14) and granite (granite-4.2-8b 0.01106 vs
-// 0.01126, p 0.87), about 3x the tile's prefill at 8K. gpt-oss failed its
-// row (0.04275 vs 0.04205, p 0.017) and the sliding-window families (gemma,
-// phi3, a windowed llama file) have none, so they keep the tile; 1 / 0 force
-// it on / off everywhere.
+// 0.01126, p 0.87), about 3x the tile's prefill at 8K; and (2026-10-22)
+// qwen3moe (Qwen3-30B-A3B 0.07584 vs 0.07580, p 0.86) and phi3
+// (Phi-3.5-mini 0.07912 vs 0.07912, p 0.12; Phi-4-mini 0.13998 vs 0.13996,
+// p 0.21), whose published 262144 window over a 131072 context is no window
+// (bind_swa_default). gpt-oss failed its row (0.04275 vs 0.04205, p 0.017;
+// its full-attention layers alone, RUNNER_CUDA_ATTN_TC_FULL, 0.04065 vs
+// 0.04039, p 3e-18) and the windowed files (gemma, a windowed phi3 or llama
+// file) have none, so they keep the tile; 1 / 0 force it on / off everywhere.
 static bool attn_tc_family(const model_t *m) {
-    static const char *const fam[] = { "llama", "qwen2", "qwen3", "granite" };
+    static const char *const fam[] = { "llama", "qwen2", "qwen3", "qwen3moe", "granite", "phi3" };
     if (!m || m->swa_window > 0) return false;
     for (size_t i = 0; i < sizeof fam / sizeof *fam; i++)
         if (strcmp(m->arch, fam[i]) == 0) return true;
@@ -6702,7 +6709,8 @@ static bool attn_tc_on(const model_t *m) {
 // RUNNER_CUDA_ATTN_TC_FULL=1: the tensor cores also take the layers without a
 // window in a family the default leaves out (gpt-oss's full-attention layers;
 // its windowed layers, where attention is short by construction, keep the
-// tile). Opt-in until a long-context P3 row passes the owner's D1 rule.
+// tile). Opt-in: gpt-oss-20b's long-context row read further from the
+// float32 reference than the tile's (0.04065 vs 0.04039, Wilcoxon p 3e-18).
 static bool attn_tc_full_on(void) {
     static _Atomic int on = -1;
     if (on < 0) {
