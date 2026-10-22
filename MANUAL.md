@@ -3019,6 +3019,14 @@ the model, geometry, tokenizer, context length and KV element type it was
 taken from, so another model cannot install one. There is no on-disk warm
 start: a restarted server prefills from cold.
 
+A snapshot holds the prefix's KV, so size the budget to the prefixes you
+reuse. At f16 KV a token costs 2 x layers x KV heads x head width x 2 bytes:
+114 KB on Llama-3.2-3B, so a 4,000-token system prompt and tool list is
+about 460 MB, and the default 512 MB holds one. Measured on an Apple M1 with
+three conversations sharing such a prefix over two slots (`--parallel 2`,
+nine turns): 294 s with no cache, 232 s at 512 MB, 115 s at 1,024 MB, where
+the later turns ran 4.1 times faster than uncached.
+
 `--parallel N` creates independent KV caches and thread pools while sharing
 mapped weights. Threads are divided across slots. On CUDA the slots share one
 device upload, and its layer split is planned for all N of them (each its own
