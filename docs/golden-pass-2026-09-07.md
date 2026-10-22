@@ -417,7 +417,10 @@ is also why the original pass reported it as a startup failure.
 
 **And the finding that was there all along, now with power behind it.**
 The KL test says "runner closer" on twenty-one of twenty-two rows, at
-p-values between 1e-2 and 1e-317. The margin-qualified test says
+p-values between 1e-2 and 1e-317. (Corrected 2026-10-22: the table above
+supports twenty; Gemma 4 E2B Q4_0 reads llama.cpp closer and Trinity Nano
+bf16 not distinguishable. See the
+[1.5.0 rerun](golden-pass-2026-10-22.md).) The margin-qualified test says
 "indistinguishable" on twenty-one of twenty-two. Those are not in
 conflict: the runner reproduces the reference **distribution** measurably
 better, essentially everywhere, and that advantage moves the **argmax**

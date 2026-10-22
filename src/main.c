@@ -1054,6 +1054,9 @@ static void usage_to(FILE *f, const char *prog) {
         "                 (owner/repo, TAG picks the quant when the repo has\n"
         "                 several; cached under ~/.cache/xyntetik-runner/hf,\n"
         "                 sha256-verified; HF_TOKEN for gated repos)\n"
+        "  --pull REPO[:TAG] download and verify what -hf would fetch, print\n"
+        "                 its path and size (with --json, one JSON object) and\n"
+        "                 exit; nothing is loaded\n"
         "  -p TEXT        prompt (one-shot completion; \\n etc. are unescaped)\n"
         "  -f FILE        read prompt from file, as written (appended after -p text)\n"
         "  -i             interactive chat mode\n"
@@ -1079,6 +1082,7 @@ static void usage_to(FILE *f, const char *prog) {
         "                 records an OUTSIDE-envelope verdict for this runtime\n"
         "                 (refused by default) — loads with a loud warning\n"
         "  --json         constrain output to a single valid JSON object\n"
+        "                 (with --pull: print the result as one JSON object)\n"
         "  --json-schema F constrain output to the JSON Schema in file F\n"
         "  --quantize OUT rewrite the model to OUT.gguf (see --quant) and exit\n"
         "  --context-surgery OUT  compile -c/--yarn-factor into GGUF metadata;\n"
@@ -1897,6 +1901,9 @@ typedef struct {
     bool interactive, verbose, no_bos, ignore_eos, json_mode;
     // modes that answer without generating
     bool serve, caps, tool_info, bench_json, score, shadow_mode, shadow_yes;
+    // --pull: fetch to the cache and exit. pull_other is the first option
+    // given beside it other than --json, which the mode refuses by name
+    const char *pull_spec, *pull_other;
     int  score_top;   // --score-top: each scored position's N most likely tokens
     bool adapt_info;    // --adapt-info: adapter eligibility as JSON
     bool doctor;        // --doctor: one diagnostic report, then exit
@@ -2022,7 +2029,9 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         #define NEXT (i + 1 < argc ? argv[++i] : (usage(argv[0]), exit(1), (char*)0))
+        if (!o->pull_other && strcmp(a, "--pull") && strcmp(a, "--json")) o->pull_other = a;
         if      (!strcmp(a, "-m")) o->model_path = NEXT;
+        else if (!strcmp(a, "--pull")) o->pull_spec = NEXT;
         else if (!strcmp(a, "-hf") || !strcmp(a, "--hf")) o->hf_spec = NEXT;
         else if (!strcmp(a, "-p")) o->prompt = NEXT;
         else if (!strcmp(a, "-f")) o->prompt_file = NEXT;
@@ -2488,6 +2497,46 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
 }
 
 // --keygen writes a signing key and prints its public half.
+// --pull owner/repo[:TAG]: what -hf fetches, fetched and verified into the
+// cache with no model loaded. stdout carries the result alone (one line, or
+// with --json one object); the hf: notes and curl's progress stay on stderr.
+static int run_pull(const cli_opts *o) {
+    if (o->pull_other) {
+        fprintf(stderr, "error: --pull downloads a model and exits; %s cannot be given with it "
+                        "(only --json can)\n", o->pull_other);
+        return 1;
+    }
+    char err[1024];
+    hf_files got;
+    if (!hf_fetch_files(o->pull_spec, "--pull", &got, err, sizeof err)) {
+        fprintf(stderr, "error: --pull %s: %s\n", o->pull_spec, err);
+        return 1;
+    }
+    if (o->json_mode) {
+        sbuf b = {0};
+        sb_lit(&b, "{\"path\": \"");
+        sb_esc(&b, got.files[0].path, strlen(got.files[0].path));
+        sb_fmt(&b, "\", \"size_bytes\": %lld, \"files\": [", got.total);
+        for (int i = 0; i < got.n; i++) {
+            const hf_file *f = &got.files[i];
+            sb_lit(&b, i ? ", {\"path\": \"" : "{\"path\": \"");
+            sb_esc(&b, f->path, strlen(f->path));
+            sb_fmt(&b, "\", \"size_bytes\": %lld, \"sha256\": \"%s\", \"verification\": \"%s\"}",
+                   f->size, f->sha256, f->verification);
+        }
+        sb_lit(&b, "]}\n");
+        bool ok = !b.failed && fwrite(b.s, 1, b.n, stdout) == b.n && fflush(stdout) == 0;
+        free(b.s);
+        hf_files_free(&got);
+        if (!ok) { fprintf(stderr, "error: --pull: cannot write the result\n"); return 1; }
+        return 0;
+    }
+    printf("%s (%lld bytes%s)\n", got.files[0].path, got.total,
+           got.n > 1 ? ", every part" : "");
+    hf_files_free(&got);
+    return fflush(stdout) == 0 ? 0 : 1;
+}
+
 static int run_keygen(const cli_opts *o) {
     uint8_t seed[32];
     char pub[SIGN_PUBHEX_CAP];
@@ -5225,6 +5274,7 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
 #endif
 
     if (!cli_parse(o, argc, argv, &rc)) return rc;
+    if (o->pull_spec) return run_pull(o);
 
     if (!cli_chat_flags_ok(o)) return 1;
     if (run_record_utility(o, &rc)) return rc;

@@ -48,4 +48,28 @@ bool hf_is_first_part(const char *name, unsigned *count, size_t *prefix_len);
 // sent as a bearer token so gated repositories work.
 char *hf_fetch(const char *spec, char *err, size_t errcap);
 
+// One file of a fetched model, as hf_fetch_files reports it.
+typedef struct {
+    char *path;                // absolute local path (malloc'd)
+    long long size;            // bytes on disk
+    char sha256[65];           // the local file's SHA-256, lowercase hex
+    const char *verification;  // the Hub record it was checked against:
+                               // "hub_sha256" (LFS digest) or "hub_size"
+} hf_file;
+
+typedef struct {
+    hf_file *files;            // every file of the model, first part first
+    int n;
+    long long total;           // the sum of their sizes
+} hf_files;
+
+// hf_fetch, reporting what it did: the same selection, cache and transfer,
+// plus each file's local digest and the Hub record that verified it. Strict
+// where hf_fetch is lenient: a file the Hub lists with neither an LFS digest
+// nor a size is refused rather than accepted unverified. `flag` names the
+// option in the messages ("--pull"). True on success; *out is then freed
+// with hf_files_free. False with the reason in `err` and *out empty.
+bool hf_fetch_files(const char *spec, const char *flag, hf_files *out, char *err, size_t errcap);
+void hf_files_free(hf_files *f);
+
 #endif

@@ -232,7 +232,7 @@ python3 scripts/kld-compare-raw.py --model-a out.gguf \
       </div>
       <div class="card">
         <h3>Models fetched and checked</h3>
-        <p><code>-hf owner/repo[:TAG]</code> downloads a GGUF from the Hugging Face Hub, verifies it against the Hub's SHA-256 record before it loads, and refuses a repository whose file list would write outside the cache.</p>
+        <p><code>-hf owner/repo[:TAG]</code> downloads a GGUF from the Hugging Face Hub, verifies it against the Hub's SHA-256 record before it loads, and refuses a repository whose file list would write outside the cache. <code>--pull</code> does the same download and check without loading the model, and prints the path for a script.</p>
       </div>
       <div class="card">
         <h3>Model surgery, with provenance</h3>

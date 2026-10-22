@@ -29,7 +29,7 @@ product claims.
 
 ## Evidence and contribution
 
-- [Publisher-reference comparison](golden-pass-2026-09-07.md) and [reference data](golden-pass-evidence/)
+- [Publisher-reference comparison on 1.5.0](golden-pass-2026-10-22.md), [the first pass](golden-pass-2026-09-07.md) and [reference data](golden-pass-evidence/)
 - [Granite 4.2/Qwen 3.8 reference admission](granite-42-qwen38-cert-2026-09-06.md) and [experimental Qwen4 evidence](qwen4exp-admission-evidence/)
 - [Truncation comparison](truncation-benchmark.md), [GPU benchmarks](benchmarks.md), and [idle-memory measurement](idle-coexistence-120b-m5max-2026-09-01.md)
 - [Current release/device records](compat-reports/) and [coverage inventory](../tests/compatibility/coverage.json)

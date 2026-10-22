@@ -266,6 +266,8 @@ directory, or a size that is not a whole byte count, is refused whole):
 # Interactive chat: download a model or use a local file.
 ./runner -hf ibm-granite/granite-4.1-3b-GGUF:Q8_0 -i
 ./runner -m model.gguf -i
+# Download and verify only (provisioning, offline later); prints the path.
+./runner --pull ibm-granite/granite-4.1-3b-GGUF:Q8_0
 # Smaller smoke-test model; does not pass the fidelity gate.
 ./runner -hf Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF -i
 
@@ -2028,6 +2030,7 @@ flags into unrelated feature sections.
 | `-m PATH` | GGUF path. In serve mode, `name=path,name2=path2` enables multi-model swap mode. |
 | `-p TEXT` | One-shot prompt; escaped sequences such as `\n` are unescaped. |
 | `-f FILE` | Append the file's contents to the prompt as written; escapes are unescaped only in `-p` text. |
+| `--pull REPO[:TAG]` | Download and verify what `-hf` would fetch, print the result and exit; no model is loaded. A mode of its own. [Details](#cli-pull). |
 | `-i` | Stateful interactive chat. |
 | `--serve` | Start the HTTP server. |
 | `--tray` | Be the macOS/Windows tray controller instead of running a model. Required where there is no terminal. See [Desktop tray](#desktop-tray). |
@@ -2036,8 +2039,43 @@ flags into unrelated feature sections.
 | `--parallel N` | Independent inference slots, default `1`; eligible CUDA/Metal dense models use microbatched decode. [Details](#cli-parallel). |
 | `--ttl N` | Swap-mode idle unload timeout, default `300`; `0` disables it. |
 | `--force-uncertified` | Load a model even when its measured-envelope sidecar records an `outside-envelope` verdict for this runtime (refused by default). See [Measured-envelope gate](#measured-envelope-gate). |
-| `--json` | Constrain output to one valid JSON object. |
+| `--json` | Constrain output to one valid JSON object. With `--pull`, print the pull's result as one JSON object instead. |
 | `--json-schema FILE` | Constrain output to the schema in `FILE`. |
+
+<a id="cli-pull"></a>
+#### `--pull REPO[:TAG]`
+
+Fetches into the cache exactly what `-hf REPO[:TAG]` would: the same file
+selection and tag matching, `HF_TOKEN`, cache (`$RUNNER_HF_CACHE`, else
+`~/.cache/xyntetik-runner/hf`), every part of a multipart file, and the same
+verification, then exits without loading anything. A cached file is checked
+again before it is reported, so a repeated pull transfers no model bytes; a
+file whose cached bytes no longer verify is fetched again; a download lands
+in `FILE.part` and is renamed only after it verifies. `--pull` is a mode of
+its own: any other option beside it (only `--json` is allowed) is refused by
+name, not ignored. Exit status `0` on success, `1` for every failure.
+
+On success stdout carries one line, the path to give `-m` and the total
+size; the `hf:` notes and curl's progress stay on stderr. With `--json`,
+stdout is exactly one object and nothing else, and nothing is written to
+stdout on failure (here with `RUNNER_HF_CACHE=/srv/models/hf`):
+
+```json
+{"path": "/srv/models/hf/owner--repo/model-Q8_0.gguf",
+ "size_bytes": 3462116256,
+ "files": [{"path": "/srv/models/hf/owner--repo/model-Q8_0.gguf",
+            "size_bytes": 3462116256,
+            "sha256": "<64 lowercase hex>",
+            "verification": "hub_sha256"}]}
+```
+
+`path` is the file to pass to `-m` (the first part of a multipart model);
+`files` lists every part in order and `size_bytes` at the top is their sum.
+Each `sha256` is the local file's own digest, computed in every case.
+`verification` names the Hub record that checked it: `hub_sha256` (its LFS
+digest) or `hub_size` (a file the Hub stores outside LFS, checked by its
+listed size). A file the Hub lists with neither is refused by `--pull`
+rather than reported unverified (`-hf` still loads such a file).
 
 <a id="cli-parallel"></a>
 #### `--parallel N`
@@ -4134,16 +4172,22 @@ are described in [determinism scope](docs/determinism-scope.md).
 Whether that arithmetic also makes Runner the *more accurate* engine
 depends on which question you ask, and both answers belong here. Twelve
 families were scored against their publishers' implementations in float32
-on 2026-09-07, both tiers, 2,000 corpus positions each, with the other
-engine given its stronger configuration at each tier.
+on Runner 1.5.0 (2026-10-22; first on 2026-09-07), both tiers, 2,000
+corpus positions each, with the other engine given its stronger
+configuration at each tier ([report](docs/golden-pass-2026-10-22.md)).
 
 On how close the whole output distribution is to the reference, Runner
-wins twenty-one of twenty-two rows, at p-values that leave no room for
-luck. On how often each engine picks the reference's token where the
-reference had a clear preference, Runner is ahead or level on twenty of
-twenty-two, but only one of those leads is big enough to be a real
+is closer on twenty of twenty-three rows, at p-values that leave no room
+for luck. The other engine is closer on one, Gemma 4 E2B at four bits,
+where scored against the file's own model it is the other engine that departs
+from the file (mean KL 0.063 against Runner's 0.00007), and two are not
+distinguishable (Qwen3 0.6B at four bits, Trinity Nano at
+bf16). On how often each engine picks the reference's token where the
+reference had a clear preference, Runner is ahead or level on twenty-two
+of twenty-three, but only one of those leads is big enough to be a real
 difference rather than chance: Apertus 8B at four bits, 1343 tokens
-against 1321 of 1369. Both things are true. Runner reproduces the
+against 1320 of 1369. (The 2026-09-07 rows were published as twenty-one
+of twenty-two; their own table supports twenty.) Both things are true. Runner reproduces the
 reference distribution measurably better, essentially everywhere, and that
 advantage moves the winning token rarely enough that it takes well over a
 thousand qualified positions to see it once.

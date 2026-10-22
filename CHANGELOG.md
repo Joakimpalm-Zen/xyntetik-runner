@@ -223,6 +223,26 @@ Current release and unreleased changes. Compatibility follows the
   rounds (medians): +4.5% (Llama-3.2-3B Q4_K_M), +8.1% (Qwen2.5-7B Q4_K_M)
   and +8.9% (Qwen3-8B Q8_0) over the 4 x 3 tile, A/A within 1.6%.
 
+- **`--pull owner/repo[:TAG]` downloads a model without loading it.** It
+  fetches into the cache exactly what `-hf` would (same selection, cache,
+  `HF_TOKEN`, multipart handling and verification), prints the path to give
+  `-m` and the total size, and exits; `--pull ... --json` prints one JSON
+  object instead, with each file's path, size, local SHA-256 and the Hub
+  record that verified it (`hub_sha256` or `hub_size`). Where `-hf` loads a
+  file the Hub lists with neither a digest nor a size, `--pull` refuses it.
+  It is a mode of its own: any other option beside it is refused by name.
+  `tests/test_pull.py` pins it against a fake hub, every assertion anchored
+  on the fixtures' own sizes and digests.
+
+- **Windows: `-hf` reuses a cached model larger than 2 GiB.** The cache
+  sized files with `stat()`, whose size MinGW keeps in 32 bits and which
+  fails past 2 GiB, as every real checkpoint is: such a file was never seen
+  as cached, so it was fetched again and the rename over the file already
+  there failed, and a file the Hub sizes without a digest read as
+  "downloaded 0 bytes". Sizes now come from `_stat64` on Windows, as the
+  model loader's file identity does; `tests/test_pull.py` holds a 2 GiB
+  file's size, digest and reuse by `--pull` and `-hf`.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was

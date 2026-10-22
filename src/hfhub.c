@@ -184,8 +184,17 @@ static bool mkdir_p(const char *path) {
 }
 
 static bool file_size(const char *path, long long *size) {
+#ifdef _WIN32
+    // MinGW's stat() keeps st_size in 32 bits and fails with EOVERFLOW past
+    // 2 GiB, which every real checkpoint is (model.c's file identity has the
+    // same note): the cache check never saw such a file, and a file the Hub
+    // sizes but does not hash could not be verified or reported
+    struct _stat64 st;
+    if (_stat64(path, &st) != 0) return false;
+#else
     struct stat st;
     if (stat(path, &st) != 0) return false;
+#endif
     *size = (long long)st.st_size;
     return true;
 }
@@ -330,12 +339,25 @@ static void local_name(const char *rfilename, char *out, size_t cap) {
     out[n] = 0;
 }
 
+// the local digest for a caller that reports it (hex_out non-NULL): the LFS
+// check has computed it already; a file verified by its size alone is hashed
+static bool digest_out(const char *target, bool have_hex, const char hex[65], char *hex_out,
+                       char *err, size_t errcap) {
+    if (!hex_out) return true;
+    if (have_hex) { memcpy(hex_out, hex, 65); return true; }
+    if (envelope_file_sha256(target, hex_out)) return true;
+    snprintf(err, errcap, "cannot read %s to compute its sha256", target);
+    return false;
+}
+
 // one file of the repository: exists in the cache and verifies, or is fetched
 // into `<target>.part`, verified, and renamed. `quiet` silences curl's
 // progress meter (stderr is not a terminal); the one-line hf: notes stay,
-// they are the record of what was loaded from where
+// they are the record of what was loaded from where. `hex_out` (65 bytes,
+// may be NULL) receives the local file's SHA-256.
 static bool ensure_file(const char *repo, const char *rfilename, const char *repodir,
-                        long long size, const char *sha, bool quiet, char *err, size_t errcap) {
+                        long long size, const char *sha, bool quiet, char *hex_out,
+                        char *err, size_t errcap) {
     char rel[1024], target[2048], part[2100], url[2048];
     local_name(rfilename, rel, sizeof rel);
     if (snprintf(target, sizeof target, "%s%c%s", repodir, HF_SEP, rel) >= (int)sizeof target) {
@@ -355,7 +377,7 @@ static bool ensure_file(const char *repo, const char *rfilename, const char *rep
                               : (size < 0 || have == size);
         if (ok) {
             fprintf(stderr, "hf: %s/%s cached\n", repo, rfilename);
-            return true;
+            return digest_out(target, sha && *sha, hex, hex_out, err, errcap);
         }
         fprintf(stderr, "hf: %s/%s in the cache does not verify, fetching again\n", repo, rfilename);
         remove(target);
@@ -382,27 +404,75 @@ static bool ensure_file(const char *repo, const char *rfilename, const char *rep
         snprintf(err, errcap, "cannot move %s into place: %s", part, strerror(errno));
         return false;
     }
+    return digest_out(target, sha && *sha, hex, hex_out, err, errcap);
+}
+
+static char *abs_path(const char *p) {
+#ifdef _WIN32
+    char buf[_MAX_PATH];
+    return strdup(_fullpath(buf, p, sizeof buf) ? buf : p);
+#else
+    char *r = realpath(p, NULL);   // allocates: no PATH_MAX buffer to size
+    return r ? r : strdup(p);
+#endif
+}
+
+// one verified file into the report
+static bool report_file(hf_files *out, const char *repodir, const char *rfilename,
+                        const char hex[65], const char *how, char *err, size_t errcap) {
+    char rel[1024], target[2048];
+    local_name(rfilename, rel, sizeof rel);
+    if (snprintf(target, sizeof target, "%s%c%s", repodir, HF_SEP, rel) >= (int)sizeof target) {
+        snprintf(err, errcap, "cache path too long for %s", rfilename);
+        return false;
+    }
+    long long size = 0;
+    hf_file *grown = realloc(out->files, (size_t)(out->n + 1) * sizeof *grown);
+    if (!grown || !file_size(target, &size)) {
+        if (grown) out->files = grown;
+        snprintf(err, errcap, "cannot report %s", target);
+        return false;
+    }
+    out->files = grown;
+    hf_file *f = &out->files[out->n];
+    if (!(f->path = abs_path(target))) { snprintf(err, errcap, "out of memory"); return false; }
+    f->size = size;
+    memcpy(f->sha256, hex, 65);
+    f->verification = how;
+    out->n++;
+    out->total += size;
     return true;
 }
 
-char *hf_fetch(const char *spec, char *err, size_t errcap) {
+void hf_files_free(hf_files *f) {
+    if (!f) return;
+    for (int i = 0; i < f->n; i++) free(f->files[i].path);
+    free(f->files);
+    memset(f, 0, sizeof *f);
+}
+
+// hf_fetch and hf_fetch_files: `flag` names the option in messages, `strict`
+// refuses a file the Hub lists with neither a digest nor a size, `out` (may
+// be NULL) receives the report
+static char *fetch_impl(const char *spec, const char *flag, bool strict, hf_files *out,
+                        char *err, size_t errcap) {
     err[0] = 0;
     // owner/repo[:TAG]; a tag is what follows the last ':' after the slash
     const char *slash = strchr(spec, '/');
     if (!slash || slash == spec || !slash[1] || strchr(slash + 1, '/')) {
-        snprintf(err, errcap, "-hf wants owner/repo[:TAG], got %s", spec);
+        snprintf(err, errcap, "%s wants owner/repo[:TAG], got %s", flag, spec);
         return NULL;
     }
     const char *colon = strrchr(slash, ':');
     char repo[512], tag[128] = "";
     size_t rn = colon ? (size_t)(colon - spec) : strlen(spec);
     if (rn >= sizeof repo || (colon && strlen(colon + 1) >= sizeof tag)) {
-        snprintf(err, errcap, "-hf spec too long");
+        snprintf(err, errcap, "%s spec too long", flag);
         return NULL;
     }
     memcpy(repo, spec, rn); repo[rn] = 0;
     if (colon) memcpy(tag, colon + 1, strlen(colon + 1) + 1);
-    if (colon && !tag[0]) { snprintf(err, errcap, "-hf %s: empty tag after ':'", spec); return NULL; }
+    if (colon && !tag[0]) { snprintf(err, errcap, "%s %s: empty tag after ':'", flag, spec); return NULL; }
 
     char root[1024], repodir[1600];
     if (!cache_root(root, sizeof root)) {
@@ -418,7 +488,7 @@ char *hf_fetch(const char *spec, char *err, size_t errcap) {
     for (size_t i = 0; i < rn; i++) {
         size_t need = repo[i] == '/' ? 2 : 1;
         if (fl + need >= sizeof flat) {
-            snprintf(err, errcap, "-hf %s: repository name too long", spec);
+            snprintf(err, errcap, "%s %s: repository name too long", flag, spec);
             return NULL;
         }
         if (repo[i] == '/') { flat[fl++] = '-'; flat[fl++] = '-'; }
@@ -468,7 +538,17 @@ char *hf_fetch(const char *spec, char *err, size_t errcap) {
         names[n++] = rf;
     }
     int pick = hf_select_file(names, n, tag, err, errcap);
-    if (pick < 0) { free(names); jv_free(doc); return NULL; }
+    if (pick < 0) {
+        // the selection names -hf in its advice; another flag gets its own name
+        char *at = strcmp(flag, "-hf") ? strstr(err, "-hf REPO:TAG") : NULL;
+        if (at) {
+            char tail[1024];
+            snprintf(tail, sizeof tail, "%s", at + 3);
+            snprintf(at, errcap - (size_t)(at - err), "%s%s", flag, tail);
+        }
+        free(names); jv_free(doc);
+        return NULL;
+    }
 
     // every part of the chosen file, first part first
     const char *first = names[pick];
@@ -503,7 +583,16 @@ char *hf_fetch(const char *spec, char *err, size_t errcap) {
             }
             size = (long long)sz;
         }
-        ok = ensure_file(repo, want, repodir, size, sha, quiet, err, errcap);
+        if (strict && !(sha && *sha) && size < 0) {
+            snprintf(err, errcap, "%s lists neither a sha256 nor a size for %s; %s reports "
+                                  "only transfers it could verify", repo, want, flag);
+            ok = false;
+            break;
+        }
+        char hex[65];
+        ok = ensure_file(repo, want, repodir, size, sha, quiet, out ? hex : NULL, err, errcap) &&
+             (!out || report_file(out, repodir, want, hex, sha && *sha ? "hub_sha256" : "hub_size",
+                                  err, errcap));
     }
     char *result = NULL;
     if (ok) {
@@ -517,4 +606,16 @@ char *hf_fetch(const char *spec, char *err, size_t errcap) {
     free(names);
     jv_free(doc);
     return result;
+}
+
+char *hf_fetch(const char *spec, char *err, size_t errcap) {
+    return fetch_impl(spec, "-hf", false, NULL, err, errcap);
+}
+
+bool hf_fetch_files(const char *spec, const char *flag, hf_files *out, char *err, size_t errcap) {
+    memset(out, 0, sizeof *out);
+    char *first = fetch_impl(spec, flag, true, out, err, errcap);
+    if (!first) { hf_files_free(out); return false; }
+    free(first);
+    return true;
 }
