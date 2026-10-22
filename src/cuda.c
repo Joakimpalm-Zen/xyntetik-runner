@@ -5585,6 +5585,39 @@ static bool gpu_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
     return launch(g, g->sw->f_moe_copy, (n_embd + 255) / 256, tn, 1, 256, p);
 }
 
+// EXPERIMENT (follow-up item 6.c, branch experiment/r3.21-gemma-arms, never
+// merged): RUNNER_GEMMA_ARM decomposes the grouped route's arithmetic
+// differences from the by-expert route (A0). On the by-expert route: 1 =
+// dense shared branch through enc_mv over the tile (the grouped dense
+// arithmetic); 2 = routed expert GEMMs through enc_moe_gemm (the grouped
+// routed products), weight before down, slot-order sum; 3 = arm 2 with the
+// pre-weighted expert outputs accumulated in ascending expert order (the
+// grouped reduction order). On the grouped route: 4 = the grouped route with
+// the by-expert dense branch (so 4 vs 3 isolates the weight placement, and
+// the grouped route itself, A5, vs 4 the dense branch). Engagement counters
+// print at exit: experts by token count and the dense branch's route.
+static int gemma_arm(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("RUNNER_GEMMA_ARM"); v = e ? atoi(e) : 0; }
+    return v;
+}
+static unsigned long g_arm_exp[2][3];   // [by-expert, grouped][cnt 1, 2-8, >8]
+static unsigned long g_arm_dense[2];    // dense branch tiles: [twins, enc_mv]
+static void gemma_arm_report(void) {
+    fprintf(stderr, "gemma-arm %d: by-expert experts cnt1 %lu cnt2-8 %lu cnt>8 %lu; "
+            "grouped experts cnt1 %lu cnt2-8 %lu cnt>8 %lu; dense tiles twins %lu enc_mv %lu\n",
+            gemma_arm(), g_arm_exp[0][0], g_arm_exp[0][1], g_arm_exp[0][2],
+            g_arm_exp[1][0], g_arm_exp[1][1], g_arm_exp[1][2], g_arm_dense[0], g_arm_dense[1]);
+}
+static void gemma_arm_count(int route, int cnt) {
+    static int reg = 0;
+    if (!reg) { reg = 1; atexit(gemma_arm_report); }
+    g_arm_exp[route][cnt == 1 ? 0 : cnt <= 8 ? 1 : 2]++;
+}
+static bool moe_twin_gemm(gpu_t *g, model_t *m, gguf_tensor *w, bool expert,
+                          CUdeviceptr x, CUdeviceptr y, int n_in, int n_out,
+                          int cnt, int xs, int ys);
+
 // Grouped gemma-4 dual-branch tile: the dense shared branch batches across
 // the whole tile with the ordinary tn-wide kernels (it was per-token
 // before), and the routed branch groups by expert over the fused gate_up
@@ -5601,16 +5634,21 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
     CUdeviceptr xn_b  = g->g_scr;
     CUdeviceptr xn2_b = g->g_scr + (size_t)g->win * n_embd * sizeof(float);
     CUdeviceptr rin_b = g->g_scr + (size_t)2 * g->win * n_embd * sizeof(float);
-    // --- dense shared MLP for the whole tile
+    // --- dense shared MLP for the whole tile (arm 4: the by-expert twins)
+    bool tw = gemma_arm() == 4;
+    g_arm_dense[tw ? 0 : 1]++;
     bool ok = enc_rmsnorm(g, g->x, xn_b, g->sw->ffn_norm[l], n_embd, eps,
                           tn, n_embd, n_embd)
-           && enc_mv(g, m, ly->w_gate, xn_b, g->hb,  n_embd, dff, 0, tn,
-                     n_embd, dff)
-           && enc_mv(g, m, ly->w_up,   xn_b, g->hb2, n_embd, dff, 0, tn,
-                     n_embd, dff)
+           && (tw ? moe_twin_gemm(g, m, ly->w_gate, false, xn_b, g->hb, n_embd, dff, tn, n_embd, dff)
+                  : enc_mv(g, m, ly->w_gate, xn_b, g->hb,  n_embd, dff, 0, tn,
+                           n_embd, dff))
+           && (tw ? moe_twin_gemm(g, m, ly->w_up, false, xn_b, g->hb2, n_embd, dff, tn, n_embd, dff)
+                  : enc_mv(g, m, ly->w_up,   xn_b, g->hb2, n_embd, dff, 0, tn,
+                           n_embd, dff))
            && enc_actmul(g, m, g->hb, g->hb2, tn * dff)
-           && enc_mv(g, m, ly->w_down, g->hb, g->xb, dff, n_embd, 0, tn,
-                     dff, xdim)
+           && (tw ? moe_twin_gemm(g, m, ly->w_down, false, g->hb, g->xb, dff, n_embd, tn, dff, xdim)
+                  : enc_mv(g, m, ly->w_down, g->hb, g->xb, dff, n_embd, 0, tn,
+                           dff, xdim))
            && enc_rmsnorm(g, g->xb, g->xb, g->sw->g_pn1[l], n_embd, eps,
                           tn, xdim, xdim);
     if (!ok) return false;
@@ -5635,6 +5673,7 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
         if (cnt == 0) continue;
         CUdeviceptr idx = g->moe_gidx + (size_t)e_start[e] * sizeof(int);
         CUdeviceptr wts = g->moe_gw   + (size_t)e_start[e] * sizeof(float);
+        gemma_arm_count(1, cnt);
         // fused gate_up expert slice, nbytes clamped (see the eager path)
         gguf_tensor guv = *ly->ffn_gate_up_exps;
         size_t rs = ggml_row_size(guv.type, n_embd);
@@ -6133,11 +6172,18 @@ static bool gpu_gemma_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly,
     CUdeviceptr rin_b  = g->g_scr + (size_t)2 * g->win * n_embd * sizeof(float);
     CUdeviceptr mout_b = g->g_scr + (size_t)3 * g->win * n_embd * sizeof(float);
     // --- dense shared MLP for the tile, written into xb, then post_ffw_norm_1
+    //     (arm 1: through enc_mv over the tile, the grouped route's dense)
+    int arm = gemma_arm();
+    bool dm = arm == 1;
+    g_arm_dense[dm ? 1 : 0]++;
     bool ok = enc_rmsnorm(g, g->x, xn_b, g->sw->ffn_norm[l], n_embd, eps, tn, n_embd, n_embd)
-           && moe_twin_gemm(g, m, ly->w_gate, false, xn_b, g->hb,  n_embd, dff, tn, n_embd, dff)
-           && moe_twin_gemm(g, m, ly->w_up,   false, xn_b, g->hb2, n_embd, dff, tn, n_embd, dff)
+           && (dm ? enc_mv(g, m, ly->w_gate, xn_b, g->hb, n_embd, dff, 0, tn, n_embd, dff)
+                  : moe_twin_gemm(g, m, ly->w_gate, false, xn_b, g->hb,  n_embd, dff, tn, n_embd, dff))
+           && (dm ? enc_mv(g, m, ly->w_up, xn_b, g->hb2, n_embd, dff, 0, tn, n_embd, dff)
+                  : moe_twin_gemm(g, m, ly->w_up,   false, xn_b, g->hb2, n_embd, dff, tn, n_embd, dff))
            && enc_actmul(g, m, g->hb, g->hb2, tn * dff)
-           && moe_twin_gemm(g, m, ly->w_down, false, g->hb, g->xb, dff, n_embd, tn, dff, xdim)
+           && (dm ? enc_mv(g, m, ly->w_down, g->hb, g->xb, dff, n_embd, 0, tn, dff, xdim)
+                  : moe_twin_gemm(g, m, ly->w_down, false, g->hb, g->xb, dff, n_embd, tn, dff, xdim))
            && enc_rmsnorm(g, g->xb, g->xb, g->sw->g_pn1[l], n_embd, eps, tn, xdim, xdim);
     // --- routed branch: the two norms, the router (each column's batch-1
     //     bits), routing
@@ -6171,9 +6217,25 @@ static bool gpu_gemma_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly,
         cu.MemcpyHtoD(g->moe_gsel, g->h_moe_gsel, sizeof(int) * (size_t)total) != 0 ||
         cu.MemcpyHtoD(g->moe_gw, g->h_moe_gw, sizeof(float) * (size_t)total) != 0)
         return false;
+    // arms 2-3: the grouped route's routed GEMMs; arm 3: unit scatter weights
+    // (the routing weight is already in the hidden, before down) in the
+    // router logits' scratch, dead after routing, and the routed sum from
+    // zero adding experts in ascending order
+    bool rt = arm == 2 || arm == 3, asc = arm == 3;
+    CUdeviceptr ones = g->moe_logits;
+    if (asc) {
+        static float h_ones[MOE_ROUTE_MAX * 64];
+        if (h_ones[0] != 1.0f)
+            for (size_t i = 0; i < sizeof h_ones / sizeof *h_ones; i++) h_ones[i] = 1.0f;
+        if ((size_t)total > sizeof h_ones / sizeof *h_ones ||
+            cu.MemcpyHtoD(ones, h_ones, sizeof(float) * (size_t)total) != 0 ||
+            cu.MemsetD8(mout_b, 0, sizeof(float) * (size_t)tn * n_embd) != 0)
+            return false;
+    }
     for (int e = 0; e < ne; e++) {
         int cnt = e_cnt[e];
         if (cnt == 0) continue;
+        gemma_arm_count(0, cnt);
         CUdeviceptr idx = g->moe_gidx + (size_t)e_start[e] * sizeof(int);
         CUdeviceptr pos = g->moe_gpos + (size_t)e_start[e] * sizeof(int);
         CUdeviceptr esl = g->moe_gsel + (size_t)e_start[e] * sizeof(int);
@@ -6186,15 +6248,27 @@ static bool gpu_gemma_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly,
         gguf_tensor dv = moe_expert_weight(ly, 2, e, n_embd, nff);
         CUdeviceptr up = g->moe_hb + (size_t)nff * sizeof(float);
         void *pp[] = { &g->moe_slots, &g->moe_dout, &pos, &n_embd, &n_embd };
+        CUdeviceptr one = ones + (size_t)e_start[e] * sizeof(float);
         bool eok = enc_moe_gather(g, g->moe_gath, xn2_b, idx, n_embd, cnt, n_embd, n_embd)
-                && moe_twin_gemm(g, m, &guv, true, g->moe_gath, g->moe_hb, n_embd, 2 * nff, cnt,
-                                 n_embd, 2 * nff)
+                && (rt ? enc_moe_gemm(g, m, &guv, g->moe_gath, g->moe_hb, n_embd, 2 * nff, cnt,
+                                      n_embd, 2 * nff)
+                       : moe_twin_gemm(g, m, &guv, true, g->moe_gath, g->moe_hb, n_embd, 2 * nff, cnt,
+                                       n_embd, 2 * nff))
                 && enc_moe_actmul(g, m, g->moe_hb, up, nff, 2 * nff, 2 * nff, wts,
                                   g->sw->g_dsc[l], esl, cnt, 0, 0)
-                && moe_twin_gemm(g, m, &dv, true, g->moe_hb, g->moe_dout, nff, n_embd, cnt,
-                                 2 * nff, n_embd)
-                && launch(g, g->sw->f_moe_place, (n_embd + 255) / 256, cnt, 1, 256, pp);
+                && (rt ? enc_moe_gemm(g, m, &dv, g->moe_hb, g->moe_dout, nff, n_embd, cnt,
+                                      2 * nff, n_embd)
+                       : moe_twin_gemm(g, m, &dv, true, g->moe_hb, g->moe_dout, nff, n_embd, cnt,
+                                       2 * nff, n_embd))
+                && (asc ? enc_moe_scatter(g, mout_b, g->moe_dout, idx, one, n_embd, cnt,
+                                          n_embd, n_embd)
+                        : launch(g, g->sw->f_moe_place, (n_embd + 255) / 256, cnt, 1, 256, pp));
         if (!eok) return false;
+    }
+    if (asc) {
+        g_moe_twin_tiles++;
+        return enc_rmsnorm(g, mout_b, mout_b, g->sw->g_pn2[l], n_embd, eps, tn, n_embd, n_embd)
+            && enc_add(g, g->xb, mout_b, n_embd, tn, xdim, n_embd);
     }
     // every token's slots in slot order (no down bias on gemma), then
     // post_ffw_norm_2 and dense += routed, all per column
