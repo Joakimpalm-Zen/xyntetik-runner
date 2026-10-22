@@ -16,6 +16,15 @@ Current release and unreleased changes. Compatibility follows the
   `tests/test_pull.py` pins it against a fake hub, every assertion anchored
   on the fixtures' own sizes and digests.
 
+- **Windows: `-hf` reuses a cached model larger than 2 GiB.** The cache
+  sized files with `stat()`, whose size MinGW keeps in 32 bits and which
+  fails past 2 GiB, as every real checkpoint is: such a file was never seen
+  as cached, so it was fetched again and the rename over the file already
+  there failed, and a file the Hub sizes without a digest read as
+  "downloaded 0 bytes". Sizes now come from `_stat64` on Windows, as the
+  model loader's file identity does; `tests/test_pull.py` holds a 2 GiB
+  file's size, digest and reuse by `--pull` and `-hf`.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was
