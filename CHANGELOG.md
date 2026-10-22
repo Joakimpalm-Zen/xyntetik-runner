@@ -15,6 +15,9 @@ Current release and unreleased changes. Compatibility follows the
   unchanged. Chunked `--score` is byte-identical before and after on
   Qwen3-30B-A3B, gpt-oss-20b and gemma-4-26B-A4B across every MoE route, and
   an 875-token Qwen3-30B-A3B prefill makes about 42,000 fewer launches.
+  Prefill on the datacenter MIG slice at about 600 and 2,600 tokens (5
+  interleaved rounds): Qwen3-30B-A3B +7.4% and +6.0%, gemma-4-26B-A4B +2.5%
+  and +2.3%, gpt-oss-20b +2.0% at both; decode unchanged.
 
 - **CUDA: gemma-4 files whose global layers reuse K as V decode through the
   CUDA graph.** Such a layer builds V from K by zeroing it and adding K, and
@@ -24,7 +27,9 @@ Current release and unreleased changes. Compatibility follows the
   in stream order (`cuMemsetD8Async`) before the same add, so V is the same
   bits and both graphs capture; a driver without that call keeps the
   previous path. Greedy output is byte-identical with the graph on and off on
-  gemma-4-12B and gemma-4-26B-A4B.
+  gemma-4-12B and gemma-4-26B-A4B. Decode on the datacenter MIG slice (5
+  interleaved rounds): gemma-4-12B +1.2% at about 700 and 2,800 prompt
+  tokens, gemma-4-26B-A4B +0.2% and +1.6%.
 
 ## v1.5.0 - 2026-10-22
 
