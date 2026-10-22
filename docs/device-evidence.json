@@ -46,18 +46,19 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-10-21",
-        "commit": "a3a60134104d555bc181b62d3016a31f3179c8c5",
-        "ran": "scripts/cuda-gate.sh on a clang CUDA build of a3a60134, the engine code 1.5.0 ships (the release adds the version string): every step (tc-overflow, iquants, cuda-gated, kv-fp4, nvfp4, qwen4exp, q3k, tc-kq, moe-legacy, varff, tc2-bytes, moe-twin, batch-id, spec-id, cpu-cuda) with the default routes and again with every opt-in route on; not rerun on the release commit because the device was then running a 29-hour study",
+        "date": "2026-10-22",
+        "commit": "f913dcaf037a287e161621021f95915ba1ae2e04",
+        "ran": "scripts/cuda-gate.sh on a clang CUDA build of a clone of the v1.5.0 tag (0 compiler warnings), default routes: every step (tc-overflow, iquants, cuda-gated, kv-fp4, nvfp4, qwen4exp, q3k, tc-kq, moe-legacy, varff, tc2-bytes, moe-twin, batch-id, spec-id, cpu-cuda on Qwen3-0.6B Q4_0, 64 tokens) pass. The opt-in routes passed on 2026-10-21 on a3a60134, whose engine code is the release's (between the two, src/ differs only in the version string in src/runner.h)",
         "result": "pass",
         "caps": {
-          "version": "1.4.2",
+          "version": "1.5.0",
           "os": "linux",
           "arch": "x86_64",
           "cpu_cores": 32,
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA RTX PRO 6000 Max-Q Workstation Edition MIG 1g.24gb"
-        }
+        },
+        "evidence": "docs/device-runs-2026-10-22/linux-x86_64-cuda/cuda-gate-20261022T044301Z.json"
       }
     },
     {
