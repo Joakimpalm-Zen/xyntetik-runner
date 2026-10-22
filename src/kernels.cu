@@ -6509,13 +6509,16 @@ extern "C" __global__ void k_mamba2_ssd(
 }
 
 // Phase 3: gate by silu(z) then grouped RMS norm (Mamba-2 RMSNormGated) for
-// token t. grid = n_group blocks (blockIdx.x = group), block 256. The group's
+// token t + blockIdx.y. grid = n_group blocks (blockIdx.x = group) by one row
+// per token (a single token's launch has one row), block 256. The group's
 // per_g = inner/n_group activations are gated then normalized together; the
 // gate is elementwise so restricting it to the group's slice is exact. Sum of
 // squares is accumulated in double, matching the CPU norm (tree order differs).
+// A token's arithmetic does not depend on the row it is launched in.
 extern "C" __global__ void k_mamba2_gate_norm(
         const float *proj, float *y, const float *gnorm_w,
         int inner, int ng, int per_g, float eps, int d_in_proj, int t) {
+    t += (int)blockIdx.y;
     int gidx = blockIdx.x;
     int tid = threadIdx.x, blk = blockDim.x;
     const float *zg = proj + (size_t)t * d_in_proj + (size_t)gidx * per_g;

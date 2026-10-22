@@ -6372,8 +6372,8 @@ static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
     CUdeviceptr gn = g->sw->ssm_gnorm[l];
     if (tn > 1 && recur_seq_admits(g, m)) {
         // conv and scan over the whole tile, one launch each; the gate and
-        // norm read only their own token's row, so one launch per token of
-        // the unchanged kernel keeps its bytes
+        // norm read only their own token's row, so one launch with a grid
+        // row per token keeps each token's bytes
         void *pc[] = { &g->mamba_proj, &g->mamba_xBC, &conv_w, &cb, &ring,
                        &conv_dim, &inner, &d_in_proj, &kk, &histn, &tn };
         void *ps[] = { &g->mamba_xBC, &g->mamba_proj, &Aw, &dtw, &Dw, &state,
@@ -6382,12 +6382,11 @@ static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
         if (!launch(g, g->sw->f_mamba_conv_seq, (conv_dim + 255) / 256, 1, 1, 256, pc) ||
             !launch(g, g->sw->f_mamba_ssd_seq, nh, 1, 1, hd, ps))
             return false;
-        for (int t = 0; t < tn; t++) {
-            void *pg[] = { &g->mamba_proj, &g->mamba_y, &gn, &inner, &ng, &per_g,
-                           &eps, &d_in_proj, &t };
-            if (!launch(g, g->sw->f_mamba_gate_norm, ng, 1, 1, 256, pg))
-                return false;
-        }
+        int t0 = 0;
+        void *pg[] = { &g->mamba_proj, &g->mamba_y, &gn, &inner, &ng, &per_g,
+                       &eps, &d_in_proj, &t0 };
+        if (!launch(g, g->sw->f_mamba_gate_norm, ng, tn, 1, 256, pg))
+            return false;
         g_recur_seq_dispatches++;
         return enc_mv(g, m, ly->ssm_out, g->mamba_y, g->xb, inner, m->n_embd,
                       0, tn, inner, xdim);

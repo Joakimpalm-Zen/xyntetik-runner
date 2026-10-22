@@ -31,6 +31,16 @@ Current release and unreleased changes. Compatibility follows the
   interleaved rounds): gemma-4-12B +1.2% at about 700 and 2,800 prompt
   tokens, gemma-4-26B-A4B +0.2% and +1.6%.
 
+- **CUDA: a Mamba-2 prompt tile gates and normalizes its tokens in one
+  launch.** The tile path ran the convolution and the scan once over the
+  tile but the gate and group norm once per token, a launch per token in
+  every Mamba layer. One launch with a grid row per token runs the same
+  arithmetic for each token: greedy text, `--score` and chunked `--score` are
+  byte-identical on granite-4.0-h-micro, granite-4.0-h-tiny and
+  Nemotron-Nano-9B-v2. Prefill on the datacenter MIG slice (5 interleaved
+  rounds): granite-4.0-h-micro +135% at about 600 tokens and +145% at 2,500,
+  Nemotron-Nano-9B-v2 +17% and +19%.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was
