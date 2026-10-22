@@ -116,7 +116,13 @@ def parse_top(d):
             by_id = {e["id"]: e["logprob"] for e in alts}
             spelled = {e["id"]: e["token"] for e in alts}
             by_id[step["id"]], spelled[step["id"]] = step["logprob"], step["token"]
-        return Top(by_spell, by_id, spelled, step["token"], step.get("id"))
+        # The top-1 is the distribution's argmax, as on the runner's side, not
+        # the emitted token: llama-server applies the model file's sampling
+        # defaults before a temperature-0 pick (Qwen2.5 ships repeat_penalty
+        # 1.1 over 64 tokens), so its pick missed its own argmax on 19 of 100
+        # Qwen2.5-0.5B positions, measured 2026-10-22.
+        best = max(list(alts) + [step], key=lambda e: e["logprob"])
+        return Top(by_spell, by_id, spelled, best["token"], best.get("id"))
     if lp and lp.get("tokens"):  # the runner's schema: parallel arrays
         alts = lp["top_logprobs"][0]
         pairs = alts.pairs if isinstance(alts, _Obj) else list(alts.items())

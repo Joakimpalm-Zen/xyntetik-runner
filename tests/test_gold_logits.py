@@ -144,6 +144,20 @@ def test_llama_server_ids_are_used():
     assert match == "id" and k < 1e-12
 
 
+def test_llama_server_top1_is_its_argmax_not_its_pick():
+    """llama-server's emitted token comes after the model file's penalties,
+    so it can sit below the top of the distribution the server reports; the
+    top-1 compared against the reference is that top on both engines."""
+    alts = [(16, "1", -1.212), (17, "2", -1.69), (18, "3", -1.919)]
+    body = {"choices": [{"logprobs": {"content": [{
+        "id": 18, "token": "3", "logprob": -1.919,
+        "top_logprobs": [{"id": i, "token": sp, "logprob": lp} for i, sp, lp in alts]}]}}]}
+    top = gold.parse_top(body)
+    assert (top.top1_spell, top.top1_id) == ("1", 16)
+    runner = _parse(_runner_json(alts, (18, "3", -1.919)))
+    assert (runner.top1_spell, runner.top1_id) == ("1", 16)
+
+
 def test_a_stop_as_the_greedy_pick_is_read_from_stop_logprobs():
     """The runner's logprob arrays align with emitted text, so a greedy stop
     leaves them empty and rides in stop_logprobs; the position used to be
