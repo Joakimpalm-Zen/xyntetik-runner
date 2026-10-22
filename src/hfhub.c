@@ -184,8 +184,17 @@ static bool mkdir_p(const char *path) {
 }
 
 static bool file_size(const char *path, long long *size) {
+#ifdef _WIN32
+    // MinGW's stat() keeps st_size in 32 bits and fails with EOVERFLOW past
+    // 2 GiB, which every real checkpoint is (model.c's file identity has the
+    // same note): the cache check never saw such a file, and a file the Hub
+    // sizes but does not hash could not be verified or reported
+    struct _stat64 st;
+    if (_stat64(path, &st) != 0) return false;
+#else
     struct stat st;
     if (stat(path, &st) != 0) return false;
+#endif
     *size = (long long)st.st_size;
     return true;
 }
