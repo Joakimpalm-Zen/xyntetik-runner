@@ -1804,9 +1804,17 @@ float4 accumulation and the q4_0 zero-point factored out of the inner loop).
 It clears the 0/64 teacher-forced flip bar on both formats but measured
 neutral on an 8-core M1 - −0.16 % bandwidth-bound, −0.01 % dispatch-bound - so
 it is **off by default**, leaving the byte-identical kernel on the default
-path. `./test-mv-tol MODEL.gguf` is the gate; see
+path. Since 2026-10-22 it also covers Q4_K (two rows a simdgroup, vector
+accumulation): decode +10.8% on Llama-3.2-1B and +12.5% on Llama-3.2-3B
+Q4_K_M over the default path on the M1, -0.9% on Qwen2.5-1.5B. It stays off
+by default: it is not the identity kernel's bits, and a tolerance default is
+a fidelity decision. `./test-mv-tol MODEL.gguf` is the gate; see
 `docs/negative-result-metal-multirow-matvec.md` for the matvec numerical
 contract and its verification gates.
+
+Q6_K decode matvecs run two rows a simdgroup on the default path
+(`k_mv2_q6_K`): the one-row kernel's bits, checked against it at load on the
+running device. `RUNNER_METAL_MV2=0` keeps the one-row kernel.
 The CPU quant dot/dequant module is a separate translation unit compiled with
 `-fno-fast-math`; fast math remains enabled for the rest of the engine.
 

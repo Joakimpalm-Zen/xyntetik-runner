@@ -196,6 +196,7 @@ void   gpu_mv_force(int on);
 // an exactly-matching one, and a gate that cannot see its own subject passes
 // vacuously.
 unsigned long gpu_mv_dispatches(void);
+unsigned long gpu_mv2_dispatches(void);   // Metal two-row identity decode matvecs
 // test hook for the cooperative-KV attention gate: force the reassociating
 // score read on (1) or off (0) regardless of RUNNER_METAL_ATTN_COOP; -1
 // returns to the env default. A no-op on backends without one.

@@ -3840,6 +3840,7 @@ void gpu_tc_force(int on) {
 // the mv gate links and can say "never dispatched here".
 void gpu_mv_force(int on) { (void)on; }
 unsigned long gpu_mv_dispatches(void) { return 0; }
+unsigned long gpu_mv2_dispatches(void) { return 0; }
 
 // Metal-only lever; present so the gate links and reports 'never here'.
 void gpu_attn_coop_force(int on) { (void)on; }

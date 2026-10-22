@@ -165,7 +165,8 @@ Around the matvec:
 | Metal 4 tensor GEMM | more than one column, `RUNNER_METAL_TENSOR=1`, an M5 or newer GPU on macOS 26.2 or newer, the per-type self-test passed at load, `n_in` a multiple of 256 | tolerance; opt-in, a failing type falls back alone | the load-time self-test, then `./test-tc-tol` |
 | simdgroup GEMM (`k_mm_*`) | more than one column, `RUNNER_METAL_MM` not `0` (promoted), `n_in` a whole number of k-steps and of superblocks | tolerance; activations staged scaled by the column maximum | `./test-tc-tol MODEL.gguf`, `make test-tc-overflow` on Darwin |
 | identity matvec (`k_mv`) | otherwise | token-identical to the CPU scalar route | `test-gpu-identity`, `make test-metal-kquant` and the other `test-metal-*` text gates |
-| fast decode matvec (`k_mvf_*`) | one column, `RUNNER_METAL_MV=1`, kernel present | tolerance; off by default (neutral when measured), never on prefill | `./test-mv-tol MODEL.gguf` |
+| fast decode matvec (`k_mvf_*`: Q4_0, Q8_0, Q4_K) | one column, `RUNNER_METAL_MV=1`, kernel present | tolerance; off by default (Q4_0 / Q8_0 neutral when measured, Q4_K +11-13% decode on the Llama 1B / 3B files over the default path), never on prefill | `./test-mv-tol MODEL.gguf` |
+| two-row identity matvec (`k_mv2_q6_K`) | one column, a Q6_K tensor, not the fast route, `RUNNER_METAL_MV2` not `0`, the load-time self-test passed | bit-exact to `k_mv_q6_K` (the self-test runs both on pseudo-random blocks and refuses the kernel on a device where any bit differs) | the load-time self-test; the identity and `test-metal-*` gates through the default route |
 
 Around the matvec:
 

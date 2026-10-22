@@ -52,6 +52,7 @@ typedef struct {
     id<MTLComputePipelineState> p_mm[METAL_TYPE_SLOTS];       // tiled prefill GEMM
     id<MTLComputePipelineState> p_tensor[METAL_TYPE_SLOTS];   // Metal 4 MPP prefill
     id<MTLComputePipelineState> p_mvf[METAL_TYPE_SLOTS];      // fast decode matvec
+    id<MTLComputePipelineState> p_mv2[METAL_TYPE_SLOTS];      // two-row identity decode matvec
     id<MTLComputePipelineState> p_moe_mv[METAL_TYPE_SLOTS];   // indexed by ggml type
     id<MTLComputePipelineState> p_moe_mv_em[METAL_TYPE_SLOTS]; // expert-major twin
     id<MTLComputePipelineState> p_moe_mv_em8[METAL_TYPE_SLOTS]; // + 8-column tiling
@@ -257,6 +258,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
         [g->p_tensor[i] release];
     }
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mvf[i] release];
+    for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mv2[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv_em[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv_em8[i] release];
@@ -834,6 +836,73 @@ static bool metal_tensor_self_test(id<MTLDevice> dev,
     return ok;
 }
 
+// The two-row Q6_K decode matvec (k_mv2_q6_K) is admitted only when it is
+// bit-identical to k_mv_q6_K on this device: the same weights and
+// activations through both, at a width where every lane takes one
+// half-superblock and at one where lanes take several, with odd row counts
+// so the second row of the last simdgroup is past the end. Pseudo-random
+// quants, scales and activations; any differing bit refuses it.
+static bool metal_mv2_self_test(id<MTLDevice> dev, id<MTLComputePipelineState> p1,
+                                id<MTLComputePipelineState> p2) {
+    if (!p1 || !p2) return false;
+    static const int shp[][2] = { { 2048, 37 }, { 8192, 21 } };
+    bool ok = true;
+    id<MTLCommandQueue> q = [dev newCommandQueue];
+    for (size_t si = 0; ok && si < sizeof shp / sizeof *shp; si++) {
+        int n_in = shp[si][0], n_out = shp[si][1];
+        size_t rb = (size_t)n_in / 256 * 210, wbytes = rb * n_out;
+        uint8_t *wh = malloc(wbytes);
+        float *xh = malloc(sizeof(float) * n_in);
+        if (!wh || !xh) { free(wh); free(xh); ok = false; break; }
+        uint32_t r = 2463534242u;
+        for (size_t i = 0; i < wbytes; i++) { r ^= r << 13; r ^= r >> 17; r ^= r << 5; wh[i] = (uint8_t)r; }
+        for (size_t blk = 0; blk < wbytes / 210; blk++) {   // finite fp16 d, as a real block has
+            wh[blk * 210 + 208] = (uint8_t)(blk * 37); wh[blk * 210 + 209] = 0x1c + (uint8_t)(blk % 8);
+        }
+        for (int i = 0; i < n_in; i++) { r ^= r << 13; r ^= r >> 17; r ^= r << 5; xh[i] = (float)(int)(r % 2001 - 1000) / 997.0f; }
+        id<MTLBuffer> wbuf = [dev newBufferWithBytes:wh length:wbytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> xb = [dev newBufferWithBytes:xh length:sizeof(float) * n_in options:MTLResourceStorageModeShared];
+        id<MTLBuffer> y1 = [dev newBufferWithLength:sizeof(float) * n_out options:MTLResourceStorageModeShared];
+        id<MTLBuffer> y2 = [dev newBufferWithLength:sizeof(float) * n_out options:MTLResourceStorageModeShared];
+        id<MTLBuffer> bb = [dev newBufferWithLength:sizeof(float) * n_out options:MTLResourceStorageModeShared];
+        free(wh); free(xh);
+        if (!wbuf || !xb || !y1 || !y2 || !bb) ok = false;
+        if (ok) {
+            mv_args a = { n_in, n_out, 0, 0, 1, n_in, n_out, 1 };
+            id<MTLCommandBuffer> cb = [q commandBuffer];
+            id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
+            for (int k = 0; k < 2; k++) {
+                [e setComputePipelineState:k ? p2 : p1];
+                [e setBuffer:wbuf offset:0 atIndex:0]; [e setBuffer:xb offset:0 atIndex:1];
+                [e setBuffer:k ? y2 : y1 offset:0 atIndex:2]; [e setBytes:&a length:sizeof a atIndex:3];
+                [e setBuffer:bb offset:0 atIndex:4];
+                int rows = k ? 8 : 4;   // rows a 128-thread threadgroup covers
+                [e dispatchThreadgroups:MTLSizeMake((n_out + rows - 1) / rows, 1, 1)
+                  threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+            }
+            [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
+            ok = cb.status == MTLCommandBufferStatusCompleted &&
+                 memcmp(y1.contents, y2.contents, sizeof(float) * n_out) == 0;
+        }
+        [wbuf release]; [xb release]; [y1 release]; [y2 release]; [bb release];
+    }
+    [q release];
+    if (!ok) fprintf(stderr, "gpu: two-row Q6_K matvec is not bit-identical on this device, "
+                     "decode keeps k_mv_q6_K\n");
+    return ok;
+}
+
+// RUNNER_METAL_MV2=0 keeps every decode matvec on its one-row identity kernel
+// (the A/B against k_mv2_q6_K). Read once: the per-matvec dispatch path.
+static bool metal_mv2_on(void) {
+    static _Atomic int v = -1;
+    if (v < 0) {
+        const char *e = getenv("RUNNER_METAL_MV2");
+        v = !(e && *e && (strcmp(e, "0") == 0 || strcmp(e, "off") == 0));
+    }
+    return v > 0;
+}
+
 static id<MTLBuffer> f32_buf(id<MTLDevice> dev, const float *src, size_t n) {
     if (!src) return nil;
     return [dev newBufferWithBytes:src length:n * sizeof(float)
@@ -1138,6 +1207,8 @@ static bool metal_attn_coop_on(void) {
 
 static _Atomic unsigned long g_mv_dispatches = 0;
 unsigned long gpu_mv_dispatches(void) { return g_mv_dispatches; }
+static _Atomic unsigned long g_mv2_dispatches = 0;
+unsigned long gpu_mv2_dispatches(void) { return g_mv2_dispatches; }
 
 static bool metal_mv_fast_on(void) {
     // Cache the env read: this sits in the per-matvec dispatch path, and
@@ -1680,6 +1751,12 @@ static void metal_make_pipelines(gpu_t *g, id<MTLDevice> dev, id<MTLLibrary> lib
     // the coverage can grow one measured format at a time.
     g->p_mvf[T_Q4_0]  = mk_pipeline(dev, lib, @"k_mvf_q4_0");
     g->p_mvf[T_Q8_0]  = mk_pipeline(dev, lib, @"k_mvf_q8_0");
+    g->p_mvf[T_Q4_K]  = mk_pipeline(dev, lib, @"k_mvf_q4_K");
+    g->p_mv2[T_Q6_K]  = mk_pipeline(dev, lib, @"k_mv2_q6_K");
+    if (g->p_mv2[T_Q6_K] && !metal_mv2_self_test(dev, g->p_mv[T_Q6_K], g->p_mv2[T_Q6_K])) {
+        [g->p_mv2[T_Q6_K] release];
+        g->p_mv2[T_Q6_K] = nil;
+    }
     g->p_moe_mv[T_F32]  = mk_pipeline(dev, lib, @"k_moe_mv_f32");
     g->p_moe_mv[T_F16]  = mk_pipeline(dev, lib, @"k_moe_mv_f16");
     g->p_moe_mv[T_Q8_0] = mk_pipeline(dev, lib, @"k_moe_mv_q8_0");
@@ -2385,10 +2462,18 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // a non-identity result on the PREFILL path, where the tolerance gate
     // (decode-only by construction) has never looked.
     id<MTLComputePipelineState> mv = g->p_mv[w->type];
+    int rows_sg = 1;   // output rows a simdgroup computes
     if (n_col == 1 && metal_mv_fast_on() && g->p_mvf[w->type]) {
         mv = g->p_mvf[w->type];
+        rows_sg = w->type == T_Q4_K ? 2 : 1;   // k_mvf_q4_K takes two rows
         g_mv_dispatches++;
         g_disp.mvf++;
+    } else if (n_col == 1 && g->p_mv2[w->type] && metal_mv2_on()) {
+        // the two-row identity matvec, admitted by metal_mv2_self_test
+        mv = g->p_mv2[w->type];
+        rows_sg = 2;
+        g_mv2_dispatches++;
+        g_disp.mv++;
     } else {
         g_disp.mv++;
     }
@@ -2400,8 +2485,10 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
     [e setBuffer:y offset:y_off atIndex:2];
     [e setBytes:&a length:sizeof(a) atIndex:3];
     [e setBuffer:bias ? bias : g->dummy offset:0 atIndex:4];
-    // 128 threads = 4 simdgroups = 4 rows per threadgroup
-    [e dispatchThreadgroups:MTLSizeMake((n_out + 3) / 4,
+    // 128 threads = 4 simdgroups = 4 rows per threadgroup (8 for the
+    // two-row kernels)
+    int tg_rows = 4 * rows_sg;
+    [e dispatchThreadgroups:MTLSizeMake((n_out + tg_rows - 1) / tg_rows,
                                         (n_col + col_tile - 1) / col_tile, 1)
       threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
 }

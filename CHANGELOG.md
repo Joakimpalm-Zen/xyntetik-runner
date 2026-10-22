@@ -53,6 +53,30 @@ Current release and unreleased changes. Compatibility follows the
   Decode on the datacenter MIG slice (5 interleaved rounds):
   granite-4.0-h-micro +1.2%, Nemotron-Nano-9B-v2 +0.4%.
 
+- **Metal: Q6_K decode matvecs compute two rows a simdgroup.** A Q4_K_M file
+  keeps some tensors in Q6_K (the output head and part of the V and FFN-down
+  tensors), and their one-column matvec computed one row a simdgroup, each
+  row loading the same activations again. `k_mv2_q6_K` computes two rows from
+  one activation load a lane, with each row's multiply-adds written as the
+  `fma` the one-row kernel compiles to, so the outputs are the same bits. The
+  engine checks that at load against the one-row kernel on the running device
+  and keeps the one-row kernel where any bit differs; `RUNNER_METAL_MV2=0`
+  keeps it everywhere. Greedy text and token-by-token `--score` are
+  byte-identical with it on and off on Llama-3.2-1B, Llama-3.2-3B and
+  Qwen2.5-1.5B Q4_K_M. Decode on an Apple M1 (5 interleaved rounds, 512-token
+  prompt, 128 tokens): Llama-3.2-1B +8.6%, Llama-3.2-3B +16.1%, Qwen2.5-1.5B
+  +3.4%; prefill unchanged.
+
+- **Metal: the opt-in fast decode matvec covers Q4_K.** `RUNNER_METAL_MV=1`
+  (tolerance class, off by default) had kernels for Q4_0 and Q8_0 only; a
+  Q4_K kernel now computes two rows a simdgroup with vector accumulation.
+  Over the new default on the M1: Llama-3.2-1B +10.8%, Llama-3.2-3B +12.5%,
+  Qwen2.5-1.5B -0.9%. `./test-mv-tol` now runs on Q4_K files (it skipped
+  them before) and passes on all three: no top-1 change in 64
+  teacher-forced positions, mean logit change 1e-5 of the logit range. It
+  stays off by default because it does not reproduce the identity kernel's
+  bits.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was
