@@ -3,6 +3,19 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **CUDA: a MoE prompt tile routes its tokens in one launch.** Every MoE
+  prefill route (fused, grouped and by-expert, and gemma-4's grouped and
+  by-expert routes) ran the router as one matvec launch per prompt token.
+  An F32 or F16 router, and a BF16 one off its split-K route, now runs through
+  the batched twin of its one-token kernel, so each token's router logits are
+  the same bits from one launch per MoE layer per tile; other router types
+  keep the per-token launches, and gemma-4's fused per-token path is
+  unchanged. Chunked `--score` is byte-identical before and after on
+  Qwen3-30B-A3B, gpt-oss-20b and gemma-4-26B-A4B across every MoE route, and
+  an 875-token Qwen3-30B-A3B prefill makes about 42,000 fewer launches.
+
 ## v1.5.0 - 2026-10-22
 
 - **`scripts/cuda-nightly.sh` sees a held GPU lock however MSYS2's bash was

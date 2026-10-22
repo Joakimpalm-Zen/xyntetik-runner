@@ -5330,6 +5330,38 @@ static bool enc_moe_sum(gpu_t *g, CUdeviceptr out, CUdeviceptr eout, int n,
 // tile, then per token gate/up/actmul/down/sum — six launches a token and
 // zero host round-trips, vs the eager path's ~49 launches and one
 // sync+DtoH per token.
+static inline bool mvb_is_mv_twin(int type);
+
+// The router over a prompt tile, every column the batch-1 call's bits. For
+// F32 and F16 (and BF16 off its split-K route) the batch-1 call is f_mv, and
+// f_mvb is its twin (mvb_is_mv_twin): one launch over the tile, sixteen
+// columns per grid row. enc_mv(batch = tn) would not do it below nine
+// columns, where these types have no f_gemvb and its small-batch branch runs
+// the batch-1 kernel once per column. Any other type keeps one batch-1 call
+// per column.
+static bool enc_router(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x, int xs,
+                       CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias, int tn) {
+    if (tn > 1 && w->scale == 1.0f && mvb_is_mv_twin(w->type) && g->sw->f_mvb[w->type] &&
+        !mv_route_splitk(g, w, n_in, n_out)) {
+        CUdeviceptr weights = 0;
+        uint64_t w_off = 0;
+        if (!binding_find(g->sw, m, w, &weights, &w_off)) {
+            gpu_first_error("tensor '%s' is not resident on the device "
+                            "(no binding covers it)", w->name);
+            return false;
+        }
+        mv_args a = { n_in, n_out, w_off, bias != 0, tn, xs, n_out };
+        return launch_tiled(g, g->sw->f_mvb[w->type], (unsigned)((n_out + 3) / 4), 128,
+                            weights, x, y, a, bias ? bias : g->sw->dummy, MVT,
+                            false, w->scale, true);
+    }
+    for (int t = 0; t < tn; t++)
+        if (!enc_mv(g, m, w, x + (size_t)t * xs * sizeof(float),
+                    y + (size_t)t * n_out * sizeof(float), n_in, n_out, bias, 1, xs, n_out))
+            return false;
+    return true;
+}
+
 static bool gpu_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
                               int tn, int xdim) {
     int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used;
@@ -5344,17 +5376,13 @@ static bool gpu_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
                        ggml_row_size(ly->ffn_up_exps->type, n_embd);
     uint64_t dstride = (uint64_t)n_embd *
                        ggml_row_size(ly->ffn_down_exps->type, nff);
-    for (int t = 0; t < tn; t++) {
-        CUdeviceptr xin = g->xb + (size_t)t * xdim * sizeof(float);
-        CUdeviceptr lg  = g->moe_logits + (size_t)t * ne * sizeof(float);
-        // gib: the gpt-oss router bias, which applies to the LOGITS before
-        // gating (model.c moe_route). k_moe_route takes no bias input, so it
-        // has to ride the router matvec — as it already does on the eager and
-        // grouped paths and in metal.m.
-        if (!enc_mv(g, m, ly->ffn_gate_inp, xin, lg, n_embd, ne,
-                    g->sw->gib[l], 1, xdim, ne))
-            return false;
-    }
+    // gib: the gpt-oss router bias, which applies to the LOGITS before
+    // gating (model.c moe_route). k_moe_route takes no bias input, so it
+    // has to ride the router matvec, as it already does on the eager and
+    // grouped paths and in metal.m.
+    if (!enc_router(g, m, ly->ffn_gate_inp, g->xb, xdim, g->moe_logits, n_embd, ne,
+                    g->sw->gib[l], tn))
+        return false;
     if (!enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used,
                        tn, ne))
         return false;
@@ -5504,13 +5532,9 @@ static bool gpu_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
-    for (int t = 0; t < tn; t++) {
-        CUdeviceptr xin = g->xb + (size_t)t * xdim * sizeof(float);
-        CUdeviceptr lg  = g->moe_logits + (size_t)t * ne * sizeof(float);
-        if (!enc_mv(g, m, ly->ffn_gate_inp, xin, lg, n_embd, ne,
-                    g->sw->gib[l], 1, xdim, ne))
-            return false;
-    }
+    if (!enc_router(g, m, ly->ffn_gate_inp, g->xb, xdim, g->moe_logits, n_embd, ne,
+                    g->sw->gib[l], tn))
+        return false;
     if (!enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used,
                        tn, ne))
         return false;
@@ -5578,12 +5602,8 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
                      n_embd, n_embd)
       && enc_rmsnorm(g, g->x, rin_b, g->sw->g_gis[l], n_embd, eps, tn,
                      n_embd, n_embd);
-    for (int t = 0; ok && t < tn; t++) {
-        CUdeviceptr rin = rin_b + (size_t)t * n_embd * sizeof(float);
-        CUdeviceptr lg  = g->moe_logits + (size_t)t * ne * sizeof(float);
-        ok = enc_mv(g, m, ly->ffn_gate_inp, rin, lg, n_embd, ne, 0, 1,
-                    n_embd, ne);
-    }
+    ok = ok && enc_router(g, m, ly->ffn_gate_inp, rin_b, n_embd, g->moe_logits,
+                          n_embd, ne, 0, tn);
     ok = ok && enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne,
                              used, tn, ne);
     if (!ok) return false;
@@ -5848,15 +5868,12 @@ static bool gpu_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly, int tn,
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
-    // routing as the fused path does it: the batch-1 router per token (the
-    // gpt-oss router bias riding it), then the routing kernel for the tile
-    for (int t = 0; t < tn; t++) {
-        CUdeviceptr xin = g->xb + (size_t)t * xdim * sizeof(float);
-        CUdeviceptr lg  = g->moe_logits + (size_t)t * ne * sizeof(float);
-        if (!enc_mv(g, m, ly->ffn_gate_inp, xin, lg, n_embd, ne,
-                    g->sw->gib[l], 1, xdim, ne))
-            return false;
-    }
+    // routing as the fused path does it: the router with each column's
+    // batch-1 bits (the gpt-oss router bias riding it), then the routing
+    // kernel for the tile
+    if (!enc_router(g, m, ly->ffn_gate_inp, g->xb, xdim, g->moe_logits, n_embd, ne,
+                    g->sw->gib[l], tn))
+        return false;
     if (!enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used,
                        tn, ne))
         return false;
@@ -6105,12 +6122,12 @@ static bool gpu_gemma_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly,
            && enc_actmul(g, m, g->hb, g->hb2, tn * dff)
            && moe_twin_gemm(g, m, ly->w_down, false, g->hb, g->xb, dff, n_embd, tn, dff, xdim)
            && enc_rmsnorm(g, g->xb, g->xb, g->sw->g_pn1[l], n_embd, eps, tn, xdim, xdim);
-    // --- routed branch: the two norms, the batch-1 router per token, routing
+    // --- routed branch: the two norms, the router (each column's batch-1
+    //     bits), routing
     ok = ok && enc_rmsnorm(g, g->x, xn2_b, g->sw->g_prn2[l], n_embd, eps, tn, n_embd, n_embd)
             && enc_rmsnorm(g, g->x, rin_b, g->sw->g_gis[l], n_embd, eps, tn, n_embd, n_embd);
-    for (int t = 0; ok && t < tn; t++)
-        ok = enc_mv(g, m, ly->ffn_gate_inp, rin_b + (size_t)t * n_embd * sizeof(float),
-                    g->moe_logits + (size_t)t * ne * sizeof(float), n_embd, ne, 0, 1, n_embd, ne);
+    ok = ok && enc_router(g, m, ly->ffn_gate_inp, rin_b, n_embd, g->moe_logits,
+                          n_embd, ne, 0, tn);
     ok = ok && enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used, tn, ne);
     if (!ok) return false;
     if (cu.StreamSynchronize(g->stream) != 0 ||
