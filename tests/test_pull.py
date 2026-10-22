@@ -17,6 +17,17 @@ from test_hf_fetch import (  # noqa: F401  (fixtures)
     calls, fixture_model, hub, resolve_calls, run, runner_bin, sha256)
 
 
+def canon(p):
+    """A path as the platform compares it: Runner prints native paths
+    (D:\\ on Windows), MSYS2's Python spells the same file D:/."""
+    return os.path.normcase(os.path.normpath(str(p)))
+
+
+def canon_doc(doc):
+    return dict(doc, path=canon(doc["path"]),
+                files=[dict(f, path=canon(f["path"])) for f in doc["files"]])
+
+
 def test_pull_fetches_into_the_cache_and_prints_one_line(runner_bin, hub):
     want = hub["dir"] / "model-Q8_0.gguf"
     r = run(runner_bin, hub["env"], "--pull", "fake/repo:Q8_0")
@@ -25,7 +36,9 @@ def test_pull_fetches_into_the_cache_and_prints_one_line(runner_bin, hub):
     assert cached.exists() and sha256(cached) == sha256(want)
     lines = r.stdout.splitlines()
     assert len(lines) == 1, r.stdout
-    assert str(cached.resolve()) in lines[0] and str(want.stat().st_size) in lines[0]
+    path, size = lines[0].rsplit(" (", 1)
+    assert canon(path) == canon(cached.resolve())
+    assert size.startswith(f"{want.stat().st_size} bytes")
     # nothing was loaded: no model banner, and the transfer notes stay on stderr
     assert "hf: fetching fake/repo/model-Q8_0.gguf" in r.stderr
     assert "loaded" not in r.stderr
@@ -43,12 +56,12 @@ def test_json_reports_the_file_against_the_fixtures_own_digest(runner_bin, hub):
     want = hub["dir"] / "model-Q8_0.gguf"
     doc, r = pull_json(runner_bin, hub["env"], "fake/repo:Q8_0")
     cached = (hub["cache"] / "fake--repo" / "model-Q8_0.gguf").resolve()
-    assert doc == {
+    assert canon_doc(doc) == canon_doc({
         "path": str(cached),
         "size_bytes": want.stat().st_size,
         "files": [{"path": str(cached), "size_bytes": want.stat().st_size,
                    "sha256": sha256(want), "verification": "hub_sha256"}],
-    }
+    })
     # the transfer notes are on stderr, never mixed into the object
     assert "hf: fetching fake/repo/model-Q8_0.gguf" in r.stderr
 
@@ -143,9 +156,9 @@ def test_multipart_lists_every_part_in_order_with_the_sum(runner_bin, hub):
     sizes = [p.stat().st_size for p in parts]
     doc, _ = pull_json(runner_bin, hub["env"], "fake/repo:Q8_0")
     repodir = (hub["cache"] / "fake--repo").resolve()
-    assert doc["path"] == str(repodir / parts[0].name)
+    assert canon(doc["path"]) == canon(repodir / parts[0].name)
     assert doc["size_bytes"] == sum(sizes)
-    assert [f["path"] for f in doc["files"]] == [str(repodir / p.name) for p in parts]
+    assert [canon(f["path"]) for f in doc["files"]] == [canon(repodir / p.name) for p in parts]
     assert [f["sha256"] for f in doc["files"]] == [sha256(p) for p in parts]
     assert [f["size_bytes"] for f in doc["files"]] == sizes
 
@@ -231,4 +244,9 @@ def test_a_file_over_2_gib_is_sized_and_reused(runner_bin, tmp_path):
     assert first["files"][0]["verification"] == "hub_size"
     second, r = pull_json(runner_bin, env, "fake/big:Q8_0")
     assert second == first and "cached" in r.stderr
+    assert len(resolve_calls(log)) == 1
+    # -hf reads the same cache: the file is found, not fetched again (the
+    # zeros are no model, so the load after it fails, as it should)
+    r = run(runner_bin, env, "-hf", "fake/big:Q8_0", "-p", "hi", "-n", "1")
+    assert "hf: fake/big/big-Q8_0.gguf cached" in r.stderr, r.stderr
     assert len(resolve_calls(log)) == 1
