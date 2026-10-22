@@ -56,7 +56,7 @@ It takes about a minute to try: [quick start](#quick-start).
   and Anthropic APIs, so your apps and coding agents connect without changes.
 - **Measured, not assumed.** Twelve model families have been scored against
   their publishers' own implementations, and Runner is closer to the
-  reference than llama.cpp on 21 of 22 rows. A model it does not know is
+  reference than llama.cpp on 20 of 23 rows. A model it does not know is
   refused by name, never guessed at.
 - **Yours.** Free forever under Apache 2.0, built in Sweden, and your prompts
   never leave your machine.
@@ -389,8 +389,8 @@ can change them, which is a stated limit, not a promise broken.
   download with `-hf`. Experimental layouts and backend limits are listed
   in the [support matrix](MANUAL.md#support-matrix).
 - **How Runner compares.** Closer to the publisher's reference than
-  llama.cpp on 21 of 22 measured rows, and level or ahead on the reference's
-  chosen token on 20 of 22. [Evidence](MANUAL.md#evidence-and-tradeoffs) ·
+  llama.cpp on 20 of 23 measured rows, and level or ahead on the reference's
+  chosen token on 22 of 23. [Evidence](MANUAL.md#evidence-and-tradeoffs) ·
   [Speed tables](docs/benchmarks.md)
 
 <a id="all-commands"></a>

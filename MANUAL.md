@@ -4118,16 +4118,22 @@ are described in [determinism scope](docs/determinism-scope.md).
 Whether that arithmetic also makes Runner the *more accurate* engine
 depends on which question you ask, and both answers belong here. Twelve
 families were scored against their publishers' implementations in float32
-on 2026-09-07, both tiers, 2,000 corpus positions each, with the other
-engine given its stronger configuration at each tier.
+on Runner 1.5.0 (2026-10-22; first on 2026-09-07), both tiers, 2,000
+corpus positions each, with the other engine given its stronger
+configuration at each tier ([report](docs/golden-pass-2026-10-22.md)).
 
 On how close the whole output distribution is to the reference, Runner
-wins twenty-one of twenty-two rows, at p-values that leave no room for
-luck. On how often each engine picks the reference's token where the
-reference had a clear preference, Runner is ahead or level on twenty of
-twenty-two, but only one of those leads is big enough to be a real
+is closer on twenty of twenty-three rows, at p-values that leave no room
+for luck. The other engine is closer on one, Gemma 4 E2B at four bits,
+where scored against the file's own model it is the other engine that departs
+from the file (mean KL 0.063 against Runner's 0.00007), and two are not
+distinguishable (Qwen3 0.6B at four bits, Trinity Nano at
+bf16). On how often each engine picks the reference's token where the
+reference had a clear preference, Runner is ahead or level on twenty-two
+of twenty-three, but only one of those leads is big enough to be a real
 difference rather than chance: Apertus 8B at four bits, 1343 tokens
-against 1321 of 1369. Both things are true. Runner reproduces the
+against 1320 of 1369. (The 2026-09-07 rows were published as twenty-one
+of twenty-two; their own table supports twenty.) Both things are true. Runner reproduces the
 reference distribution measurably better, essentially everywhere, and that
 advantage moves the winning token rarely enough that it takes well over a
 thousand qualified positions to see it once.
