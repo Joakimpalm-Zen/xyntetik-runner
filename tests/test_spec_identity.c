@@ -180,7 +180,9 @@ int main(int argc, char **argv) {
     }
     if (!cpu && strcmp(where, "gpu") == 0 && mamba2 && restored == 0) {
         printf("FAIL: no partial round restored a per-row checkpoint on the "
-               "device: every rollback re-folded\nspec-identity: FAILED\n");
+               "device: every rollback re-folded (the filing path did not run, "
+               "or the slots did not fit: see a 'no room for the verify "
+               "checkpoints' line above)\nspec-identity: FAILED\n");
         return 1;
     }
 #endif

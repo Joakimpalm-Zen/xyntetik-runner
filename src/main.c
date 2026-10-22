@@ -5193,8 +5193,10 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
     return 0;
 }
 
-int main(int argc, char **argv) {
-    char *owned_prompt = NULL;
+// The prompt buffer cli_resolve_inputs builds (-p unescaped, -f appended)
+// is the caller's: main frees it after every exit of the run, the refusals
+// between resolving the inputs and loading the model included.
+static int cli_main(int argc, char **argv, char **owned_prompt) {
     // the model, tokenizer and engine the modes run on, and what the load
     // decided about them; cli_cleanup frees them on every exit after the load
     cli_run rt_state;
@@ -5243,7 +5245,7 @@ int main(int argc, char **argv) {
 
     if (o->shadow_mode) return run_shadow_mode(o->model_path, o->shadow_yes);
     if (o->caps) return run_caps();
-    if (cli_resolve_inputs(o, argv[0], detect_text != NULL, &owned_prompt, &rc))
+    if (cli_resolve_inputs(o, argv[0], detect_text != NULL, owned_prompt, &rc))
         return rc;
     if (cli_prepare_session(o, &simg, &rc)) return rc;
     if (cli_prepare_verify(o, &wmk, wm_on, &vr, &rc)) return rc;
@@ -5288,9 +5290,7 @@ int main(int argc, char **argv) {
         return rc;
 
     if (o->serve) {
-        rc = run_serve(o, rt, &wmk, wm_on, registry, tmpl_override, &signing);
-        free(owned_prompt);
-        return rc;
+        return run_serve(o, rt, &wmk, wm_on, registry, tmpl_override, &signing);
     }
 
     // cli_wm outlives the engine that points at it
@@ -5314,6 +5314,12 @@ int main(int argc, char **argv) {
     // 237,668 bytes in 19 allocations and an over-long prompt 30,186 in 21,
     // while the successful run was clean.
     cli_cleanup(&rt->e, rt->toks, &rt->tok, &rt->m);
+    return rc;
+}
+
+int main(int argc, char **argv) {
+    char *owned_prompt = NULL;
+    int rc = cli_main(argc, argv, &owned_prompt);
     free(owned_prompt);
     return rc;
 }

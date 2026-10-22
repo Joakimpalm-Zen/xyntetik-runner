@@ -8279,6 +8279,15 @@ static bool mamba_snap_ready(gpu_t *g, model_t *m, int n) {
         for (int l = 0; l < m->n_layer; l++)
             g->snap_ord[l] = m->layers[l].recurrent ? nrec++ : -1;
     size_t slots = (size_t)rows * nrec;
+    if ((size_t)nrec * sl > INT_MAX || (size_t)nrec * hl > INT_MAX) {
+        // the tile kernels take a row's stride (nrec slots) as an int
+        free(g->snap_ord);
+        g->snap_ord = NULL;
+        g->snap_failed = true;
+        fprintf(stderr, "gpu: a verify row's recurrent state passes 2^31 floats; a "
+                "partially accepted speculative round re-folds its kept rows\n");
+        return false;
+    }
     if (!g->snap_ord || !nrec ||
         cu.MemAlloc(&g->snap_state, sizeof(float) * sl * slots) != 0 ||
         cu.MemAlloc(&g->snap_hist, sizeof(float) * (hl ? hl : 1) * slots) != 0) {
