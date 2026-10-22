@@ -7271,11 +7271,12 @@ k_q35_delta_seq(const float *cv, const float *z, const float *beta_in,
 }
 
 // k_mamba2_conv over tn tokens (one thread per channel, its ring column in
-// registers)
+// registers). snap (a speculative verify round's checkpoints, else NULL):
+// the window after each row but the last, row t's at snap + t * snap_stride.
 extern "C" __global__ void k_mamba2_conv_seq(
         const float *proj, float *xBC, const float *conv_w, const float *conv_b,
         float *ring, int conv_dim, int inner, int d_in_proj,
-        int conv_kernel, int histn, int tn) {
+        int conv_kernel, int histn, int tn, float *snap, int snap_stride) {
     int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= conv_dim) return;
     const float *cw = conv_w + (size_t)c * conv_kernel;
@@ -7296,6 +7297,11 @@ extern "C" __global__ void k_mamba2_conv_seq(
         #pragma unroll
         for (int k = 0; k < RS_MAX_HIST; k++)
             if (histn && k == histn - 1) r[k] = cur;
+        if (snap && t < tn - 1) {
+            #pragma unroll
+            for (int k = 0; k < RS_MAX_HIST; k++)
+                if (k < histn) snap[(size_t)t * snap_stride + (size_t)k * conv_dim + c] = r[k];
+        }
     }
     #pragma unroll
     for (int k = 0; k < RS_MAX_HIST; k++)
@@ -7303,12 +7309,13 @@ extern "C" __global__ void k_mamba2_conv_seq(
 }
 
 // k_mamba2_ssd over tn tokens: thread (h, p) keeps its d_state row in
-// registers (ds <= RS_MAX_SD)
+// registers (ds <= RS_MAX_SD). snap as k_mamba2_conv_seq's: the state after
+// each row but the last (the last is written to state).
 extern "C" __global__ void k_mamba2_ssd_seq(
         const float *xBC, const float *proj, const float *A, const float *dt_b,
         const float *D, const float *state_in, float *state, float *y,
         int inner, int hd, int ds, int ng, int gsz, int conv_dim,
-        int d_in_proj, int tn) {
+        int d_in_proj, int tn, float *snap, int snap_stride) {
     int h = blockIdx.x;
     int p = threadIdx.x;
     if (p >= hd) return;
@@ -7339,6 +7346,12 @@ extern "C" __global__ void k_mamba2_ssd_seq(
             }
         }
         y[(size_t)t * inner + (size_t)h * hd + p] = sumf + D[h] * x;
+        if (snap && t < tn - 1) {
+            float *sr = snap + (size_t)t * snap_stride + ((size_t)h * hd + p) * ds;
+            #pragma unroll
+            for (int j = 0; j < RS_MAX_SD; j++)
+                if (j < ds) sr[j] = s_[j];
+        }
     }
     #pragma unroll
     for (int j = 0; j < RS_MAX_SD; j++)

@@ -624,6 +624,13 @@ typedef struct {
     int         snap_rows;              // slots (0: off)
     int         snap_on;                // the current forward files them (a keep-forward)
     int         snap_valid;             // rows filed by the last keep-forward
+    // A Mamba-2 hybrid files rows 0 .. n-2 (its last row's state is the live
+    // half) in slots allocated by its first verify round (mamba_snap_ready),
+    // one per recurrent layer: snap_ord[l] is layer l's slot, -1 for the
+    // others. snap_failed: that allocation failed, so its rounds re-fold.
+    int        *snap_ord;
+    int         snap_nrec;
+    bool        snap_failed;
     unsigned long fwd_count;            // forwards run (recurrent rollback validity)
     unsigned long fwd_snap;             // fwd_count when the rollback point was taken
     // Mamba-2 recurrent buffers (granitehybrid/nemotron_h)
@@ -4816,6 +4823,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
         else free(g->kvg_host);
     }
     free(g->h_kvg_tab);
+    free(g->snap_ord);
     shared_release(g->sw);
     free(g);
 }
@@ -5103,8 +5111,34 @@ bool gpu_recurrent_rollback_mark(model_t *m) {
 // no re-fold. false = no checkpoint for that row (caller rolls back instead).
 bool gpu_recurrent_restore_row(model_t *m, int r) {
     gpu_t *g = m ? m->gpu : NULL;
-    if (!g || !g->snap_rows || !m->qwen35 || r < 0 || r >= g->snap_valid) return false;
+    if (!g || !g->snap_rows || r < 0 || r >= g->snap_valid) return false;
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    if ((m->granite_hybrid || m->nemotron_h) && g->mamba_state && g->snap_ord) {
+        // the round's last row wrote the live half; an earlier row's state
+        // and conv window come back from its slot into the half the next
+        // forward reads (rec_cur) and the ring
+        if (r < g->snap_valid - 1) {
+            int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
+            size_t sl = (size_t)m->ssm.inner * m->ssm.state;
+            size_t hl = (size_t)(m->ssm.conv_kernel - 1) * cd;
+            for (int l = 0; l < m->n_layer; l++) {
+                int o = g->snap_ord[l];
+                if (o < 0) continue;
+                size_t slot = (size_t)r * g->snap_nrec + o;
+                if (cu.MemcpyDtoDAsync(mamba_half(g, m, g->rec_cur) + l * sl * sizeof(float),
+                                       g->snap_state + slot * sl * sizeof(float),
+                                       sl * sizeof(float), g->stream) != 0 ||
+                    (hl && cu.MemcpyDtoDAsync(g->mamba_conv + l * hl * sizeof(float),
+                                              g->snap_hist + slot * hl * sizeof(float),
+                                              hl * sizeof(float), g->stream) != 0))
+                    return false;
+            }
+            if (cu.StreamSynchronize(g->stream) != 0) return false;
+        }
+        g->snap_valid = 0;
+        return true;
+    }
+    if (!m->qwen35) return false;
     int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
     size_t hb = sizeof(float) * (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * convdim;
     size_t sb = sizeof(float) * (size_t)m->n_layer * m->ssm.v_heads * m->ssm.state * m->ssm.state;
@@ -6443,15 +6477,25 @@ static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
     CUdeviceptr Aw = g->sw->ssm_a[l], dtw = g->sw->ssm_dt[l];
     CUdeviceptr Dw = g->sw->ssm_D[l], cb = g->sw->ssm_conv_b[l];
     CUdeviceptr gn = g->sw->ssm_gnorm[l];
+    // a verify round filing its rows (mamba_snap_ready): rows before the
+    // last leave their state and conv window in their slots (row t's at
+    // slot t * snap_nrec + this layer's ordinal), the last row writes the
+    // live half, on the tile kernels or the per-token ones alike
+    bool snap = g->snap_on && g->snap_ord && g->snap_ord[l] >= 0;
+    size_t sl = (size_t)nh * hd * ds, hl = (size_t)histn * conv_dim;
+    CUdeviceptr ssnap = snap ? g->snap_state + (size_t)g->snap_ord[l] * sl * sizeof(float) : 0;
+    CUdeviceptr hsnap = snap && hl ? g->snap_hist + (size_t)g->snap_ord[l] * hl * sizeof(float) : 0;
+    int sstride = snap ? (int)((size_t)g->snap_nrec * sl) : 0;
+    int hstride = snap ? (int)((size_t)g->snap_nrec * hl) : 0;
     if (tn > 1 && recur_seq_admits(g, m)) {
         // conv and scan over the whole tile, one launch each; the gate and
         // norm read only their own token's row, so one launch with a grid
         // row per token keeps each token's bytes
         void *pc[] = { &g->mamba_proj, &g->mamba_xBC, &conv_w, &cb, &ring,
-                       &conv_dim, &inner, &d_in_proj, &kk, &histn, &tn };
+                       &conv_dim, &inner, &d_in_proj, &kk, &histn, &tn, &hsnap, &hstride };
         void *ps[] = { &g->mamba_xBC, &g->mamba_proj, &Aw, &dtw, &Dw, &state_in, &state,
                        &g->mamba_y, &inner, &hd, &ds, &ng, &gsz, &conv_dim,
-                       &d_in_proj, &tn };
+                       &d_in_proj, &tn, &ssnap, &sstride };
         if (!launch(g, g->sw->f_mamba_conv_seq, (conv_dim + 255) / 256, 1, 1, 256, pc) ||
             !launch(g, g->sw->f_mamba_ssd_seq, nh, 1, 1, hd, ps))
             return false;
@@ -6469,9 +6513,17 @@ static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
                        &conv_dim, &inner, &d_in_proj, &kk, &histn, &t };
         if (!launch(g, g->sw->f_mamba_conv, (conv_dim + 255) / 256, 1, 1,
                     256, pc)) return false;
-        // token t > 0 continues from the row token t - 1 wrote
-        CUdeviceptr sin = t == 0 ? state_in : state;
-        void *ps[] = { &g->mamba_xBC, &g->mamba_proj, &Aw, &dtw, &Dw, &sin, &state,
+        // a filed row writes its slot (the window copied after its conv
+        // step), and token t > 0 continues from the row token t - 1 wrote
+        bool filed = snap && t < tn - 1;
+        if (filed && hl &&
+            cu.MemcpyDtoDAsync(hsnap + (size_t)t * hstride * sizeof(float), ring,
+                               hl * sizeof(float), g->stream) != 0)
+            return false;
+        CUdeviceptr sin = t == 0 ? state_in :
+                          snap ? ssnap + (size_t)(t - 1) * sstride * sizeof(float) : state;
+        CUdeviceptr sout = filed ? ssnap + (size_t)t * sstride * sizeof(float) : state;
+        void *ps[] = { &g->mamba_xBC, &g->mamba_proj, &Aw, &dtw, &Dw, &sin, &sout,
                        &g->mamba_y, &inner, &hd, &ds, &ng, &gsz, &conv_dim,
                        &d_in_proj, &t };
         if (!launch(g, g->sw->f_mamba_ssd, nh, 1, 1, hd, ps)) return false;
@@ -8203,6 +8255,48 @@ static bool set_pos(gpu_t *g, int pos, int tn) {
     return cu.MemcpyHtoD(g->pos_dev, hp, sizeof(int) * (size_t)n) == 0;
 }
 
+// Whether an n-row keep-forward on a Mamba-2 hybrid files its rows (9.e):
+// rows 0 .. n-2 write their SSD state into per-row slots and the last row
+// the live half, so a partially accepted round restores the state after its
+// last kept row (gpu_recurrent_restore_row) instead of rolling back and
+// re-folding the kept rows with another forward, which took 169 of 1,249 ms
+// of a granite-4.0-h-micro lookup run. The slots, one per recurrent layer
+// and row up to the verify window qwen35's checkpoints use, are allocated by
+// the first verify round, so plain decoding never holds them; a failed
+// allocation leaves the re-fold.
+static bool mamba_snap_ready(gpu_t *g, model_t *m, int n) {
+    int rows = (m->spec_batch < 8 ? m->spec_batch : 8) - 1;
+    if (n < 2 || n - 1 > rows || g->snap_failed || m->gpu_layers < m->n_layer ||
+        !cu.MemcpyDtoDAsync)
+        return false;
+    if (g->snap_rows) return true;
+    int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
+    size_t sl = (size_t)m->ssm.inner * m->ssm.state;
+    size_t hl = (size_t)(m->ssm.conv_kernel - 1) * cd;
+    int nrec = 0;
+    g->snap_ord = malloc(sizeof(int) * (size_t)m->n_layer);
+    if (g->snap_ord)
+        for (int l = 0; l < m->n_layer; l++)
+            g->snap_ord[l] = m->layers[l].recurrent ? nrec++ : -1;
+    size_t slots = (size_t)rows * nrec;
+    if (!g->snap_ord || !nrec ||
+        cu.MemAlloc(&g->snap_state, sizeof(float) * sl * slots) != 0 ||
+        cu.MemAlloc(&g->snap_hist, sizeof(float) * (hl ? hl : 1) * slots) != 0) {
+        if (g->snap_state) cu.MemFree(g->snap_state);
+        free(g->snap_ord);
+        g->snap_state = 0;
+        g->snap_ord = NULL;
+        g->snap_failed = true;
+        fprintf(stderr, "gpu: no room for the verify checkpoints (%.0f MB); a partially "
+                "accepted speculative round re-folds its kept rows\n",
+                (double)sizeof(float) * (sl + hl) * (double)slots / 1e6);
+        return false;
+    }
+    g->snap_nrec = nrec;
+    g->snap_rows = rows;
+    return true;
+}
+
 // The recurrent state reset at a new sequence and snapshot before every
 // forward (the rollback a failed or rejected forward restores), the
 // keep-forward's checkpoint flags.
@@ -8232,7 +8326,10 @@ static bool cuda_fwd_prepare(gpu_t *g, model_t *m, int n, int pos) {
     }
     g->fwd_count++;
     // a keep-forward (speculative verify) files per-row checkpoints
-    g->snap_on = g->snap_rows > 0 && m->spec_want_all >= n && n <= g->snap_rows && m->qwen35;
+    g->snap_on = m->spec_want_all >= n &&
+                 (m->qwen35 ? g->snap_rows > 0 && n <= g->snap_rows
+                            : (m->granite_hybrid || m->nemotron_h) && g->mamba_state &&
+                              mamba_snap_ready(g, m, n));
     g->snap_valid = 0;
     if ((m->granite_hybrid || m->nemotron_h) && g->mamba_state) {
         int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;

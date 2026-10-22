@@ -164,6 +164,25 @@ Current release and unreleased changes. Compatibility follows the
   chunks over 16 (5 interleaved rounds, medians), byte-identical; on x86
   (Zen 5, i7-7700K) 8 and 32 columns read within noise of 16, which stays.
 
+- **CUDA: a speculative round on a Mamba-2 hybrid restores its kept rows
+  instead of running them again.** With `--draft-lookup` or a draft model on
+  a granite-4.0-h or Nemotron-H hybrid, a round whose drafts were partly
+  rejected rolled the recurrent state back to the round's start and ran the
+  kept tokens through the model a second time. A verify round now files the
+  state after each of its rows (the tile scan writes them as it goes; the
+  last row's state is the live one), and a partial round restores the row
+  it kept, as Qwen3.5 models already did. The slots are allocated by the
+  first verify round (about 0.5 GB on granite-4.0-h-micro, 1 GB on
+  Nemotron-Nano-9B-v2), so plain decoding holds none, and without room a
+  round re-runs its kept tokens as before. Output is unchanged: greedy text
+  with and without lookup is byte-identical on three hybrids, and every
+  verify row is byte-identical to solo steps in
+  `make test-cuda-spec-identity`. Lookup decode on the datacenter MIG slice
+  (5 interleaved rounds, medians): granite-4.0-h-micro +8.1% on a
+  repetitive prompt (now 7.8% faster than plain decoding, from 0.3% slower)
+  and +4.7% on an open one, Nemotron-Nano-9B-v2 +5.0% and +0.8%; plain
+  decoding unchanged.
+
 - **CUDA: three prefill attention routes become defaults.** The
   tensor-core prefill attention now also covers the qwen3moe and phi3
   families (the phi3 files that publish a window longer than their context,

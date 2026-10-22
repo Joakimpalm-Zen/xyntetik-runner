@@ -64,9 +64,10 @@ done. One forward runs in this order:
 The synchronize in step 4 is the completion signal: after it, every device
 scratch buffer may be reused by the next forward. The logits pointer a
 forward returns belongs to the instance and is overwritten by its next
-forward. The only asynchronous copies are the qwen35 per-row checkpoints
-(`cuMemcpyDtoDAsync` on the forward's stream), which the same synchronize
-orders.
+forward. The only asynchronous copies are a verify round's per-row
+checkpoints (qwen35's states and windows, a Mamba-2 hybrid's conv windows
+where its per-token kernels run; `cuMemcpyDtoDAsync` on the forward's
+stream), which the same synchronize orders.
 
 **Metal.** Unified memory and shared storage: the CPU and the GPU read the
 same bytes, so there are no weight or KV transfers. Each forward encodes into
@@ -87,7 +88,11 @@ boundary activation back through the host `x` buffer.
 - **What the graph assumes.** Every device address it recorded stays valid
   and unmoved for the life of the `gpu_t`. All per-instance device buffers
   are allocated at init and released only by `gpu_ctx_free()`, which
-  destroys the graph first. `gpu_live_buffers()` counts every device
+  destroys the graph first. One set is allocated later: a Mamba-2 hybrid's
+  verify checkpoint slots (`snap_state`, `snap_hist`), by its first
+  speculative verify round (`mamba_snap_ready()`), so plain decoding never
+  holds them; only verify forwards, which are never captured, write them,
+  and `gpu_ctx_free()` releases them with the rest. `gpu_live_buffers()` counts every device
   allocation the backend holds, and `test-cuda-teardown` requires load and
   free cycles to return it to its starting value.
 - **When capture is refused** (`graph_bad`): no stream; a layer without
