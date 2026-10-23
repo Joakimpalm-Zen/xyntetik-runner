@@ -262,6 +262,10 @@ bool   gpu_train_mm(model_t *m, const gguf_tensor *w, const float *x,
 // its sync) since the last call, which resets them
 void   gpu_train_prof(model_t *m, double *t_mm, long *n_mm, double *t_mvt,
                       long *n_mvt, double *k_mm, double *k_mvt);
+// the same counters' wall time (gpu_train_mm + gpu_train_mvt) so far, read
+// without resetting them: the profile samples it at every phase boundary to
+// split a phase's time into the device products' and the host's
+double gpu_train_dev_wall(model_t *m);
 
 // D2 on the device (R8.7.2): place the loaded adapter's A/B in VRAM for every
 // GPU-resident layer, so an offloaded projection gets the same y += scale*B(Ax)

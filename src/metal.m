@@ -2962,6 +2962,11 @@ void gpu_train_prof(model_t *mm, double *t_mm, long *n_mm, double *t_mvt,
     *n_mm = *n_mvt = 0;
 }
 
+double gpu_train_dev_wall(model_t *mm) {
+    (void)mm;
+    return 0;
+}
+
 void gpu_free(model_t *m) {
     if (!m) return;
     gpu_t *g = m->gpu_owner ? (gpu_t *)m->gpu_owner : (gpu_t *)m->gpu;

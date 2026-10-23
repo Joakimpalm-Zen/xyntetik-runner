@@ -174,6 +174,11 @@ void gpu_train_prof(model_t *m, double *t_mm, long *n_mm, double *t_mvt,
     *n_mm = *n_mvt = 0;
 }
 
+double gpu_train_dev_wall(model_t *m) {
+    (void)m;
+    return 0;
+}
+
 bool gpu_spec_keep_ok(const model_t *m) { (void)m; return false; }
 void gpu_kv_host_wrote(model_t *m, int lo) { (void)m; (void)lo; }
 bool gpu_hidden_rows_ok(const model_t *m) { (void)m; return false; }
