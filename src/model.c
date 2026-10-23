@@ -10321,21 +10321,55 @@ static double kd_row_loss(const float *z, int V, const int32_t *ids,
     return kl;
 }
 
-static bool spec_rows_logits(model_t *m, int n);
+static bool rows_logits(model_t *m, int n, float *out);
 
-// Rows a taped forward runs at once: a speculative verify round's width,
-// whose rows are the solo decode step's bits (model_forward_verify, held
-// by test-spec-identity and, with adapters, by test_train's solo
-// comparison), so every weight block is decoded once for the round instead
-// of once a position. RUNNER_TRAIN_SOLO=1 runs it one position at a time,
-// the reference that comparison trains against.
+// Rows a taped forward runs at once. A forward of n rows with t_mv_exact (every
+// product column the batch-1 dot's bits; norms, rope, attention and the
+// recurrence already run row by row) is n solo decode steps' bits, held by
+// test_train's comparison against RUNNER_TRAIN_SOLO=1 (a position at a time)
+// on every trainable family; every weight block is decoded once a round
+// instead of once a position. Not the speculative keep-forward: training
+// restores no row, so it files no per-row checkpoints.
+enum { TRAIN_FW_ROWS = 16 };
 static int lora_fw_rows(const model_t *m) {
     if (m->gpu || getenv("RUNNER_TRAIN_SOLO")) return 1;
-    int n = m->spec_batch < m->n_batch ? m->spec_batch : m->n_batch;
+    int n = m->n_batch < TRAIN_FW_ROWS ? m->n_batch : TRAIN_FW_ROWS;
     return n > 1 ? n : 1;
 }
 
-// The taped forward: the inference forward, in verify rounds of solo bits,
+// A window's logits position by position, the forward run in those rounds:
+// position t's logits, valid until the next call. r starts zeroed; the
+// round's logits are its own (fw_rounds_free), so a step leaves nothing
+// allocated behind it.
+typedef struct { int rows, t0, n; float *lg; } fw_rounds;
+static float *fw_rounds_logits(model_t *m, fw_rounds *r, const int32_t *toks,
+                               int T, int t) {
+    if (!r->rows) {
+        r->rows = lora_fw_rows(m);
+        if (r->rows > 1 &&
+            !(r->lg = malloc(sizeof(float) * (size_t)r->rows * m->n_vocab)))
+            return NULL;
+    }
+    if (t == r->t0 + r->n) {
+        r->t0 = t;
+        r->n = T - t < r->rows ? T - t : r->rows;
+        if (r->n > 1) {
+            bool ex = t_mv_exact;
+            t_mv_exact = true;
+            model_forward_batch(m, toks + t, r->n, t, false);
+            t_mv_exact = ex;
+            if (!rows_logits(m, r->n, r->lg)) return NULL;
+        }
+    }
+    return r->n > 1 ? r->lg + (size_t)(t - r->t0) * m->n_vocab
+                    : model_forward(m, toks[t], t);
+}
+static void fw_rounds_free(fw_rounds *r) {
+    free(r->lg);
+    r->lg = NULL;
+}
+
+// The taped forward: the inference forward, in rounds of solo bits,
 // with every layer's input kept on the tape, and the window's (weighted)
 // next-token loss, or with a teacher the window's (weighted) KL. A failure
 // leaves the tape for the caller to free.
@@ -10347,18 +10381,10 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
     m->tape_T = T;
     m->tape = malloc(sizeof(float) * (size_t)(L + 1) * T * E);
     if (!m->tape) { m->tape_T = 0; return false; }
-    int rows = lora_fw_rows(m), n = 0, t0 = 0;
+    fw_rounds rd = {0};
     for (int t = 0; t < T; t++) {
-        if (t == t0 + n) {
-            t0 = t;
-            n = T - t < rows ? T - t : rows;
-            if (n > 1 && (!model_forward_verify(m, toks + t, n, t) ||
-                          !spec_rows_logits(m, n)))
-                return false;
-        }
-        float *lg = n > 1 ? m->all_logits + (size_t)(t - t0) * V
-                          : model_forward(m, toks[t], t);
-        if (!lg) return false;
+        float *lg = fw_rounds_logits(m, &rd, toks, T, t);
+        if (!lg) { fw_rounds_free(&rd); return false; }
         if (m->tape_logits_cb) m->tape_logits_cb(m->tape_logits_ud, t, lg);
         if (t < T - 1 && (!pos_w || pos_w[t] != 0.0f) && tch) {
             const int32_t *ids = tch->ids + (size_t)t * tch->k;
@@ -10368,6 +10394,7 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
                 fprintf(stderr, "error: transition %d: the teacher's tail "
                         "holds %.3g of the mass and the student none; the "
                         "KL is infinite\n", t, r.p_tail);
+                fw_rounds_free(&rd);
                 return false;
             }
             double w = pos_w ? (double)pos_w[t] : 1.0;
@@ -10382,6 +10409,7 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
                          - (double)lg[toks[t + 1]]);
         }
     }
+    fw_rounds_free(&rd);
     *loss_out = loss;
     return true;
 }
@@ -10847,9 +10875,11 @@ bool model_lora_eval_row(model_t *m, const int32_t *toks, int T,
                          const float *pos_w, const lora_teacher *tch,
                          lora_eval_acc *acc) {
     int V = m->n_vocab;
-    for (int t = 0; t < T; t++) {
-        float *lg = model_forward(m, toks[t], t);
-        if (!lg) return false;
+    fw_rounds rd = {0};
+    bool ok = true;
+    for (int t = 0; ok && t < T; t++) {
+        float *lg = fw_rounds_logits(m, &rd, toks, T, t);
+        if (!lg) { ok = false; break; }
         if (t >= T - 1 || (pos_w && pos_w[t] == 0.0f)) continue;
         double w = pos_w ? (double)pos_w[t] : 1.0;
         int vmax = 0;
@@ -10859,7 +10889,7 @@ bool model_lora_eval_row(model_t *m, const int32_t *toks, int T,
             const int32_t *ids = tch->ids + (size_t)t * tch->k;
             const float *lp = tch->logp + (size_t)t * tch->k;
             kd_row r;
-            if (!kd_row_eval(lg, V, ids, lp, tch->k, &r)) return false;
+            if (!kd_row_eval(lg, V, ids, lp, tch->k, &r)) { ok = false; break; }
             acc->loss += w * kd_row_loss(lg, V, ids, lp, tch->k, &r);
             int tbest = 0;
             for (int i = 1; i < tch->k; i++) if (lp[i] > lp[tbest]) tbest = i;
@@ -10880,7 +10910,8 @@ bool model_lora_eval_row(model_t *m, const int32_t *toks, int T,
         acc->top1_vocab += vmax == target;
         acc->positions++;
     }
-    return true;
+    fw_rounds_free(&rd);
+    return ok;
 }
 
 
@@ -12116,13 +12147,13 @@ float *model_spec_row_logits(model_t *m, int b) {
     return lg;
 }
 
-// The heads of a verify round's n rows on the host in one product: each row
-// normed as model_spec_row_logits norms it, then one exact-columns matvec
-// (every column the batch-1 dot's bits) into all_logits, the vocabulary
-// decoded once for the round instead of once a row (the taped forward).
-static bool spec_rows_logits(model_t *m, int n) {
+// The heads of a round's n rows (m->x) on the host in one product, into
+// out [n][n_vocab]: each row normed as model_spec_row_logits norms it, then
+// one exact-columns matvec (every column the batch-1 dot's bits), the
+// vocabulary decoded once for the round instead of once a row.
+static bool rows_logits(model_t *m, int n, float *out) {
     int xdim = m->xdim, V = m->n_vocab;
-    if (m->gpu || !m->all_logits || n > m->spec_batch) return false;
+    if (m->gpu) return false;
     float *hn = malloc(sizeof(float) * (size_t)n * xdim);
     if (!hn) return false;
     for (int b = 0; b < n; b++) {
@@ -12131,9 +12162,9 @@ static bool spec_rows_logits(model_t *m, int n) {
     }
     bool ex = t_mv_exact;
     t_mv_exact = true;
-    matvec_b(m->tp, m->all_logits, V, m->output, hn, xdim, m->n_embd, V, NULL, n);
+    matvec_b(m->tp, out, V, m->output, hn, xdim, m->n_embd, V, NULL, n);
     t_mv_exact = ex;
-    for (int b = 0; b < n; b++) apply_head_transforms(m, m->all_logits + (size_t)b * V);
+    for (int b = 0; b < n; b++) apply_head_transforms(m, out + (size_t)b * V);
     free(hn);
     return true;
 }

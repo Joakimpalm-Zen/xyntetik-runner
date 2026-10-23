@@ -75,10 +75,10 @@ Current release and unreleased changes. Compatibility follows the
 - **Training: a step reads each weight once per 16 positions on the CPU.**
   The forward a step trains through, its head and the backward's recompute
   ran one position at a time, so every weight was decoded once per position.
-  The forward now runs 16 positions at once through the speculative verify
-  route, whose rows are a single decode step's bits, and the head and the
-  recompute take one product per weight over the window in the same
-  per-column arithmetic. The adapter is the same byte for byte: against the
+  The forward (and a `--train-eval` set's) now runs 16 positions at once,
+  every product column computed in a single decode step's arithmetic, and the
+  head and the recompute take one product per weight over the window the same
+  way. The adapter is the same byte for byte: against the
   previous release on all 13 trainable fixture families and every objective,
   and against the one-position forward (`RUNNER_TRAIN_SOLO=1`) in
   `tests/test_train.py`. Qwen3.5-0.8B Q4_K_M with KD on an Apple M1: a
