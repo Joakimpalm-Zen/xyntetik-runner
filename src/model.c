@@ -10039,6 +10039,7 @@ NUM_STAGE void lbw_recompute_deltanet(model_t *m, int l, int T, lbw_state *s,
         float *ht = s->hact + (size_t)t * nff;
         for (int i = 0; i < nff; i++) ht[i] = gated_act(m->ffn_act, gt[i], ut[i]);
     }
+    if (s->lprof) { double n2 = plat_now(); lbw_prof[0] += n2 - s->lt; s->lt = n2; }
     *okp = ok;
 }
 
@@ -10144,6 +10145,9 @@ NUM_STAGE void lbw_deltanet_bw(model_t *m, int l, int T, lbw_state *s, lbw_dn *d
                             nh, T);
     ok = ok && lora_site_bw(m, l, LW_ALPHA, ly->ssm_alpha, s->xn1, d->daa, s->dxn1, E,
                             nh, T);
+    // RUNNER_TRAIN_PROF: the mixer's backward goes where an attention
+    // layer's does (the "attn" column)
+    if (s->lprof) { double n2 = plat_now(); lbw_prof[2] += n2 - s->lt; s->lt = n2; }
     *okp = ok;
 }
 
