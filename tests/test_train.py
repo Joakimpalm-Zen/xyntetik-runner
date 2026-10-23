@@ -361,6 +361,27 @@ def test_gpu_training_matches_cpu_bytes_on_moe_experts(runner_bin, base, tmp_pat
         (family, "GPU-assisted training changed the MoE adapter's bytes")
 
 
+# R8.16: the backward through Gated DeltaNet runs the transposed products of
+# the five DeltaNet projections (and the fused Q/gate one) through the same
+# matvec_t the assist moves to the device: the adapter must stay the CPU's.
+@pytest.mark.parametrize("family", ["qwen35", "clef"])
+def test_gpu_training_matches_cpu_bytes_through_deltanet(runner_bin, base, tmp_path, family):
+    import os
+    d = _family_fixture(tmp_path, family)
+    a_cpu, a_gpu = tmp_path / "cpu.gguf", tmp_path / "gpu.gguf"
+    _train(runner_bin, d, a_cpu, steps=3, extra=("--gpu", "off"))
+    cmd = [runner_bin, "-m", str(d / "base.gguf"),
+           "--train", str(d / "corpus.txt"), "--train-steps", "3",
+           "--lr", "3e-3", "--train-out", str(a_gpu), "-t", "2", "--gpu", "off"]
+    p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       timeout=600, env=dict(os.environ, RUNNER_TRAIN_GPU="1"))
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    if b"train-gpu:" not in p.stderr or b"no usable CUDA" in p.stderr:
+        pytest.skip("no CUDA device engaged")
+    assert a_cpu.read_bytes() == a_gpu.read_bytes(), \
+        (family, "GPU-assisted training changed the adapter's bytes")
+
+
 def test_seed_changes_the_adapter(runner_bin, base, tmp_path):
     a1, a2 = tmp_path / "s1.gguf", tmp_path / "s2.gguf"
     _train(runner_bin, base, a1, steps=4, extra=("-s", "7"))
