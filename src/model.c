@@ -8,6 +8,7 @@
 #include "template.h"   // HARMONY_THINK_OPEN/CLOSE for the gpt-oss channel split
 #include "build_arch.h" // RUNNER_BUILD_ARCH for the route record
 #include "clef.h"       // the joint schema head bound below (struct only)
+#include "fpclass.h"    // the teacher's log-probabilities, under fast math
 
 #include <math.h>
 #include "pmath.h"
@@ -9707,11 +9708,85 @@ static bool lora_backward_admit(model_t *m, int T) {
     return true;
 }
 
+// R8.15, the distillation objective at one transition. The teacher lists k
+// tokens with natural-log probabilities lp; the rest of the vocabulary is one
+// tail bucket holding the mass the list leaves, 1 - S with S = sum(p) (zero
+// when the list sums to one, or past it by rounding, and when the list IS the
+// vocabulary). The student is coarsened the same way, and the loss is
+//
+//   KL = sum_i p_i (lp_i - log q_i) + p_tail (log p_tail - log q_tail)
+//
+// the top-k-plus-tail KL distillation pipelines train, without the 1e-8
+// clamps they commonly put on the two tails: the student's tail is summed
+// over the unlisted tokens themselves, in double, rather than taken as
+// 1 - sum(q), so it does not cancel to zero, and a tail with no teacher mass
+// adds nothing rather than a floor's worth. Its gradient in the student's
+// logits z is
+//
+//   dKL/dz_j = q_j (S + p_tail) - p_j               (listed j)
+//   dKL/dz_j = q_j (S + p_tail - p_tail / q_tail)   (unlisted j)
+//
+// softmax minus a target that is the teacher on the list and the teacher's
+// tail mass spread in the student's own proportions over the rest.
+typedef struct { double S, p_tail, q_tail; } kd_row;
+
+// S, p_tail and q_tail for one transition from the student's logits z (after
+// the head transforms, as the forward samples them). false when the teacher's
+// tail has mass and every unlisted token's probability underflows a double:
+// the KL is then infinite, and a floor would hide that.
+static bool kd_row_eval(const float *z, int V, const int32_t *ids,
+                        const float *lp, int k, kd_row *r) {
+    double S = 0;
+    for (int i = 0; i < k; i++) S += exp((double)lp[i]);
+    r->S = S;
+    r->p_tail = k < V && S < 1.0 ? 1.0 - S : 0.0;
+    r->q_tail = 0.0;
+    if (r->p_tail == 0.0) return true;
+    int32_t srt[KD_K_MAX];
+    memcpy(srt, ids, sizeof *srt * (size_t)k);
+    for (int i = 1; i < k; i++)
+        for (int j = i; j > 0 && srt[j - 1] > srt[j]; j--) {
+            int32_t x = srt[j]; srt[j] = srt[j - 1]; srt[j - 1] = x;
+        }
+    float mx = z[0];
+    for (int j = 1; j < V; j++) if (z[j] > mx) mx = z[j];
+    double tot = 0.0, tail = 0.0;
+    for (int j = 0, c = 0; j < V; j++) {
+        double e = exp((double)z[j] - (double)mx);
+        tot += e;
+        if (c < k && srt[c] == j) c++;
+        else tail += e;
+    }
+    r->q_tail = tail / tot;
+    return r->q_tail > 0.0;
+}
+
+// The KL above for one transition. The listed terms take log q_i against the
+// same normalizer the cross-entropy uses, mx + logf(sum of expf), so a one-hot
+// teacher (p 1, lp 0) reproduces the cross-entropy's value exactly.
+static double kd_row_loss(const float *z, int V, const int32_t *ids,
+                          const float *lp, int k, const kd_row *r) {
+    float mx = z[0];
+    for (int i = 1; i < V; i++) if (z[i] > mx) mx = z[i];
+    double sum = 0;
+    for (int i = 0; i < V; i++) sum += expf(z[i] - mx);
+    double lse = (double)(mx + logf((float)sum));
+    double kl = 0.0;
+    for (int i = 0; i < k; i++) {
+        double p = exp((double)lp[i]);
+        if (p > 0.0) kl += p * ((double)lp[i] - ((double)z[ids[i]] - lse));
+    }
+    if (r->p_tail > 0.0) kl += r->p_tail * (log(r->p_tail) - log(r->q_tail));
+    return kl;
+}
+
 // The taped forward: the inference forward, solo per position, with every
 // layer's input kept on the tape, and the window's (weighted) next-token
-// loss. A failure leaves the tape for the caller to free.
+// loss, or with a teacher the window's (weighted) KL. A failure leaves the
+// tape for the caller to free.
 NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
-                               const float *pos_w, double *loss_out) {
+                               const float *pos_w, const lora_teacher *tch,
+                               double *loss_out) {
     int E = m->n_embd, V = m->n_vocab, L = m->n_layer;
     double loss = 0.0;
     m->tape_T = T;
@@ -9721,7 +9796,19 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
         float *lg = model_forward(m, toks[t], t);
         if (!lg) return false;
         if (m->tape_logits_cb) m->tape_logits_cb(m->tape_logits_ud, t, lg);
-        if (t < T - 1 && (!pos_w || pos_w[t] != 0.0f)) {
+        if (t < T - 1 && (!pos_w || pos_w[t] != 0.0f) && tch) {
+            const int32_t *ids = tch->ids + (size_t)t * tch->k;
+            const float *lp = tch->logp + (size_t)t * tch->k;
+            kd_row r;
+            if (!kd_row_eval(lg, V, ids, lp, tch->k, &r)) {
+                fprintf(stderr, "error: transition %d: the teacher's tail "
+                        "holds %.3g of the mass and the student none; the "
+                        "KL is infinite\n", t, r.p_tail);
+                return false;
+            }
+            double w = pos_w ? (double)pos_w[t] : 1.0;
+            loss += w * kd_row_loss(lg, V, ids, lp, tch->k, &r);
+        } else if (t < T - 1 && (!pos_w || pos_w[t] != 0.0f)) {
             float mx = lg[0];
             for (int i = 1; i < V; i++) if (lg[i] > mx) mx = lg[i];
             double sum = 0;
@@ -9746,7 +9833,8 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
 // chunk bounds the probs plane to HEAD_CHUNK * V floats.
 enum { HEAD_CHUNK = 16 };
 NUM_STAGE bool lora_head_bw(model_t *m, const int32_t *toks, int T,
-                         const float *pos_w, float *dx) {
+                         const float *pos_w, const lora_teacher *tch,
+                         float *dx) {
     int E = m->n_embd, V = m->n_vocab, L = m->n_layer;
     float *probs  = malloc(sizeof(float) * (size_t)HEAD_CHUNK * V);
     float *hn     = malloc(sizeof(float) * (size_t)E);
@@ -9781,8 +9869,35 @@ NUM_STAGE bool lora_head_bw(model_t *m, const int32_t *toks, int T,
                 }
             }
             if (m->n_suppress) suppress_logits(m, pr);
-            softmax(pr, V);
-            pr[toks[t + 1]] -= 1.0f;
+            if (tch) {
+                // R8.15: softmax minus the teacher's target (kd_row above).
+                // The tail factor scales every token, then the listed ones
+                // are set from their saved q; with a one-hot teacher both
+                // factors are 1 and this is the cross-entropy's q - 1.
+                const int32_t *ids = tch->ids + (size_t)t * tch->k;
+                const float *lp = tch->logp + (size_t)t * tch->k;
+                kd_row r;
+                if (!kd_row_eval(pr, V, ids, lp, tch->k, &r)) {
+                    fprintf(stderr, "error: transition %d: the teacher's "
+                            "tail holds %.3g of the mass and the student "
+                            "none; the KL is infinite\n", t, r.p_tail);
+                    ok = false;
+                    break;
+                }
+                softmax(pr, V);
+                float a = (float)(r.S + r.p_tail);
+                float at = r.p_tail > 0.0
+                           ? (float)(r.S + r.p_tail - r.p_tail / r.q_tail) : a;
+                float qk[KD_K_MAX];
+                for (int i = 0; i < tch->k; i++) qk[i] = pr[ids[i]];
+                if (at != 1.0f)
+                    for (int i = 0; i < V; i++) pr[i] *= at;
+                for (int i = 0; i < tch->k; i++)
+                    pr[ids[i]] = qk[i] * a - (float)exp((double)lp[i]);
+            } else {
+                softmax(pr, V);
+                pr[toks[t + 1]] -= 1.0f;
+            }
             if (pos_w)
                 for (int i = 0; i < V; i++) pr[i] *= pos_w[t];
             // and their adjoints in reverse: a suppressed logit is a
@@ -9848,8 +9963,9 @@ static bool lora_layers_bw(model_t *m, const int32_t *toks, int T, float *dx) {
 // pos_w: per-transition weights (length T-1; transition t scores toks[t+1]).
 // NULL = all ones. A zero weight removes the position from loss AND gradient
 // (the prompt-masking / advantage-weighting hook GRPO-style training needs).
-bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
-                           const float *pos_w, double *loss_out) {
+static bool lora_backward(model_t *m, const int32_t *toks, int T,
+                          const float *pos_w, const lora_teacher *tch,
+                          double *loss_out) {
     if (!lora_backward_admit(m, T)) return false;
     // RUNNER_TRAIN_PROF=1: per-step phase wall times on stderr — the dev
     // knob the slice-3 optimization ran on (guessing at the profile cost a
@@ -9857,11 +9973,11 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
     bool prof = getenv("RUNNER_TRAIN_PROF") != NULL;
     double pt0 = prof ? plat_now() : 0, pt_fw = 0, pt_head = 0;
     double loss = 0.0;
-    bool ok = lora_taped_forward(m, toks, T, pos_w, &loss);
+    bool ok = lora_taped_forward(m, toks, T, pos_w, tch, &loss);
     if (ok) {
         if (prof) { pt_fw = plat_now(); }
         float *dx = calloc((size_t)T * m->n_embd, sizeof(float));
-        ok = dx && lora_head_bw(m, toks, T, pos_w, dx);
+        ok = dx && lora_head_bw(m, toks, T, pos_w, tch, dx);
         if (ok) {
             if (prof) { pt_head = plat_now(); }
             ok = lora_layers_bw(m, toks, T, dx);
@@ -9878,6 +9994,41 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
     free(m->tape); m->tape = NULL; m->tape_T = 0;
     if (ok && loss_out) *loss_out = loss;
     return ok;
+}
+
+bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
+                           const float *pos_w, double *loss_out) {
+    return lora_backward(m, toks, T, pos_w, NULL, loss_out);
+}
+
+// The teacher's rows are bounded here (k, every id a row of the vocabulary:
+// the head indexes by them, every log-probability finite) for the transitions
+// the weights keep; that the ids of a row are distinct is the loader's check.
+bool model_lora_backward_kd(model_t *m, const int32_t *toks, int T,
+                            const float *pos_w, const lora_teacher *tch,
+                            double *loss_out) {
+    if (!tch || tch->k < 1 || tch->k > KD_K_MAX || !tch->ids || !tch->logp) {
+        fprintf(stderr, "error: a teacher needs 1..%d entries per "
+                "transition\n", KD_K_MAX);
+        return false;
+    }
+    for (int t = 0; t + 1 < T; t++) {
+        if (pos_w && pos_w[t] == 0.0f) continue;
+        for (int i = 0; i < tch->k; i++) {
+            int32_t id = tch->ids[(size_t)t * tch->k + i];
+            if (id < 0 || id >= m->n_vocab) {
+                fprintf(stderr, "error: teacher id %d at transition %d is "
+                        "outside the vocabulary\n", (int)id, t);
+                return false;
+            }
+            if (!fp_finite_f32(tch->logp[(size_t)t * tch->k + i])) {
+                fprintf(stderr, "error: a teacher log-probability at "
+                        "transition %d is not finite\n", t);
+                return false;
+            }
+        }
+    }
+    return lora_backward(m, toks, T, pos_w, tch, loss_out);
 }
 
 

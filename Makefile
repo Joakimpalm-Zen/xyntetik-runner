@@ -176,6 +176,7 @@ TEST_TC_TOL = $(TEST_BATCH:test-batch%=test-tc-tol%)
 TEST_I8_TOL = $(TEST_BATCH:test-batch%=test-i8-tol%)
 TEST_LORA_GRAD = $(TEST_BATCH:test-batch%=test-lora-grad%)
 TEST_DPO_GRAD = $(TEST_BATCH:test-batch%=test-dpo-grad%)
+TEST_KD_GRAD = $(TEST_BATCH:test-batch%=test-kd-grad%)
 TEST_MVT = $(TEST_BATCH:test-batch%=test-mvt%)
 TEST_MVCANON = $(TEST_BATCH:test-batch%=test-mvcanon%)
 TEST_MV_TOL = $(TEST_BATCH:test-batch%=test-mv-tol%)
@@ -889,6 +890,16 @@ TEST_DPO_GRAD_SRC = tests/test_dpo_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(OBJDIR)/dpo.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_DPO_GRAD): $(TEST_DPO_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_DPO_GRAD_SRC) -o $@ $(LDFLAGS)
+
+# R8.15 gate: the distillation objective (KL to a teacher's top-k plus a tail
+# bucket) against the weighted cross-entropy it must equal for a one-hot
+# teacher, an independent loss formula, and central differences of the loss,
+# on the plain, logit-scaled (granite) and soft-capped (gemma4) heads
+TEST_KD_GRAD_SRC = tests/test_kd_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o \
+                  $(OBJDIR)/vramreg.o $(GPU_OBJ)
+$(TEST_KD_GRAD): $(TEST_KD_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-granite.gguf test-lora-granite.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf
+	$(CC) $(CFLAGS) -I src $(TEST_KD_GRAD_SRC) -o $@ $(LDFLAGS)
 
 test-lora-q8.full.gguf: test-q8.gguf scripts/make-test-lora.py
 	$(PYTHON) scripts/make-test-lora.py test-q8.gguf test-lora-q8
@@ -2557,7 +2568,7 @@ test-metal:
 	$(MAKE) --no-print-directory test-metal-kv-fp4
 	$(MAKE) --no-print-directory test-metal-kv-q8
 
-test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_DPO_GRAD) $(TEST_MVT) $(TEST_MVCANON) \
+test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_SPEC_ID) $(TEST_ATTN_SPLIT) $(TEST_BIND) $(TEST_HOST_HEADER) \
@@ -2601,6 +2612,9 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_REQUEST_STOP)
 	./$(TEST_LORA_GRAD)
 	./$(TEST_DPO_GRAD)
+	./$(TEST_KD_GRAD)
+	./$(TEST_KD_GRAD) test-granite.gguf test-lora-granite.full.gguf
+	./$(TEST_KD_GRAD) test-gemma4.gguf test-lora-gemma4.full.gguf
 	@# and against a QUANTIZED base: the transposed quantized matvec (dx =
 	@# W^T dy through frozen Q8_0 rows) is the one genuinely new kernel
 	@# family here, so it gets its own gradient gate
