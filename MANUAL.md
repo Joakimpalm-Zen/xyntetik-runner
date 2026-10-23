@@ -2336,6 +2336,7 @@ whether the draft is `active` there.
 | `--export-pack RECEIPTS_DIR`, `--pack-out DIR`, `--pack-envelope F`, `--pack-attach F`, `--check-pack DIR` | An evidence pack (`xyntetik.runner.evidence-pack.v1`): every `receipt-*.json` of a receipts directory (one model, one binary, one envelope manifest, or the export refuses), the OMS model signature and key (`--model-sig`, `--model-pubkey`), the envelope manifest the receipts name by digest (`--pack-envelope`, refused when it is not that one) and up to 16 attachments (`--pack-attach`, repeatable: oversight records, a tool cassette; listed by sha256, never interpreted), under `pack.json`: every file with its role and sha256, one inference per receipt (id = chain hash, the request id and surface, what shaped it, the signer's fingerprint, the envelope verdict), and the chain `segment` they form (`contiguous`, `breaks`). `--sign-key` signs the manifest. `--check-pack` verifies offline: the files are the ones listed and no unlisted receipt sits beside them, each receipt's chain recomputes to its id, each signature is the one named, the segment is the one stated, every receipt names the manifest's model, binary and envelope, and the manifest's own signature (pinned with `--trust-key`). Exit 0 OK, 2 BAD, 3 UNVERIFIABLE. Does not replay: each receipt does, with `-m MODEL --verify`. Needs no `-m`. |
 | `--export-bundle RECEIPT`, `--bundle-out DIR`, `--check-bundle DIR` | Put a receipt, the OMS model signature (`--model-sig`) and its key (`--model-pubkey`), the receipt key's fingerprint (sha256 of the key bytes) and a `xyntetik.runner.bundle.v1` manifest of every file's sha256 into one directory a verifier can take; `--sign-key` also signs the manifest. `--check-bundle` verifies it offline: the files are the ones listed, the receipt's chain hash recomputes, its signature is the one the manifest names, both key fingerprints recompute, and the manifest's own signature (pinned with `--trust-key`). Exit 0 OK, 2 BAD naming the file or check, 3 UNVERIFIABLE. A receipt whose chain does not recompute is refused, not bundled. The check does not replay the inference; the bundled receipt does, with `-m MODEL --verify DIR/receipt.json`. Needs no `-m`. |
 | `--train-eot` | Append the selected template's end-of-turn token to each JSONL completion target. Opt-in; without it the supplied completion is the complete target. |
+| `--train-teacher DIR` | With `--train`: fit each completion position to a teacher's distribution instead of the next token, the KL divergence from the teacher's top-k plus one tail bucket to the student's. DIR holds `topk_idx.npy` (int32) and `topk_logp.npy` (float32), each `[lines, positions, k]`, as `scripts/kd-teacher.py` writes them from a parent GGUF; the `--train` file must use the id form. [Details](docs/lora.md#6-distillation-toward-a-parent-model). |
 | `--train-dpo FILE` | Train an adapter from JSONL `prompt`, `chosen`, `rejected` pairs. CPU forward/backward path; the frozen base is the reference, evaluated with the adapter bypassed. Does not activate the output adapter. |
 | `--dpo-beta F` | DPO reference-deviation coefficient (default `0.1`). Uses the existing training step, learning-rate, context and output options. |
 | `--require-eval KIND` | Refuse to load `-m` unless it carries a passing evaluation of KIND (`fidelity` or `agent`, written by `scripts/eval-record.py`) made for this very file, signed by `--trust-key` when one is given. Hashes the model at load. [Details](#evaluation-records). |
@@ -2460,7 +2461,7 @@ server started with `--lora` on the same adapter, and the zero adapter exactly a
 the bare base (`tests/test_adapter_routing.py`).
 
 <a id="cli-train"></a>
-#### `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank`, `--train-logprobs`
+#### `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank`, `--train-logprobs`, `--train-teacher`
 
 AdamW LoRA training in the serving binary (position-batched and threaded under a
 byte-exact contract - 4B trains at ~20 s/step on a many-core host, 2.3× over the first
@@ -2477,7 +2478,10 @@ decoding sampled ids and tokenizing the text again is not an identity (a byte to
 ends mid-character decodes to U+FFFD). `--train-logprobs FILE` writes one JSON line per
 step, `{"step","example","first","logprobs"}`: the logprob of every target token from
 `first` on, under the forward that step trains through, before its update, through the
-same normalizer as the server's logprobs, so the two compare bit for bit. Fresh adapters start as an exact no-op (A seeded,
+same normalizer as the server's logprobs, so the two compare bit for bit. `--train-teacher DIR`
+fits each completion position to a teacher's top-k distribution (KL, with the rest of the
+vocabulary as one tail bucket) instead of the next token: distillation, for bringing a
+quantized file back toward its parent ([guide](docs/lora.md#6-distillation-toward-a-parent-model)). Fresh adapters start as an exact no-op (A seeded,
 B zero); checkpoints are adapter GGUFs that `--lora` loads back. `--train` with `--lora`
 continues that adapter: it keeps its rank and alpha, AdamW starts fresh (an adapter file
 holds no optimizer state), and the record names it as `from_adapter`, hashed before the

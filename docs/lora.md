@@ -28,18 +28,19 @@ the design, numerical contracts and gates are in
 - [3. Train](#3-train)
 - [4. Continue, checkpoint and resume](#4-continue-checkpoint-and-resume)
 - [5. Preference training (DPO)](#5-preference-training-dpo)
-- [6. Reinforcement fine-tuning (GRPO-lite)](#6-reinforcement-fine-tuning-grpo-lite)
-- [7. Evaluate an adapter](#7-evaluate-an-adapter)
-- [8. Serve one adapter](#8-serve-one-adapter)
-- [9. Serve many adapters, chosen per request](#9-serve-many-adapters-chosen-per-request)
-- [10. Merge an adapter into a standalone file](#10-merge-an-adapter-into-a-standalone-file)
-- [11. Records, signatures and lineage](#11-records-signatures-and-lineage)
-- [12. Receipts and replay with an adapter](#12-receipts-and-replay-with-an-adapter)
-- [13. Working with other tools](#13-working-with-other-tools)
-- [14. What the trainer covers, and what it refuses](#14-what-the-trainer-covers-and-what-it-refuses)
-- [15. Determinism, and where it stops](#15-determinism-and-where-it-stops)
-- [16. Measured results](#16-measured-results)
-- [17. Reference](#17-reference)
+- [6. Distillation toward a parent model](#6-distillation-toward-a-parent-model)
+- [7. Reinforcement fine-tuning (GRPO-lite)](#7-reinforcement-fine-tuning-grpo-lite)
+- [8. Evaluate an adapter](#8-evaluate-an-adapter)
+- [9. Serve one adapter](#9-serve-one-adapter)
+- [10. Serve many adapters, chosen per request](#10-serve-many-adapters-chosen-per-request)
+- [11. Merge an adapter into a standalone file](#11-merge-an-adapter-into-a-standalone-file)
+- [12. Records, signatures and lineage](#12-records-signatures-and-lineage)
+- [13. Receipts and replay with an adapter](#13-receipts-and-replay-with-an-adapter)
+- [14. Working with other tools](#14-working-with-other-tools)
+- [15. What the trainer covers, and what it refuses](#15-what-the-trainer-covers-and-what-it-refuses)
+- [16. Determinism, and where it stops](#16-determinism-and-where-it-stops)
+- [17. Measured results](#17-measured-results)
+- [18. Reference](#18-reference)
 
 ## Every feature at a glance
 
@@ -57,6 +58,7 @@ the design, numerical contracts and gates are in
 | CUDA training assist | Runs the backward's largest products on an NVIDIA GPU, same bytes | `RUNNER_TRAIN_GPU=1` |
 | Trainer logprobs | Reports the logprob of every target token each step trains on | `--train-logprobs FILE` |
 | Preference training | DPO from chosen and rejected answers, with no second model copy | `--train-dpo`, `--dpo-beta` |
+| Distillation | Fits the adapter to a teacher's distributions instead of a text, to bring a quantized file back toward its parent | `--train-teacher`, `scripts/kd-teacher.py` |
 | Reinforcement loop | Samples, scores and trains in rounds, checking that sampler and trainer agree bit for bit | `scripts/train-grpo-lite.py` |
 | Evaluate | Teacher-forced logprobs, perplexity and top-1 rate, with or without the adapter | `--score` |
 | Serve one adapter | Applies the adapter on the CPU, CUDA or Metal | `--lora`, `--lora-scale` |
@@ -219,7 +221,7 @@ What happens:
   weight.
 - At the end the adapter is written to `--train-out` (default
   `adapter-out.gguf`) together with its record, `adapter.gguf.train.json`
-  (see [Records](#11-records-signatures-and-lineage)).
+  (see [Records](#12-records-signatures-and-lineage)).
 
 The knobs:
 
@@ -312,7 +314,71 @@ a directional derivative by central differences. Read the cost before you
 start: a step processes both answers, and on a 14B model a pair of about 4,000
 tokens takes just under an hour on a CUDA host.
 
-## 6. Reinforcement fine-tuning (GRPO-lite)
+## 6. Distillation toward a parent model
+
+`--train-teacher DIR` changes what `--train` fits. Each completion position is
+fitted to a teacher's distribution instead of the next token of a text: the
+loss is the KL divergence from the teacher's top-k tokens, with the rest of the
+vocabulary as one tail bucket, to the student's. The use it was built for is
+bringing a quantized file back toward the model it was quantized from. The
+adapter trains on the frozen quantized base and learns to undo part of the
+rounding error, which cross-entropy on a text does not aim at.
+
+DIR holds two NumPy arrays, both shaped `[lines, positions, k]`:
+
+- `topk_idx.npy` (int32): the teacher's top-k token ids for completion token
+  `p` of line `n` of the `--train` file;
+- `topk_logp.npy` (float32): their natural-log probabilities over the
+  teacher's whole vocabulary.
+
+The `--train` file must use the id form, since the teacher scored exactly those
+tokens, and an end-of-turn token cannot be appended (put it in
+`completion_tokens`). `scripts/kd-teacher.py` writes all three files from a
+parent GGUF, through `runner --score --score-top K`:
+
+```sh
+python3 scripts/kd-teacher.py --runner ./runner --parent model-Q8_0.gguf \
+    --docs docs.jsonl --topk 64 --out teacher/ -- --gpu off
+./runner -m model-Q4_0.gguf --gpu off --train teacher/train.jsonl \
+    --train-teacher teacher/ --train-ctx 256 --train-steps 100 --train-out kd.gguf
+```
+
+A teacher from another pipeline, such as the publisher's float32 model in
+PyTorch, works the same way when it writes the same two arrays.
+
+Per position, with `p_i` the teacher's listed probabilities, `p_tail` what
+they leave (`1 - sum(p_i)`), `q` the student's softmax and `q_tail` the
+student's mass on the unlisted tokens, the loss is
+
+```text
+KL = sum_i p_i (log p_i - log q_i) + p_tail (log p_tail - log q_tail)
+```
+
+A one-hot teacher (k 1, log-probability 0 on the next token) is the
+cross-entropy, bit for bit, so prompt masking and `"weight"` work as in plain
+`--train`, and the reported loss is the mean KL per completion position.
+Before the first step the teacher is read once, and refused when its shape does
+not match the `--train` file or a row lists an id outside the vocabulary, an
+id twice, a token the model suppresses, a non-finite log-probability, or
+probabilities summing past one. The record's `objective` is `kl-to-teacher`,
+with the teacher's `k`, its positions and both arrays hashed.
+
+Measured on 2026-10-23 on an Apple M1 (CPU, 4 threads): Qwen3-0.6B Q4_0 as
+the student, its Q8_0 file as the teacher (top-64, which held 84.5% of the
+mass on average), 24 training documents of 29 to 245 tokens, 48 steps at
+`--lr 2e-4`, rank 8. On 6 held-out documents the mean KL to the teacher fell
+from 0.2006 (no adapter) to 0.1346, lower on every document. The same run with
+plain cross-entropy on the same tokens left it at 0.8357: fitting the text
+moved the student away from the teacher. A step cost 12.34 s against the
+cross-entropy's 12.29 s.
+
+The objective is gated in `tests/test_kd_grad.c`: a one-hot teacher against the
+cross-entropy (loss and gradient bit for bit), the loss against an independent
+formula, and the gradient against central differences, on the plain,
+logit-scaled and soft-capped heads. It covers the models the trainer covers;
+qwen35 and Clef still refuse training ([section 15](#15-what-the-trainer-covers-and-what-it-refuses)).
+
+## 7. Reinforcement fine-tuning (GRPO-lite)
 
 `scripts/train-grpo-lite.py` closes the loop: it samples completions from the
 served model, scores them with a reward, turns group-relative advantages into
@@ -357,7 +423,7 @@ sampling; here there is no gap to correct. The limit is scale: a step takes
 seconds to minutes, so this suits small models and on-device or regulated
 work, not large-scale RL.
 
-## 7. Evaluate an adapter
+## 8. Evaluate an adapter
 
 `--score` teacher-forces a text and prints, as JSON, every token's logprob,
 the next-token argmax at each position, the NLL, the perplexity and the top-1
@@ -380,7 +446,7 @@ which is the loglikelihood request an evaluation harness sends. A task metric,
 such as exact tool calls on a held-out set, is your own harness against the
 server.
 
-## 8. Serve one adapter
+## 9. Serve one adapter
 
 ```sh
 ./runner -m base-Q4_K_M.gguf --lora adapter.gguf --serve
@@ -422,7 +488,7 @@ server.
   incompatible adapter refuses that load. Draft models do not inherit the
   target's adapter.
 
-## 9. Serve many adapters, chosen per request
+## 10. Serve many adapters, chosen per request
 
 ```sh
 ./runner -m base.gguf --serve --gpu off \
@@ -449,7 +515,7 @@ server.
   registry), and exclusive with `--lora`. `--lora-scale` applies to every
   adapter.
 
-## 10. Merge an adapter into a standalone file
+## 11. Merge an adapter into a standalone file
 
 ```sh
 ./runner -m base-Q4_K_M.gguf --lora adapter.gguf \
@@ -490,7 +556,7 @@ Choose one of:
 
 Always evaluate a merged file before trusting it.
 
-## 11. Records, signatures and lineage
+## 12. Records, signatures and lineage
 
 ### The training record
 
@@ -562,7 +628,7 @@ when. [The lineage walkthrough](lineage-walkthrough.md) runs the whole chain,
 from quantization through training, merging, evaluation and serving, to a
 flipped byte.
 
-## 12. Receipts and replay with an adapter
+## 13. Receipts and replay with an adapter
 
 A one-shot run recorded with `--transcript FILE`, and every served answer under
 `--receipts DIR`, records the adapter: its path, sha256, scale and record link.
@@ -573,7 +639,7 @@ when the answer is reproduced. The scope of replay is in
 [determinism-scope.md](determinism-scope.md) and in
 [reproducible training with receipts](reproducible-lora-training-receipts.md).
 
-## 13. Working with other tools
+## 14. Working with other tools
 
 - **The file format is llama.cpp's**: an adapter GGUF with
   `general.type = adapter`, `adapter.type = lora`, `adapter.lora.alpha`, and
@@ -586,7 +652,7 @@ when the answer is reproduced. The scope of replay is in
   and scored the same 1.00 there on the published task.
 - **A merged F16 or Q8_0 file** is a plain GGUF that any runtime serves.
 
-## 14. What the trainer covers, and what it refuses
+## 15. What the trainer covers, and what it refuses
 
 The backward covers the dense gated transformer in its common shapes: Llama,
 Mistral, Qwen2.5 and Granite 4.x dense (muP scalars, tied output), the head
@@ -610,7 +676,7 @@ partial-dimension RoPE, and the derived-K and ring KV caches. `--adapt-info` giv
 Every covered shape is pinned by a finite-difference gate in `make test` on a
 fixture that carries it.
 
-## 15. Determinism, and where it stops
+## 16. Determinism, and where it stops
 
 - **Same build, same bytes.** The same data, seed, configuration and build
   write a byte-identical adapter, whatever the thread count, and with or
@@ -622,14 +688,14 @@ fixture that carries it.
   Say "same build" when you say "same bytes"; every record names its build so
   the difference is visible.
 - **Sampler and trainer agree bit for bit** under the three conditions in
-  [section 6](#6-reinforcement-fine-tuning-grpo-lite).
+  [section 7](#7-reinforcement-fine-tuning-grpo-lite).
 - **A served adapter on a GPU** agrees with the CPU within the backend's
   measured envelope, not bit for bit.
 
 The full contract, with named edges, is
 [determinism-scope.md](determinism-scope.md).
 
-## 16. Measured results
+## 17. Measured results
 
 On one public base and task, Qwen3-4B Q4_K_M with a 29-prompt held-out
 tool-calling evaluation, greedy, measured 2026-08-22 on
@@ -658,11 +724,11 @@ data and records in the
 These are measurements for that base and task; another base or task is not
 covered by them.
 
-## 17. Reference
+## 18. Reference
 
 **Flags.** `--adapt-info`; `--train FILE`, `--train-steps`, `--lr`,
 `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank`, `--train-eot`,
-`--train-logprobs`, `-s`; `--train-dpo FILE`, `--dpo-beta`; `--lora FILE`,
+`--train-logprobs`, `--train-teacher DIR`, `-s`; `--train-dpo FILE`, `--dpo-beta`; `--lora FILE`,
 `--lora-scale`, `--lora-sig`; `--adapter NAME=PATH`; `--merge-lora OUT`,
 `--quant`, `--merge-allow-erased`; `--score`; `--sign-key`, `--keygen`,
 `--sign-model`, `--model-key`, `--model-pubkey`, `--require-signed-model`;
@@ -678,7 +744,8 @@ row is in the [command-line reference](../MANUAL.md#command-line-reference).
 
 **Tests.** `tests/test_train.py`, `tests/test_rollout_identity.py`,
 `tests/test_lora.py`, `tests/test_moe_lora.py`, `tests/test_lora_grad.c`,
-`tests/test_dpo_grad.c`, `tests/test_merge.py`,
+`tests/test_dpo_grad.c`, `tests/test_kd_grad.c`, `tests/test_train_teacher.py`,
+`tests/test_merge.py`,
 `tests/test_adapter_routing.py`, `tests/test_adapter_signature.py`,
 `tests/test_lineage.py`.
 

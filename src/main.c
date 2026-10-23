@@ -22,6 +22,7 @@
 #include "kvsnap.h"
 #include "session.h"
 #include "build_arch.h"
+#include "npy.h"
 // for render_prompt_alloc: chat mode renders the same prompts the chat route
 // does, so it uses the same measured-size renderer rather than a second one
 #include "api.h"
@@ -745,9 +746,12 @@ static const char *train_ids_tokens(jv *ptv, jv *ctv, int n_vocab,
     return bad;
 }
 
+// ids_only (--train-teacher): every line in the id form and no end-of-turn
+// token appended, since the teacher's positions are the completion tokens as
+// given and it has no row for a token added after them.
 static bool train_examples_load(tokenizer *tok, int n_vocab, const char *path,
                                 bool no_bos, int wctx, int eot_id, bool eot_all,
-                                train_ex **out, int *out_n) {
+                                bool ids_only, train_ex **out, int *out_n) {
     size_t data_n = 0;
     char *data = read_file(path, &data_n);
     if (!data) {
@@ -759,6 +763,11 @@ static bool train_examples_load(tokenizer *tok, int n_vocab, const char *path,
     int n_ex = 0;
     size_t path_n = strlen(path);
     bool jsonl = path_n >= 6 && strcmp(path + path_n - 6, ".jsonl") == 0;
+    if (ids_only && !jsonl) {
+        fprintf(stderr, "error: --train-teacher needs a .jsonl --train file "
+                "in the id form (\"prompt_tokens\", \"completion_tokens\")\n");
+        goto fail;
+    }
 
     if (jsonl) {
         size_t off = 0;
@@ -808,6 +817,14 @@ static bool train_examples_load(tokenizer *tok, int n_vocab, const char *path,
                     goto fail;
                 }
                 eot = ev->b;
+            }
+            if (ids_only && (!ids || eot)) {
+                fprintf(stderr, "error: %s line %d: --train-teacher scores the "
+                        "completion as given, so it needs \"prompt_tokens\" and "
+                        "\"completion_tokens\" ids and no end-of-turn token "
+                        "appended (put it in completion_tokens)\n", path, line_no);
+                jv_free(v);
+                goto fail;
             }
             if (eot && eot_id < 0) {
                 fprintf(stderr, "error: %s line %d asks for an end-of-turn token but "
@@ -1395,6 +1412,12 @@ static void usage_to(FILE *f, const char *prog) {
         "  --train-logprobs F  with --train: per step, one JSON line with the\n"
         "                 logprob of every completion token under the forward\n"
         "                 that step trains through (before its update)\n"
+        "  --train-teacher DIR  with --train: distill instead of cross-entropy.\n"
+        "                 DIR holds topk_idx.npy (int32) and topk_logp.npy\n"
+        "                 (float32), each [lines, positions, k]: the teacher's\n"
+        "                 top-k ids and natural-log probabilities for completion\n"
+        "                 token p of line n. Loss: KL(teacher top-k + tail ||\n"
+        "                 student). Needs the id form of --train\n"
         "  --train-eot    append the template's end-of-turn token to every\n"
         "                 completion (a jsonl line can set \"end_of_turn\")\n"
         "  --train-dpo F  preference pairs .jsonl {\"prompt\",\"chosen\",\n"
@@ -1941,7 +1964,7 @@ typedef struct {
     const char *lora_path;
     const char *lora_sig;   // R1.2.3: the adapter's OMS bundle
     float lora_scale;
-    const char *train_path, *train_out, *dpo_path, *train_lp_path;
+    const char *train_path, *train_out, *dpo_path, *train_lp_path, *train_teacher;
     int train_steps, train_ctx, lora_rank, save_every;
     bool train_eot;
     float train_lr, dpo_beta;
@@ -2226,6 +2249,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             o->train_steps = (int)int_arg(a, NEXT, 1, INT_MAX);
         else if (!strcmp(a, "--train-out")) o->train_out = NEXT;
         else if (!strcmp(a, "--train-logprobs")) o->train_lp_path = NEXT;
+        else if (!strcmp(a, "--train-teacher")) o->train_teacher = NEXT;
         else if (!strcmp(a, "--train-ctx"))
             o->train_ctx = (int)int_arg(a, NEXT, 2, INT_MAX);
         else if (!strcmp(a, "--lr"))
@@ -3966,13 +3990,203 @@ static bool train_lp_write(FILE *f, int step, int example, const train_ex *ex,
     return fprintf(f, "]}\n") > 0;
 }
 
-// --train's steps: weighted cross-entropy, one example per step, cycled in
-// file order.
+// --train-teacher (R8.15): the teacher's .npy pair as a distillation pipeline
+// writes it (topk_idx.npy int32 and topk_logp.npy float32, both [lines,
+// positions, k]; scripts/kd-teacher.py writes it from a parent GGUF). Row n
+// is line n of the --train file; position p is the teacher's distribution
+// for completion token p, which transition first-1+p scores. Read a line at
+// a time, per step: a corpus of 2,000 lines of 512 positions at top-64 is
+// half a gigabyte.
+typedef struct {
+    char *idx_path, *logp_path;
+    FILE *fi, *fl;
+    int64_t off_i, off_l;
+    int n, p, k;
+} train_teacher;
+
+static void train_teacher_close(train_teacher *tt) {
+    if (tt->fi) fclose(tt->fi);
+    if (tt->fl) fclose(tt->fl);
+    free(tt->idx_path);
+    free(tt->logp_path);
+    memset(tt, 0, sizeof *tt);
+}
+
+static char *train_teacher_path(const char *dir, const char *name) {
+    size_t n = strlen(dir) + strlen(name) + 2;
+    char *p = malloc(n);
+    if (p) snprintf(p, n, "%s/%s", dir, name);
+    return p;
+}
+
+// Read line `ex_i`'s first `nc` positions into transition-aligned rows: ids
+// and logp hold (n - 1) * k entries, rows before the completion zeroed (the
+// prompt's weights mask them).
+static bool train_teacher_rows(train_teacher *tt, int ex_i, const train_ex *ex,
+                               int32_t *ids, float *logp) {
+    int nc = ex->n - ex->first;
+    size_t k = (size_t)tt->k, skip = (size_t)(ex->first - 1) * k;
+    memset(ids, 0, sizeof *ids * skip);
+    memset(logp, 0, sizeof *logp * skip);
+    int64_t row = (int64_t)ex_i * tt->p * tt->k * 4;
+    return npy_seek(tt->fi, tt->off_i + row) && npy_seek(tt->fl, tt->off_l + row) &&
+           fread(ids + skip, sizeof *ids * k, (size_t)nc, tt->fi) == (size_t)nc &&
+           fread(logp + skip, sizeof *logp * k, (size_t)nc, tt->fl) == (size_t)nc;
+}
+
+// Open and check the pair against the examples and the model, then read every
+// row the run will use once: ids inside the vocabulary, distinct within a row
+// and not a token the model suppresses (its probability is zero by
+// construction), log-probabilities finite with a sum of probabilities no
+// more than one past rounding. A bad row is refused here, before the first
+// step, rather than at the step that reaches it.
+static bool train_teacher_open(const char *dir, const model_t *m,
+                               const train_ex *exs, int n_ex, train_teacher *tt) {
+    memset(tt, 0, sizeof *tt);
+    tt->idx_path = train_teacher_path(dir, "topk_idx.npy");
+    tt->logp_path = train_teacher_path(dir, "topk_logp.npy");
+    if (!tt->idx_path || !tt->logp_path) {
+        fprintf(stderr, "error: out of memory opening --train-teacher\n");
+        return false;
+    }
+    char why[128] = "";
+    npy_header hi, hl;
+    tt->fi = fopen(tt->idx_path, "rb");
+    tt->fl = fopen(tt->logp_path, "rb");
+    if (!tt->fi || !tt->fl) {
+        fprintf(stderr, "error: --train-teacher: cannot open %s\n",
+                tt->fi ? tt->logp_path : tt->idx_path);
+        return false;
+    }
+    if (!npy_read_header(tt->fi, &hi, why, sizeof why)) {
+        fprintf(stderr, "error: --train-teacher: %s: %s\n", tt->idx_path, why);
+        return false;
+    }
+    if (!npy_read_header(tt->fl, &hl, why, sizeof why)) {
+        fprintf(stderr, "error: --train-teacher: %s: %s\n", tt->logp_path, why);
+        return false;
+    }
+    if (strcmp(hi.descr, "<i4") != 0 || strcmp(hl.descr, "<f4") != 0 ||
+        hi.fortran_order || hl.fortran_order) {
+        fprintf(stderr, "error: --train-teacher: topk_idx.npy must be <i4 and "
+                "topk_logp.npy <f4, both in C order (got %s and %s)\n",
+                hi.descr, hl.descr);
+        return false;
+    }
+    if (hi.ndim != 3 || hl.ndim != 3 || hi.shape[0] != hl.shape[0] ||
+        hi.shape[1] != hl.shape[1] || hi.shape[2] != hl.shape[2]) {
+        fprintf(stderr, "error: --train-teacher: the two arrays must share one "
+                "[lines, positions, k] shape\n");
+        return false;
+    }
+    if (hi.shape[0] != n_ex) {
+        fprintf(stderr, "error: --train-teacher has %lld lines, the --train "
+                "file %d\n", (long long)hi.shape[0], n_ex);
+        return false;
+    }
+    if (hi.shape[2] < 1 || hi.shape[2] > KD_K_MAX || hi.shape[2] > m->n_vocab) {
+        fprintf(stderr, "error: --train-teacher: k must be 1..%d and at most "
+                "the vocabulary (got %lld)\n", KD_K_MAX, (long long)hi.shape[2]);
+        return false;
+    }
+    if (hi.shape[1] < 1 || hi.shape[1] > m->n_ctx) {
+        fprintf(stderr, "error: --train-teacher: %lld positions per line, "
+                "outside 1..%d (the context)\n", (long long)hi.shape[1], m->n_ctx);
+        return false;
+    }
+    tt->n = (int)hi.shape[0];
+    tt->p = (int)hi.shape[1];
+    tt->k = (int)hi.shape[2];
+    tt->off_i = hi.data_offset;
+    tt->off_l = hl.data_offset;
+    int64_t body = (int64_t)tt->n * tt->p * tt->k * 4;
+    if (npy_file_size(tt->fi) != tt->off_i + body ||
+        npy_file_size(tt->fl) != tt->off_l + body) {
+        fprintf(stderr, "error: --train-teacher: a file's size does not match "
+                "its [%d, %d, %d] shape\n", tt->n, tt->p, tt->k);
+        return false;
+    }
+    int max_n = 0;
+    for (int i = 0; i < n_ex; i++) {
+        if (exs[i].n - exs[i].first > tt->p) {
+            fprintf(stderr, "error: --train-teacher has %d positions per line; "
+                    "line %d has %d completion tokens\n", tt->p, i + 1,
+                    exs[i].n - exs[i].first);
+            return false;
+        }
+        if (exs[i].n > max_n) max_n = exs[i].n;
+    }
+    // every row the run uses, once; stamp[id] marks the ids of the current
+    // row, so a repeat is one comparison
+    int V = m->n_vocab;
+    int32_t *ids = malloc(sizeof *ids * (size_t)(max_n - 1) * tt->k);
+    float *lp = malloc(sizeof *lp * (size_t)(max_n - 1) * tt->k);
+    int64_t *stamp = malloc(sizeof *stamp * (size_t)V);
+    bool ok = ids && lp && stamp;
+    if (!ok) fprintf(stderr, "error: out of memory checking --train-teacher\n");
+    if (stamp) for (int j = 0; j < V; j++) stamp[j] = -1;
+    for (int i = 0; ok && i < m->n_suppress; i++) stamp[m->suppress[i]] = -2;
+    int64_t row_no = 0;
+    for (int i = 0; ok && i < n_ex; i++) {
+        if (!train_teacher_rows(tt, i, &exs[i], ids, lp)) {
+            fprintf(stderr, "error: --train-teacher: cannot read line %d's "
+                    "rows\n", i + 1);
+            ok = false;
+            break;
+        }
+        for (int t = exs[i].first - 1; ok && t < exs[i].n - 1; t++, row_no++) {
+            const int32_t *ri = ids + (size_t)t * tt->k;
+            const float *rl = lp + (size_t)t * tt->k;
+            double S = 0;
+            const char *bad = NULL;
+            for (int c = 0; c < tt->k && !bad; c++) {
+                if (ri[c] < 0 || ri[c] >= V) bad = "an id outside the vocabulary";
+                else if (stamp[ri[c]] == -2) bad = "a token this model suppresses";
+                else if (stamp[ri[c]] == row_no) bad = "the same id twice";
+                else if (!fp_finite_f32(rl[c]))
+                    bad = "a log-probability that is not finite";
+                else { stamp[ri[c]] = row_no; S += exp((double)rl[c]); }
+            }
+            if (!bad && S > 1.0 + 1e-4)
+                bad = "probabilities summing past one";
+            for (int c = 0; c < tt->k; c++)
+                if (ri[c] >= 0 && ri[c] < V && stamp[ri[c]] == row_no)
+                    stamp[ri[c]] = -1;
+            if (bad) {
+                fprintf(stderr, "error: --train-teacher line %d position %d "
+                        "lists %s\n", i + 1, t - (exs[i].first - 1), bad);
+                ok = false;
+            }
+        }
+    }
+    free(ids);
+    free(lp);
+    free(stamp);
+    return ok;
+}
+
+// --train's steps: weighted cross-entropy, or with a teacher the KL to it,
+// one example per step, cycled in file order.
 static bool train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
-                           int wctx, double *first_loss, double *last_loss) {
-    fprintf(stderr, "train: %d example%s, %d steps, lr %g, ctx %d\n",
+                           int wctx, train_teacher *tt, double *first_loss,
+                           double *last_loss) {
+    fprintf(stderr, "train: %d example%s, %d steps, lr %g, ctx %d%s\n",
             n_ex, n_ex == 1 ? "" : "s", o->train_steps, (double)o->train_lr,
-            wctx);
+            wctx, tt ? ", objective KL to the teacher" : "");
+    int32_t *tids = NULL;
+    float *tlp = NULL;
+    if (tt) {
+        int max_n = 1;
+        for (int i = 0; i < n_ex; i++) if (exs[i].n > max_n) max_n = exs[i].n;
+        tids = malloc(sizeof *tids * (size_t)(max_n - 1) * tt->k);
+        tlp = malloc(sizeof *tlp * (size_t)(max_n - 1) * tt->k);
+        if (!tids || !tlp) {
+            fprintf(stderr, "error: out of memory for the teacher's rows\n");
+            free(tids);
+            free(tlp);
+            return false;
+        }
+    }
     FILE *lpf = NULL;
     float *lp = NULL;
     if (o->train_lp_path) {
@@ -3984,6 +4198,8 @@ static bool train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
             fprintf(stderr, "error: cannot write --train-logprobs %s\n",
                     o->train_lp_path);
             free(lp);
+            free(tids);
+            free(tlp);
             return false;
         }
     }
@@ -3998,7 +4214,17 @@ static bool train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
             rt->m.tape_logits_cb = train_lp_observe;
             rt->m.tape_logits_ud = &obs;
         }
-        ok = model_lora_backward_w(&rt->m, ex->t, ex->n, ex->w, &loss);
+        if (tt) {
+            lora_teacher tch = { tt->k, tids, tlp };
+            ok = train_teacher_rows(tt, (step - 1) % n_ex, ex, tids, tlp);
+            if (!ok)
+                fprintf(stderr, "error: --train-teacher: cannot read line "
+                        "%d's rows\n", (step - 1) % n_ex + 1);
+            ok = ok && model_lora_backward_kd(&rt->m, ex->t, ex->n, ex->w,
+                                              &tch, &loss);
+        } else {
+            ok = model_lora_backward_w(&rt->m, ex->t, ex->n, ex->w, &loss);
+        }
         rt->m.tape_logits_cb = NULL;
         rt->m.tape_logits_ud = NULL;
         if (ok && lpf && !train_lp_write(lpf, step, (step - 1) % n_ex, ex, lp)) {
@@ -4048,6 +4274,8 @@ static bool train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
         ok = false;
     }
     free(lp);
+    free(tids);
+    free(tlp);
     return ok;
 }
 
@@ -4058,8 +4286,9 @@ static bool train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
 // (lineage_put_input JSON, taken before the first step), or NULL when the run
 // started a fresh one.
 static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
-                         const char *from_adapter, int wctx, int eot_id,
-                         double first_loss, double last_loss) {
+                         const char *from_adapter, const train_teacher *tt,
+                         int wctx, int eot_id, double first_loss,
+                         double last_loss) {
     char bsha[65] = "", dsha[65] = "", asha[65] = "", xsha[65] = "";
     const char *data_path = o->dpo_path ? o->dpo_path : o->train_path;
     bool hash_ok = envelope_file_sha256(load_path, bsha) &&
@@ -4111,9 +4340,24 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
         sb_lit(&rec, from_adapter);
     }
     sb_lit(&rec, ",\"objective\":\"");
-    sb_lit(&rec, o->dpo_path ? "dpo" : "weighted-cross-entropy");
+    sb_lit(&rec, o->dpo_path ? "dpo" : tt ? "kl-to-teacher" : "weighted-cross-entropy");
     if (o->dpo_path) sb_fmt(&rec, "\",\"dpo_beta\":%g", (double)o->dpo_beta);
     else sb_lit(&rec, "\"");
+    // the teacher is an input like the data: both arrays, hashed, and k
+    if (tt) {
+        sb_fmt(&rec, ",\"teacher\":{\"k\":%d,\"positions\":%d,\"topk_idx\":",
+               tt->k, tt->p);
+        if (!lineage_put_input(&rec, tt->idx_path, NULL)) hash_ok = false;
+        sb_lit(&rec, ",\"topk_logp\":");
+        if (!lineage_put_input(&rec, tt->logp_path, NULL)) hash_ok = false;
+        sb_lit(&rec, "}");
+        if (!hash_ok) {
+            fprintf(stderr, "error: cannot hash the teacher for the "
+                    "provenance record\n");
+            free(rec.s);
+            return false;
+        }
+    }
     sb_lit(&rec, ",\"data\":");
     lineage_put_input(&rec, data_path, dsha);
     sb_fmt(&rec,
@@ -4167,8 +4411,15 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
         if (!dpo_pairs_load(&rt->tok, o->dpo_path, o->no_bos, wctx, eot_id, o->train_eot,
                             &pairs, &n_pair)) return 1;
     } else if (!train_examples_load(&rt->tok, rt->m.n_vocab, o->train_path, o->no_bos, wctx, eot_id, o->train_eot,
-                                    &exs, &n_ex)) return 1;
+                                    o->train_teacher != NULL, &exs, &n_ex)) return 1;
     if (!o->dpo_path) train_risk_warn(o, exs, n_ex, eot_id);
+    train_teacher tt = {0};
+    if (o->train_teacher &&
+        !train_teacher_open(o->train_teacher, &rt->m, exs, n_ex, &tt)) {
+        train_teacher_close(&tt);
+        train_examples_free(exs, n_ex);
+        return 1;
+    }
     // The adapter a run continues from is an input like the base and the
     // data, identified (hash, and its own record) before the first step:
     // --train-out may name the same file, and --save-every rewrites it.
@@ -4180,13 +4431,16 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     double first_loss = 0, last_loss = 0;
     ok = ok && (o->dpo_path
         ? train_dpo_steps(o, rt, pairs, n_pair, wctx, &first_loss, &last_loss)
-        : train_ce_steps(o, rt, exs, n_ex, wctx, &first_loss, &last_loss));
+        : train_ce_steps(o, rt, exs, n_ex, wctx, o->train_teacher ? &tt : NULL,
+                         &first_loss, &last_loss));
     ok = ok && model_lora_save(&rt->m, o->train_out) &&
-         train_record(o, rt, load_path, from.s, wctx, eot_id, first_loss, last_loss);
+         train_record(o, rt, load_path, from.s, o->train_teacher ? &tt : NULL,
+                      wctx, eot_id, first_loss, last_loss);
     if (ok)
         fprintf(stderr, "train: done — first-step loss %.4f, last-step "
                 "%.4f, adapter -> %s\n", first_loss, last_loss, o->train_out);
     free(from.s);
+    train_teacher_close(&tt);
     train_examples_free(exs, n_ex);
     dpo_pairs_free(pairs, n_pair);
     return ok ? 0 : 1;
@@ -5322,6 +5576,11 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
     if (o->train_lp_path && !o->train_path) {
         fprintf(stderr, "error: --train-logprobs reports the --train "
                 "objective's forward; pass it with --train\n");
+        return 1;
+    }
+    if (o->train_teacher && !o->train_path) {
+        fprintf(stderr, "error: --train-teacher gives --train its targets; "
+                "pass it with --train\n");
         return 1;
     }
 
