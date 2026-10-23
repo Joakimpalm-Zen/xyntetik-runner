@@ -37,14 +37,20 @@ bool sock_timed_out(void) { return WSAGetLastError() == WSAETIMEDOUT; }
 // prints "Success" (or a stale unrelated error) for a genuine bind failure,
 // which is worse than no reason at all. FormatMessage gives the real text.
 const char *sock_errstr(void) {
-    static char buf[256];
+    static char buf[768];   // 255 UTF-16 units are at most 765 bytes of UTF-8
     DWORD e = (DWORD)WSAGetLastError();
-    DWORD n = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM |
-                             FORMAT_MESSAGE_IGNORE_INSERTS, NULL, e,
-                             MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                             buf, sizeof(buf) - 1, NULL);
-    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) buf[--n] = 0;
-    if (n == 0) snprintf(buf, sizeof(buf), "winsock error %lu", (unsigned long)e);
+    // wide, then UTF-8: the system's text is localized, and the narrow call
+    // gives it in the ANSI code page inside output that is UTF-8
+    wchar_t wbuf[256];
+    DWORD wn = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM |
+                              FORMAT_MESSAGE_IGNORE_INSERTS, NULL, e,
+                              MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                              wbuf, sizeof wbuf / sizeof *wbuf - 1, NULL);
+    while (wn > 0 && (wbuf[wn - 1] == L'\n' || wbuf[wn - 1] == L'\r')) wbuf[--wn] = 0;
+    int n = wn ? WideCharToMultiByte(CP_UTF8, 0, wbuf, (int)wn, buf, (int)sizeof buf - 1,
+                                     NULL, NULL) : 0;
+    buf[n > 0 ? n : 0] = 0;
+    if (n <= 0) snprintf(buf, sizeof(buf), "winsock error %lu", (unsigned long)e);
     return buf;
 }
 void sock_recv_timeout(sock_t fd, double s) {

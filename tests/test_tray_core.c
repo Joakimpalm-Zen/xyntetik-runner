@@ -7,6 +7,7 @@
 #include "tray.h"
 
 #include <math.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,6 +55,32 @@ static int fails = 0;
 } while (0)
 
 static char g_home[512];
+
+// Extend `path` to 5 GB, sparse where the filesystem allows it: past both
+// the signed and the unsigned 32-bit size, so a truncated st_size cannot
+// alias back to the real one (tests/test_file_identity.c has the same
+// helper). False when the filesystem refuses, which is a skip.
+static bool make_big(const char *path) {
+    const unsigned long long big = 5ull * 1024 * 1024 * 1024;
+#ifdef _WIN32
+    HANDLE h = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD ret = 0;
+    DeviceIoControl(h, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &ret, NULL);
+    LARGE_INTEGER sz;
+    sz.QuadPart = (LONGLONG)big;
+    bool ok = SetFilePointerEx(h, sz, NULL, FILE_BEGIN) && SetEndOfFile(h);
+    CloseHandle(h);
+    return ok;
+#else
+    int fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0644);
+    if (fd < 0) return false;
+    bool ok = ftruncate(fd, (off_t)big) == 0;
+    close(fd);
+    return ok;
+#endif
+}
 
 static void marker_path(char *out, size_t cap) {
     snprintf(out, cap, "%s/spawned.txt", g_home);
@@ -495,6 +522,22 @@ int main(int argc, char **argv) {
     n = tray_menu_build(items, 128);
     CHECK(menu_has(items, n, "Start default runner"),
           "restoring the file heals the menu with no tray restart");
+
+    // 2a-ter. a model over 2 GiB is present, not missing. MinGW's stat()
+    // keeps st_size in 32 bits and fails with EOVERFLOW past 2 GiB, which is
+    // every real checkpoint, so on Windows the tray named each one missing
+    // until it asked plat_stat, whose sizes are 64-bit.
+    if (make_big(mdl)) {
+        n = tray_menu_build(items, 128);
+        CHECK(!menu_has(items, n, "model file missing"),
+              "a 5 GB model is present, not missing");
+        CHECK(menu_has(items, n, "Start default runner"),
+              "a 5 GB model can be started");
+    } else {
+        fprintf(stderr, "skip: tray 5 GB model case (the filesystem refused the file)\n");
+    }
+    f = fopen(mdl, "wb"); fputs("x", f); fclose(f);
+    n = tray_menu_build(items, 128);
 
     // 2a. R4.12.24: another launcher (the Suite, a ManagedRunner) holding the
     // startup lease on this port refuses the managed start, and the menu says

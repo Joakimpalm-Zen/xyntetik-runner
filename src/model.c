@@ -41,7 +41,7 @@
 
 // ---------------------------------------------------------------- helpers
 
-static int64_t stat_mtime_ns(const struct stat *st) {
+static int64_t stat_mtime_ns(const plat_stat_t *st) {
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
     return (int64_t)st->st_mtimespec.tv_sec * 1000000000ll +
            (int64_t)st->st_mtimespec.tv_nsec;
@@ -53,7 +53,7 @@ static int64_t stat_mtime_ns(const struct stat *st) {
 #endif
 }
 
-static int64_t stat_ctime_ns(const struct stat *st) {
+static int64_t stat_ctime_ns(const plat_stat_t *st) {
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
     return (int64_t)st->st_ctimespec.tv_sec * 1000000000ll +
            (int64_t)st->st_ctimespec.tv_nsec;
@@ -1317,10 +1317,10 @@ bool model_file_identity(const char *path, const char *registry,
     // distinguish them is the thing this function exists to avoid. Found
     // 2026-09-07, when the same check passed on one Windows machine and
     // failed on a faster one.
-    HANDLE h = CreateFileA(path, FILE_READ_ATTRIBUTES,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE |
-                           FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
-                           FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE h = plat_create_file(path, FILE_READ_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL);
     BY_HANDLE_FILE_INFORMATION info;
     if (h != INVALID_HANDLE_VALUE && GetFileInformationByHandle(h, &info)) {
         *size  = ((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow;
@@ -1332,8 +1332,8 @@ bool model_file_identity(const char *path, const char *registry,
     }
     if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
 #endif
-    struct stat st;
-    if (stat(path, &st) != 0) {
+    plat_stat_t st;
+    if (plat_stat(path, &st) != 0) {
         // ENOENT is not a sharing problem. The load is about to fail with its
         // own, clearer error, and a warning about weight sharing and CPU/GPU
         // splits for a file that cannot load at all buries the real cause —
@@ -10934,13 +10934,7 @@ static void put_str(FILE *f, const char *s) {
 static int install_lora_file(const char *tmp_path, const char *path) {
     const char *inject = getenv("RUNNER_LORA_INSTALL_FAIL");
     if (inject && *inject && strcmp(inject, "0") != 0) return -1;
-#ifdef _WIN32
-    return MoveFileExA(tmp_path, path,
-                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
-        ? 0 : -1;
-#else
-    return rename(tmp_path, path);
-#endif
+    return plat_replace_file(tmp_path, path) ? 0 : -1;
 }
 
 // The adapter's bytes into f: the header and tensor infos, then each live
@@ -11016,7 +11010,7 @@ bool model_lora_save(model_t *m, const char *path) {
         return false;
     }
     snprintf(tmp_path, pn + sizeof(".partial"), "%s.partial", path);
-    FILE *f = fopen(tmp_path, "wb");
+    FILE *f = plat_fopen(tmp_path, "wb");
     if (!f) {
         fprintf(stderr, "error: cannot write %s\n", tmp_path);
         free(tmp_path);
@@ -11025,14 +11019,14 @@ bool model_lora_save(model_t *m, const char *path) {
     bool ok = lora_write_gguf(m, f) && fflush(f) == 0 && !ferror(f);
     if (fclose(f) != 0) ok = false;
     if (!ok) {
-        remove(tmp_path);
+        plat_remove(tmp_path);
         fprintf(stderr, "error: failed writing adapter %s "
                 "(destination left untouched)\n", path);
         free(tmp_path);
         return false;
     }
     if (install_lora_file(tmp_path, path) != 0) {
-        remove(tmp_path);
+        plat_remove(tmp_path);
         fprintf(stderr, "error: wrote %s but could not install it as %s "
                 "(destination unchanged)\n", tmp_path, path);
         free(tmp_path);

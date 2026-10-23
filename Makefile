@@ -59,6 +59,10 @@ LDFLAGS += -lshell32 -lgdi32 -lcomdlg32 -ladvapi32
 # fails on whatever bytes the model happened to print. CI sets it per job;
 # here a local `make test` gets it too.
 export PYTHONUTF8 = 1
+# runner.exe's application manifest (src/runner.manifest, linked through
+# src/runner.rc) makes UTF-8 the process code page. windres is part of
+# binutils, which the MSYS2 gcc package depends on.
+WINDRES ?= windres
 GPU_SRC  = src/cuda.c
 GPU_BACKEND_DEF = -DRUNNER_GPU_CUDA
 TRAY_SRC = src/tray.c src/tray_win.c
@@ -190,6 +194,7 @@ TEST_METAL_ADMISSION = $(TEST_BATCH:test-batch%=test-metal-admission%)
 TEST_METAL_TENSOR = $(TEST_BATCH:test-batch%=test-metal-tensor%)
 TEST_TRAY_CORE = $(TEST_BATCH:test-batch%=test-tray-core%)
 TEST_TRAY_WIN = $(TEST_BATCH:test-batch%=test-tray-win-menu%)
+TEST_UTF8_CONSOLE = $(TEST_BATCH:test-batch%=test-utf8-console%)
 TEST_TC_TOL = $(TEST_BATCH:test-batch%=test-tc-tol%)
 TEST_I8_TOL = $(TEST_BATCH:test-batch%=test-i8-tol%)
 TEST_LORA_GRAD = $(TEST_BATCH:test-batch%=test-lora-grad%)
@@ -233,6 +238,8 @@ TEST_MSG_OOM_DEP =
 TEST_MSG_OOM_RUN = @echo "skip: test-prompt-oom (POSIX socketpair; covered by Linux CI)"
 TEST_TRAY_WIN_DEP = $(TEST_TRAY_WIN)
 TEST_TRAY_WIN_RUN = ./$(TEST_TRAY_WIN)
+TEST_UTF8_CONSOLE_DEP = $(TEST_UTF8_CONSOLE)
+TEST_UTF8_CONSOLE_RUN = ./$(TEST_UTF8_CONSOLE)
 else
 TEST_RESP_SM_DEP = $(TEST_RESP_SM)
 TEST_RESP_SM_RUN = ./$(TEST_RESP_SM)
@@ -242,6 +249,8 @@ TEST_MSG_OOM_DEP = $(TEST_MSG_OOM)
 TEST_MSG_OOM_RUN = ./$(TEST_MSG_OOM)
 TEST_TRAY_WIN_DEP =
 TEST_TRAY_WIN_RUN = @echo "skip: test-tray-win-menu (Win32 menu readback; covered by the Windows job)"
+TEST_UTF8_CONSOLE_DEP =
+TEST_UTF8_CONSOLE_RUN = @echo "skip: test-utf8-console (Windows console code page; covered by the Windows job)"
 endif
 TEST_QUANTIZE = $(TEST_BATCH:test-batch%=test-quantize%)
 TEST_QUANTIZE_OOM = $(TEST_BATCH:test-batch%=test-quantize-oom%)
@@ -393,6 +402,32 @@ cross-riscv64:
 RUNNER_OBJ = $(patsubst src/%.c,$(OBJDIR)/%.o,$(filter-out $(MLDSA_SRC),$(filter %.c,$(SRC)))) \
              $(patsubst src/%.m,$(OBJDIR)/%.o,$(filter %.m,$(SRC))) \
              $(QUANTS_OBJ) $(QUANTIZE_OBJ) $(MLDSA_OBJ)
+# The Windows executable's resources: the UTF-8 application manifest. A build
+# without it is a runner that reads a non-ASCII -p prompt in the ANSI code
+# page (cp1252 on a Western European system, "?" for what that cannot
+# spell), so a missing windres stops the build instead of quietly dropping
+# the manifest.
+ifeq ($(BUILD_OS),Windows)
+RUNNER_RES_OBJ = $(OBJDIR)/win_manifest.o
+RUNNER_OBJ += $(RUNNER_RES_OBJ)
+$(RUNNER_RES_OBJ): src/runner.rc src/runner.manifest
+	@mkdir -p $(dir $@)
+	@command -v $(WINDRES) > /dev/null 2>&1 || { \
+	  echo "error: '$(WINDRES)' not found. It embeds runner.exe's UTF-8 manifest (src/runner.rc)," >&2; \
+	  echo "       without which non-ASCII prompts, paths and environment values are misread." >&2; \
+	  echo "       Install binutils (MSYS2 UCRT64: pacman -S mingw-w64-ucrt-x86_64-binutils)" >&2; \
+	  echo "       or name the resource compiler with WINDRES=<path>." >&2; exit 1; }
+	$(WINDRES) -I src -O coff -i src/runner.rc -o $@
+# The same executable without that manifest: what an older Windows, or one
+# whose manifest was stripped, runs, in the machine's ANSI code page.
+# tests/test_utf8_io.py holds it to the same tokens, paths and cache as
+# runner.exe, which is what tests compat.c's own wide reads.
+RUNNER_NO_MANIFEST = runner-no-manifest.exe
+$(RUNNER_NO_MANIFEST): $(filter-out $(RUNNER_RES_OBJ),$(RUNNER_OBJ)) $(HDR) src/kernels_ptx.h
+	$(CC) $(CFLAGS) $(filter-out $(RUNNER_RES_OBJ),$(RUNNER_OBJ)) -o $@ $(LDFLAGS)
+else
+RUNNER_NO_MANIFEST =
+endif
 $(OBJDIR)/%.o: src/%.m $(HDR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I src -c $< -o $@
@@ -877,6 +912,12 @@ TEST_TRAY_WIN_SRC = tests/test_tray_win_menu.c src/tray.c src/instances.c \
 $(TEST_TRAY_WIN): $(TEST_TRAY_WIN_SRC) src/tray_win.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TRAY_WIN_SRC) -o $@ -lm \
 		-lws2_32 -lpsapi -lshell32 -lgdi32 -lcomdlg32 -ladvapi32
+
+# plat_utf8_startup and the console's output code page: set to UTF-8 for a
+# console on stdout or stderr, left alone when both are redirected, restored
+# at exit. Windows only, like the menu readback above (TEST_UTF8_CONSOLE_RUN).
+$(TEST_UTF8_CONSOLE): tests/test_utf8_console.c $(OBJDIR)/compat.o $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_utf8_console.c $(OBJDIR)/compat.o -o $@ $(LDFLAGS)
 
 # TC tolerance gate: same shape as the q8-KV gate — teacher-forced logits,
 # top-1 + bounded-deviation criteria, per (type, arch) via the model argument
@@ -2629,7 +2670,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_SPEC_ID) $(TEST_ATTN_SPLIT) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
-      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) \
+      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_FPCLASS) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) \
@@ -2784,6 +2825,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_METAL_ADMISSION)
 	./$(TEST_TRAY_CORE)
 	$(TEST_TRAY_WIN_RUN)
+	$(TEST_UTF8_CONSOLE_RUN)
 	@# the CPU-only backend stub, which no platform branch ever builds
 	$(MAKE) --no-print-directory test-gpu-stub
 	@# The split guard was absent from this list entirely, which is how a
@@ -2896,7 +2938,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(MAKE) --no-print-directory test-attn-split
 	$(PYTHON) scripts/check-generated.py
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
-	$(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_hf_fetch.py tests/test_pull.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_decide.py tests/test_clef.py tests/test_hf_spec_bounds.py tests/test_lora.py tests/test_lora_qwen35.py tests/test_train.py tests/test_train_teacher.py tests/test_train_recipe.py tests/test_deltanet_autograd.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_model_tiers.py tests/test_tier_cards.py tests/test_site_tiers.py tests/test_tier_smoke.py tests/test_difftok.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_session_images.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_cli_lifecycle.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py
+	$(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_hf_fetch.py tests/test_pull.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_decide.py tests/test_clef.py tests/test_hf_spec_bounds.py tests/test_lora.py tests/test_lora_qwen35.py tests/test_train.py tests/test_train_teacher.py tests/test_train_recipe.py tests/test_deltanet_autograd.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_model_tiers.py tests/test_tier_cards.py tests/test_site_tiers.py tests/test_tier_smoke.py tests/test_difftok.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_session_images.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_utf8_io.py tests/test_cli_lifecycle.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py
 	$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"
 
@@ -3100,7 +3142,7 @@ fuzz:
 	fi
 
 clean:
-	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) \
+	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug runner-no-manifest.exe $(TEST_UTF8_CONSOLE) $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) \
 		$(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
 	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) \

@@ -11,15 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#ifdef _WIN32
-#include <direct.h>
-#include <io.h>
-#define bundle_mkdir(p) _mkdir(p)
-#else
-#include <dirent.h>
 #include <sys/stat.h>
-#define bundle_mkdir(p) mkdir(p, 0700)
-#endif
+#include "compat.h"
 
 #define BUNDLE_SCHEMA "xyntetik.runner.bundle.v1"
 #define PACK_SCHEMA "xyntetik.runner.evidence-pack.v1"
@@ -27,7 +20,7 @@
 #define BUNDLE_MAX_FILE (256u * 1024u * 1024u)
 
 static char *slurp(const char *path, size_t *n) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) return NULL;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
     long sz = ftell(f);
@@ -47,7 +40,7 @@ static char *slurp(const char *path, size_t *n) {
 }
 
 static bool spill(const char *path, const void *data, size_t n) {
-    FILE *f = fopen(path, "wb");
+    FILE *f = plat_fopen(path, "wb");
     bool ok = f && fwrite(data, 1, n, f) == n && fflush(f) == 0;
     if (f && fclose(f) != 0) ok = false;
     return ok;
@@ -146,7 +139,7 @@ int bundle_export(const bundle_opts *o) {
         algo = jv_str(jv_get(jv_get(j, "signature"), "algo"), NULL);
         if (!key_fingerprint(pk, fp)) goto out;
     }
-    if (bundle_mkdir(o->out_dir) != 0 && errno != EEXIST) {
+    if (plat_mkdir(o->out_dir, 0700) != 0 && errno != EEXIST) {
         fprintf(stderr, "error: bundle: cannot create %s\n", o->out_dir);
         goto out;
     }
@@ -161,7 +154,7 @@ int bundle_export(const bundle_opts *o) {
     // it when the manifest could not be signed.
     const char *members[] = { p_manifest, p_rec, p_sig, p_pub };
     for (int i = 0; i < 4; i++) {
-        FILE *exists = fopen(members[i], "rb");
+        FILE *exists = plat_fopen(members[i], "rb");
         if (!exists) continue;
         fclose(exists);
         fprintf(stderr, "error: bundle: %s already exists; a bundle is "
@@ -190,7 +183,7 @@ int bundle_export(const bundle_opts *o) {
     if (!spill(p_rec, rec, rn) || (sig && !spill(p_sig, sig, sn)) ||
         (pub && !spill(p_pub, pub, pn))) {
         fprintf(stderr, "error: bundle: cannot write into %s\n", o->out_dir);
-        remove(p_rec); remove(p_sig); remove(p_pub);
+        plat_remove(p_rec); plat_remove(p_sig); plat_remove(p_pub);
         goto out;
     }
 
@@ -273,12 +266,12 @@ int bundle_export(const bundle_opts *o) {
     if (m.failed || !spill(p_manifest, m.s, m.n)) {
         fprintf(stderr, "error: bundle: cannot write %s\n", p_manifest);
         free(m.s);
-        remove(p_rec); remove(p_sig); remove(p_pub);
+        plat_remove(p_rec); plat_remove(p_sig); plat_remove(p_pub);
         goto out;
     }
     free(m.s);
     if (o->sign_key && !record_sign(p_manifest, o->sign_key, NULL)) {
-        remove(p_manifest); remove(p_rec); remove(p_sig); remove(p_pub);
+        plat_remove(p_manifest); plat_remove(p_rec); plat_remove(p_sig); plat_remove(p_pub);
         goto out;
     }
     fprintf(stderr, "bundle -> %s (receipt chain %.16s…%s%s)\n", o->out_dir,
@@ -446,41 +439,21 @@ static int name_cmp(const void *a, const void *b) {
 static int list_receipts(const char *dir, char ***out) {
     char **v = NULL;
     int n = 0, cap = 0;
-#ifdef _WIN32
-    char pat[4200];
-    join(pat, sizeof pat, dir, "receipt-*.json");
-    struct _finddata_t fd;
-    intptr_t h = _findfirst(pat, &fd);
-    if (h != -1) {
-        do {
-            const char *nm = fd.name;
-#else
-    DIR *d = opendir(dir);
+    plat_dir *d = plat_opendir(dir);
     if (!d) return -1;
-    struct dirent *de;
-    while ((de = readdir(d)) != NULL) {
-        {
-            const char *nm = de->d_name;
-#endif
-            if (!is_receipt_name(nm)) continue;
-            if (n == PACK_MAX_RECEIPTS) break;
-            if (n == cap) {
-                cap = cap ? cap * 2 : 64;
-                char **g = realloc(v, sizeof *v * (size_t)cap);
-                if (!g) break;
-                v = g;
-            }
-            if (!(v[n] = strdup(nm))) break;
-            n++;
-#ifdef _WIN32
-        } while (_findnext(h, &fd) == 0);
-        _findclose(h);
-    }
-#else
+    for (const char *nm; (nm = plat_readdir(d)) != NULL; ) {
+        if (!is_receipt_name(nm)) continue;
+        if (n == PACK_MAX_RECEIPTS) break;
+        if (n == cap) {
+            cap = cap ? cap * 2 : 64;
+            char **g = realloc(v, sizeof *v * (size_t)cap);
+            if (!g) break;
+            v = g;
         }
+        if (!(v[n] = strdup(nm))) break;
+        n++;
     }
-    closedir(d);
-#endif
+    plat_closedir(d);
     if (n) qsort(v, (size_t)n, sizeof *v, name_cmp);
     *out = v;
     return n;
@@ -615,7 +588,7 @@ int pack_export(const pack_opts *o) {
             goto out;
         }
     }
-    if (bundle_mkdir(o->out_dir) != 0 && errno != EEXIST) {
+    if (plat_mkdir(o->out_dir, 0700) != 0 && errno != EEXIST) {
         fprintf(stderr, "error: pack: cannot create %s\n", o->out_dir);
         goto out;
     }
@@ -625,7 +598,7 @@ int pack_export(const pack_opts *o) {
         join(p, sizeof p, o->out_dir, "pack.json");
         char **have = NULL;
         int nh = list_receipts(o->out_dir, &have);
-        FILE *ex = fopen(p, "rb");
+        FILE *ex = plat_fopen(p, "rb");
         if (ex || nh > 0) {
             if (ex) fclose(ex);
             free_names(have, nh > 0 ? nh : 0);
@@ -761,21 +734,21 @@ int pack_export(const pack_opts *o) {
         fprintf(stderr, "error: pack: cannot write the pack into %s\n", o->out_dir);
         free(m.s);
         // remove what this call wrote; the directory held none of it before
-        remove(pm);
+        plat_remove(pm);
         for (int i = 0; i < nr; i++) {
             char p[4200];
             join(p, sizeof p, o->out_dir, r[i].name);
-            remove(p);
+            plat_remove(p);
         }
         for (int k = 0; k < 3; k++) if (extra[k].data) {
             char p[4200];
             join(p, sizeof p, o->out_dir, extra[k].name);
-            remove(p);
+            plat_remove(p);
         }
         for (int a = 0; a < o->n_attach; a++) {
             char p[4200];
             join(p, sizeof p, o->out_dir, base_of(o->attach[a]));
-            remove(p);
+            plat_remove(p);
         }
         goto out;
     }

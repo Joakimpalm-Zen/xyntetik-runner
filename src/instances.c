@@ -46,21 +46,20 @@ static bool path_child(char *out, size_t cap, const char *base,
     return true;
 }
 
+static char lease_sep(void);   // the platform's path separator
+
 static bool mkdir_one(const char *p) {
+    if (plat_mkdir(p, 0755) == 0 || errno == EEXIST) return true;
 #ifdef _WIN32
-    return _mkdir(p) == 0 || errno == EEXIST || GetLastError() == ERROR_ALREADY_EXISTS;
+    return GetLastError() == ERROR_ALREADY_EXISTS;
 #else
-    return mkdir(p, 0755) == 0 || errno == EEXIST;
+    return false;
 #endif
 }
 
 static bool path_exists(const char *p) {
-#ifdef _WIN32
-    return GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES;
-#else
-    struct stat st;
-    return stat(p, &st) == 0;
-#endif
+    plat_stat_t st;
+    return plat_stat(p, &st) == 0;
 }
 
 // One-time migration of the pre-rename state dir (Gridcore -> Xyntetik):
@@ -71,7 +70,7 @@ static void migrate_old_tree(const char *base, char sep, const char *oldname,
                              const char *newbase) {
     char old[1024];
     if (!path_child(old, sizeof old, base, sep, oldname)) return;
-    if (!path_exists(newbase) && path_exists(old)) rename(old, newbase);
+    if (!path_exists(newbase) && path_exists(old)) plat_rename(old, newbase);
 }
 
 const char *instances_dir(void) {
@@ -134,7 +133,7 @@ bool instance_pid_alive(long pid) {
 #elif defined(__linux__)
     char sp[64], buf[512];
     snprintf(sp, sizeof sp, "/proc/%ld/stat", pid);
-    FILE *f = fopen(sp, "rb");
+    FILE *f = plat_fopen(sp, "rb");
     if (f) {
         size_t rn = fread(buf, 1, sizeof buf - 1, f);
         fclose(f);
@@ -176,7 +175,7 @@ static bool write_self(void) {
     self_path(path, sizeof path);
     if (!path[0]) return false;
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
-    FILE *f = fopen(tmp, "wb");
+    FILE *f = plat_fopen(tmp, "wb");
     if (!f) return false;
     fprintf(f,
         "{\"pid\": %ld, \"procstart\": %llu, \"started\": %lld, "
@@ -186,13 +185,9 @@ static bool write_self(void) {
         (long long)time(NULL), g_self.mode, g_self.port, RUNNER_VERSION,
         g_self.models_json.s ? g_self.models_json.s : "");
     bool ok = fclose(f) == 0;
-#ifdef _WIN32
-    // rename() cannot replace an existing file on Windows
-    ok = ok && MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING);
-#else
-    ok = ok && rename(tmp, path) == 0;
-#endif
-    if (!ok) remove(tmp);
+    // rename() cannot replace an existing file on Windows; this can
+    ok = ok && plat_replace_file(tmp, path);
+    if (!ok) plat_remove(tmp);
     return ok;
 }
 
@@ -207,38 +202,19 @@ static void sweep_stale(void) {
     instances_list_free(instances_list(&n), n);
     const char *d = instances_dir();
     if (!d) return;
-#ifdef _WIN32
-    char pat[1100];
-    snprintf(pat, sizeof pat, "%s\\*.json.tmp", d);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pat, &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-    do {
-        const char *name = fd.cFileName;
-        char path[1300];
-        snprintf(path, sizeof path, "%s\\%s", d, name);
-#else
-    DIR *dp = opendir(d);
+    plat_dir *dp = plat_opendir(d);
     if (!dp) return;
-    struct dirent *de;
-    while ((de = readdir(dp)) != NULL) {
-        const char *name = de->d_name;
+    for (const char *name; (name = plat_readdir(dp)) != NULL; ) {
         size_t l = strlen(name);
         if (l < 10 || strcmp(name + l - 9, ".json.tmp") != 0) continue;
         char path[1300];
-        snprintf(path, sizeof path, "%s/%s", d, name);
-#endif
+        snprintf(path, sizeof path, "%s%c%s", d, lease_sep(), name);
         char *end;
         long pid = strtol(name, &end, 10);
         if (end == name || strcmp(end, ".json.tmp") != 0) continue;
-        if (pid > 0 && !instance_pid_alive(pid)) remove(path);
-#ifdef _WIN32
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
-#else
+        if (pid > 0 && !instance_pid_alive(pid)) plat_remove(path);
     }
-    closedir(dp);
-#endif
+    plat_closedir(dp);
 }
 
 bool instances_register(const char *mode, int port,
@@ -258,19 +234,9 @@ bool instances_register(const char *mode, int port,
         sb_lit(&g_self.models_json, "\", \"path\": \"");
         // absolute path: a controller in another cwd must be able to
         // restart or inspect the file the instance was launched with.
-        // realpath's output buffer MUST be PATH_MAX bytes: glibc's
-        // fortified build aborts on a smaller one regardless of how short
-        // the resolved path is (macOS PATH_MAX is 1024 so a short buffer
-        // passes there — every Linux CI job catches it)
-#ifdef _WIN32
-        char abs[_MAX_PATH];
-        if (!_fullpath(abs, model_paths[i], sizeof abs))
+        char abs[4096];
+        if (!plat_realpath(model_paths[i], abs, sizeof abs))
             snprintf(abs, sizeof abs, "%s", model_paths[i]);
-#else
-        char abs[PATH_MAX];
-        if (!realpath(model_paths[i], abs))
-            snprintf(abs, sizeof abs, "%s", model_paths[i]);
-#endif
         sb_esc(&g_self.models_json, abs, strlen(abs));
         sb_lit(&g_self.models_json, "\"}");
     }
@@ -290,7 +256,7 @@ void instances_unregister(void) {
     g_self.registered = false;
     char path[1200];
     self_path(path, sizeof path);
-    if (path[0]) remove(path);
+    if (path[0]) plat_remove(path);
 }
 
 // ------------------------------------------------------------------- list
@@ -314,7 +280,7 @@ static instance_rec *push_rec(instance_rec *arr, int *n, int *cap) {
 }
 
 static bool parse_rec(const char *path, instance_rec *r) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) return false;
     char buf[16384];
     size_t n = fread(buf, 1, sizeof buf - 1, f);
@@ -377,25 +343,13 @@ instance_rec *instances_list(int *n_out) {
     if (!d) return NULL;
     instance_rec *arr = NULL;
     int n = 0, cap = 0;
-#ifdef _WIN32
-    char pat[1100];
-    snprintf(pat, sizeof pat, "%s\\*.json", d);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pat, &fd);
-    if (h == INVALID_HANDLE_VALUE) return NULL;
-    do {
-        char path[1300];
-        snprintf(path, sizeof path, "%s\\%s", d, fd.cFileName);
-#else
-    DIR *dp = opendir(d);
+    plat_dir *dp = plat_opendir(d);
     if (!dp) return NULL;
-    struct dirent *de;
-    while ((de = readdir(dp)) != NULL) {
-        size_t l = strlen(de->d_name);
-        if (l < 6 || strcmp(de->d_name + l - 5, ".json") != 0) continue;
+    for (const char *name; (name = plat_readdir(dp)) != NULL; ) {
+        size_t l = strlen(name);
+        if (l < 6 || strcmp(name + l - 5, ".json") != 0) continue;
         char path[1300];
-        snprintf(path, sizeof path, "%s/%s", d, de->d_name);
-#endif
+        snprintf(path, sizeof path, "%s%c%s", d, lease_sep(), name);
         instance_rec r = {0};
         bool ok = parse_rec(path, &r);
         if (ok && record_owner_alive(&r)) {
@@ -410,15 +364,10 @@ instance_rec *instances_list(int *n_out) {
         } else {
             // stale (crash leftover) or unreadable: sweep it
             rec_free_members(&r);
-            remove(path);
+            plat_remove(path);
         }
-#ifdef _WIN32
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
-#else
     }
-    closedir(dp);
-#endif
+    plat_closedir(dp);
     *n_out = n;
     return arr;
 }
@@ -467,23 +416,19 @@ static char lease_sep(void) {
 }
 
 static bool lease_is_dir(const char *p) {
-    struct stat st;
-    return stat(p, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR;
+    plat_stat_t st;
+    return plat_stat(p, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR;
 }
 
 // A claim or a moved-aside record holds owner.json and nothing else.
 static void lease_remove_tree(const char *p) {
     if (!lease_is_dir(p)) {
-        remove(p);
+        plat_remove(p);
         return;
     }
     char f[1300];
-    if (path_child(f, sizeof f, p, lease_sep(), LEASE_RECORD)) remove(f);
-#ifdef _WIN32
-    _rmdir(p);
-#else
-    rmdir(p);
-#endif
+    if (path_child(f, sizeof f, p, lease_sep(), LEASE_RECORD)) plat_remove(f);
+    plat_rmdir(p);
 }
 
 // A sibling of the lease path: <dir>/.<name>.<tag>.<kind>
@@ -516,7 +461,7 @@ static void lease_hex_token(char out[33]) {
     unsigned char b[16];
     bool ok = false;
 #ifndef _WIN32
-    FILE *f = fopen("/dev/urandom", "rb");
+    FILE *f = plat_fopen("/dev/urandom", "rb");
     if (f) {
         ok = fread(b, 1, sizeof b, f) == sizeof b;
         fclose(f);
@@ -568,7 +513,7 @@ bool runner_lease_start_identity(long pid, char *out, size_t cap) {
     // boot); comm may hold spaces and parentheses, so count from the last ')'
     char sp[64], buf[2048];
     snprintf(sp, sizeof sp, "/proc/%ld/stat", pid);
-    FILE *f = fopen(sp, "rb");
+    FILE *f = plat_fopen(sp, "rb");
     if (!f) return false;
     size_t rn = fread(buf, 1, sizeof buf - 1, f);
     fclose(f);
@@ -620,7 +565,7 @@ static bool lease_read(const char *path, lease_rec *r) {
     } else {
         snprintf(r->source, sizeof r->source, "%s", path);
     }
-    FILE *f = fopen(r->source, "rb");
+    FILE *f = plat_fopen(r->source, "rb");
     if (!f) return false;
     char buf[8192];
     size_t n = fread(buf, 1, sizeof buf - 1, f);
@@ -666,8 +611,8 @@ static bool lease_same_token(const lease_rec *a, const lease_rec *b) {
 // record is younger than the window: a crashed owner ages out, a live one
 // is not stolen from before then.
 static bool lease_unverified_fresh(const lease_rec *r) {
-    struct stat st;
-    if (!r->source[0] || stat(r->source, &st) != 0) return false;
+    plat_stat_t st;
+    if (!r->source[0] || plat_stat(r->source, &st) != 0) return false;
     double ttl = env_f64("RUNNER_UNVERIFIED_LEASE_TTL", 0, 1e12, LEASE_TTL_DEFAULT);
     return difftime(time(NULL), st.st_mtime) < ttl;
 }
@@ -688,7 +633,7 @@ static bool lease_write_claim(const char *claim, const char *token) {
     long pid = plat_pid_self();
     bool has_start = runner_lease_start_identity(pid, start, sizeof start);
     if (has_start) json_escape(start, strlen(start), esc, sizeof esc);
-    FILE *o = fopen(f, "wb");
+    FILE *o = plat_fopen(f, "wb");
     if (!o) return false;
     // `created` is informational (no reader judges by it); whole seconds do
     int w = fprintf(o, "{\"owner_pid\": %ld, \"owner_start\": %s%s%s, "
@@ -727,7 +672,7 @@ bool runner_lease_acquire(runner_lease *l, const char *path) {
             lease_remove_tree(claim);
             return false;
         }
-        if (rename(claim, path) == 0) {
+        if (plat_rename(claim, path) == 0) {
             l->held = true;
             return true;
         }
@@ -744,13 +689,13 @@ bool runner_lease_acquire(runner_lease *l, const char *path) {
         char tag[33], stale[1300];
         lease_hex_token(tag);
         if (lease_sibling(stale, sizeof stale, path, tag, "stale") &&
-            rename(path, stale) == 0) {
+            plat_rename(path, stale) == 0) {
             // between judging the record stale and moving it, a rival may
             // have reclaimed: delete only the exact record judged
             lease_rec moved;
             lease_read(stale, &moved);
             if (!lease_same_token(&moved, &rec)) {
-                rename(stale, path);   // theirs; a third claim may have landed
+                plat_rename(stale, path);   // theirs; a third claim may have landed
                 lease_remove_tree(claim);
                 continue;
             }
@@ -770,14 +715,14 @@ void runner_lease_release(runner_lease *l) {
     char tag[33], stale[1300];
     lease_hex_token(tag);
     if (!lease_sibling(stale, sizeof stale, l->path, tag, "stale") ||
-        rename(l->path, stale) != 0)
+        plat_rename(l->path, stale) != 0)
         return;
     lease_rec moved;
     lease_read(stale, &moved);
     if (!moved.has_token || strcmp(moved.token, l->token) != 0) {
         // the path changed after the read above: the record moved belongs to
         // another owner, so put it back unless a claim already took its place
-        rename(stale, l->path);
+        plat_rename(stale, l->path);
         return;
     }
     lease_remove_tree(stale);

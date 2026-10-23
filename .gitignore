@@ -5,6 +5,11 @@ runner-sigpipe-default
 runner-gpu-stub
 runner-debug
 runner-debug.exe
+# tests/test_utf8_io.py's build without the UTF-8 manifest, and the console
+# code page test (tests/test_utf8_console.c)
+runner-no-manifest.exe
+test-utf8-console
+test-utf8-console.exe
 # `make debug` on macOS leaves a 2.5 MB debug bundle beside the binary; the
 # binary itself is ignored above and this is the rest of the same artifact.
 runner-debug.dSYM/

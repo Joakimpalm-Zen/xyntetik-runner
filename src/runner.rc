@@ -1,0 +1,26 @@
+// Resources linked into runner.exe: the application manifest
+// (src/runner.manifest). Built by windres in the Makefile's Windows branch.
+//
+// Why the manifest exists: activeCodePage UTF-8 makes UTF-8 the process's
+// ANSI code page on Windows 10 version 1903 and later, so the command line,
+// the environment and every narrow file API speak UTF-8, the encoding the
+// engine holds all text in. Without it a non-ASCII -p prompt reached the
+// tokenizer in cp1252 on a Western European system, and as "?" for anything
+// cp1252 cannot spell. Older Windows ignores the element; src/compat.c reads
+// the wide forms itself there.
+//
+// The rest of the manifest is the MSYS2 toolchain's default one, which this
+// replaces: run as the invoking user, and name the Windows versions the
+// program was written for, so the OS applies no compatibility shims.
+//
+// Numeric on purpose, so the script needs no Windows headers: 24 is
+// RT_MANIFEST and 1 is CREATEPROCESS_MANIFEST_RESOURCE_ID (winuser.h).
+//
+// The language is not decoration. The MSYS2 compiler links that default
+// manifest (default-manifest.o) with language 0, and GNU ld, merging the two,
+// keeps the manifest that names a language and drops the one that does not
+// (bfd/peXXigen.c, rsrc_sort_entries); two manifests without a language are
+// duplicate leaves, and which survives is not a promise. 0x0409 is English
+// (United States).
+LANGUAGE 0x09, 0x01
+1 24 "runner.manifest"

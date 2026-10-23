@@ -156,10 +156,11 @@ int hf_select_file(const char *const *names, int n, const char *tag, char *err, 
 // -------------------------------------------------------------- transfer
 
 static bool mkdir_one(const char *p) {
+    if (plat_mkdir(p, 0755) == 0 || errno == EEXIST) return true;
 #ifdef _WIN32
-    return _mkdir(p) == 0 || errno == EEXIST || GetLastError() == ERROR_ALREADY_EXISTS;
+    return GetLastError() == ERROR_ALREADY_EXISTS;
 #else
-    return mkdir(p, 0755) == 0 || errno == EEXIST;
+    return false;
 #endif
 }
 
@@ -184,73 +185,13 @@ static bool mkdir_p(const char *path) {
 }
 
 static bool file_size(const char *path, long long *size) {
-#ifdef _WIN32
-    // MinGW's stat() keeps st_size in 32 bits and fails with EOVERFLOW past
-    // 2 GiB, which every real checkpoint is (model.c's file identity has the
-    // same note): the cache check never saw such a file, and a file the Hub
-    // sizes but does not hash could not be verified or reported
-    struct _stat64 st;
-    if (_stat64(path, &st) != 0) return false;
-#else
-    struct stat st;
-    if (stat(path, &st) != 0) return false;
-#endif
+    // 64-bit on Windows too: MinGW's stat() keeps st_size in 32 bits and
+    // fails with EOVERFLOW past 2 GiB, which every real checkpoint is
+    // (compat.h's plat_stat_t)
+    plat_stat_t st;
+    if (plat_stat(path, &st) != 0) return false;
     *size = (long long)st.st_size;
     return true;
-}
-
-// run argv (NULL-terminated) and wait; the child's exit code, -1 when it
-// could not be started
-#ifdef _WIN32
-// The CRT's spawn joins argv with spaces and no quoting, so an argument
-// with a space ("Authorization: Bearer ...") reaches the child as three.
-// Quote the ones that need it by the CRT's own rules: wrap in double
-// quotes, double the backslashes that precede a quote, escape the quote.
-static char *win_quote(const char *arg) {
-    bool plain = *arg != 0;
-    for (const char *p = arg; *p && plain; p++)
-        if (*p == ' ' || *p == '\t' || *p == '"') plain = false;
-    if (plain) return strdup(arg);
-    size_t n = strlen(arg);
-    char *q = malloc(2 * n + 3), *w = q;
-    if (!q) return NULL;
-    *w++ = '"';
-    for (size_t i = 0; i < n; i++) {
-        size_t bs = 0;
-        while (i < n && arg[i] == '\\') { bs++; i++; }
-        if (i == n) { for (size_t k = 0; k < 2 * bs; k++) *w++ = '\\'; break; }
-        if (arg[i] == '"') { for (size_t k = 0; k < 2 * bs + 1; k++) *w++ = '\\'; *w++ = '"'; }
-        else { for (size_t k = 0; k < bs; k++) *w++ = '\\'; *w++ = arg[i]; }
-    }
-    *w++ = '"'; *w = 0;
-    return q;
-}
-#endif
-
-static int run_wait(char *const argv[]) {
-#ifdef _WIN32
-    int n = 0;
-    while (argv[n]) n++;
-    char **quoted = calloc((size_t)n + 1, sizeof *quoted);
-    if (!quoted) return -1;
-    bool ok = true;
-    for (int i = 0; i < n && ok; i++) ok = (quoted[i] = win_quote(argv[i])) != NULL;
-    intptr_t rc = ok ? _spawnvp(_P_WAIT, argv[0], (const char *const *)quoted) : -1;
-    for (int i = 0; i < n; i++) free(quoted[i]);
-    free(quoted);
-    return rc == -1 ? -1 : (int)rc;
-#else
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid == 0) {
-        execvp(argv[0], argv);
-        _exit(127);
-    }
-    int status = 0;
-    if (waitpid(pid, &status, 0) < 0) return -1;
-    if (WIFEXITED(status)) return WEXITSTATUS(status) == 127 ? -1 : WEXITSTATUS(status);
-    return -1;
-#endif
 }
 
 static const char *curl_program(void) {
@@ -272,14 +213,14 @@ static int curl_get(const char *url, const char *out, bool quiet, char *err, siz
     argv[n++] = "-o"; argv[n++] = out;
     argv[n++] = url;
     argv[n] = NULL;
-    int rc = run_wait((char *const *)argv);
+    int rc = plat_spawn_wait(argv);
     if (rc == -1) snprintf(err, errcap, "cannot run %s (set RUNNER_CURL, or install curl)", curl_program());
     else if (rc != 0) snprintf(err, errcap, "%s exited %d fetching %s", curl_program(), rc, url);
     return rc;
 }
 
 static char *read_whole(const char *path, size_t *len) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) return NULL;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
     long n = ftell(f);
@@ -380,27 +321,27 @@ static bool ensure_file(const char *repo, const char *rfilename, const char *rep
             return digest_out(target, sha && *sha, hex, hex_out, err, errcap);
         }
         fprintf(stderr, "hf: %s/%s in the cache does not verify, fetching again\n", repo, rfilename);
-        remove(target);
+        plat_remove(target);
     }
     snprintf(part, sizeof part, "%s.part", target);
-    remove(part);
+    plat_remove(part);
     snprintf(url, sizeof url, "https://huggingface.co/%s/resolve/main/%s", repo, rfilename);
     fprintf(stderr, "hf: fetching %s/%s\n", repo, rfilename);
-    if (curl_get(url, part, quiet, err, errcap) != 0) { remove(part); return false; }
+    if (curl_get(url, part, quiet, err, errcap) != 0) { plat_remove(part); return false; }
     if (sha && *sha) {
         if (!envelope_file_sha256(part, hex) || strcmp(hex, sha) != 0) {
-            remove(part);
+            plat_remove(part);
             snprintf(err, errcap, "%s/%s: sha256 of the download does not match the Hub's LFS record "
                                   "(%.16s... expected %.16s...)", repo, rfilename, hex, sha);
             return false;
         }
     } else if (size >= 0 && (!file_size(part, &have) || have != size)) {
-        remove(part);
+        plat_remove(part);
         snprintf(err, errcap, "%s/%s: downloaded %lld bytes, the Hub lists %lld", repo, rfilename, have, size);
         return false;
     }
-    if (rename(part, target) != 0) {
-        remove(part);
+    if (plat_rename(part, target) != 0) {
+        plat_remove(part);
         snprintf(err, errcap, "cannot move %s into place: %s", part, strerror(errno));
         return false;
     }
@@ -408,13 +349,8 @@ static bool ensure_file(const char *repo, const char *rfilename, const char *rep
 }
 
 static char *abs_path(const char *p) {
-#ifdef _WIN32
-    char buf[_MAX_PATH];
-    return strdup(_fullpath(buf, p, sizeof buf) ? buf : p);
-#else
-    char *r = realpath(p, NULL);   // allocates: no PATH_MAX buffer to size
-    return r ? r : strdup(p);
-#endif
+    char buf[4096];
+    return strdup(plat_realpath(p, buf, sizeof buf) ? buf : p);
 }
 
 // one verified file into the report

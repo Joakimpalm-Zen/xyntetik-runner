@@ -146,8 +146,8 @@ static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
         // a malformed one sends the reader to the wrong place entirely, so ask
         // the filesystem which failure this was instead of blaming contents we
         // never read.
-        struct stat st;
-        if (stat(path, &st) != 0)
+        plat_stat_t st;
+        if (plat_stat(path, &st) != 0)
             fprintf(stderr, "error: cannot open %s: %s\n", path,
                     strerror(errno));
         else if (!S_ISREG(st.st_mode))

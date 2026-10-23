@@ -9,13 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#ifdef _WIN32
-#include <direct.h>
-#define ks_mkdir(p) _mkdir(p)
-#else
 #include <sys/stat.h>
-#define ks_mkdir(p) mkdir(p, 0700)
-#endif
 
 #include "envelope.h"
 #include "provenance.h"
@@ -79,7 +73,7 @@ bool kvsnap_configure(const char *dir, const char *sign_key, const char *trust_k
     snprintf(KS.dir, sizeof KS.dir, "%s", dir);
     size_t n = strlen(KS.dir);
     while (n > 1 && (KS.dir[n - 1] == '/' || KS.dir[n - 1] == '\\')) KS.dir[--n] = 0;
-    if (ks_mkdir(KS.dir) != 0 && errno != EEXIST) {
+    if (plat_mkdir(KS.dir, 0700) != 0 && errno != EEXIST) {
         fprintf(stderr, "error: --kv-snapshots: cannot create %s\n", KS.dir);
         return false;
     }
@@ -136,13 +130,13 @@ static bool name_ok(const char *s) {
 }
 
 static bool exists(const char *path) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (f) fclose(f);
     return f != NULL;
 }
 
 static char *slurp(const char *path, size_t *n_out) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) return NULL;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
     long sz = ftell(f);
@@ -233,11 +227,11 @@ bool kvsnap_save(const engine *e, const char *ctx, jv *req, sbuf *out,
         char kvhex[65], thex[65];
         size_t kn = 0;
         if (!envelope_file_sha256(kvpath, kvhex)) {
-            remove(kvpath);
+            plat_remove(kvpath);
             fail(err, 500, "snapshot_write_failed", "cannot read back %s.kv", name);
             break;
         }
-        FILE *f = fopen(kvpath, "rb");
+        FILE *f = plat_fopen(kvpath, "rb");
         int32_t *toks = malloc(sizeof(int32_t) * (size_t)n);
         bool tok_ok = f && toks && fseek(f, KS_TOKENS_AT, SEEK_SET) == 0 &&
                       fread(toks, sizeof(int32_t), (size_t)n, f) == (size_t)n;
@@ -245,7 +239,7 @@ bool kvsnap_save(const engine *e, const char *ctx, jv *req, sbuf *out,
         if (tok_ok) envelope_data_sha256(toks, sizeof(int32_t) * (size_t)n, thex);
         free(toks);
         if (!tok_ok) {
-            remove(kvpath);
+            plat_remove(kvpath);
             fail(err, 500, "snapshot_write_failed", "cannot read back %s.kv", name);
             break;
         }
@@ -273,7 +267,7 @@ bool kvsnap_save(const engine *e, const char *ctx, jv *req, sbuf *out,
         else sb_lit(&m, "null");
         sb_fmt(&m, "},\"created_utc\":\"%s\"", utc);
         if (m.failed) {
-            remove(kvpath);
+            plat_remove(kvpath);
             fail(err, 500, "out_of_memory", "out of memory");
             break;
         }
@@ -281,7 +275,7 @@ bool kvsnap_save(const engine *e, const char *ctx, jv *req, sbuf *out,
         // key was given, else the chain object is written here
         bool wrote;
         if (KS.sign_key[0]) {
-            FILE *mf = fopen(tmp, "wb");
+            FILE *mf = plat_fopen(tmp, "wb");
             wrote = mf && fwrite(m.s, 1, m.n, mf) == m.n && fputc('}', mf) != EOF;
             if (mf && fclose(mf) != 0) wrote = false;
             wrote = wrote && record_sign(tmp, KS.sign_key, NULL);
@@ -290,13 +284,13 @@ bool kvsnap_save(const engine *e, const char *ctx, jv *req, sbuf *out,
             envelope_data_sha256(m.s, m.n, chain);
             sb_fmt(&m, ",\"chain\":{\"algo\":\"sha256\",\"prev\":\"\",\"hash\":"
                        "\"%s\"}}", chain);
-            FILE *mf = fopen(tmp, "wb");
+            FILE *mf = plat_fopen(tmp, "wb");
             wrote = !m.failed && mf && fwrite(m.s, 1, m.n, mf) == m.n;
             if (mf && fclose(mf) != 0) wrote = false;
         }
-        if (!wrote || rename(tmp, manpath) != 0) {
-            remove(tmp);
-            remove(kvpath);
+        if (!wrote || plat_rename(tmp, manpath) != 0) {
+            plat_remove(tmp);
+            plat_remove(kvpath);
             fail(err, 500, "snapshot_write_failed", "cannot write %s.kv.json", name);
             break;
         }

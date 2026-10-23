@@ -1598,6 +1598,19 @@ above is a claim somebody re-checks rather than one that decays quietly.
 
 On Windows, install `make` and `mingw-w64-ucrt-x86_64-gcc` from an MSYS2 UCRT64
 shell, then run `make`.
+The build also runs `windres` (binutils, which that gcc package depends on)
+to embed the application manifest that makes UTF-8 the process code page,
+and stops with an error when it is missing. Non-ASCII prompts, file paths and
+environment values are UTF-8 on Windows 10 version 1903 and later, as on Linux
+and macOS; `runner --caps` reports `"code_page":{"ansi":65001,"utf8_manifest":true}`
+there. Older Windows ignores the manifest (`--caps` then shows the legacy code
+page, such as 1252, beside `"utf8_manifest":true`), and runner reads the
+command line and the environment in their UTF-16 form and opens every file
+through the UTF-16 Windows APIs itself, so the same text and paths arrive the
+same way. A console on stdout or stderr is switched to the UTF-8 output code
+page while runner runs and put back at exit; redirected output is UTF-8 bytes
+either way. A line typed into the interactive chat at a console is read as
+UTF-16 and kept as UTF-8, whatever the console's input code page.
 
 ### Container image
 
@@ -2400,7 +2413,7 @@ whether the draft is `active` there.
 | `--watermark-keygen FILE` | Write a new watermark key (`xyntetik.runner.watermark_key.v1`, mode 0600, never overwritten) and print its id. Needs no `-m`. |
 | `--detect-watermark FILE` | Score FILE against `--watermark`'s key: a transcript record or receipt (its own token ids, the prompt as context; needs no `-m`) or a text (tokenized by `-m`'s tokenizer). Prints a `xyntetik.runner.watermark_detect.v1` object (mean g-value, z, one-sided p) and exits 0 `WATERMARKED` (z >= 4), 2 `NOT_DETECTED`, 3 `INSUFFICIENT` (fewer than 16 scored tokens). |
 | `--sign-model FILE`, `--model-key KEY.pem` | Write an OMS bundle for FILE (every part of a split GGUF) to `FILE.sig`, or to `--model-sig OUT`, signed with a PEM EC private key (SEC1 or PKCS#8, unencrypted, P-256/384/521) by deterministic ECDSA: the same key and model always give the same bytes. An existing bundle is never overwritten. Needs no `-m`. [Details](#cli-sign-model). |
-| `--caps` | Print machine, backend, quant, architecture, placement, and sampling capabilities as JSON. `cpu_cores`, `ram_bytes` and `ram_available_bytes` are what this process may use; inside a container that is the host narrowed by its cgroup limits, and `host` carries the machine's own three numbers while `limits` names the source (`cgroup2`, `cgroup1` or `none`), the CPU quota and the memory limit (`null` when there is none). |
+| `--caps` | Print machine, backend, quant, architecture, placement, and sampling capabilities as JSON. `cpu_cores`, `ram_bytes` and `ram_available_bytes` are what this process may use; inside a container that is the host narrowed by its cgroup limits, and `host` carries the machine's own three numbers while `limits` names the source (`cgroup2`, `cgroup1` or `none`), the CPU quota and the memory limit (`null` when there is none). On Windows `code_page` gives the process's ANSI code page (`ansi`; 65001 is UTF-8) and whether the executable carries the UTF-8 manifest (`utf8_manifest`); it is `null` elsewhere. |
 | `--tool-info` | With `-m`, print the model's tool-call protocol, chat template and sampling preset as JSON (`{"tool_family":…,"native_tool_protocol":…,"template":…,"sampling_preset":…}`) and exit. No manifest required. |
 | `--adapt-info` | With `-m`, print as JSON whether a LoRA adapter can be served on this model and whether one can be trained on it, each with the sentence the real operation would refuse with, plus which GPU backend of this build carries adapter kernels. Inference, adapter serving and training are three admission lists; this reads the last two without running either. |
 | `--doctor` | With `-m`, load the model, run one short probe and print a diagnostic report as JSON: version, where the layers actually ran, the template and sampler in effect, memory, timings, and findings with a next step each. Exit 2 when a finding is `broken`. Memory and threads are what the process may use; inside a container an `info` finding, `container_limits`, gives its CPU and RAM beside the host's (`container limits apply: 26 of 128 CPUs, 80.0 GiB of 249.6 GiB RAM`) and does not change the verdict. The report holds no prompt or reply text unless `--doctor-include-text` is given; read it before sharing. |
@@ -4383,7 +4396,9 @@ src/api_anthropic.c   Anthropic Messages translation
 src/registry.c        model swap and unload lifecycle
 src/vramreg.c         cross-process VRAM ownership and bounded waiting
 src/tray*.c           macOS/Windows desktop controller
-src/compat.c          platform process, memory, mmap, clock, and socket helpers
+src/compat.c          platform process, memory, mmap, clock, and socket helpers;
+                      the UTF-8 doors to file names, argv and the environment
+src/runner.rc         Windows resources: the UTF-8 application manifest
 src/main.c            CLI parsing, utility modes, and --caps
 python/               supported Python client and subprocess integration
 ```

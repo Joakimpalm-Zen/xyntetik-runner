@@ -857,7 +857,7 @@ static void type_plan_free(type_plan_t *p) {
 static bool type_plan_load(const char *path, type_plan_t *plan) {
     memset(plan, 0, sizeof(*plan));
     plan->dflt = T_KEEP;
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) { fprintf(stderr, "error: cannot open --type-plan file %s\n", path); return false; }
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
     long sz = ftell(f);
@@ -964,7 +964,7 @@ static int type_plan_pick(const type_plan_t *plan, const char *name) {
 
 static bool prune_plan_load(const char *path, prune_plan_t *plan) {
     memset(plan, 0, sizeof(*plan));
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) { fprintf(stderr, "error: cannot open --prune-experts file %s\n", path); return false; }
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
     long sz = ftell(f);
@@ -1410,12 +1410,7 @@ void quantize_set_type_plan_strict(bool on) { g_type_plan_strict = on; }
 
 static int install_finished_file(const char *tmp_path, const char *out_path) {
     if (quantize_install_injected()) return -1;
-#ifdef _WIN32
-    return MoveFileExA(tmp_path, out_path,
-                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
-#else
-    return rename(tmp_path, out_path);
-#endif
+    return plat_replace_file(tmp_path, out_path) ? 0 : -1;
 }
 
 // If tensor `t` is a per-expert tensor for a layer the (already fully
@@ -1497,7 +1492,7 @@ int context_surgery_gguf(const char *in_path, const char *out_path,
     if (!tensor_payloads_equal(in_path, out_path)) {
         fprintf(stderr, "error: context-surgery tensor-payload verification "
                         "failed; refusing %s\n", out_path);
-        remove(out_path);
+        plat_remove(out_path);
         return 1;
     }
     result->tensors_byte_identical = true;
@@ -1591,7 +1586,7 @@ static void quantize_job_release(quantize_job *J) {
     quantize_job_close_source(J);
     if (J->w.f) fclose(J->w.f);
     J->w.f = NULL;
-    if (J->tmp_created) remove(J->tmp_path);
+    if (J->tmp_created) plat_remove(J->tmp_path);
     J->tmp_created = false;
     free(J->tmp_path); J->tmp_path = NULL;
 }
@@ -1963,7 +1958,7 @@ static bool quantize_job_open_output(quantize_job *J, const char *out_path) {
     if (!J->tmp_path) return false;
     snprintf(J->tmp_path, tlen, "%s.partial", out_path);
 
-    J->w.f = fopen(J->tmp_path, "wb");
+    J->w.f = plat_fopen(J->tmp_path, "wb");
     if (!J->w.f) {
         fprintf(stderr, "error: cannot write %s\n", J->tmp_path);
         return false;
@@ -2507,8 +2502,8 @@ static int quantize_job_finish(quantize_job *J, const char *in_path,
     }
 
     // Install the finished file only after the temp is complete. POSIX rename()
-    // atomically replaces an existing destination; Windows needs MoveFileExA
-    // with replace semantics. Never remove the destination first: if the final
+    // atomically replaces an existing destination; Windows needs MoveFileEx
+    // with replace semantics (plat_replace_file). Never remove the destination first: if the final
     // install fails, the caller must still have the previous model.
     if (install_finished_file(J->tmp_path, out_path) != 0) {
         fprintf(stderr, "error: wrote %s but could not install it as %s "

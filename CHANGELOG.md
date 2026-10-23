@@ -5,6 +5,29 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Windows: non-ASCII prompts, file paths and environment values were read
+  in the ANSI code page; they are UTF-8 now.** The C runtime built the
+  command line in the system's legacy code page, so a `-p` prompt reached
+  the tokenizer as cp1252 bytes on a Western European system, and as `?` for
+  what cp1252 cannot spell, while the same text through `-f` arrived intact:
+  on the Windows CUDA host a 17-character prompt mixing accented letters, a
+  dash and two Japanese ideographs was 8 tokens through `-f` and 10
+  different ones through `-p`, and the README's own prompt 822 tokens
+  against 816 on macOS. `runner.exe` now carries an application manifest
+  that makes UTF-8 the process code page on Windows 10 version 1903 and
+  later; building it needs `windres` (binutils). `--caps` reports the code
+  page. Where Windows ignores the manifest (older versions, or a stripped
+  one) the result is the same: the command line and the environment are read
+  in their UTF-16 form and every file is opened through the UTF-16 APIs. A
+  console on stdout or stderr is switched to the UTF-8 output code page
+  while runner runs and restored at exit, and a line typed into the
+  interactive chat at a console is read as UTF-16 (it arrived in the
+  console's input code page, 437 or 850, whatever the process's own). Two
+  Windows defects on the same paths went with it: `--shadow-mode` passed a
+  model path containing a space to the Python client as two arguments, and
+  the desktop tray named every model over 2 GiB "model file missing",
+  because MinGW's `stat()` fails past 2 GiB.
+
 - **Seed 0 is accepted.** `seed: 0`, `-s 0`, `--fork-seed 0` and a
   session's `seed` or `fork_seed` of 0 now sample and replay like any other
   seed. They were refused because 0 was the sampler RNG's fixed point;

@@ -100,16 +100,16 @@ static long   g_cfg_size = -1;
 // cannot be stat'd (deleted, or never written) counts as unchanged: the last
 // known-good values are better than blanking the menu.
 static bool cfg_is_stale(const char *path) {
-    struct stat st;
-    if (!path[0] || stat(path, &st) != 0) return false;
+    plat_stat_t st;
+    if (!path[0] || plat_stat(path, &st) != 0) return false;
     if (g_cfg_loaded && st.st_mtime == g_cfg_mtime &&
         (long)st.st_size == g_cfg_size) return false;
     return true;
 }
 
 static void cfg_stamp(const char *path) {
-    struct stat st;
-    if (stat(path, &st) != 0) return;
+    plat_stat_t st;
+    if (plat_stat(path, &st) != 0) return;
     g_cfg_mtime = st.st_mtime;
     g_cfg_size  = (long)st.st_size;
     g_cfg_loaded = true;
@@ -120,7 +120,7 @@ static void cfg_load(void) {
     cfg_path(path, sizeof path);
     if (g_cfg_loaded && !cfg_is_stale(path)) return;
     g_cfg_loaded = true;
-    FILE *f = path[0] ? fopen(path, "rb") : NULL;
+    FILE *f = path[0] ? plat_fopen(path, "rb") : NULL;
     if (!f) return;
     char buf[4096];
     size_t n = fread(buf, 1, sizeof buf - 1, f);
@@ -170,7 +170,7 @@ static bool cfg_save(void) {
     char *tmp = malloc(tmp_cap);
     if (!tmp) { free(b.s); return false; }
     snprintf(tmp, tmp_cap, "%s.partial-%ld", path, (long)getpid());
-    FILE *f = fopen(tmp, "wb");
+    FILE *f = plat_fopen(tmp, "wb");
     if (!f) { free(tmp); free(b.s); return false; }
     bool ok = fwrite(b.s, 1, b.n, f) == b.n && fflush(f) == 0;
     if (ok) {
@@ -186,7 +186,7 @@ static bool cfg_save(void) {
     if (getenv("RUNNER_TEST_TRAY_CONFIG_INSTALL_FAIL")) ok = false;
 #endif
     if (ok) ok = plat_replace_file(tmp, path);
-    if (!ok) remove(tmp);
+    if (!ok) plat_remove(tmp);
     free(tmp);
     if (!ok) return false;
 
@@ -214,8 +214,8 @@ static long g_lease_refused = -1;
 // heals the menu with no bookkeeping.
 static bool model_file_present(void) {
     if (!g_cfg.last_model[0]) return false;
-    struct stat st;
-    return stat(g_cfg.last_model, &st) == 0 && S_ISREG(st.st_mode);
+    plat_stat_t st;
+    return plat_stat(g_cfg.last_model, &st) == 0 && S_ISREG(st.st_mode);
 }
 
 // Managed-instance lifecycle, derived — never stored — so the menu can't
@@ -271,6 +271,27 @@ static void log_path(char *out, size_t cap) {
     );
 }
 
+#ifdef _WIN32
+// CreateProcessW over a UTF-8 command line: the narrow call reads it in the
+// ANSI code page (compat.h), and a model path it cannot spell named no file.
+// `out` (or INVALID_HANDLE_VALUE) becomes the child's stdout and stderr.
+static bool tray_create_process(const char *cmd, bool inherit, DWORD flags,
+                                HANDLE out, PROCESS_INFORMATION *pi) {
+    // writable, as CreateProcessW asks
+    int n = MultiByteToWideChar(CP_UTF8, 0, cmd, -1, NULL, 0);
+    wchar_t *w = n > 0 ? malloc((size_t)n * sizeof *w) : NULL;
+    if (!w || MultiByteToWideChar(CP_UTF8, 0, cmd, -1, w, n) != n) { free(w); return false; }
+    STARTUPINFOW si = { .cb = sizeof si };
+    if (out != INVALID_HANDLE_VALUE) {
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdOutput = si.hStdError = out;
+    }
+    bool ok = CreateProcessW(NULL, w, NULL, NULL, inherit, flags, NULL, NULL, &si, pi) != 0;
+    free(w);
+    return ok;
+}
+#endif
+
 static void open_log(void) {
     char lp[1200];
     log_path(lp, sizeof lp);
@@ -278,9 +299,8 @@ static void open_log(void) {
 #ifdef _WIN32
     char cmd[1400];
     snprintf(cmd, sizeof cmd, "notepad.exe \"%s\"", lp);
-    STARTUPINFOA si = { .cb = sizeof si };
     PROCESS_INFORMATION pi;
-    if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+    if (tray_create_process(cmd, false, 0, INVALID_HANDLE_VALUE, &pi)) {
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
     }
@@ -383,18 +403,12 @@ static void spawn_managed(void) {
         return;
     }
     SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
-    HANDLE hlog = lp[0] ? CreateFileA(lp, GENERIC_WRITE, FILE_SHARE_READ, &sa,
-                                      CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL)
+    HANDLE hlog = lp[0] ? plat_create_file(lp, GENERIC_WRITE, FILE_SHARE_READ, &sa,
+                                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL)
                         : INVALID_HANDLE_VALUE;
-    STARTUPINFOA si = { .cb = sizeof si };
-    if (hlog != INVALID_HANDLE_VALUE) {
-        si.dwFlags = STARTF_USESTDHANDLES;
-        si.hStdOutput = si.hStdError = hlog;
-    }
     PROCESS_INFORMATION pi;
-    if (CreateProcessA(NULL, cmd, NULL, NULL, hlog != INVALID_HANDLE_VALUE,
-                       CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
-                       NULL, NULL, &si, &pi)) {
+    if (tray_create_process(cmd, hlog != INVALID_HANDLE_VALUE,
+                            CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, hlog, &pi)) {
         g_managed_pid = (long)pi.dwProcessId;
         g_managed_spawned = true;
         spawned = true;
@@ -467,7 +481,9 @@ static void stop_pid(long pid) {
 
 static void self_exe(char *out, size_t cap) {
 #ifdef _WIN32
-    GetModuleFileNameA(NULL, out, (DWORD)cap);
+    char *p = plat_executable_path();
+    snprintf(out, cap, "%s", p ? p : "runner");
+    free(p);
 #elif defined(__APPLE__)
     extern int _NSGetExecutablePath(char *, unsigned int *);
     unsigned int sz = (unsigned int)cap;
@@ -795,13 +811,11 @@ void tray_ensure_running(void) {
 #ifdef _WIN32
     char cmd[1400];
     snprintf(cmd, sizeof cmd, "\"%s\" --tray", exe);
-    STARTUPINFOA si = { .cb = sizeof si };
     PROCESS_INFORMATION pi;
     // DETACHED_PROCESS: no console of its own and none inherited, so a tray
     // launched beside a server does not scribble over the server's output
-    if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE,
-                       DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-                       NULL, NULL, &si, &pi)) {
+    if (tray_create_process(cmd, false, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                            INVALID_HANDLE_VALUE, &pi)) {
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
     }

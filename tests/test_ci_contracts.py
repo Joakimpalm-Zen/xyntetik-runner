@@ -1,5 +1,6 @@
 """Build/gate contracts that must not silently turn a red run green."""
 import os
+import re
 import pathlib
 import shutil
 import subprocess
@@ -324,12 +325,18 @@ class PlatformDetection(unittest.TestCase):
 
     def runner_link(self, uname=None, args=()):
         lines = self.make_n("runner", uname, args)
-        return next(x for x in lines if " -o .build/" in x and "/runner" in x)
+        # the line that links the executable itself, not one that merely
+        # names a runner file (windres reads src/runner.rc on Windows)
+        return next(x for x in lines
+                    if re.search(r" -o \.build/[0-9]+/runner(\.exe)?( |$)", x))
 
     def assert_windows(self, line):
         self.assertRegex(line, r" -o \.build/[0-9]+/runner\.exe ")
         self.assertIn("-lws2_32", line)
         self.assertNotIn("-ldl", line.split())
+        # the UTF-8 application manifest (src/runner.rc): without it the C
+        # runtime reads a non-ASCII -p prompt in the ANSI code page
+        self.assertRegex(line, r"\.build/[0-9]+/win_manifest\.o ")
 
     def assert_posix(self, line):
         self.assertRegex(line, r" -o \.build/[0-9]+/runner ")
@@ -354,6 +361,33 @@ class PlatformDetection(unittest.TestCase):
         self.assert_posix(darwin)
         self.assertIn("Metal", darwin)
         self.assertNotIn("-ldl", darwin.split())
+
+    @unittest.skipIf(os.name == "nt", "stubs uname with a POSIX script")
+    def test_posix_links_no_manifest(self):
+        for uname in ("Linux", "Darwin"):
+            with self.subTest(uname=uname):
+                self.assertNotIn("win_manifest", self.runner_link(uname))
+
+    @unittest.skipIf(os.name == "nt", "stubs uname with a POSIX script")
+    def test_a_missing_windres_stops_the_build_with_a_reason(self):
+        """A runner.exe without the manifest builds and runs, and misreads
+        every non-ASCII prompt, so the missing tool is an error that says
+        what it costs, never a silent fallback."""
+        uname = self.WINDOWS_UNAMES[0]
+        obj = next(w for x in self.make_n("runner", uname) for w in x.split()
+                   if w.endswith("/win_manifest.o"))
+        env = {k: v for k, v in os.environ.items() if k.upper() != "OS"}
+        with tempfile.TemporaryDirectory() as td:
+            stub = pathlib.Path(td) / "uname"
+            stub.write_text("#!/bin/sh\necho '%s'\n" % uname)
+            stub.chmod(0o755)
+            env["PATH"] = td + os.pathsep + env["PATH"]
+            p = subprocess.run(["make", "-B", obj, "WINDRES=definitely-not-windres"],
+                               cwd=ROOT, env=env, capture_output=True, text=True)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("'definitely-not-windres' not found", p.stderr)
+        self.assertIn("UTF-8 manifest", p.stderr)
+        self.assertFalse((ROOT / obj).exists())
 
     @unittest.skipIf(os.name == "nt", "stubs uname with a POSIX script")
     def test_os_windows_nt_still_selects_windows(self):
