@@ -335,9 +335,10 @@ CHARTS = {
 #
 # The support roster (docs/model-tiers.json) is read when the site is built
 # and rendered by scripts/model-tiers.py's own functions, the ones the README
-# table and the Hugging Face cards are rendered by, so the site cannot word
-# a mark differently or keep a stale copy of one. `{{tiers:table}}` is the
-# README's table; `{{validated:OWNER/REPO[,OWNER/REPO]}}` is a model card's
+# list and the Hugging Face cards are rendered by, so the site cannot word
+# a mark differently from the cards or keep a stale copy of one.
+# `{{tiers:table}}` is the README's list as one table;
+# `{{validated:OWNER/REPO[,OWNER/REPO]}}` is a model card's
 # one-line summary for the roster files of the repositories it names.
 
 def _load_tiers():
@@ -360,9 +361,10 @@ def _mark_html(cell, link=True):
 
 
 def tiers_table_html(doc: dict) -> str:
-    """The README's "Actively validated models" table: a row per Tier 1
-    model (its qualifier before its bold name), a sub-row per roster file
-    with the same marks, then the Upcoming models as names."""
+    """The "Actively validated models" table: the README's models as one
+    table, a row per Tier 1 model (its qualifier before its bold name), a
+    sub-row per roster file with the cards' marks, then the Upcoming models
+    as names."""
     out = ['<div class="table-wrap">', '<table class="data tiers">',
            "<thead><tr><th>Model</th><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th>"
            "<th>Train</th><th>Evidence</th></tr></thead>", "<tbody>"]

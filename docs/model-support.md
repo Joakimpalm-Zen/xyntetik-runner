@@ -146,9 +146,9 @@ python3 scripts/tier-smoke.py --models /models --record
 The device class comes from the binary's own `--caps`, matched against
 [`docs/device-evidence.json`](device-evidence.json). The backend defaults to
 the row's; `--backend cpu` adds a CPU cell on a GPU host. `--record` writes the
-cell and the `--adapt-info` answer into the roster and re-renders the README
-table and this page: commit `docs/model-tiers.json`, `README.md` and this file
-together.
+cell and the `--adapt-info` answer into the roster and re-renders the README's
+model list and this page: commit `docs/model-tiers.json`, `README.md` and this
+file together.
 
 The first run on a row and backend has no pin: run it once with `--pin`
 instead of `--record`, commit the pin, then run with `--record` from the clean
@@ -168,26 +168,40 @@ overwritten in place.
 
 The checks: `scripts/model-tiers.py --check` (the roster's structure),
 `--stale` (the release gate's question; `--today` fixes the day for a test)
-and `--docs-check` (the README table and this page against the roster).
+and `--docs-check` (the README's model list and this page against the roster).
 
-## Cards and site
+<a id="cards-and-site"></a>
+## The README, the cards and the site
+
+The README lists each Tier 1 model as one collapsed block. Its line sums up
+each backend over the model's files: ✅ when every file without a declared
+limit there is recorded, partial when some are, – when none is, n/a when
+every file has the limit, and failed when any file recorded a failure.
+Inside, one row per file carries its CPU, CUDA, Metal and Train cells: a
+recorded gate as its version and date, `failed` with its version and date
+for a recorded failure, `n/a` linked to the manual's support matrix, and a
+blank cell where nobody has run the gate yet. The Train cell is the
+recorded `--adapt-info` answer, ✅ with its version and date or `no:` and
+the refusal. The file name links to its row on this page.
 
 The same marks are published in two more places, rendered from the roster
-and never typed by hand.
+and never typed by hand, where not run is written out as `☐ not run` and a
+version carries its `v`.
 
 - **The Hugging Face cards.** Every repository that holds a published row's
   file carries a `xyntetik-validated` block on its card: one line per roster
-  file of that repository with the README's CPU, CUDA, Metal and Train marks
+  file of that repository with its CPU, CUDA, Metal and Train marks
   and a link to the file's row on this page, or, for a published file below
   Tier 1, its tier and the reason with no marks. The block is the last
   bullets of the card's own `xyntetik-status` block; a card without a status
   block carries it as a quote of its own right after the H1. Only the block
   is ever written, and the rest of the card is its author's.
 - **xyntetik.com.** The site's build reads the roster: the Runner page's
-  "Actively validated models" section is this table, and each model card on
-  the landing page carries a "Last validated" line for the roster files of
-  the repositories it names (a card that covers no roster file carries
-  none). The Pages workflow rebuilds the site when the roster changes.
+  "Actively validated models" section is the README's list as one table,
+  and each model card on the landing page carries a "Last validated" line
+  for the roster files of the repositories it names (a card that covers no
+  roster file carries none). The Pages workflow rebuilds the site when the
+  roster changes.
 
 After a `--record` lands on main, the cards are pushed as an explicit step;
 `--record` never touches them:
