@@ -3,6 +3,7 @@
 #define RUNNER_MODEL_H
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 #include "fp16.h"
 #include "gguf.h"
@@ -1101,6 +1102,20 @@ bool   model_seq_nll(model_t *m, const int32_t *toks, int n,
 // both halves of the pair have been accumulated, so it is applied here
 // rather than folded into pos_w.
 void   model_lora_grad_scale(model_t *m, float f);
+// R8.17, the distillation recipe in --train: per-layer gradient norms (the
+// largest and the mean; false on a non-finite gradient), the AdamW moments to
+// and from a checkpoint's sidecar, and a forward-only evaluation of one row.
+bool   model_lora_grad_norms(model_t *m, double *max_out, double *mean_out);
+bool   model_lora_optim_write(model_t *m, FILE *f);
+bool   model_lora_optim_read(model_t *m, FILE *f, char *why, size_t cap);
+typedef struct {
+    double loss, weight;          // weighted loss sum, and the weights' magnitude
+    long   top1_topk, top1_vocab;  // top-1 agreements over the positions
+    long   positions;
+} lora_eval_acc;
+bool   model_lora_eval_row(model_t *m, const int32_t *toks, int n,
+                           const float *pos_w, const lora_teacher *tch,
+                           lora_eval_acc *acc);
 
 // The identity a shared-weights record is keyed on: which file this actually
 // is, beyond the path it was spelled with. Every keyed view of a file — the
