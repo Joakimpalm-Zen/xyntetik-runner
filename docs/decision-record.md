@@ -60,8 +60,9 @@ how much of it the grammar left. They differ when the model's own next token
 is outside the grammar: on the Windows CUDA host, Qwen3-4B Q4_K_M after
 writing `"E` under an enum holding `"E"` and `"EAT"` put `coverage` 1.0 but a
 `legal_mass` near 1e-4 on the legal continuations, so its posterior of 0.84
-for `AT` was a forced choice between two strings it barely considered. A low
-`legal_mass` says the schema, not the model, made that choice. They are the
+for `AT` was a forced choice between two strings it barely considered
+([the measurements](enum-prefix-2026-10-23.md)). A low `legal_mass` says the
+schema, not the model, made that choice. They are the
 model's, at the temperature-free logits, not a calibrated probability of
 being right; calibration is a measurement on labeled decisions, per model.
 A native protocol's auto turn is parsed rather than constrained and has no

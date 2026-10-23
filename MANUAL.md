@@ -984,6 +984,19 @@ particular, general overlapping `oneOf` branches are not tracked in parallel;
 branches must diverge at a supported discriminator. This is a subset of JSON
 Schema 2020-12, not full JSON Schema or GBNF.
 
+An enum member that is a token prefix of another member (`"E"` beside
+`"EAT"`, which Qwen3 spells `E`, then `AT`) is decided after the shared token,
+by what the model predicts once it has written `"E`. The sampler reproduces
+the model's own probabilities there, but which member wins then depends on
+tokenization rather than intent: Qwen3-4B on the Windows CUDA host chose
+`"E"` in 2 of 24 requests with `"EAT"` in the enum and in 24 of 24 with
+`"FEED"` in its place, and at that step the legal continuations held about
+1e-4 of its probability (`legal_mass` in `choice_logprobs`), because it
+meant `EAST`. Spell members the way the model would say them, with no
+shared token prefix (`EAST`, `FEED`). `/v1/decide` scores options whole but
+gives the same ratio for a prefix pair
+([measurements](docs/enum-prefix-2026-10-23.md)).
+
 If the budget ends after a document starts, runner emits the minimal legal
 suffix and reports a length finish - on the tool-call path too: a truncated
 call is still returned as a parseable `tool_calls` entry, but the envelope
