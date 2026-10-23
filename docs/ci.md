@@ -153,3 +153,10 @@ startup for a week).
 `metadata.yml` runs on documentation-only changes too, checking generated
 source/document agreement and the existence of referenced evidence files.
 These checks do not assert that historical evidence has been remeasured.
+
+`cards-drift.yml` asks the Hugging Face Hub whether each published model
+card's last-validated block is still the roster's render
+(`scripts/model-tiers.py --cards-check`, [docs/model-support.md](model-support.md#cards-and-site)).
+It runs on push to main and weekly, never on a pull request, and is not a
+required check, because the cards are pushed by hand after the merge that
+changes the render. Drift fails it; a Hub it cannot read is a warning.
