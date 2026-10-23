@@ -42,7 +42,9 @@ if "-p" in argv:
             print("gpu: Metal backend on Fake M (zero-copy weights)", file=sys.stderr)
     print("loaded fake | llama | 2 layers | ctx 512 | 4 threads | 0.01s",
           file=sys.stderr)
-    text = os.environ.get("FAKE_RUNNER_TEXT", " Paris. It is the largest city in France.")
+    text = os.environ.get("FAKE_RUNNER_TEXT",
+                          "\n\n1. Mercury: the smallest planet and the closest to the Sun.\n"
+                          "2. Venus: the second planet from the Sun and the hottest.")
     sys.stdout.write(prompt + text + "\n")
     print("\nprompt: 6 tok, 100.00 tok/s | gen: 8 tok, 50.00 tok/s", file=sys.stderr)
     sys.exit(0)

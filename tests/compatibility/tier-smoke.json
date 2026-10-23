@@ -1,10 +1,11 @@
 {
   "schema": "xyntetik.runner.tier-smoke.v1",
-  "about": "The per-release smoke of docs/model-tiers.json (scripts/tier-smoke.py): one greedy prompt per Tier 1 file, its stdout byte-compared to a pin under tier-smoke/, one pin per device class and backend. The prompt asks for a fact from outside the system (expect must appear in the continuation); the pin only says whether this build reproduces the one that wrote it. -b is fixed because the prompt batch is otherwise sized from free RAM on a GPU build. A row may override prompt, n_predict, expect or args.",
+  "about": "The per-release smoke of docs/model-tiers.json (scripts/tier-smoke.py): one greedy prompt per Tier 1 file, its stdout byte-compared to a pin under tier-smoke/, one pin per device class and backend. The prompt asks for a fact from outside the system (expect must appear in the continuation) and keeps an instruct model generating to n_predict, and a pin holds at least min_generated_bytes of generated text, so a byte-compare has something to catch; the pin itself only says whether this build reproduces the one that wrote it. Each pin records the prompt and settings that produced it. -b is fixed because the prompt batch is otherwise sized from free RAM on a GPU build. A row may override prompt, n_predict, expect, min_generated_bytes or args.",
   "defaults": {
-    "prompt": "The capital of France is",
-    "n_predict": 32,
-    "expect": "Paris",
+    "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+    "n_predict": 48,
+    "expect": "Mercury",
+    "min_generated_bytes": 96,
     "args": [
       "--temp",
       "0",

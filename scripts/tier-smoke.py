@@ -12,6 +12,7 @@ lora field, through scripts/model-tiers.py's own record().
     scripts/tier-smoke.py --row ID --model FILE --backend metal --pin
     scripts/tier-smoke.py --row ID --model FILE --backend metal --record
     scripts/tier-smoke.py --models DIR --record      # every row for this class
+    scripts/tier-smoke.py --retire --row ID --backend metal --device-class C
 
 What the gate proves, and against what. Its absolute anchors are the file's
 sha256 (the row's, read from the publisher's Hugging Face listing, so the run
@@ -26,6 +27,12 @@ commit, the pin deleted and pinned again. This script never overwrites a pin.
 A pin belongs to one device class and one backend. CPU and Metal kernels
 differ in summation order, so neither inherits the other's pin; a backend
 with no pin of its own has not been run.
+
+A pin must be long enough to catch a change: its generated continuation (the
+stdout after the echoed prompt, without the CLI's closing newline) is at
+least the manifest's min_generated_bytes, or it is not written, and an
+existing pin under the minimum is not compared against. --retire removes a
+pin, its manifest entry and the roster cell that cites it, together.
 """
 
 import argparse
@@ -115,6 +122,44 @@ def this_class(caps, devices, override=None):
     return hits[0]
 
 
+def generated(out, prompt):
+    """The model's continuation: stdout after the echoed prompt, without the
+    newline the CLI prints when generation ends."""
+    cont = out[len(prompt):] if out.startswith(prompt) else out
+    return cont[:-1] if cont.endswith(b"\n") else cont
+
+
+def retire(row_id, backend, dc, roster_path, manifest, manifest_path, pins_dir, devices):
+    """Remove a pin, its manifest entry and the roster cell whose evidence it
+    is. The cell goes because its evidence does; nothing else in the row
+    (the other backends, the --adapt-info answer) cites the pin."""
+    doc = mt.load(roster_path)
+    key = f"{dc}/{backend}"
+    pin_path = os.path.join(pins_dir, f"{row_id}.{dc}.{backend}.txt")
+    entry = (manifest.get("rows", {}).get(row_id) or {}).get("pins", {})
+    if key not in entry and not os.path.exists(pin_path):
+        raise SystemExit(f"{row_id} {key} has no pin to retire")
+    entry.pop(key, None)
+    if os.path.exists(pin_path):
+        os.remove(pin_path)
+    retired = None
+    for row in doc["rows"]:
+        cell = (row.get("backends") or {}).get(backend)
+        if row["id"] == row_id and (cell or {}).get("evidence") == rel(pin_path):
+            row["backends"][backend] = None
+            retired = cell
+    errs = mt.validate(doc, devices)
+    if errs:
+        raise SystemExit("refusing to write a roster that does not validate:\n"
+                         + "\n".join(errs))
+    mt.save(doc, roster_path)
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    print(f"retired {row_id} {key}" + (f" and its {backend} cell ({retired['runner_version']} "
+                                       f"on {retired['date']})" if retired else ""))
+
+
 def find_file(name, models_dir):
     for dirpath, _, files in os.walk(models_dir):
         if name in files:
@@ -168,7 +213,10 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
     t = THREADS_RE.search(stderr)
 
     prompt = spec["prompt"].encode("utf-8")
-    cont = out[len(prompt):] if out.startswith(prompt) else out
+    cont = generated(out, prompt)
+    minimum = spec.get("min_generated_bytes")
+    if not isinstance(minimum, int) or minimum <= 0:
+        raise SystemExit(f"{row['id']}: the manifest names no min_generated_bytes")
     expect = spec.get("expect")
     found = bool(expect) and expect.encode("utf-8") in cont
 
@@ -177,14 +225,25 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
     pin_path = os.path.join(pins_dir, name)
     entry = manifest.setdefault("rows", {}).setdefault(row["id"], {}).setdefault("pins", {})
     out_sha = hashlib.sha256(out).hexdigest()
+    # what produced the bytes: a pin compared under other settings would
+    # report the manifest's change as the engine's
+    made_with = {"prompt": spec["prompt"], "n_predict": spec["n_predict"],
+                 "args": list(spec.get("args") or [])}
     if pin:
         if os.path.exists(pin_path) or key in entry:
             raise SystemExit(f"{row['id']} {key} is already pinned ({rel(pin_path)}); "
-                             f"delete the pin, with the reason in the commit, to re-pin")
+                             f"retire it (--retire), with the reason in the commit, "
+                             f"to re-pin")
+        if len(cont) < minimum:
+            raise SystemExit(f"{row['id']} {key}: the continuation is {len(cont)} bytes, "
+                             f"under the manifest's minimum of {minimum}; a pin that "
+                             f"short catches almost no change. Give the row a prompt "
+                             f"or n_predict that keeps the model generating.")
         os.makedirs(pins_dir, exist_ok=True)
         with open(pin_path, "wb") as f:
             f.write(out)
         entry[key] = {"path": rel(pin_path), "sha256": out_sha, "bytes": len(out),
+                      "spec": made_with,
                       "pinned": {"date": datetime.datetime.now(datetime.timezone.utc)
                                  .date().isoformat(),
                                  "runner_version": caps["version"],
@@ -194,10 +253,19 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
         if not os.path.exists(pin_path) or key not in entry:
             raise SystemExit(f"{row['id']} {key}: no pin to compare against; run once "
                              f"with --pin and commit the pin")
+        if entry[key].get("spec") != made_with:
+            raise SystemExit(f"{rel(pin_path)} was pinned with different settings "
+                             f"({entry[key].get('spec')}) than the manifest's now "
+                             f"({made_with}): retire it (--retire) and pin again")
         with open(pin_path, "rb") as f:
             want = f.read()
         if hashlib.sha256(want).hexdigest() != entry[key]["sha256"]:
             raise SystemExit(f"{rel(pin_path)} does not match its manifest digest")
+        short = len(generated(want, prompt))
+        if short < minimum:
+            raise SystemExit(f"{rel(pin_path)} holds {short} generated bytes, under "
+                             f"the minimum of {minimum}: retire it (--retire) and pin "
+                             f"again rather than compare against it")
         status = "match" if out == want else "mismatch"
     return {
         "schema": mt.RESULT_SCHEMA,
@@ -242,6 +310,9 @@ def main():
                     help="write the pin (a row and backend with none yet)")
     ap.add_argument("--record", action="store_true",
                     help="write the result into docs/model-tiers.json")
+    ap.add_argument("--retire", action="store_true",
+                    help="remove the pin of --row/--backend, its manifest entry and "
+                         "the roster cell that cites it")
     ap.add_argument("--out", help="also write the result document here")
     ap.add_argument("--timeout", type=int, default=1800)
     args = ap.parse_args()
@@ -256,6 +327,13 @@ def main():
         manifest = json.load(f)
     if manifest.get("schema") != MANIFEST_SCHEMA:
         raise SystemExit(f"{args.manifest}: schema {manifest.get('schema')!r}")
+    if args.retire:
+        if not (args.row and args.backend and args.device_class):
+            raise SystemExit("--retire needs --row, --backend and --device-class")
+        this_class({}, devices, args.device_class)
+        retire(args.row, args.backend, args.device_class, args.roster, manifest,
+               args.manifest, args.pins, devices)
+        return 0
     runner = runner_cmd(args.runner)
     caps = caps_of(runner)
     dc = this_class(caps, devices, args.device_class)
