@@ -137,6 +137,23 @@ int main(int argc, char **argv) {
     }
     printf("ok: loss %.6f, %d grad buffers byte-deterministic across runs\n",
            l1, nsnap);
+    // RUNNER_GRAD_DUMP=FILE: the loss, then per buffer its layer, slot, side
+    // (0 A, 1 B) and count as int32 and its gradients as float32, for
+    // tests/test_deltanet_autograd.py
+    const char *dump = getenv("RUNNER_GRAD_DUMP");
+    if (dump) {
+        FILE *f = fopen(dump, "wb");
+        CHECK(f != NULL, "cannot write RUNNER_GRAD_DUMP %s", dump);
+        if (f) {
+            fwrite(&l1, sizeof l1, 1, f);
+            for (int i = 0; i < nsnap; i++) {
+                int32_t h[4] = { lay[i], slo[i], whi[i], snap_n[i] };
+                fwrite(h, sizeof h, 1, f);
+                fwrite(snap[i], sizeof(float), (size_t)snap_n[i], f);
+            }
+            CHECK(fclose(f) == 0, "cannot write RUNNER_GRAD_DUMP %s", dump);
+        }
+    }
 
     // ---- finite differences on sampled coordinates of every buffer
     double worst = 0, cos_num = 0, cos_a = 0, cos_f = 0;
