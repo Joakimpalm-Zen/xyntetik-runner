@@ -9083,7 +9083,6 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
     float *g = s->g;
     float *u = s->u;
     float *hact = s->hact;
-    float *tmpE = s->tmpE;
     bool gate = s->gate;
     float rs = s->rs;
     int swa = s->swa;
@@ -9096,17 +9095,44 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
     float *mg = s->mg;
     float *mu = s->mu;
     bool ok = *okp;
-    // ---- phase R: recompute forward internals from the tape
+    // ---- phase R: recompute forward internals from the tape. Staged so
+    // every projection runs as ONE product over the window (R8.19): each
+    // weight decoded once per exact-columns pass instead of once a
+    // position, every column the batch-1 dot's bits (t_mv_exact), so the
+    // values are the per-position recompute's byte for byte. The adapter
+    // deltas, norms, rope and attention stay per position, in the forward's
+    // order within each position.
+    float *ob = ok ? malloc(sizeof(float) * (size_t)T * E) : NULL;
+    if (!ob) ok = false;
+    for (int t = 0; ok && t < T; t++)
+        xnorm(m, xn1 + (size_t)t * E, tape_x + (size_t)t * E, ly->attn_norm_w,
+              ly->attn_norm_b, E, m->rms_eps);
+    bool ex = t_mv_exact;
+    t_mv_exact = true;
+    if (ok) {
+        // qwen35's fused Q/gate plane goes to dqg (scratch until B2)
+        if (s->q35)
+            matvec_b(m->tp, s->dqg, 2 * q_dim, ly->wq, xn1, E, E, 2 * q_dim,
+                     ly->bq, T);
+        else
+            matvec_b(m->tp, q, q_dim, ly->wq, xn1, E, E, q_dim, ly->bq, T);
+        if (need_kpre)
+            matvec_b(m->tp, kpre, kv_dim, ly->wk, xn1, E, E, kv_dim, ly->bk, T);
+        if (vnorm && ly->wv)
+            matvec_b(m->tp, vpre, kv_dim, ly->wv, xn1, E, E, kv_dim, ly->bv, T);
+        // afmoe/muse: the output gate's own frozen projection of the normed
+        // input (qwen35's comes out of the fused Q projection)
+        if (gate && !s->q35)
+            matvec_b(m->tp, gpre, q_dim, ly->wq_gate, xn1, E, E, q_dim, NULL, T);
+    }
+    t_mv_exact = ex;
     for (int t = 0; ok && t < T; t++) {
-        const float *xt = tape_x + (size_t)t * E;
         float *x1 = xn1 + (size_t)t * E;
-        xnorm(m, x1, xt, ly->attn_norm_w, ly->attn_norm_b, E, m->rms_eps);
         float *qt = q + (size_t)t * q_dim;
         if (s->q35) {
-            // the fused projection and its adapter over all 2*q_dim rows,
-            // then the per-head split the forward makes (attn_project)
-            float *qg = s->dqg + (size_t)t * 2 * q_dim;   // scratch until B2
-            matvec_b(m->tp, qg, 2 * q_dim, ly->wq, x1, E, E, 2 * q_dim, ly->bq, 1);
+            // the fused projection's adapter over all 2*q_dim rows, then the
+            // per-head split the forward makes (attn_project)
+            float *qg = s->dqg + (size_t)t * 2 * q_dim;
             lora_site_fw(m, l, LW_Q, qg, x1, E, 2 * q_dim);
             for (int h = 0; h < n_head; h++) {
                 memcpy(qt + (size_t)h * hd, qg + (size_t)h * 2 * hd,
@@ -9115,8 +9141,7 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
                        qg + (size_t)h * 2 * hd + hd, sizeof(float) * (size_t)hd);
             }
         } else {
-        matvec_b(m->tp, qt, q_dim, ly->wq, x1, E, E, q_dim, ly->bq, 1);
-        lora_site_fw(m, l, LW_Q, qt, x1, E, q_dim);
+            lora_site_fw(m, l, LW_Q, qt, x1, E, q_dim);
         }
         if (ly->qnorm_w) {
             memcpy(qpre + (size_t)t * q_dim, qt,
@@ -9134,21 +9159,16 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
             if (ts != 1.0f)
                 for (int i = 0; i < q_dim; i++) qt[i] *= ts;
         }
-        if (need_kpre) {
-            float *kt = kpre + (size_t)t * kv_dim;
-            matvec_b(m->tp, kt, kv_dim, ly->wk, x1, E, E, kv_dim, ly->bk, 1);
-            lora_site_fw(m, l, LW_K, kt, x1, E, kv_dim);
-        }
+        if (need_kpre)
+            lora_site_fw(m, l, LW_K, kpre + (size_t)t * kv_dim, x1, E, kv_dim);
         if (vnorm) {
             // the pre-norm V the forward normalised before caching: its own
             // projection, or the raw K projection when the layer ships none
             float *vt = vpre + (size_t)t * kv_dim;
-            if (ly->wv) {
-                matvec_b(m->tp, vt, kv_dim, ly->wv, x1, E, E, kv_dim, ly->bv, 1);
+            if (ly->wv)
                 lora_site_fw(m, l, LW_V, vt, x1, E, kv_dim);
-            } else {
+            else
                 memcpy(vt, kpre + (size_t)t * kv_dim, sizeof(float) * (size_t)kv_dim);
-            }
         }
         // the derived-K cache layout (m->tied_v) is refused above, so the
         // attention below always reads real K and V rows
@@ -9158,59 +9178,67 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
                        0, 0, scale, NULL, false, NULL, l };
         attn_run(m, &aj, n_head);
         if (gate) {
-            // afmoe/muse: sigmoid gate from its own frozen projection of the
-            // normed input, applied element-wise to the attention output;
-            // qwen35's came out of the fused Q projection above
+            // sigmoid gate applied element-wise to the attention output
             float *gt = gpre + (size_t)t * q_dim;
             float *aot = ao + (size_t)t * q_dim;
-            if (!s->q35)
-                matvec_b(m->tp, gt, q_dim, ly->wq_gate, x1, E, E, q_dim, NULL, 1);
             memcpy(aopre + (size_t)t * q_dim, aot, sizeof(float) * (size_t)q_dim);
             for (int i = 0; i < q_dim; i++)
                 aot[i] *= 1.0f / (1.0f + expf(-gt[i]));
         }
-        matvec_b(m->tp, tmpE, E, ly->wo, ao + (size_t)t * q_dim, q_dim,
-                 q_dim, E, ly->bo, 1);
-        lora_site_fw(m, l, LW_O, tmpE, ao + (size_t)t * q_dim, q_dim, E);
+    }
+    t_mv_exact = true;
+    if (ok)
+        matvec_b(m->tp, ob, E, ly->wo, ao, q_dim, q_dim, E, ly->bo, T);
+    t_mv_exact = ex;
+    for (int t = 0; ok && t < T; t++) {
+        const float *xt = tape_x + (size_t)t * E;
+        float *ot = ob + (size_t)t * E;
+        lora_site_fw(m, l, LW_O, ot, ao + (size_t)t * q_dim, q_dim, E);
         if (ly->post_attn_norm_w) {
-            memcpy(opre + (size_t)t * E, tmpE, sizeof(float) * (size_t)E);
-            rmsnorm(tmpE, tmpE, ly->post_attn_norm_w, E, m->post_norm_eps);
+            memcpy(opre + (size_t)t * E, ot, sizeof(float) * (size_t)E);
+            rmsnorm(ot, ot, ly->post_attn_norm_w, E, m->post_norm_eps);
         }
         float *xat = xa + (size_t)t * E;
-        for (int i = 0; i < E; i++) xat[i] = xt[i] + rs * tmpE[i];
+        for (int i = 0; i < E; i++) xat[i] = xt[i] + rs * ot[i];
+        xnorm(m, xn2 + (size_t)t * E, xat, ly->ffn_norm_w, ly->ffn_norm_b, E,
+              m->rms_eps);
+    }
+    free(ob);
+    for (int t = 0; ok && moe && t < T; t++) {
+        // the forward's own router (selection and weights), then the
+        // router's probabilities for the softmax-over-all adjoint, then
+        // each selected expert's gate and up
         float *x2 = xn2 + (size_t)t * E;
-        xnorm(m, x2, xat, ly->ffn_norm_w, ly->ffn_norm_b, E, m->rms_eps);
-        if (moe) {
-            // the forward's own router (selection and weights), then the
-            // router's probabilities for the softmax-over-all adjoint, then
-            // each selected expert's gate and up
-            int *sl = msel + (size_t)t * used;
-            float *sw = mselw + (size_t)t * used;
-            moe_route(m, ly, x2, E, ne_x, used, sl, sw, false);
-            float *pr = mprob + (size_t)t * ne_x;
-            matvec_b(m->tp, pr, ne_x, ly->ffn_gate_inp, x2, E, E, ne_x, NULL, 1);
-            if (m->expert_gating == EXPERT_GATE_SOFTMAX) {
-                float mx = pr[0], ssum = 0.0f;
-                for (int e = 1; e < ne_x; e++) if (pr[e] > mx) mx = pr[e];
-                for (int e = 0; e < ne_x; e++) { pr[e] = expf(pr[e] - mx); ssum += pr[e]; }
-                for (int e = 0; e < ne_x; e++) pr[e] /= ssum;
-            }
-            for (int k = 0; k < used; k++) {
-                gguf_tensor gv = moe_expert_weight(ly, 0, sl[k], E, nfe);
-                gguf_tensor uv = moe_expert_weight(ly, 1, sl[k], E, nfe);
-                matvec_b(m->tp, mg + ((size_t)t * used + k) * nfe, nfe, &gv, x2,
-                         E, E, nfe, NULL, 1);
-                matvec_b(m->tp, mu + ((size_t)t * used + k) * nfe, nfe, &uv, x2,
-                         E, E, nfe, NULL, 1);
-            }
-            continue;
+        int *sl = msel + (size_t)t * used;
+        float *sw = mselw + (size_t)t * used;
+        moe_route(m, ly, x2, E, ne_x, used, sl, sw, false);
+        float *pr = mprob + (size_t)t * ne_x;
+        matvec_b(m->tp, pr, ne_x, ly->ffn_gate_inp, x2, E, E, ne_x, NULL, 1);
+        if (m->expert_gating == EXPERT_GATE_SOFTMAX) {
+            float mx = pr[0], ssum = 0.0f;
+            for (int e = 1; e < ne_x; e++) if (pr[e] > mx) mx = pr[e];
+            for (int e = 0; e < ne_x; e++) { pr[e] = expf(pr[e] - mx); ssum += pr[e]; }
+            for (int e = 0; e < ne_x; e++) pr[e] /= ssum;
         }
-        matvec_b(m->tp, g + (size_t)t * nff, nff, ly->w_gate, x2, E, E, nff,
-                 NULL, 1);
-        lora_site_fw(m, l, LW_GATE, g + (size_t)t * nff, x2, E, nff);
-        matvec_b(m->tp, u + (size_t)t * nff, nff, ly->w_up, x2, E, E, nff,
-                 NULL, 1);
-        lora_site_fw(m, l, LW_UP, u + (size_t)t * nff, x2, E, nff);
+        for (int k = 0; k < used; k++) {
+            gguf_tensor gv = moe_expert_weight(ly, 0, sl[k], E, nfe);
+            gguf_tensor uv = moe_expert_weight(ly, 1, sl[k], E, nfe);
+            matvec_b(m->tp, mg + ((size_t)t * used + k) * nfe, nfe, &gv, x2,
+                     E, E, nfe, NULL, 1);
+            matvec_b(m->tp, mu + ((size_t)t * used + k) * nfe, nfe, &uv, x2,
+                     E, E, nfe, NULL, 1);
+        }
+    }
+    if (ok && !moe) {
+        t_mv_exact = true;
+        matvec_b(m->tp, g, nff, ly->w_gate, xn2, E, E, nff, NULL, T);
+        matvec_b(m->tp, u, nff, ly->w_up, xn2, E, E, nff, NULL, T);
+        t_mv_exact = ex;
+        for (int t = 0; t < T; t++) {
+            float *x2 = xn2 + (size_t)t * E;
+            lora_site_fw(m, l, LW_GATE, g + (size_t)t * nff, x2, E, nff);
+            lora_site_fw(m, l, LW_UP, u + (size_t)t * nff, x2, E, nff);
+        }
     }
 
     if (lprof) { double n2 = plat_now(); lbw_prof[0] += n2 - lt; lt = n2; }
@@ -9962,20 +9990,29 @@ NUM_STAGE void lbw_recompute_deltanet(model_t *m, int l, int T, lbw_state *s,
     const int E = s->E, nff = s->nff, cd = d->convdim, nh = d->nh, sk = d->sk;
     const int histn = d->K - 1;
     bool ok = *okp;
+    // the four input projections, then the output and the FFN's, each ONE
+    // exact-columns product over the window (as the dense recompute); the
+    // adapter deltas per position, row t's before the conv reads it
+    for (int t = 0; ok && t < T; t++)
+        xnorm(m, s->xn1 + (size_t)t * E, s->tape_x + (size_t)t * E,
+              ly->attn_norm_w, ly->attn_norm_b, E, m->rms_eps);
+    bool ex = t_mv_exact;
+    t_mv_exact = true;
+    if (ok) {
+        matvec_b(m->tp, d->mix, cd, ly->wqkv, s->xn1, E, E, cd, NULL, T);
+        matvec_b(m->tp, d->z, d->inner, ly->wq_gate, s->xn1, E, E, d->inner, NULL, T);
+        matvec_b(m->tp, d->bb, nh, ly->ssm_beta, s->xn1, E, E, nh, NULL, T);
+        matvec_b(m->tp, d->aa, nh, ly->ssm_alpha, s->xn1, E, E, nh, NULL, T);
+    }
+    t_mv_exact = ex;
     for (int t = 0; ok && t < T; t++) {
-        const float *xt = s->tape_x + (size_t)t * E;
         float *x1 = s->xn1 + (size_t)t * E;
-        xnorm(m, x1, xt, ly->attn_norm_w, ly->attn_norm_b, E, m->rms_eps);
         float *mx = d->mix + (size_t)t * cd;
-        matvec_b(m->tp, mx, cd, ly->wqkv, x1, E, E, cd, NULL, 1);
         lora_site_fw(m, l, LW_QKV, mx, x1, E, cd);
         float *zt = d->z + (size_t)t * d->inner;
-        matvec_b(m->tp, zt, d->inner, ly->wq_gate, x1, E, E, d->inner, NULL, 1);
         lora_site_fw(m, l, LW_ZGATE, zt, x1, E, d->inner);
         float *bt = d->bb + (size_t)t * nh, *at = d->aa + (size_t)t * nh;
-        matvec_b(m->tp, bt, nh, ly->ssm_beta, x1, E, E, nh, NULL, 1);
         lora_site_fw(m, l, LW_BETA, bt, x1, E, nh);
-        matvec_b(m->tp, at, nh, ly->ssm_alpha, x1, E, E, nh, NULL, 1);
         lora_site_fw(m, l, LW_ALPHA, at, x1, E, nh);
         // the causal conv over the window (the current tap first, then the
         // history oldest to newest, as the forward sums it), and silu
@@ -10016,24 +10053,35 @@ NUM_STAGE void lbw_recompute_deltanet(model_t *m, int l, int T, lbw_state *s,
         tpool_run(m->tp, dn_fw_worker, &J, nh);
         ok = J.ok;
     }
+    float *ob = ok ? malloc(sizeof(float) * (size_t)T * E) : NULL;
+    if (!ob) ok = false;
+    t_mv_exact = true;
+    if (ok)
+        matvec_b(m->tp, ob, E, ly->ssm_out, d->o, d->inner, d->inner, E, NULL, T);
+    t_mv_exact = ex;
     for (int t = 0; ok && t < T; t++) {
         const float *xt = s->tape_x + (size_t)t * E;
-        const float *ot = d->o + (size_t)t * d->inner;
-        matvec_b(m->tp, s->tmpE, E, ly->ssm_out, ot, d->inner, d->inner, E, NULL, 1);
-        lora_site_fw(m, l, LW_SSMO, s->tmpE, ot, d->inner, E);
+        float *otE = ob + (size_t)t * E;
+        lora_site_fw(m, l, LW_SSMO, otE, d->o + (size_t)t * d->inner, d->inner, E);
         if (ly->post_attn_norm_w) {
-            memcpy(s->opre + (size_t)t * E, s->tmpE, sizeof(float) * (size_t)E);
-            rmsnorm(s->tmpE, s->tmpE, ly->post_attn_norm_w, E, m->post_norm_eps);
+            memcpy(s->opre + (size_t)t * E, otE, sizeof(float) * (size_t)E);
+            rmsnorm(otE, otE, ly->post_attn_norm_w, E, m->post_norm_eps);
         }
         float *xat = s->xa + (size_t)t * E;
-        for (int i = 0; i < E; i++) xat[i] = xt[i] + s->rs * s->tmpE[i];
+        for (int i = 0; i < E; i++) xat[i] = xt[i] + s->rs * otE[i];
+        xnorm(m, s->xn2 + (size_t)t * E, xat, ly->ffn_norm_w, ly->ffn_norm_b, E,
+              m->rms_eps);
+    }
+    free(ob);
+    t_mv_exact = true;
+    if (ok) {
+        matvec_b(m->tp, s->g, nff, ly->w_gate, s->xn2, E, E, nff, NULL, T);
+        matvec_b(m->tp, s->u, nff, ly->w_up, s->xn2, E, E, nff, NULL, T);
+    }
+    t_mv_exact = ex;
+    for (int t = 0; ok && t < T; t++) {
         float *x2 = s->xn2 + (size_t)t * E;
-        xnorm(m, x2, xat, ly->ffn_norm_w, ly->ffn_norm_b, E, m->rms_eps);
-        matvec_b(m->tp, s->g + (size_t)t * nff, nff, ly->w_gate, x2, E, E, nff,
-                 NULL, 1);
         lora_site_fw(m, l, LW_GATE, s->g + (size_t)t * nff, x2, E, nff);
-        matvec_b(m->tp, s->u + (size_t)t * nff, nff, ly->w_up, x2, E, E, nff,
-                 NULL, 1);
         lora_site_fw(m, l, LW_UP, s->u + (size_t)t * nff, x2, E, nff);
         const float *gt = s->g + (size_t)t * nff, *ut = s->u + (size_t)t * nff;
         float *ht = s->hact + (size_t)t * nff;
@@ -10273,10 +10321,60 @@ static double kd_row_loss(const float *z, int V, const int32_t *ids,
     return kl;
 }
 
-// The taped forward: the inference forward, solo per position, with every
-// layer's input kept on the tape, and the window's (weighted) next-token
-// loss, or with a teacher the window's (weighted) KL. A failure leaves the
-// tape for the caller to free.
+static bool rows_logits(model_t *m, int n, float *out);
+
+// Rows a taped forward runs at once. A forward of n rows with t_mv_exact (every
+// product column the batch-1 dot's bits; norms, rope, attention and the
+// recurrence already run row by row) is n solo decode steps' bits, held by
+// test_train's comparison across round widths (RUNNER_TRAIN_ROWS=N, 1 a
+// position at a time) on every trainable family; every weight block is
+// decoded once a round instead of once a position. Not the speculative
+// keep-forward: training restores no row, so it files no per-row checkpoints.
+enum { TRAIN_FW_ROWS = 16 };
+static int lora_fw_rows(const model_t *m) {
+    if (m->gpu) return 1;
+    const char *e = getenv("RUNNER_TRAIN_ROWS");
+    int n = e && *e ? atoi(e) : TRAIN_FW_ROWS;
+    if (n > m->n_batch) n = m->n_batch;
+    return n > 1 ? n : 1;
+}
+
+// A window's logits position by position, the forward run in those rounds:
+// position t's logits, valid until the next call. r starts zeroed; the
+// round's logits are its own (fw_rounds_free), so a step leaves nothing
+// allocated behind it.
+typedef struct { int rows, t0, n; float *lg; } fw_rounds;
+static float *fw_rounds_logits(model_t *m, fw_rounds *r, const int32_t *toks,
+                               int T, int t) {
+    if (!r->rows) {
+        r->rows = lora_fw_rows(m);
+        if (r->rows > 1 &&
+            !(r->lg = malloc(sizeof(float) * (size_t)r->rows * m->n_vocab)))
+            return NULL;
+    }
+    if (t == r->t0 + r->n) {
+        r->t0 = t;
+        r->n = T - t < r->rows ? T - t : r->rows;
+        if (r->n > 1) {
+            bool ex = t_mv_exact;
+            t_mv_exact = true;
+            model_forward_batch(m, toks + t, r->n, t, false);
+            t_mv_exact = ex;
+            if (!rows_logits(m, r->n, r->lg)) return NULL;
+        }
+    }
+    return r->n > 1 ? r->lg + (size_t)(t - r->t0) * m->n_vocab
+                    : model_forward(m, toks[t], t);
+}
+static void fw_rounds_free(fw_rounds *r) {
+    free(r->lg);
+    r->lg = NULL;
+}
+
+// The taped forward: the inference forward, in rounds of solo bits,
+// with every layer's input kept on the tape, and the window's (weighted)
+// next-token loss, or with a teacher the window's (weighted) KL. A failure
+// leaves the tape for the caller to free.
 NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
                                const float *pos_w, const lora_teacher *tch,
                                double *loss_out) {
@@ -10285,9 +10383,10 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
     m->tape_T = T;
     m->tape = malloc(sizeof(float) * (size_t)(L + 1) * T * E);
     if (!m->tape) { m->tape_T = 0; return false; }
+    fw_rounds rd = {0};
     for (int t = 0; t < T; t++) {
-        float *lg = model_forward(m, toks[t], t);
-        if (!lg) return false;
+        float *lg = fw_rounds_logits(m, &rd, toks, T, t);
+        if (!lg) { fw_rounds_free(&rd); return false; }
         if (m->tape_logits_cb) m->tape_logits_cb(m->tape_logits_ud, t, lg);
         if (t < T - 1 && (!pos_w || pos_w[t] != 0.0f) && tch) {
             const int32_t *ids = tch->ids + (size_t)t * tch->k;
@@ -10297,6 +10396,7 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
                 fprintf(stderr, "error: transition %d: the teacher's tail "
                         "holds %.3g of the mass and the student none; the "
                         "KL is infinite\n", t, r.p_tail);
+                fw_rounds_free(&rd);
                 return false;
             }
             double w = pos_w ? (double)pos_w[t] : 1.0;
@@ -10311,6 +10411,7 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
                          - (double)lg[toks[t + 1]]);
         }
     }
+    fw_rounds_free(&rd);
     *loss_out = loss;
     return true;
 }
@@ -10323,14 +10424,16 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
 // chains unchanged (positions are independent through the head; the chunk
 // boundary is a scheduling artifact). Logits still recompute from the tape
 // rather than being stored: memory over speed, the reference trade — the
-// chunk bounds the probs plane to HEAD_CHUNK * V floats.
+// chunk bounds the probs plane to HEAD_CHUNK * V floats. The logits take
+// the same chunks (R8.19): one exact-columns product a chunk, every column
+// the batch-1 dot's bits.
 enum { HEAD_CHUNK = 16 };
 NUM_STAGE bool lora_head_bw(model_t *m, const int32_t *toks, int T,
                          const float *pos_w, const lora_teacher *tch,
                          float *dx) {
     int E = m->n_embd, V = m->n_vocab, L = m->n_layer;
     float *probs  = malloc(sizeof(float) * (size_t)HEAD_CHUNK * V);
-    float *hn     = malloc(sizeof(float) * (size_t)E);
+    float *hn     = malloc(sizeof(float) * (size_t)HEAD_CHUNK * E);
     float *dhn    = malloc(sizeof(float) * (size_t)HEAD_CHUNK * E);
     // softcap adjoint needs tanh(z/c) per logit of the chunk
     float *thb    = m->logit_softcap > 0
@@ -10342,18 +10445,29 @@ NUM_STAGE bool lora_head_bw(model_t *m, const int32_t *toks, int T,
     bool ok = true;
     int tmap[HEAD_CHUNK];
     int nc = 0;
-    for (int t = 0; t < T - 1; t++) {
-        if (!pos_w || pos_w[t] != 0.0f) {
-            const float *h = m->tape + ((size_t)L * T + t) * E;
-            float *pr = probs + (size_t)nc * V;
-            xnorm(m, hn, h, m->out_norm_w, m->out_norm_b, E, m->rms_eps);
-            matvec_b(m->tp, pr, V, m->output, hn, E, E, V, NULL, 1);
+    for (int p = 0; ok && p < T - 1; p++) {
+        if (!pos_w || pos_w[p] != 0.0f) {
+            const float *h = m->tape + ((size_t)L * T + p) * E;
+            xnorm(m, hn + (size_t)nc * E, h, m->out_norm_w, m->out_norm_b, E,
+                  m->rms_eps);
+            tmap[nc++] = p;
+        }
+        if (nc == 0 || (nc < HEAD_CHUNK && p < T - 2)) continue;
+        // the chunk's logits in one exact-columns product: every column the
+        // batch-1 dot's bits, the vocabulary decoded once a chunk
+        bool ex = t_mv_exact;
+        t_mv_exact = true;
+        matvec_b(m->tp, probs, V, m->output, hn, E, E, V, NULL, nc);
+        t_mv_exact = ex;
+        for (int ci = 0; ci < nc; ci++) {
+            int t = tmap[ci];
+            float *pr = probs + (size_t)ci * V;
             // the head transforms exactly as the forward applies them
             // (apply_head_transforms): scale, softcap, suppress
             float ls = m->logit_scale != 0.0f ? m->logit_scale : 1.0f;
             if (ls != 1.0f)
                 for (int i = 0; i < V; i++) pr[i] *= ls;
-            float *th = thb ? thb + (size_t)nc * V : NULL;
+            float *th = thb ? thb + (size_t)ci * V : NULL;
             if (th) {
                 float c = m->logit_softcap;
                 for (int i = 0; i < V; i++) {
@@ -10400,9 +10514,8 @@ NUM_STAGE bool lora_head_bw(model_t *m, const int32_t *toks, int T,
                 for (int i = 0; i < V; i++) pr[i] *= 1.0f - th[i] * th[i];
             if (ls != 1.0f)
                 for (int i = 0; i < V; i++) pr[i] *= ls;
-            tmap[nc++] = t;
         }
-        if (nc == HEAD_CHUNK || (t == T - 2 && nc > 0)) {
+        if (ok) {
             memset(dhn, 0, sizeof(float) * (size_t)nc * E);
             if (!matvec_t(m, m->output, probs, dhn, E, V, nc)) {
                 ok = false;
@@ -10764,9 +10877,11 @@ bool model_lora_eval_row(model_t *m, const int32_t *toks, int T,
                          const float *pos_w, const lora_teacher *tch,
                          lora_eval_acc *acc) {
     int V = m->n_vocab;
-    for (int t = 0; t < T; t++) {
-        float *lg = model_forward(m, toks[t], t);
-        if (!lg) return false;
+    fw_rounds rd = {0};
+    bool ok = true;
+    for (int t = 0; ok && t < T; t++) {
+        float *lg = fw_rounds_logits(m, &rd, toks, T, t);
+        if (!lg) { ok = false; break; }
         if (t >= T - 1 || (pos_w && pos_w[t] == 0.0f)) continue;
         double w = pos_w ? (double)pos_w[t] : 1.0;
         int vmax = 0;
@@ -10776,7 +10891,7 @@ bool model_lora_eval_row(model_t *m, const int32_t *toks, int T,
             const int32_t *ids = tch->ids + (size_t)t * tch->k;
             const float *lp = tch->logp + (size_t)t * tch->k;
             kd_row r;
-            if (!kd_row_eval(lg, V, ids, lp, tch->k, &r)) return false;
+            if (!kd_row_eval(lg, V, ids, lp, tch->k, &r)) { ok = false; break; }
             acc->loss += w * kd_row_loss(lg, V, ids, lp, tch->k, &r);
             int tbest = 0;
             for (int i = 1; i < tch->k; i++) if (lp[i] > lp[tbest]) tbest = i;
@@ -10797,7 +10912,8 @@ bool model_lora_eval_row(model_t *m, const int32_t *toks, int T,
         acc->top1_vocab += vmax == target;
         acc->positions++;
     }
-    return true;
+    fw_rounds_free(&rd);
+    return ok;
 }
 
 
@@ -11186,12 +11302,14 @@ static void fwd_layer_facts(model_t *m, int l, int n, int pos, int dbg,
 // reads the stream without changing what the stages compute
 
 static void fwd_tape_record(model_t *m, int l, int n, int pos) {
-    // adaptation D3 tape: record the residual stream entering each layer
-    // (solo forwards only; the backward pass recomputes everything else
-    // from these checkpoints plus the KV cache)
-    if (m->tape && n == 1 && pos < m->tape_T && l < m->n_layer)
-        memcpy(m->tape + ((size_t)l * m->tape_T + pos) * m->n_embd,
-               m->x, sizeof(float) * (size_t)m->n_embd);
+    // adaptation D3 tape: record the residual stream entering each layer,
+    // every row of the forward (a solo step or a verify round of the taped
+    // forward); the backward pass recomputes everything else from these
+    // checkpoints plus the KV cache
+    if (!m->tape || l >= m->n_layer) return;
+    for (int b = 0; b < n && pos + b < m->tape_T; b++)
+        memcpy(m->tape + ((size_t)l * m->tape_T + pos + b) * m->n_embd,
+               m->x + (size_t)b * m->n_embd, sizeof(float) * (size_t)m->n_embd);
 }
 
 // RUNNER_LAYER_SIM: the layer's input rows, per thread. layer_sim_begin and
@@ -11915,10 +12033,10 @@ static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int po
         forward_layer(m, l, n, pos, dbg);
     if (dbg_time_on()) { int k = n > 1; dt_fwd_t[k] += dt_now() - dt_f0; dt_fwd_n[k]++; dt_fwd_rows[k] += n; }
 
-    // the tape's last row: the final pre-norm hidden
-    if (m->tape && n == 1 && pos < m->tape_T)
-        memcpy(m->tape + ((size_t)m->n_layer * m->tape_T + pos) * m->n_embd,
-               m->x, sizeof(float) * (size_t)m->n_embd);
+    // the tape's last row: the final pre-norm hidden, every row
+    for (int b = 0; m->tape && b < n && pos + b < m->tape_T; b++)
+        memcpy(m->tape + ((size_t)m->n_layer * m->tape_T + pos + b) * m->n_embd,
+               m->x + (size_t)b * m->n_embd, sizeof(float) * (size_t)m->n_embd);
     if (!want_logits) return NULL;
     return forward_head(m, n, dbg);
 }
@@ -12029,6 +12147,28 @@ float *model_spec_row_logits(model_t *m, int b) {
              m->n_vocab, NULL, 1);
     apply_head_transforms(m, lg);
     return lg;
+}
+
+// The heads of a round's n rows (m->x) on the host in one product, into
+// out [n][n_vocab]: each row normed as model_spec_row_logits norms it, then
+// one exact-columns matvec (every column the batch-1 dot's bits), the
+// vocabulary decoded once for the round instead of once a row.
+static bool rows_logits(model_t *m, int n, float *out) {
+    int xdim = m->xdim, V = m->n_vocab;
+    if (m->gpu) return false;
+    float *hn = malloc(sizeof(float) * (size_t)n * xdim);
+    if (!hn) return false;
+    for (int b = 0; b < n; b++) {
+        head_norm_row(m, b);
+        memcpy(hn + (size_t)b * xdim, m->xb, sizeof(float) * (size_t)xdim);
+    }
+    bool ex = t_mv_exact;
+    t_mv_exact = true;
+    matvec_b(m->tp, out, V, m->output, hn, xdim, m->n_embd, V, NULL, n);
+    t_mv_exact = ex;
+    for (int b = 0; b < n; b++) apply_head_transforms(m, out + (size_t)b * V);
+    free(hn);
+    return true;
 }
 
 const float *model_hidden_row(const model_t *m, int b) {

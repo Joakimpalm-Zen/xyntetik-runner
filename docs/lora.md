@@ -810,7 +810,9 @@ rule's verdict),
 `*.partial` (a write in progress, never installed on failure).
 
 **Environment.** `RUNNER_TRAIN_GPU=1` (the CUDA assist), `RUNNER_TRAIN_PROF=1`
-(per-step phase times on stderr), `RUNNER_SCORE_CHUNKED=1` (batched scoring).
+(per-step phase times on stderr), `RUNNER_TRAIN_ROWS=N` (positions the trained
+forward runs at once, 16 by default, 1 one at a time; the same bytes at every
+width, which the tests hold), `RUNNER_SCORE_CHUNKED=1` (batched scoring).
 
 **Tests.** `tests/test_train.py`, `tests/test_rollout_identity.py`,
 `tests/test_lora.py`, `tests/test_moe_lora.py`, `tests/test_lora_grad.c`,
