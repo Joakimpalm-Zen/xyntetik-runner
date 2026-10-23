@@ -45,12 +45,14 @@ Attention-only adapters on supported sparse MoE also train: the backward
 propagates through frozen softmax routing and frozen experts, including
 selected-expert renormalization and supported non-renormalized weights.
 Frozen parameters still affect the gradient to the attention adapter.
-Expert adapters, unsupported gating/group/bias/shared-expert shapes,
-Gemma dual-branch MoE, recurrent architectures (qwen35 and Clef serve an
-adapter on their DeltaNet, attention and FFN projections, but do not train
-one), removed sublayers, attention
-sinks, LayerNorm (StableLM), and unimplemented backward properties refuse by
-name. Derived-K (`RUNNER_TIEDV`), ring KV, and non-f16 training caches
+qwen35 and Clef train through their Gated DeltaNet layers (backpropagation
+through time over each head's state, checkpointed every square-root-of-window
+positions, with adapters on the five DeltaNet projections) and their
+full-attention layers' fused query-and-gate projection. Expert adapters,
+unsupported gating/group/bias/shared-expert shapes, Gemma dual-branch MoE, the
+Mamba-2 hybrids, qwen4exp's hyper-connections, MoE on a DeltaNet model,
+removed sublayers, attention sinks, LayerNorm (StableLM), and unimplemented
+backward properties refuse by name. Derived-K (`RUNNER_TIEDV`), ring KV, and non-f16 training caches
 retain their refusals. `--adapt-info` reports serving and training support
 for the actual loaded model.
 

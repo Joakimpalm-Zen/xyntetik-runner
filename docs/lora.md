@@ -375,8 +375,8 @@ cross-entropy's 12.29 s.
 The objective is gated in `tests/test_kd_grad.c`: a one-hot teacher against the
 cross-entropy (loss and gradient bit for bit), the loss against an independent
 formula, and the gradient against central differences, on the plain,
-logit-scaled and soft-capped heads. It covers the models the trainer covers;
-qwen35 and Clef still refuse training ([section 15](#15-what-the-trainer-covers-and-what-it-refuses)).
+logit-scaled and soft-capped heads. It covers the models the trainer covers,
+qwen35 and Clef included ([section 15](#15-what-the-trainer-covers-and-what-it-refuses)).
 
 ## 7. Reinforcement fine-tuning (GRPO-lite)
 
@@ -475,7 +475,8 @@ server.
   the CPU and on CUDA (Metal runs qwen35 on the CPU). On a Clef file the same
   adapter reaches the decision head through the backbone; a `qwen35` adapter,
   which llama.cpp's converter writes from Clef's backbone, is accepted there.
-  These models serve adapters but do not train them yet.
+  These models train adapters too, on the CPU
+  ([section 15](#15-what-the-trainer-covers-and-what-it-refuses)).
 - **Fails closed.** A shape or rank mismatch, an unknown target, an
   architecture the adapter path does not cover (the Mamba-2 hybrids, Gemma's
   dual-branch MoE), or an adapter on a routed-expert FFN that the device path
@@ -663,15 +664,25 @@ head), the GELU gated FFN (Gemma 3) beside the SiLU one, and
 Gemma 4 in full (the weightless V norm, the V-less full-attention layers, the
 E-series shared KV and per-layer embeddings).
 
+On qwen35 (Qwen3.5/3.6) and Clef the backward runs through the Gated DeltaNet
+layers: backpropagation through time over each head's state, the causal
+convolution, the L2-normed queries and keys, the decay and update gates and
+the gated output norm, with an adapter on all five DeltaNet projections. A
+head's states are kept every C positions (C the square root of the window)
+and each stretch is rebuilt from its checkpoint on the way back, so memory
+grows with the square root of the window rather than with the window. The
+full-attention layers in between train through their fused query-and-gate
+projection and their partial RoPE.
+
 On sparse-MoE models with Qwen3-MoE or Mixtral routing (softmax router, top-k,
 with or without renormalization), the adapter goes on the attention
 projections, and the backward runs through the frozen experts and the
 router's softmax weights.
 
 It refuses by name: adapters on the experts themselves, other MoE routers
-(sigmoid, group-limited, biased), shared experts, attention sinks, recurrent
-or hybrid blocks (qwen35 and Clef serve an adapter but cannot train one: the
-backward does not go through the DeltaNet recurrence), Gemma's dual-branch MoE,
+(sigmoid, group-limited, biased), shared experts, attention sinks, the Mamba-2
+hybrids (Granite 4.0 H, Nemotron-H), qwen4exp's hyper-connections, MoE on a
+DeltaNet model, Gemma's dual-branch MoE,
 removed sublayers, LayerNorm (StableLM; the backward has the RMSNorm adjoint
 only), and the derived-K and ring KV caches. `--adapt-info` gives the sentence
 for the model you have.
