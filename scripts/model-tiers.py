@@ -840,6 +840,15 @@ class CardRefused(Exception):
     """A card the script will not render, check or push, with the reason."""
 
 
+class HubUnreachable(CardRefused):
+    """The Hub could not be asked (a timeout, a dropped connection, a busy
+    server): says nothing about the card, so a check reports it apart from
+    drift."""
+
+
+EXIT_UNREACHABLE = 3
+
+
 def card_repos(doc):
     """Every repository a published row's files live in: the cards that
     carry the block, in a stable order."""
@@ -900,57 +909,114 @@ def _marker_lines(lines, marker, quoted):
     return hits
 
 
+def _h1_line(lines):
+    """Index of the card's H1: the first ATX level-one heading after the
+    YAML front matter and outside a code fence, or None."""
+    i = 0
+    if lines and lines[0].rstrip("\r\n") == "---":
+        for j in range(1, len(lines)):
+            if lines[j].rstrip("\r\n") in ("---", "..."):
+                i = j + 1
+                break
+    fenced = False
+    for j in range(i, len(lines)):
+        s = lines[j].rstrip("\r\n")
+        if re.match(r" {0,3}(```|~~~)", s):
+            fenced = not fenced
+        elif not fenced and re.match(r" {0,3}# \S", s):
+            return j
+    return None
+
+
+class _Layout:
+    """Where a card's markers are. With a status block (sb, se) the
+    validated block (vb, ve) lives inside it; without one, it is a quote of
+    its own after the H1 (h1), one blank line apart."""
+
+    def __init__(self, lines, sb, se, vb, ve, h1):
+        self.lines, self.sb, self.se, self.vb, self.ve, self.h1 = lines, sb, se, vb, ve, h1
+
+    @property
+    def managed(self):
+        """The lines the script owns, as a slice: the block, and in a card
+        without a status block also the blank line it put after the H1."""
+        if self.vb is None:
+            return None
+        first = self.vb if self.sb is not None else self.vb - 1
+        return slice(first, self.ve + 1)
+
+
 def _card_layout(text):
-    """(lines, status begin, status end, validated begin or None, validated
-    end or None) of a card, or CardRefused when the markers are not one
-    well-formed status block holding at most one validated block."""
+    """The card's layout, or CardRefused when the markers are not one
+    well-formed status block holding at most one validated block, or (with
+    no status block) a validated block that is not the quote after the H1."""
     lines = text.splitlines(keepends=True)
     sb = _marker_lines(lines, STATUS_BEGIN, False)
     se = _marker_lines(lines, STATUS_END, False)
-    if not sb and not se:
-        raise CardRefused("the card has no xyntetik-status block")
-    if len(sb) != 1 or len(se) != 1 or sb[0] > se[0]:
-        raise CardRefused("the xyntetik-status markers are malformed: expected one "
-                          "BEGIN followed by one END")
     vb = _marker_lines(lines, CARD_BEGIN, True)
     ve = _marker_lines(lines, CARD_END, True)
-    if not vb and not ve:
-        return lines, sb[0], se[0], None, None
-    if len(vb) != 1 or len(ve) != 1 or not sb[0] < vb[0] < ve[0] < se[0]:
+    if (vb or ve) and (len(vb) != 1 or len(ve) != 1 or vb[0] > ve[0]):
         raise CardRefused("the xyntetik-validated markers are malformed: expected one "
-                          "BEGIN followed by one END inside the xyntetik-status block")
-    return lines, sb[0], se[0], vb[0], ve[0]
+                          "BEGIN followed by one END")
+    vb, ve = (vb[0], ve[0]) if vb else (None, None)
+    if sb or se:
+        if len(sb) != 1 or len(se) != 1 or sb[0] > se[0]:
+            raise CardRefused("the xyntetik-status markers are malformed: expected one "
+                              "BEGIN followed by one END")
+        if vb is not None and not sb[0] < vb < ve < se[0]:
+            raise CardRefused("the xyntetik-validated markers are malformed: a card with "
+                              "a status block holds the block inside it")
+        return _Layout(lines, sb[0], se[0], vb, ve, None)
+    h1 = _h1_line(lines)
+    if h1 is None:
+        raise CardRefused("the card has no xyntetik-status block and no H1 to place "
+                          "the block after")
+    if vb is not None and not (vb == h1 + 2 and not lines[h1 + 1].strip()):
+        raise CardRefused("the xyntetik-validated markers are malformed: in a card "
+                          "without a status block the block is the quote right after "
+                          "the H1")
+    return _Layout(lines, None, None, vb, ve, h1)
 
 
 def strip_card_block(text):
-    """The card without its validated block: the part only its author edits."""
-    lines, _, _, vb, ve = _card_layout(text)
-    return text if vb is None else "".join(lines[:vb] + lines[ve + 1:])
+    """The card without the lines the script owns: the part only its author
+    edits."""
+    lay = _card_layout(text)
+    if lay.managed is None:
+        return text
+    lines = lay.lines
+    return "".join(lines[:lay.managed.start] + lines[lay.managed.stop:])
 
 
 def place_card_block(text, block, names):
-    """The card with `block` as the last lines of its status block: an
-    existing validated block is replaced in place, otherwise the block goes
-    immediately before the status END marker, in the quote the status block
-    is written in. Nothing outside the managed block changes. Refuses a card
-    without a well-formed status block or one that does not mention every
-    roster file of its repo."""
-    lines, sb, se, vb, ve = _card_layout(text)
+    """The card with `block` placed: an existing validated block is replaced
+    in place; otherwise it goes immediately before the status END marker, in
+    the quote the status block is written in, or, in a card without a status
+    block, as a quote of its own right after the H1. Nothing outside the
+    managed lines changes. Refuses a card with malformed markers or one that
+    does not mention every roster file of its repo."""
+    lay = _card_layout(text)
+    lines = lay.lines
     outside = strip_card_block(text)
     missing = [n for n in names if n not in outside]
     if missing:
         raise CardRefused("the card does not mention the roster file(s) "
                           + ", ".join(missing) + "; the roster and the card disagree "
                           "about what the repository holds")
-    body = [l for l in lines[sb + 1:se] if l.strip()]
-    if vb is not None:
-        body = [l for l in lines[sb + 1:vb] + lines[ve + 1:se] if l.strip()]
-    prefix = "> " if body and all(l.startswith(">") for l in body) else ""
-    eol = "\r\n" if lines[se].endswith("\r\n") else "\n"
+    if lay.sb is not None:
+        body = [l for i, l in enumerate(lines[lay.sb + 1:lay.se], lay.sb + 1)
+                if l.strip() and (lay.vb is None or not lay.vb <= i <= lay.ve)]
+        prefix = "> " if body and all(l.startswith(">") for l in body) else ""
+        eol = "\r\n" if lines[lay.se].endswith("\r\n") else "\n"
+    else:
+        prefix = "> "
+        eol = "\r\n" if lines[lay.h1].endswith("\r\n") else "\n"
     new = [(prefix + l).rstrip(" ") + eol for l in block]
-    if vb is None:
-        return "".join(lines[:se] + new + lines[se:])
-    return "".join(lines[:vb] + new + lines[ve + 1:])
+    if lay.vb is not None:
+        return "".join(lines[:lay.vb] + new + lines[lay.ve + 1:])
+    if lay.sb is not None:
+        return "".join(lines[:lay.se] + new + lines[lay.se:])
+    return "".join(lines[:lay.h1 + 1] + [eol] + new + lines[lay.h1 + 1:])
 
 
 HUB = "https://huggingface.co"
@@ -961,6 +1027,7 @@ CHANGELOG = os.path.join(ROOT, "CHANGELOG.md")
 def _hub_get(url):
     """One anonymous GET: the cards are public, so reading one needs no token
     and this never sends one."""
+    import http.client
     import urllib.error
     import urllib.request
     req = urllib.request.Request(url, headers={"User-Agent": "xyntetik-runner model-tiers"})
@@ -968,9 +1035,13 @@ def _hub_get(url):
         with urllib.request.urlopen(req, timeout=60) as r:
             return r.read()
     except urllib.error.HTTPError as e:
+        # a busy or failing server is the network's state; any other status
+        # (a card or repository that is not there) is the card's
+        if e.code >= 500 or e.code == 429:
+            raise HubUnreachable(f"HTTP {e.code} from {url}")
         raise CardRefused(f"HTTP {e.code} from {url}")
-    except (urllib.error.URLError, OSError) as e:
-        raise CardRefused(f"could not read {url}: {e}")
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+        raise HubUnreachable(f"could not reach {url}: {getattr(e, 'reason', e)}")
 
 
 def fetch_card(repo):
@@ -1020,6 +1091,10 @@ def card_dir(outdir, repo):
     return os.path.join(outdir, f"{owner}--{name}")
 
 
+def _state(e):
+    return "unreachable" if isinstance(e, HubUnreachable) else "refused"
+
+
 def _card_render(doc, repo, fetch):
     text, rev = fetch(repo)
     return text, rev, place_card_block(text, render_card_block(doc, repo),
@@ -1040,7 +1115,7 @@ def render_cards(doc, outdir, fetch=None):
             # a refused card leaves nothing behind that a push could pick up
             if os.path.exists(path):
                 os.remove(path)
-            out.append((repo, "refused", str(e)))
+            out.append((repo, _state(e), str(e)))
             continue
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8", newline="") as f:
@@ -1060,7 +1135,7 @@ def cards_check(doc, fetch=None):
         try:
             text, rev, new = _card_render(doc, repo, fetch)
         except CardRefused as e:
-            out.append((repo, "refused", str(e)))
+            out.append((repo, _state(e), str(e)))
             continue
         if new == text:
             out.append((repo, "ok", f"the block matches the roster (revision {rev[:12]})"))
@@ -1099,7 +1174,7 @@ def cards_push(doc, outdir, yes, fetch=None, upload=None, version=None):
                                   "since it was rendered; run --cards OUTDIR again and "
                                   "review it")
         except CardRefused as e:
-            out.append((repo, "refused", str(e)))
+            out.append((repo, _state(e), str(e)))
             continue
         if hub_text == card:
             out.append((repo, "up to date", "the Hub already holds this card"))
@@ -1121,20 +1196,27 @@ def cards_push(doc, outdir, yes, fetch=None, upload=None, version=None):
     return out
 
 
-def _report(results, bad):
-    """One line per card, the good ones too, then a count of the bad ones."""
+def _report(results, bad, soft=()):
+    """One line per card, the good ones too, then a count of the bad ones.
+    Exit 1 on any bad state; EXIT_UNREACHABLE when the only trouble is a
+    soft state (the Hub could not be asked), so a scheduled check can tell
+    a network outage from drift."""
     width = max((len(s) for _, s, _ in results), default=0)
     for repo, state, detail in results:
         print(f"{state:<{width}}  {repo}: {detail}")
-    counts = {b: sum(1 for _, s, _ in results if s == b) for b in bad}
-    if any(counts.values()):
-        # stdout is buffered in a pipe and stderr is not: flush, so the
-        # summary follows the lines it summarises
-        sys.stdout.flush()
-        print(f"\n{len(results)} cards: " + ", ".join(
-            f"{n} {b}" for b, n in counts.items() if n), file=sys.stderr)
+    counts = {b: sum(1 for _, s, _ in results if s == b) for b in tuple(bad) + tuple(soft)}
+    if not any(counts.values()):
+        return 0
+    # stdout is buffered in a pipe and stderr is not: flush, so the summary
+    # follows the lines it summarises
+    sys.stdout.flush()
+    print(f"\n{len(results)} cards: " + ", ".join(
+        f"{n} {b}" for b, n in counts.items() if n), file=sys.stderr)
+    if any(counts[b] for b in bad):
         return 1
-    return 0
+    print("the cards that could not be read from the Hub are a network failure, "
+          "not drift; run the check again later", file=sys.stderr)
+    return EXIT_UNREACHABLE
 
 
 def is_committed_roster(path):
@@ -1212,11 +1294,12 @@ def main():
                   f"run scripts/model-tiers.py --write-docs", file=sys.stderr)
         return 1 if bad else 0
     if args.cards:
-        return _report(render_cards(doc, args.cards), ("refused",))
+        return _report(render_cards(doc, args.cards), ("refused", "unreachable"))
     if args.cards_check:
-        return _report(cards_check(doc), ("drift", "refused"))
+        return _report(cards_check(doc), ("drift", "refused"), ("unreachable",))
     if args.cards_push:
-        return _report(cards_push(doc, args.cards_push, args.yes), ("refused",))
+        return _report(cards_push(doc, args.cards_push, args.yes),
+                       ("refused", "unreachable"))
     if args.stale:
         bad = stale(doc, today(args.today))
         if bad:

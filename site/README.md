@@ -17,8 +17,8 @@ to `main` that touches `site/`.
   and `{{validated:OWNER/REPO[,OWNER/REPO]}}` a model card's "Last
   validated" line, both from `docs/model-tiers.json` at build time through
   `scripts/model-tiers.py`'s own functions, so no page source holds a mark.
-  A card that names a repository with no roster row and no exempt entry
-  fails the build. `build.py --roster FILE --out DIR` builds from another
+  A card that covers no roster file carries no line, and naming a
+  repository that holds none fails the build. `build.py --roster FILE --out DIR` builds from another
   roster into another directory (the tests do).
 
 Rules the build enforces: no em dashes anywhere in the output (public-prose
@@ -29,3 +29,14 @@ the site and the README disagree, the README is right and the site has a
 bug.
 
 Local preview: `python3 site/build.py && python3 -m http.server -d site/_site 8000`.
+
+Layout check, with the preview running: `node site/shot.mjs URL WIDTH
+HEIGHT OUT.png [mobile]` drives headless Chrome with device emulation and
+prints the page's layout width against the viewport (`scrollW` above
+`innerW` is a horizontal overflow) and the first elements that reach past
+it, then writes a full-page screenshot; `SHOT_SELECTOR='#id'` captures one
+element instead. Check every changed page at 1440 and at 390 with `mobile`.
+A plain `--window-size` is clamped to about 500 px and fakes an overflow at
+phone width, which is why the emulation is there. Each run uses a Chrome
+profile of its own and `CHROME` names the browser binary when it is not the
+macOS install.

@@ -391,18 +391,15 @@ def tiers_table_html(doc: dict) -> str:
 def validated_html(doc: dict, repos: list[str]) -> str:
     """A model card's "Last validated" line for the roster files of the named
     repositories, with the table's marks and no links (the card is one).
-    Files that share every mark share a line; files that differ are named."""
+    Files that share every mark share a line; files that differ are named.
+    KeyError when the repositories hold no roster file."""
     rows = []
     for repo in repos:
         rows += [r for r in MT.repo_rows(doc, repo) if r not in rows]
     if not rows:
-        # an entry with a path exempts a folder of a repository, not the repository
-        exempt = [e for e in doc.get("exempt") or []
-                  if e["repo"] in repos and not e.get("path")]
-        if not exempt:
-            raise KeyError(", ".join(repos))
-        return ('<span class="measured validated">Not on the support roster: '
-                + esc(" ".join(e["reason"] for e in exempt)) + "</span>")
+        # a card that covers no roster file carries no line; naming one in
+        # a page is a mistake the build reports
+        raise KeyError(", ".join(repos))
     groups: dict[str, list[dict]] = {}
     for r in rows:
         if r["tier"] == "tier1":
@@ -736,8 +733,7 @@ def main(argv: list[str] | None = None) -> int:
                 return validated_html(roster, repos)
             except KeyError:
                 problems.append(f"{meta['path']}: {{{{validated:{m.group(1)}}}}} names "
-                                f"{', '.join(repos)}, which the roster has no row or "
-                                "exempt entry for")
+                                f"{', '.join(repos)}, which hold no roster file")
                 return ""
         body = re.sub(r"\{\{validated:([A-Za-z0-9._/,-]+)\}\}", validated, body)
         body = re.sub(r"\{\{mark:([a-z]+):(\d+)\}\}", lambda m: mark(m.group(1), "", int(m.group(2))), body)

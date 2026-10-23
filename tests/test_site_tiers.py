@@ -119,10 +119,20 @@ def test_every_file_of_a_card_with_one_set_of_marks_is_counted():
                      "Metal ☐ not run · Train ☐ not run")
 
 
-def test_a_repo_off_the_roster_is_said_to_be_so_from_the_exempt_list():
+def test_a_card_that_covers_no_roster_file_has_no_line(tmp_path):
+    """The GENESIS card's repository is exempt (no GGUF, not a Runner
+    model): the site prints no line for it, and never an exempt reason."""
     doc = json.loads(ROSTER.read_text(encoding="utf-8"))
-    genesis = text_of(site.validated_html(doc, ["Joakimpalm-Zen/Xyntetik-Blad-Genesis-0.7M"]))
-    assert genesis.startswith("Not on the support roster: A toy-scale research artifact")
+    genesis = "Joakimpalm-Zen/Xyntetik-Blad-Genesis-0.7M"
+    assert genesis in {e["repo"] for e in doc["exempt"]}
+    try:
+        site.validated_html(doc, [genesis])
+        raise AssertionError("an exempt repository rendered a line")
+    except KeyError:
+        pass
+    _, index = build(tmp_path, doc)
+    card = index.split("GENESIS: learning with no human text", 1)[1].split("</a>", 1)[0]
+    assert "Last validated" not in card and "support roster" not in card
 
 
 def build(tmp_path, doc):
