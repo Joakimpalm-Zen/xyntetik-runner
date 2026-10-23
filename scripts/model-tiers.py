@@ -73,6 +73,10 @@ FP32_REFERENCE = ("measured", "owed", "infeasible", "self")
 # `-m BASE --lora ADAPTER`. A model file runs on its own.
 FILE_KINDS = {"model": None, "mtp-head": "mtp-file", "adapter": "lora"}
 ANOTHER_ENGINE = "anchor: agreement with another engine, not fidelity"
+# where every declared limit points: the manual's support matrix, the one
+# place a reader checks what a backend lacks; other evidence for a limit
+# belongs in the row's envelope
+MATRIX_LINK = "MANUAL.md#support-matrix"
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -150,7 +154,12 @@ def _cell_errors(where, cell, classes):
         return [f"{where}: a cell is null, a gate or a limit, not {cell!r}"]
     if cell["kind"] == "limit":
         bad = [k for k in ("reason", "matrix") if not _text(cell.get(k))]
-        return [f"{where}: a declared limit needs {', '.join(bad)}"] if bad else []
+        if bad:
+            return [f"{where}: a declared limit needs {', '.join(bad)}"]
+        if cell["matrix"] != MATRIX_LINK:
+            return [f"{where}: a declared limit's matrix is {MATRIX_LINK!r}, not "
+                    f"{cell['matrix']!r}; other evidence goes in the envelope"]
+        return []
     errs = []
     if not VERSION_RE.match(str(cell.get("runner_version", ""))):
         errs.append(f"{where}: runner_version {cell.get('runner_version')!r}")
@@ -526,39 +535,48 @@ def _train(lora):
     return "no: " + t["reason"].replace("|", "\\|")
 
 
-def _qualified(rows, name):
-    """The qualifier a row leads with, on its model's row of the table."""
+def _qualifiers(rows):
     pre = ["Experimental"] if any(r.get("experimental") for r in rows) else []
-    pre += ["Text path only"] if any(r.get("vision_upstream") for r in rows) else []
-    return ": ".join(pre + [name])
+    return pre + (["Text path only"] if any(r.get("vision_upstream") for r in rows) else [])
+
+
+def _qualified(rows, name):
+    """The qualifier a model leads with, then its name."""
+    return ": ".join(_qualifiers(rows) + [name])
+
+
+def _readme_label(rows, name):
+    """The table's model cell: the qualifier as plain text, then the name in
+    bold ("Text path only: **Gemma 4 12B**")."""
+    return "".join(q + ": " for q in _qualifiers(rows)) + f"**{name}**"
+
+
+def _model_groups(rows):
+    """Rows grouped by model, groups sorted by model name, files within a
+    group in roster order: the render does not depend on insertion order."""
+    groups = {}
+    for r in rows:
+        groups.setdefault(r["model"], []).append(r)
+    return sorted(groups.items(), key=lambda kv: (kv[0].casefold(), kv[0]))
 
 
 def render_readme(doc):
     """The block between README_BEGIN and README_END.
 
-    One bold row per Tier 1 model, then one sub-row per file that has a
-    recorded cell or a declared limit; a file nobody ran is not listed (a
-    quant the matrix admits is the matrix's claim, not this table's), and a
-    model with no such file says so. Upcoming models follow as names.
+    One row per Tier 1 model, its qualifier before its bold name, then one
+    sub-row per roster file of that model, run or not: every roster file is
+    one the release gate holds Runner to, and a quant the matrix admits
+    outside the roster is the matrix's claim, not this table's. Upcoming
+    models follow as names, in the roster's order (the order of admission).
     """
-    groups = {}
-    for r in doc["rows"]:
-        if r["tier"] == "tier1":
-            groups.setdefault(r["model"], []).append(r)
+    groups = _model_groups([r for r in doc["rows"] if r["tier"] == "tier1"])
     # a blank line on each side keeps the markers' HTML comments apart from
     # the table and the paragraph in every markdown renderer
     lines = ["", "", "| Model | File | CPU | CUDA | Metal | Train | Evidence |",
              "|---|---|---|---|---|---|---|"]
-    for model, rows in groups.items():
-        label = _qualified(rows, model)
-        subs = [r for r in rows
-                if any(r["backends"].get(b) is not None for b in BACKENDS)]
-        if not subs:
-            lines.append(f"| **{label}** | no file run yet | | | | | "
-                         f"[envelopes]({SUPPORT_DOC}#{rows[0]['id']}) |")
-            continue
-        lines.append(f"| **{label}** | | | | | | |")
-        for r in subs:
+    for model, rows in groups:
+        lines.append(f"| {_readme_label(rows, model)} | | | | | | |")
+        for r in rows:
             files = r["files"]
             name = f"`{files[0]['name']}`" + (f" ({len(files)} parts)"
                                              if len(files) > 1 else "")
@@ -688,10 +706,15 @@ def render_doc(doc):
         if not rows:
             lines += ["No members.", ""]
             continue
-        groups = {}
-        for r in rows:
-            groups.setdefault(r["model"], []).append(r)
-        for model, rs in groups.items():
+        if tier == "upcoming":
+            # the roster's order is the order of admission, which is the point
+            groups = {}
+            for r in rows:
+                groups.setdefault(r["model"], []).append(r)
+            groups = list(groups.items())
+        else:
+            groups = _model_groups(rows)
+        for model, rs in groups:
             lines += [f"### {_qualified(rs, model)}", ""]
             for r in rs:
                 lines += _row_doc(r, by_id)

@@ -608,13 +608,13 @@ def test_the_train_column_is_the_recorded_adapt_info_answer():
     assert sub.count("✅ v1.5.1 2026-10-23") == 1
 
 
-def test_a_file_nobody_ran_gets_no_sub_row():
-    """Admitting a quant is the matrix's claim, not this table's: a file
-    with no recorded gate and no declared limit is not listed, and its
-    model row says no file has run."""
+def test_every_tier1_file_gets_its_sub_row_even_unrun():
+    """Every roster file is one the owner committed to validate, so it is
+    listed with honest marks; one shape for every model, run or not."""
     rows = readme_rows(roster())
-    assert not [r for r in rows if "toy-Q8_0.gguf" in r]
-    assert any(r.startswith("| **Toy** | no file run yet") for r in rows)
+    sub = [r for r in rows if "toy-Q8_0.gguf" in r]
+    assert len(sub) == 1 and sub[0].count("☐ not run") == 4
+    assert not [r for r in rows if "no file run yet" in r]
 
 
 def test_the_model_row_is_bold_and_carries_no_marks():
@@ -623,13 +623,40 @@ def test_the_model_row_is_bold_and_carries_no_marks():
     assert "✅" not in model and "☐" not in model and "n/a" not in model
 
 
-def test_qualifiers_lead_the_model_row():
+def test_qualifiers_lead_the_model_row_before_the_bold_name():
     doc = gated(metal=gate("2026-10-23"))
     doc["rows"][0].update(experimental=True, claim="Experimental: a toy.")
-    assert any(r.startswith("| **Experimental: Toy**") for r in readme_rows(doc))
+    assert any(r.startswith("| Experimental: **Toy** |") for r in readme_rows(doc))
     doc = gated(metal=gate("2026-10-23"))
     doc["rows"][0].update(vision_upstream=True, claim="Text path only: a toy.")
-    assert any(r.startswith("| **Text path only: Toy**") for r in readme_rows(doc))
+    assert any(r.startswith("| Text path only: **Toy** |") for r in readme_rows(doc))
+
+
+def test_models_are_sorted_by_name_and_files_keep_the_roster_order():
+    """The render does not depend on the order rows were added in: model
+    groups sort by name (the label aside), files within one keep their
+    roster order."""
+    zeta = tier1_row(id="zeta-a", model="Zeta")
+    zeta2 = tier1_row(id="zeta-b", model="Zeta")
+    zeta2["files"] = [{"name": "zeta-b.gguf", "sha256": "e" * 64, "bytes": 1}]
+    alpha = tier1_row(id="alpha", model="alpha", experimental=True,
+                      claim="Experimental: a toy.")
+    rows = readme_rows(roster(zeta, zeta2, alpha))
+    names = [r for r in rows if "**" in r]
+    assert names[0].startswith("| Experimental: **alpha**") and "**Zeta**" in names[1]
+    files = [r for r in rows if "gguf" in r]
+    assert files.index([f for f in files if "zeta-b.gguf" in f][0]) == len(files) - 1
+    assert mt.render_readme(roster(alpha, zeta, zeta2)) == \
+        mt.render_readme(roster(zeta, zeta2, alpha))
+
+
+def test_a_declared_limit_links_the_manuals_support_matrix():
+    """Every n/a points at the same place a reader checks a limit: the
+    manual's support matrix. Other evidence belongs in the row's envelope."""
+    row = tier1_row()
+    row["backends"]["cuda"] = {"kind": "limit", "reason": "no CUDA path",
+                               "matrix": "tests/compatibility/coverage.json"}
+    assert any("matrix" in e for e in errors(roster(row)))
 
 
 def test_upcoming_models_are_names_under_the_table_and_tier2_is_absent():

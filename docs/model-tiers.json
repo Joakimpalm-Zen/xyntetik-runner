@@ -1535,7 +1535,8 @@
         "context": null,
         "limitations": null,
         "evidence": [
-          "docs/qwen4exp-admission-evidence/README.md"
+          "docs/qwen4exp-admission-evidence/README.md",
+          "tests/compatibility/coverage.json"
         ],
         "missing": "Every gate on this file; the publisher float32 comparison."
       },
@@ -1548,8 +1549,8 @@
         "cuda": null,
         "metal": {
           "kind": "limit",
-          "reason": "qwen4exp has no Metal path (no qwen35-family path on Metal).",
-          "matrix": "tests/compatibility/coverage.json"
+          "reason": "qwen4exp's Gated DeltaNet blocks have no Metal kernel (the support matrix names Gated DeltaNet among the operations Metal lacks); coverage.json records the architecture's Metal path as unsupported.",
+          "matrix": "MANUAL.md#support-matrix"
         }
       },
       "lora": null,
