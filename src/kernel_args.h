@@ -102,10 +102,14 @@ typedef struct {
 #define DN_L2_EPS 1e-6f
 
 // The training products (kernels_train.cuh, cuda.c gpu_train_mvt / _mm):
-// positions a thread of k_tmvt carries (a grid row per TMVT_NT), columns a
-// block of k_tmm carries (a grid row per TMM_NC) and its rows (one a warp)
-#define TMVT_NT 8
+// a k_tmvt block's inputs, positions and weight rows a tile (TV_IT * TV_TT
+// / 8 threads, 8 positions each), the columns a block of k_tmm and of k_tmmw
+// carries (a grid row per tile) and their rows (one a warp)
+#define TV_IT 32
+#define TV_TT 64
+#define TV_JT 32
 #define TMM_NC 16
+#define TMM_NCW 64
 #define TMM_WARPS 8
 
 #endif // RUNNER_KERNEL_ARGS_H

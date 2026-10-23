@@ -257,6 +257,11 @@ bool   gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
 bool   gpu_train_mm(model_t *m, const gguf_tensor *w, const float *x,
                     int x_stride, float *y, int y_stride, int n_in, int n_out,
                     const float *bias, int nb);
+// RUNNER_TRAIN_PROF: seconds inside gpu_train_mm / gpu_train_mvt (transfers
+// and syncs included), their counts, and the kernels' share (the launch and
+// its sync) since the last call, which resets them
+void   gpu_train_prof(model_t *m, double *t_mm, long *n_mm, double *t_mvt,
+                      long *n_mvt, double *k_mm, double *k_mvt);
 
 // D2 on the device (R8.7.2): place the loaded adapter's A/B in VRAM for every
 // GPU-resident layer, so an offloaded projection gets the same y += scale*B(Ax)

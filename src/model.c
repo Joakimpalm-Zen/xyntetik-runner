@@ -10436,11 +10436,14 @@ static bool rows_logits(model_t *m, int n, float *out);
 // position at a time) on every trainable family; every weight block is
 // decoded once a round instead of once a position. Not the speculative
 // keep-forward: training restores no row, so it files no per-row checkpoints.
-enum { TRAIN_FW_ROWS = 16 };
+// Device mode (--train-gpu) runs rounds of 64: its forward product takes 64
+// columns per decode of the weights (k_tmmw), so a wider round decodes them
+// a quarter as often.
+enum { TRAIN_FW_ROWS = 16, TRAIN_FW_ROWS_DEV = 64 };
 static int lora_fw_rows(const model_t *m) {
     if (m->gpu) return 1;
     const char *e = getenv("RUNNER_TRAIN_ROWS");
-    int n = e && *e ? atoi(e) : TRAIN_FW_ROWS;
+    int n = e && *e ? atoi(e) : m->train_dev ? TRAIN_FW_ROWS_DEV : TRAIN_FW_ROWS;
     if (n > m->n_batch) n = m->n_batch;
     return n > 1 ? n : 1;
 }
@@ -10532,24 +10535,27 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
 // rather than being stored: memory over speed, the reference trade — the
 // chunk bounds the probs plane to HEAD_CHUNK * V floats. The logits take
 // the same chunks (R8.19): one exact-columns product a chunk, every column
-// the batch-1 dot's bits.
-enum { HEAD_CHUNK = 16 };
+// the batch-1 dot's bits. Device mode takes chunks of 64 (its wide product's
+// width); positions are independent through the head, so the chunk is a
+// scheduling choice in either mode.
+enum { HEAD_CHUNK = 16, HEAD_CHUNK_DEV = 64 };
 NUM_STAGE bool lora_head_bw(model_t *m, const int32_t *toks, int T,
                          const float *pos_w, const lora_teacher *tch,
                          float *dx) {
     int E = m->n_embd, V = m->n_vocab, L = m->n_layer;
-    float *probs  = malloc(sizeof(float) * (size_t)HEAD_CHUNK * V);
-    float *hn     = malloc(sizeof(float) * (size_t)HEAD_CHUNK * E);
-    float *dhn    = malloc(sizeof(float) * (size_t)HEAD_CHUNK * E);
+    int hcn = m->train_dev ? HEAD_CHUNK_DEV : HEAD_CHUNK;
+    float *probs  = malloc(sizeof(float) * (size_t)hcn * V);
+    float *hn     = malloc(sizeof(float) * (size_t)hcn * E);
+    float *dhn    = malloc(sizeof(float) * (size_t)hcn * E);
     // softcap adjoint needs tanh(z/c) per logit of the chunk
     float *thb    = m->logit_softcap > 0
-                    ? malloc(sizeof(float) * (size_t)HEAD_CHUNK * V) : NULL;
+                    ? malloc(sizeof(float) * (size_t)hcn * V) : NULL;
     if (!probs || !hn || !dhn || (m->logit_softcap > 0 && !thb)) {
         free(probs); free(hn); free(dhn); free(thb);
         return false;
     }
     bool ok = true;
-    int tmap[HEAD_CHUNK];
+    int tmap[HEAD_CHUNK_DEV];
     int nc = 0;
     for (int p = 0; ok && p < T - 1; p++) {
         if (!pos_w || pos_w[p] != 0.0f) {
@@ -10558,7 +10564,7 @@ NUM_STAGE bool lora_head_bw(model_t *m, const int32_t *toks, int T,
                   m->rms_eps);
             tmap[nc++] = p;
         }
-        if (nc == 0 || (nc < HEAD_CHUNK && p < T - 2)) continue;
+        if (nc == 0 || (nc < hcn && p < T - 2)) continue;
         // the chunk's logits in one exact-columns product: every column the
         // batch-1 dot's bits, the vocabulary decoded once a chunk
         bool ex = t_mv_exact;

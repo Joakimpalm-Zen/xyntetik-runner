@@ -3,10 +3,11 @@
 //
 //   transposed  gpu_train_mvt == the CPU trainer's chain (dequant_row, then
 //               an ascending-j fmaf per element, a zero dy skipped), memcmp
-//   forward     gpu_train_mm is batch-invariant: every column of a 37-column
-//               call equals the same column computed alone and in a 5-column
-//               call, memcmp; and it is the product (each column within
-//               2^-16 of sum|w x| of a double-precision reference)
+//   forward     gpu_train_mm is batch-invariant: every column of a 77-column
+//               call (the 64-column kernel, two tiles) equals the same column
+//               computed alone and in a 5-column call (the 16-column kernel),
+//               memcmp; and it is the product (each column within 2^-16 of
+//               sum|w x| of a double-precision reference)
 //
 // Skips (not passes) without a CUDA device. Prints each type's throughput.
 #include "runner.h"
@@ -118,7 +119,9 @@ int main(void) {
         printf("train-gpu: no CUDA device, skipping (not passing)\n");
         return 0;
     }
-    enum { N_IN = 512, N_OUT = 96, B = 37 };
+    // 77 positions: two of k_tmvt's 64-position tiles and two of k_tmmw's
+    // 64-column tiles, each with a remainder
+    enum { N_IN = 512, N_OUT = 96, B = 77 };
     float *dy = malloc(sizeof(float) * B * N_OUT);
     float *dx0 = malloc(sizeof(float) * B * N_IN);
     float *dxc = malloc(sizeof(float) * B * N_IN), *dxg = malloc(sizeof(float) * B * N_IN);
@@ -166,15 +169,15 @@ int main(void) {
         CHECK(!ok || ok5, "%s: gpu_train_mm declined 5 columns", TYPES[k].name);
         if (ok5) {
             CHECK(!memcmp(y5, y + 3 * N_OUT, sizeof(float) * 5 * N_OUT),
-                  "%s: columns 3..7 differ between a 37- and a 5-column call",
-                  TYPES[k].name);
+                  "%s: columns 3..7 differ between a %d- and a 5-column call",
+                  TYPES[k].name, B);
             double worst = 0;
             for (int c = 0; c < B; c++) {
                 bool one = gpu_train_mm(&m, &w, x + (size_t)c * N_IN, N_IN, y1, N_OUT,
                                         N_IN, N_OUT, NULL, 1);
                 CHECK(one && !memcmp(y1, y + (size_t)c * N_OUT, sizeof(float) * N_OUT),
-                      "%s: column %d alone differs from the 37-column call",
-                      TYPES[k].name, c);
+                      "%s: column %d alone differs from the %d-column call",
+                      TYPES[k].name, c, B);
                 for (int j = 0; j < N_OUT; j++) {
                     dequant_row(w.type, (const uint8_t *)w.data +
                                 (size_t)j * ggml_row_size(w.type, N_IN), row, N_IN);

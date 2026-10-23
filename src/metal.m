@@ -2955,6 +2955,13 @@ bool gpu_train_mm(model_t *mm, const gguf_tensor *w, const float *x,
     return false;
 }
 
+void gpu_train_prof(model_t *mm, double *t_mm, long *n_mm, double *t_mvt,
+                    long *n_mvt, double *k_mm, double *k_mvt) {
+    (void)mm;
+    *t_mm = *t_mvt = *k_mm = *k_mvt = 0;
+    *n_mm = *n_mvt = 0;
+}
+
 void gpu_free(model_t *m) {
     if (!m) return;
     gpu_t *g = m->gpu_owner ? (gpu_t *)m->gpu_owner : (gpu_t *)m->gpu;
