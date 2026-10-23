@@ -147,3 +147,14 @@ def test_the_cli_exits_nonzero_on_a_stale_ledger(tmp_path):
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert r.returncode == 1
     assert b"box" in r.stdout + r.stderr
+
+
+def test_the_summary_follows_the_rows_in_one_pipe(tmp_path):
+    """check-release reads this check with stdout and stderr merged into one
+    pipe: the rows (stdout) must not arrive after the summary (stderr)."""
+    p = ledger(tmp_path, **fresh(400))
+    r = subprocess.run([sys.executable, str(SCRIPT), "--check", "--json",
+                        str(p), "--today", TODAY.isoformat()],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert r.returncode == 1
+    assert r.stdout.index(b"STALE") < r.stdout.index(b"need")

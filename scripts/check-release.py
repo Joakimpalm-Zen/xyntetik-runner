@@ -7,6 +7,7 @@ packaged README and workflow comments must not drift.
 """
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -32,6 +33,23 @@ RELEASE_STRING_RE = re.compile(
     r"(?<![\w.\-])(v?\d+\.\d+\.\d+-alpha)(?![\w.\-])"
     r"|(?<![\w.\-])(v\d+\.\d+\.\d+)(?![\w.\-])"
     r"|\b[Rr]unner:?[ \t]+`?(v?\d+\.\d+\.\d+(?:-alpha)?)(?![\w.\-])")
+
+
+# The README's tier table (rendered from docs/model-tiers.json) is a set of
+# dated records: a cell gated on an earlier release and still inside its age
+# limit names that release on the day a later one is tagged. Its freshness
+# is the tier gate's business, below, and its text is held to the roster by
+# the render-parity test, so the stale-string scan reads around the block.
+_tiers_spec = importlib.util.spec_from_file_location(
+    "model_tiers", ROOT / "scripts" / "model-tiers.py")
+_tiers = importlib.util.module_from_spec(_tiers_spec)
+_tiers_spec.loader.exec_module(_tiers)
+TIER_BLOCK = re.compile(re.escape(_tiers.README_BEGIN) + ".*?"
+                        + re.escape(_tiers.README_END), re.S)
+
+
+def outside_generated_blocks(text):
+    return TIER_BLOCK.sub("", text)
 
 
 def fail(msg):
@@ -253,7 +271,8 @@ def check(args):
         ok &= fail(f"README does not identify the {version} banner")
     if f"./runner --version   # -> runner {version}" not in readme + manual:
         ok &= fail("README version-output example is not in sync")
-    for stale in stale_release_strings(readme, version, args.tag):
+    for stale in stale_release_strings(outside_generated_blocks(readme), version,
+                                       args.tag):
         ok &= fail(f"README contains stale release string {stale!r}")
     for stale in stale_release_strings(manual, version, args.tag):
         ok &= fail(f"MANUAL.md contains stale release string {stale!r}")
@@ -357,6 +376,32 @@ def check(args):
                 ok &= fail("device evidence is not current:\n" +
                            proc.stdout.rstrip())
 
+    # The Tier 1 model files (docs/model-tiers.json): each is gated on every
+    # release by its smoke on the device class its row names. The mechanism
+    # is the device ledger's, a maximum age per row with a policy default,
+    # rather than "older than the last release that touched its path",
+    # because a path-to-file map would be a second hand-kept list and a
+    # maximum age needs nothing but the cell's own date. A row never gated,
+    # gated on another class, failing on any backend or past its age
+    # refuses the tag.
+    tiers = getattr(args, "model_tiers", None)
+    if tiers:
+        if not tiers.exists():
+            ok &= fail(f"model tier roster {tiers} does not exist (it is the "
+                       f"record of which files every release re-checks)")
+        else:
+            cmd = [sys.executable, str(ROOT / "scripts" / "model-tiers.py"),
+                   "--stale", "--json", str(tiers)]
+            if args.device_evidence:
+                cmd += ["--device-evidence", str(args.device_evidence)]
+            if getattr(args, "tiers_today", None):
+                cmd += ["--today", args.tiers_today]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True)
+            if proc.returncode != 0:
+                ok &= fail("Tier 1 model files are not current:\n" +
+                           proc.stdout.rstrip())
+
     return ok
 
 
@@ -436,6 +481,14 @@ def main(argv=None):
                         help="the ledger of when each claimed device class "
                              "last ran the gates; a release is refused while "
                              "one is stale, because CI cannot see them")
+    parser.add_argument("--model-tiers", type=Path,
+                        default=ROOT / "docs" / "model-tiers.json",
+                        help="the support roster; a release is refused while a "
+                             "Tier 1 file's smoke is missing, failing or older "
+                             "than its policy")
+    parser.add_argument("--tiers-today", default=None,
+                        help="the day the tier gate measures ages from "
+                             "(tests); default the UTC clock")
     parser.add_argument("--commit", required=True,
                         help="commit SHA expected in BUILD-INFO.txt")
     parser.add_argument("--site-pages", type=Path, default=ROOT / "site" / "pages",

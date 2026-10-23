@@ -78,6 +78,7 @@ It takes about a minute to try: [quick start](#quick-start).
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
 
 **On this page:** [Quick start](#quick-start) · [The Xyntetik-Lab](#files) ·
+[Validated models](#validated-models) ·
 [Will it fit](#fit) · [Make your own file](#models-and-conversion) ·
 [More context, less memory](#long-contexts) · [Idle memory](#designed-to-stay-on) ·
 [Tool calls](#truncation) · [Training](#adaptation) ·
@@ -145,6 +146,74 @@ or follow one of these.
   GENESIS: eighteen preregistered experiments on 0.7M-parameter models that
   only ever saw programs they ran themselves. Read what survived, and
   everything that did not.
+
+<a id="validated-models"></a>
+## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Actively validated models
+
+Runner keeps loading every model the [support matrix](MANUAL.md#support-matrix)
+admits; the files below are the ones it re-checks on every release, with one
+greedy prompt compared byte for byte against a pinned output on the device
+each file names. A release is refused while any of them is missing that
+check, failing it or past its age limit, so a ✅ always carries the version
+and date of the last run, `☐ not run` means nobody has run it yet, `n/a` is
+a backend with no path for that file, and `failed` is a recorded failure.
+The Train column is the file's own `--adapt-info` answer: ✅ means the LoRA
+backward admits the file, not that training it gives good results.
+
+<!-- model-tiers:begin (rendered from docs/model-tiers.json by scripts/model-tiers.py --write-docs; do not edit) -->
+
+| Model | File | CPU | CUDA | Metal | Train | Evidence |
+|---|---|---|---|---|---|---|
+| Text path only: **Cloudflare Clef (clef, on Qwen3.8-27B)** | | | | | | |
+| | `Cloudflare_clef-IQ3_M.gguf` | ☐ not run | ☐ not run | [n/a](MANUAL.md#support-matrix) | ☐ not run | [envelope](docs/model-support.md#cloudflare-clef-iq3_m) |
+| Text path only: **Gemma 4 12B** | | | | | | |
+| | `gemma-4-12b-it-qat-q4_0.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#gemma-4-12b-it-qat-q4_0) |
+| Text path only: **Gemma 4 26B-A4B** | | | | | | |
+| | `gemma-4-26B_q4_0-it.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#gemma-4-26b-a4b-it-qat-q4_0) |
+| Text path only: **Gemma 4 31B** | | | | | | |
+| | `gemma-4-31B-it-Q4_0.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#gemma-4-31b-it-q4_0) |
+| Text path only: **Gemma 4 31B, attention block 48 removed** | | | | | | |
+| | `gemma-4-31B-it-attn48-removed-q4_0.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#gemma-4-31b-it-attn48-removed-q4_0) |
+| Text path only: **Gemma 4 E2B** | | | | | | |
+| | `gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf` | ✅ v1.5.1 2026-10-23 | ☐ not run | ✅ v1.5.1 2026-10-23 | ✅ v1.5.1 2026-10-23 | [envelope](docs/model-support.md#gemma-4-e2b-it-q4_k_m-q4_0-mix) |
+| **Granite-4.2-8B** | | | | | | |
+| | `granite-4.2-8b-Q4_K_M.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#granite-4.2-8b-q4_k_m) |
+| | `granite-4.2-8b-Q8_0.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#granite-4.2-8b-q8_0) |
+| Text path only: **Muse-Glimmer-30B** | | | | | | |
+| | `Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#muse-glimmer-30b-kquant) |
+| Text path only: **Muse-Glimmer-30B surgical** | | | | | | |
+| | `Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#muse-glimmer-30b-surgical-4p75-q4_k) |
+| | `Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#muse-glimmer-30b-surgical-6p34-q8_0) |
+| | `Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#muse-glimmer-30b-surgical-6p34-q4_k-recovered) |
+| **NVIDIA Nemotron Nano 9B v2** | | | | | | |
+| | `NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf` | ☐ not run | ☐ not run | [n/a](MANUAL.md#support-matrix) | ☐ not run | [envelope](docs/model-support.md#nvidia-nemotron-nano-9b-v2-q8_0) |
+| **Qwen3-30B-A3B selective precision** | | | | | | |
+| | `Qwen3-30B-A3B-expq4_0-attnq8_0.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#qwen3-30b-a3b-expq4_0-attnq8_0) |
+| **Qwen3-4B Runner ToolUse** | | | | | | |
+| | `merged-Q8_0.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#qwen3-4b-runner-tooluse-merged-q8_0) |
+| | `Qwen3-4B-ToolUse-LoRA.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#qwen3-4b-runner-tooluse-lora) |
+| **Qwen3-Coder-30B-A3B keep-120** | | | | | | |
+| | `Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#qwen3-coder-30b-a3b-instruct-keep120-q4_k_m) |
+| **Qwen3.8-27B** | | | | | | |
+| | `Qwen3.8-27B-UD-Q4_K_M.gguf` | ☐ not run | ☐ not run | [n/a](MANUAL.md#support-matrix) | ☐ not run | [envelope](docs/model-support.md#qwen3.8-27b-ud-q4_k_m) |
+| | `Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf` | ☐ not run | ☐ not run | [n/a](MANUAL.md#support-matrix) | ☐ not run | [envelope](docs/model-support.md#qwen3.8-27b-gsq-rco-iq3_s-recovered) |
+| | `Qwen3.8-27B-MTP-Q8_0.gguf` | ☐ not run | ☐ not run | [n/a](MANUAL.md#support-matrix) | ☐ not run | [envelope](docs/model-support.md#qwen3.8-27b-mtp-q8_0) |
+| Experimental: **Qwen3.8-Flash-Next** | | | | | | |
+| | `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf` (4 parts) | ☐ not run | ☐ not run | [n/a](MANUAL.md#support-matrix) | ☐ not run | [envelope](docs/model-support.md#qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head) |
+| | `Qwen3.8-Flash-Next-MTP-Q8_0.gguf` | ☐ not run | ☐ not run | [n/a](MANUAL.md#support-matrix) | ☐ not run | [envelope](docs/model-support.md#qwen3.8-flash-next-mtp-q8_0) |
+| **Trinity Nano** | | | | | | |
+| | `Trinity-Nano-Preview-Q8_0.gguf` | ☐ not run | [n/a](MANUAL.md#support-matrix) | [n/a](MANUAL.md#support-matrix) | ☐ not run | [envelope](docs/model-support.md#trinity-nano-preview-q8_0) |
+| **Xyntetik-Kvist-14B** | | | | | | |
+| | `Xyntetik-Kvist-14B-BF16.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#xyntetik-kvist-14b-bf16) |
+| | `Xyntetik-Kvist-14B-Q8_0.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#xyntetik-kvist-14b-q8_0) |
+| | `Xyntetik-Kvist-14B-Q5_0-mix.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#xyntetik-kvist-14b-q5_0-mix) |
+| | `Xyntetik-Kvist-14B-IQ4_NL-mix.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#xyntetik-kvist-14b-iq4_nl-mix) |
+
+**Upcoming**, not counted as validated: Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B), Mellum2.1-12B-A2.5B-Thinking (JetBrains).
+
+<!-- model-tiers:end -->
+
+[What each tier promises, every file's full envelope and how to run the check](docs/model-support.md)
 
 <a id="fit"></a>
 <a id="runtime-and-hardware"></a>

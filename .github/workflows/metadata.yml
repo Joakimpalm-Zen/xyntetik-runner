@@ -21,5 +21,7 @@ jobs:
       - run: python3 scripts/check-agent-docs.py
       - run: python3 scripts/check-generated.py
       - run: python3 scripts/check-evidence-paths.py
+      - run: python3 scripts/model-tiers.py --check
+      - run: python3 scripts/model-tiers.py --docs-check
       - run: python3 scripts/check-ci-roster.py
       - run: python3 -m unittest discover -s tests -p test_ci_contracts.py

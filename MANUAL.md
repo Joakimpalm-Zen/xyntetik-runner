@@ -1406,6 +1406,13 @@ of the reports stay up with a pointer to the canonical dataset.
 `runner --caps` publishes the architecture IDs admitted by the current binary.
 Open the architecture table below for model-specific paths and limitations.
 
+**Model support tiers.** Which files Runner re-checks on every release is a
+separate question, answered in the [model support tiers](docs/model-support.md):
+a tier is a maintenance and validation commitment for the files its row names,
+gated by a per-release smoke with a dated mark per backend. It is not this
+matrix's claim about what loads, it never removes a loading path in 1.x, and it
+is not a statement about a model's answers.
+
 **Metal quant-type coverage.** Both a matvec and a matmul kernel exist for
 every type the Metal backend loads: `q2_K`, `q3_K`, `q4_0`, `q4_1`, `q5_0`,
 `q5_1`, `q4_K`, `q5_K`, `q6_K`, `q8_0`, `iq4_nl`, `iq4_xs`, `mxfp4`, the

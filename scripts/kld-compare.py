@@ -28,6 +28,7 @@ Usage:
       --endpoint-b http://127.0.0.1:PORT2 --model-name-b NAME2 --corpus FILE.txt
 """
 import argparse
+import http.client
 import json
 import math
 import os
@@ -64,6 +65,33 @@ def require_served(endpoint, name, label):
                          f"served ids: {', '.join(ids) if ids else '(none)'}")
 
 
+
+# A poll of a port nothing listens on yet can be handed that same port as its
+# own source port when the port is inside the OS's ephemeral range (Linux
+# 32768-60999, macOS and Windows 49152-65535): the socket connects to itself
+# and reads its own request back, which http.client reports as BadStatusLine
+# and which ended a CI run on 2026-10-23. The default ports sit below every
+# ephemeral range, so that cannot happen with them, and a self-connection is
+# never taken for a server should a caller pass a port inside one.
+def self_connected(sock):
+    return sock.getsockname() == sock.getpeername()
+
+
+def server_up(port):
+    """True once a server other than this poll answers /v1/models with 2xx."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
+    try:
+        conn.connect()
+        if self_connected(conn.sock):
+            return False
+        conn.request("GET", "/v1/models")
+        return 200 <= conn.getresponse().status < 300
+    except OSError:
+        # refused, reset or timed out: not up yet, as before
+        return False
+    finally:
+        conn.close()
+
 def start_server(runner, model, port, threads=0, ctx=0):
     cmd = [runner, "-m", model, "--serve", "--no-tray",
            "--port", str(port), "--gpu", "off"]
@@ -76,11 +104,9 @@ def start_server(runner, model, port, threads=0, ctx=0):
     for _ in range(400):
         if proc.poll() is not None:
             raise RuntimeError(f"runner exited early loading {model} (code {proc.returncode})")
-        try:
-            urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=1)
+        if server_up(port):
             return proc
-        except (urllib.error.URLError, ConnectionError):
-            time.sleep(0.5)
+        time.sleep(0.5)
     proc.kill()
     raise RuntimeError(f"server for {model} on port {port} did not come up")
 
@@ -149,8 +175,8 @@ def main(argv):
     ap.add_argument("--corpus", required=True)
     ap.add_argument("--max-positions", type=int, default=64)
     ap.add_argument("--stride", type=int, default=1, help="compare every Nth word boundary")
-    ap.add_argument("--port-a", type=int, default=58601)
-    ap.add_argument("--port-b", type=int, default=58602)
+    ap.add_argument("--port-a", type=int, default=28601)
+    ap.add_argument("--port-b", type=int, default=28602)
     ap.add_argument("--threads", type=int, default=0,
                     help="server mode: -t for both served runners")
     ap.add_argument("--ctx", type=int, default=0,

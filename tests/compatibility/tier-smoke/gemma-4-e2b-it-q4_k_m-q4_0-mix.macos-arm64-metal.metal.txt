@@ -1,0 +1,5 @@
+List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.
+
+1. Mercury: This is the smallest planet and the closest to the Sun.
+2. Venus: This is the second planet from the Sun and is the hottest planet due to a runaway greenhouse effect.
+3. Earth: This

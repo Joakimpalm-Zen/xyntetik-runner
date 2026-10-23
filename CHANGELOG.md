@@ -5,6 +5,27 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Model support tiers.** [`docs/model-tiers.json`](docs/model-tiers.json)
+  records which model files Runner re-checks on every release (Tier 1, 27
+  files: the owner's roster and every published file), which are maintained
+  on report (Tier 2), and which are planned (Upcoming, 12, listed by what
+  each is missing); Tier 3 has no members. Each Tier 1 row carries its
+  envelope, the device class its smoke runs on, a mark per backend (a dated
+  gate, a declared limit, or not run) and the file's `--adapt-info` LoRA
+  answer, all written by the gate run, never by hand.
+  `scripts/tier-smoke.py` is the per-release smoke: the file hashed against
+  its row, one greedy prompt byte-compared with a committed pin under
+  `tests/compatibility/tier-smoke/`, a head or an adapter composed with the
+  row it runs with. `make release-check` now refuses a tag while a Tier 1
+  file's smoke is missing, recorded on another class, failing, or older than
+  45 days: one file (the published gemma-4-E2B mix, CPU and Metal) has run,
+  so the next tag needs the other 26 run first. The README's "Actively
+  validated models" table and [docs/model-support.md](docs/model-support.md)
+  are rendered from the roster and held to it by a parity test. Tiers change
+  no loading path and do not appear in `--caps`. Also fixed: the device
+  ledger's release-check refusal printed its summary above the rows it
+  summarises.
+
 - **Training: distillation toward a teacher (`--train-teacher DIR`).** With
   `--train`, each completion position is fitted to a teacher's top-k
   distribution instead of the next token: the KL divergence from the
