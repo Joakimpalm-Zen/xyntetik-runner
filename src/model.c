@@ -12331,6 +12331,7 @@ float *model_spec_row_logits(model_t *m, int b) {
 static bool rows_logits(model_t *m, int n, float *out, bool transform) {
     int xdim = m->xdim, V = m->n_vocab;
     if (m->gpu) return false;
+    if (n < 1) return true;   // an empty round has no heads to compute
     float *hn = malloc(sizeof(float) * (size_t)n * xdim);
     if (!hn) return false;
     for (int b = 0; b < n; b++) {
