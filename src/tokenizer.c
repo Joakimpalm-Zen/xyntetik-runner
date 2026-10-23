@@ -422,7 +422,9 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
 
     // Split rules for the BPE families we have ground truth for. Everything
     // else, including a missing key, keeps the original GPT-2 behavior rather
-    // than being silently retokenized by rules it was not checked against.
+    // than being retokenized by rules it was not checked against; a BPE file
+    // that names a split this table lacks is told so (pre_unknown, below),
+    // because GPT-2 is then a guess, not the file's rule.
     const char *pre = gguf_get_str(g, "tokenizer.ggml.pre", "");
     if (strcmp(pre, "llama-bpe") == 0)   t->pre = TOK_PRE_LLAMA3;
     else if (strcmp(pre, "dbrx") == 0)   t->pre = TOK_PRE_LLAMA3; // llama.cpp: "same as llama3" (granite 4.1 ships this)
@@ -443,9 +445,36 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     else if (strcmp(pre, "smollm") == 0) t->pre = TOK_PRE_SMOLLM;
     else if (strcmp(pre, "afmoe") == 0)  t->pre = TOK_PRE_AFMOE;
     else if (strcmp(pre, "tekken") == 0) t->pre = TOK_PRE_TEKKEN;
+    // pixtral: llama.cpp's name for the Tekken regex with its Unicode letter
+    // classes, the one TOK_PRE_TEKKEN implements; NVIDIA's Nemotron 3.5
+    // Lightning ships it (its tokenizer.json carries exactly that regex).
+    // Before this row the file took the GPT-2 split: "<p" became "<" + "p",
+    // a 1000-byte README prompt 353 tokens against the publisher's 298, and
+    // 571 of the 721 corpus strings matched the publisher's tokenizer; with
+    // it, all 721 (2026-10-23). Its BOS default stays GPT-2's: the
+    // publisher's post-processor adds none.
+    else if (strcmp(pre, "pixtral") == 0) t->pre = TOK_PRE_TEKKEN;
     else if (strcmp(pre, "llama4") == 0 ||
              strcmp(pre, "gpt-4o") == 0) t->pre = TOK_PRE_LLAMA4;
-    else                                 t->pre = TOK_PRE_GPT2;
+    else {
+        t->pre = TOK_PRE_GPT2;
+        // the name only chooses the split of a plain BPE vocabulary
+        // (SentencePiece and gemma4's BPE-over-SPM never read it); an absent
+        // key is the plain GPT-2 file and says nothing to report
+        if (t->model == TOK_BPE && pre[0]) {
+            size_t i = 0;
+            for (; pre[i] && i < sizeof t->pre_unknown - 1; i++) {
+                char c = pre[i];
+                bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                          (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+                t->pre_unknown[i] = ok ? c : '?';
+            }
+            t->pre_unknown[i] = 0;
+            fprintf(stderr, "tokenizer: pre '%s' unknown, GPT-2 split assumed "
+                            "(text may tokenize differently from the publisher's tokenizer)\n",
+                    t->pre_unknown);
+        }
+    }
     // Clef (Cloudflare's Qwen3.8 and Qwen3.5 post-trains) was trained with
     // the qwen2 split: its tokenizer.json carries \p{L}+ where Qwen's own
     // carries [\p{L}\p{M}]+, and transformers builds the qwen2 regex for it

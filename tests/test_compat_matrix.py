@@ -57,7 +57,12 @@ def test_model_manifest_covers_every_claimed_architecture():
             assert model["reference"]["revision"]
         else:
             assert "greedy_reference" not in model["checks"], model["id"]
-            assert "tokenizer" not in model["checks"], model["id"]
+            # the tokenizer check compares with the publisher's tokenizer, not
+            # with llama.cpp, so a row without a llama.cpp reference may claim
+            # it, but only through a pinned capture of that tokenizer's ids
+            if "tokenizer" in model["checks"]:
+                assert model.get("tokenizer_reference_ids"), model["id"]
+                assert model.get("tokenizer_reference_revision"), model["id"]
             assert model.get("notes"), model["id"]
         assert model["checks"]
         capture_path = model.get("tokenizer_reference_ids")
