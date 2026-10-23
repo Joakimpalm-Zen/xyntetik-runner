@@ -5429,6 +5429,14 @@ static const float *mv_xsums(const gguf_tensor *w, const float *x, int n_in,
 // pinned on, the solo step's route is the int8 dot, which the per-column
 // route takes below MV_SMALL_BATCH only (mv_takes_i8).
 static _Thread_local bool t_mv_exact;
+// R8.19 device mode on this thread (a training step or its eval with
+// model_t.train_dev): every product below goes to the training context's
+// batch-invariant product, a tensor it declines (no kernel, scaled, over the
+// VRAM budget) staying on the CPU for the whole run. Column t's value does
+// not depend on how the window is batched, so the taped forward (16-row
+// rounds), the recompute (the whole window) and the head (16-position
+// chunks) see the same values.
+static _Thread_local model_t *t_mv_dev;
 static int mv_exact_cols(void) {
     return i8_dot_enabled() ? MV_SMALL_BATCH - 1 : VEC_DOT_MULTI_MAX;
 }
@@ -5436,6 +5444,9 @@ static int mv_exact_cols(void) {
 static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
                      const float *x, int x_stride, int n_in, int n_out,
                      const float *bias, int n_batch) {
+    if (t_mv_dev && gpu_train_mm(t_mv_dev, w, x, x_stride, y, y_stride, n_in,
+                                 n_out, bias, n_batch))
+        return;
     int ec = mv_exact_cols();
     if (t_mv_exact && n_batch > ec) {
         for (int c = 0; c < n_batch; c += ec) {
@@ -5508,6 +5519,12 @@ static bool mv_fuse_enabled(void) {
 
 static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
                            int x_stride, int n_in, int n_batch) {
+    if (t_mv_dev) {   // device mode: each part its own product
+        for (int s = 0; s < np; s++)
+            matvec_b(tp, p[s].y, p[s].y_stride, p[s].w, x, x_stride, n_in,
+                     p[s].n_out, p[s].bias, n_batch);
+        return;
+    }
     int ec = mv_exact_cols();
     if (t_mv_exact && n_batch > ec && np <= MV_MAX_PARTS) {
         // a verify round: in chunks the per-column route takes (matvec_b)
@@ -5571,7 +5588,7 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
 // is done per part. Falls back to one dispatch per part under RUNNER_MV_FUSE=0.
 static void matvec_b_parts_x(tpool *tp, const mv_part *p, const float *const *xs,
                              int np, int n_in) {
-    if (np == 1 || !mv_fuse_enabled()) {
+    if (np == 1 || !mv_fuse_enabled() || t_mv_dev) {
         for (int s = 0; s < np; s++)
             matvec_b(tp, p[s].y, p[s].y_stride, p[s].w, xs[s], n_in, n_in,
                      p[s].n_out, p[s].bias, 1);
@@ -10583,6 +10600,8 @@ static bool lora_backward(model_t *m, const int32_t *toks, int T,
     bool prof = getenv("RUNNER_TRAIN_PROF") != NULL;
     double pt0 = prof ? plat_now() : 0, pt_fw = 0, pt_head = 0;
     double loss = 0.0;
+    model_t *dev = t_mv_dev;
+    t_mv_dev = m->train_dev ? m : NULL;
     bool ok = lora_taped_forward(m, toks, T, pos_w, tch, &loss);
     if (ok) {
         if (prof) { pt_fw = plat_now(); }
@@ -10602,6 +10621,7 @@ static bool lora_backward(model_t *m, const int32_t *toks, int T,
         free(dx);
     }
     free(m->tape); m->tape = NULL; m->tape_T = 0;
+    t_mv_dev = dev;
     if (ok && loss_out) *loss_out = loss;
     return ok;
 }
@@ -10882,6 +10902,8 @@ bool model_lora_eval_row(model_t *m, const int32_t *toks, int T,
                          lora_eval_acc *acc) {
     int V = m->n_vocab;
     fw_rounds rd = {0};
+    model_t *dev = t_mv_dev;
+    t_mv_dev = m->train_dev ? m : NULL;
     bool ok = true;
     for (int t = 0; ok && t < T; t++) {
         float *lg = fw_rounds_logits(m, &rd, toks, T, t);
@@ -10917,6 +10939,7 @@ bool model_lora_eval_row(model_t *m, const int32_t *toks, int T,
         acc->positions++;
     }
     fw_rounds_free(&rd);
+    t_mv_dev = dev;
     return ok;
 }
 

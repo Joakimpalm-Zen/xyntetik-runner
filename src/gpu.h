@@ -248,6 +248,15 @@ bool   gpu_train_init(model_t *m);
 void   gpu_train_free(model_t *m);
 bool   gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
                      float *dx, int n_in, int n_out, int nb);
+// R8.19: y[t][j] = sum_i W[j][i] x[t][i] (+ bias[j]) for t < nb on the same
+// context, rows x_stride / y_stride apart: a batch-invariant product (column
+// t's value does not depend on the other columns of the call), the training
+// step's forward products in device mode. Not the CPU's bits. false = no
+// context, no kernel for the type, a scaled tensor, or the VRAM budget: the
+// caller computes it on the CPU.
+bool   gpu_train_mm(model_t *m, const gguf_tensor *w, const float *x,
+                    int x_stride, float *y, int y_stride, int n_in, int n_out,
+                    const float *bias, int nb);
 
 // D2 on the device (R8.7.2): place the loaded adapter's A/B in VRAM for every
 // GPU-resident layer, so an offloaded projection gets the same y += scale*B(Ax)

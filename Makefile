@@ -201,6 +201,7 @@ TEST_LORA_GRAD = $(TEST_BATCH:test-batch%=test-lora-grad%)
 TEST_DPO_GRAD = $(TEST_BATCH:test-batch%=test-dpo-grad%)
 TEST_KD_GRAD = $(TEST_BATCH:test-batch%=test-kd-grad%)
 TEST_MVT = $(TEST_BATCH:test-batch%=test-mvt%)
+TEST_TRAIN_GPU = $(TEST_BATCH:test-batch%=test-train-gpu%)
 TEST_MVCANON = $(TEST_BATCH:test-batch%=test-mvcanon%)
 TEST_MV_TOL = $(TEST_BATCH:test-batch%=test-mv-tol%)
 TEST_ATTN_TOL = $(TEST_BATCH:test-batch%=test-attn-tol%)
@@ -975,6 +976,14 @@ TEST_MVT_SRC = tests/test_mvt.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ
                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MVT): $(TEST_MVT_SRC) $(HDR) test.gguf test-q8.gguf test-bf16.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_MVT_SRC) -o $@ $(LDFLAGS)
+
+# R8.19: the training context's products for every weight type on random
+# blocks: the transposed product the CPU chain's bytes, the forward product
+# batch-invariant (skips without a CUDA device)
+TEST_TRAIN_GPU_SRC = tests/test_train_gpu.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+$(TEST_TRAIN_GPU): $(TEST_TRAIN_GPU_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_TRAIN_GPU_SRC) -o $@ $(LDFLAGS)
 
 # The canonical-order forward (R8.7.1 slice 1). quants.c is compiled in HERE
 # with RUNNER_CANON_KERNELS and the strict float regime -- not taken from the
@@ -2665,7 +2674,7 @@ test-metal:
 	$(MAKE) --no-print-directory test-metal-kv-fp4
 	$(MAKE) --no-print-directory test-metal-kv-q8
 
-test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_MVCANON) \
+test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_SPEC_ID) $(TEST_ATTN_SPLIT) $(TEST_BIND) $(TEST_HOST_HEADER) \
@@ -2751,9 +2760,30 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	@# and with qwen3-style per-head QK norms in the layer: the norm adjoint
 	@# sits between the rope adjoint and the projection backward
 	./$(TEST_LORA_GRAD) test-qk.gguf test-lora-qk.full.gguf
+	@# R8.19: the same gates in --train-gpu's device mode (every weight
+	@# product on the GPU, batch-invariant, not the CPU's bits): its own
+	@# central differences hold its gradient only if the taped forward and
+	@# the recompute see the same values. Rounds of 5 against the backward's
+	@# 14-position window and 13-position head chunk, so a product whose
+	@# columns depend on the batch shows. Skips without a CUDA device.
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD)
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-q8.gguf test-lora-q8.full.gguf
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-qk.gguf test-lora-qk.full.gguf
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-nope.gguf test-lora-nope.full.gguf
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-prope.gguf test-lora-prope.full.gguf
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-ornith.gguf test-lora-ornith.full.gguf slots
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-clef.gguf test-lora-clef.full.gguf slots
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-granite.gguf test-lora-granite.full.gguf
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-muse.gguf test-lora-muse.full.gguf
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-gemma3.gguf test-lora-gemma3.full.gguf
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-gemma4.gguf test-lora-gemma4.full.gguf
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf strict
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-g4v.gguf test-lora-g4v.full.gguf
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-es8.gguf test-lora-es8.full.gguf stiff
 	./$(TEST_MVT)
 	./$(TEST_MVT) test-q8.gguf
 	./$(TEST_MVT) test-bf16.gguf
+	./$(TEST_TRAIN_GPU)
 	./$(TEST_MVCANON)
 	./$(TEST_MVCANON) test-q8.gguf
 	./$(TEST_BIND)
@@ -3146,7 +3176,7 @@ clean:
 		$(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
 	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) \
-	      $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) $(TEST_VRAMREG) test-shared-asan-bin \
+	      $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) $(TEST_VRAMREG) $(TEST_TRAIN_GPU) test-shared-asan-bin \
 	      $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
 	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
@@ -3184,7 +3214,7 @@ NVCC ?= nvcc
 NVCC_CCBIN ?=
 ptx: src/kernels.cu src/kernels_sm80.cu src/kernels_tc2.cuh src/kernels_tc2_iq.cuh \
      src/kernels_iq4_table.cuh src/kernels_iq_grids.cuh src/kernels_iq_stage.cuh src/iq_decode.h \
-     src/kernels_kq_stage.cuh src/kernels_tc2_kq.cuh src/kq_stage.h
+     src/kernels_kq_stage.cuh src/kernels_tc2_kq.cuh src/kq_stage.h src/kernels_train.cuh src/kernel_args.h
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_75 -O3 -o src/kernels.ptx src/kernels.cu
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_80 -O3 -o src/kernels_sm80.ptx src/kernels_sm80.cu
 	python3 scripts/embed-ptx.py || python scripts/embed-ptx.py

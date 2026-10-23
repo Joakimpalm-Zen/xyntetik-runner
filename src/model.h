@@ -601,6 +601,10 @@ typedef struct {
                              // cached on first use. NULL = CPU backward.
                              // Independent of `gpu` — the model itself stays
                              // CPU-resident under --train.
+    bool   train_dev;        // R8.19 device mode: every weight product of a
+                             // training step and of its evals on train_gpu
+                             // (gpu_train_mm), tolerance-equivalent to the
+                             // CPU, not its bytes (--train-gpu)
     void  *gpu_owner;        // backend resource owner, possibly retained after
                              // m->gpu is detached so CPU fallback can keep
                              // reading backend-owned unified-memory KV.

@@ -2947,6 +2947,14 @@ bool gpu_train_mvt(model_t *mm, const gguf_tensor *w, const float *dy,
     return false;
 }
 
+bool gpu_train_mm(model_t *mm, const gguf_tensor *w, const float *x,
+                  int x_stride, float *y, int y_stride, int n_in, int n_out,
+                  const float *bias, int nb) {
+    (void)mm; (void)w; (void)x; (void)x_stride; (void)y; (void)y_stride;
+    (void)n_in; (void)n_out; (void)bias; (void)nb;
+    return false;
+}
+
 void gpu_free(model_t *m) {
     if (!m) return;
     gpu_t *g = m->gpu_owner ? (gpu_t *)m->gpu_owner : (gpu_t *)m->gpu;

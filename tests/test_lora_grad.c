@@ -81,6 +81,19 @@ int main(int argc, char **argv) {
         fprintf(stderr, "FAIL: cannot load adapter %s\n", adapter);
         return 1;
     }
+    // RUNNER_TEST_TRAIN_DEV=1 (R8.19): every check below in --train-gpu's
+    // device mode. Its products are not the CPU's bits, so the central
+    // differences of its own loss hold its gradient only if the taped
+    // forward and the recompute see the same values (the batch-invariant
+    // product); a CUDA host runs it, anywhere else it skips.
+    if (getenv("RUNNER_TEST_TRAIN_DEV")) {
+        if (!gpu_train_init(&m)) {
+            printf("lora-grad: device mode needs a CUDA device, skipping (not passing)\n");
+            return 0;
+        }
+        m.train_dev = true;
+        printf("lora-grad: device mode (every weight product on the GPU)\n");
+    }
     int32_t toks[T];
     for (int i = 0; i < T; i++) toks[i] = 3 + (i * 7) % (m.n_vocab - 4);
 

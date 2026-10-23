@@ -7633,12 +7633,17 @@ typedef struct {
     CUcontext   ctx;              // primary context, retained on device 0
     CUdevice    dev;
     CUmodule    mod;
-    CUfunction  f_mvt[KT_N];
+    // R8.19 (kernels_train.cuh): the transposed product, the CPU chain's
+    // bits, and the batch-invariant forward product, for every type the
+    // CPU trainer decodes
+    CUfunction  f_tmvt[KT_N], f_tmm[KT_N];
     CUdeviceptr dummy;            // zeroed no-bias operand
     tg_slot    *cache;
     int         n_cache, cap_cache;
     CUdeviceptr d_dy, d_dx;
     size_t      cap_dy, cap_dx;
+    float      *h_x, *h_y;        // the forward's packed host rows
+    size_t      cap_hx, cap_hy;
     size_t      vram_used, vram_budget;
     bool        budget_noted;
 } train_gpu_t;
@@ -7663,16 +7668,41 @@ bool gpu_train_init(model_t *m) {
         free(t);
         return false;
     }
-    static const struct { int type; const char *name; } FNS[] = {
-        { T_F32, "k_mvt_f32" },   { T_F16, "k_mvt_f16" },
-        { T_BF16, "k_mvt_bf16" }, { T_Q8_0, "k_mvt_q8_0" },
-        { T_Q4_0, "k_mvt_q4_0" }, { T_Q4_K, "k_mvt_q4_K" },
-        { T_Q6_K, "k_mvt_q6_K" },
+    static const struct { int type; const char *mvt, *mm; } FNS[] = {
+        { T_F32,     "k_tmvt_f32",     "k_tmm_f32" },
+        { T_F16,     "k_tmvt_f16",     "k_tmm_f16" },
+        { T_BF16,    "k_tmvt_bf16",    "k_tmm_bf16" },
+        { T_Q8_0,    "k_tmvt_q8_0",    "k_tmm_q8_0" },
+        { T_Q4_0,    "k_tmvt_q4_0",    "k_tmm_q4_0" },
+        { T_Q4_1,    "k_tmvt_q4_1",    "k_tmm_q4_1" },
+        { T_Q5_0,    "k_tmvt_q5_0",    "k_tmm_q5_0" },
+        { T_Q5_1,    "k_tmvt_q5_1",    "k_tmm_q5_1" },
+        { T_Q2_K,    "k_tmvt_q2_K",    "k_tmm_q2_K" },
+        { T_Q3_K,    "k_tmvt_q3_K",    "k_tmm_q3_K" },
+        { T_Q4_K,    "k_tmvt_q4_K",    "k_tmm_q4_K" },
+        { T_Q5_K,    "k_tmvt_q5_K",    "k_tmm_q5_K" },
+        { T_Q6_K,    "k_tmvt_q6_K",    "k_tmm_q6_K" },
+        { T_IQ4_NL,  "k_tmvt_iq4_nl",  "k_tmm_iq4_nl" },
+        { T_IQ4_XS,  "k_tmvt_iq4_xs",  "k_tmm_iq4_xs" },
+        { T_IQ2_XXS, "k_tmvt_iq2_xxs", "k_tmm_iq2_xxs" },
+        { T_IQ2_XS,  "k_tmvt_iq2_xs",  "k_tmm_iq2_xs" },
+        { T_IQ2_S,   "k_tmvt_iq2_s",   "k_tmm_iq2_s" },
+        { T_IQ3_XXS, "k_tmvt_iq3_xxs", "k_tmm_iq3_xxs" },
+        { T_IQ3_S,   "k_tmvt_iq3_s",   "k_tmm_iq3_s" },
+        { T_IQ1_S,   "k_tmvt_iq1_s",   "k_tmm_iq1_s" },
+        { T_IQ1_M,   "k_tmvt_iq1_m",   "k_tmm_iq1_m" },
+        { T_MXFP4,   "k_tmvt_mxfp4",   "k_tmm_mxfp4" },
+        { T_NVFP4,   "k_tmvt_nvfp4",   "k_tmm_nvfp4" },
+        { T_Q2_0,    "k_tmvt_q2_0",    "k_tmm_q2_0" },
     };
-    for (size_t i = 0; i < sizeof(FNS) / sizeof(*FNS); i++)
-        if (cu.ModuleGetFunction(&t->f_mvt[FNS[i].type], t->mod,
-                                 FNS[i].name) != 0)
-            t->f_mvt[FNS[i].type] = NULL;
+    for (size_t i = 0; i < sizeof(FNS) / sizeof(*FNS); i++) {
+        if (cu.ModuleGetFunction(&t->f_tmvt[FNS[i].type], t->mod,
+                                 FNS[i].mvt) != 0)
+            t->f_tmvt[FNS[i].type] = NULL;
+        if (cu.ModuleGetFunction(&t->f_tmm[FNS[i].type], t->mod,
+                                 FNS[i].mm) != 0)
+            t->f_tmm[FNS[i].type] = NULL;
+    }
     size_t free_b = 0, total_b = 0;
     if (cu.MemGetInfo(&free_b, &total_b) != 0) free_b = 0;
     // leave a margin for the driver and anyone sharing the card; running out
@@ -7681,9 +7711,8 @@ bool gpu_train_init(model_t *m) {
     t->vram_budget = free_b > (512u << 20) ? free_b - (512u << 20) : 0;
     char name[128] = "CUDA GPU";
     gpu_available(name, sizeof(name));
-    fprintf(stderr, "train-gpu: %s — backward matvec on device, weights "
-            "cached on first use (budget %.1f GB)\n", name,
-            t->vram_budget / 1e9);
+    fprintf(stderr, "train-gpu: %s, weights cached on first use (budget "
+            "%.1f GB)\n", name, t->vram_budget / 1e9);
     m->train_gpu = t;
     return true;
 }
@@ -7700,6 +7729,8 @@ void gpu_train_free(model_t *m) {
     }
     cu.PrimaryCtxRelease(t->dev);
     free(t->cache);
+    free(t->h_x);
+    free(t->h_y);
     free(t);
     m->train_gpu = NULL;
 }
@@ -7714,47 +7745,54 @@ static bool tg_scratch(CUdeviceptr *buf, size_t *cap, size_t need) {
     return true;
 }
 
+// The tensor's device copy, uploaded on its first use and cached for the
+// run; 0 when it does not fit the budget (it then stays on the CPU, for the
+// whole run: the budget only fills). Known by host address and size, so the
+// host bytes must outlive the context (a mapped model file's do); a buffer
+// freed and handed out again at the same address would hit the old copy.
+static CUdeviceptr tg_weights(train_gpu_t *t, const gguf_tensor *w) {
+    for (int i = 0; i < t->n_cache; i++)
+        if (t->cache[i].data == w->data && t->cache[i].nbytes == w->nbytes)
+            return t->cache[i].dev;
+    CUdeviceptr weights = 0;
+    if (t->vram_used + w->nbytes > t->vram_budget) {
+        if (!t->budget_noted) {
+            t->budget_noted = true;
+            fprintf(stderr, "train-gpu: VRAM budget reached after %.1f "
+                    "GB, remaining tensors train on the CPU\n",
+                    t->vram_used / 1e9);
+        }
+        return 0;
+    }
+    if (t->n_cache == t->cap_cache) {
+        int cap = t->cap_cache ? t->cap_cache * 2 : 64;
+        tg_slot *c = realloc(t->cache, sizeof(tg_slot) * (size_t)cap);
+        if (!c) return 0;
+        t->cache = c;
+        t->cap_cache = cap;
+    }
+    if (cu.MemAlloc(&weights, w->nbytes) != 0 ||
+        cu.MemcpyHtoD(weights, w->data, w->nbytes) != 0) {
+        if (weights) cu.MemFree(weights);
+        // treat an allocation failure as the budget: stop trying
+        t->vram_budget = t->vram_used;
+        return 0;
+    }
+    t->cache[t->n_cache].data = w->data;
+    t->cache[t->n_cache].nbytes = w->nbytes;
+    t->cache[t->n_cache].dev = weights;
+    t->n_cache++;
+    t->vram_used += w->nbytes;
+    return weights;
+}
+
 bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
                    float *dx, int n_in, int n_out, int nb) {
     train_gpu_t *t = m->train_gpu;
-    if (!t || !w || w->type >= KT_N || !t->f_mvt[w->type]) return false;
-    CUdeviceptr weights = 0;
-    for (int i = 0; i < t->n_cache; i++)
-        if (t->cache[i].data == w->data && t->cache[i].nbytes == w->nbytes) {
-            weights = t->cache[i].dev;
-            break;
-        }
+    if (!t || !w || w->type >= KT_N || !t->f_tmvt[w->type]) return false;
     if (cu.CtxSetCurrent(t->ctx) != 0) return false;
-    if (!weights) {
-        if (t->vram_used + w->nbytes > t->vram_budget) {
-            if (!t->budget_noted) {
-                t->budget_noted = true;
-                fprintf(stderr, "train-gpu: VRAM budget reached after %.1f "
-                        "GB — remaining tensors train on the CPU (same "
-                        "bytes, slower)\n", t->vram_used / 1e9);
-            }
-            return false;
-        }
-        if (t->n_cache == t->cap_cache) {
-            int cap = t->cap_cache ? t->cap_cache * 2 : 64;
-            tg_slot *c = realloc(t->cache, sizeof(tg_slot) * (size_t)cap);
-            if (!c) return false;
-            t->cache = c;
-            t->cap_cache = cap;
-        }
-        if (cu.MemAlloc(&weights, w->nbytes) != 0 ||
-            cu.MemcpyHtoD(weights, w->data, w->nbytes) != 0) {
-            if (weights) cu.MemFree(weights);
-            // treat an allocation failure as the budget: stop trying
-            t->vram_budget = t->vram_used;
-            return false;
-        }
-        t->cache[t->n_cache].data = w->data;
-        t->cache[t->n_cache].nbytes = w->nbytes;
-        t->cache[t->n_cache].dev = weights;
-        t->n_cache++;
-        t->vram_used += w->nbytes;
-    }
+    CUdeviceptr weights = tg_weights(t, w);
+    if (!weights) return false;
     size_t ny = sizeof(float) * (size_t)nb * n_out;
     size_t nx = sizeof(float) * (size_t)nb * n_in;
     if (!tg_scratch(&t->d_dy, &t->cap_dy, ny) ||
@@ -7767,11 +7805,65 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
     void *p[] = { &weights, &t->d_dy, &t->d_dx, &a, &t->dummy };
     int threads = 256;
     unsigned blocks = (unsigned)((n_in + threads - 1) / threads);
-    if (cu.LaunchKernel(t->f_mvt[w->type], blocks, mvt_grid_y(nb), 1,
+    unsigned rows = (unsigned)((nb + TMVT_NT - 1) / TMVT_NT);
+    if (cu.LaunchKernel(t->f_tmvt[w->type], blocks, rows, 1,
                         (unsigned)threads, 1, 1, 0, NULL, p, NULL) != 0)
         return false;
     return cu.CtxSynchronize() == 0 &&
            cu.MemcpyDtoH(dx, t->d_dx, nx) == 0;
+}
+
+static bool tg_host(float **buf, size_t *cap, size_t n) {
+    if (*cap >= n) return true;
+    float *b = realloc(*buf, sizeof(float) * n);
+    if (!b) return false;
+    *buf = b;
+    *cap = n;
+    return true;
+}
+
+bool gpu_train_mm(model_t *m, const gguf_tensor *w, const float *x,
+                  int x_stride, float *y, int y_stride, int n_in, int n_out,
+                  const float *bias, int nb) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !w || nb < 1 || w->scale != 1.0f || w->type >= KT_N ||
+        !t->f_tmm[w->type])
+        return false;
+    if (cu.CtxSetCurrent(t->ctx) != 0) return false;
+    CUdeviceptr weights = tg_weights(t, w);
+    if (!weights) return false;
+    size_t nx = (size_t)nb * n_in, ny = (size_t)nb * n_out;
+    if (!tg_scratch(&t->d_dx, &t->cap_dx, sizeof(float) * nx) ||
+        !tg_scratch(&t->d_dy, &t->cap_dy, sizeof(float) * ny) ||
+        !tg_host(&t->h_y, &t->cap_hy, ny))
+        return false;
+    const float *xp = x;
+    if (x_stride != n_in) {
+        if (!tg_host(&t->h_x, &t->cap_hx, nx)) return false;
+        for (int c = 0; c < nb; c++)
+            memcpy(t->h_x + (size_t)c * n_in, x + (size_t)c * x_stride,
+                   sizeof(float) * (size_t)n_in);
+        xp = t->h_x;
+    }
+    if (cu.MemcpyHtoD(t->d_dx, xp, sizeof(float) * nx) != 0) return false;
+    mv_args a = { n_in, n_out, 0, 0, nb, n_in, n_out };
+    void *p[] = { &weights, &t->d_dx, &t->d_dy, &a, &t->dummy };
+    unsigned blocks = (unsigned)((n_out + TMM_WARPS - 1) / TMM_WARPS);
+    unsigned cols = (unsigned)((nb + TMM_NC - 1) / TMM_NC);
+    if (cu.LaunchKernel(t->f_tmm[w->type], blocks, cols, 1, TMM_WARPS * 32,
+                        1, 1, 0, NULL, p, NULL) != 0 ||
+        cu.CtxSynchronize() != 0 ||
+        cu.MemcpyDtoH(t->h_y, t->d_dy, sizeof(float) * ny) != 0)
+        return false;
+    for (int c = 0; c < nb; c++) {
+        const float *src = t->h_y + (size_t)c * n_out;
+        float *dst = y + (size_t)c * y_stride;
+        if (bias)
+            for (int j = 0; j < n_out; j++) dst[j] = src[j] + bias[j];
+        else
+            memcpy(dst, src, sizeof(float) * (size_t)n_out);
+    }
+    return true;
 }
 
 // Discrete VRAM: the hidden states and per-row logits live device-side and

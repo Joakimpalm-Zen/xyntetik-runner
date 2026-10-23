@@ -7357,3 +7357,5 @@ extern "C" __global__ void k_mamba2_ssd_seq(
     for (int j = 0; j < RS_MAX_SD; j++)
         if (j < ds) sp[j] = s_[j];
 }
+
+#include "kernels_train.cuh"
