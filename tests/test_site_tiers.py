@@ -55,18 +55,42 @@ def text_of(html):
     return htmllib.unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)).strip())
 
 
+def readme_models(doc):
+    """(model, file rows) per README block, a file row as its cells."""
+    out = []
+    for block in re.findall(r"<details>\n(.*?)\n</details>", mt.render_readme(doc), re.S):
+        model = htmllib.unescape(re.search(r"<b>(.*?)</b>", block).group(1))
+        rows = [[c.strip() for c in line.strip()[1:-1].split(" | ")]
+                for line in block.splitlines()[4:] if line.startswith("| ")]
+        out.append((model, rows))
+    return out
+
+
+def site_words(cell):
+    """A README cell as the site's table words it. The README writes the
+    same marks compactly: not run as a blank cell, the version without its
+    "v" and over its date. These forms are written out by hand."""
+    cell = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", cell).replace("`", "").replace("\\|", "|")
+    if cell == "":
+        return "☐ not run"
+    return re.sub(r"^(✅|failed) (\S+)<br>(\S+)$", r"\1 v\2 \3", cell)
+
+
 def test_the_table_has_the_readmes_rows_in_the_readmes_order():
+    """The site keeps one table where the README has a block per model:
+    the same models in the same order, the same files in each, and each
+    cell the same mark in the site's words."""
     doc = fixture()
     html = site.tiers_table_html(doc)
-    # every README sub-row, cell for cell, as the text of a site row
-    readme = [l for l in mt.render_readme(doc).splitlines() if l.startswith("| ")][1:]
-    site_rows = [text_of(r) for r in re.findall(r"<tr[^>]*>.*?</tr>", html, re.S)][1:]
-    assert len(site_rows) == len(readme)
-    for md, got in zip(readme, site_rows):
-        cells = [c.strip() for c in md.strip("|").split("|")]
-        want = " ".join(re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", c).replace("`", "")
-                        .replace("**", "").replace("\\|", "|") for c in cells if c)
-        assert got == want
+    readme = readme_models(doc)
+    groups = re.split(r'<tr class="group">', html)[1:]
+    assert len(groups) == len(readme)
+    for chunk, (model, rows) in zip(groups, readme):
+        label, *subrows = [text_of(r) for r in re.findall(r"<td.*?</tr>", chunk, re.S)]
+        assert re.sub(r"^(?:(?:Experimental|Text path only): )*", "", label) == model
+        assert len(subrows) == len(rows)
+        for got, cells in zip(subrows, rows):
+            assert got == " ".join([site_words(c) for c in cells] + ["envelope"])
 
 
 def test_a_recorded_cell_shows_its_version_and_date_and_links_its_row():

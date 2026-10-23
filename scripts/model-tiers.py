@@ -29,7 +29,7 @@ docs/model-support.md is rendered from it.
     scripts/model-tiers.py --check
     scripts/model-tiers.py --stale [--today YYYY-MM-DD]
     scripts/model-tiers.py --record ROW --result smoke-result.json
-    scripts/model-tiers.py --write-docs     # re-render README.md's table
+    scripts/model-tiers.py --write-docs     # re-render README.md's model list
     scripts/model-tiers.py --docs-check     # fail when it differs from the render
     scripts/model-tiers.py --cards OUTDIR   # every published card, block placed
     scripts/model-tiers.py --cards-check    # fail when a card on the Hub drifts
@@ -37,7 +37,7 @@ docs/model-support.md is rendered from it.
 
 The cards: each published repository's Hugging Face card carries a
 "last validated" sub-block (`xyntetik-validated`) inside its own
-`xyntetik-status` block, rendered from this roster with the README's marks.
+`xyntetik-status` block, rendered from this roster with the site's marks.
 Reading a card needs no token. Pushing is an explicit step, never part of
 `--record`: it uploads through huggingface_hub with the token the library
 finds itself, and refuses a card that changed on the Hub outside the block
@@ -54,6 +54,7 @@ current.
 
 import argparse
 import datetime
+import html
 import json
 import os
 import re
@@ -528,8 +529,9 @@ def record(doc, row_id, res, devices):
 def mark_parts(cell):
     """A backend cell's mark as (text, link): exactly one of a recorded gate
     with its version and date, a declared limit with the support-matrix path
-    it links to, or not run. The README, the cards and the site all render
-    these, so the three cannot word a mark differently."""
+    it links to, or not run. The cards and the site render these, so the two
+    cannot word a mark differently; the README's file tables write the same
+    states compactly (readme_mark)."""
     if cell is None:
         return "☐ not run", None
     if cell["kind"] == "limit":
@@ -557,11 +559,6 @@ def train_mark(lora):
     return "no: " + t["reason"]
 
 
-def _train(lora):
-    # a pipe in a refusal sentence would split the README's table cell
-    return train_mark(lora).replace("|", "\\|")
-
-
 def _qualifiers(rows):
     pre = ["Experimental"] if any(r.get("experimental") for r in rows) else []
     return pre + (["Text path only"] if any(r.get("vision_upstream") for r in rows) else [])
@@ -581,14 +578,18 @@ def _model_groups(rows):
     return sorted(groups.items(), key=lambda kv: (kv[0].casefold(), kv[0]))
 
 
-def _file_title(row):
-    """A file as the README names it: a sharded set by its first part."""
+def _file_title(row, link=None):
+    """A file as the README names it: a sharded set by its first part,
+    linked when `link` is given."""
     files = row["files"]
-    return f"`{files[0]['name']}`" + (f" ({len(files)} parts)" if len(files) > 1 else "")
+    name = f"`{files[0]['name']}`"
+    if link:
+        name = f"[{name}]({link})"
+    return name + (f" ({len(files)} parts)" if len(files) > 1 else "")
 
 
 def tier1_groups(doc):
-    """The table every surface shows (the README, the site): one
+    """The models every surface lists (the README, the site): one
     (qualifiers, model, rows) per Tier 1 model, sorted by name, each with
     its roster files in roster order."""
     return [(_qualifiers(rows), model, rows)
@@ -607,27 +608,94 @@ def upcoming_names(doc):
     return names
 
 
+README_LABELS = ("CPU", "CUDA", "Metal")
+NONE_RUN = "–"
+README_LEGEND = (
+    "✅ *version date*: recorded gate · blank: nobody has run it yet · n/a: declared "
+    "limit, linked to the manual · failed *version date*: recorded failure · Train: the "
+    "file's own `--adapt-info` answer, where ✅ means the LoRA backward admits the file, "
+    "not that training it gives good results. A model's line sums up its files: ✅ all "
+    f"recorded, partial some, {NONE_RUN} none run. Each file name links to its envelope.")
+
+
+def readme_mark(cell):
+    """A backend cell in the README's file table: the states of mark_parts,
+    compact. A recorded gate is its version over its date (the line break
+    keeps a narrow column from splitting the date at a hyphen), not run is
+    a blank cell, a declared limit is n/a linked to the matrix."""
+    if cell is None:
+        return ""
+    if cell["kind"] == "limit":
+        return f"[n/a]({cell['matrix']})"
+    word = "✅" if cell["result"] == "pass" else "failed"
+    return f"{word} {cell['runner_version']}<br>{cell['date']}"
+
+
+def readme_train(lora):
+    """The Train cell: the recorded --adapt-info answer, blank when no gate
+    has recorded one."""
+    if lora is None:
+        return ""
+    t = lora["training"]
+    if t["supported"]:
+        return f"✅ {lora['runner_version']}<br>{lora['date']}"
+    # a pipe in a refusal sentence would split the table cell
+    return ("no: " + t["reason"]).replace("|", "\\|")
+
+
+def backend_summary(rows, backend):
+    """One backend's status over a model's files, for its summary line. A
+    file with a declared limit there is left out: n/a when every file has
+    the limit, failed when any other recorded a failure, ✅ when every
+    other is recorded, NONE_RUN when none is, partial otherwise."""
+    owed = [c for c in (r["backends"].get(backend) for r in rows)
+            if not (c and c["kind"] == "limit")]
+    if not owed:
+        return "n/a"
+    if any(c and c["result"] != "pass" for c in owed):
+        return "failed"
+    if all(owed):
+        return "✅"
+    return "partial" if any(owed) else NONE_RUN
+
+
+def _summary(quals, model, rows):
+    """A model block's summary line. It is HTML (GitHub renders no markdown
+    inside <summary>), so the name is escaped and bold is <b>."""
+    label = "".join(", " + q[0].lower() + q[1:] for q in quals)
+    chips = " ".join(f"<code>{name}&nbsp;{backend_summary(rows, b)}</code>"
+                     for b, name in zip(BACKENDS, README_LABELS))
+    return (f"<summary><b>{html.escape(model, quote=False)}</b>"
+            f"{html.escape(label, quote=False)} {chips}</summary>")
+
+
 def render_readme(doc):
     """The block between README_BEGIN and README_END.
 
-    One row per Tier 1 model, its qualifier before its bold name, then one
-    sub-row per roster file of that model, run or not: every roster file is
-    one the release gate holds Runner to, and a quant the matrix admits
-    outside the roster is the matrix's claim, not this table's. Upcoming
-    models follow as names, in the roster's order (the order of admission).
+    The legend, then one collapsed <details> block per Tier 1 model: its
+    summary line names it, its label in plain words and a status per
+    backend over its files; inside, a table with one row per roster file of
+    that model, run or not, the file name linked to its envelope. Every
+    roster file is one the release gate holds Runner to, and a quant the
+    matrix admits outside the roster is the matrix's claim, not this list's.
+    Upcoming models follow as one line of names, in the roster's order (the
+    order of admission).
     """
     # a blank line on each side keeps the markers' HTML comments apart from
-    # the table and the paragraph in every markdown renderer
-    lines = ["", "", "| Model | File | CPU | CUDA | Metal | Train | Evidence |",
-             "|---|---|---|---|---|---|---|"]
+    # the content; GitHub renders the table inside <details> only after a
+    # blank line, and the HTML block needs one before </details>
+    lines = ["", "", README_LEGEND, ""]
     for quals, model, rows in tier1_groups(doc):
-        label = "".join(q + ": " for q in quals) + f"**{model}**"
-        lines.append(f"| {label} | | | | | | |")
+        lines += ["<details>", _summary(quals, model, rows), "",
+                  "| File | " + " | ".join(README_LABELS) + " | Train |",
+                  "|---|---|---|---|---|"]
         for r in rows:
-            cells = [_file_title(r)] + [_mark(r["backends"].get(b)) for b in BACKENDS]
-            cells += [_train(r.get("lora")), f"[envelope]({SUPPORT_DOC}#{r['id']})"]
-            lines.append("| | " + " | ".join(cells) + " |")
-    lines += ["", "**Upcoming**, not counted as validated: "
+            cells = [_file_title(r, f"{SUPPORT_DOC}#{r['id']}")]
+            cells += [readme_mark(r["backends"].get(b)) for b in BACKENDS]
+            cells.append(readme_train(r.get("lora")))
+            lines.append("| " + " | ".join(cells) + " |")
+        lines += ["", "</details>"]
+    lines += ["", "**Upcoming** (planned, not supported yet): "
               + ", ".join(upcoming_names(doc)) + ".", "", ""]
     return "\n".join(lines)
 

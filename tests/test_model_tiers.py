@@ -11,6 +11,7 @@ import copy
 import importlib.util
 import json
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -561,15 +562,38 @@ def test_record_refuses_a_companion_run_on_another_base():
     assert doc["rows"][1]["backends"]["metal"]["result"] == "pass"
 
 
-# --- the README table: a render of the roster, never typed ----------------------
+# --- the README section: a render of the roster, never typed --------------------
+#
+# One collapsible block per Tier 1 model: a summary line (the bold name, its
+# label in plain words, a status chip per backend), then a table with one
+# row per roster file. The marks below are written out by hand from the
+# owner's decisions of 2026-10-23: a recorded cell is the version and date
+# of its gate, not run is a blank cell, a limit is n/a linked to the manual.
 
-def readme_rows(doc):
-    return [l for l in mt.render_readme(doc).splitlines() if l.startswith("| ")]
+def readme_blocks(doc):
+    """(summary, file rows) per model block of the render, in order; a
+    file row is its list of cells."""
+    out = []
+    for block in re.findall(r"<details>\n(.*?)\n</details>", mt.render_readme(doc), re.S):
+        summary = re.match(r"<summary>(.*)</summary>\n", block).group(1)
+        rows = [[c.strip() for c in line.strip()[1:-1].split(" | ")]
+                for line in block.splitlines()[4:] if line.startswith("| ")]
+        out.append((summary, rows))
+    return out
+
+
+def file_row(doc, name):
+    return [r for _, rows in readme_blocks(doc) for r in rows if name in r[0]][0]
+
+
+def chips(summary):
+    """The status chips of a summary line, backend name to status."""
+    return dict(c.split("&nbsp;") for c in re.findall(r"<code>(.*?)</code>", summary))
 
 
 def test_the_readme_block_is_the_render_of_the_roster():
-    """The help-parity pattern: the README's table between the two markers
-    is exactly what the roster renders, so the table cannot drift from it.
+    """The help-parity pattern: the README's section between the two markers
+    is exactly what the roster renders, so it cannot drift from it.
     After --record, `scripts/model-tiers.py --write-docs` rewrites it."""
     text = (ROOT / "README.md").read_text(encoding="utf-8")
     assert text.count(mt.README_BEGIN) == 1 and text.count(mt.README_END) == 1
@@ -577,75 +601,119 @@ def test_the_readme_block_is_the_render_of_the_roster():
     assert block == mt.render_readme(committed())
 
 
-def test_a_recorded_cell_renders_its_version_and_date():
+def test_a_recorded_cell_renders_its_version_and_date_and_not_run_is_blank():
     doc = gated(metal=gate("2026-10-23", version="1.5.1"))
-    sub = [r for r in readme_rows(doc) if "toy-Q8_0.gguf" in r][0]
-    assert "✅ v1.5.1 2026-10-23" in sub
-    assert sub.count("☐ not run") == 3          # cpu, cuda, train
+    assert file_row(doc, "toy-Q8_0.gguf")[1:] == ["", "", "✅ 1.5.1<br>2026-10-23", ""]
 
 
 def test_a_declared_limit_renders_n_a_linked_to_the_matrix():
     doc = gated(metal=gate("2026-10-23"),
                 cuda={"kind": "limit", "reason": "no CUDA path",
                       "matrix": "MANUAL.md#support-matrix"})
-    sub = [r for r in readme_rows(doc) if "toy-Q8_0.gguf" in r][0]
-    assert "[n/a](MANUAL.md#support-matrix)" in sub
+    assert file_row(doc, "toy-Q8_0.gguf")[2] == "[n/a](MANUAL.md#support-matrix)"
 
 
 def test_a_failed_gate_never_renders_a_check_mark():
     doc = gated(metal=gate("2026-10-23", result="fail"))
-    sub = [r for r in readme_rows(doc) if "toy-Q8_0.gguf" in r][0]
-    assert "✅" not in sub and "failed" in sub
+    assert file_row(doc, "toy-Q8_0.gguf")[3] == "failed 1.5.0<br>2026-10-23"
+    (summary, _), = readme_blocks(doc)
+    assert chips(summary)["Metal"] == "failed" and "✅" not in summary
 
 
 def test_the_train_column_is_the_recorded_adapt_info_answer():
     doc = gated(metal=gate("2026-10-23"))
-    doc["rows"][0]["lora"] = lora(train=(False, "MoE shared experts"))
-    sub = [r for r in readme_rows(doc) if "toy-Q8_0.gguf" in r][0]
-    assert "no: MoE shared experts" in sub
+    doc["rows"][0]["lora"] = lora(train=(False, "MoE shared experts | router"))
+    # a pipe in the refusal sentence would split the cell
+    assert file_row(doc, "toy-Q8_0.gguf")[4] == "no: MoE shared experts \\| router"
     doc["rows"][0]["lora"] = lora()
-    sub = [r for r in readme_rows(doc) if "toy-Q8_0.gguf" in r][0]
-    assert sub.count("✅ v1.5.1 2026-10-23") == 1
+    assert file_row(doc, "toy-Q8_0.gguf")[4] == "✅ 1.5.1<br>2026-10-23"
 
 
-def test_every_tier1_file_gets_its_sub_row_even_unrun():
+def test_every_tier1_file_gets_its_row_even_unrun():
     """Every roster file is one the owner committed to validate, so it is
-    listed with honest marks; one shape for every model, run or not."""
-    rows = readme_rows(roster())
-    sub = [r for r in rows if "toy-Q8_0.gguf" in r]
-    assert len(sub) == 1 and sub[0].count("☐ not run") == 4
-    assert not [r for r in rows if "no file run yet" in r]
+    listed, its cells blank until a gate records them; one shape for every
+    model, run or not."""
+    (summary, rows), = readme_blocks(roster())
+    assert rows == [["[`toy-Q8_0.gguf`](docs/model-support.md#toy-q8_0)", "", "", "", ""]]
+    assert chips(summary) == {"CPU": "–", "CUDA": "–", "Metal": "–"}
 
 
-def test_the_model_row_is_bold_and_carries_no_marks():
-    rows = readme_rows(gated(metal=gate("2026-10-23")))
-    model = [r for r in rows if r.startswith("| **Toy**")][0]
-    assert "✅" not in model and "☐" not in model and "n/a" not in model
+def test_each_model_is_one_collapsed_block_github_renders_as_a_table():
+    """GitHub renders markdown inside <details> only after a blank line,
+    and the HTML block must end with one before </details>."""
+    text = mt.render_readme(gated(metal=gate("2026-10-23")))
+    block = text.split("<details>\n", 1)[1].split("</details>", 1)[0]
+    lines = block.split("\n")
+    assert lines[0].startswith("<summary><b>Toy</b>") and lines[0].endswith("</summary>")
+    assert lines[1] == ""
+    assert lines[2] == "| File | CPU | CUDA | Metal | Train |"
+    assert lines[3] == "|---|---|---|---|---|"
+    assert lines[-2:] == ["", ""]
 
 
-def test_qualifiers_lead_the_model_row_before_the_bold_name():
+def test_the_label_follows_the_bold_name_in_plain_words():
     doc = gated(metal=gate("2026-10-23"))
     doc["rows"][0].update(experimental=True, claim="Experimental: a toy.")
-    assert any(r.startswith("| Experimental: **Toy** |") for r in readme_rows(doc))
-    doc = gated(metal=gate("2026-10-23"))
-    doc["rows"][0].update(vision_upstream=True, claim="Text path only: a toy.")
-    assert any(r.startswith("| Text path only: **Toy** |") for r in readme_rows(doc))
+    assert readme_blocks(doc)[0][0].startswith("<b>Toy</b>, experimental <code>")
+    doc["rows"][0].update(vision_upstream=True)
+    assert readme_blocks(doc)[0][0].startswith(
+        "<b>Toy</b>, experimental, text path only <code>")
+    assert "Text path only:" not in mt.render_readme(doc)
+
+
+def test_the_summary_is_html_so_a_model_name_is_escaped():
+    doc = roster(tier1_row(model="Toy <R&D>"))
+    assert readme_blocks(doc)[0][0].startswith("<b>Toy &lt;R&amp;D&gt;</b> <code>")
+
+
+def test_the_file_name_links_its_envelope_and_a_sharded_set_counts_its_parts():
+    row = tier1_row()
+    row["files"] = [{"name": f"toy-0000{i}-of-00003.gguf", "sha256": SHA_A, "bytes": 1}
+                    for i in (1, 2, 3)]
+    (_, rows), = readme_blocks(roster(row))
+    assert rows[0][0] == ("[`toy-00001-of-00003.gguf`](docs/model-support.md#toy-q8_0)"
+                          " (3 parts)")
+
+
+def test_the_summary_sums_up_each_backend_over_the_models_files():
+    """A model's chip per backend, written out by hand for files in mixed
+    states: n/a when every file has the limit, failed when any recorded a
+    failure, ✅ when every file without the limit is recorded, – when none
+    is, partial otherwise. A limit never counts as a missing run."""
+    limit = {"kind": "limit", "reason": "no path", "matrix": "MANUAL.md#support-matrix"}
+    a = tier1_row(id="mix-a", model="Mix")
+    b = tier1_row(id="mix-b", model="Mix")
+    c = tier1_row(id="mix-c", model="Mix")
+    for r, name in ((b, "mix-b.gguf"), (c, "mix-c.gguf")):
+        r["files"] = [{"name": name, "sha256": "e" * 64, "bytes": 1}]
+    a["backends"] = {"cpu": gate("2026-10-23"), "cuda": gate("2026-10-23"), "metal": limit}
+    b["backends"] = {"cpu": gate("2026-10-23"), "cuda": None, "metal": limit}
+    c["backends"] = {"cpu": limit, "cuda": None, "metal": limit}
+    d = tier1_row(id="odd-a", model="Odd")
+    e = tier1_row(id="odd-b", model="Odd")
+    e["files"] = [{"name": "odd-b.gguf", "sha256": "f" * 64, "bytes": 1}]
+    d["backends"] = {"cpu": gate("2026-10-23"), "cuda": limit, "metal": None}
+    e["backends"] = {"cpu": gate("2026-10-23", result="fail"), "cuda": None, "metal": None}
+    blocks = readme_blocks(roster(a, b, c, d, e))
+    assert [chips(s) for s, _ in blocks] == [
+        {"CPU": "✅", "CUDA": "partial", "Metal": "n/a"},
+        {"CPU": "failed", "CUDA": "–", "Metal": "–"},
+    ]
+    assert [len(rows) for _, rows in blocks] == [3, 2]
 
 
 def test_models_are_sorted_by_name_and_files_keep_the_roster_order():
     """The render does not depend on the order rows were added in: model
-    groups sort by name (the label aside), files within one keep their
+    blocks sort by name (the label aside), files within one keep their
     roster order."""
     zeta = tier1_row(id="zeta-a", model="Zeta")
     zeta2 = tier1_row(id="zeta-b", model="Zeta")
     zeta2["files"] = [{"name": "zeta-b.gguf", "sha256": "e" * 64, "bytes": 1}]
     alpha = tier1_row(id="alpha", model="alpha", experimental=True,
                       claim="Experimental: a toy.")
-    rows = readme_rows(roster(zeta, zeta2, alpha))
-    names = [r for r in rows if "**" in r]
-    assert names[0].startswith("| Experimental: **alpha**") and "**Zeta**" in names[1]
-    files = [r for r in rows if "gguf" in r]
-    assert files.index([f for f in files if "zeta-b.gguf" in f][0]) == len(files) - 1
+    blocks = readme_blocks(roster(zeta, zeta2, alpha))
+    assert [s.split("</b>")[0] for s, _ in blocks] == ["<b>alpha", "<b>Zeta"]
+    assert [r[0].split("`")[1] for r in blocks[1][1]] == ["toy-Q8_0.gguf", "zeta-b.gguf"]
     assert mt.render_readme(roster(alpha, zeta, zeta2)) == \
         mt.render_readme(roster(zeta, zeta2, alpha))
 
@@ -659,17 +727,28 @@ def test_a_declared_limit_links_the_manuals_support_matrix():
     assert any("matrix" in e for e in errors(roster(row)))
 
 
-def test_upcoming_models_are_names_under_the_table_and_tier2_is_absent():
+def test_the_legend_comes_first_and_names_every_mark():
+    text = mt.render_readme(roster())
+    legend = text.strip().split("\n")[0]
+    assert text.index(legend) < text.index("<details>")
+    for word in ("✅", "blank", "n/a", "failed", "`--adapt-info`", "partial", "–", "envelope"):
+        assert word in legend, word
+
+
+def test_upcoming_models_are_one_line_under_the_blocks_and_tier2_is_absent():
     up = {"id": "later", "model": "Later VL", "tier": "upcoming",
           "claim": "Text path only: not admitted.", "architecture": "later",
           "missing": "an admission", "vision_upstream": True,
           "transitions": [{"tier": "upcoming", "effective": "2026-10-22",
                            "reason": "test", "last_validated_release": None}]}
+    up2 = dict(up, id="sooner", model="Sooner", vision_upstream=False)
     t2 = tier1_row(id="old", model="Old", tier="tier2")
     t2["transitions"][-1]["tier"] = "tier2"
-    text = mt.render_readme(roster(tier1_row(), t2, up))
-    assert "Later VL (text path only)" in text
-    assert not [l for l in text.splitlines() if l.startswith("| ") and "Later" in l]
+    text = mt.render_readme(roster(tier1_row(), t2, up, up2))
+    tail = text.rsplit("</details>", 1)[1]
+    assert ("**Upcoming** (planned, not supported yet): Later VL (text path only), "
+            "Sooner.") in tail.splitlines()
+    assert "Later" not in text.rsplit("</details>", 1)[0]
     assert "Old" not in text
 
 
