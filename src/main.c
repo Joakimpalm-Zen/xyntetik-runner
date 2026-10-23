@@ -5487,6 +5487,16 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
         FINDING(2, "template_not_recognised",
                 "the model's chat template is not one this build renders; llama-2 markup is used, which the model was not trained on",
                 "pass --chat-template NAME for a supported family, or report the model so its template can be added");
+    if (rt->tok.pre_unknown[0]) {
+        // the name is stored with every byte outside [A-Za-z0-9._-] replaced,
+        // so it goes into the JSON as it is
+        char det[192];
+        snprintf(det, sizeof det, "tokenizer pre '%s' unknown, GPT-2 split assumed: "
+                 "text may tokenize differently from the publisher's tokenizer",
+                 rt->tok.pre_unknown);
+        FINDING(1, "tokenizer_pre_unknown", det,
+                "compare a few strings against the model's own tokenizer, and report the model so its split rule can be added");
+    }
     if (asked_gpu && gpu_there && !rt->m.gpu)
         FINDING(1, "gpu_not_used",
                 "a GPU is present and was not used for this model; the load output above the report names the reason",

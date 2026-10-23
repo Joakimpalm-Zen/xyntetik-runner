@@ -5,6 +5,21 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Nemotron 3.5 Lightning tokenizes as its publisher's tokenizer, and an
+  unknown pre-tokenizer name is no longer silent.** The file declares
+  `tokenizer.ggml.pre` "pixtral", llama.cpp's name for the Tekken split
+  Runner already implements. Runner had no row for that name and fell back
+  to the GPT-2 split: `<p` became `<` + `p`, a 1000-byte README prompt took
+  353 tokens against the publisher's 298, and 150 of the 721 corpus strings
+  tokenized differently from NVIDIA's own tokenizer. Now 0 of 721, gated in
+  the compatibility matrix against a pinned capture of that tokenizer.
+  Generated text still read normally, which is why nothing flagged it. A BPE
+  file whose pre-tokenizer name has no rule here still loads with the GPT-2
+  split, but now prints one line at load (`tokenizer: pre 'NAME' unknown,
+  GPT-2 split assumed ...`), and `--doctor` reports it as a `degraded`
+  finding, `tokenizer_pre_unknown`. SentencePiece vocabularies, which do not
+  use the name, and files without the key stay quiet.
+
 - **Windows: non-ASCII prompts, file paths and environment values were read
   in the ANSI code page; they are UTF-8 now.** The C runtime built the
   command line in the system's legacy code page, so a `-p` prompt reached

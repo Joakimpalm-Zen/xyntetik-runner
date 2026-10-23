@@ -76,6 +76,7 @@ GPU_UNSUPPORTED = None  # one named tensor stored as CPU-only IQ2_XXS
 ZERO_BRANCHES = False  # --zero-branches: attn_output/ffn_down all zero
 POOLING = None     # --pooling N: {arch}.pooling_type (llama.cpp's enum)
 ADD_EOS = False    # --add-eos: tokenizer.ggml.add_eos_token = true
+BPE_PRE = None     # --bpe-pre NAME: a GPT-2 byte-level BPE vocabulary declaring that split
 LAYERS = None      # --layers N: block count (a family's size tells some rules)
 HEAD_DIM = None    # --head-dim N: decouple head_dim from N_EMBD / N_HEAD
 ROPE_DIM = None    # --rope-dim N: rotate only the first N dims of each head
@@ -314,6 +315,13 @@ while i < len(args):
         POOLING = int(args[i])
     elif a == "--add-eos":
         ADD_EOS = True
+    elif a == "--bpe-pre":
+        # the same three specials and 256 byte pieces, as a GPT-2 byte-level
+        # BPE vocabulary (each byte its own token, no merges) that declares
+        # tokenizer.ggml.pre NAME: the tensors do not change, and the loader's
+        # handling of the split name can be checked end to end
+        i += 1
+        BPE_PRE = args[i]
     elif a == "--layers":
         # Some reference rules key on the model's SIZE, which a loader can
         # only read off its block count: Gemma 3 27B (62 blocks) scales its
@@ -391,6 +399,20 @@ if SPECIALS:
 if CONTROL:
     VOCAB += CONTROL
     TTYPE += [3] * len(CONTROL)  # control: they join the special list and decode to nothing
+if BPE_PRE is not None:
+    # GPT-2's bytes_to_unicode: printable Latin-1 bytes stand for themselves,
+    # the rest map to code points from U+0100 up, in byte order
+    keep = (list(range(ord("!"), ord("~") + 1)) + list(range(0xA1, 0xAD)) +
+            list(range(0xAE, 0x100)))
+    b2u, extra = {}, 0
+    for b in range(256):
+        if b in keep:
+            b2u[b] = chr(b)
+        else:
+            b2u[b] = chr(0x100 + extra)
+            extra += 1
+    VOCAB[3:3 + 256] = [b2u[b] for b in range(256)]
+    TTYPE[3:3 + 256] = [1] * 256  # normal tokens
 N_VOCAB = len(VOCAB)
 
 GGUF_U32, GGUF_F32, GGUF_STR, GGUF_ARR, GGUF_I32, GGUF_BOOL = 4, 6, 8, 9, 5, 7
@@ -637,7 +659,7 @@ meta_kvs = [
        kv_u32(f"{ARCH}.attention.head_count_kv", N_KV)]),
     kv_f32(f"{ARCH}.attention.layer_norm_rms_epsilon", 1e-5),
     kv_f32(f"{ARCH}.rope.freq_base", 10000.0),
-    kv_str("tokenizer.ggml.model", "llama"),
+    kv_str("tokenizer.ggml.model", "gpt2" if BPE_PRE is not None else "llama"),
     kv_arr_str("tokenizer.ggml.tokens", VOCAB),
     kv_arr_f32("tokenizer.ggml.scores", [0.0] * N_VOCAB),
     kv_arr_i32("tokenizer.ggml.token_type", TTYPE),
@@ -663,6 +685,9 @@ if SAMPLING:
         meta_kvs.append(kv_f32("general.sampling.min_p", float(SAMPLING[3])))
 if ADD_EOS:
     meta_kvs.append(kv_bool("tokenizer.ggml.add_eos_token", True))
+if BPE_PRE is not None:
+    meta_kvs += [kv_str("tokenizer.ggml.pre", BPE_PRE),
+                 kv_arr_str("tokenizer.ggml.merges", [])]
 if CHAT_TEMPLATE is not None:
     meta_kvs.append(kv_str("tokenizer.chat_template", CHAT_TEMPLATE))
 if YARN_FACTOR is not None:

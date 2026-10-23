@@ -1475,11 +1475,15 @@
       "file": "models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",
       "sha256": "61f87e75974e4b535dcdf9aad056541a9514f1dfa4538b463b081d19b7a00e3c",
       "upstream": "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+      "tokenizer_reference": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+      "tokenizer_reference_revision": "a9904d24bcc1d289a1950fa9d2b978c47cf903b9",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/nemotron-3.5-lightning-30b-a3b.tokenizer-json.json",
       "checks": [
         "load",
+        "tokenizer",
         "chat"
       ],
-      "notes": "Pinned 2026-10-02 (R4.23.3; the architecture had no manifest row). The MoE router has no device kernel, so the routed blocks run on the CPU and cpu_cuda is not declared. No llama.cpp reference is declared, so greedy_reference and tokenizer are not claimed. The 2026-10-02 family sweep served the keep104 derivative of this file through every surface, including a required tool call, buffered and streamed.",
+      "notes": "Pinned 2026-10-02 (R4.23.3; the architecture had no manifest row). The MoE router has no device kernel, so the routed blocks run on the CPU and cpu_cuda is not declared. No llama.cpp reference is declared, so greedy_reference is not claimed. Tokenizer: checked against the publisher's tokenizer.json (the BF16 repo at a9904d24) since 2026-10-23; the file declares tokenizer.ggml.pre \"pixtral\", which fell to the GPT-2 split until then (150 of 721 corpus strings differed), and is the Tekken split (0 of 721). The 2026-10-02 family sweep served the keep104 derivative of this file through every surface, including a required tool call, buffered and streamed.",
       "check_params": {
         "chat": {
           "prompt": "What is 2+2?",

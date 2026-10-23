@@ -119,3 +119,40 @@ def _host(exe):
     caps = json.loads(subprocess.run([exe, "--caps"], stdout=subprocess.PIPE,
                                      check=True, env=env).stdout)
     return caps["host"]
+
+
+def test_an_unknown_tokenizer_split_is_reported_not_silent(tmp_path):
+    """A BPE file whose tokenizer.ggml.pre names a split this build has no
+    rule for still loads with the GPT-2 split (a file that is GPT-2-compatible
+    under a new name keeps working), but says so: one line at load and a
+    `degraded` finding, both naming the split. Before, the fallback was
+    silent: NVIDIA's Nemotron 3.5 Lightning ("pixtral", now a known name)
+    tokenized 150 of 721 corpus strings differently from its publisher's
+    tokenizer with nothing in the output to say so."""
+    exe = find_runner(ROOT)
+    if not pathlib.Path(exe).exists():
+        pytest.skip("runner not built")
+    found = {}
+    for pre in ("made-up", 'odd"name', "pixtral"):
+        m = tmp_path / f"bpe-{len(found)}.gguf"
+        subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py",
+                        "--bpe-pre", pre, str(m)], check=True, stdout=subprocess.DEVNULL)
+        rc, d, err = _doctor(exe, m, "--doctor", "--chat-template", "chatml")
+        found[pre] = ([f for f in d["findings"] if f["code"] == "tokenizer_pre_unknown"], err)
+    hits, err = found["made-up"]
+    assert len(hits) == 1 and hits[0]["severity"] == "degraded"
+    assert "'made-up'" in hits[0]["detail"] and "GPT-2 split assumed" in hits[0]["detail"]
+    assert "tokenizer: pre 'made-up' unknown, GPT-2 split assumed" in err
+    # a name from the file reaches the JSON only as [A-Za-z0-9._-] and '?'
+    hits, err = found['odd"name']
+    assert len(hits) == 1 and "'odd?name'" in hits[0]["detail"]
+    # a known name, and a SentencePiece file whatever it declares: nothing
+    hits, err = found["pixtral"]
+    assert hits == [] and "unknown, GPT-2 split assumed" not in err
+
+
+def test_a_known_or_sentencepiece_vocabulary_has_no_split_finding(model):
+    exe, m = model
+    _, d, err = _doctor(exe, m, "--doctor", "--chat-template", "chatml")
+    assert "tokenizer_pre_unknown" not in [f["code"] for f in d["findings"]]
+    assert "GPT-2 split assumed" not in err

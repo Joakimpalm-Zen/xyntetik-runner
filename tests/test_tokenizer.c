@@ -570,6 +570,7 @@ static void test_bos_default_follows_the_family(void) {
     static const struct { const char *model, *pre; int key; bool bos; } cases[] = {
         { "gpt2",  "llama-bpe", -1, true  },   // Llama 3, no key: <|begin_of_text|>
         { "gpt2",  "tekken",    -1, true  },   // Mistral Tekken, no key: <s>
+        { "gpt2",  "pixtral",   -1, false },   // Tekken's split, but its publisher adds no BOS
         { "gpt2",  "qwen2",     -1, false },   // Qwen: no BOS
         { "gpt2",  "smollm",    -1, false },
         { "gpt2",  NULL,        -1, false },   // plain GPT-2
@@ -601,9 +602,46 @@ static void test_bos_default_follows_the_family(void) {
     remove(path);
 }
 
+// tokenizer.ggml.pre chooses a plain BPE vocabulary's split. "pixtral" is
+// llama.cpp's name for the Tekken regex (Nemotron 3.5 Lightning ships it; it
+// fell to GPT-2 before, 571 of the 721 corpus strings matching the
+// publisher's tokenizer instead of all 721). A name with no rule keeps GPT-2 and is recorded,
+// sanitized, for the load line and --doctor; SentencePiece and an absent key
+// record nothing.
+static void test_pre_names_choose_the_split(void) {
+    static const struct { const char *model, *pre; int split; const char *unknown; } cases[] = {
+        { "gpt2",  "pixtral",    TOK_PRE_TEKKEN, ""          },
+        { "gpt2",  "tekken",     TOK_PRE_TEKKEN, ""          },
+        { "gpt2",  "llama-bpe",  TOK_PRE_LLAMA3, ""          },
+        { "gpt2",  "made-up",    TOK_PRE_GPT2,   "made-up"   },
+        { "gpt2",  "odd\"na me", TOK_PRE_GPT2,   "odd?na?me" },
+        { "gpt2",  NULL,         TOK_PRE_GPT2,   ""          },
+        { "llama", "made-up",    TOK_PRE_GPT2,   ""          },
+    };
+    const char *path = "tok-pre.gguf";
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        write_bos_fixture(path, cases[i].model, cases[i].pre, -1);
+        current = path;
+        gguf_file g;
+        assert(gguf_open(&g, path));
+        tokenizer t;
+        assert(tokenizer_init(&t, &g));
+        if (t.pre != cases[i].split || strcmp(t.pre_unknown, cases[i].unknown) != 0) {
+            fprintf(stderr, "pre: model %s pre %s: split %d unknown '%s', want %d '%s'\n",
+                    cases[i].model, cases[i].pre ? cases[i].pre : "(none)", t.pre,
+                    t.pre_unknown, cases[i].split, cases[i].unknown);
+            abort();
+        }
+        tokenizer_free(&t);
+        gguf_close(&g);
+    }
+    remove(path);
+}
+
 int main(void) {
     test_special_matching_across_first_bytes();
     test_bos_default_follows_the_family();
+    test_pre_names_choose_the_split();
 
     for (size_t i = 0; i < sizeof(fixtures) / sizeof(*fixtures); i++) {
         current = fixtures[i];

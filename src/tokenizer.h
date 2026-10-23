@@ -9,7 +9,8 @@ enum { TOK_SPM, TOK_BPE, TOK_BPE_SPM }; // BPE_SPM: gemma4 (spaces to U+2581, ra
 // BPE pre-tokenizer split rules, from tokenizer.ggml.pre. GPT2 is the original
 // regex (a leading space may join a run); the newer families let any single
 // non-letter/non-digit character lead a letter run and cap digit runs, which
-// changes where pre-token boundaries fall. Unrecognised values stay on GPT2.
+// changes where pre-token boundaries fall. An unrecognised value keeps GPT2
+// and is reported (pre_unknown below): the split may not be the publisher's.
 enum { TOK_PRE_GPT2, TOK_PRE_LLAMA3, TOK_PRE_QWEN2, TOK_PRE_SMOLLM, TOK_PRE_AFMOE,
        TOK_PRE_TEKKEN, TOK_PRE_LLAMA4, TOK_PRE_QWEN35 };
 
@@ -31,6 +32,12 @@ typedef struct {
     bool     add_eos;
     // the publisher's tokenizer composes its input to NFC before splitting
     bool     nfc;
+    // A BPE file's tokenizer.ggml.pre value that names no split rule here, so
+    // GPT2 is assumed; "" when the name is known or absent, or when the
+    // vocabulary is not plain BPE (no other model reads the split). Characters outside
+    // [A-Za-z0-9._-] are stored as '?', so it can go into a log line or a JSON
+    // report as it is (--doctor reports it).
+    char     pre_unknown[48];
     hmap     vocab;         // token string -> id
     hmap     merges;        // "left right" -> rank (BPE)
     char    *merges_buf;    // owned storage for merge keys
