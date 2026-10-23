@@ -818,7 +818,7 @@ jobs:
           # --no-skips would fail on them (tests/test_ci_contracts.py checks)
           .venv/bin/python scripts/ci-run.py --timeout 1500 t3 -- .venv/bin/python -m pytest -q \
             tests/test_transcript.py tests/test_train.py tests/test_session_images.py \
-            -k "not gpu_training_matches_cpu_bytes and not test_cuda_" \
+            -k "not gpu_training_matches_cpu_bytes and not test_cuda_ and not train_gpu_matches_cpu_within_rounding" \
             --junitxml=.build/ci/t3.xml
           .venv/bin/python scripts/check-junit.py --no-skips .build/ci/t3.xml
       - uses: actions/upload-artifact@v7

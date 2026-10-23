@@ -215,7 +215,7 @@ def test_train_gpu_is_refused_without_training_or_a_device(runner_bin, base, tmp
     out = tmp_path / "ad.gguf"
     p = _run_train(runner_bin, base, out, "corpus.txt", extra=("--train-gpu",))
     if p.returncode == 0:
-        pytest.skip("a CUDA device is usable here")
+        pytest.skip("a GPU is usable here: the refusal cannot be shown")
     assert b"--train-gpu needs a CUDA build and an NVIDIA GPU" in p.stderr
     assert not out.exists(), "a refused run wrote an adapter"
 
