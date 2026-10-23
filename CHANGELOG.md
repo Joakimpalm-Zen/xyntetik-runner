@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **qwen35 and Clef: the DeltaNet q/k L2 norm takes the publisher's
+  epsilon.** The Gated DeltaNet's query and key L2 norm used the model's RMS
+  epsilon; the publisher's implementation hard-codes 1e-6 (transformers'
+  `l2norm`). Every qwen35 and Clef file known ships `rms_norm_eps` 1e-6, so
+  their outputs do not change. A file with another RMS epsilon read its
+  query and key at a slightly wrong scale, on the CPU, in the training
+  recompute and on CUDA alike; all three now use 1e-6. The test fixtures
+  carry an RMS epsilon of 1e-5, so their DeltaNet outputs move, and the Clef
+  fixture's pinned head scores were re-pinned.
+
 - **Model support tiers.** [`docs/model-tiers.json`](docs/model-tiers.json)
   records which model files Runner re-checks on every release (Tier 1, 27
   files: the owner's roster and every published file), which are maintained
