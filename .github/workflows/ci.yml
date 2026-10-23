@@ -347,7 +347,7 @@ jobs:
       # through GetMenuStringW, which only this job can call
       - name: tray menu text
         run: |
-          make OS=Windows_NT test-tray-win-menu.exe
+          make test-tray-win-menu.exe
           ./test-tray-win-menu.exe
       - name: make test model
         run: python3 scripts/make-test-model.py test.gguf
@@ -748,7 +748,7 @@ jobs:
       - name: make test
         env:
           PYTHONUTF8: "1"
-        run: python3 scripts/ci-run.py --timeout 5100 windows-suite -- make OS=Windows_NT -j2 test
+        run: python3 scripts/ci-run.py --timeout 5100 windows-suite -- make -j2 test
       - name: CI timing and test reports
         if: always()
         uses: actions/upload-artifact@v7

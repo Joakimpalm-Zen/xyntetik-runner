@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Windows: `make` builds `runner.exe` in a bash started with a minimal
+  environment.** The Makefile chose its Windows branch only from the `OS`
+  environment variable, which a bash.exe started directly does not carry, so
+  such a shell built a `runner` with no `.exe` and failed linking `-ldl`.
+  The platform is now decided once from the shell's `uname` (`MINGW64_NT-...`,
+  `MSYS_NT-...`, `CYGWIN_NT-...`, busybox-w32's `Windows_NT`) or
+  `OS=Windows_NT`, and every platform branch reads that one decision; plain
+  `make` replaces `make OS=Windows_NT` in the build notes and CI.
+
 - **Model support tiers.** [`docs/model-tiers.json`](docs/model-tiers.json)
   records which model files Runner re-checks on every release (Tier 1, 27
   files: the owner's roster and every published file), which are maintained

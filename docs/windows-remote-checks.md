@@ -6,9 +6,14 @@ pull requests. CUDA verification still needs an actual NVIDIA device.
 See [CI execution and device evidence](ci.md) for the required lanes.
 
 ```sh
-make OS=Windows_NT CC=gcc
-make OS=Windows_NT -j2 test
+make CC=gcc
+make -j2 test
 ```
+
+The Makefile recognises Windows from what the shell's `uname` reports
+(`MINGW64_NT-...`, `MSYS_NT-...`, `CYGWIN_NT-...`) or from `OS=Windows_NT`,
+so a bash.exe started directly, whose minimal environment has no `OS`
+variable, builds `runner.exe` the same as a full shell does.
 
 ## Remote CUDA helper
 
