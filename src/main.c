@@ -4925,6 +4925,7 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     train_teacher_close(&tt);
     train_examples_free(exs, n_ex);
     dpo_pairs_free(pairs, n_pair);
+    model_debug_time_report();   // RUNNER_DEBUG_TIME: the forwards' stages
     return rc;
 }
 

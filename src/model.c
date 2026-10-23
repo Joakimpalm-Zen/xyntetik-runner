@@ -8386,6 +8386,16 @@ static void rmsnorm_bw(const float *x, const float *w, const float *dy,
         dx[i] += r * (w ? w[i] : 1.0f) * dy[i] - c * x[i];
 }
 
+// RUNNER_TRAIN_PROF's finer buckets, inside lbw_prof's phases: the DeltaNet
+// recurrence's recompute and its BPTT, the adapter's own passes at the
+// sites, the attention layers' B1 attention
+static double lbw_sub[4];
+static bool lbw_prof_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) on = getenv("RUNNER_TRAIN_PROF") != NULL;
+    return on > 0;
+}
+
 // The adapter half of a site's backward on the pool, in four passes:
 // tb = B^T dy and tf = A x per position (a chain over j and over i), then
 // dA[k][i] += s tb[t][k] x[t][i] and dB[j][k] += s dy[t][j] tf[t][k] (each
@@ -8480,10 +8490,12 @@ static bool lora_site_bw(model_t *m, int l, int slot, const gguf_tensor *w,
     if (!tbf) return false;
     lsb_job j = { lw, xin, dy, dxin, tbf, tbf + (size_t)nb * lw->r,
                   n_in, n_out, nb, lw->r, lw->scale };
+    double p0 = lbw_prof_on() ? plat_now() : 0;
     tpool_run(m->tp, lsb_proj, &j, nb);
     tpool_run(m->tp, lsb_ga, &j, n_in);
     tpool_run(m->tp, lsb_gb, &j, n_out);
     tpool_run(m->tp, lsb_dx, &j, nb);
+    if (lbw_prof_on()) lbw_sub[2] += plat_now() - p0;
     free(tbf);
     return true;
 }
@@ -8774,62 +8786,108 @@ static inline int attn_window_start(int swa, int t) {
     return swa > 0 && t - swa + 1 > 0 ? t - swa + 1 : 0;
 }
 
-static void attn_bw_worker(void *ctx, int g0, int g1) {
-    attn_bw_job *jb = (attn_bw_job *)ctx;
-    int hd = jb->hd, kv_mul = jb->kv_mul, T = jb->T;
-    for (int kvh = g0; kvh < g1; kvh++) {
-        float *p = jb->pbuf + (size_t)kvh * T;
+// The same backward in blocks of ATB positions, two pooled passes a block
+// (R8.19). Pass 1, one item per (position, head): the probabilities, dp and
+// sum_pd, then the score gradient and dq's chain over s ascending, keeping
+// the block's p and score gradients. Pass 2, one item per (key position,
+// kv head): dK[s] and dV[s] take the block's terms in t ascending, h
+// ascending order, and blocks run in ascending t, so every element's chain
+// is the serial sweep's (t asc, h asc, s asc); the items only spread the
+// work. It was split by kv-head group, which kept a GQA layer with four kv
+// heads on four threads.
+enum { ATB = 64 };
+typedef struct {
+    const attn_bw_job *jb;
+    int tb0, tbn;       // the block: positions [tb0, tb0 + tbn)
+    float *P, *DS;      // [tbn][n_head][T]
+} attn_bw_blk;
+
+static void attn_bw_p1(void *ctx, int i0, int i1) {
+    attn_bw_blk *B = ctx;
+    const attn_bw_job *jb = B->jb;
+    int hd = jb->hd, T = jb->T, H = jb->n_head;
+    for (int it = i0; it < i1; it++) {
+        int tt = it / H, h = it % H, t = B->tb0 + tt, kvh = h / jb->kv_mul;
         size_t hoff = (size_t)kvh * hd * sizeof(f16_t);
-        for (int t = 0; t < T; t++) {
-            const float *daot = jb->dao + (size_t)t * jb->q_dim;
-            const float *qt = jb->q + (size_t)t * jb->q_dim;
-            float *dqt = jb->dq + (size_t)t * jb->q_dim;
-            int t0 = attn_window_start(jb->swa, t);
+        float *p = B->P + ((size_t)tt * H + h) * T;
+        float *ds = B->DS + ((size_t)tt * H + h) * T;
+        const float *qh = jb->q + (size_t)t * jb->q_dim + (size_t)h * hd;
+        const float *daoh = jb->dao + (size_t)t * jb->q_dim + (size_t)h * hd;
+        float *dqh = jb->dq + (size_t)t * jb->q_dim + (size_t)h * hd;
+        int t0 = attn_window_start(jb->swa, t);
+        for (int s = t0; s <= t; s++) {
+            const f16_t *kh = (const f16_t *)(jb->kc_l +
+                              (size_t)s * jb->k_row_b + hoff);
+            float sc = 0;
+            for (int i = 0; i < hd; i++)
+                sc += qh[i] * f16_load(kh + i);
+            p[s] = sc * jb->scale;
+        }
+        softmax(p + t0, t - t0 + 1);
+        float sum_pd = 0.0f;
+        for (int s = t0; s <= t; s++) {
+            const f16_t *vh = (const f16_t *)(jb->vc_l +
+                              (size_t)s * jb->v_row_b + hoff);
+            float dp = 0.0f;
+            for (int i = 0; i < hd; i++)
+                dp = fmaf(daoh[i], f16_load(vh + i), dp);
+            ds[s] = dp;
+            sum_pd = fmaf(p[s], dp, sum_pd);
+        }
+        for (int s = t0; s <= t; s++) {
+            const f16_t *kh = (const f16_t *)(jb->kc_l +
+                              (size_t)s * jb->k_row_b + hoff);
+            float dsc = p[s] * (ds[s] - sum_pd) * jb->scale;
+            ds[s] = dsc;
+            for (int i = 0; i < hd; i++)
+                dqh[i] = fmaf(dsc, f16_load(kh + i), dqh[i]);
+        }
+    }
+}
+
+static void attn_bw_p2(void *ctx, int i0, int i1) {
+    attn_bw_blk *B = ctx;
+    const attn_bw_job *jb = B->jb;
+    int hd = jb->hd, T = jb->T, H = jb->n_head, kv_mul = jb->kv_mul;
+    int n_kv = H / kv_mul;
+    for (int it = i0; it < i1; it++) {
+        int s = it / n_kv, kvh = it % n_kv;
+        float *dks = jb->dk + (size_t)s * jb->kv_dim + (size_t)kvh * hd;
+        float *dvs = jb->dv + (size_t)s * jb->kv_dim + (size_t)kvh * hd;
+        for (int tt = 0; tt < B->tbn; tt++) {
+            int t = B->tb0 + tt;
+            if (t < s || s < attn_window_start(jb->swa, t)) continue;
             for (int h = kvh * kv_mul; h < (kvh + 1) * kv_mul; h++) {
-                const float *qh = qt + (size_t)h * hd;
-                const float *daoh = daot + (size_t)h * hd;
-                for (int s = t0; s <= t; s++) {
-                    const f16_t *kh = (const f16_t *)(jb->kc_l +
-                                      (size_t)s * jb->k_row_b + hoff);
-                    float sc = 0;
-                    for (int i = 0; i < hd; i++)
-                        sc += qh[i] * f16_load(kh + i);
-                    p[s] = sc * jb->scale;
-                }
-                softmax(p + t0, t - t0 + 1);
-                float sum_pd = 0.0f;
-                for (int s = t0; s <= t; s++) {
-                    const f16_t *vh = (const f16_t *)(jb->vc_l +
-                                      (size_t)s * jb->v_row_b + hoff);
-                    float dp = 0.0f;
-                    for (int i = 0; i < hd; i++)
-                        dp = fmaf(daoh[i], f16_load(vh + i), dp);
-                    // two passes: first accumulate sum_pd
-                    sum_pd = fmaf(p[s], dp, sum_pd);
-                }
-                for (int s = t0; s <= t; s++) {
-                    const f16_t *kh = (const f16_t *)(jb->kc_l +
-                                      (size_t)s * jb->k_row_b + hoff);
-                    const f16_t *vh = (const f16_t *)(jb->vc_l +
-                                      (size_t)s * jb->v_row_b + hoff);
-                    float dp = 0.0f;
-                    for (int i = 0; i < hd; i++)
-                        dp = fmaf(daoh[i], f16_load(vh + i), dp);
-                    float dsc = p[s] * (dp - sum_pd) * jb->scale;
-                    float *dqh = dqt + (size_t)h * hd;
-                    float *dks = jb->dk + (size_t)s * jb->kv_dim +
-                                 (size_t)kvh * hd;
-                    float *dvs = jb->dv + (size_t)s * jb->kv_dim +
-                                 (size_t)kvh * hd;
-                    for (int i = 0; i < hd; i++) {
-                        dqh[i] = fmaf(dsc, f16_load(kh + i), dqh[i]);
-                        dks[i] = fmaf(dsc, qh[i], dks[i]);
-                        dvs[i] = fmaf(p[s], daoh[i], dvs[i]);
-                    }
+                const float *qh = jb->q + (size_t)t * jb->q_dim + (size_t)h * hd;
+                const float *daoh = jb->dao + (size_t)t * jb->q_dim + (size_t)h * hd;
+                size_t r = ((size_t)tt * H + h) * T + (size_t)s;
+                float dsc = B->DS[r], ps = B->P[r];
+                for (int i = 0; i < hd; i++) {
+                    dks[i] = fmaf(dsc, qh[i], dks[i]);
+                    dvs[i] = fmaf(ps, daoh[i], dvs[i]);
                 }
             }
         }
     }
+}
+
+// the window's attention backward in blocks; false when a block's buffers
+// cannot be allocated
+static bool attn_bw_run(tpool *tp, const attn_bw_job *jb) {
+    int T = jb->T, H = jb->n_head, n_kv = H / jb->kv_mul;
+    int tbmax = T < ATB ? T : ATB;
+    float *P = malloc(sizeof(float) * (size_t)tbmax * H * T);
+    float *DS = malloc(sizeof(float) * (size_t)tbmax * H * T);
+    bool ok = P && DS;
+    for (int tb0 = 0; ok && tb0 < T; tb0 += ATB) {
+        attn_bw_blk B = { jb, tb0, T - tb0 < ATB ? T - tb0 : ATB, P, DS };
+        tpool_run(tp, attn_bw_p1, &B, B.tbn * H);
+        // key positions up to the block's last row
+        tpool_run(tp, attn_bw_p2, &B, (tb0 + B.tbn) * n_kv);
+    }
+    free(P);
+    free(DS);
+    return ok;
 }
 
 // One layer's reverse sweep. dx enters as the grad wrt the layer's OUTPUT
@@ -9620,7 +9678,6 @@ NUM_STAGE void lbw_attention(model_t *m, int l, int T, float *dx, lbw_state *s, 
     int n_head = s->n_head;
     int q_dim = s->q_dim;
     int kv_dim = s->kv_dim;
-    int n_kv = s->n_kv;
     int kv_mul = s->kv_mul;
     float scale = s->scale;
     const uint8_t *kc_l = s->kc_l;
@@ -9647,7 +9704,7 @@ NUM_STAGE void lbw_attention(model_t *m, int l, int T, float *dx, lbw_state *s, 
     if (ok) {
         attn_bw_job aj = { kc_l, vc_l, q, dao, dq, dk, dv, p, T, n_head,
                            kv_mul, hd, q_dim, kv_dim, k_row_b, v_row_b, scale, swa };
-        tpool_run(m->tp, attn_bw_worker, &aj, n_kv);
+        ok = attn_bw_run(m->tp, &aj);
     }
     // Shared KV (R8.9.6): a sharing layer attended over its owner's cached
     // rows, so its dK/dV belong to the owner's projections. Layers run in
@@ -10155,7 +10212,9 @@ NUM_STAGE void lbw_recompute_deltanet(model_t *m, int l, int T, lbw_state *s,
     }
     if (ok) {
         dn_job J = { m, ly, d, T, true };
+        double p0 = s->lprof ? plat_now() : 0;
         tpool_run(m->tp, dn_fw_worker, &J, nh);
+        if (s->lprof) lbw_sub[0] += plat_now() - p0;
         ok = J.ok;
     }
     float *ob = ok ? malloc(sizeof(float) * (size_t)T * E) : NULL;
@@ -10239,7 +10298,9 @@ NUM_STAGE void lbw_deltanet_bw(model_t *m, int l, int T, lbw_state *s, lbw_dn *d
         }
     if (ok) {
         dn_job J = { m, ly, d, T, true };
+        double p0 = s->lprof ? plat_now() : 0;
         tpool_run(m->tp, dn_bw_worker, &J, nh);
+        if (s->lprof) lbw_sub[1] += plat_now() - p0;
         ok = J.ok;
     }
     for (int t = 0; ok && t < T; t++) {
@@ -10323,7 +10384,9 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     lbw_recompute(m, l, T, dx, &s, &ok);
     lbw_ple_branch(m, l, T, dx, &s, &ok);
     lbw_ffn_and_output(m, l, T, dx, &s, &ok);
+    double p0 = s.lprof ? plat_now() : 0;
     lbw_attention(m, l, T, dx, &s, &ok);
+    if (s.lprof) lbw_sub[3] += plat_now() - p0;
     lbw_projections(m, l, T, dx, &s, &ok);
     lbw_input_grad(m, l, T, dx, &s, &ok);
     lbw_state_free(&s);
@@ -10702,10 +10765,21 @@ static bool lora_backward(model_t *m, const int32_t *toks, int T,
             if (prof) { pt_head = plat_now(); }
             ok = lora_layers_bw(m, toks, T, dx);
             if (prof) {
+                double dmm, dmvt, kmm, kmvt;
+                long nmm, nmvt;
+                gpu_train_prof(m, &dmm, &nmm, &dmvt, &nmvt, &kmm, &kmvt);
                 fprintf(stderr, "train-prof: fw %.2fs head %.2fs layers %.2fs "
-                        "(R %.2f sites %.2f attn %.2f b2b3 %.2f)\n",
+                        "(R %.2f sites %.2f attn %.2f b2b3 %.2f)",
                         pt_fw - pt0, pt_head - pt_fw, plat_now() - pt_head,
                         lbw_prof[0], lbw_prof[1], lbw_prof[2], lbw_prof[3]);
+                fprintf(stderr, " [dn_fw %.2f dn_bw %.2f lora %.2f attn_layers "
+                        "%.2f]", lbw_sub[0], lbw_sub[1], lbw_sub[2], lbw_sub[3]);
+                if (m->train_gpu)
+                    fprintf(stderr, " device: mm %.2fs/%ld (kernel %.2f) mvt "
+                            "%.2fs/%ld (kernel %.2f)", dmm, nmm, kmm, dmvt, nmvt,
+                            kmvt);
+                fputc('\n', stderr);
+                memset(lbw_sub, 0, sizeof(lbw_sub));
                 memset(lbw_prof, 0, sizeof(lbw_prof));
             }
         }
