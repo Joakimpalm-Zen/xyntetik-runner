@@ -5,6 +5,22 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Inside a container, Runner sizes from the container's limits.** CPU and
+  RAM came from the affinity mask, the physical page count and
+  `/proc/meminfo`, none of which sees a cgroup's CPU quota or memory limit:
+  a container held to 26 CPUs and 80 GiB on a 128-CPU, 268 GB host was sized
+  as the whole host, from the default thread count and the batch default to
+  `--fit` and the load-time RAM checks. On Linux these now take the cgroup v2
+  `cpu.max` and `memory.max` (or the v1 equivalents) into account, at every
+  level from the process's own cgroup up; available memory under a limit is
+  the headroom plus the cgroup's reclaimable page cache, as `MemAvailable`
+  counts it for the host. `--caps` keeps its keys, now carrying the effective
+  numbers, and adds `host` (the machine's own) and `limits` (the source, the
+  CPU quota and the memory limit). `--doctor` reports the same effective
+  memory and adds an `info` finding, `container_limits`, with both sets of
+  numbers; an `info` finding does not change the verdict. macOS and Windows
+  are unchanged.
+
 - **qwen35 and Clef: the DeltaNet q/k L2 norm takes the publisher's
   epsilon.** The Gated DeltaNet's query and key L2 norm used the model's RMS
   epsilon; the publisher's implementation hard-codes 1e-6 (transformers'

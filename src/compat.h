@@ -60,6 +60,43 @@ bool   plat_willneed_available(void);
 void   plat_release_pages(const void *addr, size_t len);
 void   plat_munmap(void *p, size_t size);
 
+// --- capacity: what this process may use ----------------------------------
+//
+// The host's numbers narrowed by the limits a container puts on this
+// process. A cgroup's CPU quota (cpu.max) and memory limit (memory.max) are
+// invisible to the affinity mask, the physical page count and
+// /proc/meminfo: on the Linux CUDA lab box, a container held to 26 CPUs and
+// 80 GiB on a 128-CPU, 268 GB host reported the host's numbers, and every
+// default sized from them over-committed. plat_cpu_count, plat_ram_bytes and
+// plat_ram_available_bytes return the effective fields below.
+typedef struct {
+    int         cpu_cores;            // min(host, ceil(quota / period))
+    uint64_t    ram_bytes;            // min(host, the memory limit)
+    uint64_t    ram_available_bytes;  // min(host, what the limit leaves)
+    int         host_cpu_cores;       // the affinity mask, else the online count
+    uint64_t    host_ram_bytes;       // physical memory
+    uint64_t    host_ram_available_bytes;   // the OS's own available figure
+    // "cgroup2" or "cgroup1" when a hierarchy was read (with or without a
+    // limit in it), "none" when there is none (macOS, Windows)
+    const char *limits_source;
+    int         cpu_quota;            // tightest quota in CPUs, rounded up; 0 = none
+    uint64_t    memory_max_bytes;     // tightest memory limit; 0 = none
+} plat_capacity;
+
+void        plat_capacity_get(plat_capacity *out);
+// The reading behind plat_capacity_get from explicit sources, so a test can
+// point it at a fixture tree. `cgroup_root` is the cgroup mount
+// (/sys/fs/cgroup; NULL or absent: no hierarchy). `self_cgroup` is the
+// process's membership file (/proc/self/cgroup); NULL, or no usable line in
+// it, makes the mount root the process's cgroup. Each level from the
+// process's cgroup up to the mount is read and the tightest limit wins, as
+// the kernel enforces them. Available memory under a limit is the headroom
+// (limit less usage) plus the cgroup's reclaimable file cache and slab, the
+// same terms MemAvailable counts for the host.
+void        plat_capacity_at(const char *cgroup_root, const char *self_cgroup,
+                             int host_cpu_cores, uint64_t host_ram_bytes,
+                             uint64_t host_ram_available_bytes, plat_capacity *out);
+
 int         plat_cpu_count(void);
 // Ceiling on the DEFAULT thread count. Distinct from TP_MAX, which clamps an
 // explicit -t: a caller who asks for 64 still gets 64.
@@ -130,7 +167,8 @@ const char *plat_page_fault_counter(void);
 
 // Physically available RAM: free plus what the OS would reclaim on demand. NOT
 // total RAM, because "model fits in RAM" is the test that passes right before
-// the machine starts thrashing. 0 where unavailable.
+// the machine starts thrashing. Inside a memory limit, what the limit leaves
+// (plat_capacity). 0 where unavailable.
 uint64_t    plat_ram_available_bytes(void);
 bool        plat_file_readable(const char *path);
 double      plat_now(void);        // monotonic seconds
