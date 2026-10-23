@@ -274,6 +274,10 @@ def validate(doc, devices):
         elif (backends.get(smoke["backend"]) or {}).get("kind") == "limit":
             errs.append(f"{where}: the smoke backend {smoke['backend']} is a "
                         f"declared limit for this file")
+        trunk = row.get("smoke_trunk")
+        if trunk is not None and not any(r.get("id") == trunk and r.get("tier") == "tier1"
+                                         for r in doc.get("rows") or []):
+            errs.append(f"{where}: smoke_trunk {trunk!r} is not a Tier 1 row")
         env = row.get("envelope") or {}
         feats = env.get("features")
         if not isinstance(feats, list) or not feats:

@@ -195,6 +195,15 @@ def test_a_lora_answer_names_the_build_and_day_it_came_from():
     assert any("lora" in e for e in errors(roster(tier1_row(lora=answer))))
 
 
+def test_a_head_files_trunk_is_a_tier1_row():
+    """An MTP head runs beside a trunk; the trunk it is gated with must be
+    a row the roster validates, not a name."""
+    assert any("smoke_trunk" in e for e in
+               errors(roster(tier1_row(smoke_trunk="no-such-row"))))
+    head = tier1_row(id="toy-head", smoke_trunk="toy-q8_0")
+    assert errors(roster(tier1_row(), head)) == []
+
+
 def test_duplicate_row_ids_are_refused():
     assert any("duplicate" in e for e in errors(roster(tier1_row(), tier1_row())))
 
