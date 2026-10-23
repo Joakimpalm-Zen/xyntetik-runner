@@ -167,6 +167,19 @@ def test_batched_taped_forward_is_the_solo_bytes(runner_bin, base, tmp_path, fam
         assert adapter == runs[0][2], (family, rows, "adapter bytes differ")
 
 
+# The manual's `-t N` row: "the adapter bytes do not depend on it". Every
+# pooled pass of a step (the products, the adapter's own rank-r math since
+# R8.19, the DeltaNet heads) keeps each element's chain whatever the split.
+@pytest.mark.parametrize("family", ["base", "gemma3", "e-series", "qwen35", "clef", "moe-renorm"])
+def test_adapter_bytes_do_not_depend_on_the_thread_count(runner_bin, base, tmp_path, family):
+    d = base if family == "base" else _family_fixture(tmp_path, family)
+    a1, a3 = tmp_path / "t1.gguf", tmp_path / "t3.gguf"
+    l1 = _train(runner_bin, d, a1, steps=4, extra=("-t", "1"))
+    l3 = _train(runner_bin, d, a3, steps=4, extra=("-t", "3"))
+    assert l1 == l3, (family, l1, l3)
+    assert a1.read_bytes() == a3.read_bytes(), (family, "adapter bytes depend on -t")
+
+
 # R8.19 --train-gpu: every weight product of a step on CUDA. Not the CPU's
 # bytes (the device products add in another order) but the same training
 # within rounding: 4 steps a family against the CPU run, every step's loss

@@ -7870,11 +7870,38 @@ static void lora_apply(const struct lora_w *lw, float *y, int ys,
     }
 }
 
+// The adapter delta over nb rows on the pool: rows are independent and each
+// keeps lora_apply's chains, so the bytes are the serial loop's at any thread
+// count. A row or three stays on the calling thread (a decode step).
+typedef struct {
+    const struct lora_w *lw;
+    float *y;
+    const float *x;
+    int ys, xs, n_in, n_out;
+} la_job;
+
+static void la_rows(void *ctx, int b0, int b1) {
+    la_job *j = ctx;
+    lora_apply(j->lw, j->y + (size_t)b0 * j->ys, j->ys, j->x + (size_t)b0 * j->xs,
+               j->xs, j->n_in, j->n_out, b1 - b0);
+}
+
+static void lora_apply_tp(tpool *tp, const struct lora_w *lw, float *y, int ys,
+                          const float *xin, int xs, int n_in, int n_out, int nb) {
+    if (!lw->r) return;
+    if (nb < 4 || !tp) {
+        lora_apply(lw, y, ys, xin, xs, n_in, n_out, nb);
+        return;
+    }
+    la_job j = { lw, y, xin, ys, xs, n_in, n_out };
+    tpool_run(tp, la_rows, &j, nb);
+}
+
 // hook macro: cheap NULL check first, layer/slot lookup second
 #define LORA_HOOK(slot, y, ys, xin, xs, nin, nout, nb) \
     do { if (m->lora && l < m->n_layer) \
-             lora_apply(&m->lora[(size_t)l * LW_SLOTS + (slot)], \
-                                 (y), (ys), (xin), (xs), (nin), (nout), (nb)); \
+             lora_apply_tp(m->tp, &m->lora[(size_t)l * LW_SLOTS + (slot)], \
+                           (y), (ys), (xin), (xs), (nin), (nout), (nb)); \
     } while (0)
 
 static void lora_hook(model_t *m, int l, int slot, float *y, int ys,
@@ -8359,6 +8386,79 @@ static void rmsnorm_bw(const float *x, const float *w, const float *dy,
         dx[i] += r * (w ? w[i] : 1.0f) * dy[i] - c * x[i];
 }
 
+// The adapter half of a site's backward on the pool, in four passes:
+// tb = B^T dy and tf = A x per position (a chain over j and over i), then
+// dA[k][i] += s tb[t][k] x[t][i] and dB[j][k] += s dy[t][j] tf[t][k] (each
+// element a chain over t ascending), then dx[t][i] += s * (A^T tb[t])[i] (a
+// chain over k, then one fmaf). Every element keeps the serial loop's chain
+// (it walked t outermost and did exactly these per position); a pass only
+// changes which thread runs a chain, so the bytes do not depend on the
+// thread count.
+typedef struct {
+    const struct lora_w *lw;
+    const float *xin, *dy;
+    float *dxin, *tb, *tf;   // tb, tf: [nb][r]
+    int n_in, n_out, nb, r;
+    float s;
+} lsb_job;
+
+static void lsb_proj(void *ctx, int t0, int t1) {
+    lsb_job *J = ctx;
+    for (int t = t0; t < t1; t++) {
+        const float *xt = J->xin + (size_t)t * J->n_in;
+        const float *dyt = J->dy + (size_t)t * J->n_out;
+        for (int k = 0; k < J->r; k++) {
+            float acc = 0.0f;
+            for (int j = 0; j < J->n_out; j++)
+                acc = fmaf(J->lw->b[(size_t)j * J->r + k], dyt[j], acc);
+            J->tb[(size_t)t * J->r + k] = acc;
+            const float *ar = J->lw->a + (size_t)k * J->n_in;
+            float acf = 0.0f;
+            for (int i = 0; i < J->n_in; i++) acf = fmaf(ar[i], xt[i], acf);
+            J->tf[(size_t)t * J->r + k] = acf;
+        }
+    }
+}
+
+static void lsb_ga(void *ctx, int i0, int i1) {
+    lsb_job *J = ctx;
+    for (int k = 0; k < J->r; k++) {
+        float *gar = J->lw->ga + (size_t)k * J->n_in;
+        for (int t = 0; t < J->nb; t++) {
+            const float *xt = J->xin + (size_t)t * J->n_in;
+            float stb = J->s * J->tb[(size_t)t * J->r + k];
+            for (int i = i0; i < i1; i++) gar[i] = fmaf(stb, xt[i], gar[i]);
+        }
+    }
+}
+
+static void lsb_gb(void *ctx, int j0, int j1) {
+    lsb_job *J = ctx;
+    for (int t = 0; t < J->nb; t++) {
+        const float *dyt = J->dy + (size_t)t * J->n_out;
+        const float *tf = J->tf + (size_t)t * J->r;
+        for (int j = j0; j < j1; j++) {
+            float *gbr = J->lw->gb + (size_t)j * J->r;
+            float sdy = J->s * dyt[j];
+            for (int k = 0; k < J->r; k++) gbr[k] = fmaf(sdy, tf[k], gbr[k]);
+        }
+    }
+}
+
+static void lsb_dx(void *ctx, int t0, int t1) {
+    lsb_job *J = ctx;
+    for (int t = t0; t < t1; t++) {
+        float *dxt = J->dxin + (size_t)t * J->n_in;
+        const float *tb = J->tb + (size_t)t * J->r;
+        for (int i = 0; i < J->n_in; i++) {
+            float acc = 0.0f;
+            for (int k = 0; k < J->r; k++)
+                acc = fmaf(J->lw->a[(size_t)k * J->n_in + i], tb[k], acc);
+            dxt[i] = fmaf(J->s, acc, dxt[i]);
+        }
+    }
+}
+
 // adapter backward at one projection site, batched over the window: given
 // dy (grad wrt the site's output, nb rows) and xin (the site's input, nb
 // rows), accumulate dA/dB and add both the adapter's and the FROZEN
@@ -8376,49 +8476,25 @@ static bool lora_site_bw(model_t *m, int l, int slot, const gguf_tensor *w,
     if (!lw->ga) lw->ga = calloc((size_t)lw->r * n_in, sizeof(float));
     if (!lw->gb) lw->gb = calloc((size_t)n_out * lw->r, sizeof(float));
     if (!lw->ga || !lw->gb) return false;
-    float s = lw->scale;
-    for (int t = 0; t < nb; t++) {
-        const float *xt = xin + (size_t)t * n_in;
-        const float *dyt = dy + (size_t)t * n_out;
-        float *dxt = dxin + (size_t)t * n_in;
-        float tb[LORA_R_MAX], tf[LORA_R_MAX];
-        // tb = B^T dy ; tf = A x
-        for (int k = 0; k < lw->r; k++) {
-            float acc = 0.0f;
-            for (int j = 0; j < n_out; j++)
-                acc = fmaf(lw->b[(size_t)j * lw->r + k], dyt[j], acc);
-            tb[k] = acc;
-            const float *ar = lw->a + (size_t)k * n_in;
-            float acf = 0.0f;
-            for (int i = 0; i < n_in; i++) acf = fmaf(ar[i], xt[i], acf);
-            tf[k] = acf;
-        }
-        for (int k = 0; k < lw->r; k++) {
-            float *gar = lw->ga + (size_t)k * n_in;
-            float stb = s * tb[k];
-            for (int i = 0; i < n_in; i++) gar[i] = fmaf(stb, xt[i], gar[i]);
-        }
-        for (int j = 0; j < n_out; j++) {
-            float *gbr = lw->gb + (size_t)j * lw->r;
-            float sdy = s * dyt[j];
-            for (int k = 0; k < lw->r; k++) gbr[k] = fmaf(sdy, tf[k], gbr[k]);
-        }
-        for (int i = 0; i < n_in; i++) {
-            float acc = 0.0f;
-            for (int k = 0; k < lw->r; k++)
-                acc = fmaf(lw->a[(size_t)k * n_in + i], tb[k], acc);
-            dxt[i] = fmaf(s, acc, dxt[i]);
-        }
-    }
+    float *tbf = malloc(sizeof(float) * (size_t)2 * nb * lw->r);
+    if (!tbf) return false;
+    lsb_job j = { lw, xin, dy, dxin, tbf, tbf + (size_t)nb * lw->r,
+                  n_in, n_out, nb, lw->r, lw->scale };
+    tpool_run(m->tp, lsb_proj, &j, nb);
+    tpool_run(m->tp, lsb_ga, &j, n_in);
+    tpool_run(m->tp, lsb_gb, &j, n_out);
+    tpool_run(m->tp, lsb_dx, &j, nb);
+    free(tbf);
     return true;
 }
 
-// forward apply for the recompute passes (same math as LORA_HOOK, one row)
+// forward apply for the recompute passes (LORA_HOOK's math), nb rows packed
+// n_in / n_out apart
 static void lora_site_fw(model_t *m, int l, int slot, float *y,
-                         const float *xin, int n_in, int n_out) {
+                         const float *xin, int n_in, int n_out, int nb) {
     if (!m->lora) return;
-    lora_apply(&m->lora[(size_t)l * LW_SLOTS + slot], y, n_out, xin, n_in,
-               n_in, n_out, 1);
+    lora_apply_tp(m->tp, &m->lora[(size_t)l * LW_SLOTS + slot], y, n_out, xin,
+                  n_in, n_in, n_out, nb);
 }
 
 // transpose of rope_apply's per-pair rotation (the ms factor rides inside
@@ -9144,22 +9220,27 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
             matvec_b(m->tp, gpre, q_dim, ly->wq_gate, xn1, E, E, q_dim, NULL, T);
     }
     t_mv_exact = ex;
+    // and the adapter deltas on them, every row on the pool
+    if (ok) {
+        if (s->q35)
+            lora_site_fw(m, l, LW_Q, s->dqg, xn1, E, 2 * q_dim, T);
+        else
+            lora_site_fw(m, l, LW_Q, q, xn1, E, q_dim, T);
+        if (need_kpre) lora_site_fw(m, l, LW_K, kpre, xn1, E, kv_dim, T);
+        if (vnorm && ly->wv) lora_site_fw(m, l, LW_V, vpre, xn1, E, kv_dim, T);
+    }
     for (int t = 0; ok && t < T; t++) {
-        float *x1 = xn1 + (size_t)t * E;
         float *qt = q + (size_t)t * q_dim;
         if (s->q35) {
-            // the fused projection's adapter over all 2*q_dim rows, then the
-            // per-head split the forward makes (attn_project)
+            // the per-head split the forward makes (attn_project), of the
+            // fused projection with its adapter over all 2*q_dim rows
             float *qg = s->dqg + (size_t)t * 2 * q_dim;
-            lora_site_fw(m, l, LW_Q, qg, x1, E, 2 * q_dim);
             for (int h = 0; h < n_head; h++) {
                 memcpy(qt + (size_t)h * hd, qg + (size_t)h * 2 * hd,
                        sizeof(float) * (size_t)hd);
                 memcpy(gpre + (size_t)t * q_dim + (size_t)h * hd,
                        qg + (size_t)h * 2 * hd + hd, sizeof(float) * (size_t)hd);
             }
-        } else {
-            lora_site_fw(m, l, LW_Q, qt, x1, E, q_dim);
         }
         if (ly->qnorm_w) {
             memcpy(qpre + (size_t)t * q_dim, qt,
@@ -9177,17 +9258,11 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
             if (ts != 1.0f)
                 for (int i = 0; i < q_dim; i++) qt[i] *= ts;
         }
-        if (need_kpre)
-            lora_site_fw(m, l, LW_K, kpre + (size_t)t * kv_dim, x1, E, kv_dim);
-        if (vnorm) {
-            // the pre-norm V the forward normalised before caching: its own
-            // projection, or the raw K projection when the layer ships none
-            float *vt = vpre + (size_t)t * kv_dim;
-            if (ly->wv)
-                lora_site_fw(m, l, LW_V, vt, x1, E, kv_dim);
-            else
-                memcpy(vt, kpre + (size_t)t * kv_dim, sizeof(float) * (size_t)kv_dim);
-        }
+        // the pre-norm V the forward normalised before caching: its own
+        // projection, or the raw K projection when the layer ships none
+        if (vnorm && !ly->wv)
+            memcpy(vpre + (size_t)t * kv_dim, kpre + (size_t)t * kv_dim,
+                   sizeof(float) * (size_t)kv_dim);
         // the derived-K cache layout (m->tied_v) is refused above, so the
         // attention below always reads real K and V rows
         attn_job aj = { m, kc_l, vc_l, qt, ao + (size_t)t * q_dim, t,
@@ -9208,10 +9283,10 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
     if (ok)
         matvec_b(m->tp, ob, E, ly->wo, ao, q_dim, q_dim, E, ly->bo, T);
     t_mv_exact = ex;
+    if (ok) lora_site_fw(m, l, LW_O, ob, ao, q_dim, E, T);
     for (int t = 0; ok && t < T; t++) {
         const float *xt = tape_x + (size_t)t * E;
         float *ot = ob + (size_t)t * E;
-        lora_site_fw(m, l, LW_O, ot, ao + (size_t)t * q_dim, q_dim, E);
         if (ly->post_attn_norm_w) {
             memcpy(opre + (size_t)t * E, ot, sizeof(float) * (size_t)E);
             rmsnorm(ot, ot, ly->post_attn_norm_w, E, m->post_norm_eps);
@@ -9252,11 +9327,8 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
         matvec_b(m->tp, g, nff, ly->w_gate, xn2, E, E, nff, NULL, T);
         matvec_b(m->tp, u, nff, ly->w_up, xn2, E, E, nff, NULL, T);
         t_mv_exact = ex;
-        for (int t = 0; t < T; t++) {
-            float *x2 = xn2 + (size_t)t * E;
-            lora_site_fw(m, l, LW_GATE, g + (size_t)t * nff, x2, E, nff);
-            lora_site_fw(m, l, LW_UP, u + (size_t)t * nff, x2, E, nff);
-        }
+        lora_site_fw(m, l, LW_GATE, g, xn2, E, nff, T);
+        lora_site_fw(m, l, LW_UP, u, xn2, E, nff, T);
     }
 
     if (lprof) { double n2 = plat_now(); lbw_prof[0] += n2 - lt; lt = n2; }
@@ -9298,27 +9370,34 @@ NUM_STAGE void lbw_ple_branch(model_t *m, int l, int T, float *dx, lbw_state *s,
     // token and layer, a function of the token embedding alone.
     if (ok && ple) {
         size_t per_tok = (size_t)m->n_layer * P;
+        // the three products one exact-columns call each over the window
+        // (the recompute's batching), the rest per position as before
+        bool ex = t_mv_exact;
+        t_mv_exact = true;
+        // x_post recomputed the way the forward built it
+        matvec_b(m->tp, xpost, E, ly->w_down, hact, nff, nff, E, NULL, T);
+        lora_site_fw(m, l, LW_DOWN, xpost, hact, nff, E, T);
         for (int t = 0; t < T; t++) {
-            // x_post recomputed the way the forward built it
             float *xp = xpost + (size_t)t * E;
-            matvec_b(m->tp, xp, E, ly->w_down, hact + (size_t)t * nff, nff,
-                     nff, E, NULL, 1);
-            lora_site_fw(m, l, LW_DOWN, xp, hact + (size_t)t * nff, nff, E);
             if (ly->post_ffn_norm_w)
                 rmsnorm(xp, xp, ly->post_ffn_norm_w, E, m->post_norm_eps);
             const float *xat = xa + (size_t)t * E;
             for (int i = 0; i < E; i++) xp[i] = xat[i] + rs * xp[i];
-            // branch forward
-            const float *sl = m->bw_ple + (size_t)t * per_tok + (size_t)l * P;
-            float *tt = ptt + (size_t)t * P, *ga = pga + (size_t)t * P;
-            matvec_b(m->tp, tt, P, ly->ple_gate, xp, E, E, P, NULL, 1);
-            for (int i = 0; i < P; i++) ga[i] = gated_act(ACT_GELU, tt[i], sl[i]);
-            float *uu = puu + (size_t)t * E;
-            matvec_b(m->tp, uu, E, ly->ple_proj, ga, P, P, E, NULL, 1);
-            // branch backward: post-norm adjoint against the pre-norm output
-            rmsnorm_bw(uu, ly->ple_post_norm, dx + (size_t)t * E,
-                       pdu + (size_t)t * E, E, m->rms_eps);
         }
+        // branch forward
+        matvec_b(m->tp, ptt, P, ly->ple_gate, xpost, E, E, P, NULL, T);
+        for (int t = 0; t < T; t++) {
+            const float *sl = m->bw_ple + (size_t)t * per_tok + (size_t)l * P;
+            const float *tt = ptt + (size_t)t * P;
+            float *ga = pga + (size_t)t * P;
+            for (int i = 0; i < P; i++) ga[i] = gated_act(ACT_GELU, tt[i], sl[i]);
+        }
+        matvec_b(m->tp, puu, E, ly->ple_proj, pga, P, P, E, NULL, T);
+        t_mv_exact = ex;
+        // branch backward: post-norm adjoint against the pre-norm output
+        for (int t = 0; t < T; t++)
+            rmsnorm_bw(puu + (size_t)t * E, ly->ple_post_norm, dx + (size_t)t * E,
+                       pdu + (size_t)t * E, E, m->rms_eps);
         ok = matvec_t(m, ly->ple_proj, pdu, pdg, P, E, T);
         for (int t = 0; ok && t < T; t++) {
             const float *sl = m->bw_ple + (size_t)t * per_tok + (size_t)l * P;
@@ -9387,14 +9466,19 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
     // the reorganization is a scheduling change, not a numeric one.
     // the FFN branch's output gradient: the residual scale, then the
     // sandwich norm's adjoint against the recomputed pre-norm output
+    if (ok && ly->post_ffn_norm_w) {
+        // the pre-norm FFN output for the window, one exact-columns product
+        bool ex = t_mv_exact;
+        t_mv_exact = true;
+        matvec_b(m->tp, fpre, E, ly->w_down, hact, nff, nff, E, NULL, T);
+        t_mv_exact = ex;
+        lora_site_fw(m, l, LW_DOWN, fpre, hact, nff, E, T);
+    }
     for (int t = 0; ok && t < T; t++) {
         const float *dxt = dx + (size_t)t * E;
         float *dbt = dbr + (size_t)t * E;
         if (ly->post_ffn_norm_w) {
             float *ft = fpre + (size_t)t * E;
-            matvec_b(m->tp, ft, E, ly->w_down, hact + (size_t)t * nff, nff,
-                     nff, E, NULL, 1);
-            lora_site_fw(m, l, LW_DOWN, ft, hact + (size_t)t * nff, nff, E);
             for (int i = 0; i < E; i++) dyb[i] = rs * dxt[i];
             memset(dbt, 0, sizeof(float) * (size_t)E);
             rmsnorm_bw(ft, ly->post_ffn_norm_w, dyb, dbt, E, m->post_norm_eps);
@@ -10026,15 +10110,15 @@ NUM_STAGE void lbw_recompute_deltanet(model_t *m, int l, int T, lbw_state *s,
         matvec_b(m->tp, d->aa, nh, ly->ssm_alpha, s->xn1, E, E, nh, NULL, T);
     }
     t_mv_exact = ex;
+    if (ok) {
+        lora_site_fw(m, l, LW_QKV, d->mix, s->xn1, E, cd, T);
+        lora_site_fw(m, l, LW_ZGATE, d->z, s->xn1, E, d->inner, T);
+        lora_site_fw(m, l, LW_BETA, d->bb, s->xn1, E, nh, T);
+        lora_site_fw(m, l, LW_ALPHA, d->aa, s->xn1, E, nh, T);
+    }
     for (int t = 0; ok && t < T; t++) {
-        float *x1 = s->xn1 + (size_t)t * E;
         float *mx = d->mix + (size_t)t * cd;
-        lora_site_fw(m, l, LW_QKV, mx, x1, E, cd);
-        float *zt = d->z + (size_t)t * d->inner;
-        lora_site_fw(m, l, LW_ZGATE, zt, x1, E, d->inner);
         float *bt = d->bb + (size_t)t * nh, *at = d->aa + (size_t)t * nh;
-        lora_site_fw(m, l, LW_BETA, bt, x1, E, nh);
-        lora_site_fw(m, l, LW_ALPHA, at, x1, E, nh);
         // the causal conv over the window (the current tap first, then the
         // history oldest to newest, as the forward sums it), and silu
         float *cp = d->cpre + (size_t)t * cd, *cv = d->cv + (size_t)t * cd;
@@ -10080,10 +10164,10 @@ NUM_STAGE void lbw_recompute_deltanet(model_t *m, int l, int T, lbw_state *s,
     if (ok)
         matvec_b(m->tp, ob, E, ly->ssm_out, d->o, d->inner, d->inner, E, NULL, T);
     t_mv_exact = ex;
+    if (ok) lora_site_fw(m, l, LW_SSMO, ob, d->o, d->inner, E, T);
     for (int t = 0; ok && t < T; t++) {
         const float *xt = s->tape_x + (size_t)t * E;
         float *otE = ob + (size_t)t * E;
-        lora_site_fw(m, l, LW_SSMO, otE, d->o + (size_t)t * d->inner, d->inner, E);
         if (ly->post_attn_norm_w) {
             memcpy(s->opre + (size_t)t * E, otE, sizeof(float) * (size_t)E);
             rmsnorm(otE, otE, ly->post_attn_norm_w, E, m->post_norm_eps);
@@ -10100,10 +10184,11 @@ NUM_STAGE void lbw_recompute_deltanet(model_t *m, int l, int T, lbw_state *s,
         matvec_b(m->tp, s->u, nff, ly->w_up, s->xn2, E, E, nff, NULL, T);
     }
     t_mv_exact = ex;
+    if (ok) {
+        lora_site_fw(m, l, LW_GATE, s->g, s->xn2, E, nff, T);
+        lora_site_fw(m, l, LW_UP, s->u, s->xn2, E, nff, T);
+    }
     for (int t = 0; ok && t < T; t++) {
-        float *x2 = s->xn2 + (size_t)t * E;
-        lora_site_fw(m, l, LW_GATE, s->g + (size_t)t * nff, x2, E, nff);
-        lora_site_fw(m, l, LW_UP, s->u + (size_t)t * nff, x2, E, nff);
         const float *gt = s->g + (size_t)t * nff, *ut = s->u + (size_t)t * nff;
         float *ht = s->hact + (size_t)t * nff;
         for (int i = 0; i < nff; i++) ht[i] = gated_act(m->ffn_act, gt[i], ut[i]);
