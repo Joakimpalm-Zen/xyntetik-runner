@@ -5,6 +5,23 @@ Current release and unreleased changes. Compatibility follows the
 
 ## v1.5.1 - 2026-10-23
 
+- **Training: distillation toward a teacher (`--train-teacher DIR`).** With
+  `--train`, each completion position is fitted to a teacher's top-k
+  distribution instead of the next token: the KL divergence from the
+  teacher's top-k plus one tail bucket to the student's, under the same
+  prompt mask and weights. The use is bringing a quantized file back toward
+  the model it came from, with an adapter on the frozen quantized base. DIR
+  holds `topk_idx.npy` (int32) and `topk_logp.npy` (float32), each
+  `[lines, positions, k]`, read a line at a time and checked in full before
+  the first step; the `--train` file uses the id form.
+  `scripts/kd-teacher.py` writes all three from a parent GGUF through
+  `runner --score --score-top K`. On Qwen3-0.6B (Q4_0 student, Q8_0 teacher,
+  48 steps) the held-out KL to the teacher fell from 0.2006 to 0.1346, where
+  cross-entropy on the same tokens left it at 0.8357; a step costs 0.4%
+  more. A one-hot teacher trains the cross-entropy's adapter byte for byte.
+  The record's `objective` is `kl-to-teacher`, with both arrays hashed.
+  Training still covers the models it covered: qwen35 and Clef refuse it.
+
 - **Metal: Q4_K decode matvecs take the fast kernel by default on dense
   models.** The reassociating `k_mvf_q4_K` (two rows a simdgroup, vector
   accumulation), opt-in since the performance follow-up, is the default for

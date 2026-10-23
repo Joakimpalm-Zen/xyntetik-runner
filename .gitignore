@@ -293,6 +293,8 @@ test-prompt-marks.exe
 
 /test-dpo-grad
 /test-dpo-grad.exe
+/test-kd-grad
+/test-kd-grad.exe
 .DS_Store
 test-kv-fp4
 test-metal-kvfp4

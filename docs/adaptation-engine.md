@@ -34,11 +34,12 @@ models do not inherit the target's adapter.
 
 ## Training admission
 
-`--train` and `--train-dpo` keep the base CPU-resident, use f16 KV, and
-update only adapter parameters. Supported dense SiLU/GELU paths include
-attention gates/head transforms, sliding windows, sandwich norms, and the
-covered Gemma tied/shared-KV and per-layer-embedding layouts. Admission is
-by implemented property, not by an old blanket dense-model list.
+`--train` (with or without `--train-teacher`) and `--train-dpo` keep the
+base CPU-resident, use f16 KV, and update only adapter parameters. Supported
+dense SiLU/GELU paths include attention gates/head transforms, sliding
+windows, sandwich norms, and the covered Gemma tied/shared-KV and
+per-layer-embedding layouts. Admission is by implemented property, not by an
+old blanket dense-model list.
 
 Attention-only adapters on supported sparse MoE also train: the backward
 propagates through frozen softmax routing and frozen experts, including
@@ -71,7 +72,11 @@ adapter bytes and deterministic loss trajectory. Different builds/ISAs
 need not write the same bytes. Prompt/completion JSONL masks prompt loss;
 weighted examples, training context, and opt-in end-of-turn tokens retain
 their specified behavior. DPO evaluates the frozen reference through an
-adapter bypass rather than a second base-weight copy.
+adapter bypass rather than a second base-weight copy. `--train-teacher`
+replaces the cross-entropy with the KL divergence from a teacher's top-k
+distribution plus one tail bucket to the student's, per completion position,
+under the same masks and weights; a one-hot teacher reproduces the
+cross-entropy's loss and gradient bit for bit.
 
 Checkpoint/output installation preserves the previous artifact on failure.
 Allocation, optimizer, save, hashing, record, and signing failures remain
@@ -131,6 +136,7 @@ hardware result is implied by this reference.
 
 The regression entry points are `tests/test_lora.py`, `tests/test_train.py`,
 `tests/test_lora_grad.c`, `tests/test_moe_lora.py`, `tests/test_dpo_grad.c`,
-`tests/test_merge.py`, `tests/test_quantize.c`, adapter routing/signature
-checks, and lineage/evaluation/receipt checks. Their fixture/hash/tolerance
+`tests/test_kd_grad.c`, `tests/test_train_teacher.py`, `tests/test_merge.py`,
+`tests/test_quantize.c`, adapter routing/signature checks, and
+lineage/evaluation/receipt checks. Their fixture/hash/tolerance
 contracts remain part of the aggregate test gate.

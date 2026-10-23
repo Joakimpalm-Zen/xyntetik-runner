@@ -1004,6 +1004,24 @@ bool   model_lora_backward(model_t *m, const int32_t *toks, int n,
 // advantage weighting). NULL = all ones.
 bool   model_lora_backward_w(model_t *m, const int32_t *toks, int n,
                              const float *pos_w, double *loss_out);
+// R8.15, distillation: a teacher's distribution per transition. Transition t
+// (the one scoring toks[t+1]) lists k distinct token ids at ids[t*k ..] with
+// their natural-log probabilities at logp[t*k ..], the teacher's top-k over
+// the full vocabulary. The rest of the vocabulary is one tail bucket holding
+// the mass the list leaves. KD_K_MAX bounds k.
+enum { KD_K_MAX = 1024 };
+typedef struct {
+    int k;
+    const int32_t *ids;
+    const float *logp;
+} lora_teacher;
+// model_lora_backward_w with the teacher as the target: per transition,
+// KL(teacher top-k + tail || student, coarsened the same way), weighted by
+// pos_w exactly as the cross-entropy is. A one-hot teacher (k 1, logp 0 on
+// toks[t+1]) is the weighted cross-entropy, loss and gradient bit for bit.
+bool   model_lora_backward_kd(model_t *m, const int32_t *toks, int n,
+                              const float *pos_w, const lora_teacher *tch,
+                              double *loss_out);
 // --- adaptation D4: fresh trainable adapters (A seeded, B zero -> exact
 // no-op start), one AdamW step from the accumulated gradients (byte-
 // deterministic), and the adapter-GGUF writer (the format --lora reads).
