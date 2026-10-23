@@ -22,7 +22,9 @@ A Tier 1 row's backend cell is one of exactly three things:
 
 The same run records the file's `--adapt-info` answer (owner decision 6):
 whether the LoRA backward admits the file and whether an adapter can be
-served on it, each with the refusal sentence when not.
+served on it, each with the refusal sentence when not. A row's
+`transitions` is its tier history, newest last; the transition log in
+docs/model-support.md is rendered from it.
 
     scripts/model-tiers.py --check
     scripts/model-tiers.py --stale [--today YYYY-MM-DD]
@@ -225,17 +227,28 @@ def validate(doc, devices):
             errs.append(f"{where}: an experimental row's claim starts with 'Experimental'")
         if row.get("vision_upstream") and not claim.startswith("Text path only"):
             errs.append(f"{where}: a vision model's claim starts with 'Text path only'")
-        t = row.get("transition") or {}
-        if t.get("tier") != tier:
-            errs.append(f"{where}: the latest transition leads to {t.get('tier')!r}, "
+        # the row's history of tiers, newest last: the transition log is
+        # rendered from it, so a move appends and the earlier entries stay
+        ts = row.get("transitions")
+        if not isinstance(ts, list) or not ts:
+            errs.append(f"{where}: transitions lists the row's tier history, newest last")
+            ts = []
+        for i, t in enumerate(ts):
+            if t.get("tier") not in TIERS:
+                errs.append(f"{where}: transitions[{i}].tier {t.get('tier')!r}")
+            if not _date(t.get("effective")):
+                errs.append(f"{where}: transitions[{i}].effective {t.get('effective')!r}")
+            elif i and _date(ts[i - 1].get("effective")) and \
+                    t["effective"] < ts[i - 1]["effective"]:
+                errs.append(f"{where}: transitions are in date order, newest last")
+            if not _text(t.get("reason")):
+                errs.append(f"{where}: transitions[{i}].reason")
+            lvr = t.get("last_validated_release")
+            if lvr is not None and not VERSION_RE.match(str(lvr)):
+                errs.append(f"{where}: transitions[{i}].last_validated_release {lvr!r}")
+        if ts and ts[-1].get("tier") != tier:
+            errs.append(f"{where}: the latest transition leads to {ts[-1].get('tier')!r}, "
                         f"not to the row's tier {tier!r}")
-        if not _date(t.get("effective")):
-            errs.append(f"{where}: transition.effective {t.get('effective')!r}")
-        if not _text(t.get("reason")):
-            errs.append(f"{where}: transition.reason")
-        lvr = t.get("last_validated_release")
-        if lvr is not None and not VERSION_RE.match(str(lvr)):
-            errs.append(f"{where}: transition.last_validated_release {lvr!r}")
         # owner decision 1: a published file is Tier 1 unless the exception
         # is decided and written down (gpt-oss-20b-keep30, 2026-10-22)
         if row.get("published") and tier != "tier1" and \

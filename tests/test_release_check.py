@@ -117,8 +117,8 @@ def tier_roster(tmp_path, gated_on="2026-10-22", version="1.5.0"):
             "smoke": {"device_class": "test-class", "backend": "cpu"},
             "backends": {"cpu": cell, "cuda": None, "metal": None},
             "lora": None,
-            "transition": {"tier": "tier1", "effective": "2026-10-22",
-                           "reason": "test", "last_validated_release": None},
+            "transitions": [{"tier": "tier1", "effective": "2026-10-22",
+                           "reason": "test", "last_validated_release": None}],
         }],
     }) + "\n")
     return path

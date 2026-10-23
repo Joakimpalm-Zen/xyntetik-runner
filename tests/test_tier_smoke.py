@@ -68,8 +68,8 @@ def world(tmp_path):
             "smoke": {"device_class": "macos-arm64-metal", "backend": "metal"},
             "backends": {"cpu": None, "cuda": None, "metal": None},
             "lora": None,
-            "transition": {"tier": "tier1", "effective": "2026-10-22",
-                           "reason": "test", "last_validated_release": None},
+            "transitions": [{"tier": "tier1", "effective": "2026-10-22",
+                           "reason": "test", "last_validated_release": None}],
         }],
     }
     paths = {

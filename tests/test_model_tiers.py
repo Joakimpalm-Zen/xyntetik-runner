@@ -61,8 +61,8 @@ def tier1_row(**over):
         "smoke": {"device_class": "macos-arm64-metal", "backend": "metal"},
         "backends": {"cpu": None, "cuda": None, "metal": None},
         "lora": None,
-        "transition": {"tier": "tier1", "effective": "2026-10-22",
-                       "reason": "test", "last_validated_release": None},
+        "transitions": [{"tier": "tier1", "effective": "2026-10-22",
+                       "reason": "test", "last_validated_release": None}],
     }
     row.update(over)
     return row
@@ -130,7 +130,7 @@ def test_a_published_file_below_tier1_needs_a_stated_exception():
     """Owner decision 1: a published file is Tier 1 by definition; the one
     exception is decided and written down, never implied."""
     row = tier1_row(tier="tier2", published=True)
-    row["transition"]["tier"] = "tier2"
+    row["transitions"][-1]["tier"] = "tier2"
     assert any("published" in e for e in errors(roster(row)))
     row["published_exception"] = "card leads with its measured shortfall"
     assert errors(roster(row)) == []
@@ -138,15 +138,30 @@ def test_a_published_file_below_tier1_needs_a_stated_exception():
 
 def test_the_latest_transition_must_lead_to_the_rows_tier():
     row = tier1_row()
-    row["transition"]["tier"] = "tier2"
+    row["transitions"][-1]["tier"] = "tier2"
     assert any("transition" in e for e in errors(roster(row)))
+
+
+def test_transitions_are_a_history_newest_last():
+    """The transition log is rendered from these, so a move appends an entry
+    and the migration's entry stays: a log that kept only the latest move
+    would lose the 2026-10-22 row the first time a model changed tier."""
+    row = tier1_row()
+    row["transitions"] = []
+    assert any("transitions" in e for e in errors(roster(row)))
+    row = tier1_row(tier="tier2")
+    row["transitions"].append({"tier": "tier2", "effective": "2026-12-01",
+                               "reason": "moved", "last_validated_release": "1.5.1"})
+    assert errors(roster(row)) == []
+    row["transitions"][-1]["effective"] = "2026-10-01"
+    assert any("order" in e for e in errors(roster(row)))
 
 
 def test_an_upcoming_row_says_what_is_missing():
     row = {"id": "later", "model": "Later", "tier": "upcoming",
            "claim": "Not admitted.", "architecture": "later", "missing": "",
-           "transition": {"tier": "upcoming", "effective": "2026-10-22",
-                          "reason": "test", "last_validated_release": None}}
+           "transitions": [{"tier": "upcoming", "effective": "2026-10-22",
+                          "reason": "test", "last_validated_release": None}]}
     assert any("missing" in e for e in errors(roster(tier1_row(), row)))
     row["missing"] = "an admission"
     assert errors(roster(tier1_row(), row)) == []
@@ -419,7 +434,7 @@ def test_record_refuses_a_declared_limit_backend():
 
 def test_record_refuses_a_row_below_tier1():
     row = tier1_row(tier="tier2")
-    row["transition"]["tier"] = "tier2"
+    row["transitions"][-1]["tier"] = "tier2"
     with pytest.raises(SystemExit, match="Tier 1"):
         record(smoke_result(), row)
 
@@ -511,7 +526,7 @@ def test_a_smoke_from_another_device_class_does_not_count():
 
 def test_rows_below_tier1_are_not_gated():
     row = tier1_row(tier="tier2")
-    row["transition"]["tier"] = "tier2"
+    row["transitions"][-1]["tier"] = "tier2"
     assert mt.stale(roster(row), TODAY) == []
 
 

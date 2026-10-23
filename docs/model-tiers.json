@@ -49,7 +49,8 @@
       "id": "cloudflare-clef-iq3_m",
       "model": "Cloudflare Clef (clef, on Qwen3.8-27B)",
       "tier": "tier1",
-      "claim": "A decision model served at /v1/systemone, text input only: the model card's two examples reproduce on the CPU with this file, which shows the head binds and decides; it is not a fidelity measurement of the quantized file.",
+      "claim": "Text path only: a decision model served at /v1/systemone; requests with images or videos are refused. The model card's two examples reproduce on the CPU with this file, which shows the head binds and decides; it is not a fidelity measurement of the quantized file.",
+      "vision_upstream": true,
       "architecture": "clef",
       "upstream": {
         "checkpoint": "Cloudflare/clef",
@@ -93,12 +94,14 @@
         }
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "qwen3.8-27b-ud-q4_k_m",
@@ -149,18 +152,21 @@
         }
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "gemma-4-12b-it-qat-q4_0",
       "model": "Gemma 4 12B",
       "tier": "tier1",
-      "claim": "Google's quantization-aware Q4_0 release, text path: the gemma4 tool protocol passes report cases A and B on CUDA; case C (prose then call) fails on the family's own call-first format.",
+      "claim": "Text path only: Google's quantization-aware Q4_0 release, its mmproj file not loaded; the gemma4 tool protocol passes report cases A and B on CUDA, and case C (prose then call) fails on the family's own call-first format.",
+      "vision_upstream": true,
       "architecture": "gemma4",
       "upstream": {
         "checkpoint": "google/gemma-4-12B-it",
@@ -202,18 +208,21 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "gemma-4-26b-a4b-it-qat-q4_0",
       "model": "Gemma 4 26B-A4B",
       "tier": "tier1",
-      "claim": "Google's quantization-aware Q4_0 release of the MoE model, text path; no float32 reference has been run on the MoE layout.",
+      "claim": "Text path only: Google's quantization-aware Q4_0 release of the MoE model, its mmproj file not loaded; no float32 reference has been run on the MoE layout.",
+      "vision_upstream": true,
       "architecture": "gemma4",
       "upstream": {
         "checkpoint": "google/gemma-4-26B-A4B-it",
@@ -254,18 +263,21 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "gemma-4-31b-it-q4_0",
       "model": "Gemma 4 31B",
       "tier": "tier1",
-      "claim": "ggml-org's post-training Q4_0 of Gemma 4 31B, not Google's QAT file, text path: the existing 31B evidence is bound to this file's sha256.",
+      "claim": "Text path only: ggml-org's post-training Q4_0 of Gemma 4 31B, not Google's QAT file; the existing 31B evidence is bound to this file's sha256.",
+      "vision_upstream": true,
       "architecture": "gemma4",
       "upstream": {
         "checkpoint": "google/gemma-4-31B-it",
@@ -306,18 +318,21 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "muse-glimmer-30b-kquant",
       "model": "Muse-Glimmer-30B",
       "tier": "tier1",
-      "claim": "Meta's own Q4_K_M, text path only: it passes the fidelity bar against the BF16 parent; the vision encoder is outside the admitted path.",
+      "claim": "Text path only: Meta's own Q4_K_M, which passes the fidelity bar against the BF16 parent; the vision encoder is outside the admitted path.",
+      "vision_upstream": true,
       "architecture": "muse-glimmer",
       "upstream": {
         "checkpoint": "meta-models/Muse-Glimmer-30B",
@@ -358,12 +373,14 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "granite-4.2-8b-q4_k_m",
@@ -412,12 +429,14 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "granite-4.2-8b-q8_0",
@@ -464,12 +483,14 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "trinity-nano-preview-q8_0",
@@ -524,12 +545,14 @@
         }
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: owner decision 2026-10-22, Tier 1 as the pinned afmoe file (the manual's 8 GB recommendation and a 1.5.0 golden-pass row).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: owner decision 2026-10-22, Tier 1 as the pinned afmoe file (the manual's 8 GB recommendation and a 1.5.0 golden-pass row).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "qwen3.8-27b-gsq-rco-iq3_s-recovered",
@@ -582,12 +605,14 @@
         }
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "qwen3.8-27b-mtp-q8_0",
@@ -642,12 +667,14 @@
         }
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "xyntetik-kvist-14b-bf16",
@@ -693,12 +720,14 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "xyntetik-kvist-14b-q8_0",
@@ -744,12 +773,14 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "xyntetik-kvist-14b-q5_0-mix",
@@ -795,12 +826,14 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "xyntetik-kvist-14b-iq4_nl-mix",
@@ -846,12 +879,14 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "qwen3-30b-a3b-expq4_0-attnq8_0",
@@ -898,12 +933,14 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "qwen3-coder-30b-a3b-instruct-keep120-q4_k_m",
@@ -949,18 +986,21 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "gemma-4-e2b-it-q4_k_m-q4_0-mix",
       "model": "Gemma 4 E2B",
       "tier": "tier1",
-      "claim": "The smoke-test file from the quickstart: it fails the fidelity bar against its own BF16 parent (77.75% of tokens agree, mean KLD 0.286) and is a way to try Runner on an 8 GB machine, not a faithful gemma-4-E2B.",
+      "claim": "Text path only: the smoke-test file from the quickstart; it fails the fidelity bar against its own BF16 parent (77.75% of tokens agree, mean KLD 0.286) and is a way to try Runner on an 8 GB machine, not a faithful gemma-4-E2B.",
+      "vision_upstream": true,
       "architecture": "gemma4",
       "upstream": {
         "checkpoint": "google/gemma-4-E2B-it",
@@ -1048,12 +1088,14 @@
         "runner_version": "1.5.1",
         "date": "2026-10-23"
       },
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "nvidia-nemotron-nano-9b-v2-q8_0",
@@ -1103,18 +1145,21 @@
         }
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "gemma-4-31b-it-attn48-removed-q4_0",
       "model": "Gemma 4 31B, attention block 48 removed",
       "tier": "tier1",
-      "claim": "Google's QAT Q4_0 of Gemma 4 31B with one attention sublayer physically removed, text path: it tracks its parent at clean KLD 0.0223 on 44,413 held-out positions and loads only in Runner (llama.cpp refuses it by name).",
+      "claim": "Text path only: Google's QAT Q4_0 of Gemma 4 31B with one attention sublayer physically removed; it tracks its parent at clean KLD 0.0223 on 44,413 held-out positions and loads only in Runner (llama.cpp refuses it by name).",
+      "vision_upstream": true,
       "architecture": "gemma4",
       "upstream": {
         "checkpoint": "google/gemma-4-31B-it",
@@ -1155,18 +1200,21 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "muse-glimmer-30b-surgical-4p75-q4_k",
       "model": "Muse-Glimmer-30B surgical",
       "tier": "tier1",
-      "claim": "Muse-Glimmer-30B with 4.75% of the decoder removed and healed, at Q4_K, text path only: it passes the bar against the unmodified BF16 parent on a held-out split.",
+      "claim": "Text path only: Muse-Glimmer-30B with 4.75% of the decoder removed and healed, at Q4_K; it passes the bar against the unmodified BF16 parent on a held-out split.",
+      "vision_upstream": true,
       "architecture": "muse-glimmer",
       "upstream": {
         "checkpoint": "meta-models/Muse-Glimmer-30B",
@@ -1206,18 +1254,21 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "muse-glimmer-30b-surgical-6p34-q8_0",
       "model": "Muse-Glimmer-30B surgical",
       "tier": "tier1",
-      "claim": "Muse-Glimmer-30B with 6.34% of the decoder removed (the FFN sublayers of layers 4, 7, 9 and 48), at Q8_0, text path only: it passes the bar against the unmodified BF16 parent on a held-out split.",
+      "claim": "Text path only: Muse-Glimmer-30B with 6.34% of the decoder removed (the FFN sublayers of layers 4, 7, 9 and 48), at Q8_0; it passes the bar against the unmodified BF16 parent on a held-out split.",
+      "vision_upstream": true,
       "architecture": "muse-glimmer",
       "upstream": {
         "checkpoint": "meta-models/Muse-Glimmer-30B",
@@ -1257,18 +1308,21 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "muse-glimmer-30b-surgical-6p34-q4_k-recovered",
       "model": "Muse-Glimmer-30B surgical",
       "tier": "tier1",
-      "claim": "The 6.34% surgical Muse-Glimmer-30B at Q4_K with retrained scales, text path only: it passes the bar (0.04949, 97.90%) where plain Q4_K of the same model fails it (0.05815).",
+      "claim": "Text path only: the 6.34% surgical Muse-Glimmer-30B at Q4_K with retrained scales; it passes the bar (0.04949, 97.90%) where plain Q4_K of the same model fails it (0.05815).",
+      "vision_upstream": true,
       "architecture": "muse-glimmer",
       "upstream": {
         "checkpoint": "meta-models/Muse-Glimmer-30B",
@@ -1308,12 +1362,14 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "qwen3-4b-runner-tooluse-merged-q8_0",
@@ -1360,12 +1416,14 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "qwen3-4b-runner-tooluse-lora",
@@ -1417,12 +1475,14 @@
         "metal": null
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head",
@@ -1493,12 +1553,14 @@
         }
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published file, Tier 1 by owner decision 1; owner decision 2026-10-22: stays Tier 1 with 'experimental' first.",
-        "last_validated_release": null
-      },
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published file, Tier 1 by owner decision 1; owner decision 2026-10-22: stays Tier 1 with 'experimental' first.",
+          "last_validated_release": null
+        }
+      ],
       "experimental": true
     },
     {
@@ -1554,12 +1616,14 @@
         }
       },
       "lora": null,
-      "transition": {
-        "tier": "tier1",
-        "effective": "2026-10-22",
-        "reason": "Migration: published file, Tier 1 by owner decision 1; owner decision 2026-10-22: stays Tier 1 with 'experimental' first.",
-        "last_validated_release": null
-      },
+      "transitions": [
+        {
+          "tier": "tier1",
+          "effective": "2026-10-22",
+          "reason": "Migration: published file, Tier 1 by owner decision 1; owner decision 2026-10-22: stays Tier 1 with 'experimental' first.",
+          "last_validated_release": null
+        }
+      ],
       "experimental": true
     },
     {
@@ -1579,12 +1643,14 @@
       ],
       "published": true,
       "published_exception": "Owner decision 2026-10-22: a published file may be Tier 2 when its card already leads with its measured shortfall.",
-      "transition": {
-        "tier": "tier2",
-        "effective": "2026-10-22",
-        "reason": "Migration: owner decision 2026-10-22, Tier 2 with its near-miss disclosure; it stays published.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-22",
+          "reason": "Migration: owner decision 2026-10-22, Tier 2 with its near-miss disclosure; it stays published.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "qwen3-4b-q4_k_m-bartowski",
@@ -1602,12 +1668,14 @@
         }
       ],
       "published": false,
-      "transition": {
-        "tier": "tier2",
-        "effective": "2026-10-22",
-        "reason": "Migration: the base of a Tier 1 adapter, added 2026-10-23 so the adapter's smoke can run; not on the owner's Tier 1 roster.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-22",
+          "reason": "Migration: the base of a Tier 1 adapter, added 2026-10-23 so the adapter's smoke can run; not on the owner's Tier 1 roster.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "qwen3.8-flash-next-gsq-rco-iq3_s",
@@ -1633,12 +1701,14 @@
       ],
       "published": false,
       "experimental": true,
-      "transition": {
-        "tier": "tier2",
-        "effective": "2026-10-22",
-        "reason": "Migration: the trunk of a Tier 1 MTP head, added 2026-10-23 so the head's smoke can run; not on the owner's Tier 1 roster.",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-22",
+          "reason": "Migration: the trunk of a Tier 1 MTP head, added 2026-10-23 so the head's smoke can run; not on the owner's Tier 1 roster.",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "arch-llama",
@@ -1647,12 +1717,14 @@
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
       "architecture": "llama",
-      "transition": {
-        "tier": "tier2",
-        "effective": "2026-10-22",
-        "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-22",
+          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "arch-mistral",
@@ -1661,12 +1733,14 @@
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
       "architecture": "mistral",
-      "transition": {
-        "tier": "tier2",
-        "effective": "2026-10-22",
-        "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-22",
+          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "arch-smollm",
@@ -1675,12 +1749,14 @@
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
       "architecture": "smollm",
-      "transition": {
-        "tier": "tier2",
-        "effective": "2026-10-22",
-        "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-22",
+          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "arch-stablelm",
@@ -1689,12 +1765,14 @@
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
       "architecture": "stablelm",
-      "transition": {
-        "tier": "tier2",
-        "effective": "2026-10-22",
-        "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-22",
+          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "arch-qwen2",
@@ -1703,12 +1781,14 @@
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
       "architecture": "qwen2",
-      "transition": {
-        "tier": "tier2",
-        "effective": "2026-10-22",
-        "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-22",
+          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "arch-gemma3",
@@ -1717,12 +1797,14 @@
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
       "architecture": "gemma3",
-      "transition": {
-        "tier": "tier2",
-        "effective": "2026-10-22",
-        "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-22",
+          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "arch-phi3",
@@ -1731,12 +1813,14 @@
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
       "architecture": "phi3",
-      "transition": {
-        "tier": "tier2",
-        "effective": "2026-10-22",
-        "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-22",
+          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "arch-apertus",
@@ -1745,12 +1829,14 @@
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
       "architecture": "apertus",
-      "transition": {
-        "tier": "tier2",
-        "effective": "2026-10-22",
-        "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-22",
+          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "arch-granitehybrid",
@@ -1759,12 +1845,14 @@
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
       "architecture": "granitehybrid",
-      "transition": {
-        "tier": "tier2",
-        "effective": "2026-10-22",
-        "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-22",
+          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "qwen3.8-35b-a3b",
@@ -1773,12 +1861,14 @@
       "claim": "Not admitted: Runner does not load the qwen35moe architecture yet.",
       "architecture": "qwen35moe",
       "missing": "The qwen35moe admission (Gated DeltaNet hybrid plus routed experts; the qwen35 recurrent path and the qwen3moe expert path both exist, the hybrid does not). One piece of engine work covers Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B and MiniCPM-V-4.7-35B-A3B; the first Upcoming item. Then tokenizer, template and quant-bar gates, a pinned output and a device record.",
-      "transition": {
-        "tier": "upcoming",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
-        "last_validated_release": null
-      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ],
       "anchor": "anchor: agreement with another engine, not fidelity. A float32 reference (140 GB) is not feasible; Qwen3.5-0.8B covers the recurrent path only."
     },
     {
@@ -1788,12 +1878,14 @@
       "claim": "Text path only: the vision projector is not loaded, and Runner does not load the qwen35moe architecture yet.",
       "architecture": "qwen35moe",
       "missing": "The qwen35moe admission (see Qwen3.8-35B-A3B), then template conformance for Ornith 1.5 (the ornith template exists for 1.0 9B dense).",
-      "transition": {
-        "tier": "upcoming",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
-        "last_validated_release": null
-      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ],
       "anchor": "anchor: agreement with another engine, not fidelity.",
       "vision_upstream": true
     },
@@ -1804,12 +1896,14 @@
       "claim": "Text path only: the vision projector is not loaded, and Runner does not load the qwen35moe architecture yet.",
       "architecture": "qwen35moe",
       "missing": "The qwen35moe admission (see Qwen3.8-35B-A3B); its tokenizer and template are unknown.",
-      "transition": {
-        "tier": "upcoming",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
-        "last_validated_release": null
-      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ],
       "anchor": "anchor: agreement with another engine, not fidelity.",
       "vision_upstream": true
     },
@@ -1820,12 +1914,14 @@
       "claim": "Not validated: the granite architecture is admitted and IBM's official GGUF exists, but no gate has run on a 30B file.",
       "architecture": "granite",
       "missing": "One gate run on the Linux CUDA lab box: quant bar, tool gate, pinned output, device record; a file pinned by sha256.",
-      "transition": {
-        "tier": "upcoming",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
-        "last_validated_release": null
-      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ],
       "anchor": "Family: granite-4.2-3B bf16 against IBM's float32 reference covers the family."
     },
     {
@@ -1835,12 +1931,14 @@
       "claim": "Not validated: the file loads and its template conforms, but the tool gate, a pinned output and a device record are missing.",
       "architecture": "nemotron_h_moe",
       "missing": "Tool gate, pinned output, device record, and the another-engine label.",
-      "transition": {
-        "tier": "upcoming",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
-        "last_validated_release": null
-      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ],
       "files": [
         {
           "name": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",
@@ -1859,12 +1957,14 @@
       "claim": "Not validated: the qwen35 family loads, but no gate has run on a Qwen3.6-27B file.",
       "architecture": "qwen35",
       "missing": "One gate run: tokenizer, template, quant bar, pinned output, device record; a file pinned by sha256.",
-      "transition": {
-        "tier": "upcoming",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
-        "last_validated_release": null
-      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ],
       "anchor": "Family: Qwen3.5-0.8B bf16 against Qwen's float32 reference covers the family."
     },
     {
@@ -1874,12 +1974,14 @@
       "claim": "Not validated: the clef architecture is admitted, but no clef-flash file is pinned or gated.",
       "architecture": "clef",
       "missing": "Pin one clef-flash file by sha256 with its own evidence (the audit names clef and clef-flash as separate checkpoints); a float32 gold run on a released checkpoint.",
-      "transition": {
-        "tier": "upcoming",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
-        "last_validated_release": null
-      }
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ]
     },
     {
       "id": "nemotron-3-nano-30b-a3b",
@@ -1888,12 +1990,14 @@
       "claim": "Not admitted as a file: never loaded; it declares the same architecture id as Lightning, with the layout unverified.",
       "architecture": "nemotron_h_moe",
       "missing": "A load test and a layout check, then the Lightning gate list.",
-      "transition": {
-        "tier": "upcoming",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
-        "last_validated_release": null
-      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ],
       "anchor": "Nano-9B-v2 bf16 covers the SSM path; the MoE path has no small member."
     },
     {
@@ -1903,12 +2007,14 @@
       "claim": "Text path only: Bolt ships a vision projector that is not loaded, and the model has never been loaded.",
       "architecture": "nemotron_h_moe",
       "missing": "A sharded load test (22 GB is tight on a 24 GB slice), then the Lightning gate list.",
-      "transition": {
-        "tier": "upcoming",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
-        "last_validated_release": null
-      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ],
       "anchor": "anchor: agreement with another engine, not fidelity.",
       "vision_upstream": true
     },
@@ -1919,12 +2025,14 @@
       "claim": "Text path only: image input is not implemented in Runner and a VL name never implies vision support; the model has never been loaded.",
       "architecture": "nemotron_h_moe",
       "missing": "A load test on the lab CPU box (Q4_K_M about 65 GB in two parts), then the Lightning gate list.",
-      "transition": {
-        "tier": "upcoming",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
-        "last_validated_release": null
-      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ],
       "anchor": "anchor: agreement with another engine, not fidelity.",
       "vision_upstream": true
     },
@@ -1935,12 +2043,14 @@
       "claim": "Not admitted: a new architecture.",
       "architecture": "kolibri1",
       "missing": "Read the model code first, then an admission; 78B at Q4 is about 45 GB, the lab CPU box only.",
-      "transition": {
-        "tier": "upcoming",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
-        "last_validated_release": null
-      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ],
       "anchor": "anchor: agreement with another engine, not fidelity. A float32 reference is not feasible."
     },
     {
@@ -1950,12 +2060,14 @@
       "claim": "Not admitted: a new architecture.",
       "architecture": "mellum",
       "missing": "An admission; it fits every box and a float32 reference (48 GB) is feasible on the lab box, so it is a full admission candidate.",
-      "transition": {
-        "tier": "upcoming",
-        "effective": "2026-10-22",
-        "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
-        "last_validated_release": null
-      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        }
+      ],
       "anchor": "A float32 reference is feasible."
     }
   ]
