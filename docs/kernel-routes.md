@@ -217,3 +217,21 @@ replaces. Training recomputes through the inference primitives, so a new
 route must not change what the backward pass differentiates. `RUNNER_DEBUG_ROUTE=1`
 and the `route` object of `--bench-json` report the route a forward took
 ([performance](performance.md)).
+
+A tolerance route becomes a default only when it is no further from the
+publisher's float32 model than the route it replaces: 2,000 positions, mean
+KL within 1.01x, paired Wilcoxon and McNemar on the margin-qualified chosen
+token not worse at p < 0.05, on rows of the families it reaches. The rule
+holds as written for mixture-of-experts families too, where a handful of
+positions at which the expert routing flips can decide the mean either way;
+a MoE route that cannot pass stays opt-in.
+
+A change that only reorders float32 sums (the same terms at the same
+precision, such as the CPU K-quant dots keeping one accumulator per row in
+1.5.0) is judged across files, not per file: it passes when no file moves
+mean KL by more than 0.1%, none changes a margin-qualified chosen token,
+and the paired verdicts have no consistent direction across the files
+measured. At 2,000 positions the Wilcoxon test resolves such a reordering's
+file-specific drift, which is not a fidelity change; for that change it read
+closer on one file, further on one and level on two
+([golden pass on 1.5.0](golden-pass-2026-10-22.md)).
