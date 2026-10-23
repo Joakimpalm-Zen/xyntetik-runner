@@ -2245,6 +2245,7 @@ static void cl_capture(engine *e, const float *logits) {
         r->n_legal++;
     }
     if (r->n_legal < 2 || legal_mass <= 0) return;  // forced: no decision
+    r->legal_mass = (float)legal_mass;
     int stored = r->n_legal < CL_MAX_ALT ? r->n_legal : CL_MAX_ALT;
     for (int i = 0; i < stored; i++)
         r->prob[i] = (float)(r->prob[i] / legal_mass);

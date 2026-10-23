@@ -87,7 +87,10 @@ export interface RunnerTelemetry {
 export interface ChoiceLogprob {
   index: number;
   n_legal: number;
+  n_probed: number;
   coverage: number;
+  /** probability the legal candidates held before renormalizing; small when the schema forced the choice */
+  legal_mass: number;
   alternatives: { token: string; id: number; prob: number; logprob: number }[];
 }
 

@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`choice_logprobs` reports the mass the legal branches held.** Each
+  decision point now carries `legal_mass`: the whole-vocabulary probability
+  of its legal candidates before the posteriors were renormalized over them.
+  The posteriors alone read the same whether the model wanted one of the
+  schema's branches or none of them: on the Windows CUDA host Qwen3-4B, after
+  writing `"E` under an enum holding `"E"` and `"EAT"`, gave its legal
+  continuations about 1e-4 of its probability and the record showed a 0.84
+  posterior with `coverage` 1.0. A low `legal_mass` marks a choice the schema
+  forced. Added to the decision-record v1 contract
+  ([docs/decision-record.md](docs/decision-record.md)); nothing else in the
+  record or in sampling changes.
+
 - **Windows: `make` builds `runner.exe` in a bash started with a minimal
   environment.** The Makefile chose its Windows branch only from the `OS`
   environment variable, which a bash.exe started directly does not carry, so

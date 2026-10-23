@@ -17,6 +17,7 @@ buffered turn in `choices[0].choice_logprobs`:
 | `n_legal` | legal candidates among the probed ones |
 | `n_probed` | candidates probed (`choice_logprobs_probe`, 32 by default, at most 64) |
 | `coverage` | whole-vocabulary probability mass of the probed candidates |
+| `legal_mass` | whole-vocabulary probability mass of the legal probed candidates: the number each `prob` was divided by |
 | `alternatives` | the legal candidates, most probable first, at most 8: `token`, `id`, `prob` (posterior over the legal probed set), `logprob` (over the whole vocabulary) |
 
 `n_legal < n_probed` means the grammar removed some candidates: the step was
@@ -54,7 +55,13 @@ The same record serves four consumers, which is why it is one contract:
 ## Limits
 
 The posteriors are over the probed candidates, not the whole vocabulary:
-`coverage` says how much of the distribution the probe saw. They are the
+`coverage` says how much of the distribution the probe saw, and `legal_mass`
+how much of it the grammar left. They differ when the model's own next token
+is outside the grammar: on the Windows CUDA host, Qwen3-4B Q4_K_M after
+writing `"E` under an enum holding `"E"` and `"EAT"` put `coverage` 1.0 but a
+`legal_mass` near 1e-4 on the legal continuations, so its posterior of 0.84
+for `AT` was a forced choice between two strings it barely considered. A low
+`legal_mass` says the schema, not the model, made that choice. They are the
 model's, at the temperature-free logits, not a calibrated probability of
 being right; calibration is a measurement on labeled decisions, per model.
 A native protocol's auto turn is parsed rather than constrained and has no

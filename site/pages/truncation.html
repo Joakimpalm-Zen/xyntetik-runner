@@ -87,7 +87,7 @@ curl localhost:8080/v1/chat/completions -d '{
       </div>
       <div class="callout">
         <span class="t">Decisions with a confidence signal.</span>
-        <p>Because the validator knows the legal branches at a decision point, Runner can record <code>choice_logprobs</code>: each schema branch as a legal alternative, a posterior renormalized over them, and the probed probability mass. Routing and calibrated classification need that, and an included calibration tool turns labeled decisions into accuracy, Brier-score and ECE gates.</p>
+        <p>Because the validator knows the legal branches at a decision point, Runner can record <code>choice_logprobs</code>: each schema branch as a legal alternative, a posterior renormalized over them, the probed probability mass, and the mass the legal branches held before renormalizing. Routing and calibrated classification need that, and an included calibration tool turns labeled decisions into accuracy, Brier-score and ECE gates.</p>
       </div>
     </div>
   </div>

@@ -556,9 +556,10 @@ These capabilities help when managing several models or evaluating decisions:
   read decides whether the rest of the download is worth starting.
 - **Constrained decisions come with a confidence signal.** `choice_logprobs`
   records each JSON-schema branch as legal alternatives, a posterior
-  renormalized over them, and the probed probability mass - how confident the
-  model was choosing one branch over another, which is what routing and
-  calibrated classification actually need. The included calibration tool turns
+  renormalized over them, the probed probability mass, and the mass the legal
+  branches held before renormalizing (`legal_mass`) - how confident the model
+  was choosing one branch over another, and whether it wanted any of them at
+  all, which is what routing and calibrated classification actually need. The included calibration tool turns
   labeled decisions into accuracy, Brier-score, and ECE gates; the included
   boundary lane does the opposite job, recording where serving conditions
   DISAGREE on a tool choice with no labels at all. This is a decision record
@@ -3732,7 +3733,11 @@ print(response.choices[0].message.content)
 
 Constrained buffered requests can set `choice_logprobs:true`. Decision points
 then include legal alternatives, posterior probability over the probed legal
-set, raw logprobs, and coverage mass. `choice_logprobs_probe` defaults to 32
+set, raw logprobs, coverage mass, and `legal_mass`: the whole-vocabulary
+probability the legal probed candidates held, the number the posteriors were
+divided by. A posterior of 0.84 at a `legal_mass` of 1e-4 is a forced choice
+between continuations the model barely considered (its own next token was
+outside the grammar), not a confident one. `choice_logprobs_probe` defaults to 32
 and is capped at 64; `scripts/cl-calibration.py` turns labeled records into an
 ECE report, and `scripts/tool-choice-boundary.py` runs an unlabeled
 tool-choice bank across serving conditions and reports where they disagree

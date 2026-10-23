@@ -4679,9 +4679,13 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
         for (int i = 0; i < e->cl_count; i++) {
             const cl_rec *c = &e->cl_recs[i];
             if (i) sb_lit(&r, ",");
+            // legal_mass at nine significant digits, not coverage's six
+            // decimals: it is the number that is small when it matters
             sb_fmt(&r, "{\"index\":%d,\"n_legal\":%d,\"n_probed\":%d,"
-                       "\"coverage\":%.6f,\"alternatives\":[",
-                   c->pos, c->n_legal, c->n_probed, c->coverage);
+                       "\"coverage\":%.6f,\"legal_mass\":%.9g,"
+                       "\"alternatives\":[",
+                   c->pos, c->n_legal, c->n_probed, c->coverage,
+                   (double)c->legal_mass);
             int stored = c->n_legal < CL_MAX_ALT ? c->n_legal : CL_MAX_ALT;
             for (int j = 0; j < stored; j++) {
                 if (j) sb_lit(&r, ",");
