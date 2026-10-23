@@ -172,6 +172,15 @@ What the laptop establishes:
   record it is about 1e-4 at the branch; on the laptop it is 0.999. A small
   `legal_mass` says the schema made the choice, not the model.
 
+A limit on reading it: the validator refuses a token made only of
+whitespace, so at a key's opening quote the legal mass can be small although
+JSON allows the whitespace the model wanted there. On the laptop the record
+after `{\n\n` read 0.0011 at the first key's quote, where the model wanted
+another `\n\n`.
+
+Not done: `confirm_below`'s turn summary carries no minimum legal mass; it
+was considered and deferred.
+
 ## Method and files
 
 The counting harness posts the chat requests above and parses
