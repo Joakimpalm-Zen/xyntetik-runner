@@ -571,12 +571,6 @@ def _qualified(rows, name):
     return ": ".join(_qualifiers(rows) + [name])
 
 
-def _readme_label(rows, name):
-    """The table's model cell: the qualifier as plain text, then the name in
-    bold ("Text path only: **Gemma 4 12B**")."""
-    return "".join(q + ": " for q in _qualifiers(rows)) + f"**{name}**"
-
-
 def _model_groups(rows):
     """Rows grouped by model, groups sorted by model name, files within a
     group in roster order: the render does not depend on insertion order."""
@@ -584,6 +578,32 @@ def _model_groups(rows):
     for r in rows:
         groups.setdefault(r["model"], []).append(r)
     return sorted(groups.items(), key=lambda kv: (kv[0].casefold(), kv[0]))
+
+
+def _file_title(row):
+    """A file as the README names it: a sharded set by its first part."""
+    files = row["files"]
+    return f"`{files[0]['name']}`" + (f" ({len(files)} parts)" if len(files) > 1 else "")
+
+
+def tier1_groups(doc):
+    """The table every surface shows (the README, the site): one
+    (qualifiers, model, rows) per Tier 1 model, sorted by name, each with
+    its roster files in roster order."""
+    return [(_qualifiers(rows), model, rows)
+            for model, rows in _model_groups([r for r in doc["rows"] if r["tier"] == "tier1"])]
+
+
+def upcoming_names(doc):
+    """Upcoming models as names, in the roster's order (the order of
+    admission), a vision model marked text path only."""
+    names = []
+    for r in doc["rows"]:
+        if r["tier"] == "upcoming":
+            n = r["model"] + (" (text path only)" if r.get("vision_upstream") else "")
+            if n not in names:
+                names.append(n)
+    return names
 
 
 def render_readme(doc):
@@ -595,28 +615,19 @@ def render_readme(doc):
     outside the roster is the matrix's claim, not this table's. Upcoming
     models follow as names, in the roster's order (the order of admission).
     """
-    groups = _model_groups([r for r in doc["rows"] if r["tier"] == "tier1"])
     # a blank line on each side keeps the markers' HTML comments apart from
     # the table and the paragraph in every markdown renderer
     lines = ["", "", "| Model | File | CPU | CUDA | Metal | Train | Evidence |",
              "|---|---|---|---|---|---|---|"]
-    for model, rows in groups:
-        lines.append(f"| {_readme_label(rows, model)} | | | | | | |")
+    for quals, model, rows in tier1_groups(doc):
+        label = "".join(q + ": " for q in quals) + f"**{model}**"
+        lines.append(f"| {label} | | | | | | |")
         for r in rows:
-            files = r["files"]
-            name = f"`{files[0]['name']}`" + (f" ({len(files)} parts)"
-                                             if len(files) > 1 else "")
-            cells = [name] + [_mark(r["backends"].get(b)) for b in BACKENDS]
+            cells = [_file_title(r)] + [_mark(r["backends"].get(b)) for b in BACKENDS]
             cells += [_train(r.get("lora")), f"[envelope]({SUPPORT_DOC}#{r['id']})"]
             lines.append("| | " + " | ".join(cells) + " |")
-    upcoming = []
-    for r in doc["rows"]:
-        if r["tier"] == "upcoming":
-            n = r["model"] + (" (text path only)" if r.get("vision_upstream") else "")
-            if n not in upcoming:
-                upcoming.append(n)
-    lines += ["", "**Upcoming**, not counted as validated: " + ", ".join(upcoming) + ".",
-              "", ""]
+    lines += ["", "**Upcoming**, not counted as validated: "
+              + ", ".join(upcoming_names(doc)) + ".", "", ""]
     return "\n".join(lines)
 
 
@@ -837,7 +848,8 @@ def card_repos(doc):
     return sorted(repos, key=lambda s: (s.casefold(), s))
 
 
-def _repo_rows(doc, repo):
+def repo_rows(doc, repo):
+    """The rows with a file in the repository, in roster order."""
     return [r for r in doc["rows"]
             if any(f.get("repo") == repo for f in r.get("files") or [])]
 
@@ -845,12 +857,7 @@ def _repo_rows(doc, repo):
 def card_file_names(doc, repo):
     """The name each roster file of the repo goes by (a sharded set by its
     first part, as the README names it): the card must mention every one."""
-    return [r["files"][0]["name"] for r in _repo_rows(doc, repo)]
-
-
-def _file_title(row):
-    files = row["files"]
-    return f"`{files[0]['name']}`" + (f" ({len(files)} parts)" if len(files) > 1 else "")
+    return [r["files"][0]["name"] for r in repo_rows(doc, repo)]
 
 
 def render_card_block(doc, repo):
@@ -859,7 +866,7 @@ def render_card_block(doc, repo):
     marks for a Tier 1 file and the tier and its reason for any other."""
     lines = [CARD_BEGIN, "- **Last validated (Runner support tiers):**"]
     marked = False
-    for r in _repo_rows(doc, repo):
+    for r in repo_rows(doc, repo):
         link = f"([roster row]({GITHUB_BLOB}{SUPPORT_DOC}#{r['id']}))"
         if r["tier"] == "tier1":
             marked = True

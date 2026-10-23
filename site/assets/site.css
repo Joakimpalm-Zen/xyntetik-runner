@@ -278,6 +278,15 @@ table.compare th:first-child, table.compare td:first-child { min-width: 11rem; }
 table.compare .y::before { content: "\25CF"; color: var(--teal); margin-right: 0.45rem; }
 table.compare .n::before { content: "\25CB"; color: var(--muted); margin-right: 0.45rem; }
 table.compare .p::before { content: "\25D0"; color: var(--coral); margin-right: 0.45rem; }
+/* the support-tier table, rendered from docs/model-tiers.json at build time */
+table.tiers { min-width: 900px; }
+table.tiers tr.group td { background: var(--surface-2); padding-top: 0.5rem; padding-bottom: 0.5rem; }
+table.tiers td.file { min-width: 12rem; }
+table.tiers td.file code { overflow-wrap: anywhere; }
+table.tiers td.mark, table.tiers td.train { font-family: var(--mono); font-size: 0.8rem; }
+table.tiers td.mark { white-space: nowrap; }
+.card .validated { margin-top: 0.3rem; }
+.validated .nw { white-space: nowrap; }
 
 /* figures and charts */
 .fig { margin: 0; min-width: 0; overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.25rem 1.25rem 1rem; }

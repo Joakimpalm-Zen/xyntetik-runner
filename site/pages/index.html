@@ -190,21 +190,25 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       <a class="card card-link reveal" href="{{hf}}/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF" rel="noopener">
         <h3>A 3-bit Qwen3.8-27B that fits a 16 GB card whole</h3>
         <p>Every block scale retrained against the original; the lab's most downloaded file, shown side by side with its source.</p>
+        {{validated:Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF}}
         <span class="more">Get the file &rarr;</span>
       </a>
       <a class="card card-link reveal" href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-kvist-distilled-agents-6ab9f930af19ca84df9ebf6b" rel="noopener">
         <h3>Kvist-14B, half the size of its parent</h3>
         <p>Distilled from a 30B model for tool-calling agents on a 24 GB card; it solves 57 of the 60 held-out tasks its parent solves.</p>
+        {{validated:Joakimpalm-Zen/Xyntetik-Kvist-14B-GGUF}}
         <span class="more">Meet Kvist &rarr;</span>
       </a>
       <a class="card card-link reveal" href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-model-surgery-and-scale-recovery-6aa98bab0ecb9723f310c770" rel="noopener">
         <h3>What survives surgery on a 30B model</h3>
         <p>Nine preregistered cuts on one frozen Muse-Glimmer-30B; two run with up to 6% of the decoder gone and still pass the fidelity bar.</p>
+        {{validated:Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q4_K-GGUF,Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q8_0-GGUF,Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-6p34-Q4_K-recovered-GGUF}}
         <span class="more">See the surgery &rarr;</span>
       </a>
       <a class="card card-link reveal" href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-genesis-6abcfa50b6707dec9bfee356" rel="noopener">
         <h3>GENESIS: learning with no human text</h3>
         <p>Eighteen preregistered experiments on tiny models that only ever saw programs they ran themselves, failures included.</p>
+        {{validated:Joakimpalm-Zen/Xyntetik-Blad-Genesis-0.7M}}
         <span class="more">Read the record &rarr;</span>
       </a>
     </div>
@@ -213,6 +217,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       <a class="btn" href="https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae" rel="noopener">Xyntetik-Runner releases</a>
       <a class="btn" href="/evidence/#artifacts">The artifact ledger</a>
     </div>
+    <p class="small muted mt-1">Each card's last-validated line is rendered from the Runner support roster when this site is built: a ✅ is a reproduced greedy smoke at that Runner version and date, not a verdict on the answers. Every file and backend is in the <a href="/runner/#validated">Runner page's table</a>.</p>
   </div>
 </section>
 

@@ -13,6 +13,13 @@ to `main` that touches `site/`.
   the top of `build.py`. Those tables are copies of numbers in the README
   and `docs/`; every caption names the source document and the date.
 - `{{repo}}` and `{{hf}}` expand to the repository and Hugging Face URLs.
+- `{{tiers:table}}` renders the README's "Actively validated models" table
+  and `{{validated:OWNER/REPO[,OWNER/REPO]}}` a model card's "Last
+  validated" line, both from `docs/model-tiers.json` at build time through
+  `scripts/model-tiers.py`'s own functions, so no page source holds a mark.
+  A card that names a repository with no roster row and no exempt entry
+  fails the build. `build.py --roster FILE --out DIR` builds from another
+  roster into another directory (the tests do).
 
 Rules the build enforces: no em dashes anywhere in the output (public-prose
 rule), no placeholder tokens, no internal link without a page behind it.

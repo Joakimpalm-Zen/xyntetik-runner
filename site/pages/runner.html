@@ -62,6 +62,7 @@ nav: runner
       <a href="#contracts">What it promises</a>
       <a href="#versioning">What 1.x keeps</a>
       <a href="#support">Support matrix</a>
+      <a href="#validated">Validated models</a>
       <a href="#agents">Coding agents</a>
       <a href="#how">How it is built</a>
     </nav>
@@ -322,7 +323,20 @@ python3 scripts/kld-compare-raw.py --model-a out.gguf \
   </div>
 </section>
 
-<section class="section tint" id="agents">
+<section class="section tint" id="validated">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Support tiers</p>
+      <h2>Actively validated models</h2>
+      <p>Runner keeps loading every model the <a href="{{repo}}/blob/main/MANUAL.md#support-matrix">support matrix</a> admits; the files below are the ones it re-checks on every release, with one greedy prompt compared byte for byte against a pinned output on the device class each file names. A release is refused while any of them is missing that check, failing it or past its age limit.</p>
+      <p>A ✅ carries the Runner version and date of the last run and says nothing about the quality of the answers. <code>☐ not run</code> means nobody has run it yet, <code>n/a</code> is a backend with no path for that file, and <code>failed</code> is a recorded failure. The Train column is the file's own <code>--adapt-info</code> answer: ✅ means the LoRA backward admits the file, not that training it gives good results.</p>
+    </div>
+    {{tiers:table}}
+    <p class="small muted">Rendered from <a href="{{repo}}/blob/main/docs/model-tiers.json">docs/model-tiers.json</a> when the site is built, the same roster the README table and the model cards are rendered from. What each tier promises, every file's full envelope and how to run the check: <a href="{{repo}}/blob/main/docs/model-support.md">docs/model-support.md</a>.</p>
+  </div>
+</section>
+
+<section class="section" id="agents">
   <div class="wrap split">
     <div>
       <p class="eyebrow">Coding agents</p>
@@ -347,7 +361,7 @@ codex "list the files here"</code></pre>
   </div>
 </section>
 
-<section class="section" id="how">
+<section class="section tint" id="how">
   <div class="wrap split rev">
     <div>
 <pre><code>src/gguf.c            GGUF metadata and tensor-table parser

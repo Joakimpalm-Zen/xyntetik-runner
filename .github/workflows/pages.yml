@@ -12,6 +12,10 @@ on:
       - ".github/workflows/pages.yml"
       # the site takes its version and release date from the changelog
       - "CHANGELOG.md"
+      # and renders the support roster's table and card lines at build time,
+      # so a recorded gate rebuilds the site instead of leaving it stale
+      - "docs/model-tiers.json"
+      - "scripts/model-tiers.py"
   workflow_dispatch:
 
 permissions:

@@ -15,8 +15,10 @@ site may not claim more than the README and docs do on the day it is built.
 """
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import html
+import importlib.util
 import os
 import re
 import shutil
@@ -329,6 +331,100 @@ CHARTS = {
     "fidelity": chart_fidelity,
 }
 
+# ----------------------------------------------------------- the roster --
+#
+# The support roster (docs/model-tiers.json) is read when the site is built
+# and rendered by scripts/model-tiers.py's own functions, the ones the README
+# table and the Hugging Face cards are rendered by, so the site cannot word
+# a mark differently or keep a stale copy of one. `{{tiers:table}}` is the
+# README's table; `{{validated:OWNER/REPO[,OWNER/REPO]}}` is a model card's
+# one-line summary for the roster files of the repositories it names.
+
+def _load_tiers():
+    spec = importlib.util.spec_from_file_location(
+        "model_tiers", ROOT / "scripts" / "model-tiers.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+MT = _load_tiers()
+MARK_LABELS = ("CPU", "CUDA", "Metal")
+
+
+def _mark_html(cell, link=True):
+    text, href = MT.mark_parts(cell)
+    if href and link:
+        return f'<a href="{REPO}/blob/main/{esc(href)}">{esc(text)}</a>'
+    return esc(text)
+
+
+def tiers_table_html(doc: dict) -> str:
+    """The README's "Actively validated models" table: a row per Tier 1
+    model (its qualifier before its bold name), a sub-row per roster file
+    with the same marks, then the Upcoming models as names."""
+    out = ['<div class="table-wrap">', '<table class="data tiers">',
+           "<thead><tr><th>Model</th><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th>"
+           "<th>Train</th><th>Evidence</th></tr></thead>", "<tbody>"]
+    for quals, model, rows in MT.tier1_groups(doc):
+        label = "".join(esc(q) + ": " for q in quals) + f"<strong>{esc(model)}</strong>"
+        out.append(f'<tr class="group"><td colspan="7">{label}</td></tr>')
+        for r in rows:
+            files = r["files"]
+            name = f"<code>{esc(files[0]['name'])}</code>" + (
+                f" ({len(files)} parts)" if len(files) > 1 else "")
+            cells = [f'<td class="mark">{_mark_html(r["backends"].get(b))}</td>'
+                     for b in MT.BACKENDS]
+            train = MT.train_mark(r.get("lora"))
+            # a mark stays on one line; a refusal sentence wraps
+            kind = "train" if train.startswith("no: ") else "mark"
+            cells.append(f'<td class="{kind}">{esc(train)}</td>')
+            cells.append(f'<td><a href="{REPO}/blob/main/{MT.SUPPORT_DOC}#{esc(r["id"])}">'
+                         "envelope</a></td>")
+            out.append(f'<tr><td></td><td class="file">{name}</td>{"".join(cells)}</tr>')
+    out += ["</tbody>", "</table>", "</div>",
+            '<p class="small muted mt-1"><strong>Upcoming</strong>, not counted as validated: '
+            + esc(", ".join(MT.upcoming_names(doc))) + ".</p>"]
+    return "\n".join(out)
+
+
+def validated_html(doc: dict, repos: list[str]) -> str:
+    """A model card's "Last validated" line for the roster files of the named
+    repositories, with the table's marks and no links (the card is one).
+    Files that share every mark share a line; files that differ are named."""
+    rows = []
+    for repo in repos:
+        rows += [r for r in MT.repo_rows(doc, repo) if r not in rows]
+    if not rows:
+        # an entry with a path exempts a folder of a repository, not the repository
+        exempt = [e for e in doc.get("exempt") or []
+                  if e["repo"] in repos and not e.get("path")]
+        if not exempt:
+            raise KeyError(", ".join(repos))
+        return ('<span class="measured validated">Not on the support roster: '
+                + esc(" ".join(e["reason"] for e in exempt)) + "</span>")
+    groups: dict[str, list[dict]] = {}
+    for r in rows:
+        if r["tier"] == "tier1":
+            marks = [f"{label} {_mark_html(r['backends'].get(b), link=False)}"
+                     for b, label in zip(MT.BACKENDS, MARK_LABELS)]
+            marks.append("Train " + esc(MT.train_mark(r.get("lora"))))
+            # a narrow card breaks the line between marks, never inside one
+            key = " · ".join(f'<span class="nw">{m}</span>' for m in marks)
+        else:
+            key = esc(MT.TIER_NAMES[r["tier"]]) + ", no backend marks"
+        groups.setdefault(key, []).append(r)
+    if len(groups) == 1:
+        (key, rs), = groups.items()
+        n = len(rs)
+        head = ("Last validated" if n == 1 else
+                "Last validated, both files" if n == 2 else f"Last validated, all {n} files")
+        return f'<span class="measured validated">{head}: {key}</span>'
+    parts = [", ".join(f"<code>{esc(r['files'][0]['name'])}</code>" for r in rs) + ": " + key
+             for key, rs in groups.items()]
+    return '<span class="measured validated">Last validated: ' + "; ".join(parts) + "</span>"
+
+
 # ----------------------------------------------------------------- shell --
 
 MARKS = SITE / "assets" / "marks"
@@ -600,15 +696,22 @@ def check_page(path: str, out: str, known_paths: set[str]) -> list[str]:
 
 # ----------------------------------------------------------------- main ---
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Build xyntetik.com into site/_site.")
+    ap.add_argument("--roster", type=Path, default=Path(MT.ROSTER),
+                    help="the support roster the tier table and card lines are rendered from")
+    ap.add_argument("--out", type=Path, default=OUT, help="the output directory")
+    args = ap.parse_args(argv)
+    out_dir = args.out
+    roster = MT.load(str(args.roster))
     sha = build_revision()
     version, release_date = latest_release()
     global VERSION, RELEASE_DATE
     VERSION, RELEASE_DATE = version, release_date
-    if OUT.exists():
-        shutil.rmtree(OUT)
-    OUT.mkdir(parents=True)
-    shutil.copytree(SITE / "assets", OUT / "assets")
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
+    shutil.copytree(SITE / "assets", out_dir / "assets")
 
     pages = []
     for p in sorted((SITE / "pages").glob("*.html")):
@@ -625,34 +728,46 @@ def main() -> int:
                 return CHARTS[name]()
             raise KeyError(kind)
         body = re.sub(r"\{\{(chart):([a-z_]+)\}\}", sub, body)
+        body = body.replace("{{tiers:table}}", tiers_table_html(roster))
+
+        def validated(m: re.Match[str]) -> str:
+            repos = m.group(1).split(",")
+            try:
+                return validated_html(roster, repos)
+            except KeyError:
+                problems.append(f"{meta['path']}: {{{{validated:{m.group(1)}}}}} names "
+                                f"{', '.join(repos)}, which the roster has no row or "
+                                "exempt entry for")
+                return ""
+        body = re.sub(r"\{\{validated:([A-Za-z0-9._/,-]+)\}\}", validated, body)
         body = re.sub(r"\{\{mark:([a-z]+):(\d+)\}\}", lambda m: mark(m.group(1), "", int(m.group(2))), body)
         body = re.sub(r"\{\{heromark:([a-z]+)\}\}", lambda m: inline_mark(m.group(1)), body)
         body = (body.replace("{{repo}}", REPO).replace("{{hfd}}", HFD).replace("{{hf}}", HF)
                 .replace("{{version}}", version).replace("{{release_date}}", release_date))
         out = shell(meta, body, sha)
         problems += check_page(meta["path"], out, known)
-        target = OUT / meta["path"].lstrip("/") / "index.html"
+        target = out_dir / meta["path"].lstrip("/") / "index.html"
         if meta["path"] == "/404.html":
-            target = OUT / "404.html"
+            target = out_dir / "404.html"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(out, encoding="utf-8")
     for src, dst in REDIRECTS.items():
-        target = OUT / src.lstrip("/") / "index.html"
+        target = out_dir / src.lstrip("/") / "index.html"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(redirect_page(dst), encoding="utf-8")
 
     urls = sorted(m["path"] for m, _ in pages if m["path"] != "/404.html")
     today = dt.date.today().isoformat()
-    (OUT / "sitemap.xml").write_text(
+    (out_dir / "sitemap.xml").write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
         + "".join(f"  <url><loc>{ORIGIN}{u}</loc><lastmod>{today}</lastmod></url>\n" for u in urls)
         + "</urlset>\n", encoding="utf-8")
-    (OUT / "robots.txt").write_text(f"User-agent: *\nAllow: /\nSitemap: {ORIGIN}/sitemap.xml\n", encoding="utf-8")
-    (OUT / ".nojekyll").write_text("", encoding="utf-8")
+    (out_dir / "robots.txt").write_text(f"User-agent: *\nAllow: /\nSitemap: {ORIGIN}/sitemap.xml\n", encoding="utf-8")
+    (out_dir / ".nojekyll").write_text("", encoding="utf-8")
     # llms.txt: the answer engines read this file the way crawlers read
     # robots.txt. Plain Markdown: what the site is, then where the detail is.
-    (OUT / "llms.txt").write_text(
+    (out_dir / "llms.txt").write_text(
         "# Xyntetik\n\n"
         "> Xyntetik is the Zenova AB program for running capable language models on "
         "hardware you own and proving what they did. Its released product is Xyntetik "
@@ -685,7 +800,8 @@ def main() -> int:
     if problems:
         print("\n".join(problems), file=sys.stderr)
         return 1
-    print(f"wrote {len(pages)} pages and {len(REDIRECTS)} redirects to {OUT.relative_to(ROOT)} at {sha[:12]}")
+    where = out_dir.relative_to(ROOT) if out_dir.is_relative_to(ROOT) else out_dir
+    print(f"wrote {len(pages)} pages and {len(REDIRECTS)} redirects to {where} at {sha[:12]}")
     return 0
 
 
