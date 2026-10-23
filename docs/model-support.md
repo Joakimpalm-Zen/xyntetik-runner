@@ -723,10 +723,11 @@ Arcee's Q8_0 of Trinity Nano Preview, text path, CPU only by admission: the one 
 - **Still missing:** Pinned output.
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/model-evidence.md](model-evidence.md).
 - **Per-release smoke:** on linux-x86_64-cuda, cpu backend, the policy's age limit.
-- **CPU:** ☐ not run
+- **CPU:** ✅ v1.5.1 2026-10-23 on linux-x86_64-cuda at commit `e347e50fdd63`, output sha256 `b26e284a3452dbba`, [pin](../tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** [n/a](../MANUAL.md#support-matrix): afmoe (gated attention with sparse MoE) has no CUDA path; CUDA refuses it and the file runs on the CPU.
 - **Metal:** [n/a](../MANUAL.md#support-matrix): afmoe (gated attention with sparse MoE) has no Metal path; Metal refuses it and the file runs on the CPU.
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** no: MoE router gating other than softmax (runner 1.5.1, 2026-10-23).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-23).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 ### Xyntetik-Kvist-14B

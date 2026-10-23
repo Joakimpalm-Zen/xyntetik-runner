@@ -202,7 +202,7 @@ backward admits the file, not that training it gives good results.
 | | `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf` (4 parts) | ☐ not run | ☐ not run | [n/a](MANUAL.md#support-matrix) | ☐ not run | [envelope](docs/model-support.md#qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head) |
 | | `Qwen3.8-Flash-Next-MTP-Q8_0.gguf` | ☐ not run | ☐ not run | [n/a](MANUAL.md#support-matrix) | ☐ not run | [envelope](docs/model-support.md#qwen3.8-flash-next-mtp-q8_0) |
 | **Trinity Nano** | | | | | | |
-| | `Trinity-Nano-Preview-Q8_0.gguf` | ☐ not run | [n/a](MANUAL.md#support-matrix) | [n/a](MANUAL.md#support-matrix) | ☐ not run | [envelope](docs/model-support.md#trinity-nano-preview-q8_0) |
+| | `Trinity-Nano-Preview-Q8_0.gguf` | ✅ v1.5.1 2026-10-23 | [n/a](MANUAL.md#support-matrix) | [n/a](MANUAL.md#support-matrix) | no: MoE router gating other than softmax | [envelope](docs/model-support.md#trinity-nano-preview-q8_0) |
 | **Xyntetik-Kvist-14B** | | | | | | |
 | | `Xyntetik-Kvist-14B-BF16.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#xyntetik-kvist-14b-bf16) |
 | | `Xyntetik-Kvist-14B-Q8_0.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#xyntetik-kvist-14b-q8_0) |
