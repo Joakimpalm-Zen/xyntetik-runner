@@ -355,149 +355,182 @@ check, failing it or past its age limit.
 
 <details>
 <summary><b>Cloudflare Clef (clef, on Qwen3.8-27B)</b>, text path only <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;n/a</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`Cloudflare_clef-IQ3_M.gguf`](docs/model-support.md#cloudflare-clef-iq3_m) |  |  | [n/a](MANUAL.md#support-matrix) |  |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#cloudflare-clef-iq3_m"><code>Cloudflare_clef-IQ3_M.gguf</code></a></td><td></td><td></td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>Gemma 4 12B</b>, text path only <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`gemma-4-12b-it-qat-q4_0.gguf`](docs/model-support.md#gemma-4-12b-it-qat-q4_0) |  |  |  |  |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#gemma-4-12b-it-qat-q4_0"><code>gemma-4-12b-it-qat-q4_0.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>Gemma 4 26B-A4B</b>, text path only <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`gemma-4-26B_q4_0-it.gguf`](docs/model-support.md#gemma-4-26b-a4b-it-qat-q4_0) |  |  |  |  |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#gemma-4-26b-a4b-it-qat-q4_0"><code>gemma-4-26B_q4_0-it.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>Gemma 4 31B</b>, text path only <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`gemma-4-31B-it-Q4_0.gguf`](docs/model-support.md#gemma-4-31b-it-q4_0) |  |  |  |  |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#gemma-4-31b-it-q4_0"><code>gemma-4-31B-it-Q4_0.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>Gemma 4 31B, attention block 48 removed</b>, text path only <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`gemma-4-31B-it-attn48-removed-q4_0.gguf`](docs/model-support.md#gemma-4-31b-it-attn48-removed-q4_0) |  |  |  |  |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#gemma-4-31b-it-attn48-removed-q4_0"><code>gemma-4-31B-it-attn48-removed-q4_0.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>Gemma 4 E2B</b>, text path only <code>CPU&nbsp;✅</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;✅</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf`](docs/model-support.md#gemma-4-e2b-it-q4_k_m-q4_0-mix) | ✅ 1.5.1<br>2026-10-23 |  | ✅ 1.5.1<br>2026-10-23 | ✅ 1.5.1<br>2026-10-23 |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#gemma-4-e2b-it-q4_k_m-q4_0-mix"><code>gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf</code></a></td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td nowrap>✅ 1.5.1<br>2026-10-23</td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>Granite-4.2-8B</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`granite-4.2-8b-Q4_K_M.gguf`](docs/model-support.md#granite-4.2-8b-q4_k_m) |  |  |  |  |
-| [`granite-4.2-8b-Q8_0.gguf`](docs/model-support.md#granite-4.2-8b-q8_0) |  |  |  |  |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#granite-4.2-8b-q4_k_m"><code>granite-4.2-8b-Q4_K_M.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="docs/model-support.md#granite-4.2-8b-q8_0"><code>granite-4.2-8b-Q8_0.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>Muse-Glimmer-30B</b>, text path only <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf`](docs/model-support.md#muse-glimmer-30b-kquant) |  |  |  |  |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#muse-glimmer-30b-kquant"><code>Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>Muse-Glimmer-30B surgical</b>, text path only <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf`](docs/model-support.md#muse-glimmer-30b-surgical-4p75-q4_k) |  |  |  |  |
-| [`Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf`](docs/model-support.md#muse-glimmer-30b-surgical-6p34-q8_0) |  |  |  |  |
-| [`Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf`](docs/model-support.md#muse-glimmer-30b-surgical-6p34-q4_k-recovered) |  |  |  |  |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#muse-glimmer-30b-surgical-4p75-q4_k"><code>Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="docs/model-support.md#muse-glimmer-30b-surgical-6p34-q8_0"><code>Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="docs/model-support.md#muse-glimmer-30b-surgical-6p34-q4_k-recovered"><code>Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>NVIDIA Nemotron Nano 9B v2</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;n/a</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf`](docs/model-support.md#nvidia-nemotron-nano-9b-v2-q8_0) |  |  | [n/a](MANUAL.md#support-matrix) |  |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#nvidia-nemotron-nano-9b-v2-q8_0"><code>NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf</code></a></td><td></td><td></td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>Qwen3-30B-A3B selective precision</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`Qwen3-30B-A3B-expq4_0-attnq8_0.gguf`](docs/model-support.md#qwen3-30b-a3b-expq4_0-attnq8_0) |  |  |  |  |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#qwen3-30b-a3b-expq4_0-attnq8_0"><code>Qwen3-30B-A3B-expq4_0-attnq8_0.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>Qwen3-4B Runner ToolUse</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`merged-Q8_0.gguf`](docs/model-support.md#qwen3-4b-runner-tooluse-merged-q8_0) |  |  |  |  |
-| [`Qwen3-4B-ToolUse-LoRA.gguf`](docs/model-support.md#qwen3-4b-runner-tooluse-lora) |  |  |  |  |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#qwen3-4b-runner-tooluse-merged-q8_0"><code>merged-Q8_0.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="docs/model-support.md#qwen3-4b-runner-tooluse-lora"><code>Qwen3-4B-ToolUse-LoRA.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>Qwen3-Coder-30B-A3B keep-120</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf`](docs/model-support.md#qwen3-coder-30b-a3b-instruct-keep120-q4_k_m) |  |  |  |  |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#qwen3-coder-30b-a3b-instruct-keep120-q4_k_m"><code>Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>Qwen3.8-27B</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;n/a</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`Qwen3.8-27B-UD-Q4_K_M.gguf`](docs/model-support.md#qwen3.8-27b-ud-q4_k_m) |  |  | [n/a](MANUAL.md#support-matrix) |  |
-| [`Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf`](docs/model-support.md#qwen3.8-27b-gsq-rco-iq3_s-recovered) |  |  | [n/a](MANUAL.md#support-matrix) |  |
-| [`Qwen3.8-27B-MTP-Q8_0.gguf`](docs/model-support.md#qwen3.8-27b-mtp-q8_0) |  |  | [n/a](MANUAL.md#support-matrix) |  |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#qwen3.8-27b-ud-q4_k_m"><code>Qwen3.8-27B-UD-Q4_K_M.gguf</code></a></td><td></td><td></td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
+<tr><td><a href="docs/model-support.md#qwen3.8-27b-gsq-rco-iq3_s-recovered"><code>Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf</code></a></td><td></td><td></td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
+<tr><td><a href="docs/model-support.md#qwen3.8-27b-mtp-q8_0"><code>Qwen3.8-27B-MTP-Q8_0.gguf</code></a></td><td></td><td></td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>Qwen3.8-Flash-Next</b>, experimental <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;n/a</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf`](docs/model-support.md#qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head) (4 parts) |  |  | [n/a](MANUAL.md#support-matrix) |  |
-| [`Qwen3.8-Flash-Next-MTP-Q8_0.gguf`](docs/model-support.md#qwen3.8-flash-next-mtp-q8_0) |  |  | [n/a](MANUAL.md#support-matrix) |  |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head"><code>Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf</code></a> (4 parts)</td><td></td><td></td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
+<tr><td><a href="docs/model-support.md#qwen3.8-flash-next-mtp-q8_0"><code>Qwen3.8-Flash-Next-MTP-Q8_0.gguf</code></a></td><td></td><td></td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>Trinity Nano</b> <code>CPU&nbsp;✅</code> <code>CUDA&nbsp;n/a</code> <code>Metal&nbsp;n/a</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`Trinity-Nano-Preview-Q8_0.gguf`](docs/model-support.md#trinity-nano-preview-q8_0) | ✅ 1.5.1<br>2026-10-23 | [n/a](MANUAL.md#support-matrix) | [n/a](MANUAL.md#support-matrix) | no: MoE router gating other than softmax |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#trinity-nano-preview-q8_0"><code>Trinity-Nano-Preview-Q8_0.gguf</code></a></td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td>no: MoE router gating other than softmax</td></tr>
+</tbody>
+</table>
 </details>
+
 <details>
 <summary><b>Xyntetik-Kvist-14B</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
-
-| File | CPU | CUDA | Metal | Train |
-|---|---|---|---|---|
-| [`Xyntetik-Kvist-14B-BF16.gguf`](docs/model-support.md#xyntetik-kvist-14b-bf16) |  |  |  |  |
-| [`Xyntetik-Kvist-14B-Q8_0.gguf`](docs/model-support.md#xyntetik-kvist-14b-q8_0) |  |  |  |  |
-| [`Xyntetik-Kvist-14B-Q5_0-mix.gguf`](docs/model-support.md#xyntetik-kvist-14b-q5_0-mix) |  |  |  |  |
-| [`Xyntetik-Kvist-14B-IQ4_NL-mix.gguf`](docs/model-support.md#xyntetik-kvist-14b-iq4_nl-mix) |  |  |  |  |
-
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-bf16"><code>Xyntetik-Kvist-14B-BF16.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-q8_0"><code>Xyntetik-Kvist-14B-Q8_0.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-q5_0-mix"><code>Xyntetik-Kvist-14B-Q5_0-mix.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-iq4_nl-mix"><code>Xyntetik-Kvist-14B-IQ4_NL-mix.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
 </details>
 
 **Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B), Mellum2.1-12B-A2.5B-Thinking (JetBrains).

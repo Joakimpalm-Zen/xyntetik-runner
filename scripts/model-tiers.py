@@ -578,14 +578,10 @@ def _model_groups(rows):
     return sorted(groups.items(), key=lambda kv: (kv[0].casefold(), kv[0]))
 
 
-def _file_title(row, link=None):
-    """A file as the README names it: a sharded set by its first part,
-    linked when `link` is given."""
+def _file_title(row):
+    """A file as the README names it: a sharded set by its first part."""
     files = row["files"]
-    name = f"`{files[0]['name']}`"
-    if link:
-        name = f"[{name}]({link})"
-    return name + (f" ({len(files)} parts)" if len(files) > 1 else "")
+    return f"`{files[0]['name']}`" + (f" ({len(files)} parts)" if len(files) > 1 else "")
 
 
 def tier1_groups(doc):
@@ -618,29 +614,42 @@ README_LEGEND = (
     f"recorded, partial some, {NONE_RUN} none run. Each file name links to its envelope.")
 
 
+def _esc(text):
+    return html.escape(text, quote=False)
+
+
 def readme_mark(cell):
-    """A backend cell in the README's file table: the states of mark_parts,
-    compact. A recorded gate is its version over its date (the line break
-    keeps a narrow column from splitting the date at a hyphen), not run is
-    a blank cell, a declared limit is n/a linked to the matrix."""
+    """A backend cell of the README's file table, as its <td>: the states of
+    mark_parts, compact. A recorded gate is its version over its date in a
+    cell that does not wrap (GitHub's table layout otherwise splits a date
+    at its hyphens when a neighbour claims the width), not run is a blank
+    cell, a declared limit is n/a linked to the matrix."""
     if cell is None:
-        return ""
+        return "<td></td>"
     if cell["kind"] == "limit":
-        return f"[n/a]({cell['matrix']})"
+        return f'<td><a href="{html.escape(cell["matrix"])}">n/a</a></td>'
     word = "✅" if cell["result"] == "pass" else "failed"
-    return f"{word} {cell['runner_version']}<br>{cell['date']}"
+    return f"<td nowrap>{word} {cell['runner_version']}<br>{cell['date']}</td>"
 
 
 def readme_train(lora):
     """The Train cell: the recorded --adapt-info answer, blank when no gate
-    has recorded one."""
+    has recorded one; a refusal is the engine's sentence and may wrap."""
     if lora is None:
-        return ""
+        return "<td></td>"
     t = lora["training"]
     if t["supported"]:
-        return f"✅ {lora['runner_version']}<br>{lora['date']}"
-    # a pipe in a refusal sentence would split the table cell
-    return ("no: " + t["reason"]).replace("|", "\\|")
+        return f"<td nowrap>✅ {lora['runner_version']}<br>{lora['date']}</td>"
+    return f"<td>no: {_esc(t['reason'])}</td>"
+
+
+def _readme_file(row):
+    """The File cell: the name linked to its envelope, a sharded set by its
+    first part."""
+    files = row["files"]
+    parts = f" ({len(files)} parts)" if len(files) > 1 else ""
+    return (f'<td><a href="{SUPPORT_DOC}#{html.escape(row["id"])}">'
+            f"<code>{_esc(files[0]['name'])}</code></a>{parts}</td>")
 
 
 def backend_summary(rows, backend):
@@ -665,8 +674,7 @@ def _summary(quals, model, rows):
     label = "".join(", " + q[0].lower() + q[1:] for q in quals)
     chips = " ".join(f"<code>{name}&nbsp;{backend_summary(rows, b)}</code>"
                      for b, name in zip(BACKENDS, README_LABELS))
-    return (f"<summary><b>{html.escape(model, quote=False)}</b>"
-            f"{html.escape(label, quote=False)} {chips}</summary>")
+    return f"<summary><b>{_esc(model)}</b>{_esc(label)} {chips}</summary>"
 
 
 def render_readme(doc):
@@ -680,22 +688,24 @@ def render_readme(doc):
     matrix admits outside the roster is the matrix's claim, not this list's.
     Upcoming models follow as one line of names, in the roster's order (the
     order of admission).
+
+    A block is plain HTML, one line per file: GitHub's markdown passes an
+    HTML block through until a blank line, so none may fall inside one, and
+    only an HTML cell can be kept from wrapping.
     """
     # a blank line on each side keeps the markers' HTML comments apart from
-    # the content; GitHub renders the table inside <details> only after a
-    # blank line, and the HTML block needs one before </details>
+    # the legend, the blocks and the Upcoming paragraph
+    head = "".join(f"<th>{h}</th>" for h in ("File",) + README_LABELS + ("Train",))
     lines = ["", "", README_LEGEND, ""]
     for quals, model, rows in tier1_groups(doc):
-        lines += ["<details>", _summary(quals, model, rows), "",
-                  "| File | " + " | ".join(README_LABELS) + " | Train |",
-                  "|---|---|---|---|---|"]
+        lines += ["<details>", _summary(quals, model, rows), "<table>",
+                  f"<thead><tr>{head}</tr></thead>", "<tbody>"]
         for r in rows:
-            cells = [_file_title(r, f"{SUPPORT_DOC}#{r['id']}")]
-            cells += [readme_mark(r["backends"].get(b)) for b in BACKENDS]
+            cells = [_readme_file(r)] + [readme_mark(r["backends"].get(b)) for b in BACKENDS]
             cells.append(readme_train(r.get("lora")))
-            lines.append("| " + " | ".join(cells) + " |")
-        lines += ["", "</details>"]
-    lines += ["", "**Upcoming** (planned, not supported yet): "
+            lines.append("<tr>" + "".join(cells) + "</tr>")
+        lines += ["</tbody>", "</table>", "</details>", ""]
+    lines += ["**Upcoming** (planned, not supported yet): "
               + ", ".join(upcoming_names(doc)) + ".", "", ""]
     return "\n".join(lines)
 

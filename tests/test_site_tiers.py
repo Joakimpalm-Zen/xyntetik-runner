@@ -56,12 +56,13 @@ def text_of(html):
 
 
 def readme_models(doc):
-    """(model, file rows) per README block, a file row as its cells."""
+    """(model, file rows) per README block, a file row as the contents of
+    its cells."""
     out = []
     for block in re.findall(r"<details>\n(.*?)\n</details>", mt.render_readme(doc), re.S):
         model = htmllib.unescape(re.search(r"<b>(.*?)</b>", block).group(1))
-        rows = [[c.strip() for c in line.strip()[1:-1].split(" | ")]
-                for line in block.splitlines()[4:] if line.startswith("| ")]
+        rows = [re.findall(r"<td[^>]*>(.*?)</td>", tr)
+                for tr in re.findall(r"<tr>(.*?)</tr>", block) if "<td" in tr]
         out.append((model, rows))
     return out
 
@@ -70,10 +71,8 @@ def site_words(cell):
     """A README cell as the site's table words it. The README writes the
     same marks compactly: not run as a blank cell, the version without its
     "v" and over its date. These forms are written out by hand."""
-    cell = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", cell).replace("`", "").replace("\\|", "|")
-    if cell == "":
-        return "☐ not run"
-    return re.sub(r"^(✅|failed) (\S+)<br>(\S+)$", r"\1 v\2 \3", cell)
+    cell = re.sub(r"^(✅|failed) (\S+)<br>(\S+)$", r"\1 v\2 \3", cell)
+    return text_of(cell) if cell else "☐ not run"
 
 
 def test_the_table_has_the_readmes_rows_in_the_readmes_order():

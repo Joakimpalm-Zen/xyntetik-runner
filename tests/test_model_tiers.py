@@ -572,12 +572,12 @@ def test_record_refuses_a_companion_run_on_another_base():
 
 def readme_blocks(doc):
     """(summary, file rows) per model block of the render, in order; a
-    file row is its list of cells."""
+    file row is its list of <td> elements, attributes and all."""
     out = []
     for block in re.findall(r"<details>\n(.*?)\n</details>", mt.render_readme(doc), re.S):
         summary = re.match(r"<summary>(.*)</summary>\n", block).group(1)
-        rows = [[c.strip() for c in line.strip()[1:-1].split(" | ")]
-                for line in block.splitlines()[4:] if line.startswith("| ")]
+        rows = [re.findall(r"<td[^>]*>.*?</td>", tr)
+                for tr in re.findall(r"<tr>(.*?)</tr>", block) if "<td" in tr]
         out.append((summary, rows))
     return out
 
@@ -602,31 +602,36 @@ def test_the_readme_block_is_the_render_of_the_roster():
 
 
 def test_a_recorded_cell_renders_its_version_and_date_and_not_run_is_blank():
+    """The version over the date, in a cell that does not wrap: GitHub's
+    table layout otherwise splits a date at its hyphens when a neighbour
+    (a refusal sentence) claims the width."""
     doc = gated(metal=gate("2026-10-23", version="1.5.1"))
-    assert file_row(doc, "toy-Q8_0.gguf")[1:] == ["", "", "✅ 1.5.1<br>2026-10-23", ""]
+    assert file_row(doc, "toy-Q8_0.gguf")[1:] == [
+        "<td></td>", "<td></td>", "<td nowrap>✅ 1.5.1<br>2026-10-23</td>", "<td></td>"]
 
 
 def test_a_declared_limit_renders_n_a_linked_to_the_matrix():
     doc = gated(metal=gate("2026-10-23"),
                 cuda={"kind": "limit", "reason": "no CUDA path",
                       "matrix": "MANUAL.md#support-matrix"})
-    assert file_row(doc, "toy-Q8_0.gguf")[2] == "[n/a](MANUAL.md#support-matrix)"
+    assert file_row(doc, "toy-Q8_0.gguf")[2] == '<td><a href="MANUAL.md#support-matrix">n/a</a></td>'
 
 
 def test_a_failed_gate_never_renders_a_check_mark():
     doc = gated(metal=gate("2026-10-23", result="fail"))
-    assert file_row(doc, "toy-Q8_0.gguf")[3] == "failed 1.5.0<br>2026-10-23"
+    assert file_row(doc, "toy-Q8_0.gguf")[3] == "<td nowrap>failed 1.5.0<br>2026-10-23</td>"
     (summary, _), = readme_blocks(doc)
     assert chips(summary)["Metal"] == "failed" and "✅" not in summary
 
 
 def test_the_train_column_is_the_recorded_adapt_info_answer():
     doc = gated(metal=gate("2026-10-23"))
-    doc["rows"][0]["lora"] = lora(train=(False, "MoE shared experts | router"))
-    # a pipe in the refusal sentence would split the cell
-    assert file_row(doc, "toy-Q8_0.gguf")[4] == "no: MoE shared experts \\| router"
+    doc["rows"][0]["lora"] = lora(train=(False, "MoE shared experts | <router> & more"))
+    # the refusal is the engine's sentence, escaped as HTML, and it may wrap
+    assert file_row(doc, "toy-Q8_0.gguf")[4] == \
+        "<td>no: MoE shared experts | &lt;router&gt; &amp; more</td>"
     doc["rows"][0]["lora"] = lora()
-    assert file_row(doc, "toy-Q8_0.gguf")[4] == "✅ 1.5.1<br>2026-10-23"
+    assert file_row(doc, "toy-Q8_0.gguf")[4] == "<td nowrap>✅ 1.5.1<br>2026-10-23</td>"
 
 
 def test_every_tier1_file_gets_its_row_even_unrun():
@@ -634,21 +639,23 @@ def test_every_tier1_file_gets_its_row_even_unrun():
     listed, its cells blank until a gate records them; one shape for every
     model, run or not."""
     (summary, rows), = readme_blocks(roster())
-    assert rows == [["[`toy-Q8_0.gguf`](docs/model-support.md#toy-q8_0)", "", "", "", ""]]
+    assert rows == [['<td><a href="docs/model-support.md#toy-q8_0"><code>toy-Q8_0.gguf'
+                     '</code></a></td>'] + ["<td></td>"] * 4]
     assert chips(summary) == {"CPU": "–", "CUDA": "–", "Metal": "–"}
 
 
-def test_each_model_is_one_collapsed_block_github_renders_as_a_table():
-    """GitHub renders markdown inside <details> only after a blank line,
-    and the HTML block must end with one before </details>."""
+def test_each_model_is_one_collapsed_block_of_html_with_no_blank_line():
+    """The block is one HTML block in GitHub's markdown: a blank line inside
+    it would end the block and print the rest as text. One <tr> per file."""
     text = mt.render_readme(gated(metal=gate("2026-10-23")))
     block = text.split("<details>\n", 1)[1].split("</details>", 1)[0]
     lines = block.split("\n")
     assert lines[0].startswith("<summary><b>Toy</b>") and lines[0].endswith("</summary>")
-    assert lines[1] == ""
-    assert lines[2] == "| File | CPU | CUDA | Metal | Train |"
-    assert lines[3] == "|---|---|---|---|---|"
-    assert lines[-2:] == ["", ""]
+    assert lines[1:4] == ["<table>", "<thead><tr><th>File</th><th>CPU</th><th>CUDA</th>"
+                          "<th>Metal</th><th>Train</th></tr></thead>", "<tbody>"]
+    assert lines[4].startswith("<tr><td>") and lines[4].endswith("</td></tr>")
+    assert lines[5:] == ["</tbody>", "</table>", ""]
+    assert "\n\n" not in block
 
 
 def test_the_label_follows_the_bold_name_in_plain_words():
@@ -671,8 +678,8 @@ def test_the_file_name_links_its_envelope_and_a_sharded_set_counts_its_parts():
     row["files"] = [{"name": f"toy-0000{i}-of-00003.gguf", "sha256": SHA_A, "bytes": 1}
                     for i in (1, 2, 3)]
     (_, rows), = readme_blocks(roster(row))
-    assert rows[0][0] == ("[`toy-00001-of-00003.gguf`](docs/model-support.md#toy-q8_0)"
-                          " (3 parts)")
+    assert rows[0][0] == ('<td><a href="docs/model-support.md#toy-q8_0"><code>'
+                          'toy-00001-of-00003.gguf</code></a> (3 parts)</td>')
 
 
 def test_the_summary_sums_up_each_backend_over_the_models_files():
@@ -713,7 +720,8 @@ def test_models_are_sorted_by_name_and_files_keep_the_roster_order():
                       claim="Experimental: a toy.")
     blocks = readme_blocks(roster(zeta, zeta2, alpha))
     assert [s.split("</b>")[0] for s, _ in blocks] == ["<b>alpha", "<b>Zeta"]
-    assert [r[0].split("`")[1] for r in blocks[1][1]] == ["toy-Q8_0.gguf", "zeta-b.gguf"]
+    assert [re.search(r"<code>(.*?)</code>", r[0]).group(1) for r in blocks[1][1]] == \
+        ["toy-Q8_0.gguf", "zeta-b.gguf"]
     assert mt.render_readme(roster(alpha, zeta, zeta2)) == \
         mt.render_readme(roster(zeta, zeta2, alpha))
 
