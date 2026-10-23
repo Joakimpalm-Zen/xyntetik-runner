@@ -475,6 +475,10 @@ def main():
     if args.stale:
         bad = stale(doc, today(args.today))
         if bad:
+            # the rows went to stdout, which a pipe buffers while stderr is
+            # written at once: flush, or a reader of both in one pipe gets
+            # the summary before the rows it summarises
+            sys.stdout.flush()
             print("\n%d Tier 1 file%s need%s a smoke run: %s" % (
                 len(bad), "" if len(bad) == 1 else "s",
                 "s" if len(bad) == 1 else "", ", ".join(bad)), file=sys.stderr)

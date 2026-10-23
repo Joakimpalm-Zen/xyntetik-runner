@@ -479,3 +479,17 @@ def test_rows_below_tier1_are_not_gated():
 def test_the_stale_report_prints_every_tier1_row(capsys):
     mt.stale(gated(metal=gate("2026-10-22")), TODAY)
     assert "toy-q8_0" in capsys.readouterr().out
+
+
+def test_the_stale_summary_follows_the_rows_in_one_pipe(tmp_path):
+    """check-release reads this check with stdout and stderr merged into
+    one pipe; the per-row lines must come before the summary under them."""
+    rpath = tmp_path / "tiers.json"
+    dpath = tmp_path / "devices.json"
+    mt.save(gated(), rpath)
+    dpath.write_text(json.dumps(DEVICES), encoding="utf-8")
+    r = subprocess.run([sys.executable, str(SCRIPT), "--stale", "--json", str(rpath),
+                        "--device-evidence", str(dpath), "--today", TODAY.isoformat()],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    assert r.returncode == 1
+    assert r.stdout.index("NEVER") < r.stdout.index("need")

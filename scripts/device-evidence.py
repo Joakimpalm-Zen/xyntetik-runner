@@ -234,6 +234,10 @@ def main():
 
     stale = check(doc, now)
     if stale:
+        # the rows went to stdout, which a pipe buffers while stderr is
+        # written at once: flush, or check-release (both in one pipe) prints
+        # the summary before the rows it summarises
+        sys.stdout.flush()
         print("\n%d device class%s need%s a run: %s" % (
             len(stale), "" if len(stale) == 1 else "es",
             "s" if len(stale) == 1 else "", ", ".join(stale)), file=sys.stderr)
