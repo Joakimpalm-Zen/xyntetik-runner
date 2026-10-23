@@ -8515,6 +8515,12 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     // pinned by the gemma4, tied-V and E-series fixtures. Still out: the
     // derived-K cache layout (RUNNER_TIEDV), sinks, ungated FFNs.
     else if (m->tied_v) r = "derived-K cache layout (RUNNER_TIEDV)";
+    // R8.16 (2026-10-23): partial-dimension rope trains (rope_unapply
+    // rotates the same rope_dim dims the forward does; gated on llama and
+    // neox fixtures rotating half of each head). That refusal had been what
+    // kept stablelm out, and the backward has the RMSNorm adjoint only, so
+    // LayerNorm is refused by name now.
+    else if (m->norm_layernorm) r = "LayerNorm (stablelm)";
     for (int l = 0; !r && l < m->n_layer; l++) {
         const layer_t *ly = &m->layers[l];
         bool owner = model_kv_owner(m, l) == l;
@@ -8531,8 +8537,6 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
             r = "MoE shared experts";
         else if (ly->n_expert == 0 && (!ly->w_gate || !ly->w_up)) r = "ungated FFN";
         else if (ly->attn_sinks) r = "attention sinks";
-        else if (model_rope_dim(m, l) != model_head_dim(m, l))
-            r = "partial-dimension rope";
     }
     if (r && why) snprintf(why, cap, "%s", r);
     return r == NULL;

@@ -37,9 +37,9 @@ models do not inherit the target's adapter.
 `--train` (with or without `--train-teacher`) and `--train-dpo` keep the
 base CPU-resident, use f16 KV, and update only adapter parameters. Supported
 dense SiLU/GELU paths include attention gates/head transforms, sliding
-windows, sandwich norms, and the covered Gemma tied/shared-KV and
-per-layer-embedding layouts. Admission is by implemented property, not by an
-old blanket dense-model list.
+windows, partial-dimension RoPE, sandwich norms, and the covered Gemma
+tied/shared-KV and per-layer-embedding layouts. Admission is by implemented
+property, not by an old blanket dense-model list.
 
 Attention-only adapters on supported sparse MoE also train: the backward
 propagates through frozen softmax routing and frozen experts, including
@@ -49,8 +49,8 @@ Expert adapters, unsupported gating/group/bias/shared-expert shapes,
 Gemma dual-branch MoE, recurrent architectures (qwen35 and Clef serve an
 adapter on their DeltaNet, attention and FFN projections, but do not train
 one), removed sublayers, attention
-sinks, partial-dimension RoPE, and unimplemented backward properties refuse
-by name. Derived-K (`RUNNER_TIEDV`), ring KV, and non-f16 training caches
+sinks, LayerNorm (StableLM), and unimplemented backward properties refuse by
+name. Derived-K (`RUNNER_TIEDV`), ring KV, and non-f16 training caches
 retain their refusals. `--adapt-info` reports serving and training support
 for the actual loaded model.
 

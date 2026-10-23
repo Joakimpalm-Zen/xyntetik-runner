@@ -875,7 +875,7 @@ $(TEST_TC_TOL): $(TEST_TC_TOL_SRC) $(HDR) tests/finite_check.h
 TEST_LORA_GRAD_SRC = tests/test_lora_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
                   $(GPU_OBJ)
-$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf
+$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-prope.gguf test-lora-prope.full.gguf test-prope-neox.gguf test-lora-prope-neox.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
 
 test-lora.full.gguf: test.gguf scripts/make-test-lora.py
@@ -950,6 +950,20 @@ test-nope.gguf: scripts/make-test-model.py
 
 test-lora-nope.full.gguf: test-nope.gguf scripts/make-test-lora.py
 	$(PYTHON) scripts/make-test-lora.py test-nope.gguf test-lora-nope
+
+# R8.16: partial-dimension rope, half of each 16-wide head rotated, in the
+# interleaved-pair (llama) and the split-half (neox, qwen3) layouts
+test-prope.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py test-prope.gguf --rope-dim 8
+
+test-lora-prope.full.gguf: test-prope.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-prope.gguf test-lora-prope
+
+test-prope-neox.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py test-prope-neox.gguf --arch qwen3 --rope-dim 8
+
+test-lora-prope-neox.full.gguf: test-prope-neox.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-prope-neox.gguf test-lora-prope-neox
 
 # R8.9.4 dense-shape variants in the backward: granite's muP scalars
 # (embedding, fixed attention, residual and divided logit scale, tied
@@ -2622,6 +2636,10 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	@# and on NoPE layers with the attention temperature live: the recompute
 	@# and the backward must match the serving forward (no rope, Q scaled)
 	./$(TEST_LORA_GRAD) test-nope.gguf test-lora-nope.full.gguf
+	@# and with partial-dimension rope (R8.16): the transpose rotates only
+	@# the rope_dim dims, pairs (llama) and split halves (neox)
+	./$(TEST_LORA_GRAD) test-prope.gguf test-lora-prope.full.gguf
+	./$(TEST_LORA_GRAD) test-prope-neox.gguf test-lora-prope-neox.full.gguf
 	@# R8.9.4: granite's muP scalars (residual and logit scale, fixed
 	@# attention scale, tied output) and muse-glimmer's output gate, sandwich
 	@# norms, sliding window and softcapped head, all through the adjoint

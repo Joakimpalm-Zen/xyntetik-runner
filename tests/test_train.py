@@ -110,6 +110,7 @@ TRAIN_FAMILIES = {
     "muse": ("make-test-model.py", ["--muse-glimmer"], None),
     "granite": ("make-test-model.py", ["--granite"], None),
     "q8_0": ("make-test-model.py", ["--quant", "q8_0"], None),
+    "partial-rope": ("make-test-model.py", ["--arch", "qwen3", "--rope-dim", "8"], None),
     "moe-renorm": ("make-test-moe.py", [], "moe4-train"),
     "moe-no-renorm": ("make-test-moe.py", [], "moe4-train-nonorm"),
 }

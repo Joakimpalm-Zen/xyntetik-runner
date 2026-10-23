@@ -78,6 +78,7 @@ POOLING = None     # --pooling N: {arch}.pooling_type (llama.cpp's enum)
 ADD_EOS = False    # --add-eos: tokenizer.ggml.add_eos_token = true
 LAYERS = None      # --layers N: block count (a family's size tells some rules)
 HEAD_DIM = None    # --head-dim N: decouple head_dim from N_EMBD / N_HEAD
+ROPE_DIM = None    # --rope-dim N: rotate only the first N dims of each head
 SAMPLING = None
 args = sys.argv[1:]
 i = 0
@@ -324,6 +325,11 @@ while i < len(args):
         # value_length and rope.dimension_count (the plain and gemma3 shapes)
         i += 1
         HEAD_DIM = int(args[i])
+    elif a == "--rope-dim":
+        # partial-dimension rope (Qwen3.5's full-attention layers rotate a
+        # quarter of each head): rope.dimension_count below the head width
+        i += 1
+        ROPE_DIM = int(args[i])
     elif a == "--mtp-layers":
         # emit N extra blocks and declare them as training-only MTP predictor
         # heads; the runner must exclude them and decode exactly as without
@@ -643,8 +649,10 @@ if HEAD_DIM:
     meta_kvs += [
         kv_u32(f"{ARCH}.attention.key_length", HEAD_DIM),
         kv_u32(f"{ARCH}.attention.value_length", HEAD_DIM),
-        kv_u32(f"{ARCH}.rope.dimension_count", HEAD_DIM),
+        kv_u32(f"{ARCH}.rope.dimension_count", ROPE_DIM or HEAD_DIM),
     ]
+elif ROPE_DIM:
+    meta_kvs.append(kv_u32(f"{ARCH}.rope.dimension_count", ROPE_DIM))
 if POOLING is not None:
     meta_kvs.append(kv_u32(f"{ARCH}.pooling_type", POOLING))
 if SAMPLING:

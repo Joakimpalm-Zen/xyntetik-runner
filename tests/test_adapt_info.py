@@ -99,3 +99,27 @@ def test_the_gemma4_banner_names_what_the_file_was_verified_on(fx):
                     str(d / "g4.gguf")], check=True, stdout=subprocess.DEVNULL)
     err = _banner(exe, d / "g4.gguf")
     assert "gemma4: dense variant verified" in err and "MoE variant" not in err, err
+
+
+# R8.16: partial-dimension rope trains (the backward's rope transpose rotates
+# the same rope_dim dims the forward does, gated in make test on a llama and a
+# neox fixture). That refusal was what had kept stablelm out, whose LayerNorm
+# the backward has no adjoint for, so LayerNorm is refused by name.
+@pytest.mark.parametrize("arch", ["llama", "qwen3"])
+def test_partial_dimension_rope_trains(fx, arch):
+    exe, d = fx
+    f = d / f"{arch}-rope8.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--arch", arch,
+                    "--rope-dim", "8", str(f)], check=True, stdout=subprocess.DEVNULL)
+    assert _info(exe, f)["training"] == {"supported": True, "reason": None, "host": "cpu"}
+
+
+def test_layernorm_refuses_training_by_name(fx):
+    exe, d = fx
+    f = d / "stablelm.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--arch",
+                    "stablelm", str(f)], check=True, stdout=subprocess.DEVNULL)
+    info = _info(exe, f)
+    assert info["adapter_serving"]["supported"] is True
+    assert info["training"] == {"supported": False, "reason": "LayerNorm (stablelm)",
+                                "host": "cpu"}

@@ -658,7 +658,8 @@ The backward covers the dense gated transformer in its common shapes: Llama,
 Mistral, Qwen2.5 and Granite 4.x dense (muP scalars, tied output), the head
 transforms (logit scale, softcap, suppressed tokens), the attention output
 gate (afmoe, Muse-Glimmer), sandwich norms, per-layer output scale,
-sliding-window attention, the GELU gated FFN (Gemma 3) beside the SiLU one, and
+sliding-window attention, partial-dimension RoPE (a rotation over part of each
+head), the GELU gated FFN (Gemma 3) beside the SiLU one, and
 Gemma 4 in full (the weightless V norm, the V-less full-attention layers, the
 E-series shared KV and per-layer embeddings).
 
@@ -671,8 +672,9 @@ It refuses by name: adapters on the experts themselves, other MoE routers
 (sigmoid, group-limited, biased), shared experts, attention sinks, recurrent
 or hybrid blocks (qwen35 and Clef serve an adapter but cannot train one: the
 backward does not go through the DeltaNet recurrence), Gemma's dual-branch MoE,
-removed sublayers,
-partial-dimension RoPE, and the derived-K and ring KV caches. `--adapt-info` gives the sentence for the model you have.
+removed sublayers, LayerNorm (StableLM; the backward has the RMSNorm adjoint
+only), and the derived-K and ring KV caches. `--adapt-info` gives the sentence
+for the model you have.
 Every covered shape is pinned by a finite-difference gate in `make test` on a
 fixture that carries it.
 
