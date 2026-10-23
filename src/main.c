@@ -176,7 +176,7 @@ static bool os_random(uint8_t *out, size_t n) {
     }
     return true;
 #else
-    FILE *f = fopen("/dev/urandom", "rb");
+    FILE *f = plat_fopen("/dev/urandom", "rb");
     if (!f) return false;
     size_t r = fread(out, 1, n, f);
     fclose(f);
@@ -189,7 +189,7 @@ static bool os_random(uint8_t *out, size_t n) {
 static bool receipt_chain_hash(const char *path, char out[65]);
 
 static char *read_file(const char *path, size_t *out_len) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) return NULL;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
     long sz = ftell(f);
@@ -440,7 +440,7 @@ static bool write_provenance(const char *artifact, const char *suffix,
     }
     memcpy(path, artifact, an);
     memcpy(path + an, suffix, sn + 1);
-    FILE *f = fopen(path, "wb");
+    FILE *f = plat_fopen(path, "wb");
     bool ok = f && fwrite(doc->s, 1, doc->n, f) == doc->n &&
               fflush(f) == 0 && !ferror(f);
     if (f && fclose(f) != 0) ok = false;
@@ -1708,7 +1708,7 @@ static int run_shadow_mode(const char *model, bool yes) {
     // The client lives beside the real binary, and the recorded runner path
     // must outlive this process, so resolve the link first.
     if (exe) {
-        char *real = realpath(exe, NULL);
+        char *real = plat_realpath(exe);
         if (real) { free(exe); exe = real; }
     }
 #endif
@@ -1726,8 +1726,8 @@ static int run_shadow_mode(const char *model, bool yes) {
             strcat(client, "/python/src");
             char probe[4096];
             snprintf(probe, sizeof probe, "%s/xyntetik_runner/shadow/cli.py", client);
-            struct stat st;
-            if (stat(probe, &st) != 0) client[0] = '\0';
+            plat_stat_t st;
+            if (plat_stat(probe, &st) != 0) client[0] = '\0';
         }
     }
     if (client[0]) {
@@ -1740,11 +1740,7 @@ static int run_shadow_mode(const char *model, bool yes) {
 #endif
         if (old && *old) snprintf(joined, sizeof joined, "%s%s%s", client, sep, old);
         else snprintf(joined, sizeof joined, "%s", client);
-#ifdef _WIN32
-        _putenv_s("PYTHONPATH", joined);
-#else
-        setenv("PYTHONPATH", joined, 1);
-#endif
+        plat_setenv("PYTHONPATH", joined);
     }
     const char *argv[16];
     int n = 0;
@@ -1759,8 +1755,8 @@ static int run_shadow_mode(const char *model, bool yes) {
     argv[n] = NULL;
 #ifdef _WIN32
     argv[0] = "python";
-    intptr_t rc = _spawnvp(_P_WAIT, "python", argv);
-    if (rc == -1) { argv[0] = "py"; rc = _spawnvp(_P_WAIT, "py", argv); }
+    int rc = plat_spawn_wait(argv);
+    if (rc == -1) { argv[0] = "py"; rc = plat_spawn_wait(argv); }
     if (rc == -1) {
         fprintf(stderr, "error: --shadow-mode needs Python 3 on PATH (python or py); "
                         "the client is stdlib-only and ships beside this binary\n");
@@ -2817,7 +2813,7 @@ static bool cli_prepare_session(cli_opts *o, session_image *simg, int *rc) {
         if (!why && o->session_out) {
             // refused before the load and the generation, not after them;
             // session_write's O_EXCL still closes the race
-            FILE *ex = fopen(o->session_out, "rb");
+            FILE *ex = plat_fopen(o->session_out, "rb");
             if (ex) {
                 fclose(ex);
                 fprintf(stderr, "error: --session-out %s already exists; an "
@@ -4150,8 +4146,8 @@ static bool train_teacher_open(const char *dir, const model_t *m,
     }
     char why[128] = "";
     npy_header hi, hl;
-    tt->fi = fopen(tt->idx_path, "rb");
-    tt->fl = fopen(tt->logp_path, "rb");
+    tt->fi = plat_fopen(tt->idx_path, "rb");
+    tt->fl = plat_fopen(tt->logp_path, "rb");
     if (!tt->fi || !tt->fl) {
         fprintf(stderr, "error: --train-teacher: cannot open %s\n",
                 tt->fi ? tt->logp_path : tt->idx_path);
@@ -4390,7 +4386,7 @@ static bool train_optim_save(const char *adapter, cli_run *rt, const train_state
         snprintf(path, sizeof path, "%s.optim", adapter) >= (int)sizeof path)
         return false;
     snprintf(tmp, sizeof tmp, "%s.partial", path);
-    FILE *f = fopen(tmp, "wb");
+    FILE *f = plat_fopen(tmp, "wb");
     if (!f) return false;
     uint32_t ver = 1;
     int32_t step = st->step, n = n_ev;
@@ -4406,7 +4402,7 @@ static bool train_optim_save(const char *adapter, cli_run *rt, const train_state
     ok = ok && model_lora_optim_write(&rt->m, f) && fflush(f) == 0 && !ferror(f);
     if (fclose(f) != 0) ok = false;
     if (!ok || !plat_replace_file(tmp, path)) {
-        remove(tmp);
+        plat_remove(tmp);
         fprintf(stderr, "error: cannot write the optimizer state %s\n", path);
         return false;
     }
@@ -4422,7 +4418,7 @@ static bool train_optim_load(const char *adapter, cli_run *rt, train_state *st,
     if (snprintf(path, sizeof path, "%s.optim", adapter) >= (int)sizeof path ||
         !envelope_file_sha256(adapter, sha))
         return false;
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "error: --train-resume: no optimizer state %s (a checkpoint "
                 "--save-every, --kill-at or --stop-file wrote)\n", path);
@@ -4483,7 +4479,7 @@ static bool train_kill_record(cli_opts *o, const char *suffix, int step,
     char path[4096];
     if (snprintf(path, sizeof path, "%s%s", o->train_out, suffix) >= (int)sizeof path)
         return false;
-    FILE *f = fopen(path, "w");
+    FILE *f = plat_fopen(path, "w");
     if (!f) return false;
     fprintf(f, "{\"step\":%d,\"metric\":\"%s\",\"baseline\":%.6f,\"now\":%.6f,"
             "\"relative_reduction\":%.6f,\"required\":%.6f}\n", step, o->kill_metric,
@@ -4525,7 +4521,7 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
     }
     if (!rc && o->train_lp_path) {
         lp = malloc(sizeof *lp * (size_t)max_n);
-        lpf = lp ? fopen(o->train_lp_path, "w") : NULL;
+        lpf = lp ? plat_fopen(o->train_lp_path, "w") : NULL;
         if (!lpf) {
             fprintf(stderr, "error: cannot write --train-logprobs %s\n", o->train_lp_path);
             rc = 1;
@@ -5115,7 +5111,7 @@ typedef int (*jsonl_handler)(cli_run *rt, const jv *req, const char *label,
 
 static int run_jsonl(cli_opts *o, cli_run *rt, const char *path, jsonl_handler h,
                      const char *what) {
-    FILE *df = strcmp(path, "-") ? fopen(path, "rb") : stdin;
+    FILE *df = strcmp(path, "-") ? plat_fopen(path, "rb") : stdin;
     if (!df) { fprintf(stderr, "error: cannot open %s\n", path); return 1; }
     size_t cap = 1 << 16, len = 0; char *line = malloc(cap);
     if (!line) { if (df != stdin) fclose(df); return 1; }
@@ -6134,6 +6130,9 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
 }
 
 int main(int argc, char **argv) {
+    // before anything reads argv or the environment: on Windows both arrive
+    // in the ANSI code page unless the manifest made that UTF-8 (compat.h)
+    plat_utf8_startup(&argc, &argv);
     char *owned_prompt = NULL;
     int rc = cli_main(argc, argv, &owned_prompt);
     free(owned_prompt);

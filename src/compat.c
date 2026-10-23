@@ -19,8 +19,11 @@
 #include <psapi.h>
 
 void *plat_mmap_ro(const char *path, size_t *size) {
-    HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    wchar_t *wp = plat_utf8_to_wide(path);
+    HANDLE f = wp ? CreateFileW(wp, GENERIC_READ, FILE_SHARE_READ, NULL,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)
+                  : INVALID_HANDLE_VALUE;
+    free(wp);
     if (f == INVALID_HANDLE_VALUE) return NULL;
     LARGE_INTEGER sz;
     if (!GetFileSizeEx(f, &sz) || sz.QuadPart <= 0) { CloseHandle(f); return NULL; }
@@ -285,7 +288,10 @@ static uint64_t machine_ram_available_bytes(void) {
 }
 
 bool plat_file_readable(const char *path) {
-    return _access(path, 4) == 0;
+    wchar_t *wp = plat_utf8_to_wide(path);
+    bool ok = wp && _waccess(wp, 4) == 0;
+    free(wp);
+    return ok;
 }
 
 double plat_now(void) {
@@ -358,9 +364,12 @@ const char *plat_runtime_dir(void) {
 }
 
 bool plat_file_rmw(const char *path, plat_rmw_fn fn, void *ud) {
-    HANDLE f = CreateFileA(path, GENERIC_READ | GENERIC_WRITE,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
-                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    wchar_t *wp = plat_utf8_to_wide(path);
+    HANDLE f = wp ? CreateFileW(wp, GENERIC_READ | GENERIC_WRITE,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                                OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL)
+                  : INVALID_HANDLE_VALUE;
+    free(wp);
     if (f == INVALID_HANDLE_VALUE) return false;
 
     OVERLAPPED ov = {0};
@@ -971,6 +980,343 @@ void plat_parent_watch(long pid) {
 
 #endif
 
+// ------------------------------------------------- UTF-8 at the OS boundary
+//
+// See compat.h. Windows converts at each door; POSIX passes bytes through,
+// so only the calls that are not plain libc (realpath's allocation, the
+// directory walk, the spawn) have bodies there.
+
+#ifdef _WIN32
+#include <direct.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <process.h>
+#include <sys/stat.h>
+
+wchar_t *plat_utf8_to_wide(const char *s) {
+    if (!s) { errno = EINVAL; return NULL; }
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    wchar_t *w = n > 0 ? malloc((size_t)n * sizeof *w) : NULL;
+    if (!w || MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n) != n) {
+        free(w);
+        errno = ENOMEM;
+        return NULL;
+    }
+    return w;
+}
+
+char *plat_wide_to_utf8(const wchar_t *w) {
+    if (!w) { errno = EINVAL; return NULL; }
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+    char *s = n > 0 ? malloc((size_t)n) : NULL;
+    if (!s || WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, NULL, NULL) != n) {
+        free(s);
+        errno = ENOMEM;
+        return NULL;
+    }
+    return s;
+}
+
+// free() that leaves errno and the last Win32 error as the wide call set
+// them: callers report strerror(errno), and some read GetLastError()
+// (ERROR_ALREADY_EXISTS after a mkdir), from the call, not from cleanup
+static void free_keep_errno(void *a, void *b) {
+    int e = errno;
+    DWORD le = GetLastError();
+    free(a);
+    free(b);
+    errno = e;
+    SetLastError(le);
+}
+
+FILE *plat_fopen(const char *path, const char *mode) {
+    wchar_t *wp = plat_utf8_to_wide(path), *wm = wp ? plat_utf8_to_wide(mode) : NULL;
+    FILE *f = wm ? _wfopen(wp, wm) : NULL;
+    free_keep_errno(wp, wm);
+    return f;
+}
+
+int plat_open(const char *path, int flags, int mode) {
+    wchar_t *wp = plat_utf8_to_wide(path);
+    int fd = wp ? _wopen(wp, flags, mode) : -1;
+    free_keep_errno(wp, NULL);
+    return fd;
+}
+
+int plat_remove(const char *path) {
+    wchar_t *wp = plat_utf8_to_wide(path);
+    int r = wp ? _wremove(wp) : -1;
+    free_keep_errno(wp, NULL);
+    return r;
+}
+
+int plat_rename(const char *from, const char *to) {
+    wchar_t *wf = plat_utf8_to_wide(from), *wt = wf ? plat_utf8_to_wide(to) : NULL;
+    int r = wt ? _wrename(wf, wt) : -1;
+    free_keep_errno(wf, wt);
+    return r;
+}
+
+int plat_mkdir(const char *path, int mode) {
+    (void)mode;
+    wchar_t *wp = plat_utf8_to_wide(path);
+    int r = wp ? _wmkdir(wp) : -1;
+    free_keep_errno(wp, NULL);
+    return r;
+}
+
+int plat_rmdir(const char *path) {
+    wchar_t *wp = plat_utf8_to_wide(path);
+    int r = wp ? _wrmdir(wp) : -1;
+    free_keep_errno(wp, NULL);
+    return r;
+}
+
+int plat_stat(const char *path, plat_stat_t *st) {
+    wchar_t *wp = plat_utf8_to_wide(path);
+    if (!wp) return -1;
+    // the C runtime's stat refuses "dir\" for anything but a root; MinGW's
+    // POSIX stat() strips the separators first, and the callers were
+    // written against that one
+    size_t n = wcslen(wp);
+    while (n > 1 && (wp[n - 1] == L'/' || wp[n - 1] == L'\\') &&
+           !(n == 3 && wp[1] == L':'))
+        wp[--n] = 0;
+    int r = _wstat64(wp, st);
+    free_keep_errno(wp, NULL);
+    return r;
+}
+
+// The C runtime's narrow environment table (what getenv reads, and what
+// model.c walks for RUNNER_* routes), rebuilt in UTF-8 from the wide table
+// when the two disagree. They agree whenever the code page is UTF-8; the
+// wide one is what the OS holds. The old table is left alone, not freed:
+// main()'s envp may still point at it.
+static void env_narrow_from_wide(void) {
+    wchar_t **w = _wenviron;
+    char **old = _environ;
+    if (!w) return;
+    size_t n = 0;
+    while (w[n]) n++;
+    char **u = calloc(n + 1, sizeof *u);
+    if (!u) return;
+    bool same = old != NULL;
+    for (size_t i = 0; i < n; i++) {
+        if (!(u[i] = plat_wide_to_utf8(w[i]))) {
+            for (size_t k = 0; k < i; k++) free(u[k]);
+            free(u);
+            return;
+        }
+        if (same && (!old[i] || strcmp(old[i], u[i]) != 0)) same = false;
+    }
+    if (same && !old[n]) {
+        for (size_t k = 0; k < n; k++) free(u[k]);
+        free(u);
+        return;
+    }
+    _environ = u;
+}
+
+int plat_setenv(const char *name, const char *value) {
+    wchar_t *wn = plat_utf8_to_wide(name), *wv = wn ? plat_utf8_to_wide(value) : NULL;
+    // _wputenv_s sets the wide table and the OS block; the narrow copy it
+    // derives is in the ANSI code page, so it is rebuilt after
+    errno_t e = wv ? _wputenv_s(wn, wv) : ENOMEM;
+    free(wn);
+    free(wv);
+    if (e) { errno = e; return -1; }
+    env_narrow_from_wide();
+    return 0;
+}
+
+// The C runtime's own split of the wide command line, the one it made of
+// the narrow line for main(): __wgetmainargs is what MinGW's startup calls
+// for wmain(), and _dowildcard is the wildcard setting it used for main().
+typedef struct { int newmode; } plat_startupinfo;
+extern int __wgetmainargs(int *argc, wchar_t ***argv, wchar_t ***env, int glob,
+                          plat_startupinfo *si);
+extern int _dowildcard;
+
+static UINT g_console_out_cp;
+static void console_out_cp_restore(void) { SetConsoleOutputCP(g_console_out_cp); }
+
+void plat_utf8_startup(int *argc, char ***argv) {
+    int wargc = 0;
+    wchar_t **wargv = NULL, **wenv = NULL;
+    plat_startupinfo si = { 0 };
+    // the same split of the same line, so the counts agree; a disagreement
+    // would mean this is not the line main() was given, and then the
+    // narrow argv stays
+    if (__wgetmainargs(&wargc, &wargv, &wenv, _dowildcard, &si) == 0 && wargv &&
+        wargc == *argc) {
+        char **u = calloc((size_t)wargc + 1, sizeof *u);
+        bool ok = u != NULL;
+        for (int i = 0; ok && i < wargc; i++) ok = (u[i] = plat_wide_to_utf8(wargv[i])) != NULL;
+        if (ok) {
+            *argv = u;
+            __argv = u;
+        } else if (u) {
+            for (int i = 0; i < wargc; i++) free(u[i]);
+            free(u);
+        }
+    }
+    env_narrow_from_wide();
+    // The engine writes UTF-8. A console draws the bytes it is given in its
+    // output code page (437 or 850 by default), which turned every
+    // non-ASCII character into two or three wrong ones; a pipe or a file
+    // takes the bytes as they are. The console is shared with the shell
+    // that started us, so its code page is put back at exit.
+    if (plat_is_terminal(1) || plat_is_terminal(2)) {
+        UINT cp = GetConsoleOutputCP();
+        if (cp && cp != CP_UTF8 && SetConsoleOutputCP(CP_UTF8)) {
+            g_console_out_cp = cp;
+            atexit(console_out_cp_restore);
+        }
+    }
+}
+
+char *plat_realpath(const char *path) {
+    wchar_t *wp = plat_utf8_to_wide(path);
+    wchar_t *abs = wp ? _wfullpath(NULL, wp, 0) : NULL;
+    char *r = abs ? plat_wide_to_utf8(abs) : NULL;
+    free_keep_errno(wp, abs);
+    return r;
+}
+
+struct plat_dir {
+    HANDLE h;
+    bool pending;          // fd holds an entry plat_readdir has not returned
+    WIN32_FIND_DATAW fd;
+    char *name;
+};
+
+plat_dir *plat_opendir(const char *path) {
+    size_t n = strlen(path);
+    char *pat = malloc(n + 3);
+    if (!pat) { errno = ENOMEM; return NULL; }
+    memcpy(pat, path, n);
+    if (n && pat[n - 1] != '/' && pat[n - 1] != '\\') pat[n++] = '\\';
+    pat[n++] = '*';
+    pat[n] = 0;
+    wchar_t *wp = plat_utf8_to_wide(pat);
+    free(pat);
+    plat_dir *d = wp ? calloc(1, sizeof *d) : NULL;
+    if (!d) { free(wp); errno = ENOMEM; return NULL; }
+    d->h = FindFirstFileW(wp, &d->fd);
+    free(wp);
+    if (d->h == INVALID_HANDLE_VALUE) {
+        DWORD e = GetLastError();
+        free(d);
+        errno = e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? ENOENT
+              : e == ERROR_DIRECTORY ? ENOTDIR
+              : e == ERROR_ACCESS_DENIED ? EACCES : EIO;
+        return NULL;
+    }
+    d->pending = true;
+    return d;
+}
+
+const char *plat_readdir(plat_dir *d) {
+    if (!d->pending && !FindNextFileW(d->h, &d->fd)) return NULL;
+    d->pending = false;
+    free(d->name);
+    d->name = plat_wide_to_utf8(d->fd.cFileName);
+    return d->name;
+}
+
+void plat_closedir(plat_dir *d) {
+    if (!d) return;
+    FindClose(d->h);
+    free(d->name);
+    free(d);
+}
+
+// Quote one argument by the C runtime's rules: wrap in double quotes, double
+// the backslashes that precede a quote, escape the quote.
+static char *win_quote(const char *arg) {
+    bool plain = *arg != 0;
+    for (const char *p = arg; *p && plain; p++)
+        if (*p == ' ' || *p == '\t' || *p == '"') plain = false;
+    if (plain) return strdup(arg);
+    size_t n = strlen(arg);
+    char *q = malloc(2 * n + 3), *w = q;
+    if (!q) return NULL;
+    *w++ = '"';
+    for (size_t i = 0; i < n; i++) {
+        size_t bs = 0;
+        while (i < n && arg[i] == '\\') { bs++; i++; }
+        if (i == n) { for (size_t k = 0; k < 2 * bs; k++) *w++ = '\\'; break; }
+        if (arg[i] == '"') { for (size_t k = 0; k < 2 * bs + 1; k++) *w++ = '\\'; *w++ = '"'; }
+        else { for (size_t k = 0; k < bs; k++) *w++ = '\\'; *w++ = arg[i]; }
+    }
+    *w++ = '"'; *w = 0;
+    return q;
+}
+
+int plat_spawn_wait(const char *const argv[]) {
+    int n = 0;
+    while (argv[n]) n++;
+    wchar_t **w = calloc((size_t)n + 1, sizeof *w);
+    wchar_t *file = w && n ? plat_utf8_to_wide(argv[0]) : NULL;
+    bool ok = file != NULL;
+    for (int i = 0; i < n && ok; i++) {
+        char *q = win_quote(argv[i]);
+        ok = q && (w[i] = plat_utf8_to_wide(q)) != NULL;
+        free(q);
+    }
+    intptr_t rc = ok ? _wspawnvp(_P_WAIT, file, (const wchar_t *const *)w) : -1;
+    for (int i = 0; w && i < n; i++) free(w[i]);
+    free(w);
+    free(file);
+    return rc == -1 ? -1 : (int)rc;
+}
+
+#else // POSIX
+
+#include <dirent.h>
+#include <sys/wait.h>
+
+void plat_utf8_startup(int *argc, char ***argv) { (void)argc; (void)argv; }
+
+char *plat_realpath(const char *path) { return realpath(path, NULL); }
+
+struct plat_dir { DIR *d; };
+
+plat_dir *plat_opendir(const char *path) {
+    DIR *dp = opendir(path);
+    if (!dp) return NULL;
+    plat_dir *d = malloc(sizeof *d);
+    if (!d) { closedir(dp); errno = ENOMEM; return NULL; }
+    d->d = dp;
+    return d;
+}
+
+const char *plat_readdir(plat_dir *d) {
+    struct dirent *e = readdir(d->d);
+    return e ? e->d_name : NULL;
+}
+
+void plat_closedir(plat_dir *d) {
+    if (!d) return;
+    closedir(d->d);
+    free(d);
+}
+
+int plat_spawn_wait(const char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    if (WIFEXITED(status)) return WEXITSTATUS(status) == 127 ? -1 : WEXITSTATUS(status);
+    return -1;
+}
+
+#endif
+
 unsigned plat_code_page(void) {
 #ifdef _WIN32
     return (unsigned)GetACP();
@@ -1008,8 +1354,11 @@ bool plat_utf8_manifest(void) {
 
 bool plat_replace_file(const char *tmp_path, const char *path) {
 #ifdef _WIN32
-    return MoveFileExA(tmp_path, path,
-                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    wchar_t *wt = plat_utf8_to_wide(tmp_path), *wp = wt ? plat_utf8_to_wide(path) : NULL;
+    bool ok = wp && MoveFileExW(wt, wp, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    free(wt);
+    free(wp);
+    return ok;
 #else
     return rename(tmp_path, path) == 0;
 #endif
@@ -1020,19 +1369,25 @@ char *plat_executable_path(void) {
     // Opening this magic link reads the running image even when argv[0] was a
     // bare PATH lookup (and remains meaningful after the original is unlinked).
     return strdup("/proc/self/exe");
+#elif defined(_WIN32)
+    // wide, then UTF-8: the narrow call spells each character the ANSI code
+    // page lacks as "?", and the path then names no file
+    for (size_t cap = 1024; cap <= (1u << 20); cap *= 2) {
+        wchar_t *w = malloc(cap * sizeof *w);
+        if (!w) return NULL;
+        DWORD n = GetModuleFileNameW(NULL, w, (DWORD)cap);
+        char *u = n > 0 && n < cap ? plat_wide_to_utf8(w) : NULL;
+        free(w);
+        if (u || n == 0 || n < cap) return u;
+    }
+    return NULL;
 #else
     size_t cap = 1024;
     for (;;) {
         if (cap > (1u << 20)) return NULL;
         char *path = malloc(cap);
         if (!path) return NULL;
-#ifdef _WIN32
-        DWORD n = GetModuleFileNameA(NULL, path, (DWORD)cap);
-        if (n > 0 && n < cap) return path;
-        free(path);
-        if (n == 0) return NULL;
-        cap *= 2;
-#elif defined(__APPLE__)
+#if defined(__APPLE__)
         uint32_t needed = (uint32_t)cap;
         if (_NSGetExecutablePath(path, &needed) == 0) {
             char *absolute = realpath(path, NULL);
@@ -1065,7 +1420,7 @@ static bool cg_text(const char *dir, const char *name, char *buf, size_t n) {
     char path[CG_PATH_MAX + 64];
     int w = snprintf(path, sizeof path, "%s/%s", dir, name);
     if (w < 0 || (size_t)w >= sizeof path) return false;
-    FILE *f = fopen(path, "r");
+    FILE *f = plat_fopen(path, "r");
     if (!f) return false;
     size_t got = fread(buf, 1, n - 1, f);
     fclose(f);
@@ -1129,7 +1484,7 @@ static uint64_t cg_reclaimable(const char *dir, int v) {
     char path[CG_PATH_MAX + 64];
     int w = snprintf(path, sizeof path, "%s/memory.stat", dir);
     if (w < 0 || (size_t)w >= sizeof path) return 0;
-    FILE *f = fopen(path, "r");
+    FILE *f = plat_fopen(path, "r");
     if (!f) return 0;
     uint64_t v2 = 0, total = 0, local = 0;
     bool have_total = false;
@@ -1232,7 +1587,7 @@ static bool cg_climbs(const char *p) {
 // outside it.
 static void cg_self(const char *file, const char *controller, char *out, size_t n) {
     out[0] = '\0';
-    FILE *f = file ? fopen(file, "r") : NULL;
+    FILE *f = file ? plat_fopen(file, "r") : NULL;
     if (!f) return;
     char line[CG_PATH_MAX + 256];
     while (fgets(line, sizeof line, f)) {
@@ -1440,7 +1795,7 @@ FILE *plat_env_file_get(plat_env_file *f, const char *env) {
     if (atomic_compare_exchange_strong(&f->state, &unread, 1)) {
         const char *path = getenv(env);
         if (path && *path) {
-            f->fp = fopen(path, "a");
+            f->fp = plat_fopen(path, "a");
             if (!f->fp)
                 fprintf(stderr, "warning: %s=%s: could not open for append\n", env, path);
         }

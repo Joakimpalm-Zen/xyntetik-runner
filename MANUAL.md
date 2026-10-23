@@ -1603,7 +1603,13 @@ to embed the application manifest that makes UTF-8 the process code page,
 and stops with an error when it is missing. Non-ASCII prompts, file paths and
 environment values are UTF-8 on Windows 10 version 1903 and later, as on Linux
 and macOS; `runner --caps` reports `"code_page":{"ansi":65001,"utf8_manifest":true}`
-there.
+there. Older Windows ignores the manifest (`--caps` then shows the legacy code
+page, such as 1252, beside `"utf8_manifest":true`), and runner reads the
+command line and the environment in their UTF-16 form and opens every file
+through the UTF-16 Windows APIs itself, so the same text and paths arrive the
+same way. A console on stdout or stderr is switched to the UTF-8 output code
+page while runner runs and put back at exit; redirected output is UTF-8 bytes
+either way.
 
 ### Container image
 
@@ -4389,7 +4395,9 @@ src/api_anthropic.c   Anthropic Messages translation
 src/registry.c        model swap and unload lifecycle
 src/vramreg.c         cross-process VRAM ownership and bounded waiting
 src/tray*.c           macOS/Windows desktop controller
-src/compat.c          platform process, memory, mmap, clock, and socket helpers
+src/compat.c          platform process, memory, mmap, clock, and socket helpers;
+                      the UTF-8 doors to file names, argv and the environment
+src/runner.rc         Windows resources: the UTF-8 application manifest
 src/main.c            CLI parsing, utility modes, and --caps
 python/               supported Python client and subprocess integration
 ```

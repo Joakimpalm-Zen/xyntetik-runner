@@ -1062,7 +1062,7 @@ int prefix_cache_save(const char *path) {
     char *tmp = malloc(path_n + sizeof(".partial"));
     if (!tmp) return -1;
     snprintf(tmp, path_n + sizeof(".partial"), "%s.partial", path);
-    FILE *f = fopen(tmp, "wb");
+    FILE *f = plat_fopen(tmp, "wb");
     if (!f) {
         fprintf(stderr, "prefix: cannot write %s\n", tmp);
         free(tmp);
@@ -1092,7 +1092,7 @@ int prefix_cache_save(const char *path) {
     ok = ok && wr(f, &digest, sizeof digest);
     if (fclose(f) != 0) ok = false;
     if (!ok || !plat_replace_file(tmp, path)) {
-        remove(tmp);
+        plat_remove(tmp);
         fprintf(stderr, "prefix: failed to write %s\n", path);
         free(tmp);
         return -1;
@@ -1103,7 +1103,7 @@ int prefix_cache_save(const char *path) {
 
 int prefix_cache_load(const char *path, const engine *e) {
     if (!path || !*path || !e || !e->m) return -1;
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) return -1;                 // absent is not an error worth shouting
 
     char magic[PFX_MAGIC_N];
@@ -1196,7 +1196,7 @@ int prefix_context_export(const char *name, const char *path) {
     p->readers++;
     pthread_mutex_unlock(&PFX.mu);
     // From here the entry is read without the lock (see `readers`).
-    FILE *f = fopen(tmp, "wb");
+    FILE *f = plat_fopen(tmp, "wb");
     if (!f) {
         fprintf(stderr, "prefix: cannot write %s\n", tmp);
         pfx_release_reader(p);
@@ -1218,7 +1218,7 @@ int prefix_context_export(const char *name, const char *path) {
     ok = ok && wr(f, &digest, sizeof digest);
     if (fclose(f) != 0) ok = false;
     if (!ok || !plat_replace_file(tmp, path)) {
-        remove(tmp);
+        plat_remove(tmp);
         free(tmp);
         return PFX_CTX_IO;
     }
@@ -1232,7 +1232,7 @@ int prefix_context_import(const engine *e, const char *name, const char *path,
     if (!e || !e->m || model_kv_ring_active(e->m) || e->m->tied_v ||
         (model_has_recurrent(e->m) && e->m->gpu))
         return PFX_CTX_UNSUPPORTED;
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) return PFX_CTX_UNKNOWN;
     char magic[PFX_MAGIC_N];
     uint32_t count = 0;

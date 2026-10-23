@@ -1,5 +1,6 @@
 // OpenSSF Model Signing bundle verification. See oms.h.
 #include "oms.h"
+#include "compat.h"
 #include "ecdsa.h"
 #include "ed25519.h"
 #include "envelope.h"
@@ -58,7 +59,7 @@ static long b64_decode(const char *s, size_t n, uint8_t *out) {
 }
 
 static char *read_all(const char *path, size_t *n_out) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) return NULL;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
     long sz = ftell(f);
@@ -417,7 +418,7 @@ bool oms_check_artifact(const char *model_path, const oms_policy *policy,
         }
         memcpy(auto_sig, model_path, n);
         memcpy(auto_sig + n, ".sig", sizeof(".sig"));
-        FILE *f = fopen(auto_sig, "rb");
+        FILE *f = plat_fopen(auto_sig, "rb");
         if (f) { fclose(f); sig = auto_sig; }
     }
     bool allowed = true;
@@ -486,19 +487,16 @@ static uint8_t *pem_block(const char *pem, const char *label, size_t *len) {
 // The last directory name in the absolute form of `path`'s parent: what the
 // reference signer names a model directory.
 static void parent_name(const char *path, char *out, size_t cap) {
-#ifdef _WIN32
-    char abs[_MAX_PATH];
-    if (!_fullpath(abs, path, sizeof abs)) snprintf(abs, sizeof abs, "%s", path);
-#else
-    char abs[PATH_MAX];
-    if (!realpath(path, abs)) snprintf(abs, sizeof abs, "%s", path);
-#endif
+    char *full = plat_realpath(path);
+    char *abs = full ? full : strdup(path);
+    if (!abs) { snprintf(out, cap, "model"); return; }
     size_t n = strlen(abs);
     while (n && abs[n - 1] != '/' && abs[n - 1] != '\\') n--;   // drop the file
     while (n && (abs[n - 1] == '/' || abs[n - 1] == '\\')) n--;
     abs[n] = 0;
     const char *b = base_name(abs);
     snprintf(out, cap, "%s", *b ? b : "model");
+    free(abs);
 }
 
 bool oms_sign_file(const char *model_path, const char *key_pem_path,
@@ -640,7 +638,7 @@ bool oms_sign_file(const char *model_path, const char *key_pem_path,
         if (bundle.failed) break;
         // created, never replaced: O_EXCL decides in one step (fopen's "x"
         // is missing from older Windows C runtimes)
-        int fd = open(out_path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0644);
+        int fd = plat_open(out_path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0644);
         f = fd >= 0 ? fdopen(fd, "wb") : NULL;
         if (fd >= 0 && !f) close(fd);
         if (!f) {
@@ -653,7 +651,7 @@ bool oms_sign_file(const char *model_path, const char *key_pem_path,
         wrote = (fclose(f) == 0) && wrote;
         f = NULL;
         if (!wrote) {
-            remove(out_path);
+            plat_remove(out_path);
             fprintf(stderr, "error: --sign-model: cannot write %s\n", out_path);
             break;
         }

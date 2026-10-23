@@ -22,6 +22,7 @@ same tokens, and a file under a non-ASCII path opens.
 """
 import json
 import os
+import re
 import pathlib
 import shutil
 import subprocess
@@ -162,6 +163,24 @@ def test_a_non_ascii_hf_cache_directory_is_used_as_named(runner_bin, model, tmp_
     assert cached.read_bytes() == blob
 
 
+def test_a_spawned_child_gets_a_spaced_non_ascii_argument_whole(runner_bin, tmp_path):
+    """--shadow-mode spawns the Python client with the model path: on Windows
+    the spawn joined argv with spaces and quoted nothing, so a path with a
+    space reached the client as two arguments, and the narrow spawn read the
+    rest in the ANSI code page."""
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    model = tmp_path / ODD_DIR / "my model.gguf"
+    model.parent.mkdir()
+    model.write_bytes(b"GGUF")
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    env.update(HOME=str(home), USERPROFILE=str(home), PYTHONUTF8="1")
+    p = run(runner_bin, "--shadow-mode", "-m", str(model), "--yes", env=env)
+    assert p.returncode == 0, p.stdout + p.stderr
+    cfg = json.loads((home / ".xyntetik" / "shadow" / "config.json").read_text(encoding="utf-8"))
+    assert cfg["model"] == str(model)
+
+
 def test_caps_reports_the_code_page(runner_bin):
     p = run(runner_bin, "--caps")
     assert p.returncode == 0, p.stderr
@@ -173,4 +192,63 @@ def test_caps_reports_the_code_page(runner_bin):
         # Windows image is Server 2022, which honours the manifest
         assert cp == {"ansi": 65001, "utf8_manifest": True}
     else:
+        # the build without the manifest runs in the machine's legacy code
+        # page (1252 on the hosted image), so every other test in this file
+        # passing on it is compat.c's wide reads at work, not the manifest's
         assert cp["utf8_manifest"] is False
+        assert cp["ansi"] != 65001, (
+            "this machine's ANSI code page is UTF-8 system-wide, so the build "
+            "without the manifest no longer exercises the wide reads")
+
+
+# Every narrow door to a file name, a process or the environment that the C
+# runtime or Win32 offers, by name. Outside compat.c (where the doors are)
+# and compat.h (their POSIX spellings) none may be called directly: each one
+# reads its text in the ANSI code page on a Windows without the manifest.
+NARROW = re.compile(
+    r"(?<![\w.>])("
+    r"fopen|freopen|open|_open|_sopen|_fsopen|remove|rename|unlink|_unlink|"
+    r"mkdir|_mkdir|rmdir|_rmdir|stat|_stat|_stat64|lstat|access|_access|"
+    r"opendir|_findfirst|_findfirst64|realpath|_fullpath|"
+    r"_spawnv|_spawnvp|_spawnl|_spawnlp|_putenv|_putenv_s|setenv|"
+    r"CreateFileA|MoveFileExA|MoveFileA|DeleteFileA|CopyFileA|"
+    r"FindFirstFileA|GetFileAttributesA|GetFullPathNameA|GetModuleFileNameA|"
+    r"CreateProcessA|ShellExecuteA|GetOpenFileNameA|RegSetValueExA|"
+    r"FormatMessageA|CreateDirectoryA|RemoveDirectoryA"
+    r")\s*\(")
+
+
+def code_only(text):
+    """The text with comments and string and character literals blanked."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+        elif text[i] in "\"'":
+            q, j = text[i], i + 1
+            while j < n and text[j] != q:
+                j += 2 if text[j] == "\\" else 1
+            i = j + 1
+            out.append('""')
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
+def test_src_crosses_the_os_boundary_only_through_compat():
+    found = []
+    for p in sorted((ROOT / "src").rglob("*")):
+        if p.suffix not in (".c", ".h", ".m") or p.name in ("compat.c", "compat.h"):
+            continue
+        code = code_only(p.read_text(encoding="utf-8", errors="replace"))
+        for lineno, line in enumerate(code.splitlines(), 1):
+            for m in NARROW.finditer(line):
+                found.append(f"{p.relative_to(ROOT)}:{lineno}: {m.group(1)}(")
+    assert not found, ("call the plat_* door in compat.h instead (a narrow call "
+                       "reads its text in the ANSI code page on Windows):\n  "
+                       + "\n  ".join(found))

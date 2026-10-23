@@ -5,6 +5,7 @@
 #import <AppKit/AppKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "tray.h"
+#include "compat.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -258,11 +259,11 @@ static void migrate_old_agent(void) {
     snprintf(op, sizeof op,
              "%s/Library/LaunchAgents/ai.gridcore.runner.tray.plist",
              home ? home : ".");
-    FILE *f = fopen(op, "rb");
+    FILE *f = plat_fopen(op, "rb");
     if (!f) return;
     fclose(f);
     unload_old_agent();
-    remove(op);
+    plat_remove(op);
     tray_platform_autostart_set(true);
 }
 
@@ -270,7 +271,7 @@ bool tray_platform_autostart_get(void) {
     migrate_old_agent();
     char p[1024];
     agent_path(p, sizeof p);
-    FILE *f = fopen(p, "rb");
+    FILE *f = plat_fopen(p, "rb");
     if (f) fclose(f);
     return f != NULL;
 }
@@ -278,14 +279,14 @@ bool tray_platform_autostart_get(void) {
 bool tray_platform_autostart_set(bool on) {
     char p[1024];
     agent_path(p, sizeof p);
-    if (!on) return remove(p) == 0;
+    if (!on) return plat_remove(p) == 0;
 
     char exe[1200];
     uint32_t sz = sizeof exe;
     extern int _NSGetExecutablePath(char *, uint32_t *);
     if (_NSGetExecutablePath(exe, &sz) != 0) return false;
 
-    FILE *f = fopen(p, "wb");
+    FILE *f = plat_fopen(p, "wb");
     if (!f) return false;
     fprintf(f,
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"

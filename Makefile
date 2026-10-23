@@ -194,6 +194,7 @@ TEST_METAL_ADMISSION = $(TEST_BATCH:test-batch%=test-metal-admission%)
 TEST_METAL_TENSOR = $(TEST_BATCH:test-batch%=test-metal-tensor%)
 TEST_TRAY_CORE = $(TEST_BATCH:test-batch%=test-tray-core%)
 TEST_TRAY_WIN = $(TEST_BATCH:test-batch%=test-tray-win-menu%)
+TEST_UTF8_CONSOLE = $(TEST_BATCH:test-batch%=test-utf8-console%)
 TEST_TC_TOL = $(TEST_BATCH:test-batch%=test-tc-tol%)
 TEST_I8_TOL = $(TEST_BATCH:test-batch%=test-i8-tol%)
 TEST_LORA_GRAD = $(TEST_BATCH:test-batch%=test-lora-grad%)
@@ -237,6 +238,8 @@ TEST_MSG_OOM_DEP =
 TEST_MSG_OOM_RUN = @echo "skip: test-prompt-oom (POSIX socketpair; covered by Linux CI)"
 TEST_TRAY_WIN_DEP = $(TEST_TRAY_WIN)
 TEST_TRAY_WIN_RUN = ./$(TEST_TRAY_WIN)
+TEST_UTF8_CONSOLE_DEP = $(TEST_UTF8_CONSOLE)
+TEST_UTF8_CONSOLE_RUN = ./$(TEST_UTF8_CONSOLE)
 else
 TEST_RESP_SM_DEP = $(TEST_RESP_SM)
 TEST_RESP_SM_RUN = ./$(TEST_RESP_SM)
@@ -246,6 +249,8 @@ TEST_MSG_OOM_DEP = $(TEST_MSG_OOM)
 TEST_MSG_OOM_RUN = ./$(TEST_MSG_OOM)
 TEST_TRAY_WIN_DEP =
 TEST_TRAY_WIN_RUN = @echo "skip: test-tray-win-menu (Win32 menu readback; covered by the Windows job)"
+TEST_UTF8_CONSOLE_DEP =
+TEST_UTF8_CONSOLE_RUN = @echo "skip: test-utf8-console (Windows console code page; covered by the Windows job)"
 endif
 TEST_QUANTIZE = $(TEST_BATCH:test-batch%=test-quantize%)
 TEST_QUANTIZE_OOM = $(TEST_BATCH:test-batch%=test-quantize-oom%)
@@ -413,6 +418,15 @@ $(RUNNER_RES_OBJ): src/runner.rc src/runner.manifest
 	  echo "       Install binutils (MSYS2 UCRT64: pacman -S mingw-w64-ucrt-x86_64-binutils)" >&2; \
 	  echo "       or name the resource compiler with WINDRES=<path>." >&2; exit 1; }
 	$(WINDRES) -I src -O coff -i src/runner.rc -o $@
+# The same executable without that manifest: what an older Windows, or one
+# whose manifest was stripped, runs, in the machine's ANSI code page.
+# tests/test_utf8_io.py holds it to the same tokens, paths and cache as
+# runner.exe, which is what tests compat.c's own wide reads.
+RUNNER_NO_MANIFEST = runner-no-manifest.exe
+$(RUNNER_NO_MANIFEST): $(filter-out $(RUNNER_RES_OBJ),$(RUNNER_OBJ)) $(HDR) src/kernels_ptx.h
+	$(CC) $(CFLAGS) $(filter-out $(RUNNER_RES_OBJ),$(RUNNER_OBJ)) -o $@ $(LDFLAGS)
+else
+RUNNER_NO_MANIFEST =
 endif
 $(OBJDIR)/%.o: src/%.m $(HDR)
 	@mkdir -p $(dir $@)
@@ -898,6 +912,12 @@ TEST_TRAY_WIN_SRC = tests/test_tray_win_menu.c src/tray.c src/instances.c \
 $(TEST_TRAY_WIN): $(TEST_TRAY_WIN_SRC) src/tray_win.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TRAY_WIN_SRC) -o $@ -lm \
 		-lws2_32 -lpsapi -lshell32 -lgdi32 -lcomdlg32 -ladvapi32
+
+# plat_utf8_startup and the console's output code page: set to UTF-8 for a
+# console on stdout or stderr, left alone when both are redirected, restored
+# at exit. Windows only, like the menu readback above (TEST_UTF8_CONSOLE_RUN).
+$(TEST_UTF8_CONSOLE): tests/test_utf8_console.c $(OBJDIR)/compat.o $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_utf8_console.c $(OBJDIR)/compat.o -o $@ $(LDFLAGS)
 
 # TC tolerance gate: same shape as the q8-KV gate — teacher-forced logits,
 # top-1 + bounded-deviation criteria, per (type, arch) via the model argument
@@ -2650,7 +2670,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_SPEC_ID) $(TEST_ATTN_SPLIT) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
-      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) \
+      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_FPCLASS) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) \
@@ -2805,6 +2825,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_METAL_ADMISSION)
 	./$(TEST_TRAY_CORE)
 	$(TEST_TRAY_WIN_RUN)
+	$(TEST_UTF8_CONSOLE_RUN)
 	@# the CPU-only backend stub, which no platform branch ever builds
 	$(MAKE) --no-print-directory test-gpu-stub
 	@# The split guard was absent from this list entirely, which is how a
@@ -3121,7 +3142,7 @@ fuzz:
 	fi
 
 clean:
-	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) \
+	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug runner-no-manifest.exe $(TEST_UTF8_CONSOLE) $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) \
 		$(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
 	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) \

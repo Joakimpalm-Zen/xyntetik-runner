@@ -564,5 +564,5 @@ void vram_yield_clear(const vram_lease *l) {
     if (!l) return;
     char path[560];
     yield_sentinel_path(l->path, l->pid, path, sizeof(path));
-    remove(path);
+    plat_remove(path);
 }

@@ -96,7 +96,7 @@ bool session_write(const char *path, const engine *e, const session_meta *mt,
         fprintf(stderr, "error: session: out of memory building the image\n");
         return false;
     }
-    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
+    int fd = plat_open(path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
     FILE *f = fd >= 0 ? fdopen(fd, "wb") : NULL;
     if (fd >= 0 && !f) close(fd);
     if (!f) {
@@ -110,7 +110,7 @@ bool session_write(const char *path, const engine *e, const session_meta *mt,
     ok = (fclose(f) == 0) && ok;
     free(w.b);
     if (!ok) {
-        remove(path);
+        plat_remove(path);
         fprintf(stderr, "error: session: cannot write %s\n", path);
     }
     return ok;
@@ -132,7 +132,7 @@ static bool hex64(const char *s) {
 
 bool session_read(const char *path, session_image *img) {
     memset(img, 0, sizeof *img);
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) { fprintf(stderr, "error: session: cannot read %s\n", path); return false; }
     uint8_t *b = NULL;
     size_t n = 0, cap = 0, got;
@@ -300,11 +300,7 @@ bool sessions_configure(const char *dir) {
         fprintf(stderr, "error: --sessions: a directory path is needed\n");
         return false;
     }
-#ifdef _WIN32
-    if (_mkdir(dir) != 0 && errno != EEXIST) {
-#else
-    if (mkdir(dir, 0700) != 0 && errno != EEXIST) {
-#endif
+    if (plat_mkdir(dir, 0700) != 0 && errno != EEXIST) {
         fprintf(stderr, "error: --sessions %s: %s\n", dir, strerror(errno));
         return false;
     }

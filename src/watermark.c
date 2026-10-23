@@ -77,7 +77,7 @@ bool wm_key_write(const char *path, const uint8_t key[32], char id_out[17]) {
     char hex[65];
     for (int i = 0; i < 32; i++) snprintf(hex + 2 * i, 3, "%02x", key[i]);
     wm_key_id(key, id_out);
-    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
+    int fd = plat_open(path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
     FILE *f = fd >= 0 ? fdopen(fd, "wb") : NULL;
     if (fd >= 0 && !f) close(fd);
     bool ok = f != NULL;
@@ -85,7 +85,7 @@ bool wm_key_write(const char *path, const uint8_t key[32], char id_out[17]) {
         ok = fprintf(f, "{\"schema_version\":\"%s\",\"key\":\"%s\",\"key_id\":\"%s\"}\n",
                      KEY_SCHEMA, hex, id_out) > 0;
         ok = (fclose(f) == 0) && ok;
-        if (!ok) remove(path);
+        if (!ok) plat_remove(path);
     }
     memset(hex, 0, sizeof hex);
     return ok;
@@ -100,7 +100,7 @@ static int hexv(char c) {
 
 bool wm_key_load(const char *path, wm_key *k, char *err, size_t cap) {
     memset(k, 0, sizeof *k);
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) { snprintf(err, cap, "cannot read %s", path); return false; }
     char buf[1024];
     size_t n = fread(buf, 1, sizeof buf - 1, f);

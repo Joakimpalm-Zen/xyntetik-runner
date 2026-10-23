@@ -110,7 +110,7 @@ static void sha256_final(sha256_ctx *c, uint8_t out[32]) {
 
 // Hash a whole file to lowercase hex. Returns false if it cannot be read.
 bool envelope_file_sha256(const char *path, char hex[65]) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) return false;
     sha256_ctx c;
     sha256_init(&c);
@@ -273,10 +273,10 @@ bool record_sidecar(const char *artifact, char *out, size_t cap) {
     long long newest = 0;
     char cand[4096];
     for (size_t i = 0; i < sizeof SIDECAR_SUFFIXES / sizeof SIDECAR_SUFFIXES[0]; i++) {
-        struct stat st;
+        plat_stat_t st;
         int n = snprintf(cand, sizeof cand, "%s%s", artifact, SIDECAR_SUFFIXES[i]);
         if (n < 0 || (size_t)n >= sizeof cand || (size_t)n >= cap) continue;
-        if (stat(cand, &st) != 0) continue;
+        if (plat_stat(cand, &st) != 0) continue;
         if (!found || (long long)st.st_mtime > newest) {
             memcpy(out, cand, (size_t)n + 1);
             newest = (long long)st.st_mtime;
@@ -475,7 +475,7 @@ bool transcript_write(const transcript_info *ti) {
     char *tmp = malloc(tl);
     if (!tmp) { free(w.b); return false; }
     snprintf(tmp, tl, "%s.partial", ti->out_path);
-    FILE *f = fopen(tmp, "wb");
+    FILE *f = plat_fopen(tmp, "wb");
     bool ok = f != NULL;
     if (ok) {
         // The chain object closes the record; a signature, when a key was
@@ -543,7 +543,7 @@ bool transcript_write(const transcript_info *ti) {
     // "failed writing" while the .partial held a complete receipt
     if (ok) ok = plat_replace_file(tmp, ti->out_path);
     if (!ok) {
-        remove(tmp);
+        plat_remove(tmp);
         fprintf(stderr, "error: transcript: failed writing %s\n",
                 ti->out_path);
     }
@@ -616,7 +616,7 @@ bool signkey_write(const char *path, const char *algo, const uint8_t seed[32],
     char seed_hex[65];
     bytes_to_hex(seed, 32, seed_hex);
     bytes_to_hex(k.pk, k.pk_n, pub_hex);
-    FILE *f = fopen(path, "wb");
+    FILE *f = plat_fopen(path, "wb");
     bool ok = f != NULL;
     if (ok) {
         ok = fprintf(f, "{\"schema_version\":\"xyntetik.runner.signkey.v1\","
@@ -630,7 +630,7 @@ bool signkey_write(const char *path, const char *algo, const uint8_t seed[32],
 }
 
 bool signkey_load(const char *path, signkey *k) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) return false;
     // seed (64 hex) + an ML-DSA-44 public key (2624 hex) + framing
     char buf[4096];
@@ -745,7 +745,7 @@ static char *read_sidecar(const char *model_path, size_t *n_out) {
     if (!path) return NULL;
     memcpy(path, model_path, plen);
     memcpy(path + plen, ".envelope.json", sizeof(".envelope.json"));
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     free(path);
     if (!f) return NULL;
     char *buf = malloc(ENV_MAX_BYTES);
@@ -1038,7 +1038,7 @@ bool envelope_gate(const char *model_path, const char *runtime_version,
 // replaced atomically; a failure leaves the original untouched.
 
 static char *record_read(const char *path, size_t *n_out) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) return NULL;
     size_t cap = 1 << 16, n = 0;
     char *buf = malloc(cap);
@@ -1167,7 +1167,7 @@ bool record_sign(const char *path, const char *sign_key_path, const char *prev_p
         int tl = snprintf(tmp_path, sizeof tmp_path, "%s.partial", path);
         ok = tl > 0 && tl < (int)sizeof tmp_path;
     }
-    FILE *f = ok ? fopen(tmp_path, "wb") : NULL;
+    FILE *f = ok ? plat_fopen(tmp_path, "wb") : NULL;
     if (ok && !f) ok = false;
     if (ok) {
         ok = fwrite(buf, 1, body_n, f) == body_n &&
@@ -1176,7 +1176,7 @@ bool record_sign(const char *path, const char *sign_key_path, const char *prev_p
                      k.algo, pkh, sigh) > 0;
         ok = (fclose(f) == 0) && ok;
         if (ok) ok = plat_replace_file(tmp_path, path);
-        if (!ok) remove(tmp_path);
+        if (!ok) plat_remove(tmp_path);
     }
     memset(&k, 0, sizeof k);
     free(pkh); free(sigh); free(buf);

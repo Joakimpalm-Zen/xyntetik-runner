@@ -7,15 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef _WIN32
-#include <direct.h>
-#include <io.h>
-#define rc_mkdir(p) _mkdir(p)
-#else
-#include <dirent.h>
 #include <sys/stat.h>
-#define rc_mkdir(p) mkdir(p, 0700)
-#endif
+#include "compat.h"
 
 // receipt-<10-digit sequence>.json: the sequence orders records within and
 // across runs, and a lexical sort of the names is that order
@@ -71,43 +64,19 @@ int receipts_list_dir(const char *dir, char ***paths_out) {
 static int list_seqs_in(const char *dir, unsigned long long **out) {
     int n = 0, cap = 0;
     unsigned long long *v = NULL;
-#ifdef _WIN32
-    char pat[1100];
-    snprintf(pat, sizeof pat, "%s\\" RC_PREFIX "*" RC_SUFFIX, dir);
-    struct _finddata_t fd;
-    intptr_t h = _findfirst(pat, &fd);
-    if (h != -1) {
-        do {
-            unsigned long long s;
-            if (!seq_of(fd.name, &s)) continue;
-            if (n == cap) {
-                cap = cap ? cap * 2 : 64;
-                unsigned long long *g = realloc(v, sizeof *v * (size_t)cap);
-                if (!g) break;
-                v = g;
-            }
-            v[n++] = s;
-        } while (_findnext(h, &fd) == 0);
-        _findclose(h);
-    }
-#else
-    DIR *d = opendir(dir);
-    if (d) {
-        struct dirent *de;
-        while ((de = readdir(d)) != NULL) {
-            unsigned long long s;
-            if (!seq_of(de->d_name, &s)) continue;
-            if (n == cap) {
-                cap = cap ? cap * 2 : 64;
-                unsigned long long *g = realloc(v, sizeof *v * (size_t)cap);
-                if (!g) break;
-                v = g;
-            }
-            v[n++] = s;
+    plat_dir *d = plat_opendir(dir);
+    for (const char *nm; d && (nm = plat_readdir(d)) != NULL; ) {
+        unsigned long long s;
+        if (!seq_of(nm, &s)) continue;
+        if (n == cap) {
+            cap = cap ? cap * 2 : 64;
+            unsigned long long *g = realloc(v, sizeof *v * (size_t)cap);
+            if (!g) break;
+            v = g;
         }
-        closedir(d);
+        v[n++] = s;
     }
-#endif
+    plat_closedir(d);
     // insertion sort: the directory holds at most --receipts-keep + 1 once
     // retention runs, and ordering is all that is asked
     for (int i = 1; i < n; i++) {
@@ -136,7 +105,7 @@ bool receipts_configure(const receipts_cfg *c) {
     size_t dn = strlen(RC.dir);
     while (dn > 1 && (RC.dir[dn - 1] == '/' || RC.dir[dn - 1] == '\\'))
         RC.dir[--dn] = 0;
-    if (rc_mkdir(RC.dir) != 0 && errno != EEXIST) {
+    if (plat_mkdir(RC.dir, 0700) != 0 && errno != EEXIST) {
         fprintf(stderr, "error: --receipts: cannot create %s\n", RC.dir);
         goto out;
     }
@@ -212,7 +181,7 @@ bool receipts_write(transcript_info *ti, char name_out[64], char chain_out[65]) 
             for (int i = 0; i + RC.keep < n; i++) {
                 char old[1100];
                 path_of(old, sizeof old, seqs[i]);
-                remove(old);
+                plat_remove(old);
             }
             free(seqs);
         }

@@ -184,6 +184,80 @@ unsigned    plat_code_page(void);
 // page, read back from its own resources; false on other platforms.
 bool        plat_utf8_manifest(void);
 
+// --- UTF-8 at the operating-system boundary --------------------------------
+//
+// Every string runner holds is UTF-8: prompts, file names, environment
+// values. POSIX passes bytes through, so on Linux and macOS the calls below
+// are the libc calls themselves. Windows' narrow C runtime and -A APIs read
+// text in the process's ANSI code page instead. runner.exe's manifest makes
+// that UTF-8 on Windows 10 1903 and later; on an older Windows, or with the
+// manifest stripped, a cp1252 system read the two UTF-8 bytes of an accented
+// letter as two cp1252 characters and an ideograph as "?". So every file
+// name in src/ goes through these doors, which on Windows convert UTF-8 to
+// UTF-16 and call the wide entry points: what a name means no longer
+// depends on the code page. tests/test_utf8_io.py holds both builds to it,
+// and holds src/ to these doors.
+
+// First thing in main(). On Windows: argv becomes the command line as the
+// OS holds it (UTF-16, split by the C runtime's own rules) in UTF-8, the C
+// runtime's environment table is rewritten in UTF-8 where it was not
+// already, and a console on stdout or stderr is switched to the UTF-8 output
+// code page until exit (redirected output is bytes, and needs nothing).
+// Nothing elsewhere.
+void plat_utf8_startup(int *argc, char ***argv);
+
+#ifdef _WIN32
+#include <wchar.h>
+// UTF-8 <-> UTF-16, malloc'd; NULL when out of memory. A byte sequence that
+// is not UTF-8 becomes U+FFFD, as it does in the -A APIs under the UTF-8
+// code page.
+wchar_t *plat_utf8_to_wide(const char *s);
+char    *plat_wide_to_utf8(const wchar_t *s);
+
+// 64-bit sizes and times: MinGW's stat() keeps st_size in 32 bits and fails
+// with EOVERFLOW on every file over 2 GiB, which is every real model.
+typedef struct _stat64 plat_stat_t;
+FILE *plat_fopen(const char *path, const char *mode);
+int   plat_open(const char *path, int flags, int mode);
+int   plat_remove(const char *path);
+int   plat_rename(const char *from, const char *to);
+int   plat_mkdir(const char *path, int mode);     // mode: POSIX only
+int   plat_rmdir(const char *path);
+// stat() as MinGW's POSIX one behaves: a trailing separator names the
+// directory itself ("dir/" is "dir"), except at a root
+int   plat_stat(const char *path, plat_stat_t *st);
+int   plat_setenv(const char *name, const char *value);
+#else
+typedef struct stat plat_stat_t;
+#define plat_fopen(path, mode)        fopen(path, mode)
+#define plat_open(path, flags, mode)  open(path, flags, mode)
+#define plat_remove(path)             remove(path)
+#define plat_rename(from, to)         rename(from, to)
+#define plat_mkdir(path, mode)        mkdir(path, mode)
+#define plat_rmdir(path)              rmdir(path)
+#define plat_stat(path, st)           stat(path, st)
+#define plat_setenv(name, value)      setenv(name, value, 1)
+#endif
+
+// An absolute form of `path`, malloc'd; NULL on failure. The platform's own
+// rules, as before: POSIX realpath() resolves links and needs the file to
+// exist, Windows _fullpath() only joins and normalises.
+char *plat_realpath(const char *path);
+
+// A directory's entry names, "." and ".." included, in UTF-8. A name is
+// valid until the next plat_readdir on the same handle.
+typedef struct plat_dir plat_dir;
+plat_dir   *plat_opendir(const char *path);
+const char *plat_readdir(plat_dir *d);
+void        plat_closedir(plat_dir *d);
+
+// Run argv[0], looked up on PATH, with argv (NULL-terminated), and wait: its
+// exit code, or -1 when it could not be started. On Windows every argument
+// is quoted by the C runtime's rules first, because the spawn functions join
+// argv with spaces and quote nothing: "C:\Program Files\x" reached the
+// child as two arguments.
+int plat_spawn_wait(const char *const argv[]);
+
 // Install a completed same-filesystem temporary file at `path`, replacing an
 // existing regular file. POSIX rename() has replacement semantics; Windows
 // needs MoveFileEx(..., REPLACE_EXISTING) for the same operation.

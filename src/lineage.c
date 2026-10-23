@@ -44,7 +44,7 @@ bool lineage_sign(const char *record_path, const char *sign_key) {
 // ------------------------------------------------------------------ walker --
 
 static jv *read_json(const char *path) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) return NULL;
     size_t cap = 1 << 16, n = 0, r;
     char *buf = malloc(cap);
@@ -360,8 +360,8 @@ static int walk_receipts_dir(const char *dir, const char *trust_hex) {
 }
 
 int lineage_walk(const char *start, const char *trust_hex) {
-    struct stat dst;
-    if (stat(start, &dst) == 0 && S_ISDIR(dst.st_mode)) return walk_receipts_dir(start, trust_hex);
+    plat_stat_t dst;
+    if (plat_stat(start, &dst) == 0 && S_ISDIR(dst.st_mode)) return walk_receipts_dir(start, trust_hex);
     walk_state w = { 0 };
     char rec[4096];
     const char *want_out = NULL;

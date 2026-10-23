@@ -4,6 +4,7 @@
 // console is released with FreeConsole so no black window lingers.
 #ifdef _WIN32
 #include "tray.h"
+#include "compat.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -131,7 +132,7 @@ bool tray_platform_icon_dump(const char *dir, int px) {
         bi.bV4CSType = 0x73524742;      // "sRGB"
         char path[1200];
         snprintf(path, sizeof path, "%s\\tray-%s.bmp", dir, names[i]);
-        FILE *f = fopen(path, "wb");
+        FILE *f = plat_fopen(path, "wb");
         if (!f) {
             ok = false;
         } else {
@@ -222,18 +223,19 @@ static HMENU build_menu(void) {
 }
 
 static void pick_model(void) {
-    char file[1024] = "";
-    OPENFILENAMEA ofn = { .lStructSize = sizeof ofn };
+    // wide: the narrow dialog hands back the path in the ANSI code page, and
+    // the core keeps paths in UTF-8 (compat.h)
+    wchar_t file[1024] = L"";
+    OPENFILENAMEW ofn = { .lStructSize = sizeof ofn };
     ofn.hwndOwner = g_hwnd;
-    ofn.lpstrFilter = "GGUF models (*.gguf)\0*.gguf\0All files\0*.*\0";
+    ofn.lpstrFilter = L"GGUF models (*.gguf)\0*.gguf\0All files\0*.*\0";
     ofn.lpstrFile = file;
-    ofn.nMaxFile = sizeof file;
-    ofn.lpstrTitle = "Choose a GGUF model for the desktop-managed runner";
+    ofn.nMaxFile = sizeof file / sizeof *file;
+    ofn.lpstrTitle = L"Choose a GGUF model for the desktop-managed runner";
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    if (GetOpenFileNameA(&ofn))
-        tray_menu_act(TRAY_ACT_PICK_MODEL, 0, file);
-    else
-        tray_menu_act(TRAY_ACT_PICK_MODEL, 0, NULL);
+    char *picked = GetOpenFileNameW(&ofn) ? plat_wide_to_utf8(file) : NULL;
+    tray_menu_act(TRAY_ACT_PICK_MODEL, 0, picked);
+    free(picked);
 }
 
 static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
@@ -277,14 +279,24 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
 #define RUN_VAL "XyntetikTray"
 #define RUN_VAL_OLD "GridcoreTray"  // pre-rename value, migrated on sight
 
-// GetModuleFileNameA returns 0 on failure (leaving the buffer untouched) and
-// on truncation does not NUL-terminate before Windows 10 1607. Either way an
-// unchecked buffer is uninitialized or unterminated stack, and both call sites
-// below persist it into the autostart command — a corrupt Run value that would
-// fail every login. Refuse to write one rather than register garbage.
-static bool self_exe(char *out, DWORD cap) {
-    DWORD n = GetModuleFileNameA(NULL, out, cap);
-    return n != 0 && n < cap;
+// The autostart command, "<this executable>" --tray. GetModuleFileName
+// returns 0 on failure and on truncation does not NUL-terminate before
+// Windows 10 1607, and either way an unchecked buffer becomes a corrupt Run
+// value that fails every login: plat_executable_path checks both and returns
+// NULL, and then nothing is written. Written wide, because the path is UTF-8
+// and the narrow registry call would read it in the ANSI code page.
+static bool set_run_value(HKEY k) {
+    char *exe = plat_executable_path();
+    size_t n = exe ? strlen(exe) + sizeof "\"\" --tray" : 0;
+    char *cmd = exe ? malloc(n) : NULL;
+    if (cmd) snprintf(cmd, n, "\"%s\" --tray", exe);
+    wchar_t *w = cmd ? plat_utf8_to_wide(cmd) : NULL;
+    bool ok = w && RegSetValueExW(k, L"" RUN_VAL, 0, REG_SZ, (const BYTE *)w,
+                                  (DWORD)((wcslen(w) + 1) * sizeof *w)) == ERROR_SUCCESS;
+    free(w);
+    free(cmd);
+    free(exe);
+    return ok;
 }
 
 // One-time migration of the pre-rename autostart value (Gridcore ->
@@ -296,15 +308,9 @@ static void migrate_old_autostart(void) {
     if (RegOpenKeyExA(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_READ | KEY_SET_VALUE,
                       &k) != ERROR_SUCCESS)
         return;
-    if (RegQueryValueExA(k, RUN_VAL_OLD, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
-        char exe[1024], cmd[1100];
-        if (self_exe(exe, sizeof exe)) {
-            snprintf(cmd, sizeof cmd, "\"%s\" --tray", exe);
-            RegSetValueExA(k, RUN_VAL, 0, REG_SZ,
-                           (const BYTE *)cmd, (DWORD)strlen(cmd) + 1);
-            RegDeleteValueA(k, RUN_VAL_OLD);
-        }
-    }
+    if (RegQueryValueExA(k, RUN_VAL_OLD, NULL, NULL, NULL, NULL) == ERROR_SUCCESS &&
+        set_run_value(k))
+        RegDeleteValueA(k, RUN_VAL_OLD);
     RegCloseKey(k);
 }
 
@@ -324,14 +330,7 @@ bool tray_platform_autostart_set(bool on) {
         return false;
     bool ok;
     if (on) {
-        char exe[1024], cmd[1100];
-        if (!self_exe(exe, sizeof exe)) {
-            RegCloseKey(k);
-            return false;
-        }
-        snprintf(cmd, sizeof cmd, "\"%s\" --tray", exe);
-        ok = RegSetValueExA(k, RUN_VAL, 0, REG_SZ,
-                            (const BYTE *)cmd, (DWORD)strlen(cmd) + 1) == ERROR_SUCCESS;
+        ok = set_run_value(k);
     } else {
         LONG rc = RegDeleteValueA(k, RUN_VAL);
         ok = rc == ERROR_SUCCESS || rc == ERROR_FILE_NOT_FOUND;

@@ -1039,7 +1039,7 @@ static void session_answer(slot_t *s, sock_t fd, float *logits, int n_prompt,
             } else {
                 session_path(final, sizeof final, id);
                 if (!plat_replace_file(tmp, final)) {
-                    remove(tmp);
+                    plat_remove(tmp);
                     id[0] = 0;
                     why = "the image could not be installed in --sessions";
                 }
@@ -1215,7 +1215,7 @@ static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
     memcpy(id, p, 64);
     id[64] = 0;
     session_path(file, sizeof file, id);
-    FILE *f = fopen(file, "rb");
+    FILE *f = plat_fopen(file, "rb");
     if (!f) {
         send_error_detail(fd, 404, "no session of that id", "id", "session_not_found");
         return;
@@ -1318,7 +1318,7 @@ static void session_route(sock_t fd, const char *method, const char *path) {
     char file[1200];
     session_path(file, sizeof file, id);
     if (!strcmp(method, "DELETE")) {
-        if (remove(file) != 0) {
+        if (plat_remove(file) != 0) {
             send_error_detail(fd, 404, "no session of that id", "id",
                               "session_not_found");
             return;
@@ -1330,7 +1330,7 @@ static void session_route(sock_t fd, const char *method, const char *path) {
         return;
     }
     session_image img;
-    FILE *f = fopen(file, "rb");
+    FILE *f = plat_fopen(file, "rb");
     if (!f) {
         send_error_detail(fd, 404, "no session of that id", "id", "session_not_found");
         return;
