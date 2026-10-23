@@ -8481,8 +8481,13 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     const char *r = NULL;
     if (m->gpu) r = "GPU-resident model (run --gpu off)";
     else if (m->n_removed > 0) r = "removed sublayers (--remove-sublayer artifact)";
-    else if (m->qwen35 || m->granite_hybrid || m->nemotron_h)
-        r = "recurrent architecture";
+    // R8.16 (2026-10-23): the Gated DeltaNet layer (qwen35 and clef) trains:
+    // the backward runs through the recurrence (lbw_deltanet_bw). The
+    // Mamba-2 hybrids and qwen4exp's hyper-connections do not yet.
+    else if (m->granite_hybrid || m->nemotron_h)
+        r = "recurrent architecture (Mamba-2)";
+    else if (m->hyper_conn) r = "hyper-connections (qwen4exp)";
+    else if (m->qwen35 && m->n_expert > 0) r = "MoE on a Gated DeltaNet model";
     // R17.3 (2026-10-08): an adapter on the ATTENTION of a sparse-MoE model
     // trains, with the backward running through the frozen router and
     // experts (Qwen3-MoE / Mixtral routing: softmax router, top-k, optional
@@ -8515,12 +8520,21 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     // pinned by the gemma4, tied-V and E-series fixtures. Still out: the
     // derived-K cache layout (RUNNER_TIEDV), sinks, ungated FFNs.
     else if (m->tied_v) r = "derived-K cache layout (RUNNER_TIEDV)";
+    // R8.16 (2026-10-23): partial-dimension rope trains (rope_unapply
+    // rotates the same rope_dim dims the forward does; gated on llama and
+    // neox fixtures rotating half of each head). That refusal had been what
+    // kept stablelm out, and the backward has the RMSNorm adjoint only, so
+    // LayerNorm is refused by name now.
+    else if (m->norm_layernorm) r = "LayerNorm (stablelm)";
     for (int l = 0; !r && l < m->n_layer; l++) {
         const layer_t *ly = &m->layers[l];
         bool owner = model_kv_owner(m, l) == l;
-        if (model_kv_is_ring(m, l)) r = "recycled KV rows (RUNNER_KV_RING)";
-        else if (owner && !ly->wv && !m->v_rmsnorm) r = "absent V projection";
-        else if (owner && !ly->wk) r = "absent K projection";
+        // a DeltaNet layer has no attention: its mixer is lbw_deltanet_bw's,
+        // and only the FFN checks below apply to it
+        bool attn = !ly->recurrent;
+        if (attn && model_kv_is_ring(m, l)) r = "recycled KV rows (RUNNER_KV_RING)";
+        else if (attn && owner && !ly->wv && !m->v_rmsnorm) r = "absent V projection";
+        else if (attn && owner && !ly->wk) r = "absent K projection";
         else if (ly->n_expert > 0 &&
                  (ly->exp_probs_b || ly->ffn_gate_inp_b || ly->ffn_gate_exps_b ||
                   ly->ffn_up_exps_b || ly->ffn_down_exps_b))
@@ -8530,9 +8544,7 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
         else if (ly->n_expert > 0 && (ly->w_gate_shexp || ly->w_up_shexp || ly->w_down_shexp))
             r = "MoE shared experts";
         else if (ly->n_expert == 0 && (!ly->w_gate || !ly->w_up)) r = "ungated FFN";
-        else if (ly->attn_sinks) r = "attention sinks";
-        else if (model_rope_dim(m, l) != model_head_dim(m, l))
-            r = "partial-dimension rope";
+        else if (attn && ly->attn_sinks) r = "attention sinks";
     }
     if (r && why) snprintf(why, cap, "%s", r);
     return r == NULL;
@@ -8825,6 +8837,11 @@ typedef struct {
     float *mdr;
     float *dbr;
     float *dyb;
+    // R8.16: a qwen35 full-attention layer projects Q and its output gate in
+    // one matrix, interleaved per head ([q_h | gate_h], 2*q_dim rows); the
+    // two gradients go back through it as one interleaved plane
+    bool q35;
+    float *dqg;
 } lbw_state;
 
 // The sweep's shapes and buffers, and the layer output scale applied to dx;
@@ -8905,7 +8922,8 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     // the ungated attention output; the sandwich norms keep each branch's
     // pre-norm output; the residual scale and the per-layer output scale are
     // scalars applied where the forward applies them.
-    bool gate = m->attn_out_gate && ly->wq_gate;
+    bool q35 = m->qwen35 && !ly->recurrent;
+    bool gate = (m->attn_out_gate && ly->wq_gate) || q35;
     float rs = m->resid_scale != 0.0f ? m->resid_scale : 1.0f;
     float os = ly->out_scale != 0.0f ? ly->out_scale : 1.0f;
     int swa = model_is_swa(m, l) ? m->swa_window : 0;
@@ -8926,11 +8944,13 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     float *mdu   = moe ? malloc(sizeof(float) * (size_t)nfe) : NULL;
     float *md    = moe ? malloc(sizeof(float) * (size_t)E) : NULL;
     float *mdr   = moe ? malloc(sizeof(float) * (size_t)ne_x) : NULL;
+    float *dqg   = q35 ? malloc(sizeof(float) * (size_t)T * 2 * q_dim) : NULL;
     float *dbr   = malloc(szE);   // a branch output's gradient, per window
     float *dyb   = malloc(sizeof(float) * (size_t)E);  // one scaled row
     bool ok = xn1 && xa && xn2 && q && ao && g && u && dxn1 && dxa && dq &&
               dk && dv && hact && dhact && dgu && dxn2 && dao && tmpE && p &&
               dbr && dyb && (!gate || (gpre && aopre && dg && dxg)) &&
+              (!q35 || dqg) &&
               (!ly->post_attn_norm_w || opre) && (!ly->post_ffn_norm_w || fpre) &&
               (!ly->qnorm_w || qpre) && (!need_kpre || kpre) &&
               (!vnorm || (vpre && dvn)) &&
@@ -9022,6 +9042,8 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     s->mdr = mdr;
     s->dbr = dbr;
     s->dyb = dyb;
+    s->q35 = q35;
+    s->dqg = dqg;
     return ok;
 }
 
@@ -9080,8 +9102,22 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
         float *x1 = xn1 + (size_t)t * E;
         xnorm(m, x1, xt, ly->attn_norm_w, ly->attn_norm_b, E, m->rms_eps);
         float *qt = q + (size_t)t * q_dim;
+        if (s->q35) {
+            // the fused projection and its adapter over all 2*q_dim rows,
+            // then the per-head split the forward makes (attn_project)
+            float *qg = s->dqg + (size_t)t * 2 * q_dim;   // scratch until B2
+            matvec_b(m->tp, qg, 2 * q_dim, ly->wq, x1, E, E, 2 * q_dim, ly->bq, 1);
+            lora_site_fw(m, l, LW_Q, qg, x1, E, 2 * q_dim);
+            for (int h = 0; h < n_head; h++) {
+                memcpy(qt + (size_t)h * hd, qg + (size_t)h * 2 * hd,
+                       sizeof(float) * (size_t)hd);
+                memcpy(gpre + (size_t)t * q_dim + (size_t)h * hd,
+                       qg + (size_t)h * 2 * hd + hd, sizeof(float) * (size_t)hd);
+            }
+        } else {
         matvec_b(m->tp, qt, q_dim, ly->wq, x1, E, E, q_dim, ly->bq, 1);
         lora_site_fw(m, l, LW_Q, qt, x1, E, q_dim);
+        }
         if (ly->qnorm_w) {
             memcpy(qpre + (size_t)t * q_dim, qt,
                    sizeof(float) * (size_t)q_dim);
@@ -9123,10 +9159,12 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
         attn_run(m, &aj, n_head);
         if (gate) {
             // afmoe/muse: sigmoid gate from its own frozen projection of the
-            // normed input, applied element-wise to the attention output
+            // normed input, applied element-wise to the attention output;
+            // qwen35's came out of the fused Q projection above
             float *gt = gpre + (size_t)t * q_dim;
             float *aot = ao + (size_t)t * q_dim;
-            matvec_b(m->tp, gt, q_dim, ly->wq_gate, x1, E, E, q_dim, NULL, 1);
+            if (!s->q35)
+                matvec_b(m->tp, gt, q_dim, ly->wq_gate, x1, E, E, q_dim, NULL, 1);
             memcpy(aopre + (size_t)t * q_dim, aot, sizeof(float) * (size_t)q_dim);
             for (int i = 0; i < q_dim; i++)
                 aot[i] *= 1.0f / (1.0f + expf(-gt[i]));
@@ -9399,7 +9437,14 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
                    dxat, E, m->rms_eps);
     }
     // attention output projection, whole window at once, fed by the branch
-    // gradient (residual scale, then the sandwich norm's adjoint)
+    // gradient (residual scale, then the sandwich norm's adjoint); a
+    // DeltaNet layer's mixer output is lbw_deltanet_bw's
+    if (ly->recurrent) {
+        if (lprof) { double n2 = plat_now(); lbw_prof[1] += n2 - lt; lt = n2; }
+        *okp = ok;
+        s->lt = lt;
+        return;
+    }
     for (int t = 0; ok && t < T; t++) {
         const float *dxat = dxa + (size_t)t * E;
         float *dbt = dbr + (size_t)t * E;
@@ -9424,8 +9469,12 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
                 dg[k] = dao[k] * aopre[k] * sg * (1.0f - sg);
                 dao[k] *= sg;
             }
-        ok = matvec_t(m, ly->wq_gate, dg, dxg, E, q_dim, T);
-        for (size_t i = 0; ok && i < (size_t)T * E; i++) dxn1[i] += dxg[i];
+        // qwen35's gate rows are part of the fused Q projection: dg waits
+        // for phase B2, where it joins dq
+        if (!s->q35) {
+            ok = matvec_t(m, ly->wq_gate, dg, dxg, E, q_dim, T);
+            for (size_t i = 0; ok && i < (size_t)T * E; i++) dxn1[i] += dxg[i];
+        }
     }
     if (lprof) { double n2 = plat_now(); lbw_prof[1] += n2 - lt; lt = n2; }
     *okp = ok;
@@ -9574,6 +9623,20 @@ NUM_STAGE void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s
     }
     // projection backwards, each site one batched call over the window; a
     // sharing layer has no K/V projections of its own
+    if (s->q35) {
+        // like every loop of the phase, only on a state whose buffers all
+        // exist (the allocation sweep reached this with dg NULL)
+        int hd = s->hd;
+        for (int t = 0; ok && t < T; t++)
+            for (int h = 0; h < n_head; h++) {
+                float *row = s->dqg + (size_t)t * 2 * q_dim + (size_t)h * 2 * hd;
+                memcpy(row, dq + (size_t)t * q_dim + (size_t)h * hd,
+                       sizeof(float) * (size_t)hd);
+                memcpy(row + hd, s->dg + (size_t)t * q_dim + (size_t)h * hd,
+                       sizeof(float) * (size_t)hd);
+            }
+        ok = ok && lora_site_bw(m, l, LW_Q, ly->wq, xn1, s->dqg, dxn1, E, 2 * q_dim, T);
+    } else
     ok = ok && lora_site_bw(m, l, LW_Q, ly->wq, xn1, dq, dxn1, E, q_dim, T);
     if (owns) {
         ok = ok && lora_site_bw(m, l, LW_K, ly->wk, xn1, dk, dxn1, E, kv_dim, T);
@@ -9662,6 +9725,7 @@ static void lbw_state_free(lbw_state *s) {
     free(dxn1); free(dxa); free(dq); free(dk); free(dv); free(hact);
     free(dhact); free(dgu); free(dxn2); free(dao); free(tmpE); free(p);
     free(gpre); free(aopre); free(dg); free(dxg); free(opre); free(fpre);
+    free(s->dqg);
     free(dbr); free(dyb);
     free(vpre); free(dvn); free(xpost); free(ptt); free(pga); free(puu);
     free(pdu); free(pdg); free(pdx);
@@ -9669,10 +9733,439 @@ static void lbw_state_free(lbw_state *s) {
     free(mdh); free(mdg); free(mdu); free(md); free(mdr);
 }
 
+// ---- R8.16: the backward through a Gated DeltaNet layer (qwen35, clef) ----
+//
+// The forward (qwen35_linear and q35_heads_worker), per position t:
+//   mix = W_qkv x, z = W_z x, b = W_beta x, a = W_alpha x (each + adapter)
+//   c   = silu(causal depthwise conv of mix over K taps), the history zero
+//         at position 0 (model_forward resets the recurrent state there)
+//   q, k: c's q and k channels per key group, L2-normed x / sqrt(eps + |x|^2)
+//   per value head h, on key group h % ng and its state S [hv][hv]:
+//     beta = sigmoid(b_h), decay = exp(A_h * softplus(a_h + dt_h))
+//     S <- decay S; delta = beta (v - S k); S <- S + delta k^T
+//     y = S q / sqrt(sk)
+//   o = rmsnorm(y_h) * w * silu(z_h); out = W_out o (+ adapter)
+// The recompute below replays it from the tape over the window and keeps each
+// head's state every C positions (C = ceil(sqrt(T))). The reverse sweep
+// rebuilds one segment of states from its checkpoint and walks it backwards
+// through time, so the states held at once are C per head, not T.
+typedef struct {
+    int sk, ng, nh, hv, keydim, convdim, inner, K, C, nseg;
+    float *mix, *cpre, *craw, *cv, *rq, *rk, *z, *bb, *aa, *beta, *decay;
+    float *y, *o, *ckpt;
+    float *dout, *dz, *dy, *dqh, *dkh, *dv, *dbeta, *ddecay, *dc, *dmix;
+    float *dbb, *daa;
+} lbw_dn;
+
+static void lbw_dn_free(lbw_dn *d) {
+    float **bufs[] = { &d->mix, &d->cpre, &d->craw, &d->cv, &d->rq, &d->rk, &d->z,
+                       &d->bb, &d->aa, &d->beta, &d->decay, &d->y, &d->o, &d->ckpt,
+                       &d->dout, &d->dz, &d->dy, &d->dqh, &d->dkh, &d->dv, &d->dbeta,
+                       &d->ddecay, &d->dc, &d->dmix, &d->dbb, &d->daa };
+    for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++) {
+        free(*bufs[i]);
+        *bufs[i] = NULL;
+    }
+}
+
+static bool lbw_dn_init(const model_t *m, int T, lbw_dn *d) {
+    memset(d, 0, sizeof *d);
+    d->sk = m->ssm.state; d->ng = m->ssm.groups; d->nh = m->ssm.v_heads;
+    d->inner = m->ssm.inner; d->hv = d->inner / d->nh;
+    d->keydim = d->sk * d->ng; d->convdim = 2 * d->keydim + d->inner;
+    d->K = m->ssm.conv_kernel;
+    int C = 1;
+    while (C * C < T) C++;
+    d->C = C;
+    d->nseg = (T + C - 1) / C;
+    size_t Tz = (size_t)T;
+    d->mix  = malloc(sizeof(float) * Tz * d->convdim);
+    d->cpre = malloc(sizeof(float) * Tz * d->convdim);
+    d->craw = malloc(sizeof(float) * Tz * 2 * d->keydim);
+    d->cv   = malloc(sizeof(float) * Tz * d->convdim);
+    d->rq   = malloc(sizeof(float) * Tz * d->ng);
+    d->rk   = malloc(sizeof(float) * Tz * d->ng);
+    d->z    = malloc(sizeof(float) * Tz * d->inner);
+    d->bb   = malloc(sizeof(float) * Tz * d->nh);
+    d->aa   = malloc(sizeof(float) * Tz * d->nh);
+    d->beta = malloc(sizeof(float) * Tz * d->nh);
+    d->decay = malloc(sizeof(float) * Tz * d->nh);
+    d->y    = malloc(sizeof(float) * Tz * d->inner);
+    d->o    = malloc(sizeof(float) * Tz * d->inner);
+    d->ckpt = malloc(sizeof(float) * (size_t)d->nseg * d->nh * d->hv * d->hv);
+    d->dout = calloc(Tz * d->inner, sizeof(float));
+    d->dz   = calloc(Tz * d->inner, sizeof(float));
+    d->dy   = calloc(Tz * d->inner, sizeof(float));
+    d->dqh  = calloc((size_t)d->nh * Tz * d->sk, sizeof(float));
+    d->dkh  = calloc((size_t)d->nh * Tz * d->sk, sizeof(float));
+    d->dv   = calloc(Tz * d->inner, sizeof(float));
+    d->dbeta = calloc(Tz * d->nh, sizeof(float));
+    d->ddecay = calloc(Tz * d->nh, sizeof(float));
+    d->dc   = calloc(Tz * d->convdim, sizeof(float));
+    d->dmix = calloc(Tz * d->convdim, sizeof(float));
+    d->dbb  = calloc(Tz * d->nh, sizeof(float));
+    d->daa  = calloc(Tz * d->nh, sizeof(float));
+    bool ok = d->mix && d->cpre && d->craw && d->cv && d->rq && d->rk && d->z &&
+              d->bb && d->aa && d->beta && d->decay && d->y && d->o && d->ckpt &&
+              d->dout && d->dz && d->dy && d->dqh && d->dkh && d->dv && d->dbeta &&
+              d->ddecay && d->dc && d->dmix && d->dbb && d->daa;
+    if (!ok) lbw_dn_free(d);
+    return ok;
+}
+
+// One step of a head's recurrence on its state S [hv][hv] (row j a value
+// dim, column i a key dim), in q35_heads_worker's order: the decay, then per
+// row the prediction, the delta correction, the update and the readout.
+// y (or NULL) gets S q / sqrt(sk).
+static inline void dn_step(float *S, int hv, int sk, float decay, float beta,
+                           const float *q, const float *k, const float *v,
+                           float *y) {
+    for (int j = 0; j < hv; j++)
+        for (int i = 0; i < hv; i++) S[j * hv + i] *= decay;
+    for (int j = 0; j < hv; j++) {
+        float pred = 0;
+        for (int i = 0; i < hv; i++) pred += S[j * hv + i] * k[i];
+        float delta = (v[j] - pred) * beta;
+        for (int i = 0; i < hv; i++) S[j * hv + i] += delta * k[i];
+        if (y) {
+            float acc = 0;
+            for (int i = 0; i < hv; i++) acc += S[j * hv + i] * q[i];
+            y[j] = acc / sqrtf((float)sk);
+        }
+    }
+}
+
+typedef struct {
+    const model_t *m; const layer_t *ly; lbw_dn *d; int T; bool ok;
+} dn_job;
+
+// Recompute, one head per item: its recurrence over the window (filing a
+// checkpoint at every segment start), then its gated output norm.
+static void dn_fw_worker(void *vp, int h0, int h1) {
+    dn_job *J = vp;
+    lbw_dn *d = J->d;
+    const int hv = d->hv, sk = d->sk, T = J->T;
+    float *S = malloc(sizeof(float) * (size_t)hv * hv);
+    if (!S) { J->ok = false; return; }
+    for (int h = h0; h < h1; h++) {
+        memset(S, 0, sizeof(float) * (size_t)hv * hv);
+        int g = h % d->ng;
+        for (int t = 0; t < T; t++) {
+            if (t % d->C == 0)
+                memcpy(d->ckpt + ((size_t)(t / d->C) * d->nh + h) * hv * hv, S,
+                       sizeof(float) * (size_t)hv * hv);
+            const float *c = d->cv + (size_t)t * d->convdim;
+            dn_step(S, hv, sk, d->decay[(size_t)t * d->nh + h],
+                    d->beta[(size_t)t * d->nh + h], c + g * sk,
+                    c + d->keydim + g * sk, c + 2 * d->keydim + h * hv,
+                    d->y + (size_t)t * d->inner + h * hv);
+            float *o = d->o + (size_t)t * d->inner + h * hv;
+            rmsnorm(o, d->y + (size_t)t * d->inner + h * hv, J->ly->ssm_norm_w, hv,
+                    J->m->rms_eps);
+            const float *z = d->z + (size_t)t * d->inner + h * hv;
+            for (int j = 0; j < hv; j++) o[j] *= z[j] / (1.0f + expf(-z[j]));
+        }
+    }
+    free(S);
+}
+
+// The reverse sweep, one head per item. Per segment (last first): the states
+// rebuilt from its checkpoint, then t from the segment's end down, with dS
+// the gradient on the state after step t carried across segments:
+//   y:      dS += (dy/sqrt(sk)) q^T,  dq += S_t^T (dy/sqrt(sk))
+//   update: d delta = dS k,  dk += dS^T delta
+//   delta:  dv = beta d delta, dbeta = d delta . (v - pred),
+//           dSd = dS - beta (d delta) k^T, dk -= Sd^T beta d delta
+//   decay:  ddecay = <dSd, S_{t-1}>,  dS <- decay dSd
+// Each head writes only its own rows of dq/dk (per head), dv, dbeta and
+// ddecay, so the result does not depend on the thread count.
+static void dn_bw_worker(void *vp, int h0, int h1) {
+    dn_job *J = vp;
+    lbw_dn *d = J->d;
+    const int hv = d->hv, sk = d->sk, T = J->T, C = d->C;
+    size_t hh = (size_t)hv * hv;
+    float *Sb = malloc(sizeof(float) * hh * (size_t)(C + 1));
+    float *dS = malloc(sizeof(float) * hh);
+    if (!Sb || !dS) { free(Sb); free(dS); J->ok = false; return; }
+    const float rs = 1.0f / sqrtf((float)sk);
+    for (int h = h0; h < h1; h++) {
+        memset(dS, 0, sizeof(float) * hh);
+        int g = h % d->ng;
+        for (int seg = d->nseg - 1; seg >= 0; seg--) {
+            int t0 = seg * C, t1 = t0 + C < T ? t0 + C : T;
+            memcpy(Sb, d->ckpt + ((size_t)seg * d->nh + h) * hh, sizeof(float) * hh);
+            for (int t = t0; t < t1; t++) {
+                const float *c = d->cv + (size_t)t * d->convdim;
+                float *Sn = Sb + (size_t)(t - t0 + 1) * hh;
+                memcpy(Sn, Sn - hh, sizeof(float) * hh);
+                dn_step(Sn, hv, sk, d->decay[(size_t)t * d->nh + h],
+                        d->beta[(size_t)t * d->nh + h], c + g * sk,
+                        c + d->keydim + g * sk, c + 2 * d->keydim + h * hv, NULL);
+            }
+            for (int t = t1 - 1; t >= t0; t--) {
+                const float *c = d->cv + (size_t)t * d->convdim;
+                const float *q = c + g * sk, *k = c + d->keydim + g * sk;
+                const float *v = c + 2 * d->keydim + h * hv;
+                const float *Sp = Sb + (size_t)(t - t0) * hh;      // S_{t-1}
+                const float *St = Sp + hh;                          // S_t
+                float dec = d->decay[(size_t)t * d->nh + h];
+                float bet = d->beta[(size_t)t * d->nh + h];
+                const float *dyt = d->dy + (size_t)t * d->inner + h * hv;
+                float *dq = d->dqh + ((size_t)h * T + t) * sk;
+                float *dk = d->dkh + ((size_t)h * T + t) * sk;
+                float *dvt = d->dv + (size_t)t * d->inner + h * hv;
+                double dbeta = 0.0, ddec = 0.0;
+                for (int j = 0; j < hv; j++) {
+                    float gj = dyt[j] * rs;
+                    float *dSj = dS + (size_t)j * hv;
+                    const float *Stj = St + (size_t)j * hv;
+                    for (int i = 0; i < hv; i++) {
+                        dSj[i] += gj * q[i];
+                        dq[i] += gj * Stj[i];
+                    }
+                }
+                for (int j = 0; j < hv; j++) {
+                    float *dSj = dS + (size_t)j * hv;
+                    const float *Spj = Sp + (size_t)j * hv;
+                    float pred = 0;
+                    for (int i = 0; i < hv; i++) pred += (Spj[i] * dec) * k[i];
+                    float delta = (v[j] - pred) * bet;
+                    float dd = 0;
+                    for (int i = 0; i < hv; i++) dd += dSj[i] * k[i];
+                    for (int i = 0; i < hv; i++) dk[i] += dSj[i] * delta;
+                    dvt[j] = bet * dd;
+                    dbeta += (double)dd * (double)(v[j] - pred);
+                    float dpred = -bet * dd;
+                    for (int i = 0; i < hv; i++) {
+                        float sd = Spj[i] * dec;
+                        float dsd = dSj[i] + dpred * k[i];
+                        dk[i] += sd * dpred;
+                        ddec += (double)dsd * (double)Spj[i];
+                        dSj[i] = dec * dsd;
+                    }
+                }
+                d->dbeta[(size_t)t * d->nh + h] = (float)dbeta;
+                d->ddecay[(size_t)t * d->nh + h] = (float)ddec;
+            }
+        }
+    }
+    free(Sb);
+    free(dS);
+}
+
+// Phase R for a DeltaNet layer: the mixer recomputed from the tape over the
+// window, its output into the residual, then the FFN's internals as the dense
+// recompute has them.
+NUM_STAGE void lbw_recompute_deltanet(model_t *m, int l, int T, lbw_state *s,
+                                   lbw_dn *d, bool *okp) {
+    layer_t *ly = s->ly;
+    const int E = s->E, nff = s->nff, cd = d->convdim, nh = d->nh, sk = d->sk;
+    const int histn = d->K - 1;
+    bool ok = *okp;
+    for (int t = 0; ok && t < T; t++) {
+        const float *xt = s->tape_x + (size_t)t * E;
+        float *x1 = s->xn1 + (size_t)t * E;
+        xnorm(m, x1, xt, ly->attn_norm_w, ly->attn_norm_b, E, m->rms_eps);
+        float *mx = d->mix + (size_t)t * cd;
+        matvec_b(m->tp, mx, cd, ly->wqkv, x1, E, E, cd, NULL, 1);
+        lora_site_fw(m, l, LW_QKV, mx, x1, E, cd);
+        float *zt = d->z + (size_t)t * d->inner;
+        matvec_b(m->tp, zt, d->inner, ly->wq_gate, x1, E, E, d->inner, NULL, 1);
+        lora_site_fw(m, l, LW_ZGATE, zt, x1, E, d->inner);
+        float *bt = d->bb + (size_t)t * nh, *at = d->aa + (size_t)t * nh;
+        matvec_b(m->tp, bt, nh, ly->ssm_beta, x1, E, E, nh, NULL, 1);
+        lora_site_fw(m, l, LW_BETA, bt, x1, E, nh);
+        matvec_b(m->tp, at, nh, ly->ssm_alpha, x1, E, E, nh, NULL, 1);
+        lora_site_fw(m, l, LW_ALPHA, at, x1, E, nh);
+        // the causal conv over the window (the current tap first, then the
+        // history oldest to newest, as the forward sums it), and silu
+        float *cp = d->cpre + (size_t)t * cd, *cv = d->cv + (size_t)t * cd;
+        for (int c = 0; c < cd; c++) {
+            const float *cw = ly->ssm_conv_w + (size_t)c * d->K;
+            float sum = cw[histn] * mx[c];
+            for (int k = 0; k < histn; k++) {
+                int src = t - histn + k;
+                if (src >= 0) sum += cw[k] * d->mix[(size_t)src * cd + c];
+            }
+            cp[c] = sum;
+            cv[c] = sum / (1.0f + expf(-sum));
+        }
+        // Q and K L2-normed per key group; the pre-norm values and the
+        // inverse norms kept for the adjoint
+        memcpy(d->craw + (size_t)t * 2 * d->keydim, cv,
+               sizeof(float) * (size_t)2 * d->keydim);
+        for (int g = 0; g < d->ng; g++) {
+            float *q = cv + g * sk, *k = cv + d->keydim + g * sk;
+            float qs = m->rms_eps, ks = m->rms_eps;
+            for (int j = 0; j < sk; j++) { qs += q[j] * q[j]; ks += k[j] * k[j]; }
+            qs = 1.0f / sqrtf(qs); ks = 1.0f / sqrtf(ks);
+            d->rq[(size_t)t * d->ng + g] = qs;
+            d->rk[(size_t)t * d->ng + g] = ks;
+            for (int j = 0; j < sk; j++) { q[j] *= qs; k[j] *= ks; }
+        }
+        for (int h = 0; h < nh; h++) {
+            float beta = 1.0f / (1.0f + expf(-bt[h]));
+            float a = at[h] + ly->ssm_dt[h];
+            float softplus = a > 20.0f ? a : log1pf(expf(a));
+            d->beta[(size_t)t * nh + h] = beta;
+            d->decay[(size_t)t * nh + h] = expf(ly->ssm_a[h] * softplus);
+        }
+    }
+    if (ok) {
+        dn_job J = { m, ly, d, T, true };
+        tpool_run(m->tp, dn_fw_worker, &J, nh);
+        ok = J.ok;
+    }
+    for (int t = 0; ok && t < T; t++) {
+        const float *xt = s->tape_x + (size_t)t * E;
+        const float *ot = d->o + (size_t)t * d->inner;
+        matvec_b(m->tp, s->tmpE, E, ly->ssm_out, ot, d->inner, d->inner, E, NULL, 1);
+        lora_site_fw(m, l, LW_SSMO, s->tmpE, ot, d->inner, E);
+        if (ly->post_attn_norm_w) {
+            memcpy(s->opre + (size_t)t * E, s->tmpE, sizeof(float) * (size_t)E);
+            rmsnorm(s->tmpE, s->tmpE, ly->post_attn_norm_w, E, m->post_norm_eps);
+        }
+        float *xat = s->xa + (size_t)t * E;
+        for (int i = 0; i < E; i++) xat[i] = xt[i] + s->rs * s->tmpE[i];
+        float *x2 = s->xn2 + (size_t)t * E;
+        xnorm(m, x2, xat, ly->ffn_norm_w, ly->ffn_norm_b, E, m->rms_eps);
+        matvec_b(m->tp, s->g + (size_t)t * nff, nff, ly->w_gate, x2, E, E, nff,
+                 NULL, 1);
+        lora_site_fw(m, l, LW_GATE, s->g + (size_t)t * nff, x2, E, nff);
+        matvec_b(m->tp, s->u + (size_t)t * nff, nff, ly->w_up, x2, E, E, nff,
+                 NULL, 1);
+        lora_site_fw(m, l, LW_UP, s->u + (size_t)t * nff, x2, E, nff);
+        const float *gt = s->g + (size_t)t * nff, *ut = s->u + (size_t)t * nff;
+        float *ht = s->hact + (size_t)t * nff;
+        for (int i = 0; i < nff; i++) ht[i] = gated_act(m->ffn_act, gt[i], ut[i]);
+    }
+    if (s->lprof) { double n2 = plat_now(); lbw_prof[0] += n2 - s->lt; s->lt = n2; }
+    *okp = ok;
+}
+
+// Phases B1-B2 for a DeltaNet layer, from dxa (the FFN phase's gradient on
+// the post-mixer residual) into dxn1: the output projection, the gated norm,
+// the recurrence through time, the q/k norms, silu and the conv, and the
+// four input projections.
+NUM_STAGE void lbw_deltanet_bw(model_t *m, int l, int T, lbw_state *s, lbw_dn *d,
+                            bool *okp) {
+    layer_t *ly = s->ly;
+    const int E = s->E, cd = d->convdim, nh = d->nh, hv = d->hv, sk = d->sk;
+    const int inner = d->inner, histn = d->K - 1;
+    bool ok = *okp;
+    for (int t = 0; ok && t < T; t++) {
+        const float *dxat = s->dxa + (size_t)t * E;
+        float *dbt = s->dbr + (size_t)t * E;
+        if (ly->post_attn_norm_w) {
+            for (int i = 0; i < E; i++) s->dyb[i] = s->rs * dxat[i];
+            memset(dbt, 0, sizeof(float) * (size_t)E);
+            rmsnorm_bw(s->opre + (size_t)t * E, ly->post_attn_norm_w, s->dyb, dbt, E,
+                       m->post_norm_eps);
+        } else {
+            for (int i = 0; i < E; i++) dbt[i] = s->rs * dxat[i];
+        }
+    }
+    ok = ok && lora_site_bw(m, l, LW_SSMO, ly->ssm_out, d->o, s->dbr, d->dout,
+                            inner, E, T);
+    // o = rmsnorm(y) w silu(z): dz = do rn silu'(z), d rn = do silu(z), and
+    // the norm's adjoint into dy
+    for (int t = 0; ok && t < T; t++)
+        for (int h = 0; h < nh; h++) {
+            size_t off = (size_t)t * inner + (size_t)h * hv;
+            float rn[1024], drn[1024];
+            if (hv > 1024) { ok = false; break; }
+            rmsnorm(rn, d->y + off, ly->ssm_norm_w, hv, m->rms_eps);
+            for (int j = 0; j < hv; j++) {
+                float z = d->z[off + j], dov = d->dout[off + j];
+                float gz = z / (1.0f + expf(-z));
+                d->dz[off + j] = dov * rn[j] * silu_d(z);
+                drn[j] = dov * gz;
+            }
+            rmsnorm_bw(d->y + off, ly->ssm_norm_w, drn, d->dy + off, hv, m->rms_eps);
+        }
+    if (ok) {
+        dn_job J = { m, ly, d, T, true };
+        tpool_run(m->tp, dn_bw_worker, &J, nh);
+        ok = J.ok;
+    }
+    for (int t = 0; ok && t < T; t++) {
+        float *dc = d->dc + (size_t)t * cd;
+        // the heads' q/k gradients summed into their key group, heads in
+        // order; v's straight into its channels
+        for (int h = 0; h < nh; h++) {
+            int g = h % d->ng;
+            const float *dq = d->dqh + ((size_t)h * T + t) * sk;
+            const float *dk = d->dkh + ((size_t)h * T + t) * sk;
+            for (int i = 0; i < sk; i++) {
+                dc[g * sk + i] += dq[i];
+                dc[d->keydim + g * sk + i] += dk[i];
+            }
+            memcpy(dc + 2 * d->keydim + h * hv, d->dv + (size_t)t * inner + h * hv,
+                   sizeof(float) * (size_t)hv);
+        }
+        // the L2 norm's adjoint: dx = r dn - r^3 x (x . dn)
+        const float *raw = d->craw + (size_t)t * 2 * d->keydim;
+        for (int g = 0; g < d->ng; g++)
+            for (int w = 0; w < 2; w++) {
+                const float *x = raw + w * d->keydim + g * sk;
+                float *dn = dc + w * d->keydim + g * sk;
+                float r = (w ? d->rk : d->rq)[(size_t)t * d->ng + g];
+                float dot = 0;
+                for (int i = 0; i < sk; i++) dot += x[i] * dn[i];
+                float c3 = r * r * r * dot;
+                for (int i = 0; i < sk; i++) dn[i] = r * dn[i] - c3 * x[i];
+            }
+        // silu's adjoint, then beta's and the decay's
+        const float *cp = d->cpre + (size_t)t * cd;
+        for (int c = 0; c < cd; c++) dc[c] *= silu_d(cp[c]);
+        for (int h = 0; h < nh; h++) {
+            size_t k = (size_t)t * nh + h;
+            float b = d->beta[k];
+            d->dbb[k] = d->dbeta[k] * b * (1.0f - b);
+            float a = d->aa[k] + ly->ssm_dt[h];
+            float dsp = a > 20.0f ? 1.0f : 1.0f / (1.0f + expf(-a));
+            d->daa[k] = d->ddecay[k] * d->decay[k] * ly->ssm_a[h] * dsp;
+        }
+    }
+    // the conv's adjoint: tap j at step t read mix at t - histn + j
+    for (int t = 0; ok && t < T; t++) {
+        const float *dc = d->dc + (size_t)t * cd;
+        for (int c = 0; c < cd; c++) {
+            const float *cw = ly->ssm_conv_w + (size_t)c * d->K;
+            for (int j = 0; j <= histn; j++) {
+                int src = t - histn + j;
+                if (src >= 0) d->dmix[(size_t)src * cd + c] += cw[j] * dc[c];
+            }
+        }
+    }
+    ok = ok && lora_site_bw(m, l, LW_QKV, ly->wqkv, s->xn1, d->dmix, s->dxn1, E, cd, T);
+    ok = ok && lora_site_bw(m, l, LW_ZGATE, ly->wq_gate, s->xn1, d->dz, s->dxn1, E,
+                            inner, T);
+    ok = ok && lora_site_bw(m, l, LW_BETA, ly->ssm_beta, s->xn1, d->dbb, s->dxn1, E,
+                            nh, T);
+    ok = ok && lora_site_bw(m, l, LW_ALPHA, ly->ssm_alpha, s->xn1, d->daa, s->dxn1, E,
+                            nh, T);
+    // RUNNER_TRAIN_PROF: the mixer's backward goes where an attention
+    // layer's does (the "attn" column)
+    if (s->lprof) { double n2 = plat_now(); lbw_prof[2] += n2 - s->lt; s->lt = n2; }
+    *okp = ok;
+}
+
 static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
                           float *dx) {
     lbw_state s;
     bool ok = lbw_state_init(m, l, T, dx, &s);
+    if (m->layers[l].recurrent) {
+        lbw_dn d;
+        ok = lbw_dn_init(m, T, &d) && ok;
+        lbw_recompute_deltanet(m, l, T, &s, &d, &ok);
+        lbw_ffn_and_output(m, l, T, dx, &s, &ok);
+        lbw_deltanet_bw(m, l, T, &s, &d, &ok);
+        lbw_input_grad(m, l, T, dx, &s, &ok);
+        lbw_dn_free(&d);
+        lbw_state_free(&s);
+        return ok;
+    }
     lbw_recompute(m, l, T, dx, &s, &ok);
     lbw_ple_branch(m, l, T, dx, &s, &ok);
     lbw_ffn_and_output(m, l, T, dx, &s, &ok);

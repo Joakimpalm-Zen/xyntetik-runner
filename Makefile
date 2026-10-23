@@ -875,7 +875,7 @@ $(TEST_TC_TOL): $(TEST_TC_TOL_SRC) $(HDR) tests/finite_check.h
 TEST_LORA_GRAD_SRC = tests/test_lora_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
                   $(GPU_OBJ)
-$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf
+$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-prope.gguf test-lora-prope.full.gguf test-prope-neox.gguf test-lora-prope-neox.full.gguf test-ornith.gguf test-lora-ornith.full.gguf test-clef.gguf test-lora-clef.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
 
 test-lora.full.gguf: test.gguf scripts/make-test-lora.py
@@ -950,6 +950,20 @@ test-nope.gguf: scripts/make-test-model.py
 
 test-lora-nope.full.gguf: test-nope.gguf scripts/make-test-lora.py
 	$(PYTHON) scripts/make-test-lora.py test-nope.gguf test-lora-nope
+
+# R8.16: partial-dimension rope, half of each 16-wide head rotated, in the
+# interleaved-pair (llama) and the split-half (neox, qwen3) layouts
+test-prope.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py test-prope.gguf --rope-dim 8
+
+test-lora-prope.full.gguf: test-prope.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-prope.gguf test-lora-prope
+
+test-prope-neox.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py test-prope-neox.gguf --arch qwen3 --rope-dim 8
+
+test-lora-prope-neox.full.gguf: test-prope-neox.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-prope-neox.gguf test-lora-prope-neox
 
 # R8.9.4 dense-shape variants in the backward: granite's muP scalars
 # (embedding, fixed attention, residual and divided logit scale, tied
@@ -1395,6 +1409,18 @@ test.gguf: scripts/make-test-model.py
 # the recurrent-state cache-seam gate (make-test-model.py cannot emit an SSM arch)
 test-ornith.gguf: scripts/make-test-ornith.py
 	$(PYTHON) scripts/make-test-ornith.py test-ornith.gguf
+
+# R8.16: full-coverage adapters on the qwen35 and clef fixtures (every
+# DeltaNet projection, the fused Q/gate and K/V/output of the attention
+# layer, every FFN) for the backward through the recurrence
+test-lora-ornith.full.gguf: test-ornith.gguf scripts/make-test-lora.py
+	LORA_TARGETS=qwen35 $(PYTHON) scripts/make-test-lora.py test-ornith.gguf test-lora-ornith
+
+test-clef.gguf: scripts/make-test-clef.py
+	$(PYTHON) scripts/make-test-clef.py test-clef.gguf
+
+test-lora-clef.full.gguf: test-clef.gguf scripts/make-test-lora.py
+	LORA_TARGETS=qwen35 $(PYTHON) scripts/make-test-lora.py test-clef.gguf test-lora-clef
 
 # same geometry/vocab, different weights: a draft model that genuinely diverges
 # from the target, so the speculative fold-rollback gate exercises rejection
@@ -2580,7 +2606,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
-      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-ornith.gguf test-ornith-draft.gguf test-yarn.gguf \
+      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf \
       test-qk.gguf test-gemma3.gguf test-gemma4.gguf test-es.gguf test-muse.gguf test-granite.gguf \
       test-gemma3-62.gguf test-gemma3-26.gguf test-qwen4exp.gguf
 	./$(TEST_RECURRENT)
@@ -2622,6 +2648,15 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	@# and on NoPE layers with the attention temperature live: the recompute
 	@# and the backward must match the serving forward (no rope, Q scaled)
 	./$(TEST_LORA_GRAD) test-nope.gguf test-lora-nope.full.gguf
+	@# and with partial-dimension rope (R8.16): the transpose rotates only
+	@# the rope_dim dims, pairs (llama) and split halves (neox)
+	./$(TEST_LORA_GRAD) test-prope.gguf test-lora-prope.full.gguf
+	./$(TEST_LORA_GRAD) test-prope-neox.gguf test-lora-prope-neox.full.gguf
+	@# and through the Gated DeltaNet recurrence (R8.16), qwen35 and clef:
+	@# per-slot directions and the exact-zero probe on top ("slots"), since
+	@# the whole-adapter direction missed a dropped decay or gate term
+	./$(TEST_LORA_GRAD) test-ornith.gguf test-lora-ornith.full.gguf slots
+	./$(TEST_LORA_GRAD) test-clef.gguf test-lora-clef.full.gguf slots
 	@# R8.9.4: granite's muP scalars (residual and logit scale, fixed
 	@# attention scale, tied output) and muse-glimmer's output gate, sandwich
 	@# norms, sliding window and softcapped head, all through the adjoint
@@ -2795,7 +2830,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./runner -m test.gguf --quantize test-load-oom-cut.gguf --remove-sublayer attn:1 > /dev/null 2>&1
 	./$(TEST_MODEL_LOAD_OOM) test.gguf test-qk.gguf test-gemma3.gguf test-gemma4.gguf \
 	    test-load-oom-g4h.gguf test-es.gguf test-muse.gguf test-granite.gguf \
-	    test-ornith.gguf test-qwen4exp.gguf test-load-oom-moe.gptoss-mxfp4.gguf \
+	    test-ornith.gguf test-clef.gguf test-qwen4exp.gguf test-load-oom-moe.gptoss-mxfp4.gguf \
 	    test-load-oom-moe.shexpg.gguf test-load-oom-moe.gemma4-moe.gguf \
 	    test-load-oom-hybrid.gguf test-load-oom-nemotron.gguf test-load-oom-mtp.gguf \
 	    test-load-oom-cut.gguf test-load-oom-ffw.gguf 2> test-model-load-oom.err || \
@@ -2829,7 +2864,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(MAKE) --no-print-directory test-attn-split
 	$(PYTHON) scripts/check-generated.py
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
-	$(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_hf_fetch.py tests/test_pull.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_decide.py tests/test_clef.py tests/test_hf_spec_bounds.py tests/test_lora.py tests/test_lora_qwen35.py tests/test_train.py tests/test_train_teacher.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_difftok.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_session_images.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_cli_lifecycle.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py
+	$(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_hf_fetch.py tests/test_pull.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_decide.py tests/test_clef.py tests/test_hf_spec_bounds.py tests/test_lora.py tests/test_lora_qwen35.py tests/test_train.py tests/test_train_teacher.py tests/test_deltanet_autograd.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_difftok.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_session_images.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_cli_lifecycle.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py
 	$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"
 

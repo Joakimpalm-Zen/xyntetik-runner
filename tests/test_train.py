@@ -110,6 +110,9 @@ TRAIN_FAMILIES = {
     "muse": ("make-test-model.py", ["--muse-glimmer"], None),
     "granite": ("make-test-model.py", ["--granite"], None),
     "q8_0": ("make-test-model.py", ["--quant", "q8_0"], None),
+    "partial-rope": ("make-test-model.py", ["--arch", "qwen3", "--rope-dim", "8"], None),
+    "qwen35": ("make-test-ornith.py", [], None),
+    "clef": ("make-test-clef.py", [], None),
     "moe-renorm": ("make-test-moe.py", [], "moe4-train"),
     "moe-no-renorm": ("make-test-moe.py", [], "moe4-train-nonorm"),
 }
@@ -147,6 +150,19 @@ def test_loss_falls_and_adapter_improves_score(runner_bin, base, tmp_path):
     base_nll = _score(runner_bin, base)
     tuned_nll = _score(runner_bin, base, lora=out)
     assert tuned_nll < base_nll - 0.2, (base_nll, tuned_nll)
+
+
+# R8.16: training through the Gated DeltaNet recurrence learns, end to end:
+# the loss falls on the corpus and the saved adapter, loaded back through
+# --lora (the serving hooks on all five DeltaNet projections, the fused Q/gate
+# and the FFN), scores the trained text better than the bare base.
+@pytest.mark.parametrize("family", ["qwen35", "clef"])
+def test_deltanet_training_learns_and_serves(runner_bin, tmp_path, family):
+    d = _family_fixture(tmp_path, family)
+    out = tmp_path / "ad.gguf"
+    losses = _train(runner_bin, d, out, steps=30)
+    assert losses[-1] < losses[0] * 0.95, (losses[0], losses[-1])
+    assert _score(runner_bin, d, lora=out) < _score(runner_bin, d) - 0.2
 
 
 # --train-dpo end to end: run_train's DPO step loop, its per-step fields, the
@@ -343,6 +359,27 @@ def test_gpu_training_matches_cpu_bytes_on_moe_experts(runner_bin, base, tmp_pat
         pytest.skip("no CUDA device engaged")
     assert a_cpu.read_bytes() == a_gpu.read_bytes(), \
         (family, "GPU-assisted training changed the MoE adapter's bytes")
+
+
+# R8.16: the backward through Gated DeltaNet runs the transposed products of
+# the five DeltaNet projections (and the fused Q/gate one) through the same
+# matvec_t the assist moves to the device: the adapter must stay the CPU's.
+@pytest.mark.parametrize("family", ["qwen35", "clef"])
+def test_gpu_training_matches_cpu_bytes_through_deltanet(runner_bin, base, tmp_path, family):
+    import os
+    d = _family_fixture(tmp_path, family)
+    a_cpu, a_gpu = tmp_path / "cpu.gguf", tmp_path / "gpu.gguf"
+    _train(runner_bin, d, a_cpu, steps=3, extra=("--gpu", "off"))
+    cmd = [runner_bin, "-m", str(d / "base.gguf"),
+           "--train", str(d / "corpus.txt"), "--train-steps", "3",
+           "--lr", "3e-3", "--train-out", str(a_gpu), "-t", "2", "--gpu", "off"]
+    p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       timeout=600, env=dict(os.environ, RUNNER_TRAIN_GPU="1"))
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    if b"train-gpu:" not in p.stderr or b"no usable CUDA" in p.stderr:
+        pytest.skip("no CUDA device engaged")
+    assert a_cpu.read_bytes() == a_gpu.read_bytes(), \
+        (family, "GPU-assisted training changed the adapter's bytes")
 
 
 def test_seed_changes_the_adapter(runner_bin, base, tmp_path):

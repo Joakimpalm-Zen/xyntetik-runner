@@ -57,6 +57,13 @@ int main(int argc, char **argv) {
     // MoE fixtures) while the correct backward reads 0. Strict holds the
     // resolved coordinates to 0.5%.
     bool strict = argc > 3 && strcmp(argv[3], "strict") == 0;
+    // "slots" (R8.16): also a directional derivative along each projection
+    // slot's own coordinates. The whole-adapter direction is dominated by
+    // the large slots: on the qwen35 fixture a backward that dropped the
+    // DeltaNet decay's gradient (the ssm_alpha slot, gradients near 1e-3)
+    // passed it at cosine 0.99983, where its own direction reads an
+    // analytic 0 against a nonzero finite difference.
+    bool slots = argc > 3 && strcmp(argv[3], "slots") == 0;
     f16_init();
     model_params p;
     memset(&p, 0, sizeof(p));
@@ -103,11 +110,11 @@ int main(int argc, char **argv) {
     // ---- determinism: two runs, byte-identical grads and bit-equal loss
     double l1 = run_backward(&m, toks);
     // snapshot every grad buffer
-    enum { MAX_BUF = 64 };
+    enum { MAX_BUF = 128 };
     float *snap[MAX_BUF]; int snap_n[MAX_BUF]; int nsnap = 0;
     int lay[MAX_BUF], slo[MAX_BUF], whi[MAX_BUF];
     for (int l = 0; l < m.n_layer; l++)
-        for (int s = 0; s < 7; s++)
+        for (int s = 0; s < LW_SLOTS; s++)
             for (int w = 0; w < 2; w++) {
                 int cnt = 0;
                 float *g = model_lora_gradbuf(&m, l, s, w, &cnt);
@@ -130,6 +137,23 @@ int main(int argc, char **argv) {
     }
     printf("ok: loss %.6f, %d grad buffers byte-deterministic across runs\n",
            l1, nsnap);
+    // RUNNER_GRAD_DUMP=FILE: the loss, then per buffer its layer, slot, side
+    // (0 A, 1 B) and count as int32 and its gradients as float32, for
+    // tests/test_deltanet_autograd.py
+    const char *dump = getenv("RUNNER_GRAD_DUMP");
+    if (dump) {
+        FILE *f = fopen(dump, "wb");
+        CHECK(f != NULL, "cannot write RUNNER_GRAD_DUMP %s", dump);
+        if (f) {
+            fwrite(&l1, sizeof l1, 1, f);
+            for (int i = 0; i < nsnap; i++) {
+                int32_t h[4] = { lay[i], slo[i], whi[i], snap_n[i] };
+                fwrite(h, sizeof h, 1, f);
+                fwrite(snap[i], sizeof(float), (size_t)snap_n[i], f);
+            }
+            CHECK(fclose(f) == 0, "cannot write RUNNER_GRAD_DUMP %s", dump);
+        }
+    }
 
     // ---- finite differences on sampled coordinates of every buffer
     double worst = 0, cos_num = 0, cos_a = 0, cos_f = 0;
@@ -285,6 +309,119 @@ int main(int argc, char **argv) {
         // with the sandwich norms); a wrong jacobian term is a bias that no
         // step removes, so the best of the three must sit within 1%
         CHECK(best <= 0.01, "directional derivative: best agreement %.4f is outside 1%%", best);
+    }
+
+    // ---- exact zeros (mode "slots"): a backward that drops a term leaves
+    // the coordinates only that term reached at exactly 0 (the qwen35
+    // attention gate's rows of the fused Q adapter; the ssm_alpha slot when
+    // the decay's gradient is lost), and both directional checks below are
+    // blind there: the sign direction skips them and a random one lets them
+    // cancel. A correct backward is exactly 0 only where the loss does not
+    // depend on the coordinate, and then the loss does not move at all, the
+    // f16 staircase included. Up to three zeros per buffer are probed.
+    for (int i = 0; slots && i < nsnap; i++) {
+        int cnt = 0, probed = 0;
+        float *theta = model_lora_param(&m, lay[i], slo[i], whi[i], &cnt);
+        for (int k = 0; theta && k < snap_n[i] && probed < 3; k++) {
+            if (snap[i][k] != 0.0f) continue;
+            if (probed++ && k != snap_n[i] - 1 && k % 7) continue;
+            float save = theta[k];
+            theta[k] = save + 1e-2f;
+            double lp = run_backward(&m, toks);
+            theta[k] = save - 1e-2f;
+            double lm = run_backward(&m, toks);
+            theta[k] = save;
+            double fd = (lp - lm) / 2e-2;
+            CHECK(fabs(fd) <= 1e-5, "layer %d slot %d %s[%d]: analytic gradient exactly 0 "
+                  "where the loss moves (fd %.3g)", lay[i], slo[i], whi[i] ? "B" : "A", k, fd);
+        }
+    }
+
+    // ---- per-slot directional derivatives (mode "slots")
+    for (int sl = 0; slots && sl < LW_SLOTS; sl++) {
+        double expect = 0;
+        long n_sel = 0;
+        for (int i = 0; i < nsnap; i++)
+            if (slo[i] == sl)
+                for (int k = 0; k < snap_n[i]; k++) { expect += fabs(snap[i][k]); n_sel++; }
+        if (!n_sel) continue;
+        // up to 1e-2: the small slots (ssm_beta, ssm_alpha: slopes near 0.3)
+        // move the loss by too little at 1e-4 to clear its float rounding
+        const float steps[6] = { 1e-4f, 2e-4f, 5e-4f, 1e-3f, 2e-3f, 5e-3f };
+        double best = 1e9, best_fd = 0;
+        for (int si = 0; si < 6; si++) {
+            double lv[2];
+            for (int sg = 0; sg < 2; sg++) {
+                float e = sg ? -steps[si] : steps[si];
+                for (int i = 0; i < nsnap; i++) {
+                    if (slo[i] != sl) continue;
+                    int cnt = 0;
+                    float *theta = model_lora_param(&m, lay[i], slo[i], whi[i], &cnt);
+                    for (int k = 0; theta && k < cnt; k++)
+                        theta[k] += e * (snap[i][k] > 0 ? 1.0f : snap[i][k] < 0 ? -1.0f : 0.0f);
+                }
+                lv[sg] = run_backward(&m, toks);
+                for (int i = 0; i < nsnap; i++) {
+                    if (slo[i] != sl) continue;
+                    int cnt = 0;
+                    float *theta = model_lora_param(&m, lay[i], slo[i], whi[i], &cnt);
+                    for (int k = 0; theta && k < cnt; k++)
+                        theta[k] -= e * (snap[i][k] > 0 ? 1.0f : snap[i][k] < 0 ? -1.0f : 0.0f);
+                }
+            }
+            double fd = (lv[0] - lv[1]) / (2.0 * (double)steps[si]);
+            double mag = fabs(fd) > expect ? fabs(fd) : expect;
+            double rel = mag > 0 ? fabs(fd - expect) / mag : 0;
+            if (rel < best) { best = rel; best_fd = fd; }
+        }
+        printf("ok: slot %d direction: fd %.6g vs analytic %.6g (rel %.5f, %ld coords)\n",
+               sl, best_fd, expect, best, n_sel);
+        CHECK(best <= 0.02, "slot %d: directional derivative off by %.4f (fd %.6g, analytic %.6g)",
+              sl, best, best_fd, expect);
+        // and along a fixed +-1 direction that does not come from the
+        // gradient: the sign direction above is empty where a backward
+        // leaves a slot's gradient at zero (a dropped term), and passes it.
+        // The bound is the slot's L1 gradient norm, the scale of the slope
+        // along the sign direction.
+        double best2 = 1e9, fd2b = 0, an2 = 0;
+        for (int si = 0; si < 6; si++) {
+            double lv[2];
+            an2 = 0;
+            for (int sg = 0; sg < 2; sg++) {
+                uint64_t r = 0x9E3779B97F4A7C15ull ^ (uint64_t)(sl + 1);
+                float e = sg ? -steps[si] : steps[si];
+                for (int i = 0; i < nsnap; i++) {
+                    if (slo[i] != sl) continue;
+                    int cnt = 0;
+                    float *theta = model_lora_param(&m, lay[i], slo[i], whi[i], &cnt);
+                    for (int k = 0; theta && k < cnt; k++) {
+                        r ^= r << 13; r ^= r >> 7; r ^= r << 17;
+                        float dk = (r >> 63) ? 1.0f : -1.0f;
+                        theta[k] += e * dk;
+                        if (sg == 0) an2 += (double)snap[i][k] * dk;
+                    }
+                }
+                lv[sg] = run_backward(&m, toks);
+                r = 0x9E3779B97F4A7C15ull ^ (uint64_t)(sl + 1);
+                for (int i = 0; i < nsnap; i++) {
+                    if (slo[i] != sl) continue;
+                    int cnt = 0;
+                    float *theta = model_lora_param(&m, lay[i], slo[i], whi[i], &cnt);
+                    for (int k = 0; theta && k < cnt; k++) {
+                        r ^= r << 13; r ^= r >> 7; r ^= r << 17;
+                        theta[k] -= e * ((r >> 63) ? 1.0f : -1.0f);
+                    }
+                }
+            }
+            double fd = (lv[0] - lv[1]) / (2.0 * (double)steps[si]);
+            double scale = expect > 0 ? expect : fabs(fd);
+            double rel = scale > 0 ? fabs(fd - an2) / scale : 0;
+            if (rel < best2) { best2 = rel; fd2b = fd; }
+        }
+        printf("ok: slot %d random direction: fd %.6g vs analytic %.6g (off %.5f of |g|_1)\n",
+               sl, fd2b, an2, best2);
+        CHECK(best2 <= 0.02, "slot %d: random-direction derivative off by %.4f of |g|_1 "
+              "(fd %.6g, analytic %.6g)", sl, best2, fd2b, an2);
     }
 
     for (int i = 0; i < nsnap; i++) free(snap[i]);
