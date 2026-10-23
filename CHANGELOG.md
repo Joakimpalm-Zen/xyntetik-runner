@@ -220,6 +220,14 @@ Current release and unreleased changes. Compatibility follows the
   to 1.8 s). The backward's own products and the attention and DeltaNet
   backward are unchanged.
 
+- **`scripts/decide-calibrate.py --rendering raw-v1|continuation-v1`.** The
+  calibration instrument sent no `rendering`, so every run measured the
+  server's default, `raw-v1`. The flag names the rendering in every request
+  and records it in the result and the report's header; `continuation-v1`
+  with an `--answer-prefix` is refused before any request, as the server
+  would refuse each one. Without the flag the requests and the output are
+  byte for byte what they were.
+
 ## v1.5.1 - 2026-10-23
 
 - **Metal: Q4_K decode matvecs take the fast kernel by default on dense

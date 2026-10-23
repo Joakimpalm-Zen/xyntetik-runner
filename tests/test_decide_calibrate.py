@@ -45,9 +45,12 @@ class _Server:
     test can assert on exactly what was sent over the wire.
     """
 
-    def __init__(self, scorer, served=("test",), not_found=False):
+    def __init__(self, scorer, served=("test",), not_found=False, refuse_batches=False):
         self.served = list(served)
         self.not_found = not_found
+        # a 400 for any request carrying more than one question, so the
+        # instrument's one-question-at-a-time fallback is what gets scored
+        self.refuse_batches = refuse_batches
         self.scorer = scorer
         self.received = []
         outer = self
@@ -84,6 +87,16 @@ class _Server:
                 length = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(length))
                 outer.received.append(body)
+                if outer.refuse_batches and len(body["questions"]) > 1:
+                    out = json.dumps({"error": {"message": "one question per request",
+                                                "type": "invalid_request_error",
+                                                "param": "questions", "code": None}}).encode()
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(out)))
+                    self.end_headers()
+                    self.wfile.write(out)
+                    return
                 decisions = []
                 for q in body["questions"]:
                     opts = q["options"]
@@ -560,3 +573,125 @@ def test_emit_predictions_writes_every_question_with_its_probabilities(tmp_path,
         assert abs(sum(rec["probs"]) - 1.0) < 1e-6
         assert rec["failed"] is False
         assert len(rec["label_dist"]) == len(src["options"])
+
+
+# ------------------------------------------- (l) the rendering a run asks for ---
+#
+# POST /v1/decide takes `rendering`: raw-v1 (the server's default) or
+# continuation-v1 (src/decide.c). Without --rendering the instrument sends
+# no field and its output is the shape it had before the flag existed; with
+# it, every request carries the field and the output says which it was.
+
+# the provenance keys of a run without --rendering, in order: the output
+# before the flag existed, which a default run still writes
+PROVENANCE_KEYS = [
+    "schema_version", "questions_file", "questions_sha256", "endpoint",
+    "model_name", "answer_prefix", "seed", "holdout_frac", "bins",
+    "batch_state", "runner_git_describe", "n_rows", "n_skipped", "n_failed",
+    "n_train_rows", "n_train_groups", "n_holdout_rows", "n_holdout_groups",
+    "n_train_permutation_groups", "n_holdout_permutation_groups",
+    "per_source_counts",
+]
+
+
+def _run(server, qfile, tmp_path, tag, *extra):
+    out, report, pred = (tmp_path / f"{tag}.json", tmp_path / f"{tag}.md",
+                         tmp_path / f"{tag}.jsonl")
+    code = dc.main(["--questions", str(qfile), "--endpoint", server.endpoint,
+                    "--model-name", "test", "--seed", "42", "--holdout-frac", "0.5",
+                    "--out", str(out), "--report", str(report),
+                    "--emit-predictions", str(pred), *extra])
+    return code, out, report, pred
+
+
+def test_rendering_reaches_the_body_only_when_named(tmp_path, make_server):
+    server = make_server(hash_scorer)
+    qfile = tmp_path / "questions.jsonl"
+    write_jsonl(qfile, ROWS)
+    assert _run(server, qfile, tmp_path, "default")[0] == 0
+    default_bodies, server.received = server.received, []
+    assert default_bodies
+    # the request a default run sends is the one it sent before the flag
+    assert all(sorted(b) == ["answer_prefix", "model", "questions", "state"]
+               for b in default_bodies)
+    for rendering in ("continuation-v1", "raw-v1"):
+        assert _run(server, qfile, tmp_path, rendering, "--rendering", rendering)[0] == 0
+        assert len(server.received) == len(default_bodies)
+        assert all(b["rendering"] == rendering for b in server.received)
+        server.received = []
+
+
+def test_rendering_reaches_every_request_of_the_one_question_fallback(tmp_path, make_server):
+    # a 400 on a shared-state batch is retried one question at a time; each
+    # of those requests is scored under the rendering the run named
+    server = make_server(hash_scorer, refuse_batches=True)
+    qfile = tmp_path / "questions.jsonl"
+    write_jsonl(qfile, ROWS)
+    code, out, _, _ = _run(server, qfile, tmp_path, "cont", "--rendering", "continuation-v1")
+    assert code == 0
+    assert json.loads(out.read_text())["provenance"]["n_failed"] == 0
+    singles = [b for b in server.received if len(b["questions"]) == 1]
+    assert len(singles) == len(ROWS)
+    assert all(b["rendering"] == "continuation-v1" for b in server.received)
+
+
+def test_a_default_run_writes_the_output_it_wrote_before(tmp_path, make_server):
+    """Without --rendering the result, report and predictions are the bytes
+    the instrument wrote before the flag: an explicit --rendering raw-v1 run
+    against the same server differs from them by exactly the recorded field
+    and the report's one header line."""
+    server = make_server(hash_scorer)
+    qfile = tmp_path / "questions.jsonl"
+    write_jsonl(qfile, ROWS)
+    _, d_out, d_report, d_pred = _run(server, qfile, tmp_path, "default")
+    _, e_out, e_report, e_pred = _run(server, qfile, tmp_path, "explicit",
+                                      "--rendering", "raw-v1")
+    default = json.loads(d_out.read_text(encoding="utf-8"))
+    assert list(default["provenance"]) == PROVENANCE_KEYS
+    assert "rendering" not in d_report.read_text(encoding="utf-8")
+    explicit = json.loads(e_out.read_text(encoding="utf-8"))
+    assert explicit["provenance"].pop("rendering") == "raw-v1"
+    assert json.dumps(explicit, indent=2) == d_out.read_text(encoding="utf-8")
+    e_lines = e_report.read_text(encoding="utf-8").split("\n")
+    e_lines.remove("rendering: raw-v1")
+    assert "\n".join(e_lines) == d_report.read_text(encoding="utf-8")
+    assert e_pred.read_bytes() == d_pred.read_bytes()
+
+
+def test_the_report_header_names_the_rendering(tmp_path, make_server):
+    server = make_server(hash_scorer)
+    qfile = tmp_path / "questions.jsonl"
+    write_jsonl(qfile, ROWS)
+    code, out, report, _ = _run(server, qfile, tmp_path, "cont",
+                                "--rendering", "continuation-v1")
+    assert code == 0
+    assert json.loads(out.read_text())["provenance"]["rendering"] == "continuation-v1"
+    header = report.read_text(encoding="utf-8").split("## ")[0]
+    assert "rendering: continuation-v1" in header.splitlines()
+
+
+def test_an_unknown_rendering_is_refused_before_any_request(tmp_path, make_server, capsys):
+    server = make_server(hash_scorer)
+    qfile = tmp_path / "questions.jsonl"
+    write_jsonl(qfile, ROWS)
+    with pytest.raises(SystemExit) as e:
+        dc.main(["--questions", str(qfile), "--endpoint", server.endpoint,
+                 "--model-name", "test", "--rendering", "chat-v1"])
+    assert e.value.code == 2
+    assert "invalid choice: 'chat-v1'" in capsys.readouterr().err
+    assert server.received == []
+
+
+def test_continuation_with_an_answer_prefix_is_refused_before_any_request(
+        tmp_path, make_server, capsys):
+    # the server refuses answer_prefix under continuation-v1 (a 400 per
+    # request, src/decide.c); the instrument says so once, up front
+    server = make_server(hash_scorer)
+    qfile = tmp_path / "questions.jsonl"
+    write_jsonl(qfile, ROWS)
+    code = dc.main(["--questions", str(qfile), "--endpoint", server.endpoint,
+                    "--model-name", "test", "--rendering", "continuation-v1",
+                    "--answer-prefix", "Answer:"])
+    assert code == 2
+    assert "--answer-prefix" in capsys.readouterr().err
+    assert server.received == []
