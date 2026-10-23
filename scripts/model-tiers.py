@@ -25,7 +25,16 @@ whether the LoRA backward admits the file and whether an adapter can be
 served on it, each with the refusal sentence when not.
 
     scripts/model-tiers.py --check
+    scripts/model-tiers.py --stale [--today YYYY-MM-DD]
     scripts/model-tiers.py --record ROW --result smoke-result.json
+
+`--stale` is the release gate's question, asked the way
+scripts/device-evidence.py asks it of the device classes: every Tier 1 row's
+smoke cell (the backend and device class the row names) must exist, must have
+passed, and must be no older than the row's max age (the policy default
+unless the row sets a tighter one). A recorded failure on any backend of the
+row refuses too. scripts/check-release.py refuses a tag while any row is not
+current.
 """
 
 import argparse
@@ -241,6 +250,9 @@ def validate(doc, devices):
             if tier == "upcoming" and any(
                     (c or {}).get("kind") == "gate" for c in backends.values()):
                 errs.append(f"{where}: an Upcoming row carries no gate; promote it first")
+        mad = row.get("max_age_days")
+        if mad is not None and (not isinstance(mad, int) or mad <= 0):
+            errs.append(f"{where}: max_age_days {mad!r}")
         if tier == "upcoming" and not _text(row.get("missing")):
             errs.append(f"{where}: an Upcoming row says what is missing")
         if tier != "tier1":
@@ -286,6 +298,54 @@ def validate(doc, devices):
                 if not _text(p) or not _repo_path_exists(p):
                     errs.append(f"{where}: evidence {p!r} does not exist")
     return errs
+
+
+def today(override=None):
+    if override:
+        return datetime.date.fromisoformat(override)
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
+
+def stale(doc, now, out=None):
+    """Report every Tier 1 row; return the ids of those that are not current.
+
+    Prints the fresh rows too, as the device ledger does: the number that
+    matters is how old the freshest evidence is, and a check that only
+    speaks when it is angry trains a reader to take silence for coverage.
+    """
+    # resolved here, not in the signature, so a replaced stdout (pytest's
+    # capture) is the one written to
+    out = out or sys.stdout
+    default = doc["policy"]["default_max_age_days"]
+    rows = [r for r in doc["rows"] if r["tier"] == "tier1"]
+    width = max((len(r["id"]) for r in rows), default=0)
+    bad = []
+    for row in rows:
+        limit = row.get("max_age_days", default)
+        smoke = row["smoke"]
+        where = f"{smoke['device_class']} {smoke['backend']}"
+        cells = row.get("backends") or {}
+        cell = cells.get(smoke["backend"])
+        failing = sorted(b for b, c in cells.items()
+                         if (c or {}).get("kind") == "gate" and c.get("result") != "pass")
+        if failing:
+            state, detail = "FAILING", "recorded failure on " + ", ".join(failing)
+        elif (cell or {}).get("kind") != "gate":
+            state, detail = "NEVER", f"no smoke recorded on {where}"
+        elif cell["device_class"] != smoke["device_class"]:
+            state, detail = "NEVER", (f"the {smoke['backend']} cell was recorded on "
+                                      f"{cell['device_class']}; the row names {where}")
+        else:
+            days = (now - datetime.date.fromisoformat(cell["date"])).days
+            detail = "%s, %s on %s, %d day%s ago" % (
+                where, cell["runner_version"], cell["date"], days,
+                "" if days == 1 else "s")
+            state = "STALE" if days > limit else "ok"
+        if state != "ok":
+            bad.append(row["id"])
+        print("%-7s %-*s  %s (policy %d days)" % (state, width, row["id"], detail, limit),
+              file=out)
+    return bad
 
 
 def record(doc, row_id, res, devices):
@@ -375,6 +435,10 @@ def main():
     ap.add_argument("--device-evidence", default=DEVICE_EVIDENCE)
     ap.add_argument("--check", action="store_true",
                     help="validate the roster's structure (no clock involved)")
+    ap.add_argument("--stale", action="store_true",
+                    help="the release gate: refuse while a Tier 1 row is not current")
+    ap.add_argument("--today", help="the day ages are measured from (tests); "
+                                    "default the UTC clock")
     ap.add_argument("--record", metavar="ROW",
                     help="write a smoke run's result into ROW")
     ap.add_argument("--result", help="the result file scripts/tier-smoke.py wrote")
@@ -404,6 +468,14 @@ def main():
     if errs:
         print(f"\n{args.json}: {len(errs)} error(s)", file=sys.stderr)
         return 1
+    if args.stale:
+        bad = stale(doc, today(args.today))
+        if bad:
+            print("\n%d Tier 1 file%s need%s a smoke run: %s" % (
+                len(bad), "" if len(bad) == 1 else "s",
+                "s" if len(bad) == 1 else "", ", ".join(bad)), file=sys.stderr)
+            return 1
+        return 0
     rows = doc["rows"]
     counts = {t: sum(1 for r in rows if r["tier"] == t) for t in TIERS}
     print("roster ok: " + ", ".join(f"{counts[t]} {t}" for t in TIERS))

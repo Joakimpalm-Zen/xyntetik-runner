@@ -402,3 +402,71 @@ def test_the_cli_records_into_the_roster_file(tmp_path):
     assert r.returncode == 0, r.stdout
     row = mt.load(rpath)["rows"][0]
     assert row["backends"]["metal"]["date"] == RUN_DAY
+
+
+# --- staleness: what scripts/check-release.py refuses a tag on ---------------
+
+import datetime  # noqa: E402
+
+TODAY = datetime.date(2026, 10, 23)
+
+
+def gate(day, result="pass", device_class="macos-arm64-metal", version="1.5.0"):
+    return {"kind": "gate", "runner_version": version, "date": day,
+            "device_class": device_class, "result": result, "commit": "b" * 40,
+            "caps": {"version": version}, "output_sha256": "c" * 64,
+            "ran": "tier-smoke", "evidence": "docs/model-evidence.md"}
+
+
+def gated(**cells):
+    row = tier1_row()
+    row["backends"].update(cells)
+    return roster(row)
+
+
+def test_a_smoke_cell_inside_the_max_age_is_fresh():
+    assert mt.stale(gated(metal=gate("2026-10-22")), TODAY) == []
+
+
+def test_a_tier1_row_whose_smoke_never_ran_is_refused():
+    """The device ledger's NEVER: a row nobody gated is not current."""
+    assert mt.stale(gated(), TODAY) == ["toy-q8_0"]
+
+
+def test_a_smoke_cell_past_the_max_age_is_stale():
+    # 2026-09-07 is 46 days before 2026-10-23; the policy allows 45
+    assert mt.stale(gated(metal=gate("2026-09-07")), TODAY) == ["toy-q8_0"]
+
+
+def test_the_boundary_day_is_not_stale():
+    assert mt.stale(gated(metal=gate("2026-09-08")), TODAY) == []
+
+
+def test_a_row_can_hold_a_tighter_max_age():
+    doc = gated(metal=gate("2026-10-12"))
+    doc["rows"][0]["max_age_days"] = 10
+    assert mt.stale(doc, TODAY) == ["toy-q8_0"]
+
+
+def test_a_failing_cell_on_any_backend_refuses():
+    """Recent and red is worse than absent: a recorded failure on a backend
+    the row is not gated on still says this file broke."""
+    doc = gated(metal=gate("2026-10-22"), cpu=gate("2026-10-22", result="fail"))
+    assert mt.stale(doc, TODAY) == ["toy-q8_0"]
+
+
+def test_a_smoke_from_another_device_class_does_not_count():
+    """Owner decision 3: the smoke runs on the class named in the row."""
+    doc = gated(metal=gate("2026-10-22", device_class="linux-x86_64-cuda"))
+    assert mt.stale(doc, TODAY) == ["toy-q8_0"]
+
+
+def test_rows_below_tier1_are_not_gated():
+    row = tier1_row(tier="tier2")
+    row["transition"]["tier"] = "tier2"
+    assert mt.stale(roster(row), TODAY) == []
+
+
+def test_the_stale_report_prints_every_tier1_row(capsys):
+    mt.stale(gated(metal=gate("2026-10-22")), TODAY)
+    assert "toy-q8_0" in capsys.readouterr().out

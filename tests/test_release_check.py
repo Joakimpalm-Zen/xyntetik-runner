@@ -83,7 +83,45 @@ def good_args(tmp_path):
         current_docs=[],
         compat_reports=report_dir(tmp_path, "1.2.0-2026-01-01.json"),
         device_evidence=device_ledger(tmp_path),
+        model_tiers=tier_roster(tmp_path),
+        tiers_today=TIERS_TODAY,
     )
+
+
+# The tier gate is anchored on a fixed day, not the clock: the release under
+# test is "cut" on 2026-10-23 and the roster's one Tier 1 row was gated by
+# Runner 1.5.0, either the day before (fresh) or on 2026-08-01, 83 days
+# before and past the 45-day policy (stale).
+TIERS_TODAY = "2026-10-23"
+
+
+def tier_roster(tmp_path, gated_on="2026-10-22", version="1.5.0"):
+    path = tmp_path / "model-tiers.json"
+    cell = {"kind": "gate", "runner_version": version, "date": gated_on,
+            "device_class": "test-class", "result": "pass",
+            "commit": "b" * 40, "caps": {"version": version},
+            "output_sha256": "c" * 64, "ran": "scripts/tier-smoke.py",
+            "evidence": "docs/model-evidence.md"}
+    write(path, json.dumps({
+        "schema": "xyntetik.runner.model-tiers.v1",
+        "policy": {"default_max_age_days": 45,
+                   "backends": ["cpu", "cuda", "metal"]},
+        "exempt": [],
+        "rows": [{
+            "id": "toy-q8_0", "model": "Toy", "tier": "tier1",
+            "claim": "A toy Tier 1 row.", "architecture": "llama",
+            "upstream": {"checkpoint": "toy/toy", "revision": None},
+            "files": [{"name": "toy.gguf", "sha256": "a" * 64, "bytes": 1}],
+            "envelope": {"features": ["text"], "fp32_reference": "measured",
+                         "anchor": "toy", "evidence": ["docs/model-evidence.md"]},
+            "smoke": {"device_class": "test-class", "backend": "cpu"},
+            "backends": {"cpu": cell, "cuda": None, "metal": None},
+            "lora": None,
+            "transition": {"tier": "tier1", "effective": "2026-10-22",
+                           "reason": "test", "last_validated_release": None},
+        }],
+    }) + "\n")
+    return path
 
 
 def device_ledger(tmp_path, days_ago=1, result="pass"):
@@ -529,6 +567,32 @@ def test_release_check_accepts_fresh_device_evidence(monkeypatch, tmp_path):
     args = good_args(tmp_path)
     args.device_evidence = device_ledger(tmp_path, days_ago=3)
     assert check_release.check(args) is True
+
+
+def test_release_check_refuses_a_stale_tier1_row(monkeypatch, tmp_path, capsys):
+    """A Tier 1 file is gated on every release: its smoke cell older than
+    the policy refuses the tag, as stale device evidence does."""
+    _pinned(monkeypatch)
+    args = good_args(tmp_path)
+    args.model_tiers = tier_roster(tmp_path, gated_on="2026-08-01")
+    assert check_release.check(args) is False
+    assert "toy-q8_0" in capsys.readouterr().err
+
+
+@needs_git_checkout
+def test_release_check_accepts_a_fresh_tier1_row(monkeypatch, tmp_path):
+    _pinned(monkeypatch)
+    args = good_args(tmp_path)
+    args.model_tiers = tier_roster(tmp_path, gated_on="2026-10-22")
+    assert check_release.check(args) is True
+
+
+def test_release_check_refuses_a_missing_tier_roster(monkeypatch, tmp_path):
+    """Naming a roster that is not there must not read as "nothing to check"."""
+    _pinned(monkeypatch)
+    args = good_args(tmp_path)
+    args.model_tiers = tmp_path / "gone.json"
+    assert check_release.check(args) is False
 
 
 # The release workflow's Windows job runs its steps in the msys2 shell, so a
