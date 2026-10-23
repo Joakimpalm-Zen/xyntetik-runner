@@ -5,6 +5,22 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Metal: Q4_K decode matvecs take the fast kernel by default on dense
+  models.** The reassociating `k_mvf_q4_K` (two rows a simdgroup, vector
+  accumulation), opt-in since the performance follow-up, is the default for
+  the Q4_K weights of dense models on the owner's decision of 2026-10-23
+  (MoE models keep the identity kernel: the fidelity rows are dense): decode +10.8% (Llama-3.2-1B) and
+  +12.5% (Llama-3.2-3B Q4_K_M) on an Apple M1, -0.9% on Qwen2.5-1.5B; mean
+  KL 0.9993x and 0.9998x of the identity route's against the publisher's
+  float32 model, paired tests not distinguishable. Promoting it found that
+  its microbatch columns did not equal solo decode (`test-batch-identity`
+  failed on a Q4_K fixture: `--parallel` output would have depended on
+  concurrency); the kernel now walks columns with the one-column arithmetic,
+  so microbatch and speculative verify rows stay bit-identical, and `make
+  test` runs both gates on a new Q4_K fixture. `RUNNER_METAL_MV=0` restores
+  the identity kernel for every type (every byte comparison sets it);
+  `RUNNER_METAL_MV=1` adds the fast q4_0 / q8_0 kernels, which stay opt-in.
+
 - **gemma4: a forced tool call with a number argument is returned as a call,
   not as text.** The native grammar let a number start with a space
   (`[9, 0, 0]`, `scale: 1.5`) where booleans and nulls already could not,
@@ -78,7 +94,8 @@ Current release and unreleased changes. Compatibility follows the
   prompt, 128 tokens): Llama-3.2-1B +8.6%, Llama-3.2-3B +16.1%, Qwen2.5-1.5B
   +3.4%; prefill unchanged.
 
-- **Metal: the opt-in fast decode matvec covers Q4_K.** `RUNNER_METAL_MV=1`
+- **Metal: the opt-in fast decode matvec covers Q4_K** (made the Q4_K default on
+  dense models by the entry at the top of this section). `RUNNER_METAL_MV=1`
   (tolerance class, off by default) had kernels for Q4_0 and Q8_0 only; a
   Q4_K kernel now computes two rows a simdgroup with vector accumulation.
   Over the new default on the M1: Llama-3.2-1B +10.8%, Llama-3.2-3B +12.5%,

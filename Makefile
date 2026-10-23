@@ -1401,6 +1401,15 @@ test-ornith-draft.gguf: scripts/make-test-ornith.py
 test-q8.gguf: scripts/make-test-model.py
 	$(PYTHON) scripts/make-test-model.py --quant q8_0 test-q8.gguf
 
+# Q4_K reaches Metal's default fast decode matvec (k_mvf_q4_K, the owner's
+# 2026-10-23 promotion), whose microbatch columns must be the solo step's
+# bits: the batch and spec identity gates run on it. 256-wide rows, so the
+# K-quant superblocks tile; written by the runner's own quantizer.
+test-q4k.gguf: scripts/make-test-model.py runner
+	$(PYTHON) scripts/make-test-model.py --wide test-q4k-src.gguf > /dev/null
+	./$(RUNNER_EXE) -m test-q4k-src.gguf --quantize test-q4k.gguf --quant q4_k > /dev/null
+	rm -f test-q4k-src.gguf
+
 # BF16 reaches its own CUDA decode-microbatch twins. The F32 and Q8_0 runs do
 # not execute k_gemvb_bf16_x4/_x8, so neither can hold their identity contract.
 test-bf16.gguf: scripts/make-test-model.py
@@ -1470,11 +1479,11 @@ ifeq ($(shell uname -s),Darwin)
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		./$(RUNNER_EXE) -m test.gguf -p "hello" -n 8 --temp 0 --gpu off > metal-cpu.out 2>/dev/null; \
 		env RUNNER_METAL_INJECT_FAILURE=once MallocScribble=1 MallocGuardEdges=1 \
-		    env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test.gguf -p "hello" -n 8 --temp 0 --gpu auto > metal-fallback.out 2> metal-fallback.err; \
+		    env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test.gguf -p "hello" -n 8 --temp 0 --gpu auto > metal-fallback.out 2> metal-fallback.err; \
 		cmp -s metal-cpu.out metal-fallback.out; \
 		grep -q "falling back to CPU" metal-fallback.err; \
 		env RUNNER_METAL_INIT_INJECT_FAILURE=after-kv MallocScribble=1 MallocGuardEdges=1 \
-		    env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test.gguf -p "hello" -n 8 --temp 0 --gpu auto > metal-init-fallback.out 2> metal-init-fallback.err; \
+		    env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test.gguf -p "hello" -n 8 --temp 0 --gpu auto > metal-init-fallback.out 2> metal-init-fallback.err; \
 		cmp -s metal-cpu.out metal-init-fallback.out; \
 		grep -q "Metal initialization failed" metal-init-fallback.err; \
 		env RUNNER_METAL_INIT_INJECT_FAILURE=device ./$(RUNNER_EXE) -m test.gguf -p "hello" -n 8 --temp 0 --gpu auto > metal-init-fallback.out 2> metal-init-fallback.err; \
@@ -1530,7 +1539,7 @@ ifeq ($(shell uname -s),Darwin)
 	      else prompt="$$long"; fi; \
 	      ./$(RUNNER_EXE) -m $$m -p "$$prompt" -n 12 --temp 0 --gpu off \
 	        > metal-kquant-cpu.out 2>/dev/null; \
-	      env RUNNER_METAL_ATTN_COOP=0 ./$(RUNNER_EXE) -m $$m -p "$$prompt" -n 12 --temp 0 --gpu auto \
+	      env RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 ./$(RUNNER_EXE) -m $$m -p "$$prompt" -n 12 --temp 0 --gpu auto \
 	        > metal-kquant-gpu.out 2> metal-kquant-gpu.err; \
 	      if grep -q "without a Metal kernel" metal-kquant-gpu.err; then \
 	        echo "FAIL: $$m fell back to CPU — this parity check would compare"; \
@@ -1748,10 +1757,10 @@ ifeq ($(shell uname -s),Darwin)
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		$(PYTHON) scripts/make-test-moe.py test-moe-fixture; \
 		./$(RUNNER_EXE) -m test-moe-fixture.dense.gguf -p "hello world" -n 12 --temp 0 --gpu off > metal-moe-dense.out 2>/dev/null; \
-		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-moe-fixture.moe1.gguf -p "hello world" -n 12 --temp 0 --gpu auto > metal-moe1.out 2> metal-moe1.err; \
+		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-moe-fixture.moe1.gguf -p "hello world" -n 12 --temp 0 --gpu auto > metal-moe1.out 2> metal-moe1.err; \
 		cmp -s metal-moe-dense.out metal-moe1.out; \
 		grep -q "Metal backend" metal-moe1.err; \
-		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-moe-fixture.moe2.gguf -p "hello world" -n 12 --temp 0 --gpu auto > metal-moe2.out 2> metal-moe2.err; \
+		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-moe-fixture.moe2.gguf -p "hello world" -n 12 --temp 0 --gpu auto > metal-moe2.out 2> metal-moe2.err; \
 		cmp -s metal-moe-dense.out metal-moe2.out; \
 		grep -q "Metal backend" metal-moe2.err; \
 		echo "metal MoE ok"; \
@@ -1768,7 +1777,7 @@ ifeq ($(shell uname -s),Darwin)
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		$(PYTHON) scripts/make-test-moe.py test-moe-fixture; \
 		./$(RUNNER_EXE) -m test-moe-fixture.gptoss-mxfp4.gguf -p "hello world" -n 8 --temp 0 --gpu off > metal-gptoss-moe-cpu.out 2>/dev/null; \
-		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-moe-fixture.gptoss-mxfp4.gguf -p "hello world" -n 8 --temp 0 --gpu auto > metal-gptoss-moe-gpu.out 2> metal-gptoss-moe-gpu.err; \
+		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-moe-fixture.gptoss-mxfp4.gguf -p "hello world" -n 8 --temp 0 --gpu auto > metal-gptoss-moe-gpu.out 2> metal-gptoss-moe-gpu.err; \
 		cmp -s metal-gptoss-moe-cpu.out metal-gptoss-moe-gpu.out; \
 		grep -q "Metal backend" metal-gptoss-moe-gpu.err; \
 		echo "metal gpt-oss MoE ok"; \
@@ -2106,7 +2115,7 @@ ifeq ($(shell uname -s),Darwin)
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		$(PYTHON) scripts/make-test-moe.py test-moe-fixture; \
 		./$(RUNNER_EXE) -m test-moe-fixture.gemma4-moe.gguf -p "hello world" -n 8 --temp 0 --gpu off > metal-gemma4-moe-cpu.out 2>/dev/null; \
-		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-moe-fixture.gemma4-moe.gguf -p "hello world" -n 8 --temp 0 --gpu auto > metal-gemma4-moe-gpu.out 2> metal-gemma4-moe-gpu.err; \
+		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-moe-fixture.gemma4-moe.gguf -p "hello world" -n 8 --temp 0 --gpu auto > metal-gemma4-moe-gpu.out 2> metal-gemma4-moe-gpu.err; \
 		cmp -s metal-gemma4-moe-cpu.out metal-gemma4-moe-gpu.out; \
 		grep -q "Metal backend" metal-gemma4-moe-gpu.err; \
 		echo "metal gemma4 MoE ok"; \
@@ -2123,12 +2132,12 @@ ifeq ($(shell uname -s),Darwin)
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		$(PYTHON) scripts/make-test-model.py --gemma4-hetero test-g4h.gguf; \
 		./$(RUNNER_EXE) -m test-g4h.gguf -p "hello world" -n 8 --temp 0 --gpu off > metal-g4h-dense-cpu.out 2>/dev/null; \
-		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-g4h.gguf -p "hello world" -n 8 --temp 0 --gpu auto > metal-g4h-dense-gpu.out 2> metal-g4h-dense-gpu.err; \
+		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-g4h.gguf -p "hello world" -n 8 --temp 0 --gpu auto > metal-g4h-dense-gpu.out 2> metal-g4h-dense-gpu.err; \
 		cmp -s metal-g4h-dense-cpu.out metal-g4h-dense-gpu.out; \
 		grep -q "Metal backend" metal-g4h-dense-gpu.err; \
 		$(PYTHON) scripts/make-test-moe.py test-moe-fixture; \
 		./$(RUNNER_EXE) -m test-moe-fixture.gemma4-moe-hetero.gguf -p "hello world" -n 8 --temp 0 --gpu off > metal-g4h-moe-cpu.out 2>/dev/null; \
-		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-moe-fixture.gemma4-moe-hetero.gguf -p "hello world" -n 8 --temp 0 --gpu auto > metal-g4h-moe-gpu.out 2> metal-g4h-moe-gpu.err; \
+		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-moe-fixture.gemma4-moe-hetero.gguf -p "hello world" -n 8 --temp 0 --gpu auto > metal-g4h-moe-gpu.out 2> metal-g4h-moe-gpu.err; \
 		cmp -s metal-g4h-moe-cpu.out metal-g4h-moe-gpu.out; \
 		grep -q "Metal backend" metal-g4h-moe-gpu.err; \
 		echo "metal gemma4 heterogeneous ok"; \
@@ -2163,7 +2172,7 @@ ifeq ($(shell uname -s),Darwin)
 		echo "metal big-model identity skipped: $(BIGMODEL) not found"; \
 	elif ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		./$(RUNNER_EXE) -m "$(BIGMODEL)" -p "$(BIGPROMPT)" -n 32 --temp 0 --gpu off > metal-bigmodel-cpu.out 2>/dev/null; \
-		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MOE_MM=0 \
+		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 \
 		  ./$(RUNNER_EXE) -m "$(BIGMODEL)" -p "$(BIGPROMPT)" -n 32 --temp 0 --gpu auto > metal-bigmodel-gpu.out 2>/dev/null; \
 		if cmp -s metal-bigmodel-cpu.out metal-bigmodel-gpu.out; then \
 			echo "metal big-model identity ok: $(BIGMODEL)"; \
@@ -2337,9 +2346,9 @@ ifeq ($(shell uname -s),Darwin)
 	            "test-qkw-q6k.gguf:(q6_k)" \
 	            "test-moe-fixture.moe4-q4.gguf:(q4_0)"; do \
 	  f=$${spec%%:*}; want=$${spec##*:}; \
-	  RUNNER_METAL_FUSE=0 ./$(RUNNER_EXE) -m $$f -p "$$prompt" -n 24 \
+	  RUNNER_METAL_MV=0 RUNNER_METAL_FUSE=0 ./$(RUNNER_EXE) -m $$f -p "$$prompt" -n 24 \
 	    --temp 0 --no-tray > fuse-off.out 2>/dev/null; \
-	  RUNNER_METAL_FRONT=all ./$(RUNNER_EXE) -m $$f -p "$$prompt" -n 24 \
+	  RUNNER_METAL_MV=0 RUNNER_METAL_FRONT=all ./$(RUNNER_EXE) -m $$f -p "$$prompt" -n 24 \
 	    --temp 0 --no-tray > fuse-on.out 2> fuse-on.err; \
 	  grep -qF "attention front on $$want" fuse-on.err || { \
 	    echo "FAIL: $$f never engaged the $$want front kernel — vacuous"; \
@@ -2352,9 +2361,9 @@ ifeq ($(shell uname -s),Darwin)
 	  --temp 0 --no-tray 2> fuse-on.err >/dev/null; \
 	grep -qF "attention front on (q4_0)" fuse-on.err || { \
 	  echo "FAIL: MoE fixture no longer front-admitted by DEFAULT"; exit 1; }; \
-	RUNNER_METAL_FUSE=0 ./$(RUNNER_EXE) -m test-qkw-q4k.gguf \
+	RUNNER_METAL_MV=0 RUNNER_METAL_FUSE=0 ./$(RUNNER_EXE) -m test-qkw-q4k.gguf \
 	  --score -p "$$prompt $$prompt $$prompt" --no-tray > fuse-sc-off.json 2>/dev/null; \
-	RUNNER_METAL_FRONT=all ./$(RUNNER_EXE) -m test-qkw-q4k.gguf \
+	RUNNER_METAL_MV=0 RUNNER_METAL_FRONT=all ./$(RUNNER_EXE) -m test-qkw-q4k.gguf \
 	  --score -p "$$prompt $$prompt $$prompt" --no-tray > fuse-sc-on.json 2>/dev/null; \
 	cmp -s fuse-sc-off.json fuse-sc-on.json || { \
 	  echo "FAIL: front (q4_k+qk-norm) teacher-forced logprobs differ"; exit 1; }; \
@@ -2424,7 +2433,7 @@ ifeq ($(shell uname -s),Darwin)
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		$(PYTHON) scripts/make-test-model.py --arch gemma3 --act-overflow test-actovf.gguf; \
 		./$(RUNNER_EXE) -m test-actovf.gguf -p "hello world" -n 8 --temp 0 --gpu off > metal-actovf-cpu.out 2>/dev/null; \
-		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-actovf.gguf -p "hello world" -n 8 --temp 0 --gpu auto > metal-actovf-gpu.out 2> metal-actovf-gpu.err; \
+		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-actovf.gguf -p "hello world" -n 8 --temp 0 --gpu auto > metal-actovf-gpu.out 2> metal-actovf-gpu.err; \
 		cmp -s metal-actovf-cpu.out metal-actovf-gpu.out; \
 		grep -q "Metal backend" metal-actovf-gpu.err; \
 		echo "metal GELU overflow ok"; \
@@ -2442,7 +2451,7 @@ ifeq ($(shell uname -s),Darwin)
 		for cfg in 0,16 3,0 3,16; do \
 		  $(PYTHON) scripts/make-test-model.py --eseries $$cfg test-es-cfg.gguf; \
 		  ./$(RUNNER_EXE) -m test-es-cfg.gguf -p "hello world" -n 8 --temp 0 --gpu off > metal-es-cpu.out 2>/dev/null; \
-		  env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-es-cfg.gguf -p "hello world" -n 8 --temp 0 --gpu auto > metal-es-gpu.out 2> metal-es-gpu.err; \
+		  env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-es-cfg.gguf -p "hello world" -n 8 --temp 0 --gpu auto > metal-es-gpu.out 2> metal-es-gpu.err; \
 		  cmp -s metal-es-cpu.out metal-es-gpu.out || { echo "eseries $$cfg differs"; exit 1; }; \
 		  grep -q "Metal backend" metal-es-gpu.err || { echo "eseries $$cfg: Metal never engaged"; exit 1; }; \
 		  case $$cfg in *,0) ;; *) grep -q "per-layer embedding table stays on the host" metal-es-gpu.err || { echo "eseries $$cfg: the per-layer embedding table was wrapped"; exit 1; };; esac; \
@@ -2497,7 +2506,7 @@ ifeq ($(shell uname -s),Darwin)
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		$(PYTHON) scripts/make-test-model.py --arch qwen3 --swa 8,2 test-swa.gguf; \
 		./$(RUNNER_EXE) -m test-swa.gguf -p "abcdefghijklmnopqrstuvwxyz0123456789" -n 12 --temp 0 --gpu off > metal-swa-cpu.out 2>/dev/null; \
-		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-swa.gguf -p "abcdefghijklmnopqrstuvwxyz0123456789" -n 12 --temp 0 --gpu auto > metal-swa-gpu.out 2> metal-swa-gpu.err; \
+		env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-swa.gguf -p "abcdefghijklmnopqrstuvwxyz0123456789" -n 12 --temp 0 --gpu auto > metal-swa-gpu.out 2> metal-swa-gpu.err; \
 		cmp -s metal-swa-cpu.out metal-swa-gpu.out; \
 		grep -q "Metal backend" metal-swa-gpu.err; \
 		echo "metal SWA ok"; \
@@ -2560,7 +2569,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
-      runner test.gguf test-q8.gguf test-bf16.gguf test-ornith.gguf test-ornith-draft.gguf test-yarn.gguf \
+      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-ornith.gguf test-ornith-draft.gguf test-yarn.gguf \
       test-qk.gguf test-gemma3.gguf test-gemma4.gguf test-es.gguf test-muse.gguf test-granite.gguf \
       test-gemma3-62.gguf test-gemma3-26.gguf test-qwen4exp.gguf
 	./$(TEST_RECURRENT)
@@ -2800,12 +2809,13 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(MAKE) --no-print-directory test-shader-embed
 	$(MAKE) --no-print-directory test-metal PYTHON="$(PYTHON)"
 	./$(TEST_BATCH_ID) test.gguf
-	@for f in test.gguf test-q8.gguf test-bf16.gguf; do \
+	./$(TEST_BATCH_ID) test-q4k.gguf
+	@for f in test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf; do \
 	  ./$(TEST_SPEC_ID) $$f || exit 1; ./$(TEST_SPEC_ID) $$f cpu || exit 1; done
 	$(MAKE) --no-print-directory test-attn-split
 	$(PYTHON) scripts/check-generated.py
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
-	$(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_hf_fetch.py tests/test_pull.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_decide.py tests/test_clef.py tests/test_hf_spec_bounds.py tests/test_lora.py tests/test_lora_qwen35.py tests/test_train.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_difftok.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_session_images.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_cli_lifecycle.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py
+	$(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_hf_fetch.py tests/test_pull.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_decide.py tests/test_clef.py tests/test_hf_spec_bounds.py tests/test_lora.py tests/test_lora_qwen35.py tests/test_train.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_difftok.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_session_images.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_cli_lifecycle.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py
 	$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"
 

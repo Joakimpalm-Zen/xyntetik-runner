@@ -2032,17 +2032,23 @@ kernel void k_mv2_q6_K(MV_PARAMS) {
     }
 }
 
-// The opt-in fast decode matvec for Q4_K (RUNNER_METAL_MV=1, beside
-// k_mvf_q4_0 / k_mvf_q8_0): two rows a simdgroup sharing the lane's
+// The fast decode matvec for Q4_K, the default for Q4_K tensors since the
+// owner's 2026-10-23 decision (D1 rows: mean KL 0.9993x / 0.9998x; beside the
+// opt-in k_mvf_q4_0 / k_mvf_q8_0): two rows a simdgroup sharing the lane's
 // activation loads, vector accumulation. TOLERANCE class (about 1e-7 of the
 // output range from k_mv_q4_K), not the identity kernel's bits; +3 to +49% on
-// the M1 shapes. Making it a default is an owner decision (D1).
+// the M1 shapes. It walks columns the way MV_HEAD does, each column with the
+// one-column arithmetic, so a microbatch decode column is the solo decode
+// step's bits (test-batch-identity).
 kernel void k_mvf_q4_K(MV_PARAMS) {
     enum { NR = 2 };
     uint row0 = (tgpig.x * (ntg.x / 32) + sgitg) * NR;
     if (row0 >= (uint)a.n_out) return;
-    device const float *x = x_all;
-    device float *y = y_all;
+    int col_lo = (int)tgpig.y * a.col_tile;
+    int col_hi = min(col_lo + a.col_tile, a.n_col);
+    for (int col = col_lo; col < col_hi; col++) {
+    device const float *x = x_all + (ulong)col * a.x_stride;
+    device float *y = y_all + (ulong)col * a.y_stride;
     int nb = a.n_in / 256, nq = nb * 4;
     float s[NR] = {0, 0};
     for (int u = tiisg; u < nq; u += 32) {
@@ -2075,6 +2081,7 @@ kernel void k_mvf_q4_K(MV_PARAMS) {
         uint row = row0 + r;
         float v = simd_sum(s[r]);
         if (tiisg == 0 && row < (uint)a.n_out) y[row] = a.has_bias ? v + bias[row] : v;
+    }
     }
 }
 

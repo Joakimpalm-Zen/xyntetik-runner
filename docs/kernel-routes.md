@@ -23,8 +23,8 @@ logit-bit-identical**: the CPU sums a row with SIMD lanes and the GPU with a
 states that bound. A route promoted to a default keeps an opt-out switch that
 restores the reference route; every CPU-against-GPU byte comparison in the
 suite sets those switches (`RUNNER_CUDA_TC=0`, `RUNNER_CUDA_ROUTE=reference`,
-`RUNNER_METAL_MM=0`, `RUNNER_METAL_ATTN_COOP=0`, `RUNNER_METAL_MOE_MM=0`,
-`RUNNER_MOE_EAGER=1`).
+`RUNNER_METAL_MM=0`, `RUNNER_METAL_ATTN_COOP=0`, `RUNNER_METAL_MV=0`,
+`RUNNER_METAL_MOE_MM=0`, `RUNNER_MOE_EAGER=1`).
 
 Several tolerance gates take a real model as an argument (`./test-tc-tol
 MODEL.gguf`). They run on a promotion, not on every change; the rows they
@@ -180,7 +180,7 @@ Around the matvec:
 | Metal 4 tensor GEMM | more than one column, `RUNNER_METAL_TENSOR=1`, an M5 or newer GPU on macOS 26.2 or newer, the per-type self-test passed at load, `n_in` a multiple of 256 | tolerance; opt-in, a failing type falls back alone | the load-time self-test, then `./test-tc-tol` |
 | simdgroup GEMM (`k_mm_*`) | more than one column, `RUNNER_METAL_MM` not `0` (promoted), `n_in` a whole number of k-steps and of superblocks | tolerance; activations staged scaled by the column maximum | `./test-tc-tol MODEL.gguf`, `make test-tc-overflow` on Darwin |
 | identity matvec (`k_mv`) | otherwise | token-identical to the CPU scalar route | `test-gpu-identity`, `make test-metal-kquant` and the other `test-metal-*` text gates |
-| fast decode matvec (`k_mvf_*`: Q4_0, Q8_0, Q4_K) | one column, `RUNNER_METAL_MV=1`, kernel present | tolerance; off by default (Q4_0 / Q8_0 neutral when measured, Q4_K +11-13% decode on the Llama 1B / 3B files over the default path), never on prefill | `./test-mv-tol MODEL.gguf` |
+| fast decode matvec (`k_mvf_*`: Q4_0, Q8_0, Q4_K) | decode columns (one token, or the microbatch's slots), kernel present; Q4_K by default on dense models since 2026-10-23 (MoE models keep identity: their D1 rows do not exist), every type under `RUNNER_METAL_MV=1`, none under `=0` | tolerance; Q4_K promoted on D1 rows (mean KL 0.9993x / 0.9998x, decode +11-13% on the Llama 1B / 3B files), Q4_0 / Q8_0 neutral when measured and opt-in; never on prefill; each column is the one-column kernel's bits, so microbatch and verify rows equal solo decode | `./test-mv-tol MODEL.gguf`; `test-batch-identity` and `test-spec-identity` on `test-q4k.gguf` in `make test` |
 | two-row identity matvec (`k_mv2_q6_K`) | one column, a Q6_K tensor, not the fast route, `RUNNER_METAL_MV2` not `0`, the load-time self-test passed | bit-exact to `k_mv_q6_K` (the self-test runs both on pseudo-random blocks and refuses the kernel on a device where any bit differs) | the load-time self-test; the identity and `test-metal-*` gates through the default route |
 
 Around the matvec:
@@ -217,3 +217,21 @@ replaces. Training recomputes through the inference primitives, so a new
 route must not change what the backward pass differentiates. `RUNNER_DEBUG_ROUTE=1`
 and the `route` object of `--bench-json` report the route a forward took
 ([performance](performance.md)).
+
+A tolerance route becomes a default only when it is no further from the
+publisher's float32 model than the route it replaces: 2,000 positions, mean
+KL within 1.01x, paired Wilcoxon and McNemar on the margin-qualified chosen
+token not worse at p < 0.05, on rows of the families it reaches. The rule
+holds as written for mixture-of-experts families too, where a handful of
+positions at which the expert routing flips can decide the mean either way;
+a MoE route that cannot pass stays opt-in.
+
+A change that only reorders float32 sums (the same terms at the same
+precision, such as the CPU K-quant dots keeping one accumulator per row in
+1.5.0) is judged across files, not per file: it passes when no file moves
+mean KL by more than 0.1%, none changes a margin-qualified chosen token,
+and the paired verdicts have no consistent direction across the files
+measured. At 2,000 positions the Wilcoxon test resolves such a reordering's
+file-specific drift, which is not a fidelity change; for that change it read
+closer on one file, further on one and level on two
+([golden pass on 1.5.0](golden-pass-2026-10-22.md)).
