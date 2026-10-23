@@ -111,6 +111,8 @@ TRAIN_FAMILIES = {
     "granite": ("make-test-model.py", ["--granite"], None),
     "q8_0": ("make-test-model.py", ["--quant", "q8_0"], None),
     "partial-rope": ("make-test-model.py", ["--arch", "qwen3", "--rope-dim", "8"], None),
+    "qwen35": ("make-test-ornith.py", [], None),
+    "clef": ("make-test-clef.py", [], None),
     "moe-renorm": ("make-test-moe.py", [], "moe4-train"),
     "moe-no-renorm": ("make-test-moe.py", [], "moe4-train-nonorm"),
 }
@@ -148,6 +150,19 @@ def test_loss_falls_and_adapter_improves_score(runner_bin, base, tmp_path):
     base_nll = _score(runner_bin, base)
     tuned_nll = _score(runner_bin, base, lora=out)
     assert tuned_nll < base_nll - 0.2, (base_nll, tuned_nll)
+
+
+# R8.16: training through the Gated DeltaNet recurrence learns, end to end:
+# the loss falls on the corpus and the saved adapter, loaded back through
+# --lora (the serving hooks on all five DeltaNet projections, the fused Q/gate
+# and the FFN), scores the trained text better than the bare base.
+@pytest.mark.parametrize("family", ["qwen35", "clef"])
+def test_deltanet_training_learns_and_serves(runner_bin, tmp_path, family):
+    d = _family_fixture(tmp_path, family)
+    out = tmp_path / "ad.gguf"
+    losses = _train(runner_bin, d, out, steps=30)
+    assert losses[-1] < losses[0] * 0.95, (losses[0], losses[-1])
+    assert _score(runner_bin, d, lora=out) < _score(runner_bin, d) - 0.2
 
 
 # --train-dpo end to end: run_train's DPO step loop, its per-step fields, the

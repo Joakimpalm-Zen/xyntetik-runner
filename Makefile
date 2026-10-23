@@ -875,7 +875,7 @@ $(TEST_TC_TOL): $(TEST_TC_TOL_SRC) $(HDR) tests/finite_check.h
 TEST_LORA_GRAD_SRC = tests/test_lora_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
                   $(GPU_OBJ)
-$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-prope.gguf test-lora-prope.full.gguf test-prope-neox.gguf test-lora-prope-neox.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf
+$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-prope.gguf test-lora-prope.full.gguf test-prope-neox.gguf test-lora-prope-neox.full.gguf test-ornith.gguf test-lora-ornith.full.gguf test-clef.gguf test-lora-clef.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
 
 test-lora.full.gguf: test.gguf scripts/make-test-lora.py
@@ -1409,6 +1409,18 @@ test.gguf: scripts/make-test-model.py
 # the recurrent-state cache-seam gate (make-test-model.py cannot emit an SSM arch)
 test-ornith.gguf: scripts/make-test-ornith.py
 	$(PYTHON) scripts/make-test-ornith.py test-ornith.gguf
+
+# R8.16: full-coverage adapters on the qwen35 and clef fixtures (every
+# DeltaNet projection, the fused Q/gate and K/V/output of the attention
+# layer, every FFN) for the backward through the recurrence
+test-lora-ornith.full.gguf: test-ornith.gguf scripts/make-test-lora.py
+	LORA_TARGETS=qwen35 $(PYTHON) scripts/make-test-lora.py test-ornith.gguf test-lora-ornith
+
+test-clef.gguf: scripts/make-test-clef.py
+	$(PYTHON) scripts/make-test-clef.py test-clef.gguf
+
+test-lora-clef.full.gguf: test-clef.gguf scripts/make-test-lora.py
+	LORA_TARGETS=qwen35 $(PYTHON) scripts/make-test-lora.py test-clef.gguf test-lora-clef
 
 # same geometry/vocab, different weights: a draft model that genuinely diverges
 # from the target, so the speculative fold-rollback gate exercises rejection
@@ -2640,6 +2652,11 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	@# the rope_dim dims, pairs (llama) and split halves (neox)
 	./$(TEST_LORA_GRAD) test-prope.gguf test-lora-prope.full.gguf
 	./$(TEST_LORA_GRAD) test-prope-neox.gguf test-lora-prope-neox.full.gguf
+	@# and through the Gated DeltaNet recurrence (R8.16), qwen35 and clef:
+	@# per-slot directions and the exact-zero probe on top ("slots"), since
+	@# the whole-adapter direction missed a dropped decay or gate term
+	./$(TEST_LORA_GRAD) test-ornith.gguf test-lora-ornith.full.gguf slots
+	./$(TEST_LORA_GRAD) test-clef.gguf test-lora-clef.full.gguf slots
 	@# R8.9.4: granite's muP scalars (residual and logit scale, fixed
 	@# attention scale, tied output) and muse-glimmer's output gate, sandwich
 	@# norms, sliding window and softcapped head, all through the adjoint
