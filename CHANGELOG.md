@@ -14,9 +14,10 @@ Current release and unreleased changes. Compatibility follows the
   gate, a declared limit, or not run) and the file's `--adapt-info` LoRA
   answer, all written by the gate run, never by hand.
   `scripts/tier-smoke.py` is the per-release smoke: the file hashed against
-  its row, one greedy prompt byte-compared with a committed pin under
-  `tests/compatibility/tier-smoke/`, a head or an adapter composed with the
-  row it runs with. `make release-check` now refuses a tag while a Tier 1
+  its row, served and asked one user turn through its own chat template
+  (temperature 0, `enable_thinking` false), the reply's bytes compared with a
+  committed pin under `tests/compatibility/tier-smoke/` that always names the
+  prompt's fact, a head or an adapter composed with the row it runs with. `make release-check` now refuses a tag while a Tier 1
   file's smoke is missing, recorded on another class, failing, or older than
   45 days: one file (the published gemma-4-E2B mix, CPU and Metal) has run,
   so the next tag needs the other 26 run first. The README's "Actively
