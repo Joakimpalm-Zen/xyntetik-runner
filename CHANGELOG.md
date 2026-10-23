@@ -231,12 +231,13 @@ Current release and unreleased changes. Compatibility follows the
   adapter's own rank-r math runs on every thread, and so does the attention
   backward (it was split by kv-head group, a few threads on a GQA model).
   Every gradient element keeps its accumulation order, so the adapter is the
-  same byte for byte: against the previous release on all 13 trainable
-  fixture families and every objective (on an Apple M1, and on x86-64 under
-  clang and gcc), at round widths 1, 5 and 16 (`RUNNER_TRAIN_ROWS=N`) and at
-  `-t 1` and `-t 3`, which a new test now holds (the manual's claim had
-  none). Qwen3.5-0.8B Q4_K_M with KD on an Apple M1, `-t 4`: a 134-token
-  step from 15.2 s to 8.9 s.
+  same byte for byte as the trainer before this change: on all 13 trainable
+  fixture families with CE, weighted rows, the batch recipe and KD on an
+  Apple M1 and on x86-64 under clang and gcc, and with DPO on the M1; at
+  round widths 1, 5 and 16 (`RUNNER_TRAIN_ROWS=N`); and at `-t 1` and `-t 3`,
+  which a new test now holds (the manual's claim had none). Qwen3.5-0.8B
+  Q4_K_M with KD on an Apple M1, `-t 4`: a 134-token step from 15.2 s to
+  8.9 s.
 
 - **Training on the GPU (`--train-gpu`).** With `--train` or `--train-dpo`,
   every weight product of a step runs on an NVIDIA GPU: the forward, the
@@ -246,14 +247,16 @@ Current release and unreleased changes. Compatibility follows the
   rope, attention, the DeltaNet recurrence, the adapter's rank-r math and
   the optimizer. On a 24 GB datacenter MIG slice with 6 CPU threads, six
   Qwen3.5-0.8B distillation steps took 10.3 s against 43.1 s for the CPU
-  trainer on the same threads. The adapter is not the CPU run's byte for
-  byte (the device adds in another order); it matches within rounding:
-  Qwen3.5-0.8B's losses to 1e-6 and its held-out evals to six digits after 6
-  steps. Its
+  trainer on the same threads; on an RTX 3070 beside 4 CPU threads, a
+  Qwen2.5-7B Q4_K_M step took 9.7 s against 95 s. The adapter is not the CPU
+  run's byte for byte (the device adds in another order); it matches within
+  rounding: Qwen3.5-0.8B's losses to 1e-6 and its held-out evals to six
+  digits after 6 steps, on both hosts; Qwen2.5-7B's to 3e-5 relative. Its
   forward product gives a position the same value however the window is
   batched, which the backward needs, and the gradient gates run in this mode
-  on CUDA hosts at a batching that would expose a product that depends on
-  it. The record names the device under `products`. Without a CUDA build and
+  on CUDA hosts at a batching that would expose a product that depends on it
+  (all 14 pass on a datacenter MIG slice and on an RTX 3070).
+  The record names the device under `products`. Without a CUDA build and
   an NVIDIA GPU the flag is an error, not a CPU run. `RUNNER_TRAIN_GPU=1`,
   the same-bytes assist that moves only the backward's transposed products,
   now covers every weight type (it covered 7).

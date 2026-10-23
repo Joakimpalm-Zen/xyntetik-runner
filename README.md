@@ -301,9 +301,11 @@ TensorRT-LLM and SGLang.
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Train the model file you actually serve
 
 Runner trains a LoRA adapter through the quantized file you serve, in the
-same binary, with no Python stack. It is for small, targeted datasets, it
-runs at about a minute per step on a consumer GPU, and it covers dense
-models plus attention-only adapters on sparse-MoE models. On Qwen3-4B at
+same binary, with no Python stack. It is for small, targeted datasets. With
+`--train-gpu` a step on a 7B model takes about ten seconds on a consumer
+NVIDIA GPU (95 s on the CPU beside it), and training covers dense models,
+the Qwen3.5 and Clef hybrids, and attention-only adapters on sparse-MoE
+models. On Qwen3-4B at
 4 bits, exact tool calls on a held-out set went from 0.69 to 1.00 in 316
 steps; two runs wrote the same adapter, checksum for checksum, an
 independent tester reproduced that on a Tesla T4, and stock llama.cpp

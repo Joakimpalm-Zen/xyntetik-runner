@@ -78,10 +78,12 @@ Adapters suit small, targeted datasets: a tool habit, a format, a house style,
 on the order of hundreds of examples and hundreds of steps. This is not an
 instrument for pretraining or for large corpora.
 
-Training runs on the CPU, one example per step. A step takes about 20 s for a
-4B model on a many-core CPU host, and about a minute for a 7B on a consumer
-GPU (Qwen2.5-7B Q4_K_M: 64.8 s per step on an RTX 3070 with the CUDA assist,
-76.5 s on 8 CPU threads). The published Qwen3-4B adapter took 316 steps.
+Training runs one example per step, on the CPU, or with every weight product
+on an NVIDIA GPU under `--train-gpu`. A step takes about 20 s for a 4B model
+on a many-core CPU host, and about ten seconds for a 7B on a consumer GPU
+with `--train-gpu` (Qwen2.5-7B Q4_K_M on an RTX 3070: 9.7 s per step against
+95 s for the CPU trainer on the same 4 threads). The published Qwen3-4B
+adapter took 316 steps.
 Budget hours, not minutes, and expect a Python training stack on a GPU to be
 faster per step. What Runner gives for that cost is one numerical path and an
 artifact you can audit.
@@ -250,11 +252,12 @@ CPU keeps the rest: norms, rope, attention, the DeltaNet recurrence, the
 adapter's own rank-r products and the optimizer.
 
 It is what to use when the weight products dominate, which they do on large
-models. On a 24 GB datacenter MIG slice with 6 CPU threads, six
-Qwen3.5-0.8B distillation steps took 10.3 s against 43.1 s for the CPU
-trainer on the same threads (4.2x); the device calls were about 0.4 s of a
-1.5 s step, so on a small model the CPU's share, not the GPU, sets the step
-time.
+models. On an RTX 3070 beside 4 CPU threads, a Qwen2.5-7B Q4_K_M step took
+9.7 s against 95 s for the CPU trainer on the same threads (9.8x), and six
+Qwen3.5-0.8B distillation steps 15.9 s against 74.3 s. On a 24 GB datacenter
+MIG slice with 6 CPU threads the same six steps took 10.3 s against 43.1 s
+(4.2x); the device calls were about 0.4 s of a 1.5 s step, so on a small
+model the CPU's share, not the GPU, sets the step time.
 
 The adapter is not the CPU run's byte for byte: the device products add in
 another order. It matches within rounding: on Qwen3.5-0.8B the losses matched
