@@ -1783,8 +1783,12 @@ static int run_shadow_mode(const char *model, bool yes) {
 static int run_caps(void) {
     char gname[128];
     bool has_gpu = gpu_available(gname, sizeof(gname));
+    // One reading for every number below, so the effective, host and limit
+    // figures describe the same moment
+    plat_capacity cap;
+    plat_capacity_get(&cap);
     printf("{\"version\":\"%s\",\"os\":\"%s\",\"arch\":\"%s\",\"cpu_cores\":%d,"
-           "\"ram_bytes\":%llu,\"ram_available_bytes\":%llu,\"gpu\":",
+           "\"ram_bytes\":%llu,\"ram_available_bytes\":%llu,",
            RUNNER_VERSION,
 #if defined(_WIN32)
            "windows",
@@ -1794,12 +1798,25 @@ static int run_caps(void) {
            "linux",
 #endif
            RUNNER_BUILD_ARCH,
-           plat_cpu_count(), (unsigned long long)plat_ram_bytes(),
+           cap.cpu_cores, (unsigned long long)cap.ram_bytes,
            // Not total RAM: "model file size <= RAM" is the test that
            // passes right before a machine starts thrashing. A launcher
            // needs to know what is actually free plus reclaimable, so it
            // can refuse a model that will not stay resident.
-           (unsigned long long)plat_ram_available_bytes());
+           (unsigned long long)cap.ram_available_bytes);
+    // The three numbers above are what this process may use: inside a
+    // container, the host's narrowed by its cgroup limits. A reader that
+    // wants the machine, or why the two differ, reads these.
+    printf("\"host\":{\"cpu_cores\":%d,\"ram_bytes\":%llu,\"ram_available_bytes\":%llu},"
+           "\"limits\":{\"source\":\"%s\",\"cpu_quota\":",
+           cap.host_cpu_cores, (unsigned long long)cap.host_ram_bytes,
+           (unsigned long long)cap.host_ram_available_bytes, cap.limits_source);
+    if (cap.cpu_quota) printf("%d", cap.cpu_quota);
+    else printf("null");
+    printf(",\"memory_max_bytes\":");
+    if (cap.memory_max_bytes) printf("%llu", (unsigned long long)cap.memory_max_bytes);
+    else printf("null");
+    printf("},\"gpu\":");
     if (has_gpu) {
         size_t vfree = 0, vtotal = 0;
         bool vm = gpu_mem_info(&vfree, &vtotal);

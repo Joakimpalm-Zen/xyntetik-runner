@@ -5,6 +5,8 @@ import shlex
 import subprocess
 import sys
 
+import pytest
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -76,3 +78,83 @@ def test_gpu_quant_report_matches_backend_support():
             f"{backend} gpu_quants disagree; symmetric difference: "
             f"{sorted(gpu_quants ^ expected)}"
         )
+
+
+def _caps(env_root=None):
+    runner = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
+    if not runner.exists():
+        pytest.skip("runner not built")
+    env = dict(os.environ)
+    env.pop("RUNNER_TEST_CGROUP_ROOT", None)
+    if env_root is not None:
+        env["RUNNER_TEST_CGROUP_ROOT"] = str(env_root)
+    return json.loads(subprocess.run(
+        [runner, "--caps"], cwd=ROOT, stdout=subprocess.PIPE, check=True, env=env,
+    ).stdout)
+
+
+def _write(root, files):
+    for rel, text in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+
+
+def test_caps_reports_host_and_limits_beside_the_effective_numbers():
+    """The old keys keep their names and now carry what this process may use;
+    `host` has the machine's numbers and `limits` says what narrowed them."""
+    caps = _caps()
+    host, limits = caps["host"], caps["limits"]
+    assert set(host) == {"cpu_cores", "ram_bytes", "ram_available_bytes"}
+    assert set(limits) == {"source", "cpu_quota", "memory_max_bytes"}
+    assert limits["source"] in ("cgroup2", "cgroup1", "none")
+    assert 1 <= caps["cpu_cores"] <= host["cpu_cores"]
+    assert caps["ram_bytes"] <= host["ram_bytes"]
+    if limits["cpu_quota"] is None:
+        assert caps["cpu_cores"] == host["cpu_cores"]
+    if limits["memory_max_bytes"] is None:
+        assert caps["ram_bytes"] == host["ram_bytes"]
+    if not sys.platform.startswith("linux"):
+        # no cgroup outside Linux: the numbers are the host's, unchanged
+        assert limits == {"source": "none", "cpu_quota": None, "memory_max_bytes": None}
+        assert caps["cpu_cores"] == host["cpu_cores"]
+        assert caps["ram_bytes"] == host["ram_bytes"]
+
+
+def test_caps_sizes_from_a_cgroup2_limit(tmp_path):
+    # cpu.max is "$MAX $PERIOD": 150000 / 100000 = 1.5 CPUs, rounded up to 2.
+    # 1 GiB limit with 256 MiB charged and no memory.stat leaves 768 MiB.
+    # Both are below any machine this runs on, so the limits must show.
+    _write(tmp_path, {
+        "cgroup.controllers": "cpu memory\n",
+        "cpu.max": "150000 100000\n",
+        "memory.max": "1073741824\n",
+        "memory.current": "268435456\n",
+    })
+    plain, caps = _caps(), _caps(tmp_path)
+    assert caps["limits"] == {"source": "cgroup2", "cpu_quota": 2,
+                              "memory_max_bytes": 1073741824}
+    # the host block is the machine, whatever the limits say
+    assert caps["host"]["cpu_cores"] == plain["host"]["cpu_cores"]
+    assert caps["host"]["ram_bytes"] == plain["host"]["ram_bytes"]
+    assert caps["cpu_cores"] == min(caps["host"]["cpu_cores"], 2)
+    assert caps["ram_bytes"] == min(caps["host"]["ram_bytes"], 1073741824)
+    host_avail = caps["host"]["ram_available_bytes"]
+    want = 805306368 if not host_avail else min(host_avail, 805306368)
+    assert caps["ram_available_bytes"] == want
+
+
+def test_caps_reads_a_cgroup1_layout(tmp_path):
+    # v1 mounts each controller apart; -1 is no CPU quota, and the memory
+    # limit is 512 MiB with nothing charged
+    _write(tmp_path, {
+        "cpu,cpuacct/cpu.cfs_quota_us": "-1\n",
+        "cpu,cpuacct/cpu.cfs_period_us": "100000\n",
+        "memory/memory.limit_in_bytes": "536870912\n",
+        "memory/memory.usage_in_bytes": "0\n",
+    })
+    caps = _caps(tmp_path)
+    assert caps["limits"] == {"source": "cgroup1", "cpu_quota": None,
+                              "memory_max_bytes": 536870912}
+    assert caps["cpu_cores"] == caps["host"]["cpu_cores"]
+    assert caps["ram_bytes"] == min(caps["host"]["ram_bytes"], 536870912)
