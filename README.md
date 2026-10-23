@@ -175,7 +175,7 @@ backward admits the file, not that training it gives good results.
 | Text path only: **Gemma 4 31B, attention block 48 removed** | | | | | | |
 | | `gemma-4-31B-it-attn48-removed-q4_0.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#gemma-4-31b-it-attn48-removed-q4_0) |
 | Text path only: **Gemma 4 E2B** | | | | | | |
-| | `gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf` | ☐ not run | ☐ not run | ☐ not run | ✅ v1.5.1 2026-10-23 | [envelope](docs/model-support.md#gemma-4-e2b-it-q4_k_m-q4_0-mix) |
+| | `gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf` | ✅ v1.5.1 2026-10-23 | ☐ not run | ✅ v1.5.1 2026-10-23 | ✅ v1.5.1 2026-10-23 | [envelope](docs/model-support.md#gemma-4-e2b-it-q4_k_m-q4_0-mix) |
 | **Granite-4.2-8B** | | | | | | |
 | | `granite-4.2-8b-Q4_K_M.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#granite-4.2-8b-q4_k_m) |
 | | `granite-4.2-8b-Q8_0.gguf` | ☐ not run | ☐ not run | ☐ not run | ☐ not run | [envelope](docs/model-support.md#granite-4.2-8b-q8_0) |
