@@ -2763,9 +2763,10 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	@# R8.19: the same gates in --train-gpu's device mode (every weight
 	@# product on the GPU, batch-invariant, not the CPU's bits): its own
 	@# central differences hold its gradient only if the taped forward and
-	@# the recompute see the same values. Rounds of 5 against the backward's
-	@# 14-position window and 13-position head chunk, so a product whose
-	@# columns depend on the batch shows. Skips without a CUDA device.
+	@# the recompute see the same values. Forward rounds (and the head's rows
+	@# with them) of 5 against the recompute's 14-position window, so a
+	@# product whose columns depend on the batch shows. Skips without a CUDA
+	@# device.
 	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD)
 	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-q8.gguf test-lora-q8.full.gguf
 	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-qk.gguf test-lora-qk.full.gguf

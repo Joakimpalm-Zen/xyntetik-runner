@@ -7799,7 +7799,10 @@ static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
 bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
                    float *dx, int n_in, int n_out, int nb) {
     train_gpu_t *t = m->train_gpu;
-    if (!t || !w || w->type >= KT_N || !t->f_tmvt[w->type]) return false;
+    // the kernel reads raw rows: a scaled tensor (stored * scale) is the
+    // CPU chain's, which multiplies the decoded row first
+    if (!t || !w || w->scale != 1.0f || w->type >= KT_N || !t->f_tmvt[w->type])
+        return false;
     double t0 = plat_now();
     bool ok = train_mvt(t, w, dy, dx, n_in, n_out, nb);
     t->t_mvt += plat_now() - t0;

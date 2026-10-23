@@ -6,8 +6,8 @@
 // in f32 (a half-precision scale times small integers, at most 24 significant
 // bits; a K-quant's minimum and Q4_1/Q5_1's offset subtract or add one more
 // exact value, a single rounding on both sides), so the association the CPU
-// writes and a contracted multiply-add here land on the same bits; test-mvt
-// holds every type to the CPU chain byte for byte.
+// writes and a contracted multiply-add here land on the same bits;
+// test-train-gpu holds every type to the CPU chain byte for byte.
 //
 // Two kernels on each decoder:
 //

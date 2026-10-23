@@ -8782,7 +8782,6 @@ typedef struct {
     const uint8_t *kc_l, *vc_l;
     const float *q, *dao;
     float *dq, *dk, *dv;
-    float *pbuf;           // n_kv rows of T floats, one per group
     int T, n_head, kv_mul, hd, q_dim, kv_dim;
     size_t k_row_b, v_row_b;   // f16 rows (training refuses quantized caches)
     float scale;
@@ -8974,7 +8973,6 @@ typedef struct {
     float *dxn2;
     float *dao;
     float *tmpE;
-    float *p;
     bool gate;
     float rs;
     int swa;
@@ -9077,7 +9075,6 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     float *dxn2 = calloc((size_t)T * E, sizeof(float));
     float *dao  = calloc((size_t)T * q_dim, sizeof(float));
     float *tmpE = malloc(sizeof(float) * (size_t)E);
-    float *p    = malloc(sizeof(float) * (size_t)T * n_kv);  // per-group rows
     // R8.9.4 shapes: the attention output gate keeps its pre-activation and
     // the ungated attention output; the sandwich norms keep each branch's
     // pre-norm output; the residual scale and the per-layer output scale are
@@ -9108,7 +9105,7 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     float *dbr   = malloc(szE);   // a branch output's gradient, per window
     float *dyb   = malloc(sizeof(float) * (size_t)E);  // one scaled row
     bool ok = xn1 && xa && xn2 && q && ao && g && u && dxn1 && dxa && dq &&
-              dk && dv && hact && dhact && dgu && dxn2 && dao && tmpE && p &&
+              dk && dv && hact && dhact && dgu && dxn2 && dao && tmpE &&
               dbr && dyb && (!gate || (gpre && aopre && dg && dxg)) &&
               (!q35 || dqg) &&
               (!ly->post_attn_norm_w || opre) && (!ly->post_ffn_norm_w || fpre) &&
@@ -9179,7 +9176,6 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     s->dxn2 = dxn2;
     s->dao = dao;
     s->tmpE = tmpE;
-    s->p = p;
     s->gate = gate;
     s->rs = rs;
     s->swa = swa;
@@ -9699,7 +9695,6 @@ NUM_STAGE void lbw_attention(model_t *m, int l, int T, float *dx, lbw_state *s, 
     float *dk = s->dk;
     float *dv = s->dv;
     float *dao = s->dao;
-    float *p = s->p;
     int swa = s->swa;
     bool ok = *okp;
     // score/softmax backward, threaded over KV-HEAD GROUPS (slice 3): each
@@ -9710,7 +9705,7 @@ NUM_STAGE void lbw_attention(model_t *m, int l, int T, float *dx, lbw_state *s, 
     // bytes cannot depend on the thread count. Reads K/V from the cache
     // (the f16-rounded values the forward attended over).
     if (ok) {
-        attn_bw_job aj = { kc_l, vc_l, q, dao, dq, dk, dv, p, T, n_head,
+        attn_bw_job aj = { kc_l, vc_l, q, dao, dq, dk, dv, T, n_head,
                            kv_mul, hd, q_dim, kv_dim, k_row_b, v_row_b, scale, swa };
         ok = attn_bw_run(m->tp, &aj);
     }
@@ -9895,7 +9890,6 @@ static void lbw_state_free(lbw_state *s) {
     float *dxn2 = s->dxn2;
     float *dao = s->dao;
     float *tmpE = s->tmpE;
-    float *p = s->p;
     float *gpre = s->gpre;
     float *aopre = s->aopre;
     float *dg = s->dg;
@@ -9918,7 +9912,7 @@ static void lbw_state_free(lbw_state *s) {
     free(qpre); free(kpre);
     free(xn1); free(xa); free(xn2); free(q); free(ao); free(g); free(u);
     free(dxn1); free(dxa); free(dq); free(dk); free(dv); free(hact);
-    free(dhact); free(dgu); free(dxn2); free(dao); free(tmpE); free(p);
+    free(dhact); free(dgu); free(dxn2); free(dao); free(tmpE);
     free(gpre); free(aopre); free(dg); free(dxg); free(opre); free(fpre);
     free(s->dqg);
     free(dbr); free(dyb);
