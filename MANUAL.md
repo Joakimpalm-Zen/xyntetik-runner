@@ -2337,6 +2337,13 @@ whether the draft is `active` there.
 | `--export-bundle RECEIPT`, `--bundle-out DIR`, `--check-bundle DIR` | Put a receipt, the OMS model signature (`--model-sig`) and its key (`--model-pubkey`), the receipt key's fingerprint (sha256 of the key bytes) and a `xyntetik.runner.bundle.v1` manifest of every file's sha256 into one directory a verifier can take; `--sign-key` also signs the manifest. `--check-bundle` verifies it offline: the files are the ones listed, the receipt's chain hash recomputes, its signature is the one the manifest names, both key fingerprints recompute, and the manifest's own signature (pinned with `--trust-key`). Exit 0 OK, 2 BAD naming the file or check, 3 UNVERIFIABLE. A receipt whose chain does not recompute is refused, not bundled. The check does not replay the inference; the bundled receipt does, with `-m MODEL --verify DIR/receipt.json`. Needs no `-m`. |
 | `--train-eot` | Append the selected template's end-of-turn token to each JSONL completion target. Opt-in; without it the supplied completion is the complete target. |
 | `--train-teacher DIR` | With `--train`: fit each completion position to a teacher's distribution instead of the next token, the KL divergence from the teacher's top-k plus one tail bucket to the student's. DIR holds `topk_idx.npy` (int32) and `topk_logp.npy` (float32), each `[lines, positions, k]`, as `scripts/kd-teacher.py` writes them from a parent GGUF; the `--train` file must use the id form. [Details](docs/lora.md#6-distillation-toward-a-parent-model). |
+| `--lr-schedule constant\|cosine`, `--lr-warmup N`, `--lr-floor F` | With `--train`: a linear warmup over N steps, then a constant learning rate or a cosine down to F x `--lr` (0.1) at the last step. |
+| `--train-batch N` | With `--train`: N rows per optimizer step, the loss and gradient the mean over their positions (rows in file order). Without it, one row a step, its loss summed over its positions. |
+| `--weight-decay F` | AdamW's decoupled weight decay (`0.01`); `0` is plain Adam. |
+| `--train-resume CKPT` | Continue the run that wrote checkpoint CKPT: its adapter, AdamW moments (`CKPT.optim`), step and next rows; byte-identical to the run that never stopped. |
+| `--train-eval LABEL=ROWS[,TEACHER]`, `--eval-every N` | Held-out sets (up to 8) evaluated with no update at step 0, every N steps and at the last: mean loss per position, `top1_topk` and `top1_vocab`. |
+| `--kill-at S`, `--kill-metric LABEL`, `--kill-min-rel R` | At step S, unless LABEL's loss fell by at least R from step 0: save, write `OUT.killed.json`, exit 3 (else `OUT.kill-check.json`). |
+| `--stop-file F` | After each step, if F exists: save a checkpoint and exit 75. |
 | `--train-dpo FILE` | Train an adapter from JSONL `prompt`, `chosen`, `rejected` pairs. CPU forward/backward path; the frozen base is the reference, evaluated with the adapter bypassed. Does not activate the output adapter. |
 | `--dpo-beta F` | DPO reference-deviation coefficient (default `0.1`). Uses the existing training step, learning-rate, context and output options. |
 | `--require-eval KIND` | Refuse to load `-m` unless it carries a passing evaluation of KIND (`fidelity` or `agent`, written by `scripts/eval-record.py`) made for this very file, signed by `--trust-key` when one is given. Hashes the model at load. [Details](#evaluation-records). |
@@ -2461,7 +2468,7 @@ server started with `--lora` on the same adapter, and the zero adapter exactly a
 the bare base (`tests/test_adapter_routing.py`).
 
 <a id="cli-train"></a>
-#### `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank`, `--train-logprobs`, `--train-teacher`
+#### `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank`, `--train-logprobs`, `--train-teacher`, `--train-resume`
 
 AdamW LoRA training in the serving binary (position-batched and threaded under a
 byte-exact contract - 4B trains at ~20 s/step on a many-core host, 2.3× over the first
@@ -2481,10 +2488,13 @@ step, `{"step","example","first","logprobs"}`: the logprob of every target token
 same normalizer as the server's logprobs, so the two compare bit for bit. `--train-teacher DIR`
 fits each completion position to a teacher's top-k distribution (KL, with the rest of the
 vocabulary as one tail bucket) instead of the next token: distillation, for bringing a
-quantized file back toward its parent ([guide](docs/lora.md#6-distillation-toward-a-parent-model)). Fresh adapters start as an exact no-op (A seeded,
+quantized file back toward its parent ([guide](docs/lora.md#6-distillation-toward-a-parent-model)), with a
+learning-rate schedule, batches, held-out evals, a kill rule and a stop file
+when a distillation pipeline's recipe needs them. `--save-every` checkpoints
+carry the optimizer state, and `--train-resume` continues such a run exactly. Fresh adapters start as an exact no-op (A seeded,
 B zero); checkpoints are adapter GGUFs that `--lora` loads back. `--train` with `--lora`
-continues that adapter: it keeps its rank and alpha, AdamW starts fresh (an adapter file
-holds no optimizer state), and the record names it as `from_adapter`, hashed before the
+continues that adapter: it keeps its rank and alpha, AdamW starts fresh (`--lora` loads
+the weights only; `--train-resume` loads a checkpoint's optimizer state too), and the record names it as `from_adapter`, hashed before the
 first step, so `--lineage` walks back through every earlier run. Deterministic by
 default: same data + same seed produce a byte-identical adapter file, gated in `make
 test`. One example per step, cycled in file order; before the first step `--train`

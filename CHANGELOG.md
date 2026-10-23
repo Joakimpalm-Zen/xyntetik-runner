@@ -56,6 +56,22 @@ Current release and unreleased changes. Compatibility follows the
   no LayerNorm adjoint, so `--adapt-info` and `--train` now refuse
   "LayerNorm (stablelm)" by name.
 
+- **Training: a distillation pipeline's recipe in `--train`.** A learning-rate
+  schedule (`--lr-warmup N`, then `--lr-schedule constant|cosine` down to
+  `--lr-floor`), batches (`--train-batch N`: N rows a step, the loss and
+  gradient the mean over their positions), `--weight-decay` (0 is plain Adam),
+  checkpoints that carry the optimizer state (`--save-every` writes
+  `OUT.optim` and keeps `OUT.step-NNNNN` copies) and `--train-resume CKPT`,
+  which continues such a run byte for byte as if it had never stopped,
+  held-out sets (`--train-eval LABEL=ROWS[,TEACHER]`, `--eval-every`: mean
+  loss, `top1_topk`, `top1_vocab`), a kill rule (`--kill-at`, exit 3) and a
+  stop file (`--stop-file`, save and exit 75). Each step line adds `lr` and
+  the per-layer gradient norms (`grad_norm_max`, `grad_norm_mean`), and a step
+  whose loss or gradient is not finite stops the run before it touches the
+  adapter. A run with none of the new flags writes the same adapter bytes as
+  before. The recipe is the one a distillation pipeline uses for quantization
+  recovery, so such a run can move from PyTorch to Runner.
+
 ## v1.5.1 - 2026-10-23
 
 - **Metal: Q4_K decode matvecs take the fast kernel by default on dense

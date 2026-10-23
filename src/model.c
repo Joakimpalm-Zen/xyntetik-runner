@@ -10650,6 +10650,157 @@ bool model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
     return true;
 }
 
+// R8.17: each layer's gradient norm, the L2 over that layer's adapter
+// gradients (every slot, A and B), reported as the largest and the mean over
+// the layers that carry an adapter: the per-block norms a distillation
+// pipeline logs. false when any gradient is not finite (a step from it would
+// write NaN into the adapter).
+bool model_lora_grad_norms(model_t *m, double *max_out, double *mean_out) {
+    double mx = 0.0, sum = 0.0;
+    int layers = 0;
+    for (int l = 0; m->lora && l < m->n_layer; l++) {
+        double ss = 0.0;
+        bool any = false;
+        for (int s = 0; s < LW_SLOTS; s++)
+            for (int w = 0; w < 2; w++) {
+                int cnt = 0;
+                float *g = model_lora_gradbuf(m, l, s, w, &cnt);
+                if (!g) continue;
+                any = true;
+                for (int i = 0; i < cnt; i++) {
+                    if (!fp_finite_f32(g[i])) return false;
+                    ss += (double)g[i] * (double)g[i];
+                }
+            }
+        if (!any) continue;
+        double nrm = sqrt(ss);
+        if (nrm > mx) mx = nrm;
+        sum += nrm;
+        layers++;
+    }
+    if (max_out) *max_out = mx;
+    if (mean_out) *mean_out = layers ? sum / layers : 0.0;
+    return true;
+}
+
+// R8.17: the AdamW moments, so a checkpoint resumes the run it came from
+// exactly. Per adapted slot, in table order: layer, slot, the A and B element
+// counts, then mA, vA, mB, vB as float32 (zeros for a slot whose moments were
+// never allocated). The reader checks every count against the attached
+// adapter and refuses a sidecar written for another one.
+bool model_lora_optim_write(model_t *m, FILE *f) {
+    if (!m->lora) return false;
+    for (int l = 0; l < m->n_layer; l++)
+        for (int s = 0; s < LW_SLOTS; s++) {
+            struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
+            gguf_tensor *base = lora_slot_base(m, l, s);
+            if (!lw->r || !base) continue;
+            uint32_t h[4] = { (uint32_t)l, (uint32_t)s,
+                              (uint32_t)((size_t)lw->r * (size_t)base->ne[0]),
+                              (uint32_t)((size_t)lw->r * (size_t)base->ne[1]) };
+            if (fwrite(h, sizeof h, 1, f) != 1) return false;
+            const float *bufs[4] = { lw->ma, lw->va, lw->mb, lw->vb };
+            for (int k = 0; k < 4; k++) {
+                size_t n = k < 2 ? h[2] : h[3];
+                if (bufs[k]) {
+                    if (fwrite(bufs[k], sizeof(float), n, f) != n) return false;
+                } else {
+                    float z = 0.0f;
+                    for (size_t i = 0; i < n; i++)
+                        if (fwrite(&z, sizeof z, 1, f) != 1) return false;
+                }
+            }
+        }
+    return true;
+}
+
+bool model_lora_optim_read(model_t *m, FILE *f, char *why, size_t cap) {
+    if (!m->lora) { snprintf(why, cap, "no adapter attached"); return false; }
+    for (int l = 0; l < m->n_layer; l++)
+        for (int s = 0; s < LW_SLOTS; s++) {
+            struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
+            gguf_tensor *base = lora_slot_base(m, l, s);
+            if (!lw->r || !base) continue;
+            size_t na = (size_t)lw->r * (size_t)base->ne[0];
+            size_t nb = (size_t)lw->r * (size_t)base->ne[1];
+            uint32_t h[4];
+            if (fread(h, sizeof h, 1, f) != 1) {
+                snprintf(why, cap, "it ends before layer %d's %s", l, lora_slot_name[s]);
+                return false;
+            }
+            if (h[0] != (uint32_t)l || h[1] != (uint32_t)s || h[2] != na || h[3] != nb) {
+                snprintf(why, cap, "it was written for another adapter (layer %d %s)",
+                         l, lora_slot_name[s]);
+                return false;
+            }
+            if (!adam_state(&lw->ma, na) || !adam_state(&lw->va, na) ||
+                !adam_state(&lw->mb, nb) || !adam_state(&lw->vb, nb)) {
+                snprintf(why, cap, "out of memory for the moments");
+                return false;
+            }
+            if (fread(lw->ma, sizeof(float), na, f) != na ||
+                fread(lw->va, sizeof(float), na, f) != na ||
+                fread(lw->mb, sizeof(float), nb, f) != nb ||
+                fread(lw->vb, sizeof(float), nb, f) != nb) {
+                snprintf(why, cap, "it ends inside layer %d's %s", l, lora_slot_name[s]);
+                return false;
+            }
+        }
+    if (fgetc(f) != EOF) {
+        snprintf(why, cap, "it has bytes past the last slot");
+        return false;
+    }
+    return true;
+}
+
+// R8.17: one row's held-out evaluation, forward only (no tape, no update):
+// over the transitions the weights keep, the weighted loss (the KL to the
+// teacher with one, the cross-entropy without) and two top-1 agreements.
+// top1_topk: among the teacher's listed ids, the one the student scores
+// highest is the teacher's own first (the pipeline's metric); top1_vocab: the
+// student's argmax over the whole vocabulary is it. Without a teacher both
+// compare with the next token.
+bool model_lora_eval_row(model_t *m, const int32_t *toks, int T,
+                         const float *pos_w, const lora_teacher *tch,
+                         lora_eval_acc *acc) {
+    int V = m->n_vocab;
+    for (int t = 0; t < T; t++) {
+        float *lg = model_forward(m, toks[t], t);
+        if (!lg) return false;
+        if (t >= T - 1 || (pos_w && pos_w[t] == 0.0f)) continue;
+        double w = pos_w ? (double)pos_w[t] : 1.0;
+        int vmax = 0;
+        for (int j = 1; j < V; j++) if (lg[j] > lg[vmax]) vmax = j;
+        int target = toks[t + 1], kbest = target;
+        if (tch) {
+            const int32_t *ids = tch->ids + (size_t)t * tch->k;
+            const float *lp = tch->logp + (size_t)t * tch->k;
+            kd_row r;
+            if (!kd_row_eval(lg, V, ids, lp, tch->k, &r)) return false;
+            acc->loss += w * kd_row_loss(lg, V, ids, lp, tch->k, &r);
+            int tbest = 0;
+            for (int i = 1; i < tch->k; i++) if (lp[i] > lp[tbest]) tbest = i;
+            int sbest = 0;
+            for (int i = 1; i < tch->k; i++) if (lg[ids[i]] > lg[ids[sbest]]) sbest = i;
+            target = ids[tbest];
+            kbest = ids[sbest];
+        } else {
+            float mx = lg[0];
+            for (int i = 1; i < V; i++) if (lg[i] > mx) mx = lg[i];
+            double sum = 0;
+            for (int i = 0; i < V; i++) sum += expf(lg[i] - mx);
+            acc->loss += w * ((double)(mx + logf((float)sum)) - (double)lg[target]);
+            kbest = vmax;
+        }
+        acc->weight += w < 0 ? -w : w;
+        acc->top1_topk += kbest == target;
+        acc->top1_vocab += vmax == target;
+        acc->positions++;
+    }
+    return true;
+}
+
+
 // Adapter GGUF writer — exactly the format model_lora_load reads (v3 header,
 // general.type=adapter / adapter.type=lora / adapter.lora.alpha, F32
 // blk.N.<proj>.weight.lora_a/_b tensors, 32-byte-aligned data).
