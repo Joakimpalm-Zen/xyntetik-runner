@@ -64,6 +64,10 @@ FEATURES = ("text", "tools", "structured_output", "reasoning", "vision",
 #   self        this project is the publisher and its BF16 file is the
 #               reference.
 FP32_REFERENCE = ("measured", "owed", "infeasible", "self")
+# What the file is, and how a companion is loaded beside the row it runs
+# with: an MTP head as `-m TRUNK --mtp-file HEAD`, an adapter as
+# `-m BASE --lora ADAPTER`. A model file runs on its own.
+FILE_KINDS = {"model": None, "mtp-head": "mtp-file", "adapter": "lora"}
 ANOTHER_ENGINE = "anchor: agreement with another engine, not fidelity"
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -198,6 +202,7 @@ def validate(doc, devices):
         if not (_text(e.get("repo")) and _text(e.get("reason"))):
             errs.append(f"exempt entry {e!r} needs repo and reason")
     seen = set()
+    by_id = {r.get("id"): r for r in doc.get("rows") or []}
     for row in doc.get("rows") or []:
         rid = row.get("id")
         where = f"row {rid!r}"
@@ -239,6 +244,30 @@ def validate(doc, devices):
                         f"published_exception")
         if "files" in row:
             errs += _file_errors(where, row["files"])
+        kind = row.get("file_kind", "model")
+        rw = row.get("runs_with")
+        if kind not in FILE_KINDS:
+            errs.append(f"{where}: file_kind {kind!r} is not one of {list(FILE_KINDS)}")
+        elif kind == "model" and rw is not None:
+            errs.append(f"{where}: a model file runs on its own and names no runs_with")
+        elif kind != "model" and rw is None and tier == "tier1":
+            errs.append(f"{where}: a {kind} file does not run on its own, and without "
+                        f"runs_with the per-release smoke cannot run it")
+        elif kind != "model" and rw is not None:
+            target = by_id.get((rw or {}).get("row"))
+            if (rw or {}).get("as") != FILE_KINDS[kind]:
+                errs.append(f"{where}: runs_with.as is {FILE_KINDS[kind]!r} for a {kind}")
+            if target is None or not target.get("files"):
+                errs.append(f"{where}: runs_with names {(rw or {}).get('row')!r}, not a "
+                            f"row with files")
+            elif target.get("file_kind", "model") != "model":
+                errs.append(f"{where}: runs_with names another companion; a companion "
+                            f"runs with a model file")
+            elif tier == "tier1":
+                b = (row.get("smoke") or {}).get("backend")
+                if ((target.get("backends") or {}).get(b) or {}).get("kind") == "limit":
+                    errs.append(f"{where}: runs_with {target['id']} has a declared limit "
+                                f"on {b}, the backend this row's smoke runs on")
         errs += _lora_errors(where, row.get("lora"))
         backends = row.get("backends")
         if backends is not None:
@@ -274,10 +303,6 @@ def validate(doc, devices):
         elif (backends.get(smoke["backend"]) or {}).get("kind") == "limit":
             errs.append(f"{where}: the smoke backend {smoke['backend']} is a "
                         f"declared limit for this file")
-        trunk = row.get("smoke_trunk")
-        if trunk is not None and not any(r.get("id") == trunk and r.get("tier") == "tier1"
-                                         for r in doc.get("rows") or []):
-            errs.append(f"{where}: smoke_trunk {trunk!r} is not a Tier 1 row")
         env = row.get("envelope") or {}
         feats = env.get("features")
         if not isinstance(feats, list) or not feats:
@@ -380,6 +405,18 @@ def record(doc, row_id, res, devices):
     got = [f.get("sha256") for f in res.get("files") or []]
     if got != want:
         raise SystemExit(f"{row_id}: the run hashed {got}, the row names sha256 {want}")
+    rw = row.get("runs_with")
+    if rw:
+        # a companion's run is the named row's file plus this one: both must
+        # be the bytes their rows name
+        base = rows.get(rw["row"]) or {}
+        w = res.get("with") or {}
+        want_w = [f["sha256"] for f in base.get("files") or []]
+        got_w = [f.get("sha256") for f in w.get("files") or []]
+        if w.get("row") != rw["row"] or got_w != want_w:
+            raise SystemExit(f"{row_id} runs with {rw['row']}: the run used "
+                             f"{w.get('row')!r} with sha256 {got_w}, the roster names "
+                             f"{want_w}")
     classes = device_classes(devices)
     dc = res.get("device_class")
     if dc not in classes:

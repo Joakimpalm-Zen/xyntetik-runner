@@ -272,3 +272,63 @@ def test_a_pin_made_with_another_prompt_is_not_compared_against(world):
     r = smoke(world, "--backend", "metal")
     assert r.returncode != 0
     assert "different" in r.stdout
+
+
+# --- a companion runs with the row it names -----------------------------------
+
+def add_companion(world, kind, how, name):
+    comp = world["model"].parent / name
+    comp.write_bytes(b"GGUF companion bytes for " + kind.encode())
+    doc = mt.load(world["roster"])
+    row = json.loads(json.dumps(doc["rows"][0]))
+    row.update(id="toy-" + kind, file_kind=kind,
+               runs_with={"row": "toy-q8_0", "as": how},
+               files=[{"name": name, "sha256": hashlib.sha256(comp.read_bytes()).hexdigest(),
+                       "bytes": comp.stat().st_size}])
+    doc["rows"].append(row)
+    mt.save(doc, world["roster"])
+    return comp
+
+
+def companion_smoke(world, comp, row, *extra, env=None):
+    cmd = [sys.executable, str(SMOKE), "--runner", str(FAKE),
+           "--roster", str(world["roster"]),
+           "--device-evidence", str(world["devices"]),
+           "--manifest", str(world["manifest"]), "--pins", str(world["pins"]),
+           "--row", row, "--model", str(comp), "--with-model", str(world["model"]),
+           "--backend", "metal", "--out", str(world["out"])] + list(extra)
+    return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, env=dict(os.environ, **(env or {})))
+
+
+def test_a_head_runs_beside_its_trunk_and_pins_under_its_own_row(world):
+    head = add_companion(world, "mtp-head", "mtp-file", "toy-mtp.gguf")
+    r = companion_smoke(world, head, "toy-mtp-head", "--pin")
+    assert r.returncode == 0, r.stdout
+    res = result(world)
+    assert "-m toy-Q8_0.gguf" in res["ran"] and "--mtp-file toy-mtp.gguf" in res["ran"]
+    assert res["with"]["row"] == "toy-q8_0"
+    assert (world["pins"] / "toy-mtp-head.macos-arm64-metal.metal.txt").exists()
+    assert companion_smoke(world, head, "toy-mtp-head", "--record").returncode == 0
+    rows = {r["id"]: r for r in mt.load(world["roster"])["rows"]}
+    assert rows["toy-mtp-head"]["backends"]["metal"]["result"] == "pass"
+    assert rows["toy-q8_0"]["backends"]["metal"] is None
+
+
+def test_an_adapter_runs_on_its_base(world):
+    lora = add_companion(world, "adapter", "lora", "toy-lora.gguf")
+    r = companion_smoke(world, lora, "toy-adapter", "--pin")
+    assert r.returncode == 0, r.stdout
+    assert "--lora toy-lora.gguf" in result(world)["ran"]
+    # the stand-in marks a run that applied an adapter, so this is the
+    # composed run's output and not the base's
+    pin = world["pins"] / "toy-adapter.macos-arm64-metal.metal.txt"
+    assert b"(adapter applied)" in pin.read_bytes()
+
+
+def test_a_trunk_that_is_not_the_named_rows_is_refused(world):
+    head = add_companion(world, "mtp-head", "mtp-file", "toy-mtp.gguf")
+    world["model"].write_bytes(b"another trunk")
+    r = companion_smoke(world, head, "toy-mtp-head", "--pin")
+    assert r.returncode != 0
+    assert "sha256" in r.stdout

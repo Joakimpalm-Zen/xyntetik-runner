@@ -610,6 +610,11 @@
       ],
       "quantization": "Q8_0",
       "published": true,
+      "file_kind": "mtp-head",
+      "runs_with": {
+        "row": "qwen3.8-27b-gsq-rco-iq3_s-recovered",
+        "as": "mtp-file"
+      },
       "envelope": {
         "features": [
           "mtp"
@@ -621,7 +626,7 @@
         "evidence": [
           "MANUAL.md#placement-and-memory"
         ],
-        "missing": "Pinned output of trunk plus head against the trunk's own."
+        "missing": "Pinned output of the composed run (the trunk plus this head)."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
@@ -642,8 +647,7 @@
         "effective": "2026-10-22",
         "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
         "last_validated_release": null
-      },
-      "smoke_trunk": "qwen3.8-27b-gsq-rco-iq3_s-recovered"
+      }
     },
     {
       "id": "xyntetik-kvist-14b-bf16",
@@ -1367,7 +1371,7 @@
       "id": "qwen3-4b-runner-tooluse-lora",
       "model": "Qwen3-4B Runner ToolUse",
       "tier": "tier1",
-      "claim": "The tool-use LoRA adapter for Qwen3-4B, served with --lora on its base: an adapter, not a model.",
+      "claim": "The tool-use LoRA adapter for Qwen3-4B, served with --lora on the base its card names (bartowski's Q4_K_M): an adapter, not a model.",
       "architecture": "qwen3",
       "upstream": {
         "checkpoint": "Qwen/Qwen3-4B",
@@ -1384,6 +1388,11 @@
       ],
       "quantization": "adapter (F32/F16 LoRA tensors)",
       "published": true,
+      "file_kind": "adapter",
+      "runs_with": {
+        "row": "qwen3-4b-q4_k_m-bartowski",
+        "as": "lora"
+      },
       "envelope": {
         "features": [
           "adapters"
@@ -1396,7 +1405,7 @@
           "docs/adaptation-engine.md",
           "docs/lora.md"
         ],
-        "missing": "The base file the adapter is validated on is not pinned in this roster; pinned output."
+        "missing": "Pinned output of the composed run (the base named on the card plus this adapter)."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
@@ -1496,7 +1505,7 @@
       "id": "qwen3.8-flash-next-mtp-q8_0",
       "model": "Qwen3.8-Flash-Next",
       "tier": "tier1",
-      "claim": "Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for --mtp-file, built from the publisher's BF16 checkpoint; no gate has run on it.",
+      "claim": "Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for --mtp-file, built from the publisher's BF16 checkpoint for ISTA-DASLab's IQ3_S trunk; no gate has run on it.",
       "architecture": "qwen4exp",
       "upstream": {
         "checkpoint": "Qwen/Qwen3.8-Flash-Next",
@@ -1513,6 +1522,11 @@
       ],
       "quantization": "Q8_0",
       "published": true,
+      "file_kind": "mtp-head",
+      "runs_with": {
+        "row": "qwen3.8-flash-next-gsq-rco-iq3_s",
+        "as": "mtp-file"
+      },
       "envelope": {
         "features": [
           "mtp"
@@ -1524,7 +1538,7 @@
         "evidence": [
           "MANUAL.md#placement-and-memory"
         ],
-        "missing": "Every gate; the trunk this head is validated with is not pinned in this roster."
+        "missing": "Every gate, run beside ISTA-DASLab's 2-part trunk (the 4-part set already carries a head, and --mtp-file refuses a second one)."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
@@ -1569,6 +1583,60 @@
         "tier": "tier2",
         "effective": "2026-10-22",
         "reason": "Migration: owner decision 2026-10-22, Tier 2 with its near-miss disclosure; it stays published.",
+        "last_validated_release": null
+      }
+    },
+    {
+      "id": "qwen3-4b-q4_k_m-bartowski",
+      "model": "Qwen3-4B",
+      "tier": "tier2",
+      "claim": "The base the published tool-use adapter was trained through and runs on, named by sha256 on the adapter's card: maintained on report, and run on every release only as the adapter's base in its composed smoke.",
+      "architecture": "qwen3",
+      "files": [
+        {
+          "name": "Qwen_Qwen3-4B-Q4_K_M.gguf",
+          "repo": "bartowski/Qwen_Qwen3-4B-GGUF",
+          "revision": "cb76885dc66d50759b207c5a48c4e78dfa00c638",
+          "sha256": "fbe1d5edd4ce802ae3ae7c7e4ab7d09789d697fdac1fc7929f8df4ca3c41bae3",
+          "bytes": 2497280960
+        }
+      ],
+      "published": false,
+      "transition": {
+        "tier": "tier2",
+        "effective": "2026-10-22",
+        "reason": "Migration: the base of a Tier 1 adapter, added 2026-10-23 so the adapter's smoke can run; not on the owner's Tier 1 roster.",
+        "last_validated_release": null
+      }
+    },
+    {
+      "id": "qwen3.8-flash-next-gsq-rco-iq3_s",
+      "model": "Qwen3.8-Flash-Next",
+      "tier": "tier2",
+      "claim": "Experimental: ISTA-DASLab's IQ3_S trunk of Qwen3.8-Flash-Next, the file the published MTP head was built for and the one the qwen4exp admission evidence measured; maintained on report, and run on every release only as that head's trunk in its composed smoke.",
+      "architecture": "qwen4exp",
+      "files": [
+        {
+          "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+          "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+          "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+          "sha256": "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3",
+          "bytes": 54817524224
+        },
+        {
+          "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+          "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+          "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+          "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
+          "bytes": 28800138432
+        }
+      ],
+      "published": false,
+      "experimental": true,
+      "transition": {
+        "tier": "tier2",
+        "effective": "2026-10-22",
+        "reason": "Migration: the trunk of a Tier 1 MTP head, added 2026-10-23 so the head's smoke can run; not on the owner's Tier 1 roster.",
         "last_validated_release": null
       }
     },

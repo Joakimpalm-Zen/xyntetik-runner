@@ -6,6 +6,8 @@ binary's shapes: `--caps` (one JSON object), `-m FILE --adapt-info` (one JSON
 line) and a one-shot `-m FILE -p PROMPT` (the prompt echoed, then the
 continuation, on stdout; the backend banner on stderr unless `--gpu off`).
 
+With --lora the continuation is marked, as an adapter changes the text;
+--mtp-file changes nothing, as a draft head only proposes tokens.
 FAKE_RUNNER_TEXT replaces the continuation; FAKE_RUNNER_FALLBACK=1 makes a
 GPU run decline the model and run on the CPU, as a Metal build does for a
 layout it has no kernel for.
@@ -45,6 +47,8 @@ if "-p" in argv:
     text = os.environ.get("FAKE_RUNNER_TEXT",
                           "\n\n1. Mercury: the smallest planet and the closest to the Sun.\n"
                           "2. Venus: the second planet from the Sun and the hottest.")
+    if "--lora" in argv:
+        text += " (adapter applied)"
     sys.stdout.write(prompt + text + "\n")
     print("\nprompt: 6 tok, 100.00 tok/s | gen: 8 tok, 50.00 tok/s", file=sys.stderr)
     sys.exit(0)

@@ -167,25 +167,44 @@ def find_file(name, models_dir):
     return None
 
 
-def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
-              pin, timeout):
-    """One gate run; returns the result document (schema tier-smoke-result.v1)."""
-    # the file first: a run on other bytes is not this row's evidence
+def hash_files(row, paths):
+    """The files' digests, refusing any file that is not the row's."""
     hashed = []
-    for want, path in zip(row["files"], model_paths):
+    for want, path in zip(row["files"], paths):
         got = sha256_file(path)
         if got != want["sha256"]:
             raise SystemExit(f"{row['id']}: {path} has sha256 {got}, the row names "
                              f"{want['sha256']}; refusing to run on another file")
         hashed.append({"sha256": got, "bytes": os.path.getsize(path)})
-    if row.get("smoke_trunk"):
-        raise SystemExit(f"{row['id']}: a head-only file runs beside its trunk, "
-                         f"which this script does not resolve yet")
-    if "adapters" in row["envelope"]["features"]:
-        raise SystemExit(f"{row['id']}: an adapter runs on a base file the row "
-                         f"does not pin; nothing to run it on")
-    model = model_paths[0]
+    return hashed
 
+
+# how a companion file joins the run of the model it names (runs_with.as)
+COMPANION_FLAG = {"mtp-file": "--mtp-file", "lora": "--lora"}
+
+
+def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
+              pin, timeout, with_row=None, with_paths=None):
+    """One gate run; returns the result document (schema tier-smoke-result.v1).
+
+    A companion row (runs_with) is run as the model it names plus this file:
+    `-m TRUNK --mtp-file HEAD` or `-m BASE --lora ADAPTER`. Both files are
+    hashed against their rows first, and the pin is the composed run's,
+    under the companion's own row id.
+    """
+    # the files first: a run on other bytes is not this row's evidence
+    hashed = hash_files(row, model_paths)
+    companion = []
+    with_hashed = None
+    if with_row is not None:
+        with_hashed = hash_files(with_row, with_paths)
+        companion = [COMPANION_FLAG[row["runs_with"]["as"]], model_paths[0]]
+        model = with_paths[0]
+    else:
+        model = model_paths[0]
+
+    # --adapt-info answers for the model the configuration trains and serves
+    # on: for a companion, the trunk or base it runs with
     p = run(runner + ["-m", model, "--adapt-info", "--no-tray"], timeout)
     if p.returncode != 0:
         raise SystemExit("--adapt-info failed: " + p.stderr.decode(errors="replace"))
@@ -194,7 +213,7 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
     spec = dict(manifest.get("defaults") or {})
     spec.update({k: v for k, v in (manifest.get("rows", {}).get(row["id"]) or {}).items()
                  if k != "pins"})
-    args = ["-m", model, "-p", spec["prompt"], "-n", str(spec["n_predict"])]
+    args = ["-m", model] + companion + ["-p", spec["prompt"], "-n", str(spec["n_predict"])]
     args += list(spec.get("args") or [])
     if backend == "cpu":
         args += ["--gpu", "off"]
@@ -276,13 +295,15 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
         .strftime("%Y-%m-%dT%H:%M:%SZ"),
         "commit": git_commit(),
         "ran": " ".join(shlex.quote(a) for a in
-                        ["runner"] + [os.path.basename(a) if a == model else a
-                                      for a in args]),
+                        ["runner"] + [os.path.basename(a) if a in (model, *companion[1:])
+                                      else a for a in args]),
         "caps": caps,
         "banner": banner,
         "threads": int(t.group(1)) if t else None,
         "seconds": seconds,
         "files": hashed,
+        "with": ({"row": with_row["id"], "files": with_hashed}
+                 if with_row is not None else None),
         "status": status,
         "output": {"sha256": out_sha, "bytes": len(out)},
         "pin": {"path": rel(pin_path), "sha256": entry[key]["sha256"]},
@@ -302,6 +323,9 @@ def main():
     ap.add_argument("--row", help="one Tier 1 row (default: every row this class gates)")
     ap.add_argument("--model", action="append",
                     help="the row's file (repeat for each part of a sharded set)")
+    ap.add_argument("--with-model", action="append",
+                    help="the file of the row a companion runs with (runs_with), "
+                         "repeat for each part")
     ap.add_argument("--models", help="a directory searched for the rows' file names")
     ap.add_argument("--backend", choices=mt.BACKENDS,
                     help="default: the backend the row's smoke names")
@@ -354,12 +378,27 @@ def main():
             paths = [find_file(f["name"], args.models) for f in row["files"]]
         else:
             raise SystemExit("name the file with --model or a directory with --models")
+        with_row = with_paths = None
+        if row.get("runs_with"):
+            with_row = next(r for r in doc["rows"] if r["id"] == row["runs_with"]["row"])
+            if args.with_model:
+                with_paths = args.with_model
+            elif args.models:
+                with_paths = [find_file(f["name"], args.models) for f in with_row["files"]]
+            else:
+                raise SystemExit(f"{row['id']} runs with {with_row['id']}: name its file "
+                                 f"with --with-model or a directory with --models")
+            if len(with_paths) != len(with_row["files"]) or not all(with_paths):
+                print(f"SKIP  {row['id']}: the file of {with_row['id']} not found",
+                      file=sys.stderr)
+                failed += 1
+                continue
         if len(paths) != len(row["files"]) or not all(paths):
             print(f"SKIP  {row['id']}: file not found", file=sys.stderr)
             failed += 1
             continue
         res = smoke_one(row, backend, dc, paths, runner, caps, manifest, args.pins,
-                        args.pin, args.timeout)
+                        args.pin, args.timeout, with_row, with_paths)
         if args.pin:
             with open(args.manifest, "w", encoding="utf-8") as f:
                 json.dump(manifest, f, indent=2, ensure_ascii=False)

@@ -195,13 +195,52 @@ def test_a_lora_answer_names_the_build_and_day_it_came_from():
     assert any("lora" in e for e in errors(roster(tier1_row(lora=answer))))
 
 
-def test_a_head_files_trunk_is_a_tier1_row():
-    """An MTP head runs beside a trunk; the trunk it is gated with must be
-    a row the roster validates, not a name."""
-    assert any("smoke_trunk" in e for e in
-               errors(roster(tier1_row(smoke_trunk="no-such-row"))))
-    head = tier1_row(id="toy-head", smoke_trunk="toy-q8_0")
-    assert errors(roster(tier1_row(), head)) == []
+def head_row(**over):
+    row = tier1_row(id="toy-head", file_kind="mtp-head",
+                    runs_with={"row": "toy-q8_0", "as": "mtp-file"})
+    row["files"] = [{"name": "toy-mtp.gguf", "sha256": "e" * 64, "bytes": 99}]
+    row.update(over)
+    return row
+
+
+def test_a_tier1_file_the_smoke_cannot_run_is_refused():
+    """A head or an adapter does not run on its own. Without the row it runs
+    with, the per-release smoke can never gate it, and the release gate,
+    which refuses never-run rows, could never pass."""
+    head = head_row()
+    del head["runs_with"]
+    assert any("cannot run" in e for e in errors(roster(tier1_row(), head)))
+
+
+def test_a_head_runs_with_a_trunk_row_the_roster_names():
+    assert errors(roster(tier1_row(), head_row())) == []
+    assert any("runs_with" in e for e in errors(roster(
+        tier1_row(), head_row(runs_with={"row": "no-such-row", "as": "mtp-file"}))))
+
+
+def test_a_head_is_loaded_as_a_head_and_an_adapter_as_an_adapter():
+    assert any("runs_with" in e for e in errors(roster(
+        tier1_row(), head_row(runs_with={"row": "toy-q8_0", "as": "lora"}))))
+    adapter = head_row(id="toy-lora", file_kind="adapter",
+                       runs_with={"row": "toy-q8_0", "as": "lora"})
+    assert errors(roster(tier1_row(), adapter)) == []
+
+
+def test_a_companion_runs_with_a_model_not_with_another_companion():
+    second = head_row(id="toy-head-2", runs_with={"row": "toy-head", "as": "mtp-file"})
+    assert any("runs_with" in e for e in errors(roster(tier1_row(), head_row(), second)))
+
+
+def test_a_companion_cannot_be_gated_where_its_base_has_no_path():
+    base = tier1_row(smoke={"device_class": "macos-arm64-metal", "backend": "cpu"})
+    base["backends"]["metal"] = {"kind": "limit", "reason": "no Metal path",
+                                 "matrix": "MANUAL.md#support-matrix"}
+    assert any("runs_with" in e for e in errors(roster(base, head_row())))
+
+
+def test_a_model_file_does_not_name_a_row_to_run_with():
+    row = tier1_row(runs_with={"row": "toy-q8_0", "as": "lora"})
+    assert any("runs_with" in e for e in errors(roster(row)))
 
 
 def test_duplicate_row_ids_are_refused():
@@ -493,3 +532,15 @@ def test_the_stale_summary_follows_the_rows_in_one_pipe(tmp_path):
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert r.returncode == 1
     assert r.stdout.index("NEVER") < r.stdout.index("need")
+
+
+def test_record_refuses_a_companion_run_on_another_base():
+    doc = roster(tier1_row(), head_row())
+    res = smoke_result(row="toy-head", files=[{"sha256": "e" * 64, "bytes": 99}],
+                       **{"with": {"row": "toy-q8_0",
+                                   "files": [{"sha256": "f" * 64, "bytes": 1}]}})
+    with pytest.raises(SystemExit, match="runs with"):
+        mt.record(doc, "toy-head", res, DEVICES)
+    res["with"]["files"] = [{"sha256": SHA_A, "bytes": 1234}]
+    mt.record(doc, "toy-head", res, DEVICES)
+    assert doc["rows"][1]["backends"]["metal"]["result"] == "pass"
