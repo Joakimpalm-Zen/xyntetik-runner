@@ -985,7 +985,7 @@
           "docs/golden-pass-2026-10-22.md",
           "MANUAL.md#published-artifacts"
         ],
-        "missing": "Pinned output."
+        "missing": null
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
