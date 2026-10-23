@@ -3,7 +3,7 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## v1.5.1 - 2026-10-23
+## Unreleased
 
 - **Training: distillation toward a teacher (`--train-teacher DIR`).** With
   `--train`, each completion position is fitted to a teacher's top-k
@@ -21,6 +21,8 @@ Current release and unreleased changes. Compatibility follows the
   more. A one-hot teacher trains the cross-entropy's adapter byte for byte.
   The record's `objective` is `kl-to-teacher`, with both arrays hashed.
   Training still covers the models it covered: qwen35 and Clef refuse it.
+
+## v1.5.1 - 2026-10-23
 
 - **Metal: Q4_K decode matvecs take the fast kernel by default on dense
   models.** The reassociating `k_mvf_q4_K` (two rows a simdgroup, vector
