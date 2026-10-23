@@ -7897,10 +7897,11 @@ static bool train_mm(train_gpu_t *t, const gguf_tensor *w, const float *x,
     if (cu.MemcpyHtoD(t->d_dx, xp, sizeof(float) * nx) != 0) return false;
     mv_args a = { n_in, n_out, 0, 0, nb, n_in, n_out };
     void *p[] = { &weights, &t->d_dx, &t->d_dy, &a, &t->dummy };
-    // the 64-column twin past one narrow tile: the same per-column
-    // arithmetic, each weight decoded once for 64 columns instead of 16
+    // the 32-column twin past one narrow tile: the same per-column
+    // arithmetic, each weight decoded once for 32 columns instead of 16
     bool wide = nb > TMM_NC && t->f_tmmw[w->type];
-    unsigned blocks = (unsigned)((n_out + TMM_WARPS - 1) / TMM_WARPS);
+    unsigned blocks = (unsigned)((n_out + TMM_WARPS * TMM_RW - 1) /
+                                 (TMM_WARPS * TMM_RW));
     int ncb = wide ? TMM_NCW : TMM_NC;
     unsigned cols = (unsigned)((nb + ncb - 1) / ncb);
     double k0 = plat_now();

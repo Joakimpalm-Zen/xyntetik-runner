@@ -109,7 +109,8 @@ typedef struct {
 #define TV_TT 64
 #define TV_JT 32
 #define TMM_NC 16
-#define TMM_NCW 64
+#define TMM_NCW 32
 #define TMM_WARPS 8
+#define TMM_RW 4        // rows a warp of k_tmm / k_tmmw carries
 
 #endif // RUNNER_KERNEL_ARGS_H

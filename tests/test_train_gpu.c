@@ -4,8 +4,9 @@
 //   transposed  gpu_train_mvt == the CPU trainer's chain (dequant_row, then
 //               an ascending-j fmaf per element, a zero dy skipped), memcmp
 //   forward     gpu_train_mm is batch-invariant: every column of a 77-column
-//               call (the 64-column kernel, two tiles) equals the same column
-//               computed alone and in a 5-column call (the 16-column kernel),
+//               call (the 32-column kernel, three tiles) equals the same
+//               column computed alone and in a 5-column call (the 16-column
+//               kernel),
 //               memcmp; and it is the product (each column within 2^-16 of
 //               sum|w x| of a double-precision reference)
 //
@@ -119,9 +120,9 @@ int main(void) {
         printf("train-gpu: no CUDA device, skipping (not passing)\n");
         return 0;
     }
-    // 77 positions: two of k_tmvt's 64-position tiles and two of k_tmmw's
-    // 64-column tiles, each with a remainder
-    enum { N_IN = 512, N_OUT = 96, B = 77 };
+    // 77 positions: two of k_tmvt's 64-position tiles and three of k_tmmw's
+    // 32-column tiles, each with a remainder
+    enum { N_IN = 512, N_OUT = 100, B = 77 };   // 100 rows: a partial row block
     float *dy = malloc(sizeof(float) * B * N_OUT);
     float *dx0 = malloc(sizeof(float) * B * N_IN);
     float *dxc = malloc(sizeof(float) * B * N_IN), *dxg = malloc(sizeof(float) * B * N_IN);
