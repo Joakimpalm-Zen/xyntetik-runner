@@ -153,6 +153,8 @@ def retire(row_id, backend, dc, roster_path, manifest, manifest_path, pins_dir, 
         raise SystemExit("refusing to write a roster that does not validate:\n"
                          + "\n".join(errs))
     mt.save(doc, roster_path)
+    if mt.is_committed_roster(roster_path):
+        mt.write_docs(doc)
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
         f.write("\n")
@@ -417,6 +419,8 @@ def main():
                 raise SystemExit("refusing to write a roster that does not validate:\n"
                                  + "\n".join(errs))
             mt.save(doc, args.roster)
+            if mt.is_committed_roster(args.roster):
+                mt.write_docs(doc)
             cell = next(r for r in doc["rows"] if r["id"] == row["id"])["backends"][backend]
             print(f"recorded {row['id']} {backend}: {cell['result']}")
         if res["status"] == "mismatch" or (res["status"] == "match" and not res["expect"]["found"]):

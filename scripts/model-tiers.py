@@ -29,6 +29,8 @@ docs/model-support.md is rendered from it.
     scripts/model-tiers.py --check
     scripts/model-tiers.py --stale [--today YYYY-MM-DD]
     scripts/model-tiers.py --record ROW --result smoke-result.json
+    scripts/model-tiers.py --write-docs     # re-render README.md's table
+    scripts/model-tiers.py --docs-check     # fail when it differs from the render
 
 `--stale` is the release gate's question, asked the way
 scripts/device-evidence.py asks it of the device classes: every Tier 1 row's
@@ -76,6 +78,12 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+README = os.path.join(ROOT, "README.md")
+README_BEGIN = ("<!-- model-tiers:begin (rendered from docs/model-tiers.json by "
+                "scripts/model-tiers.py --write-docs; do not edit) -->")
+README_END = "<!-- model-tiers:end -->"
+SUPPORT_DOC = "docs/model-support.md"
 
 
 def load(path):
@@ -482,6 +490,120 @@ def record(doc, row_id, res, devices):
     return row
 
 
+# --- the README table ---------------------------------------------------------
+
+def _mark(cell):
+    """A backend cell's mark: exactly one of a recorded gate with its version
+    and date, a declared limit linked to its matrix row, or not run."""
+    if cell is None:
+        return "☐ not run"
+    if cell["kind"] == "limit":
+        return f"[n/a]({cell['matrix']})"
+    if cell["result"] == "pass":
+        return f"✅ v{cell['runner_version']} {cell['date']}"
+    # a recorded failure refuses the next tag; until then it is shown as one
+    return f"failed v{cell['runner_version']} {cell['date']}"
+
+
+def _train(lora):
+    if lora is None:
+        return "☐ not run"
+    t = lora["training"]
+    if t["supported"]:
+        return f"✅ v{lora['runner_version']} {lora['date']}"
+    return "no: " + t["reason"].replace("|", "\\|")
+
+
+def _qualified(rows, name):
+    """The qualifier a row leads with, on its model's row of the table."""
+    pre = ["Experimental"] if any(r.get("experimental") for r in rows) else []
+    pre += ["Text path only"] if any(r.get("vision_upstream") for r in rows) else []
+    return ": ".join(pre + [name])
+
+
+def render_readme(doc):
+    """The block between README_BEGIN and README_END.
+
+    One bold row per Tier 1 model, then one sub-row per file that has a
+    recorded cell or a declared limit; a file nobody ran is not listed (a
+    quant the matrix admits is the matrix's claim, not this table's), and a
+    model with no such file says so. Upcoming models follow as names.
+    """
+    groups = {}
+    for r in doc["rows"]:
+        if r["tier"] == "tier1":
+            groups.setdefault(r["model"], []).append(r)
+    # a blank line on each side keeps the markers' HTML comments apart from
+    # the table and the paragraph in every markdown renderer
+    lines = ["", "", "| Model | File | CPU | CUDA | Metal | Train | Evidence |",
+             "|---|---|---|---|---|---|---|"]
+    for model, rows in groups.items():
+        label = _qualified(rows, model)
+        subs = [r for r in rows
+                if any(r["backends"].get(b) is not None for b in BACKENDS)]
+        if not subs:
+            lines.append(f"| **{label}** | no file run yet | | | | | "
+                         f"[envelopes]({SUPPORT_DOC}#{rows[0]['id']}) |")
+            continue
+        lines.append(f"| **{label}** | | | | | | |")
+        for r in subs:
+            files = r["files"]
+            name = f"`{files[0]['name']}`" + (f" ({len(files)} parts)"
+                                             if len(files) > 1 else "")
+            cells = [name] + [_mark(r["backends"].get(b)) for b in BACKENDS]
+            cells += [_train(r.get("lora")), f"[envelope]({SUPPORT_DOC}#{r['id']})"]
+            lines.append("| | " + " | ".join(cells) + " |")
+    upcoming = []
+    for r in doc["rows"]:
+        if r["tier"] == "upcoming":
+            n = r["model"] + (" (text path only)" if r.get("vision_upstream") else "")
+            if n not in upcoming:
+                upcoming.append(n)
+    lines += ["", "**Upcoming**, not counted as validated: " + ", ".join(upcoming) + ".",
+              "", ""]
+    return "\n".join(lines)
+
+
+def _blocks(doc):
+    """(path, begin, end, rendered text) for every rendered block."""
+    return [(README, README_BEGIN, README_END, render_readme(doc))]
+
+
+def _replace_block(text, begin, end, body, path):
+    if text.count(begin) != 1 or text.count(end) != 1:
+        raise SystemExit(f"{path}: expected one {begin!r} and one {end!r}")
+    head, rest = text.split(begin, 1)
+    _, tail = rest.split(end, 1)
+    return head + begin + body + end + tail
+
+
+def docs_drift(doc):
+    """The files whose rendered block differs from the roster's render."""
+    bad = []
+    for path, begin, end, body in _blocks(doc):
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        if _replace_block(text, begin, end, body, path) != text:
+            bad.append(os.path.relpath(path, ROOT))
+    return bad
+
+
+def write_docs(doc):
+    """Re-render every block from the roster (after a --record or --retire)."""
+    for path, begin, end, body in _blocks(doc):
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        new = _replace_block(text, begin, end, body, path)
+        if new != text:
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(new)
+
+
+def is_committed_roster(path):
+    """Only the repository's own roster drives the repository's docs."""
+    return os.path.abspath(path) == os.path.abspath(ROSTER)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -496,6 +618,10 @@ def main():
     ap.add_argument("--record", metavar="ROW",
                     help="write a smoke run's result into ROW")
     ap.add_argument("--result", help="the result file scripts/tier-smoke.py wrote")
+    ap.add_argument("--write-docs", action="store_true",
+                    help="re-render the README table from the roster")
+    ap.add_argument("--docs-check", action="store_true",
+                    help="fail when the README table differs from the render")
     args = ap.parse_args()
 
     doc = load(args.json)
@@ -512,6 +638,8 @@ def main():
             raise SystemExit("refusing to write a roster that does not validate:\n"
                              + "\n".join(errs))
         save(doc, args.json)
+        if is_committed_roster(args.json):
+            write_docs(doc)
         cell = row["backends"][res["backend"]]
         print(f"recorded {args.record} {res['backend']}: {cell['result']} at "
               f"{cell['runner_version']} on {cell['date']} ({cell['device_class']})")
@@ -522,6 +650,18 @@ def main():
     if errs:
         print(f"\n{args.json}: {len(errs)} error(s)", file=sys.stderr)
         return 1
+    if args.write_docs or args.docs_check:
+        errs = validate(doc, devices)
+        if errs:
+            raise SystemExit("the roster does not validate:\n" + "\n".join(errs))
+        if args.write_docs:
+            write_docs(doc)
+            return 0
+        bad = docs_drift(doc)
+        for b in bad:
+            print(f"{b}: the rendered block differs from docs/model-tiers.json; "
+                  f"run scripts/model-tiers.py --write-docs", file=sys.stderr)
+        return 1 if bad else 0
     if args.stale:
         bad = stale(doc, today(args.today))
         if bad:

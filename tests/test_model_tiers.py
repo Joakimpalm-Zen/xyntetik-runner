@@ -559,3 +559,88 @@ def test_record_refuses_a_companion_run_on_another_base():
     res["with"]["files"] = [{"sha256": SHA_A, "bytes": 1234}]
     mt.record(doc, "toy-head", res, DEVICES)
     assert doc["rows"][1]["backends"]["metal"]["result"] == "pass"
+
+
+# --- the README table: a render of the roster, never typed ----------------------
+
+def readme_rows(doc):
+    return [l for l in mt.render_readme(doc).splitlines() if l.startswith("| ")]
+
+
+def test_the_readme_block_is_the_render_of_the_roster():
+    """The help-parity pattern: the README's table between the two markers
+    is exactly what the roster renders, so the table cannot drift from it.
+    After --record, `scripts/model-tiers.py --write-docs` rewrites it."""
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert text.count(mt.README_BEGIN) == 1 and text.count(mt.README_END) == 1
+    block = text.split(mt.README_BEGIN, 1)[1].split(mt.README_END, 1)[0]
+    assert block == mt.render_readme(committed())
+
+
+def test_a_recorded_cell_renders_its_version_and_date():
+    doc = gated(metal=gate("2026-10-23", version="1.5.1"))
+    sub = [r for r in readme_rows(doc) if "toy-Q8_0.gguf" in r][0]
+    assert "✅ v1.5.1 2026-10-23" in sub
+    assert sub.count("☐ not run") == 3          # cpu, cuda, train
+
+
+def test_a_declared_limit_renders_n_a_linked_to_the_matrix():
+    doc = gated(metal=gate("2026-10-23"),
+                cuda={"kind": "limit", "reason": "no CUDA path",
+                      "matrix": "MANUAL.md#support-matrix"})
+    sub = [r for r in readme_rows(doc) if "toy-Q8_0.gguf" in r][0]
+    assert "[n/a](MANUAL.md#support-matrix)" in sub
+
+
+def test_a_failed_gate_never_renders_a_check_mark():
+    doc = gated(metal=gate("2026-10-23", result="fail"))
+    sub = [r for r in readme_rows(doc) if "toy-Q8_0.gguf" in r][0]
+    assert "✅" not in sub and "failed" in sub
+
+
+def test_the_train_column_is_the_recorded_adapt_info_answer():
+    doc = gated(metal=gate("2026-10-23"))
+    doc["rows"][0]["lora"] = lora(train=(False, "MoE shared experts"))
+    sub = [r for r in readme_rows(doc) if "toy-Q8_0.gguf" in r][0]
+    assert "no: MoE shared experts" in sub
+    doc["rows"][0]["lora"] = lora()
+    sub = [r for r in readme_rows(doc) if "toy-Q8_0.gguf" in r][0]
+    assert sub.count("✅ v1.5.1 2026-10-23") == 1
+
+
+def test_a_file_nobody_ran_gets_no_sub_row():
+    """Admitting a quant is the matrix's claim, not this table's: a file
+    with no recorded gate and no declared limit is not listed, and its
+    model row says no file has run."""
+    rows = readme_rows(roster())
+    assert not [r for r in rows if "toy-Q8_0.gguf" in r]
+    assert any(r.startswith("| **Toy** | no file run yet") for r in rows)
+
+
+def test_the_model_row_is_bold_and_carries_no_marks():
+    rows = readme_rows(gated(metal=gate("2026-10-23")))
+    model = [r for r in rows if r.startswith("| **Toy**")][0]
+    assert "✅" not in model and "☐" not in model and "n/a" not in model
+
+
+def test_qualifiers_lead_the_model_row():
+    doc = gated(metal=gate("2026-10-23"))
+    doc["rows"][0].update(experimental=True, claim="Experimental: a toy.")
+    assert any(r.startswith("| **Experimental: Toy**") for r in readme_rows(doc))
+    doc = gated(metal=gate("2026-10-23"))
+    doc["rows"][0].update(vision_upstream=True, claim="Text path only: a toy.")
+    assert any(r.startswith("| **Text path only: Toy**") for r in readme_rows(doc))
+
+
+def test_upcoming_models_are_names_under_the_table_and_tier2_is_absent():
+    up = {"id": "later", "model": "Later VL", "tier": "upcoming",
+          "claim": "Text path only: not admitted.", "architecture": "later",
+          "missing": "an admission", "vision_upstream": True,
+          "transitions": [{"tier": "upcoming", "effective": "2026-10-22",
+                           "reason": "test", "last_validated_release": None}]}
+    t2 = tier1_row(id="old", model="Old", tier="tier2")
+    t2["transitions"][-1]["tier"] = "tier2"
+    text = mt.render_readme(roster(tier1_row(), t2, up))
+    assert "Later VL (text path only)" in text
+    assert not [l for l in text.splitlines() if l.startswith("| ") and "Later" in l]
+    assert "Old" not in text
