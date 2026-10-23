@@ -9624,8 +9624,10 @@ NUM_STAGE void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s
     // projection backwards, each site one batched call over the window; a
     // sharing layer has no K/V projections of its own
     if (s->q35) {
+        // like every loop of the phase, only on a state whose buffers all
+        // exist (the allocation sweep reached this with dg NULL)
         int hd = s->hd;
-        for (int t = 0; t < T; t++)
+        for (int t = 0; ok && t < T; t++)
             for (int h = 0; h < n_head; h++) {
                 float *row = s->dqg + (size_t)t * 2 * q_dim + (size_t)h * 2 * hd;
                 memcpy(row, dq + (size_t)t * q_dim + (size_t)h * hd,

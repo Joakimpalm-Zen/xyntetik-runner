@@ -2606,7 +2606,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
-      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-ornith.gguf test-ornith-draft.gguf test-yarn.gguf \
+      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf \
       test-qk.gguf test-gemma3.gguf test-gemma4.gguf test-es.gguf test-muse.gguf test-granite.gguf \
       test-gemma3-62.gguf test-gemma3-26.gguf test-qwen4exp.gguf
 	./$(TEST_RECURRENT)
@@ -2830,7 +2830,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./runner -m test.gguf --quantize test-load-oom-cut.gguf --remove-sublayer attn:1 > /dev/null 2>&1
 	./$(TEST_MODEL_LOAD_OOM) test.gguf test-qk.gguf test-gemma3.gguf test-gemma4.gguf \
 	    test-load-oom-g4h.gguf test-es.gguf test-muse.gguf test-granite.gguf \
-	    test-ornith.gguf test-qwen4exp.gguf test-load-oom-moe.gptoss-mxfp4.gguf \
+	    test-ornith.gguf test-clef.gguf test-qwen4exp.gguf test-load-oom-moe.gptoss-mxfp4.gguf \
 	    test-load-oom-moe.shexpg.gguf test-load-oom-moe.gemma4-moe.gguf \
 	    test-load-oom-hybrid.gguf test-load-oom-nemotron.gguf test-load-oom-mtp.gguf \
 	    test-load-oom-cut.gguf test-load-oom-ffw.gguf 2> test-model-load-oom.err || \
