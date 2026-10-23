@@ -72,6 +72,20 @@ Current release and unreleased changes. Compatibility follows the
   before. The recipe is the one a distillation pipeline uses for quantization
   recovery, so such a run can move from PyTorch to Runner.
 
+- **Training: a step reads each weight once per 16 positions on the CPU.**
+  The forward a step trains through, its head and the backward's recompute
+  ran one position at a time, so every weight was decoded once per position.
+  The forward now runs 16 positions at once through the speculative verify
+  route, whose rows are a single decode step's bits, and the head and the
+  recompute take one product per weight over the window in the same
+  per-column arithmetic. The adapter is the same byte for byte: against the
+  previous release on all 13 trainable fixture families and every objective,
+  and against the one-position forward (`RUNNER_TRAIN_SOLO=1`) in
+  `tests/test_train.py`. Qwen3.5-0.8B Q4_K_M with KD on an Apple M1: a
+  134-token step from 15.2 s to 10.7 s (forward 5.4 to 3.1 s, recompute 3.3
+  to 1.8 s). The backward's own products and the attention and DeltaNet
+  backward are unchanged.
+
 ## v1.5.1 - 2026-10-23
 
 - **Metal: Q4_K decode matvecs take the fast kernel by default on dense
