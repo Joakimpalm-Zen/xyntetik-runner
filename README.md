@@ -416,11 +416,11 @@ check, failing it or past its age limit.
 </details>
 
 <details>
-<summary><b>Granite-4.2-8B</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
+<summary><b>Granite-4.2-8B</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;partial</code> <code>Metal&nbsp;–</code></summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="docs/model-support.md#granite-4.2-8b-q4_k_m"><code>granite-4.2-8b-Q4_K_M.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="docs/model-support.md#granite-4.2-8b-q4_k_m"><code>granite-4.2-8b-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-23</td></tr>
 <tr><td><a href="docs/model-support.md#granite-4.2-8b-q8_0"><code>granite-4.2-8b-Q8_0.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
 </tbody>
 </table>

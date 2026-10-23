@@ -425,10 +425,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-23",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "349af6e651856365a098f4e284e7f5293a504576",
+          "caps": {
+            "version": "1.5.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "ff1cd210d7a92cd2f0bf5c91eea629c0774479852b1c523dd916d47e05a75942",
+          "ran": "runner -m granite-4.2-8b-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/granite-4.2-8b-q4_k_m.windows-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-23"
+      },
       "transitions": [
         {
           "tier": "tier1",
