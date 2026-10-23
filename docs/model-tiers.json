@@ -996,9 +996,45 @@
         "backend": "metal"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-23",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "a72068140625bae835e88793c0b45ddb58ab15d6",
+          "caps": {
+            "version": "1.5.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "eadb99d6bfee9881232221059e9e1638c31325987a1b28dc31ae5874cfff2d99",
+          "ran": "runner -m e2b-q40.gguf -p 'List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.' -n 48 --temp 0 -c 512 -b 64 --no-tray --gpu off",
+          "evidence": "tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.cpu.txt"
+        },
         "cuda": null,
-        "metal": null
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-23",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "a72068140625bae835e88793c0b45ddb58ab15d6",
+          "caps": {
+            "version": "1.5.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "eadb99d6bfee9881232221059e9e1638c31325987a1b28dc31ae5874cfff2d99",
+          "ran": "runner -m e2b-q40.gguf -p 'List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.' -n 48 --temp 0 -c 512 -b 64 --no-tray",
+          "evidence": "tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.metal.txt"
+        }
       },
       "lora": {
         "training": {
