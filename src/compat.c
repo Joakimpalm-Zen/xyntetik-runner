@@ -1,4 +1,4 @@
-// sched_getaffinity (plat_cpu_count counts the mask this process may run on)
+// sched_getaffinity (machine_cpu_count counts the mask this process may run on)
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
 #endif
@@ -103,7 +103,7 @@ void plat_munmap(void *p, size_t size) {
     if (p) UnmapViewOfFile(p);
 }
 
-int plat_cpu_count(void) {
+static int machine_cpu_count(void) {
     // the process affinity mask first (a job object or `start /affinity`
     // narrows it), the machine's count as the fallback; see the POSIX twin
     DWORD_PTR pm = 0, sm = 0;
@@ -121,7 +121,7 @@ int plat_default_thread_count(void) {
     return plat_thread_default_for(plat_cpu_count());
 }
 
-uint64_t plat_ram_bytes(void) {
+static uint64_t machine_ram_bytes(void) {
     MEMORYSTATUSEX ms = { .dwLength = sizeof(ms) };
     GlobalMemoryStatusEx(&ms);
     return ms.ullTotalPhys;
@@ -278,7 +278,7 @@ uint64_t plat_proc_peak_rss_bytes(void) {
     return (uint64_t)pmc.PeakWorkingSetSize;
 }
 
-uint64_t plat_ram_available_bytes(void) {
+static uint64_t machine_ram_available_bytes(void) {
     MEMORYSTATUSEX ms = { .dwLength = sizeof(ms) };
     if (!GlobalMemoryStatusEx(&ms)) return 0;
     return ms.ullAvailPhys;
@@ -548,8 +548,10 @@ void plat_munmap(void *p, size_t size) {
 // from the machine oversubscribes the mask. Measured 2026-10-07 on a 128-cpu
 // box with a 32-cpu mask (16 cores + SMT siblings): 32 pool threads decoded
 // Qwen3.8-Flash-Next at 1.7 tok/s where 16 gave 9.3, a spinning sibling
-// starving the straggler at every barrier.
-int plat_cpu_count(void) {
+// starving the straggler at every barrier. A CFS quota (cpu.max) narrows
+// nothing here: the mask still lists every CPU, and plat_capacity_at applies
+// the quota on top.
+static int machine_cpu_count(void) {
 #ifdef __linux__
     cpu_set_t mask;
     if (sched_getaffinity(0, sizeof(mask), &mask) == 0) {
@@ -585,7 +587,7 @@ int plat_default_thread_count(void) {
     return plat_thread_default_for(nc);
 }
 
-uint64_t plat_ram_bytes(void) {
+static uint64_t machine_ram_bytes(void) {
     long pages = sysconf(_SC_PHYS_PAGES);
     long psz   = sysconf(_SC_PAGE_SIZE);
     return pages > 0 && psz > 0 ? (uint64_t)pages * (uint64_t)psz : 0;
@@ -684,7 +686,7 @@ uint64_t plat_proc_rss_bytes(void) {
 #endif
 }
 
-uint64_t plat_ram_available_bytes(void) {
+static uint64_t machine_ram_available_bytes(void) {
 #ifdef __APPLE__
     // free + inactive + purgeable is what the kernel can hand back without
     // swapping; vm.page_free_count alone reads near zero on a healthy Mac and
@@ -1007,6 +1009,284 @@ char *plat_executable_path(void) {
 #endif
     }
 #endif
+}
+
+// ------------------------------------------------------------------ capacity
+//
+// The cgroup files read here are the kernel's documented interface
+// (Documentation/admin-guide/cgroup-v2.rst, cgroup-v1/memory.rst and
+// scheduler/sched-bwc.rst): v2 cpu.max is "$MAX $PERIOD" with "max" for no
+// quota and memory.max a byte count or "max"; v1 has cpu.cfs_quota_us (-1
+// for none) over cpu.cfs_period_us, and memory.limit_in_bytes.
+
+#define CG_PATH_MAX 4096
+
+// One small cgroup file with its trailing whitespace trimmed. False when it
+// cannot be opened, which is how an absent level or controller reads.
+static bool cg_text(const char *dir, const char *name, char *buf, size_t n) {
+    char path[CG_PATH_MAX + 64];
+    int w = snprintf(path, sizeof path, "%s/%s", dir, name);
+    if (w < 0 || (size_t)w >= sizeof path) return false;
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    size_t got = fread(buf, 1, n - 1, f);
+    fclose(f);
+    buf[got] = '\0';
+    while (got && (buf[got - 1] == '\n' || buf[got - 1] == '\r' ||
+                   buf[got - 1] == ' ' || buf[got - 1] == '\t'))
+        buf[--got] = '\0';
+    return true;
+}
+
+// A number at least `lo`; false for "max" and for text the kernel does not
+// write, which then carries no limit rather than a guessed one.
+static bool cg_num(const char *dir, const char *name, uint64_t lo, uint64_t *out) {
+    char b[64];
+    return cg_text(dir, name, b, sizeof b) && strcmp(b, "max") &&
+           parse_u64(b, lo, UINT64_MAX, out);
+}
+
+// v1 writes "no limit" as LONG_MAX rounded down to a page
+// (9223372036854771712 with 4 KiB pages). No machine has 2^62 bytes, so a
+// figure at or above it is that sentinel for every page size.
+#define CG1_UNLIMITED (UINT64_C(1) << 62)
+
+// Quota over period in CPUs, rounded up and never below one: 1.5 CPUs of
+// bandwidth is work for two threads, and a pool of one would leave the half
+// unused.
+static int cg_cpus(uint64_t quota, uint64_t period) {
+    uint64_t n = quota / period + (quota % period != 0);
+    if (n < 1) n = 1;
+    return n > (uint64_t)INT_MAX ? INT_MAX : (int)n;
+}
+
+static int cg2_quota(const char *dir) {
+    char b[96];
+    if (!cg_text(dir, "cpu.max", b, sizeof b)) return 0;
+    char *sp = strchr(b, ' ');
+    if (!sp) return 0;
+    *sp = '\0';
+    uint64_t q, p;
+    if (!strcmp(b, "max") || !parse_u64(b, 1, UINT64_MAX, &q) ||
+        !parse_u64(sp + 1, 1, UINT64_MAX, &p)) return 0;
+    return cg_cpus(q, p);
+}
+
+static int cg1_quota(const char *dir) {
+    uint64_t q, p;
+    // -1 is no quota, and parse_u64 refuses the sign
+    if (!cg_num(dir, "cpu.cfs_quota_us", 1, &q) ||
+        !cg_num(dir, "cpu.cfs_period_us", 1, &p)) return 0;
+    return cg_cpus(q, p);
+}
+
+// What the kernel can take back from this cgroup's own charge without
+// swapping: the file LRU pages and reclaimable slab, the terms MemAvailable
+// counts for the whole machine. shmem sits on the anon lists and is in
+// neither. Without these, the page cache the model file itself leaves
+// charged to the container would read as used. v1 has no slab line, and its
+// hierarchical total_ keys are preferred because usage_in_bytes counts the
+// children too.
+static uint64_t cg_reclaimable(const char *dir, int v) {
+    char path[CG_PATH_MAX + 64];
+    int w = snprintf(path, sizeof path, "%s/memory.stat", dir);
+    if (w < 0 || (size_t)w >= sizeof path) return 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    uint64_t v2 = 0, total = 0, local = 0;
+    bool have_total = false;
+    char line[256];
+    while (fgets(line, sizeof line, f)) {
+        char *sp = strchr(line, ' ');
+        if (!sp) continue;
+        *sp = '\0';
+        char *val = sp + 1;
+        val[strcspn(val, "\r\n")] = '\0';
+        uint64_t x, *into = NULL;
+        if (!parse_u64(val, 0, UINT64_MAX, &x)) continue;
+        if (v == 2) {
+            if (!strcmp(line, "active_file") || !strcmp(line, "inactive_file") ||
+                !strcmp(line, "slab_reclaimable")) into = &v2;
+        } else if (!strcmp(line, "total_active_file") ||
+                   !strcmp(line, "total_inactive_file")) {
+            into = &total;
+            have_total = true;
+        } else if (!strcmp(line, "active_file") || !strcmp(line, "inactive_file"))
+            into = &local;
+        if (into && !checked_u64_add(*into, x, into)) *into = UINT64_MAX;
+    }
+    fclose(f);
+    return v == 2 ? v2 : have_total ? total : local;
+}
+
+// The running bound over the levels walked so far: the tightest of each.
+typedef struct {
+    int      cpus;        // CPUs, 0 = no quota seen
+    uint64_t mem_max;     // bytes, 0 = no limit seen
+    uint64_t mem_left;    // what the tightest-left level leaves, valid with have_left
+    bool     have_left;
+} cg_bound;
+
+static void cg_fold(const char *dir, int v, bool cpu, bool mem, cg_bound *b) {
+    if (cpu) {
+        int n = v == 2 ? cg2_quota(dir) : cg1_quota(dir);
+        if (n > 0 && (!b->cpus || n < b->cpus)) b->cpus = n;
+    }
+    uint64_t max, used;
+    if (!mem || !cg_num(dir, v == 2 ? "memory.max" : "memory.limit_in_bytes", 1, &max) ||
+        (v == 1 && max >= CG1_UNLIMITED)) return;
+    // headroom under this level's limit (siblings' usage included, since an
+    // ancestor's charge covers its whole subtree), plus what it can reclaim
+    uint64_t left = max;
+    if (cg_num(dir, v == 2 ? "memory.current" : "memory.usage_in_bytes", 0, &used)) {
+        left = used < max ? max - used : 0;
+        uint64_t r = cg_reclaimable(dir, v);
+        left = r > max - left ? max : left + r;
+    }
+    if (!b->mem_max || max < b->mem_max) b->mem_max = max;
+    if (!b->have_left || left < b->mem_left) { b->mem_left = left; b->have_left = true; }
+}
+
+// Every level from the process's cgroup `self` (a path under the mount such
+// as "/system.slice/x.scope", or "" for the mount root) up to the mount
+// `base`, since the kernel enforces each ancestor's limit too. A level that
+// does not exist under this mount simply has no files.
+static void cg_walk(const char *base, const char *self, int v, bool cpu, bool mem,
+                    cg_bound *b) {
+    char dir[CG_PATH_MAX];
+    size_t bl = strlen(base);
+    int w = snprintf(dir, sizeof dir, "%s%s", base, self);
+    if (w < 0 || (size_t)w >= sizeof dir) {
+        if (bl >= sizeof dir) return;
+        memcpy(dir, base, bl + 1);
+    }
+    for (;;) {
+        cg_fold(dir, v, cpu, mem, b);
+        if (strlen(dir) <= bl) break;
+        char *slash = strrchr(dir + bl, '/');
+        if (!slash) break;
+        *slash = '\0';
+    }
+}
+
+static bool cg_list_has(const char *list, const char *name) {
+    size_t nl = strlen(name);
+    for (const char *p = list;;) {
+        const char *e = strchr(p, ',');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        if (len == nl && !strncmp(p, name, nl)) return true;
+        if (!e) return false;
+        p = e + 1;
+    }
+}
+
+static bool cg_climbs(const char *p) {
+    for (const char *s = p; (s = strstr(s, "/..")) != NULL; s += 3)
+        if (s[3] == '/' || s[3] == '\0') return true;
+    return false;
+}
+
+// The process's cgroup under one hierarchy, from /proc/self/cgroup: the v2
+// "0::/path" line when `controller` is NULL, else the v1 line whose
+// controller list names it ("4:cpu,cpuacct:/path"). "" (the mount root)
+// when there is no file or no such line, and for a path that climbs out of
+// the mount with "..", which is how a cgroup namespace shows a cgroup
+// outside it.
+static void cg_self(const char *file, const char *controller, char *out, size_t n) {
+    out[0] = '\0';
+    FILE *f = file ? fopen(file, "r") : NULL;
+    if (!f) return;
+    char line[CG_PATH_MAX + 256];
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        char *c1 = strchr(line, ':'), *c2 = c1 ? strchr(c1 + 1, ':') : NULL;
+        if (!c2) continue;
+        *c1 = *c2 = '\0';
+        const char *ctrls = c1 + 1, *path = c2 + 1;
+        if (controller ? !cg_list_has(ctrls, controller) : (strcmp(line, "0") || *ctrls))
+            continue;
+        if (path[0] == '/' && strcmp(path, "/") && !cg_climbs(path) && strlen(path) < n)
+            memcpy(out, path, strlen(path) + 1);
+        break;
+    }
+    fclose(f);
+}
+
+void plat_capacity_at(const char *root, const char *self_file, int host_cpus,
+                      uint64_t host_ram, uint64_t host_avail, plat_capacity *out) {
+    memset(out, 0, sizeof *out);
+    out->host_cpu_cores = host_cpus > 0 ? host_cpus : 1;
+    out->host_ram_bytes = host_ram;
+    out->host_ram_available_bytes = host_avail;
+    out->limits_source = "none";
+    cg_bound b = { 0 };
+    char self[CG_PATH_MAX], base[CG_PATH_MAX], probe[8];
+    if (root && strlen(root) + 32 < sizeof base) {
+        if (cg_text(root, "cgroup.controllers", probe, sizeof probe)) {
+            out->limits_source = "cgroup2";
+            cg_self(self_file, NULL, self, sizeof self);
+            cg_walk(root, self, 2, true, true, &b);
+        } else {
+            // v1 mounts each controller apart; cpu is "cpu" or the combined
+            // "cpu,cpuacct" ("cpu" is usually a symlink to it)
+            static const char *const cpu_dirs[] = { "cpu", "cpu,cpuacct", "cpuacct,cpu" };
+            for (size_t i = 0; i < sizeof cpu_dirs / sizeof *cpu_dirs; i++) {
+                snprintf(base, sizeof base, "%s/%s", root, cpu_dirs[i]);
+                if (!cg_text(base, "cpu.cfs_period_us", probe, sizeof probe)) continue;
+                out->limits_source = "cgroup1";
+                cg_self(self_file, "cpu", self, sizeof self);
+                cg_walk(base, self, 1, true, false, &b);
+                break;
+            }
+            snprintf(base, sizeof base, "%s/memory", root);
+            if (cg_text(base, "memory.limit_in_bytes", probe, sizeof probe)) {
+                out->limits_source = "cgroup1";
+                cg_self(self_file, "memory", self, sizeof self);
+                cg_walk(base, self, 1, false, true, &b);
+            }
+        }
+    }
+    out->cpu_quota = b.cpus;
+    out->memory_max_bytes = b.mem_max;
+    out->cpu_cores = b.cpus && b.cpus < out->host_cpu_cores ? b.cpus : out->host_cpu_cores;
+    // a host figure of 0 is "unknown", so the limit's figure stands alone
+    out->ram_bytes = b.mem_max && (!host_ram || b.mem_max < host_ram) ? b.mem_max : host_ram;
+    out->ram_available_bytes =
+        b.have_left && (!host_avail || b.mem_left < host_avail) ? b.mem_left : host_avail;
+}
+
+void plat_capacity_get(plat_capacity *out) {
+    // RUNNER_TEST_CGROUP_ROOT (test-only) reads a fixture tree as this
+    // process's own cgroup, on any platform
+    const char *root = getenv("RUNNER_TEST_CGROUP_ROOT"), *self = NULL;
+    if (!root || !*root) {
+#ifdef __linux__
+        root = "/sys/fs/cgroup";
+        self = "/proc/self/cgroup";
+#else
+        root = NULL;
+#endif
+    }
+    plat_capacity_at(root, self, machine_cpu_count(), machine_ram_bytes(),
+                     machine_ram_available_bytes(), out);
+}
+
+int plat_cpu_count(void) {
+    plat_capacity c;
+    plat_capacity_get(&c);
+    return c.cpu_cores;
+}
+
+uint64_t plat_ram_bytes(void) {
+    plat_capacity c;
+    plat_capacity_get(&c);
+    return c.ram_bytes;
+}
+
+uint64_t plat_ram_available_bytes(void) {
+    plat_capacity c;
+    plat_capacity_get(&c);
+    return c.ram_available_bytes;
 }
 
 // --------------------------------------------------------- strict numeric parse
