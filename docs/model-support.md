@@ -305,9 +305,9 @@ Text path only: the smoke-test file from the quickstart; it fails the fidelity b
 - **Still missing:** nothing the audit named
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
 - **Per-release smoke:** on macos-arm64-metal, metal backend, the policy's age limit.
-- **CPU:** ✅ v1.5.1 2026-10-23 on macos-arm64-metal at commit `a72068140625`, output sha256 `eadb99d6bfee9881`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.cpu.txt)
+- **CPU:** ☐ not run
 - **CUDA:** ☐ not run
-- **Metal:** ✅ v1.5.1 2026-10-23 on macos-arm64-metal at commit `a72068140625`, output sha256 `eadb99d6bfee9881`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.metal.txt)
+- **Metal:** ☐ not run
 - **LoRA training:** supported (runner 1.5.1, 2026-10-23).
 - **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-23).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).

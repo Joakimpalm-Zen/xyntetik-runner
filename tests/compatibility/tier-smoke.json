@@ -17,54 +17,7 @@
   },
   "rows": {
     "gemma-4-e2b-it-q4_k_m-q4_0-mix": {
-      "pins": {
-        "macos-arm64-metal/metal": {
-          "path": "tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.metal.txt",
-          "sha256": "eadb99d6bfee9881232221059e9e1638c31325987a1b28dc31ae5874cfff2d99",
-          "bytes": 311,
-          "spec": {
-            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
-            "n_predict": 48,
-            "args": [
-              "--temp",
-              "0",
-              "-c",
-              "512",
-              "-b",
-              "64",
-              "--no-tray"
-            ]
-          },
-          "pinned": {
-            "date": "2026-10-23",
-            "runner_version": "1.5.1",
-            "commit": "a81dc9727e4e65848a916426fe845f3ad9f99245"
-          }
-        },
-        "macos-arm64-metal/cpu": {
-          "path": "tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.cpu.txt",
-          "sha256": "eadb99d6bfee9881232221059e9e1638c31325987a1b28dc31ae5874cfff2d99",
-          "bytes": 311,
-          "spec": {
-            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
-            "n_predict": 48,
-            "args": [
-              "--temp",
-              "0",
-              "-c",
-              "512",
-              "-b",
-              "64",
-              "--no-tray"
-            ]
-          },
-          "pinned": {
-            "date": "2026-10-23",
-            "runner_version": "1.5.1",
-            "commit": "a81dc9727e4e65848a916426fe845f3ad9f99245"
-          }
-        }
-      }
+      "pins": {}
     }
   }
 }
