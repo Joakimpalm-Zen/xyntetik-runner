@@ -26,6 +26,24 @@ Current release and unreleased changes. Compatibility follows the
   ledger's release-check refusal printed its summary above the rows it
   summarises.
 
+- **The last-validated line on the model cards and the site.** Every
+  published model file's Hugging Face card (13 repositories) now carries a
+  `xyntetik-validated` block rendered from the roster: per roster file, the
+  README's CPU, CUDA, Metal and Train marks with their version and date, or
+  "not run", and a link to the file's row in
+  [docs/model-support.md](docs/model-support.md#cards-and-site); the Tier 2
+  gpt-oss-20b keep-30 file says its tier and reason instead. A mark is a
+  reproduced greedy smoke at that version and date, not a quality claim.
+  `scripts/model-tiers.py --cards OUTDIR` renders the cards for review,
+  `--cards-push OUTDIR` uploads them (a dry run unless `--yes`, one commit
+  per repository, refused when the card changed on the Hub outside the
+  block) and `--cards-check` reports drift; the new `cards-drift` workflow
+  runs the check on main and weekly, never on a pull request. xyntetik.com
+  renders the same table on the Runner page and a one-line summary on the
+  landing page's model cards at build time, and rebuilds when the roster
+  changes. `site/shot.mjs` is the site's layout check, now in the
+  repository.
+
 - **Training: distillation toward a teacher (`--train-teacher DIR`).** With
   `--train`, each completion position is fitted to a teacher's top-k
   distribution instead of the next token: the KL divergence from the

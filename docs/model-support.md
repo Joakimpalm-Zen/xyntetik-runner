@@ -158,6 +158,59 @@ The checks: `scripts/model-tiers.py --check` (the roster's structure),
 `--stale` (the release gate's question; `--today` fixes the day for a test)
 and `--docs-check` (the README table and this page against the roster).
 
+## Cards and site
+
+The same marks are published in two more places, rendered from the roster
+and never typed by hand.
+
+- **The Hugging Face cards.** Every repository that holds a published row's
+  file carries a `xyntetik-validated` block on its card: one line per roster
+  file of that repository with the README's CPU, CUDA, Metal and Train marks
+  and a link to the file's row on this page, or, for a published file below
+  Tier 1, its tier and the reason with no marks. The block is the last
+  bullets of the card's own `xyntetik-status` block; a card without a status
+  block carries it as a quote of its own right after the H1. Only the block
+  is ever written, and the rest of the card is its author's.
+- **xyntetik.com.** The site's build reads the roster: the Runner page's
+  "Actively validated models" section is this table, and each model card on
+  the landing page carries a "Last validated" line for the roster files of
+  the repositories it names (a card that covers no roster file carries
+  none). The Pages workflow rebuilds the site when the roster changes.
+
+After a `--record` lands on main, the cards are pushed as an explicit step;
+`--record` never touches them:
+
+```sh
+# fetch every published card (no token needed) and write it, block placed,
+# to OUTDIR/<owner>--<repo>/README.md for review
+python3 scripts/model-tiers.py --cards OUTDIR
+# with the test interpreter (below): a dry run, what would be uploaded and
+# anything that would be refused, then the upload, one commit per repository
+python scripts/model-tiers.py --cards-push OUTDIR
+python scripts/model-tiers.py --cards-push OUTDIR --yes
+# read-only: every card's block against the roster's render
+python3 scripts/model-tiers.py --cards-check
+```
+
+Run the push with the project's test interpreter (the one `make
+test-python-deps` names), with `huggingface_hub` and its HTTP stack
+installed in it; an interpreter that cannot import them is refused with the
+reason before anything is uploaded, so a `python3` without them is not a
+silent fallback. The push uses the token `huggingface_hub` finds on its own
+and never reads, prints or passes one. It refuses a card rendered from an older roster, and a card that
+changed on the Hub outside the block since it was fetched; the commit is
+made on the revision it compared against, so an edit that lands in between
+is refused by the Hub rather than overwritten. `--cards` and the push refuse
+a card with malformed markers or one that does not mention every roster
+file of its repository.
+
+`--cards-check` exits 0 when every card matches, 1 on drift or a refused
+card, and 3 when the only trouble is a Hub it could not read (a timeout, a
+dropped connection, HTTP 429 or 5xx), which says nothing about the cards.
+The `cards-drift` workflow runs it on every push to main and weekly, never
+on a pull request and not as a required check: a merge that changes the
+render shows drift until the cards are pushed, and exit 3 is a warning.
+
 <!-- model-tiers:rows:begin (rendered from docs/model-tiers.json by scripts/model-tiers.py --write-docs; do not edit) -->
 
 <a id="tier1"></a>
@@ -604,7 +657,7 @@ The NextN/MTP predictor head for Qwen3.8-27B, loaded with --mtp-file beside a tr
 <a id="qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head"></a>
 #### `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf` (4 parts)
 
-Experimental: the qwen4exp architecture is admitted with a recorded publisher-reference gap, and no gate has run on this 4-part file; the admission evidence is on the upstream 2-part trunk.
+Experimental: the qwen4exp architecture is admitted with its publisher float32 comparison still unmeasured, and no gate has run on this 4-part file; the admission evidence is on the upstream 2-part trunk.
 
 - **File:** `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf` (sha256 `522632bbb6f2c353621762be5bd48b270b1ff9fe60a9630bd47d5ef097aa0fa2`, 26,481,462,400 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00002-of-00004.gguf` (sha256 `f82cc8f151e15b73bbb84c75baf78f179df1b9b368437d7c75d8b3a7618cb8c8`, 28,347,013,600 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00003-of-00004.gguf` (sha256 `53ada4d2c3f2e189ce209520ecad0ae9649028b19e6bb9a55a021613b204e93b`, 28,800,138,432 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00004-of-00004.gguf` (sha256 `3a8c77474c82c5e81212ef3c5ef2330e75413cc60241d600fcfd87e4e2143b66`, 2,803,798,784 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`).
 - **Upstream checkpoint:** Qwen/Qwen3.8-Flash-Next.
@@ -624,7 +677,7 @@ Experimental: the qwen4exp architecture is admitted with a recorded publisher-re
 <a id="qwen3.8-flash-next-mtp-q8_0"></a>
 #### `Qwen3.8-Flash-Next-MTP-Q8_0.gguf`
 
-Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for --mtp-file, built from the publisher's BF16 checkpoint for ISTA-DASLab's IQ3_S trunk; no gate has run on it.
+Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for --mtp-file, built from the publisher's BF16 checkpoint for ISTA-DASLab's IQ3_S trunk, whose qwen4exp architecture is admitted with its publisher float32 comparison still unmeasured; no gate has run on it.
 
 - **File:** `Qwen3.8-Flash-Next-MTP-Q8_0.gguf` (sha256 `cd2f837a63f0b6ea1d951976e161fc40648932ffaf59194aed3557175638000b`, 4,165,605,056 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`).
 - **Upstream checkpoint:** Qwen/Qwen3.8-Flash-Next.
