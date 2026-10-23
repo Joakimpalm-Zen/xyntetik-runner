@@ -2390,6 +2390,7 @@ whether the draft is `active` there.
 | `--lr-schedule constant\|cosine`, `--lr-warmup N`, `--lr-floor F` | With `--train`: a linear warmup over N steps, then a constant learning rate or a cosine down to F x `--lr` (0.1) at the last step. |
 | `--train-batch N` | With `--train`: N rows per optimizer step, the loss and gradient the mean over their positions (rows in file order). Without it, one row a step, its loss summed over its positions. |
 | `--weight-decay F` | AdamW's decoupled weight decay (`0.01`); `0` is plain Adam. |
+| `--train-gpu` | With `--train` or `--train-dpo`: every weight product of a step on an NVIDIA GPU (CUDA build), the weights cached there. Within rounding of a CPU run, not its bytes; the record names the device. An error without a usable device. [Details](docs/lora.md#training-on-the-gpu---train-gpu). |
 | `--train-resume CKPT` | Continue the run that wrote checkpoint CKPT: its adapter, AdamW moments (`CKPT.optim`), step and next rows; byte-identical to the run that never stopped. |
 | `--train-eval LABEL=ROWS[,TEACHER]`, `--eval-every N` | Held-out sets (up to 8) evaluated with no update at step 0, every N steps and at the last: mean loss per position, `top1_topk` and `top1_vocab`. |
 | `--kill-at S`, `--kill-metric LABEL`, `--kill-min-rel R` | At step S, unless LABEL's loss fell by at least R from step 0: save, write `OUT.killed.json`, exit 3 (else `OUT.kill-check.json`). |
