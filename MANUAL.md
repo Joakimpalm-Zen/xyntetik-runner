@@ -4178,7 +4178,7 @@ are described in [determinism scope](docs/determinism-scope.md).
 Whether that arithmetic also makes Runner the *more accurate* engine
 depends on which question you ask, and both answers belong here. Twelve
 families were scored against their publishers' implementations in float32
-on Runner 1.5.0 (2026-10-22; first on 2026-09-07), both tiers, 2,000
+on Runner's 1.5.0 release (2026-10-22; first on 2026-09-07), both tiers, 2,000
 corpus positions each, with the other engine given its stronger
 configuration at each tier ([report](docs/golden-pass-2026-10-22.md)).
 
