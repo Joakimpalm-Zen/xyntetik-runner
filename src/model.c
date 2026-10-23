@@ -1317,13 +1317,10 @@ bool model_file_identity(const char *path, const char *registry,
     // distinguish them is the thing this function exists to avoid. Found
     // 2026-09-07, when the same check passed on one Windows machine and
     // failed on a faster one.
-    wchar_t *wpath = plat_utf8_to_wide(path);
-    HANDLE h = wpath ? CreateFileW(wpath, FILE_READ_ATTRIBUTES,
-                                   FILE_SHARE_READ | FILE_SHARE_WRITE |
-                                   FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
-                                   FILE_ATTRIBUTE_NORMAL, NULL)
-                     : INVALID_HANDLE_VALUE;
-    free(wpath);
+    HANDLE h = plat_create_file(path, FILE_READ_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL);
     BY_HANDLE_FILE_INFORMATION info;
     if (h != INVALID_HANDLE_VALUE && GetFileInformationByHandle(h, &info)) {
         *size  = ((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow;

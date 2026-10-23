@@ -18,8 +18,11 @@
 #include <io.h>
 #include <psapi.h>
 
+static wchar_t *utf8_to_wide(const char *s);   // the UTF-8 doors, below
+static char *wide_to_utf8(const wchar_t *w);
+
 void *plat_mmap_ro(const char *path, size_t *size) {
-    wchar_t *wp = plat_utf8_to_wide(path);
+    wchar_t *wp = utf8_to_wide(path);
     HANDLE f = wp ? CreateFileW(wp, GENERIC_READ, FILE_SHARE_READ, NULL,
                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)
                   : INVALID_HANDLE_VALUE;
@@ -288,7 +291,7 @@ static uint64_t machine_ram_available_bytes(void) {
 }
 
 bool plat_file_readable(const char *path) {
-    wchar_t *wp = plat_utf8_to_wide(path);
+    wchar_t *wp = utf8_to_wide(path);
     bool ok = wp && _waccess(wp, 4) == 0;
     free(wp);
     return ok;
@@ -364,7 +367,7 @@ const char *plat_runtime_dir(void) {
 }
 
 bool plat_file_rmw(const char *path, plat_rmw_fn fn, void *ud) {
-    wchar_t *wp = plat_utf8_to_wide(path);
+    wchar_t *wp = utf8_to_wide(path);
     HANDLE f = wp ? CreateFileW(wp, GENERIC_READ | GENERIC_WRITE,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                                 OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL)
@@ -993,7 +996,10 @@ void plat_parent_watch(long pid) {
 #include <process.h>
 #include <sys/stat.h>
 
-wchar_t *plat_utf8_to_wide(const char *s) {
+// UTF-8 <-> UTF-16, malloc'd and freed here; NULL when out of memory. A
+// byte sequence that is not UTF-8 becomes U+FFFD, as it does in the -A APIs
+// under the UTF-8 code page.
+static wchar_t *utf8_to_wide(const char *s) {
     if (!s) { errno = EINVAL; return NULL; }
     int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
     wchar_t *w = n > 0 ? malloc((size_t)n * sizeof *w) : NULL;
@@ -1005,7 +1011,7 @@ wchar_t *plat_utf8_to_wide(const char *s) {
     return w;
 }
 
-char *plat_wide_to_utf8(const wchar_t *w) {
+static char *wide_to_utf8(const wchar_t *w) {
     if (!w) { errno = EINVAL; return NULL; }
     int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
     char *s = n > 0 ? malloc((size_t)n) : NULL;
@@ -1030,28 +1036,28 @@ static void free_keep_errno(void *a, void *b) {
 }
 
 FILE *plat_fopen(const char *path, const char *mode) {
-    wchar_t *wp = plat_utf8_to_wide(path), *wm = wp ? plat_utf8_to_wide(mode) : NULL;
+    wchar_t *wp = utf8_to_wide(path), *wm = wp ? utf8_to_wide(mode) : NULL;
     FILE *f = wm ? _wfopen(wp, wm) : NULL;
     free_keep_errno(wp, wm);
     return f;
 }
 
 int plat_open(const char *path, int flags, int mode) {
-    wchar_t *wp = plat_utf8_to_wide(path);
+    wchar_t *wp = utf8_to_wide(path);
     int fd = wp ? _wopen(wp, flags, mode) : -1;
     free_keep_errno(wp, NULL);
     return fd;
 }
 
 int plat_remove(const char *path) {
-    wchar_t *wp = plat_utf8_to_wide(path);
+    wchar_t *wp = utf8_to_wide(path);
     int r = wp ? _wremove(wp) : -1;
     free_keep_errno(wp, NULL);
     return r;
 }
 
 int plat_rename(const char *from, const char *to) {
-    wchar_t *wf = plat_utf8_to_wide(from), *wt = wf ? plat_utf8_to_wide(to) : NULL;
+    wchar_t *wf = utf8_to_wide(from), *wt = wf ? utf8_to_wide(to) : NULL;
     int r = wt ? _wrename(wf, wt) : -1;
     free_keep_errno(wf, wt);
     return r;
@@ -1059,21 +1065,31 @@ int plat_rename(const char *from, const char *to) {
 
 int plat_mkdir(const char *path, int mode) {
     (void)mode;
-    wchar_t *wp = plat_utf8_to_wide(path);
+    wchar_t *wp = utf8_to_wide(path);
     int r = wp ? _wmkdir(wp) : -1;
     free_keep_errno(wp, NULL);
     return r;
 }
 
 int plat_rmdir(const char *path) {
-    wchar_t *wp = plat_utf8_to_wide(path);
+    wchar_t *wp = utf8_to_wide(path);
     int r = wp ? _wrmdir(wp) : -1;
     free_keep_errno(wp, NULL);
     return r;
 }
 
+void *plat_create_file(const char *path, unsigned long access, unsigned long share,
+                       void *security, unsigned long disposition, unsigned long flags) {
+    wchar_t *wp = utf8_to_wide(path);
+    HANDLE h = wp ? CreateFileW(wp, access, share, (SECURITY_ATTRIBUTES *)security,
+                                disposition, flags, NULL)
+                  : INVALID_HANDLE_VALUE;
+    free_keep_errno(wp, NULL);
+    return h;
+}
+
 int plat_stat(const char *path, plat_stat_t *st) {
-    wchar_t *wp = plat_utf8_to_wide(path);
+    wchar_t *wp = utf8_to_wide(path);
     if (!wp) return -1;
     // the C runtime's stat refuses "dir\" for anything but a root; MinGW's
     // POSIX stat() strips the separators first, and the callers were
@@ -1102,7 +1118,7 @@ static void env_narrow_from_wide(void) {
     if (!u) return;
     bool same = old != NULL;
     for (size_t i = 0; i < n; i++) {
-        if (!(u[i] = plat_wide_to_utf8(w[i]))) {
+        if (!(u[i] = wide_to_utf8(w[i]))) {
             for (size_t k = 0; k < i; k++) free(u[k]);
             free(u);
             return;
@@ -1118,7 +1134,7 @@ static void env_narrow_from_wide(void) {
 }
 
 int plat_setenv(const char *name, const char *value) {
-    wchar_t *wn = plat_utf8_to_wide(name), *wv = wn ? plat_utf8_to_wide(value) : NULL;
+    wchar_t *wn = utf8_to_wide(name), *wv = wn ? utf8_to_wide(value) : NULL;
     // _wputenv_s sets the wide table and the OS block; the narrow copy it
     // derives is in the ANSI code page, so it is rebuilt after
     errno_t e = wv ? _wputenv_s(wn, wv) : ENOMEM;
@@ -1161,7 +1177,7 @@ char *plat_console_read_line(bool *oom) {
         if (w[i] == 0x1A) { n = i; ended = false; g_console_eof = true; break; }
     if (n == 0 && !ended) { free(w); return NULL; }
     w[n] = 0;
-    char *u = plat_wide_to_utf8(w);
+    char *u = wide_to_utf8(w);
     free(w);
     if (!u) *oom = true;
     return u;
@@ -1189,7 +1205,7 @@ void plat_utf8_startup(int *argc, char ***argv) {
         wargc == *argc) {
         char **u = calloc((size_t)wargc + 1, sizeof *u);
         bool ok = u != NULL;
-        for (int i = 0; ok && i < wargc; i++) ok = (u[i] = plat_wide_to_utf8(wargv[i])) != NULL;
+        for (int i = 0; ok && i < wargc; i++) ok = (u[i] = wide_to_utf8(wargv[i])) != NULL;
         if (ok) {
             *argv = u;
             __argv = u;
@@ -1213,12 +1229,15 @@ void plat_utf8_startup(int *argc, char ***argv) {
     }
 }
 
-char *plat_realpath(const char *path) {
-    wchar_t *wp = plat_utf8_to_wide(path);
+bool plat_realpath(const char *path, char *out, size_t cap) {
+    wchar_t *wp = utf8_to_wide(path);
     wchar_t *abs = wp ? _wfullpath(NULL, wp, 0) : NULL;
-    char *r = abs ? plat_wide_to_utf8(abs) : NULL;
+    char *r = abs ? wide_to_utf8(abs) : NULL;
+    bool ok = r && strlen(r) < cap;
+    if (ok) memcpy(out, r, strlen(r) + 1);
+    free(r);
     free_keep_errno(wp, abs);
-    return r;
+    return ok;
 }
 
 struct plat_dir {
@@ -1236,7 +1255,7 @@ plat_dir *plat_opendir(const char *path) {
     if (n && pat[n - 1] != '/' && pat[n - 1] != '\\') pat[n++] = '\\';
     pat[n++] = '*';
     pat[n] = 0;
-    wchar_t *wp = plat_utf8_to_wide(pat);
+    wchar_t *wp = utf8_to_wide(pat);
     free(pat);
     plat_dir *d = wp ? calloc(1, sizeof *d) : NULL;
     if (!d) { free(wp); errno = ENOMEM; return NULL; }
@@ -1258,7 +1277,7 @@ const char *plat_readdir(plat_dir *d) {
     if (!d->pending && !FindNextFileW(d->h, &d->fd)) return NULL;
     d->pending = false;
     free(d->name);
-    d->name = plat_wide_to_utf8(d->fd.cFileName);
+    d->name = wide_to_utf8(d->fd.cFileName);
     return d->name;
 }
 
@@ -1295,11 +1314,11 @@ int plat_spawn_wait(const char *const argv[]) {
     int n = 0;
     while (argv[n]) n++;
     wchar_t **w = calloc((size_t)n + 1, sizeof *w);
-    wchar_t *file = w && n ? plat_utf8_to_wide(argv[0]) : NULL;
+    wchar_t *file = w && n ? utf8_to_wide(argv[0]) : NULL;
     bool ok = file != NULL;
     for (int i = 0; i < n && ok; i++) {
         char *q = win_quote(argv[i]);
-        ok = q && (w[i] = plat_utf8_to_wide(q)) != NULL;
+        ok = q && (w[i] = utf8_to_wide(q)) != NULL;
         free(q);
     }
     intptr_t rc = ok ? _wspawnvp(_P_WAIT, file, (const wchar_t *const *)w) : -1;
@@ -1316,7 +1335,15 @@ int plat_spawn_wait(const char *const argv[]) {
 
 void plat_utf8_startup(int *argc, char ***argv) { (void)argc; (void)argv; }
 
-char *plat_realpath(const char *path) { return realpath(path, NULL); }
+bool plat_realpath(const char *path, char *out, size_t cap) {
+    // realpath's own allocation: glibc's fortified build aborts on a caller
+    // buffer smaller than PATH_MAX however short the result is
+    char *r = realpath(path, NULL);
+    bool ok = r && strlen(r) < cap;
+    if (ok) memcpy(out, r, strlen(r) + 1);
+    free(r);
+    return ok;
+}
 
 struct plat_dir { DIR *d; };
 
@@ -1392,7 +1419,7 @@ bool plat_utf8_manifest(void) {
 
 bool plat_replace_file(const char *tmp_path, const char *path) {
 #ifdef _WIN32
-    wchar_t *wt = plat_utf8_to_wide(tmp_path), *wp = wt ? plat_utf8_to_wide(path) : NULL;
+    wchar_t *wt = utf8_to_wide(tmp_path), *wp = wt ? utf8_to_wide(path) : NULL;
     bool ok = wp && MoveFileExW(wt, wp, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
     free(wt);
     free(wp);
@@ -1414,7 +1441,7 @@ char *plat_executable_path(void) {
         wchar_t *w = malloc(cap * sizeof *w);
         if (!w) return NULL;
         DWORD n = GetModuleFileNameW(NULL, w, (DWORD)cap);
-        char *u = n > 0 && n < cap ? plat_wide_to_utf8(w) : NULL;
+        char *u = n > 0 && n < cap ? wide_to_utf8(w) : NULL;
         free(w);
         if (u || n == 0 || n < cap) return u;
     }

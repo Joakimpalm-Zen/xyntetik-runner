@@ -233,9 +233,11 @@ static void pick_model(void) {
     ofn.nMaxFile = sizeof file / sizeof *file;
     ofn.lpstrTitle = L"Choose a GGUF model for the desktop-managed runner";
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    char *picked = GetOpenFileNameW(&ofn) ? plat_wide_to_utf8(file) : NULL;
-    tray_menu_act(TRAY_ACT_PICK_MODEL, 0, picked);
-    free(picked);
+    char picked[3 * 1024 + 1];   // UTF-8 takes at most 3 bytes per UTF-16 unit
+    bool ok = GetOpenFileNameW(&ofn) &&
+              WideCharToMultiByte(CP_UTF8, 0, file, -1, picked, (int)sizeof picked,
+                                  NULL, NULL) > 0;
+    tray_menu_act(TRAY_ACT_PICK_MODEL, 0, ok ? picked : NULL);
 }
 
 static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
@@ -290,9 +292,11 @@ static bool set_run_value(HKEY k) {
     size_t n = exe ? strlen(exe) + sizeof "\"\" --tray" : 0;
     char *cmd = exe ? malloc(n) : NULL;
     if (cmd) snprintf(cmd, n, "\"%s\" --tray", exe);
-    wchar_t *w = cmd ? plat_utf8_to_wide(cmd) : NULL;
-    bool ok = w && RegSetValueExW(k, L"" RUN_VAL, 0, REG_SZ, (const BYTE *)w,
-                                  (DWORD)((wcslen(w) + 1) * sizeof *w)) == ERROR_SUCCESS;
+    int wn = cmd ? MultiByteToWideChar(CP_UTF8, 0, cmd, -1, NULL, 0) : 0;
+    wchar_t *w = wn > 0 ? malloc((size_t)wn * sizeof *w) : NULL;
+    bool ok = w && MultiByteToWideChar(CP_UTF8, 0, cmd, -1, w, wn) == wn &&
+              RegSetValueExW(k, L"" RUN_VAL, 0, REG_SZ, (const BYTE *)w,
+                             (DWORD)((size_t)wn * sizeof *w)) == ERROR_SUCCESS;
     free(w);
     free(cmd);
     free(exe);

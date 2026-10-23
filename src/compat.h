@@ -206,13 +206,18 @@ bool        plat_utf8_manifest(void);
 // Nothing elsewhere.
 void plat_utf8_startup(int *argc, char ***argv);
 
+// The doors convert in buffers of their own and hand nothing back to free,
+// apart from plat_executable_path and plat_console_read_line. That matters:
+// the tests/test_*_oom.c gates compile model.c, instances.c and others with
+// counting allocators, and read a free() there of memory compat.c allocated
+// as a release with no allocation behind it. None of those modules calls the
+// two that do hand memory back.
 #ifdef _WIN32
-#include <wchar.h>
-// UTF-8 <-> UTF-16, malloc'd; NULL when out of memory. A byte sequence that
-// is not UTF-8 becomes U+FFFD, as it does in the -A APIs under the UTF-8
-// code page.
-wchar_t *plat_utf8_to_wide(const char *s);
-char    *plat_wide_to_utf8(const wchar_t *s);
+// CreateFileW with a UTF-8 name: the arguments and the result are
+// CreateFile's (a HANDLE, INVALID_HANDLE_VALUE on failure with GetLastError()
+// as the call set it), spelled without <windows.h>.
+void *plat_create_file(const char *path, unsigned long access, unsigned long share,
+                       void *security, unsigned long disposition, unsigned long flags);
 
 // 64-bit sizes and times: MinGW's stat() keeps st_size in 32 bits and fails
 // with EOVERFLOW on every file over 2 GiB, which is every real model.
@@ -247,10 +252,10 @@ typedef struct stat plat_stat_t;
 #define plat_setenv(name, value)      setenv(name, value, 1)
 #endif
 
-// An absolute form of `path`, malloc'd; NULL on failure. The platform's own
-// rules, as before: POSIX realpath() resolves links and needs the file to
-// exist, Windows _fullpath() only joins and normalises.
-char *plat_realpath(const char *path);
+// The absolute form of `path` in `out`; false when it fails or does not fit.
+// The platform's own rules, as before: POSIX realpath() resolves links and
+// needs the file to exist, Windows _fullpath() only joins and normalises.
+bool plat_realpath(const char *path, char *out, size_t cap);
 
 // A directory's entry names, "." and ".." included, in UTF-8. A name is
 // valid until the next plat_readdir on the same handle.

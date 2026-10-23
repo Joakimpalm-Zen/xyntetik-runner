@@ -349,8 +349,8 @@ static bool ensure_file(const char *repo, const char *rfilename, const char *rep
 }
 
 static char *abs_path(const char *p) {
-    char *r = plat_realpath(p);   // allocates: no PATH_MAX buffer to size
-    return r ? r : strdup(p);
+    char buf[4096];
+    return strdup(plat_realpath(p, buf, sizeof buf) ? buf : p);
 }
 
 // one verified file into the report

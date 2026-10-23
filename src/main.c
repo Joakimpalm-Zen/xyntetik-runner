@@ -1712,9 +1712,10 @@ static int run_shadow_mode(const char *model, bool yes) {
     // Linux answers "/proc/self/exe": a link, whose directory is /proc/self.
     // The client lives beside the real binary, and the recorded runner path
     // must outlive this process, so resolve the link first.
-    if (exe) {
-        char *real = plat_realpath(exe);
-        if (real) { free(exe); exe = real; }
+    char real[4096];
+    if (exe && plat_realpath(exe, real, sizeof real)) {
+        char *copy = strdup(real);
+        if (copy) { free(exe); exe = copy; }
     }
 #endif
     char client[4096] = "";

@@ -487,16 +487,14 @@ static uint8_t *pem_block(const char *pem, const char *label, size_t *len) {
 // The last directory name in the absolute form of `path`'s parent: what the
 // reference signer names a model directory.
 static void parent_name(const char *path, char *out, size_t cap) {
-    char *full = plat_realpath(path);
-    char *abs = full ? full : strdup(path);
-    if (!abs) { snprintf(out, cap, "model"); return; }
+    char abs[4096];
+    if (!plat_realpath(path, abs, sizeof abs)) snprintf(abs, sizeof abs, "%s", path);
     size_t n = strlen(abs);
     while (n && abs[n - 1] != '/' && abs[n - 1] != '\\') n--;   // drop the file
     while (n && (abs[n - 1] == '/' || abs[n - 1] == '\\')) n--;
     abs[n] = 0;
     const char *b = base_name(abs);
     snprintf(out, cap, "%s", *b ? b : "model");
-    free(abs);
 }
 
 bool oms_sign_file(const char *model_path, const char *key_pem_path,

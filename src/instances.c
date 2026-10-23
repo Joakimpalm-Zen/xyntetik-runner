@@ -185,15 +185,8 @@ static bool write_self(void) {
         (long long)time(NULL), g_self.mode, g_self.port, RUNNER_VERSION,
         g_self.models_json.s ? g_self.models_json.s : "");
     bool ok = fclose(f) == 0;
-#ifdef _WIN32
-    // rename() cannot replace an existing file on Windows
-    wchar_t *wt = ok ? plat_utf8_to_wide(tmp) : NULL, *wp = wt ? plat_utf8_to_wide(path) : NULL;
-    ok = wp && MoveFileExW(wt, wp, MOVEFILE_REPLACE_EXISTING);
-    free(wt);
-    free(wp);
-#else
-    ok = ok && plat_rename(tmp, path) == 0;
-#endif
+    // rename() cannot replace an existing file on Windows; this can
+    ok = ok && plat_replace_file(tmp, path);
     if (!ok) plat_remove(tmp);
     return ok;
 }
@@ -241,13 +234,10 @@ bool instances_register(const char *mode, int port,
         sb_lit(&g_self.models_json, "\", \"path\": \"");
         // absolute path: a controller in another cwd must be able to
         // restart or inspect the file the instance was launched with.
-        // plat_realpath allocates its result: glibc's fortified realpath
-        // aborts on a caller buffer smaller than PATH_MAX regardless of how
-        // short the resolved path is, which a fixed buffer here once hit
-        char *abs = plat_realpath(model_paths[i]);
-        const char *shown = abs ? abs : model_paths[i];
-        sb_esc(&g_self.models_json, shown, strlen(shown));
-        free(abs);
+        char abs[4096];
+        if (!plat_realpath(model_paths[i], abs, sizeof abs))
+            snprintf(abs, sizeof abs, "%s", model_paths[i]);
+        sb_esc(&g_self.models_json, abs, strlen(abs));
         sb_lit(&g_self.models_json, "\"}");
     }
     if (g_self.models_json.failed) return false;

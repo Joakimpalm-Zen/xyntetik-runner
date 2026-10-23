@@ -277,8 +277,10 @@ static void log_path(char *out, size_t cap) {
 // `out` (or INVALID_HANDLE_VALUE) becomes the child's stdout and stderr.
 static bool tray_create_process(const char *cmd, bool inherit, DWORD flags,
                                 HANDLE out, PROCESS_INFORMATION *pi) {
-    wchar_t *w = plat_utf8_to_wide(cmd);   // writable, as CreateProcessW asks
-    if (!w) return false;
+    // writable, as CreateProcessW asks
+    int n = MultiByteToWideChar(CP_UTF8, 0, cmd, -1, NULL, 0);
+    wchar_t *w = n > 0 ? malloc((size_t)n * sizeof *w) : NULL;
+    if (!w || MultiByteToWideChar(CP_UTF8, 0, cmd, -1, w, n) != n) { free(w); return false; }
     STARTUPINFOW si = { .cb = sizeof si };
     if (out != INVALID_HANDLE_VALUE) {
         si.dwFlags = STARTF_USESTDHANDLES;
@@ -401,11 +403,9 @@ static void spawn_managed(void) {
         return;
     }
     SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
-    wchar_t *wlp = lp[0] ? plat_utf8_to_wide(lp) : NULL;
-    HANDLE hlog = wlp ? CreateFileW(wlp, GENERIC_WRITE, FILE_SHARE_READ, &sa,
-                                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL)
-                      : INVALID_HANDLE_VALUE;
-    free(wlp);
+    HANDLE hlog = lp[0] ? plat_create_file(lp, GENERIC_WRITE, FILE_SHARE_READ, &sa,
+                                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL)
+                        : INVALID_HANDLE_VALUE;
     PROCESS_INFORMATION pi;
     if (tray_create_process(cmd, hlog != INVALID_HANDLE_VALUE,
                             CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, hlog, &pi)) {
