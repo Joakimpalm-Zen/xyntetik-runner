@@ -139,6 +139,18 @@ static void anchored_teacher(model_t *m, const int32_t *toks, int k,
     }
 }
 
+// The bound on the gap to the independent formula: the listed terms take
+// log q against the float normalizer the cross-entropy uses (mx + logf of a
+// float sum, rounded at about 6e-8 of a log-sum-exp near 5 nats), so the gap
+// grows with the weight summed over the window: 1.3e-6 on the full-vocabulary
+// teacher on Linux x86-64, 0.96e-6 on arm64. A wrong formula is off by 1e-2
+// and more.
+static double kd_tol(const float *w) {
+    double sw = 0;
+    for (int t = 0; t + 1 < T; t++) sw += w ? fabs((double)w[t]) : 1.0;
+    return 3e-6 * sw;
+}
+
 // The KL written independently: a double log-softmax of the model's logits,
 // log-ratios, and the student's tail as the masked sum of its probabilities.
 static double reference_kl(model_t *m, const int32_t *toks, const float *w,
@@ -326,20 +338,20 @@ int main(int argc, char **argv) {
     soft_teacher(&m, toks, K, 0.85, ids, lp);
     {
         double got = kd(&m, toks, w, &top), want = reference_kl(&m, toks, w, &top);
-        double tol = 1e-6 * (fabs(want) > 1 ? fabs(want) : 1);
+        double tol = kd_tol(w);
         CHECK(fabs(got - want) <= tol, "top-%d KL %.17g vs independent %.17g", K, got, want);
         printf("ok: random top-%d teacher, tail 0.15: KL %.9f matches the "
-               "independent formula (%.2e)\n", K, got, fabs(got - want));
+               "independent formula (%.2e, bound %.2e)\n", K, got, fabs(got - want), tol);
     }
     fd_checks(&m, toks, w, &top, "random top-k, tail 0.15");
     anchored_teacher(&m, toks, K, 0.1, ids, lp);
     {
         double got = kd(&m, toks, w, &top), want = reference_kl(&m, toks, w, &top);
-        double tol = 1e-6 * (fabs(want) > 1 ? fabs(want) : 1);
+        double tol = kd_tol(w);
         CHECK(fabs(got - want) <= tol, "anchored top-%d KL %.17g vs independent %.17g",
               K, got, want);
         printf("ok: student-anchored top-%d teacher, tail 0.9: KL %.9f matches "
-               "the independent formula (%.2e)\n", K, got, fabs(got - want));
+               "the independent formula (%.2e, bound %.2e)\n", K, got, fabs(got - want), tol);
     }
     fd_checks(&m, toks, w, &top, "anchored top-k, tail 0.9");
 
@@ -349,11 +361,11 @@ int main(int argc, char **argv) {
         soft_teacher(&m, toks, V, 1.0, fids, flp);
         lora_teacher full = { V, fids, flp };
         double got = kd(&m, toks, w, &full), want = reference_kl(&m, toks, w, &full);
-        double tol = 1e-6 * (fabs(want) > 1 ? fabs(want) : 1);
+        double tol = kd_tol(w);
         CHECK(fabs(got - want) <= tol, "full-vocabulary KL %.17g vs independent %.17g",
               got, want);
         printf("ok: full-vocabulary teacher (k %d, no tail): KL %.9f matches the "
-               "independent formula (%.2e)\n", V, got, fabs(got - want));
+               "independent formula (%.2e, bound %.2e)\n", V, got, fabs(got - want), tol);
         fd_checks(&m, toks, w, &full, "full vocabulary");
         free(fids); free(flp);
     }
