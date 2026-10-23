@@ -1542,7 +1542,7 @@
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
-        "backend": "cpu"
+        "backend": "cuda"
       },
       "backends": {
         "cpu": null,
@@ -1605,7 +1605,7 @@
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
-        "backend": "cpu"
+        "backend": "cuda"
       },
       "backends": {
         "cpu": null,

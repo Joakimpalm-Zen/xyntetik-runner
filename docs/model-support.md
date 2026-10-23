@@ -679,7 +679,7 @@ Experimental: the qwen4exp architecture is admitted with its publisher float32 c
 - **Context tested:** not recorded.
 - **Still missing:** Every gate on this file; the publisher float32 comparison.
 - **Evidence:** [docs/qwen4exp-admission-evidence/README.md](qwen4exp-admission-evidence/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Per-release smoke:** on linux-x86_64-cuda, cpu backend, the policy's age limit.
+- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
 - **CUDA:** ☐ not run
 - **Metal:** [n/a](../MANUAL.md#support-matrix): qwen4exp's Gated DeltaNet blocks have no Metal kernel (the support matrix names Gated DeltaNet among the operations Metal lacks); coverage.json records the architecture's Metal path as unsupported.
@@ -700,7 +700,7 @@ Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for 
 - **Context tested:** not recorded.
 - **Still missing:** Every gate, run beside ISTA-DASLab's 2-part trunk (the 4-part set already carries a head, and --mtp-file refuses a second one).
 - **Evidence:** [MANUAL.md#placement-and-memory](../MANUAL.md#placement-and-memory).
-- **Per-release smoke:** on linux-x86_64-cuda, cpu backend, the policy's age limit.
+- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
 - **CUDA:** ☐ not run
 - **Metal:** [n/a](../MANUAL.md#support-matrix): MTP/NextN draft-head consumption is not implemented on Metal.
