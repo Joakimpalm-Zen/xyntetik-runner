@@ -372,6 +372,17 @@ plain cross-entropy on the same tokens left it at 0.8357: fitting the text
 moved the student away from the teacher. A step cost 12.34 s against the
 cross-entropy's 12.29 s.
 
+On Qwen3.5-0.8B, which trains through its Gated DeltaNet layers, the same
+setup against the Q8_0 file lowered the held-out KL from 0.1269 to 0.0914 for
+a Q4_0 student (requantized from the Q8_0) at `--lr 2e-4`. The Q4_K_M student
+starts much closer to its teacher (0.0319), and at `--lr 2e-4` it diverged
+(0.0447 after 48 steps) while at `--lr 5e-5` it fell to 0.0257, lower on every
+held-out document. The trainer's AdamW moves each parameter by about the
+learning rate per step whatever the loss, one example per step, with no warmup
+or decay: the closer a student starts to its teacher, the lower the rate it
+needs. Start low (5e-5) and watch the per-step loss, comparing each example
+with its own earlier pass.
+
 The objective is gated in `tests/test_kd_grad.c`: a one-hot teacher against the
 cross-entropy (loss and gradient bit for bit), the loss against an independent
 formula, and the gradient against central differences, on the plain,

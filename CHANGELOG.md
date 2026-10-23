@@ -20,7 +20,41 @@ Current release and unreleased changes. Compatibility follows the
   cross-entropy on the same tokens left it at 0.8357; a step costs 0.4%
   more. A one-hot teacher trains the cross-entropy's adapter byte for byte.
   The record's `objective` is `kl-to-teacher`, with both arrays hashed.
-  Training still covers the models it covered: qwen35 and Clef refuse it.
+  It covers every model the trainer covers, qwen35 and Clef included (the
+  next entry).
+
+- **Training: qwen35 and Clef train an adapter (backward through Gated
+  DeltaNet).** They served adapters and refused training. The backward now
+  runs through each DeltaNet layer: backpropagation through time over every
+  head's state (kept every square root of the window and rebuilt a stretch
+  at a time on the way back, so memory grows with the square root of the
+  window), the causal convolution, the L2-normed queries and keys, the decay
+  and update gates and the gated output norm, with an adapter on all five
+  DeltaNet projections; and through the full-attention layers' fused query
+  and output-gate projection. It matches PyTorch autograd element by element
+  on the qwen35 and Clef fixtures (every one of the 62 adapter gradient
+  buffers within 1e-6 relative; `tests/test_deltanet_autograd.py`, run where
+  torch is installed), and in `make test` the central-difference gate checks
+  each projection slot on its own, which caught two dropped terms the
+  whole-adapter check passed. `RUNNER_TRAIN_GPU=1` keeps the CPU's adapter
+  bytes on CUDA. On Qwen3.5-0.8B against its Q8_0 file as the teacher
+  (top-64, 24 documents, 48 steps), the held-out KL fell from 0.1269 to
+  0.0914 with a Q4_0 student (requantized from the Q8_0) at `--lr 2e-4`, and
+  from 0.0319 to 0.0257 with the Q4_K_M student at `--lr 5e-5`. At
+  `--lr 2e-4` that student diverged (0.0447): it starts 0.03 nats from its
+  teacher, and the trainer's AdamW moves each parameter by about the learning
+  rate per step whatever the loss (no warmup or decay, one example per step),
+  while its gradient on that model matches central differences projection by
+  projection. The Mamba-2 hybrids, qwen4exp and MoE on a
+  DeltaNet model still refuse training by name.
+
+- **Training: partial-dimension RoPE trains; LayerNorm refuses by name.**
+  The refusal of a rope that covers part of each head had no reason behind
+  it (the backward already rotated the same dimensions the forward does) and
+  is lifted, gated on fixtures rotating half of each head in both layouts.
+  It had also been what kept StableLM out of training, and the backward has
+  no LayerNorm adjoint, so `--adapt-info` and `--train` now refuse
+  "LayerNorm (stablelm)" by name.
 
 ## v1.5.1 - 2026-10-23
 
