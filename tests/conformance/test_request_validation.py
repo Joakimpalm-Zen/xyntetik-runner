@@ -419,15 +419,22 @@ def test_context_overflow_is_a_typed_request_error(client):
 # 2026-08-29. Each of these was answered 200 while the field the caller
 # reached for did nothing.
 
-def test_explicit_seed_zero_is_rejected(client):
-    """seed:0 asks for a reproducible run and did not get one.
+def test_explicit_seed_zero_is_a_seed(client):
+    """seed:0 asks for a reproducible run and gets one.
 
-    The sampler's xorshift64 has a fixed point at state 0, so the engine only
-    adopts a seed above zero -- an explicit 0 left the inherited state and two
-    identical requests diverged. The CLI has refused -s 0 by name for exactly
-    this reason since the reasoning was first written down. Absent stays
-    absent: only a seed the caller actually sent is refused."""
-    client.expect_400(dict(CHAT, seed=0), name="seed-zero", contains="seed")
+    It was first left unapplied (the engine adopted only a seed above zero,
+    so two identical requests diverged) and then refused, because 0 was the
+    sampler xorshift64's fixed point. Seeds are mixed before they seed the
+    sampler now, and the mix is never 0, so 0 runs like any other seed: two
+    identical sampled requests under it agree, and the telemetry reports it."""
+    body = dict(CHAT, seed=0, temperature=0.9, max_tokens=12)
+    a = client.chat(body, name="seed-zero-a")
+    a.expect_status(200)
+    b = client.chat(body, name="seed-zero-b")
+    b.expect_status(200)
+    assert a.json["choices"][0]["message"]["content"] == \
+        b.json["choices"][0]["message"]["content"]
+    assert a.json["runner_telemetry"]["sampling"]["seed"] == 0
 
 
 @pytest.mark.parametrize("seed", [2 ** 53, 2 ** 53 + 1, 2 ** 64 - 1],

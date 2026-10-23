@@ -2824,7 +2824,8 @@ typedef struct {
     bool script_fault;                // runner_test_fault: end it in a fault
     double req_deadline;              // 0: none
     double temp, top_p, min_p, top_k, repeat_penalty;
-    uint64_t seed;                    // 0: not fixed by the request (exact: request_seed)
+    uint64_t seed;                    // exact (request_seed); meaningful when seed_given
+    bool seed_given;                  // the request sent a seed (0 is one)
     int max_tokens;
     bool stream, include_usage;
     bool want_lp;
@@ -2915,9 +2916,10 @@ static bool creq_deadline(const creq_ctx *c, completion_req *q, creq_err *err) {
 // num_text): read as a double, 9007199254740993 ran, and was reported, as
 // 9007199254740992, and 2^64 - 1 was refused as 2^64 (2026-10-16, the
 // review's fork_seed finding, which this read shared).
-static bool request_seed(creq_err *err, jv *req, uint64_t *out) {
+static bool request_seed(creq_err *err, jv *req, uint64_t *out, bool *given) {
     jv *v = jv_get(req, "seed");
     *out = 0;
+    *given = false;
     if (absent(v)) return true;
     if (v->type != J_NUM) {
         creq_set_detail(err, 400, "seed must be a number", "seed", "invalid_type");
@@ -2944,20 +2946,11 @@ static bool request_seed(creq_err *err, jv *req, uint64_t *out) {
                         "seed", "invalid_value");
         return false;
     }
-    // An explicit seed:0 asks for a REPRODUCIBLE run and does not get one:
-    // the sampler's xorshift64 has a fixed point at state 0, so the engine
-    // leaves the inherited state and two identical requests diverge. The CLI
-    // has refused -s 0 by name since the same reasoning was written down
-    // there; accepting it here and randomizing anyway is the
-    // accepted-then-ignored hazard, answered 200. Absent stays absent.
-    if (*out == 0) {
-        creq_set_detail(err, 400,
-                          "seed 0 is not a usable seed: the sampler's RNG "
-                          "state 0 is a fixed point, so the run would not be "
-                          "reproducible. Use any other value, or omit seed.",
-                          "seed", "invalid_value");
-        return false;
-    }
+    // 0 is a seed like any other: it is mixed into the sampler's state
+    // (sampler_seed_state), never installed as the xorshift64's fixed point
+    // it was refused for when seeds were installed raw. Presence, not the
+    // value, says the request fixed its seed.
+    *given = true;
     return true;
 }
 
@@ -2969,6 +2962,7 @@ static bool creq_sampling(const creq_ctx *c, completion_req *q, creq_err *err) {
     // the rng STATE carries across so sampling sequences stay diverse
     double temp, top_p, min_p, top_k, repeat_penalty;
     uint64_t seed;
+    bool seed_given;
     if (!sampling_number(err, req, "temperature", s->smp_base.temp,
                          0, FLT_MAX, "0 or greater", &temp) ||
         !sampling_number(err, req, "top_p", s->smp_base.top_p,
@@ -2984,7 +2978,7 @@ static bool creq_sampling(const creq_ctx *c, completion_req *q, creq_err *err) {
                          FLT_MIN, FLT_MAX,
                          "greater than 0 (send 1 for no penalty)",
                          &repeat_penalty) ||
-        !request_seed(err, req, &seed))
+        !request_seed(err, req, &seed, &seed_given))
         return false;   // the reader already answered, naming the field
     // top_k and seed are held as integer engine state, so accepting 2.5 and
     // truncating it to 2 would run the request with settings the caller did
@@ -3001,6 +2995,7 @@ static bool creq_sampling(const creq_ctx *c, completion_req *q, creq_err *err) {
     q->min_p = min_p;
     q->top_k = top_k;
     q->seed = seed;
+    q->seed_given = seed_given;
     q->repeat_penalty = repeat_penalty;
     q->temp = temp;
     return true;
@@ -4088,7 +4083,7 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
                    : SV.ov.has_top_k ? "cli" : sfile.has_top_k ? "file" : "preset",
         .src_repeat = !absent(jv_get(req, "repeat_penalty")) ? "request"
                     : SV.ov.has_repeat_penalty ? "cli" : "preset",
-        .seed = q->seed > 0 ? (uint64_t)q->seed : 0,
+        .seed = q->seed_given ? q->seed : 0,
         .template_name = template_name(s->tmpl),
         // with tools declared, the protocol this request actually runs
         // under (a fallback to the generic envelope is reported as such);
@@ -4966,9 +4961,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // draws nothing and takes no place; a refused one never gets here.
     if (s->smp.temp > 0.0f || (e->think_smp && e->think_temp > 0.0f)) {
         uint64_t place = atomic_fetch_add(&SV.sampled_requests, 1);
-        s->smp.rng = q.seed > 0 ? sampler_seed_state(q.seed)
-                                : server_request_stream(SV.base_rng, place);
-    } else if (q.seed > 0) {
+        s->smp.rng = q.seed_given ? sampler_seed_state(q.seed)
+                                  : server_request_stream(SV.base_rng, place);
+    } else if (q.seed_given) {
         s->smp.rng = sampler_seed_state(q.seed);
     }
     // R1.2.2: the sampler's state as generation starts is the receipt's seed

@@ -5,6 +5,11 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Seed 0 is accepted.** `seed: 0`, `-s 0`, `--fork-seed 0` and a
+  session's `seed` or `fork_seed` of 0 now sample and replay like any other
+  seed. They were refused because 0 was the sampler RNG's fixed point;
+  seeds are mixed before use now and the mix is never 0.
+
 - **Seeded sampling: the request seed is now mixed before use; with small
   seeds the first sampled token was always the most likely one.** Every
   seeded output changes once; determinism within a version is unchanged.

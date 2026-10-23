@@ -147,7 +147,6 @@ BEFORE_LOAD = [
     (["-hf", "owner/repo"], 1, "use -m or -hf, not both"),
     ([], 1, "need -p PROMPT, -i, or --serve"),
     (["-f", "no-such-prompt.txt"], 1, "cannot read no-such-prompt.txt"),
-    (["-s", "0", "-p", "x"], 1, "-s 0 is not a usable seed"),
     (["--suspend-after", "2", "-p", "x"], 1, "--suspend-after N needs --session-out FILE"),
     (["--fork-seed", "3", "-p", "x"], 1, "--fork-seed forks a session and needs --resume FILE"),
     (["--resume", "img", "-p", "x"], 1, "--resume continues an image's prompt; give no -p"),

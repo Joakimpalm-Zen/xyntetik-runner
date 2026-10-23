@@ -542,3 +542,20 @@ def test_a_record_made_before_seeds_were_mixed_still_verifies(runner_bin, base,
     # from the mix of 7, a different stream
     new = _run(runner_bin, base, tmp_path / "seed7.json", seed="7", temp="0.9")
     assert new["output"]["tokens"] != r["output"]["tokens"]
+
+
+def test_seed_zero_samples_and_replays(runner_bin, base, tmp_path):
+    """0 was the sampler xorshift64's fixed point and `-s 0` was refused.
+    Mixed, it starts the sampler from splitmix64's published first output
+    for 0 (the absolute anchor), samples, reproduces and replays."""
+    rec = tmp_path / "zero.json"
+    r = _run(runner_bin, base, rec, seed="0", temp="0.9")
+    assert r["config"]["seed"] == 0xE220A8397B1DCDAF
+    assert r["config"]["seed_u64"] == str(0xE220A8397B1DCDAF)
+    again = _run(runner_bin, base, tmp_path / "zero2.json", seed="0", temp="0.9")
+    assert again["output"]["tokens"] == r["output"]["tokens"]
+    one = _run(runner_bin, base, tmp_path / "one.json", seed="1", temp="0.9")
+    assert one["output"]["tokens"] != r["output"]["tokens"]
+    p = _verify(runner_bin, base, rec)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert json.loads(p.stdout)["verdict"] == "VERIFIED"

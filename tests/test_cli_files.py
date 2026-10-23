@@ -338,22 +338,23 @@ def _sampled(runner_bin, model, seed):
                           stderr=subprocess.PIPE, timeout=60)
 
 
-def test_seed_zero_is_refused_rather_than_silently_randomised(runner_bin, model):
-    """`-s 0` must not run as if it had been honoured.
+def test_seed_zero_is_a_seed_and_is_not_randomised(runner_bin, model):
+    """`-s 0` must run as the seed it names.
 
-    The sampler's xorshift64 has a fixed point at state 0 -- it stays 0 and
-    every draw comes back 0.0 -- so 0 genuinely cannot be used as a seed. The
-    old code said that by replacing it with time(NULL), which turned a request
-    for a REPRODUCIBLE run into a random one with nothing on stderr: measured
-    on the fixture, three `-s 0` runs a second apart produced three different
-    completions while `-s 7` reproduced exactly.
+    0 was the sampler xorshift64's fixed point, and the oldest code replaced
+    it with time(NULL): three `-s 0` runs a second apart produced three
+    different completions while `-s 7` reproduced exactly. It was refused by
+    name after that. Seeds are now mixed before they seed the sampler and the
+    mix is never 0, so 0 is accepted, and it must reproduce like any other.
 
     The sleep is what makes this able to fail. time(NULL) is whole seconds, so
     two runs inside the same second agreed by accident and hid the bug.
     """
-    zero = _sampled(runner_bin, model, 0)
-    assert zero.returncode != 0
-    assert b"not a usable seed" in zero.stderr, zero.stderr[-200:]
+    z1 = _sampled(runner_bin, model, 0)
+    assert z1.returncode == 0, z1.stderr[-200:]
+    time.sleep(1.2)
+    z2 = _sampled(runner_bin, model, 0)
+    assert z1.stdout == z2.stdout
 
     # every other seed is untouched and still reproduces across the same gap
     a = _sampled(runner_bin, model, 7)
@@ -361,6 +362,7 @@ def test_seed_zero_is_refused_rather_than_silently_randomised(runner_bin, model)
     b = _sampled(runner_bin, model, 7)
     assert a.returncode == 0 and a.stdout == b.stdout
     assert a.stdout != _sampled(runner_bin, model, 8).stdout
+    assert z1.stdout != a.stdout
 
 
 def test_a_truncated_model_says_it_is_truncated(tmp_path):

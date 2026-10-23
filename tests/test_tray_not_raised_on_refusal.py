@@ -65,10 +65,11 @@ def _trays(instances_dir):
 
 
 # One refusal from every check a serve or interactive run passes after the
-# mode guard and before the model loads: the seed, the serving configuration
-# (receipts, adapters), the rewrite flags and the eval requirement.
+# mode guard and before the model loads: the prompt file, the serving
+# configuration (receipts, adapters), the rewrite flags and the eval
+# requirement. (The seed's refusal stood here until seed 0 was accepted.)
 REFUSALS = [
-    (["-i", "-s", "0"], b"not a usable seed"),
+    (["-i", "-f", "no-such-prompt.txt"], b"cannot read no-such-prompt.txt"),
     (["--serve", "--receipts-keep", "3"], b"--receipts-keep needs --receipts DIR"),
     (["--serve", "--adapter", "a=a.gguf", "--lora", "a.gguf"], b"--adapter and --lora are exclusive"),
     (["--serve", "--merge-allow-erased"], b"--merge-allow-erased requires --merge-lora OUT"),

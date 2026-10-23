@@ -2745,22 +2745,12 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         *rc = 1;
         return true;
     }
-    // The sampler's xorshift64 has a fixed point at state 0: it stays 0 and
-    // every draw comes back 0.0. So 0 is not a usable seed — but the old
-    // `if (rng == 0) rng = time(...)` said that by silently substituting the
-    // clock, which turned `-s 0`, a request for a REPRODUCIBLE run, into a
-    // random one with nothing on stderr. Only an absent -s takes the clock
-    // now; an explicit 0 is refused, because the one thing that must not
-    // happen is running it as if it had been honoured.
-    if (o->seed_given && o->smp.rng == 0) {
-        fprintf(stderr, "error: -s 0 is not a usable seed — the sampler's RNG "
-                        "state 0 is a fixed point. Use any other value.\n");
-        *rc = 1;
-        return true;
-    }
     // The seed is mixed into the state the sampler starts from: installed
     // raw, a small seed's first draw was 0.0 and the first sampled token the
-    // argmax (sample.h). A record replays the STATE it wrote, unmixed.
+    // argmax (sample.h), and 0 was the xorshift64's fixed point, refused by
+    // name. The mix is never 0, so every seed, 0 included, is usable; only
+    // an absent -s takes the clock. A record replays the STATE it wrote,
+    // unmixed.
     if (o->seed_given) {
         o->seed = o->smp.rng;
         o->smp.rng = sampler_seed_state(o->seed);
@@ -2837,11 +2827,6 @@ static bool cli_prepare_session(cli_opts *o, session_image *simg, int *rc) {
         o->ov.top_p = sm->top_p;                   o->ov.has_top_p = true;
         o->ov.min_p = sm->min_p;                   o->ov.has_min_p = true;
         o->ov.repeat_penalty = sm->repeat_penalty; o->ov.has_repeat_penalty = true;
-        if (o->fork_seed_given && o->fork_seed == 0) {
-            fprintf(stderr, "error: --fork-seed must be nonzero\n");
-            *rc = 1;
-            return true;
-        }
         if (!o->fork_seed_given && sm->rng == 0 && sm->temp > 0) {
             fprintf(stderr, "error: --resume %s: a sampled image without an rng "
                     "state\n", o->resume_path);

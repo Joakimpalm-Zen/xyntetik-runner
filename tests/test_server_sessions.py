@@ -92,6 +92,10 @@ def test_suspend_resume_and_fork_are_exact(exe, model, tmp_path):
         f3 = _post(srv, f"/v1/runner/sessions/{a['id']}/resume", {"fork_seed": 5})[1]
         assert f1["forked"] and f1["text"] == f2["text"]
         assert f1["text"] != b["text"] or f3["text"] != b["text"]
+        # 0 is a seed too (mixed, so never the rng's fixed point)
+        z1 = _post(srv, f"/v1/runner/sessions/{a['id']}/resume", {"fork_seed": 0})
+        z2 = _post(srv, f"/v1/runner/sessions/{a['id']}/resume", {"fork_seed": 0})
+        assert z1[0] == 200 and z1[1]["forked"] and z1[1]["text"] == z2[1]["text"]
 
         code, meta = _get(srv, f"/v1/runner/sessions/{a['id']}")
         assert code == 200 and meta["generated"] == 15 and meta["max_tokens"] == 40
@@ -191,7 +195,7 @@ def test_a_resumed_image_is_not_decoded_against_the_previous_rows(exe, model, tm
 @pytest.mark.parametrize("field,value", [
     ("temperature", "hot"), ("temperature", -1), ("temperature", 11),
     ("top_p", 1.5), ("min_p", -0.1), ("repeat_penalty", "2"),
-    ("seed", 0), ("seed", 1.5), ("seed", "7"), ("seed", 2.0 ** 60),
+    ("seed", -1), ("seed", 1.5), ("seed", "7"), ("seed", 2.0 ** 60),
     ("ignore_eos", "yes"), ("max_tokens", "40"), ("top_k", -1),
 ])
 def test_session_numbers_are_validated(exe, model, tmp_path, field, value):
@@ -210,7 +214,7 @@ def test_resume_validates_its_numbers(exe, model, tmp_path):
     with RunnerServer(exe, model, ctx=256, extra_args=[
             "--gpu", "off", "-t", "2", "--sessions", str(tmp_path / "s")]) as srv:
         code, a = _post(srv, "/v1/runner/sessions", dict(START, suspend_after=10))
-        for body in ({"fork_seed": 0}, {"fork_seed": "9"}, {"fork_seed": 1.5},
+        for body in ({"fork_seed": -1}, {"fork_seed": "9"}, {"fork_seed": 1.5},
                      {"suspend_after": "20"}, {"suspend_after": 1.5}):
             code, err = _post(srv, f"/v1/runner/sessions/{a['id']}/resume", body)
             assert code == 400, (body, err)
