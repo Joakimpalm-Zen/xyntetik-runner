@@ -18,28 +18,7 @@
   },
   "rows": {
     "gemma-4-e2b-it-q4_k_m-q4_0-mix": {
-      "pins": {
-        "macos-arm64-metal/metal": {
-          "path": "tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.metal.txt",
-          "sha256": "c9ba5557ea09feef90011604657255a11621c036b482e8c85fe966f2cf20d0b7",
-          "bytes": 32,
-          "pinned": {
-            "date": "2026-10-23",
-            "runner_version": "1.5.1",
-            "commit": "98308718547e5bacfbb4631194138a9193f72bff"
-          }
-        },
-        "macos-arm64-metal/cpu": {
-          "path": "tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.cpu.txt",
-          "sha256": "c9ba5557ea09feef90011604657255a11621c036b482e8c85fe966f2cf20d0b7",
-          "bytes": 32,
-          "pinned": {
-            "date": "2026-10-23",
-            "runner_version": "1.5.1",
-            "commit": "98308718547e5bacfbb4631194138a9193f72bff"
-          }
-        }
-      }
+      "pins": {}
     }
   }
 }
