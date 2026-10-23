@@ -1376,13 +1376,22 @@ reported beside it).
 - The [GENESIS existence record](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Genesis-Existence-record)
   is research evidence, **not a Runner model** and no weights: the
   preregistrations with every amendment, the reports, the experiment code
-  and every counted run of GE-001 to GE-007, failures included. GE-002
+  and every counted run of GE-001 to GE-014, failures included. GE-002
   failed its preregistered pass on both limbs (a hand-written homeostat
   outlived the learning subject) and GE-003 was inconclusive. Same
   collection.
+- The [GENESIS genome record](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Genesis-Genome-record)
+  is research evidence, **not a Runner model** and no weights: "the
+  language is the genome", the restarted GENESIS thesis, with its prior-art
+  review, the soup of self-copying programs whose instruction set is itself
+  part of the genome, and its first kill test GK-001 with every run.
+  Replicators arose and lasted at both soup sizes; the mutable language gave
+  no efficiency gain (the one definition that lasted deletes instructions,
+  and its carrier costs 37% more per copy), and that half was stopped. Same
+  collection.
 
 The account is organised for a reader who has never seen
-it: weightless reports are Hugging Face **Datasets** (the seven above, plus
+it: weightless reports are Hugging Face **Datasets** (every one linked above, plus
 the [Qwen3-4B tool-use training record](https://huggingface.co/datasets/Joakimpalm-Zen/Qwen3-4B-ToolUse-LoRA-training-record)
 extracted from the adapter repository), every model card opens with a
 release or research-artifact status block, and seven collections tell the
