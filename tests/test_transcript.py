@@ -18,6 +18,34 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
+M64 = (1 << 64) - 1
+GOLDEN = 0x9E3779B97F4A7C15
+
+
+def _splitmix64(x):
+    """splitmix64's first output for state x: the state `-s x` starts the
+    sampler from (sample.h, sampler_seed_state). Written out here, apart from
+    the C, and anchored to the published outputs for 0 and 1 below."""
+    z = (x + GOLDEN) & M64
+    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & M64
+    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & M64
+    return z ^ (z >> 31)
+
+
+def _unsplitmix64(z):
+    """The seed whose mix is z: each step of the finalizer is invertible."""
+    z ^= (z >> 31) ^ (z >> 62)
+    z = (z * pow(0x94D049BB133111EB, -1, 1 << 64)) & M64
+    z ^= (z >> 27) ^ (z >> 54)
+    z = (z * pow(0xBF58476D1CE4E5B9, -1, 1 << 64)) & M64
+    z ^= (z >> 30) ^ (z >> 60)
+    return (z - GOLDEN) & M64
+
+
+assert _splitmix64(0) == 0xE220A8397B1DCDAF   # Vigna's splitmix64.c
+assert _splitmix64(1) == 0x910A2DEC89025CC1
+assert _splitmix64(_unsplitmix64(7)) == 7
+
 
 @pytest.fixture(scope="module")
 def runner_bin():
@@ -60,8 +88,9 @@ def test_replay_substrate_and_chain(runner_bin, base, tmp_path):
     assert r1["model"]["sha256"] == hashlib.sha256(
         base.read_bytes()).hexdigest()
     assert len(r1["build"]["binary_sha256"]) == 64
-    assert r1["config"]["seed"] == 7
-    assert r1["config"]["seed_u64"] == "7"
+    # the record's seed is the state the sampler started from: -s 7 mixed
+    assert r1["config"]["seed"] == _splitmix64(7) == 7191089600892374487
+    assert r1["config"]["seed_u64"] == "7191089600892374487"
     assert r1["output"]["finish"] in ("stop", "length")
     assert r1["schema_version"] == "xyntetik.runner.transcript.v1"
 
@@ -216,8 +245,8 @@ def test_seed_above_json_exact_integer_range_replays(runner_bin, base, tmp_path)
     rec = tmp_path / "wide-seed.json"
     seed = "9007199254740993"  # 2**53 + 1: rounds when parsed as a double
     r = _run(runner_bin, base, rec, seed=seed, temp="0.9")
-    assert r["config"]["seed"] == int(seed)
-    assert r["config"]["seed_u64"] == seed
+    assert r["config"]["seed"] == _splitmix64(int(seed))
+    assert r["config"]["seed_u64"] == str(_splitmix64(int(seed)))
 
     p = _verify(runner_bin, base, rec)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
@@ -486,10 +515,30 @@ def test_the_token_that_completes_a_json_document_is_recorded(runner_bin, base,
     out = tmp_path / "json.json"
     p = subprocess.run(
         [runner_bin, "-m", str(base), "-p", "hello", "--json", "-n", "60", "-s",
-         "4", "--gpu", "off", "-t", "2", "--transcript", str(out)],
+         "2", "--gpu", "off", "-t", "2", "--transcript", str(out)],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     o = json.loads(out.read_bytes())["output"]
     # the precondition: the document closed before the budget ran out
     assert o["finish"] == "stop" and o["n"] < 60, o
     assert bytes(t - 3 for t in o["tokens"]) == bytes.fromhex(o["bytes_hex"]), o
+
+
+def test_a_record_made_before_seeds_were_mixed_still_verifies(runner_bin, base,
+                                                              tmp_path):
+    """Before seeds were mixed, `-s 7` started the sampler from the state 7
+    and its record said seed 7. The seed whose mix is 7 starts the sampler
+    from that same state, so its record is what `-s 7` used to write, byte
+    for byte apart from the binary's own hash. --verify installs a record's
+    seed as the state, unmixed, so that record replays: the old receipts
+    reproduce."""
+    old = tmp_path / "state7.json"
+    r = _run(runner_bin, base, old, seed=str(_unsplitmix64(7)), temp="0.9")
+    assert r["config"]["seed"] == 7 and r["config"]["seed_u64"] == "7"
+    p = _verify(runner_bin, base, old)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert json.loads(p.stdout)["verdict"] == "VERIFIED"
+    # and it is the state that is replayed, not the seed: -s 7 now samples
+    # from the mix of 7, a different stream
+    new = _run(runner_bin, base, tmp_path / "seed7.json", seed="7", temp="0.9")
+    assert new["output"]["tokens"] != r["output"]["tokens"]

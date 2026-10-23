@@ -2006,6 +2006,10 @@ typedef struct {
     int suspend_after;
     bool fork_seed_given;
     uint64_t fork_seed;
+    // -s as given. smp.rng holds the sampler state it mixes to
+    // (sampler_seed_state); the adapter initialisation and the training
+    // record read the seed itself, as they always have.
+    uint64_t seed;
     model_params mp;
     // The four sampling knobs are filled in from the model's family preset
     // once the model is known; anything named on the command line is recorded
@@ -2754,6 +2758,13 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         *rc = 1;
         return true;
     }
+    // The seed is mixed into the state the sampler starts from: installed
+    // raw, a small seed's first draw was 0.0 and the first sampled token the
+    // argmax (sample.h). A record replays the STATE it wrote, unmixed.
+    if (o->seed_given) {
+        o->seed = o->smp.rng;
+        o->smp.rng = sampler_seed_state(o->seed);
+    }
     if (!o->seed_given) o->smp.rng = (uint64_t)time(NULL) ^ 0x9E3779B97F4A7C15ull;
     return false;
 }
@@ -2839,7 +2850,10 @@ static bool cli_prepare_session(cli_opts *o, session_image *simg, int *rc) {
         }
         // a greedy image records no rng (it is never drawn from); the sampler
         // still wants a nonzero state
-        o->smp.rng = o->fork_seed_given ? o->fork_seed : sm->rng ? sm->rng : 1;
+        // a fork seed is a caller's seed and is mixed; the image's own rng is
+        // a recorded state and is installed as it is
+        o->smp.rng = o->fork_seed_given ? sampler_seed_state(o->fork_seed)
+                                        : sm->rng ? sm->rng : 1;
         if ((o->json_mode && !sm->json_mode) || (o->ignore_eos && !sm->ignore_eos)) {
             fprintf(stderr, "error: --resume: the image was not generated under "
                     "%s\n", o->json_mode && !sm->json_mode ? "--json" : "--ignore-eos");
@@ -3109,6 +3123,9 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
             *rc = 3;
             return true;
         }
+        // the record's seed is the state its sampler started from (the mix
+        // of -s since seeds are mixed; the seed itself before, when the two
+        // were the same number), so it is installed as it is
         o->smp.rng = replay_seed;
         // The record's sampling config rides the CLI-override mechanism so
         // it survives sampler_resolve's per-model presets. Apply the same
@@ -3877,7 +3894,7 @@ static bool train_prepare(cli_opts *o, cli_run *rt) {
         return false;
     }
     if (!rt->m.lora) {
-        uint64_t iseed = o->seed_given ? o->smp.rng : 0;
+        uint64_t iseed = o->seed_given ? o->seed : 0;
         if (!model_lora_train_init(&rt->m, o->lora_rank,
                                    2.0f * (float)o->lora_rank, iseed))
             return false;
@@ -4736,7 +4753,7 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
             "\"recipe\":{\"schedule\":\"%s\",\"warmup\":%d,\"floor\":%g,"
             "\"batch\":%d,\"loss\":\"%s\"},"
             "\"loss_first\":%.6f,\"loss_last\":%.6f,",
-            (unsigned long long)(o->seed_given ? o->smp.rng : 0),
+            (unsigned long long)(o->seed_given ? o->seed : 0),
             model_lora_rank(&rt->m), (double)rt->m.lora_alpha, (double)o->train_lr,
             o->train_steps, wctx, o->train_eot ? "true" : "false", eot_id,
             (double)o->weight_decay, o->lr_schedule == 1 ? "cosine" : "constant",

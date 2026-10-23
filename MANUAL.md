@@ -2131,7 +2131,7 @@ per step, measured faster in aggregate at 4-8 slots on Metal, and
 | `-c N` | Context length; default is the smaller of model maximum and 4096. `0` auto-fits with a reservation. |
 | `-b N` | Prompt batch size: `64` with `--gpu off`; otherwise `64`, `256` or `512` by total RAM. Explicit `-b` overrides. [Details](#cli-b). |
 | `-t N` | Worker threads; defaults to physical cores and is capped at `32`. The cap is measured, not assumed: decode PEAKS at 32 threads and regresses above it on many-core hardware (a 64-core Zen 5 box in 2026-08, and a 128-core sweep in 2026-08 where both models peaked at 32 while the previous default of 64 cost up to -41% decode and -55% prefill). Only machines with more than 64 logical CPUs are affected; below that the default is unchanged. An explicit `-t` is honoured up to 64. The default leaves the logical CPUs past the physical cores to the rest of the machine, and it is not the fastest setting everywhere (2026-10-20, one model file at a time, CPU only): on an Apple M1, 8 threads (performance and efficiency cores) read prompts 11-18% faster than the default 4 and decoded 2-11% faster; on a 4-core, 8-thread desktop CPU, 8 threads decoded 5-22% faster than 4; on 16 cores of a shared server, 32 threads read prompts 18-23% faster than 16 and decoded between 17% slower and 9% faster. A machine that runs nothing else can set `-t` to its logical CPU count; measure on the workload first. |
-| `-s N` | RNG seed; default is time-based. `0` is refused: it is the sampler RNG's fixed point, so it cannot produce a stream. With `--serve`, each request that samples takes the next place in one server-wide order, and an unseeded one draws from the seed and that place, so the same requests in the same order sample the same output at any `--parallel`. A request's own `seed` wins; a greedy or refused request takes no place. |
+| `-s N` | RNG seed; default is time-based. The seed is mixed through splitmix64 into the state the sampler starts from, as a request's `seed` is, so seeds 1, 2, 3 start unrelated streams from their first token. `0` is refused. With `--serve`, each request that samples takes the next place in one server-wide order, and an unseeded one draws from the seed and that place, so the same requests in the same order sample the same output at any `--parallel`. A request's own `seed` wins; a greedy or refused request takes no place. |
 | `--think` / `--no-think` | Select thinking or non-thinking prompt shape in interactive chat only; family support varies. [Details](#cli-think). |
 | `--temp F` | Temperature; `0` is greedy and disables repeat penalty. |
 | `--top-k N` | Top-k sampling; `0` disables it. Several presets ship `0`, where setting it is a measured decode-throughput win that also changes the sampled distribution - see [`--top-k 40`](#--top-k-40-a-faster-constrained-decode-with-different-semantics). |
@@ -2612,8 +2612,10 @@ flag and ignore it.
 
 Record a one-shot `-p` run as `xyntetik.runner.transcript.v1`: model, adapter and binary
 hashes; the effective execution profile (including fallback KV type, GPU layer
-count and, on CUDA, the prompt window); the exact 64-bit seed and sampling
-config; prompt/output text and token ids; the exact streamed output bytes as
+count and, on CUDA, the prompt window); the exact 64-bit seed (the state the
+sampler started from: `-s N` mixed through splitmix64, which `--verify`
+installs as it is, so a record written before seeds were mixed, when the
+state was `N` itself, still replays) and sampling config; prompt/output text and token ids; the exact streamed output bytes as
 `output.bytes_hex` (tokenizer pieces need not
 individually be valid UTF-8); a `speculation` object naming the draft source (`model`,
 `mtp` or `lookup`) with its round, drafted and accepted counts when one was configured
@@ -2742,7 +2744,7 @@ and `--repeat-penalty` rather than silently overriding them, as it refuses `--js
 image whose trailer does not match its bytes, and a schema image without the same
 `--json-schema` (the schema itself is not in the image, only its digest). Resumed by a
 different binary, it warns: the continuation is exact only on the build that suspended
-it. `--fork-seed N` replaces the image's rng state with `N`, so a fork is reproducible
+it. `--fork-seed N` replaces the image's rng state with `N` mixed as `-s` is, so a fork is reproducible
 and shares the image's tokens as its prefix. `--session-out` refuses an existing file
 before loading anything. A generation that ends (end of text, a closed document) before
 its image point has nothing to resume: no image is written and the run exits 1.

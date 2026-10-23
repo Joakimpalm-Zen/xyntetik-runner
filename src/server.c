@@ -1160,14 +1160,16 @@ static void handle_session_start(slot_t *s, sock_t fd, jv *req) {
         return;
     }
     bool ignore_eos = ie && ie->type == J_BOOL && ie->b;
+    uint64_t seed = 0;
     s->smp = s->smp_base;
     s->smp.top_k = top_k;
     if (!session_float(fd, req, "temperature", 0.0, 10.0, &s->smp.temp) ||
         !session_float(fd, req, "top_p", 0.0, 1.0, &s->smp.top_p) ||
         !session_float(fd, req, "min_p", 0.0, 1.0, &s->smp.min_p) ||
         !session_float(fd, req, "repeat_penalty", 0.0, 10.0, &s->smp.repeat_penalty) ||
-        !session_seed(fd, req, "seed", &s->smp.rng))
+        !session_seed(fd, req, "seed", &seed))
         return;
+    if (seed) s->smp.rng = sampler_seed_state(seed);   // a caller's seed, mixed
     int32_t *toks = NULL;
     int n = tok_encode_fit(s->tok, prompt->str, true, TOK_RAW, 0, &toks);
     if (n < 0) { free(toks); send_error(fd, 500, "out of memory tokenizing"); return; }
@@ -1264,7 +1266,10 @@ static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
     s->smp.temp = sm->temp; s->smp.top_k = sm->top_k; s->smp.top_p = sm->top_p;
     s->smp.min_p = sm->min_p; s->smp.repeat_penalty = sm->repeat_penalty;
     // a greedy image records no rng (it is never drawn from)
-    s->smp.rng = fork_seed ? (uint64_t)fork_seed : sm->rng ? sm->rng : 1;
+    // a fork seed is a caller's seed (mixed); the image's rng is a recorded
+    // state (as it is)
+    s->smp.rng = fork_seed ? sampler_seed_state((uint64_t)fork_seed)
+                           : sm->rng ? sm->rng : 1;
     sched_prefill_begin();
     engine_request_defaults(e);   // the image, not the last request, is the state
     if (!engine_state_load(e, img.tokens, sm->n_tokens, img.state)) {

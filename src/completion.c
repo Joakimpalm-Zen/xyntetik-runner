@@ -4721,15 +4721,11 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
 }
 
 // The stream an unseeded request samples from: splitmix64 of the server seed
-// and the request's place among the requests that sampled. Never 0,
-// which is the sampler xorshift's fixed point (the reason `seed: 0` is
-// refused).
+// and the request's place among the requests that sampled, the same mix a
+// request's own seed gets (sampler_seed_state, whose first output for
+// seed + place * golden this is, bit for bit as before). Never 0.
 uint64_t server_request_stream(uint64_t seed, uint64_t arrival) {
-    uint64_t z = seed + (arrival + 1) * 0x9E3779B97F4A7C15ull;
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
-    z ^= z >> 31;
-    return z ? z : 1;
+    return sampler_seed_state(seed + arrival * 0x9E3779B97F4A7C15ull);
 }
 
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
@@ -4970,10 +4966,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // draws nothing and takes no place; a refused one never gets here.
     if (s->smp.temp > 0.0f || (e->think_smp && e->think_temp > 0.0f)) {
         uint64_t place = atomic_fetch_add(&SV.sampled_requests, 1);
-        s->smp.rng = q.seed > 0 ? (uint64_t)q.seed
+        s->smp.rng = q.seed > 0 ? sampler_seed_state(q.seed)
                                 : server_request_stream(SV.base_rng, place);
     } else if (q.seed > 0) {
-        s->smp.rng = (uint64_t)q.seed;
+        s->smp.rng = sampler_seed_state(q.seed);
     }
     // R1.2.2: the sampler's state as generation starts is the receipt's seed
     uint64_t gen_rng = s->smp.rng;

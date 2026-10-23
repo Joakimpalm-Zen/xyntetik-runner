@@ -21,6 +21,14 @@ static float rng_f32(uint64_t *s) {
     return (rng_next(s) >> 40) / 16777216.0f;
 }
 
+uint64_t sampler_seed_state(uint64_t seed) {
+    uint64_t z = seed + 0x9E3779B97F4A7C15ull;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    z ^= z >> 31;
+    return z ? z : 1;
+}
+
 void sampler_reset(sampler *s) {
     s->n_recent = 0;
     s->recent_head = 0;

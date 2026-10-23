@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Seeded sampling: the request seed is now mixed before use; with small
+  seeds the first sampled token was always the most likely one.** Every
+  seeded output changes once; determinism within a version is unchanged.
+  The seed (a request's `seed`, `-s`, `--fork-seed`, a session's `seed` and
+  `fork_seed`) was installed raw as the sampler's xorshift64 state, whose
+  first draw from a small state is 0.0, so seeds 1 to about 1000 always took
+  the top candidate first: a one-token classification sampled under
+  `seed: i` was greedy for every `i`. Seeds now pass through splitmix64, the
+  mix unseeded requests already used. A `--transcript` record's seed is the
+  state the sampler started from and `--verify` installs it as it is, so
+  records written before this change still verify.
+
 - **`choice_logprobs` reports the mass the legal branches held.** Each
   decision point now carries `legal_mass`: the whole-vocabulary probability
   of its legal candidates before the posteriors were renormalized over them.
