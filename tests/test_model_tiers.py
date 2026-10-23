@@ -644,3 +644,53 @@ def test_upcoming_models_are_names_under_the_table_and_tier2_is_absent():
     assert "Later VL (text path only)" in text
     assert not [l for l in text.splitlines() if l.startswith("| ") and "Later" in l]
     assert "Old" not in text
+
+
+# --- docs/model-support.md: envelopes and the transition log, rendered ----------
+
+def test_the_support_doc_block_is_the_render_of_the_roster():
+    text = (ROOT / "docs" / "model-support.md").read_text(encoding="utf-8")
+    assert text.count(mt.DOC_BEGIN) == 1 and text.count(mt.DOC_END) == 1
+    block = text.split(mt.DOC_BEGIN, 1)[1].split(mt.DOC_END, 1)[0]
+    assert block == mt.render_doc(committed())
+
+
+def test_every_envelope_link_in_the_readme_lands_on_a_row():
+    import re
+    doc = committed()
+    anchors = set(re.findall(r'<a id="([^"]+)"></a>', mt.render_doc(doc)))
+    links = set(re.findall(r"docs/model-support\.md#([A-Za-z0-9._-]+)",
+                           mt.render_readme(doc)))
+    assert links and links <= anchors, sorted(links - anchors)
+
+
+def test_an_envelope_carries_the_lora_answer_and_the_tier_history():
+    doc = gated(metal=gate("2026-10-23"))
+    doc["rows"][0]["lora"] = lora(train=(False, "MoE shared experts"))
+    text = mt.render_doc(doc)
+    assert "no: MoE shared experts" in text
+    assert "adapter serving" in text.lower()
+    assert "2026-10-22" in text and "Tier 1" in text
+
+
+def test_the_transition_log_lists_every_entry_of_every_row():
+    row = tier1_row(tier="tier2")
+    row["transitions"] = [
+        {"tier": "tier1", "effective": "2026-10-22", "reason": "migration",
+         "last_validated_release": None},
+        {"tier": "tier2", "effective": "2026-12-01", "reason": "moved down",
+         "last_validated_release": "1.5.1"}]
+    log = mt.render_doc(roster(row)).split("Transition log", 1)[1]
+    assert "migration" in log and "moved down" in log and "1.5.1" in log
+    assert log.index("migration") < log.index("moved down")
+
+
+def test_links_in_the_support_doc_resolve_from_docs():
+    """The roster stores repository paths; the document lives in docs/, so
+    every rendered link is rewritten relative to it and must exist."""
+    import re
+    text = mt.render_doc(committed())
+    for target in re.findall(r"\]\(([^)#]+)(?:#[^)]*)?\)", text):
+        if target.startswith("http"):
+            continue
+        assert (ROOT / "docs" / target).resolve().exists(), target

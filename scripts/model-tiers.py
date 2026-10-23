@@ -84,6 +84,18 @@ README_BEGIN = ("<!-- model-tiers:begin (rendered from docs/model-tiers.json by 
                 "scripts/model-tiers.py --write-docs; do not edit) -->")
 README_END = "<!-- model-tiers:end -->"
 SUPPORT_DOC = "docs/model-support.md"
+DOC = os.path.join(ROOT, "docs", "model-support.md")
+DOC_BEGIN = ("<!-- model-tiers:rows:begin (rendered from docs/model-tiers.json by "
+             "scripts/model-tiers.py --write-docs; do not edit) -->")
+DOC_END = "<!-- model-tiers:rows:end -->"
+TIER_NAMES = {"tier1": "Tier 1, actively validated", "tier2": "Tier 2, maintained on report",
+              "tier3": "Tier 3, unmaintained", "upcoming": "Upcoming, planned admission"}
+FP32_WORDS = {
+    "measured": "a publisher float32 comparison exists",
+    "owed": "a publisher float32 comparison is feasible and owed",
+    "infeasible": "no publisher float32 reference is feasible",
+    "self": "this project is the publisher and its BF16 file is the reference",
+}
 
 
 def load(path):
@@ -564,9 +576,154 @@ def render_readme(doc):
     return "\n".join(lines)
 
 
+# --- docs/model-support.md ------------------------------------------------------
+
+def _from_docs(path):
+    """A repository path as a link from docs/model-support.md."""
+    if path.startswith(("http://", "https://")):
+        return path
+    return path[len("docs/"):] if path.startswith("docs/") else "../" + path
+
+
+def _cell_detail(cell):
+    if cell is None:
+        return "☐ not run"
+    if cell["kind"] == "limit":
+        return f"[n/a]({_from_docs(cell['matrix'])}): {cell['reason']}"
+    pin = cell["evidence"]
+    return (f"{_mark(cell)} on {cell['device_class']} at commit "
+            f"`{(cell.get('commit') or 'unknown')[:12]}`, output sha256 "
+            f"`{cell['output_sha256'][:16]}`, [pin]({_from_docs(pin)})")
+
+
+def _lora_detail(lora):
+    if lora is None:
+        return ["- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer)."]
+    out = []
+    for half, label in (("training", "training"), ("adapter_serving", "adapter serving")):
+        h = lora[half]
+        mark = "supported" if h["supported"] else "no: " + h["reason"]
+        out.append(f"- **LoRA {label}:** {mark} (runner {lora['runner_version']}, "
+                   f"{lora['date']}).")
+    return out
+
+
+def _files(row):
+    out = []
+    for f in row.get("files") or []:
+        where = ""
+        if f.get("repo"):
+            where = f", from [{f['repo']}](https://huggingface.co/{f['repo']})"
+            if f.get("revision"):
+                where += f" at revision `{f['revision'][:12]}`"
+        size = f", {f['bytes']:,} bytes" if f.get("bytes") else ""
+        out.append(f"`{f['name']}` (sha256 `{f['sha256']}`{size}{where})")
+    return out
+
+
+def _row_doc(row, by_id):
+    files = row.get("files") or []
+    title = f"`{files[0]['name']}`" + (f" ({len(files)} parts)" if len(files) > 1 else "") \
+        if files else row["model"]
+    lines = [f'<a id="{row["id"]}"></a>', f"#### {title}", "", row["claim"], ""]
+    if files:
+        lines.append("- **File:** " + "; ".join(_files(row)) + ".")
+    up = row.get("upstream")
+    if up:
+        rev = f" at revision `{up['revision'][:12]}`" if up.get("revision") else ""
+        lines.append(f"- **Upstream checkpoint:** {up['checkpoint']}{rev}.")
+    if row.get("quantization"):
+        lines.append(f"- **Quantization:** {row['quantization']}.")
+    rw = row.get("runs_with")
+    if rw:
+        flag = {"mtp-file": "--mtp-file", "lora": "--lora"}[rw["as"]]
+        base = by_id.get(rw["row"], {})
+        lines.append(f"- **Runs with:** [{base.get('model', rw['row'])}](#{rw['row']}), "
+                     f"loaded beside it with `{flag}`; the smoke and its pin are of "
+                     f"that composed run.")
+    if row.get("published_exception"):
+        lines.append(f"- **Published below Tier 1:** {row['published_exception']}")
+    env = row.get("envelope")
+    if env:
+        feats = ", ".join(f.replace(":", " (") + (")" if ":" in f else "")
+                          for f in env["features"])
+        lines.append(f"- **Features claimed:** {feats}. A feature not listed is not claimed.")
+        lines.append(f"- **Numerical anchor ({FP32_WORDS[env['fp32_reference']]}):** "
+                     f"{env['anchor']}")
+        lines.append(f"- **Context tested:** {env.get('context') or 'not recorded'}.")
+        if env.get("limitations"):
+            lines.append(f"- **Known limitations:** {env['limitations']}")
+        lines.append(f"- **Still missing:** {env.get('missing') or 'nothing the audit named'}")
+        ev = ", ".join(f"[{e}]({_from_docs(e)})" for e in env["evidence"])
+        lines.append(f"- **Evidence:** {ev}.")
+    elif row.get("anchor"):
+        lines.append(f"- **Numerical anchor:** {row['anchor']}")
+    if row.get("missing"):
+        lines.append(f"- **Missing for Tier 1:** {row['missing']}")
+    if row.get("smoke"):
+        sm = row["smoke"]
+        age = (f"an age limit of {row['max_age_days']} days" if row.get("max_age_days")
+               else "the policy's age limit")
+        lines.append(f"- **Per-release smoke:** on {sm['device_class']}, {sm['backend']} "
+                     f"backend, {age}.")
+    if row.get("backends"):
+        for b in BACKENDS:
+            lines.append(f"- **{b.upper() if b != 'metal' else 'Metal'}:** "
+                         f"{_cell_detail(row['backends'].get(b))}")
+    if row["tier"] == "tier1" or row.get("lora") is not None:
+        lines += _lora_detail(row.get("lora"))
+    hist = "; ".join(f"{TIER_NAMES[t['tier']]} from {t['effective']}" for t in row["transitions"])
+    lines += [f"- **Tier history:** {hist} ([log](#transition-log)).", ""]
+    return lines
+
+
+def render_doc(doc):
+    """The block between DOC_BEGIN and DOC_END: every row's envelope by
+    tier, the exempt repositories, and the transition log."""
+    by_id = {r["id"]: r for r in doc["rows"]}
+    lines = ["", ""]
+    for tier in TIERS:
+        rows = [r for r in doc["rows"] if r["tier"] == tier]
+        lines += [f'<a id="{tier}"></a>', f"## {TIER_NAMES[tier]}", ""]
+        if not rows:
+            lines += ["No members.", ""]
+            continue
+        groups = {}
+        for r in rows:
+            groups.setdefault(r["model"], []).append(r)
+        for model, rs in groups.items():
+            lines += [f"### {_qualified(rs, model)}", ""]
+            for r in rs:
+                lines += _row_doc(r, by_id)
+    lines += ['<a id="exempt"></a>', "## Published, not a Runner model file", ""]
+    for e in doc.get("exempt") or []:
+        path = f" (`{e['path']}`)" if e.get("path") else ""
+        lines.append(f"- [{e['repo']}](https://huggingface.co/{e['repo']}){path}: {e['reason']}")
+    lines += ["", '<a id="transition-log"></a>', "## Transition log", "",
+              "Every tier a row has held, oldest first. Last validated release is "
+              "the Runner version of the newest passing gate the roster had recorded on "
+              "the row when it moved; none recorded means the roster held no gate for it "
+              "then, which is every row at the 2026-10-22 migration.", "",
+              "| Effective | Row | Tier | Reason | Last validated release |",
+              "|---|---|---|---|---|"]
+    entries = []
+    for i, r in enumerate(doc["rows"]):
+        name = (r.get("files") or [{"name": r["model"]}])[0]["name"]
+        for j, t in enumerate(r["transitions"]):
+            entries.append((t["effective"], i, j, f"[{r['model']}, `{name}`](#{r['id']})"
+                            if r.get("files") else f"[{r['model']}](#{r['id']})", t))
+    for eff, _, _, label, t in sorted(entries, key=lambda e: e[:3]):
+        lvr = t.get("last_validated_release") or "none recorded"
+        reason = t["reason"].replace("|", "\\|")
+        lines.append(f"| {eff} | {label} | {TIER_NAMES[t['tier']]} | {reason} | {lvr} |")
+    lines += ["", ""]
+    return "\n".join(lines)
+
+
 def _blocks(doc):
     """(path, begin, end, rendered text) for every rendered block."""
-    return [(README, README_BEGIN, README_END, render_readme(doc))]
+    return [(README, README_BEGIN, README_END, render_readme(doc)),
+            (DOC, DOC_BEGIN, DOC_END, render_doc(doc))]
 
 
 def _replace_block(text, begin, end, body, path):
