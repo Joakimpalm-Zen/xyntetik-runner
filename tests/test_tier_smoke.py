@@ -2,11 +2,11 @@
 
 The script is driven through its command line. The runner it calls is a
 stand-in process (tests/fixtures/tier_smoke_fake_runner.py) that answers
---caps, --adapt-info and a one-shot prompt the way the real binary does, so
-these tests hold the smoke's own decisions (hash the file first, pin once,
+--caps, --adapt-info and --serve (GET /health, POST /v1/chat/completions) the
+way the real binary does, so these tests hold the smoke's own decisions
+(hash the file first, ask through the model's chat template, pin once,
 compare bytes, require the backend's banner, the outside fact and a pin long
-enough to catch a change) without a
-model on the CI host. The real binary's run on a real Tier 1 file is the
+enough to catch a change) without a model on the CI host. The real binary's run on a real Tier 1 file is the
 committed pin and the roster cells it recorded.
 
 Absolute anchors: the sha256 of the fixture file is computed here with
@@ -43,9 +43,9 @@ DEVICES = {
 
 PROMPT = ("List the eight planets of the Solar System in order from the Sun, "
           "one per line, then describe each in one sentence.")
-# what the stand-in runner continues PROMPT with unless told otherwise
-LONG = ("\n\n1. Mercury: the smallest planet and the closest to the Sun.\n"
-        "2. Venus: the second planet from the Sun and the hottest.")
+# what the stand-in runner answers PROMPT with unless told otherwise
+LONG = ("Here they are, in order from the Sun:\n\n1. Mercury: the smallest planet "
+        "and the closest to the Sun.\n2. Venus: the hottest planet.")
 
 
 @pytest.fixture
@@ -85,8 +85,9 @@ def world(tmp_path):
     paths["manifest"].write_text(json.dumps({
         "schema": "xyntetik.runner.tier-smoke.v1",
         "defaults": {"prompt": PROMPT, "n_predict": 48, "expect": "Mercury",
-                     "min_generated_bytes": 96,
-                     "args": ["--temp", "0", "--no-tray"]},
+                     "min_generated_bytes": 96, "ctx": 512,
+                     "server_args": ["-b", "64"],
+                     "request": {"enable_thinking": False}},
         "rows": {},
     }), encoding="utf-8")
     return paths
@@ -108,13 +109,19 @@ def result(world):
     return json.loads(world["out"].read_text(encoding="utf-8"))
 
 
-def test_the_first_run_pins_and_the_second_compares(world):
-    r = smoke(world, "--backend", "metal", "--pin")
+def test_the_first_run_pins_and_the_second_compares(world, tmp_path):
+    log = tmp_path / "requests.jsonl"
+    r = smoke(world, "--backend", "metal", "--pin",
+              env={"FAKE_RUNNER_REQUEST_LOG": str(log)})
     assert r.returncode == 0, r.stdout
     assert result(world)["status"] == "pinned"
     pin = world["pins"] / "toy-q8_0.macos-arm64-metal.metal.txt"
-    # the one-shot CLI echoes the prompt, then the continuation
-    assert pin.read_bytes().startswith(PROMPT.encode())
+    # the pin is the assistant's reply through the chat template, as bytes
+    assert pin.read_bytes() == LONG.encode("utf-8")
+    req = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    assert req["messages"] == [{"role": "user", "content": PROMPT}]
+    assert (req["temperature"], req["max_tokens"], req["stream"]) == (0, 48, False)
+    assert req["enable_thinking"] is False
     r = smoke(world, "--backend", "metal")
     assert r.returncode == 0, r.stdout
     res = result(world)
@@ -122,6 +129,7 @@ def test_the_first_run_pins_and_the_second_compares(world):
     assert res["expect"] == {"substring": "Mercury", "found": True}
     assert res["output"]["sha256"] == hashlib.sha256(pin.read_bytes()).hexdigest()
     assert res["banner"].startswith("gpu: Metal backend on")
+    assert res["threads"] == 4
     assert res["adapt_info"]["training"]["supported"] is True
 
 
@@ -332,3 +340,67 @@ def test_a_trunk_that_is_not_the_named_rows_is_refused(world):
     r = companion_smoke(world, head, "toy-mtp-head", "--pin")
     assert r.returncode != 0
     assert "sha256" in r.stdout
+
+
+
+# --- the chat path: what is pinned, and when a pin is refused ----------------
+
+def test_a_pin_without_the_fact_is_refused_and_shows_the_reply(world):
+    """Windows CUDA host, round 1: an instruct model given the raw prompt
+    continued it ("**Constraints:** The response must be...") and the pin
+    was written with the fact missing. A pin now always holds the fact."""
+    reply = "The response must be exactly nine lines long, " * 4
+    r = smoke(world, "--backend", "metal", "--pin", env={"FAKE_RUNNER_TEXT": reply})
+    assert r.returncode != 0
+    assert "Mercury" in r.stdout and "exactly nine lines" in r.stdout
+    assert not (world["pins"] / "toy-q8_0.macos-arm64-metal.metal.txt").exists()
+    assert "toy-q8_0" not in manifest_of(world)["rows"]
+
+
+def test_the_manifest_entry_is_the_pinned_bytes_and_how_the_turn_ended(world):
+    assert smoke(world, "--backend", "metal", "--pin").returncode == 0
+    pin = manifest_of(world)["rows"]["toy-q8_0"]["pins"]["macos-arm64-metal/metal"]
+    data = (world["pins"] / "toy-q8_0.macos-arm64-metal.metal.txt").read_bytes()
+    assert pin["bytes"] == len(data) == len(LONG.encode("utf-8"))
+    assert (pin["finish_reason"], pin["completion_tokens"]) == ("length", 48)
+    assert pin["spec"]["request"] == {"enable_thinking": False}
+
+
+def test_reply_bytes_are_pinned_as_sent_never_through_text_mode(world):
+    """CRLF: a pin is the reply's UTF-8 bytes, so a host whose text mode
+    writes CRLF cannot change it, and a reply's own LF stays one byte."""
+    text = LONG + " Sol\u00e8il.\n"
+    assert smoke(world, "--backend", "metal", "--pin",
+                 env={"FAKE_RUNNER_TEXT": text}).returncode == 0
+    data = (world["pins"] / "toy-q8_0.macos-arm64-metal.metal.txt").read_bytes()
+    assert data == text.encode("utf-8") and b"\r" not in data
+
+
+def _crlf_open(real):
+    """open() as a Windows host's text mode behaves: newline=None writes CRLF."""
+    def crlf_open(file, mode="r", *a, newline=None, **k):
+        if "b" not in mode and newline is None and ("w" in mode or "a" in mode):
+            newline = "\r\n"
+        return real(file, mode, *a, newline=newline, **k)
+    return crlf_open
+
+
+def test_json_is_written_with_lf_on_a_crlf_host(tmp_path, monkeypatch):
+    import builtins
+    smoke_spec = importlib.util.spec_from_file_location("tier_smoke", SMOKE)
+    ts = importlib.util.module_from_spec(smoke_spec)
+    smoke_spec.loader.exec_module(ts)
+    crlf = _crlf_open(builtins.open)
+    # the control: a plain text-mode write on the simulated host is CRLF
+    with crlf(tmp_path / "control.json", "w", encoding="utf-8") as f:
+        f.write("{\n}\n")
+    assert b"\r\n" in (tmp_path / "control.json").read_bytes()
+    monkeypatch.setattr(mt, "open", crlf, raising=False)
+    monkeypatch.setattr(ts, "open", crlf, raising=False)
+    monkeypatch.setattr(ts.mt, "open", crlf, raising=False)
+    mt.save({"schema": mt.SCHEMA, "rows": []}, tmp_path / "roster.json")
+    ts.write_json({"a": [1, 2]}, tmp_path / "manifest.json")
+    for name in ("roster.json", "manifest.json"):
+        data = (tmp_path / name).read_bytes()
+        assert b"\n" in data and b"\r" not in data, name
+

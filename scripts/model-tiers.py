@@ -122,7 +122,8 @@ def load(path):
 
 
 def save(doc, path):
-    with open(path, "w", encoding="utf-8") as f:
+    # LF on every host: a text-mode write on Windows would make it CRLF
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(doc, f, indent=2, ensure_ascii=False)
         f.write("\n")
 

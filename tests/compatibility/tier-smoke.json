@@ -1,68 +1,69 @@
 {
   "schema": "xyntetik.runner.tier-smoke.v1",
-  "about": "The per-release smoke of docs/model-tiers.json (scripts/tier-smoke.py): one greedy prompt per Tier 1 file, its stdout byte-compared to a pin under tier-smoke/, one pin per device class and backend. The prompt asks for a fact from outside the system (expect must appear in the continuation) and keeps an instruct model generating to n_predict, and a pin holds at least min_generated_bytes of generated text, so a byte-compare has something to catch; the pin itself only says whether this build reproduces the one that wrote it. Each pin records the prompt and settings that produced it. -b is fixed because the prompt batch is otherwise sized from free RAM on a GPU build. A row may override prompt, n_predict, expect, min_generated_bytes or args.",
+  "about": "The per-release smoke of docs/model-tiers.json (scripts/tier-smoke.py): each Tier 1 file is served and asked one user turn through its own chat template (POST /v1/chat/completions, temperature 0, max_tokens n_predict, not streamed, with the request fields below), and the reply's content, as UTF-8 bytes, is byte-compared to a pin under tier-smoke/, one pin per device class and backend. The prompt asks for a fact from outside the system: a reply that does not name expect, or holds fewer than min_generated_bytes, is never pinned. The pin itself only says whether this build reproduces the one that wrote it. Each pin records the prompt and settings that produced it, how the turn ended and its completion tokens. enable_thinking false keeps a thinking family's budget for the answer; -b is fixed because the prompt batch is otherwise sized from the machine. A row may override prompt, n_predict, expect, min_generated_bytes, ctx, server_args or request.",
   "defaults": {
     "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
     "n_predict": 48,
     "expect": "Mercury",
     "min_generated_bytes": 96,
-    "args": [
-      "--temp",
-      "0",
-      "-c",
-      "512",
+    "ctx": 512,
+    "server_args": [
       "-b",
-      "64",
-      "--no-tray"
-    ]
+      "64"
+    ],
+    "request": {
+      "enable_thinking": false
+    }
   },
   "rows": {
     "gemma-4-e2b-it-q4_k_m-q4_0-mix": {
       "pins": {
         "macos-arm64-metal/metal": {
           "path": "tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.metal.txt",
-          "sha256": "eadb99d6bfee9881232221059e9e1638c31325987a1b28dc31ae5874cfff2d99",
-          "bytes": 311,
+          "sha256": "4132fa520bc517ed7697f3026b5ca584d275e9d03827a441040e5693a57987cc",
+          "bytes": 206,
+          "finish_reason": "length",
+          "completion_tokens": 48,
           "spec": {
             "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
             "n_predict": 48,
-            "args": [
-              "--temp",
-              "0",
-              "-c",
-              "512",
+            "ctx": 512,
+            "server_args": [
               "-b",
-              "64",
-              "--no-tray"
-            ]
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
           },
           "pinned": {
             "date": "2026-10-23",
             "runner_version": "1.5.1",
-            "commit": "a81dc9727e4e65848a916426fe845f3ad9f99245"
+            "commit": "3eb72b484b39cb606575070c6ae4c2635f95919f"
           }
         },
         "macos-arm64-metal/cpu": {
           "path": "tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.cpu.txt",
-          "sha256": "eadb99d6bfee9881232221059e9e1638c31325987a1b28dc31ae5874cfff2d99",
-          "bytes": 311,
+          "sha256": "4132fa520bc517ed7697f3026b5ca584d275e9d03827a441040e5693a57987cc",
+          "bytes": 206,
+          "finish_reason": "length",
+          "completion_tokens": 48,
           "spec": {
             "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
             "n_predict": 48,
-            "args": [
-              "--temp",
-              "0",
-              "-c",
-              "512",
+            "ctx": 512,
+            "server_args": [
               "-b",
-              "64",
-              "--no-tray"
-            ]
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
           },
           "pinned": {
             "date": "2026-10-23",
             "runner_version": "1.5.1",
-            "commit": "a81dc9727e4e65848a916426fe845f3ad9f99245"
+            "commit": "3eb72b484b39cb606575070c6ae4c2635f95919f"
           }
         }
       }
