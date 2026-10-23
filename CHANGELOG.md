@@ -26,8 +26,10 @@ Current release and unreleased changes. Compatibility follows the
   continuations about 1e-4 of its probability and the record showed a 0.84
   posterior with `coverage` 1.0. A low `legal_mass` marks a choice the schema
   forced. Added to the decision-record v1 contract
-  ([docs/decision-record.md](docs/decision-record.md)); nothing else in the
-  record or in sampling changes.
+  ([docs/decision-record.md](docs/decision-record.md)). Both masses are now
+  held at 1: float rounding in the shared log-sum-exp printed `coverage` up
+  to about 1.4e-6 above it, against the contract's maximum. Nothing else in
+  the record or in sampling changes.
 
 - **Windows: `make` builds `runner.exe` in a bash started with a minimal
   environment.** The Makefile chose its Windows branch only from the `OS`

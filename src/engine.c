@@ -2245,7 +2245,14 @@ static void cl_capture(engine *e, const float *logits) {
         r->n_legal++;
     }
     if (r->n_legal < 2 || legal_mass <= 0) return;  // forced: no decision
-    r->legal_mass = (float)legal_mass;
+    // Both are probability masses, at most 1. The normalizer is
+    // engine_logsumexp's float, whose rounding near a large logit (a step
+    // of 1.9e-6 at 32) can leave every probability a little high: two legal
+    // tokens at 31.75 summed to 1.0000014. The record states the mass, not
+    // that rounding; the shared normalizer, which every logprob the runner
+    // reports is taken against, stays as it is.
+    if (r->coverage > 1.0f) r->coverage = 1.0f;
+    r->legal_mass = legal_mass < 1.0 ? (float)legal_mass : 1.0f;
     int stored = r->n_legal < CL_MAX_ALT ? r->n_legal : CL_MAX_ALT;
     for (int i = 0; i < stored; i++)
         r->prob[i] = (float)(r->prob[i] / legal_mass);

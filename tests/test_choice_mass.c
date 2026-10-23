@@ -120,6 +120,32 @@ int main(int argc, char **argv) {
     }
     engine_gen_end(&e, sink_cb, NULL, NULL);
 
+    // The same step with the legal pair holding everything, at logit 31.75.
+    // The normalizer is engine_logsumexp's float: 31.75 + ln 2 rounds to
+    // 32.4431458 (a float's step there is 1.9e-6), so each token's computed
+    // probability is 0.50000072 and the pair sums to 1.0000014, the value a
+    // served Qwen3-4B record printed as legal_mass. A mass is at most 1, and
+    // decision-record v1 says so for both fields.
+    memset(recs, 0, sizeof(recs));
+    e.cl_count = 0;
+    engine_reset(&e);
+    ck(engine_feed(&e, prompt, 4) != NULL, "the prompt feeds again");
+    for (int i = 0; i < V; i++) fx[i] = -1e30f;
+    fx[one] = fx[two] = 31.75f;
+    engine_gen_begin(&e, 1);
+    engine_gen_step(&e, fx, sink_cb, NULL, &next, &pos);
+    ck(e.cl_count == 1, "the all-legal step is one decision point");
+    if (e.cl_count == 1) {
+        const cl_rec *r = &recs[0];
+        fprintf(stderr, "   all-legal: legal_mass %.9g, coverage %.9g\n",
+                (double)r->legal_mass, (double)r->coverage);
+        ck(r->legal_mass <= 1.0f && r->coverage <= 1.0f,
+           "neither mass exceeds 1 when the normalizer rounds low");
+        ck(r->legal_mass >= 1.0f - 1e-6f && r->coverage >= 1.0f - 1e-6f,
+           "and both still say the legal pair held all of it");
+    }
+    engine_gen_end(&e, sink_cb, NULL, NULL);
+
     free(fx);
     free(e.hist);
     schema_free(schema);
