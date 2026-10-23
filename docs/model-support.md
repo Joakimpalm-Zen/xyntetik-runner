@@ -396,9 +396,10 @@ IBM's official Q4_K_M of Granite 4.2 8B, text path: the granite42 tool protocol 
 - **Evidence:** [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Per-release smoke:** on windows-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-23 on windows-x86_64-cuda at commit `349af6e65185`, output sha256 `ff1cd210d7a92cd2`, [pin](../tests/compatibility/tier-smoke/granite-4.2-8b-q4_k_m.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-23).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-23).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="granite-4.2-8b-q8_0"></a>
