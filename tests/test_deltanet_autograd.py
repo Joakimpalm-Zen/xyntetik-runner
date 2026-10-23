@@ -152,8 +152,10 @@ def reference(base, adapter):
             q = c[:, :keydim].reshape(T, ng, sk)
             k = c[:, keydim:2 * keydim].reshape(T, ng, sk)
             v = c[:, 2 * keydim:].reshape(T, nh, hv)
-            q = q / torch.sqrt(eps + (q * q).sum(-1, keepdim=True))
-            k = k / torch.sqrt(eps + (k * k).sum(-1, keepdim=True))
+            # the q/k L2 norm at the publisher's epsilon (transformers'
+            # l2norm, 1e-6), not the model's RMS epsilon (R8.18)
+            q = q / torch.sqrt(1e-6 + (q * q).sum(-1, keepdim=True))
+            k = k / torch.sqrt(1e-6 + (k * k).sum(-1, keepdim=True))
             dtb = W.get(f"blk.{l}.ssm_dt.bias", W.get(f"blk.{l}.ssm_dt")).reshape(-1)
             Aa = W[f"blk.{l}.ssm_a"].reshape(-1)
             beta = torch.sigmoid(bpre)
