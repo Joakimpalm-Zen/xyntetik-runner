@@ -1418,6 +1418,20 @@ static void usage_to(FILE *f, const char *prog) {
         "                 top-k ids and natural-log probabilities for completion\n"
         "                 token p of line n. Loss: KL(teacher top-k + tail ||\n"
         "                 student). Needs the id form of --train\n"
+        "  --lr-schedule constant|cosine --lr-warmup N --lr-floor F\n"
+        "                 with --train: linear warmup over N steps, then a\n"
+        "                 constant lr or a cosine down to F x --lr (0.1)\n"
+        "  --train-batch N  with --train: N rows per optimizer step, the\n"
+        "                 loss and gradient the mean over their positions\n"
+        "  --weight-decay F  AdamW decoupled decay (0.01; 0 is plain Adam)\n"
+        "  --train-resume CKPT  continue the run CKPT (an adapter --save-every\n"
+        "                 wrote) left: its moments, step and next rows\n"
+        "  --train-eval LABEL=ROWS[,TEACHER]  a held-out set (repeatable): at\n"
+        "                 step 0, every --eval-every N steps and the last, its\n"
+        "                 mean loss and top-1 agreement, no update\n"
+        "  --kill-at S --kill-metric LABEL --kill-min-rel R  at step S stop\n"
+        "                 (exit 3) unless LABEL's loss fell by R from step 0\n"
+        "  --stop-file F  after a step, if F exists: save and exit 75\n"
         "  --train-eot    append the template's end-of-turn token to every\n"
         "                 completion (a jsonl line can set \"end_of_turn\")\n"
         "  --train-dpo F  preference pairs .jsonl {\"prompt\",\"chosen\",\n"
@@ -1968,6 +1982,14 @@ typedef struct {
     int train_steps, train_ctx, lora_rank, save_every;
     bool train_eot;
     float train_lr, dpo_beta;
+    // R8.17, the distillation recipe: the lr schedule, rows per step, the
+    // decay, resuming a checkpoint, held-out evals, the kill rule and the
+    // stop file
+    int lr_schedule, lr_warmup, train_batch, eval_every, kill_at, n_eval;
+    float lr_floor, weight_decay, kill_min_rel;
+    const char *train_resume, *stop_file, *kill_metric;
+    const char *eval_spec[8];
+    const char *recipe_flag;   // the first R8.17 flag given, for refusals
     // records, signing, verification, watermarks, session images
     const char *transcript_path, *transcript_prev, *sign_key, *keygen_path;
     const char *keygen_algo, *lineage_path, *require_eval;
@@ -2039,6 +2061,8 @@ static void cli_opts_init(cli_opts *o) {
     o->lora_rank = 8;
     o->train_lr = 1e-4f;   // TRAIN_LR_DEFAULT (train_risk_warn)
     o->dpo_beta = 0.1f;
+    o->lr_floor = 0.1f;
+    o->weight_decay = 0.01f;   // TRAIN_ADAM_WD, the decay before R8.17
     // RUNNER_VRAM_PRIORITY sets the baseline; --vram-priority (parsed below)
     // overrides it, same precedence as every other env/flag pair in runner.
     o->mp.vram_priority = (int)env_i64("RUNNER_VRAM_PRIORITY", -1000, 1000, 0);
@@ -2048,6 +2072,13 @@ static void cli_opts_init(cli_opts *o) {
 // The flags, in order. Parsing stops where an early exit stands (--version,
 // --help, --tray), so a flag after one is never read; *rc is the process exit
 // status whenever this returns false.
+// R8.17: notes the first recipe flag (--lr-schedule, --train-batch, ...) so a
+// run without --train can refuse it by name; true, so it reads as a condition.
+static bool recipe_flag(cli_opts *o, const char *flag) {
+    if (!o->recipe_flag) o->recipe_flag = flag;
+    return true;
+}
+
 static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -2258,6 +2289,43 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             o->lora_rank = (int)int_arg(a, NEXT, 1, 512);
         else if (!strcmp(a, "--save-every"))
             o->save_every = (int)int_arg(a, NEXT, 0, INT_MAX);
+        else if (!strcmp(a, "--lr-schedule") && recipe_flag(o, a)) {
+            const char *v = NEXT;
+            if (!strcmp(v, "constant")) o->lr_schedule = 0;
+            else if (!strcmp(v, "cosine")) o->lr_schedule = 1;
+            else {
+                fprintf(stderr, "error: --lr-schedule takes constant or cosine "
+                        "(got %s)\n", v);
+                *rc = 1;
+                return false;
+            }
+        }
+        else if (!strcmp(a, "--lr-warmup") && recipe_flag(o, a))
+            o->lr_warmup = (int)int_arg(a, NEXT, 0, INT_MAX);
+        else if (!strcmp(a, "--lr-floor") && recipe_flag(o, a))
+            o->lr_floor = (float)float_arg(a, NEXT, 0, 1);
+        else if (!strcmp(a, "--train-batch") && recipe_flag(o, a))
+            o->train_batch = (int)int_arg(a, NEXT, 1, 65536);
+        else if (!strcmp(a, "--weight-decay"))
+            o->weight_decay = (float)float_arg(a, NEXT, 0, 1);
+        else if (!strcmp(a, "--train-resume") && recipe_flag(o, a)) o->train_resume = NEXT;
+        else if (!strcmp(a, "--train-eval") && recipe_flag(o, a)) {
+            if (o->n_eval == (int)(sizeof o->eval_spec / sizeof o->eval_spec[0])) {
+                fprintf(stderr, "error: at most %d --train-eval sets\n",
+                        (int)(sizeof o->eval_spec / sizeof o->eval_spec[0]));
+                *rc = 1;
+                return false;
+            }
+            o->eval_spec[o->n_eval++] = NEXT;
+        }
+        else if (!strcmp(a, "--eval-every") && recipe_flag(o, a))
+            o->eval_every = (int)int_arg(a, NEXT, 1, INT_MAX);
+        else if (!strcmp(a, "--stop-file") && recipe_flag(o, a)) o->stop_file = NEXT;
+        else if (!strcmp(a, "--kill-at") && recipe_flag(o, a))
+            o->kill_at = (int)int_arg(a, NEXT, 1, INT_MAX);
+        else if (!strcmp(a, "--kill-metric") && recipe_flag(o, a)) o->kill_metric = NEXT;
+        else if (!strcmp(a, "--kill-min-rel") && recipe_flag(o, a))
+            o->kill_min_rel = (float)float_arg(a, NEXT, -1, 1);
         else if (!strcmp(a, "--reserve")) o->mp.reserve_vram_pct = o->mp.reserve_ram_pct = (int)int_arg(a, NEXT, 0, 100);
         else if (!strcmp(a, "--reserve-vram")) o->mp.reserve_vram_pct = (int)int_arg(a, NEXT, 0, 100);
         else if (!strcmp(a, "--gpu-layers")) {
@@ -3788,10 +3856,10 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
 #define TRAIN_STR_(x) #x
 #define TRAIN_STR(x)  TRAIN_STR_(x)
 
-static bool train_adam_step(cli_opts *o, cli_run *rt, int step) {
-    if (model_lora_adam_step(&rt->m, o->train_lr, (float)TRAIN_ADAM_BETA1,
+static bool train_adam_step(cli_opts *o, cli_run *rt, int step, double lr) {
+    if (model_lora_adam_step(&rt->m, (float)lr, (float)TRAIN_ADAM_BETA1,
                              (float)TRAIN_ADAM_BETA2, (float)TRAIN_ADAM_EPS,
-                             (float)TRAIN_ADAM_WD, step))
+                             o->weight_decay, step))
         return true;
     fprintf(stderr, "error: cannot allocate optimizer state\n");
     return false;
@@ -3858,7 +3926,7 @@ static bool train_dpo_steps(cli_opts *o, cli_run *rt, dpo_pair *pairs,
             fprintf(stderr, "error: DPO step failed\n");
             return false;
         }
-        if (!train_adam_step(o, rt, step)) return false;
+        if (!train_adam_step(o, rt, step, o->train_lr)) return false;
         if (step == 1) *first_loss = d.loss;
         *last_loss = d.loss;
         acc_sum += d.acc;
@@ -4165,118 +4233,414 @@ static bool train_teacher_open(const char *dir, const model_t *m,
     return ok;
 }
 
-// --train's steps: weighted cross-entropy, or with a teacher the KL to it,
-// one example per step, cycled in file order.
-static bool train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
-                           int wctx, train_teacher *tt, double *first_loss,
-                           double *last_loss) {
+// R8.17: the learning rate of optimizer step s (0-based): a linear warmup
+// over --lr-warmup steps, then constant, or a cosine from --lr down to
+// --lr-floor x --lr at the last step (a distillation pipeline's schedule(),
+// with the floor as a flag).
+static double train_lr_at(const cli_opts *o, int s) {
+    double base = o->train_lr;
+    if (s < o->lr_warmup) return base * (double)(s + 1) / (double)o->lr_warmup;
+    if (o->lr_schedule != 1) return base;
+    int span = o->train_steps - o->lr_warmup;
+    double p = (double)(s - o->lr_warmup) / (double)(span > 1 ? span : 1);
+    double f = o->lr_floor;
+    return base * (f + (1.0 - f) * 0.5 * (1.0 + cos(3.14159265358979323846 * p)));
+}
+
+// Where a run stands: optimizer steps done, and rows consumed (the next row is
+// cursor % n_ex). A checkpoint's sidecar carries both.
+typedef struct {
+    int step;
+    long long cursor;
+} train_state;
+
+// A --train-eval set: LABEL=ROWS[,TEACHER], loaded like --train (the id form
+// when it has a teacher) and evaluated with no update.
+typedef struct {
+    char label[64];
+    const char *rows_path, *teacher_dir;
+    char *spec;                    // the spec, split in place
+    train_ex *exs;
+    int n_ex;
+    train_teacher tt;
+    bool has_tt;
+    double base, last;             // its loss at step 0 and at the latest eval
+    bool has_base;
+} train_eval_set;
+
+static void train_evals_free(train_eval_set *ev, int n) {
+    for (int i = 0; i < n; i++) {
+        train_examples_free(ev[i].exs, ev[i].n_ex);
+        if (ev[i].has_tt) train_teacher_close(&ev[i].tt);
+        free(ev[i].spec);
+    }
+}
+
+static bool train_evals_open(cli_opts *o, cli_run *rt, int wctx, int eot_id,
+                             train_eval_set *ev) {
+    for (int i = 0; i < o->n_eval; i++) {
+        train_eval_set *e = &ev[i];
+        e->spec = strdup(o->eval_spec[i]);
+        char *eq = e->spec ? strchr(e->spec, '=') : NULL;
+        if (!eq || eq == e->spec || (size_t)(eq - e->spec) >= sizeof e->label) {
+            fprintf(stderr, "error: --train-eval %s: expected LABEL=ROWS[,TEACHER] "
+                    "with a label of 1..%d characters\n", o->eval_spec[i],
+                    (int)sizeof e->label - 1);
+            return false;
+        }
+        *eq = '\0';
+        snprintf(e->label, sizeof e->label, "%s", e->spec);
+        for (int j = 0; j < i; j++)
+            if (!strcmp(ev[j].label, e->label)) {
+                fprintf(stderr, "error: --train-eval label %s given twice\n", e->label);
+                return false;
+            }
+        e->rows_path = eq + 1;
+        char *comma = strchr(eq + 1, ',');
+        if (comma) { *comma = '\0'; e->teacher_dir = comma + 1; }
+        if (!train_examples_load(&rt->tok, rt->m.n_vocab, e->rows_path, o->no_bos, wctx,
+                                 eot_id, o->train_eot, e->teacher_dir != NULL,
+                                 &e->exs, &e->n_ex))
+            return false;
+        if (e->teacher_dir) {
+            e->has_tt = true;
+            if (!train_teacher_open(e->teacher_dir, &rt->m, e->exs, e->n_ex, &e->tt))
+                return false;
+        }
+    }
+    return true;
+}
+
+// Every set once, no update: one JSON line {"step","eval":{LABEL:{...}}} with
+// the mean loss per (weighted) position, as the training loss is, and the two
+// top-1 agreements (model_lora_eval_row).
+static bool train_evals_run(cli_opts *o, cli_run *rt, train_eval_set *ev, int step,
+                            int32_t *tids, float *tlp) {
+    printf("{\"step\":%d,\"eval\":{", step);
+    for (int i = 0; i < o->n_eval; i++) {
+        train_eval_set *e = &ev[i];
+        lora_eval_acc acc = {0};
+        for (int r = 0; r < e->n_ex; r++) {
+            lora_teacher tch = { e->has_tt ? e->tt.k : 0, tids, tlp };
+            if (e->has_tt && !train_teacher_rows(&e->tt, r, &e->exs[r], tids, tlp)) {
+                fprintf(stderr, "error: --train-eval %s: cannot read row %d's teacher\n",
+                        e->label, r + 1);
+                return false;
+            }
+            if (!model_lora_eval_row(&rt->m, e->exs[r].t, e->exs[r].n, e->exs[r].w,
+                                     e->has_tt ? &tch : NULL, &acc)) {
+                fprintf(stderr, "error: --train-eval %s: row %d failed\n", e->label, r + 1);
+                return false;
+            }
+        }
+        e->last = acc.weight > 0 ? acc.loss / acc.weight : 0.0;
+        if (step == 0) { e->base = e->last; e->has_base = true; }
+        double pos = acc.positions > 0 ? (double)acc.positions : 1.0;
+        printf("%s\"%s\":{\"loss\":%.6f,\"top1_topk\":%.6f,\"top1_vocab\":%.6f,"
+               "\"rows\":%d,\"positions\":%ld}", i ? "," : "", e->label, e->last,
+               (double)acc.top1_topk / pos, (double)acc.top1_vocab / pos, e->n_ex,
+               acc.positions);
+    }
+    printf("}}\n");
+    fflush(stdout);
+    return true;
+}
+
+// A checkpoint's sidecar, ADAPTER.optim: where the run stood (step, rows
+// consumed), the eval sets' step-0 losses (the kill rule's baseline), the
+// SHA-256 of the adapter it belongs to, and the AdamW moments. Written to a
+// .partial file and installed over the old one.
+static const char TRAIN_OPTIM_MAGIC[8] = "RNROPT1";
+
+static bool train_optim_save(const char *adapter, cli_run *rt, const train_state *st,
+                             const train_eval_set *ev, int n_ev) {
+    char sha[65], path[4096], tmp[4200];
+    if (!envelope_file_sha256(adapter, sha) ||
+        snprintf(path, sizeof path, "%s.optim", adapter) >= (int)sizeof path)
+        return false;
+    snprintf(tmp, sizeof tmp, "%s.partial", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return false;
+    uint32_t ver = 1;
+    int32_t step = st->step, n = n_ev;
+    int64_t cursor = st->cursor;
+    bool ok = fwrite(TRAIN_OPTIM_MAGIC, 8, 1, f) == 1 && fwrite(&ver, 4, 1, f) == 1 &&
+              fwrite(&step, 4, 1, f) == 1 && fwrite(&cursor, 8, 1, f) == 1 &&
+              fwrite(sha, 64, 1, f) == 1 && fwrite(&n, 4, 1, f) == 1;
+    for (int i = 0; ok && i < n_ev; i++) {
+        uint8_t has = ev[i].has_base;
+        ok = fwrite(ev[i].label, sizeof ev[i].label, 1, f) == 1 &&
+             fwrite(&has, 1, 1, f) == 1 && fwrite(&ev[i].base, 8, 1, f) == 1;
+    }
+    ok = ok && model_lora_optim_write(&rt->m, f) && fflush(f) == 0 && !ferror(f);
+    if (fclose(f) != 0) ok = false;
+    if (!ok || !plat_replace_file(tmp, path)) {
+        remove(tmp);
+        fprintf(stderr, "error: cannot write the optimizer state %s\n", path);
+        return false;
+    }
+    return true;
+}
+
+// --train-resume: the sidecar of the checkpoint --lora loaded. Refused when it
+// was written for another adapter file, so moments never meet weights they
+// did not come from.
+static bool train_optim_load(const char *adapter, cli_run *rt, train_state *st,
+                             train_eval_set *ev, int n_ev) {
+    char sha[65], path[4096], why[160] = "";
+    if (snprintf(path, sizeof path, "%s.optim", adapter) >= (int)sizeof path ||
+        !envelope_file_sha256(adapter, sha))
+        return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "error: --train-resume: no optimizer state %s (a checkpoint "
+                "--save-every, --kill-at or --stop-file wrote)\n", path);
+        return false;
+    }
+    char magic[8], stored[65] = "";
+    uint32_t ver = 0;
+    int32_t step = 0, n = 0;
+    int64_t cursor = 0;
+    bool ok = fread(magic, 8, 1, f) == 1 && !memcmp(magic, TRAIN_OPTIM_MAGIC, 8) &&
+              fread(&ver, 4, 1, f) == 1 && ver == 1 && fread(&step, 4, 1, f) == 1 &&
+              fread(&cursor, 8, 1, f) == 1 && fread(stored, 64, 1, f) == 1 &&
+              fread(&n, 4, 1, f) == 1 && step >= 0 && cursor >= 0 && n >= 0 && n <= 64;
+    if (!ok) snprintf(why, sizeof why, "not an optimizer state this runner writes");
+    else if (strcmp(stored, sha) != 0)
+        snprintf(why, sizeof why, "it belongs to another adapter file"), ok = false;
+    for (int i = 0; ok && i < n; i++) {
+        char label[64];
+        uint8_t has;
+        double base;
+        ok = fread(label, sizeof label, 1, f) == 1 && fread(&has, 1, 1, f) == 1 &&
+             fread(&base, 8, 1, f) == 1;
+        label[sizeof label - 1] = '\0';
+        for (int j = 0; ok && j < n_ev; j++)
+            if (has && !strcmp(ev[j].label, label)) { ev[j].base = base; ev[j].has_base = true; }
+        if (!ok) snprintf(why, sizeof why, "it ends inside the eval baselines");
+    }
+    ok = ok && model_lora_optim_read(&rt->m, f, why, sizeof why);
+    fclose(f);
+    if (!ok) {
+        fprintf(stderr, "error: --train-resume: %s: %s\n", path, why);
+        return false;
+    }
+    st->step = step;
+    st->cursor = cursor;
+    return true;
+}
+
+// The adapter and its sidecar as OUT, and with numbered also as OUT.step-NNNNN:
+// the checkpoints a resumed run starts from.
+static bool train_checkpoint(cli_opts *o, cli_run *rt, const train_state *st,
+                             const train_eval_set *ev, bool numbered) {
+    if (!model_lora_save(&rt->m, o->train_out) ||
+        !train_optim_save(o->train_out, rt, st, ev, o->n_eval))
+        return false;
+    if (!numbered) return true;
+    char path[4096];
+    if (snprintf(path, sizeof path, "%s.step-%05d", o->train_out, st->step) >=
+        (int)sizeof path)
+        return false;
+    return model_lora_save(&rt->m, path) && train_optim_save(path, rt, st, ev, o->n_eval);
+}
+
+// The kill rule's verdict beside the adapter: OUT.killed.json when the run
+// stops, OUT.kill-check.json when it passes.
+static bool train_kill_record(cli_opts *o, const char *suffix, int step,
+                              double base, double now, double rel) {
+    char path[4096];
+    if (snprintf(path, sizeof path, "%s%s", o->train_out, suffix) >= (int)sizeof path)
+        return false;
+    FILE *f = fopen(path, "w");
+    if (!f) return false;
+    fprintf(f, "{\"step\":%d,\"metric\":\"%s\",\"baseline\":%.6f,\"now\":%.6f,"
+            "\"relative_reduction\":%.6f,\"required\":%.6f}\n", step, o->kill_metric,
+            base, now, rel, (double)o->kill_min_rel);
+    return fclose(f) == 0;
+}
+
+// --train's steps: weighted cross-entropy, or with a teacher the KL to it.
+// Without --train-batch, one row a step in file order with its loss summed over
+// its positions (as since D4; Adam's update hardly depends on the scale); with
+// it, N rows a step and the mean over all their positions. The lr follows
+// train_lr_at. Returns 0, 1 on an error, 3 when the kill rule stopped the run,
+// 75 when the stop file did (both after a checkpoint).
+static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
+                          int wctx, train_teacher *tt, train_eval_set *ev,
+                          train_state *st, double *first_loss, double *last_loss) {
     fprintf(stderr, "train: %d example%s, %d steps, lr %g, ctx %d%s\n",
             n_ex, n_ex == 1 ? "" : "s", o->train_steps, (double)o->train_lr,
             wctx, tt ? ", objective KL to the teacher" : "");
-    int32_t *tids = NULL;
-    float *tlp = NULL;
-    if (tt) {
-        int max_n = 1;
-        for (int i = 0; i < n_ex; i++) if (exs[i].n > max_n) max_n = exs[i].n;
-        tids = malloc(sizeof *tids * (size_t)(max_n - 1) * tt->k);
-        tlp = malloc(sizeof *tlp * (size_t)(max_n - 1) * tt->k);
-        if (!tids || !tlp) {
-            fprintf(stderr, "error: out of memory for the teacher's rows\n");
-            free(tids);
-            free(tlp);
-            return false;
-        }
+    int B = o->train_batch > 0 ? o->train_batch : 1;
+    bool mean = o->train_batch > 0;
+    // teacher rows for the training set and every eval set, sized for the
+    // longest row and the widest teacher of any of them
+    int max_n = 1, max_k = tt ? tt->k : 0;
+    for (int i = 0; i < n_ex; i++) if (exs[i].n > max_n) max_n = exs[i].n;
+    for (int e = 0; e < o->n_eval; e++) {
+        for (int i = 0; i < ev[e].n_ex; i++) if (ev[e].exs[i].n > max_n) max_n = ev[e].exs[i].n;
+        if (ev[e].has_tt && ev[e].tt.k > max_k) max_k = ev[e].tt.k;
     }
-    FILE *lpf = NULL;
+    int32_t *tids = max_k ? malloc(sizeof *tids * (size_t)(max_n - 1) * max_k) : NULL;
+    float *tlp = max_k ? malloc(sizeof *tlp * (size_t)(max_n - 1) * max_k) : NULL;
+    int *rows = malloc(sizeof *rows * (size_t)B);
     float *lp = NULL;
-    if (o->train_lp_path) {
-        int max_n = 1;
-        for (int i = 0; i < n_ex; i++) if (exs[i].n > max_n) max_n = exs[i].n;
+    FILE *lpf = NULL;
+    int rc = 0;
+    if ((max_k && (!tids || !tlp)) || !rows) {
+        fprintf(stderr, "error: out of memory for a training step's rows\n");
+        rc = 1;
+    }
+    if (!rc && o->train_lp_path) {
         lp = malloc(sizeof *lp * (size_t)max_n);
         lpf = lp ? fopen(o->train_lp_path, "w") : NULL;
         if (!lpf) {
-            fprintf(stderr, "error: cannot write --train-logprobs %s\n",
-                    o->train_lp_path);
-            free(lp);
-            free(tids);
-            free(tlp);
-            return false;
+            fprintf(stderr, "error: cannot write --train-logprobs %s\n", o->train_lp_path);
+            rc = 1;
         }
     }
-    bool ok = true;
-    for (int step = 1; ok && step <= o->train_steps; step++) {
-        train_ex *ex = &exs[(step - 1) % n_ex];
-        double loss = 0;
+    if (!rc && o->n_eval && st->step == 0 && !train_evals_run(o, rt, ev, 0, tids, tlp))
+        rc = 1;
+    bool first = true;
+    for (int step = st->step + 1; !rc && step <= o->train_steps; step++) {
+        double lr = train_lr_at(o, step - 1);
         double step_t0 = plat_now();
-        train_lp_obs obs = { ex, lp, rt->m.n_vocab };
+        double loss_sum = 0, wsum = 0;
+        long tokens = 0;
+        bool ok = true;
         model_lora_grad_zero(&rt->m);
-        if (lpf) {
-            rt->m.tape_logits_cb = train_lp_observe;
-            rt->m.tape_logits_ud = &obs;
+        for (int b = 0; ok && b < B; b++) {
+            int r = (int)(st->cursor++ % n_ex);
+            train_ex *ex = &exs[r];
+            double loss = 0;
+            train_lp_obs obs = { ex, lp, rt->m.n_vocab };
+            rows[b] = r;
+            if (lpf) {
+                rt->m.tape_logits_cb = train_lp_observe;
+                rt->m.tape_logits_ud = &obs;
+            }
+            if (tt) {
+                lora_teacher tch = { tt->k, tids, tlp };
+                ok = train_teacher_rows(tt, r, ex, tids, tlp);
+                if (!ok)
+                    fprintf(stderr, "error: --train-teacher: cannot read line "
+                            "%d's rows\n", r + 1);
+                ok = ok && model_lora_backward_kd(&rt->m, ex->t, ex->n, ex->w,
+                                                  &tch, &loss);
+            } else {
+                ok = model_lora_backward_w(&rt->m, ex->t, ex->n, ex->w, &loss);
+            }
+            rt->m.tape_logits_cb = NULL;
+            rt->m.tape_logits_ud = NULL;
+            if (ok && lpf && !train_lp_write(lpf, step, r, ex, lp)) {
+                fprintf(stderr, "error: cannot write --train-logprobs %s\n",
+                        o->train_lp_path);
+                ok = false;
+            }
+            // Per-token mean over the weighted positions, normalized by the
+            // weights' MAGNITUDE. `wsum > 0 ? loss/wsum : loss` silently fell
+            // back to the unnormalized total whenever the weights summed
+            // negative, which is exactly what a GRPO-style negative advantage
+            // produces: a run's reported loss then changed scale between
+            // positive- and negative-weight examples, by a factor of the token
+            // count, and loss_first/loss_last in the provenance record
+            // inherited it. Measured on the fixture: a w=-1 example printed
+            // -66.30 where the per-token mean is -16.58. The sign still
+            // carries the weight's sign, which is the informative part.
+            double ws = 0;
+            if (ex->w) {
+                for (int i = 0; i < ex->n - 1; i++) ws += ex->w[i];
+            } else ws = ex->n - 1;
+            loss_sum += loss;
+            wsum += ws < 0 ? -ws : ws;
+            tokens += ex->n;
         }
-        if (tt) {
-            lora_teacher tch = { tt->k, tids, tlp };
-            ok = train_teacher_rows(tt, (step - 1) % n_ex, ex, tids, tlp);
-            if (!ok)
-                fprintf(stderr, "error: --train-teacher: cannot read line "
-                        "%d's rows\n", (step - 1) % n_ex + 1);
-            ok = ok && model_lora_backward_kd(&rt->m, ex->t, ex->n, ex->w,
-                                              &tch, &loss);
-        } else {
-            ok = model_lora_backward_w(&rt->m, ex->t, ex->n, ex->w, &loss);
-        }
-        rt->m.tape_logits_cb = NULL;
-        rt->m.tape_logits_ud = NULL;
-        if (ok && lpf && !train_lp_write(lpf, step, (step - 1) % n_ex, ex, lp)) {
-            fprintf(stderr, "error: cannot write --train-logprobs %s\n",
-                    o->train_lp_path);
-            ok = false;
-        }
-        if (!ok || !train_adam_step(o, rt, step)) {
-            ok = false;
+        if (!ok) { rc = 1; break; }
+        double ml = wsum > 0 ? loss_sum / wsum : loss_sum;
+        if (mean && wsum > 0) model_lora_grad_scale(&rt->m, (float)(1.0 / wsum));
+        double gmax = 0, gmean = 0;
+        if (!fp_finite_f64(ml) || !model_lora_grad_norms(&rt->m, &gmax, &gmean)) {
+            fprintf(stderr, "error: step %d: the loss or a gradient is not finite; "
+                    "the adapter stays as step %d left it\n", step, step - 1);
+            rc = 1;
             break;
         }
-        // Per-token mean over the weighted positions, normalized by the
-        // weights' MAGNITUDE. `wsum > 0 ? loss/wsum : loss` silently fell
-        // back to the unnormalized total whenever the weights summed
-        // negative, which is exactly what a GRPO-style negative advantage
-        // produces: a run's reported loss then changed scale between
-        // positive- and negative-weight examples, by a factor of the token
-        // count, and loss_first/loss_last in the provenance record
-        // inherited it. Measured on the fixture: a w=-1 example printed
-        // -66.30 where the per-token mean is -16.58. The sign still
-        // carries the weight's sign, which is the informative part.
-        double wsum = 0;
-        if (ex->w) {
-            for (int i = 0; i < ex->n - 1; i++) wsum += ex->w[i];
-        } else wsum = ex->n - 1;
-        double wmag = wsum < 0 ? -wsum : wsum;
-        double ml = wmag > 0 ? loss / wmag : loss;
-        if (step == 1) *first_loss = ml;
+        if (!train_adam_step(o, rt, step, lr)) { rc = 1; break; }
+        st->step = step;
+        if (first) { *first_loss = ml; first = false; }
         *last_loss = ml;
         // step_s / tok_s: wall time and TRAINING tokens/sec (forward +
         // backward + optimizer, not inference throughput). Reporting
         // fields only — the reproducibility contract covers the loss
         // and the adapter bytes, never the clock.
         double step_s = plat_now() - step_t0;
-        printf("{\"step\":%d,\"example\":%d,\"tokens\":%d,"
-               "\"loss\":%.6f,\"step_s\":%.2f,\"tok_s\":%.1f}\n",
-               step, (step - 1) % n_ex, ex->n, ml, step_s,
-               step_s > 0 ? (double)ex->n / step_s : 0.0);
+        printf("{\"step\":%d,\"example\":%d,\"tokens\":%ld,\"loss\":%.6f,\"lr\":%.6g,"
+               "\"grad_norm_max\":%.6g,\"grad_norm_mean\":%.6g", step, rows[0],
+               tokens, ml, lr, gmax, gmean);
+        if (mean) {
+            printf(",\"rows\":[");
+            for (int b = 0; b < B; b++) printf("%s%d", b ? "," : "", rows[b]);
+            printf("]");
+        }
+        printf(",\"step_s\":%.2f,\"tok_s\":%.1f}\n", step_s,
+               step_s > 0 ? (double)tokens / step_s : 0.0);
         fflush(stdout);
-        if (o->save_every > 0 && step % o->save_every == 0 &&
-            !model_lora_save(&rt->m, o->train_out))
-            ok = false;
+        // after the step: the evals, the checkpoint, the kill rule, then the
+        // stop file, the order a distillation pipeline checks them in
+        if (o->n_eval && ((o->eval_every && step % o->eval_every == 0) ||
+                          step == o->train_steps || step == o->kill_at) &&
+            !train_evals_run(o, rt, ev, step, tids, tlp)) {
+            rc = 1;
+            break;
+        }
+        if (o->save_every > 0 && (step % o->save_every == 0 || step == o->train_steps) &&
+            !train_checkpoint(o, rt, st, ev, true)) {
+            rc = 1;
+            break;
+        }
+        if (o->kill_at && step == o->kill_at) {
+            train_eval_set *k = NULL;
+            for (int e = 0; e < o->n_eval; e++)
+                if (!strcmp(ev[e].label, o->kill_metric)) k = &ev[e];
+            double rel = k->has_base && k->base != 0 ? (k->base - k->last) / k->base : 0.0;
+            bool pass = k->has_base && rel >= o->kill_min_rel;
+            if (!train_kill_record(o, pass ? ".kill-check.json" : ".killed.json", step,
+                                   k->base, k->last, rel)) {
+                fprintf(stderr, "error: cannot write the kill rule's record\n");
+                rc = 1;
+                break;
+            }
+            if (!pass) {
+                if (!train_checkpoint(o, rt, st, ev, true)) { rc = 1; break; }
+                printf("{\"killed\":{\"step\":%d,\"metric\":\"%s\",\"baseline\":%.6f,"
+                       "\"now\":%.6f,\"relative_reduction\":%.6f,\"required\":%.6f}}\n",
+                       step, o->kill_metric, k->base, k->last, rel,
+                       (double)o->kill_min_rel);
+                fflush(stdout);
+                rc = 3;
+                break;
+            }
+        }
+        if (o->stop_file && plat_file_readable(o->stop_file)) {
+            if (!train_checkpoint(o, rt, st, ev, true)) { rc = 1; break; }
+            printf("{\"yield\":\"");
+            fputs(o->stop_file, stdout);
+            printf("\",\"step\":%d}\n", step);
+            fflush(stdout);
+            rc = 75;
+            break;
+        }
     }
-    if (lpf && fclose(lpf) != 0 && ok) {
-        fprintf(stderr, "error: cannot write --train-logprobs %s\n",
-                o->train_lp_path);
-        ok = false;
+    if (lpf && fclose(lpf) != 0 && !rc) {
+        fprintf(stderr, "error: cannot write --train-logprobs %s\n", o->train_lp_path);
+        rc = 1;
     }
     free(lp);
     free(tids);
     free(tlp);
-    return ok;
+    free(rows);
+    return rc;
 }
 
 // D7: the provenance record, written beside every adapter — the
@@ -4287,6 +4651,7 @@ static bool train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
 // started a fresh one.
 static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
                          const char *from_adapter, const train_teacher *tt,
+                         const train_eval_set *ev, int resumed_at,
                          int wctx, int eot_id, double first_loss,
                          double last_loss) {
     char bsha[65] = "", dsha[65] = "", asha[65] = "", xsha[65] = "";
@@ -4367,13 +4732,50 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
             "\"adamw\":{\"beta1\":" TRAIN_STR(TRAIN_ADAM_BETA1)
             ",\"beta2\":" TRAIN_STR(TRAIN_ADAM_BETA2)
             ",\"eps\":" TRAIN_STR(TRAIN_ADAM_EPS)
-            ",\"weight_decay\":" TRAIN_STR(TRAIN_ADAM_WD) "},"
-            "\"loss_first\":%.6f,\"loss_last\":%.6f,"
-            "\"adapter\":{\"path\":\"",
+            ",\"weight_decay\":%g},"
+            "\"recipe\":{\"schedule\":\"%s\",\"warmup\":%d,\"floor\":%g,"
+            "\"batch\":%d,\"loss\":\"%s\"},"
+            "\"loss_first\":%.6f,\"loss_last\":%.6f,",
             (unsigned long long)(o->seed_given ? o->smp.rng : 0),
             model_lora_rank(&rt->m), (double)rt->m.lora_alpha, (double)o->train_lr,
             o->train_steps, wctx, o->train_eot ? "true" : "false", eot_id,
+            (double)o->weight_decay, o->lr_schedule == 1 ? "cosine" : "constant",
+            o->lr_warmup, (double)o->lr_floor,
+            o->train_batch > 0 ? o->train_batch : 1,
+            o->train_batch > 0 ? "position-mean" : "row-sum",
             first_loss, last_loss);
+    // R8.17: the held-out sets (rows and teacher hashed like the data), the
+    // kill rule and the step a resumed run started from
+    if (o->n_eval) {
+        sb_lit(&rec, "\"evals\":[");
+        for (int i = 0; i < o->n_eval && !rec.failed; i++) {
+            sb_lit(&rec, i ? ",{\"label\":\"" : "{\"label\":\"");
+            sb_esc(&rec, ev[i].label, strlen(ev[i].label));
+            sb_lit(&rec, "\",\"rows\":");
+            if (!lineage_put_input(&rec, ev[i].rows_path, NULL)) hash_ok = false;
+            if (ev[i].has_tt) {
+                sb_lit(&rec, ",\"topk_idx\":");
+                if (!lineage_put_input(&rec, ev[i].tt.idx_path, NULL)) hash_ok = false;
+                sb_lit(&rec, ",\"topk_logp\":");
+                if (!lineage_put_input(&rec, ev[i].tt.logp_path, NULL)) hash_ok = false;
+            }
+            sb_fmt(&rec, ",\"loss_step0\":%.6f,\"loss_last\":%.6f}",
+                   ev[i].has_base ? ev[i].base : -1.0, ev[i].last);
+        }
+        sb_lit(&rec, "],");
+    }
+    if (o->kill_at) {
+        sb_fmt(&rec, "\"kill\":{\"at\":%d,\"metric\":\"", o->kill_at);
+        sb_esc(&rec, o->kill_metric, strlen(o->kill_metric));
+        sb_fmt(&rec, "\",\"min_rel\":%g},", (double)o->kill_min_rel);
+    }
+    if (o->train_resume) sb_fmt(&rec, "\"resumed_at_step\":%d,", resumed_at);
+    if (!hash_ok) {
+        fprintf(stderr, "error: cannot hash an eval set for the provenance record\n");
+        free(rec.s);
+        return false;
+    }
+    sb_lit(&rec, "\"adapter\":{\"path\":\"");
     sb_esc(&rec, o->train_out, strlen(o->train_out));
     sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, asha);
     sb_lit(&rec, "\"}}\n");
@@ -4428,22 +4830,40 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     if (!ok)
         fprintf(stderr, "error: cannot hash the --lora adapter %s for the "
                 "provenance record\n", o->lora_path);
+    // R8.17: the held-out sets, and on --train-resume where the run stood
+    train_eval_set ev[8];
+    memset(ev, 0, sizeof ev);
+    train_state st = {0, 0};
+    ok = ok && train_evals_open(o, rt, wctx, eot_id, ev) &&
+         (!o->train_resume || train_optim_load(o->train_resume, rt, &st, ev, o->n_eval));
+    if (ok && o->train_resume)
+        fprintf(stderr, "train: resuming %s at step %d (row %lld next)\n",
+                o->train_resume, st.step, st.cursor % (n_ex > 0 ? n_ex : 1));
+    int resumed_at = st.step;
     double first_loss = 0, last_loss = 0;
-    ok = ok && (o->dpo_path
-        ? train_dpo_steps(o, rt, pairs, n_pair, wctx, &first_loss, &last_loss)
-        : train_ce_steps(o, rt, exs, n_ex, wctx, o->train_teacher ? &tt : NULL,
-                         &first_loss, &last_loss));
-    ok = ok && model_lora_save(&rt->m, o->train_out) &&
-         train_record(o, rt, load_path, from.s, o->train_teacher ? &tt : NULL,
-                      wctx, eot_id, first_loss, last_loss);
-    if (ok)
+    int rc = ok ? 0 : 1;
+    if (!rc && o->dpo_path)
+        rc = train_dpo_steps(o, rt, pairs, n_pair, wctx, &first_loss, &last_loss) ? 0 : 1;
+    else if (!rc)
+        rc = train_ce_steps(o, rt, exs, n_ex, wctx, o->train_teacher ? &tt : NULL,
+                            ev, &st, &first_loss, &last_loss);
+    // a run that checkpoints leaves its sidecar beside the final adapter too,
+    // so it can be continued past --train-steps
+    bool sidecar = o->save_every > 0 || o->stop_file || o->kill_at || o->train_resume;
+    if (!rc && !(model_lora_save(&rt->m, o->train_out) &&
+                 (!sidecar || train_optim_save(o->train_out, rt, &st, ev, o->n_eval)) &&
+                 train_record(o, rt, load_path, from.s, o->train_teacher ? &tt : NULL,
+                              ev, resumed_at, wctx, eot_id, first_loss, last_loss)))
+        rc = 1;
+    if (!rc)
         fprintf(stderr, "train: done — first-step loss %.4f, last-step "
                 "%.4f, adapter -> %s\n", first_loss, last_loss, o->train_out);
     free(from.s);
+    train_evals_free(ev, o->n_eval);
     train_teacher_close(&tt);
     train_examples_free(exs, n_ex);
     dpo_pairs_free(pairs, n_pair);
-    return ok ? 0 : 1;
+    return rc;
 }
 
 // ---- notarized inference D2: the replay
@@ -5581,6 +6001,39 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
     if (o->train_teacher && !o->train_path) {
         fprintf(stderr, "error: --train-teacher gives --train its targets; "
                 "pass it with --train\n");
+        return 1;
+    }
+    if (o->recipe_flag && !o->train_path) {
+        fprintf(stderr, "error: %s shapes a --train run; pass it with --train\n",
+                o->recipe_flag);
+        return 1;
+    }
+    if (o->train_resume && o->lora_path) {
+        fprintf(stderr, "error: --train-resume continues the checkpoint's own "
+                "adapter; --lora names another\n");
+        return 1;
+    }
+    if (o->train_resume) o->lora_path = o->train_resume;
+    if ((o->kill_at || o->kill_metric || o->kill_min_rel != 0.0f) &&
+        !(o->kill_at && o->kill_metric)) {
+        fprintf(stderr, "error: the kill rule needs --kill-at and --kill-metric "
+                "together (--kill-min-rel, 0 by default, with them)\n");
+        return 1;
+    }
+    if (o->kill_metric) {
+        bool found = false;
+        size_t kn = strlen(o->kill_metric);
+        for (int i = 0; i < o->n_eval; i++)
+            found |= !strncmp(o->eval_spec[i], o->kill_metric, kn) &&
+                     o->eval_spec[i][kn] == '=';
+        if (!found) {
+            fprintf(stderr, "error: --kill-metric %s names no --train-eval set\n",
+                    o->kill_metric);
+            return 1;
+        }
+    }
+    if (o->eval_every && !o->n_eval) {
+        fprintf(stderr, "error: --eval-every needs a --train-eval set\n");
         return 1;
     }
 

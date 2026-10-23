@@ -269,8 +269,19 @@ the starting adapter.
 ## 4. Continue, checkpoint and resume
 
 **Checkpoints.** `--save-every N` writes the adapter to `--train-out` every N
-steps. Every write goes to a temporary file first and is then installed, so a
-failure leaves the previous checkpoint in place.
+steps (and at the last step), and beside it the optimizer's state,
+`OUT.optim`: the AdamW moments, the step and the next rows. Each checkpoint is
+also kept as `OUT.step-NNNNN` with its own `.optim`. Every write goes to a
+temporary file first and is then installed, so a failure leaves the previous
+checkpoint in place.
+
+**Resume a run.** `--train-resume CKPT` continues the run that wrote the
+checkpoint `CKPT` (`OUT` or one of its `OUT.step-NNNNN` copies): the adapter,
+the moments, the step (so the learning-rate schedule picks up where it was)
+and the next rows. Give the rest of the command as the run had it, with the
+same `--train-steps`. A resumed run writes the same adapter, byte for byte,
+as the run that never stopped, and its record names the step it resumed at. A
+sidecar written for a different adapter file is refused.
 
 **Continue an adapter.** Pass an existing adapter with `--lora` to train it
 further:
@@ -282,10 +293,10 @@ further:
 
 - The adapter keeps its own rank and alpha; `--lora-rank` applies only to a
   fresh adapter.
-- Adapter files hold the weights, not the optimizer's moments, so a continued
-  run starts AdamW fresh. It is a new run from those weights, not a resumed
-  one: training 100 steps and then 100 more is not the same as 200 steps in
-  one run.
+- `--lora` loads the weights only, so a continued run starts AdamW fresh. It
+  is a new run from those weights: training 100 steps and then 100 more is not
+  the same as 200 steps in one run. To continue the same run, use
+  `--train-resume` on a checkpoint instead.
 - The record names the adapter the run started from (`from_adapter`, with its
   hash and its own record), and `--lineage` walks back through every earlier
   run. The starting adapter is identified before the first step, so the record
@@ -382,6 +393,35 @@ learning rate per step whatever the loss, one example per step, with no warmup
 or decay: the closer a student starts to its teacher, the lower the rate it
 needs. Start low (5e-5) and watch the per-step loss, comparing each example
 with its own earlier pass.
+
+**A distillation run's recipe.** These flags give `--train` what a
+distillation pipeline's own trainer has (they apply to cross-entropy too):
+
+- `--lr-warmup N` raises the learning rate linearly over the first N steps;
+  `--lr-schedule cosine` then lowers it along a cosine to `--lr-floor F` times
+  `--lr` at the last step (0.1 by default; `constant` keeps it).
+- `--train-batch N` takes N rows a step, and the loss and gradient are the
+  mean over all their positions. Rows are used in file order, wrapping at the
+  end; write the file in the order you want them drawn.
+- `--weight-decay 0` turns AdamW into plain Adam (the default decay is 0.01).
+- `--train-eval LABEL=ROWS[,TEACHER]` (up to eight) is a held-out set,
+  evaluated with no update at step 0, every `--eval-every N` steps and at the
+  last: its mean loss per position, and two top-1 agreements, `top1_topk`
+  (among the teacher's listed tokens the student ranks the teacher's first
+  highest) and `top1_vocab` (the student's most likely token over the whole
+  vocabulary is it).
+- `--kill-at S --kill-metric LABEL --kill-min-rel R`: at step S, unless
+  LABEL's loss has fallen by at least R (a fraction) from step 0, the run
+  saves a checkpoint, writes `OUT.killed.json` and exits with status 3;
+  otherwise it writes `OUT.kill-check.json` and goes on.
+- `--stop-file F`: after every step (its eval, checkpoint and kill check), if
+  F exists the run saves a checkpoint and exits with status 75, ready for
+  `--train-resume`.
+
+Every step line carries `lr`, `grad_norm_max` and `grad_norm_mean` (each
+layer's L2 over its adapter gradients, the largest and the mean), and with
+`--train-batch` the `rows` it drew. A step whose loss or gradient is not
+finite stops the run with an error before it touches the adapter.
 
 The objective is gated in `tests/test_kd_grad.c`: a one-hot teacher against the
 cross-entropy (loss and gradient bit for bit), the loss against an independent
@@ -752,7 +792,10 @@ covered by them.
 
 **Flags.** `--adapt-info`; `--train FILE`, `--train-steps`, `--lr`,
 `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank`, `--train-eot`,
-`--train-logprobs`, `--train-teacher DIR`, `-s`; `--train-dpo FILE`, `--dpo-beta`; `--lora FILE`,
+`--train-logprobs`, `--train-teacher DIR`, `--lr-schedule`, `--lr-warmup`,
+`--lr-floor`, `--train-batch`, `--weight-decay`, `--train-resume CKPT`,
+`--train-eval`, `--eval-every`, `--kill-at`, `--kill-metric`,
+`--kill-min-rel`, `--stop-file`, `-s`; `--train-dpo FILE`, `--dpo-beta`; `--lora FILE`,
 `--lora-scale`, `--lora-sig`; `--adapter NAME=PATH`; `--merge-lora OUT`,
 `--quant`, `--merge-allow-erased`; `--score`; `--sign-key`, `--keygen`,
 `--sign-model`, `--model-key`, `--model-pubkey`, `--require-signed-model`;
@@ -760,6 +803,9 @@ covered by them.
 row is in the [command-line reference](../MANUAL.md#command-line-reference).
 
 **Files.** `ADAPTER.gguf` (the adapter), `ADAPTER.gguf.train.json` (its record),
+`ADAPTER.gguf.optim` and `ADAPTER.gguf.step-NNNNN` (checkpoints and their
+optimizer state), `ADAPTER.gguf.killed.json` / `.kill-check.json` (the kill
+rule's verdict),
 `MERGED.gguf.merge.json` (a merge record), `ADAPTER.gguf.sig` (an OMS bundle),
 `*.partial` (a write in progress, never installed on failure).
 
@@ -769,6 +815,7 @@ row is in the [command-line reference](../MANUAL.md#command-line-reference).
 **Tests.** `tests/test_train.py`, `tests/test_rollout_identity.py`,
 `tests/test_lora.py`, `tests/test_moe_lora.py`, `tests/test_lora_grad.c`,
 `tests/test_dpo_grad.c`, `tests/test_kd_grad.c`, `tests/test_train_teacher.py`,
+`tests/test_train_recipe.py`,
 `tests/test_merge.py`,
 `tests/test_adapter_routing.py`, `tests/test_adapter_signature.py`,
 `tests/test_lineage.py`.
