@@ -263,6 +263,8 @@ test-mvcanon
 test-mvcanon.exe
 test-mvt
 test-mvt.exe
+test-train-gpu
+test-train-gpu.exe
 test-lora-q8.*
 test-lora-qk.*
 test-qk.gguf

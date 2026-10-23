@@ -378,9 +378,10 @@ adapter, is explained in order in [the complete adapter guide](docs/lora.md).
 **What it is for, and what it costs.** Small, targeted datasets: a tool
 habit, a format, a house style, on the order of hundreds of examples and
 hundreds of steps. It is not a pretraining or a large-corpus instrument. A
-step costs about a minute on a consumer GPU (Qwen2.5-7B Q4_K_M: 64.8 s on an
-RTX 3070 with the CUDA assist, 76.5 s on 8 CPU threads) and about 20 s for a
-4B on a many-core CPU host; the published Qwen3-4B adapter took 316 steps.
+7B step costs about ten seconds on a consumer GPU with `--train-gpu`
+(Qwen2.5-7B Q4_K_M: 9.7 s on an RTX 3070, 95 s for the CPU trainer on the
+same 4 threads) and a 4B step about 20 s on a many-core CPU host; the
+published Qwen3-4B adapter took 316 steps.
 Budget hours, not minutes, and expect a Python training stack to be
 faster per step. What Runner buys for that is one numerical path and an
 auditable artifact.
@@ -2390,6 +2391,7 @@ whether the draft is `active` there.
 | `--lr-schedule constant\|cosine`, `--lr-warmup N`, `--lr-floor F` | With `--train`: a linear warmup over N steps, then a constant learning rate or a cosine down to F x `--lr` (0.1) at the last step. |
 | `--train-batch N` | With `--train`: N rows per optimizer step, the loss and gradient the mean over their positions (rows in file order). Without it, one row a step, its loss summed over its positions. |
 | `--weight-decay F` | AdamW's decoupled weight decay (`0.01`); `0` is plain Adam. |
+| `--train-gpu` | With `--train` or `--train-dpo`: every weight product of a step on an NVIDIA GPU (CUDA build), the weights cached there. Within rounding of a CPU run, not its bytes; the record names the device. An error without a usable device. [Details](docs/lora.md#training-on-the-gpu---train-gpu). |
 | `--train-resume CKPT` | Continue the run that wrote checkpoint CKPT: its adapter, AdamW moments (`CKPT.optim`), step and next rows; byte-identical to the run that never stopped. |
 | `--train-eval LABEL=ROWS[,TEACHER]`, `--eval-every N` | Held-out sets (up to 8) evaluated with no update at step 0, every N steps and at the last: mean loss per position, `top1_topk` and `top1_vocab`. |
 | `--kill-at S`, `--kill-metric LABEL`, `--kill-min-rel R` | At step S, unless LABEL's loss fell by at least R from step 0: save, write `OUT.killed.json`, exit 3 (else `OUT.kill-check.json`). |
@@ -2521,12 +2523,13 @@ the bare base (`tests/test_adapter_routing.py`).
 #### `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank`, `--train-logprobs`, `--train-teacher`, `--train-resume`
 
 AdamW LoRA training in the serving binary (position-batched and threaded under a
-byte-exact contract - 4B trains at ~20 s/step on a many-core host, 2.3× over the first
-release; the optional `RUNNER_TRAIN_GPU=1` CUDA assist puts the backward's transposed
-matvecs on the device and, since its position grid, is the faster arm on a consumer box
-- Qwen2.5-7B Q4_K_M at 64.8 s/step against 76.5 on 8 CPU threads, 2.2× its own previous
-kernel, RTX 3070; the adapter bytes are gated invariant across binaries, thread counts
-and the assist): plain-text corpora or `.jsonl` lines `{"prompt","completion","weight"}`
+byte-exact contract - 4B trains at ~20 s/step on a many-core host; `--train-gpu` puts
+every weight product of a step on an NVIDIA GPU, within rounding of the CPU run -
+Qwen2.5-7B Q4_K_M at 9.7 s/step against 95 s for the CPU trainer on the same 4 threads,
+RTX 3070; the optional `RUNNER_TRAIN_GPU=1` CUDA assist moves only the backward's
+transposed products and keeps the CPU's bytes; the CPU adapter bytes are gated
+invariant across thread counts, round widths and the assist): plain-text corpora or
+`.jsonl` lines `{"prompt","completion","weight"}`
 with the prompt masked from the loss and per-example weights (the policy-gradient hook
 `scripts/train-grpo-lite.py` drives). A `.jsonl` line can give token ids instead of text,
 `{"prompt_tokens":[...],"completion_tokens":[...],"weight":w}`, used exactly as given (no

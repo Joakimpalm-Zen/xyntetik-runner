@@ -159,6 +159,21 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
     return false;
 }
 
+bool gpu_train_mm(model_t *m, const gguf_tensor *w, const float *x,
+                  int x_stride, float *y, int y_stride, int n_in, int n_out,
+                  const float *bias, int nb) {
+    (void)m; (void)w; (void)x; (void)x_stride; (void)y; (void)y_stride;
+    (void)n_in; (void)n_out; (void)bias; (void)nb;
+    return false;
+}
+
+void gpu_train_prof(model_t *m, double *t_mm, long *n_mm, double *t_mvt,
+                    long *n_mvt, double *k_mm, double *k_mvt) {
+    (void)m;
+    *t_mm = *t_mvt = *k_mm = *k_mvt = 0;
+    *n_mm = *n_mvt = 0;
+}
+
 bool gpu_spec_keep_ok(const model_t *m) { (void)m; return false; }
 void gpu_kv_host_wrote(model_t *m, int lo) { (void)m; (void)lo; }
 bool gpu_hidden_rows_ok(const model_t *m) { (void)m; return false; }

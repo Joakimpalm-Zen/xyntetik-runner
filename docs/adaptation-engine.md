@@ -56,10 +56,11 @@ backward properties refuse by name. Derived-K (`RUNNER_TIEDV`), ring KV, and non
 retain their refusals. `--adapt-info` reports serving and training support
 for the actual loaded model.
 
-CUDA training assistance is opt-in with `RUNNER_TRAIN_GPU=1`; the CPU hosts
-the forward/optimizer and the implemented device primitives assist the
-backward. It must preserve CPU adapter bytes with proof the device hooks
-engaged. This is not a fully GPU-hosted trainer.
+CUDA training is opt-in two ways. `RUNNER_TRAIN_GPU=1` puts the backward's
+transposed products on the device and must preserve CPU adapter bytes.
+`--train-gpu` puts every weight product of a step there (forward, heads,
+recompute, transposed); it matches a CPU run within rounding, not its bytes,
+and the CPU keeps the small ops and the optimizer.
 
 ## Reproducibility, gradients, and failure behavior
 

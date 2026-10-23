@@ -1437,6 +1437,9 @@ static void usage_to(FILE *f, const char *prog) {
         "  --kill-at S --kill-metric LABEL --kill-min-rel R  at step S stop\n"
         "                 (exit 3) unless LABEL's loss fell by R from step 0\n"
         "  --stop-file F  after a step, if F exists: save and exit 75\n"
+        "  --train-gpu    with --train or --train-dpo: every weight product\n"
+        "                 of a step on a CUDA GPU. The adapter matches a CPU\n"
+        "                 run within tolerance, not byte for byte\n"
         "  --train-eot    append the template's end-of-turn token to every\n"
         "                 completion (a jsonl line can set \"end_of_turn\")\n"
         "  --train-dpo F  preference pairs .jsonl {\"prompt\",\"chosen\",\n"
@@ -2021,6 +2024,7 @@ typedef struct {
     const char *train_resume, *stop_file, *kill_metric;
     const char *eval_spec[8];
     const char *recipe_flag;   // the first R8.17 flag given, for refusals
+    bool train_gpu;            // R8.19 --train-gpu: every product on CUDA
     // records, signing, verification, watermarks, session images
     const char *transcript_path, *transcript_prev, *sign_key, *keygen_path;
     const char *keygen_algo, *lineage_path, *require_eval;
@@ -2343,6 +2347,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             o->train_batch = (int)int_arg(a, NEXT, 1, 65536);
         else if (!strcmp(a, "--weight-decay"))
             o->weight_decay = (float)float_arg(a, NEXT, 0, 1);
+        else if (!strcmp(a, "--train-gpu")) o->train_gpu = true;
         else if (!strcmp(a, "--train-resume") && recipe_flag(o, a)) o->train_resume = NEXT;
         else if (!strcmp(a, "--train-eval") && recipe_flag(o, a)) {
             if (o->n_eval == (int)(sizeof o->eval_spec / sizeof o->eval_spec[0])) {
@@ -3918,6 +3923,21 @@ static bool train_prepare(cli_opts *o, cli_run *rt) {
                 "projection (alpha %g)\n", o->lora_rank,
                 (double)(2.0f * o->lora_rank));
     }
+    // R8.19 --train-gpu: every weight product of a step (the forward, the
+    // heads, the recompute, the transposed products) on the device. Asked
+    // for by name, so no device is an error, not a quiet CPU run.
+    if (o->train_gpu) {
+        if (!gpu_train_init(&rt->m)) {
+            fprintf(stderr, "error: --train-gpu needs a CUDA build and an "
+                    "NVIDIA GPU; none is usable here\n");
+            return false;
+        }
+        rt->m.train_dev = true;
+        fprintf(stderr, "train-gpu: every weight product on the GPU; the "
+                "adapter matches a CPU run within tolerance, not byte for "
+                "byte\n");
+        return true;
+    }
     // D8 slice 2, opt-in: run the backward's transposed matvec on the
     // device with the weights cached there. The kernel is gated
     // bit-identical to the CPU chain, so the adapter bytes do not
@@ -4777,6 +4797,15 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
             o->train_batch > 0 ? o->train_batch : 1,
             o->train_batch > 0 ? "position-mean" : "row-sum",
             first_loss, last_loss);
+    // R8.19: a device-mode run names its device; its adapter is the CPU's
+    // within tolerance, so a reader comparing two records must know
+    if (rt->m.train_dev) {
+        char gname[128] = "CUDA GPU";
+        gpu_available(gname, (int)sizeof gname);
+        sb_lit(&rec, "\"products\":{\"device\":\"cuda\",\"name\":\"");
+        sb_esc(&rec, gname, strlen(gname));
+        sb_lit(&rec, "\"},");
+    }
     // R8.17: the held-out sets (rows and teacher hashed like the data), the
     // kill rule and the step a resumed run started from
     if (o->n_eval) {
@@ -4896,6 +4925,7 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     train_teacher_close(&tt);
     train_examples_free(exs, n_ex);
     dpo_pairs_free(pairs, n_pair);
+    model_debug_time_report();   // RUNNER_DEBUG_TIME: the forwards' stages
     return rc;
 }
 
@@ -6067,6 +6097,11 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
     if (o->train_teacher && !o->train_path) {
         fprintf(stderr, "error: --train-teacher gives --train its targets; "
                 "pass it with --train\n");
+        return 1;
+    }
+    if (o->train_gpu && !o->train_path && !o->dpo_path) {
+        fprintf(stderr, "error: --train-gpu runs a --train or --train-dpo "
+                "step on the GPU; pass it with one\n");
         return 1;
     }
     if (o->recipe_flag && !o->train_path) {

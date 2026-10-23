@@ -167,6 +167,59 @@ def test_batched_taped_forward_is_the_solo_bytes(runner_bin, base, tmp_path, fam
         assert adapter == runs[0][2], (family, rows, "adapter bytes differ")
 
 
+# The manual's `-t N` row: "the adapter bytes do not depend on it". Every
+# pooled pass of a step (the products, the adapter's own rank-r math since
+# R8.19, the DeltaNet heads) keeps each element's chain whatever the split.
+@pytest.mark.parametrize("family", ["base", "gemma3", "e-series", "qwen35", "clef", "moe-renorm"])
+def test_adapter_bytes_do_not_depend_on_the_thread_count(runner_bin, base, tmp_path, family):
+    d = base if family == "base" else _family_fixture(tmp_path, family)
+    a1, a3 = tmp_path / "t1.gguf", tmp_path / "t3.gguf"
+    l1 = _train(runner_bin, d, a1, steps=4, extra=("-t", "1"))
+    l3 = _train(runner_bin, d, a3, steps=4, extra=("-t", "3"))
+    assert l1 == l3, (family, l1, l3)
+    assert a1.read_bytes() == a3.read_bytes(), (family, "adapter bytes depend on -t")
+
+
+# R8.19 --train-gpu: every weight product of a step on CUDA. Not the CPU's
+# bytes (the device products add in another order) but the same training
+# within rounding: 4 steps a family against the CPU run, every step's loss
+# within 1e-4 relative, and the record names the device. Skips where no CUDA
+# device is usable (the error it gives there is checked below).
+@pytest.mark.parametrize("family", ["base", "q8_0", "gemma4", "qwen35", "clef", "moe-renorm"])
+def test_train_gpu_matches_cpu_within_rounding(runner_bin, base, tmp_path, family):
+    d = base if family == "base" else _family_fixture(tmp_path, family)
+    runs = {}
+    for arm in ("cpu", "gpu"):
+        out = tmp_path / ("%s.gguf" % arm)
+        p = _run_train(runner_bin, d, out, "corpus.txt",
+                       extra=("--train-steps", "4") + (("--train-gpu",) if arm == "gpu" else ()))
+        err = p.stderr.decode(errors="replace")
+        if arm == "gpu" and p.returncode != 0 and "needs a CUDA build" in err:
+            pytest.skip("no usable CUDA device")
+        assert p.returncode == 0, err
+        runs[arm] = ([json.loads(l)["loss"] for l in p.stdout.splitlines() if l], out)
+    (lc, _), (lg, ag) = runs["cpu"], runs["gpu"]
+    assert len(lc) == len(lg) == 4
+    for a, b in zip(lc, lg):
+        assert abs(a - b) <= 1e-4 * max(abs(a), 1e-6), (family, lc, lg)
+    rec = json.loads(pathlib.Path(str(ag) + ".train.json").read_text())
+    assert rec["products"]["device"] == "cuda", rec.get("products")
+
+
+def test_train_gpu_is_refused_without_training_or_a_device(runner_bin, base, tmp_path):
+    p = subprocess.run([runner_bin, "-m", str(base / "base.gguf"), "--train-gpu",
+                        "-p", "hi", "-n", "1"], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode != 0
+    assert b"--train-gpu runs a --train or --train-dpo step" in p.stderr
+    out = tmp_path / "ad.gguf"
+    p = _run_train(runner_bin, base, out, "corpus.txt", extra=("--train-gpu",))
+    if p.returncode == 0:
+        pytest.skip("a GPU is usable here: the refusal cannot be shown")
+    assert b"--train-gpu needs a CUDA build and an NVIDIA GPU" in p.stderr
+    assert not out.exists(), "a refused run wrote an adapter"
+
+
 def test_loss_falls_and_adapter_improves_score(runner_bin, base, tmp_path):
     out = tmp_path / "ad.gguf"
     losses = _train(runner_bin, base, out, steps=30)

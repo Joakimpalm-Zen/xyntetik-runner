@@ -56,6 +56,7 @@ the design, numerical contracts and gates are in
 | Checkpoints | Writes the adapter every N steps | `--save-every N` |
 | Continue an adapter | Trains an existing adapter further, and records which one | `--train` with `--lora` |
 | CUDA training assist | Runs the backward's largest products on an NVIDIA GPU, same bytes | `RUNNER_TRAIN_GPU=1` |
+| GPU training | Runs every weight product of a step on an NVIDIA GPU, within rounding of a CPU run | `--train-gpu` |
 | Trainer logprobs | Reports the logprob of every target token each step trains on | `--train-logprobs FILE` |
 | Preference training | DPO from chosen and rejected answers, with no second model copy | `--train-dpo`, `--dpo-beta` |
 | Distillation | Fits the adapter to a teacher's distributions instead of a text, to bring a quantized file back toward its parent | `--train-teacher`, `scripts/kd-teacher.py` |
@@ -77,10 +78,12 @@ Adapters suit small, targeted datasets: a tool habit, a format, a house style,
 on the order of hundreds of examples and hundreds of steps. This is not an
 instrument for pretraining or for large corpora.
 
-Training runs on the CPU, one example per step. A step takes about 20 s for a
-4B model on a many-core CPU host, and about a minute for a 7B on a consumer
-GPU (Qwen2.5-7B Q4_K_M: 64.8 s per step on an RTX 3070 with the CUDA assist,
-76.5 s on 8 CPU threads). The published Qwen3-4B adapter took 316 steps.
+Training runs one example per step, on the CPU, or with every weight product
+on an NVIDIA GPU under `--train-gpu`. A step takes about 20 s for a 4B model
+on a many-core CPU host, and about ten seconds for a 7B on a consumer GPU
+with `--train-gpu` (Qwen2.5-7B Q4_K_M on an RTX 3070: 9.7 s per step against
+95 s for the CPU trainer on the same 4 threads). The published Qwen3-4B
+adapter took 316 steps.
 Budget hours, not minutes, and expect a Python training stack on a GPU to be
 faster per step. What Runner gives for that cost is one numerical path and an
 artifact you can audit.
@@ -235,18 +238,44 @@ The knobs:
 | `--save-every N` | 0 (off) | Write a checkpoint every N steps |
 | `-t N` | auto | CPU threads; the adapter bytes do not depend on it |
 
-Training is the CPU path: `--train` and `--train-dpo` load the model on the
-CPU even in a CUDA or Metal build. The base stays frozen and memory-mapped;
-only the adapter's parameters and their optimizer state change.
+Training loads the model on the CPU, even in a CUDA or Metal build: `--train`
+and `--train-dpo` keep the base frozen and memory-mapped, and only the
+adapter's parameters and their optimizer state change. A step reads each
+weight once per 16 positions (`RUNNER_TRAIN_ROWS`).
+
+### Training on the GPU (`--train-gpu`)
+
+`--train-gpu` runs every weight product of a step on an NVIDIA GPU: the
+forward, the heads, the backward's recompute and its transposed products, for
+every weight type, with the weights uploaded once and cached for the run. The
+CPU keeps the rest: norms, rope, attention, the DeltaNet recurrence, the
+adapter's own rank-r products and the optimizer.
+
+It is what to use when the weight products dominate, which they do on large
+models. On an RTX 3070 beside 4 CPU threads, a Qwen2.5-7B Q4_K_M step took
+9.7 s against 95 s for the CPU trainer on the same threads (9.8x), and six
+Qwen3.5-0.8B distillation steps 15.9 s against 74.3 s. On a 24 GB datacenter
+MIG slice with 6 CPU threads the same six steps took 10.3 s against 43.1 s
+(4.2x); the device calls were about 0.4 s of a 1.5 s step, so on a small
+model the CPU's share, not the GPU, sets the step time.
+
+The adapter is not the CPU run's byte for byte: the device products add in
+another order. It matches within rounding: on Qwen3.5-0.8B the losses matched
+to 1e-6 and the held-out evals to six digits after 6 steps. Within a run the
+results are deterministic, and the device's forward product gives every
+position the same value however the window is batched, which the backward
+needs. The gradient gates (`test-lora-grad`) run in this mode on a CUDA host,
+at a batching that would expose a product that depends on it. The record
+(`ADAPTER.gguf.train.json`) names the device under `products`. Without a
+CUDA build and an NVIDIA GPU, `--train-gpu` is an error, not a CPU run. There
+is no Metal equivalent.
 
 ### The CUDA training assist
 
-`RUNNER_TRAIN_GPU=1` puts the backward pass's transposed products, its single
-largest cost, on an NVIDIA GPU with the weights cached there. It is gated
-bit-identical to the CPU chain, so the adapter bytes do not depend on it; only
-the step time does. The forward pass and the optimizer stay on the CPU, so
-this is an assist, not a GPU-hosted trainer. Without a usable CUDA device it
-says so once and trains on the CPU. There is no Metal training assist.
+`RUNNER_TRAIN_GPU=1` puts only the backward pass's transposed products on an
+NVIDIA GPU, every weight type, with the weights cached there. They are the CPU
+chain's bits, so the adapter bytes do not depend on it; only the step time
+does. Without a usable CUDA device it says so once and trains on the CPU.
 
 ### See the logprobs a step trains on
 
@@ -809,7 +838,8 @@ rule's verdict),
 `MERGED.gguf.merge.json` (a merge record), `ADAPTER.gguf.sig` (an OMS bundle),
 `*.partial` (a write in progress, never installed on failure).
 
-**Environment.** `RUNNER_TRAIN_GPU=1` (the CUDA assist), `RUNNER_TRAIN_PROF=1`
+**Environment.** `RUNNER_TRAIN_GPU=1` (the CUDA assist, same bytes; `--train-gpu`
+is the whole step on the GPU), `RUNNER_TRAIN_PROF=1`
 (per-step phase times on stderr), `RUNNER_TRAIN_ROWS=N` (positions the trained
 forward runs at once, 16 by default, 1 one at a time; the same bytes at every
 width, which the tests hold), `RUNNER_SCORE_CHUNKED=1` (batched scoring).

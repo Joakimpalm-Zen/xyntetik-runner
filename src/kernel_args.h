@@ -101,4 +101,16 @@ typedef struct {
 // forward, the backward's recompute and the CUDA steps all take it here.
 #define DN_L2_EPS 1e-6f
 
+// The training products (kernels_train.cuh, cuda.c gpu_train_mvt / _mm):
+// a k_tmvt block's inputs, positions and weight rows a tile (TV_IT * TV_TT
+// / 8 threads, 8 positions each), the columns a block of k_tmm and of k_tmmw
+// carries (a grid row per tile) and their rows (one a warp)
+#define TV_IT 32
+#define TV_TT 64
+#define TV_JT 32
+#define TMM_NC 16
+#define TMM_NCW 32
+#define TMM_WARPS 8
+#define TMM_RW 4        // rows a warp of k_tmm / k_tmmw carries
+
 #endif // RUNNER_KERNEL_ARGS_H
