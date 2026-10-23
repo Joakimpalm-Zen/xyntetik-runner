@@ -8,6 +8,7 @@ answers, and shut down cleanly (SIGTERM, then SIGKILL). Everything about
 import contextlib
 import os
 import platform
+import random
 import signal
 import socket
 import subprocess
@@ -19,13 +20,31 @@ from _errors import TransportError
 WINDOWS = os.name == "nt"
 
 
+# Below every OS's ephemeral range (Linux 32768-60999, macOS and Windows
+# 49152-65535). Binding :0 hands out a port INSIDE that range, and the /health
+# poll then connects to it before the server has bound it: the kernel can give
+# the poll that same port as its source port, and the socket connects to
+# itself (TCP simultaneous open). The poll reads its own request back and
+# retries, but while it holds the port the server's bind can fail. A port
+# below 32768 is never a source port, so the poll only ever reaches a server.
+# (The same mechanism ended a kld-compare CI run on 2026-10-23.)
+_PORT_LOW, _PORT_HIGH = 20000, 32767
+
+
 def free_port():
-    """Bind :0, learn the port, release it. Racy in principle; the server
-    binds immediately after and start() fails loudly if it lost the race."""
-    with contextlib.closing(socket.socket()) as s:
-        s.bind(("127.0.0.1", 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.getsockname()[1]
+    """A port below the ephemeral ranges that binds now. Racy in principle;
+    the server binds immediately after and start() fails loudly if it lost
+    the race."""
+    rng = random.SystemRandom()
+    for _ in range(500):
+        port = rng.randint(_PORT_LOW, _PORT_HIGH)
+        with contextlib.closing(socket.socket()) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise OSError(f"no free port in {_PORT_LOW}-{_PORT_HIGH}")
 
 
 def peak_rss_kb(pid):
@@ -58,7 +77,8 @@ class RunnerServer:
 
     def __init__(self, exe, model, *, extra_args=(), ctx=1024, parallel=1,
                  start_timeout=60.0, log_path=None, env=None):
-        self.exe = str(exe)
+        # a path, or a command prefix (a stand-in runner run by an interpreter)
+        self.exe = list(exe) if isinstance(exe, (list, tuple)) else str(exe)
         self.model = str(model)
         self.extra_args = list(extra_args)
         self.ctx = ctx
@@ -89,7 +109,8 @@ class RunnerServer:
 
     def start(self):
         self.port = free_port()
-        argv = [self.exe, "-m", self.model, "--serve", "--no-tray",
+        argv = (list(self.exe) if isinstance(self.exe, list) else [self.exe]) + [
+                "-m", self.model, "--serve", "--no-tray",
                 "--port", str(self.port), "--parallel", str(self.parallel),
                 "-c", str(self.ctx)] + self.extra_args
         self._log = open(self.log_path, "wb") if self.log_path else subprocess.DEVNULL

@@ -6019,7 +6019,7 @@ extern "C" __global__ void k_q35_delta(float *cv, const float *z,
         if (tid < off) red[tid] += red[tid + off];
         __syncthreads();
     }
-    float qscale = rsqrtf(red[0] + eps);
+    float qscale = rsqrtf(red[0] + DN_L2_EPS);
     // every thread has read red[0] before any overwrites it with its k
     // partial: without this barrier warp 0 could store its ks over the q sum
     // while another warp had yet to read it (a silent wrong q scale, found
@@ -6033,7 +6033,7 @@ extern "C" __global__ void k_q35_delta(float *cv, const float *z,
         if (tid < off) red[tid] += red[tid + off];
         __syncthreads();
     }
-    float kscale = rsqrtf(red[0] + eps);
+    float kscale = rsqrtf(red[0] + DN_L2_EPS);
     float beta = 1.0f / (1.0f + expf(-beta_in[h]));
     float av = alpha_in[h] + dt[h];
     float softplus = av > 20.0f ? av : log1pf(expf(av));
@@ -6137,7 +6137,7 @@ k_q35_delta1(const float *cv, const float *beta_in, const float *alpha_in,
         if (tid < off) red[tid] += red[tid + off];
         __syncthreads();
     }
-    float qscale = rsqrtf(red[0] + eps);
+    float qscale = rsqrtf(red[0] + DN_L2_EPS);
     __syncthreads();
     float ks = 0.0f;
     for (int i = tid; i < state_dim; i += blockDim.x) ks += k[i] * k[i];
@@ -6147,7 +6147,7 @@ k_q35_delta1(const float *cv, const float *beta_in, const float *alpha_in,
         if (tid < off) red[tid] += red[tid + off];
         __syncthreads();
     }
-    float kscale = rsqrtf(red[0] + eps);
+    float kscale = rsqrtf(red[0] + DN_L2_EPS);
     float beta = 1.0f / (1.0f + expf(-beta_in[h]));
     float av = alpha_in[h] + dt[h];
     float softplus = av > 20.0f ? av : log1pf(expf(av));
@@ -7207,7 +7207,7 @@ k_q35_delta_seq(const float *cv, const float *z, const float *beta_in,
             if (tid < off) red[tid] += red[tid + off];
             __syncthreads();
         }
-        float qscale = rsqrtf(red[0] + eps);
+        float qscale = rsqrtf(red[0] + DN_L2_EPS);
         __syncthreads();
         float ks = 0.0f;
         for (int i = tid; i < state_dim; i += blockDim.x) ks += k[i] * k[i];
@@ -7217,7 +7217,7 @@ k_q35_delta_seq(const float *cv, const float *z, const float *beta_in,
             if (tid < off) red[tid] += red[tid + off];
             __syncthreads();
         }
-        float kscale = rsqrtf(red[0] + eps);
+        float kscale = rsqrtf(red[0] + DN_L2_EPS);
         float beta = 1.0f / (1.0f + expf(-beta_in[(ulong64)t * heads + h]));
         float av = alpha_in[(ulong64)t * heads + h] + dt[h];
         float softplus = av > 20.0f ? av : log1pf(expf(av));

@@ -284,3 +284,19 @@ def test_a_self_connected_socket_is_not_taken_for_a_server(name):
     finally:
         c.close()
         server.close()
+
+
+def test_the_server_helper_picks_ports_below_every_ephemeral_range():
+    """tests/conformance's RunnerServer (the conformance suite's and the tier
+    smoke's server start) polls /health before the server binds. Binding :0
+    handed out a port inside the ephemeral range, where that poll can be
+    given the same port as its source and connect to itself, as above; a
+    port below 32768 can never be a source port."""
+    import socket
+    sys.path.insert(0, str(ROOT / "tests" / "conformance"))
+    from _process import free_port
+    for _ in range(50):
+        p = free_port()
+        assert 1024 <= p < 32768, p
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", p))

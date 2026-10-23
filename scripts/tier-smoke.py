@@ -4,7 +4,9 @@
 For each Tier 1 file the roster gates on this machine's device class (or the
 one row named with --row): hash the file and refuse it unless it is the
 row's, ask the binary for its --caps and for the file's --adapt-info answer,
-run one greedy prompt, and byte-compare stdout to the pin committed under
+serve the file and ask it one user turn through its own chat template (POST
+/v1/chat/completions, temperature 0, max_tokens n_predict, not streamed),
+and byte-compare the reply's content to the pin committed under
 tests/compatibility/tier-smoke/. --record writes the result into the row's
 cell for the backend it ran on, and the --adapt-info answer into the row's
 lora field, through scripts/model-tiers.py's own record().
@@ -14,25 +16,35 @@ lora field, through scripts/model-tiers.py's own record().
     scripts/tier-smoke.py --models DIR --record      # every row for this class
     scripts/tier-smoke.py --retire --row ID --backend metal --device-class C
 
+Why the chat path: `runner -p` is a raw one-shot prompt with no chat
+template, and an instruct model given one continues the text instead of
+answering it (the Windows CUDA host's first run pinned Granite 4.2
+continuing the prompt with its own "Constraints:"). A user turn is what a
+client sends, so it is what the gate measures. The request sends
+enable_thinking false by default: a thinking family would otherwise spend
+the whole budget on reasoning_content and leave no answer to pin.
+
 What the gate proves, and against what. Its absolute anchors are the file's
 sha256 (the row's, read from the publisher's Hugging Face listing, so the run
-is on the published bytes) and the fact the prompt asks for (the
-continuation of "The capital of France is" must contain "Paris"). The byte
-pin is not an anchor: it was written by an earlier run of this engine, so a
-match proves this build reproduces that one, and a mismatch says something
+is on the published bytes) and the fact the prompt asks for (the reply to
+"List the eight planets ... in order" must name "Mercury"). The byte pin is
+not an anchor: it was written by an earlier run of this engine, so a match
+proves this build reproduces that one, and a mismatch says something
 changed. Generated tokens may change between releases on purpose
 (docs/versioning.md); a mismatch is then read, the reason written in a
-commit, the pin deleted and pinned again. This script never overwrites a pin.
+commit, the pin retired and pinned again. This script never overwrites a pin.
 
 A pin belongs to one device class and one backend. CPU and Metal kernels
 differ in summation order, so neither inherits the other's pin; a backend
 with no pin of its own has not been run.
 
-A pin must be long enough to catch a change: its generated continuation (the
-stdout after the echoed prompt, without the CLI's closing newline) is at
-least the manifest's min_generated_bytes, or it is not written, and an
-existing pin under the minimum is not compared against. --retire removes a
-pin, its manifest entry and the roster cell that cites it, together.
+A pin holds the fact and is long enough to catch a change: a reply that does
+not name the fact, or is shorter than the manifest's min_generated_bytes,
+is not pinned (the reply is printed), and an existing pin under the minimum
+is not compared against. A pin is the reply's UTF-8 bytes as sent, written
+in binary, and every JSON file is written with LF on every host. --retire
+removes a pin, its manifest entry and the roster cell that cites it,
+together.
 """
 
 import argparse
@@ -45,7 +57,9 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST = os.path.join(ROOT, "tests", "compatibility", "tier-smoke.json")
@@ -57,8 +71,13 @@ _spec = importlib.util.spec_from_file_location(
 mt = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mt)
 
+# the tests' own server start: a free port, /health, SIGTERM and a log of
+# the server's stdout and stderr, where the backend banner is read
+sys.path.insert(0, os.path.join(ROOT, "tests", "conformance"))
+from _process import RunnerServer  # noqa: E402
+
 BANNER_RE = re.compile(r"^gpu: (Metal|CUDA) backend on .*$", re.M)
-THREADS_RE = re.compile(r"^loaded .*\| (\d+) threads \|", re.M)
+THREADS_RE = re.compile(r"^loaded .*\| (\d+) threads\b", re.M)
 
 
 def runner_cmd(path):
@@ -122,11 +141,28 @@ def this_class(caps, devices, override=None):
     return hits[0]
 
 
-def generated(out, prompt):
-    """The model's continuation: stdout after the echoed prompt, without the
-    newline the CLI prints when generation ends."""
-    cont = out[len(prompt):] if out.startswith(prompt) else out
-    return cont[:-1] if cont.endswith(b"\n") else cont
+def write_json(obj, path):
+    """JSON as the repository keeps it: UTF-8 and LF on every host. A text-mode
+    write on Windows turns every newline into CRLF and the whole manifest into
+    a diff."""
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(obj, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+
+def chat(port, body, timeout):
+    """One buffered chat turn: the reply's content as UTF-8 bytes, how the turn
+    ended, its completion tokens, and any reasoning_content beside it."""
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions",
+                                 data=json.dumps(body).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        doc = json.loads(r.read().decode("utf-8"))
+    choice = doc["choices"][0]
+    msg = choice.get("message") or {}
+    return ((msg.get("content") or "").encode("utf-8"), choice.get("finish_reason"),
+            (doc.get("usage") or {}).get("completion_tokens"),
+            msg.get("reasoning_content") or "")
 
 
 def retire(row_id, backend, dc, roster_path, manifest, manifest_path, pins_dir, devices):
@@ -155,9 +191,7 @@ def retire(row_id, backend, dc, roster_path, manifest, manifest_path, pins_dir, 
     mt.save(doc, roster_path)
     if mt.is_committed_roster(roster_path):
         mt.write_docs(doc)
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+    write_json(manifest, manifest_path)
     print(f"retired {row_id} {key}" + (f" and its {backend} cell ({retired['runner_version']} "
                                        f"on {retired['date']})" if retired else ""))
 
@@ -215,31 +249,45 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
     spec = dict(manifest.get("defaults") or {})
     spec.update({k: v for k, v in (manifest.get("rows", {}).get(row["id"]) or {}).items()
                  if k != "pins"})
-    args = ["-m", model] + companion + ["-p", spec["prompt"], "-n", str(spec["n_predict"])]
-    args += list(spec.get("args") or [])
+    for k in ("prompt", "n_predict", "ctx", "min_generated_bytes"):
+        if k not in spec:
+            raise SystemExit(f"{row['id']}: the manifest names no {k}")
+    extra = companion + list(spec.get("server_args") or [])
     if backend == "cpu":
-        args += ["--gpu", "off"]
-    t0 = time.monotonic()
-    p = run(runner + args, timeout)
-    seconds = round(time.monotonic() - t0, 2)
-    stderr = p.stderr.decode("utf-8", errors="replace")
-    if p.returncode != 0:
-        raise SystemExit(f"{row['id']} {backend}: the run exited {p.returncode}:\n{stderr}")
-    out = p.stdout
+        extra += ["--gpu", "off"]
+    body = {"messages": [{"role": "user", "content": spec["prompt"]}],
+            "temperature": 0, "max_tokens": spec["n_predict"], "stream": False}
+    body.update(spec.get("request") or {})
+
+    # the model's own chat template: the file is served and asked one user
+    # turn, as a client would; the CLI's -p is a raw continuation, which an
+    # instruct model answers by continuing the prompt rather than replying
+    with tempfile.TemporaryDirectory() as td:
+        log = os.path.join(td, "server.log")
+        t0 = time.monotonic()
+        try:
+            with RunnerServer(runner, model, extra_args=extra, ctx=spec["ctx"],
+                              start_timeout=timeout, log_path=log) as srv:
+                out, finish, ctoks, reasoning = chat(srv.port, body, timeout)
+        except SystemExit:
+            raise
+        except Exception as e:  # TransportError, HTTP errors: the gate did not run
+            tail = open(log, "rb").read()[-2000:].decode("utf-8", "replace") \
+                if os.path.exists(log) else ""
+            raise SystemExit(f"{row['id']} {backend}: the server run failed: {e}\n{tail}")
+        seconds = round(time.monotonic() - t0, 2)
+        with open(log, "rb") as f:
+            server_log = f.read().decode("utf-8", "replace")
 
     # the backend's own statement that it took the model; a fallback line
     # means it did not, whatever printed before it
-    m = BANNER_RE.search(stderr)
-    banner = m.group(0) if m and "using CPU" not in stderr else None
-    t = THREADS_RE.search(stderr)
+    m = BANNER_RE.search(server_log)
+    banner = m.group(0) if m and "using CPU" not in server_log else None
+    t = THREADS_RE.search(server_log)
 
-    prompt = spec["prompt"].encode("utf-8")
-    cont = generated(out, prompt)
-    minimum = spec.get("min_generated_bytes")
-    if not isinstance(minimum, int) or minimum <= 0:
-        raise SystemExit(f"{row['id']}: the manifest names no min_generated_bytes")
+    minimum = spec["min_generated_bytes"]
     expect = spec.get("expect")
-    found = bool(expect) and expect.encode("utf-8") in cont
+    found = bool(expect) and expect.encode("utf-8") in out
 
     key = f"{dc}/{backend}"
     name = f"{row['id']}.{dc}.{backend}.txt"
@@ -249,21 +297,29 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
     # what produced the bytes: a pin compared under other settings would
     # report the manifest's change as the engine's
     made_with = {"prompt": spec["prompt"], "n_predict": spec["n_predict"],
-                 "args": list(spec.get("args") or [])}
+                 "ctx": spec["ctx"], "server_args": list(spec.get("server_args") or []),
+                 "request": dict(spec.get("request") or {})}
     if pin:
         if os.path.exists(pin_path) or key in entry:
             raise SystemExit(f"{row['id']} {key} is already pinned ({rel(pin_path)}); "
                              f"retire it (--retire), with the reason in the commit, "
                              f"to re-pin")
-        if len(cont) < minimum:
-            raise SystemExit(f"{row['id']} {key}: the continuation is {len(cont)} bytes, "
-                             f"under the manifest's minimum of {minimum}; a pin that "
-                             f"short catches almost no change. Give the row a prompt "
-                             f"or n_predict that keeps the model generating.")
+        shown = out.decode("utf-8", "replace")
+        if not found:
+            raise SystemExit(f"{row['id']} {key}: the reply does not name {expect!r}, so "
+                             f"it is not pinned (a pin always holds the fact). The "
+                             f"reply, finish_reason {finish}, {ctoks} tokens:\n{shown}")
+        if len(out) < minimum:
+            why = (f"; reasoning_content held {len(reasoning)} bytes" if reasoning else "")
+            raise SystemExit(f"{row['id']} {key}: the reply is {len(out)} bytes, under "
+                             f"the manifest's minimum of {minimum}{why}; a pin that "
+                             f"short catches almost no change. Give the row a prompt, "
+                             f"n_predict or request that keeps the model answering.")
         os.makedirs(pins_dir, exist_ok=True)
         with open(pin_path, "wb") as f:
             f.write(out)
         entry[key] = {"path": rel(pin_path), "sha256": out_sha, "bytes": len(out),
+                      "finish_reason": finish, "completion_tokens": ctoks,
                       "spec": made_with,
                       "pinned": {"date": datetime.datetime.now(datetime.timezone.utc)
                                  .date().isoformat(),
@@ -282,12 +338,17 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
             want = f.read()
         if hashlib.sha256(want).hexdigest() != entry[key]["sha256"]:
             raise SystemExit(f"{rel(pin_path)} does not match its manifest digest")
-        short = len(generated(want, prompt))
-        if short < minimum:
-            raise SystemExit(f"{rel(pin_path)} holds {short} generated bytes, under "
-                             f"the minimum of {minimum}: retire it (--retire) and pin "
+        if len(want) < minimum:
+            raise SystemExit(f"{rel(pin_path)} holds {len(want)} bytes, under the "
+                             f"minimum of {minimum}: retire it (--retire) and pin "
                              f"again rather than compare against it")
         status = "match" if out == want else "mismatch"
+    shown_args = ["-m", os.path.basename(model)] + \
+        [os.path.basename(a) if a in companion[1:] else a for a in companion] + \
+        ["--serve", "-c", str(spec["ctx"])] + extra[len(companion):]
+    ran = (" ".join(shlex.quote(a) for a in ["runner"] + shown_args)
+           + "; POST /v1/chat/completions "
+           + " ".join(f"{k}={json.dumps(v)}" for k, v in body.items() if k != "messages"))
     return {
         "schema": mt.RESULT_SCHEMA,
         "row": row["id"],
@@ -296,9 +357,7 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
         "generated_utc": datetime.datetime.now(datetime.timezone.utc)
         .strftime("%Y-%m-%dT%H:%M:%SZ"),
         "commit": git_commit(),
-        "ran": " ".join(shlex.quote(a) for a in
-                        ["runner"] + [os.path.basename(a) if a in (model, *companion[1:])
-                                      else a for a in args]),
+        "ran": ran,
         "caps": caps,
         "banner": banner,
         "threads": int(t.group(1)) if t else None,
@@ -307,7 +366,8 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
         "with": ({"row": with_row["id"], "files": with_hashed}
                  if with_row is not None else None),
         "status": status,
-        "output": {"sha256": out_sha, "bytes": len(out)},
+        "output": {"sha256": out_sha, "bytes": len(out), "finish_reason": finish,
+                   "completion_tokens": ctoks},
         "pin": {"path": rel(pin_path), "sha256": entry[key]["sha256"]},
         "expect": {"substring": expect, "found": found},
         "adapt_info": adapt,
@@ -402,13 +462,9 @@ def main():
         res = smoke_one(row, backend, dc, paths, runner, caps, manifest, args.pins,
                         args.pin, args.timeout, with_row, with_paths)
         if args.pin:
-            with open(args.manifest, "w", encoding="utf-8") as f:
-                json.dump(manifest, f, indent=2, ensure_ascii=False)
-                f.write("\n")
+            write_json(manifest, args.manifest)
         if args.out:
-            with open(args.out, "w", encoding="utf-8") as f:
-                json.dump(res, f, indent=2, ensure_ascii=False)
-                f.write("\n")
+            write_json(res, args.out)
         line = (f"{res['status']:<8} {row['id']} {dc} {backend} "
                 f"({res['seconds']} s, fact {'found' if res['expect']['found'] else 'MISSING'})")
         print(line)

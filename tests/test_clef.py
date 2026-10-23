@@ -274,10 +274,12 @@ def test_prompt_chunking_does_not_move_the_scores(runner_bin, clef_model):
 def test_pinned_scores(runner_bin, clef_model):
     # This build's head on the fixture, after it matched the publisher's code
     # on a real checkpoint (docs/clef-admission-2026-10-16.md): a regression
-    # pin on the head's wiring, not a reference value.
+    # pin on the head's wiring, not a reference value. Re-pinned for R8.18:
+    # the DeltaNet q/k L2 norm takes the publisher's 1e-6, and the fixture's
+    # RMS epsilon is 1e-5 (a real checkpoint's is 1e-6, so its scores stay).
     _, (resp,) = systemone(runner_bin, clef_model, [traced(record("card-invoice"))])
     got = scores(resp)
-    want = [1.86071897, 1.50314081, 1.94673312, 2.14638948, 2.30561352]
+    want = [1.85890114, 1.49842787, 1.94177055, 2.14295936, 2.29865026]
     assert max(abs(x - y) for x, y in zip(got, want)) <= 1e-4, got
 
 

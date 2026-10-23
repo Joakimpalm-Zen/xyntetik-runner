@@ -9,6 +9,7 @@
 #include "build_arch.h" // RUNNER_BUILD_ARCH for the route record
 #include "clef.h"       // the joint schema head bound below (struct only)
 #include "fpclass.h"    // the teacher's log-probabilities, under fast math
+#include "kernel_args.h" // DN_L2_EPS, the DeltaNet q/k L2 norm's epsilon
 
 #include <math.h>
 #include "pmath.h"
@@ -6838,11 +6839,11 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
                    sizeof(float) * convdim);
         }
         float *cv = m->ssm_aux + (size_t)b * convdim;
-        // Q and K use L2 norm (not RMS norm).
+        // Q and K use L2 norm (not RMS norm), at the publisher's epsilon
         for (int g = 0; g < ng; g++) {
             float *q = cv + g * sk;
             float *k = cv + keydim + g * sk;
-            float qs = m->rms_eps, ks = m->rms_eps;
+            float qs = DN_L2_EPS, ks = DN_L2_EPS;
             for (int j = 0; j < sk; j++) {
                 qs += q[j] * q[j]; ks += k[j] * k[j];
             }
@@ -9844,7 +9845,10 @@ static bool lbw_dn_init(const model_t *m, int T, lbw_dn *d) {
 // One step of a head's recurrence on its state S [hv][hv] (row j a value
 // dim, column i a key dim), in q35_heads_worker's order: the decay, then per
 // row the prediction, the delta correction, the update and the readout.
-// y (or NULL) gets S q / sqrt(sk).
+// y (or NULL) gets S q / sqrt(sk). The state is square, a key row as wide as
+// a value row: the loader admits a qwen35 file only when inner / v_heads (a
+// head's value width) equals the state size (a key group's width), so hv ==
+// sk wherever this runs.
 static inline void dn_step(float *S, int hv, int sk, float decay, float beta,
                            const float *q, const float *k, const float *v,
                            float *y) {
@@ -10033,7 +10037,7 @@ NUM_STAGE void lbw_recompute_deltanet(model_t *m, int l, int T, lbw_state *s,
                sizeof(float) * (size_t)2 * d->keydim);
         for (int g = 0; g < d->ng; g++) {
             float *q = cv + g * sk, *k = cv + d->keydim + g * sk;
-            float qs = m->rms_eps, ks = m->rms_eps;
+            float qs = DN_L2_EPS, ks = DN_L2_EPS;
             for (int j = 0; j < sk; j++) { qs += q[j] * q[j]; ks += k[j] * k[j]; }
             qs = 1.0f / sqrtf(qs); ks = 1.0f / sqrtf(ks);
             d->rq[(size_t)t * d->ng + g] = qs;

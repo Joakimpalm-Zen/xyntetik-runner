@@ -1042,7 +1042,7 @@
           "date": "2026-10-23",
           "device_class": "macos-arm64-metal",
           "result": "pass",
-          "commit": "a72068140625bae835e88793c0b45ddb58ab15d6",
+          "commit": "7660980968b431928827ed2a795db33892d1a661",
           "caps": {
             "version": "1.5.1",
             "os": "macos",
@@ -1051,8 +1051,8 @@
             "gpu_backend": "metal",
             "gpu_name": "Apple M1"
           },
-          "output_sha256": "eadb99d6bfee9881232221059e9e1638c31325987a1b28dc31ae5874cfff2d99",
-          "ran": "runner -m e2b-q40.gguf -p 'List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.' -n 48 --temp 0 -c 512 -b 64 --no-tray --gpu off",
+          "output_sha256": "4132fa520bc517ed7697f3026b5ca584d275e9d03827a441040e5693a57987cc",
+          "ran": "runner -m e2b-q40.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
           "evidence": "tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.cpu.txt"
         },
         "cuda": null,
@@ -1062,7 +1062,7 @@
           "date": "2026-10-23",
           "device_class": "macos-arm64-metal",
           "result": "pass",
-          "commit": "a72068140625bae835e88793c0b45ddb58ab15d6",
+          "commit": "7660980968b431928827ed2a795db33892d1a661",
           "caps": {
             "version": "1.5.1",
             "os": "macos",
@@ -1071,8 +1071,8 @@
             "gpu_backend": "metal",
             "gpu_name": "Apple M1"
           },
-          "output_sha256": "eadb99d6bfee9881232221059e9e1638c31325987a1b28dc31ae5874cfff2d99",
-          "ran": "runner -m e2b-q40.gguf -p 'List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.' -n 48 --temp 0 -c 512 -b 64 --no-tray",
+          "output_sha256": "4132fa520bc517ed7697f3026b5ca584d275e9d03827a441040e5693a57987cc",
+          "ran": "runner -m e2b-q40.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
           "evidence": "tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.metal.txt"
         }
       },
@@ -1542,7 +1542,7 @@
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
-        "backend": "cpu"
+        "backend": "cuda"
       },
       "backends": {
         "cpu": null,
@@ -1605,7 +1605,7 @@
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
-        "backend": "cpu"
+        "backend": "cuda"
       },
       "backends": {
         "cpu": null,

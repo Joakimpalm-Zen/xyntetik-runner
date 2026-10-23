@@ -45,6 +45,32 @@ Current release and unreleased changes. Compatibility follows the
   `OS=Windows_NT`, and every platform branch reads that one decision; plain
   `make` replaces `make OS=Windows_NT` in the build notes and CI.
 
+- **Inside a container, Runner sizes from the container's limits.** CPU and
+  RAM came from the affinity mask, the physical page count and
+  `/proc/meminfo`, none of which sees a cgroup's CPU quota or memory limit:
+  a container held to 26 CPUs and 80 GiB on a 128-CPU, 268 GB host was sized
+  as the whole host, from the default thread count and the batch default to
+  `--fit` and the load-time RAM checks. On Linux these now take the cgroup v2
+  `cpu.max` and `memory.max` (or the v1 equivalents) into account, at every
+  level from the process's own cgroup up; available memory under a limit is
+  the headroom plus the cgroup's reclaimable page cache, as `MemAvailable`
+  counts it for the host. `--caps` keeps its keys, now carrying the effective
+  numbers, and adds `host` (the machine's own) and `limits` (the source, the
+  CPU quota and the memory limit). `--doctor` reports the same effective
+  memory and adds an `info` finding, `container_limits`, with both sets of
+  numbers; an `info` finding does not change the verdict. macOS and Windows
+  are unchanged.
+
+- **qwen35 and Clef: the DeltaNet q/k L2 norm takes the publisher's
+  epsilon.** The Gated DeltaNet's query and key L2 norm used the model's RMS
+  epsilon; the publisher's implementation hard-codes 1e-6 (transformers'
+  `l2norm`). Every qwen35 and Clef file known ships `rms_norm_eps` 1e-6, so
+  their outputs do not change. A file with another RMS epsilon read its
+  query and key at a slightly wrong scale, on the CPU, in the training
+  recompute and on CUDA alike; all three now use 1e-6. The test fixtures
+  carry an RMS epsilon of 1e-5, so their DeltaNet outputs move, and the Clef
+  fixture's pinned head scores were re-pinned.
+
 - **Model support tiers.** [`docs/model-tiers.json`](docs/model-tiers.json)
   records which model files Runner re-checks on every release (Tier 1, 27
   files: the owner's roster and every published file), which are maintained
@@ -54,9 +80,10 @@ Current release and unreleased changes. Compatibility follows the
   gate, a declared limit, or not run) and the file's `--adapt-info` LoRA
   answer, all written by the gate run, never by hand.
   `scripts/tier-smoke.py` is the per-release smoke: the file hashed against
-  its row, one greedy prompt byte-compared with a committed pin under
-  `tests/compatibility/tier-smoke/`, a head or an adapter composed with the
-  row it runs with. `make release-check` now refuses a tag while a Tier 1
+  its row, served and asked one user turn through its own chat template
+  (temperature 0, `enable_thinking` false), the reply's bytes compared with a
+  committed pin under `tests/compatibility/tier-smoke/` that always names the
+  prompt's fact, a head or an adapter composed with the row it runs with. `make release-check` now refuses a tag while a Tier 1
   file's smoke is missing, recorded on another class, failing, or older than
   45 days: one file (the published gemma-4-E2B mix, CPU and Metal) has run,
   so the next tag needs the other 26 run first. The README's "Actively

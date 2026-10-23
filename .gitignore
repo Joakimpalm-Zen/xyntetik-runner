@@ -216,6 +216,8 @@ test-tokenizer-merge
 test-tokenizer-merge.exe
 test-residency
 test-residency.exe
+test-capacity
+test-capacity.exe
 test-file-identity
 test-file-identity.exe
 # 5 GB scratch file made (and removed) by tests/test_file_identity.c
