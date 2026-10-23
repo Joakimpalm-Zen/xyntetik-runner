@@ -66,7 +66,7 @@ def _run(*args):
 def test_self_comparison_is_near_zero_kld_and_full_agreement(runner_bin, small_model, corpus):
     proc = _run("--model-a", str(small_model), "--model-b", str(small_model),
                 "--runner", str(runner_bin), "--corpus", str(corpus),
-                "--max-positions", "12", "--port-a", "58701", "--port-b", "58702")
+                "--max-positions", "12", "--port-a", "28701", "--port-b", "28702")
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout)
     assert result["positions_scored"] >= 8, result
@@ -80,7 +80,7 @@ def test_self_comparison_is_near_zero_kld_and_full_agreement(runner_bin, small_m
 def test_different_quants_give_sane_nonzero_divergence(runner_bin, small_model, requant_model, corpus):
     proc = _run("--model-a", str(small_model), "--model-b", str(requant_model),
                 "--runner", str(runner_bin), "--corpus", str(corpus),
-                "--max-positions", "12", "--port-a", "58703", "--port-b", "58704")
+                "--max-positions", "12", "--port-a", "28703", "--port-b", "28704")
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout)
     assert result["positions_scored"] >= 8, result
@@ -98,23 +98,23 @@ def test_endpoint_mode_reuses_an_already_running_server(runner_bin, small_model,
     # (Task 5a's pruned-vs-unpruned comparison will likely run this way).
     proc = subprocess.Popen(
         [str(runner_bin), "-m", str(small_model), "--serve", "--no-tray",
-         "--port", "58705", "--gpu", "off"],
+         "--port", "28705", "--gpu", "off"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         import time
         import urllib.request
         for _ in range(200):
             try:
-                urllib.request.urlopen("http://127.0.0.1:58705/v1/models", timeout=1)
+                urllib.request.urlopen("http://127.0.0.1:28705/v1/models", timeout=1)
                 break
             except Exception:
                 time.sleep(0.25)
         else:
             pytest.fail("test server did not come up")
 
-        proc2 = _run("--endpoint-a", "http://127.0.0.1:58705",
+        proc2 = _run("--endpoint-a", "http://127.0.0.1:28705",
                      "--model-name-a", small_model.name,
-                     "--endpoint-b", "http://127.0.0.1:58705",
+                     "--endpoint-b", "http://127.0.0.1:28705",
                      "--model-name-b", small_model.name,
                      "--corpus", str(corpus), "--max-positions", "6")
         assert proc2.returncode == 0, proc2.stderr
@@ -155,22 +155,22 @@ def test_endpoint_mode_refuses_an_unserved_model_name(runner_bin, small_model, c
     # still write a report; now it is a one-line refusal naming the served ids
     proc = subprocess.Popen(
         [str(runner_bin), "-m", str(small_model), "--serve", "--no-tray",
-         "--port", "58706", "--gpu", "off"],
+         "--port", "28706", "--gpu", "off"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         import time
         import urllib.request
         for _ in range(200):
             try:
-                urllib.request.urlopen("http://127.0.0.1:58706/v1/models", timeout=1)
+                urllib.request.urlopen("http://127.0.0.1:28706/v1/models", timeout=1)
                 break
             except Exception:
                 time.sleep(0.25)
         else:
             pytest.fail("test server did not come up")
-        proc2 = _run("--endpoint-a", "http://127.0.0.1:58706",
+        proc2 = _run("--endpoint-a", "http://127.0.0.1:28706",
                      "--model-name-a", "not-the-served-id",
-                     "--endpoint-b", "http://127.0.0.1:58706",
+                     "--endpoint-b", "http://127.0.0.1:28706",
                      "--model-name-b", small_model.name,
                      "--corpus", str(corpus), "--max-positions", "2")
         assert proc2.returncode != 0
@@ -218,7 +218,7 @@ def test_raw_ab_run_records_each_side(runner_bin, corpus):
     proc = subprocess.run(
         [sys.executable, str(RAW_SCRIPT), "--runner", str(runner_bin),
          "--model-a", str(model), "--model-b", str(model),
-         "--port-a", "58721", "--port-b", "58722",
+         "--port-a", "28721", "--port-b", "28722",
          "--env-a", "RUNNER_SCORE_AB_SIDE=a", "--args-b", "-t 1", "--gpu-b", "off",
          "--corpus", str(corpus), "--max-positions", "3", "--out", str(out)],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
@@ -227,3 +227,60 @@ def test_raw_ab_run_records_each_side(runner_bin, corpus):
     assert result["positions_scored"] == 3
     assert result["sides"]["a"] == {"gpu": "off", "args": [], "env": ["RUNNER_SCORE_AB_SIDE=a"]}
     assert result["sides"]["b"] == {"gpu": "off", "args": ["-t", "1"], "env": []}
+
+
+# CI 2026-10-23: the raw A/B run died polling 127.0.0.1:28722 with
+# BadStatusLine "GET /v1/models HTTP/1.1", its own request read back. A port
+# inside the OS's ephemeral range can be handed to a connecting socket as its
+# own source port while nothing listens there yet, and the socket connects to
+# itself. Absolute anchors: Linux's default ip_local_port_range is
+# 32768-60999, and macOS and Windows use the IANA dynamic range 49152-65535.
+EPHEMERAL_FLOOR = 32768
+
+
+def _load(name):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"),
+                                                  ROOT / "scripts" / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_every_polled_port_sits_below_the_ephemeral_ranges():
+    import re
+    found = []
+    for name in ("kld-compare.py", "kld-compare-raw.py"):
+        text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+        found += [int(p) for p in re.findall(r'"--port-[ab]", type=int, default=(\d+)', text)]
+    text = pathlib.Path(__file__).read_text(encoding="utf-8")
+    found += [int(p) for p in re.findall(r'"--port(?:-[ab])?", "(\d+)"', text)]
+    found += [int(p) for p in re.findall(r"127\.0\.0\.1:(\d+)", text)]
+    assert len(found) >= 10, found
+    assert all(p < EPHEMERAL_FLOOR for p in found), sorted(p for p in found
+                                                           if p >= EPHEMERAL_FLOOR)
+
+
+@pytest.mark.parametrize("name", ["kld-compare", "kld-compare-raw"])
+def test_a_self_connected_socket_is_not_taken_for_a_server(name):
+    import socket
+    mod = _load(name)
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", 0))
+        try:
+            s.connect(s.getsockname())
+        except OSError:
+            pytest.skip("this OS refuses a deliberate self-connect")
+        assert mod.self_connected(s)
+    finally:
+        s.close()
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    c = socket.create_connection(server.getsockname())
+    try:
+        assert not mod.self_connected(c)
+    finally:
+        c.close()
+        server.close()
