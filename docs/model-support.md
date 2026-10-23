@@ -145,7 +145,12 @@ python3 scripts/tier-smoke.py --models /models --record
 
 The device class comes from the binary's own `--caps`, matched against
 [`docs/device-evidence.json`](device-evidence.json). The backend defaults to
-the row's; `--backend cpu` adds a CPU cell on a GPU host. `--record` writes the
+the row's; `--backend cpu` adds a CPU cell on a GPU host. Run that cell with
+the GPU visible, since the smoke serves it with `--gpu off` itself: a GPU
+hidden with an empty `CUDA_VISIBLE_DEVICES` leaves `--caps` with no GPU, which
+matches no GPU class. When no class matches, the refusal lists every class
+with the caps fields it expected otherwise; `--device-class` names the class
+outright. `--record` writes the
 cell and the `--adapt-info` answer into the roster and re-renders the README's
 model list and this page: commit `docs/model-tiers.json`, `README.md` and this
 file together.

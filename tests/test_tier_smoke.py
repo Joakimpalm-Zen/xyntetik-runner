@@ -100,7 +100,8 @@ def smoke(world, *extra, env=None):
            "--manifest", str(world["manifest"]), "--pins", str(world["pins"]),
            "--row", "toy-q8_0", "--model", str(world["model"]),
            "--out", str(world["out"])] + list(extra)
-    e = dict(os.environ, **(env or {}))
+    # a None value removes the variable from the smoke's environment
+    e = {k: v for k, v in dict(os.environ, **(env or {})).items() if v is not None}
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           text=True, env=e)
 
@@ -280,6 +281,74 @@ def test_a_pin_made_with_another_prompt_is_not_compared_against(world):
     r = smoke(world, "--backend", "metal")
     assert r.returncode != 0
     assert "different" in r.stdout
+
+
+# --- the device class: matched from --caps, and a refusal that says why -------
+
+# a Linux x86_64 build's --caps with the GPU hidden: src/main.c prints
+# "gpu":null when no device answers
+NO_GPU_CAPS = ROOT / "tests" / "fixtures" / "tier_smoke_caps_linux_no_gpu.json"
+TWO_CLASSES = {
+    "schema": "xyntetik.runner.device-evidence.v1",
+    "policy": {"default_max_age_days": 45},
+    "classes": [
+        {"id": "linux-x86_64-cuda",
+         "expect": {"os": "linux", "arch": "x86_64", "gpu_backend": "cuda"}},
+        {"id": "macos-arm64-metal",
+         "expect": {"os": "macos", "arch": "arm64", "gpu_backend": "metal"}},
+    ],
+}
+
+
+def test_a_hidden_gpu_is_refused_with_the_classes_and_what_differed(world):
+    """The Linux CUDA lab box, a CPU row run with CUDA_VISIBLE_DEVICES empty:
+    --caps reported no GPU, no class matched, and the refusal said only that
+    ("matches device classes []"). It now names every class the ledger has,
+    the caps fields each one expected otherwise, and the two ways a GPU
+    class's CPU cell is run."""
+    world["devices"].write_text(json.dumps(TWO_CLASSES), encoding="utf-8")
+    r = smoke(world, "--backend", "cpu", "--pin",
+              env={"FAKE_RUNNER_CAPS": str(NO_GPU_CAPS), "CUDA_VISIBLE_DEVICES": ""})
+    assert r.returncode != 0
+    out = r.stdout
+    assert "no device class in" in out and "(os linux, arch x86_64, no GPU)" in out
+    assert "caps report no GPU; class linux-x86_64-cuda expects gpu_backend cuda" in out
+    assert ("caps report os linux, arch x86_64, no GPU; class macos-arm64-metal "
+            "expects os macos, arch arm64, gpu_backend metal") in out
+    assert "CUDA_VISIBLE_DEVICES is '' in this environment" in out
+    assert "with the GPU visible and --backend cpu" in out and "--gpu off" in out
+    # the one class this machine differs from only by the hidden GPU is named
+    assert "--device-class linux-x86_64-cuda" in out
+    assert "--device-class macos-arm64-metal" not in out
+    assert not world["pins"].exists()
+
+
+def test_the_refusal_names_cuda_visible_devices_only_when_it_is_set(world):
+    world["devices"].write_text(json.dumps(TWO_CLASSES), encoding="utf-8")
+    r = smoke(world, "--backend", "cpu", "--pin",
+              env={"FAKE_RUNNER_CAPS": str(NO_GPU_CAPS), "CUDA_VISIBLE_DEVICES": None})
+    assert r.returncode != 0
+    assert "caps report no GPU; class linux-x86_64-cuda expects gpu_backend cuda" in r.stdout
+    assert "CUDA_VISIBLE_DEVICES" not in r.stdout
+
+
+def test_a_named_class_runs_the_cpu_cell_with_the_gpu_hidden(world):
+    """The explicit class is the other way the refusal offers, and it runs."""
+    world["devices"].write_text(json.dumps(TWO_CLASSES), encoding="utf-8")
+    r = smoke(world, "--backend", "cpu", "--pin", "--device-class", "linux-x86_64-cuda",
+              env={"FAKE_RUNNER_CAPS": str(NO_GPU_CAPS), "CUDA_VISIBLE_DEVICES": ""})
+    assert r.returncode == 0, r.stdout
+    assert (world["pins"] / "toy-q8_0.linux-x86_64-cuda.cpu.txt").exists()
+    assert result(world)["caps"]["gpu_backend"] is None
+
+
+def test_an_unknown_named_class_lists_the_classes(world):
+    world["devices"].write_text(json.dumps(TWO_CLASSES), encoding="utf-8")
+    r = smoke(world, "--backend", "cpu", "--pin", "--device-class", "linux-cuda",
+              env={"FAKE_RUNNER_CAPS": str(NO_GPU_CAPS)})
+    assert r.returncode != 0
+    assert "unknown device class 'linux-cuda'" in r.stdout
+    assert "linux-x86_64-cuda, macos-arm64-metal" in r.stdout
 
 
 # --- a companion runs with the row it names -----------------------------------

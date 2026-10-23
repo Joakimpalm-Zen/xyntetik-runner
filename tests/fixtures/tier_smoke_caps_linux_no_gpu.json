@@ -1,0 +1,7 @@
+{
+  "version": "9.8.7",
+  "os": "linux",
+  "arch": "x86_64",
+  "cpu_cores": 26,
+  "gpu": null
+}

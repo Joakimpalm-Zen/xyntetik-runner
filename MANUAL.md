@@ -3986,6 +3986,11 @@ than accuracy, because a decision surface that changes its answer when the
 options are reordered is not usable no matter how sharp its distribution
 looks elsewhere. `--batch-state` (default on) groups a state's questions
 into one request, the same KV reuse the endpoint itself is built around.
+`--rendering raw-v1|continuation-v1` names the rendering in every request
+and records it in the result and the report's header; without it no
+`rendering` field is sent, the server applies `raw-v1`, and the output is
+what it was before the flag. `continuation-v1` with an `--answer-prefix` is
+refused before any request, since the server refuses each such request.
 `--emit-predictions FILE` writes one JSONL record per question (split,
 groups, options, the returned probabilities and logprobs, the label
 distribution), so a different binning or a paired comparison of two models

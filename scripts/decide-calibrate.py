@@ -21,6 +21,15 @@ Input: the lab's question shape, one JSON object per line (contract:
 one is assigned here (`q<line-number>`, 0-based) to correlate the request
 and the response.
 
+Rendering: `--rendering raw-v1|continuation-v1` names the endpoint's
+rendering (src/decide.c) in every request and records it in the result's
+provenance and the report header. Without it no `rendering` field is sent,
+the server applies its default (raw-v1), and the requests and the output
+are what they were before the flag. continuation-v1 scores each option as
+the direct continuation of the state and takes no answer prefix, so
+`--rendering continuation-v1 --answer-prefix ...` is refused before any
+request.
+
 Held-out split: BY permutation_group, never by row, deterministic from
 --seed. A permutation_group's rows can span more than one underlying
 `state` (a rephrasing AND a chosen/rejected pair sharing one group, seen in
@@ -60,6 +69,8 @@ DEFAULT_HOLDOUT_FRAC = 0.2
 DEFAULT_BINS = 10
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BACKOFF = 0.5
+# the renderings POST /v1/decide accepts (src/decide.c); raw-v1 is its default
+RENDERINGS = ("raw-v1", "continuation-v1")
 
 
 # --------------------------------------------------------------- input ---
@@ -172,7 +183,10 @@ def assign_holdout_groups(group_ids, seed, holdout_frac):
 
 # ----------------------------------------------------------------- HTTP ---
 
-def build_payload(state, model_name, answer_prefix, group_rows):
+def build_payload(state, model_name, answer_prefix, group_rows, rendering=None):
+    """One /v1/decide body. `rendering` is sent only when the run named one:
+    a run without --rendering sends the body it sent before the flag existed,
+    and the server applies its own default (raw-v1)."""
     payload = {
         "state": state,
         "answer_prefix": answer_prefix,
@@ -183,6 +197,8 @@ def build_payload(state, model_name, answer_prefix, group_rows):
     }
     if model_name:
         payload["model"] = model_name
+    if rendering is not None:
+        payload["rendering"] = rendering
     return payload
 
 
@@ -271,12 +287,14 @@ def apply_decisions(group_rows, body):
 
 
 def send_group(endpoint, model_name, answer_prefix, group_rows,
-               max_retries=DEFAULT_MAX_RETRIES, backoff=DEFAULT_BACKOFF):
+               max_retries=DEFAULT_MAX_RETRIES, backoff=DEFAULT_BACKOFF,
+               rendering=None):
     """Send one group of rows (sharing one `state`) as a single request.
     A 400 on a multi-question group is isolated by falling back to one
     request per question, so one bad question in a batch does not fail
     every question that shares its state prefill."""
-    payload = build_payload(group_rows[0]["state"], model_name, answer_prefix, group_rows)
+    payload = build_payload(group_rows[0]["state"], model_name, answer_prefix,
+                            group_rows, rendering)
     ok, body, err = post_decide(endpoint, payload, max_retries=max_retries, backoff=backoff)
     if ok:
         apply_decisions(group_rows, body)
@@ -284,7 +302,7 @@ def send_group(endpoint, model_name, answer_prefix, group_rows,
     if err and err.startswith("HTTP 400") and len(group_rows) > 1:
         for r in group_rows:
             send_group(endpoint, model_name, answer_prefix, [r],
-                       max_retries=max_retries, backoff=backoff)
+                       max_retries=max_retries, backoff=backoff, rendering=rendering)
         return
     for r in group_rows:
         r["failed"] = True
@@ -558,6 +576,9 @@ def render_report(result):
         "",
         f"questions file: `{p['questions_file']}` (sha256 `{p['questions_sha256']}`)",
         f"endpoint: {p['endpoint']}  model: {p['model_name']}",
+        # only a run that named its rendering records one; a run without
+        # --rendering keeps the header it had before the flag
+        *([f"rendering: {p['rendering']}"] if "rendering" in p else []),
         f"seed: {p['seed']}  holdout_frac: {p['holdout_frac']}  bins: {p['bins']}",
         f"runner: {p['runner_git_describe'] or '(git describe unavailable)'}",
         f"rows: {p['n_rows']} used, {p['n_skipped']} skipped at parse, "
@@ -624,6 +645,13 @@ def render_report(result):
 # ----------------------------------------------------------------- main ---
 
 def run(args):
+    if args.rendering == "continuation-v1" and args.answer_prefix:
+        # the server refuses this pair on every request (src/decide.c), so
+        # the run would be one 400 per group and an empty report
+        print("error: --answer-prefix has no place in the continuation-v1 rendering "
+              "(the option follows the state directly); drop it or use raw-v1",
+              file=sys.stderr)
+        return None, 2
     rows, n_skipped = read_questions(args.questions, args.max_questions)
     if not rows:
         print("error: no usable questions parsed", file=sys.stderr)
@@ -650,7 +678,8 @@ def run(args):
     last_reported = 0
     for group in request_groups:
         send_group(args.endpoint, args.model_name, args.answer_prefix, group,
-                   max_retries=DEFAULT_MAX_RETRIES, backoff=DEFAULT_BACKOFF)
+                   max_retries=DEFAULT_MAX_RETRIES, backoff=DEFAULT_BACKOFF,
+                   rendering=args.rendering)
         done += len(group)
         if done - last_reported >= 50 or done == total:
             print(f"progress: {done}/{total} questions", file=sys.stderr)
@@ -679,6 +708,7 @@ def run(args):
         "endpoint": args.endpoint,
         "model_name": args.model_name,
         "answer_prefix": args.answer_prefix,
+        **({"rendering": args.rendering} if args.rendering is not None else {}),
         "seed": args.seed,
         "holdout_frac": args.holdout_frac,
         "bins": args.bins,
@@ -721,6 +751,11 @@ def main(argv=None):
                     help="model field sent with every request")
     ap.add_argument("--answer-prefix", default="",
                     help="text placed between the question and every option")
+    ap.add_argument("--rendering", choices=RENDERINGS, default=None,
+                    help="the rendering every request names (raw-v1 or "
+                         "continuation-v1), recorded in the result and the "
+                         "report; without it no rendering is sent and the "
+                         "server applies its default, raw-v1")
     ap.add_argument("--max-questions", type=int, default=None,
                     help="use only the first N questions in the file")
     ap.add_argument("--seed", type=int, default=DEFAULT_SEED,
