@@ -91,10 +91,11 @@ def moe_fixtures(tmp_path_factory):
 
 
 def _run(runner_bin, model, mode):
-    # RUNNER_METAL_MM=0 and RUNNER_METAL_ATTN_COOP=0 pin the two byte-identical
-    # routes. Both of their fast twins are promoted by default and both
-    # reassociate, so a CPU-vs-GPU byte comparison has to pin both or it is
-    # comparing a tolerance route against an identity one.
+    # RUNNER_METAL_MM=0, RUNNER_METAL_ATTN_COOP=0 and RUNNER_METAL_MV=0 pin the
+    # byte-identical routes. Their fast twins are promoted by default (the
+    # Q4_K decode matvec since 2026-10-23) and all reassociate, so a
+    # CPU-vs-GPU byte comparison has to pin all three or it is comparing a
+    # tolerance route against an identity one.
     # The matvec pin, which IS byte-identical to the
     # CPU by contract. Every Makefile smoke that does this same CPU-vs-"auto"
     # byte comparison (test-metal-moe, test-metal-swa, test-metal-eseries, ...)
@@ -105,7 +106,7 @@ def _run(runner_bin, model, mode):
     # deliberately NOT bit-identical to the scalar path -- this file's job is
     # geometry/dispatch coverage (does Metal have a working kernel for this
     # shape), not the MM kernel's numeric behavior, which has its own gate.
-    env = dict(os.environ, RUNNER_METAL_MM="0", RUNNER_METAL_ATTN_COOP="0")
+    env = dict(os.environ, RUNNER_METAL_MM="0", RUNNER_METAL_ATTN_COOP="0", RUNNER_METAL_MV="0")
     return subprocess.run(
         [runner_bin, "-m", str(model), "-p", PROMPT, "-n", "12", "--temp", "0",
          "--gpu", mode],

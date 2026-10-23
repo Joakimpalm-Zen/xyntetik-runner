@@ -106,6 +106,8 @@ typedef struct {
     id<MTLBuffer> *ggis, *gdsc;                 // gemma4 router/down scales
     id<MTLBuffer> suppress;                     // gemma never-emit token ids
     int batch_cap;                              // scratch rows allocated
+    bool mv_q4k_default;   // the fast Q4_K matvec is this model's default:
+                           // dense models only (metal_mv_fast_for)
 } gpu_t;
 
 static void lora_dev_release(gpu_t *g);
@@ -1078,15 +1080,18 @@ static bool metal_tensor_device_ok(id<MTLDevice> dev) {
 // selected at n_col == 1 only. See the kernel-family comment in kernels.metal
 // for what it does that identity forbids, and tests/test_mv_tol.c for the gate.
 //
-// Default: OFF. It ships opt-in until a measurement promotes it, exactly as
-// the fused CPU int8 dot does — a lever that has not cleared its bar on a
-// machine is not a default anywhere. `RUNNER_METAL_MV=1` opts in; -1 through
-// gpu_mv_force restores the env default.
-enum { MV_ENV_UNSET = -2 };
+// Default: Q4_K only. The owner promoted k_mvf_q4_K on 2026-10-23 on its D1
+// rows (mean KL 0.9993x / 0.9998x against the publisher's float32 model,
+// decode +10.8% / +12.5% on the Q4_K_M Llamas); Q4_0 and Q8_0 measured
+// neutral and stay opt-in. `RUNNER_METAL_MV=0` restores the identity kernel
+// for every type (what every CPU-against-GPU byte comparison sets),
+// `RUNNER_METAL_MV=1` takes the fast kernel for every type that has one.
+// gpu_mv_force: 0 identity, 1 every type, -1 back to the env default.
+enum { MV_ENV_UNSET = -2, MV_OFF = 0, MV_ALL = 1, MV_Q4_K = 2 };
 static _Atomic int g_mv_state = MV_ENV_UNSET;
 
 void gpu_mv_force(int on) {
-    g_mv_state = on < 0 ? MV_ENV_UNSET : (on != 0);
+    g_mv_state = on < 0 ? MV_ENV_UNSET : on ? MV_ALL : MV_OFF;
 }
 
 // Cooperative KV score read (k_attn_coop / k_attn_chunk_coop). It reassociates
@@ -1211,17 +1216,26 @@ unsigned long gpu_mv_dispatches(void) { return g_mv_dispatches; }
 static _Atomic unsigned long g_mv2_dispatches = 0;
 unsigned long gpu_mv2_dispatches(void) { return g_mv2_dispatches; }
 
-static bool metal_mv_fast_on(void) {
+static int metal_mv_state(void) {
     // Cache the env read: this sits in the per-matvec dispatch path, and
     // gpu_mv_force(-1) resets to UNSET so the next call re-reads it.
     int st = g_mv_state;   // one read
     if (st == MV_ENV_UNSET) {
         const char *e = getenv("RUNNER_METAL_MV");
-        int v = e && *e && strcmp(e, "0") && strcmp(e, "off");
+        int v = !e || !*e ? MV_Q4_K
+              : !strcmp(e, "0") || !strcmp(e, "off") ? MV_OFF : MV_ALL;
         // only from unread: a value gpu_mv_force set meanwhile stands
         st = atomic_compare_exchange_strong(&g_mv_state, &(int){ MV_ENV_UNSET }, v) ? v : g_mv_state;
     }
-    return st > 0;
+    return st;
+}
+
+// whether a matvec over weights of `type` takes the fast kernel (when the
+// type has one): every type under RUNNER_METAL_MV=1, Q4_K on a dense model
+// by default
+static bool metal_mv_fast_for(const gpu_t *g, int type) {
+    int st = metal_mv_state();
+    return st == MV_ALL || (st == MV_Q4_K && type == T_Q4_K && g->mv_q4k_default);
 }
 
 void gpu_moe_eager_force(int on) { (void)on; }
@@ -2199,6 +2213,11 @@ static void metal_publish(model_t *m, gpu_t *g, id<MTLDevice> dev, int gpu_K,
     m->kv_owner = KV_OWNER_GPU_BACKEND;
     m->gpu = g;
     m->gpu_owner = g;
+    // The fast Q4_K decode matvec's default covers dense models: its D1 rows
+    // are dense (Llama-3.2-3B, Qwen2.5-1.5B), and D1 is held as written for
+    // MoE families, where routing flips decide the mean (owner, 2026-10-23).
+    // A MoE model keeps the identity kernel unless RUNNER_METAL_MV=1.
+    g->mv_q4k_default = m->n_expert <= 0;
     // K layers on the device. Full offload (K == n_layer) returns logits and
     // never reaches the CPU loop; a partial split leaves the boundary
     // activation in the host x buffer and the CPU finishes from layer K.
@@ -2340,7 +2359,7 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
                         gguf_tensor *w, id<MTLBuffer> x, NSUInteger x_off,
                         id<MTLBuffer> y, NSUInteger y_off,
                         int n_in, int n_out, id<MTLBuffer> bias,
-                        int n_col, int x_stride, int y_stride);
+                        int n_col, int x_stride, int y_stride, bool decode);
 
 // The per-column scale buffer for the tiled GEMMs, grown to the batch on
 // demand (a buffer allocation is not an encoder operation, so growing it
@@ -2370,7 +2389,7 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
     // window (spec_batch); real prefill batches go to the tiles as before.
     if (n_col > 1 && n_col <= 16) {
         enc_mv_cols(g, e, w, x, x_off, y, y_off, n_in, n_out, bias,
-                    n_col, x_stride, y_stride);
+                    n_col, x_stride, y_stride, false);
         return;
     }
     if (n_col > 1 && g->p_tensor[w->type] && n_in % 256 == 0) {
@@ -2438,7 +2457,7 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
         return;
     }
     enc_mv_cols(g, e, w, x, x_off, y, y_off, n_in, n_out, bias,
-                n_col, x_stride, y_stride);
+                n_col, x_stride, y_stride, n_col == 1);
 }
 
 // The identity matvec tail of enc_mv_n, callable directly: the microbatch
@@ -2447,24 +2466,26 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
 // here runs the exact k_mv dot the solo path runs, weights served from cache
 // across the columns. This is the same twin discipline CUDA's enc_mv_batch
 // enforces, arrived at from the other side.
+// `decode`: the columns are decode steps (one token, or the microbatch's
+// slots), which is where the fast matvec may run; a prefill batch that lands
+// here keeps the identity kernel.
 static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
                         gguf_tensor *w, id<MTLBuffer> x, NSUInteger x_off,
                         id<MTLBuffer> y, NSUInteger y_off,
                         int n_in, int n_out, id<MTLBuffer> bias,
-                        int n_col, int x_stride, int y_stride) {
+                        int n_col, int x_stride, int y_stride, bool decode) {
     int col_tile = metal_col_tile();
     if (col_tile > n_col) col_tile = n_col;
     mv_args a = { n_in, n_out, 0,
                   bias != nil, n_col, x_stride, y_stride, col_tile };
-    // Fast decode matvec: single column only. At n_col > 1 either the tiled
-    // GEMM above already took the work, or this type has no mm kernel and the
-    // identity matvec is what the batch falls back to — in both cases the
-    // fast kernel would be answering a question nobody asked, and it would put
-    // a non-identity result on the PREFILL path, where the tolerance gate
+    // Fast decode matvec: decode columns only (one token, or the microbatch's
+    // slots, whose columns must be the solo step's bits). A prefill batch that
+    // lands here keeps the identity kernel: the fast kernel would put a
+    // non-identity result on the PREFILL path, where the tolerance gate
     // (decode-only by construction) has never looked.
     id<MTLComputePipelineState> mv = g->p_mv[w->type];
     int rows_sg = 1;   // output rows a simdgroup computes
-    if (n_col == 1 && metal_mv_fast_on() && g->p_mvf[w->type]) {
+    if (decode && metal_mv_fast_for(g, w->type) && g->p_mvf[w->type]) {
         mv = g->p_mvf[w->type];
         rows_sg = w->type == T_Q4_K ? 2 : 1;   // k_mvf_q4_K takes two rows
         g_mv_dispatches++;
@@ -4248,7 +4269,8 @@ const char *gpu_route_detail(const model_t *m) {
     int moe = metal_moe_mm_on();
     snprintf(buf, sizeof buf, "fusion=%s mm=%s mv=%s attn=%s%s%s tensor=%s",
              metal_fuse_on() ? "on" : "off", metal_mm_on() ? "on" : "off",
-             metal_mv_fast_on() ? "fast" : "identity",
+             metal_mv_state() == MV_ALL ? "fast"
+             : metal_mv_state() == MV_Q4_K && g && g->mv_q4k_default ? "fast-q4_K" : "identity",
              metal_attn_coop_on() ? "coop" : "identity",
              m && m->n_expert > 0 ? " moe_mm=" : "",
              m && m->n_expert > 0 ? (moe == 2 ? "half" : moe ? "f32" : "off") : "",
@@ -4347,13 +4369,13 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->attn_norm[l],
                       n_embd, m0->rms_eps, n, n_embd, xdim);
         enc_mv_cols(g, e, ly->wq, g->xb, 0, g->q, 0,
-                    n_embd, q_dim_l, g->bq[l], n, xdim, q_dim);
+                    n_embd, q_dim_l, g->bq[l], n, xdim, q_dim, true);
         if (owns_kv) {
             enc_mv_cols(g, e, ly->wk, g->xb, 0, g->kt, 0,
-                        n_embd, kv_dim_l, g->bk[l], n, xdim, kv_dim);
+                        n_embd, kv_dim_l, g->bk[l], n, xdim, kv_dim, true);
             if (ly->wv)
                 enc_mv_cols(g, e, ly->wv, g->xb, 0, g->vt, 0,
-                            n_embd, kv_dim_l, g->bv[l], n, xdim, kv_dim);
+                            n_embd, kv_dim_l, g->bv[l], n, xdim, kv_dim, true);
         }
         if (g->qn[l])
             enc_qknorm_n(g, e, m0, g->q, 0, g->qn[l], m0->n_head, hd, n, q_dim);
@@ -4405,7 +4427,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         }
 
         enc_mv_cols(g, e, ly->wo, g->xb2, 0, g->xb, 0,
-                    q_dim_l, n_embd, g->bo[l], n, xdim, xdim);
+                    q_dim_l, n_embd, g->bo[l], n, xdim, xdim, true);
         if (g->pan[l])
             enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->pan[l],
                           n_embd, m0->post_norm_eps, n, xdim, xdim);
@@ -4417,13 +4439,13 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->ffn_norm[l],
                       n_embd, m0->rms_eps, n, n_embd, xdim);
         enc_mv_cols(g, e, ly->w_gate, g->xb, 0, g->hb, 0,
-                    n_embd, nff_l, nil, n, xdim, nff_l);
+                    n_embd, nff_l, nil, n, xdim, nff_l, true);
         enc_mv_cols(g, e, ly->w_up, g->xb, 0, g->hb2, 0,
-                    n_embd, nff_l, nil, n, xdim, nff_l);
+                    n_embd, nff_l, nil, n, xdim, nff_l, true);
         enc_elem(g, e, m0->ffn_act == ACT_GELU ? g->p_gelu : g->p_silu,
                  g->hb, 0, g->hb2, 0, n * nff_l);
         enc_mv_cols(g, e, ly->w_down, g->hb, 0, g->xb, 0,
-                    nff_l, n_embd, nil, n, nff_l, xdim);
+                    nff_l, n_embd, nil, n, nff_l, xdim, true);
         if (g->pfn[l])
             enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->pfn[l],
                           n_embd, m0->post_norm_eps, n, xdim, xdim);

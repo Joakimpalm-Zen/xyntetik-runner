@@ -1740,8 +1740,8 @@ attention-temperature fixtures - in both f16 and q8 KV cache formats, for a
 measured +3.0–4.3 % decode across 2.3k–8.1k token spans. So Metal decode at
 long context is a tolerance-gated route, not a byte-identical one.
 
-`RUNNER_CUDA_TC=0`, `RUNNER_METAL_MM=0`, `RUNNER_METAL_ATTN_COOP=0` and
-`RUNNER_METAL_MOE_MM=0` pin the
+`RUNNER_CUDA_TC=0`, `RUNNER_METAL_MM=0`, `RUNNER_METAL_ATTN_COOP=0`,
+`RUNNER_METAL_MV=0` and `RUNNER_METAL_MOE_MM=0` pin the
 byte-identical scalar paths for identity investigations, and `RUNNER_MOE_EAGER=1`
 pins CUDA's eager MoE routing (the fused path's device `expf` differs from the
 host libm by 1-2 ulp by construction); every CPU-vs-GPU byte comparison in the
@@ -1801,16 +1801,22 @@ every byte-identity gate pins); `=half` selects the half-staged
 comparison arm. The full three-instrument account is archived in Shade
 (`research/runner-engine/archive/runner-docs-2026-10-13b/`).
 
-`RUNNER_METAL_MV=1` opts into a reassociating Metal *decode* matvec (q4_0/q8_0,
-float4 accumulation and the q4_0 zero-point factored out of the inner loop).
-It clears the 0/64 teacher-forced flip bar on both formats but measured
-neutral on an 8-core M1 - −0.16 % bandwidth-bound, −0.01 % dispatch-bound - so
-it is **off by default**, leaving the byte-identical kernel on the default
-path. Since 2026-10-22 it also covers Q4_K (two rows a simdgroup, vector
-accumulation): decode +10.8% on Llama-3.2-1B and +12.5% on Llama-3.2-3B
-Q4_K_M over the default path on the M1, -0.9% on Qwen2.5-1.5B. It stays off
-by default: it is not the identity kernel's bits, and a tolerance default is
-a fidelity decision. `./test-mv-tol MODEL.gguf` is the gate; see
+Metal *decode* matvecs over **Q4_K** weights of a dense model take a
+reassociating fast kernel by default (two rows a simdgroup, vector
+accumulation; a mixture-of-experts model keeps the identity kernel, since
+the fidelity rows behind the default are dense): decode +10.8% on
+Llama-3.2-1B and +12.5% on Llama-3.2-3B Q4_K_M on an Apple M1, -0.9% on
+Qwen2.5-1.5B. It is a tolerance route, not the identity kernel's bits,
+promoted on its fidelity rows against the publisher's float32 model (mean
+KL 0.9993x on Llama-3.2-3B and 0.9998x on Qwen2.5-1.5B against the identity
+route, paired tests not distinguishable) and on `./test-mv-tol MODEL.gguf`
+(0/64 teacher-forced flips). Its columns are computed the way one column
+is, so `--parallel` microbatch decode and speculative verify stay
+bit-identical to solo decode (`test-batch-identity`, `test-spec-identity`).
+`RUNNER_METAL_MV=0` restores the identity kernel for every type;
+`RUNNER_METAL_MV=1` also takes the fast q4_0 / q8_0 kernels (float4
+accumulation, the q4_0 zero-point factored out of the inner loop), which
+clear the flip bar but measured neutral on an 8-core M1 and stay opt-in. See
 `docs/negative-result-metal-multirow-matvec.md` for the matvec numerical
 contract and its verification gates.
 

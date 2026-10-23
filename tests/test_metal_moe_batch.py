@@ -37,7 +37,7 @@ def moe_fixture_prefix(tmp_path_factory):
 
 def _run(runner, model, gpu, *, stats=False, route_trace=False,
          route_batch=True, nan_trace=None, full_trace=None):
-    env = dict(os.environ, RUNNER_METAL_MM="0", RUNNER_METAL_ATTN_COOP="0")
+    env = dict(os.environ, RUNNER_METAL_MM="0", RUNNER_METAL_ATTN_COOP="0", RUNNER_METAL_MV="0")
     if stats:
         env["RUNNER_METAL_STATS"] = "1"
     if route_trace:
