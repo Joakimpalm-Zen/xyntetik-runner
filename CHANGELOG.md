@@ -116,7 +116,10 @@ Current release and unreleased changes. Compatibility follows the
   roster and held to it by a parity test. Tiers change
   no loading path and do not appear in `--caps`. Also fixed: the device
   ledger's release-check refusal printed its summary above the rows it
-  summarises.
+  summarises. A machine whose `--caps` matches no device class (a GPU
+  hidden with an empty `CUDA_VISIBLE_DEVICES`, say) is refused with every
+  class, the caps fields each expected otherwise, and how a GPU class's CPU
+  cell is run.
 
 - **The last-validated line on the model cards and the site.** Every
   published model file's Hugging Face card (13 repositories) now carries a

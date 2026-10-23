@@ -16,6 +16,13 @@ lora field, through scripts/model-tiers.py's own record().
     scripts/tier-smoke.py --models DIR --record      # every row for this class
     scripts/tier-smoke.py --retire --row ID --backend metal --device-class C
 
+The device class is matched from this machine's --caps against
+docs/device-evidence.json, or named with --device-class. A CPU cell of a GPU
+class runs with the GPU visible and --backend cpu: the smoke serves it with
+--gpu off itself, and a hidden GPU (CUDA_VISIBLE_DEVICES empty) leaves --caps
+with no GPU, which matches no GPU class. When no class matches, the refusal
+lists every class with the caps fields it expected otherwise.
+
 Why the chat path: `runner -p` is a raw one-shot prompt with no chat
 template, and an instruct model given one continues the text instead of
 answering it (the Windows CUDA host's first run pinned Granite 4.2
@@ -126,16 +133,60 @@ def caps_of(runner):
             "gpu_backend": gpu.get("backend"), "gpu_name": gpu.get("name")}
 
 
-def this_class(caps, devices, override=None):
+def _caps_field(key, value):
+    """One caps field as the refusal reads it: a GPU that --caps does not
+    report (src/main.c prints "gpu": null) is "no GPU", not "gpu_backend None"."""
+    if value is None:
+        return "no GPU" if key == "gpu_backend" else f"no {key}"
+    return f"{key} {value}"
+
+
+def no_class_message(caps, classes, where):
+    """Why no class matched: every class the ledger has, the caps fields each
+    one expected otherwise, and how a GPU class's CPU cell is run. A bare
+    "matches device classes []" sent the operator of a CPU row on the Linux
+    CUDA lab box, run with the GPU hidden, to read the script."""
+    if not classes:
+        return f"{where} names no device classes"
+    keys = []
+    for exp in classes.values():
+        keys += [k for k in exp if k not in keys]
+    lines = [f"no device class in {where} matches this machine's --caps "
+             f"({', '.join(_caps_field(k, caps.get(k)) for k in keys)}):"]
+    hidden_gpu = []
+    for cid, exp in classes.items():
+        diff = [k for k, v in exp.items() if caps.get(k) != v]
+        lines.append(f"  - caps report {', '.join(_caps_field(k, caps.get(k)) for k in diff)}; "
+                     f"class {cid} expects {', '.join(f'{k} {exp[k]}' for k in diff)}")
+        if diff == ["gpu_backend"] and caps.get("gpu_backend") is None:
+            hidden_gpu.append(cid)
+    if caps.get("gpu_backend") is None:
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            lines.append(f"CUDA_VISIBLE_DEVICES is {os.environ['CUDA_VISIBLE_DEVICES']!r} "
+                         f"in this environment, and an empty value or an index with no "
+                         f"device hides the GPU from the runner.")
+        named = " or ".join(f"--device-class {c}" for c in hidden_gpu) or "--device-class ID"
+        lines.append("A CPU cell of a GPU class is run on that class's machine with the "
+                     "GPU visible and --backend cpu (the smoke serves with --gpu off "
+                     f"itself), or with the class named: {named}.")
+    else:
+        lines.append("If this machine is one of these classes, name it with --device-class.")
+    return "\n".join(lines)
+
+
+def this_class(caps, devices, override=None, where="docs/device-evidence.json"):
     """The device class this machine is, by its own --caps."""
     classes = mt.device_classes(devices)
     if override:
         if override not in classes:
-            raise SystemExit(f"unknown device class {override!r}")
+            raise SystemExit(f"unknown device class {override!r}; {where} names "
+                             f"{', '.join(classes) or 'none'}")
         return override
     hits = [cid for cid, exp in classes.items()
             if all(caps.get(k) == v for k, v in exp.items())]
-    if len(hits) != 1:
+    if not hits:
+        raise SystemExit(no_class_message(caps, classes, where))
+    if len(hits) > 1:
         raise SystemExit(f"this machine matches device classes {hits}; name one "
                          f"with --device-class")
     return hits[0]
@@ -416,13 +467,13 @@ def main():
     if args.retire:
         if not (args.row and args.backend and args.device_class):
             raise SystemExit("--retire needs --row, --backend and --device-class")
-        this_class({}, devices, args.device_class)
+        this_class({}, devices, args.device_class, rel(args.device_evidence))
         retire(args.row, args.backend, args.device_class, args.roster, manifest,
                args.manifest, args.pins, devices)
         return 0
     runner = runner_cmd(args.runner)
     caps = caps_of(runner)
-    dc = this_class(caps, devices, args.device_class)
+    dc = this_class(caps, devices, args.device_class, rel(args.device_evidence))
 
     tier1 = [r for r in doc["rows"] if r["tier"] == "tier1"]
     if args.row:

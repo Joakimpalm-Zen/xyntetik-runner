@@ -12,6 +12,8 @@ Mercury. With --lora the content is marked, as an adapter changes the text;
 FAKE_RUNNER_FALLBACK=1 makes a GPU run decline the model and run on the
 CPU, as a Metal build does for a layout it has no kernel for.
 FAKE_RUNNER_REQUEST_LOG names a file each chat request body is appended to.
+FAKE_RUNNER_CAPS names a JSON file answered for --caps instead of the
+default Metal host's document.
 """
 
 import json
@@ -25,6 +27,10 @@ DEFAULT = ("Here they are, in order from the Sun:\n\n1. Mercury: the smallest pl
            "and the closest to the Sun.\n2. Venus: the hottest planet.")
 
 if "--caps" in argv:
+    if os.environ.get("FAKE_RUNNER_CAPS"):
+        with open(os.environ["FAKE_RUNNER_CAPS"], encoding="utf-8") as f:
+            print(json.dumps(json.load(f)))
+        sys.exit(0)
     print(json.dumps({"version": "9.8.7", "os": "macos", "arch": "arm64",
                       "cpu_cores": 8,
                       "gpu": {"backend": "metal", "name": "Fake M"}}))
