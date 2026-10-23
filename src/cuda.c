@@ -7878,6 +7878,11 @@ void gpu_train_prof(model_t *m, double *t_mm, long *n_mm, double *t_mvt,
     }
 }
 
+double gpu_train_dev_wall(model_t *m) {
+    train_gpu_t *t = m->train_gpu;
+    return t ? t->t_mm + t->t_mvt : 0;
+}
+
 static bool train_mm(train_gpu_t *t, const gguf_tensor *w, const float *x,
                      int x_stride, float *y, int y_stride, int n_in, int n_out,
                      const float *bias, int nb) {

@@ -8906,8 +8906,22 @@ static bool attn_bw_run(tpool *tp, const attn_bw_job *jb) {
 // backwards once dK/dV are complete; phase B3 folds the attn-norm backward
 // into the residual path.
 // RUNNER_TRAIN_PROF phase accumulators (the backward runs on the serial
-// spine, so plain globals are race-free)
-static double lbw_prof[4];   // R recompute / B1 sites / B1 attn / B2+B3
+// spine, so plain globals are race-free): R recompute / B1 sites / the
+// attention layers' B1 attention / B2+B3 / a DeltaNet layer's mixer sites.
+// The mixer's sites had shared the attention column, and a 10.7 s "attn"
+// that was 3.2 s of attention was read as attention (2026-10-23). lbw_dev
+// holds the device products' wall time inside each phase.
+enum { LBW_R, LBW_SITES, LBW_ATTN, LBW_B2B3, LBW_DN_SITES, LBW_N };
+static double lbw_prof[LBW_N], lbw_dev[LBW_N];
+
+// close phase k now: its wall time since *lt, and the device's share of it
+static void lbw_tick(model_t *m, int k, double *lt, double *dt) {
+    double n2 = plat_now(), d2 = gpu_train_dev_wall(m);
+    lbw_prof[k] += n2 - *lt;
+    lbw_dev[k] += d2 - *dt;
+    *lt = n2;
+    *dt = d2;
+}
 
 // One layer's reverse sweep, shared by its phases: the shapes resolved once,
 // every buffer the phases read and write, and the profile clock.
@@ -8916,7 +8930,7 @@ static double lbw_prof[4];   // R recompute / B1 sites / B1 attn / B2+B3
 // clang on arm64, on the MoE adapters with clang on x86-64).
 typedef struct {
     bool lprof;
-    double lt;
+    double lt, dt;   // the profile clock, and the device wall time at lt
     layer_t *ly;
     int E;
     int hd;
@@ -9120,6 +9134,7 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
         for (size_t i = 0; i < (size_t)T * E; i++) dx[i] *= os;
     s->lprof = lprof;
     s->lt = lt;
+    s->dt = lprof ? gpu_train_dev_wall(m) : 0;
     s->ly = ly;
     s->E = E;
     s->hd = hd;
@@ -9393,7 +9408,7 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
         lora_site_fw(m, l, LW_UP, u, xn2, E, nff, T);
     }
 
-    if (lprof) { double n2 = plat_now(); lbw_prof[0] += n2 - lt; lt = n2; }
+    if (lprof) lbw_tick(m, LBW_R, &lt, &s->dt);
     for (int t = 0; ok && !moe && t < T; t++) {
         const float *gt = g + (size_t)t * nff, *ut = u + (size_t)t * nff;
         float *ht = hact + (size_t)t * nff;
@@ -9632,7 +9647,7 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
     // gradient (residual scale, then the sandwich norm's adjoint); a
     // DeltaNet layer's mixer output is lbw_deltanet_bw's
     if (ly->recurrent) {
-        if (lprof) { double n2 = plat_now(); lbw_prof[1] += n2 - lt; lt = n2; }
+        if (lprof) lbw_tick(m, LBW_SITES, &lt, &s->dt);
         *okp = ok;
         s->lt = lt;
         return;
@@ -9668,7 +9683,7 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
             for (size_t i = 0; ok && i < (size_t)T * E; i++) dxn1[i] += dxg[i];
         }
     }
-    if (lprof) { double n2 = plat_now(); lbw_prof[1] += n2 - lt; lt = n2; }
+    if (lprof) lbw_tick(m, LBW_SITES, &lt, &s->dt);
     *okp = ok;
     s->lt = lt;
 }
@@ -9727,7 +9742,7 @@ NUM_STAGE void lbw_attention(model_t *m, int l, int T, float *dx, lbw_state *s, 
         }
     }
 
-    if (lprof) { double n2 = plat_now(); lbw_prof[2] += n2 - lt; lt = n2; }
+    if (lprof) lbw_tick(m, LBW_ATTN, &lt, &s->dt);
     *okp = ok;
     s->lt = lt;
 }
@@ -9855,7 +9870,7 @@ NUM_STAGE void lbw_input_grad(model_t *m, int l, int T, float *dx, lbw_state *s,
                    dxn1 + (size_t)t * E, out, E, m->rms_eps);
     }
 
-    if (lprof) lbw_prof[3] += plat_now() - lt;
+    if (lprof) lbw_tick(m, LBW_B2B3, &lt, &s->dt);
     *okp = ok;
 }
 
@@ -10254,7 +10269,7 @@ NUM_STAGE void lbw_recompute_deltanet(model_t *m, int l, int T, lbw_state *s,
         float *ht = s->hact + (size_t)t * nff;
         for (int i = 0; i < nff; i++) ht[i] = gated_act(m->ffn_act, gt[i], ut[i]);
     }
-    if (s->lprof) { double n2 = plat_now(); lbw_prof[0] += n2 - s->lt; s->lt = n2; }
+    if (s->lprof) lbw_tick(m, LBW_R, &s->lt, &s->dt);
     *okp = ok;
 }
 
@@ -10362,9 +10377,8 @@ NUM_STAGE void lbw_deltanet_bw(model_t *m, int l, int T, lbw_state *s, lbw_dn *d
                             nh, T);
     ok = ok && lora_site_bw(m, l, LW_ALPHA, ly->ssm_alpha, s->xn1, d->daa, s->dxn1, E,
                             nh, T);
-    // RUNNER_TRAIN_PROF: the mixer's backward goes where an attention
-    // layer's does (the "attn" column)
-    if (s->lprof) { double n2 = plat_now(); lbw_prof[2] += n2 - s->lt; s->lt = n2; }
+    // RUNNER_TRAIN_PROF: the mixer's sites have their own column
+    if (s->lprof) lbw_tick(m, LBW_DN_SITES, &s->lt, &s->dt);
     *okp = ok;
 }
 
@@ -10747,21 +10761,30 @@ static bool lora_backward(model_t *m, const int32_t *toks, int T,
     // The head's adjoint runs inside the forward's rounds (R8.19).
     bool prof = getenv("RUNNER_TRAIN_PROF") != NULL;
     double pt0 = prof ? plat_now() : 0, pt_fw = 0;
+    double pd0 = prof ? gpu_train_dev_wall(m) : 0, pd_fw = 0;
     double loss = 0.0;
     model_t *dev = t_mv_dev;
     t_mv_dev = m->train_dev ? m : NULL;
     float *dx = calloc((size_t)T * m->n_embd, sizeof(float));
     bool ok = dx && lora_taped_forward(m, toks, T, pos_w, tch, dx, &loss);
-    if (ok && prof) pt_fw = plat_now();
+    if (ok && prof) { pt_fw = plat_now(); pd_fw = gpu_train_dev_wall(m); }
     if (ok) ok = lora_layers_bw(m, toks, T, dx);
     if (ok && prof) {
         double dmm, dmvt, kmm, kmvt;
         long nmm, nmvt;
         gpu_train_prof(m, &dmm, &nmm, &dmvt, &nmvt, &kmm, &kmvt);
         fprintf(stderr, "train-prof: fw+head %.2fs layers %.2fs "
-                "(R %.2f sites %.2f attn %.2f b2b3 %.2f)",
+                "(R %.2f sites %.2f attn %.2f b2b3 %.2f dn_sites %.2f)",
                 pt_fw - pt0, plat_now() - pt_fw,
-                lbw_prof[0], lbw_prof[1], lbw_prof[2], lbw_prof[3]);
+                lbw_prof[LBW_R], lbw_prof[LBW_SITES], lbw_prof[LBW_ATTN],
+                lbw_prof[LBW_B2B3], lbw_prof[LBW_DN_SITES]);
+        // the same phases' device share (wall time inside the products,
+        // transfers and syncs included); the rest of each phase is the host
+        if (m->train_gpu)
+            fprintf(stderr, " of which device: fw+head %.2f R %.2f sites %.2f "
+                    "attn %.2f b2b3 %.2f dn_sites %.2f", pd_fw - pd0,
+                    lbw_dev[LBW_R], lbw_dev[LBW_SITES], lbw_dev[LBW_ATTN],
+                    lbw_dev[LBW_B2B3], lbw_dev[LBW_DN_SITES]);
         fprintf(stderr, " [dn_fw %.2f dn_bw %.2f lora %.2f attn_layers "
                 "%.2f]", lbw_sub[0], lbw_sub[1], lbw_sub[2], lbw_sub[3]);
         if (m->train_gpu)
@@ -10772,6 +10795,7 @@ static bool lora_backward(model_t *m, const int32_t *toks, int T,
     }
     memset(lbw_sub, 0, sizeof(lbw_sub));
     memset(lbw_prof, 0, sizeof(lbw_prof));
+    memset(lbw_dev, 0, sizeof(lbw_dev));
     free(dx);
     free(m->tape); m->tape = NULL; m->tape_T = 0;
     t_mv_dev = dev;
