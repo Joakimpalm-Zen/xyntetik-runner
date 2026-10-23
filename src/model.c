@@ -8430,12 +8430,14 @@ static void lsb_proj(void *ctx, int t0, int t1) {
     }
 }
 
+// t outermost: a position's input slice is read once for all r rows of
+// dA (each element's chain is still t ascending)
 static void lsb_ga(void *ctx, int i0, int i1) {
     lsb_job *J = ctx;
-    for (int k = 0; k < J->r; k++) {
-        float *gar = J->lw->ga + (size_t)k * J->n_in;
-        for (int t = 0; t < J->nb; t++) {
-            const float *xt = J->xin + (size_t)t * J->n_in;
+    for (int t = 0; t < J->nb; t++) {
+        const float *xt = J->xin + (size_t)t * J->n_in;
+        for (int k = 0; k < J->r; k++) {
+            float *gar = J->lw->ga + (size_t)k * J->n_in;
             float stb = J->s * J->tb[(size_t)t * J->r + k];
             for (int i = i0; i < i1; i++) gar[i] = fmaf(stb, xt[i], gar[i]);
         }
@@ -8455,16 +8457,22 @@ static void lsb_gb(void *ctx, int j0, int j1) {
     }
 }
 
+// columns in blocks of LSB_IB, so A's block stays in cache across the
+// positions (each element's chain is still k ascending, then one fmaf)
+enum { LSB_IB = 512 };
 static void lsb_dx(void *ctx, int t0, int t1) {
     lsb_job *J = ctx;
-    for (int t = t0; t < t1; t++) {
-        float *dxt = J->dxin + (size_t)t * J->n_in;
-        const float *tb = J->tb + (size_t)t * J->r;
-        for (int i = 0; i < J->n_in; i++) {
-            float acc = 0.0f;
-            for (int k = 0; k < J->r; k++)
-                acc = fmaf(J->lw->a[(size_t)k * J->n_in + i], tb[k], acc);
-            dxt[i] = fmaf(J->s, acc, dxt[i]);
+    for (int ib = 0; ib < J->n_in; ib += LSB_IB) {
+        int ie = ib + LSB_IB < J->n_in ? ib + LSB_IB : J->n_in;
+        for (int t = t0; t < t1; t++) {
+            float *dxt = J->dxin + (size_t)t * J->n_in;
+            const float *tb = J->tb + (size_t)t * J->r;
+            for (int i = ib; i < ie; i++) {
+                float acc = 0.0f;
+                for (int k = 0; k < J->r; k++)
+                    acc = fmaf(J->lw->a[(size_t)k * J->n_in + i], tb[k], acc);
+                dxt[i] = fmaf(J->s, acc, dxt[i]);
+            }
         }
     }
 }
