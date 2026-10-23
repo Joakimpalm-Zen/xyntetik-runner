@@ -5434,9 +5434,13 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
            have_tmpl_text ? "true" : "false", fam, native ? "true" : "false");
     sb_lit(&r, "\"sampling\":\"");
     sb_esc(&r, rt->sampling, strlen(rt->sampling));
+    // what this process may use: inside a container, the host narrowed by
+    // its cgroup limits (the finding below names both when they differ)
+    plat_capacity cap;
+    plat_capacity_get(&cap);
     sb_fmt(&r, "\",\"memory\":{\"ram_total_bytes\":%llu,\"ram_available_bytes\":%llu},",
-           (unsigned long long)plat_ram_bytes(),
-           (unsigned long long)plat_ram_available_bytes());
+           (unsigned long long)cap.ram_bytes,
+           (unsigned long long)cap.ram_available_bytes);
     sb_fmt(&r, "\"timings\":{\"load_s\":%.3f,\"threads\":%d", rt->load_s,
            tpool_size(rt->m.tp));
     if (probe_ran)
@@ -5457,11 +5461,11 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
         sb_lit(&r, "\"");
     }
     sb_lit(&r, "},\"findings\":[");
-    int nf = 0, worst = 0;   // 0 ok, 1 degraded, 2 broken
+    int nf = 0, worst = 0;   // 0 ok, 1 degraded, 2 broken; an info finding (0) moves nothing
 #define FINDING(sev, code, detail, next) do { \
         sb_fmt(&r, "%s{\"severity\":\"%s\",\"code\":\"%s\",\"detail\":\"%s\"," \
                    "\"next_step\":\"%s\"}", nf++ ? "," : "", \
-               (sev) == 2 ? "broken" : "degraded", code, detail, next); \
+               (sev) == 2 ? "broken" : (sev) == 1 ? "degraded" : "info", code, detail, next); \
         if ((sev) > worst) worst = (sev); } while (0)
     if (dt == TMPL_LLAMA2_FALLBACK)
         FINDING(2, "template_not_recognised",
@@ -5505,10 +5509,29 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
                     "generation is under one token per second",
                     "check available RAM against the model size with --fit; a model larger than RAM pages from disk");
     }
-    if (plat_ram_available_bytes() && rt->m.file_size > plat_ram_available_bytes() && !rt->m.gpu)
+    if (cap.ram_available_bytes && rt->m.file_size > cap.ram_available_bytes && !rt->m.gpu)
         FINDING(1, "file_larger_than_available_ram",
                 "the model file is larger than the RAM available right now",
                 "close other programs, pick a smaller quantization, or run --fit for the exact numbers");
+    if (cap.cpu_cores != cap.host_cpu_cores || cap.ram_bytes != cap.host_ram_bytes) {
+        // not a fault: the run is sized to what the container allows, and a
+        // reader comparing this report with the machine needs both numbers
+        char lim[192], part[96];
+        snprintf(lim, sizeof lim, "container limits apply:");
+        if (cap.cpu_cores != cap.host_cpu_cores) {
+            snprintf(part, sizeof part, " %d of %d CPUs", cap.cpu_cores, cap.host_cpu_cores);
+            strncat(lim, part, sizeof lim - strlen(lim) - 1);
+        }
+        if (cap.ram_bytes != cap.host_ram_bytes) {
+            snprintf(part, sizeof part, "%s %.1f GiB of %.1f GiB RAM",
+                     cap.cpu_cores != cap.host_cpu_cores ? "," : "",
+                     (double)cap.ram_bytes / (double)(1ull << 30),
+                     (double)cap.host_ram_bytes / (double)(1ull << 30));
+            strncat(lim, part, sizeof lim - strlen(lim) - 1);
+        }
+        FINDING(0, "container_limits", lim,
+                "threads, the batch and the RAM checks are sized from these limits; raise the container's CPU or memory limit to give Runner more, or set -t");
+    }
 #undef FINDING
     sb_fmt(&r, "],\"verdict\":\"%s\",\"shareable\":\"%s\"}\n",
            worst == 2 ? "broken" : worst == 1 ? "degraded" : "ok",

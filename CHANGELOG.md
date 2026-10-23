@@ -16,7 +16,10 @@ Current release and unreleased changes. Compatibility follows the
   the headroom plus the cgroup's reclaimable page cache, as `MemAvailable`
   counts it for the host. `--caps` keeps its keys, now carrying the effective
   numbers, and adds `host` (the machine's own) and `limits` (the source, the
-  CPU quota and the memory limit). macOS and Windows are unchanged.
+  CPU quota and the memory limit). `--doctor` reports the same effective
+  memory and adds an `info` finding, `container_limits`, with both sets of
+  numbers; an `info` finding does not change the verdict. macOS and Windows
+  are unchanged.
 
 - **qwen35 and Clef: the DeltaNet q/k L2 norm takes the publisher's
   epsilon.** The Gated DeltaNet's query and key L2 norm used the model's RMS

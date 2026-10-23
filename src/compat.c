@@ -571,7 +571,10 @@ int plat_default_thread_count(void) {
     size_t len = sizeof(perf);
     if (sysctlbyname("hw.perflevel0.physicalcpu", &perf, &len, NULL, 0) == 0 &&
         len == sizeof(perf) && perf > 0) {
-        nc = perf;
+        // never more than the CPUs this process may use; on a Mac the
+        // performance cores are always the fewer, so this only binds where
+        // a limit has narrowed plat_cpu_count below them
+        if (perf < nc) nc = perf;
         perf_known = true;
     }
 #endif
