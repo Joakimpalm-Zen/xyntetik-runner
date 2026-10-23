@@ -20,11 +20,13 @@ Current release and unreleased changes. Compatibility follows the
   one) the result is the same: the command line and the environment are read
   in their UTF-16 form and every file is opened through the UTF-16 APIs. A
   console on stdout or stderr is switched to the UTF-8 output code page
-  while runner runs and restored at exit. Two Windows defects on the same
-  paths went with it: `--shadow-mode` passed a model path containing a space
-  to the Python client as two arguments, and the desktop tray named every
-  model over 2 GiB "model file missing", because MinGW's `stat()` fails past
-  2 GiB.
+  while runner runs and restored at exit, and a line typed into the
+  interactive chat at a console is read as UTF-16 (it arrived in the
+  console's input code page, 437 or 850, whatever the process's own). Two
+  Windows defects on the same paths went with it: `--shadow-mode` passed a
+  model path containing a space to the Python client as two arguments, and
+  the desktop tray named every model over 2 GiB "model file missing",
+  because MinGW's `stat()` fails past 2 GiB.
 
 - **Seed 0 is accepted.** `seed: 0`, `-s 0`, `--fork-seed 0` and a
   session's `seed` or `fork_seed` of 0 now sample and replay like any other

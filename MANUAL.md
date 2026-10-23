@@ -1609,7 +1609,8 @@ command line and the environment in their UTF-16 form and opens every file
 through the UTF-16 Windows APIs itself, so the same text and paths arrive the
 same way. A console on stdout or stderr is switched to the UTF-8 output code
 page while runner runs and put back at exit; redirected output is UTF-8 bytes
-either way.
+either way. A line typed into the interactive chat at a console is read as
+UTF-16 and kept as UTF-8, whatever the console's input code page.
 
 ### Container image
 

@@ -1007,6 +1007,11 @@ static const char *tool_family_for(int tmpl, bool *native) {
 // pasting a file into chat asked two unrelated questions, the second starting
 // mid-word. Callers free the result.
 static char *read_line(FILE *f, bool *oom) {
+#ifdef _WIN32
+    // typed at a console: read in UTF-16, because the narrow read gives the
+    // console's input code page rather than UTF-8 (compat.h)
+    if (f == stdin && plat_is_terminal(0)) return plat_console_read_line(oom);
+#endif
     size_t cap = 1024, n = 0;
     char *buf = malloc(cap);
     if (!buf) { *oom = true; return NULL; }

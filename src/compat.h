@@ -227,6 +227,14 @@ int   plat_rmdir(const char *path);
 // directory itself ("dir/" is "dir"), except at a root
 int   plat_stat(const char *path, plat_stat_t *st);
 int   plat_setenv(const char *name, const char *value);
+// One line typed at the console that is stdin, without its line ending, as
+// malloc'd UTF-8; NULL at the end of input (Ctrl+Z first on a line, as the C
+// runtime reads a console, or a read that fails), with *oom set when memory
+// ran out. Read in UTF-16 (ReadConsoleW): the narrow read gives the
+// console's input code page, 437 or 850 out of the box, whatever the
+// process's own code page is, so a typed "e acute" arrived as one cp850 byte.
+// Only for a stdin that plat_is_terminal(0) calls a console.
+char *plat_console_read_line(bool *oom);
 #else
 typedef struct stat plat_stat_t;
 #define plat_fopen(path, mode)        fopen(path, mode)

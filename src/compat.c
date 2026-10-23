@@ -1129,6 +1129,44 @@ int plat_setenv(const char *name, const char *value) {
     return 0;
 }
 
+static bool g_console_eof;   // a Ctrl+Z was read: every later read is the end
+
+char *plat_console_read_line(bool *oom) {
+    if (g_console_eof) return NULL;
+    HANDLE in = (HANDLE)_get_osfhandle(0);
+    size_t cap = 256, n = 0;
+    wchar_t *w = malloc(cap * sizeof *w);
+    if (!w) { *oom = true; return NULL; }
+    bool ended = false;     // the line's newline arrived
+    for (;;) {
+        if (cap - n < 129) {
+            if (cap > ((size_t)1 << 28)) { free(w); *oom = true; return NULL; }
+            wchar_t *g = realloc(w, 2 * cap * sizeof *w);
+            if (!g) { free(w); *oom = true; return NULL; }
+            w = g;
+            cap *= 2;
+        }
+        DWORD got = 0;
+        if (!ReadConsoleW(in, w + n, 128, &got, NULL) || got == 0) break;
+        n += got;
+        if (w[n - 1] == L'\n') { ended = true; break; }
+    }
+    if (ended) {
+        n--;
+        if (n && w[n - 1] == L'\r') n--;
+    }
+    // Ctrl+Z is the end of input on a console; what was typed before it on
+    // the same line is the last line
+    for (size_t i = 0; i < n; i++)
+        if (w[i] == 0x1A) { n = i; ended = false; g_console_eof = true; break; }
+    if (n == 0 && !ended) { free(w); return NULL; }
+    w[n] = 0;
+    char *u = plat_wide_to_utf8(w);
+    free(w);
+    if (!u) *oom = true;
+    return u;
+}
+
 // The C runtime's own split of the wide command line, the one it made of
 // the narrow line for main(): __wgetmainargs is what MinGW's startup calls
 // for wmain(), and _dowildcard is the wildcard setting it used for main().
