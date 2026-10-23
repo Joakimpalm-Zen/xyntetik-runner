@@ -10498,7 +10498,7 @@ static double kd_row_loss(const float *z, int V, const int32_t *ids,
     return kl;
 }
 
-static bool rows_logits(model_t *m, int n, float *out);
+static bool rows_logits(model_t *m, int n, float *out, bool transform);
 
 // Rows a taped forward runs at once. A forward of n rows with t_mv_exact (every
 // product column the batch-1 dot's bits; norms, rope, attention and the
@@ -10507,9 +10507,9 @@ static bool rows_logits(model_t *m, int n, float *out);
 // position at a time) on every trainable family; every weight block is
 // decoded once a round instead of once a position. Not the speculative
 // keep-forward: training restores no row, so it files no per-row checkpoints.
-// Device mode (--train-gpu) runs rounds of 64: its forward product takes 64
-// columns per decode of the weights (k_tmmw), so a wider round decodes them
-// a quarter as often.
+// Device mode (--train-gpu) runs rounds of 64: a quarter of the device calls,
+// and its forward product (k_tmmw) decodes the weights once per 32 columns
+// of a round instead of once per 16.
 enum { TRAIN_FW_ROWS = 16, TRAIN_FW_ROWS_DEV = 64 };
 static int lora_fw_rows(const model_t *m) {
     if (m->gpu) return 1;
@@ -10540,7 +10540,7 @@ static float *fw_rounds_logits(model_t *m, fw_rounds *r, const int32_t *toks,
             t_mv_exact = true;
             model_forward_batch(m, toks + t, r->n, t, false);
             t_mv_exact = ex;
-            if (!rows_logits(m, r->n, r->lg)) return NULL;
+            if (!rows_logits(m, r->n, r->lg, true)) return NULL;
         }
     }
     return r->n > 1 ? r->lg + (size_t)(t - r->t0) * m->n_vocab
@@ -10551,170 +10551,161 @@ static void fw_rounds_free(fw_rounds *r) {
     r->lg = NULL;
 }
 
-// The taped forward: the inference forward, in rounds of solo bits,
-// with every layer's input kept on the tape, and the window's (weighted)
-// next-token loss, or with a teacher the window's (weighted) KL. A failure
-// leaves the tape for the caller to free.
+// The head's adjoint for nc positions (tmap) whose raw logits are rows of
+// probs, computed by the forward round they came from (R8.19: the head no
+// longer recomputes them from the tape): the transforms the forward applies
+// (scale, softcap, suppress), softmax minus the target, the position's
+// weight and the transforms' adjoints, then ONE batched transposed product
+// for the rows and the out-norm adjoint into dx. Per-position chains are
+// unchanged: positions are independent through the head, and the
+// transposed product keeps each element's chain over the vocabulary,
+// whatever rows share the call. probs and thb are overwritten.
+NUM_STAGE bool head_rows_bw(model_t *m, const int32_t *toks, int T,
+                            const float *pos_w, const lora_teacher *tch,
+                            float *probs, float *thb, float *dhn,
+                            const int *tmap, int nc, float *dx) {
+    int E = m->n_embd, V = m->n_vocab, L = m->n_layer;
+    bool ok = true;
+    for (int ci = 0; ci < nc; ci++) {
+        int t = tmap[ci];
+        float *pr = probs + (size_t)ci * V;
+        // the head transforms exactly as the forward applies them
+        // (apply_head_transforms): scale, softcap, suppress
+        float ls = m->logit_scale != 0.0f ? m->logit_scale : 1.0f;
+        if (ls != 1.0f)
+            for (int i = 0; i < V; i++) pr[i] *= ls;
+        float *th = thb ? thb + (size_t)ci * V : NULL;
+        if (th) {
+            float c = m->logit_softcap;
+            for (int i = 0; i < V; i++) {
+                th[i] = tanhf(pr[i] / c);
+                pr[i] = c * th[i];
+            }
+        }
+        if (m->n_suppress) suppress_logits(m, pr);
+        if (tch) {
+            // R8.15: softmax minus the teacher's target (kd_row above).
+            // The tail factor scales every token, then the listed ones
+            // are set from their saved q; with a one-hot teacher both
+            // factors are 1 and this is the cross-entropy's q - 1.
+            const int32_t *ids = tch->ids + (size_t)t * tch->k;
+            const float *lp = tch->logp + (size_t)t * tch->k;
+            kd_row r;
+            if (!kd_row_eval(pr, V, ids, lp, tch->k, &r)) {
+                fprintf(stderr, "error: transition %d: the teacher's "
+                        "tail holds %.3g of the mass and the student "
+                        "none; the KL is infinite\n", t, r.p_tail);
+                ok = false;
+                break;
+            }
+            softmax(pr, V);
+            float a = (float)(r.S + r.p_tail);
+            float at = r.p_tail > 0.0
+                       ? (float)(r.S + r.p_tail - r.p_tail / r.q_tail) : a;
+            float qk[KD_K_MAX];
+            for (int i = 0; i < tch->k; i++) qk[i] = pr[ids[i]];
+            if (at != 1.0f)
+                for (int i = 0; i < V; i++) pr[i] *= at;
+            for (int i = 0; i < tch->k; i++)
+                pr[ids[i]] = qk[i] * a - (float)exp((double)lp[i]);
+        } else {
+            softmax(pr, V);
+            pr[toks[t + 1]] -= 1.0f;
+        }
+        if (pos_w)
+            for (int i = 0; i < V; i++) pr[i] *= pos_w[t];
+        // and their adjoints in reverse: a suppressed logit is a
+        // constant, the softcap's slope is 1 - tanh^2, the scale is itself
+        for (int i = 0; i < m->n_suppress; i++) pr[m->suppress[i]] = 0.0f;
+        if (th)
+            for (int i = 0; i < V; i++) pr[i] *= 1.0f - th[i] * th[i];
+        if (ls != 1.0f)
+            for (int i = 0; i < V; i++) pr[i] *= ls;
+    }
+    if (!ok) return false;
+    memset(dhn, 0, sizeof(float) * (size_t)nc * E);
+    if (!matvec_t(m, m->output, probs, dhn, E, V, nc)) return false;
+    for (int c = 0; c < nc; c++) {
+        const float *hc = m->tape + ((size_t)L * T + tmap[c]) * E;
+        rmsnorm_bw(hc, m->out_norm_w, dhn + (size_t)c * E,
+                   dx + (size_t)tmap[c] * E, E, m->rms_eps);
+    }
+    return true;
+}
+
+// The taped forward: the inference forward in rounds of solo bits, every
+// layer's input kept on the tape, the window's (weighted) next-token loss, or
+// with a teacher its (weighted) KL, and the head's adjoint into dx for each
+// round's scored rows from the logits the round computed (head_rows_bw).
+// A failure leaves the tape for the caller to free.
 NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
                                const float *pos_w, const lora_teacher *tch,
-                               double *loss_out) {
+                               float *dx, double *loss_out) {
     int E = m->n_embd, V = m->n_vocab, L = m->n_layer;
     double loss = 0.0;
     m->tape_T = T;
     m->tape = malloc(sizeof(float) * (size_t)(L + 1) * T * E);
     if (!m->tape) { m->tape_T = 0; return false; }
-    fw_rounds rd = {0};
-    for (int t = 0; t < T; t++) {
-        float *lg = fw_rounds_logits(m, &rd, toks, T, t);
-        if (!lg) { fw_rounds_free(&rd); return false; }
-        if (m->tape_logits_cb) m->tape_logits_cb(m->tape_logits_ud, t, lg);
-        if (t < T - 1 && (!pos_w || pos_w[t] != 0.0f) && tch) {
-            const int32_t *ids = tch->ids + (size_t)t * tch->k;
-            const float *lp = tch->logp + (size_t)t * tch->k;
-            kd_row r;
-            if (!kd_row_eval(lg, V, ids, lp, tch->k, &r)) {
-                fprintf(stderr, "error: transition %d: the teacher's tail "
-                        "holds %.3g of the mass and the student none; the "
-                        "KL is infinite\n", t, r.p_tail);
-                fw_rounds_free(&rd);
-                return false;
-            }
-            double w = pos_w ? (double)pos_w[t] : 1.0;
-            loss += w * kd_row_loss(lg, V, ids, lp, tch->k, &r);
-        } else if (t < T - 1 && (!pos_w || pos_w[t] != 0.0f)) {
-            float mx = lg[0];
-            for (int i = 1; i < V; i++) if (lg[i] > mx) mx = lg[i];
-            double sum = 0;
-            for (int i = 0; i < V; i++) sum += expf(lg[i] - mx);
-            double w = pos_w ? (double)pos_w[t] : 1.0;
-            loss += w * ((double)(mx + logf((float)sum))
-                         - (double)lg[toks[t + 1]]);
-        }
-    }
-    fw_rounds_free(&rd);
-    *loss_out = loss;
-    return true;
-}
-
-// The reverse sweep starts at the head: head + out-norm into dx, chunked
-// (slice 3). The lm-head transposed matvec is the backward's single largest
-// tensor, and running it per position re-decoded all V rows T times. Scored
-// positions gather into chunks of HEAD_CHUNK probs rows and one batched call
-// per chunk decodes each row once per chunk instead — per-position gradient
-// chains unchanged (positions are independent through the head; the chunk
-// boundary is a scheduling artifact). Logits still recompute from the tape
-// rather than being stored: memory over speed, the reference trade — the
-// chunk bounds the probs plane to HEAD_CHUNK * V floats. The logits take
-// the same chunks (R8.19): one exact-columns product a chunk, every column
-// the batch-1 dot's bits. Device mode takes chunks of 64 (its wide product's
-// width); positions are independent through the head, so the chunk is a
-// scheduling choice in either mode.
-enum { HEAD_CHUNK = 16, HEAD_CHUNK_DEV = 64 };
-NUM_STAGE bool lora_head_bw(model_t *m, const int32_t *toks, int T,
-                         const float *pos_w, const lora_teacher *tch,
-                         float *dx) {
-    int E = m->n_embd, V = m->n_vocab, L = m->n_layer;
-    int hcn = m->train_dev ? HEAD_CHUNK_DEV : HEAD_CHUNK;
-    float *probs  = malloc(sizeof(float) * (size_t)hcn * V);
-    float *hn     = malloc(sizeof(float) * (size_t)hcn * E);
-    float *dhn    = malloc(sizeof(float) * (size_t)hcn * E);
-    // softcap adjoint needs tanh(z/c) per logit of the chunk
-    float *thb    = m->logit_softcap > 0
-                    ? malloc(sizeof(float) * (size_t)hcn * V) : NULL;
-    if (!probs || !hn || !dhn || (m->logit_softcap > 0 && !thb)) {
-        free(probs); free(hn); free(dhn); free(thb);
-        return false;
-    }
-    bool ok = true;
-    int tmap[HEAD_CHUNK_DEV];
-    int nc = 0;
-    for (int p = 0; ok && p < T - 1; p++) {
-        if (!pos_w || pos_w[p] != 0.0f) {
-            const float *h = m->tape + ((size_t)L * T + p) * E;
-            xnorm(m, hn + (size_t)nc * E, h, m->out_norm_w, m->out_norm_b, E,
-                  m->rms_eps);
-            tmap[nc++] = p;
-        }
-        if (nc == 0 || (nc < hcn && p < T - 2)) continue;
-        // the chunk's logits in one exact-columns product: every column the
-        // batch-1 dot's bits, the vocabulary decoded once a chunk
+    int rows = lora_fw_rows(m);
+    float *raw   = malloc(sizeof(float) * (size_t)rows * V);
+    float *probs = malloc(sizeof(float) * (size_t)rows * V);
+    float *lgt   = malloc(sizeof(float) * (size_t)V);
+    float *dhn   = malloc(sizeof(float) * (size_t)rows * E);
+    // the softcap's adjoint needs tanh(z/c) per logit of the round
+    float *thb   = m->logit_softcap > 0
+                   ? malloc(sizeof(float) * (size_t)rows * V) : NULL;
+    int *tmap    = malloc(sizeof(int) * (size_t)rows);
+    bool ok = raw && probs && lgt && dhn && tmap && (m->logit_softcap <= 0 || thb);
+    for (int t0 = 0; ok && t0 < T; t0 += rows) {
+        int n = T - t0 < rows ? T - t0 : rows;
         bool ex = t_mv_exact;
         t_mv_exact = true;
-        matvec_b(m->tp, probs, V, m->output, hn, E, E, V, NULL, nc);
+        model_forward_batch(m, toks + t0, n, t0, false);
         t_mv_exact = ex;
-        for (int ci = 0; ci < nc; ci++) {
-            int t = tmap[ci];
-            float *pr = probs + (size_t)ci * V;
-            // the head transforms exactly as the forward applies them
-            // (apply_head_transforms): scale, softcap, suppress
-            float ls = m->logit_scale != 0.0f ? m->logit_scale : 1.0f;
-            if (ls != 1.0f)
-                for (int i = 0; i < V; i++) pr[i] *= ls;
-            float *th = thb ? thb + (size_t)ci * V : NULL;
-            if (th) {
-                float c = m->logit_softcap;
-                for (int i = 0; i < V; i++) {
-                    th[i] = tanhf(pr[i] / c);
-                    pr[i] = c * th[i];
-                }
-            }
-            if (m->n_suppress) suppress_logits(m, pr);
-            if (tch) {
-                // R8.15: softmax minus the teacher's target (kd_row above).
-                // The tail factor scales every token, then the listed ones
-                // are set from their saved q; with a one-hot teacher both
-                // factors are 1 and this is the cross-entropy's q - 1.
+        ok = rows_logits(m, n, raw, false);
+        int nc = 0;
+        for (int b = 0; ok && b < n; b++) {
+            int t = t0 + b;
+            const float *rl = raw + (size_t)b * V;
+            memcpy(lgt, rl, sizeof(float) * (size_t)V);
+            apply_head_transforms(m, lgt);
+            const float *lg = lgt;
+            if (m->tape_logits_cb) m->tape_logits_cb(m->tape_logits_ud, t, lg);
+            if (t < T - 1 && (!pos_w || pos_w[t] != 0.0f) && tch) {
                 const int32_t *ids = tch->ids + (size_t)t * tch->k;
                 const float *lp = tch->logp + (size_t)t * tch->k;
                 kd_row r;
-                if (!kd_row_eval(pr, V, ids, lp, tch->k, &r)) {
-                    fprintf(stderr, "error: transition %d: the teacher's "
-                            "tail holds %.3g of the mass and the student "
-                            "none; the KL is infinite\n", t, r.p_tail);
+                if (!kd_row_eval(lg, V, ids, lp, tch->k, &r)) {
+                    fprintf(stderr, "error: transition %d: the teacher's tail "
+                            "holds %.3g of the mass and the student none; the "
+                            "KL is infinite\n", t, r.p_tail);
                     ok = false;
                     break;
                 }
-                softmax(pr, V);
-                float a = (float)(r.S + r.p_tail);
-                float at = r.p_tail > 0.0
-                           ? (float)(r.S + r.p_tail - r.p_tail / r.q_tail) : a;
-                float qk[KD_K_MAX];
-                for (int i = 0; i < tch->k; i++) qk[i] = pr[ids[i]];
-                if (at != 1.0f)
-                    for (int i = 0; i < V; i++) pr[i] *= at;
-                for (int i = 0; i < tch->k; i++)
-                    pr[ids[i]] = qk[i] * a - (float)exp((double)lp[i]);
-            } else {
-                softmax(pr, V);
-                pr[toks[t + 1]] -= 1.0f;
+                double w = pos_w ? (double)pos_w[t] : 1.0;
+                loss += w * kd_row_loss(lg, V, ids, lp, tch->k, &r);
+            } else if (t < T - 1 && (!pos_w || pos_w[t] != 0.0f)) {
+                float mx = lg[0];
+                for (int i = 1; i < V; i++) if (lg[i] > mx) mx = lg[i];
+                double sum = 0;
+                for (int i = 0; i < V; i++) sum += expf(lg[i] - mx);
+                double w = pos_w ? (double)pos_w[t] : 1.0;
+                loss += w * ((double)(mx + logf((float)sum))
+                             - (double)lg[toks[t + 1]]);
             }
-            if (pos_w)
-                for (int i = 0; i < V; i++) pr[i] *= pos_w[t];
-            // and their adjoints in reverse: a suppressed logit is a
-            // constant, the softcap's slope is 1 - tanh^2, the scale is itself
-            for (int i = 0; i < m->n_suppress; i++) pr[m->suppress[i]] = 0.0f;
-            if (th)
-                for (int i = 0; i < V; i++) pr[i] *= 1.0f - th[i] * th[i];
-            if (ls != 1.0f)
-                for (int i = 0; i < V; i++) pr[i] *= ls;
+            if (t < T - 1 && (!pos_w || pos_w[t] != 0.0f)) {
+                memcpy(probs + (size_t)nc * V, rl, sizeof(float) * (size_t)V);
+                tmap[nc++] = t;
+            }
         }
-        if (ok) {
-            memset(dhn, 0, sizeof(float) * (size_t)nc * E);
-            if (!matvec_t(m, m->output, probs, dhn, E, V, nc)) {
-                ok = false;
-                break;
-            }
-            for (int c = 0; c < nc; c++) {
-                const float *hc = m->tape + ((size_t)L * T + tmap[c]) * E;
-                rmsnorm_bw(hc, m->out_norm_w, dhn + (size_t)c * E,
-                           dx + (size_t)tmap[c] * E, E, m->rms_eps);
-            }
-            nc = 0;
-        }
+        if (ok && nc)
+            ok = head_rows_bw(m, toks, T, pos_w, tch, probs, thb, dhn, tmap, nc, dx);
     }
-    free(probs); free(hn); free(dhn); free(thb);
+    free(raw); free(probs); free(lgt); free(dhn); free(thb); free(tmap);
+    if (ok) *loss_out = loss;
     return ok;
 }
+
 
 // The layers in reverse, with the scratch they share: the shared-KV deposits
 // per owner layer and the window's per-layer embedding slices.
@@ -10758,41 +10749,36 @@ static bool lora_backward(model_t *m, const int32_t *toks, int T,
     if (!lora_backward_admit(m, T)) return false;
     // RUNNER_TRAIN_PROF=1: per-step phase wall times on stderr — the dev
     // knob the slice-3 optimization ran on (guessing at the profile cost a
-    // round of measurement; this line is cheaper than being wrong again)
+    // round of measurement; this line is cheaper than being wrong again).
+    // The head's adjoint runs inside the forward's rounds (R8.19).
     bool prof = getenv("RUNNER_TRAIN_PROF") != NULL;
-    double pt0 = prof ? plat_now() : 0, pt_fw = 0, pt_head = 0;
+    double pt0 = prof ? plat_now() : 0, pt_fw = 0;
     double loss = 0.0;
     model_t *dev = t_mv_dev;
     t_mv_dev = m->train_dev ? m : NULL;
-    bool ok = lora_taped_forward(m, toks, T, pos_w, tch, &loss);
-    if (ok) {
-        if (prof) { pt_fw = plat_now(); }
-        float *dx = calloc((size_t)T * m->n_embd, sizeof(float));
-        ok = dx && lora_head_bw(m, toks, T, pos_w, tch, dx);
-        if (ok) {
-            if (prof) { pt_head = plat_now(); }
-            ok = lora_layers_bw(m, toks, T, dx);
-            if (prof) {
-                double dmm, dmvt, kmm, kmvt;
-                long nmm, nmvt;
-                gpu_train_prof(m, &dmm, &nmm, &dmvt, &nmvt, &kmm, &kmvt);
-                fprintf(stderr, "train-prof: fw %.2fs head %.2fs layers %.2fs "
-                        "(R %.2f sites %.2f attn %.2f b2b3 %.2f)",
-                        pt_fw - pt0, pt_head - pt_fw, plat_now() - pt_head,
-                        lbw_prof[0], lbw_prof[1], lbw_prof[2], lbw_prof[3]);
-                fprintf(stderr, " [dn_fw %.2f dn_bw %.2f lora %.2f attn_layers "
-                        "%.2f]", lbw_sub[0], lbw_sub[1], lbw_sub[2], lbw_sub[3]);
-                if (m->train_gpu)
-                    fprintf(stderr, " device: mm %.2fs/%ld (kernel %.2f) mvt "
-                            "%.2fs/%ld (kernel %.2f)", dmm, nmm, kmm, dmvt, nmvt,
-                            kmvt);
-                fputc('\n', stderr);
-                memset(lbw_sub, 0, sizeof(lbw_sub));
-                memset(lbw_prof, 0, sizeof(lbw_prof));
-            }
-        }
-        free(dx);
+    float *dx = calloc((size_t)T * m->n_embd, sizeof(float));
+    bool ok = dx && lora_taped_forward(m, toks, T, pos_w, tch, dx, &loss);
+    if (ok && prof) pt_fw = plat_now();
+    if (ok) ok = lora_layers_bw(m, toks, T, dx);
+    if (ok && prof) {
+        double dmm, dmvt, kmm, kmvt;
+        long nmm, nmvt;
+        gpu_train_prof(m, &dmm, &nmm, &dmvt, &nmvt, &kmm, &kmvt);
+        fprintf(stderr, "train-prof: fw+head %.2fs layers %.2fs "
+                "(R %.2f sites %.2f attn %.2f b2b3 %.2f)",
+                pt_fw - pt0, plat_now() - pt_fw,
+                lbw_prof[0], lbw_prof[1], lbw_prof[2], lbw_prof[3]);
+        fprintf(stderr, " [dn_fw %.2f dn_bw %.2f lora %.2f attn_layers "
+                "%.2f]", lbw_sub[0], lbw_sub[1], lbw_sub[2], lbw_sub[3]);
+        if (m->train_gpu)
+            fprintf(stderr, " device: mm %.2fs/%ld (kernel %.2f) mvt "
+                    "%.2fs/%ld (kernel %.2f)", dmm, nmm, kmm, dmvt, nmvt,
+                    kmvt);
+        fputc('\n', stderr);
     }
+    memset(lbw_sub, 0, sizeof(lbw_sub));
+    memset(lbw_prof, 0, sizeof(lbw_prof));
+    free(dx);
     free(m->tape); m->tape = NULL; m->tape_T = 0;
     t_mv_dev = dev;
     if (ok && loss_out) *loss_out = loss;
@@ -12346,8 +12332,9 @@ float *model_spec_row_logits(model_t *m, int b) {
 // The heads of a round's n rows (m->x) on the host in one product, into
 // out [n][n_vocab]: each row normed as model_spec_row_logits norms it, then
 // one exact-columns matvec (every column the batch-1 dot's bits), the
-// vocabulary decoded once for the round instead of once a row.
-static bool rows_logits(model_t *m, int n, float *out) {
+// vocabulary decoded once for the round instead of once a row; with
+// transform, the head transforms after (raw logits without).
+static bool rows_logits(model_t *m, int n, float *out, bool transform) {
     int xdim = m->xdim, V = m->n_vocab;
     if (m->gpu) return false;
     float *hn = malloc(sizeof(float) * (size_t)n * xdim);
@@ -12360,7 +12347,8 @@ static bool rows_logits(model_t *m, int n, float *out) {
     t_mv_exact = true;
     matvec_b(m->tp, out, V, m->output, hn, xdim, m->n_embd, V, NULL, n);
     t_mv_exact = ex;
-    for (int b = 0; b < n; b++) apply_head_transforms(m, out + (size_t)b * V);
+    for (int b = 0; transform && b < n; b++)
+        apply_head_transforms(m, out + (size_t)b * V);
     free(hn);
     return true;
 }
