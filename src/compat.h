@@ -173,6 +173,17 @@ uint64_t    plat_ram_available_bytes(void);
 bool        plat_file_readable(const char *path);
 double      plat_now(void);        // monotonic seconds
 
+// The ANSI code page of this process: the one Windows' narrow (-A) APIs and
+// the C runtime read and write text in (GetACP(); 65001 is UTF-8). With the
+// manifest runner.exe carries (src/runner.manifest) it is 65001 on Windows 10
+// version 1903 and later; a lower number means that manifest was missing or
+// not honoured, which --caps reports so the regression is visible. 0 on other
+// platforms, where arguments, file names and the environment are bytes.
+unsigned    plat_code_page(void);
+// Whether this executable carries a manifest that asks for the UTF-8 code
+// page, read back from its own resources; false on other platforms.
+bool        plat_utf8_manifest(void);
+
 // Install a completed same-filesystem temporary file at `path`, replacing an
 // existing regular file. POSIX rename() has replacement semantics; Windows
 // needs MoveFileEx(..., REPLACE_EXISTING) for the same operation.

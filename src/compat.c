@@ -971,6 +971,41 @@ void plat_parent_watch(long pid) {
 
 #endif
 
+unsigned plat_code_page(void) {
+#ifdef _WIN32
+    return (unsigned)GetACP();
+#else
+    return 0;
+#endif
+}
+
+bool plat_utf8_manifest(void) {
+#ifdef _WIN32
+    // resource type 24 (RT_MANIFEST), name 1: the manifest the loader reads
+    // for an executable (CREATEPROCESS_MANIFEST_RESOURCE_ID)
+    HRSRC r = FindResourceW(NULL, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(24));
+    HGLOBAL g = r ? LoadResource(NULL, r) : NULL;
+    const char *p = g ? (const char *)LockResource(g) : NULL;
+    DWORD n = r ? SizeofResource(NULL, r) : 0;
+    if (!p || !n) return false;
+    // <activeCodePage ...>UTF-8</activeCodePage>, the element's text being
+    // the first thing after the end of its start tag
+    static const char tag[] = "activeCodePage";
+    static const char val[] = "UTF-8";
+    for (DWORD i = 0; i + sizeof tag - 1 <= n; i++) {
+        if (memcmp(p + i, tag, sizeof tag - 1) != 0) continue;
+        DWORD j = i + (DWORD)sizeof tag - 1;
+        while (j < n && p[j] != '>' && p[j] != '<') j++;
+        if (j < n && p[j] == '>' && n - (j + 1) >= sizeof val - 1 &&
+            _strnicmp(p + j + 1, val, sizeof val - 1) == 0)
+            return true;
+    }
+    return false;
+#else
+    return false;
+#endif
+}
+
 bool plat_replace_file(const char *tmp_path, const char *path) {
 #ifdef _WIN32
     return MoveFileExA(tmp_path, path,

@@ -351,6 +351,17 @@ jobs:
           ./test-tray-win-menu.exe
       - name: make test model
         run: python3 scripts/make-test-model.py test.gguf
+      # A non-ASCII prompt, file path and environment value reach the engine
+      # as UTF-8: the C runtime built argv in the ANSI code page until
+      # runner.exe carried its UTF-8 manifest (tests/test_utf8_io.py). Only
+      # this job runs it on Windows for a pull request; --no-skips because a
+      # skipped case here is the regression going unseen.
+      - name: UTF-8 at the process boundary
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          python3 -m pytest -q tests/test_utf8_io.py --junitxml=.build/ci/utf8-io.xml
+          python3 scripts/check-junit.py --no-skips .build/ci/utf8-io.xml
       - name: python client tests
         # UTF-8 regardless of the runner's locale: the shadow fixtures carry
         # non-ASCII text and a cp1252 default turns them into a SyntaxError

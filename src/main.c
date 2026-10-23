@@ -1816,7 +1816,19 @@ static int run_caps(void) {
     printf(",\"memory_max_bytes\":");
     if (cap.memory_max_bytes) printf("%llu", (unsigned long long)cap.memory_max_bytes);
     else printf("null");
-    printf("},\"gpu\":");
+    // The process code page on Windows, and whether the executable asked for
+    // UTF-8 (src/runner.manifest): 65001 and true is the shipped state on
+    // Windows 10 1903 and later. Anything else means text from the command
+    // line and the environment arrives in a legacy code page unless
+    // compat.c's own wide reads cover it. null elsewhere: bytes pass through.
+    printf("},\"code_page\":");
+#ifdef _WIN32
+    printf("{\"ansi\":%u,\"utf8_manifest\":%s}", plat_code_page(),
+           plat_utf8_manifest() ? "true" : "false");
+#else
+    printf("null");
+#endif
+    printf(",\"gpu\":");
     if (has_gpu) {
         size_t vfree = 0, vtotal = 0;
         bool vm = gpu_mem_info(&vfree, &vtotal);
