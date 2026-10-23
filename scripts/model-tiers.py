@@ -31,6 +31,17 @@ docs/model-support.md is rendered from it.
     scripts/model-tiers.py --record ROW --result smoke-result.json
     scripts/model-tiers.py --write-docs     # re-render README.md's table
     scripts/model-tiers.py --docs-check     # fail when it differs from the render
+    scripts/model-tiers.py --cards OUTDIR   # every published card, block placed
+    scripts/model-tiers.py --cards-check    # fail when a card on the Hub drifts
+    scripts/model-tiers.py --cards-push OUTDIR [--yes]   # dry run without --yes
+
+The cards: each published repository's Hugging Face card carries a
+"last validated" sub-block (`xyntetik-validated`) inside its own
+`xyntetik-status` block, rendered from this roster with the README's marks.
+Reading a card needs no token. Pushing is an explicit step, never part of
+`--record`: it uploads through huggingface_hub with the token the library
+finds itself, and refuses a card that changed on the Hub outside the block
+since it was rendered.
 
 `--stale` is the release gate's question, asked the way
 scripts/device-evidence.py asks it of the device classes: every Tier 1 row's
@@ -513,26 +524,41 @@ def record(doc, row_id, res, devices):
 
 # --- the README table ---------------------------------------------------------
 
-def _mark(cell):
-    """A backend cell's mark: exactly one of a recorded gate with its version
-    and date, a declared limit linked to its matrix row, or not run."""
+def mark_parts(cell):
+    """A backend cell's mark as (text, link): exactly one of a recorded gate
+    with its version and date, a declared limit with the support-matrix path
+    it links to, or not run. The README, the cards and the site all render
+    these, so the three cannot word a mark differently."""
     if cell is None:
-        return "☐ not run"
+        return "☐ not run", None
     if cell["kind"] == "limit":
-        return f"[n/a]({cell['matrix']})"
+        return "n/a", cell["matrix"]
     if cell["result"] == "pass":
-        return f"✅ v{cell['runner_version']} {cell['date']}"
+        return f"✅ v{cell['runner_version']} {cell['date']}", None
     # a recorded failure refuses the next tag; until then it is shown as one
-    return f"failed v{cell['runner_version']} {cell['date']}"
+    return f"failed v{cell['runner_version']} {cell['date']}", None
 
 
-def _train(lora):
+def _mark(cell, base=""):
+    """The mark in Markdown; `base` makes the limit's link absolute for a
+    page that does not live in this repository."""
+    text, link = mark_parts(cell)
+    return f"[{text}]({base}{link})" if link else text
+
+
+def train_mark(lora):
+    """The file's recorded --adapt-info training answer, or not run."""
     if lora is None:
         return "☐ not run"
     t = lora["training"]
     if t["supported"]:
         return f"✅ v{lora['runner_version']} {lora['date']}"
-    return "no: " + t["reason"].replace("|", "\\|")
+    return "no: " + t["reason"]
+
+
+def _train(lora):
+    # a pipe in a refusal sentence would split the README's table cell
+    return train_mark(lora).replace("|", "\\|")
 
 
 def _qualifiers(rows):
@@ -779,6 +805,331 @@ def write_docs(doc):
                 f.write(new)
 
 
+# --- the Hugging Face cards ----------------------------------------------------
+#
+# Every published file's card carries a "last validated" sub-block, rendered
+# from this roster and placed as the last bullets of the card's own
+# `xyntetik-status` block. Only the sub-block is ever written: the rest of
+# the card is the author's, and a card this script cannot place the block in
+# safely is refused by name rather than guessed at.
+
+GITHUB_BLOB = "https://github.com/Joakimpalm-Zen/xyntetik-runner/blob/main/"
+STATUS_BEGIN = "<!-- BEGIN xyntetik-status -->"
+STATUS_END = "<!-- END xyntetik-status -->"
+CARD_BEGIN = "<!-- BEGIN xyntetik-validated -->"
+CARD_END = "<!-- END xyntetik-validated -->"
+CARD_SENTENCE = (
+    "A backend mark is a reproduced greedy smoke on the device class the row "
+    "names, at that Runner version and date, and says nothing about answer "
+    "quality; Train is the file's `--adapt-info` answer, dated the same way; "
+    "\"not run\" means nobody has run it yet.")
+
+
+class CardRefused(Exception):
+    """A card the script will not render, check or push, with the reason."""
+
+
+def card_repos(doc):
+    """Every repository a published row's files live in: the cards that
+    carry the block, in a stable order."""
+    repos = {f["repo"] for r in doc["rows"] if r.get("published")
+             for f in r.get("files") or [] if f.get("repo")}
+    return sorted(repos, key=lambda s: (s.casefold(), s))
+
+
+def _repo_rows(doc, repo):
+    return [r for r in doc["rows"]
+            if any(f.get("repo") == repo for f in r.get("files") or [])]
+
+
+def card_file_names(doc, repo):
+    """The name each roster file of the repo goes by (a sharded set by its
+    first part, as the README names it): the card must mention every one."""
+    return [r["files"][0]["name"] for r in _repo_rows(doc, repo)]
+
+
+def _file_title(row):
+    files = row["files"]
+    return f"`{files[0]['name']}`" + (f" ({len(files)} parts)" if len(files) > 1 else "")
+
+
+def render_card_block(doc, repo):
+    """The managed sub-block for one card, as lines without the card's
+    quote prefix: one line per roster file of the repo, with the README's
+    marks for a Tier 1 file and the tier and its reason for any other."""
+    lines = [CARD_BEGIN, "- **Last validated (Runner support tiers):**"]
+    marked = False
+    for r in _repo_rows(doc, repo):
+        link = f"([roster row]({GITHUB_BLOB}{SUPPORT_DOC}#{r['id']}))"
+        if r["tier"] == "tier1":
+            marked = True
+            cells = [f"{label} {_mark(r['backends'].get(b), GITHUB_BLOB)}"
+                     for b, label in zip(BACKENDS, ("CPU", "CUDA", "Metal"))]
+            cells.append(f"Train {train_mark(r.get('lora'))}")
+            lines.append(f"  - {_file_title(r)}: {' · '.join(cells)} {link}")
+        else:
+            why = r.get("published_exception") or r["transitions"][-1]["reason"]
+            lines.append(f"  - {_file_title(r)}: {TIER_NAMES[r['tier']]}, not gated on "
+                         f"every release, so it carries no backend marks. {why} {link}")
+    if marked:
+        lines.append("  - " + CARD_SENTENCE)
+    lines.append(CARD_END)
+    return lines
+
+
+def _unquoted(line):
+    """A card line's content without its line ending and quote prefix."""
+    s = line.rstrip("\r\n")
+    return s[1:].lstrip(" ") if s.startswith(">") else s
+
+
+def _marker_lines(lines, marker, quoted):
+    """Indices of the lines that are exactly the marker (inside a quote too,
+    when `quoted`). A marker anywhere else on a line is a malformed card."""
+    hits = [i for i, l in enumerate(lines)
+            if (_unquoted(l) if quoted else l.rstrip("\r\n")).strip() == marker]
+    if len(hits) != "".join(lines).count(marker):
+        raise CardRefused(f"a {marker} marker shares its line with other text")
+    return hits
+
+
+def _card_layout(text):
+    """(lines, status begin, status end, validated begin or None, validated
+    end or None) of a card, or CardRefused when the markers are not one
+    well-formed status block holding at most one validated block."""
+    lines = text.splitlines(keepends=True)
+    sb = _marker_lines(lines, STATUS_BEGIN, False)
+    se = _marker_lines(lines, STATUS_END, False)
+    if not sb and not se:
+        raise CardRefused("the card has no xyntetik-status block")
+    if len(sb) != 1 or len(se) != 1 or sb[0] > se[0]:
+        raise CardRefused("the xyntetik-status markers are malformed: expected one "
+                          "BEGIN followed by one END")
+    vb = _marker_lines(lines, CARD_BEGIN, True)
+    ve = _marker_lines(lines, CARD_END, True)
+    if not vb and not ve:
+        return lines, sb[0], se[0], None, None
+    if len(vb) != 1 or len(ve) != 1 or not sb[0] < vb[0] < ve[0] < se[0]:
+        raise CardRefused("the xyntetik-validated markers are malformed: expected one "
+                          "BEGIN followed by one END inside the xyntetik-status block")
+    return lines, sb[0], se[0], vb[0], ve[0]
+
+
+def strip_card_block(text):
+    """The card without its validated block: the part only its author edits."""
+    lines, _, _, vb, ve = _card_layout(text)
+    return text if vb is None else "".join(lines[:vb] + lines[ve + 1:])
+
+
+def place_card_block(text, block, names):
+    """The card with `block` as the last lines of its status block: an
+    existing validated block is replaced in place, otherwise the block goes
+    immediately before the status END marker, in the quote the status block
+    is written in. Nothing outside the managed block changes. Refuses a card
+    without a well-formed status block or one that does not mention every
+    roster file of its repo."""
+    lines, sb, se, vb, ve = _card_layout(text)
+    outside = strip_card_block(text)
+    missing = [n for n in names if n not in outside]
+    if missing:
+        raise CardRefused("the card does not mention the roster file(s) "
+                          + ", ".join(missing) + "; the roster and the card disagree "
+                          "about what the repository holds")
+    body = [l for l in lines[sb + 1:se] if l.strip()]
+    if vb is not None:
+        body = [l for l in lines[sb + 1:vb] + lines[ve + 1:se] if l.strip()]
+    prefix = "> " if body and all(l.startswith(">") for l in body) else ""
+    eol = "\r\n" if lines[se].endswith("\r\n") else "\n"
+    new = [(prefix + l).rstrip(" ") + eol for l in block]
+    if vb is None:
+        return "".join(lines[:se] + new + lines[se:])
+    return "".join(lines[:vb] + new + lines[ve + 1:])
+
+
+HUB = "https://huggingface.co"
+REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
+CHANGELOG = os.path.join(ROOT, "CHANGELOG.md")
+
+
+def _hub_get(url):
+    """One anonymous GET: the cards are public, so reading one needs no token
+    and this never sends one."""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "xyntetik-runner model-tiers"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.read()
+    except urllib.error.HTTPError as e:
+        raise CardRefused(f"HTTP {e.code} from {url}")
+    except (urllib.error.URLError, OSError) as e:
+        raise CardRefused(f"could not read {url}: {e}")
+
+
+def fetch_card(repo):
+    """(README text, the Hub revision it was read at). The text is read at
+    that revision, so the pair is one consistent snapshot of the card."""
+    try:
+        sha = json.loads(_hub_get(f"{HUB}/api/models/{repo}")).get("sha")
+    except ValueError:
+        raise CardRefused(f"the Hub's model API returned no JSON for {repo}")
+    if not REVISION_RE.match(str(sha)):
+        raise CardRefused(f"the Hub reported no revision for {repo}")
+    data = _hub_get(f"{HUB}/{repo}/raw/{sha}/README.md")
+    try:
+        return data.decode("utf-8"), sha
+    except UnicodeDecodeError:
+        raise CardRefused("the card is not UTF-8")
+
+
+def upload_card(repo, data, message, parent_commit):
+    """One commit to the repo's README.md through huggingface_hub, with the
+    token the library finds on its own (never read or passed here). The
+    commit is made on `parent_commit`, the revision the push compared
+    against, so a commit that lands in between is refused by the Hub instead
+    of overwritten."""
+    try:
+        from huggingface_hub import HfApi
+    except ImportError as e:
+        raise CardRefused(f"huggingface_hub is not importable by {sys.executable} ({e})")
+    info = HfApi().upload_file(path_or_fileobj=data, path_in_repo="README.md",
+                               repo_id=repo, repo_type="model",
+                               commit_message=message, parent_commit=parent_commit)
+    return getattr(info, "commit_url", None) or str(info)
+
+
+def release_version():
+    """The newest released version in CHANGELOG.md, the one a card push names."""
+    with open(CHANGELOG, encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r"## v(\d+\.\d+\.\d+)\b", line)
+            if m:
+                return m.group(1)
+    raise SystemExit("CHANGELOG.md names no released version")
+
+
+def card_dir(outdir, repo):
+    owner, name = repo.split("/", 1)
+    return os.path.join(outdir, f"{owner}--{name}")
+
+
+def _card_render(doc, repo, fetch):
+    text, rev = fetch(repo)
+    return text, rev, place_card_block(text, render_card_block(doc, repo),
+                                       card_file_names(doc, repo))
+
+
+def render_cards(doc, outdir, fetch=None):
+    """--cards: every published repo's card, fetched from the Hub, with the
+    block placed, written to OUTDIR/<owner>--<repo>/README.md for review.
+    Returns (repo, state, detail) per repo, state "rendered" or "refused"."""
+    fetch = fetch or fetch_card
+    out = []
+    for repo in card_repos(doc):
+        path = os.path.join(card_dir(outdir, repo), "README.md")
+        try:
+            text, rev, new = _card_render(doc, repo, fetch)
+        except CardRefused as e:
+            # a refused card leaves nothing behind that a push could pick up
+            if os.path.exists(path):
+                os.remove(path)
+            out.append((repo, "refused", str(e)))
+            continue
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(new)
+        what = "already current" if new == text else "block placed"
+        out.append((repo, "rendered", f"{what}, from Hub revision {rev[:12]}, "
+                                      f"in {os.path.basename(card_dir(outdir, repo))}/"))
+    return out
+
+
+def cards_check(doc, fetch=None):
+    """--cards-check: read-only. Each published repo's card on the Hub
+    against the current render; state "ok", "drift" or "refused"."""
+    fetch = fetch or fetch_card
+    out = []
+    for repo in card_repos(doc):
+        try:
+            text, rev, new = _card_render(doc, repo, fetch)
+        except CardRefused as e:
+            out.append((repo, "refused", str(e)))
+            continue
+        if new == text:
+            out.append((repo, "ok", f"the block matches the roster (revision {rev[:12]})"))
+        else:
+            out.append((repo, "drift", "the card's xyntetik-validated block differs "
+                                       "from the roster's render"))
+    return out
+
+
+def cards_push(doc, outdir, yes, fetch=None, upload=None, version=None):
+    """--cards-push: upload each rendered card, one commit per repo, only
+    when the render is the current roster's and the card on the Hub has not
+    changed outside the managed block since it was fetched for rendering.
+    A dry run unless `yes`. State "would push", "pushed", "up to date" or
+    "refused"."""
+    fetch, upload = fetch or fetch_card, upload or upload_card
+    message = ("card: last validated line from the Runner support roster "
+               f"(v{version or release_version()})")
+    out = []
+    for repo in card_repos(doc):
+        path = os.path.join(card_dir(outdir, repo), "README.md")
+        try:
+            if not os.path.exists(path):
+                raise CardRefused(f"no rendered card in "
+                                  f"{os.path.basename(card_dir(outdir, repo))}/; "
+                                  "run --cards OUTDIR first")
+            with open(path, encoding="utf-8", newline="") as f:
+                card = f.read()
+            names = card_file_names(doc, repo)
+            if place_card_block(card, render_card_block(doc, repo), names) != card:
+                raise CardRefused("the rendered card is not the current roster's "
+                                  f"render; run --cards OUTDIR again and review it")
+            hub_text, rev = fetch(repo)
+            if strip_card_block(hub_text) != strip_card_block(card):
+                raise CardRefused("the card changed on the Hub outside the managed block "
+                                  "since it was rendered; run --cards OUTDIR again and "
+                                  "review it")
+        except CardRefused as e:
+            out.append((repo, "refused", str(e)))
+            continue
+        if hub_text == card:
+            out.append((repo, "up to date", "the Hub already holds this card"))
+            continue
+        data = card.encode("utf-8")
+        if not yes:
+            out.append((repo, "would push", f"README.md, {len(data):,} bytes, on revision "
+                                            f"{rev[:12]}, message {message!r}"))
+            continue
+        try:
+            url = upload(repo, data, message, rev)
+        except CardRefused as e:
+            out.append((repo, "refused", str(e)))
+            continue
+        except Exception as e:  # the Hub's refusal of a moved head lands here
+            out.append((repo, "refused", f"the upload failed: {type(e).__name__}: {e}"))
+            continue
+        out.append((repo, "pushed", url))
+    return out
+
+
+def _report(results, bad):
+    """One line per card, the good ones too, then a count of the bad ones."""
+    width = max((len(s) for _, s, _ in results), default=0)
+    for repo, state, detail in results:
+        print(f"{state:<{width}}  {repo}: {detail}")
+    counts = {b: sum(1 for _, s, _ in results if s == b) for b in bad}
+    if any(counts.values()):
+        # stdout is buffered in a pipe and stderr is not: flush, so the
+        # summary follows the lines it summarises
+        sys.stdout.flush()
+        print(f"\n{len(results)} cards: " + ", ".join(
+            f"{n} {b}" for b, n in counts.items() if n), file=sys.stderr)
+        return 1
+    return 0
+
+
 def is_committed_roster(path):
     """Only the repository's own roster drives the repository's docs."""
     return os.path.abspath(path) == os.path.abspath(ROSTER)
@@ -802,6 +1153,17 @@ def main():
                     help="re-render the README table from the roster")
     ap.add_argument("--docs-check", action="store_true",
                     help="fail when the README table differs from the render")
+    ap.add_argument("--cards", metavar="OUTDIR",
+                    help="fetch every published card from the Hub and write it with "
+                         "its last-validated block to OUTDIR/<owner>--<repo>/README.md")
+    ap.add_argument("--cards-check", action="store_true",
+                    help="read-only: fail when a card's last-validated block on the "
+                         "Hub differs from the roster's render")
+    ap.add_argument("--cards-push", metavar="OUTDIR",
+                    help="upload the cards --cards rendered, one commit per repo; a "
+                         "dry run unless --yes")
+    ap.add_argument("--yes", action="store_true",
+                    help="with --cards-push: really upload")
     args = ap.parse_args()
 
     doc = load(args.json)
@@ -842,6 +1204,12 @@ def main():
             print(f"{b}: the rendered block differs from docs/model-tiers.json; "
                   f"run scripts/model-tiers.py --write-docs", file=sys.stderr)
         return 1 if bad else 0
+    if args.cards:
+        return _report(render_cards(doc, args.cards), ("refused",))
+    if args.cards_check:
+        return _report(cards_check(doc), ("drift", "refused"))
+    if args.cards_push:
+        return _report(cards_push(doc, args.cards_push, args.yes), ("refused",))
     if args.stale:
         bad = stale(doc, today(args.today))
         if bad:
