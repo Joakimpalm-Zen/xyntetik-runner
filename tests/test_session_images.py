@@ -98,7 +98,10 @@ CASES = [
                                  "--repeat-penalty", "1.3", "--ignore-eos"]),
     ("greedy", "model", ["-p", "hello", "--temp", "0", "--ignore-eos"]),
     ("json", "model", ["-p", "hello", "-s", "3", "--temp", "0.8", "--json"]),
-    ("json-schema", "model", ["-p", "hello", "-s", "5", "--temp", "0.8",
+    # seed 6, not 5, since seeds are mixed (sample.h): under 5 the document
+    # now closes at 28 tokens, before the image point, which this case needs
+    # the generation to reach
+    ("json-schema", "model", ["-p", "hello", "-s", "6", "--temp", "0.8",
                               "--json-schema", "{schema}"]),
     ("recurrent", "hybrid", ["-p", "hello", "-s", "5", "--temp", "0.9",
                              "--repeat-penalty", "1.2", "--ignore-eos"]),

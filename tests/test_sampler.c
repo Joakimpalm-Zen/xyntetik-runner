@@ -599,6 +599,49 @@ static void test_nan_logits_rank_last(void) {
     }
 }
 
+// A caller's seed becomes the sampler's starting state through splitmix64.
+// The seed used to be installed raw as the xorshift64 state, and xorshift's
+// first output from a small state is small: rng_f32's first draw was exactly
+// 0.0 for every seed up to about a thousand, so the roulette walk took the
+// most likely candidate and the first sampled token of every request seeded
+// 1, 2, 3, ... was the argmax (Qwen3-4B continuing `"E`, AT at 0.86 against
+// the close at 0.14: AT 200 times in 200 under seeds 1000-1199).
+static void test_seed_is_mixed_before_it_seeds_the_sampler(void) {
+    // the published splitmix64 outputs for states 0 and 1 (Vigna's
+    // splitmix64.c): the absolute anchor
+    assert(sampler_seed_state(0) == 0xE220A8397B1DCDAFull);
+    assert(sampler_seed_state(1) == 0x910A2DEC89025CC1ull);
+    assert(sampler_seed_state(1000) == 0x3C1EBA8B4DCCC148ull);
+
+    // the first pick over ten equally likely tokens, seeds 1 to 1000: each
+    // bucket holds about 100 (sd 9.5); the raw seeds put all 1000 in bucket 0
+    enum { K = 10, N = 1000 };
+    int bucket[K] = {0};
+    for (int i = 1; i <= N; i++) {
+        float l[K];
+        for (int j = 0; j < K; j++) l[j] = 0.0f;
+        sampler s = { .temp = 1.0f, .top_p = 1.0f, .repeat_penalty = 1.0f,
+                      .rng = sampler_seed_state((uint64_t)i) };
+        int t = sample_pick(&s, l, K, NULL, NULL);
+        assert(t >= 0 && t < K);
+        bucket[t]++;
+    }
+    for (int j = 0; j < K; j++) assert(bucket[j] >= 60 && bucket[j] <= 140);
+
+    // the branch the report measured: 0.86 against 0.14, sampled once per
+    // seed 1..200. Both outcomes appear, the minority about 28 times (sd 4.9)
+    int minority = 0;
+    for (int i = 1; i <= 200; i++) {
+        float l[2] = { logf(0.86f), logf(0.14f) };
+        sampler s = { .temp = 1.0f, .top_p = 1.0f, .repeat_penalty = 1.0f,
+                      .rng = sampler_seed_state((uint64_t)i) };
+        minority += sample_pick(&s, l, 2, NULL, NULL) == 1;
+    }
+    assert(minority >= 10 && minority <= 50);
+    printf("ok: seeds are mixed (first picks %d..%d per bucket, minority %d/200)\n",
+           bucket[0], bucket[K - 1], minority);
+}
+
 int main(void) {
     test_nan_logits_rank_last();
     test_template_outranks_the_model_name();
@@ -617,6 +660,7 @@ int main(void) {
     test_topk_selection_is_linear_on_ranked_input();
     test_constrained_pick_ranks_a_prefix();
     test_greedy_takes_the_first_of_equal_maxima();
+    test_seed_is_mixed_before_it_seeds_the_sampler();
     puts("sampler tests ok");
     return 0;
 }

@@ -31,14 +31,19 @@ typedef struct { int32_t id; float lp; } lp_alt; // logprob alternative
 // the active schema/JSON constraint. prob[] is the softmax renormalized
 // over the legal probed set (raw logits, temperature-free); coverage is
 // the full-softmax mass of everything probed, so a consumer can see how
-// much distribution the probe examined. Alternatives beyond CL_MAX_ALT
-// count toward n_legal/renormalization but are not stored.
+// much distribution the probe examined; legal_mass is the full-softmax mass
+// of the legal probed candidates, the renormalizer prob[] was divided by,
+// so a forced choice between continuations the model barely considers
+// (legal_mass 1e-4, posteriors that still sum to 1) can be told from a
+// real one. Alternatives beyond CL_MAX_ALT count toward
+// n_legal/renormalization but are not stored.
 #define CL_MAX_ALT 8
 typedef struct {
     int32_t pos;                 // emitted-token index in this generation
     int32_t n_legal;             // legal candidates among the probed set
     int32_t n_probed;            // candidates probed (n_legal of them legal)
     float   coverage;            // full-softmax mass of ALL probed candidates
+    float   legal_mass;          // full-softmax mass of the LEGAL probed ones
     int32_t ids[CL_MAX_ALT];     // legal alternatives, descending probability
     float   prob[CL_MAX_ALT];    // renormalized over the legal probed set
     float   raw_lp[CL_MAX_ALT];  // full-vocab log-softmax of each

@@ -23,7 +23,7 @@
 #                       name filter)
 #   NIGHTLY_LOCK        the lock this job holds while it runs (its own pid,
 #                       the Windows pid under MSYS2)
-#   NIGHTLY_MAKE_ARGS   make arguments for the build (e.g. OS=Windows_NT -j4)
+#   NIGHTLY_MAKE_ARGS   make arguments for the build (e.g. -j4)
 #   NIGHTLY_REMOTE      git remote and branch to build (default origin main)
 #   NIGHTLY_SRC         the checkout to update and build
 #   NIGHTLY_ISSUE_REPO  owner/name; when set and the GitHub CLI is logged in,

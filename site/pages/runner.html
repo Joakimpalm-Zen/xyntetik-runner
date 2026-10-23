@@ -213,7 +213,7 @@ python3 scripts/kld-compare-raw.py --model-a out.gguf \
       </div>
       <div class="card">
         <h3>Decisions you can gate</h3>
-        <p><code>choice_logprobs</code> records each JSON-schema branch as legal alternatives, a posterior renormalized over them, and the probed probability mass. <code>confirm_below</code> turns that into one answer per turn: the lowest posterior a chosen branch had, and whether it fell below your threshold. Served Llama-3.2-3B with three tools picked <code>get_weather</code> at 0.92 for a weather question and at 0.78 when <code>send_email</code> was wanted, and asked for confirmation at 0.9. One versioned contract, <a href="{{repo}}/blob/main/docs/decision-record.md">docs/decision-record.md</a>.</p>
+        <p><code>choice_logprobs</code> records each JSON-schema branch as legal alternatives, a posterior renormalized over them, the probed probability mass, and how much of the model's probability the legal branches held, so a choice the schema forced on a model that wanted none of them reads as one. <code>confirm_below</code> turns that into one answer per turn: the lowest posterior a chosen branch had, and whether it fell below your threshold. Served Llama-3.2-3B with three tools picked <code>get_weather</code> at 0.92 for a weather question and at 0.78 when <code>send_email</code> was wanted, and asked for confirmation at 0.9. One versioned contract, <a href="{{repo}}/blob/main/docs/decision-record.md">docs/decision-record.md</a>.</p>
       </div>
       <div class="card">
         <h3>Long agent turns stay on track</h3>

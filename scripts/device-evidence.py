@@ -24,7 +24,7 @@ Two rules keep it from becoming a spreadsheet nobody trusts:
 
     scripts/device-evidence.py --check
     scripts/device-evidence.py --record windows-x86_64-cuda \
-        --ran "make OS=Windows_NT -j2 test" --result pass --caps caps.json
+        --ran "make -j2 test" --result pass --caps caps.json
 """
 
 import argparse

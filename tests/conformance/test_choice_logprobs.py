@@ -67,6 +67,10 @@ def test_decision_points_recorded(client, report):
         prev = rec["index"]
         assert rec["n_legal"] >= 2
         assert 0.0 < rec["coverage"] <= 1.0 + 1e-6
+        # the legal set's own raw mass: part of what was probed, and the
+        # renormalizer behind prob (by hand: the stored alternatives' raw
+        # probabilities add up to it when every legal one is stored)
+        assert 0.0 < rec["legal_mass"] <= rec["coverage"] + 1e-6
         alts = rec["alternatives"]
         assert 2 <= len(alts) <= 8
         assert len(alts) == min(rec["n_legal"], 8)
@@ -75,6 +79,11 @@ def test_decision_points_recorded(client, report):
         assert probs == sorted(probs, reverse=True)
         if rec["n_legal"] == len(alts):
             assert math.isclose(sum(probs), 1.0, abs_tol=1e-4)
+            raw = sum(math.exp(a["logprob"]) for a in alts)
+            assert math.isclose(raw, rec["legal_mass"], rel_tol=1e-4)
+            for a in alts:
+                assert math.isclose(a["prob"], math.exp(a["logprob"]) / rec["legal_mass"],
+                                    rel_tol=1e-3, abs_tol=2e-6)
         for a in alts:
             assert a["logprob"] <= 0.0
             assert 0.0 < a["prob"] <= 1.0

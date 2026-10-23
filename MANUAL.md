@@ -556,9 +556,10 @@ These capabilities help when managing several models or evaluating decisions:
   read decides whether the rest of the download is worth starting.
 - **Constrained decisions come with a confidence signal.** `choice_logprobs`
   records each JSON-schema branch as legal alternatives, a posterior
-  renormalized over them, and the probed probability mass - how confident the
-  model was choosing one branch over another, which is what routing and
-  calibrated classification actually need. The included calibration tool turns
+  renormalized over them, the probed probability mass, and the mass the legal
+  branches held before renormalizing (`legal_mass`) - how confident the model
+  was choosing one branch over another, and whether it wanted any of them at
+  all, which is what routing and calibrated classification actually need. The included calibration tool turns
   labeled decisions into accuracy, Brier-score, and ECE gates; the included
   boundary lane does the opposite job, recording where serving conditions
   DISAGREE on a tool choice with no labels at all. This is a decision record
@@ -982,6 +983,19 @@ Unsupported or ambiguous constraints fail at compile/request time. In
 particular, general overlapping `oneOf` branches are not tracked in parallel;
 branches must diverge at a supported discriminator. This is a subset of JSON
 Schema 2020-12, not full JSON Schema or GBNF.
+
+An enum member that is a token prefix of another member (`"E"` beside
+`"EAT"`, which Qwen3 spells `E`, then `AT`) is decided after the shared token,
+by what the model predicts once it has written `"E`. The sampler reproduces
+the model's own probabilities there, but which member wins then depends on
+tokenization rather than intent: Qwen3-4B on the Windows CUDA host chose
+`"E"` in 2 of 24 requests with `"EAT"` in the enum and in 24 of 24 with
+`"FEED"` in its place, and at that step the legal continuations held about
+1e-4 of its probability (`legal_mass` in `choice_logprobs`), because it
+meant `EAST`. Spell members the way the model would say them, with no
+shared token prefix (`EAST`, `FEED`). `/v1/decide` scores options whole but
+gives the same ratio for a prefix pair
+([measurements](docs/enum-prefix-2026-10-23.md)).
 
 If the budget ends after a document starts, runner emits the minimal legal
 suffix and reports a length finish - on the tool-call path too: a truncated
@@ -2124,7 +2138,7 @@ per step, measured faster in aggregate at 4-8 slots on Metal, and
 | `-c N` | Context length; default is the smaller of model maximum and 4096. `0` auto-fits with a reservation. |
 | `-b N` | Prompt batch size: `64` with `--gpu off`; otherwise `64`, `256` or `512` by total RAM (inside a container, its memory limit). Explicit `-b` overrides. [Details](#cli-b). |
 | `-t N` | Worker threads; defaults to physical cores and is capped at `32`. Inside a container the default starts from the cgroup's CPU quota (`cpu.max`, rounded up) when that is below the CPUs the process may run on, so a container held to 26 CPUs on a 128-CPU host sizes for 26. The cap is measured, not assumed: decode PEAKS at 32 threads and regresses above it on many-core hardware (a 64-core Zen 5 box in 2026-08, and a 128-core sweep in 2026-08 where both models peaked at 32 while the previous default of 64 cost up to -41% decode and -55% prefill). Only machines with more than 64 logical CPUs are affected; below that the default is unchanged. An explicit `-t` is honoured up to 64. The default leaves the logical CPUs past the physical cores to the rest of the machine, and it is not the fastest setting everywhere (2026-10-20, one model file at a time, CPU only): on an Apple M1, 8 threads (performance and efficiency cores) read prompts 11-18% faster than the default 4 and decoded 2-11% faster; on a 4-core, 8-thread desktop CPU, 8 threads decoded 5-22% faster than 4; on 16 cores of a shared server, 32 threads read prompts 18-23% faster than 16 and decoded between 17% slower and 9% faster. A machine that runs nothing else can set `-t` to its logical CPU count; measure on the workload first. |
-| `-s N` | RNG seed; default is time-based. `0` is refused: it is the sampler RNG's fixed point, so it cannot produce a stream. With `--serve`, each request that samples takes the next place in one server-wide order, and an unseeded one draws from the seed and that place, so the same requests in the same order sample the same output at any `--parallel`. A request's own `seed` wins; a greedy or refused request takes no place. |
+| `-s N` | RNG seed; default is time-based. The seed is mixed through splitmix64 into the state the sampler starts from, as a request's `seed` is, so seeds 1, 2, 3 start unrelated streams from their first token. Every value, `0` included, is a seed. With `--serve`, each request that samples takes the next place in one server-wide order, and an unseeded one draws from the seed and that place, so the same requests in the same order sample the same output at any `--parallel`. A request's own `seed` wins; a greedy or refused request takes no place. |
 | `--think` / `--no-think` | Select thinking or non-thinking prompt shape in interactive chat only; family support varies. [Details](#cli-think). |
 | `--temp F` | Temperature; `0` is greedy and disables repeat penalty. |
 | `--top-k N` | Top-k sampling; `0` disables it. Several presets ship `0`, where setting it is a measured decode-throughput win that also changes the sampled distribution - see [`--top-k 40`](#--top-k-40-a-faster-constrained-decode-with-different-semantics). |
@@ -2605,8 +2619,10 @@ flag and ignore it.
 
 Record a one-shot `-p` run as `xyntetik.runner.transcript.v1`: model, adapter and binary
 hashes; the effective execution profile (including fallback KV type, GPU layer
-count and, on CUDA, the prompt window); the exact 64-bit seed and sampling
-config; prompt/output text and token ids; the exact streamed output bytes as
+count and, on CUDA, the prompt window); the exact 64-bit seed (the state the
+sampler started from: `-s N` mixed through splitmix64, which `--verify`
+installs as it is, so a record written before seeds were mixed, when the
+state was `N` itself, still replays) and sampling config; prompt/output text and token ids; the exact streamed output bytes as
 `output.bytes_hex` (tokenizer pieces need not
 individually be valid UTF-8); a `speculation` object naming the draft source (`model`,
 `mtp` or `lookup`) with its round, drafted and accepted counts when one was configured
@@ -2735,7 +2751,7 @@ and `--repeat-penalty` rather than silently overriding them, as it refuses `--js
 image whose trailer does not match its bytes, and a schema image without the same
 `--json-schema` (the schema itself is not in the image, only its digest). Resumed by a
 different binary, it warns: the continuation is exact only on the build that suspended
-it. `--fork-seed N` replaces the image's rng state with `N`, so a fork is reproducible
+it. `--fork-seed N` replaces the image's rng state with `N` mixed as `-s` is, so a fork is reproducible
 and shares the image's tokens as its prefix. `--session-out` refuses an existing file
 before loading anything. A generation that ends (end of text, a closed document) before
 its image point has nothing to resume: no image is written and the run exits 1.
@@ -2762,7 +2778,7 @@ own sha256, so the same state is the same id. A resume continues it exactly: on 
 8 GB M1 serving Llama-3.2-3B on Metal, a 60-token sampled generation suspended at 25 and
 resumed, and one suspended at 25 and again at 40, both returned the uninterrupted run's
 text byte for byte. `fork_seed` continues under another seed, the same text every time it
-is asked for; like a session's own `seed`, it is a positive integer below 2^53. The images are the CLI's format. A served session holds the device from
+is asked for; like a session's own `seed`, it is a whole number from 0 to 2^53 - 1. The images are the CLI's format. A served session holds the device from
 prefill to its last token, so it does not share batches with other slots, and a resume
 is exact on the backend and build that suspended it. A recurrent model on a device
 cannot be imaged (its state is not the host's to restore; serve it with `--gpu off`), and
@@ -3740,7 +3756,11 @@ print(response.choices[0].message.content)
 
 Constrained buffered requests can set `choice_logprobs:true`. Decision points
 then include legal alternatives, posterior probability over the probed legal
-set, raw logprobs, and coverage mass. `choice_logprobs_probe` defaults to 32
+set, raw logprobs, coverage mass, and `legal_mass`: the whole-vocabulary
+probability the legal probed candidates held, the number the posteriors were
+divided by. A posterior of 0.84 at a `legal_mass` of 1e-4 is a forced choice
+between continuations the model barely considered (its own next token was
+outside the grammar), not a confident one. `choice_logprobs_probe` defaults to 32
 and is capped at 64; `scripts/cl-calibration.py` turns labeled records into an
 ECE report, and `scripts/tool-choice-boundary.py` runs an unlabeled
 tool-choice bank across serving conditions and reports where they disagree

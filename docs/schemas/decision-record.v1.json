@@ -18,7 +18,7 @@
     },
     "point": {
       "type": "object",
-      "required": ["index", "n_legal", "n_probed", "coverage", "alternatives"],
+      "required": ["index", "n_legal", "n_probed", "coverage", "legal_mass", "alternatives"],
       "properties": {
         "index": {"type": "integer", "minimum": 0,
                   "description": "generated-token index of the step"},
@@ -28,6 +28,8 @@
                      "description": "candidates probed; n_legal < n_probed means the grammar shaped this choice"},
         "coverage": {"type": "number", "minimum": 0, "maximum": 1,
                      "description": "whole-vocabulary probability mass of the probed candidates"},
+        "legal_mass": {"type": "number", "exclusiveMinimum": 0, "maximum": 1,
+                       "description": "whole-vocabulary probability mass of the legal probed candidates, the number each prob was divided by; small when the model's own next token was outside the grammar"},
         "alternatives": {"type": "array", "maxItems": 8,
                          "items": {"$ref": "#/$defs/alternative"},
                          "description": "the legal candidates, most probable first, at most 8"}

@@ -43,7 +43,7 @@
 #   GATE_CLASS       device-evidence class id (default by uname)
 #   GATE_PYTHON      python with pytest (default python3)
 #   GATE_MODEL       GGUF for the cpu-cuda step
-#   GATE_MAKE_ARGS   extra make arguments, e.g. CC=... or OS=Windows_NT
+#   GATE_MAKE_ARGS   extra make arguments, e.g. CC=... or -j4
 #   RUNNER_IQ_FIXTURES / RUNNER_LLAMA_CPP_BIN   as tests/test_iquants.py reads
 #                    (moe-legacy needs llama-quantize there and fails without it)
 #   GATE_LOCK        lock file to hold while running (optional)

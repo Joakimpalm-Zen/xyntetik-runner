@@ -18,7 +18,7 @@ product claims.
 - [Model support scope](model-scope.md), [admission evidence](model-evidence.md), and [sparse-MoE support](moe-support.md)
 - [LoRA adapters: the complete guide](lora.md), [train on a quantized GGUF](train-lora-on-quantized-gguf.md) and [adapter/training/merge contracts](adaptation-engine.md)
 - [Lineage walkthrough](lineage-walkthrough.md), [sublayer removal](sublayer-removal.md), and [quantization fidelity](quant-fidelity.md)
-- [Tool-choice decision boundary](tool-choice-boundary-lane.md)
+- [Tool-choice decision boundary](tool-choice-boundary-lane.md) and [enum members that share a token prefix](enum-prefix-2026-10-23.md)
 
 ## Record and verify
 

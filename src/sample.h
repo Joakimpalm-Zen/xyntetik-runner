@@ -47,6 +47,15 @@ typedef struct {
 typedef bool (*sample_ok_fn)(void *ud, int token);
 
 void sampler_reset(sampler *s);
+// The sampler state a caller's seed starts from: the first splitmix64 output
+// for that seed, never 0 (the xorshift64's fixed point). Every seed a caller
+// chooses -- a request's `seed`, `-s`, a fork seed -- goes through here, and
+// so does the server's per-request stream (server_request_stream). Installed
+// raw, a small seed was a small state, and xorshift's first draw from it was
+// 0.0: the first sampled token of every request seeded 1, 2, 3, ... was the
+// most likely one. A recorded state (a receipt's, a session image's) is
+// already a state and is installed as it is.
+uint64_t sampler_seed_state(uint64_t seed);
 void sampler_accept(sampler *s, int tok);
 // Pick next token; ok==NULL means unconstrained; returns -1 if no token allowed.
 //

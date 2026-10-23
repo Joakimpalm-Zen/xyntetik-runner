@@ -293,5 +293,78 @@ class ScheduledEntryPoints(unittest.TestCase):
             self.assertFalse((base / "logs/fetch.log").exists())
 
 
+class PlatformDetection(unittest.TestCase):
+    """The Windows branch is chosen from the shell the build runs in, not
+    from an environment variable a minimal shell may not carry. A bash.exe
+    started directly on the Windows CUDA host had no OS variable, took the
+    POSIX branch, and failed linking `.build/.../runner` (no .exe) against
+    -ldl, which MinGW does not have.
+
+    The uname strings are the platforms' own (the absolute anchor): the MSYS2
+    runtime prints MSYS_NT-<ver> with MSYSTEM unset and MINGW64_NT-<ver> or
+    MINGW32_NT-<ver> under any other MSYSTEM (UCRT64 and CLANG64 included),
+    Git for Windows prints MINGW64_NT-<ver>, Cygwin CYGWIN_NT-<ver>, and the
+    busybox-w32 uname of w64devkit prints Windows_NT."""
+
+    WINDOWS_UNAMES = ("MINGW64_NT-10.0-19045", "MINGW32_NT-10.0-19045",
+                      "MSYS_NT-10.0-19045", "CYGWIN_NT-10.0-19045",
+                      "Windows_NT")
+
+    def make_n(self, target, uname=None, args=()):
+        env = {k: v for k, v in os.environ.items() if k.upper() != "OS"}
+        with tempfile.TemporaryDirectory() as td:
+            if uname is not None:
+                stub = pathlib.Path(td) / "uname"
+                stub.write_text("#!/bin/sh\necho '%s'\n" % uname)
+                stub.chmod(0o755)
+                env["PATH"] = td + os.pathsep + env["PATH"]
+            p = subprocess.run(["make", "-Bn", target, *args], cwd=ROOT, env=env,
+                               capture_output=True, text=True, check=True)
+        return p.stdout.replace("\\\n", " ").splitlines()
+
+    def runner_link(self, uname=None, args=()):
+        lines = self.make_n("runner", uname, args)
+        return next(x for x in lines if " -o .build/" in x and "/runner" in x)
+
+    def assert_windows(self, line):
+        self.assertRegex(line, r" -o \.build/[0-9]+/runner\.exe ")
+        self.assertIn("-lws2_32", line)
+        self.assertNotIn("-ldl", line.split())
+
+    def assert_posix(self, line):
+        self.assertRegex(line, r" -o \.build/[0-9]+/runner ")
+        self.assertNotIn("-lws2_32", line)
+
+    @unittest.skipIf(os.name == "nt", "stubs uname with a POSIX script; "
+                     "the Windows job runs the real-uname case below")
+    def test_windows_uname_selects_windows_without_os_variable(self):
+        for uname in self.WINDOWS_UNAMES:
+            with self.subTest(uname=uname):
+                self.assert_windows(self.runner_link(uname))
+                tsan = next(x for x in self.make_n("test-decide-race-gpu", uname)
+                            if "-o test-decide-race-gpu-bin" in x)
+                self.assertNotIn("-fsanitize=thread", tsan)
+
+    @unittest.skipIf(os.name == "nt", "stubs uname with a POSIX script")
+    def test_posix_uname_keeps_its_branch(self):
+        linux = self.runner_link("Linux")
+        self.assert_posix(linux)
+        self.assertIn("-ldl", linux.split())
+        darwin = self.runner_link("Darwin")
+        self.assert_posix(darwin)
+        self.assertIn("Metal", darwin)
+        self.assertNotIn("-ldl", darwin.split())
+
+    @unittest.skipIf(os.name == "nt", "stubs uname with a POSIX script")
+    def test_os_windows_nt_still_selects_windows(self):
+        # mingw32-make from cmd.exe has no uname; Windows sets OS there
+        self.assert_windows(self.runner_link("Linux", ["OS=Windows_NT"]))
+
+    @unittest.skipUnless(os.name == "nt", "the real-platform half of the "
+                         "stubbed cases above; runs in the Windows job")
+    def test_real_windows_shell_without_os_variable(self):
+        self.assert_windows(self.runner_link())
+
+
 if __name__ == "__main__":
     unittest.main()

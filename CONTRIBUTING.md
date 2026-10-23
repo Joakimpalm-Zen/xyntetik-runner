@@ -13,7 +13,9 @@ make test
 make debug
 ```
 
-On Windows, build in MSYS2 UCRT64 with `make OS=Windows_NT CC=gcc`.
+On Windows, build in MSYS2 UCRT64 with `make CC=gcc`. The Makefile
+recognises Windows from the shell's `uname`, so no `OS=Windows_NT` is needed,
+even in a bash started directly with a minimal environment.
 `make test` runs the aggregate C, Python-client, and CLI/API regression
 checks; it requires pytest. The sanitizer build is separate. See
 [CI execution and device verification](docs/ci.md) for Linux, Windows,

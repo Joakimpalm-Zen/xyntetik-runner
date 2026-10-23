@@ -315,3 +315,36 @@ def test_a_server_seed_fixes_unseeded_sampling_at_any_parallel(model):
     # the streams differ by arrival: the first and last prompts are the same
     # text, sampled under two different positions in the sequence
     assert one[0] != one[4]
+
+
+def test_a_small_request_seed_does_not_pin_the_first_token(model):
+    """Seeds 1, 2, 3, ... are the ones clients send. Installed raw as the
+    sampler's xorshift64 state, every one of them drew 0.0 first, so the
+    first sampled token was the most likely one whatever the seed; a request
+    whose first token is the decision (a one-token classification) was greedy
+    under every small seed. With the seed mixed, the first token varies."""
+    srv_cm = _server(model, "chatml")
+    with srv_cm as srv:
+        firsts = set()
+        for seed in range(1, 25):
+            r = _post(srv, "/v1/completions", {
+                "prompt": "hello", "max_tokens": 1, "temperature": 1.0,
+                "top_k": 0, "top_p": 1.0, "min_p": 0.0, "seed": seed})
+            firsts.add(r["choices"][0]["text"])
+    assert len(firsts) > 1, firsts
+
+
+def test_a_small_cli_seed_does_not_pin_the_first_token(model):
+    """The same for `-s`: the CLI installed its seed raw as well."""
+    exe = find_runner(ROOT)
+    if not pathlib.Path(exe).exists():
+        pytest.skip("runner not built")
+    firsts = set()
+    for seed in range(1, 9):
+        p = subprocess.run([exe, "-m", str(model), "-p", "hello", "-n", "1",
+                            "--temp", "1", "--top-k", "0", "--top-p", "1",
+                            "--min-p", "0", "-s", str(seed), "--gpu", "off",
+                            "-t", "2", "--no-tray"],
+                           capture_output=True, check=True)
+        firsts.add(p.stdout)
+    assert len(firsts) > 1, firsts

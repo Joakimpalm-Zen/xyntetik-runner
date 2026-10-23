@@ -5,6 +5,46 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Seed 0 is accepted.** `seed: 0`, `-s 0`, `--fork-seed 0` and a
+  session's `seed` or `fork_seed` of 0 now sample and replay like any other
+  seed. They were refused because 0 was the sampler RNG's fixed point;
+  seeds are mixed before use now and the mix is never 0.
+
+- **Seeded sampling: the request seed is now mixed before use; with small
+  seeds the first sampled token was always the most likely one.** Every
+  seeded output changes once; determinism within a version is unchanged.
+  The seed (a request's `seed`, `-s`, `--fork-seed`, a session's `seed` and
+  `fork_seed`) was installed raw as the sampler's xorshift64 state, whose
+  first draw from a small state is 0.0, so seeds 1 to about 1000 always took
+  the top candidate first: a one-token classification sampled under
+  `seed: i` was greedy for every `i`. Seeds now pass through splitmix64, the
+  mix unseeded requests already used. A `--transcript` record's seed is the
+  state the sampler started from and `--verify` installs it as it is, so
+  records written before this change still verify.
+
+- **`choice_logprobs` reports the mass the legal branches held.** Each
+  decision point now carries `legal_mass`: the whole-vocabulary probability
+  of its legal candidates before the posteriors were renormalized over them.
+  The posteriors alone read the same whether the model wanted one of the
+  schema's branches or none of them: on the Windows CUDA host Qwen3-4B, after
+  writing `"E` under an enum holding `"E"` and `"EAT"`, gave its legal
+  continuations about 1e-4 of its probability and the record showed a 0.84
+  posterior with `coverage` 1.0. A low `legal_mass` marks a choice the schema
+  forced. Added to the decision-record v1 contract
+  ([docs/decision-record.md](docs/decision-record.md)). Both masses are now
+  held at 1: float rounding in the shared log-sum-exp printed `coverage` up
+  to about 1.4e-6 above it, against the contract's maximum. Nothing else in
+  the record or in sampling changes.
+
+- **Windows: `make` builds `runner.exe` in a bash started with a minimal
+  environment.** The Makefile chose its Windows branch only from the `OS`
+  environment variable, which a bash.exe started directly does not carry, so
+  such a shell built a `runner` with no `.exe` and failed linking `-ldl`.
+  The platform is now decided once from the shell's `uname` (`MINGW64_NT-...`,
+  `MSYS_NT-...`, `CYGWIN_NT-...`, busybox-w32's `Windows_NT`) or
+  `OS=Windows_NT`, and every platform branch reads that one decision; plain
+  `make` replaces `make OS=Windows_NT` in the build notes and CI.
+
 - **Inside a container, Runner sizes from the container's limits.** CPU and
   RAM came from the affinity mask, the physical page count and
   `/proc/meminfo`, none of which sees a cgroup's CPU quota or memory limit:

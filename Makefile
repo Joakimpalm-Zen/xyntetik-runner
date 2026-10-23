@@ -29,7 +29,24 @@ CFLAGS  ?= -O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march
 ARCH_FLAGS ?= -march=native
 CFLAGS += -O3 -ffast-math -std=gnu11 $(ARCH_FLAGS)
 LDFLAGS  = -lm -lpthread
-ifeq ($(OS),Windows_NT)
+# The build platform, decided once from the shell the build runs in. Windows
+# is what that shell's uname reports there: the MSYS2 runtime prints
+# MSYS_NT-<ver> with MSYSTEM unset and MINGW64_NT-<ver> or MINGW32_NT-<ver>
+# under any other MSYSTEM (UCRT64 and CLANG64 included), Git for Windows
+# MINGW64_NT-<ver>, Cygwin CYGWIN_NT-<ver>, the busybox-w32 uname Windows_NT.
+# OS=Windows_NT, which Windows puts in a full environment, still counts for a
+# make started without a uname (mingw32-make from cmd.exe) and on the command
+# line. It is not enough alone: a bash.exe started directly gets a minimal
+# environment without it, and the build took the POSIX branch, linking a
+# `runner` with no .exe against -ldl, which MinGW does not have.
+# tests/test_ci_contracts.py (PlatformDetection) holds each case.
+UNAME_S := $(shell uname -s 2>/dev/null)
+ifneq ($(filter MINGW% MSYS% CYGWIN% Windows_NT,$(UNAME_S))$(filter Windows_NT,$(OS)),)
+BUILD_OS := Windows
+else
+BUILD_OS := $(UNAME_S)
+endif
+ifeq ($(BUILD_OS),Windows)
 # -static: link winpthread/libgcc into the exe so it runs outside an MSYS2
 # shell (otherwise it dies at load with STATUS_DLL_NOT_FOUND on libwinpthread-1.dll)
 CFLAGS += -Werror=format-truncation -Werror=cpp
@@ -63,7 +80,7 @@ TEST_SHARED = test-shared-weights.exe
 TEST_BATCH = test-batch.exe
 DIFFTOK = difftok.exe
 TEST_BIND = test-bind.exe
-else ifeq ($(shell uname -s),Darwin)
+else ifeq ($(BUILD_OS),Darwin)
 GPU_SRC  = src/metal.m
 GPU_BACKEND_DEF = -DRUNNER_GPU_METAL
 # Compiler-specific correctness annotations must not silently disappear.  The
@@ -162,6 +179,7 @@ TEST_REQUEST_STOP = $(TEST_BATCH:test-batch%=test-request-stop%)
 TEST_HOST_HEADER = $(TEST_BATCH:test-batch%=test-host-header%)
 TEST_GRAMMAR_FF = $(TEST_BATCH:test-batch%=test-grammar-ff%)
 TEST_LOOKUP_DRAFT = $(TEST_BATCH:test-batch%=test-lookup-draft%)
+TEST_CHOICE_MASS = $(TEST_BATCH:test-batch%=test-choice-mass%)
 TEST_VRAMREG = $(TEST_BATCH:test-batch%=test-vram-registry%)
 TEST_KV_TOL = $(TEST_BATCH:test-batch%=test-kv-tol%)
 TEST_KV_FP4 = $(TEST_BATCH:test-batch%=test-kv-fp4%)
@@ -206,7 +224,7 @@ TMPL_CONF_RENDER = $(TEST_BATCH:test-batch%=template-conformance-render%)
 # test_tray_win_menu is the inverse case: it reads the popup menu back through
 # the Win32 API (GetMenuStringW), which exists nowhere else, so POSIX skips
 # it loudly and the Windows job and the Windows box run it.
-ifeq ($(OS),Windows_NT)
+ifeq ($(BUILD_OS),Windows)
 TEST_RESP_SM_DEP =
 TEST_RESP_SM_RUN = @echo "skip: test-responses-sm (POSIX socketpair; covered by Linux CI)"
 TEST_ATTRIB_DEP =
@@ -738,6 +756,12 @@ TEST_GRAMMAR_FF_SRC = tests/test_grammar_ff.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.
 $(TEST_GRAMMAR_FF): $(TEST_GRAMMAR_FF_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_GRAMMAR_FF_SRC) -o $@ $(LDFLAGS)
 
+# the decision record's legal mass on hand-written logits (one engine step
+# under an enum): the same full-engine link as the fast-forward gate
+TEST_CHOICE_MASS_SRC = tests/test_choice_mass.c $(filter-out tests/test_grammar_ff.c,$(TEST_GRAMMAR_FF_SRC))
+$(TEST_CHOICE_MASS): $(TEST_CHOICE_MASS_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_CHOICE_MASS_SRC) -o $@ $(LDFLAGS)
+
 # The prompt-lookup search pinned against hand-computed proposals (the
 # absolute anchor of --draft-lookup; the CLI identity gate is in
 # tests/test_draft_lookup.py). Links the engine, so it takes engine.c's deps.
@@ -834,7 +858,7 @@ $(TEST_METAL_ADMISSION): tests/test_metal_admission.c src/metal_admission.h
 # links the stub backend on EVERY platform: this gate tests the portable
 # core (menu model, managed spawn/stop, quit semantics), not the GUI.
 # ws2_32: the core's /v1/models enrichment uses sockets on Windows
-ifeq ($(OS),Windows_NT)
+ifeq ($(BUILD_OS),Windows)
 TRAY_TEST_LIBS = -lws2_32
 else
 TRAY_TEST_LIBS =
@@ -1504,7 +1528,7 @@ $(TEST_METAL_OWNERSHIP): tests/test_metal_ownership.m src/metal.m src/compat.c $
 # Runs inside `make test` on macOS: a shader that does not compile makes every
 # run fall back to the CPU silently, which no correctness gate can see.
 test-metal-shader-gate:
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@$(MAKE) --no-print-directory $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_METAL_KVFP4) $(TEST_METAL_TENSOR) >/dev/null
 	@./$(TEST_METAL_SHADERS)
 	@./$(TEST_METAL_KQUANTS)
@@ -1515,7 +1539,7 @@ else
 endif
 
 test-metal-fallback: runner test.gguf
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	$(MAKE) --no-print-directory $(TEST_METAL_OWNERSHIP)
 	./$(TEST_METAL_OWNERSHIP)
 	@set -e; \
@@ -1569,7 +1593,7 @@ endif
 KQUANT_MODELS ?= $(wildcard models/tinyllama-q2k.gguf \
     models/SmolLM2-360M-Instruct-IQ3_S.gguf models/SmolLM2-360M-Instruct-IQ1_M.gguf)
 test-metal-kquant: runner
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if [ -z "$(KQUANT_MODELS)" ]; then \
 	  echo "metal quant parity: SKIP (no q2_K/q3_K/iq4_xs/f16/bf16 checkpoint in models/)"; \
@@ -1603,7 +1627,7 @@ else
 endif
 
 test-metal-prefill: runner test.gguf
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		prompt="alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu"; \
@@ -1634,7 +1658,7 @@ endif
 # position 128 and the census must report attn_chunk > 0 or this gate is
 # passing on a path it never took.
 test-metal-decode-only: runner test.gguf
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		./$(RUNNER_EXE) -m test.gguf -p "hello" -n 200 -b 1 --temp 0 --gpu off > metal-decode1-cpu.out 2>/dev/null; \
@@ -1672,7 +1696,7 @@ endif
 # --gpu-layers arm pins the loud refusal, and the single-file control keeps
 # the multi-part path from quietly widening.
 test-metal-split: runner
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		mkdir -p test-gguf-split; \
@@ -1726,7 +1750,7 @@ endif
 # — the same deliberate-hook approach docs/metal-fallback.md documents for the
 # command-buffer failure it cannot induce on real hardware.
 test-metal-bind-failure: runner test.gguf
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		./$(RUNNER_EXE) -m test.gguf -p "hello" -n 12 --temp 0 --gpu off > metal-bind-cpu.out 2>/dev/null; \
@@ -1754,13 +1778,13 @@ endif
 # reassociation floor). Like test-metal-kv-q8 it wants a real small model.
 # the store-kernel binary is Objective-C: a prerequisite only on Darwin, so
 # test-metal (which make test runs everywhere) skips cleanly elsewhere
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 TEST_METAL_KV_FP4_DEPS = $(TEST_METAL_KVFP4)
 else
 TEST_METAL_KV_FP4_DEPS =
 endif
 test-metal-kv-fp4: runner $(TEST_KV_TOL) $(TEST_METAL_KV_FP4_DEPS)
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		./$(TEST_METAL_KVFP4); \
@@ -1778,7 +1802,7 @@ else
 endif
 
 test-metal-kv-q8: runner $(TEST_KV_TOL)
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		model="$${ASAN_MODEL:-models/SmolLM2-135M-Instruct-Q8_0.gguf}"; \
@@ -1795,7 +1819,7 @@ else
 endif
 
 test-metal-moe: runner
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		$(PYTHON) scripts/make-test-moe.py test-moe-fixture; \
@@ -1815,7 +1839,7 @@ else
 endif
 
 test-metal-gptoss-moe: runner
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		$(PYTHON) scripts/make-test-moe.py test-moe-fixture; \
@@ -2153,7 +2177,7 @@ test-cuda-nvfp4: runner
 	fi
 
 test-metal-gemma4-moe: runner
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		$(PYTHON) scripts/make-test-moe.py test-moe-fixture; \
@@ -2170,7 +2194,7 @@ else
 endif
 
 test-metal-gemma4-hetero: runner
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		$(PYTHON) scripts/make-test-model.py --gemma4-hetero test-g4h.gguf; \
@@ -2207,7 +2231,7 @@ endif
 BIGMODEL ?=
 BIGPROMPT ?= Explain photosynthesis in two sentences.
 test-metal-bigmodel: runner
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if [ -z "$(BIGMODEL)" ]; then \
 		echo "metal big-model identity skipped: set BIGMODEL=<path.gguf>"; \
@@ -2240,7 +2264,7 @@ endif
 # pipelines fail to compile would fall back to slot-major and pass on
 # self-agreement.
 test-metal-moe-em: runner test-moe-fixture.moe1.gguf test-moe-fixture.moe4.gguf test-moe-fixture.gptoss-mxfp4.gguf test-moe-fixture.gemma4-moe.gguf
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ! ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 	  echo "metal moe expert-major: SKIP (no Metal device)"; exit 0; fi; \
@@ -2279,7 +2303,7 @@ endif
 # comparison at fixture scale and to TEST_MOE_MM_AB, including the
 # half-staged twins on the fp16-overflow fixture (2026-09-17).
 test-metal-moe-mm: runner $(TEST_GPU_ID) $(TEST_MOE_MM_AB) test-moe-fixture.gptoss-mxfp4.gguf
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ! ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 	  echo "metal moe grouped-mma: SKIP (no Metal device)"; exit 0; fi; \
@@ -2343,13 +2367,13 @@ test-es.gguf: scripts/make-test-model.py
 # The fixture prerequisites are macOS-only: on Linux the recipe body is a
 # skip line, and naming Darwin fixtures as prerequisites there stops the
 # whole `make test` with "No rule to make target" instead of skipping.
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 TEST_METAL_FUSE_DEPS = test-swa.gguf test-es.gguf test-moe-fixture.gptoss-mxfp4.gguf test-moe-fixture.gemma4-moe.gguf test-qk.gguf test-qkw.gguf
 else
 TEST_METAL_FUSE_DEPS =
 endif
 test-metal-fuse: runner $(TEST_METAL_FUSE_DEPS)
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ! ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 	  echo "metal decode fusion: SKIP (no Metal device)"; exit 0; fi; \
@@ -2440,7 +2464,7 @@ endif
 # tensor boundaries, byte-identical output demanded. Opt-in by path:
 #   make test-metal-bigmodel-multibuf BIGMODEL=models/Llama-3.3-70B-Instruct-Q4_0.gguf
 test-metal-bigmodel-multibuf: runner
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if [ -z "$(BIGMODEL)" ]; then \
 		echo "metal big-model multibuf skipped: set BIGMODEL=<path.gguf>"; \
@@ -2471,7 +2495,7 @@ else
 endif
 
 test-metal-gelu-overflow: runner
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		$(PYTHON) scripts/make-test-model.py --arch gemma3 --act-overflow test-actovf.gguf; \
@@ -2488,7 +2512,7 @@ else
 endif
 
 test-metal-eseries: runner
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		for cfg in 0,16 3,0 3,16; do \
@@ -2513,7 +2537,7 @@ endif
 # span several wraps. What is being gated is that the split changes NOTHING --
 # the wrap is at tensor boundaries, so output must stay byte-identical.
 test-metal-multibuf: runner $(TEST_GPU_ID) test.gguf
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ! ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 	  echo "metal multi-buffer: SKIP (no Metal device)"; exit 0; fi; \
@@ -2544,7 +2568,7 @@ else
 endif
 
 test-metal-swa: runner
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		$(PYTHON) scripts/make-test-model.py --arch qwen3 --swa 8,2 test-swa.gguf; \
@@ -2604,7 +2628,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_SPEC_ID) $(TEST_ATTN_SPLIT) $(TEST_BIND) $(TEST_HOST_HEADER) \
-      $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
+      $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_FPCLASS) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
@@ -2738,6 +2762,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_PREFIX)
 	./$(TEST_GRAMMAR_FF)
 	./$(TEST_GRAMMAR_FF) test-ornith.gguf
+	./$(TEST_CHOICE_MASS)
 	./$(TEST_LOOKUP_DRAFT)
 	./$(TEST_STOP_CONSTRAINT)
 	$(TEST_RESP_SM_RUN)
@@ -3080,7 +3105,7 @@ clean:
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
 	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) \
 	      $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) $(TEST_VRAMREG) test-shared-asan-bin \
-	      $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_TOOLS) $(DIFFTOK) \
+	      $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
 	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
 	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err \
@@ -3251,7 +3276,7 @@ test-decide-race: test.gguf
 # the driver load. Needs the device, so CI's hosted runners cannot run it.
 # MinGW has no TSan: there it builds plain and is the functional half only
 # (four engines on the GPU at once, every answer and every id distinct).
-ifeq ($(OS),Windows_NT)
+ifeq ($(BUILD_OS),Windows)
 DECIDE_RACE_GPU_FLAGS = -O1 -g -std=gnu11 -Wall -I src
 DECIDE_RACE_GPU_RUN   =
 else

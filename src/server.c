@@ -1117,19 +1117,24 @@ static bool session_float(sock_t fd, jv *req, const char *key, double lo,
     return true;
 }
 
-// A seed is a positive integer the rng can hold exactly: a double carries
-// 53 bits, so the range is capped there rather than cast past it.
-static bool session_seed(sock_t fd, jv *req, const char *key, uint64_t *out) {
+// A seed is a whole number the rng can hold exactly: a double carries 53
+// bits, so the range is capped there rather than cast past it. 0 is one: a
+// seed is mixed before it seeds the sampler (sampler_seed_state), so it is
+// never the xorshift64's fixed point. *given says the request sent one.
+static bool session_seed(sock_t fd, jv *req, const char *key, uint64_t *out,
+                         bool *given) {
+    *given = false;
     jv *v = jv_get(req, key);
     if (!v || v->type == J_NULL) return true;
-    if (v->type != J_NUM || v->num < 1 || v->num > 9007199254740991.0 ||
+    if (v->type != J_NUM || v->num < 0 || v->num > 9007199254740991.0 ||
         v->num != (double)(long long)v->num) {
         char msg[128];
-        snprintf(msg, sizeof msg, "%s must be a positive integer below 2^53", key);
+        snprintf(msg, sizeof msg, "%s must be a whole number from 0 to 2^53 - 1", key);
         send_error_detail(fd, 400, msg, key, "invalid_value");
         return false;
     }
     *out = (uint64_t)v->num;
+    *given = true;
     return true;
 }
 
@@ -1160,14 +1165,17 @@ static void handle_session_start(slot_t *s, sock_t fd, jv *req) {
         return;
     }
     bool ignore_eos = ie && ie->type == J_BOOL && ie->b;
+    uint64_t seed = 0;
+    bool seed_given;
     s->smp = s->smp_base;
     s->smp.top_k = top_k;
     if (!session_float(fd, req, "temperature", 0.0, 10.0, &s->smp.temp) ||
         !session_float(fd, req, "top_p", 0.0, 1.0, &s->smp.top_p) ||
         !session_float(fd, req, "min_p", 0.0, 1.0, &s->smp.min_p) ||
         !session_float(fd, req, "repeat_penalty", 0.0, 10.0, &s->smp.repeat_penalty) ||
-        !session_seed(fd, req, "seed", &s->smp.rng))
+        !session_seed(fd, req, "seed", &seed, &seed_given))
         return;
+    if (seed_given) s->smp.rng = sampler_seed_state(seed);   // a caller's seed, mixed
     int32_t *toks = NULL;
     int n = tok_encode_fit(s->tok, prompt->str, true, TOK_RAW, 0, &toks);
     if (n < 0) { free(toks); send_error(fd, 500, "out of memory tokenizing"); return; }
@@ -1227,12 +1235,12 @@ static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
     // it only checked for a whole double, so 2^53 and 2^53 + 1 both forked as
     // 2^53 into one image, and a value past 2^63 reached a long long cast it
     // does not fit (2026-10-16 review).
-    uint64_t fork_seed_u = 0;
-    if (!session_seed(fd, req, "fork_seed", &fork_seed_u)) {
+    uint64_t fork_seed = 0;
+    bool fork = false;
+    if (!session_seed(fd, req, "fork_seed", &fork_seed, &fork)) {
         session_image_free(&img);
         return;
     }
-    long long fork_seed = (long long)fork_seed_u;
     if (!session_int(fd, req, "suspend_after", 1, sm->max_new, &stop_at, false)) {
         session_image_free(&img);
         return;
@@ -1253,7 +1261,7 @@ static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
     if (!why && stop_at && (stop_at <= sm->generated || stop_at >= sm->max_new))
         why = "suspend_after must lie after the image's point and before its "
               "budget is spent";
-    if (!why && sm->temp > 0 && sm->rng == 0 && !fork_seed)
+    if (!why && sm->temp > 0 && sm->rng == 0 && !fork)
         why = "a sampled image without an rng state";
     if (why) {
         session_image_free(&img);
@@ -1264,7 +1272,10 @@ static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
     s->smp.temp = sm->temp; s->smp.top_k = sm->top_k; s->smp.top_p = sm->top_p;
     s->smp.min_p = sm->min_p; s->smp.repeat_penalty = sm->repeat_penalty;
     // a greedy image records no rng (it is never drawn from)
-    s->smp.rng = fork_seed ? (uint64_t)fork_seed : sm->rng ? sm->rng : 1;
+    // a fork seed is a caller's seed (mixed); the image's rng is a recorded
+    // state (as it is)
+    s->smp.rng = fork ? sampler_seed_state(fork_seed)
+                      : sm->rng ? sm->rng : 1;
     sched_prefill_begin();
     engine_request_defaults(e);   // the image, not the last request, is the state
     if (!engine_state_load(e, img.tokens, sm->n_tokens, img.state)) {
@@ -1285,7 +1296,7 @@ static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
     }
     memcpy(lg, img.logits, sizeof(float) * (size_t)s->m->n_vocab);
     session_answer(s, fd, lg, sm->n_prompt, sm->max_new, stop_at,
-                   sm->ignore_eos, id, fork_seed != 0);
+                   sm->ignore_eos, id, fork);
     e->ignore_eos = false;
     sched_prefill_end();
     free(lg);
