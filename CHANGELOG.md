@@ -80,7 +80,7 @@ Current release and unreleased changes. Compatibility follows the
   head and the recompute take one product per weight over the window the same
   way. The adapter is the same byte for byte: against the
   previous release on all 13 trainable fixture families and every objective,
-  and against the one-position forward (`RUNNER_TRAIN_SOLO=1`) in
+  and against the one-position forward (`RUNNER_TRAIN_ROWS=1`) in
   `tests/test_train.py`. Qwen3.5-0.8B Q4_K_M with KD on an Apple M1: a
   134-token step from 15.2 s to 10.7 s (forward 5.4 to 3.1 s, recompute 3.3
   to 1.8 s). The backward's own products and the attention and DeltaNet

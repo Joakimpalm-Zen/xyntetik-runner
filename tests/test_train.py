@@ -143,24 +143,28 @@ def test_every_trainable_family_is_byte_deterministic(runner_bin, base, tmp_path
     assert a1.read_bytes() == a2.read_bytes(), (family, "adapter files differ")
 
 
-# R8.19: the taped forward runs in verify rounds (rows of a speculative verify
-# are the solo step's bits); RUNNER_TRAIN_SOLO=1 runs it a position at a time.
-# The two must train the same adapter byte for byte on every family, with an
-# adapter in the forward from step 2 on, which test-spec-identity never has.
+# R8.19: the taped forward runs in rounds of 16 positions, every product
+# column a solo decode step's bits; RUNNER_TRAIN_ROWS=N sets the width, 1 a
+# position at a time. Every width must train the same adapter byte for byte
+# on every family, with an adapter in the forward from step 2 on.
 @pytest.mark.parametrize("family", ["base"] + sorted(TRAIN_FAMILIES))
 def test_batched_taped_forward_is_the_solo_bytes(runner_bin, base, tmp_path, family):
     d = base if family == "base" else _family_fixture(tmp_path, family)
-    a1, a2 = tmp_path / "solo.gguf", tmp_path / "rounds.gguf"
-    env = dict(os.environ)
-    os.environ["RUNNER_TRAIN_SOLO"] = "1"
-    try:
-        l1 = _train(runner_bin, d, a1, steps=4)
-    finally:
-        os.environ.clear()
-        os.environ.update(env)
-    l2 = _train(runner_bin, d, a2, steps=4)
-    assert l1 == l2, (family, l1, l2)
-    assert a1.read_bytes() == a2.read_bytes(), (family, "adapter bytes differ")
+    runs = []
+    for rows in ("1", "5", None):
+        out = tmp_path / ("rows-%s.gguf" % (rows or "default"))
+        env = dict(os.environ)
+        if rows:
+            os.environ["RUNNER_TRAIN_ROWS"] = rows
+        try:
+            losses = _train(runner_bin, d, out, steps=4)
+        finally:
+            os.environ.clear()
+            os.environ.update(env)
+        runs.append((rows, losses, out.read_bytes()))
+    for rows, losses, adapter in runs[1:]:
+        assert losses == runs[0][1], (family, rows, runs[0][1], losses)
+        assert adapter == runs[0][2], (family, rows, "adapter bytes differ")
 
 
 def test_loss_falls_and_adapter_improves_score(runner_bin, base, tmp_path):

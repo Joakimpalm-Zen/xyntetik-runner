@@ -10326,14 +10326,16 @@ static bool rows_logits(model_t *m, int n, float *out);
 // Rows a taped forward runs at once. A forward of n rows with t_mv_exact (every
 // product column the batch-1 dot's bits; norms, rope, attention and the
 // recurrence already run row by row) is n solo decode steps' bits, held by
-// test_train's comparison against RUNNER_TRAIN_SOLO=1 (a position at a time)
-// on every trainable family; every weight block is decoded once a round
-// instead of once a position. Not the speculative keep-forward: training
-// restores no row, so it files no per-row checkpoints.
+// test_train's comparison across round widths (RUNNER_TRAIN_ROWS=N, 1 a
+// position at a time) on every trainable family; every weight block is
+// decoded once a round instead of once a position. Not the speculative
+// keep-forward: training restores no row, so it files no per-row checkpoints.
 enum { TRAIN_FW_ROWS = 16 };
 static int lora_fw_rows(const model_t *m) {
-    if (m->gpu || getenv("RUNNER_TRAIN_SOLO")) return 1;
-    int n = m->n_batch < TRAIN_FW_ROWS ? m->n_batch : TRAIN_FW_ROWS;
+    if (m->gpu) return 1;
+    const char *e = getenv("RUNNER_TRAIN_ROWS");
+    int n = e && *e ? atoi(e) : TRAIN_FW_ROWS;
+    if (n > m->n_batch) n = m->n_batch;
     return n > 1 ? n : 1;
 }
 
