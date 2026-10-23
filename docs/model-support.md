@@ -657,7 +657,7 @@ The NextN/MTP predictor head for Qwen3.8-27B, loaded with --mtp-file beside a tr
 <a id="qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head"></a>
 #### `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf` (4 parts)
 
-Experimental: the qwen4exp architecture is admitted with a recorded publisher-reference gap, and no gate has run on this 4-part file; the admission evidence is on the upstream 2-part trunk.
+Experimental: the qwen4exp architecture is admitted with its publisher float32 comparison still unmeasured, and no gate has run on this 4-part file; the admission evidence is on the upstream 2-part trunk.
 
 - **File:** `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf` (sha256 `522632bbb6f2c353621762be5bd48b270b1ff9fe60a9630bd47d5ef097aa0fa2`, 26,481,462,400 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00002-of-00004.gguf` (sha256 `f82cc8f151e15b73bbb84c75baf78f179df1b9b368437d7c75d8b3a7618cb8c8`, 28,347,013,600 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00003-of-00004.gguf` (sha256 `53ada4d2c3f2e189ce209520ecad0ae9649028b19e6bb9a55a021613b204e93b`, 28,800,138,432 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00004-of-00004.gguf` (sha256 `3a8c77474c82c5e81212ef3c5ef2330e75413cc60241d600fcfd87e4e2143b66`, 2,803,798,784 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`).
 - **Upstream checkpoint:** Qwen/Qwen3.8-Flash-Next.
@@ -677,7 +677,7 @@ Experimental: the qwen4exp architecture is admitted with a recorded publisher-re
 <a id="qwen3.8-flash-next-mtp-q8_0"></a>
 #### `Qwen3.8-Flash-Next-MTP-Q8_0.gguf`
 
-Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for --mtp-file, built from the publisher's BF16 checkpoint for ISTA-DASLab's IQ3_S trunk; no gate has run on it.
+Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for --mtp-file, built from the publisher's BF16 checkpoint for ISTA-DASLab's IQ3_S trunk, whose qwen4exp architecture is admitted with its publisher float32 comparison still unmeasured; no gate has run on it.
 
 - **File:** `Qwen3.8-Flash-Next-MTP-Q8_0.gguf` (sha256 `cd2f837a63f0b6ea1d951976e161fc40648932ffaf59194aed3557175638000b`, 4,165,605,056 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`).
 - **Upstream checkpoint:** Qwen/Qwen3.8-Flash-Next.

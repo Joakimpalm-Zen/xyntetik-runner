@@ -1488,7 +1488,7 @@
       "id": "qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head",
       "model": "Qwen3.8-Flash-Next",
       "tier": "tier1",
-      "claim": "Experimental: the qwen4exp architecture is admitted with a recorded publisher-reference gap, and no gate has run on this 4-part file; the admission evidence is on the upstream 2-part trunk.",
+      "claim": "Experimental: the qwen4exp architecture is admitted with its publisher float32 comparison still unmeasured, and no gate has run on this 4-part file; the admission evidence is on the upstream 2-part trunk.",
       "architecture": "qwen4exp",
       "upstream": {
         "checkpoint": "Qwen/Qwen3.8-Flash-Next",
@@ -1568,7 +1568,7 @@
       "id": "qwen3.8-flash-next-mtp-q8_0",
       "model": "Qwen3.8-Flash-Next",
       "tier": "tier1",
-      "claim": "Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for --mtp-file, built from the publisher's BF16 checkpoint for ISTA-DASLab's IQ3_S trunk; no gate has run on it.",
+      "claim": "Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for --mtp-file, built from the publisher's BF16 checkpoint for ISTA-DASLab's IQ3_S trunk, whose qwen4exp architecture is admitted with its publisher float32 comparison still unmeasured; no gate has run on it.",
       "architecture": "qwen4exp",
       "upstream": {
         "checkpoint": "Qwen/Qwen3.8-Flash-Next",

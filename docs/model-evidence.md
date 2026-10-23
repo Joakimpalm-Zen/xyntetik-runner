@@ -13,7 +13,7 @@ The [golden reference comparison](golden-pass-2026-10-22.md) (first pass
 rows. The [Granite 4.2/Qwen 3.8 admission](granite-42-qwen38-cert-2026-09-06.md)
 records the corresponding tokenizer/template/reference cases.
 [Qwen4 experimental admission](qwen4exp-admission-evidence/) records CPU and
-CUDA checks and the remaining publisher-reference gap. No unmeasured
+CUDA checks; its publisher float32 comparison is still unmeasured. No unmeasured
 configuration inherits a PASS from a neighboring row.
 
 ## AFMoE
