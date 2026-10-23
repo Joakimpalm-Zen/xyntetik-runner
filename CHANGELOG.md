@@ -3,7 +3,7 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.5.1 - 2026-10-23
 
 - **Metal: Q4_K decode matvecs take the fast kernel by default on dense
   models.** The reassociating `k_mvf_q4_K` (two rows a simdgroup, vector

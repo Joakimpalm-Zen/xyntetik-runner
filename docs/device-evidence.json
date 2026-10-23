@@ -19,19 +19,19 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-10-21",
-        "commit": "8d680cf7dc09cded4271316882e28c6feec3735e",
-        "ran": "build150.sh on the Windows CUDA host: make OS=Windows_NT -j8 runner from release-1.5.0 (0 warnings); tests/test_native_xml_routing.py 28/28; scripts/cuda-smoke-remote.sh 13/13 on the 1.5.0 candidate; clean-setup walkthrough (docs/workflow-opencode.md, empty model cache) pass",
+        "date": "2026-10-23",
+        "commit": "08924aecb8fab1c7dc1ff5084e557b6eb0d56315",
+        "ran": "build151.sh on the Windows CUDA host: make OS=Windows_NT -j8 runner from release-1.5.1 (0 warnings); tests/test_native_xml_routing.py 28/28; scripts/cuda-smoke-remote.sh 13/13 on the 1.5.1 candidate; clean-setup walkthrough (docs/workflow-opencode.md, empty model cache) pass",
         "result": "pass",
         "caps": {
-          "version": "1.5.0",
+          "version": "1.5.1",
           "os": "windows",
           "arch": "x86_64",
           "cpu_cores": 8,
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA GeForce RTX 3070"
         },
-        "evidence": "docs/compat-reports/cuda-smoke-1.5.0-2026-10-22-rtx3070.json"
+        "evidence": "docs/compat-reports/cuda-smoke-1.5.1-2026-10-23-rtx3070.json"
       }
     },
     {
@@ -73,19 +73,19 @@
         "gpu_backend": "metal"
       },
       "last_verified": {
-        "date": "2026-10-21",
-        "commit": "8d680cf7dc09cded4271316882e28c6feec3735e",
-        "ran": "make test PYTHON=python with pytest (every C gate and the pytest suites: 1,626 + 208 + 26 + 20 passed); scripts/conformance.sh 512/7; compat_matrix.py gemma-4-e4b-it-qat-q4_0 --verify-files --load --execute-checks complete; make release-check",
+        "date": "2026-10-23",
+        "commit": "08924aecb8fab1c7dc1ff5084e557b6eb0d56315",
+        "ran": "make test PYTHON=python with pytest (every C gate and the pytest suites: 1,642 + 208 + 26 + 20 + 7 passed); scripts/conformance.sh 512/7; compat_matrix.py gemma-4-e4b-it-qat-q4_0 --verify-files --load --execute-checks complete; make release-check",
         "result": "pass",
         "caps": {
-          "version": "1.5.0",
+          "version": "1.5.1",
           "os": "macos",
           "arch": "arm64",
           "cpu_cores": 8,
           "gpu_backend": "metal",
           "gpu_name": "Apple M1"
         },
-        "evidence": "docs/compat-reports/1.5.0-2026-10-22-macos-arm64-gemma-4-e4b-it-qat-q4_0.json"
+        "evidence": "docs/compat-reports/1.5.1-2026-10-23-macos-arm64-gemma-4-e4b-it-qat-q4_0.json"
       }
     }
   ]
