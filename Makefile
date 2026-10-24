@@ -1468,12 +1468,16 @@ $(TEST_MOE_HOST_BRIDGE): $(TEST_MOE_HOST_BRIDGE_SRC) src/model.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MOE_HOST_BRIDGE_SRC) -o $@ $(LDFLAGS)
 
 # The adapter delta (lora_apply's blocked chains) against the serial loop it
-# replaced (tests/test_lora_chains.c), model.c compiled in the same way.
+# replaced (tests/test_lora_chains.c), model.c compiled in the same way, with
+# -fno-associative-math: the test checks the source's fmaf chains, and gcc's
+# -ffast-math may reassociate an fmaf chain into a vector reduction (it did
+# at -march=native on a Zen 5, each loop its own way; the release ISAs and
+# clang keep the chains). See the test's header.
 TEST_LORA_CHAINS_SRC = tests/test_lora_chains.c $(OBJDIR)/gguf.o \
                        $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                        $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_LORA_CHAINS): $(TEST_LORA_CHAINS_SRC) src/model.c $(HDR)
-	$(CC) $(CFLAGS) -I src $(TEST_LORA_CHAINS_SRC) -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) -fno-associative-math -I src $(TEST_LORA_CHAINS_SRC) -o $@ $(LDFLAGS)
 
 # The CPU-only backend stub must be able to STAND IN for a real backend --
 # that is the entire claim in its own header comment ("CUDA (cuda.c) and Metal

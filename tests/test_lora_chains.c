@@ -10,6 +10,16 @@
 // the order; the two must agree bit for bit, serial and on the pool, at
 // every block edge, with large, tiny and subnormal values in the inputs.
 //
+// The contract is the source's: every chain written as fmaf in order. The
+// test is built with -fno-associative-math (the Makefile rule), because
+// gcc's -ffast-math may turn an fmaf chain into a vector reduction that
+// sums in another order: with gcc 16.1 at -march=native on a Zen 5 it did,
+// in the reference and in lora_apply each its own way (1 ulp on a
+// 1024-wide chain), while the release ISAs (x86-64-v3, skylake-avx512),
+// clang and the CI's other hosts keep the chains. Whether the engine itself
+// should be built that way is a separate decision (it cost 4 to 6% of CPU
+// decode and prefill on that host).
+//
 // model.c is compiled into this test (tests/test_model_load_oom.c's
 // pattern) to reach lora_apply.
 #include <math.h>
