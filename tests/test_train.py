@@ -205,6 +205,35 @@ def test_train_gpu_matches_cpu_within_rounding(runner_bin, base, tmp_path, famil
         assert abs(a - b) <= 1e-4 * max(abs(a), 1e-6), (family, lc, lg)
     rec = json.loads(pathlib.Path(str(ag) + ".train.json").read_text())
     assert rec["products"]["device"] == "cuda", rec.get("products")
+    assert rec["products"]["tensors_on_device"] > 0, rec["products"]
+    assert rec["products"]["tensors_on_cpu"] == 0, rec["products"]
+
+
+# Which weights the device holds decides a --train-gpu adapter's bits (a
+# tensor the VRAM budget kept on the CPU takes the CPU's order), and the free
+# VRAM at the start decides which fit: the record names the split, the run
+# says so when it happens, and a budget that holds part of the model still
+# trains (the path had no test). RUNNER_TRAIN_GPU_BUDGET caps the budget.
+def test_train_gpu_records_the_weight_split(runner_bin, base, tmp_path):
+    split = {}
+    for cap in ("", "20000"):
+        out = tmp_path / ("ad-%s.gguf" % (cap or "all"))
+        env = dict(os.environ, RUNNER_TRAIN_GPU_BUDGET=cap) if cap else None
+        p = _run_train(runner_bin, base, out, "corpus.txt",
+                       extra=("--train-steps", "2", "--train-gpu"), env=env)
+        err = p.stderr.decode(errors="replace")
+        if p.returncode != 0 and "needs a CUDA build" in err:
+            pytest.skip("no usable CUDA device")
+        assert p.returncode == 0, err
+        rec = json.loads(pathlib.Path(str(out) + ".train.json").read_text())
+        split[cap] = (rec["products"], err)
+    (whole, err_all), (part, err_part) = split[""], split["20000"]
+    assert whole["tensors_on_cpu"] == 0 and whole["cpu_bytes"] == 0, whole
+    assert "VRAM budget reached" not in err_all
+    assert part["tensors_on_cpu"] > 0 and part["cpu_bytes"] > 0, part
+    assert part["device_bytes"] <= 20000, part
+    assert part["tensors_on_device"] + part["tensors_on_cpu"] >= whole["tensors_on_device"]
+    assert "the adapter's bits depend on this split" in err_part
 
 
 def test_train_gpu_is_refused_without_training_or_a_device(runner_bin, base, tmp_path):

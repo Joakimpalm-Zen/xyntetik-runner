@@ -4804,7 +4804,15 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
         gpu_available(gname, (int)sizeof gname);
         sb_lit(&rec, "\"products\":{\"device\":\"cuda\",\"name\":\"");
         sb_esc(&rec, gname, strlen(gname));
-        sb_lit(&rec, "\"},");
+        // which weights the device held: a tensor the VRAM budget kept on the
+        // CPU takes the CPU's order, so two runs whose free VRAM differed can
+        // write different adapters, and this says whether they did
+        int on_dev, on_cpu;
+        size_t dev_b, cpu_b;
+        gpu_train_placement(&rt->m, &on_dev, &dev_b, &on_cpu, &cpu_b);
+        sb_fmt(&rec, "\",\"tensors_on_device\":%d,\"device_bytes\":%llu,"
+                     "\"tensors_on_cpu\":%d,\"cpu_bytes\":%llu},",
+               on_dev, (unsigned long long)dev_b, on_cpu, (unsigned long long)cpu_b);
     }
     // R8.17: the held-out sets (rows and teacher hashed like the data), the
     // kill rule and the step a resumed run started from

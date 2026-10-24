@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--train-gpu`: the record names which weights the device held.** The
+  weights are cached as long as the device's free memory at the start
+  allows, and the rest train on the CPU, where a tensor's products take the
+  CPU's order. So the adapter's bits depend on the split, and two runs of
+  one command could write different adapters while their records looked the
+  same. `products` now carries `tensors_on_device`, `device_bytes`,
+  `tensors_on_cpu` and `cpu_bytes`, and the run's note says the bits depend
+  on the split when it happens. A test covers the partial path (it had
+  none), with `RUNNER_TRAIN_GPU_BUDGET` capping the budget.
+
 - **Release gate: refuses to run in a degraded launch environment (system
   temp directory, no user name) and records the environment it ran in.** On
   the Windows CUDA host a tool shell started MSYS2 bash without `USERNAME`,

@@ -2967,6 +2967,13 @@ double gpu_train_dev_wall(model_t *mm) {
     return 0;
 }
 
+void gpu_train_placement(model_t *mm, int *on_dev, size_t *dev_bytes,
+                         int *on_cpu, size_t *cpu_bytes) {
+    (void)mm;
+    *on_dev = *on_cpu = 0;
+    *dev_bytes = *cpu_bytes = 0;
+}
+
 void gpu_free(model_t *m) {
     if (!m) return;
     gpu_t *g = m->gpu_owner ? (gpu_t *)m->gpu_owner : (gpu_t *)m->gpu;
