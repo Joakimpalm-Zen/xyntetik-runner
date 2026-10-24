@@ -258,6 +258,8 @@ test-prompt-oom
 test-prompt-oom.exe
 test-envelope
 test-envelope.exe
+test-sha256
+test-sha256.exe
 test-template.dSYM/
 test-template-oom.dSYM/
 test-template-families.dSYM/

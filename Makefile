@@ -261,6 +261,7 @@ TEST_HFHUB = $(TEST_BATCH:test-batch%=test-hfhub%)
 TEST_GGUF_SPLIT = $(TEST_BATCH:test-batch%=test-gguf-split-load%)
 TEST_PARSE = $(TEST_BATCH:test-batch%=test-parse%)
 TEST_ENVELOPE = $(TEST_BATCH:test-batch%=test-envelope%)
+TEST_SHA256 = $(TEST_BATCH:test-batch%=test-sha256%)
 TEST_ED25519 = $(TEST_BATCH:test-batch%=test-ed25519%)
 TEST_MLDSA = $(TEST_BATCH:test-batch%=test-mldsa%)
 TEST_PMATH = $(TEST_BATCH:test-batch%=test-pmath%)
@@ -1414,6 +1415,12 @@ $(TEST_HFHUB): tests/test_hfhub.c $(OBJDIR)/hfhub.o $(OBJDIR)/envelope.o $(OBJDI
 
 $(TEST_ENVELOPE): tests/test_envelope.c $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/compat.o src/envelope.h src/json.h src/runner.h
 	$(CC) $(CFLAGS) -I src tests/test_envelope.c $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/compat.o -o $@ $(LDFLAGS)
+
+# SHA-256 on every backend the host has (the CPU's instructions and the
+# portable code) against reference digests (tests/test_sha256.c, envelope.c
+# compiled in to reach the backend switch).
+$(TEST_SHA256): tests/test_sha256.c src/envelope.c $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/compat.o src/envelope.h src/json.h src/runner.h
+	$(CC) $(CFLAGS) -I src tests/test_sha256.c $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/compat.o -o $@ $(LDFLAGS)
 
 # receipt and model-signature primitives: RFC 8032 / RFC 6979 known answers
 $(TEST_ED25519): tests/test_ed25519.c $(OBJDIR)/ed25519.o src/ed25519.h
@@ -2726,7 +2733,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) test-lora.full.gguf \
-      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_FPCLASS) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
+      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_FPCLASS) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
@@ -2957,6 +2964,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_GGUF_SPLIT) test-gguf-split/whole.gguf test-gguf-split/part-00001-of-00003.gguf
 	./$(TEST_PARSE)
 	./$(TEST_ENVELOPE)
+	./$(TEST_SHA256)
 	./$(TEST_ED25519)
 	./$(TEST_MLDSA)
 	./$(TEST_CANON_KERNELS)
