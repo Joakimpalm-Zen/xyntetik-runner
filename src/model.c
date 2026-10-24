@@ -5920,8 +5920,24 @@ static inline double dt_now(void) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + 1e-9 * (double)ts.tv_nsec;
 }
-#define DT_BEGIN double dt_t0 = dbg_time_on() ? dt_now() : 0
-#define DT_MARK_AT(t0, k) do { if (dbg_time_on()) { double dt_t1 = dt_now(); dt_acc[k] += dt_t1 - (t0); (t0) = dt_t1; } } while (0)
+// Under --train-gpu, each stage's share spent in the training device's
+// products (their wall time, transfers and syncs included), so a stage's
+// host time is its total less this. The forward runs its stages on the
+// calling thread, the one t_mv_dev names the device for; a stage clock
+// started inside another stage (the MoE route) restarts the device clock
+// too, so the outer stage then counts only the device time after it.
+static double dt_dev[DT_N];
+static _Thread_local double dt_dev_last;
+static inline double dt_dev_now(void) {
+    return t_mv_dev ? gpu_train_dev_wall(t_mv_dev) : 0;
+}
+static inline double dt_start(void) {
+    dt_dev_last = dt_dev_now();
+    return dt_now();
+}
+#define DT_BEGIN double dt_t0 = dbg_time_on() ? dt_start() : 0
+#define DT_MARK_AT(t0, k) do { if (dbg_time_on()) { double dt_t1 = dt_now(); dt_acc[k] += dt_t1 - (t0); (t0) = dt_t1; \
+    double dt_d1 = dt_dev_now(); dt_dev[k] += dt_d1 - dt_dev_last; dt_dev_last = dt_d1; } } while (0)
 #define DT_MARK(k) DT_MARK_AT(dt_t0, k)
 
 // A numerical stage of a hot or byte-pinned routine: split out to be read,
@@ -6193,8 +6209,14 @@ void model_debug_time_report(void) {
     if (!dbg_time_on()) return;
     double tot = 0; for (int k = 0; k < DT_N; k++) tot += dt_acc[k];
     fprintf(stderr, "TIME total %.3f s over the run\n", tot);
+    bool dev = false;
+    for (int k = 0; k < DT_N; k++) dev |= dt_dev[k] > 0;
     for (int k = 0; k < DT_N; k++)
-        if (dt_acc[k] > 0) fprintf(stderr, "TIME %-14s %8.3f s  %5.1f%%\n", dt_names[k], dt_acc[k], 100.0 * dt_acc[k] / tot);
+        if (dt_acc[k] > 0) {
+            fprintf(stderr, "TIME %-14s %8.3f s  %5.1f%%", dt_names[k], dt_acc[k], 100.0 * dt_acc[k] / tot);
+            if (dev) fprintf(stderr, "  (device %.3f s, host %.3f s)", dt_dev[k], dt_acc[k] - dt_dev[k]);
+            fputc('\n', stderr);
+        }
     for (int k = 0; k < 2; k++)
         if (dt_fwd_n[k]) fprintf(stderr, "TIME forward %s: %ld passes, %ld rows, %8.3f s (%.1f ms/pass)\n",
                                  k ? "batch" : "1-row", dt_fwd_n[k], dt_fwd_rows[k], dt_fwd_t[k], 1e3 * dt_fwd_t[k] / dt_fwd_n[k]);
@@ -12086,7 +12108,7 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
     const layer_t *ly = c.ly;
     const int n_embd = c.n_embd, xdim = c.xdim;
     bool sim = layer_sim_begin(m, n);
-    c.dt_t0 = dbg_time_on() ? dt_now() : 0;
+    c.dt_t0 = dbg_time_on() ? dt_start() : 0;
     // No mixer at all (a nemotron_h MLP-only block, or an attention
     // removed by --remove-sublayer): the residual passes straight to the
     // FFN. The whole branch is omitted, not computed as zero and added.
@@ -12125,7 +12147,7 @@ bool model_moe_ffn_cpu(model_t *m, int layer, int n) {
     if (!ly->is_moe) return false;
     fwd_layer c;
     fwd_layer_facts(m, layer, n, 0, 0, &c);
-    c.dt_t0 = dbg_time_on() ? dt_now() : 0;
+    c.dt_t0 = dbg_time_on() ? dt_start() : 0;
     layer_ffn(m, &c);
     if (ly->ple_gate) layer_ple_branch(m, &c);
     layer_output(m, &c);
@@ -12144,7 +12166,7 @@ bool model_moe_ffn_cpu_premixed(model_t *m, int layer, int n) {
     if (!ly->is_moe || ly->moe_gemma) return false;
     fwd_layer c;
     fwd_layer_facts(m, layer, n, 0, 0, &c);
-    c.dt_t0 = dbg_time_on() ? dt_now() : 0;
+    c.dt_t0 = dbg_time_on() ? dt_start() : 0;
     layer_moe_ffn(m, &c);
     return true;
 }
