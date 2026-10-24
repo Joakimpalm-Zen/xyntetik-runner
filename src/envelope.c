@@ -180,9 +180,11 @@ static bool sha256_hw_present(void) {
 }
 #endif
 
-// 0 portable, 1 the CPU's instructions; resolved once (a race only
-// resolves it twice to the same value). tests/test_sha256.c sets it.
-static int sha_backend = -1;
+// 0 portable, 1 the CPU's instructions; resolved on first use. Atomic:
+// several threads hash at once (the server's decisions, the transcript
+// chain), and two first uses may both resolve it, to the same value.
+// tests/test_sha256.c sets it.
+static _Atomic int sha_backend = -1;
 
 static void sha256_blocks(sha256_ctx *c, const uint8_t *p, size_t nb) {
 #ifdef SHA_HW
