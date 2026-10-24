@@ -1938,11 +1938,14 @@ test-cuda-q3k: runner $(TEST_GPU_ID)
 # llama-quantize-impl.dll beside llama-quantize.exe, "-" sorts before "."
 # under C collation, and the `llama-quantize*` glob these steps used picked
 # the DLL (the 1.5.2 CUDA gate on the Windows CUDA host; under a UTF-8 locale
-# the exe sorted first and the same step had passed). `make
-# llama-quantize-path` prints what the steps run (tests/test_ci_contracts.py).
+# the exe sorted first and the same step had passed). The .exe name is tried
+# first: MSYS2's stat resolves a bare name to its .exe, so the other order
+# printed llama-quantize for llama-quantize.exe (the windows-suite job, every
+# push from d8544b6f to f960e470). `make llama-quantize-path` prints what the
+# steps run (tests/test_ci_contracts.py).
 LLAMA_QUANTIZE = d="$$RUNNER_LLAMA_CPP_BIN"; \
 	[ -n "$$d" ] || { echo "llama-quantize: RUNNER_LLAMA_CPP_BIN is not set" >&2; exit 1; }; \
-	for n in llama-quantize llama-quantize.exe; do \
+	for n in llama-quantize.exe llama-quantize; do \
 	  if [ -f "$$d/$$n" ] && [ -x "$$d/$$n" ]; then echo "$$d/$$n"; exit 0; fi; \
 	done; \
 	echo "llama-quantize: neither llama-quantize nor llama-quantize.exe is an executable file in RUNNER_LLAMA_CPP_BIN ($$d)" >&2; exit 1
