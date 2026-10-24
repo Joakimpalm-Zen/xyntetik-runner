@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -95,15 +96,29 @@ def test_replay_substrate_and_chain(runner_bin, base, tmp_path):
     assert r1["schema_version"] == "xyntetik.runner.transcript.v1"
 
 
-def test_binary_hash_uses_running_image_not_argv0(runner_bin, base, tmp_path):
+def test_binary_hash_uses_running_image_not_argv0(runner_bin, base, tmp_path,
+                                                 monkeypatch):
+    # argv0 stays the bare name, which the runner cannot open from its cwd,
+    # so the recorded hash has to come from the running image. The file to
+    # start is resolved here, in the PATH this test builds: on Windows
+    # subprocess does not search the child's env PATH (CreateProcess searches
+    # the parent's current directory, then the parent's PATH), so the bare
+    # name only ever started through the current directory, and
+    # NoDefaultCurrentDirectoryInExePath=1 in an operator's environment turned
+    # that off. The variable is set here (in this process, where CreateProcess
+    # reads it, and so in env) to keep that environment covered.
+    monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "1")
     rec = tmp_path / "path-invocation.json"
     env = dict(os.environ)
     env["PATH"] = str(ROOT) + os.pathsep + env.get("PATH", "")
+    exe = shutil.which(runner_bin.name, path=env["PATH"])
+    assert exe and os.path.samefile(exe, runner_bin), exe
+    exe = os.path.abspath(exe)
     p = subprocess.run(
         [runner_bin.name, "-m", str(base), "-p", "hello", "-n", "1",
          "--temp", "0", "--gpu", "off", "--transcript", str(rec)],
-        cwd=tmp_path, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        timeout=120)
+        executable=exe, cwd=tmp_path, env=env, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=120)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     r = json.loads(rec.read_bytes())
     assert r["build"]["binary_sha256"] == hashlib.sha256(
@@ -111,8 +126,8 @@ def test_binary_hash_uses_running_image_not_argv0(runner_bin, base, tmp_path):
 
     p = subprocess.run(
         [runner_bin.name, "-m", str(base), "--verify", str(rec),
-         "--gpu", "off"], cwd=tmp_path, env=env, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, timeout=120)
+         "--gpu", "off"], executable=exe, cwd=tmp_path, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     assert json.loads(p.stdout)["tier"] == "T1"
 
