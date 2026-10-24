@@ -293,6 +293,17 @@ bool   gpu_train_dn_fw(model_t *m, const tdn_args *a, const float *cv,
 bool   gpu_train_dn_bw(model_t *m, const tdn_args *a, const float *cv,
                        const float *dy, float *dq, float *dk, float *dv,
                        float *dbeta, float *ddecay);
+// the record's count of those calls: run on the device, and failed there
+// (each failed one ran on the CPU)
+void   gpu_train_dn_counts(model_t *m, long *dev, long *failed);
+// A forward round's state stays on the device for the next round, and the
+// host's copy (the state argument) goes stale. gpu_train_dn_pull brings
+// every such state back to its host buffer (false = one could not be, and
+// the host's copy is wrong); the trainer calls it where its device mode
+// ends and before any CPU code reads a state. gpu_train_dn_reset: the host
+// states were zeroed (model_recurrent_reset), so are the device's.
+bool   gpu_train_dn_pull(model_t *m);
+void   gpu_train_dn_reset(model_t *m);
 // where the weights went: tensors and bytes cached on the device, the ones
 // the budget kept on the CPU, and the budget with whether a flag set it (the
 // train record names all of it: the split decides the adapter's bits, and

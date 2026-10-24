@@ -247,9 +247,12 @@ weight once per 16 positions (`RUNNER_TRAIN_ROWS`).
 
 `--train-gpu` runs every weight product of a step on an NVIDIA GPU: the
 forward, the heads, the backward's recompute and its transposed products, for
-every weight type, with the weights uploaded once and cached for the run. The
-CPU keeps the rest: norms, rope, attention, the DeltaNet recurrence, the
-adapter's own rank-r products and the optimizer.
+every weight type, with the weights uploaded once and cached for the run. On
+Qwen3.5 and Clef the Gated DeltaNet recurrence runs there too: the forward's,
+the recompute's and the backward through time, all through one step
+function, so the forward and the recompute see the same states. The CPU
+keeps the rest: norms, rope, attention, the adapter's own rank-r products
+and the optimizer.
 
 It is what to use when the weight products dominate, which they do on large
 models. On an RTX 3070 beside 4 CPU threads, a Qwen2.5-7B Q4_K_M step took
@@ -267,7 +270,10 @@ position the same value however the window is batched, which the backward
 needs. The gradient gates (`test-lora-grad`) run in this mode on a CUDA host,
 at a batching that would expose a product that depends on it. The record
 (`ADAPTER.gguf.train.json`) names the device under `products`, together
-with the budget and the weights it held.
+with the budget and the weights it held, and on a Gated DeltaNet model the
+recurrence's calls on the device (`deltanet_device_calls`) and any that
+failed there and ran on the CPU instead (`deltanet_failed_calls`, which
+stderr also reports).
 
 The weights are cached as long as the device budget allows, and the rest
 train on the CPU, where a tensor's products take the CPU's order. So the

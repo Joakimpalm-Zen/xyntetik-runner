@@ -119,8 +119,10 @@ static double clk(void) {
 // dn_step and dn_bw_worker), at five head widths (the fixtures' 8, a width
 // that is no whole number of warps' columns, and the real models' 128):
 //   forward   y within 2^-14 of the reference, relative to the largest |y|;
-//             the forward's rounds (the state in and out, the window in
-//             calls of 16 and 5 positions) give the recompute's y bit for bit
+//             the forward's rounds (the state kept on the device between
+//             calls of 16 and 5 positions, from a reset) give the
+//             recompute's y bit for bit, and the state brought back to the
+//             host after them is the reference's final one within 2^-14
 //   backward  dq, dk, dv, dbeta and ddecay within 2^-12 of the reference's,
 //             relative to each one's largest magnitude, and bit for bit the
 //             same on a second run
@@ -239,8 +241,10 @@ static void dn_check(model_t *m, int nh, int ng, int hv, int T) {
         }
     }
 
-    // the forward's rounds: 16 positions a call, the last call 5 or fewer
+    // the forward's rounds: 16 positions a call, the last call 5 or fewer,
+    // from a reset (st is zero, as model_recurrent_reset leaves the host's)
     bool ok = true;
+    gpu_train_dn_reset(m);
     for (int t0 = 0; ok && t0 < T; ) {
         int n = T - t0 > 16 ? 16 : T - t0 > 5 ? T - t0 - 5 : T - t0;
         tdn_args r = a;
@@ -250,6 +254,15 @@ static void dn_check(model_t *m, int nh, int ng, int hv, int T) {
         t0 += n;
     }
     CHECK(ok, "dn hv %d: a forward round declined", hv);
+    CHECK(ok && gpu_train_dn_pull(m), "dn hv %d: the state did not come back", hv);
+    if (ok) {
+        double *fin = malloc(sizeof(double) * (size_t)nh * hh);
+        for (int h = 0; h < nh; h++)
+            memcpy(fin + (size_t)h * hh, S + ((size_t)h * (T + 1) + T) * hh,
+                   sizeof(double) * hh);
+        dn_close("final state", hv, st, fin, (size_t)nh * hh, 1.0 / 16384);
+        free(fin);
+    }
     CHECK(!gpu_train_dn_bw(m, &a, cv, dy, out[0], out[1], out[2], out[3], out[4]),
           "dn hv %d: a sweep ran without its recompute", hv);
     ok = ok && gpu_train_dn_fw(m, &a, cv, beta, decay, NULL, y);

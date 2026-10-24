@@ -6844,6 +6844,25 @@ static __attribute__((noinline)) void dn_gate_out(const model_t *m,
     for (int j = 0; j < hv; j++) o[j] *= z[j] / (1.0f + expf(-z[j]));
 }
 
+// dn_gate_out over n rows of every head on the pool, a head an item (each
+// row and head is its own, so the split moves no value); y, z and o rows
+// ys, zs and os apart
+typedef struct {
+    const model_t *m; const layer_t *ly; const float *y, *z; float *o;
+    int n, hv, ys, zs, os;
+} dn_gate_job;
+
+static void dn_gate_worker(void *vp, int h0, int h1) {
+    const dn_gate_job *J = vp;
+    for (int h = h0; h < h1; h++)
+        for (int t = 0; t < J->n; t++) {
+            size_t c = (size_t)h * J->hv;
+            dn_gate_out(J->m, J->ly, J->y + (size_t)t * J->ys + c,
+                        J->z + (size_t)t * J->zs + c,
+                        J->o + (size_t)t * J->os + c, J->hv);
+        }
+}
+
 // The heads of a forward call's n rows on the device: beta and decay from
 // m->q_gate and the alphas, the recurrence from the layer's state (written
 // back), then each head's gated norm into m->xb2's rows.
@@ -6859,12 +6878,10 @@ static bool q35_dev_heads(model_t *m, const layer_t *ly, int n, int xdim,
         dn_gates(ly, m->q_gate + (size_t)b * nh, alphas + (size_t)b * nh, nh,
                  bd + (size_t)b * nh, bd + gn + (size_t)b * nh);
     ok = ok && gpu_train_dn_fw(m, a, m->ssm_aux, bd, bd + gn, states, y);
-    for (int b = 0; ok && b < n; b++)
-        for (int h = 0; h < nh; h++) {
-            size_t off = (size_t)b * inner + (size_t)h * hv;
-            dn_gate_out(m, ly, y + off, m->ssm_z + off,
-                        m->xb2 + (size_t)b * xdim + (size_t)h * hv, hv);
-        }
+    if (ok) {
+        dn_gate_job gj = { m, ly, y, m->ssm_z, m->xb2, n, hv, inner, inner, xdim };
+        tpool_run(m->tp, dn_gate_worker, &gj, nh);
+    }
     free(bd);
     free(y);
     return ok;
@@ -6970,8 +6987,10 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
         }
     }
     // a device call that failed (noted once) leaves the rows' heads to the
-    // CPU, in row order, from the state the last good call wrote back
-    if (dev && !q35_dev_heads(m, ly, n, xdim, &da, alphas, states))
+    // CPU, in row order, from the state the last good call left on the
+    // device (brought back first; one that cannot be fails the step)
+    if (dev && !q35_dev_heads(m, ly, n, xdim, &da, alphas, states)) {
+        if (!gpu_train_dn_pull(m)) m->train_dn_lost = true;
         for (int b = 0; b < n; b++) {
             const float *cv = m->ssm_aux + (size_t)b * convdim;
             q35_head_job hj = { m, ly, cv, cv + 2 * keydim,
@@ -6979,6 +6998,7 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
                                 sk, ng, nh, hv, keydim, inner };
             tpool_run(m->tp, q35_heads_worker, &hj, nh);
         }
+    }
     matvec_b(m->tp, m->xb, xdim, ly->ssm_out, m->xb2, xdim,
              inner, m->n_embd, NULL, n);
     lora_hook(m, layer, LW_SSMO, m->xb, xdim, m->xb2, xdim, inner, m->n_embd, n);
@@ -7722,6 +7742,7 @@ void model_recurrent_reset(model_t *m) {
     if (!model_has_recurrent(m)) return;
     memset(m->ssm_conv_state, 0, recurrent_conv_bytes(m));
     memset(m->ssm_state_mem, 0, recurrent_state_bytes(m));
+    if (m->train_gpu) gpu_train_dn_reset(m);   // the states a step keeps there
     if (recurrent_ple_bytes(m)) memset(m->ple4_conv_hist, 0, recurrent_ple_bytes(m));
     m->ssm_snap_pos = -1;   // a fresh sequence: no earlier fold to restore
     m->ssm_mark_pos = -1;   // and the mark was over the sequence being dropped
@@ -10496,11 +10517,11 @@ NUM_STAGE void lbw_recompute_deltanet(model_t *m, int l, int T, lbw_state *s,
             dn_gates(ly, d->bb + (size_t)t * nh, d->aa + (size_t)t * nh, nh,
                      d->beta + (size_t)t * nh, d->decay + (size_t)t * nh);
         d->dev_fw = gpu_train_dn_fw(m, &da, d->cv, d->beta, d->decay, NULL, d->y);
-        for (int t = 0; d->dev_fw && t < T; t++)
-            for (int h = 0; h < nh; h++) {
-                size_t off = (size_t)t * d->inner + (size_t)h * d->hv;
-                dn_gate_out(m, ly, d->y + off, d->z + off, d->o + off, d->hv);
-            }
+        if (d->dev_fw) {
+            dn_gate_job gj = { m, ly, d->y, d->z, d->o, T, d->hv, d->inner,
+                               d->inner, d->inner };
+            tpool_run(m->tp, dn_gate_worker, &gj, nh);
+        }
     }
     if (ok && !d->dev_fw) {
         dn_job J = { m, ly, d, T, true };
@@ -11041,6 +11062,19 @@ static bool lora_layers_bw(model_t *m, const int32_t *toks, int T, float *dx) {
 // pos_w: per-transition weights (length T-1; transition t scores toks[t+1]).
 // NULL = all ones. A zero weight removes the position from loss AND gradient
 // (the prompt-masking / advantage-weighting hook GRPO-style training needs).
+// R8.21: where a device-mode step or eval ends, the forward's DeltaNet
+// states the device kept come back to the host, and a state lost on the
+// device (a failed call that only the device's copy could have resumed)
+// fails it instead of training on a stale state
+static bool lbw_dn_settle(model_t *m) {
+    if (m->train_gpu && !gpu_train_dn_pull(m)) m->train_dn_lost = true;
+    if (!m->train_dn_lost) return true;
+    m->train_dn_lost = false;
+    fprintf(stderr, "error: --train-gpu: a DeltaNet layer's recurrent state "
+            "was lost on the device; this step is not trained\n");
+    return false;
+}
+
 static bool lora_backward(model_t *m, const int32_t *toks, int T,
                           const float *pos_w, const lora_teacher *tch,
                           double *loss_out) {
@@ -11088,6 +11122,7 @@ static bool lora_backward(model_t *m, const int32_t *toks, int T,
     memset(lbw_dev, 0, sizeof(lbw_dev));
     free(dx);
     free(m->tape); m->tape = NULL; m->tape_T = 0;
+    if (!lbw_dn_settle(m)) ok = false;
     t_mv_dev = dev;
     if (ok && loss_out) *loss_out = loss;
     return ok;
@@ -11406,6 +11441,7 @@ bool model_lora_eval_row(model_t *m, const int32_t *toks, int T,
         acc->positions++;
     }
     fw_rounds_free(&rd);
+    if (!lbw_dn_settle(m)) ok = false;
     t_mv_dev = dev;
     return ok;
 }

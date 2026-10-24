@@ -7636,6 +7636,19 @@ typedef struct {
 enum { DN_CV, DN_BETA, DN_DECAY, DN_STATE, DN_Y, DN_CKPT, DN_SB, DN_DY, DN_DQ,
        DN_DK, DN_DV, DN_DBETA, DN_DDEC, DN_NBUF };
 
+// A forward layer's recurrent state, kept on the device between the rounds
+// of a step (known by its host buffer). at says which copy is current: the
+// host's (upload it before the next round), the device's (the host's is
+// stale until gpu_train_dn_pull), zero (a reset: clear the device copy), or
+// lost (a device failure after the device copy was the only current one).
+enum { TDN_AT_HOST, TDN_AT_DEV, TDN_AT_ZERO, TDN_AT_LOST };
+typedef struct {
+    const float *host;
+    CUdeviceptr  dev;
+    size_t       bytes;
+    int          at;
+} tdn_slot;
+
 typedef struct {
     CUcontext   ctx;              // primary context, retained on device 0
     CUdevice    dev;
@@ -7654,6 +7667,9 @@ typedef struct {
     int         dn_T;
     bool        dn_noted;
     double      t_dn;             // RUNNER_TRAIN_PROF: wall inside the calls
+    long        n_dn, n_dn_failed;   // the record: calls run, calls failed
+    tdn_slot   *dn_slot;          // the forward's states, one a layer
+    int         n_dn_slot, cap_dn_slot;
     CUdeviceptr dummy;            // zeroed no-bias operand
     tg_slot    *cache;
     int         n_cache, cap_cache;
@@ -7804,11 +7820,13 @@ void gpu_train_free(model_t *m) {
         if (t->d_dx) cu.MemFree(t->d_dx);
         for (int i = 0; i < DN_NBUF; i++)
             if (t->dn[i]) cu.MemFree(t->dn[i]);
+        for (int i = 0; i < t->n_dn_slot; i++) cu.MemFree(t->dn_slot[i].dev);
         cu.MemFree(t->dummy);
         cu.ModuleUnload(t->mod);
     }
     cu.PrimaryCtxRelease(t->dev);
     free(t->cache);
+    free(t->dn_slot);
     free(t->cpu_kept);
     free(t->h_x);
     free(t->h_y);
@@ -8011,6 +8029,61 @@ static bool tdn_buf(train_gpu_t *t, int i, size_t need) {
     return tg_scratch(&t->dn[i], &t->dn_cap[i], need);
 }
 
+// the device copy of the forward state at host, made on first use (the
+// host's copy current); a host buffer of another size at the same address
+// is a new state
+static tdn_slot *tdn_slot_for(train_gpu_t *t, const float *host, size_t bytes) {
+    for (int i = 0; i < t->n_dn_slot; i++) {
+        tdn_slot *s = &t->dn_slot[i];
+        if (s->host != host) continue;
+        if (s->bytes != bytes) {
+            cu.MemFree(s->dev);
+            s->dev = 0;
+            if (cu.MemAlloc(&s->dev, bytes) != 0) {
+                *s = t->dn_slot[--t->n_dn_slot];   // dropped
+                return NULL;
+            }
+            s->bytes = bytes;
+            s->at = TDN_AT_HOST;
+        }
+        return s;
+    }
+    if (t->n_dn_slot == t->cap_dn_slot) {
+        int cap = t->cap_dn_slot ? t->cap_dn_slot * 2 : 64;
+        tdn_slot *s = realloc(t->dn_slot, sizeof(*s) * (size_t)cap);
+        if (!s) return NULL;
+        t->dn_slot = s;
+        t->cap_dn_slot = cap;
+    }
+    tdn_slot *s = &t->dn_slot[t->n_dn_slot];
+    if (cu.MemAlloc(&s->dev, bytes) != 0) return NULL;
+    s->host = host;
+    s->bytes = bytes;
+    s->at = TDN_AT_HOST;
+    t->n_dn_slot++;
+    return s;
+}
+
+bool gpu_train_dn_pull(model_t *m) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->n_dn_slot) return true;
+    if (cu.CtxSetCurrent(t->ctx) != 0) return false;
+    bool ok = true;
+    for (int i = 0; i < t->n_dn_slot; i++) {
+        tdn_slot *s = &t->dn_slot[i];
+        if (s->at == TDN_AT_LOST) ok = false;
+        if (s->at != TDN_AT_DEV) continue;
+        if (cu.MemcpyDtoH((void *)s->host, s->dev, s->bytes) == 0) s->at = TDN_AT_HOST;
+        else ok = false;
+    }
+    return ok;
+}
+
+void gpu_train_dn_reset(model_t *m) {
+    train_gpu_t *t = m->train_gpu;
+    for (int i = 0; t && i < t->n_dn_slot; i++) t->dn_slot[i].at = TDN_AT_ZERO;
+}
+
 static bool train_dn_fw(train_gpu_t *t, const tdn_args *a, const float *cv,
                         const float *beta, const float *decay, float *state,
                         float *y) {
@@ -8024,8 +8097,11 @@ static bool train_dn_fw(train_gpu_t *t, const tdn_args *a, const float *cv,
     size_t nqk = sizeof(float) * (size_t)a->nh * T * (size_t)a->sk;
     bool rec = !state;   // the recompute: from zero, checkpoints kept
     t->dn_owner = NULL;
+    // a forward round's state stays on the device for the next round
+    tdn_slot *sl = rec ? NULL : tdn_slot_for(t, state, ns);
+    if (!rec && !sl) return false;
     if (!tdn_buf(t, DN_CV, ncv) || !tdn_buf(t, DN_BETA, ng) ||
-        !tdn_buf(t, DN_DECAY, ng) || !tdn_buf(t, DN_STATE, ns) ||
+        !tdn_buf(t, DN_DECAY, ng) || (rec && !tdn_buf(t, DN_STATE, ns)) ||
         !tdn_buf(t, DN_Y, ny))
         return false;
     // the recompute takes the reverse sweep's buffers too, so a sweep that
@@ -8038,22 +8114,31 @@ static bool train_dn_fw(train_gpu_t *t, const tdn_args *a, const float *cv,
         return false;
     if (cu.MemcpyHtoD(t->dn[DN_CV], cv, ncv) != 0 ||
         cu.MemcpyHtoD(t->dn[DN_BETA], beta, ng) != 0 ||
-        cu.MemcpyHtoD(t->dn[DN_DECAY], decay, ng) != 0 ||
-        (!rec && cu.MemcpyHtoD(t->dn[DN_STATE], state, ns) != 0))
+        cu.MemcpyHtoD(t->dn[DN_DECAY], decay, ng) != 0)
         return false;
+    int prior = sl ? sl->at : TDN_AT_HOST;
+    if (prior == TDN_AT_LOST ||
+        (sl && prior == TDN_AT_HOST && cu.MemcpyHtoD(sl->dev, state, ns) != 0) ||
+        (sl && prior == TDN_AT_ZERO && cu.MemsetD8(sl->dev, 0, ns) != 0))
+        return false;
+    CUdeviceptr st = sl ? sl->dev : t->dn[DN_STATE];
     CUdeviceptr ck = rec ? t->dn[DN_CKPT] : 0;
     tdn_args aa = *a;
     int load = !rec;
-    void *p[] = { &t->dn[DN_CV], &t->dn[DN_BETA], &t->dn[DN_DECAY],
-                  &t->dn[DN_STATE], &t->dn[DN_Y], &ck, &aa, &load };
+    void *p[] = { &t->dn[DN_CV], &t->dn[DN_BETA], &t->dn[DN_DECAY], &st,
+                  &t->dn[DN_Y], &ck, &aa, &load };
     unsigned gy = (unsigned)((a->hv + TDN_ROWS * TDN_FW_WARPS - 1) /
                              (TDN_ROWS * TDN_FW_WARPS));
     if (cu.LaunchKernel(t->f_tdn_fw, (unsigned)a->nh, gy, 1,
                         TDN_FW_WARPS * 32, 1, 1, 0, NULL, p, NULL) != 0 ||
         cu.CtxSynchronize() != 0 ||
-        cu.MemcpyDtoH(y, t->dn[DN_Y], ny) != 0 ||
-        (!rec && cu.MemcpyDtoH(state, t->dn[DN_STATE], ns) != 0))
+        cu.MemcpyDtoH(y, t->dn[DN_Y], ny) != 0) {
+        // the kernel may have run: a state only the device held is gone; a
+        // host-current or reset state is still the host's
+        if (sl) sl->at = prior == TDN_AT_DEV ? TDN_AT_LOST : TDN_AT_HOST;
         return false;
+    }
+    if (sl) sl->at = TDN_AT_DEV;
     if (rec) {
         t->dn_owner = cv;
         t->dn_T = a->T;
@@ -8069,7 +8154,11 @@ bool gpu_train_dn_fw(model_t *m, const tdn_args *a, const float *cv,
     double t0 = plat_now();
     bool ok = train_dn_fw(t, a, cv, beta, decay, state, y);
     t->t_dn += plat_now() - t0;
-    if (!ok) tdn_note(t, state ? "forward" : "recompute");
+    if (ok) t->n_dn++;
+    else {
+        t->n_dn_failed++;
+        tdn_note(t, state ? "forward" : "recompute");
+    }
     return ok;
 }
 
@@ -8110,8 +8199,18 @@ bool gpu_train_dn_bw(model_t *m, const tdn_args *a, const float *cv,
     bool ok = train_dn_bw(t, a, dy, dq, dk, dv, dbeta, ddecay);
     t->dn_owner = NULL;
     t->t_dn += plat_now() - t0;
-    if (!ok) tdn_note(t, "reverse sweep");
+    if (ok) t->n_dn++;
+    else {
+        t->n_dn_failed++;
+        tdn_note(t, "reverse sweep");
+    }
     return ok;
+}
+
+void gpu_train_dn_counts(model_t *m, long *dev, long *failed) {
+    train_gpu_t *t = m->train_gpu;
+    *dev = t ? t->n_dn : 0;
+    *failed = t ? t->n_dn_failed : 0;
 }
 
 static bool train_mm(train_gpu_t *t, const gguf_tensor *w, const float *x,

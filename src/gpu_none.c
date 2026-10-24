@@ -202,6 +202,18 @@ bool gpu_train_dn_bw(model_t *m, const tdn_args *a, const float *cv,
     return false;
 }
 
+void gpu_train_dn_counts(model_t *m, long *dev, long *failed) {
+    (void)m;
+    *dev = *failed = 0;
+}
+
+bool gpu_train_dn_pull(model_t *m) {
+    (void)m;
+    return true;
+}
+
+void gpu_train_dn_reset(model_t *m) { (void)m; }
+
 void gpu_train_placement(model_t *m, int *on_dev, size_t *dev_bytes,
                          int *on_cpu, size_t *cpu_bytes, size_t *budget,
                          bool *budget_set) {
