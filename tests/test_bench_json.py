@@ -182,3 +182,38 @@ def test_debug_route_prints_each_route_once(runner_bin, model):
                           "--gpu", "off"], cwd=ROOT, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, timeout=120)
     assert b"route: " not in off.stderr
+
+
+def test_cuda_attention_routes_have_their_own_kernel_counters(runner_bin, model):
+    """The kernels object counts CUDA's attention routes apart, so a record
+    says which ran: cuda_attn_tile counts every tiled prefill tile and
+    cuda_attn_tc the tensor-core ones among them (attn-tc falls back to the
+    tiled kernel where it does not apply), cuda_attn_dec_gqa the grouped
+    decode launches, cuda_kv_gather the decoded tokens whose K and V came
+    back in one copy. A run without CUDA reports them as 0; on a CUDA device
+    the grouped decode (on by default) is counted, and not under
+    RUNNER_CUDA_ATTN_DEC=0. The three were counted and never reported until
+    a compiler flagged them as set and never read."""
+    import os
+    keys = ("cuda_attn_tile", "cuda_attn_tc", "cuda_attn_dec_gqa", "cuda_kv_gather")
+    cpu = _bench(runner_bin, model)["route"]["kernels"]
+    assert all(cpu.get(k) == 0 for k in keys), cpu
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, check=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("the routes' counts need a CUDA device")
+
+    def kernels(**env):
+        proc = subprocess.run([runner_bin, "-m", str(model), "--bench-json", "--gpu", "auto"],
+                              cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=300, env=dict(os.environ, RUNNER_GPU_FALLBACK="fail", **env))
+        assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+        route = json.loads(proc.stdout)["route"]
+        assert route.get("backend") == "cuda", route
+        return route["kernels"]
+
+    on = kernels()
+    assert on["cuda_attn_dec_gqa"] > 0, on
+    assert on["cuda_attn_tc"] <= on["cuda_attn_tile"], on
+    off = kernels(RUNNER_CUDA_ATTN_DEC="0")
+    assert off["cuda_attn_dec_gqa"] == 0, off
