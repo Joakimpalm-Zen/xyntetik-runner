@@ -4,17 +4,17 @@
 //   transposed  gpu_train_mvt == the CPU trainer's chain (dequant_row, then
 //               an ascending-j fmaf per element, a zero dy skipped), memcmp
 //   forward     gpu_train_mm is batch-invariant: every column of a 77-column
-//               call (the staged kernel, two column tiles) equals the same
+//               call (the 32-column kernel, three tiles) equals the same
 //               column computed alone and in a 5-column call (the 16-column
-//               kernel) and in the 77-column call with the staged kernel off
-//               (RUNNER_TRAIN_MMS=0: the 32-column kernel), memcmp; and it is
+//               kernel) and in the 77-column call through the opt-in staged
+//               kernels (RUNNER_TRAIN_MMS=1 k_tmms, =2 k_tmmp), memcmp; and it is
 //               the product (each column within 2^-16 of sum|w x| of a
 //               double-precision reference)
 //
 // Skips (not passes) without a CUDA device. Prints each type's throughput.
 // RUNNER_TRAIN_GPU_BENCH=1 adds a kernel benchmark: four types at 4096 x
-// 5120, 64 and 512 columns, the staged kernel against the per-warp ones
-// (the kernels' time alone, best of five).
+// 5120, 64 and 512 columns, the per-warp kernels against the two staged
+// ones (the kernels' time alone, best of five).
 #include "runner.h"
 
 #include <math.h>
@@ -171,14 +171,16 @@ int main(void) {
         double t2 = clk();
         CHECK(ok, "%s: gpu_train_mm declined", TYPES[k].name);
         if (ok) {
-            // the same 77 columns through the per-warp kernels
+            // the same 77 columns through the staged kernels (R8.20, opt-in)
             float *yw = malloc(sizeof(float) * B * N_OUT);
-            setenv("RUNNER_TRAIN_MMS", "0", 1);
-            bool okw = gpu_train_mm(&m, &w, x, N_IN, yw, N_OUT, N_IN, N_OUT, NULL, B);
-            unsetenv("RUNNER_TRAIN_MMS");
-            CHECK(okw && !memcmp(yw, y, sizeof(float) * B * N_OUT),
-                  "%s: the staged kernel's %d columns differ from the per-warp "
-                  "kernel's", TYPES[k].name, B);
+            for (int v = 1; v <= 2; v++) {
+                setenv("RUNNER_TRAIN_MMS", v == 1 ? "1" : "2", 1);
+                bool okw = gpu_train_mm(&m, &w, x, N_IN, yw, N_OUT, N_IN, N_OUT, NULL, B);
+                unsetenv("RUNNER_TRAIN_MMS");
+                CHECK(okw && !memcmp(yw, y, sizeof(float) * B * N_OUT),
+                      "%s: the %s kernel's %d columns differ from the per-warp "
+                      "kernel's", TYPES[k].name, v == 1 ? "staged" : "pipelined", B);
+            }
             free(yw);
         }
         bool ok5 = ok && gpu_train_mm(&m, &w, x + 3 * N_IN, N_IN, y5, N_OUT, N_IN,
@@ -265,8 +267,9 @@ int main(void) {
             w.ne[0] = BN_IN; w.ne[1] = BN_OUT;
             w.data = make_rows(BT[k].type, BT[k].f16, BN_IN, BN_OUT, &w.nbytes);
             for (int nb = 64; nb <= BB; nb *= 8)
-                for (int staged = 1; staged >= 0; staged--) {
-                    if (!staged) setenv("RUNNER_TRAIN_MMS", "0", 1);
+                for (int v = 0; v <= 2; v++) {
+                    static const char *const VN[] = { "per-warp", "staged", "pipelined" };
+                    if (v) setenv("RUNNER_TRAIN_MMS", v == 1 ? "1" : "2", 1);
                     double best = 1e9;
                     for (int rep = 0; rep < 5; rep++) {
                         double t_mm, t_mvt, k_mm, k_mvt;
@@ -278,8 +281,8 @@ int main(void) {
                         if (k_mm < best) best = k_mm;
                     }
                     unsetenv("RUNNER_TRAIN_MMS");
-                    printf("bench %-6s %4d columns %-8s %7.3f ms  %6.2f TFLOP/s\n",
-                           BT[k].name, nb, staged ? "staged" : "per-warp", best * 1e3,
+                    printf("bench %-6s %4d columns %-9s %7.3f ms  %6.2f TFLOP/s\n",
+                           BT[k].name, nb, VN[v], best * 1e3,
                            2.0 * BN_IN * BN_OUT * nb / best / 1e12);
                 }
             bkeep[k] = w.data;

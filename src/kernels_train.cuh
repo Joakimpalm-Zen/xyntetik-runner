@@ -367,6 +367,103 @@ extern "C" __global__ void k_tmms_##name(MV_PARAMS) {                         \
         }                                                                      \
 }
 
+// k_tmmp: k_tmms's arithmetic on the same 16 x 64 tile, software-pipelined,
+// in 16 warps of 8 x 8 (8 x 16 with the prefetch registers spilled). k_tmms decodes a
+// chunk's weights behind a __syncthreads and only then computes, and with
+// one 8-warp block an SM nothing hides the decode's dependent loads: it ran
+// at about 0.6x k_tmmw (R8.20 attempt 1). Here each thread decodes its share
+// of chunk c + 1 (and loads its activations) into registers before it
+// computes chunk c from shared memory, then stores them into the other
+// buffer, so the loads are in flight under the FMAs. Lane L still visits
+// i = L, L + 32, ... in ascending order across chunks and folds with
+// warp_sum: k_tmm's value bit for bit.
+#define TMP_W (TMP_RG * TMP_RW * TMP_KC / (TMP_RG * TMP_CG * 32))
+#define TMP_X (TMP_CG * TMP_NC * TMP_KC / (TMP_RG * TMP_CG * 32))
+#define TRAIN_MMP(name, BS, TS)                                                \
+extern "C" __global__ void __launch_bounds__(TMP_RG * TMP_CG * 32, 1)        \
+k_tmmp_##name(MV_PARAMS) {                                                     \
+    (void)bias;                                                                \
+    __shared__ float wsm[2][TMP_RG * TMP_RW][TMP_KC];                          \
+    __shared__ float xsm[2][TMP_CG * TMP_NC][TMP_KC];                          \
+    int tid = (int)threadIdx.x, nt = (int)blockDim.x;                          \
+    int warp = tid >> 5, lane = tid & 31;                                      \
+    int rg = warp / TMP_CG, cg = warp % TMP_CG;                                \
+    int brow = (int)blockIdx.x * (TMP_RG * TMP_RW), row0 = brow + rg * TMP_RW; \
+    int tb = (int)blockIdx.y * (TMP_CG * TMP_NC), t0 = tb + cg * TMP_NC;       \
+    int nbk = a.batch - tb < TMP_CG * TMP_NC ? a.batch - tb : TMP_CG * TMP_NC; \
+    ulong64 rb = TQ_ROW(BS, TS);                                               \
+    const uchar *w0 = wb + a.w_off;                                            \
+    float acc[TMP_RW][TMP_NC];                                                 \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < TMP_RW; r++)                                           \
+        _Pragma("unroll")                                                      \
+        for (int c = 0; c < TMP_NC; c++) acc[r][c] = 0.0f;                     \
+    float pw[TMP_W], px[TMP_X];                                                \
+    /* this thread's share of chunk k0: element e = tid + j * nt */            \
+    _Pragma("unroll")                                                          \
+    for (int j = 0; j < TMP_W; j++) {                                          \
+        int e = tid + j * nt, r = e / TMP_KC, k = e % TMP_KC;                  \
+        pw[j] = brow + r < a.n_out && k < a.n_in                               \
+            ? tdq_##name(w0 + (ulong64)(brow + r) * rb, k) : 0.0f;             \
+    }                                                                          \
+    _Pragma("unroll")                                                          \
+    for (int j = 0; j < TMP_X; j++) {                                          \
+        int e = tid + j * nt, c = e / TMP_KC, k = e % TMP_KC;                  \
+        px[j] = c < nbk && k < a.n_in ? x[(ulong64)(tb + c) * a.xs + k] : 0.0f; \
+    }                                                                          \
+    int buf = 0;                                                               \
+    for (int k0 = 0; k0 < a.n_in; k0 += TMP_KC) {                             \
+        int kn = a.n_in - k0 < TMP_KC ? a.n_in - k0 : TMP_KC;                  \
+        _Pragma("unroll")                                                      \
+        for (int j = 0; j < TMP_W; j++) {                                      \
+            int e = tid + j * nt;                                              \
+            wsm[buf][e / TMP_KC][e % TMP_KC] = pw[j];                          \
+        }                                                                      \
+        _Pragma("unroll")                                                      \
+        for (int j = 0; j < TMP_X; j++) {                                      \
+            int e = tid + j * nt;                                              \
+            xsm[buf][e / TMP_KC][e % TMP_KC] = px[j];                          \
+        }                                                                      \
+        __syncthreads();                                                       \
+        int k1 = k0 + TMP_KC;                                                  \
+        if (k1 < a.n_in) {                                                     \
+            _Pragma("unroll")                                                  \
+            for (int j = 0; j < TMP_W; j++) {                                  \
+                int e = tid + j * nt, r = e / TMP_KC, k = e % TMP_KC;          \
+                pw[j] = brow + r < a.n_out && k1 + k < a.n_in                  \
+                    ? tdq_##name(w0 + (ulong64)(brow + r) * rb, k1 + k) : 0.0f; \
+            }                                                                  \
+            _Pragma("unroll")                                                  \
+            for (int j = 0; j < TMP_X; j++) {                                  \
+                int e = tid + j * nt, c = e / TMP_KC, k = e % TMP_KC;          \
+                px[j] = c < nbk && k1 + k < a.n_in                             \
+                    ? x[(ulong64)(tb + c) * a.xs + k1 + k] : 0.0f;             \
+            }                                                                  \
+        }                                                                      \
+        for (int k = lane; k < kn; k += 32) {                                  \
+            float w[TMP_RW];                                                   \
+            _Pragma("unroll")                                                  \
+            for (int r = 0; r < TMP_RW; r++) w[r] = wsm[buf][rg * TMP_RW + r][k]; \
+            _Pragma("unroll")                                                  \
+            for (int c = 0; c < TMP_NC; c++) {                                 \
+                float xv = xsm[buf][cg * TMP_NC + c][k];                       \
+                _Pragma("unroll")                                              \
+                for (int r = 0; r < TMP_RW; r++)                               \
+                    acc[r][c] = fmaf(w[r], xv, acc[r][c]);                     \
+            }                                                                  \
+        }                                                                      \
+        buf ^= 1;                                                              \
+    }                                                                          \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < TMP_RW; r++)                                           \
+        _Pragma("unroll")                                                      \
+        for (int c = 0; c < TMP_NC; c++) {                                     \
+            float v = warp_sum(acc[r][c]);                                     \
+            if (lane == 0 && row0 + r < a.n_out && t0 + c < a.batch)           \
+                y[(ulong64)(t0 + c) * a.ys + row0 + r] = v;                    \
+        }                                                                      \
+}
+
 #define TRAIN_KERNELS(name, BS, TS)                                            \
 extern "C" __global__ void k_tmvt_##name(MV_PARAMS) {                         \
     (void)bias;                                                                \
@@ -412,7 +509,8 @@ extern "C" __global__ void k_tmvt_##name(MV_PARAMS) {                         \
 }                                                                              \
 TRAIN_MM(k_tmm_##name, name, BS, TS, TMM_NC, TMM_RW)                           \
 TRAIN_MM(k_tmmw_##name, name, BS, TS, TMM_NCW, TMM_RW)                         \
-TRAIN_MMS(name, BS, TS)
+TRAIN_MMS(name, BS, TS)                                                        \
+TRAIN_MMP(name, BS, TS)
 
 TRAIN_KERNELS(f32, 1, 4)
 TRAIN_KERNELS(f16, 1, 2)

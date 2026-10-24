@@ -119,5 +119,13 @@ typedef struct {
 #define TMS_RG 2
 #define TMS_CG 4
 #define TMS_NC 16
+// k_tmmp: the same 16 x 64 tile in 16 warps of 8 rows x 8 columns, the next
+// chunk's weights and activations loaded into registers while the current
+// one computes (TMP_KC elements a chunk)
+#define TMP_KC 64
+#define TMP_RW 8
+#define TMP_RG 2
+#define TMP_CG 8
+#define TMP_NC 8
 
 #endif // RUNNER_KERNEL_ARGS_H
