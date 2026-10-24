@@ -205,6 +205,45 @@ def test_train_gpu_matches_cpu_within_rounding(runner_bin, base, tmp_path, famil
         assert abs(a - b) <= 1e-4 * max(abs(a), 1e-6), (family, lc, lg)
     rec = json.loads(pathlib.Path(str(ag) + ".train.json").read_text())
     assert rec["products"]["device"] == "cuda", rec.get("products")
+    assert rec["products"]["tensors_on_device"] > 0, rec["products"]
+    assert rec["products"]["tensors_on_cpu"] == 0, rec["products"]
+
+
+# Which weights the device holds decides a --train-gpu adapter's bits (a
+# tensor past the budget takes the CPU's order), and the budget decides
+# which fit. So the budget is an input: --train-gpu-budget names it, the
+# record carries it and the split, and the same budget twice writes the same
+# adapter byte for byte while a smaller one records a different split.
+def test_train_gpu_budget_decides_and_reproduces_the_split(runner_bin, base, tmp_path):
+    runs = {}
+    for tag, budget in (("free", None), ("small", "20000"), ("small2", "20000")):
+        out = tmp_path / ("ad-%s.gguf" % tag)
+        extra = ("--train-steps", "2", "--train-gpu")
+        if budget:
+            extra += ("--train-gpu-budget", budget)
+        p = _run_train(runner_bin, base, out, "corpus.txt", extra=extra)
+        err = p.stderr.decode(errors="replace")
+        if p.returncode != 0 and "needs a CUDA build" in err:
+            pytest.skip("no usable CUDA device")
+        assert p.returncode == 0, err
+        rec = json.loads(pathlib.Path(str(out) + ".train.json").read_text())
+        runs[tag] = (rec["products"], out.read_bytes(), err)
+    free, small, small2 = runs["free"][0], runs["small"][0], runs["small2"][0]
+    assert free["budget_from"] == "free memory" and free["tensors_on_cpu"] == 0, free
+    assert "VRAM budget reached" not in runs["free"][2]
+    assert small["budget_from"] == "--train-gpu-budget", small
+    assert small["budget_bytes"] == 20000 and small["device_bytes"] <= 20000, small
+    assert small["tensors_on_cpu"] > 0 and small["cpu_bytes"] > 0, small
+    assert "the adapter's bits depend on this split" in runs["small"][2]
+    assert small == small2, (small, small2)
+    assert runs["small"][1] == runs["small2"][1], "the same budget wrote different adapters"
+
+
+def test_train_gpu_budget_needs_train_gpu(runner_bin, base, tmp_path):
+    p = _run_train(runner_bin, base, tmp_path / "ad.gguf", "corpus.txt",
+                   extra=("--train-gpu-budget", "20000"))
+    assert p.returncode != 0
+    assert b"--train-gpu-budget sets --train-gpu's device memory" in p.stderr
 
 
 def test_train_gpu_is_refused_without_training_or_a_device(runner_bin, base, tmp_path):

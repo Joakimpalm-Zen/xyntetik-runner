@@ -179,6 +179,15 @@ double gpu_train_dev_wall(model_t *m) {
     return 0;
 }
 
+void gpu_train_placement(model_t *m, int *on_dev, size_t *dev_bytes,
+                         int *on_cpu, size_t *cpu_bytes, size_t *budget,
+                         bool *budget_set) {
+    (void)m;
+    *on_dev = *on_cpu = 0;
+    *dev_bytes = *cpu_bytes = *budget = 0;
+    *budget_set = false;
+}
+
 bool gpu_spec_keep_ok(const model_t *m) { (void)m; return false; }
 void gpu_kv_host_wrote(model_t *m, int lo) { (void)m; (void)lo; }
 bool gpu_hidden_rows_ok(const model_t *m) { (void)m; return false; }

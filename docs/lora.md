@@ -266,9 +266,22 @@ results are deterministic, and the device's forward product gives every
 position the same value however the window is batched, which the backward
 needs. The gradient gates (`test-lora-grad`) run in this mode on a CUDA host,
 at a batching that would expose a product that depends on it. The record
-(`ADAPTER.gguf.train.json`) names the device under `products`. Without a
-CUDA build and an NVIDIA GPU, `--train-gpu` is an error, not a CPU run. There
-is no Metal equivalent.
+(`ADAPTER.gguf.train.json`) names the device under `products`, together
+with the budget and the weights it held.
+
+The weights are cached as long as the device budget allows, and the rest
+train on the CPU, where a tensor's products take the CPU's order. So the
+adapter's bits depend on that split, and the budget decides it. By default
+the budget is the device's free memory at the start, less 512 MB;
+`--train-gpu-budget BYTES` names it instead. The record carries
+`budget_bytes` and `budget_from`, and `tensors_on_device`, `device_bytes`,
+`tensors_on_cpu` and `cpu_bytes`. To reproduce a run's adapter, pass its
+recorded `budget_bytes` as `--train-gpu-budget`: the same budget gives the
+same split, and the same split gives the same bits.
+
+The budget is reserved on the device at the start, so a run either gets it
+or stops with an error before training. Without a CUDA build and an NVIDIA
+GPU, `--train-gpu` is an error, not a CPU run. There is no Metal equivalent.
 
 ### The CUDA training assist
 

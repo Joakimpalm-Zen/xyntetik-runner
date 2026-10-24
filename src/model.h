@@ -605,6 +605,13 @@ typedef struct {
                              // training step and of its evals on train_gpu
                              // (gpu_train_mm), tolerance-equivalent to the
                              // CPU, not its bytes (--train-gpu)
+    uint64_t train_gpu_budget; // --train-gpu-budget: the device bytes the
+                             // weights may take, 0 = the free memory measured
+                             // at the start; which weights fit decides the
+                             // adapter's bits, so this is an input the
+                             // record names
+    int    train_gpu_err;    // why gpu_train_init declined: 1 no usable
+                             // device, 2 the budget is not free on it
     void  *gpu_owner;        // backend resource owner, possibly retained after
                              // m->gpu is detached so CPU fallback can keep
                              // reading backend-owned unified-memory KV.
