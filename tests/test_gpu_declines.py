@@ -118,7 +118,8 @@ def test_cuda_runtime_absence_is_loud(runner_bin, tmp_path):
     # Two ways to have no CUDA runtime, each with its own reason: no driver
     # library (a machine without NVIDIA's driver, the hosted runners), or a
     # driver with no device it may use (a CUDA host with CUDA_VISIBLE_DEVICES
-    # empty, the CPU lane of a device gate). --caps reports no GPU for both.
+    # set to an invalid ordinal such as -1; an empty value reads as unset on
+    # Windows). --caps reports no GPU for both.
     assert ("CUDA driver library is unavailable" in err
             or "CUDA initialization failed" in err), err
     assert "using CPU" in err, err

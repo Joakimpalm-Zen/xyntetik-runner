@@ -15,7 +15,8 @@ on:
   # No path filter on the workflow: a workflow that never starts leaves its
   # required checks pending and blocks the merge. The `changes` job below
   # classifies the change instead, and every engine job skips on a prose-only
-  # change (site/**, docs/**, README.md, CHANGELOG.md); a skipped job satisfies
+  # change (site/**, docs/**, README.md, CHANGELOG.md, except the roster
+  # docs/model-tiers.json, which tests read); a skipped job satisfies
   # a required check. MANUAL.md stays in scope because help-parity reads it,
   # and SECURITY.md because it changes rarely and with code.
 
@@ -76,7 +77,10 @@ jobs:
               [ -n "$base" ] || base=$(git rev-parse HEAD^1)
               changed=$(git diff --name-only "$base" HEAD)
               printf '%s\n' "$changed" | sed 's/^/  changed: /'
-              if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -v -E '^(site/|docs/|README\.md$|CHANGELOG\.md$)' | grep -q .; then
+              # docs/model-tiers.json is data the tests and the site build
+              # consume, not prose: a record landing there runs the engine jobs
+              if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -v -E '^(site/|docs/|README\.md$|CHANGELOG\.md$)' | grep -q . \
+                 && ! printf '%s\n' "$changed" | grep -qx 'docs/model-tiers.json'; then
                 engine=false
               fi
               ;;
