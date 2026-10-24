@@ -5,6 +5,22 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--train-gpu`: the backward's transposed products run 2-3x faster, and
+  every model's adapter changes bytes again.** They ran the CPU trainer's
+  own chain (one serial sum an element, skipping zero gradients), which the
+  CUDA assist (`RUNNER_TRAIN_GPU=1`) needs and `--train-gpu` does not.
+  Device mode now takes the forward product's contract (four chains of
+  16-row chunks, folded in order, then added to the incoming gradient), so
+  a `--train-gpu` adapter changes (within rounding of a CPU run,
+  deterministic and batch-invariant); the assist keeps the CPU's bytes.
+  Kernel time against the chain at 64 and 512 columns: on a datacenter MIG
+  slice 2.90x and 2.58x (IQ3_S), 2.78x and 2.61x (Q4_K), 2.53x and 2.31x
+  (Q6_K), 2.56x and 2.21x (Q8_0); on an RTX 3070 2.1-2.7x. A 26B Clef IQ3_S
+  step on the slice with 6 threads: 32.0 s to 27.8 s (two interleaved
+  rounds on a quiet host), its transposed kernels 7.25 s to 3.22 s.
+  `RUNNER_TRAIN_MVT_KERNEL=chain` runs the chain in device mode too, for
+  comparison.
+
 - **`--train-gpu`: every model's adapter is not 1.6.0's byte for byte, and
   the forward products run about twice as fast.** The forward's weight
   products (the taped forward, the recompute and the heads) move to a

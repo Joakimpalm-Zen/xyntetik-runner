@@ -50,6 +50,67 @@ static void set_mm_kernel(const char *v) {
 #endif
 }
 
+static void set_mvt_kernel(const char *v) {
+#ifdef _WIN32
+    _putenv_s("RUNNER_TRAIN_MVT_KERNEL", v);
+#else
+    if (*v) setenv("RUNNER_TRAIN_MVT_KERNEL", v, 1);
+    else unsetenv("RUNNER_TRAIN_MVT_KERNEL");
+#endif
+}
+
+// --train-gpu's transposed product (k_tmvtr / k_tmvtrn): each column of a
+// B-column call equals it alone and in a 5-column call, memcmp, and it is
+// dx0 + W^T dy within 2^-16 of |dx0| + sum|w dy| of a double reference.
+static double mvt_dev_check(model_t *m, const gguf_tensor *w, const float *dy,
+                            const float *dx0, int n_in, int n_out, int B,
+                            const char *name) {
+    size_t nx = (size_t)B * n_in;
+    float *dxa = malloc(sizeof(float) * nx), *dx5 = malloc(sizeof(float) * 5 * n_in);
+    float *dx1 = malloc(sizeof(float) * n_in), *row = malloc(sizeof(float) * n_in);
+    double *ref = calloc(nx, sizeof(double)), *mag = calloc(nx, sizeof(double));
+    double worst = 1;
+    m->train_dev = true;
+    memcpy(dxa, dx0, sizeof(float) * nx);
+    memcpy(dx5, dx0 + (size_t)3 * n_in, sizeof(float) * 5 * n_in);
+    bool ok = gpu_train_mvt(m, w, dy, dxa, n_in, n_out, B) &&
+              gpu_train_mvt(m, w, dy + (size_t)3 * n_out, dx5, n_in, n_out, 5);
+    CHECK(ok, "%s: device-mode transposed declined", name);
+    if (ok) {
+        CHECK(!memcmp(dx5, dxa + (size_t)3 * n_in, sizeof(float) * 5 * n_in),
+              "%s: device transposed columns 3..7 differ between a %d- and a "
+              "5-column call", name, B);
+        for (int c = 0; c < B; c++) {
+            memcpy(dx1, dx0 + (size_t)c * n_in, sizeof(float) * n_in);
+            bool one = gpu_train_mvt(m, w, dy + (size_t)c * n_out, dx1, n_in, n_out, 1);
+            CHECK(one && !memcmp(dx1, dxa + (size_t)c * n_in, sizeof(float) * n_in),
+                  "%s: device transposed column %d alone differs", name, c);
+        }
+        for (int j = 0; j < n_out; j++) {
+            dequant_row(w->type, (const uint8_t *)w->data +
+                        (size_t)j * ggml_row_size(w->type, n_in), row, n_in);
+            for (int c = 0; c < B; c++) {
+                double d = dy[(size_t)c * n_out + j];
+                for (int i = 0; i < n_in; i++) {
+                    ref[(size_t)c * n_in + i] += (double)row[i] * d;
+                    mag[(size_t)c * n_in + i] += fabs((double)row[i] * d);
+                }
+            }
+        }
+        worst = 0;
+        for (size_t i = 0; i < nx; i++) {
+            double r = ref[i] + dx0[i], a = mag[i] + fabs(dx0[i]);
+            double e = a > 0 ? fabs(dxa[i] - r) / a : 0;
+            if (e > worst) worst = e;
+        }
+        CHECK(worst < 1.0 / 65536, "%s: device transposed is not dx0 + W^T dy "
+              "(relative error %.3g)", name, worst);
+    }
+    m->train_dev = false;
+    free(dxa); free(dx5); free(dx1); free(row); free(ref); free(mag);
+    return worst;
+}
+
 static void put16(uint8_t *p, uint16_t v) { memcpy(p, &v, 2); }
 static uint16_t get16(const uint8_t *p) { uint16_t v; memcpy(&v, p, 2); return v; }
 // a finite block scale, either sign, 2^-10 .. 2^-4
@@ -294,6 +355,7 @@ int main(void) {
                   "elements (first [%zu]: cpu %.9g gpu %.9g)", TYPES[k].name, bad,
                   B * N_IN, first, dxc[first], dxg[first]);
         }
+        mvt_dev_check(&m, &w, dy, dx0, N_IN, N_OUT, B, TYPES[k].name);
         // forward: batch-invariant columns, and the product
         ok = gpu_train_mm(&m, &w, x, N_IN, y, N_OUT, N_IN, N_OUT, NULL, B);
         double t2 = clk();
@@ -403,6 +465,30 @@ int main(void) {
                            BT[k].name, NBS[ni], v ? "tile" : "per-warp", best * 1e3,
                            2.0 * BN_IN * BN_OUT * NBS[ni] / best / 1e12);
                 }
+            // the transposed product in device mode: the CPU chain (k_tmvt)
+            // against the register-blocked twins
+            m.train_dev = true;
+            float *bdx = malloc(sizeof(float) * (size_t)BB * BN_IN);
+            for (int ni = 0; ni < 3; ni++)
+                for (int v = 0; v < 2; v++) {
+                    set_mvt_kernel(v ? "" : "chain");
+                    double best = 1e9;
+                    for (int rep = 0; rep < 5; rep++) {
+                        double t_mm, t_mvt, k_mm, k_mvt;
+                        long n_mm, n_mvt;
+                        memset(bdx, 0, sizeof(float) * (size_t)NBS[ni] * BN_IN);
+                        gpu_train_prof(&m, &t_mm, &n_mm, &t_mvt, &n_mvt, &k_mm, &k_mvt);
+                        if (!gpu_train_mvt(&m, &w, by, bdx, BN_IN, BN_OUT, NBS[ni])) break;
+                        gpu_train_prof(&m, &t_mm, &n_mm, &t_mvt, &n_mvt, &k_mm, &k_mvt);
+                        if (k_mvt < best) best = k_mvt;
+                    }
+                    set_mvt_kernel("");
+                    printf("bench %-6s %4d columns %-8s %7.3f ms  %6.2f TFLOP/s (transposed)\n",
+                           BT[k].name, NBS[ni], v ? "tile" : "chain", best * 1e3,
+                           2.0 * BN_IN * BN_OUT * NBS[ni] / best / 1e12);
+                }
+            free(bdx);
+            m.train_dev = false;
             bkeep[k] = w.data;
         }
         free(bx); free(by);
