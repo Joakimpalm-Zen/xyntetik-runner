@@ -3,6 +3,7 @@
 #endif
 #include "compat.h"
 #include "tpool.h"
+#include "fpenv.h"
 #ifdef __linux__
 #include <sched.h>
 #endif
@@ -43,7 +44,48 @@ static void *call_pool(void *arg) {
     return NULL;
 }
 
+// The pool's workers compute in their creator's floating-point control
+// state (fpenv.h). Windows threads start in the default state while the
+// -ffast-math main thread flushes subnormals, so before the fix a row's
+// bytes depended on the thread that computed it. Each state is set on this
+// thread before the pool is made; every item reports the state of the
+// thread that ran it. Linux and macOS threads inherit the state anyway, so
+// this fails only where a platform does not.
+#if defined(__x86_64__) || defined(__i386__)
+#define FP_FLUSH_BITS 0x8040u              // MXCSR FTZ | DAZ
+#elif defined(__aarch64__)
+#define FP_FLUSH_BITS ((fpenv_t)1 << 24)   // FPCR FZ
+#endif
+#ifdef FP_FLUSH_BITS
+static fpenv_t seen_env[64];
+static void read_env(void *ctx, int i0, int i1) {
+    (void)ctx;
+    for (int i = i0; i < i1; i++) seen_env[i] = fpenv_get();
+}
+static void check_fp_state(void) {
+    fpenv_t keep = fpenv_get();
+    fpenv_t states[2] = { keep | FP_FLUSH_BITS, keep & ~FP_FLUSH_BITS };
+    for (int s = 0; s < 2; s++) {
+        fpenv_set(states[s]);
+        tpool *tp = tpool_create(4);
+        ck(tp != NULL, "a pool for the FP state check");
+        if (!tp) break;
+        for (int i = 0; i < 64; i++) seen_env[i] = ~states[s];
+        tpool_run(tp, read_env, NULL, 64);
+        int same = 1;
+        for (int i = 0; i < 64; i++) same &= seen_env[i] == states[s];
+        ck(same, s == 0 ? "every pool worker flushes subnormals as its creator does"
+                        : "every pool worker keeps subnormals as its creator does");
+        tpool_destroy(tp);
+    }
+    fpenv_set(keep);
+}
+#endif
+
 int main(void) {
+#ifdef FP_FLUSH_BITS
+    check_fp_state();
+#endif
     int logical = plat_cpu_count();
     int def = plat_default_thread_count();
     ck(logical >= 1, "logical CPU count is positive");

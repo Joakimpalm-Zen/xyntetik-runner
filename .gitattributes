@@ -27,3 +27,10 @@ tests/fuzz/corpus/** -text
 # still loads; this rule keeps the bytes stable on top of that, the way the
 # rest of this file treats anything a test hashes.
 python/tests/fixtures/** -text
+
+# The tier smoke's pinned texts: tests/test_tier_smoke.py checks each one's
+# sha256 and byte count against tests/compatibility/tier-smoke.json, and
+# scripts/tier-smoke.py compares a run's output with them. A CRLF checkout
+# added a byte a line and failed the Windows suite (215 bytes against 206
+# for a nine-line pin, 2026-10-24).
+tests/compatibility/tier-smoke/*.txt -text

@@ -1,5 +1,6 @@
 // Continuous-batching scheduler. Lifted out of server.c (RNR-019); see sched.h.
 #include "scheduler.h"
+#include "fpenv.h"
 #include "compat.h"
 
 #include <errno.h>
@@ -150,8 +151,13 @@ static void ts_in(struct timespec *ts, double secs) {
     ts->tv_nsec  = (long)(ns % 1000000000LL);
 }
 
+// the starting thread's FP control state, which the decode worker takes
+// (fpenv.h)
+static fpenv_t decode_fpenv;
+
 static void *decode_worker(void *unused) {
     (void)unused;
+    fpenv_set(decode_fpenv);
     int n = SV.n_slots;
     // scratch is preallocated and owned by sched_start (see RNR-005): the
     // worker cannot fail here, so it can never exit leaving slot threads
@@ -289,6 +295,7 @@ bool sched_start(void) {
     // running and launch the worker. Because the worker allocates nothing, it
     // cannot fail startup and strand slot threads on logits that never arrive.
     SCH.running = true;
+    decode_fpenv = fpenv_get();
     if (pthread_create(&SCH.th, NULL, decode_worker, NULL) != 0) {
         SCH.running = false;
         pthread_cond_destroy(&SCH.slot_cv); pthread_cond_destroy(&SCH.dec_cv);

@@ -8,7 +8,17 @@
 // mix of full and partial blocks. The reference below is the serial loop the
 // engine shipped before (one chain at a time), which is the specification of
 // the order; the two must agree bit for bit, serial and on the pool, at
-// every block edge, with the float range's extremes in the inputs.
+// every block edge, with large, tiny and subnormal values in the inputs.
+//
+// The contract is the source's: every chain written as fmaf in order. The
+// test is built with -fno-associative-math (the Makefile rule), because
+// gcc's -ffast-math may turn an fmaf chain into a vector reduction that
+// sums in another order: with gcc 16.1 at -march=native on a Zen 5 it did,
+// in the reference and in lora_apply each its own way (1 ulp on a
+// 1024-wide chain), while the release ISAs (x86-64-v3, skylake-avx512),
+// clang and the CI's other hosts keep the chains. Whether the engine itself
+// should be built that way is a separate decision (it cost 4 to 6% of CPU
+// decode and prefill on that host).
 //
 // model.c is compiled into this test (tests/test_model_load_oom.c's
 // pattern) to reach lora_apply.
@@ -16,6 +26,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../src/model.c"
+#include "fpclass.h"
 
 static void ref_apply(const struct lora_w *lw, float *y, int ys,
                       const float *xin, int xs, int n_in, int n_out, int nb) {
@@ -44,16 +55,26 @@ static float rndf(void) {
     return (float)(int32_t)(uint32_t)(rng >> 32) / 2147483648.0f;
 }
 
-// Values a chain must carry exactly: the largest and smallest normal
-// floats, a subnormal, zeros of both signs, and the exact halves that round
-// to even, mixed into the random fill.
-static const float edge[] = { 3.4028235e38f, -3.4028235e38f, 1.1754944e-38f,
-                              1.4e-45f, 0.0f, -0.0f, 0.5f, -1.5f, 1.0f };
+// Values a chain must carry exactly, mixed into the random fill: the
+// smallest normal float, a subnormal, zeros of both signs, exact halves, and
+// in A a large magnitude. The build is -ffast-math, which assumes finite
+// values: an inf or NaN result is outside what the engine (or a reference
+// compiled with it) defines, and on the Windows CI the reference and the
+// engine did come out inf and NaN on a chain that overflowed. So the large
+// values sit only in A, at 1e30, where the largest sum this test makes (3072
+// terms of 1e30 times a unit input, then 512 of those times a unit B) stays
+// far below FLT_MAX.
+static const float edge_small[] = { 1.1754944e-38f, 1.4e-45f, 0.0f, -0.0f,
+                                    0.5f, -1.5f, 1.0f };
+static const float edge_large[] = { 1e30f, -1e30f };
 
-static void fill(float *v, size_t n, float scale) {
+static void fill(float *v, size_t n, float scale, bool large) {
     for (size_t i = 0; i < n; i++) v[i] = rndf() * scale;
-    for (size_t e = 0; e < sizeof edge / sizeof *edge; e++)
-        v[(e * 7 + 3) % n] = edge[e];
+    size_t ns = sizeof edge_small / sizeof *edge_small;
+    for (size_t e = 0; e < ns; e++) v[(e * 7 + 3) % n] = edge_small[e];
+    if (large)
+        for (size_t e = 0; e < sizeof edge_large / sizeof *edge_large; e++)
+            v[((ns + e) * 7 + 3) % n] = edge_large[e];
 }
 
 static int check(tpool *tp, int n_in, int n_out, int r, int nb, int xs_pad) {
@@ -69,15 +90,19 @@ static int check(tpool *tp, int n_in, int n_out, int r, int nb, int xs_pad) {
     float *y1 = malloc(sizeof(float) * (size_t)nb * ys);
     float *y2 = malloc(sizeof(float) * (size_t)nb * ys);
     if (!lw.a || !lw.b || !x || !y0 || !y1 || !y2) { fprintf(stderr, "oom\n"); exit(2); }
-    // scales that keep the extremes' products finite on most chains and
-    // overflow on a few, which must overflow the same way on both paths
-    fill(lw.a, (size_t)r * n_in, 0.25f);
-    fill(lw.b, (size_t)n_out * r, 0.5f);
-    fill(x, (size_t)nb * xs, 1.0f);
-    fill(y0, (size_t)nb * ys, 1.0f);
+    fill(lw.a, (size_t)r * n_in, 0.25f, true);
+    fill(lw.b, (size_t)n_out * r, 0.5f, false);
+    fill(x, (size_t)nb * xs, 1.0f, false);
+    fill(y0, (size_t)nb * ys, 1.0f, false);
     memcpy(y1, y0, sizeof(float) * (size_t)nb * ys);
     memcpy(y2, y0, sizeof(float) * (size_t)nb * ys);
     ref_apply(&lw, y0, ys, x, xs, n_in, n_out, nb);
+    for (size_t e = 0; e < (size_t)nb * ys; e++)
+        if (!fp_finite_f32(y0[e])) {   // a bit test: fast-math cannot fold it
+            fprintf(stderr, "FAIL n_in %d n_out %d r %d: the reference left the finite range\n",
+                    n_in, n_out, r);
+            exit(2);
+        }
     lora_apply(&lw, y1, ys, x, xs, n_in, n_out, nb);
     lora_apply_tp(tp, &lw, y2, ys, x, xs, n_in, n_out, nb);
     int bad = 0;
