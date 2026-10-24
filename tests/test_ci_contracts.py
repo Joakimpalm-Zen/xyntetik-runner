@@ -294,6 +294,65 @@ class ScheduledEntryPoints(unittest.TestCase):
             self.assertFalse((base / "logs/fetch.log").exists())
 
 
+class CudaGateExplainsNotRun(unittest.TestCase):
+    """cuda-gate.sh takes its settings from the environment and from
+    cuda-gate.env beside the script (or the file GATE_ENV names). On the
+    Windows CUDA host variables exported in a Git Bash shell did not reach
+    the MSYS2 bash the gate ran under, and the gate said only "no model for
+    the cpu-cuda step (set GATE_MODEL)". A gate that cannot run for want of
+    a setting names the env file it looked for, whether it loaded it, which
+    settings it has, and the shell that ran it. The gate runs from a copy in
+    a scratch directory, so a box's own env file beside the checkout's copy
+    is never read."""
+
+    SETTINGS = ("GATE_MODEL", "GATE_PYTHON", "RUNNER_LLAMA_CPP_BIN", "RUNNER_IQ_FIXTURES")
+
+    def run_gate(self, env_file=None):
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            (base / "scripts").mkdir()
+            (base / "build").mkdir()
+            gate = base / "scripts/cuda-gate.sh"
+            shutil.copyfile(ROOT / "scripts/cuda-gate.sh", gate)
+            env_path = base / "scripts/cuda-gate.env"
+            if env_file is not None:
+                env_path.write_bytes(env_file(base).encode())
+            env = {k: v for k, v in os.environ.items()
+                   if not k.upper().startswith("GATE_") and k.upper() not in self.SETTINGS}
+            r = subprocess.run([BASH, gate.as_posix(), (base / "build").as_posix(),
+                                (base / "out").as_posix()],
+                               capture_output=True, text=True, timeout=60, env=env)
+        return r, base.as_posix(), env_path.as_posix()
+
+    def test_no_env_file_names_it_and_the_missing_settings(self):
+        r, _, env_path = self.run_gate()
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        out = r.stdout
+        self.assertIn("env file: %s (not found)" % env_path, out)
+        self.assertIn("GATE_MODEL is not set", out)
+        self.assertIn("RUNNER_LLAMA_CPP_BIN is not set", out)
+        for name in ("GATE_MODEL", "GATE_PYTHON", "RUNNER_LLAMA_CPP_BIN"):
+            self.assertRegex(out, r"settings:.* %s unset" % name)
+        self.assertRegex(out, r"shell: \S*bash")
+        self.assertIn("result: not-run", out)
+
+    def test_a_loaded_env_file_with_a_missing_model_says_both(self):
+        r, base, env_path = self.run_gate(lambda b: "GATE_MODEL=%s/no-such-model.gguf\n" % b.as_posix())
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        out = r.stdout
+        model = base + "/no-such-model.gguf"
+        self.assertIn("env file: %s (found and loaded)" % env_path, out)
+        self.assertIn("GATE_MODEL %s does not exist" % model, out)
+        self.assertRegex(out, r"settings:.* GATE_MODEL=%s" % re.escape(model))
+        self.assertNotIn("GATE_MODEL is not set", out)
+
+    @unittest.skipIf(os.name == "nt", "whether MSYS2's bash keeps the carriage return is its own")
+    def test_a_crlf_env_file_is_named(self):
+        r, _, _ = self.run_gate(lambda b: "GATE_MODEL=%s/m.gguf\r\n" % b.as_posix())
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("carriage return", r.stdout)
+
+
 class LlamaQuantizeByName(unittest.TestCase):
     """The CUDA gate steps that quantize fixtures run llama-quantize from
     RUNNER_LLAMA_CPP_BIN, resolved by name. A llama.cpp Windows release
@@ -330,7 +389,7 @@ class LlamaQuantizeByName(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout.strip(), d + "/llama-quantize.exe")
 
-    @unittest.skipIf(os.name == "nt", "a bare name is not executable to MSYS2's bash")
+    @unittest.skipIf(os.name == "nt", "NTFS keeps no mode bits: whether MSYS2 calls a bare name executable is its own")
     def test_the_bare_name(self):
         p, d = self.resolve(["llama-quantize"])
         self.assertEqual(p.returncode, 0, p.stderr)

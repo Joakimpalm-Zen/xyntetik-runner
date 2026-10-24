@@ -145,7 +145,12 @@ records committed. There is no hosted or self-hosted device workflow.
 `scripts/cuda-gate.sh BUILD_DIR [OUT_DIR]` reads its settings
 (`GATE_MODEL`, `GATE_PYTHON`, `RUNNER_LLAMA_CPP_BIN` and the others its
 header lists) from the environment and from `cuda-gate.env` beside the
-script, or the file `GATE_ENV` names. Its steps that quantize fixtures run
+script, or the file `GATE_ENV` names. When one it needs is missing it
+finishes not-run and says which env file it looked for, whether it loaded
+it, the settings it ended up with and the shell running it: a variable
+exported in another shell (Git Bash, say) does not reach the MSYS2 bash a
+scheduled task starts, so a box's settings belong in the env file, saved
+with LF line endings. Its steps that quantize fixtures run
 `llama-quantize` or `llama-quantize.exe` from `RUNNER_LLAMA_CPP_BIN` by name,
 never by glob (a llama.cpp Windows release directory's
 `llama-quantize-impl.dll` sorts first under C collation);
