@@ -1950,7 +1950,7 @@ test-cuda-q3k: runner $(TEST_GPU_ID)
 # on stderr. Never a glob: a llama.cpp Windows release directory holds
 # llama-quantize-impl.dll beside llama-quantize.exe, "-" sorts before "."
 # under C collation, and the `llama-quantize*` glob these steps used picked
-# the DLL (the 1.5.2 CUDA gate on the Windows CUDA host; under a UTF-8 locale
+# the DLL (the 1.6.0 CUDA gate on the Windows CUDA host; under a UTF-8 locale
 # the exe sorted first and the same step had passed). The .exe name is tried
 # first: MSYS2's stat resolves a bare name to its .exe, so the other order
 # printed llama-quantize for llama-quantize.exe (the windows-suite job, every

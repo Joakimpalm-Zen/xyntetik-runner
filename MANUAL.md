@@ -136,7 +136,7 @@ $response.choices[0].message.content
 
 </details>
 
-> **Version `1.5.1`.** The command line, the HTTP API, the record formats and
+> **Version `1.6.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x; speed, generated
 > tokens across releases and the support matrix move with the evidence. The
 > [versioning policy](docs/versioning.md) lists exactly what is kept. CI builds
@@ -1528,7 +1528,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.5.1
+./runner --version   # -> runner 1.6.0
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -1553,6 +1553,13 @@ make          # release build: ./runner or runner.exe
 make debug    # ASan/UBSan development build where supported
 make test     # unit, fixture, generated-source, and backend gates
 ```
+
+The x86 release binaries are built for `x86-64-v3` and clang keeps the
+engine's explicit fused multiply-add chains; a gcc build with `-ffast-math`
+at `-march=native` (what `make` uses) on a Zen-class CPU can reassociate
+those chains into vector reductions, so its bytes can differ from a release
+binary's, and replay is bound to the build
+([versioning policy](docs/versioning.md)).
 
 Runner uses ordinary platform C, math, threading, mmap/file-mapping, and
 dynamic-loader libraries. GGUF is little-endian, so little-endian hosts are
@@ -1617,7 +1624,7 @@ UTF-16 and kept as UTF-8, whatever the console's input code page.
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
 nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v1.5.1`) and `:latest`. Build it yourself with `docker build -t runner .`.
+tag carries the `v`, e.g. `:v1.6.0`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which

@@ -21,7 +21,7 @@
       "last_verified": {
         "date": "2026-10-24",
         "commit": "246b6426ad8d01a433af4ef0ae409b3beb052305",
-        "ran": "scripts/cuda-gate.sh on runner main 246b6426 (the 1.5.2 candidate), RTX 3070, default routes: every step (tc-overflow, iquants, cuda-gated 292 passed with 3 allowed skips of 295, kv-fp4, nvfp4, qwen4exp, q3k, tc-kq, moe-legacy, varff, tc2-bytes, moe-twin, batch-id, spec-id, cpu-cuda on Llama-3.2-3B Q4_K_M) pass, build 0 warnings, 6 min 35 s in total; no step slower than the 1.5.1 run beyond cuda-gated's larger suite (126 s for 295 tests against 106 s for 239). Launched as an MSYS2 UCRT64 login shell with the user resolvable, TEMP under the MSYS2 tree and NoDefaultCurrentDirectoryInExePath unset; earlier attempts the same night from a degraded launch environment are not evidence.",
+        "ran": "scripts/cuda-gate.sh on runner main 246b6426 (the 1.6.0 candidate), RTX 3070, default routes: every step (tc-overflow, iquants, cuda-gated 292 passed with 3 allowed skips of 295, kv-fp4, nvfp4, qwen4exp, q3k, tc-kq, moe-legacy, varff, tc2-bytes, moe-twin, batch-id, spec-id, cpu-cuda on Llama-3.2-3B Q4_K_M) pass, build 0 warnings, 6 min 35 s in total; no step slower than the 1.5.1 run beyond cuda-gated's larger suite (126 s for 295 tests against 106 s for 239). Launched as an MSYS2 UCRT64 login shell with the user resolvable, TEMP under the MSYS2 tree and NoDefaultCurrentDirectoryInExePath unset; earlier attempts the same night from a degraded launch environment are not evidence.",
         "result": "pass",
         "caps": {
           "version": "1.5.1",
@@ -73,19 +73,19 @@
         "gpu_backend": "metal"
       },
       "last_verified": {
-        "date": "2026-10-23",
-        "commit": "08924aecb8fab1c7dc1ff5084e557b6eb0d56315",
-        "ran": "make test PYTHON=python with pytest (every C gate and the pytest suites: 1,642 + 208 + 26 + 20 + 7 passed); scripts/conformance.sh 512/7; compat_matrix.py gemma-4-e4b-it-qat-q4_0 --verify-files --load --execute-checks complete; make release-check",
+        "date": "2026-10-24",
+        "commit": "fd91aa6c4fa03f2f555adbf51494f6ff5ca9b2a2",
+        "ran": "make test PYTHON=python with pytest (every C gate and the pytest suites: 1,903 + 208 + 26 + 20 + 7 passed); scripts/conformance.sh 512/7; compat_matrix.py gemma-4-e4b-it-qat-q4_0 --verify-files --load --execute-checks complete; make release-check",
         "result": "pass",
         "caps": {
-          "version": "1.5.1",
+          "version": "1.6.0",
           "os": "macos",
           "arch": "arm64",
           "cpu_cores": 8,
           "gpu_backend": "metal",
           "gpu_name": "Apple M1"
         },
-        "evidence": "docs/compat-reports/1.5.1-2026-10-23-macos-arm64-gemma-4-e4b-it-qat-q4_0.json"
+        "evidence": "docs/compat-reports/1.6.0-2026-10-24-macos-arm64-gemma-4-e4b-it-qat-q4_0.json"
       }
     }
   ]
