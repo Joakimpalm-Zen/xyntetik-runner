@@ -3,7 +3,10 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## v1.5.2 - 2026-10-26
+## v1.6.0 - 2026-10-24
+
+Numbered 1.6.0 under the [versioning policy](docs/versioning.md): a 1.x minor
+release adds, and this one adds flags and record fields.
 
 - **`--lora` on the CPU: the adapter's delta costs about a third of what it
   did, with the same bytes.** Each projection's y += scale * B (A x) ran its

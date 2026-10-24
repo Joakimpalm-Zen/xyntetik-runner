@@ -1,13 +1,13 @@
 {
   "schema_version": "xyntetik.runner.model-compat-report.v1",
-  "generated_utc": "2026-10-24T09:23:45Z",
+  "generated_utc": "2026-10-24T09:28:52Z",
   "host": {
     "os": "Darwin",
     "machine": "arm64"
   },
   "runner": {
     "path": "runner",
-    "version": "runner 1.5.2"
+    "version": "runner 1.6.0"
   },
   "reference": {
     "path": null,
@@ -23,13 +23,13 @@
         "load": {
           "status": "pass",
           "returncode": 0,
-          "elapsed_ms": 19554.9,
-          "stderr_tail": "gemma4: E-series (per-layer embeddings + shared KV) \u2014 verified against llama.cpp at the Q4_K noise floor rather than token-identically\nrope: using model frequency factors (rope_freqs.weight)\ngpu: the 2.31 GB per-layer embedding table stays on the host (gathered by row); the Metal wrap leaves it out\ngpu: Metal backend on Apple M1 (zero-copy weights)\nwarning: weights are 2.8 GB but only 2.5 GB of RAM is available \u2014 expect the model to be evicted and every token to page from disk. --mlock pins them; a smaller model is the other fix.\nloaded gemma-4-E4B_q4_0-it.gguf | gemma4 | 42 layers | ctx 4096 | 4 threads | 0.29s\nsampling: gemma4 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\nsampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 64\ngpu: decode fusion on (byte-identical; RUNNER_METAL_FUSE=0 disables)\n\nprompt: 4 tok, 0.21 tok/s | gen: 1 tok, 1.81 tok/s\n"
+          "elapsed_ms": 18913.8,
+          "stderr_tail": "gemma4: E-series (per-layer embeddings + shared KV) \u2014 verified against llama.cpp at the Q4_K noise floor rather than token-identically\nrope: using model frequency factors (rope_freqs.weight)\ngpu: the 2.31 GB per-layer embedding table stays on the host (gathered by row); the Metal wrap leaves it out\ngpu: Metal backend on Apple M1 (zero-copy weights)\nwarning: weights are 2.8 GB but only 2.4 GB of RAM is available \u2014 expect the model to be evicted and every token to page from disk. --mlock pins them; a smaller model is the other fix.\nloaded gemma-4-E4B_q4_0-it.gguf | gemma4 | 42 layers | ctx 4096 | 4 threads | 0.30s\nsampling: gemma4 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\nsampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 64\ngpu: decode fusion on (byte-identical; RUNNER_METAL_FUSE=0 disables)\n\nprompt: 4 tok, 0.22 tok/s | gen: 1 tok, 3.27 tok/s\n"
         },
         "chat": {
           "status": "pass",
           "returncode": 0,
-          "elapsed_ms": 34109.19,
+          "elapsed_ms": 24376.66,
           "prompt": "What is 2+2?",
           "gpu": "off",
           "failure_reasons": [],
