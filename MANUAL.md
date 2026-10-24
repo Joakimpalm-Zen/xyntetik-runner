@@ -379,8 +379,8 @@ adapter, is explained in order in [the complete adapter guide](docs/lora.md).
 habit, a format, a house style, on the order of hundreds of examples and
 hundreds of steps. It is not a pretraining or a large-corpus instrument. A
 7B step costs about ten seconds on a consumer GPU with `--train-gpu`
-(Qwen2.5-7B Q4_K_M: 9.7 s on an RTX 3070, 95 s for the CPU trainer on the
-same 4 threads) and a 4B step about 20 s on a many-core CPU host; the
+(Qwen2.5-7B Q4_K_M: 9.4 s on an RTX 3070, 90 s for the CPU trainer on the
+same 4 threads) and a 4B step about 15 s on 12 threads of a many-core host; the
 published Qwen3-4B adapter took 316 steps.
 Budget hours, not minutes, and expect a Python training stack to be
 faster per step. What Runner buys for that is one numerical path and an
@@ -2535,9 +2535,9 @@ the bare base (`tests/test_adapter_routing.py`).
 #### `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank`, `--train-logprobs`, `--train-teacher`, `--train-resume`
 
 AdamW LoRA training in the serving binary (position-batched and threaded under a
-byte-exact contract - 4B trains at ~20 s/step on a many-core host; `--train-gpu` puts
+byte-exact contract - 4B trains at ~15 s/step on 12 threads of a many-core host; `--train-gpu` puts
 every weight product of a step on an NVIDIA GPU, within rounding of the CPU run -
-Qwen2.5-7B Q4_K_M at 9.7 s/step against 95 s for the CPU trainer on the same 4 threads,
+Qwen2.5-7B Q4_K_M at 9.4 s/step against 90 s for the CPU trainer on the same 4 threads,
 RTX 3070; the optional `RUNNER_TRAIN_GPU=1` CUDA assist moves only the backward's
 transposed products and keeps the CPU's bytes; the CPU adapter bytes are gated
 invariant across thread counts, round widths and the assist): plain-text corpora or
