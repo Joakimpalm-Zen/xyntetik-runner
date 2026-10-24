@@ -160,7 +160,8 @@ empty `USERNAME` or `USER` that python's `getpass.getuser()` still resolves
 is only a warning. A tool shell on the Windows CUDA host that started MSYS2
 bash without `USERNAME`, `TEMP` or `TMP` sent every fixture through
 `C:\Windows\Temp` and the gate ran about 27 times slower, so the summary
-JSON records the temp directory, user and shell each run had. A scheduler
+JSON records the temp directory, whether a user resolved (never the login
+name: the file is committed as device evidence) and the shell each run had. A scheduler
 that starts a bare shell needs `TEMP`/`TMP`, `USERNAME` or `USER` and
 `MSYSTEM` in `cuda-gate.env`, or `GATE_ALLOW_DEGRADED_ENV=1` there. Its steps
 that quantize fixtures run `llama-quantize` or `llama-quantize.exe` from

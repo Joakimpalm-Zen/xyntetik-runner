@@ -71,8 +71,9 @@
 # Windows CUDA host a tool shell that started MSYS2 bash without USERNAME,
 # TEMP or TMP sent every fixture through C:\Windows\Temp (python's last
 # resort) and the gate ran about 27 times slower, with subprocess timeouts
-# that were not hangs. The summary JSON records the temp directory, user and
-# shell the run had.
+# that were not hangs. The summary JSON records the temp directory, whether a
+# user resolved (never the name: the file is committed as device evidence)
+# and the shell the run had.
 set -u
 GATE_ENV=${GATE_ENV:-$(dirname "$0")/cuda-gate.env}
 GATE_ENV_STATE="not found"
@@ -110,9 +111,12 @@ json_str() { printf '"%s"' "$(printf '%s' "$1" | tr -d '\000-\037' | sed 's/[\\"
 ENV_TMP="" ENV_USER="" ENV_DEGRADED="" ENV_WARNED="" ENV_LOGIN=false
 shopt -q login_shell && ENV_LOGIN=true
 finish() {  # result exit_code
-  printf '{"schema":"xyntetik.runner.cuda-gate.v1","stamp":"%s","class":"%s","commit":"%s","result":"%s","env":{"tempdir":%s,"user":%s,"shell":%s,"login_shell":%s,"msystem":%s,"degraded":[%s],"warned":[%s]},"steps":[%s]}\n' \
+  # the summary is committed as device evidence, so it says whether a user
+  # resolved, never who: the name stays in the console notes
+  local user_ok=false; [ -n "$ENV_USER" ] && user_ok=true
+  printf '{"schema":"xyntetik.runner.cuda-gate.v2","stamp":"%s","class":"%s","commit":"%s","result":"%s","env":{"tempdir":%s,"user_resolved":%s,"shell":%s,"login_shell":%s,"msystem":%s,"degraded":[%s],"warned":[%s]},"steps":[%s]}\n' \
     "$STAMP" "$CLASS" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$1" \
-    "$(json_str "$ENV_TMP")" "$(json_str "$ENV_USER")" "$(json_str "${BASH:-}")" "$ENV_LOGIN" \
+    "$(json_str "$ENV_TMP")" "$user_ok" "$(json_str "${BASH:-}")" "$ENV_LOGIN" \
     "$(json_str "${MSYSTEM:-}")" "$ENV_DEGRADED" "$ENV_WARNED" "$STEPS" > "$SUMMARY"
   note "result: $1 ($SUMMARY)"
   [ -n "${GATE_LOCK:-}" ] && [ -n "${LOCKED:-}" ] && rm -f "$GATE_LOCK"
