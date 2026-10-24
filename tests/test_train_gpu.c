@@ -4,11 +4,16 @@
 //   transposed  gpu_train_mvt == the CPU trainer's chain (dequant_row, then
 //               an ascending-j fmaf per element, a zero dy skipped), memcmp
 //   forward     gpu_train_mm is batch-invariant: every column of a 77-column
-//               call (the 32-column kernel, three tiles) equals the same
-//               column computed alone and in a 5-column call (the 16-column
-//               kernel),
-//               memcmp; and it is the product (each column within 2^-16 of
-//               sum|w x| of a double-precision reference)
+//               call (k_tmmr, a 64-column tile and a partial one) equals the
+//               same column computed alone and in a 5-column call (its
+//               16-column twin k_tmmrn), memcmp; and it is the product (each
+//               column within 2^-16 of sum|w x| of a double-precision
+//               reference)
+//
+// RUNNER_TRAIN_GPU_BENCH=1 adds a kernel benchmark: four types at 4096 x
+// 5120, 16, 64 and 512 columns, the register-blocked kernels against the
+// per-warp ones (RUNNER_TRAIN_MM_KERNEL=warp), the kernels' time alone, best
+// of five.
 //
 // R8.21 adds the DeltaNet recurrence's device calls (dn_check below).
 //
@@ -33,6 +38,17 @@ static uint32_t rnd32(void) {
     return (uint32_t)(rng >> 32);
 }
 static float frnd(void) { return (float)(int32_t)rnd32() / 2147483648.0f; }
+
+// RUNNER_TRAIN_MM_KERNEL for the next products ("" unsets it); the engine
+// reads it at every call. MinGW's headers declare no setenv or unsetenv.
+static void set_mm_kernel(const char *v) {
+#ifdef _WIN32
+    _putenv_s("RUNNER_TRAIN_MM_KERNEL", v);   // "" removes it
+#else
+    if (*v) setenv("RUNNER_TRAIN_MM_KERNEL", v, 1);
+    else unsetenv("RUNNER_TRAIN_MM_KERNEL");
+#endif
+}
 
 static void put16(uint8_t *p, uint16_t v) { memcpy(p, &v, 2); }
 static uint16_t get16(const uint8_t *p) { uint16_t v; memcpy(&v, p, 2); return v; }
@@ -348,6 +364,49 @@ int main(void) {
         free(xs); free(ys);
         keep[sizeof(TYPES) / sizeof(*TYPES)] = w.data;
     }
+    // RUNNER_TRAIN_GPU_BENCH=1: the forward product's two kernel families at
+    // 4096 x 5120, 16, 64 and 512 columns (the narrow twin, a device-mode
+    // round, a recompute window), the kernels' time alone, best of five
+    const char *bench = getenv("RUNNER_TRAIN_GPU_BENCH");
+    void *bkeep[4] = {0};   // freed after the context, like keep[]
+    if (bench && strcmp(bench, "0") != 0) {
+        static const struct { int type; const char *name; int f16[2]; } BT[] = {
+            { T_IQ3_S, "iq3_s", {0, -1} }, { T_Q4_K, "q4_K", {0, 2} },
+            { T_Q6_K, "q6_K", {208, -1} }, { T_Q8_0, "q8_0", {0, -1} },
+        };
+        enum { BN_IN = 5120, BN_OUT = 4096, BB = 512 };
+        float *bx = malloc(sizeof(float) * (size_t)BB * BN_IN);
+        float *by = malloc(sizeof(float) * (size_t)BB * BN_OUT);
+        for (size_t i = 0; i < (size_t)BB * BN_IN; i++) bx[i] = frnd();
+        for (size_t k = 0; k < sizeof(BT) / sizeof(*BT); k++) {
+            gguf_tensor w;
+            memset(&w, 0, sizeof(w));
+            w.type = (uint32_t)BT[k].type; w.scale = 1.0f;
+            w.ne[0] = BN_IN; w.ne[1] = BN_OUT;
+            w.data = make_rows(BT[k].type, BT[k].f16, BN_IN, BN_OUT, &w.nbytes);
+            static const int NBS[] = { 16, 64, 512 };
+            for (int ni = 0; ni < 3; ni++)
+                for (int v = 0; v < 2; v++) {
+                    set_mm_kernel(v ? "" : "warp");
+                    double best = 1e9;
+                    for (int rep = 0; rep < 5; rep++) {
+                        double t_mm, t_mvt, k_mm, k_mvt;
+                        long n_mm, n_mvt;
+                        gpu_train_prof(&m, &t_mm, &n_mm, &t_mvt, &n_mvt, &k_mm, &k_mvt);
+                        if (!gpu_train_mm(&m, &w, bx, BN_IN, by, BN_OUT, BN_IN,
+                                          BN_OUT, NULL, NBS[ni])) break;
+                        gpu_train_prof(&m, &t_mm, &n_mm, &t_mvt, &n_mvt, &k_mm, &k_mvt);
+                        if (k_mm < best) best = k_mm;
+                    }
+                    set_mm_kernel("");
+                    printf("bench %-6s %4d columns %-8s %7.3f ms  %6.2f TFLOP/s\n",
+                           BT[k].name, NBS[ni], v ? "tile" : "per-warp", best * 1e3,
+                           2.0 * BN_IN * BN_OUT * NBS[ni] / best / 1e12);
+                }
+            bkeep[k] = w.data;
+        }
+        free(bx); free(by);
+    }
     dn_check(&m, 4, 2, 128, 77);
     dn_check(&m, 3, 3, 64, 40);
     dn_check(&m, 4, 2, 40, 33);
@@ -355,6 +414,7 @@ int main(void) {
     dn_check(&m, 4, 2, 8, 26);
     gpu_train_free(&m);
     for (size_t k = 0; k < sizeof(keep) / sizeof(*keep); k++) free(keep[k]);
+    for (size_t k = 0; k < sizeof(bkeep) / sizeof(*bkeep); k++) free(bkeep[k]);
     printf("%s: %d types\n", g_fail ? "FAIL" : "PASS", tested);
     return g_fail;
 }

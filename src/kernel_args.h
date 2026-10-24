@@ -113,6 +113,17 @@ typedef struct {
 #define TMM_WARPS 8
 #define TMM_RW 4        // rows a warp of k_tmm / k_tmmw carries
 
+// The register-blocked forward product (kernels_train.cuh k_tmmr / k_tmmrn,
+// R8.20 attempt 3): a block's output rows, its columns (wide and narrow
+// twin), the inputs a chunk stages and the chains each output's sum is split
+// into (chunk c feeds chain c % TMR_KS; the chains fold in order). Four
+// groups of 64 threads, one a chain.
+#define TMR_BM 64
+#define TMR_BN 64
+#define TMR_BNN 16
+#define TMR_BK 16
+#define TMR_KS 4
+
 // The Gated DeltaNet recurrence of a training step: tdn_args.h
 #include "tdn_args.h"
 
