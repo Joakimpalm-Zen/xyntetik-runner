@@ -486,10 +486,11 @@ Text path only: Muse-Glimmer-30B with 6.34% of the decoder removed (the FFN subl
 - **Still missing:** Backend rows; pinned output; a live tool-protocol run.
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
 - **Per-release smoke:** on linux-x86_64-cuda, cpu backend, the policy's age limit.
-- **CPU:** ☐ not run
+- **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `3b2c21c82306`, output sha256 `40a1110e1716fb3d`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-surgical-6p34-q8_0.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="muse-glimmer-30b-surgical-6p34-q4_k-recovered"></a>
@@ -593,10 +594,11 @@ The tool-use LoRA adapter for Qwen3-4B, served with --lora on the base its card 
 - **Still missing:** Pinned output of the composed run (the base named on the card plus this adapter).
 - **Evidence:** [docs/adaptation-engine.md](adaptation-engine.md), [docs/lora.md](lora.md).
 - **Per-release smoke:** on linux-x86_64-cuda, cpu backend, the policy's age limit.
-- **CPU:** ☐ not run
+- **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `3b2c21c82306`, output sha256 `9a878ce06241ebaa`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 ### Qwen3-Coder-30B-A3B keep-120
@@ -766,10 +768,11 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **Still missing:** Per-file backend rows; pinned output.
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
 - **Per-release smoke:** on linux-x86_64-cuda, cpu backend, the policy's age limit.
-- **CPU:** ☐ not run
+- **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `3b2c21c82306`, output sha256 `c89c26e516c5d4dd`, [pin](../tests/compatibility/tier-smoke/xyntetik-kvist-14b-bf16.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="xyntetik-kvist-14b-q8_0"></a>
