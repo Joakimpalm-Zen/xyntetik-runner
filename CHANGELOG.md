@@ -25,12 +25,20 @@ release adds, and this one adds flags and record fields.
   each pool worker to compute in the state its pool was made in. CPU outputs
   on Windows can change where a subnormal reached a worker.
 
-- **Building from source: the bytes follow the build.** The x86 release
-  binaries are built for `x86-64-v3` and clang keeps the engine's explicit
-  fused multiply-add chains; a gcc build with `-ffast-math` at
-  `-march=native` (what `make` uses) on a Zen-class CPU can reassociate those
-  chains into vector reductions (measured with gcc 16.1 on a Zen 5), so its
-  bytes can differ from a release binary's, and replay is bound to the build
+- **The x86 release binaries are gcc builds, so their adapter bytes are
+  bound to that build and differ from a clang build's.** Measured on 14
+  fixture families at `x86-64-v3`, the release target: clang 23 and gcc
+  16.1 (the Windows release's toolchain) built from the same source trained
+  identical adapters on 0 of 14, also with gcc's `-fno-associative-math`.
+  Part of the gap is gcc's `-ffast-math` reassociating some of the
+  trainer's explicit fused multiply-add chains into vector reductions: a
+  normal gcc build and the same source built with `-fno-associative-math`
+  agreed on 0 of 14. A gcc build is deterministic (the same binary twice:
+  2 of 2 identical; the thread count does not change them), but its
+  adapters can move when the code around a chain changes while the chain's
+  own order in the source does not. At `-march=native` on a Zen-class CPU
+  gcc reassociates more (the LoRA delta's chains as well, measured on a
+  Zen 5). Replay is bound to the build
   ([versioning policy](docs/versioning.md)).
 
 - **`--lora` on the CPU: the adapter's delta costs about a third of what it
@@ -55,9 +63,13 @@ release adds, and this one adds flags and record fields.
   1.96 s to 0.17 s a step. On the 26B Clef backbone with `--train-gpu` and
   6 threads of a datacenter MIG slice: 6.2-6.5 s to 1.3-1.5 s a step, and
   steady steps from 59-61 s to 53-55 s. Each element keeps its summation
-  order, so adapters are byte-identical to before: on every fixture
-  family and objective, at ranks 1, 5, 16 and 33 beside the default 8,
-  and on the 26B pair.
+  order in the source, so adapters are byte-identical to before in clang
+  builds (on every fixture family and objective, at ranks 1, 5, 16 and 33
+  beside the default 8, and on the 26B pair) and in a gcc build that keeps
+  the source order (`-fno-associative-math`: 14 of 14 fixture families). A
+  gcc release build's adapters do change: gcc reassociates some of those
+  chains, and the new loops change where (gcc 16.1 at `x86-64-v3`, before
+  against after: 0 of 14 identical).
 
 - **`--train-gpu`: the device budget is an input you can name, and the
   record names it.** The weights are cached as long as the budget allows,

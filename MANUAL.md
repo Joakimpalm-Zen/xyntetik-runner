@@ -1554,11 +1554,15 @@ make debug    # ASan/UBSan development build where supported
 make test     # unit, fixture, generated-source, and backend gates
 ```
 
-The x86 release binaries are built for `x86-64-v3` and clang keeps the
-engine's explicit fused multiply-add chains; a gcc build with `-ffast-math`
-at `-march=native` (what `make` uses) on a Zen-class CPU can reassociate
-those chains into vector reductions, so its bytes can differ from a release
-binary's, and replay is bound to the build
+The x86 release binaries are gcc builds for `x86-64-v3`, so their adapter
+bytes are bound to that build and differ from a clang build's (clang 23
+against gcc 16.1, same source, 14 fixture families: 0 of 14 adapters
+identical). Part of the gap is gcc's `-ffast-math` reassociating some of
+the trainer's explicit fused multiply-add chains into vector reductions (0
+of 14 identical to the same source built with `-fno-associative-math`),
+more at `-march=native` on a Zen-class CPU; clang keeps the chains. A
+build is deterministic (the same binary twice agrees, at any thread
+count), and replay is bound to the build
 ([versioning policy](docs/versioning.md)).
 
 Runner uses ordinary platform C, math, threading, mmap/file-mapping, and
