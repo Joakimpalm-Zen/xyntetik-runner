@@ -372,3 +372,269 @@ TRAIN_KERNELS(iq1_m, 256, 56)
 TRAIN_KERNELS(mxfp4, 32, 17)
 TRAIN_KERNELS(nvfp4, 64, 36)
 TRAIN_KERNELS(q2_0, 64, 18)
+
+// ---- R8.21: the Gated DeltaNet recurrence of a training step ----
+//
+// model.c dn_step's step, per head h and position t, on the state S [hv][hv]
+// (row j a value dim, column i a key dim):
+//   S <- decay S;  pred_j = S_j . k;  delta_j = beta (v_j - pred_j);
+//   S_j <- S_j + delta_j k;  y_j = S_j . q / sqrt(sk)
+// The rows do not touch each other, so a warp owns TDN_ROWS rows and lane L
+// holds columns L, L + 32, ... of each (a lane past the row's end holds
+// zeros): a row's dot product is the lane's fmaf chain over its columns,
+// then one butterfly (tdn_allsum) that leaves every lane the same sum. tdn_rows is the one step: the taped forward's
+// rounds and the backward's recompute (k_tdn_fw) and the reverse sweep's
+// rebuild (k_tdn_bw) all take it, so they see the same states, bit for bit.
+// Not the CPU's bits (another order); deterministic, and no value depends
+// on the launch shape or on how the window was split into calls.
+
+#define TDN_CPL (TDN_MAX_HV / 32)
+
+static __device__ __forceinline__ float tdn_allsum(float s) {
+    for (int off = 16; off > 0; off >>= 1)
+        s += __shfl_xor_sync(0xffffffffu, s, off);
+    return s;
+}
+
+// a position's q and k columns for lane L (cpl of them, zero past hv)
+static __device__ __forceinline__ void tdn_qk(const float *ct, const tdn_args &a,
+                                              int g, int lane, int cpl,
+                                              float (&kc)[TDN_CPL],
+                                              float (&qc)[TDN_CPL]) {
+    #pragma unroll
+    for (int c = 0; c < TDN_CPL; c++) {
+        bool on = c < cpl && lane + 32 * c < a.hv;
+        qc[c] = on ? ct[g * a.sk + lane + 32 * c] : 0.0f;
+        kc[c] = on ? ct[a.keydim + g * a.sk + lane + 32 * c] : 0.0f;
+    }
+}
+
+// one position's step on the warp's rows j0 .. j0 + TDN_ROWS - 1; y (or
+// NULL) gets their readouts, row r's from lane r
+static __device__ __forceinline__ void tdn_rows(float (&s)[TDN_ROWS][TDN_CPL],
+                                                int cpl, int j0, int lane,
+                                                float dec, float bet,
+                                                const float (&kc)[TDN_CPL],
+                                                const float (&qc)[TDN_CPL],
+                                                const float *v, float *y,
+                                                float sqk) {
+    #pragma unroll
+    for (int r = 0; r < TDN_ROWS; r++) {
+        float p = 0.0f;
+        #pragma unroll
+        for (int c = 0; c < TDN_CPL; c++)
+            if (c < cpl) {
+                s[r][c] *= dec;
+                p = fmaf(s[r][c], kc[c], p);
+            }
+        float delta = (v[j0 + r] - tdn_allsum(p)) * bet;
+        float acc = 0.0f;
+        #pragma unroll
+        for (int c = 0; c < TDN_CPL; c++)
+            if (c < cpl) {
+                s[r][c] = fmaf(delta, kc[c], s[r][c]);
+                acc = fmaf(s[r][c], qc[c], acc);
+            }
+        acc = tdn_allsum(acc);
+        if (y && lane == r) y[j0 + r] = acc / sqk;
+    }
+}
+
+// The rows of a head's [hv][hv] matrix the warp owns, in or out of s.
+static __device__ __forceinline__ void tdn_load(float (&s)[TDN_ROWS][TDN_CPL],
+                                                const float *m, int hv, int j0,
+                                                int lane, int cpl) {
+    #pragma unroll
+    for (int r = 0; r < TDN_ROWS; r++)
+        #pragma unroll
+        for (int c = 0; c < TDN_CPL; c++)
+            s[r][c] = c < cpl && lane + 32 * c < hv
+                ? m[(ulong64)(j0 + r) * hv + lane + 32 * c] : 0.0f;
+}
+
+static __device__ __forceinline__ void tdn_store(const float (&s)[TDN_ROWS][TDN_CPL],
+                                                 float *m, int hv, int j0,
+                                                 int lane, int cpl) {
+    #pragma unroll
+    for (int r = 0; r < TDN_ROWS; r++)
+        #pragma unroll
+        for (int c = 0; c < TDN_CPL; c++)
+            if (c < cpl && lane + 32 * c < hv)
+                m[(ulong64)(j0 + r) * hv + lane + 32 * c] = s[r][c];
+}
+
+// The forward over a.T positions: TDN_FW_WARPS warps a block, grid (heads,
+// hv / (TDN_ROWS * TDN_FW_WARPS)). state [nh][hv][hv] is read at the start
+// when load is set (else the state starts at zero) and written at the end;
+// ckpt (or NULL) gets each head's state before every position t with
+// t % C == 0, at [t / C][nh][hv][hv]. cv rows hold q and k L2-normed;
+// beta and decay are [T][nh], y is [T][inner].
+extern "C" __global__ void __launch_bounds__(TDN_FW_WARPS * 32)
+k_tdn_fw(const float *cv, const float *beta, const float *decay, float *state,
+         float *y, float *ckpt, tdn_args a, int load) {
+    int lane = (int)(threadIdx.x & 31), h = (int)blockIdx.x;
+    int j0 = ((int)blockIdx.y * TDN_FW_WARPS + (int)(threadIdx.x >> 5)) * TDN_ROWS;
+    if (h >= a.nh || j0 >= a.hv) return;
+    int cpl = (a.hv + 31) / 32, g = h % a.ng;
+    ulong64 hh = (ulong64)a.hv * a.hv;
+    float *st = state + (ulong64)h * hh;
+    float s[TDN_ROWS][TDN_CPL], kc[TDN_CPL], qc[TDN_CPL];
+    if (load) {
+        tdn_load(s, st, a.hv, j0, lane, cpl);
+    } else {
+        #pragma unroll
+        for (int r = 0; r < TDN_ROWS; r++)
+            #pragma unroll
+            for (int c = 0; c < TDN_CPL; c++) s[r][c] = 0.0f;
+    }
+    float sqk = sqrtf((float)a.sk);
+    for (int t = 0; t < a.T; t++) {
+        if (ckpt && t % a.C == 0)
+            tdn_store(s, ckpt + ((ulong64)(t / a.C) * a.nh + h) * hh, a.hv, j0,
+                      lane, cpl);
+        const float *ct = cv + (ulong64)t * a.convdim;
+        tdn_qk(ct, a, g, lane, cpl, kc, qc);
+        tdn_rows(s, cpl, j0, lane, decay[(ulong64)t * a.nh + h],
+                 beta[(ulong64)t * a.nh + h], kc, qc,
+                 ct + 2 * a.keydim + h * a.hv,
+                 y + (ulong64)t * a.inner + h * a.hv, sqk);
+    }
+    tdn_store(s, st, a.hv, j0, lane, cpl);
+}
+
+// The reverse sweep (model.c dn_bw_worker's arithmetic), one block a head of
+// hv / TDN_ROWS warps, warp w owning rows w * TDN_ROWS ... Per segment, last
+// first: its states rebuilt from the checkpoint by tdn_rows into sb (slot s
+// the state before position t0 + s; slot 0 is the checkpoint itself), then
+// t from the segment's end down, with dS the gradient on the state after t,
+// carried across segments in the warps' registers:
+//   y:      dS_j += g_j q (g = dy / sqrt(sk)),  dq += S_t^T g
+//   update: dd_j = dS_j . k,  dk += dS^T delta
+//   delta:  dv_j = beta dd_j,  dbeta = sum_j dd_j (v_j - pred_j),
+//           dSd_j = dS_j - beta dd_j k,  dk -= (decay S_{t-1})^T beta dd
+//   decay:  ddecay = <dSd, S_{t-1}>,  dS <- decay dSd
+// S_t's rows are tdn_rows' arithmetic again on S_{t-1}, so the same bits the
+// rebuild stored. A lane reads back only the elements it stored. The column
+// sums (dq, dk) and the two scalars fold the warps' partials in warp order
+// through shared memory, double-buffered by t's parity: one barrier a
+// position, and fixed trees throughout. dq, dk are [nh][T][sk], dv [T][inner],
+// dbeta and ddecay [T][nh]; sb holds C states a head.
+extern "C" __global__ void __launch_bounds__(TDN_MAX_HV / TDN_ROWS * 32)
+k_tdn_bw(const float *cv, const float *beta, const float *decay,
+         const float *ckpt, float *sb, const float *dy, float *dq, float *dk,
+         float *dv, float *dbeta, float *ddecay, tdn_args a) {
+    __shared__ float pq[2][TDN_MAX_HV / TDN_ROWS][TDN_MAX_HV];
+    __shared__ float pk[2][TDN_MAX_HV / TDN_ROWS][TDN_MAX_HV];
+    __shared__ float pb[2][TDN_MAX_HV / TDN_ROWS], pd[2][TDN_MAX_HV / TDN_ROWS];
+    int lane = (int)(threadIdx.x & 31), w = (int)(threadIdx.x >> 5);
+    int h = (int)blockIdx.x, j0 = w * TDN_ROWS;
+    int nw = a.hv / TDN_ROWS, cpl = (a.hv + 31) / 32, g = h % a.ng;
+    ulong64 hh = (ulong64)a.hv * a.hv;
+    float *sbh = sb + (ulong64)h * a.C * hh;
+    float sqk = sqrtf((float)a.sk), rs = 1.0f / sqk;
+    float dS[TDN_ROWS][TDN_CPL], kc[TDN_CPL], qc[TDN_CPL];
+    #pragma unroll
+    for (int r = 0; r < TDN_ROWS; r++)
+        #pragma unroll
+        for (int c = 0; c < TDN_CPL; c++) dS[r][c] = 0.0f;
+    int nseg = (a.T + a.C - 1) / a.C;
+    for (int seg = nseg - 1; seg >= 0; seg--) {
+        int t0 = seg * a.C, t1 = t0 + a.C < a.T ? t0 + a.C : a.T;
+        const float *ck = ckpt + ((ulong64)seg * a.nh + h) * hh;
+        {
+            float s[TDN_ROWS][TDN_CPL];
+            tdn_load(s, ck, a.hv, j0, lane, cpl);
+            for (int t = t0; t < t1 - 1; t++) {
+                const float *ct = cv + (ulong64)t * a.convdim;
+                tdn_qk(ct, a, g, lane, cpl, kc, qc);
+                tdn_rows(s, cpl, j0, lane, decay[(ulong64)t * a.nh + h],
+                         beta[(ulong64)t * a.nh + h], kc, qc,
+                         ct + 2 * a.keydim + h * a.hv, NULL, sqk);
+                tdn_store(s, sbh + (ulong64)(t - t0 + 1) * hh, a.hv, j0, lane, cpl);
+            }
+        }
+        for (int t = t1 - 1; t >= t0; t--) {
+            const float *sp = t == t0 ? ck : sbh + (ulong64)(t - t0) * hh;
+            const float *ct = cv + (ulong64)t * a.convdim;
+            const float *v = ct + 2 * a.keydim + h * a.hv;
+            const float *dyt = dy + (ulong64)t * a.inner + h * a.hv;
+            float dec = decay[(ulong64)t * a.nh + h], bet = beta[(ulong64)t * a.nh + h];
+            tdn_qk(ct, a, g, lane, cpl, kc, qc);
+            float dqp[TDN_CPL], dkp[TDN_CPL], ddp = 0.0f, dbp = 0.0f;
+            #pragma unroll
+            for (int c = 0; c < TDN_CPL; c++) dqp[c] = dkp[c] = 0.0f;
+            #pragma unroll
+            for (int r = 0; r < TDN_ROWS; r++) {
+                int j = j0 + r;
+                float spv[TDN_CPL], sd[TDN_CPL], p = 0.0f;
+                #pragma unroll
+                for (int c = 0; c < TDN_CPL; c++) {
+                    spv[c] = c < cpl && lane + 32 * c < a.hv
+                        ? sp[(ulong64)j * a.hv + lane + 32 * c] : 0.0f;
+                    sd[c] = spv[c];
+                    if (c < cpl) {
+                        sd[c] *= dec;
+                        p = fmaf(sd[c], kc[c], p);
+                    }
+                }
+                float pred = tdn_allsum(p);
+                float delta = (v[j] - pred) * bet;
+                float gj = dyt[j] * rs, e = 0.0f;
+                #pragma unroll
+                for (int c = 0; c < TDN_CPL; c++)
+                    if (c < cpl) {
+                        float stc = fmaf(delta, kc[c], sd[c]);
+                        dS[r][c] = fmaf(gj, qc[c], dS[r][c]);
+                        dqp[c] = fmaf(gj, stc, dqp[c]);
+                        e = fmaf(dS[r][c], kc[c], e);
+                    }
+                float dd = tdn_allsum(e);
+                if (lane == r) dv[(ulong64)t * a.inner + h * a.hv + j] = bet * dd;
+                dbp += dd * (v[j] - pred);
+                float dpred = -bet * dd;
+                #pragma unroll
+                for (int c = 0; c < TDN_CPL; c++)
+                    if (c < cpl) {
+                        dkp[c] = fmaf(dS[r][c], delta, dkp[c]);
+                        float dsd = fmaf(dpred, kc[c], dS[r][c]);
+                        dkp[c] = fmaf(sd[c], dpred, dkp[c]);
+                        ddp = fmaf(dsd, spv[c], ddp);
+                        dS[r][c] = dec * dsd;
+                    }
+            }
+            int par = t & 1;
+            #pragma unroll
+            for (int c = 0; c < TDN_CPL; c++)
+                if (c < cpl && lane + 32 * c < a.hv) {
+                    pq[par][w][lane + 32 * c] = dqp[c];
+                    pk[par][w][lane + 32 * c] = dkp[c];
+                }
+            ddp = tdn_allsum(ddp);
+            if (lane == 0) {
+                pb[par][w] = dbp;
+                pd[par][w] = ddp;
+            }
+            __syncthreads();
+            int i = (int)threadIdx.x;
+            if (i < a.hv) {
+                float sq = 0.0f, sk2 = 0.0f;
+                for (int ww = 0; ww < nw; ww++) {
+                    sq += pq[par][ww][i];
+                    sk2 += pk[par][ww][i];
+                }
+                ulong64 o = ((ulong64)h * a.T + t) * a.sk + i;
+                dq[o] = sq;
+                dk[o] = sk2;
+            }
+            if (i == 0) {
+                float sb2 = 0.0f, sd2 = 0.0f;
+                for (int ww = 0; ww < nw; ww++) {
+                    sb2 += pb[par][ww];
+                    sd2 += pd[par][ww];
+                }
+                dbeta[(ulong64)t * a.nh + h] = sb2;
+                ddecay[(ulong64)t * a.nh + h] = sd2;
+            }
+        }
+    }
+}

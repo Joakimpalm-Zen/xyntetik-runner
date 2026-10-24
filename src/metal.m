@@ -2970,6 +2970,38 @@ double gpu_train_dev_wall(model_t *mm) {
     return 0;
 }
 
+bool gpu_train_dn_ok(model_t *mm, const tdn_args *a) {
+    (void)mm; (void)a;
+    return false;
+}
+
+bool gpu_train_dn_fw(model_t *mm, const tdn_args *a, const float *cv,
+                     const float *beta, const float *decay, float *state,
+                     float *y) {
+    (void)mm; (void)a; (void)cv; (void)beta; (void)decay; (void)state; (void)y;
+    return false;
+}
+
+bool gpu_train_dn_bw(model_t *mm, const tdn_args *a, const float *cv,
+                     const float *dy, float *dq, float *dk, float *dv,
+                     float *dbeta, float *ddecay) {
+    (void)mm; (void)a; (void)cv; (void)dy; (void)dq; (void)dk; (void)dv;
+    (void)dbeta; (void)ddecay;
+    return false;
+}
+
+void gpu_train_dn_counts(model_t *mm, long *dev, long *failed) {
+    (void)mm;
+    *dev = *failed = 0;
+}
+
+bool gpu_train_dn_pull(model_t *mm) {
+    (void)mm;
+    return true;
+}
+
+void gpu_train_dn_reset(model_t *mm) { (void)mm; }
+
 void gpu_train_placement(model_t *mm, int *on_dev, size_t *dev_bytes,
                          int *on_cpu, size_t *cpu_bytes, size_t *budget,
                          bool *budget_set) {

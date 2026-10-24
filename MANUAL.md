@@ -2402,7 +2402,7 @@ whether the draft is `active` there.
 | `--lr-schedule constant\|cosine`, `--lr-warmup N`, `--lr-floor F` | With `--train`: a linear warmup over N steps, then a constant learning rate or a cosine down to F x `--lr` (0.1) at the last step. |
 | `--train-batch N` | With `--train`: N rows per optimizer step, the loss and gradient the mean over their positions (rows in file order). Without it, one row a step, its loss summed over its positions. |
 | `--weight-decay F` | AdamW's decoupled weight decay (`0.01`); `0` is plain Adam. |
-| `--train-gpu` | With `--train` or `--train-dpo`: every weight product of a step on an NVIDIA GPU (CUDA build), the weights cached there. Within rounding of a CPU run, not its bytes; the record names the device. An error without a usable device. [Details](docs/lora.md#training-on-the-gpu---train-gpu). |
+| `--train-gpu` | With `--train` or `--train-dpo`: every weight product of a step on an NVIDIA GPU (CUDA build), the weights cached there, and on Qwen3.5 and Clef the Gated DeltaNet recurrence. Within rounding of a CPU run, not its bytes; the record names the device. An error without a usable device. [Details](docs/lora.md#training-on-the-gpu---train-gpu). |
 | `--train-gpu-budget BYTES` | The device memory `--train-gpu`'s weights may take (default: the free memory at the start, less 512 MB). Weights past it train on the CPU, and which weights the device holds decides the adapter's bits, so the record names the budget and the split, and passing the recorded `budget_bytes` here reproduces them. An error when the device does not have it free. |
 | `--train-resume CKPT` | Continue the run that wrote checkpoint CKPT: its adapter, AdamW moments (`CKPT.optim`), step and next rows; byte-identical to the run that never stopped. |
 | `--train-eval LABEL=ROWS[,TEACHER]`, `--eval-every N` | Held-out sets (up to 8) evaluated with no update at step 0, every N steps and at the last: mean loss per position, `top1_topk` and `top1_vocab`. |
@@ -2536,7 +2536,7 @@ the bare base (`tests/test_adapter_routing.py`).
 
 AdamW LoRA training in the serving binary (position-batched and threaded under a
 byte-exact contract - 4B trains at ~15 s/step on 12 threads of a many-core host; `--train-gpu` puts
-every weight product of a step on an NVIDIA GPU, within rounding of the CPU run -
+every weight product of a step (and a Gated DeltaNet model's recurrence) on an NVIDIA GPU, within rounding of the CPU run -
 Qwen2.5-7B Q4_K_M at 9.4 s/step against 90 s for the CPU trainer on the same 4 threads,
 RTX 3070; the optional `RUNNER_TRAIN_GPU=1` CUDA assist moves only the backward's
 transposed products and keeps the CPU's bytes; the CPU adapter bytes are gated

@@ -10,8 +10,11 @@
 //               memcmp; and it is the product (each column within 2^-16 of
 //               sum|w x| of a double-precision reference)
 //
+// R8.21 adds the DeltaNet recurrence's device calls (dn_check below).
+//
 // Skips (not passes) without a CUDA device. Prints each type's throughput.
 #include "runner.h"
+#include "dn_ref.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -110,6 +113,119 @@ static double clk(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
+// R8.21: the DeltaNet recurrence on the device (gpu_train_dn_fw / _bw)
+// against the double-precision reference of the same equations
+// (tests/dn_ref.h, which tests/test_dn_recurrence.c holds the CPU's
+// recurrence to as well), at five head widths (the fixtures' 8, a width
+// that is no whole number of warps' columns, and the real models' 128):
+//   forward   y within 2^-14 of the reference, relative to the largest |y|;
+//             the forward's rounds (the state kept on the device between
+//             calls of 16 and 5 positions, from a reset) give the
+//             recompute's y bit for bit, and the state brought back to the
+//             host after them is the reference's final one within 2^-14
+//   backward  dq, dk, dv, dbeta and ddecay within 2^-12 of the reference's,
+//             relative to each one's largest magnitude, and bit for bit the
+//             same on a second run
+//   refusals  a sweep without its recompute, a head width that is no
+//             multiple of TDN_ROWS or wider than TDN_MAX_HV, and hv != sk
+//             are declined
+static void dn_close(const char *what, int hv, const float *got,
+                     const double *ref, size_t n, double tol) {
+    size_t at;
+    double mx, worst = dn_ref_err(got, ref, n, &at, &mx);
+    CHECK(worst <= tol * mx,   // an all-zero reference wants exact zeros
+          "dn hv %d: %s off by %.3g of max %.3g at "
+          "[%zu] (device %.9g reference %.9g)", hv, what, worst, mx, at,
+          (double)got[at], ref[at]);
+}
+
+static void dn_check(model_t *m, int nh, int ng, int hv, int T) {
+    int sk = hv, keydim = sk * ng, inner = nh * hv, convdim = 2 * keydim + inner;
+    int C = 1;
+    while (C * C < T) C++;
+    tdn_args a = { T, C, nh, ng, sk, hv, convdim, keydim, inner };
+    size_t hh = (size_t)hv * hv, ncv = (size_t)T * convdim, ng_ = (size_t)T * nh;
+    size_t ny = (size_t)T * inner, nqk = (size_t)nh * T * sk;
+    float *cv = malloc(sizeof(float) * ncv), *beta = malloc(sizeof(float) * ng_);
+    float *decay = malloc(sizeof(float) * ng_), *dy = malloc(sizeof(float) * ny);
+    float *y = malloc(sizeof(float) * ny), *yr = malloc(sizeof(float) * ny);
+    float *st = calloc((size_t)nh * hh, sizeof(float));
+    float *out[5], *out2[5];
+    size_t on[5] = { nqk, nqk, ny, ng_, ng_ };
+    for (int i = 0; i < 5; i++) {
+        out[i] = malloc(sizeof(float) * on[i]);
+        out2[i] = malloc(sizeof(float) * on[i]);
+    }
+    dn_shape sh = dn_shape_of(nh, ng, hv, T);
+    dn_ref_fill(&sh, 0x2545F4914F6CDD1Dull ^ (uint64_t)hv, cv, beta, decay, dy);
+    dn_ref_out r;
+    dn_ref_run(&sh, cv, beta, decay, dy, &r);
+
+    // the forward's rounds: 16 positions a call, the last call 5 or fewer,
+    // from a reset (st is zero, as model_recurrent_reset leaves the host's)
+    bool ok = true;
+    gpu_train_dn_reset(m);
+    for (int t0 = 0; ok && t0 < T; ) {
+        int n = T - t0 > 16 ? 16 : T - t0 > 5 ? T - t0 - 5 : T - t0;
+        tdn_args r = a;
+        r.T = n;
+        ok = gpu_train_dn_fw(m, &r, cv + (size_t)t0 * convdim, beta + (size_t)t0 * nh,
+                             decay + (size_t)t0 * nh, st, yr + (size_t)t0 * inner);
+        t0 += n;
+    }
+    CHECK(ok, "dn hv %d: a forward round declined", hv);
+    CHECK(ok && gpu_train_dn_pull(m), "dn hv %d: the state did not come back", hv);
+    if (ok) {
+        double *fin = malloc(sizeof(double) * (size_t)nh * hh);
+        for (int h = 0; h < nh; h++)
+            memcpy(fin + (size_t)h * hh, r.S + ((size_t)h * (T + 1) + T) * hh,
+                   sizeof(double) * hh);
+        dn_close("final state", hv, st, fin, (size_t)nh * hh, 1.0 / 16384);
+        free(fin);
+    }
+    CHECK(!gpu_train_dn_bw(m, &a, cv, dy, out[0], out[1], out[2], out[3], out[4]),
+          "dn hv %d: a sweep ran without its recompute", hv);
+    ok = ok && gpu_train_dn_fw(m, &a, cv, beta, decay, NULL, y);
+    CHECK(ok, "dn hv %d: the recompute declined", hv);
+    if (ok) {
+        dn_close("y", hv, y, r.y, ny, 1.0 / 16384);
+        CHECK(!memcmp(y, yr, sizeof(float) * ny), "dn hv %d: the forward's rounds "
+              "and the recompute differ", hv);
+        float *junk = malloc(sizeof(float) * ncv);
+        memcpy(junk, cv, sizeof(float) * ncv);
+        CHECK(!gpu_train_dn_bw(m, &a, junk, dy, out[0], out[1], out[2], out[3], out[4]),
+              "dn hv %d: a sweep ran on another recompute's states", hv);
+        free(junk);
+    }
+    for (int run = 0; ok && run < 2; run++) {
+        float **o = run ? out2 : out;
+        ok = (!run || gpu_train_dn_fw(m, &a, cv, beta, decay, NULL, y)) &&
+             gpu_train_dn_bw(m, &a, cv, dy, o[0], o[1], o[2], o[3], o[4]);
+        CHECK(ok, "dn hv %d: the sweep declined (run %d)", hv, run);
+    }
+    if (ok) {
+        static const char *const NAMES[5] = { "dq", "dk", "dv", "dbeta", "ddecay" };
+        const double *refs[5] = { r.dq, r.dk, r.dv, r.dbeta, r.ddecay };
+        for (int i = 0; i < 5; i++) {
+            dn_close(NAMES[i], hv, out[i], refs[i], on[i], 1.0 / 4096);
+            CHECK(!memcmp(out[i], out2[i], sizeof(float) * on[i]),
+                  "dn hv %d: %s differs between two runs", hv, NAMES[i]);
+        }
+    }
+    tdn_args bad = a;
+    bad.hv = bad.sk = 12;
+    CHECK(!gpu_train_dn_ok(m, &bad), "dn: hv 12 accepted");
+    bad.hv = bad.sk = TDN_MAX_HV + TDN_ROWS;
+    CHECK(!gpu_train_dn_ok(m, &bad), "dn: hv %d accepted", bad.hv);
+    bad = a;
+    bad.sk = hv / 2;
+    CHECK(!gpu_train_dn_ok(m, &bad), "dn: hv != sk accepted");
+    printf("dn hv %3d nh %d ng %d T %d: %s\n", hv, nh, ng, T, ok ? "checked" : "declined");
+    free(cv); free(beta); free(decay); free(dy); free(y); free(yr); free(st);
+    for (int i = 0; i < 5; i++) { free(out[i]); free(out2[i]); }
+    dn_ref_free(&r);
 }
 
 int main(void) {
@@ -232,6 +348,11 @@ int main(void) {
         free(xs); free(ys);
         keep[sizeof(TYPES) / sizeof(*TYPES)] = w.data;
     }
+    dn_check(&m, 4, 2, 128, 77);
+    dn_check(&m, 3, 3, 64, 40);
+    dn_check(&m, 4, 2, 40, 33);
+    dn_check(&m, 2, 1, 32, 9);
+    dn_check(&m, 4, 2, 8, 26);
     gpu_train_free(&m);
     for (size_t k = 0; k < sizeof(keep) / sizeof(*keep); k++) free(keep[k]);
     printf("%s: %d types\n", g_fail ? "FAIL" : "PASS", tested);

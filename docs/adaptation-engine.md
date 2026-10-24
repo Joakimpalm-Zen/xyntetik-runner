@@ -59,8 +59,10 @@ for the actual loaded model.
 CUDA training is opt-in two ways. `RUNNER_TRAIN_GPU=1` puts the backward's
 transposed products on the device and must preserve CPU adapter bytes.
 `--train-gpu` puts every weight product of a step there (forward, heads,
-recompute, transposed); it matches a CPU run within rounding, not its bytes,
-and the CPU keeps the small ops and the optimizer.
+recompute, transposed), and on Qwen3.5 and Clef the Gated DeltaNet
+recurrence (the forward's, the recompute's and the sweep back through
+time, one step function for all three); it matches a CPU run within
+rounding, not its bytes, and the CPU keeps the small ops and the optimizer.
 
 ## Reproducibility, gradients, and failure behavior
 

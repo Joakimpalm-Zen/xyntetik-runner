@@ -1438,8 +1438,9 @@ static void usage_to(FILE *f, const char *prog) {
         "                 (exit 3) unless LABEL's loss fell by R from step 0\n"
         "  --stop-file F  after a step, if F exists: save and exit 75\n"
         "  --train-gpu    with --train or --train-dpo: every weight product\n"
-        "                 of a step on a CUDA GPU. The adapter matches a CPU\n"
-        "                 run within tolerance, not byte for byte\n"
+        "                 of a step (and a Gated DeltaNet model's recurrence)\n"
+        "                 on a CUDA GPU. The adapter matches a CPU run within\n"
+        "                 tolerance, not byte for byte\n"
         "  --train-gpu-budget BYTES  the device memory --train-gpu's weights\n"
         "                 may take (default: the free memory); which weights\n"
         "                 fit decides the adapter's bits, the record names it\n"
@@ -4828,11 +4829,17 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
         size_t dev_b, cpu_b, bud;
         bool bud_set;
         gpu_train_placement(&rt->m, &on_dev, &dev_b, &on_cpu, &cpu_b, &bud, &bud_set);
+        // R8.21: the DeltaNet recurrence's calls on the device and the ones
+        // that failed there and ran on the CPU (both 0 on other models)
+        long dn_dev, dn_failed;
+        gpu_train_dn_counts(&rt->m, &dn_dev, &dn_failed);
         sb_fmt(&rec, "\",\"budget_bytes\":%llu,\"budget_from\":\"%s\","
                      "\"tensors_on_device\":%d,\"device_bytes\":%llu,"
-                     "\"tensors_on_cpu\":%d,\"cpu_bytes\":%llu},",
+                     "\"tensors_on_cpu\":%d,\"cpu_bytes\":%llu,"
+                     "\"deltanet_device_calls\":%ld,\"deltanet_failed_calls\":%ld},",
                (unsigned long long)bud, bud_set ? "--train-gpu-budget" : "free memory",
-               on_dev, (unsigned long long)dev_b, on_cpu, (unsigned long long)cpu_b);
+               on_dev, (unsigned long long)dev_b, on_cpu, (unsigned long long)cpu_b,
+               dn_dev, dn_failed);
     }
     // R8.17: the held-out sets (rows and teacher hashed like the data), the
     // kill rule and the step a resumed run started from

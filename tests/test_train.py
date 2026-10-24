@@ -231,6 +231,11 @@ def test_train_gpu_matches_cpu_within_rounding(runner_bin, base, tmp_path, famil
     assert rec["products"]["device"] == "cuda", rec.get("products")
     assert rec["products"]["tensors_on_device"] > 0, rec["products"]
     assert rec["products"]["tensors_on_cpu"] == 0, rec["products"]
+    # R8.21: the Gated DeltaNet families' recurrence ran on the device (the
+    # forward's rounds, the recompute and the sweep), none of it fell back
+    dn = rec["products"]["deltanet_device_calls"]
+    assert (dn > 0) == (family in ("qwen35", "clef")), (family, rec["products"])
+    assert rec["products"]["deltanet_failed_calls"] == 0, rec["products"]
 
 
 # Which weights the device holds decides a --train-gpu adapter's bits (a

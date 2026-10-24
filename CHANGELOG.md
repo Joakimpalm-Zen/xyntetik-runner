@@ -5,6 +5,28 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--train-gpu` on Qwen3.5 and Clef: the Gated DeltaNet recurrence runs
+  on the GPU too, and these models' adapters are not 1.6.0's byte for
+  byte.** The recurrence of the DeltaNet layers ran on the CPU beside the
+  device's weight products, in all three places a step takes it: the
+  forward, the backward's recompute and its sweep back through time. It now
+  runs on the GPU through one step function, so the forward and the
+  recompute still see the same states, bit for bit. Its sums run in another
+  order than before, so a `--train-gpu` adapter on these models changes
+  (within rounding of a CPU run, as before, and deterministic); on every
+  other model it is byte-identical to 1.6.0's, and the CPU trainer's bytes
+  are unchanged on every model. On an RTX 3070 beside 4 CPU threads, medians
+  of three: six Qwen3.5-0.8B distillation steps 16.5 s to 14.4 s, two
+  Qwen3.5-4B Q4_K_M steps of 512 tokens 16.1 s to 14.9 s. On the 26B Clef
+  IQ3_S with 6 threads of a datacenter MIG slice the recurrence's part of a
+  step fell from 2.9-5.6 s to 1.2-1.7 s; the whole step (50 to 65 s on that
+  shared host) moved by less than the host's own noise. The record's
+  `products` count the recurrence's calls on the device
+  (`deltanet_device_calls`) and any that failed there and ran on the CPU
+  (`deltanet_failed_calls`). A new test holds the CPU recurrence and its
+  sweep to a double-precision reference (`tests/test_dn_recurrence.c`): the
+  gradient gates could not see an error of a tenth of a percent there.
+
 - **SHA-256 on the CPU's own instructions: a model file hashes about ten
   times faster.** The training, quantize and merge records, the download
   check, bundles and lineage all hash whole model files, and the portable
