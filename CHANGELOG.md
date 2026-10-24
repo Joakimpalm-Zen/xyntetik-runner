@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--lora` on the CPU: the adapter's delta costs about a third of what it
+  did, with the same bytes.** Each projection's y += scale * B (A x) ran its
+  rank and output sums one chain at a time, every step waiting on the one
+  before (2-3 GFLOP/s a thread). It now runs up to 8 of those chains side
+  by side, each with its own order unchanged. On an Apple M1, 4 threads,
+  Qwen3-0.6B Q8_0 with a rank-8 adapter: decode 37.0 to 42.6 tok/s (44.7 to
+  47.0 without the adapter), prefill 149-154 to 164-173 tok/s. Training's
+  forward passes take the same path. The CUDA and Metal backends apply
+  adapters with their own kernels and are unchanged. Outputs are
+  byte-identical to before: text and scoring with an adapter, every
+  training fixture family and objective (ranks 1, 2, 4, 5, 8, 12, 16 and
+  33), and `tests/test_lora_chains.c` against the old loop over 915 shapes.
+
 - **Training: the adapter's own backward passes run 4 to 11 times faster,
   with the same bytes.** Every site's rank-r products (B^T dy, A x, the
   dA and dB updates, the adapter's share of dx) walked one strided chain at
