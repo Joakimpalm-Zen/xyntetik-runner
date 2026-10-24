@@ -1554,6 +1554,13 @@ make debug    # ASan/UBSan development build where supported
 make test     # unit, fixture, generated-source, and backend gates
 ```
 
+The x86 release binaries are built for `x86-64-v3` and clang keeps the
+engine's explicit fused multiply-add chains; a gcc build with `-ffast-math`
+at `-march=native` (what `make` uses) on a Zen-class CPU can reassociate
+those chains into vector reductions, so its bytes can differ from a release
+binary's, and replay is bound to the build
+([versioning policy](docs/versioning.md)).
+
 Runner uses ordinary platform C, math, threading, mmap/file-mapping, and
 dynamic-loader libraries. GGUF is little-endian, so little-endian hosts are
 required.

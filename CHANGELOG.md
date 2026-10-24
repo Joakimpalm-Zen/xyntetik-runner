@@ -8,6 +8,31 @@ Current release and unreleased changes. Compatibility follows the
 Numbered 1.6.0 under the [versioning policy](docs/versioning.md): a 1.x minor
 release adds, and this one adds flags and record fields.
 
+- **Windows: a pooled CPU result no longer depends on which thread computed
+  it.** Windows only; Linux and macOS are unchanged, since their threads
+  already inherited this state. Runner's 1.5.1 release and earlier have it.
+  `-ffast-math` sets flush-to-zero and denormals-are-zero in the main
+  thread's floating-point control register at startup; Linux and macOS
+  threads start with their creator's state, Windows threads in the default
+  one. So on Windows the thread pool's workers, the server's slot threads
+  and the scheduler's decode thread kept subnormals the calling thread
+  flushed, and a row computed on a worker could round differently from the
+  same row on the calling thread (pooled LoRA rows, the batched prompt pass,
+  a server slot against the CLI), or differ outright with extreme inputs
+  (inf where the calling thread gave NaN). Every compute thread now installs
+  its creator's control state when it starts (x86 MXCSR without its sticky
+  exception flags, arm64 FPCR), and `tests/test_thread_default.c` requires
+  each pool worker to compute in the state its pool was made in. CPU outputs
+  on Windows can change where a subnormal reached a worker.
+
+- **Building from source: the bytes follow the build.** The x86 release
+  binaries are built for `x86-64-v3` and clang keeps the engine's explicit
+  fused multiply-add chains; a gcc build with `-ffast-math` at
+  `-march=native` (what `make` uses) on a Zen-class CPU can reassociate those
+  chains into vector reductions (measured with gcc 16.1 on a Zen 5), so its
+  bytes can differ from a release binary's, and replay is bound to the build
+  ([versioning policy](docs/versioning.md)).
+
 - **`--lora` on the CPU: the adapter's delta costs about a third of what it
   did, with the same bytes.** Each projection's y += scale * B (A x) ran its
   rank and output sums one chain at a time, every step waiting on the one
@@ -365,7 +390,9 @@ release adds, and this one adds flags and record fields.
   now covers every weight type (it covered 7). `RUNNER_TRAIN_PROF=1` prints
   each phase's share of device time, the forward's included, and gives a
   DeltaNet layer's mixer sites their own column (`dn_sites`) instead of
-  counting them as attention.
+  counting them as attention; `RUNNER_DEBUG_TIME=1` splits each forward
+  stage's time (attention, DeltaNet or SSM, dense FFN and the rest) into
+  device and host when a run used the device.
 
 - **`scripts/kld-compare.py` and `kld-compare-raw.py` listen below the
   ephemeral port ranges.** Their default ports, 58601/58602 and 58611/58612,
