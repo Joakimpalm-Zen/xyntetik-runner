@@ -14,7 +14,8 @@ to `main` that touches `site/`.
   and `docs/`; every caption names the source document and the date.
 - `{{repo}}` and `{{hf}}` expand to the repository and Hugging Face URLs.
 - `{{tiers:table}}` renders the "Actively validated models" table (the
-  README's per-model blocks as one table) and
+  README's family blocks as one table, a row per model in the README's
+  order) and
   `{{validated:OWNER/REPO[,OWNER/REPO]}}` a model card's "Last
   validated" line, both from `docs/model-tiers.json` at build time through
   `scripts/model-tiers.py`'s own functions, so no page source holds a mark.

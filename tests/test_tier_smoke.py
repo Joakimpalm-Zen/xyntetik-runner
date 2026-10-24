@@ -58,7 +58,7 @@ def world(tmp_path):
         "policy": {"default_max_age_days": 45, "backends": ["cpu", "cuda", "metal"]},
         "exempt": [],
         "rows": [{
-            "id": "toy-q8_0", "model": "Toy", "tier": "tier1",
+            "id": "toy-q8_0", "model": "Toy", "family": "Toy", "tier": "tier1",
             "claim": "A toy Tier 1 row.", "architecture": "llama",
             "upstream": {"checkpoint": "toy/toy", "revision": None},
             "files": [{"name": "toy-Q8_0.gguf", "sha256": sha,

@@ -4,7 +4,7 @@ built from docs/model-tiers.json, never copied into the page sources.
 
 The anchors are marks written out by hand for fixture cells whose version
 and date are known, and the committed roster's own README render: the site
-table holds the same rows in the same order as the README table.
+table holds the same rows in the same order as the README's family blocks.
 """
 
 import html as htmllib
@@ -85,14 +85,26 @@ def text_of(html):
 
 
 def readme_models(doc):
-    """(model, file rows) per README block, a file row as the contents of
+    """(model, file rows) per model of the README's blocks, family by
+    family and model by model within each, a file row as the contents of
     its cells."""
     out = []
     for block in re.findall(r"<details>\n(.*?)\n</details>", mt.render_readme(doc), re.S):
-        model = htmllib.unescape(re.search(r"<b>(.*?)</b>", block).group(1))
-        rows = [re.findall(r"<td[^>]*>(.*?)</td>", tr)
-                for tr in re.findall(r"<tr>(.*?)</tr>", block) if "<td" in tr]
-        out.append((model, rows))
+        for line, table in re.findall(r"<p>(.*?)</p>\n(<table>.*?</table>)", block, re.S):
+            model = htmllib.unescape(re.match(r"<b>(.*?)</b>", line).group(1))
+            rows = [re.findall(r"<td[^>]*>(.*?)</td>", tr)
+                    for tr in re.findall(r"<tr>(.*?)</tr>", table) if "<td" in tr]
+            out.append((model, rows))
+    return out
+
+
+def family_marks(doc):
+    """Family name to its summary line's marks (label to mark), in the
+    README's order."""
+    out = {}
+    for s in re.findall(r"<summary>(.*?)</summary>", mt.render_readme(doc)):
+        m = re.match(r"<b>(.*?)</b>, \d+ models?: (.*)$", s)
+        out[htmllib.unescape(m.group(1))] = dict(x.split(" ", 1) for x in m.group(2).split(" · "))
     return out
 
 
@@ -105,7 +117,7 @@ def site_words(cell):
 
 
 def test_the_table_has_the_readmes_rows_in_the_readmes_order():
-    """The site keeps one table where the README has a block per model:
+    """The site keeps one table where the README has a block per family:
     the same models in the same order, the same files in each, and each
     cell the same mark in the site's words."""
     doc = fixture()
@@ -119,6 +131,38 @@ def test_the_table_has_the_readmes_rows_in_the_readmes_order():
         assert len(subrows) == len(rows)
         for got, cells in zip(subrows, rows):
             assert got == " ".join([site_words(c) for c in cells] + ["envelope"])
+
+
+def test_a_familys_line_is_computed_from_its_files():
+    """The cleared roster with marks set here: Granite-4.2-8B with both
+    files recorded on CUDA, Xyntetik-Kvist-14B with one of its four files
+    recorded there, and Trinity Nano, whose CUDA and Metal are declared
+    limits in the committed roster and whose training is refused. The
+    Qwen3.8 family's MTP Q8_0 head is a declared CUDA limit beside four
+    files recorded there, which counts as not run. Written out by hand."""
+    doc = fixture()
+    for r in doc["rows"]:
+        if r["id"] in ("granite-4.2-8b-q4_k_m", "granite-4.2-8b-q8_0"):
+            r["backends"]["cuda"] = gate("2026-10-23", "1.5.1")
+            r["lora"] = lora("2026-10-23", "1.5.1")
+        if r["id"] == "trinity-nano-preview-q8_0":
+            r["lora"] = dict(lora("2026-10-23", "1.5.1"),
+                             training={"supported": False, "reason": "MoE router"})
+        if r.get("family") == "Qwen3.8" and r["tier"] == "tier1" and \
+                r["backends"]["cuda"] is None:
+            r["backends"]["cuda"] = gate("2026-10-23", "1.5.1")
+    fams = family_marks(doc)
+    assert fams["Granite-4.2-8B"] == {"CPU": "-", "CUDA": "✅", "Metal": "-", "Train": "✅"}
+    assert fams["Xyntetik-Kvist-14B"] == {
+        "CPU": "-", "CUDA": "🟨 1 of 4", "Metal": "-", "Train": "-"}
+    assert fams["Trinity Nano"] == {"CPU": "-", "CUDA": "n/a", "Metal": "n/a", "Train": "n/a"}
+    assert fams["Qwen3.8"] == {"CPU": "-", "CUDA": "🟨 4 of 5", "Metal": "n/a", "Train": "-"}
+    # the E2B mix is the only Gemma 4 file the fixture records
+    assert fams["Gemma 4"] == {"CPU": "🟨 1 of 5", "CUDA": "-", "Metal": "🟨 1 of 5",
+                               "Train": "🟨 1 of 5"}
+    summary = re.search(r"<summary><b>Gemma 4</b>.*?</summary>", mt.render_readme(doc)).group(0)
+    assert summary == ("<summary><b>Gemma 4</b>, 5 models: CPU 🟨 1 of 5 · CUDA - · "
+                       "Metal 🟨 1 of 5 · Train 🟨 1 of 5</summary>")
 
 
 def test_a_recorded_cell_shows_its_version_and_date_and_links_its_row():

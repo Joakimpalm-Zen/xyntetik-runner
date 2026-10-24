@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **README: the actively validated models are listed by family.** One
+  collapsed block per family (Gemma 4, Qwen3, Qwen3.8 and the others), in
+  the roster's order, its line a plain overview per backend and for Train:
+  ✅ when every file of its models is recorded, 🟨 *k of n* when some are,
+  a hyphen when none is, n/a when every file has a declared limit there.
+  Each model inside keeps its per-file table. For Train, recorded means the
+  LoRA backward admits the file and a refusal counts as a declared limit.
+  [docs/model-support.md](docs/model-support.md) groups the envelopes the
+  same way, every Tier 1 and Tier 2 row of `docs/model-tiers.json` names
+  its `family` (`--check` requires one), and the site's table follows the
+  README's order. The Hugging Face cards do not change.
+
 - **`--train-gpu`: the backward's transposed products run 2-3x faster, and
   every model's adapter changes bytes again.** They ran the CPU trainer's
   own chain (one serial sum an element, skipping zero gradients), which the
