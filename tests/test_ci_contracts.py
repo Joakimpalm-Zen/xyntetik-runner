@@ -456,7 +456,8 @@ class CudaGateRefusesADegradedLaunch(_CudaGateCopy, unittest.TestCase):
         self.assertNotIn("not run: user name", out)
         self.assertIn("caps reports no CUDA device", out)
         env = self.summary[0]["env"]
-        self.assertEqual(env["user"], name)
+        self.assertIs(env["user_resolved"], True)
+        self.assertNotIn(name, json.dumps(env))  # evidence names no login
         self.assertEqual(env["degraded"], [])
         self.assertEqual(env["warned"], ["user name"])
 
@@ -473,7 +474,7 @@ class CudaGateRefusesADegradedLaunch(_CudaGateCopy, unittest.TestCase):
                       % var, r.stdout)
         self.assertIn("remedy: launch from a login shell", r.stdout)
         self.assertIn("user name", self.summary[0]["env"]["degraded"])
-        self.assertEqual(self.summary[0]["env"]["user"], "")
+        self.assertIs(self.summary[0]["env"]["user_resolved"], False)
 
     @unittest.skipIf(os.name == "nt", "the stand-in runner is a POSIX script")
     def test_the_escape_hatch_warns_and_goes_on_to_the_next_check(self):
