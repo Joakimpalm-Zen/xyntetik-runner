@@ -3,7 +3,7 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.5.2 - 2026-10-26
 
 - **`--lora` on the CPU: the adapter's delta costs about a third of what it
   did, with the same bytes.** Each projection's y += scale * B (A x) ran its
@@ -61,8 +61,11 @@ Current release and unreleased changes. Compatibility follows the
   shell); it names each check, the values it saw and the remedy (launch from
   a login shell, or set `TEMP`/`TMP` and `USERNAME`).
   `GATE_ALLOW_DEGRADED_ENV=1` turns the refusal into a warning. The summary
-  JSON gains an `env` object: temp directory, user, shell, login shell,
-  `MSYSTEM`, the checks that failed and the checks that only warned.
+  JSON moves to `xyntetik.runner.cuda-gate.v2` and gains an `env` object:
+  temp directory, `user_resolved` (whether a user name resolved, never the
+  name itself, since the summary is committed as device evidence), shell,
+  login shell, `MSYSTEM`, the checks that failed and the checks that only
+  warned.
 
 - **Release gate: cuda-gate.sh explains an empty GATE_MODEL.** On the
   Windows CUDA host variables exported in a Git Bash shell never reached the
@@ -80,9 +83,11 @@ Current release and unreleased changes. Compatibility follows the
   `llama-quantize-impl.dll` beside `llama-quantize.exe`, and under C
   collation the DLL sorted first, so the CUDA gate's `test-cuda-moe-legacy`
   step tried to execute it and failed. The four steps that quantize fixtures
-  now run `llama-quantize` or `llama-quantize.exe` from
-  `RUNNER_LLAMA_CPP_BIN`, and name the directory and both names when neither
-  is there; `make llama-quantize-path` prints the one they run. In the three
+  now run `llama-quantize.exe` or `llama-quantize` from
+  `RUNNER_LLAMA_CPP_BIN`, the `.exe` first (under MSYS2 a bare name resolves
+  to its `.exe`, which would otherwise be reported under the wrong name), and
+  name the directory and both names when neither is there;
+  `make llama-quantize-path` prints the one they run. In the three
   steps that narrow their coverage without the tool, a quantize that fails
   now prints a line naming the binary and the type instead of dropping the
   type silently.
@@ -203,10 +208,23 @@ Current release and unreleased changes. Compatibility follows the
   its row, served and asked one user turn through its own chat template
   (temperature 0, `enable_thinking` false), the reply's bytes compared with a
   committed pin under `tests/compatibility/tier-smoke/` that always names the
-  prompt's fact, a head or an adapter composed with the row it runs with. `make release-check` now refuses a tag while a Tier 1
+  prompt's fact, a head or an adapter composed with the row it runs with.
+  A mark is a reproduced greedy smoke on that class, not a quality or
+  fidelity claim. `make release-check` now refuses a tag while a Tier 1
   file's smoke is missing, recorded on another class, failing, or older than
-  45 days: one file (the published gemma-4-E2B mix, CPU and Metal) has run,
-  so the next tag needs the other 26 run first. The README's "Actively
+  45 days. All 27 are recorded for this release, every reply matching its
+  pin: 25 on `linux-x86_64-cuda` (20 on its CUDA backend, 5 on its CPU
+  backend), one on `windows-x86_64-cuda`, and the published gemma-4-E2B mix
+  on CPU and Metal on `macos-arm64-metal`. They ran on main builds made
+  between Runner's 1.5.1 release and this one, which still named their
+  version 1.5.1, so the marks read 1.5.1. The Flash-Next MTP Q8_0 head
+  carries a declared CUDA limit instead of a CUDA run (`--mtp` needs the
+  whole trunk on the device, and the IQ3_S trunk keeps 18 of its 48 layers
+  on a 24 GB device), so its smoke runs on the same class's CPU backend. The
+  Train column is each file's `--adapt-info` answer: 21 of the 27 train an
+  adapter, and the other six name why not (the gemma-4 dual-branch MoE FFN,
+  Mamba-2, removed sublayers, a MoE router that is not softmax, and the
+  hyper-connections of the two Flash-Next files). The README's "Actively
   validated models" section (one collapsed block per model, its line
   summing up each backend, a row per file inside) and
   [docs/model-support.md](docs/model-support.md) are rendered from the
@@ -315,7 +333,7 @@ Current release and unreleased changes. Compatibility follows the
   Every gradient element keeps its accumulation order, so the adapter is the
   same byte for byte as the trainer before this change: on all 13 trainable
   fixture families with CE, weighted rows, the batch recipe and KD on an
-  Apple M1 and on x86-64 under clang and gcc, and with DPO on the M1; at
+  Apple M1 and on x86-64 under clang and gcc, and with DPO on Apple M1; at
   round widths 1, 5 and 16 (`RUNNER_TRAIN_ROWS=N`); and at `-t 1` and `-t 3`,
   which a new test now holds (the manual's claim had none). Qwen3.5-0.8B
   Q4_K_M with KD on an Apple M1, `-t 4`: a 134-token step from 15.2 s to
@@ -341,7 +359,26 @@ Current release and unreleased changes. Compatibility follows the
   The record names the device under `products`. Without a CUDA build and
   an NVIDIA GPU the flag is an error, not a CPU run. `RUNNER_TRAIN_GPU=1`,
   the same-bytes assist that moves only the backward's transposed products,
-  now covers every weight type (it covered 7).
+  now covers every weight type (it covered 7). `RUNNER_TRAIN_PROF=1` prints
+  each phase's share of device time, the forward's included, and gives a
+  DeltaNet layer's mixer sites their own column (`dn_sites`) instead of
+  counting them as attention.
+
+- **`scripts/kld-compare.py` and `kld-compare-raw.py` listen below the
+  ephemeral port ranges.** Their default ports, 58601/58602 and 58611/58612,
+  sat inside Linux's ephemeral range (32768-60999). A readiness poll sent
+  before the server had bound its port could be given that same port as its
+  own source port, connect to itself and read back its own request, which
+  ended a run with `BadStatusLine`. The defaults are now 28601/28602 and
+  28611/28612, below every ephemeral range, and the poll refuses a socket
+  connected to itself. The conformance suite's server helper picks its ports
+  from 20000-32767 for the same reason.
+
+- **The manual and the site link the GENESIS genome record.** A research
+  dataset with no weights, not a Runner model: the restarted GENESIS thesis,
+  its prior-art review and its first kill test, GK-001, with every run. The
+  existence record's description now covers every counted run from GE-001 to
+  GE-014.
 
 - **`scripts/decide-calibrate.py --rendering raw-v1|continuation-v1`.** The
   calibration instrument sent no `rendering`, so every run measured the
