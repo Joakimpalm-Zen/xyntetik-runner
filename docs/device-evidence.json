@@ -19,9 +19,9 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-10-23",
-        "commit": "615b9697b2ccfc493205aa18b5b8683c0fa75620",
-        "ran": "scripts/cuda-gate.sh on the merged 1.5.1 release commit (main 615b9697), RTX 3070, default routes: every step (tc-overflow, iquants, cuda-gated, kv-fp4, nvfp4, qwen4exp, q3k, tc-kq, moe-legacy, varff, tc2-bytes, moe-twin, batch-id, spec-id, cpu-cuda on Llama-3.2-3B Q4_K_M) pass, build 0 warnings; on the release branch earlier the same day: native XML routing 28/28, scripts/cuda-smoke-remote.sh 13/13, clean-setup walkthrough pass",
+        "date": "2026-10-24",
+        "commit": "246b6426ad8d01a433af4ef0ae409b3beb052305",
+        "ran": "scripts/cuda-gate.sh on runner main 246b6426 (the 1.5.2 candidate), RTX 3070, default routes: every step (tc-overflow, iquants, cuda-gated 292 passed with 3 allowed skips of 295, kv-fp4, nvfp4, qwen4exp, q3k, tc-kq, moe-legacy, varff, tc2-bytes, moe-twin, batch-id, spec-id, cpu-cuda on Llama-3.2-3B Q4_K_M) pass, build 0 warnings, 6 min 35 s in total; no step slower than the 1.5.1 run beyond cuda-gated's larger suite (126 s for 295 tests against 106 s for 239). Launched as an MSYS2 UCRT64 login shell with USERNAME=zen, TEMP under C:/msys64/tmp and NoDefaultCurrentDirectoryInExePath unset; earlier attempts the same night from a degraded launch environment are not evidence.",
         "result": "pass",
         "caps": {
           "version": "1.5.1",
@@ -31,7 +31,7 @@
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA GeForce RTX 3070"
         },
-        "evidence": "docs/device-runs-2026-10-23/windows-x86_64-cuda/cuda-gate-20261023T074221Z.json"
+        "evidence": "docs/device-runs-2026-10-24/windows-x86_64-cuda/cuda-gate-20261024T024904Z.json"
       }
     },
     {
