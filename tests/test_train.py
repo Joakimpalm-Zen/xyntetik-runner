@@ -216,8 +216,12 @@ def test_train_gpu_is_refused_without_training_or_a_device(runner_bin, base, tmp
     # Hide every CUDA device from the child so the refusal shows on any host,
     # a CUDA host with a usable GPU included: a skip here used to carry the
     # words "GPU is usable", which the CUDA lane's no-skip rule rejects.
+    # The value is an invalid ordinal, not an empty string: the driver shows
+    # only the devices listed before the first invalid index, so -1 hides all
+    # of them everywhere, while a variable set to "" reads as unset on Windows
+    # (the 1.5.2 gate on a CUDA host trained to completion with it).
     out = tmp_path / "ad.gguf"
-    no_device = dict(os.environ, CUDA_VISIBLE_DEVICES="")
+    no_device = dict(os.environ, CUDA_VISIBLE_DEVICES="-1")
     p = _run_train(runner_bin, base, out, "corpus.txt", extra=("--train-gpu",),
                    env=no_device)
     assert p.returncode != 0, p.stdout[-400:]
