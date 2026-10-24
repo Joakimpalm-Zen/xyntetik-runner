@@ -230,6 +230,93 @@ static __device__ __forceinline__ float tdq_q2_0(const uchar *rw, int i) {
     return (float)((int)((b[2 + (e >> 2)] >> ((e & 3) * 2)) & 3) - 1) * f16f(b);
 }
 
+// tdq8_<type>(row, i0, o): weights i0 .. i0 + 7 of a row (i0 a multiple of
+// 8), each the value tdq_<type> gives it by the same expression, so the
+// same bits. The register-blocked kernels decode a run at a time: IQ3_S,
+// Q4_K and Q6_K share the run's block header, scale and grid words instead
+// of reading them once a weight; the rest take their weights one by one.
+// tdq_run_<type>: whether the kernels decode the type in runs (else one
+// weight a thread, consecutive threads on consecutive weights of a row,
+// which keeps a simple type's byte reads coalesced).
+#define TDQ8_EACH(name)                                                        \
+static const bool tdq_run_##name = false;                                      \
+static __device__ __forceinline__ void tdq8_##name(const uchar *rw, int i0,   \
+                                                   float *o) {                \
+    _Pragma("unroll")                                                          \
+    for (int j = 0; j < 8; j++) o[j] = tdq_##name(rw, i0 + j);                 \
+}
+TDQ8_EACH(f32)
+TDQ8_EACH(f16)
+TDQ8_EACH(bf16)
+TDQ8_EACH(q8_0)
+TDQ8_EACH(q4_0)
+TDQ8_EACH(q4_1)
+TDQ8_EACH(q5_0)
+TDQ8_EACH(q5_1)
+TDQ8_EACH(q2_K)
+TDQ8_EACH(q3_K)
+TDQ8_EACH(q5_K)
+TDQ8_EACH(iq4_nl)
+TDQ8_EACH(iq4_xs)
+TDQ8_EACH(iq2_xxs)
+TDQ8_EACH(iq2_xs)
+TDQ8_EACH(iq2_s)
+TDQ8_EACH(iq3_xxs)
+TDQ8_EACH(iq1_s)
+TDQ8_EACH(iq1_m)
+TDQ8_EACH(mxfp4)
+TDQ8_EACH(nvfp4)
+TDQ8_EACH(q2_0)
+
+static const bool tdq_run_q4_K = true;
+static __device__ __forceinline__ void tdq8_q4_K(const uchar *rw, int i0, float *o) {
+    int i = i0;
+    const uchar *b = TQ_BLK(256, 144);
+    int e = i0 & 255, g = e >> 5, l0 = e & 31;
+    uchar sc, mn;
+    get_scale_min_k4(g, b + 4, &sc, &mn);
+    float d = f16f(b), dm = f16f(b + 2);
+    const uchar *qs = b + 16 + 32 * (g >> 1) + l0;
+    _Pragma("unroll")
+    for (int j = 0; j < 8; j++) {
+        int q = (g & 1) ? (qs[j] >> 4) : (qs[j] & 0xF);
+        o[j] = d * (float)sc * (float)q - dm * (float)mn;
+    }
+}
+static const bool tdq_run_q6_K = true;
+static __device__ __forceinline__ void tdq8_q6_K(const uchar *rw, int i0, float *o) {
+    int i = i0;
+    const uchar *b = TQ_BLK(256, 210);
+    int e = i0 & 255, half = e >> 7, r = e & 127, seg = r >> 5, l0 = r & 31;
+    const uchar *ql = b + half * 64, *qh = b + 128 + half * 32;
+    int s = ((const signed char *)(b + 192))[half * 8 + 2 * seg + (l0 >> 4)];
+    float d = f16f(b + 208);
+    _Pragma("unroll")
+    for (int j = 0; j < 8; j++) {
+        int l = l0 + j;
+        int lo = (seg & 1) ? ql[l + 32] : ql[l];
+        int q = (int)(((seg & 2) ? (lo >> 4) : (lo & 0xF)) | (((qh[l] >> (2 * seg)) & 3) << 4)) - 32;
+        o[j] = d * (float)(s * q);
+    }
+}
+static const bool tdq_run_iq3_s = true;
+static __device__ __forceinline__ void tdq8_iq3_s(const uchar *rw, int i0, float *o) {
+    int i = i0;
+    const uchar *b = TQ_BLK(256, 110);
+    int e = i0 & 255, ib = e >> 5, l = (e >> 3) & 3;
+    unsigned sc = b[106 + (ib >> 1)];
+    float db = f16f(b) * (float)(1 + 2 * ((ib & 1) ? (sc >> 4) : (sc & 0xF)));
+    unsigned hb = b[66 + ib];
+    unsigned g0 = kiq3s_grid[b[2 + 8 * ib + 2 * l] | ((hb << (8 - 2 * l)) & 256)];
+    unsigned g1 = kiq3s_grid[b[2 + 8 * ib + 2 * l + 1] | ((hb << (7 - 2 * l)) & 256)];
+    unsigned sg = b[74 + 4 * ib + l];
+    _Pragma("unroll")
+    for (int j = 0; j < 8; j++) {
+        float mag = (float)(((j < 4 ? g0 : g1) >> (8 * (j & 3))) & 0xFF);
+        o[j] = db * ((sg >> j) & 1 ? -mag : mag);
+    }
+}
+
 // a row's bytes from its element count
 #define TQ_ROW(BS, TS) ((ulong64)(a.n_in / (BS)) * (TS))
 
@@ -333,10 +420,26 @@ extern "C" __global__ void __launch_bounds__(TMR_KS * 64) fname(MV_PARAMS) {  \
         int ch = it * TMR_KS + g, k0 = ch * TMR_BK;                            \
         int kn = ch < nch ? (a.n_in - k0 < TMR_BK ? a.n_in - k0 : TMR_BK) : 0; \
         __syncthreads();                                                       \
-        for (int e = lt; e < TMR_BM * TMR_BK; e += 64) {                       \
-            int kk = e % TMR_BK, r = e / TMR_BK;                               \
-            ws[g][kk][r] = kk < kn && r0 + r < a.n_out                         \
-                ? tdq_##name(w0 + (ulong64)(r0 + r) * rb, k0 + kk) : 0.0f;     \
+        if (!tdq_run_##name)                                                   \
+            for (int e = lt; e < TMR_BM * TMR_BK; e += 64) {                   \
+                int kk = e % TMR_BK, r = e / TMR_BK;                           \
+                ws[g][kk][r] = kk < kn && r0 + r < a.n_out                     \
+                    ? tdq_##name(w0 + (ulong64)(r0 + r) * rb, k0 + kk) : 0.0f; \
+            }                                                                  \
+        /* runs of 8 inputs of one row a thread (TMR_BK / 8 runs a row) */    \
+        else for (int e = lt; e < TMR_BM * (TMR_BK / 8); e += 64) {            \
+            int r = e / (TMR_BK / 8), kk0 = (e % (TMR_BK / 8)) * 8;            \
+            float wv[8];                                                       \
+            if (r0 + r < a.n_out && kk0 + 8 <= kn) {                           \
+                tdq8_##name(w0 + (ulong64)(r0 + r) * rb, k0 + kk0, wv);         \
+            } else {                                                           \
+                _Pragma("unroll")                                              \
+                for (int j = 0; j < 8; j++)                                    \
+                    wv[j] = r0 + r < a.n_out && kk0 + j < kn                   \
+                        ? tdq_##name(w0 + (ulong64)(r0 + r) * rb, k0 + kk0 + j) : 0.0f; \
+            }                                                                  \
+            _Pragma("unroll")                                                  \
+            for (int j = 0; j < 8; j++) ws[g][kk0 + j][r] = wv[j];             \
         }                                                                      \
         for (int e = lt; e < (BN) * TMR_BK; e += 64) {                         \
             int kk = e % TMR_BK, c = e / TMR_BK;                               \
