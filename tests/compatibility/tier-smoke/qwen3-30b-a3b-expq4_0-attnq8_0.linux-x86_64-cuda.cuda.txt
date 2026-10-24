@@ -1,0 +1,12 @@
+Mercury  
+Venus  
+Earth  
+Mars  
+Jupiter  
+Saturn  
+Uranus  
+Neptune  
+
+**Descriptions:**
+
+- **Mercury** is the closest planet to the Sun and has the most extreme temperature variations.

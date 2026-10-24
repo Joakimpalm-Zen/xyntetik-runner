@@ -473,3 +473,25 @@ def test_json_is_written_with_lf_on_a_crlf_host(tmp_path, monkeypatch):
         data = (tmp_path / name).read_bytes()
         assert b"\n" in data and b"\r" not in data, name
 
+
+
+def test_every_committed_pin_entry_has_its_text_at_the_recorded_digest():
+    """The registry entry and its pin text travel together. A pull request
+    once carried 20 CUDA entries without their texts (the diff was applied,
+    the new files were not copied) and CI passed; --record then refused every
+    row with "no pin to compare against". Each committed entry must name a
+    file that exists, with the recorded sha256 and byte count, and no text
+    may sit in the pin directory without an entry."""
+    reg = json.loads((ROOT / "tests" / "compatibility" / "tier-smoke.json").read_text(encoding="utf-8"))
+    pin_dir = ROOT / "tests" / "compatibility" / "tier-smoke"
+    listed = set()
+    for row, body in reg["rows"].items():
+        for cell, pin in (body.get("pins") or {}).items():
+            path = ROOT / pin["path"]
+            listed.add(path.resolve())
+            assert path.is_file(), f"{row} {cell}: {pin['path']} is missing"
+            data = path.read_bytes()
+            assert len(data) == pin["bytes"], (row, cell, len(data), pin["bytes"])
+            assert hashlib.sha256(data).hexdigest() == pin["sha256"], (row, cell)
+    stray = sorted(p.name for p in pin_dir.glob("*.txt") if p.resolve() not in listed)
+    assert not stray, f"pin texts without an entry: {stray}"

@@ -86,14 +86,43 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "a38540f4ff7fd6c7f9390c5a9aedee14a73808155c47124fc7601b3cd7901687",
+          "ran": "runner -m Cloudflare_clef-IQ3_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/cloudflare-clef-iq3_m.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "limit",
           "reason": "Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -144,14 +173,43 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "44ffbc5ccee57adc35621e0a060baa2e5db9ea32f88f426173d4d08bc7c5a14b",
+          "ran": "runner -m Qwen3.8-27B-UD-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3.8-27b-ud-q4_k_m.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "limit",
           "reason": "The qwen35 Gated DeltaNet hybrid has no Metal path; a Metal build runs this file on the CPU.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -204,10 +262,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "109c0663eb8c13c0140d105f0144a8bd2517dfec2f21b3517e0facf4ea76b20c",
+          "ran": "runner -m gemma-4-12b-it-qat-q4_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/gemma-4-12b-it-qat-q4_0.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -259,10 +346,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "c697fa9c64f4a37048a754d269ab4a72004a3a9a9fc0fd39157dcc746aa3f15b",
+          "ran": "runner -m gemma-4-26B_q4_0-it.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/gemma-4-26b-a4b-it-qat-q4_0.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "MoE FFN (gemma-4 dual-branch)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover the gemma-4 dual-branch FFN yet"
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -314,10 +430,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "6e01ea7bc489371c7da8b0450e8f7ad4add3a461de40c2f6fe0cef1ee7537728",
+          "ran": "runner -m gemma-4-31B-it-Q4_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/gemma-4-31b-it-q4_0.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -369,10 +514,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "bfe1008c84ebfae4a3dad551216d0e9289f7d661eee41a07dfde428ccb50a2be",
+          "ran": "runner -m Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/muse-glimmer-30b-kquant.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -508,10 +682,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "9e4082576850d0a87f71654360ded1ebc6fc5ae2141de754d8fefeca412d7bef",
+          "ran": "runner -m granite-4.2-8b-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/granite-4.2-8b-q8_0.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -655,14 +858,43 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "6bc726d37ed11e94fa92cd8b4ea9c96eabe3945f5ca3fadb3dc547bf3139be01",
+          "ran": "runner -m Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3.8-27b-gsq-rco-iq3_s-recovered.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "limit",
           "reason": "The qwen35 Gated DeltaNet hybrid has no Metal path; a Metal build runs this file on the CPU.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -717,14 +949,43 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "6bc726d37ed11e94fa92cd8b4ea9c96eabe3945f5ca3fadb3dc547bf3139be01",
+          "ran": "runner -m Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf --mtp-file Qwen3.8-27B-MTP-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3.8-27b-mtp-q8_0.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "limit",
           "reason": "MTP/NextN draft-head consumption is not implemented on Metal.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -856,10 +1117,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "c89c26e516c5d4dde10843f99aed6f51f3da2946799a9d774a06cc8a74fcfd65",
+          "ran": "runner -m Xyntetik-Kvist-14B-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/xyntetik-kvist-14b-q8_0.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -909,10 +1199,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "c89c26e516c5d4dde10843f99aed6f51f3da2946799a9d774a06cc8a74fcfd65",
+          "ran": "runner -m Xyntetik-Kvist-14B-Q5_0-mix.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/xyntetik-kvist-14b-q5_0-mix.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -962,10 +1281,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "c89c26e516c5d4dde10843f99aed6f51f3da2946799a9d774a06cc8a74fcfd65",
+          "ran": "runner -m Xyntetik-Kvist-14B-IQ4_NL-mix.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/xyntetik-kvist-14b-iq4_nl-mix.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -1016,10 +1364,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "9c80990c12a550f6a635e0ea68750cfe7cdaf9837aeced6866c6eb458dbb671d",
+          "ran": "runner -m Qwen3-30B-A3B-expq4_0-attnq8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3-30b-a3b-expq4_0-attnq8_0.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -1069,10 +1446,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "f049d30f2e67e4a97f2c09930fac19eb672bbf9fb3858fe66aa4c1979123fd94",
+          "ran": "runner -m Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3-coder-30b-a3b-instruct-keep120-q4_k_m.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -1224,14 +1630,43 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "e23a8c77690649fbbda0b826b6f889f2acb2812fc63196c087cdece96a98bd0d",
+          "ran": "runner -m NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/nvidia-nemotron-nano-9b-v2-q8_0.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "limit",
           "reason": "Metal has no SSM path; a Metal build runs this file on the CPU.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "recurrent architecture (Mamba-2)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover Mamba-2 hybrid architectures yet (nemotron_h)"
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -1283,10 +1718,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "fbb8f3caf0ab7e53000c9b9a4bdfafb14cef460e335f0104e88509804fa2a393",
+          "ran": "runner -m gemma-4-31B-it-attn48-removed-q4_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/gemma-4-31b-it-attn48-removed-q4_0.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "removed sublayers (--remove-sublayer artifact)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover a model with removed sublayers yet (1 removed by --remove-sublayer)"
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -1337,10 +1801,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "9d806b71f48e104936d76546368d29de2d4b4e73b9ad3c80becb20dc7af76231",
+          "ran": "runner -m Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/muse-glimmer-30b-surgical-4p75-q4_k.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -1474,10 +1967,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "80e114dfae5939164d76d509cbd4b9ae5ab570e4820c9f3ad5a054dabac5f3c1",
+          "ran": "runner -m Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/muse-glimmer-30b-surgical-6p34-q4_k-recovered.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -1528,10 +2050,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "aa1a1647a3e4b5344f357f9fe3ab9ebe12647e7861a5c1153c5fb36aaa56f3af",
+          "ran": "runner -m merged-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-merged-q8_0.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -1691,14 +2242,43 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "d10ba25da7047454a710e0cf7bbbf5fea726c9a13aaa2faee515da122abaa13c",
+          "ran": "runner -m Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "limit",
           "reason": "qwen4exp's Gated DeltaNet blocks have no Metal kernel (the support matrix names Gated DeltaNet among the operations Metal lacks); coverage.json records the architecture's Metal path as unsupported.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "hyper-connections (qwen4exp)"
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
@@ -1753,7 +2333,25 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.5.1",
+          "date": "2026-10-24",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "caps": {
+            "version": "1.5.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "d10ba25da7047454a710e0cf7bbbf5fea726c9a13aaa2faee515da122abaa13c",
+          "ran": "runner -m Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --mtp-file Qwen3.8-Flash-Next-MTP-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3.8-flash-next-mtp-q8_0.linux-x86_64-cuda.cpu.txt"
+        },
         "cuda": {
           "kind": "limit",
           "reason": "--mtp draft decoding on CUDA needs the whole trunk on the device; the IQ3_S trunk this head runs with holds 18 of 48 layers on a 24 GB device, and the partial split refuses with an error naming --gpu off (lab box, 2026-10-25, runner f960e470). The head is smoked on the CPU path of the same class.",
@@ -1765,7 +2363,18 @@
           "matrix": "MANUAL.md#support-matrix"
         }
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "hyper-connections (qwen4exp)"
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.5.1",
+        "date": "2026-10-24"
+      },
       "transitions": [
         {
           "tier": "tier1",
