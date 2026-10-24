@@ -51,6 +51,21 @@ release adds, and this one adds flags and record fields.
   Zen 5). Replay is bound to the build
   ([versioning policy](docs/versioning.md)).
 
+- **The CPU trainer: a step takes about a third to a half of the time, with
+  the same bytes.** Most of a CPU training step was the backward's
+  transposed weight products, and the largest was the LM head's: its
+  16-position rounds were split into position chunks of 2, so each worker
+  re-walked every vocabulary row for two positions, under 2 GFLOP/s. Chunks
+  now keep at least 32 positions, rows are decoded a panel at a time, and
+  the gradient is updated in register tiles down the panel instead of
+  being reloaded and stored once per row. Every element keeps its
+  summation order. On an Apple M1, Qwen3-0.6B Q8_0 over 256 positions: 76
+  s to 25 s a step on one thread, 24-26 s to 9-11 s on four. Qwen3-4B
+  Q4_K_M on 12 threads of a datacenter host: 27-32 s to 15-16 s. Adapters
+  are byte-identical to before on every fixture family and objective, on
+  those models, and against the per-element contract in
+  `tests/test_mvt_chains.c` (all 25 weight types the trainer decodes).
+
 - **`--lora` on the CPU: the adapter's delta costs about a third of what it
   did, with the same bytes.** Each projection's y += scale * B (A x) ran its
   rank and output sums one chain at a time, every step waiting on the one
