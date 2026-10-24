@@ -6,7 +6,8 @@
 #
 # BUILD_DIR is a checkout whose `runner` is already built with CUDA. Exit 0
 # when every step passed, 1 when a step failed, 2 when the gate could not run
-# (no CUDA device, no model, no python): a gate that cannot run is not a pass.
+# (no CUDA device, no model, no python, no llama.cpp directory): a gate that
+# cannot run is not a pass.
 #
 # Steps, each with its own log under OUT_DIR/cuda-gate-<stamp>/:
 #   caps         --caps reports a CUDA device
@@ -45,15 +46,27 @@
 #   GATE_MODEL       GGUF for the cpu-cuda step
 #   GATE_MAKE_ARGS   extra make arguments, e.g. CC=... or -j4
 #   RUNNER_IQ_FIXTURES / RUNNER_LLAMA_CPP_BIN   as tests/test_iquants.py reads
-#                    (moe-legacy needs llama-quantize there and fails without it)
+#                    (moe-legacy needs llama-quantize there, so the gate does
+#                    not run without RUNNER_LLAMA_CPP_BIN)
 #   GATE_LOCK        lock file to hold while running (optional)
 #   GATE_SKIP_IF     shell command; when it exits 0 the gate SKIPS, logged
 # A box keeps its values in a file beside its copy of this script
-# (cuda-gate.env, plain VAR=value lines) or in the file GATE_ENV names.
+# (cuda-gate.env, plain VAR=value lines with LF line endings) or in the file
+# GATE_ENV names. A gate that cannot run for want of a setting says which env
+# file it looked for, whether it loaded it, the settings it ended up with and
+# the shell running it: a variable exported in another shell does not reach
+# this one (on the Windows CUDA host, a Git Bash export never reached the
+# MSYS2 bash the gate ran under), and the env file is the one place that does.
 set -u
 GATE_ENV=${GATE_ENV:-$(dirname "$0")/cuda-gate.env}
-# shellcheck disable=SC1090
-[ -f "$GATE_ENV" ] && { set -a; . "$GATE_ENV"; set +a; }
+GATE_ENV_STATE="not found"
+if [ -f "$GATE_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  if . "$GATE_ENV"; then GATE_ENV_STATE="found and loaded"
+  else GATE_ENV_STATE="found, but sourcing it failed"; fi
+  set +a
+fi
 BUILD=${1:?usage: cuda-gate.sh BUILD_DIR [OUT_DIR]}
 OUT=${2:-${GATE_OUT:-$BUILD/cuda-gate-out}}
 cd "$BUILD" || exit 2
@@ -106,9 +119,39 @@ run_step() {  # name command...
   return 1
 }
 
-[ -x "$EXE" ] || { note "no $EXE in $BUILD"; finish not-run 2; }
-"$PY" -c 'import pytest' 2>/dev/null || { note "$PY has no pytest"; finish not-run 2; }
-[ -n "$MODEL" ] && [ -f "$MODEL" ] || { note "no model for the cpu-cuda step (set GATE_MODEL)"; finish not-run 2; }
+# Everything the gate needs before a step runs, every gap reported at once,
+# then where the settings came from.
+SETTINGS="GATE_MODEL GATE_PYTHON RUNNER_LLAMA_CPP_BIN RUNNER_IQ_FIXTURES"
+env_report() {
+  local v val list="" crs="" root=""
+  note "env file: $GATE_ENV ($GATE_ENV_STATE)"
+  for v in $SETTINGS; do
+    val=${!v:-}
+    case $val in
+      "") list="$list, $v unset"; [ "$v" = GATE_PYTHON ] && list="$list ($PY assumed)" ;;
+      *$'\r') list="$list, $v=${val%$'\r'}\\r"; crs="$crs $v" ;;
+      *) list="$list, $v=$val" ;;
+    esac
+  done
+  note "settings:${list#,}"
+  [ -z "$crs" ] || note "${crs# } end in a carriage return: an env file with CRLF line endings ends every value with one; save it with LF"
+  command -v cygpath > /dev/null 2>&1 && root=", root $(cygpath -m / 2> /dev/null)"
+  note "shell: ${BASH:-unknown} (bash ${BASH_VERSION:-?}${MSYSTEM:+, MSYSTEM=$MSYSTEM}$root)"
+  note "a variable exported in another shell does not reach this one: set it in $GATE_ENV"
+}
+PROBLEMS=0
+problem() { note "not run: $*"; PROBLEMS=$((PROBLEMS + 1)); }
+[ -x "$EXE" ] || problem "no $EXE in $BUILD"
+if ! command -v "$PY" > /dev/null 2>&1; then problem "no $PY on PATH (GATE_PYTHON)"
+elif ! "$PY" -c 'import pytest' 2> /dev/null; then problem "$PY has no pytest (GATE_PYTHON)"; fi
+if [ -z "$MODEL" ]; then problem "GATE_MODEL is not set: the cpu-cuda step needs a GGUF"
+elif [ ! -f "$MODEL" ]; then problem "GATE_MODEL $MODEL does not exist"; fi
+if [ -z "${RUNNER_LLAMA_CPP_BIN:-}" ]; then
+  problem "RUNNER_LLAMA_CPP_BIN is not set: moe-legacy quantizes its fixtures with the llama-quantize there"
+elif [ ! -d "$RUNNER_LLAMA_CPP_BIN" ]; then
+  problem "RUNNER_LLAMA_CPP_BIN $RUNNER_LLAMA_CPP_BIN is not a directory"
+fi
+[ "$PROBLEMS" = 0 ] || { env_report; finish not-run 2; }
 
 "$EXE" --caps > "$DIR/caps.json" 2> "$DIR/caps.err"
 if ! "$PY" -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'cuda' else 1)" "$DIR/caps.json"; then

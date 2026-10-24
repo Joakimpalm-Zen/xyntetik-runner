@@ -5,6 +5,29 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Release gate: cuda-gate.sh explains an empty GATE_MODEL.** On the
+  Windows CUDA host variables exported in a Git Bash shell never reached the
+  MSYS2 bash the gate ran under, and the gate said only "no model for the
+  cpu-cuda step (set GATE_MODEL)". A gate that cannot run for want of a
+  setting now lists every gap at once, then the env file it looked for and
+  whether it was found and loaded, the settings it ended up with (a value
+  ending in a carriage return from a CRLF env file is named), and the shell
+  running it. `RUNNER_LLAMA_CPP_BIN` is checked with the others: moe-legacy
+  cannot pass without it, so the gate now stops before its first step
+  instead of failing there.
+
+- **Release gate: the llama-quantize binary is resolved by name, not by
+  glob.** A llama.cpp Windows release directory holds
+  `llama-quantize-impl.dll` beside `llama-quantize.exe`, and under C
+  collation the DLL sorted first, so the CUDA gate's `test-cuda-moe-legacy`
+  step tried to execute it and failed. The four steps that quantize fixtures
+  now run `llama-quantize` or `llama-quantize.exe` from
+  `RUNNER_LLAMA_CPP_BIN`, and name the directory and both names when neither
+  is there; `make llama-quantize-path` prints the one they run. In the three
+  steps that narrow their coverage without the tool, a quantize that fails
+  now prints a line naming the binary and the type instead of dropping the
+  type silently.
+
 - **Nemotron 3.5 Lightning tokenizes as its publisher's tokenizer, and an
   unknown pre-tokenizer name is no longer silent.** The file declares
   `tokenizer.ggml.pre` "pixtral", llama.cpp's name for the Tekken split
