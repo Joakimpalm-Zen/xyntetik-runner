@@ -73,19 +73,19 @@
         "gpu_backend": "metal"
       },
       "last_verified": {
-        "date": "2026-10-23",
-        "commit": "08924aecb8fab1c7dc1ff5084e557b6eb0d56315",
-        "ran": "make test PYTHON=python with pytest (every C gate and the pytest suites: 1,642 + 208 + 26 + 20 + 7 passed); scripts/conformance.sh 512/7; compat_matrix.py gemma-4-e4b-it-qat-q4_0 --verify-files --load --execute-checks complete; make release-check",
+        "date": "2026-10-24",
+        "commit": "403fafe237c6c415e09698b84a1001df3508238d",
+        "ran": "make test PYTHON=python with pytest (every C gate and the pytest suites: 1,903 + 208 + 26 + 20 + 7 passed); scripts/conformance.sh 512/7; compat_matrix.py gemma-4-e4b-it-qat-q4_0 --verify-files --load --execute-checks complete; make release-check",
         "result": "pass",
         "caps": {
-          "version": "1.5.1",
+          "version": "1.5.2",
           "os": "macos",
           "arch": "arm64",
           "cpu_cores": 8,
           "gpu_backend": "metal",
           "gpu_name": "Apple M1"
         },
-        "evidence": "docs/compat-reports/1.5.1-2026-10-23-macos-arm64-gemma-4-e4b-it-qat-q4_0.json"
+        "evidence": "docs/compat-reports/1.5.2-2026-10-24-macos-arm64-gemma-4-e4b-it-qat-q4_0.json"
       }
     }
   ]
