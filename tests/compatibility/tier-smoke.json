@@ -767,6 +767,34 @@
           }
         }
       }
+    },
+    "qwen3.8-flash-next-mtp-q8_0": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/qwen3.8-flash-next-mtp-q8_0.linux-x86_64-cuda.cpu.txt",
+          "sha256": "d10ba25da7047454a710e0cf7bbbf5fea726c9a13aaa2faee515da122abaa13c",
+          "bytes": 223,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-24",
+            "runner_version": "1.5.1",
+            "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525"
+          }
+        }
+      }
     }
   }
 }

@@ -265,9 +265,10 @@ Text path only: a decision model served at /v1/systemone; requests with images o
 - **Evidence:** [docs/clef-admission-2026-10-16.md](clef-admission-2026-10-16.md).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `a38540f4ff7fd6c7`, [pin](../tests/compatibility/tier-smoke/cloudflare-clef-iq3_m.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 ### Text path only: Gemma 4 12B
@@ -288,9 +289,10 @@ Text path only: Google's quantization-aware Q4_0 release, its mmproj file not lo
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `109c0663eb8c13c0`, [pin](../tests/compatibility/tier-smoke/gemma-4-12b-it-qat-q4_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 ### Text path only: Gemma 4 26B-A4B
@@ -311,9 +313,10 @@ Text path only: Google's quantization-aware Q4_0 release of the MoE model, its m
 - **Evidence:** [docs/model-evidence.md](model-evidence.md), [tests/compatibility/models.json](../tests/compatibility/models.json).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `c697fa9c64f4a370`, [pin](../tests/compatibility/tier-smoke/gemma-4-26b-a4b-it-qat-q4_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** no: MoE FFN (gemma-4 dual-branch) (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** no: --lora does not cover the gemma-4 dual-branch FFN yet (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 ### Text path only: Gemma 4 31B
@@ -334,9 +337,10 @@ Text path only: ggml-org's post-training Q4_0 of Gemma 4 31B, not Google's QAT f
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/model-evidence.md](model-evidence.md).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `6e01ea7bc489371c`, [pin](../tests/compatibility/tier-smoke/gemma-4-31b-it-q4_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 ### Text path only: Gemma 4 31B, attention block 48 removed
@@ -356,9 +360,10 @@ Text path only: Google's QAT Q4_0 of Gemma 4 31B with one attention sublayer phy
 - **Evidence:** [docs/sublayer-removal.md](sublayer-removal.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `fbb8f3caf0ab7e53`, [pin](../tests/compatibility/tier-smoke/gemma-4-31b-it-attn48-removed-q4_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** no: removed sublayers (--remove-sublayer artifact) (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** no: --lora does not cover a model with removed sublayers yet (1 removed by --remove-sublayer) (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 ### Text path only: Gemma 4 E2B
@@ -422,9 +427,10 @@ IBM's official Q8_0 of Granite 4.2 8B, text path: the reference sibling of the Q
 - **Evidence:** [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `9e4082576850d0a8`, [pin](../tests/compatibility/tier-smoke/granite-4.2-8b-q8_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 ### Text path only: Muse-Glimmer-30B
@@ -445,9 +451,10 @@ Text path only: Meta's own Q4_K_M, which passes the fidelity bar against the BF1
 - **Evidence:** [docs/model-evidence.md](model-evidence.md), [tests/compatibility/models.json](../tests/compatibility/models.json).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `bfe1008c84ebfae4`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-kquant.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 ### Text path only: Muse-Glimmer-30B surgical
@@ -467,9 +474,10 @@ Text path only: Muse-Glimmer-30B with 4.75% of the decoder removed and healed, a
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `9d806b71f48e1049`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-surgical-4p75-q4_k.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="muse-glimmer-30b-surgical-6p34-q8_0"></a>
@@ -508,9 +516,10 @@ Text path only: the 6.34% surgical Muse-Glimmer-30B at Q4_K with retrained scale
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `80e114dfae593916`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-surgical-6p34-q4_k-recovered.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 ### NVIDIA Nemotron Nano 9B v2
@@ -530,9 +539,10 @@ A plain Q8_0 of NVIDIA's Nemotron-Nano-9B-v2 (Mamba-2 hybrid), text path: 100% m
 - **Evidence:** [docs/golden-pass-2026-09-07.md](golden-pass-2026-09-07.md).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `e23a8c77690649fb`, [pin](../tests/compatibility/tier-smoke/nvidia-nemotron-nano-9b-v2-q8_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): Metal has no SSM path; a Metal build runs this file on the CPU.
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (nemotron_h) (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 ### Qwen3-30B-A3B selective precision
@@ -552,9 +562,10 @@ Qwen3-30B-A3B with attention Q8_0 and experts Q4_0, text path: it passes the fid
 - **Evidence:** [tests/compatibility/models.json](../tests/compatibility/models.json), [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `9c80990c12a550f6`, [pin](../tests/compatibility/tier-smoke/qwen3-30b-a3b-expq4_0-attnq8_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 ### Qwen3-4B Runner ToolUse
@@ -574,9 +585,10 @@ Qwen3-4B with the tool-use LoRA merged and written at Q8_0, text path: a qwen3 c
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/adaptation-engine.md](adaptation-engine.md).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `aa1a1647a3e4b534`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-merged-q8_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="qwen3-4b-runner-tooluse-lora"></a>
@@ -618,9 +630,10 @@ An expert-pruned Qwen3-Coder-30B-A3B (120 of 128 experts kept) at Q4_K_M, text p
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `f049d30f2e67e4a9`, [pin](../tests/compatibility/tier-smoke/qwen3-coder-30b-a3b-instruct-keep120-q4_k_m.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 ### Qwen3.8-27B
@@ -640,9 +653,10 @@ Unsloth's dynamic Q4_K_M of Qwen3.8-27B, text path: it passes the quant bar agai
 - **Evidence:** [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `44ffbc5ccee57adc`, [pin](../tests/compatibility/tier-smoke/qwen3.8-27b-ud-q4_k_m.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): The qwen35 Gated DeltaNet hybrid has no Metal path; a Metal build runs this file on the CPU.
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="qwen3.8-27b-gsq-rco-iq3_s-recovered"></a>
@@ -660,9 +674,10 @@ ISTA-DASLab's IQ3_S file with every quantised block's fp16 scales retrained agai
 - **Evidence:** [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `6bc726d37ed11e94`, [pin](../tests/compatibility/tier-smoke/qwen3.8-27b-gsq-rco-iq3_s-recovered.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): The qwen35 Gated DeltaNet hybrid has no Metal path; a Metal build runs this file on the CPU.
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="qwen3.8-27b-mtp-q8_0"></a>
@@ -681,9 +696,10 @@ The NextN/MTP predictor head for Qwen3.8-27B, loaded with --mtp-file beside a tr
 - **Evidence:** [MANUAL.md#placement-and-memory](../MANUAL.md#placement-and-memory).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `6bc726d37ed11e94`, [pin](../tests/compatibility/tier-smoke/qwen3.8-27b-mtp-q8_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): MTP/NextN draft-head consumption is not implemented on Metal.
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 ### Experimental: Qwen3.8-Flash-Next
@@ -703,9 +719,10 @@ Experimental: the qwen4exp architecture is admitted with its publisher float32 c
 - **Evidence:** [docs/qwen4exp-admission-evidence/README.md](qwen4exp-admission-evidence/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `d10ba25da7047454`, [pin](../tests/compatibility/tier-smoke/qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): qwen4exp's Gated DeltaNet blocks have no Metal kernel (the support matrix names Gated DeltaNet among the operations Metal lacks); coverage.json records the architecture's Metal path as unsupported.
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** no: hyper-connections (qwen4exp) (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="qwen3.8-flash-next-mtp-q8_0"></a>
@@ -723,10 +740,11 @@ Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for 
 - **Still missing:** Every gate, run beside ISTA-DASLab's 2-part trunk (the 4-part set already carries a head, and --mtp-file refuses a second one).
 - **Evidence:** [MANUAL.md#placement-and-memory](../MANUAL.md#placement-and-memory).
 - **Per-release smoke:** on linux-x86_64-cuda, cpu backend, the policy's age limit.
-- **CPU:** ☐ not run
+- **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `d10ba25da7047454`, [pin](../tests/compatibility/tier-smoke/qwen3.8-flash-next-mtp-q8_0.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** [n/a](../MANUAL.md#support-matrix): --mtp draft decoding on CUDA needs the whole trunk on the device; the IQ3_S trunk this head runs with holds 18 of 48 layers on a 24 GB device, and the partial split refuses with an error naming --gpu off (lab box, 2026-10-25, runner f960e470). The head is smoked on the CPU path of the same class.
 - **Metal:** [n/a](../MANUAL.md#support-matrix): MTP/NextN draft-head consumption is not implemented on Metal.
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** no: hyper-connections (qwen4exp) (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 ### Trinity Nano
@@ -790,9 +808,10 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `c89c26e516c5d4dd`, [pin](../tests/compatibility/tier-smoke/xyntetik-kvist-14b-q8_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="xyntetik-kvist-14b-q5_0-mix"></a>
@@ -810,9 +829,10 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `c89c26e516c5d4dd`, [pin](../tests/compatibility/tier-smoke/xyntetik-kvist-14b-q5_0-mix.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="xyntetik-kvist-14b-iq4_nl-mix"></a>
@@ -830,9 +850,10 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
 - **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `c89c26e516c5d4dd`, [pin](../tests/compatibility/tier-smoke/xyntetik-kvist-14b-iq4_nl-mix.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="tier2"></a>
