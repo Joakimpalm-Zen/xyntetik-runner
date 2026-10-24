@@ -612,6 +612,9 @@ typedef struct {
                              // record names
     int    train_gpu_err;    // why gpu_train_init declined: 1 no usable
                              // device, 2 the budget is not free on it
+    bool   train_dn_lost;    // R8.21: a DeltaNet layer's recurrent state
+                             // held on the device could not be brought back
+                             // to the host; the step that saw it fails
     void  *gpu_owner;        // backend resource owner, possibly retained after
                              // m->gpu is detached so CPU fallback can keep
                              // reading backend-owned unified-memory KV.

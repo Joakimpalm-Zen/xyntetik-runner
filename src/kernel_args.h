@@ -113,4 +113,7 @@ typedef struct {
 #define TMM_WARPS 8
 #define TMM_RW 4        // rows a warp of k_tmm / k_tmmw carries
 
+// The Gated DeltaNet recurrence of a training step: tdn_args.h
+#include "tdn_args.h"
+
 #endif // RUNNER_KERNEL_ARGS_H

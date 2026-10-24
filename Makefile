@@ -276,6 +276,7 @@ TEST_MODEL_LOAD_OOM = $(TEST_BATCH:test-batch%=test-model-load-oom%)
 TEST_MOE_HOST_BRIDGE = $(TEST_BATCH:test-batch%=test-moe-host-bridge%)
 TEST_LORA_CHAINS = $(TEST_BATCH:test-batch%=test-lora-chains%)
 TEST_MVT_CHAINS = $(TEST_BATCH:test-batch%=test-mvt-chains%)
+TEST_DN_RECURRENCE = $(TEST_BATCH:test-batch%=test-dn-recurrence%)
 TEST_THREAD_DEFAULT = $(TEST_BATCH:test-batch%=test-thread-default%)
 
 # Every module header, so a change to any of them rebuilds. runner.h was one
@@ -985,7 +986,7 @@ $(TEST_MVT): $(TEST_MVT_SRC) $(HDR) test.gguf test-q8.gguf test-bf16.gguf
 # batch-invariant (skips without a CUDA device)
 TEST_TRAIN_GPU_SRC = tests/test_train_gpu.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
-$(TEST_TRAIN_GPU): $(TEST_TRAIN_GPU_SRC) $(HDR)
+$(TEST_TRAIN_GPU): $(TEST_TRAIN_GPU_SRC) $(HDR) tests/dn_ref.h
 	$(CC) $(CFLAGS) -I src $(TEST_TRAIN_GPU_SRC) -o $@ $(LDFLAGS)
 
 # The canonical-order forward (R8.7.1 slice 1). quants.c is compiled in HERE
@@ -1494,6 +1495,15 @@ TEST_MVT_CHAINS_SRC = tests/test_mvt_chains.c $(OBJDIR)/gguf.o \
                       $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MVT_CHAINS): $(TEST_MVT_CHAINS_SRC) src/model.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MVT_CHAINS_SRC) -o $@ $(LDFLAGS)
+
+# The CPU trainer's Gated DeltaNet recurrence (the recompute and the sweep
+# through time) against a double-precision reference (tests/dn_ref.h, the
+# device's reference too), model.c compiled in (tests/test_dn_recurrence.c).
+TEST_DN_RECURRENCE_SRC = tests/test_dn_recurrence.c $(OBJDIR)/gguf.o \
+                         $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                         $(OBJDIR)/vramreg.o $(GPU_OBJ)
+$(TEST_DN_RECURRENCE): $(TEST_DN_RECURRENCE_SRC) src/model.c $(HDR) tests/dn_ref.h
+	$(CC) $(CFLAGS) -I src $(TEST_DN_RECURRENCE_SRC) -o $@ $(LDFLAGS)
 
 # The CPU-only backend stub must be able to STAND IN for a real backend --
 # that is the entire claim in its own header comment ("CUDA (cuda.c) and Metal
@@ -2735,7 +2745,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_FPCLASS) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) \
-      $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
+      $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
       runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf \
@@ -3013,6 +3023,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	@tail -1 test-moe-host-bridge.err
 	./$(TEST_LORA_CHAINS)
 	./$(TEST_MVT_CHAINS)
+	./$(TEST_DN_RECURRENCE)
 	$(MAKE) --no-print-directory test-bare-invocation
 	$(MAKE) --no-print-directory test-help-interface
 	$(MAKE) --no-print-directory test-shader-embed
@@ -3236,7 +3247,7 @@ clean:
 	      $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
 	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
-	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) \
+	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
 	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \
@@ -3270,7 +3281,8 @@ NVCC ?= nvcc
 NVCC_CCBIN ?=
 ptx: src/kernels.cu src/kernels_sm80.cu src/kernels_tc2.cuh src/kernels_tc2_iq.cuh \
      src/kernels_iq4_table.cuh src/kernels_iq_grids.cuh src/kernels_iq_stage.cuh src/iq_decode.h \
-     src/kernels_kq_stage.cuh src/kernels_tc2_kq.cuh src/kq_stage.h src/kernels_train.cuh src/kernel_args.h
+     src/kernels_kq_stage.cuh src/kernels_tc2_kq.cuh src/kq_stage.h src/kernels_train.cuh src/kernel_args.h \
+     src/tdn_args.h
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_75 -O3 -o src/kernels.ptx src/kernels.cu
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_80 -O3 -o src/kernels_sm80.ptx src/kernels_sm80.cu
 	python3 scripts/embed-ptx.py || python scripts/embed-ptx.py
