@@ -61,7 +61,9 @@ release adds, and this one adds flags and record fields.
   being reloaded and stored once per row. Every element keeps its
   summation order. On an Apple M1, Qwen3-0.6B Q8_0 over 256 positions: 76
   s to 25 s a step on one thread, 24-26 s to 9-11 s on four. Qwen3-4B
-  Q4_K_M on 12 threads of a datacenter host: 27-32 s to 15-16 s. Adapters
+  Q4_K_M on 12 threads of a datacenter host: 27-32 s to 15-16 s.
+  Qwen2.5-7B Q4_K_M on an i7-7700K's 4 threads: 97-101 s to 84-94 s; six
+  Qwen3.5-0.8B distillation steps there: 73.5 s to 51.1 s. Adapters
   are byte-identical to before on every fixture family and objective, on
   those models, and against the per-element contract in
   `tests/test_mvt_chains.c` (all 25 weight types the trainer decodes).
