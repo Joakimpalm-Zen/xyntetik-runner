@@ -10,6 +10,8 @@
 //               memcmp; and it is the product (each column within 2^-16 of
 //               sum|w x| of a double-precision reference)
 //
+// R8.21 adds the DeltaNet recurrence's device calls (dn_check below).
+//
 // Skips (not passes) without a CUDA device. Prints each type's throughput.
 #include "runner.h"
 
@@ -110,6 +112,185 @@ static double clk(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
+// R8.21: the DeltaNet recurrence on the device (gpu_train_dn_fw / _bw)
+// against a double-precision reference of the same equations (model.c
+// dn_step and dn_bw_worker), at five head widths (the fixtures' 8, a width
+// that is no whole number of warps' columns, and the real models' 128):
+//   forward   y within 2^-14 of the reference, relative to the largest |y|;
+//             the forward's rounds (the state in and out, the window in
+//             calls of 16 and 5 positions) give the recompute's y bit for bit
+//   backward  dq, dk, dv, dbeta and ddecay within 2^-12 of the reference's,
+//             relative to each one's largest magnitude, and bit for bit the
+//             same on a second run
+//   refusals  a sweep without its recompute, a head width that is no
+//             multiple of TDN_ROWS or wider than TDN_MAX_HV, and hv != sk
+//             are declined
+static double dn_maxabs(const double *a, size_t n) {
+    double mx = 0;
+    for (size_t i = 0; i < n; i++) mx = fmax(mx, fabs(a[i]));
+    return mx;
+}
+
+static void dn_close(const char *what, int hv, const float *got,
+                     const double *ref, size_t n, double tol) {
+    double mx = dn_maxabs(ref, n), worst = 0;
+    size_t at = 0;
+    for (size_t i = 0; i < n; i++) {
+        double e = fabs((double)got[i] - ref[i]);
+        if (e > worst) { worst = e; at = i; }
+    }
+    CHECK(mx > 0 && worst <= tol * mx, "dn hv %d: %s off by %.3g of max %.3g at "
+          "[%zu] (device %.9g reference %.9g)", hv, what, worst, mx, at,
+          (double)got[at], ref[at]);
+}
+
+static void dn_check(model_t *m, int nh, int ng, int hv, int T) {
+    int sk = hv, keydim = sk * ng, inner = nh * hv, convdim = 2 * keydim + inner;
+    int C = 1;
+    while (C * C < T) C++;
+    tdn_args a = { T, C, nh, ng, sk, hv, convdim, keydim, inner };
+    size_t hh = (size_t)hv * hv, ncv = (size_t)T * convdim, ng_ = (size_t)T * nh;
+    size_t ny = (size_t)T * inner, nqk = (size_t)nh * T * sk;
+    float *cv = malloc(sizeof(float) * ncv), *beta = malloc(sizeof(float) * ng_);
+    float *decay = malloc(sizeof(float) * ng_), *dy = malloc(sizeof(float) * ny);
+    float *y = malloc(sizeof(float) * ny), *yr = malloc(sizeof(float) * ny);
+    float *st = calloc((size_t)nh * hh, sizeof(float));
+    float *out[5], *out2[5];
+    size_t on[5] = { nqk, nqk, ny, ng_, ng_ };
+    for (int i = 0; i < 5; i++) {
+        out[i] = malloc(sizeof(float) * on[i]);
+        out2[i] = malloc(sizeof(float) * on[i]);
+    }
+    for (size_t i = 0; i < ncv; i++) cv[i] = frnd();
+    for (int t = 0; t < T; t++)   // q and k L2-normed per group, as the CPU leaves them
+        for (int g = 0; g < 2 * ng; g++) {
+            float *x = cv + (size_t)t * convdim + (size_t)g * sk, ss = 1e-6f;
+            for (int i = 0; i < sk; i++) ss += x[i] * x[i];
+            for (int i = 0; i < sk; i++) x[i] /= sqrtf(ss);
+        }
+    for (size_t i = 0; i < ng_; i++) {
+        beta[i] = 0.55f + 0.35f * frnd();
+        decay[i] = 0.9f + 0.099f * frnd();
+    }
+    for (size_t i = 0; i < ny; i++) dy[i] = frnd();
+
+    // the reference: every state kept (T is small)
+    double *S = calloc((size_t)nh * (T + 1) * hh, sizeof(double));
+    double *ry = calloc(ny, sizeof(double)), *rq = calloc(nqk, sizeof(double));
+    double *rk = calloc(nqk, sizeof(double)), *rv = calloc(ny, sizeof(double));
+    double *rb = calloc(ng_, sizeof(double)), *rd = calloc(ng_, sizeof(double));
+    double *dS = malloc(sizeof(double) * hh);
+    double sq = sqrt((double)sk);
+    for (int h = 0; h < nh; h++) {
+        int g = h % ng;
+        double *Sh = S + (size_t)h * (T + 1) * hh;   // slot t + 1: after step t
+        for (int t = 0; t < T; t++) {
+            const float *c = cv + (size_t)t * convdim;
+            const float *q = c + g * sk, *k = c + keydim + g * sk, *v = c + 2 * keydim + h * hv;
+            double dec = decay[(size_t)t * nh + h], bet = beta[(size_t)t * nh + h];
+            double *Sp = Sh + (size_t)t * hh, *Sn = Sp + hh;
+            for (int j = 0; j < hv; j++) {
+                double pred = 0;
+                for (int i = 0; i < hv; i++) pred += Sp[j * hv + i] * dec * k[i];
+                double delta = (v[j] - pred) * bet, acc = 0;
+                for (int i = 0; i < hv; i++) {
+                    Sn[j * hv + i] = Sp[j * hv + i] * dec + delta * k[i];
+                    acc += Sn[j * hv + i] * q[i];
+                }
+                ry[(size_t)t * inner + h * hv + j] = acc / sq;
+            }
+        }
+        memset(dS, 0, sizeof(double) * hh);
+        for (int t = T - 1; t >= 0; t--) {
+            const float *c = cv + (size_t)t * convdim;
+            const float *q = c + g * sk, *k = c + keydim + g * sk, *v = c + 2 * keydim + h * hv;
+            double dec = decay[(size_t)t * nh + h], bet = beta[(size_t)t * nh + h];
+            const double *Sp = Sh + (size_t)t * hh, *St = Sp + hh;
+            double *dq = rq + ((size_t)h * T + t) * sk, *dk = rk + ((size_t)h * T + t) * sk;
+            double db = 0, dd_ = 0;
+            for (int j = 0; j < hv; j++) {
+                double gj = dy[(size_t)t * inner + h * hv + j] / sq;
+                for (int i = 0; i < hv; i++) {
+                    dS[j * hv + i] += gj * q[i];
+                    dq[i] += gj * St[j * hv + i];
+                }
+            }
+            for (int j = 0; j < hv; j++) {
+                double pred = 0, dd = 0;
+                for (int i = 0; i < hv; i++) {
+                    pred += Sp[j * hv + i] * dec * k[i];
+                    dd += dS[j * hv + i] * k[i];
+                }
+                double delta = (v[j] - pred) * bet;
+                rv[(size_t)t * inner + h * hv + j] = bet * dd;
+                db += dd * (v[j] - pred);
+                double dpred = -bet * dd;
+                for (int i = 0; i < hv; i++) {
+                    double dsd = dS[j * hv + i] + dpred * k[i];
+                    dk[i] += dS[j * hv + i] * delta + Sp[j * hv + i] * dec * dpred;
+                    dd_ += dsd * Sp[j * hv + i];
+                    dS[j * hv + i] = dec * dsd;
+                }
+            }
+            rb[(size_t)t * nh + h] = db;
+            rd[(size_t)t * nh + h] = dd_;
+        }
+    }
+
+    // the forward's rounds: 16 positions a call, the last call 5 or fewer
+    bool ok = true;
+    for (int t0 = 0; ok && t0 < T; ) {
+        int n = T - t0 > 16 ? 16 : T - t0 > 5 ? T - t0 - 5 : T - t0;
+        tdn_args r = a;
+        r.T = n;
+        ok = gpu_train_dn_fw(m, &r, cv + (size_t)t0 * convdim, beta + (size_t)t0 * nh,
+                             decay + (size_t)t0 * nh, st, yr + (size_t)t0 * inner);
+        t0 += n;
+    }
+    CHECK(ok, "dn hv %d: a forward round declined", hv);
+    CHECK(!gpu_train_dn_bw(m, &a, cv, dy, out[0], out[1], out[2], out[3], out[4]),
+          "dn hv %d: a sweep ran without its recompute", hv);
+    ok = ok && gpu_train_dn_fw(m, &a, cv, beta, decay, NULL, y);
+    CHECK(ok, "dn hv %d: the recompute declined", hv);
+    if (ok) {
+        dn_close("y", hv, y, ry, ny, 1.0 / 16384);
+        CHECK(!memcmp(y, yr, sizeof(float) * ny), "dn hv %d: the forward's rounds "
+              "and the recompute differ", hv);
+        float *junk = malloc(sizeof(float) * ncv);
+        memcpy(junk, cv, sizeof(float) * ncv);
+        CHECK(!gpu_train_dn_bw(m, &a, junk, dy, out[0], out[1], out[2], out[3], out[4]),
+              "dn hv %d: a sweep ran on another recompute's states", hv);
+        free(junk);
+    }
+    for (int run = 0; ok && run < 2; run++) {
+        float **o = run ? out2 : out;
+        ok = (!run || gpu_train_dn_fw(m, &a, cv, beta, decay, NULL, y)) &&
+             gpu_train_dn_bw(m, &a, cv, dy, o[0], o[1], o[2], o[3], o[4]);
+        CHECK(ok, "dn hv %d: the sweep declined (run %d)", hv, run);
+    }
+    if (ok) {
+        static const char *const NAMES[5] = { "dq", "dk", "dv", "dbeta", "ddecay" };
+        const double *refs[5] = { rq, rk, rv, rb, rd };
+        for (int i = 0; i < 5; i++) {
+            dn_close(NAMES[i], hv, out[i], refs[i], on[i], 1.0 / 4096);
+            CHECK(!memcmp(out[i], out2[i], sizeof(float) * on[i]),
+                  "dn hv %d: %s differs between two runs", hv, NAMES[i]);
+        }
+    }
+    tdn_args bad = a;
+    bad.hv = bad.sk = 12;
+    CHECK(!gpu_train_dn_ok(m, &bad), "dn: hv 12 accepted");
+    bad.hv = bad.sk = TDN_MAX_HV + TDN_ROWS;
+    CHECK(!gpu_train_dn_ok(m, &bad), "dn: hv %d accepted", bad.hv);
+    bad = a;
+    bad.sk = hv / 2;
+    CHECK(!gpu_train_dn_ok(m, &bad), "dn: hv != sk accepted");
+    printf("dn hv %3d nh %d ng %d T %d: %s\n", hv, nh, ng, T, ok ? "checked" : "declined");
+    free(cv); free(beta); free(decay); free(dy); free(y); free(yr); free(st);
+    for (int i = 0; i < 5; i++) { free(out[i]); free(out2[i]); }
+    free(S); free(ry); free(rq); free(rk); free(rv); free(rb); free(rd); free(dS);
 }
 
 int main(void) {
@@ -232,6 +413,11 @@ int main(void) {
         free(xs); free(ys);
         keep[sizeof(TYPES) / sizeof(*TYPES)] = w.data;
     }
+    dn_check(&m, 4, 2, 128, 77);
+    dn_check(&m, 3, 3, 64, 40);
+    dn_check(&m, 4, 2, 40, 33);
+    dn_check(&m, 2, 1, 32, 9);
+    dn_check(&m, 4, 2, 8, 26);
     gpu_train_free(&m);
     for (size_t k = 0; k < sizeof(keep) / sizeof(*keep); k++) free(keep[k]);
     printf("%s: %d types\n", g_fail ? "FAIL" : "PASS", tested);

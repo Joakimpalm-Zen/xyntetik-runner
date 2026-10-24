@@ -6816,6 +6816,60 @@ static void q35_heads_worker(void *vp, int h0, int h1) {
     }
 }
 
+// R8.21: under --train-gpu the DeltaNet heads' recurrence runs on the device
+// (gpu_train_dn_fw / _bw) in the taped forward's rounds, the backward's
+// recompute and its reverse sweep. These two keep what surrounds it the same
+// in the forward and the recompute: one function each (never inlined into
+// either caller, so the compiler cannot treat them differently), for a
+// position's beta and decay from its projections, and for a head's gated
+// output norm. The CPU path keeps its own code.
+static __attribute__((noinline)) void dn_gates(const layer_t *ly,
+                                               const float *bt, const float *at,
+                                               int nh, float *beta,
+                                               float *decay) {
+    for (int h = 0; h < nh; h++) {
+        beta[h] = 1.0f / (1.0f + expf(-bt[h]));
+        float a = at[h] + ly->ssm_dt[h];
+        float softplus = a > 20.0f ? a : log1pf(expf(a));
+        decay[h] = expf(ly->ssm_a[h] * softplus);
+    }
+}
+
+static __attribute__((noinline)) void dn_gate_out(const model_t *m,
+                                                  const layer_t *ly,
+                                                  const float *y,
+                                                  const float *z, float *o,
+                                                  int hv) {
+    rmsnorm(o, y, ly->ssm_norm_w, hv, m->rms_eps);
+    for (int j = 0; j < hv; j++) o[j] *= z[j] / (1.0f + expf(-z[j]));
+}
+
+// The heads of a forward call's n rows on the device: beta and decay from
+// m->q_gate and the alphas, the recurrence from the layer's state (written
+// back), then each head's gated norm into m->xb2's rows.
+static bool q35_dev_heads(model_t *m, const layer_t *ly, int n, int xdim,
+                          const tdn_args *a, const float *alphas,
+                          float *states) {
+    const int nh = a->nh, hv = a->hv, inner = a->inner;
+    size_t gn = (size_t)n * nh;
+    float *bd = malloc(sizeof(float) * 2 * gn);
+    float *y = malloc(sizeof(float) * (size_t)n * inner);
+    bool ok = bd && y;
+    for (int b = 0; ok && b < n; b++)
+        dn_gates(ly, m->q_gate + (size_t)b * nh, alphas + (size_t)b * nh, nh,
+                 bd + (size_t)b * nh, bd + gn + (size_t)b * nh);
+    ok = ok && gpu_train_dn_fw(m, a, m->ssm_aux, bd, bd + gn, states, y);
+    for (int b = 0; ok && b < n; b++)
+        for (int h = 0; h < nh; h++) {
+            size_t off = (size_t)b * inner + (size_t)h * hv;
+            dn_gate_out(m, ly, y + off, m->ssm_z + off,
+                        m->xb2 + (size_t)b * xdim + (size_t)h * hv, hv);
+        }
+    free(bd);
+    free(y);
+    return ok;
+}
+
 static size_t recurrent_conv_bytes(const model_t *m);
 static size_t recurrent_state_bytes(const model_t *m);
 // LORA_HOOK for a site defined before the adapter table is (the hook and
@@ -6861,6 +6915,11 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
     }
     if (!m->ssm_conv_keep) keep = false;
     m->ssm_keep_n = keep ? n : 0;
+    // R8.21: a --train-gpu step's forward takes the heads of all n rows on
+    // the device after the loop (the conv and the norms stay here; the
+    // heads need only their own row's values, in row order)
+    tdn_args da = { n, 1, nh, ng, sk, hv, convdim, keydim, inner };
+    bool dev = t_mv_dev == m && !keep && gpu_train_dn_ok(m, &da);
     const int K = m->ssm.conv_kernel;
     for (int b = 0; b < n; b++) {
         float *mix = m->ssm_qkv + (size_t)b * convdim;
@@ -6895,9 +6954,12 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
         // shared within a group, read only), so they run across the pool;
         // the token order stays sequential, which is what the recurrence
         // needs. Per head the math is unchanged.
-        q35_head_job hj = { m, ly, cv, cv + 2 * keydim, m->xb2 + (size_t)b * xdim,
-                            states, alphas, b, sk, ng, nh, hv, keydim, inner };
-        tpool_run(m->tp, q35_heads_worker, &hj, nh);
+        if (!dev) {
+            q35_head_job hj = { m, ly, cv, cv + 2 * keydim,
+                                m->xb2 + (size_t)b * xdim, states, alphas, b,
+                                sk, ng, nh, hv, keydim, inner };
+            tpool_run(m->tp, q35_heads_worker, &hj, nh);
+        }
         if (keep) {
             // checkpoint this layer's window and state after row b
             size_t cb = (size_t)histn * convdim, sb = (size_t)nh * hv * hv;
@@ -6907,6 +6969,16 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
                    sizeof(float) * sb);
         }
     }
+    // a device call that failed (noted once) leaves the rows' heads to the
+    // CPU, in row order, from the state the last good call wrote back
+    if (dev && !q35_dev_heads(m, ly, n, xdim, &da, alphas, states))
+        for (int b = 0; b < n; b++) {
+            const float *cv = m->ssm_aux + (size_t)b * convdim;
+            q35_head_job hj = { m, ly, cv, cv + 2 * keydim,
+                                m->xb2 + (size_t)b * xdim, states, alphas, b,
+                                sk, ng, nh, hv, keydim, inner };
+            tpool_run(m->tp, q35_heads_worker, &hj, nh);
+        }
     matvec_b(m->tp, m->xb, xdim, ly->ssm_out, m->xb2, xdim,
              inner, m->n_embd, NULL, n);
     lora_hook(m, layer, LW_SSMO, m->xb, xdim, m->xb2, xdim, inner, m->n_embd, n);
@@ -10139,6 +10211,7 @@ static void lbw_state_free(lbw_state *s) {
 // through time, so the states held at once are C per head, not T.
 typedef struct {
     int sk, ng, nh, hv, keydim, convdim, inner, K, C, nseg;
+    bool dev_fw;   // the recompute ran on the device: no host checkpoints
     float *mix, *cpre, *craw, *cv, *rq, *rk, *z, *bb, *aa, *beta, *decay;
     float *y, *o, *ckpt;
     float *dout, *dz, *dy, *dqh, *dkh, *dv, *dbeta, *ddecay, *dc, *dmix;
@@ -10411,13 +10484,30 @@ NUM_STAGE void lbw_recompute_deltanet(model_t *m, int l, int T, lbw_state *s,
             d->decay[(size_t)t * nh + h] = expf(ly->ssm_a[h] * softplus);
         }
     }
-    if (ok) {
+    // R8.21: under --train-gpu the recurrence runs on the device with the
+    // forward's beta and decay (dn_gates, the same function its rounds
+    // took) and gated norm (dn_gate_out), so it replays the forward's
+    // values; its checkpoints stay there for the reverse sweep
+    tdn_args da = { T, d->C, nh, d->ng, sk, d->hv, cd, d->keydim, d->inner };
+    double p0 = s->lprof ? plat_now() : 0;
+    d->dev_fw = ok && t_mv_dev == m && gpu_train_dn_ok(m, &da);
+    if (d->dev_fw) {
+        for (int t = 0; t < T; t++)
+            dn_gates(ly, d->bb + (size_t)t * nh, d->aa + (size_t)t * nh, nh,
+                     d->beta + (size_t)t * nh, d->decay + (size_t)t * nh);
+        d->dev_fw = gpu_train_dn_fw(m, &da, d->cv, d->beta, d->decay, NULL, d->y);
+        for (int t = 0; d->dev_fw && t < T; t++)
+            for (int h = 0; h < nh; h++) {
+                size_t off = (size_t)t * d->inner + (size_t)h * d->hv;
+                dn_gate_out(m, ly, d->y + off, d->z + off, d->o + off, d->hv);
+            }
+    }
+    if (ok && !d->dev_fw) {
         dn_job J = { m, ly, d, T, true };
-        double p0 = s->lprof ? plat_now() : 0;
         tpool_run(m->tp, dn_fw_worker, &J, nh);
-        if (s->lprof) lbw_sub[0] += plat_now() - p0;
         ok = J.ok;
     }
+    if (s->lprof) lbw_sub[0] += plat_now() - p0;
     float *ob = ok ? malloc(sizeof(float) * (size_t)T * E) : NULL;
     if (!ob) ok = false;
     t_mv_exact = true;
@@ -10498,11 +10588,27 @@ NUM_STAGE void lbw_deltanet_bw(model_t *m, int l, int T, lbw_state *s, lbw_dn *d
             rmsnorm_bw(d->y + off, ly->ssm_norm_w, drn, d->dy + off, hv, m->rms_eps);
         }
     if (ok) {
-        dn_job J = { m, ly, d, T, true };
         double p0 = s->lprof ? plat_now() : 0;
-        tpool_run(m->tp, dn_bw_worker, &J, nh);
+        tdn_args da = { T, d->C, nh, d->ng, sk, hv, cd, d->keydim, inner };
+        bool dev = d->dev_fw &&
+                   gpu_train_dn_bw(m, &da, d->cv, d->dy, d->dqh, d->dkh, d->dv,
+                                   d->dbeta, d->ddecay);
+        if (!dev) {
+            dn_job J = { m, ly, d, T, true };
+            // a device recompute left no host checkpoints, and a failed
+            // device sweep may have written part of dq / dk, which the CPU
+            // sweep adds into: file the checkpoints (y and o are no longer
+            // read) and start the sums from zero
+            if (d->dev_fw) {
+                size_t nq = (size_t)nh * T * sk;
+                memset(d->dqh, 0, sizeof(float) * nq);
+                memset(d->dkh, 0, sizeof(float) * nq);
+                tpool_run(m->tp, dn_fw_worker, &J, nh);
+            }
+            if (J.ok) tpool_run(m->tp, dn_bw_worker, &J, nh);
+            ok = J.ok;
+        }
         if (s->lprof) lbw_sub[1] += plat_now() - p0;
-        ok = J.ok;
     }
     for (int t = 0; ok && t < T; t++) {
         float *dc = d->dc + (size_t)t * cd;

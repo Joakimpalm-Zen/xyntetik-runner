@@ -182,6 +182,26 @@ double gpu_train_dev_wall(model_t *m) {
     return 0;
 }
 
+bool gpu_train_dn_ok(model_t *m, const tdn_args *a) {
+    (void)m; (void)a;
+    return false;
+}
+
+bool gpu_train_dn_fw(model_t *m, const tdn_args *a, const float *cv,
+                     const float *beta, const float *decay, float *state,
+                     float *y) {
+    (void)m; (void)a; (void)cv; (void)beta; (void)decay; (void)state; (void)y;
+    return false;
+}
+
+bool gpu_train_dn_bw(model_t *m, const tdn_args *a, const float *cv,
+                     const float *dy, float *dq, float *dk, float *dv,
+                     float *dbeta, float *ddecay) {
+    (void)m; (void)a; (void)cv; (void)dy; (void)dq; (void)dk; (void)dv;
+    (void)dbeta; (void)ddecay;
+    return false;
+}
+
 void gpu_train_placement(model_t *m, int *on_dev, size_t *dev_bytes,
                          int *on_cpu, size_t *cpu_bytes, size_t *budget,
                          bool *budget_set) {

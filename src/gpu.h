@@ -2,6 +2,7 @@
 #ifndef RUNNER_GPU_H
 #define RUNNER_GPU_H
 
+#include "tdn_args.h"   // the training DeltaNet calls' shape
 #include "model.h"
 #include <stdio.h>
 #include <string.h>
@@ -272,6 +273,26 @@ void   gpu_train_prof(model_t *m, double *t_mm, long *n_mm, double *t_mvt,
 // without resetting them: the profile samples it at every phase boundary to
 // split a phase's time into the device products' and the host's
 double gpu_train_dev_wall(model_t *m);
+// R8.21: the Gated DeltaNet recurrence of a --train-gpu step on the device,
+// one step function (kernels_train.cuh tdn_rows) for the taped forward's
+// rounds, the backward's recompute and its reverse sweep, so all three see
+// the same states. Not the CPU's bits; deterministic. gpu_train_dn_ok: the
+// context has the kernels and takes this shape (hv == sk, a multiple of
+// TDN_ROWS up to TDN_MAX_HV), the same answer for every call of a run.
+// gpu_train_dn_fw: y [T][inner] from cv / beta / decay (kernel_args.h
+// tdn_args.h). With a state ([nh][hv][hv], read and written back) it is a
+// forward round; with state NULL it is the recompute, from a zero state,
+// and it keeps its inputs and a checkpoint every C positions on the device
+// for gpu_train_dn_bw on the same cv, which writes dq, dk [nh][T][sk], dv
+// [T][inner], dbeta and ddecay [T][nh] from dy [T][inner]. false = the
+// caller computes that part on the CPU (a failure is noted once on stderr).
+bool   gpu_train_dn_ok(model_t *m, const tdn_args *a);
+bool   gpu_train_dn_fw(model_t *m, const tdn_args *a, const float *cv,
+                       const float *beta, const float *decay, float *state,
+                       float *y);
+bool   gpu_train_dn_bw(model_t *m, const tdn_args *a, const float *cv,
+                       const float *dy, float *dq, float *dk, float *dv,
+                       float *dbeta, float *ddecay);
 // where the weights went: tensors and bytes cached on the device, the ones
 // the budget kept on the CPU, and the budget with whether a flag set it (the
 // train record names all of it: the split decides the adapter's bits, and

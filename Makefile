@@ -3270,7 +3270,8 @@ NVCC ?= nvcc
 NVCC_CCBIN ?=
 ptx: src/kernels.cu src/kernels_sm80.cu src/kernels_tc2.cuh src/kernels_tc2_iq.cuh \
      src/kernels_iq4_table.cuh src/kernels_iq_grids.cuh src/kernels_iq_stage.cuh src/iq_decode.h \
-     src/kernels_kq_stage.cuh src/kernels_tc2_kq.cuh src/kq_stage.h src/kernels_train.cuh src/kernel_args.h
+     src/kernels_kq_stage.cuh src/kernels_tc2_kq.cuh src/kq_stage.h src/kernels_train.cuh src/kernel_args.h \
+     src/tdn_args.h
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_75 -O3 -o src/kernels.ptx src/kernels.cu
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_80 -O3 -o src/kernels_sm80.ptx src/kernels_sm80.cu
 	python3 scripts/embed-ptx.py || python scripts/embed-ptx.py
