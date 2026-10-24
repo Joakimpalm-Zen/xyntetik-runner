@@ -5196,6 +5196,7 @@ static bool gpu_kv_gather_on(void) {
     return on == 1;
 }
 static _Atomic unsigned long g_kvg_tokens;
+unsigned long gpu_kv_gather_tokens(void) { return g_kvg_tokens; }
 
 // The per-layer table and the two staging buffers, at load; false only on a
 // CUDA error (no switch, no kernel or nothing offloaded leaves it unused).
@@ -6772,6 +6773,7 @@ static bool attn_tc_full_on(void) {
     return on == 1;
 }
 static _Atomic unsigned long g_attn_tc_dispatches;
+unsigned long gpu_attn_tc_dispatches(void) { return g_attn_tc_dispatches; }
 
 // The tensor-core prefill attention over a whole tile, or false when it does
 // not apply: switch off, kernel absent, a quantized K or V cache, or a head
@@ -6807,6 +6809,7 @@ static bool attn_dec_on(void) {
     return on == 1;
 }
 static _Atomic unsigned long g_attn_dec_gqa_dispatches;
+unsigned long gpu_attn_dec_gqa_dispatches(void) { return g_attn_dec_gqa_dispatches; }
 
 // The arithmetic routes in force (gpu.h): what a record states and --verify
 // checks after it has pinned them. With an instance, sm80 counts only when

@@ -3,6 +3,16 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **`--bench-json` names CUDA's attention routes.** Its kernels object now
+  counts the tensor-core prefill tiles (`cuda_attn_tc`, among
+  `cuda_attn_tile`), the grouped decode launches (`cuda_attn_dec_gqa`) and
+  the decoded tokens whose K and V came back in one copy
+  (`cuda_kv_gather`), so a record says which route ran. The three were
+  counted and never reported, until a compiler flagged them as set and
+  never read; CPU and Metal runs report 0.
+
 ## v1.6.0 - 2026-10-24
 
 Numbered 1.6.0 under the [versioning policy](docs/versioning.md): a 1.x minor
