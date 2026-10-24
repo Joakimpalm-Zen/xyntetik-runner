@@ -2968,10 +2968,12 @@ double gpu_train_dev_wall(model_t *mm) {
 }
 
 void gpu_train_placement(model_t *mm, int *on_dev, size_t *dev_bytes,
-                         int *on_cpu, size_t *cpu_bytes) {
+                         int *on_cpu, size_t *cpu_bytes, size_t *budget,
+                         bool *budget_set) {
     (void)mm;
     *on_dev = *on_cpu = 0;
-    *dev_bytes = *cpu_bytes = 0;
+    *dev_bytes = *cpu_bytes = *budget = 0;
+    *budget_set = false;
 }
 
 void gpu_free(model_t *m) {

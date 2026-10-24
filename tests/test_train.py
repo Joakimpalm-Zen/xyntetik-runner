@@ -210,30 +210,40 @@ def test_train_gpu_matches_cpu_within_rounding(runner_bin, base, tmp_path, famil
 
 
 # Which weights the device holds decides a --train-gpu adapter's bits (a
-# tensor the VRAM budget kept on the CPU takes the CPU's order), and the free
-# VRAM at the start decides which fit: the record names the split, the run
-# says so when it happens, and a budget that holds part of the model still
-# trains (the path had no test). RUNNER_TRAIN_GPU_BUDGET caps the budget.
-def test_train_gpu_records_the_weight_split(runner_bin, base, tmp_path):
-    split = {}
-    for cap in ("", "20000"):
-        out = tmp_path / ("ad-%s.gguf" % (cap or "all"))
-        env = dict(os.environ, RUNNER_TRAIN_GPU_BUDGET=cap) if cap else None
-        p = _run_train(runner_bin, base, out, "corpus.txt",
-                       extra=("--train-steps", "2", "--train-gpu"), env=env)
+# tensor past the budget takes the CPU's order), and the budget decides
+# which fit. So the budget is an input: --train-gpu-budget names it, the
+# record carries it and the split, and the same budget twice writes the same
+# adapter byte for byte while a smaller one records a different split.
+def test_train_gpu_budget_decides_and_reproduces_the_split(runner_bin, base, tmp_path):
+    runs = {}
+    for tag, budget in (("free", None), ("small", "20000"), ("small2", "20000")):
+        out = tmp_path / ("ad-%s.gguf" % tag)
+        extra = ("--train-steps", "2", "--train-gpu")
+        if budget:
+            extra += ("--train-gpu-budget", budget)
+        p = _run_train(runner_bin, base, out, "corpus.txt", extra=extra)
         err = p.stderr.decode(errors="replace")
         if p.returncode != 0 and "needs a CUDA build" in err:
             pytest.skip("no usable CUDA device")
         assert p.returncode == 0, err
         rec = json.loads(pathlib.Path(str(out) + ".train.json").read_text())
-        split[cap] = (rec["products"], err)
-    (whole, err_all), (part, err_part) = split[""], split["20000"]
-    assert whole["tensors_on_cpu"] == 0 and whole["cpu_bytes"] == 0, whole
-    assert "VRAM budget reached" not in err_all
-    assert part["tensors_on_cpu"] > 0 and part["cpu_bytes"] > 0, part
-    assert part["device_bytes"] <= 20000, part
-    assert part["tensors_on_device"] + part["tensors_on_cpu"] >= whole["tensors_on_device"]
-    assert "the adapter's bits depend on this split" in err_part
+        runs[tag] = (rec["products"], out.read_bytes(), err)
+    free, small, small2 = runs["free"][0], runs["small"][0], runs["small2"][0]
+    assert free["budget_from"] == "free memory" and free["tensors_on_cpu"] == 0, free
+    assert "VRAM budget reached" not in runs["free"][2]
+    assert small["budget_from"] == "--train-gpu-budget", small
+    assert small["budget_bytes"] == 20000 and small["device_bytes"] <= 20000, small
+    assert small["tensors_on_cpu"] > 0 and small["cpu_bytes"] > 0, small
+    assert "the adapter's bits depend on this split" in runs["small"][2]
+    assert small == small2, (small, small2)
+    assert runs["small"][1] == runs["small2"][1], "the same budget wrote different adapters"
+
+
+def test_train_gpu_budget_needs_train_gpu(runner_bin, base, tmp_path):
+    p = _run_train(runner_bin, base, tmp_path / "ad.gguf", "corpus.txt",
+                   extra=("--train-gpu-budget", "20000"))
+    assert p.returncode != 0
+    assert b"--train-gpu-budget sets --train-gpu's device memory" in p.stderr
 
 
 def test_train_gpu_is_refused_without_training_or_a_device(runner_bin, base, tmp_path):

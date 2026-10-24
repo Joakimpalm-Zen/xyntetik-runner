@@ -1440,6 +1440,9 @@ static void usage_to(FILE *f, const char *prog) {
         "  --train-gpu    with --train or --train-dpo: every weight product\n"
         "                 of a step on a CUDA GPU. The adapter matches a CPU\n"
         "                 run within tolerance, not byte for byte\n"
+        "  --train-gpu-budget BYTES  the device memory --train-gpu's weights\n"
+        "                 may take (default: the free memory); which weights\n"
+        "                 fit decides the adapter's bits, the record names it\n"
         "  --train-eot    append the template's end-of-turn token to every\n"
         "                 completion (a jsonl line can set \"end_of_turn\")\n"
         "  --train-dpo F  preference pairs .jsonl {\"prompt\",\"chosen\",\n"
@@ -2025,6 +2028,7 @@ typedef struct {
     const char *eval_spec[8];
     const char *recipe_flag;   // the first R8.17 flag given, for refusals
     bool train_gpu;            // R8.19 --train-gpu: every product on CUDA
+    uint64_t train_gpu_budget; // --train-gpu-budget BYTES (0: the free memory)
     // records, signing, verification, watermarks, session images
     const char *transcript_path, *transcript_prev, *sign_key, *keygen_path;
     const char *keygen_algo, *lineage_path, *require_eval;
@@ -2348,6 +2352,14 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "--weight-decay"))
             o->weight_decay = (float)float_arg(a, NEXT, 0, 1);
         else if (!strcmp(a, "--train-gpu")) o->train_gpu = true;
+        else if (!strcmp(a, "--train-gpu-budget")) {
+            o->train_gpu_budget = u64_arg(a, NEXT);
+            if (!o->train_gpu_budget) {
+                fprintf(stderr, "error: --train-gpu-budget expects a byte "
+                        "count above 0\n");
+                exit(1);
+            }
+        }
         else if (!strcmp(a, "--train-resume") && recipe_flag(o, a)) o->train_resume = NEXT;
         else if (!strcmp(a, "--train-eval") && recipe_flag(o, a)) {
             if (o->n_eval == (int)(sizeof o->eval_spec / sizeof o->eval_spec[0])) {
@@ -3927,9 +3939,12 @@ static bool train_prepare(cli_opts *o, cli_run *rt) {
     // heads, the recompute, the transposed products) on the device. Asked
     // for by name, so no device is an error, not a quiet CPU run.
     if (o->train_gpu) {
+        rt->m.train_gpu_budget = o->train_gpu_budget;
         if (!gpu_train_init(&rt->m)) {
-            fprintf(stderr, "error: --train-gpu needs a CUDA build and an "
-                    "NVIDIA GPU; none is usable here\n");
+            // a budget the device cannot give has said so itself
+            if (rt->m.train_gpu_err != 2)
+                fprintf(stderr, "error: --train-gpu needs a CUDA build and an "
+                        "NVIDIA GPU; none is usable here\n");
             return false;
         }
         rt->m.train_dev = true;
@@ -4807,11 +4822,16 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
         // which weights the device held: a tensor the VRAM budget kept on the
         // CPU takes the CPU's order, so two runs whose free VRAM differed can
         // write different adapters, and this says whether they did
+        // the budget that decided it, and where it came from: passed back
+        // as --train-gpu-budget it reproduces the split
         int on_dev, on_cpu;
-        size_t dev_b, cpu_b;
-        gpu_train_placement(&rt->m, &on_dev, &dev_b, &on_cpu, &cpu_b);
-        sb_fmt(&rec, "\",\"tensors_on_device\":%d,\"device_bytes\":%llu,"
+        size_t dev_b, cpu_b, bud;
+        bool bud_set;
+        gpu_train_placement(&rt->m, &on_dev, &dev_b, &on_cpu, &cpu_b, &bud, &bud_set);
+        sb_fmt(&rec, "\",\"budget_bytes\":%llu,\"budget_from\":\"%s\","
+                     "\"tensors_on_device\":%d,\"device_bytes\":%llu,"
                      "\"tensors_on_cpu\":%d,\"cpu_bytes\":%llu},",
+               (unsigned long long)bud, bud_set ? "--train-gpu-budget" : "free memory",
                on_dev, (unsigned long long)dev_b, on_cpu, (unsigned long long)cpu_b);
     }
     // R8.17: the held-out sets (rows and teacher hashed like the data), the
@@ -6110,6 +6130,11 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
     if (o->train_gpu && !o->train_path && !o->dpo_path) {
         fprintf(stderr, "error: --train-gpu runs a --train or --train-dpo "
                 "step on the GPU; pass it with one\n");
+        return 1;
+    }
+    if (o->train_gpu_budget && !o->train_gpu) {
+        fprintf(stderr, "error: --train-gpu-budget sets --train-gpu's device "
+                "memory; pass it with --train-gpu\n");
         return 1;
     }
     if (o->recipe_flag && !o->train_path) {

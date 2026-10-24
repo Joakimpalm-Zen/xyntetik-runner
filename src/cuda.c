@@ -7649,7 +7649,12 @@ typedef struct {
     double      t_mm, t_mvt, k_mm, k_mvt;   // k_: the launch and its sync alone
     long        n_mm, n_mvt;
     size_t      vram_used, vram_budget;
-    bool        budget_noted;
+    bool        budget_noted, budget_set;
+    // one device arena of min(budget, the model's tensor bytes), reserved at
+    // the start: a tensor fits or not by the budget and the order of first
+    // use alone, never by what else holds memory later in the run
+    CUdeviceptr arena;
+    size_t      arena_size;
     // the tensors that stayed on the CPU (by host address), for the record:
     // which tensors fit decides the adapter's bits (their products take the
     // CPU's order), and the free VRAM at the run's start decides which fit
@@ -7660,6 +7665,7 @@ typedef struct {
 
 bool gpu_train_init(model_t *m) {
     if (m->train_gpu) return true;
+    m->train_gpu_err = 1;   // until a device is up: none usable
     if (!cu_load() || cu.Init(0) != 0) return false;
     int n = 0;
     if (cu.DeviceGetCount(&n) != 0 || n < 1) return false;
@@ -7718,21 +7724,54 @@ bool gpu_train_init(model_t *m) {
     }
     size_t free_b = 0, total_b = 0;
     if (cu.MemGetInfo(&free_b, &total_b) != 0) free_b = 0;
-    // leave a margin for the driver and anyone sharing the card; running out
-    // mid-cache is not an error (the remainder trains on the CPU), the
-    // budget just decides where the split lands
-    t->vram_budget = free_b > (512u << 20) ? free_b - (512u << 20) : 0;
-    // RUNNER_TRAIN_GPU_BUDGET=<bytes> caps it (the test of the split)
-    const char *bud = getenv("RUNNER_TRAIN_GPU_BUDGET");
-    if (bud && *bud) {
-        unsigned long long cap = strtoull(bud, NULL, 10);
-        if ((size_t)cap < t->vram_budget) t->vram_budget = (size_t)cap;
+    // leave a margin for the driver and anyone sharing the card. The budget
+    // decides which weights the device holds and so the adapter's bits:
+    // --train-gpu-budget names it, else the free memory measured here does,
+    // and the record carries it either way
+    size_t avail = free_b > (512u << 20) ? free_b - (512u << 20) : 0;
+    if (m->train_gpu_budget) {
+        if (m->train_gpu_budget > avail) {
+            fprintf(stderr, "error: --train-gpu-budget %llu is more than "
+                    "this device has free (%llu bytes, less a 512 MB "
+                    "margin)\n", (unsigned long long)m->train_gpu_budget,
+                    (unsigned long long)avail);
+            m->train_gpu_err = 2;
+            cu.MemFree(t->dummy);
+            cu.ModuleUnload(t->mod);
+            cu.PrimaryCtxRelease(t->dev);
+            free(t);
+            return false;
+        }
+        t->vram_budget = (size_t)m->train_gpu_budget;
+        t->budget_set = true;
+    } else {
+        t->vram_budget = avail;
+    }
+    // the arena: no more than the model's tensors can use (a caller with
+    // no model file, test-train-gpu, gets the budget it set)
+    size_t need = 0;
+    for (uint64_t i = 0; i < m->gf.n_tensors; i++)
+        need += ((size_t)m->gf.tensors[i].nbytes + 255) & ~(size_t)255;
+    if (!m->gf.n_tensors) need = t->vram_budget;
+    t->arena_size = need < t->vram_budget ? need : t->vram_budget;
+    if (t->arena_size && cu.MemAlloc(&t->arena, t->arena_size) != 0) {
+        fprintf(stderr, "error: --train-gpu could not reserve %llu bytes "
+                "on the device\n", (unsigned long long)t->arena_size);
+        m->train_gpu_err = 2;
+        cu.MemFree(t->dummy);
+        cu.ModuleUnload(t->mod);
+        cu.PrimaryCtxRelease(t->dev);
+        free(t);
+        return false;
     }
     char name[128] = "CUDA GPU";
     gpu_available(name, sizeof(name));
     fprintf(stderr, "train-gpu: %s, weights cached on first use (budget "
-            "%.1f GB)\n", name, t->vram_budget / 1e9);
+            "%.1f GB%s, %.1f GB reserved)\n", name, t->vram_budget / 1e9,
+            t->budget_set ? ", --train-gpu-budget" : ", the free memory",
+            t->arena_size / 1e9);
     m->train_gpu = t;
+    m->train_gpu_err = 0;
     return true;
 }
 
@@ -7740,7 +7779,7 @@ void gpu_train_free(model_t *m) {
     train_gpu_t *t = m->train_gpu;
     if (!t) return;
     if (cu.CtxSetCurrent(t->ctx) == 0) {
-        for (int i = 0; i < t->n_cache; i++) cu.MemFree(t->cache[i].dev);
+        if (t->arena) cu.MemFree(t->arena);
         if (t->d_dy) cu.MemFree(t->d_dy);
         if (t->d_dx) cu.MemFree(t->d_dx);
         cu.MemFree(t->dummy);
@@ -7771,12 +7810,15 @@ static void tg_kept(train_gpu_t *t, const gguf_tensor *w) {
 }
 
 void gpu_train_placement(model_t *m, int *on_dev, size_t *dev_bytes,
-                         int *on_cpu, size_t *cpu_bytes) {
+                         int *on_cpu, size_t *cpu_bytes, size_t *budget,
+                         bool *budget_set) {
     train_gpu_t *t = m->train_gpu;
     *on_dev = t ? t->n_cache : 0;
     *dev_bytes = t ? t->vram_used : 0;
     *on_cpu = t ? t->n_cpu : 0;
     *cpu_bytes = t ? t->cpu_bytes : 0;
+    *budget = t ? t->vram_budget : 0;
+    *budget_set = t && t->budget_set;
 }
 
 static bool tg_scratch(CUdeviceptr *buf, size_t *cap, size_t need) {
@@ -7798,8 +7840,8 @@ static CUdeviceptr tg_weights(train_gpu_t *t, const gguf_tensor *w) {
     for (int i = 0; i < t->n_cache; i++)
         if (t->cache[i].data == w->data && t->cache[i].nbytes == w->nbytes)
             return t->cache[i].dev;
-    CUdeviceptr weights = 0;
-    if (t->vram_used + w->nbytes > t->vram_budget) {
+    size_t span = ((size_t)w->nbytes + 255) & ~(size_t)255;
+    if (t->vram_used + span > t->arena_size) {
         if (!t->budget_noted) {
             t->budget_noted = true;
             fprintf(stderr, "train-gpu: VRAM budget reached after %.1f "
@@ -7817,19 +7859,13 @@ static CUdeviceptr tg_weights(train_gpu_t *t, const gguf_tensor *w) {
         t->cache = c;
         t->cap_cache = cap;
     }
-    if (cu.MemAlloc(&weights, w->nbytes) != 0 ||
-        cu.MemcpyHtoD(weights, w->data, w->nbytes) != 0) {
-        if (weights) cu.MemFree(weights);
-        // treat an allocation failure as the budget: stop trying
-        t->vram_budget = t->vram_used;
-        tg_kept(t, w);
-        return 0;
-    }
+    CUdeviceptr weights = t->arena + t->vram_used;
+    if (cu.MemcpyHtoD(weights, w->data, w->nbytes) != 0) return 0;
     t->cache[t->n_cache].data = w->data;
     t->cache[t->n_cache].nbytes = w->nbytes;
     t->cache[t->n_cache].dev = weights;
     t->n_cache++;
-    t->vram_used += w->nbytes;
+    t->vram_used += span;
     return weights;
 }
 

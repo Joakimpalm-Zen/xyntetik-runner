@@ -5,15 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
-- **`--train-gpu`: the record names which weights the device held.** The
-  weights are cached as long as the device's free memory at the start
-  allows, and the rest train on the CPU, where a tensor's products take the
-  CPU's order. So the adapter's bits depend on the split, and two runs of
-  one command could write different adapters while their records looked the
-  same. `products` now carries `tensors_on_device`, `device_bytes`,
-  `tensors_on_cpu` and `cpu_bytes`, and the run's note says the bits depend
-  on the split when it happens. A test covers the partial path (it had
-  none), with `RUNNER_TRAIN_GPU_BUDGET` capping the budget.
+- **`--train-gpu`: the device budget is an input you can name, and the
+  record names it.** The weights are cached as long as the budget allows,
+  and the rest train on the CPU, where a tensor's products take the CPU's
+  order, so the adapter's bits depend on the split. The budget was the free
+  memory at the start, which no flag named, and allocations could fail
+  later in the run, so two runs of one command could write different
+  adapters with records that looked the same.
+  `--train-gpu-budget BYTES` now sets the budget (default: the free memory,
+  less 512 MB). The budget is reserved on the device at the start, so a run
+  gets it or stops with an error before training. `products` records
+  `budget_bytes`, `budget_from` and the split (`tensors_on_device`,
+  `device_bytes`, `tensors_on_cpu`, `cpu_bytes`). Passing a record's
+  `budget_bytes` back reproduces its adapter.
 
 - **Release gate: refuses to run in a degraded launch environment (system
   temp directory, no user name) and records the environment it ran in.** On

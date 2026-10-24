@@ -266,10 +266,13 @@ void   gpu_train_prof(model_t *m, double *t_mm, long *n_mm, double *t_mvt,
 // without resetting them: the profile samples it at every phase boundary to
 // split a phase's time into the device products' and the host's
 double gpu_train_dev_wall(model_t *m);
-// where the weights went: tensors and bytes cached on the device, and the
-// ones the VRAM budget kept on the CPU (the train record names the split)
+// where the weights went: tensors and bytes cached on the device, the ones
+// the budget kept on the CPU, and the budget with whether a flag set it (the
+// train record names all of it: the split decides the adapter's bits, and
+// --train-gpu-budget with the recorded budget reproduces the split)
 void   gpu_train_placement(model_t *m, int *on_dev, size_t *dev_bytes,
-                           int *on_cpu, size_t *cpu_bytes);
+                           int *on_cpu, size_t *cpu_bytes, size_t *budget,
+                           bool *budget_set);
 
 // D2 on the device (R8.7.2): place the loaded adapter's A/B in VRAM for every
 // GPU-resident layer, so an offloaded projection gets the same y += scale*B(Ax)

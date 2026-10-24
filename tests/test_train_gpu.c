@@ -116,6 +116,7 @@ int main(void) {
     f16_init();
     model_t m;
     memset(&m, 0, sizeof(m));
+    m.train_gpu_budget = (uint64_t)1 << 30;   // no model file: the arena is this
     if (!gpu_train_init(&m)) {
         printf("train-gpu: no CUDA device, skipping (not passing)\n");
         return 0;
