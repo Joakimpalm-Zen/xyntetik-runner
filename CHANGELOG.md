@@ -5,6 +5,21 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **SHA-256 on the CPU's own instructions: a model file hashes about ten
+  times faster.** The training, quantize and merge records, the download
+  check, bundles and lineage all hash whole model files, and the portable
+  code ran at about 0.2 GB/s on an Apple M1 and 0.5 GB/s on an x86 core:
+  a 12 GB file took about a minute on the M1 and 23 s on the x86 core. Where the running CPU has SHA-256
+  instructions (every arm64 Mac, ARMv8 Linux CPUs that report them, x86
+  CPUs with SHA-NI) they are used, at 2.1 and 2.5 GB/s on the same
+  machines; elsewhere the portable code runs as before. The digests are
+  the same by definition, and `tests/test_sha256.c` checks every backend a
+  host has against the FIPS 180-4 example messages and reference digests
+  at each block-padding edge. The 12.4 GB Clef backbone file hashed in
+  5-6 s instead of 23 s on an AMD Threadripper core; a one-step training
+  run of Qwen3-0.6B Q8_0 on an Apple M1 went from 9.2 to 5.9 s, the
+  difference the record's hash.
+
 - **The CPU trainer: a step takes about a third to a half of the time, with
   the same bytes.** Most of a CPU training step was the backward's
   transposed weight products, and the largest was the LM head's: its

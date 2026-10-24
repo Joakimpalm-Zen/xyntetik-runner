@@ -16,12 +16,13 @@
 static void bytes_to_hex(const uint8_t *b, size_t n, char *out);
 
 // ---- SHA-256 (FIPS 180-4) --------------------------------------------------
-// Used only to verify a sidecar's artifact.sha256 against the file that was
-// actually loaded (Unit 7). Kept local so this stays a leaf translation unit:
-// the C test links envelope.c + json.c and nothing else, and no other caller
-// needs a hash. It streams the file in a fixed buffer, so a large GGUF costs
-// one sequential pass and no extra memory. Runs ONLY when a sidecar carrying a
-// sha is present, so the ordinary no-manifest load never touches it.
+// First written to verify a sidecar's artifact.sha256 against the file that
+// was actually loaded (Unit 7); now every artifact hash goes through it (the
+// training, quantize and merge records, downloads, bundles, lineage, the
+// transcript chain). Kept local so this stays a leaf translation unit: the C
+// test links envelope.c + json.c and nothing else. It streams a file in a
+// fixed buffer, so a large GGUF costs one sequential pass and no extra
+// memory.
 typedef struct {
     uint32_t h[8];
     uint64_t len;        // total bytes fed
@@ -40,19 +41,22 @@ static void sha256_init(sha256_ctx *c) {
     c->n = 0;
 }
 
+static const uint32_t sha_k[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
+    0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+    0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
+    0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+    0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+    0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+
+// The portable compression function: FIPS 180-4 as written.
 static void sha256_block(sha256_ctx *c, const uint8_t *p) {
-    static const uint32_t k[64] = {
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
-        0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-        0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
-        0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
-        0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
-        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
-        0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+    const uint32_t *k = sha_k;
     uint32_t w[64];
     for (int i = 0; i < 16; i++)
         w[i] = (uint32_t)p[i * 4] << 24 | (uint32_t)p[i * 4 + 1] << 16 |
@@ -79,17 +83,137 @@ static void sha256_block(sha256_ctx *c, const uint8_t *p) {
     c->h[4] += e; c->h[5] += f; c->h[6] += g; c->h[7] += hh;
 }
 
+static void sha256_blocks_portable(sha256_ctx *c, const uint8_t *p, size_t nb) {
+    for (; nb; nb--, p += 64) sha256_block(c, p);
+}
+
+// The CPUs' SHA-256 instructions compute the same function about ten times
+// faster (2.1 GB/s against 0.21 on an Apple M1, 2.5 against 0.47 on an AMD
+// Threadripper core): a model file's hash in the training, quantize and merge
+// records, the download check and the bundle checks went from 23 s (x86)
+// or about a minute (M1) per 12 GB to 5 or 6 s. A digest is defined by FIPS 180-4, so
+// the backends must agree on every input (tests/test_sha256.c checks each
+// one the host has against reference digests and against the portable
+// code). The instructions are used where the running CPU has them; the
+// build's -march does not have to (Apple clang's -march=native leaves them
+// out, and a release builds for x86-64-v3).
+#if defined(__aarch64__) && (defined(__clang__) || defined(__ARM_FEATURE_SHA2))
+#include <arm_neon.h>
+#if defined(__linux__) && !defined(__ARM_FEATURE_SHA2)
+#include <sys/auxv.h>
+#endif
+#define SHA_HW 1
+#if defined(__clang__)
+__attribute__((target("sha2")))
+#endif
+static void sha256_blocks_hw(sha256_ctx *c, const uint8_t *p, size_t nb) {
+    uint32x4_t s0 = vld1q_u32(c->h), s1 = vld1q_u32(c->h + 4);
+    for (; nb; nb--, p += 64) {
+        uint32x4_t a0 = s0, a1 = s1;
+        uint32x4_t m0 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(p)));
+        uint32x4_t m1 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(p + 16)));
+        uint32x4_t m2 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(p + 32)));
+        uint32x4_t m3 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(p + 48)));
+        for (int i = 0; i < 16; i++) {   // four rounds a step
+            uint32x4_t wk = vaddq_u32(m0, vld1q_u32(sha_k + 4 * i));
+            uint32x4_t t = s0;
+            s0 = vsha256hq_u32(s0, s1, wk);
+            s1 = vsha256h2q_u32(s1, t, wk);
+            uint32x4_t next = i < 12 ? vsha256su1q_u32(vsha256su0q_u32(m0, m1), m2, m3) : m3;
+            m0 = m1; m1 = m2; m2 = m3; m3 = next;
+        }
+        s0 = vaddq_u32(s0, a0);
+        s1 = vaddq_u32(s1, a1);
+    }
+    vst1q_u32(c->h, s0);
+    vst1q_u32(c->h + 4, s1);
+}
+static bool sha256_hw_present(void) {
+#if defined(__ARM_FEATURE_SHA2) || defined(__APPLE__)
+    return true;   // every arm64 Mac has them
+#elif defined(__linux__)
+    return (getauxval(AT_HWCAP) & (1UL << 6)) != 0;   // HWCAP_SHA2
+#else
+    return false;
+#endif
+}
+#elif (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
+#include <immintrin.h>
+#include <cpuid.h>
+#define SHA_HW 1
+__attribute__((target("sha,sse4.1,ssse3")))
+static void sha256_blocks_hw(sha256_ctx *c, const uint8_t *p, size_t nb) {
+    const __m128i bswap = _mm_set_epi64x(0x0c0d0e0f08090a0bULL, 0x0405060700010203ULL);
+    // the instructions want the state as ABEF and CDGH
+    __m128i t = _mm_shuffle_epi32(_mm_loadu_si128((const __m128i *)c->h), 0xB1);
+    __m128i s1 = _mm_shuffle_epi32(_mm_loadu_si128((const __m128i *)(c->h + 4)), 0x1B);
+    __m128i s0 = _mm_alignr_epi8(t, s1, 8);
+    s1 = _mm_blend_epi16(s1, t, 0xF0);
+    for (; nb; nb--, p += 64) {
+        __m128i a0 = s0, a1 = s1;
+        __m128i m0 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)p), bswap);
+        __m128i m1 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 16)), bswap);
+        __m128i m2 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 32)), bswap);
+        __m128i m3 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 48)), bswap);
+        for (int i = 0; i < 16; i++) {   // four rounds a step
+            __m128i wk = _mm_add_epi32(m0, _mm_loadu_si128((const __m128i *)(sha_k + 4 * i)));
+            s1 = _mm_sha256rnds2_epu32(s1, s0, wk);
+            s0 = _mm_sha256rnds2_epu32(s0, s1, _mm_shuffle_epi32(wk, 0x0E));
+            __m128i next = m3;
+            if (i < 12)
+                next = _mm_sha256msg2_epu32(_mm_add_epi32(_mm_sha256msg1_epu32(m0, m1),
+                                                          _mm_alignr_epi8(m3, m2, 4)), m3);
+            m0 = m1; m1 = m2; m2 = m3; m3 = next;
+        }
+        s0 = _mm_add_epi32(s0, a0);
+        s1 = _mm_add_epi32(s1, a1);
+    }
+    t = _mm_shuffle_epi32(s0, 0x1B);
+    s1 = _mm_shuffle_epi32(s1, 0xB1);
+    _mm_storeu_si128((__m128i *)c->h, _mm_blend_epi16(t, s1, 0xF0));
+    _mm_storeu_si128((__m128i *)(c->h + 4), _mm_alignr_epi8(s1, t, 8));
+}
+static bool sha256_hw_present(void) {
+    unsigned a, b, cx, d;
+    if (!__get_cpuid_count(7, 0, &a, &b, &cx, &d) || !(b & (1u << 29))) return false;   // SHA
+    return __get_cpuid(1, &a, &b, &cx, &d) && (cx & (1u << 19)) && (cx & (1u << 9));    // SSE4.1, SSSE3
+}
+#endif
+
+// 0 portable, 1 the CPU's instructions; resolved on first use. Atomic:
+// several threads hash at once (the server's decisions, the transcript
+// chain), and two first uses may both resolve it, to the same value.
+// tests/test_sha256.c sets it.
+static _Atomic int sha_backend = -1;
+
+static void sha256_blocks(sha256_ctx *c, const uint8_t *p, size_t nb) {
+#ifdef SHA_HW
+    if (sha_backend < 0) sha_backend = sha256_hw_present() ? 1 : 0;
+    if (sha_backend == 1) { sha256_blocks_hw(c, p, nb); return; }
+#endif
+    sha256_blocks_portable(c, p, nb);
+}
+
 static void sha256_update(sha256_ctx *c, const uint8_t *p, size_t n) {
     c->len += n;
-    while (n) {
+    if (c->n) {   // top up a partly filled block first
         size_t take = 64 - c->n;
         if (take > n) take = n;
         memcpy(c->buf + c->n, p, take);
         c->n += take;
         p += take;
         n -= take;
-        if (c->n == 64) { sha256_block(c, c->buf); c->n = 0; }
+        if (c->n < 64) return;
+        sha256_blocks(c, c->buf, 1);
+        c->n = 0;
     }
+    if (n >= 64) {   // whole blocks straight from the input
+        sha256_blocks(c, p, n / 64);
+        p += n / 64 * 64;
+        n %= 64;
+    }
+    if (n) memcpy(c->buf, p, n);
+    c->n = n;
 }
 
 static void sha256_final(sha256_ctx *c, uint8_t out[32]) {
