@@ -153,13 +153,16 @@ scheduled task starts, so a box's settings belong in the env file, saved
 with LF line endings. Before its first step it asks its own python for the
 temp directory and the user, and finishes not-run in a degraded launch
 environment (a temp directory under the Windows directory or one python
-could not write, an empty `USERNAME` or `USER`, an MSYS2 bash without
-`MSYSTEM`, or without `HOME` outside a login shell), naming each check, the
-values it saw and the remedy; `GATE_ALLOW_DEGRADED_ENV=1` makes that a
-warning. A tool shell on the Windows CUDA host that started MSYS2 bash
-without `USERNAME`, `TEMP` or `TMP` sent every fixture through
+could not write, no user name at all, an MSYS2 bash without `MSYSTEM`, or
+without `HOME` outside a login shell), naming each check, the values it saw
+and the remedy; `GATE_ALLOW_DEGRADED_ENV=1` makes that a warning, and an
+empty `USERNAME` or `USER` that python's `getpass.getuser()` still resolves
+is only a warning. A tool shell on the Windows CUDA host that started MSYS2
+bash without `USERNAME`, `TEMP` or `TMP` sent every fixture through
 `C:\Windows\Temp` and the gate ran about 27 times slower, so the summary
-JSON records the temp directory, user and shell each run had. Its steps
+JSON records the temp directory, user and shell each run had. A scheduler
+that starts a bare shell needs `TEMP`/`TMP`, `USERNAME` or `USER` and
+`MSYSTEM` in `cuda-gate.env`, or `GATE_ALLOW_DEGRADED_ENV=1` there. Its steps
 that quantize fixtures run `llama-quantize` or `llama-quantize.exe` from
 `RUNNER_LLAMA_CPP_BIN` by name, never by glob (a llama.cpp Windows release
 directory's `llama-quantize-impl.dll` sorts first under C collation);

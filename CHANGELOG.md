@@ -14,13 +14,15 @@ Current release and unreleased changes. Compatibility follows the
   `cuda-gate.sh` now asks its own python for the temp directory and the user
   before its first step and finishes not-run when the temp directory is
   under the Windows directory (on POSIX, `/`, not writable, or not the
-  `TMPDIR` the environment names), the user name is empty or `getuser()`
-  raises, or an MSYS2 bash has no `MSYSTEM` (or no `HOME` outside a login
+  `TMPDIR` the environment names), there is no user name at all (`USERNAME`
+  or `USER` empty and `getuser()` raising; an empty variable that
+  `getuser()` still resolves, as in a Linux container without `USER`, is a
+  warning), or an MSYS2 bash has no `MSYSTEM` (or no `HOME` outside a login
   shell); it names each check, the values it saw and the remedy (launch from
   a login shell, or set `TEMP`/`TMP` and `USERNAME`).
   `GATE_ALLOW_DEGRADED_ENV=1` turns the refusal into a warning. The summary
   JSON gains an `env` object: temp directory, user, shell, login shell,
-  `MSYSTEM` and the checks that failed.
+  `MSYSTEM`, the checks that failed and the checks that only warned.
 
 - **Release gate: cuda-gate.sh explains an empty GATE_MODEL.** On the
   Windows CUDA host variables exported in a Git Bash shell never reached the

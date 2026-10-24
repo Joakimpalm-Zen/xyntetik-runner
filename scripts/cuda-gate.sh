@@ -64,8 +64,10 @@
 # its temp directory and the user, and finishes not-run when the launch
 # environment is degraded: a temp directory under the Windows directory, or
 # on POSIX one that is / or not writable, or a TMPDIR/TEMP/TMP python could
-# not use; an empty USERNAME (Windows) or USER (POSIX), or a getuser() that
-# raises; under MSYS2, no MSYSTEM, or no HOME outside a login shell. On the
+# not use; no user name at all, an empty USERNAME (Windows) or USER (POSIX)
+# and a getuser() that raises (an empty variable alone is a warning: a Linux
+# container without USER still has a user python resolves); under MSYS2, no
+# MSYSTEM, or no HOME outside a login shell. On the
 # Windows CUDA host a tool shell that started MSYS2 bash without USERNAME,
 # TEMP or TMP sent every fixture through C:\Windows\Temp (python's last
 # resort) and the gate ran about 27 times slower, with subprocess timeouts
@@ -105,13 +107,13 @@ note() { echo "[cuda-gate $(date -u +%H:%M:%S)] $*"; }
 STEPS=""
 add_step() { STEPS="$STEPS${STEPS:+,}{\"step\":\"$1\",\"result\":\"$2\",\"seconds\":$3}"; }
 json_str() { printf '"%s"' "$(printf '%s' "$1" | tr -d '\000-\037' | sed 's/[\\"]/\\&/g')"; }
-ENV_TMP="" ENV_USER="" ENV_DEGRADED="" ENV_LOGIN=false
+ENV_TMP="" ENV_USER="" ENV_DEGRADED="" ENV_WARNED="" ENV_LOGIN=false
 shopt -q login_shell && ENV_LOGIN=true
 finish() {  # result exit_code
-  printf '{"schema":"xyntetik.runner.cuda-gate.v1","stamp":"%s","class":"%s","commit":"%s","result":"%s","env":{"tempdir":%s,"user":%s,"shell":%s,"login_shell":%s,"msystem":%s,"degraded":[%s]},"steps":[%s]}\n' \
+  printf '{"schema":"xyntetik.runner.cuda-gate.v1","stamp":"%s","class":"%s","commit":"%s","result":"%s","env":{"tempdir":%s,"user":%s,"shell":%s,"login_shell":%s,"msystem":%s,"degraded":[%s],"warned":[%s]},"steps":[%s]}\n' \
     "$STAMP" "$CLASS" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$1" \
     "$(json_str "$ENV_TMP")" "$(json_str "$ENV_USER")" "$(json_str "${BASH:-}")" "$ENV_LOGIN" \
-    "$(json_str "${MSYSTEM:-}")" "$ENV_DEGRADED" "$STEPS" > "$SUMMARY"
+    "$(json_str "${MSYSTEM:-}")" "$ENV_DEGRADED" "$ENV_WARNED" "$STEPS" > "$SUMMARY"
   note "result: $1 ($SUMMARY)"
   [ -n "${GATE_LOCK:-}" ] && [ -n "${LOCKED:-}" ] && rm -f "$GATE_LOCK"
   exit "$2"
@@ -164,12 +166,15 @@ problem() { note "not run: $*"; PROBLEMS=$((PROBLEMS + 1)); }
 
 # The launch environment, as the gate's own python sees it (the header says
 # why). Each failed check is a problem, or with GATE_ALLOW_DEGRADED_ENV=1 a
-# warning; either way the summary JSON names it.
+# warning, and the summary JSON lists it under "degraded"; a check that only
+# warns is listed under "warned".
+listed() { case ",$1," in *",\"$2\","*) echo "$1" ;; *) echo "$1${1:+,}\"$2\"" ;; esac; }
 degraded() {  # check detail
-  case ",$ENV_DEGRADED," in *",\"$1\","*) ;; *) ENV_DEGRADED="$ENV_DEGRADED${ENV_DEGRADED:+,}\"$1\"" ;; esac
+  ENV_DEGRADED=$(listed "$ENV_DEGRADED" "$1")
   if [ "${GATE_ALLOW_DEGRADED_ENV:-}" = 1 ]; then note "warning: $1: $2 (GATE_ALLOW_DEGRADED_ENV=1: going on)"
   else problem "$1: $2"; fi
 }
+warned() { ENV_WARNED=$(listed "$ENV_WARNED" "$1"); note "warning: $1: $2"; }
 # Six lines, from python's stdin (no multi-line argument for MSYS2 to quote
 # for a Windows python): the temp directory, the TMPDIR/TEMP/TMP (the first
 # set, in python's order) it did not use, whether it is writable, the user,
@@ -209,13 +214,15 @@ env_check() {
   fi
   [ -z "$unused" ] || degraded "temp directory" "$unused is missing or not writable, so python uses $ENV_TMP"
   uval=${!uvar:-}
-  [ -n "$uval" ] || degraded "user name" "$uvar is empty"
-  [ -z "$why" ] || degraded "user name" "python's getpass.getuser() raises ($why)"
+  if [ -z "$uval" ] && [ -n "$why" ]; then degraded "user name" "$uvar is empty and python's getpass.getuser() raises ($why)"
+  elif [ -z "$uval" ]; then warned "user name" "$uvar is empty, python's getpass.getuser() resolves $ENV_USER"
+  elif [ -n "$why" ]; then warned "user name" "python's getpass.getuser() raises ($why)"
+  fi
   case $UNAME in MINGW*|MSYS*)
     [ -n "${MSYSTEM:-}" ] || degraded "MSYS2 shell" "MSYSTEM is not set"
     [ "$ENV_LOGIN" = true ] || [ -n "${HOME:-}" ] || degraded "MSYS2 shell" "not a login shell and HOME is not set" ;;
   esac
-  [ -n "$ENV_DEGRADED" ] || return 0
+  [ -n "$ENV_DEGRADED$ENV_WARNED" ] || return 0
   login="not a login shell"; [ "$ENV_LOGIN" = true ] && login="login shell"
   note "launch environment: temp directory ${ENV_TMP:-none}, user ${ENV_USER:-none} ($uvar ${uval:-empty}), shell ${BASH:-unknown} ($login), MSYSTEM ${MSYSTEM:-unset}"
   if [ -n "$win" ]; then

@@ -380,7 +380,10 @@ class CudaGateRefusesADegradedLaunch(_CudaGateCopy, unittest.TestCase):
     the gate asks its own python for the temp directory and the user, refuses
     (not-run, exit 2) a degraded answer, naming each check, the values it saw
     and the remedy, and records what it saw in its summary JSON.
-    GATE_ALLOW_DEGRADED_ENV=1 makes each refusal a warning.
+    GATE_ALLOW_DEGRADED_ENV=1 makes each refusal a warning. An empty user
+    variable alone is a warning, not a refusal: a Linux container without
+    USER still has a user python resolves, and only a gate with no user name
+    at all (the variable empty and getuser() raising) is refused.
 
     Python's own fallback is the anchor of the POSIX case: tempfile skips a
     directory it cannot write to without a word (a read-only TMPDIR resolves
@@ -406,41 +409,87 @@ class CudaGateRefusesADegradedLaunch(_CudaGateCopy, unittest.TestCase):
         self.assertIn("result: not-run", out)
         self.assertEqual(self.summary[0]["env"]["degraded"], ["temp directory"])
 
-    def test_no_user_name_is_refused(self):
+    # every name getpass.getuser() reads before it asks the passwd database
+    NO_USER = {"USER": None, "USERNAME": None, "LOGNAME": None, "LNAME": None}
+
+    def no_passwd_entry(self, base):
+        """A stand-in python: the gate's python with a sitecustomize that
+        makes the passwd lookup fail, as for a container uid with no entry,
+        so getuser() raises once the variables are gone. Returns the
+        PYTHONPATH entry."""
+        d = base / "no-passwd"
+        d.mkdir(exist_ok=True)
+        (d / "sitecustomize.py").write_text(
+            "import pwd\n"
+            "def _no_entry(uid):\n"
+            "    raise KeyError('getpwuid(): uid not found: %d' % uid)\n"
+            "pwd.getpwuid = _no_entry\n")
+        return d.as_posix()
+
+    def ready(self, base, **extra):
+        """Everything the preflight asks for, so the next check after it (the
+        stand-in runner's --caps) is where a run that goes on stops."""
+        runner = base / "build/runner"
+        runner.write_text("#!/bin/sh\necho '{\"gpu\": null}'\n")
+        runner.chmod(0o755)
+        (base / "m.gguf").write_bytes(b"")
+        (base / "llama").mkdir()
+        (base / "stand-in").mkdir()
+        (base / "stand-in/pytest.py").write_text("")  # the preflight only imports it
+        (base / "tmp").mkdir()
+        env = {"GATE_PYTHON": PYTHON, "GATE_MODEL": (base / "m.gguf").as_posix(),
+               "TMPDIR": (base / "tmp").as_posix(),
+               "RUNNER_LLAMA_CPP_BIN": (base / "llama").as_posix(),
+               "PYTHONPATH": (base / "stand-in").as_posix()}
+        env.update(extra)
+        return env
+
+    @unittest.skipIf(os.name == "nt", "on Windows getuser() has nothing else to read once USERNAME is gone")
+    def test_an_empty_user_variable_that_python_resolves_warns_and_goes_on(self):
+        import pwd
+        name = pwd.getpwuid(os.getuid()).pw_name  # the passwd database, not the gate
+        r, _, _ = self.run_gate(prepare=lambda b: self.ready(b, **self.NO_USER))
+        out = r.stdout
+        self.assertEqual(r.returncode, 2, out + r.stderr)  # no CUDA here: --caps stops it
+        self.assertIn("warning: user name: USER is empty, python's getpass.getuser() resolves %s"
+                      % name, out)
+        self.assertNotIn("not run: user name", out)
+        self.assertIn("caps reports no CUDA device", out)
+        env = self.summary[0]["env"]
+        self.assertEqual(env["user"], name)
+        self.assertEqual(env["degraded"], [])
+        self.assertEqual(env["warned"], ["user name"])
+
+    def test_no_user_name_at_all_is_refused(self):
         var = "USERNAME" if os.name == "nt" else "USER"
-        r, _, _ = self.run_gate(prepare=lambda b: {"USER": None, "USERNAME": None,
-                                                   "GATE_PYTHON": PYTHON})
+        def prepare(base):
+            env = dict(self.NO_USER, GATE_PYTHON=PYTHON)
+            if os.name != "nt":  # Windows python has no passwd database to fall back on
+                env["PYTHONPATH"] = self.no_passwd_entry(base)
+            return env
+        r, _, _ = self.run_gate(prepare=prepare)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        self.assertIn("not run: user name: %s is empty" % var, r.stdout)
+        self.assertIn("not run: user name: %s is empty and python's getpass.getuser() raises ("
+                      % var, r.stdout)
         self.assertIn("remedy: launch from a login shell", r.stdout)
         self.assertIn("user name", self.summary[0]["env"]["degraded"])
+        self.assertEqual(self.summary[0]["env"]["user"], "")
 
     @unittest.skipIf(os.name == "nt", "the stand-in runner is a POSIX script")
     def test_the_escape_hatch_warns_and_goes_on_to_the_next_check(self):
-        def ready(base, **extra):
-            # everything the preflight asks for, so the next check after it
-            # (the runner's --caps) is where a run that goes on stops
-            runner = base / "build/runner"
-            runner.write_text("#!/bin/sh\necho '{\"gpu\": null}'\n")
-            runner.chmod(0o755)
-            (base / "m.gguf").write_bytes(b"")
-            (base / "llama").mkdir()
-            (base / "stand-in").mkdir()
-            (base / "stand-in/pytest.py").write_text("")  # the preflight only imports it
-            (base / "tmp").mkdir()
-            env = {"GATE_PYTHON": PYTHON, "GATE_MODEL": (base / "m.gguf").as_posix(),
-                   "TMPDIR": (base / "tmp").as_posix(),
-                   "RUNNER_LLAMA_CPP_BIN": (base / "llama").as_posix(),
-                   "PYTHONPATH": (base / "stand-in").as_posix(), "USER": None}
-            env.update(extra)
+        def prepare(base, **extra):
+            env = self.ready(base, **self.NO_USER, **extra)
+            env["PYTHONPATH"] += os.pathsep + self.no_passwd_entry(base)
             return env
-        r, _, _ = self.run_gate(prepare=ready)
+        r, _, _ = self.run_gate(prepare=prepare)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        self.assertIn("not run: user name: USER is empty", r.stdout)
+        self.assertIn("not run: user name: USER is empty and python's getpass.getuser() raises",
+                      r.stdout)
         self.assertNotIn("caps reports", r.stdout)
-        r, base, _ = self.run_gate(prepare=lambda b: ready(b, GATE_ALLOW_DEGRADED_ENV="1"))
+        r, base, _ = self.run_gate(prepare=lambda b: prepare(b, GATE_ALLOW_DEGRADED_ENV="1"))
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        self.assertIn("warning: user name: USER is empty", r.stdout)
+        self.assertIn("warning: user name: USER is empty and python's getpass.getuser() raises",
+                      r.stdout)
         self.assertNotIn("not run: user name", r.stdout)
         self.assertIn("caps reports no CUDA device", r.stdout)
         env = self.summary[0]["env"]
@@ -476,15 +525,16 @@ class CudaGateRefusesADegradedLaunch(_CudaGateCopy, unittest.TestCase):
         root = (base + "/WINDOWS").replace("/", "\\").upper()
         self.assertIn("not run: temp directory: %s/Windows/Temp is under the Windows directory %s"
                       % (base, root), out)
-        self.assertIn("not run: user name: USERNAME is empty", out)
+        # USER is still set, so python resolves a name: a warning only
+        self.assertIn("warning: user name: USERNAME is empty, python's getpass.getuser() resolves", out)
         self.assertIn("not run: MSYS2 shell: MSYSTEM is not set", out)
         self.assertIn("not run: MSYS2 shell: not a login shell and HOME is not set", out)
         self.assertIn("MSYSTEM unset", out)
         self.assertIn(r"remedy: launch from a login shell (PowerShell: "
                       r"C:\msys64\usr\bin\bash.exe -lc '...') or set TEMP/TMP and USERNAME", out)
         self.assertEqual(self.summary[0]["class"], "windows-x86_64-cuda")
-        self.assertEqual(self.summary[0]["env"]["degraded"],
-                         ["temp directory", "user name", "MSYS2 shell"])
+        self.assertEqual(self.summary[0]["env"]["degraded"], ["temp directory", "MSYS2 shell"])
+        self.assertEqual(self.summary[0]["env"]["warned"], ["user name"])
         for case, home, args in (("HOME set", True, ()),
                                  ("a login shell without HOME", False, ("--noprofile", "-l"))):
             with self.subTest(case):
@@ -495,6 +545,7 @@ class CudaGateRefusesADegradedLaunch(_CudaGateCopy, unittest.TestCase):
                 self.assertNotIn("launch environment", r.stdout)
                 self.assertNotIn("remedy", r.stdout)
                 self.assertEqual(self.summary[0]["env"]["degraded"], [])
+                self.assertEqual(self.summary[0]["env"]["warned"], [])
                 self.assertEqual(self.summary[0]["env"]["msystem"], "UCRT64")
                 self.assertIs(self.summary[0]["env"]["login_shell"], bool(args))
 
