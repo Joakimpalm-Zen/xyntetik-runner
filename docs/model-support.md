@@ -722,9 +722,9 @@ Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for 
 - **Context tested:** not recorded.
 - **Still missing:** Every gate, run beside ISTA-DASLab's 2-part trunk (the 4-part set already carries a head, and --mtp-file refuses a second one).
 - **Evidence:** [MANUAL.md#placement-and-memory](../MANUAL.md#placement-and-memory).
-- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
+- **Per-release smoke:** on linux-x86_64-cuda, cpu backend, the policy's age limit.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** [n/a](../MANUAL.md#support-matrix): --mtp draft decoding on CUDA needs the whole trunk on the device; the IQ3_S trunk this head runs with holds 18 of 48 layers on a 24 GB device, and the partial split refuses with an error naming --gpu off (lab box, 2026-10-25, runner f960e470). The head is smoked on the CPU path of the same class.
 - **Metal:** [n/a](../MANUAL.md#support-matrix): MTP/NextN draft-head consumption is not implemented on Metal.
 - **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
