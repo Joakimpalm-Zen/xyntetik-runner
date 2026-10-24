@@ -437,12 +437,12 @@ check, failing it or past its age limit.
 </details>
 
 <details>
-<summary><b>Muse-Glimmer-30B surgical</b>, text path only <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
+<summary><b>Muse-Glimmer-30B surgical</b>, text path only <code>CPU&nbsp;partial</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="docs/model-support.md#muse-glimmer-30b-surgical-4p75-q4_k"><code>Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
-<tr><td><a href="docs/model-support.md#muse-glimmer-30b-surgical-6p34-q8_0"><code>Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="docs/model-support.md#muse-glimmer-30b-surgical-6p34-q8_0"><code>Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf</code></a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
 <tr><td><a href="docs/model-support.md#muse-glimmer-30b-surgical-6p34-q4_k-recovered"><code>Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
 </tbody>
 </table>
@@ -469,12 +469,12 @@ check, failing it or past its age limit.
 </details>
 
 <details>
-<summary><b>Qwen3-4B Runner ToolUse</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
+<summary><b>Qwen3-4B Runner ToolUse</b> <code>CPU&nbsp;partial</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="docs/model-support.md#qwen3-4b-runner-tooluse-merged-q8_0"><code>merged-Q8_0.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
-<tr><td><a href="docs/model-support.md#qwen3-4b-runner-tooluse-lora"><code>Qwen3-4B-ToolUse-LoRA.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="docs/model-support.md#qwen3-4b-runner-tooluse-lora"><code>Qwen3-4B-ToolUse-LoRA.gguf</code></a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
 </tbody>
 </table>
 </details>
@@ -523,11 +523,11 @@ check, failing it or past its age limit.
 </details>
 
 <details>
-<summary><b>Xyntetik-Kvist-14B</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
+<summary><b>Xyntetik-Kvist-14B</b> <code>CPU&nbsp;partial</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;–</code></summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-bf16"><code>Xyntetik-Kvist-14B-BF16.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-bf16"><code>Xyntetik-Kvist-14B-BF16.gguf</code></a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
 <tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-q8_0"><code>Xyntetik-Kvist-14B-Q8_0.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
 <tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-q5_0-mix"><code>Xyntetik-Kvist-14B-Q5_0-mix.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
 <tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-iq4_nl-mix"><code>Xyntetik-Kvist-14B-IQ4_NL-mix.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
