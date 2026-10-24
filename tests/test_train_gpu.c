@@ -14,6 +14,7 @@
 //
 // Skips (not passes) without a CUDA device. Prints each type's throughput.
 #include "runner.h"
+#include "dn_ref.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -115,8 +116,9 @@ static double clk(void) {
 }
 
 // R8.21: the DeltaNet recurrence on the device (gpu_train_dn_fw / _bw)
-// against a double-precision reference of the same equations (model.c
-// dn_step and dn_bw_worker), at five head widths (the fixtures' 8, a width
+// against the double-precision reference of the same equations
+// (tests/dn_ref.h, which tests/test_dn_recurrence.c holds the CPU's
+// recurrence to as well), at five head widths (the fixtures' 8, a width
 // that is no whole number of warps' columns, and the real models' 128):
 //   forward   y within 2^-14 of the reference, relative to the largest |y|;
 //             the forward's rounds (the state kept on the device between
@@ -129,21 +131,12 @@ static double clk(void) {
 //   refusals  a sweep without its recompute, a head width that is no
 //             multiple of TDN_ROWS or wider than TDN_MAX_HV, and hv != sk
 //             are declined
-static double dn_maxabs(const double *a, size_t n) {
-    double mx = 0;
-    for (size_t i = 0; i < n; i++) mx = fmax(mx, fabs(a[i]));
-    return mx;
-}
-
 static void dn_close(const char *what, int hv, const float *got,
                      const double *ref, size_t n, double tol) {
-    double mx = dn_maxabs(ref, n), worst = 0;
-    size_t at = 0;
-    for (size_t i = 0; i < n; i++) {
-        double e = fabs((double)got[i] - ref[i]);
-        if (e > worst) { worst = e; at = i; }
-    }
-    CHECK(mx > 0 && worst <= tol * mx, "dn hv %d: %s off by %.3g of max %.3g at "
+    size_t at;
+    double mx, worst = dn_ref_err(got, ref, n, &at, &mx);
+    CHECK(worst <= tol * mx,   // an all-zero reference wants exact zeros
+          "dn hv %d: %s off by %.3g of max %.3g at "
           "[%zu] (device %.9g reference %.9g)", hv, what, worst, mx, at,
           (double)got[at], ref[at]);
 }
@@ -165,81 +158,10 @@ static void dn_check(model_t *m, int nh, int ng, int hv, int T) {
         out[i] = malloc(sizeof(float) * on[i]);
         out2[i] = malloc(sizeof(float) * on[i]);
     }
-    for (size_t i = 0; i < ncv; i++) cv[i] = frnd();
-    for (int t = 0; t < T; t++)   // q and k L2-normed per group, as the CPU leaves them
-        for (int g = 0; g < 2 * ng; g++) {
-            float *x = cv + (size_t)t * convdim + (size_t)g * sk, ss = 1e-6f;
-            for (int i = 0; i < sk; i++) ss += x[i] * x[i];
-            for (int i = 0; i < sk; i++) x[i] /= sqrtf(ss);
-        }
-    for (size_t i = 0; i < ng_; i++) {
-        beta[i] = 0.55f + 0.35f * frnd();
-        decay[i] = 0.9f + 0.099f * frnd();
-    }
-    for (size_t i = 0; i < ny; i++) dy[i] = frnd();
-
-    // the reference: every state kept (T is small)
-    double *S = calloc((size_t)nh * (T + 1) * hh, sizeof(double));
-    double *ry = calloc(ny, sizeof(double)), *rq = calloc(nqk, sizeof(double));
-    double *rk = calloc(nqk, sizeof(double)), *rv = calloc(ny, sizeof(double));
-    double *rb = calloc(ng_, sizeof(double)), *rd = calloc(ng_, sizeof(double));
-    double *dS = malloc(sizeof(double) * hh);
-    double sq = sqrt((double)sk);
-    for (int h = 0; h < nh; h++) {
-        int g = h % ng;
-        double *Sh = S + (size_t)h * (T + 1) * hh;   // slot t + 1: after step t
-        for (int t = 0; t < T; t++) {
-            const float *c = cv + (size_t)t * convdim;
-            const float *q = c + g * sk, *k = c + keydim + g * sk, *v = c + 2 * keydim + h * hv;
-            double dec = decay[(size_t)t * nh + h], bet = beta[(size_t)t * nh + h];
-            double *Sp = Sh + (size_t)t * hh, *Sn = Sp + hh;
-            for (int j = 0; j < hv; j++) {
-                double pred = 0;
-                for (int i = 0; i < hv; i++) pred += Sp[j * hv + i] * dec * k[i];
-                double delta = (v[j] - pred) * bet, acc = 0;
-                for (int i = 0; i < hv; i++) {
-                    Sn[j * hv + i] = Sp[j * hv + i] * dec + delta * k[i];
-                    acc += Sn[j * hv + i] * q[i];
-                }
-                ry[(size_t)t * inner + h * hv + j] = acc / sq;
-            }
-        }
-        memset(dS, 0, sizeof(double) * hh);
-        for (int t = T - 1; t >= 0; t--) {
-            const float *c = cv + (size_t)t * convdim;
-            const float *q = c + g * sk, *k = c + keydim + g * sk, *v = c + 2 * keydim + h * hv;
-            double dec = decay[(size_t)t * nh + h], bet = beta[(size_t)t * nh + h];
-            const double *Sp = Sh + (size_t)t * hh, *St = Sp + hh;
-            double *dq = rq + ((size_t)h * T + t) * sk, *dk = rk + ((size_t)h * T + t) * sk;
-            double db = 0, dd_ = 0;
-            for (int j = 0; j < hv; j++) {
-                double gj = dy[(size_t)t * inner + h * hv + j] / sq;
-                for (int i = 0; i < hv; i++) {
-                    dS[j * hv + i] += gj * q[i];
-                    dq[i] += gj * St[j * hv + i];
-                }
-            }
-            for (int j = 0; j < hv; j++) {
-                double pred = 0, dd = 0;
-                for (int i = 0; i < hv; i++) {
-                    pred += Sp[j * hv + i] * dec * k[i];
-                    dd += dS[j * hv + i] * k[i];
-                }
-                double delta = (v[j] - pred) * bet;
-                rv[(size_t)t * inner + h * hv + j] = bet * dd;
-                db += dd * (v[j] - pred);
-                double dpred = -bet * dd;
-                for (int i = 0; i < hv; i++) {
-                    double dsd = dS[j * hv + i] + dpred * k[i];
-                    dk[i] += dS[j * hv + i] * delta + Sp[j * hv + i] * dec * dpred;
-                    dd_ += dsd * Sp[j * hv + i];
-                    dS[j * hv + i] = dec * dsd;
-                }
-            }
-            rb[(size_t)t * nh + h] = db;
-            rd[(size_t)t * nh + h] = dd_;
-        }
-    }
+    dn_shape sh = dn_shape_of(nh, ng, hv, T);
+    dn_ref_fill(&sh, 0x2545F4914F6CDD1Dull ^ (uint64_t)hv, cv, beta, decay, dy);
+    dn_ref_out r;
+    dn_ref_run(&sh, cv, beta, decay, dy, &r);
 
     // the forward's rounds: 16 positions a call, the last call 5 or fewer,
     // from a reset (st is zero, as model_recurrent_reset leaves the host's)
@@ -258,7 +180,7 @@ static void dn_check(model_t *m, int nh, int ng, int hv, int T) {
     if (ok) {
         double *fin = malloc(sizeof(double) * (size_t)nh * hh);
         for (int h = 0; h < nh; h++)
-            memcpy(fin + (size_t)h * hh, S + ((size_t)h * (T + 1) + T) * hh,
+            memcpy(fin + (size_t)h * hh, r.S + ((size_t)h * (T + 1) + T) * hh,
                    sizeof(double) * hh);
         dn_close("final state", hv, st, fin, (size_t)nh * hh, 1.0 / 16384);
         free(fin);
@@ -268,7 +190,7 @@ static void dn_check(model_t *m, int nh, int ng, int hv, int T) {
     ok = ok && gpu_train_dn_fw(m, &a, cv, beta, decay, NULL, y);
     CHECK(ok, "dn hv %d: the recompute declined", hv);
     if (ok) {
-        dn_close("y", hv, y, ry, ny, 1.0 / 16384);
+        dn_close("y", hv, y, r.y, ny, 1.0 / 16384);
         CHECK(!memcmp(y, yr, sizeof(float) * ny), "dn hv %d: the forward's rounds "
               "and the recompute differ", hv);
         float *junk = malloc(sizeof(float) * ncv);
@@ -285,7 +207,7 @@ static void dn_check(model_t *m, int nh, int ng, int hv, int T) {
     }
     if (ok) {
         static const char *const NAMES[5] = { "dq", "dk", "dv", "dbeta", "ddecay" };
-        const double *refs[5] = { rq, rk, rv, rb, rd };
+        const double *refs[5] = { r.dq, r.dk, r.dv, r.dbeta, r.ddecay };
         for (int i = 0; i < 5; i++) {
             dn_close(NAMES[i], hv, out[i], refs[i], on[i], 1.0 / 4096);
             CHECK(!memcmp(out[i], out2[i], sizeof(float) * on[i]),
@@ -303,7 +225,7 @@ static void dn_check(model_t *m, int nh, int ng, int hv, int T) {
     printf("dn hv %3d nh %d ng %d T %d: %s\n", hv, nh, ng, T, ok ? "checked" : "declined");
     free(cv); free(beta); free(decay); free(dy); free(y); free(yr); free(st);
     for (int i = 0; i < 5; i++) { free(out[i]); free(out2[i]); }
-    free(S); free(ry); free(rq); free(rk); free(rv); free(rb); free(rd); free(dS);
+    dn_ref_free(&r);
 }
 
 int main(void) {
