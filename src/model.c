@@ -8403,11 +8403,13 @@ static bool lbw_prof_on(void) {
 // chain over k, then one fmaf). Every element keeps the serial loop's chain
 // (it walked t outermost and did exactly these per position); a pass only
 // changes which thread runs a chain, so the bytes do not depend on the
-// thread count. lsb_proj and lsb_dx run a pass's independent chains side
-// by side over contiguous rows (B's, A's transpose's, A's) so the vector
-// units carry several at once; each chain still starts at 0 and takes its
-// terms in the same order through fmaf, and no loop is a reduction the
-// compiler could reassociate.
+// thread count. The passes run independent chains side by side over
+// contiguous rows (B's, A's transpose's, A's, dB's) so the vector units
+// carry several at once, with the accumulators in locals (written through
+// a pointer, they were stored and reloaded every step and each chain
+// waited on its own latency); each chain still starts where it did and
+// takes its terms in the same order through fmaf, and no loop is a
+// reduction the compiler could reassociate.
 typedef struct {
     const struct lora_w *lw;
     const float *xin, *dy;
@@ -8417,23 +8419,48 @@ typedef struct {
     float s;
 } lsb_job;
 
+// one block of lsb_proj: nt positions from tg, ranks [kb, kb + nk). The
+// full block is called with constant sizes, so its accumulators stay in
+// registers: LSB_TB x LSB_KB independent chains per step.
+enum { LSB_TB = 4, LSB_KB = 8 };
+static inline __attribute__((always_inline)) void
+lsb_proj_blk(const lsb_job *J, int tg, int nt, int kb, int nk) {
+    int r = J->r;
+    float ab[LSB_TB][LSB_KB] = { { 0 } }, af[LSB_TB][LSB_KB] = { { 0 } };
+    for (int j = 0; j < J->n_out; j++) {
+        const float *br = J->lw->b + (size_t)j * r + kb;
+        for (int u = 0; u < nt; u++) {
+            float d = J->dy[(size_t)(tg + u) * J->n_out + j];
+            for (int k = 0; k < nk; k++) ab[u][k] = fmaf(br[k], d, ab[u][k]);
+        }
+    }
+    for (int i = 0; i < J->n_in; i++) {
+        const float *ar = J->at + (size_t)i * r + kb;
+        for (int u = 0; u < nt; u++) {
+            float xv = J->xin[(size_t)(tg + u) * J->n_in + i];
+            for (int k = 0; k < nk; k++) af[u][k] = fmaf(ar[k], xv, af[u][k]);
+        }
+    }
+    // two store loops: one loop storing both kept clang's SLP vectorizer
+    // off the whole block (scalar fmadd throughout, a third of the speed)
+    for (int u = 0; u < nt; u++)
+        for (int k = 0; k < nk; k++)
+            J->tb[(size_t)(tg + u) * r + kb + k] = ab[u][k];
+    for (int u = 0; u < nt; u++)
+        for (int k = 0; k < nk; k++)
+            J->tf[(size_t)(tg + u) * r + kb + k] = af[u][k];
+}
+
 static void lsb_proj(void *ctx, int t0, int t1) {
     lsb_job *J = ctx;
-    int r = J->r;
-    for (int t = t0; t < t1; t++) {
-        const float *xt = J->xin + (size_t)t * J->n_in;
-        const float *dyt = J->dy + (size_t)t * J->n_out;
-        float *tb = J->tb + (size_t)t * r, *tf = J->tf + (size_t)t * r;
-        for (int k = 0; k < r; k++) tb[k] = tf[k] = 0.0f;
-        for (int j = 0; j < J->n_out; j++) {
-            const float *br = J->lw->b + (size_t)j * r;
-            float d = dyt[j];
-            for (int k = 0; k < r; k++) tb[k] = fmaf(br[k], d, tb[k]);
-        }
-        for (int i = 0; i < J->n_in; i++) {
-            const float *ar = J->at + (size_t)i * r;
-            float xv = xt[i];
-            for (int k = 0; k < r; k++) tf[k] = fmaf(ar[k], xv, tf[k]);
+    for (int tg = t0; tg < t1; tg += LSB_TB) {
+        int nt = t1 - tg < LSB_TB ? t1 - tg : LSB_TB;
+        for (int kb = 0; kb < J->r; kb += LSB_KB) {
+            int nk = J->r - kb < LSB_KB ? J->r - kb : LSB_KB;
+            if (nt == LSB_TB && nk == LSB_KB)
+                lsb_proj_blk(J, tg, LSB_TB, kb, LSB_KB);
+            else
+                lsb_proj_blk(J, tg, nt, kb, nk);
         }
     }
 }
@@ -8452,15 +8479,40 @@ static void lsb_ga(void *ctx, int i0, int i1) {
     }
 }
 
+// one block of lsb_gb: rows [jg, jg + nj) of dB, ranks [kb, kb + nk),
+// held in locals across the positions (each element's chain is still t
+// ascending from its stored value)
+enum { LSB_JB = 4 };
+static inline __attribute__((always_inline)) void
+lsb_gb_blk(const lsb_job *J, int jg, int nj, int kb, int nk) {
+    int r = J->r;
+    float acc[LSB_JB][LSB_KB];
+    for (int u = 0; u < nj; u++)
+        for (int k = 0; k < nk; k++)
+            acc[u][k] = J->lw->gb[(size_t)(jg + u) * r + kb + k];
+    for (int t = 0; t < J->nb; t++) {
+        const float *tf = J->tf + (size_t)t * r + kb;
+        const float *dyt = J->dy + (size_t)t * J->n_out + jg;
+        for (int u = 0; u < nj; u++) {
+            float sdy = J->s * dyt[u];
+            for (int k = 0; k < nk; k++) acc[u][k] = fmaf(sdy, tf[k], acc[u][k]);
+        }
+    }
+    for (int u = 0; u < nj; u++)
+        for (int k = 0; k < nk; k++)
+            J->lw->gb[(size_t)(jg + u) * r + kb + k] = acc[u][k];
+}
+
 static void lsb_gb(void *ctx, int j0, int j1) {
     lsb_job *J = ctx;
-    for (int t = 0; t < J->nb; t++) {
-        const float *dyt = J->dy + (size_t)t * J->n_out;
-        const float *tf = J->tf + (size_t)t * J->r;
-        for (int j = j0; j < j1; j++) {
-            float *gbr = J->lw->gb + (size_t)j * J->r;
-            float sdy = J->s * dyt[j];
-            for (int k = 0; k < J->r; k++) gbr[k] = fmaf(sdy, tf[k], gbr[k]);
+    for (int jg = j0; jg < j1; jg += LSB_JB) {
+        int nj = j1 - jg < LSB_JB ? j1 - jg : LSB_JB;
+        for (int kb = 0; kb < J->r; kb += LSB_KB) {
+            int nk = J->r - kb < LSB_KB ? J->r - kb : LSB_KB;
+            if (nj == LSB_JB && nk == LSB_KB)
+                lsb_gb_blk(J, jg, LSB_JB, kb, LSB_KB);
+            else
+                lsb_gb_blk(J, jg, nj, kb, nk);
         }
     }
 }
