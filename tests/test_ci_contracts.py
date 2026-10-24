@@ -294,20 +294,16 @@ class ScheduledEntryPoints(unittest.TestCase):
             self.assertFalse((base / "logs/fetch.log").exists())
 
 
-class CudaGateExplainsNotRun(unittest.TestCase):
-    """cuda-gate.sh takes its settings from the environment and from
-    cuda-gate.env beside the script (or the file GATE_ENV names). On the
-    Windows CUDA host variables exported in a Git Bash shell did not reach
-    the MSYS2 bash the gate ran under, and the gate said only "no model for
-    the cpu-cuda step (set GATE_MODEL)". A gate that cannot run for want of
-    a setting names the env file it looked for, whether it loaded it, which
-    settings it has, and the shell that ran it. The gate runs from a copy in
-    a scratch directory, so a box's own env file beside the checkout's copy
-    is never read."""
+class _CudaGateCopy:
+    """Runs a copy of cuda-gate.sh from a scratch directory, so a box's own
+    env file beside the checkout's copy is never read."""
 
     SETTINGS = ("GATE_MODEL", "GATE_PYTHON", "RUNNER_LLAMA_CPP_BIN", "RUNNER_IQ_FIXTURES")
 
-    def run_gate(self, env_file=None):
+    def run_gate(self, env_file=None, prepare=None, bash_args=()):
+        """prepare(base) makes what a case needs in the scratch directory and
+        returns environment changes (None removes a variable); the summary
+        JSON the run wrote is kept in self.summary."""
         with tempfile.TemporaryDirectory() as td:
             base = pathlib.Path(td)
             (base / "scripts").mkdir()
@@ -319,10 +315,27 @@ class CudaGateExplainsNotRun(unittest.TestCase):
                 env_path.write_bytes(env_file(base).encode())
             env = {k: v for k, v in os.environ.items()
                    if not k.upper().startswith("GATE_") and k.upper() not in self.SETTINGS}
-            r = subprocess.run([BASH, gate.as_posix(), (base / "build").as_posix(),
+            for name, value in (prepare(base) if prepare else {}).items():
+                for k in [k for k in env if k.upper() == name.upper()]:
+                    del env[k]
+                if value is not None:
+                    env[name] = value
+            r = subprocess.run([BASH, *bash_args, gate.as_posix(), (base / "build").as_posix(),
                                 (base / "out").as_posix()],
                                capture_output=True, text=True, timeout=60, env=env)
+            self.summary = [json.loads(f.read_text(encoding="utf-8"))
+                            for f in sorted((base / "out").glob("cuda-gate-*.json"))]
         return r, base.as_posix(), env_path.as_posix()
+
+
+class CudaGateExplainsNotRun(_CudaGateCopy, unittest.TestCase):
+    """cuda-gate.sh takes its settings from the environment and from
+    cuda-gate.env beside the script (or the file GATE_ENV names). On the
+    Windows CUDA host variables exported in a Git Bash shell did not reach
+    the MSYS2 bash the gate ran under, and the gate said only "no model for
+    the cpu-cuda step (set GATE_MODEL)". A gate that cannot run for want of
+    a setting names the env file it looked for, whether it loaded it, which
+    settings it has, and the shell that ran it."""
 
     def test_no_env_file_names_it_and_the_missing_settings(self):
         r, _, env_path = self.run_gate()
@@ -351,6 +364,139 @@ class CudaGateExplainsNotRun(unittest.TestCase):
         r, _, _ = self.run_gate(lambda b: "GATE_MODEL=%s/m.gguf\r\n" % b.as_posix())
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("carriage return", r.stdout)
+
+
+PYTHON = pathlib.Path(sys.executable).as_posix()
+
+
+class CudaGateRefusesADegradedLaunch(_CudaGateCopy, unittest.TestCase):
+    r"""On the Windows CUDA host a tool shell started MSYS2 bash with almost
+    none of the Windows environment: no USERNAME, no TEMP or TMP. Python's
+    tempfile fell back to C:\Windows\Temp (its last resort there is
+    %SystemRoot%\Temp), getpass.getuser() raised (pytest's directory became
+    pytest-of-unknown), and the gate ran about 27 times slower than under a
+    login shell on the same host (iquants 1,607 s against 59 s), with two
+    20-second subprocess timeouts that were not hangs. Before its first step
+    the gate asks its own python for the temp directory and the user, refuses
+    (not-run, exit 2) a degraded answer, naming each check, the values it saw
+    and the remedy, and records what it saw in its summary JSON.
+    GATE_ALLOW_DEGRADED_ENV=1 makes each refusal a warning.
+
+    Python's own fallback is the anchor of the POSIX case: tempfile skips a
+    directory it cannot write to without a word (a read-only TMPDIR resolves
+    to /tmp), so the check compares the directory the environment names with
+    the one python uses."""
+
+    @unittest.skipIf(os.name == "nt", "NTFS keeps no mode bits: a read-only TMPDIR is a POSIX fixture")
+    def test_a_tmpdir_python_cannot_write_is_refused(self):
+        def prepare(base):
+            ro = base / "read-only"
+            ro.mkdir()
+            ro.chmod(0o555)
+            if os.access(ro, os.W_OK):
+                self.skipTest("this user writes to a read-only directory (root)")
+            return {"TMPDIR": ro.as_posix(), "USER": "gate", "GATE_PYTHON": PYTHON}
+        r, base, _ = self.run_gate(prepare=prepare)
+        out = r.stdout
+        self.assertEqual(r.returncode, 2, out + r.stderr)
+        self.assertIn("not run: temp directory: TMPDIR=%s/read-only is missing or not writable"
+                      % base, out)
+        self.assertRegex(out, r"launch environment: temp directory /\S+, user \S+")
+        self.assertIn("remedy: launch from a login shell", out)
+        self.assertIn("result: not-run", out)
+        self.assertEqual(self.summary[0]["env"]["degraded"], ["temp directory"])
+
+    def test_no_user_name_is_refused(self):
+        var = "USERNAME" if os.name == "nt" else "USER"
+        r, _, _ = self.run_gate(prepare=lambda b: {"USER": None, "USERNAME": None,
+                                                   "GATE_PYTHON": PYTHON})
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("not run: user name: %s is empty" % var, r.stdout)
+        self.assertIn("remedy: launch from a login shell", r.stdout)
+        self.assertIn("user name", self.summary[0]["env"]["degraded"])
+
+    @unittest.skipIf(os.name == "nt", "the stand-in runner is a POSIX script")
+    def test_the_escape_hatch_warns_and_goes_on_to_the_next_check(self):
+        def ready(base, **extra):
+            # everything the preflight asks for, so the next check after it
+            # (the runner's --caps) is where a run that goes on stops
+            runner = base / "build/runner"
+            runner.write_text("#!/bin/sh\necho '{\"gpu\": null}'\n")
+            runner.chmod(0o755)
+            (base / "m.gguf").write_bytes(b"")
+            (base / "llama").mkdir()
+            (base / "stand-in").mkdir()
+            (base / "stand-in/pytest.py").write_text("")  # the preflight only imports it
+            (base / "tmp").mkdir()
+            env = {"GATE_PYTHON": PYTHON, "GATE_MODEL": (base / "m.gguf").as_posix(),
+                   "TMPDIR": (base / "tmp").as_posix(),
+                   "RUNNER_LLAMA_CPP_BIN": (base / "llama").as_posix(),
+                   "PYTHONPATH": (base / "stand-in").as_posix(), "USER": None}
+            env.update(extra)
+            return env
+        r, _, _ = self.run_gate(prepare=ready)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("not run: user name: USER is empty", r.stdout)
+        self.assertNotIn("caps reports", r.stdout)
+        r, base, _ = self.run_gate(prepare=lambda b: ready(b, GATE_ALLOW_DEGRADED_ENV="1"))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("warning: user name: USER is empty", r.stdout)
+        self.assertNotIn("not run: user name", r.stdout)
+        self.assertIn("caps reports no CUDA device", r.stdout)
+        env = self.summary[0]["env"]
+        self.assertEqual(env["degraded"], ["user name"])
+        self.assertEqual(env["tempdir"], base + "/tmp")
+        self.assertRegex(env["shell"], r"bash")
+        self.assertIs(env["login_shell"], False)
+
+    @unittest.skipIf(os.name == "nt", "stubs uname with a POSIX script; "
+                     "on Windows the real uname takes this branch")
+    def test_the_windows_branch(self):
+        r"""The Windows directory comes from SYSTEMROOT, compared without
+        regard to case or slash direction (C:\WINDOWS against python's
+        C:\Windows\Temp on the host), and MSYS2 needs MSYSTEM, and HOME
+        unless the shell is a login shell. The uname strings are the
+        platforms' own (PlatformDetection)."""
+        def prepare(base, **extra):
+            stub = base / "bin/uname"
+            stub.parent.mkdir()
+            stub.write_text("#!/bin/sh\necho MSYS_NT-10.0-19045\n")
+            stub.chmod(0o755)
+            (base / "Windows/Temp").mkdir(parents=True)
+            (base / "tmp").mkdir()
+            env = {"PATH": (base / "bin").as_posix() + os.pathsep + os.environ["PATH"],
+                   "SYSTEMROOT": (base / "WINDOWS").as_posix().replace("/", "\\").upper(),
+                   "TMPDIR": (base / "Windows/Temp").as_posix(), "TEMP": None, "TMP": None,
+                   "USERNAME": None, "MSYSTEM": None, "HOME": None, "GATE_PYTHON": PYTHON}
+            env.update(extra)
+            return env
+        r, base, _ = self.run_gate(prepare=prepare)
+        out = r.stdout
+        self.assertEqual(r.returncode, 2, out + r.stderr)
+        root = (base + "/WINDOWS").replace("/", "\\").upper()
+        self.assertIn("not run: temp directory: %s/Windows/Temp is under the Windows directory %s"
+                      % (base, root), out)
+        self.assertIn("not run: user name: USERNAME is empty", out)
+        self.assertIn("not run: MSYS2 shell: MSYSTEM is not set", out)
+        self.assertIn("not run: MSYS2 shell: not a login shell and HOME is not set", out)
+        self.assertIn("MSYSTEM unset", out)
+        self.assertIn(r"remedy: launch from a login shell (PowerShell: "
+                      r"C:\msys64\usr\bin\bash.exe -lc '...') or set TEMP/TMP and USERNAME", out)
+        self.assertEqual(self.summary[0]["class"], "windows-x86_64-cuda")
+        self.assertEqual(self.summary[0]["env"]["degraded"],
+                         ["temp directory", "user name", "MSYS2 shell"])
+        for case, home, args in (("HOME set", True, ()),
+                                 ("a login shell without HOME", False, ("--noprofile", "-l"))):
+            with self.subTest(case):
+                r, _, _ = self.run_gate(prepare=lambda b: prepare(
+                    b, TMPDIR=(b / "tmp").as_posix(), MSYSTEM="UCRT64", USERNAME="gate",
+                    HOME=b.as_posix() if home else None), bash_args=args)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertNotIn("launch environment", r.stdout)
+                self.assertNotIn("remedy", r.stdout)
+                self.assertEqual(self.summary[0]["env"]["degraded"], [])
+                self.assertEqual(self.summary[0]["env"]["msystem"], "UCRT64")
+                self.assertIs(self.summary[0]["env"]["login_shell"], bool(args))
 
 
 class LlamaQuantizeByName(unittest.TestCase):

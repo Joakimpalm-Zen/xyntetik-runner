@@ -50,6 +50,8 @@
 #                    not run without RUNNER_LLAMA_CPP_BIN)
 #   GATE_LOCK        lock file to hold while running (optional)
 #   GATE_SKIP_IF     shell command; when it exits 0 the gate SKIPS, logged
+#   GATE_ALLOW_DEGRADED_ENV=1   run in a degraded launch environment (below)
+#                    with a warning instead of refusing
 # A box keeps its values in a file beside its copy of this script
 # (cuda-gate.env, plain VAR=value lines with LF line endings) or in the file
 # GATE_ENV names. A gate that cannot run for want of a setting says which env
@@ -57,6 +59,18 @@
 # the shell running it: a variable exported in another shell does not reach
 # this one (on the Windows CUDA host, a Git Bash export never reached the
 # MSYS2 bash the gate ran under), and the env file is the one place that does.
+#
+# Before its first step the gate also asks its own python (GATE_PYTHON) for
+# its temp directory and the user, and finishes not-run when the launch
+# environment is degraded: a temp directory under the Windows directory, or
+# on POSIX one that is / or not writable, or a TMPDIR/TEMP/TMP python could
+# not use; an empty USERNAME (Windows) or USER (POSIX), or a getuser() that
+# raises; under MSYS2, no MSYSTEM, or no HOME outside a login shell. On the
+# Windows CUDA host a tool shell that started MSYS2 bash without USERNAME,
+# TEMP or TMP sent every fixture through C:\Windows\Temp (python's last
+# resort) and the gate ran about 27 times slower, with subprocess timeouts
+# that were not hangs. The summary JSON records the temp directory, user and
+# shell the run had.
 set -u
 GATE_ENV=${GATE_ENV:-$(dirname "$0")/cuda-gate.env}
 GATE_ENV_STATE="not found"
@@ -75,7 +89,8 @@ DIR=$OUT/cuda-gate-$STAMP
 mkdir -p "$DIR" || exit 2
 SUMMARY=$OUT/cuda-gate-$STAMP.json
 
-case "$(uname -s)" in
+UNAME=$(uname -s)
+case "$UNAME" in
   Linux)            DEF_CLASS=linux-x86_64-cuda; EXE=./runner ;;
   MINGW*|MSYS*|CYGWIN*) DEF_CLASS=windows-x86_64-cuda; EXE=./runner.exe ;;
   *)                DEF_CLASS=none; EXE=./runner ;;
@@ -89,9 +104,14 @@ MODEL=${GATE_MODEL:-}
 note() { echo "[cuda-gate $(date -u +%H:%M:%S)] $*"; }
 STEPS=""
 add_step() { STEPS="$STEPS${STEPS:+,}{\"step\":\"$1\",\"result\":\"$2\",\"seconds\":$3}"; }
+json_str() { printf '"%s"' "$(printf '%s' "$1" | tr -d '\000-\037' | sed 's/[\\"]/\\&/g')"; }
+ENV_TMP="" ENV_USER="" ENV_DEGRADED="" ENV_LOGIN=false
+shopt -q login_shell && ENV_LOGIN=true
 finish() {  # result exit_code
-  printf '{"schema":"xyntetik.runner.cuda-gate.v1","stamp":"%s","class":"%s","commit":"%s","result":"%s","steps":[%s]}\n' \
-    "$STAMP" "$CLASS" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$1" "$STEPS" > "$SUMMARY"
+  printf '{"schema":"xyntetik.runner.cuda-gate.v1","stamp":"%s","class":"%s","commit":"%s","result":"%s","env":{"tempdir":%s,"user":%s,"shell":%s,"login_shell":%s,"msystem":%s,"degraded":[%s]},"steps":[%s]}\n' \
+    "$STAMP" "$CLASS" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$1" \
+    "$(json_str "$ENV_TMP")" "$(json_str "$ENV_USER")" "$(json_str "${BASH:-}")" "$ENV_LOGIN" \
+    "$(json_str "${MSYSTEM:-}")" "$ENV_DEGRADED" "$STEPS" > "$SUMMARY"
   note "result: $1 ($SUMMARY)"
   [ -n "${GATE_LOCK:-}" ] && [ -n "${LOCKED:-}" ] && rm -f "$GATE_LOCK"
   exit "$2"
@@ -141,9 +161,76 @@ env_report() {
 }
 PROBLEMS=0
 problem() { note "not run: $*"; PROBLEMS=$((PROBLEMS + 1)); }
+
+# The launch environment, as the gate's own python sees it (the header says
+# why). Each failed check is a problem, or with GATE_ALLOW_DEGRADED_ENV=1 a
+# warning; either way the summary JSON names it.
+degraded() {  # check detail
+  case ",$ENV_DEGRADED," in *",\"$1\","*) ;; *) ENV_DEGRADED="$ENV_DEGRADED${ENV_DEGRADED:+,}\"$1\"" ;; esac
+  if [ "${GATE_ALLOW_DEGRADED_ENV:-}" = 1 ]; then note "warning: $1: $2 (GATE_ALLOW_DEGRADED_ENV=1: going on)"
+  else problem "$1: $2"; fi
+}
+# Six lines, from python's stdin (no multi-line argument for MSYS2 to quote
+# for a Windows python): the temp directory, the TMPDIR/TEMP/TMP (the first
+# set, in python's order) it did not use, whether it is writable, the user,
+# why getuser() raised, and SYSTEMROOT as a child process gets it.
+ENV_PROBE='import getpass, os, sys, tempfile
+try: t = tempfile.gettempdir()
+except Exception: t = ""
+named = [(k, os.environ[k]) for k in ("TMPDIR", "TEMP", "TMP") if os.environ.get(k)][:1]
+unused = ""
+if named and os.path.normcase(os.path.abspath(named[0][1])) != os.path.normcase(t):
+    unused = "%s=%s" % named[0]
+try: u, why = getpass.getuser(), ""
+except Exception as e: u, why = "", "%s: %s" % (type(e).__name__, e)
+root = os.environ.get("SYSTEMROOT") or os.environ.get("WINDIR") or ""
+w = "1" if t and os.access(t, os.W_OK) else "0"
+lines = (str(x).replace("\n", " ") for x in (t, unused, w, u, why, root))
+sys.stdout.buffer.write(("\n".join(lines) + "\n").encode("utf-8", "replace"))
+'
+path_key() { printf '%s' "$1" | tr '\\' / | tr '[:upper:]' '[:lower:]' | sed 's:/*$::'; }
+env_check() {
+  local probe unused writable why root win="" uvar=USER uval login
+  case $UNAME in MINGW*|MSYS*|CYGWIN*) win=1; uvar=USERNAME ;; esac
+  if ! probe=$(printf '%s\n' "$ENV_PROBE" | "$PY" - 2> /dev/null); then
+    problem "$PY could not report its temp directory and user"; return
+  fi
+  { IFS= read -r ENV_TMP; IFS= read -r unused; IFS= read -r writable
+    IFS= read -r ENV_USER; IFS= read -r why; IFS= read -r root; } <<< "$probe"
+  if [ -z "$ENV_TMP" ]; then degraded "temp directory" "python finds no usable one"
+  elif [ -n "$win" ]; then
+    # compared without regard to case or slash direction: C:\WINDOWS holds
+    # C:\Windows\Temp
+    [ -z "$root" ] || case "$(path_key "$ENV_TMP")/" in
+      "$(path_key "$root")"/*) degraded "temp directory" "$ENV_TMP is under the Windows directory $root" ;;
+    esac
+  elif [ "$ENV_TMP" = / ]; then degraded "temp directory" "it is /"
+  elif [ "$writable" != 1 ]; then degraded "temp directory" "$ENV_TMP is not writable"
+  fi
+  [ -z "$unused" ] || degraded "temp directory" "$unused is missing or not writable, so python uses $ENV_TMP"
+  uval=${!uvar:-}
+  [ -n "$uval" ] || degraded "user name" "$uvar is empty"
+  [ -z "$why" ] || degraded "user name" "python's getpass.getuser() raises ($why)"
+  case $UNAME in MINGW*|MSYS*)
+    [ -n "${MSYSTEM:-}" ] || degraded "MSYS2 shell" "MSYSTEM is not set"
+    [ "$ENV_LOGIN" = true ] || [ -n "${HOME:-}" ] || degraded "MSYS2 shell" "not a login shell and HOME is not set" ;;
+  esac
+  [ -n "$ENV_DEGRADED" ] || return 0
+  login="not a login shell"; [ "$ENV_LOGIN" = true ] && login="login shell"
+  note "launch environment: temp directory ${ENV_TMP:-none}, user ${ENV_USER:-none} ($uvar ${uval:-empty}), shell ${BASH:-unknown} ($login), MSYSTEM ${MSYSTEM:-unset}"
+  if [ -n "$win" ]; then
+    note "remedy: launch from a login shell (PowerShell: C:\\msys64\\usr\\bin\\bash.exe -lc '...') or set TEMP/TMP and USERNAME"
+  else
+    note "remedy: launch from a login shell (bash -lc '...') or set TMPDIR and USER"
+  fi
+}
+
 [ -x "$EXE" ] || problem "no $EXE in $BUILD"
 if ! command -v "$PY" > /dev/null 2>&1; then problem "no $PY on PATH (GATE_PYTHON)"
-elif ! "$PY" -c 'import pytest' 2> /dev/null; then problem "$PY has no pytest (GATE_PYTHON)"; fi
+else
+  "$PY" -c 'import pytest' 2> /dev/null || problem "$PY has no pytest (GATE_PYTHON)"
+  env_check
+fi
 if [ -z "$MODEL" ]; then problem "GATE_MODEL is not set: the cpu-cuda step needs a GGUF"
 elif [ ! -f "$MODEL" ]; then problem "GATE_MODEL $MODEL does not exist"; fi
 if [ -z "${RUNNER_LLAMA_CPP_BIN:-}" ]; then
