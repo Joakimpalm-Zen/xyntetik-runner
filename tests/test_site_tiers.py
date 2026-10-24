@@ -40,12 +40,41 @@ def gate(day, version):
             "evidence": "docs/model-evidence.md"}
 
 
-def fixture(day="2026-10-23", version="1.5.1"):
-    """The committed roster with one known cell: Kvist-14B Q8_0 on CUDA."""
+def lora(day, version):
+    return {"training": {"supported": True, "reason": None},
+            "adapter_serving": {"supported": True, "reason": None},
+            "runner_version": version, "date": day}
+
+
+E2B_ROW = "gemma-4-e2b-it-q4_k_m-q4_0-mix"
+
+
+def cleared():
+    """The committed roster's shape (rows, files, order, declared limits) with
+    every recorded gate cell and Train answer removed. The tests below pin
+    marks they set themselves, so a record landing on main changes nothing
+    here; before this, every --record moved the expected text."""
     doc = json.loads(ROSTER.read_text(encoding="utf-8"))
+    for r in doc["rows"]:
+        for b, cell in list((r.get("backends") or {}).items()):
+            if cell and cell.get("kind") == "gate":
+                r["backends"][b] = None
+        if "lora" in r:
+            r["lora"] = None
+    return doc
+
+
+def fixture(day="2026-10-23", version="1.5.1"):
+    """The cleared roster with three known cells: Kvist-14B Q8_0 on CUDA,
+    and the E2B mix on CPU and Metal with a Train answer."""
+    doc = cleared()
     for r in doc["rows"]:
         if r["id"] == "xyntetik-kvist-14b-q8_0":
             r["backends"]["cuda"] = gate(day, version)
+        if r["id"] == E2B_ROW:
+            r["backends"]["cpu"] = gate(day, version)
+            r["backends"]["metal"] = gate(day, version)
+            r["lora"] = lora(day, version)
     return doc
 
 
@@ -136,9 +165,11 @@ def test_a_card_summary_names_the_marks_of_its_repos_files():
 
 
 def test_every_file_of_a_card_with_one_set_of_marks_is_counted():
-    doc = json.loads(ROSTER.read_text(encoding="utf-8"))
+    doc = cleared()
+    n = len(mt.repo_rows(doc, KVIST_GGUF))
+    assert n >= 3
     kvist = text_of(site.validated_html(doc, [KVIST_GGUF]))
-    assert kvist == ("Last validated, all 4 files: CPU ☐ not run · CUDA ☐ not run · "
+    assert kvist == (f"Last validated, all {n} files: CPU ☐ not run · CUDA ☐ not run · "
                      "Metal ☐ not run · Train ☐ not run")
 
 
