@@ -8403,29 +8403,37 @@ static bool lbw_prof_on(void) {
 // chain over k, then one fmaf). Every element keeps the serial loop's chain
 // (it walked t outermost and did exactly these per position); a pass only
 // changes which thread runs a chain, so the bytes do not depend on the
-// thread count.
+// thread count. lsb_proj and lsb_dx run a pass's independent chains side
+// by side over contiguous rows (B's, A's transpose's, A's) so the vector
+// units carry several at once; each chain still starts at 0 and takes its
+// terms in the same order through fmaf, and no loop is a reduction the
+// compiler could reassociate.
 typedef struct {
     const struct lora_w *lw;
     const float *xin, *dy;
     float *dxin, *tb, *tf;   // tb, tf: [nb][r]
+    const float *at;         // A transposed, [n_in][r]
     int n_in, n_out, nb, r;
     float s;
 } lsb_job;
 
 static void lsb_proj(void *ctx, int t0, int t1) {
     lsb_job *J = ctx;
+    int r = J->r;
     for (int t = t0; t < t1; t++) {
         const float *xt = J->xin + (size_t)t * J->n_in;
         const float *dyt = J->dy + (size_t)t * J->n_out;
-        for (int k = 0; k < J->r; k++) {
-            float acc = 0.0f;
-            for (int j = 0; j < J->n_out; j++)
-                acc = fmaf(J->lw->b[(size_t)j * J->r + k], dyt[j], acc);
-            J->tb[(size_t)t * J->r + k] = acc;
-            const float *ar = J->lw->a + (size_t)k * J->n_in;
-            float acf = 0.0f;
-            for (int i = 0; i < J->n_in; i++) acf = fmaf(ar[i], xt[i], acf);
-            J->tf[(size_t)t * J->r + k] = acf;
+        float *tb = J->tb + (size_t)t * r, *tf = J->tf + (size_t)t * r;
+        for (int k = 0; k < r; k++) tb[k] = tf[k] = 0.0f;
+        for (int j = 0; j < J->n_out; j++) {
+            const float *br = J->lw->b + (size_t)j * r;
+            float d = dyt[j];
+            for (int k = 0; k < r; k++) tb[k] = fmaf(br[k], d, tb[k]);
+        }
+        for (int i = 0; i < J->n_in; i++) {
+            const float *ar = J->at + (size_t)i * r;
+            float xv = xt[i];
+            for (int k = 0; k < r; k++) tf[k] = fmaf(ar[k], xv, tf[k]);
         }
     }
 }
@@ -8458,8 +8466,10 @@ static void lsb_gb(void *ctx, int j0, int j1) {
 }
 
 // columns in blocks of LSB_IB, so A's block stays in cache across the
-// positions (each element's chain is still k ascending, then one fmaf)
-enum { LSB_IB = 512 };
+// positions, then LSB_IV columns at a time with k outermost, so A's row
+// segment is read contiguously (each element's chain is still k
+// ascending, then one fmaf)
+enum { LSB_IB = 512, LSB_IV = 16 };
 static void lsb_dx(void *ctx, int t0, int t1) {
     lsb_job *J = ctx;
     for (int ib = 0; ib < J->n_in; ib += LSB_IB) {
@@ -8467,11 +8477,18 @@ static void lsb_dx(void *ctx, int t0, int t1) {
         for (int t = t0; t < t1; t++) {
             float *dxt = J->dxin + (size_t)t * J->n_in;
             const float *tb = J->tb + (size_t)t * J->r;
-            for (int i = ib; i < ie; i++) {
-                float acc = 0.0f;
-                for (int k = 0; k < J->r; k++)
-                    acc = fmaf(J->lw->a[(size_t)k * J->n_in + i], tb[k], acc);
-                dxt[i] = fmaf(J->s, acc, dxt[i]);
+            for (int i = ib; i < ie; i += LSB_IV) {
+                int n = ie - i < LSB_IV ? ie - i : LSB_IV;
+                float acc[LSB_IV] = { 0 };
+                for (int k = 0; k < J->r; k++) {
+                    const float *ar = J->lw->a + (size_t)k * J->n_in + i;
+                    float tk = tb[k];
+                    if (n == LSB_IV)
+                        for (int v = 0; v < LSB_IV; v++) acc[v] = fmaf(ar[v], tk, acc[v]);
+                    else
+                        for (int v = 0; v < n; v++) acc[v] = fmaf(ar[v], tk, acc[v]);
+                }
+                for (int v = 0; v < n; v++) dxt[i + v] = fmaf(J->s, acc[v], dxt[i + v]);
             }
         }
     }
@@ -8494,11 +8511,15 @@ static bool lora_site_bw(model_t *m, int l, int slot, const gguf_tensor *w,
     if (!lw->ga) lw->ga = calloc((size_t)lw->r * n_in, sizeof(float));
     if (!lw->gb) lw->gb = calloc((size_t)n_out * lw->r, sizeof(float));
     if (!lw->ga || !lw->gb) return false;
-    float *tbf = malloc(sizeof(float) * (size_t)2 * nb * lw->r);
+    float *tbf = malloc(sizeof(float) * ((size_t)2 * nb + n_in) * lw->r);
     if (!tbf) return false;
-    lsb_job j = { lw, xin, dy, dxin, tbf, tbf + (size_t)nb * lw->r,
-                  n_in, n_out, nb, lw->r, lw->scale };
+    float *at = tbf + (size_t)2 * nb * lw->r;
     double p0 = lbw_prof_on() ? plat_now() : 0;
+    for (int k = 0; k < lw->r; k++)
+        for (int i = 0; i < n_in; i++)
+            at[(size_t)i * lw->r + k] = lw->a[(size_t)k * n_in + i];
+    lsb_job j = { lw, xin, dy, dxin, tbf, tbf + (size_t)nb * lw->r, at,
+                  n_in, n_out, nb, lw->r, lw->scale };
     tpool_run(m->tp, lsb_proj, &j, nb);
     tpool_run(m->tp, lsb_ga, &j, n_in);
     tpool_run(m->tp, lsb_gb, &j, n_out);
