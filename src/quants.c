@@ -15,6 +15,7 @@
 #include "quants.h"
 #include "fp16.h"
 #include "tpool.h"
+#include "fpenv.h"
 
 #include <math.h>
 #include "pmath.h"
@@ -4620,6 +4621,7 @@ struct tpool {
     _Atomic int stop;
     int spin;                 // relax iterations before parking
     pthread_mutex_t run_mu;   // one run at a time: shared pools serialize their holders
+    fpenv_t fpenv;            // the creator's FP control state, for the workers (fpenv.h)
     _Atomic int refs;         // holders (tpool_retain / tpool_destroy)
 };
 
@@ -4669,6 +4671,7 @@ static void *tp_worker(void *argp) {
     tpool *tp = a->tp;
     int idx = a->idx; // 1..n_threads-1 (0 is the calling thread)
     free(a);
+    fpenv_set(tp->fpenv);
     uint64_t seen = 0;
     for (;;) {
         // Wait for work: spin on the generation counter, then park. The
@@ -4733,6 +4736,7 @@ tpool *tpool_create(int n_threads) {
     if (!tp) return NULL;
     tp->n_threads = n_threads;
     tp->spin = tp_spin_budget();
+    tp->fpenv = fpenv_get();
     atomic_store(&tp->refs, 1);
     if (pthread_mutex_init(&tp->run_mu, NULL) != 0) { free(tp); return NULL; }
     if (pthread_mutex_init(&tp->mu, NULL) != 0) { pthread_mutex_destroy(&tp->run_mu); free(tp); return NULL; }

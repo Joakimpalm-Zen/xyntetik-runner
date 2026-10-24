@@ -24,6 +24,7 @@
 // weights are shared between slots through the page cache (mmap).
 #include "runner.h"
 #include "fpclass.h"
+#include "fpenv.h"
 #include "json.h"
 #include "compat.h"
 #include "http.h"
@@ -2768,8 +2769,12 @@ static void handle_conn(slot_t *s, sock_t fd) {
     free(body);
 }
 
+// the main thread's FP control state, which the slot threads take (fpenv.h)
+static fpenv_t slot_fpenv;
+
 static void *slot_worker(void *arg) {
     slot_t *s = arg;
+    fpenv_set(slot_fpenv);
     for (;;) {
         double waited = 0;
         sock_t fd = q_pop(&waited);
@@ -3632,6 +3637,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     // batched kernels all get.
     bool batched = sched_start();
 
+    slot_fpenv = fpenv_get();
     for (int i = 0; i < parallel; i++) {
         if (pthread_create(&SV.slots[i].th, NULL, slot_worker, &SV.slots[i]) != 0) {
             fprintf(stderr, "error: cannot start server slot %d\n", i);
