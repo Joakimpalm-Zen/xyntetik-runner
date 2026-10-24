@@ -205,6 +205,12 @@ void   gpu_attn_coop_force(int on);
 unsigned long gpu_attn_coop_dispatches(void);
 unsigned long gpu_attn_tile_dispatches(void);  // prefill tiles (Metal), 0 elsewhere
 unsigned long gpu_attn_tiled_dispatches(void); // tiled prefill attention (CUDA), 0 elsewhere
+// CUDA's attention routes and KV copy-back, so the kernel counters say which
+// ran (attn-tc falls back to the tiled kernel where it does not apply);
+// 0 on every other backend
+unsigned long gpu_attn_tc_dispatches(void);     // tensor-core prefill attention tiles
+unsigned long gpu_attn_dec_gqa_dispatches(void); // grouped decode attention launches
+unsigned long gpu_kv_gather_tokens(void);       // decoded tokens whose K/V came back in one copy
 unsigned long gpu_attn_gqa_dispatches(void);   // grouped-query decode groups (Metal), 0 elsewhere
 // CUDA's BF16 split-K decode GEMV (k_mv_bf16_splitk) launches, so its gate
 // can prove the route ran; 0 on every other backend.
