@@ -7846,26 +7846,61 @@ static void lora_attach_owned(model_t *m, struct lora_w *tab, float alpha,
 }
 
 // The low-rank delta for one projection: t = A x (r dots), y += scale * B t.
-// Explicit fmaf accumulation in a fixed sequential order — the adapter path
-// must be as reproducible as the base kernels it rides beside.
+// Explicit fmaf accumulation in a fixed sequential order: the adapter path
+// must be as reproducible as the base kernels it rides beside. Each t[k] is
+// a chain over i ascending from 0, each y[j]'s sum a chain over k ascending
+// from 0, then one fmaf into y[j]. The loops run up to 8 of those
+// independent chains side by side (8, then 4, 2 and 1 at an edge, each
+// width a constant so its accumulators stay in registers); one at a time,
+// every chain waited on its own fmaf latency (2-3 GFLOP/s a thread).
+static inline __attribute__((always_inline)) void
+la_t_blk(const float *a, int n_in, const float *xr, float *t, int kb, int nk) {
+    float acc[8] = { 0 };
+    for (int i = 0; i < n_in; i++) {
+        float xv = xr[i];
+        for (int k = 0; k < nk; k++)
+            acc[k] = fmaf(a[(size_t)(kb + k) * n_in + i], xv, acc[k]);
+    }
+    for (int k = 0; k < nk; k++) t[kb + k] = acc[k];
+}
+
+static inline __attribute__((always_inline)) void
+la_y_blk(const float *b, int r, const float *t, float *yr, int jb, int nj,
+         float s) {
+    float acc[8] = { 0 };
+    for (int k = 0; k < r; k++) {
+        float tk = t[k];
+        for (int u = 0; u < nj; u++)
+            acc[u] = fmaf(b[(size_t)(jb + u) * r + k], tk, acc[u]);
+    }
+    for (int u = 0; u < nj; u++) yr[jb + u] = fmaf(s, acc[u], yr[jb + u]);
+}
+
+static int la_width(int n) { return n >= 8 ? 8 : n >= 4 ? 4 : n >= 2 ? 2 : 1; }
+
 static void lora_apply(const struct lora_w *lw, float *y, int ys,
                        const float *xin, int xs, int n_in, int n_out, int nb) {
     if (!lw->r) return;
+    int r = lw->r;
     float t[LORA_R_MAX];
     for (int bb = 0; bb < nb; bb++) {
         const float *xr = xin + (size_t)bb * xs;
         float *yr = y + (size_t)bb * ys;
-        for (int k = 0; k < lw->r; k++) {
-            const float *ar = lw->a + (size_t)k * n_in;
-            float acc = 0.0f;
-            for (int i = 0; i < n_in; i++) acc = fmaf(ar[i], xr[i], acc);
-            t[k] = acc;
+        for (int kb = 0, w; kb < r; kb += w) {
+            switch ((w = la_width(r - kb))) {
+            case 8: la_t_blk(lw->a, n_in, xr, t, kb, 8); break;
+            case 4: la_t_blk(lw->a, n_in, xr, t, kb, 4); break;
+            case 2: la_t_blk(lw->a, n_in, xr, t, kb, 2); break;
+            default: la_t_blk(lw->a, n_in, xr, t, kb, 1); break;
+            }
         }
-        for (int j = 0; j < n_out; j++) {
-            const float *br = lw->b + (size_t)j * lw->r;
-            float acc = 0.0f;
-            for (int k = 0; k < lw->r; k++) acc = fmaf(br[k], t[k], acc);
-            yr[j] = fmaf(lw->scale, acc, yr[j]);
+        for (int jb = 0, w; jb < n_out; jb += w) {
+            switch ((w = la_width(n_out - jb))) {
+            case 8: la_y_blk(lw->b, r, t, yr, jb, 8, lw->scale); break;
+            case 4: la_y_blk(lw->b, r, t, yr, jb, 4, lw->scale); break;
+            case 2: la_y_blk(lw->b, r, t, yr, jb, 2, lw->scale); break;
+            default: la_y_blk(lw->b, r, t, yr, jb, 1, lw->scale); break;
+            }
         }
     }
 }
