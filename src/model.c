@@ -8339,11 +8339,40 @@ typedef struct {
     const gguf_tensor *w;
     const float *dyT;   // [j][t] — transposed so workers stream, see below
     float *dx;
-    int n_in, n_out, nb, bs;
+    int n_in, n_out, nb, uw;   // uw: columns a unit decodes (whole blocks)
     int n_units, tch;   // column units, and position chunks per unit
+    int panel;          // rows decoded at a time
     size_t rs, unit_bytes;
     bool oom;
 } mvt_job;
+
+// One register tile: positions [t, t + ntt) x columns [c, c + ncw) of a
+// unit, over the panel's rows [0, np) ascending. The tile's dx values are
+// loaded once, carried in registers down the panel, and stored once; each
+// element still takes its rows in ascending order through fmaf and skips a
+// row whose dy is zero, so the chain is the one the row-at-a-time loop
+// built. Called with constant sizes (4 x 16 and the edges' 1s).
+enum { MVT_TT = 4, MVT_CW = 16 };
+static inline __attribute__((always_inline)) void
+mvt_tile(const mvt_job *jb, const float *pan, int nsl, int j0, int np,
+         int i0, int t, int ntt, int c, int ncw) {
+    float acc[MVT_TT][MVT_CW];
+    for (int a = 0; a < ntt; a++)
+        for (int v = 0; v < ncw; v++)
+            acc[a][v] = jb->dx[(size_t)(t + a) * jb->n_in + i0 + c + v];
+    for (int p = 0; p < np; p++) {
+        const float *row = pan + (size_t)p * nsl + c;
+        const float *dyj = jb->dyT + (size_t)(j0 + p) * jb->nb + t;
+        for (int a = 0; a < ntt; a++) {
+            float d = dyj[a];
+            if (d == 0.0f) continue;
+            for (int v = 0; v < ncw; v++) acc[a][v] = fmaf(row[v], d, acc[a][v]);
+        }
+    }
+    for (int a = 0; a < ntt; a++)
+        for (int v = 0; v < ncw; v++)
+            jb->dx[(size_t)(t + a) * jb->n_in + i0 + c + v] = acc[a][v];
+}
 
 // Worker grid = column units × position chunks. The decode granularity
 // caps units at n_in/block_size (as few as 10 on a 2560-wide input), which
@@ -8351,41 +8380,58 @@ typedef struct {
 // partition axis. Each element (t,i) still belongs to exactly ONE worker
 // and keeps its ascending-j chain, so the partition shape (like the thread
 // count) cannot reach the bytes; what it costs is decoding each slice once
-// per position chunk instead of once, a factor the position batching
-// already made cheap.
+// per position chunk instead of once, so a chunk keeps at least 32
+// positions where it can (the LM head's 16-position rounds were split into
+// chunks of 2 and ran at under 2 GFLOP/s, re-walking every vocabulary row
+// for two positions). Within an item the rows are decoded a panel at a
+// time and the chunk's dx is updated in register tiles down the panel,
+// not reloaded and stored once per row.
 static void mvt_worker(void *ctx, int k0, int k1) {
     mvt_job *jb = (mvt_job *)ctx;
+    float *pan = malloc(sizeof(float) * (size_t)jb->panel * jb->uw);
+    if (!pan) { jb->oom = true; return; }
     for (int k = k0; k < k1; k++) {
         int u = k / jb->tch, tc = k % jb->tch;
         int t0 = (int)((int64_t)jb->nb * tc / jb->tch);
         int t1 = (int)((int64_t)jb->nb * (tc + 1) / jb->tch);
-        int i0 = u * jb->bs;
-        int nsl = jb->bs;
+        int i0 = u * jb->uw;
+        int nsl = jb->uw;
         if (i0 + nsl > jb->n_in) nsl = jb->n_in - i0;
-        float *slice = malloc(sizeof(float) * (size_t)nsl);
-        if (!slice) { jb->oom = true; return; }
         const uint8_t *base = (const uint8_t *)jb->w->data +
                               (size_t)u * jb->unit_bytes;
-        for (int j = 0; j < jb->n_out; j++) {
-            const float *dyj = jb->dyT + (size_t)j * jb->nb;
-            bool decoded = false;
-            for (int t = t0; t < t1; t++) {
-                float d = dyj[t];
-                if (d == 0.0f) continue;
-                if (!decoded) {
-                    dequant_row(jb->w->type, base + (size_t)j * jb->rs,
-                                slice, nsl);
-                    if (jb->w->scale != 1.0f)
-                        for (int i = 0; i < nsl; i++) slice[i] *= jb->w->scale;
-                    decoded = true;
+        for (int j0 = 0; j0 < jb->n_out; j0 += jb->panel) {
+            int np = jb->n_out - j0 < jb->panel ? jb->n_out - j0 : jb->panel;
+            // decode the panel's rows that some position in the chunk uses
+            for (int p = 0; p < np; p++) {
+                const float *dyj = jb->dyT + (size_t)(j0 + p) * jb->nb;
+                float *row = pan + (size_t)p * nsl;
+                int used = 0;
+                for (int t = t0; t < t1 && !used; t++) used = dyj[t] != 0.0f;
+                if (!used) { memset(row, 0, sizeof(float) * (size_t)nsl); continue; }
+                dequant_row(jb->w->type, base + (size_t)(j0 + p) * jb->rs,
+                            row, nsl);
+                if (jb->w->scale != 1.0f)
+                    for (int i = 0; i < nsl; i++) row[i] *= jb->w->scale;
+            }
+            for (int t = t0; t < t1; ) {
+                int ntt = t1 - t >= MVT_TT ? MVT_TT : 1;
+                for (int c = 0; c < nsl; ) {
+                    int ncw = nsl - c >= MVT_CW ? MVT_CW : 1;
+                    if (ntt == MVT_TT && ncw == MVT_CW)
+                        mvt_tile(jb, pan, nsl, j0, np, i0, t, MVT_TT, c, MVT_CW);
+                    else if (ntt == MVT_TT)
+                        mvt_tile(jb, pan, nsl, j0, np, i0, t, MVT_TT, c, 1);
+                    else if (ncw == MVT_CW)
+                        mvt_tile(jb, pan, nsl, j0, np, i0, t, 1, c, MVT_CW);
+                    else
+                        mvt_tile(jb, pan, nsl, j0, np, i0, t, 1, c, 1);
+                    c += ncw;
                 }
-                float *dxt = jb->dx + (size_t)t * jb->n_in + i0;
-                for (int i = 0; i < nsl; i++)
-                    dxt[i] = fmaf(slice[i], d, dxt[i]);
+                t += ntt;
             }
         }
-        free(slice);
     }
+    free(pan);
 }
 
 // dy arrives [t][j]; every worker walks it row-by-row (fixed j, all t),
@@ -8420,13 +8466,19 @@ static bool matvec_t(model_t *m, const gguf_tensor *w, const float *dy,
         mvtt_job tj = { dy, dyT, n_out, nb };
         tpool_run(m->tp, mvt_transpose_worker, &tj, n_out);
     }
+    // a unit is whole blocks, at least 32 columns (a 1-element block type
+    // decoded one column per unit); chunks of at least 32 positions, at
+    // most 8; panels of about 16 KB of decoded rows. All of it from the
+    // shapes alone, never the thread count.
     int bs = ggml_block_size(w->type);
-    int n_units = n_in / bs;
-    int tch = nb >= 8 ? 8 : 1;   // data-dependent only, never thread-count
-    mvt_job jb = { w, dyT ? dyT : dy, dx, n_in, n_out, nb, bs,
-                   n_units, tch,
+    int uw = bs >= 32 ? bs : bs * ((32 + bs - 1) / bs);
+    int n_units = (n_in + uw - 1) / uw;
+    int tch = nb / 32 < 1 ? 1 : nb / 32 > 8 ? 8 : nb / 32;
+    int panel = 4096 / uw < 8 ? 8 : 4096 / uw;
+    mvt_job jb = { w, dyT ? dyT : dy, dx, n_in, n_out, nb, uw,
+                   n_units, tch, panel,
                    ggml_row_size(w->type, n_in),
-                   ggml_row_size(w->type, bs), false };
+                   ggml_row_size(w->type, uw), false };
     tpool_run(m->tp, mvt_worker, &jb, n_units * tch);
     free(dyT);
     return !jb.oom;
