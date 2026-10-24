@@ -1930,6 +1930,26 @@ test-cuda-q3k: runner $(TEST_GPU_ID)
 	./$(RUNNER_EXE) -m test-q3k-src.gguf --quantize test-q3k.gguf --quant q3_k > /dev/null 2>&1; \
 	./$(TEST_GPU_ID) test-q3k.gguf
 
+# llama-quantize from RUNNER_LLAMA_CPP_BIN for the CUDA gate steps that
+# quantize fixtures with it, resolved by name: `lq=$$($(LLAMA_QUANTIZE))` sets
+# lq to $RUNNER_LLAMA_CPP_BIN/llama-quantize or .../llama-quantize.exe,
+# whichever is an executable file, or fails with the directory and both names
+# on stderr. Never a glob: a llama.cpp Windows release directory holds
+# llama-quantize-impl.dll beside llama-quantize.exe, "-" sorts before "."
+# under C collation, and the `llama-quantize*` glob these steps used picked
+# the DLL (the 1.5.2 CUDA gate on the Windows CUDA host; under a UTF-8 locale
+# the exe sorted first and the same step had passed). `make
+# llama-quantize-path` prints what the steps run (tests/test_ci_contracts.py).
+LLAMA_QUANTIZE = d="$$RUNNER_LLAMA_CPP_BIN"; \
+	[ -n "$$d" ] || { echo "llama-quantize: RUNNER_LLAMA_CPP_BIN is not set" >&2; exit 1; }; \
+	for n in llama-quantize llama-quantize.exe; do \
+	  if [ -f "$$d/$$n" ] && [ -x "$$d/$$n" ]; then echo "$$d/$$n"; exit 0; fi; \
+	done; \
+	echo "llama-quantize: neither llama-quantize nor llama-quantize.exe is an executable file in RUNNER_LLAMA_CPP_BIN ($$d)" >&2; exit 1
+.PHONY: llama-quantize-path
+llama-quantize-path:
+	@$(LLAMA_QUANTIZE)
+
 # The tensor-core prefill of the K-quants and legacy quants that had none
 # until 2026-10-21 (kernels_kq_stage.cuh, decoders held to dequant_row by
 # test-kq-stage), through test-tc-tol's teacher-forced tolerance gate: a
@@ -1944,10 +1964,10 @@ test-cuda-tc-kq: runner $(TEST_TC_TOL)
 	$(PYTHON) scripts/make-test-model.py --wide test-tckq-wide.gguf > /dev/null; \
 	./$(RUNNER_EXE) -m test-tckq-wide.gguf --quantize test-tckq-q3_k.gguf --quant q3_k > /dev/null 2>&1; \
 	files="test-tckq-q3_k.gguf"; \
-	lq=$$(ls "$$RUNNER_LLAMA_CPP_BIN"/llama-quantize* 2>/dev/null | head -1); \
-	if [ -n "$$lq" ]; then \
+	if lq=$$($(LLAMA_QUANTIZE)); then \
 	  for q in Q5_K_S Q2_K Q4_1 Q5_0 Q5_1; do \
-	    "$$lq" test-tckq-wide.gguf test-tckq-$$q.gguf $$q > /dev/null 2>&1 && files="$$files test-tckq-$$q.gguf"; \
+	    "$$lq" test-tckq-wide.gguf test-tckq-$$q.gguf $$q > /dev/null 2>&1 && files="$$files test-tckq-$$q.gguf" || \
+	      echo "test-cuda-tc-kq: $$lq $$q failed, $$q not exercised"; \
 	  done; \
 	else echo "test-cuda-tc-kq: no llama-quantize in RUNNER_LLAMA_CPP_BIN, only Q3_K exercised"; fi; \
 	for f in $$files; do \
@@ -1973,12 +1993,12 @@ test-cuda-tc-kq: runner $(TEST_TC_TOL)
 # do: a CUDA gate host needs it.
 test-cuda-moe-legacy: runner $(TEST_MOE_TOL)
 	@set -e; \
-	lq=$$(ls "$$RUNNER_LLAMA_CPP_BIN"/llama-quantize* 2>/dev/null | head -1); \
-	if [ -z "$$lq" ]; then echo "test-cuda-moe-legacy: needs llama-quantize in RUNNER_LLAMA_CPP_BIN"; exit 1; fi; \
+	lq=$$($(LLAMA_QUANTIZE)) || { echo "test-cuda-moe-legacy: needs llama-quantize in RUNNER_LLAMA_CPP_BIN"; exit 1; }; \
 	$(PYTHON) scripts/make-test-moe.py test-moe-legacy > /dev/null; \
 	for q in Q5_0 Q4_1 Q5_1; do \
 	  f=test-moe-legacy-$$q.gguf; \
-	  "$$lq" test-moe-legacy.moe4.gguf $$f $$q > /dev/null 2>&1 || { echo "test-cuda-moe-legacy: llama-quantize $$q failed"; exit 1; }; \
+	  "$$lq" test-moe-legacy.moe4.gguf $$f $$q > test-cuda-moe-legacy.out 2>&1 || \
+	    { tail -n 20 test-cuda-moe-legacy.out; echo "test-cuda-moe-legacy: $$lq $$q failed"; exit 1; }; \
 	  ./$(TEST_MOE_TOL) $$f > test-cuda-moe-legacy.out 2>&1 || \
 	    { cat test-cuda-moe-legacy.out; echo "test-cuda-moe-legacy: $$q FAILED"; exit 1; }; \
 	  if ! grep -q 'moe-tol: ok' test-cuda-moe-legacy.out || grep -qi 'skip' test-cuda-moe-legacy.out; then \
@@ -2036,10 +2056,10 @@ test-cuda-batch-identity: runner $(TEST_BATCH_ID) test.gguf test-q8.gguf test-bf
 	  $(PYTHON) scripts/make-test-model.py --quant $$q test-batch-$$q.gguf > /dev/null; \
 	  files="$$files test-batch-$$q.gguf"; \
 	done; \
-	lq=$$(ls "$$RUNNER_LLAMA_CPP_BIN"/llama-quantize* 2>/dev/null | head -1); \
-	if [ -n "$$lq" ]; then \
+	if lq=$$($(LLAMA_QUANTIZE)); then \
 	  for q in Q5_K_S IQ4_XS; do \
-	    "$$lq" test-batch-wide.gguf test-batch-wide-$$q.gguf $$q > /dev/null 2>&1 && files="$$files test-batch-wide-$$q.gguf"; \
+	    "$$lq" test-batch-wide.gguf test-batch-wide-$$q.gguf $$q > /dev/null 2>&1 && files="$$files test-batch-wide-$$q.gguf" || \
+	      echo "test-cuda-batch-identity: $$lq $$q failed, $$q not exercised"; \
 	  done; \
 	else echo "test-cuda-batch-identity: no llama-quantize in RUNNER_LLAMA_CPP_BIN, the Q5_K and IQ4_XS twins not exercised"; fi; \
 	for f in $$files; do \
@@ -2083,9 +2103,9 @@ test-cuda-spec-identity: runner $(TEST_SPEC_ID) test.gguf test-q8.gguf test-bf16
 	       test-spec-wide-q3k.gguf test-spec-iq2_xxs.gguf test-spec-iq3_s.gguf \
 	       test-spec-moe-q8.gguf test-spec-moe-q40.gguf test-spec-moe.gptoss-mxfp4.gguf test-spec-moe-g4.gguf \
 	       test-ornith-draft.gguf test-spec-hybrid.gguf"; \
-	lq=$$(ls "$$RUNNER_LLAMA_CPP_BIN"/llama-quantize* 2>/dev/null | head -1); \
-	if [ -n "$$lq" ]; then \
-	  "$$lq" test-spec-wide.gguf test-spec-wide-IQ4_XS.gguf IQ4_XS > /dev/null 2>&1 && files="$$files test-spec-wide-IQ4_XS.gguf"; \
+	if lq=$$($(LLAMA_QUANTIZE)); then \
+	  "$$lq" test-spec-wide.gguf test-spec-wide-IQ4_XS.gguf IQ4_XS > /dev/null 2>&1 && files="$$files test-spec-wide-IQ4_XS.gguf" || \
+	    echo "test-cuda-spec-identity: $$lq IQ4_XS failed, IQ4_XS not exercised"; \
 	else echo "test-cuda-spec-identity: no llama-quantize in RUNNER_LLAMA_CPP_BIN, the IQ4_XS twins not exercised"; fi; \
 	env=default; for f in $$files; do $(SPEC_ID_RUN); done; \
 	env=RUNNER_MOE_GROUPED=1; f=test-spec-moe-q8.gguf; export RUNNER_MOE_GROUPED=1; $(SPEC_ID_RUN); unset RUNNER_MOE_GROUPED; \

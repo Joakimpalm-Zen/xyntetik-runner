@@ -142,6 +142,14 @@ is the CUDA gate a lab box runs from a fresh build, and
 `scripts/check-ptx-source.py` compares regenerated PTX against the committed
 header with the pinned nvcc; both are run by hand on the box and their
 records committed. There is no hosted or self-hosted device workflow.
+`scripts/cuda-gate.sh BUILD_DIR [OUT_DIR]` reads its settings
+(`GATE_MODEL`, `GATE_PYTHON`, `RUNNER_LLAMA_CPP_BIN` and the others its
+header lists) from the environment and from `cuda-gate.env` beside the
+script, or the file `GATE_ENV` names. Its steps that quantize fixtures run
+`llama-quantize` or `llama-quantize.exe` from `RUNNER_LLAMA_CPP_BIN` by name,
+never by glob (a llama.cpp Windows release directory's
+`llama-quantize-impl.dll` sorts first under C collation);
+`make llama-quantize-path` prints the one they run.
 `scripts/cuda-nightly.sh` is the entry point a scheduled task on the Windows
 CUDA host runs every night (a copy of it pulls main, builds and runs
 `cuda-gate.sh`). No workflow or document in this repository calls it, so its

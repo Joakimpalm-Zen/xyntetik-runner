@@ -294,6 +294,66 @@ class ScheduledEntryPoints(unittest.TestCase):
             self.assertFalse((base / "logs/fetch.log").exists())
 
 
+class LlamaQuantizeByName(unittest.TestCase):
+    """The CUDA gate steps that quantize fixtures run llama-quantize from
+    RUNNER_LLAMA_CPP_BIN, resolved by name. A llama.cpp Windows release
+    directory (b11748) holds llama-quantize-impl.dll beside
+    llama-quantize.exe; under C collation "-" (0x2D) sorts before "."
+    (0x2E), so a `llama-quantize*` glob's first match was the DLL and the
+    1.5.2 gate on the Windows CUDA host tried to execute it. Under a UTF-8
+    locale the exe sorted first, which is why the same step had passed.
+
+    The byte order of the two names is the absolute anchor; the helper is
+    held through `make llama-quantize-path`, which prints what the steps
+    run."""
+
+    QUANTIZE_TARGETS = ("test-cuda-tc-kq", "test-cuda-moe-legacy",
+                        "test-cuda-batch-identity", "test-cuda-spec-identity")
+
+    def resolve(self, names, bin_dir=True):
+        env = {k: v for k, v in os.environ.items() if k != "RUNNER_LLAMA_CPP_BIN"}
+        env["LC_ALL"] = "C"
+        with tempfile.TemporaryDirectory() as td:
+            d = pathlib.Path(td)
+            for n in names:
+                (d / n).write_text("#!/bin/sh\nexit 0\n")
+                (d / n).chmod(0o755)
+            if bin_dir:
+                env["RUNNER_LLAMA_CPP_BIN"] = d.as_posix()
+            p = subprocess.run(["make", "-s", "--no-print-directory", "llama-quantize-path"],
+                               cwd=ROOT, env=env, capture_output=True, text=True)
+        return p, d.as_posix()
+
+    def test_the_exe_beside_the_impl_dll_under_c_collation(self):
+        self.assertLess(b"llama-quantize-impl.dll", b"llama-quantize.exe")
+        p, d = self.resolve(["llama-quantize-impl.dll", "llama-quantize.exe"])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.strip(), d + "/llama-quantize.exe")
+
+    @unittest.skipIf(os.name == "nt", "a bare name is not executable to MSYS2's bash")
+    def test_the_bare_name(self):
+        p, d = self.resolve(["llama-quantize"])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.strip(), d + "/llama-quantize")
+
+    def test_neither_name_fails_naming_the_directory_and_both_names(self):
+        p, d = self.resolve(["llama-quantize-impl.dll"])
+        self.assertNotEqual(p.returncode, 0)
+        self.assertEqual(p.stdout.strip(), "")
+        for word in (d, "llama-quantize ", "llama-quantize.exe", "RUNNER_LLAMA_CPP_BIN"):
+            self.assertIn(word, p.stderr)
+        p, _ = self.resolve([], bin_dir=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("RUNNER_LLAMA_CPP_BIN is not set", p.stderr)
+
+    def test_every_quantize_step_uses_the_helper(self):
+        p = subprocess.run(["make", "-n", "--no-print-directory", *self.QUANTIZE_TARGETS],
+                           cwd=ROOT, capture_output=True, text=True, check=True)
+        self.assertNotIn("llama-quantize*", p.stdout)
+        self.assertEqual(p.stdout.count("neither llama-quantize nor llama-quantize.exe"),
+                         len(self.QUANTIZE_TARGETS))
+
+
 class PlatformDetection(unittest.TestCase):
     """The Windows branch is chosen from the shell the build runs in, not
     from an environment variable a minimal shell may not carry. A bash.exe

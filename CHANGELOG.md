@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Release gate: the llama-quantize binary is resolved by name, not by
+  glob.** A llama.cpp Windows release directory holds
+  `llama-quantize-impl.dll` beside `llama-quantize.exe`, and under C
+  collation the DLL sorted first, so the CUDA gate's `test-cuda-moe-legacy`
+  step tried to execute it and failed. The four steps that quantize fixtures
+  now run `llama-quantize` or `llama-quantize.exe` from
+  `RUNNER_LLAMA_CPP_BIN`, and name the directory and both names when neither
+  is there; `make llama-quantize-path` prints the one they run. In the three
+  steps that narrow their coverage without the tool, a quantize that fails
+  now prints a line naming the binary and the type instead of dropping the
+  type silently.
+
 - **Nemotron 3.5 Lightning tokenizes as its publisher's tokenizer, and an
   unknown pre-tokenizer name is no longer silent.** The file declares
   `tokenizer.ggml.pre` "pixtral", llama.cpp's name for the Tekken split
