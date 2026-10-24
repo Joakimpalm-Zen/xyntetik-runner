@@ -1750,11 +1750,15 @@
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
-        "backend": "cuda"
+        "backend": "cpu"
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "limit",
+          "reason": "--mtp draft decoding on CUDA needs the whole trunk on the device; the IQ3_S trunk this head runs with holds 18 of 48 layers on a 24 GB device, and the partial split refuses with an error naming --gpu off (lab box, 2026-10-25, runner f960e470). The head is smoked on the CPU path of the same class.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
         "metal": {
           "kind": "limit",
           "reason": "MTP/NextN draft-head consumption is not implemented on Metal.",

@@ -507,7 +507,7 @@ check, failing it or past its age limit.
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="docs/model-support.md#qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head"><code>Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf</code></a> (4 parts)</td><td></td><td></td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
-<tr><td><a href="docs/model-support.md#qwen3.8-flash-next-mtp-q8_0"><code>Qwen3.8-Flash-Next-MTP-Q8_0.gguf</code></a></td><td></td><td></td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
+<tr><td><a href="docs/model-support.md#qwen3.8-flash-next-mtp-q8_0"><code>Qwen3.8-Flash-Next-MTP-Q8_0.gguf</code></a></td><td></td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
 </tbody>
 </table>
 </details>
