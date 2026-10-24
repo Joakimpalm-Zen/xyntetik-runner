@@ -7636,7 +7636,7 @@ typedef struct {
     // R8.19 (kernels_train.cuh): the transposed product, the CPU chain's
     // bits, and the batch-invariant forward product, for every type the
     // CPU trainer decodes
-    CUfunction  f_tmvt[KT_N], f_tmm[KT_N], f_tmmw[KT_N];
+    CUfunction  f_tmvt[KT_N], f_tmm[KT_N], f_tmmw[KT_N], f_tmms[KT_N];
     CUdeviceptr dummy;            // zeroed no-bias operand
     tg_slot    *cache;
     int         n_cache, cap_cache;
@@ -7684,32 +7684,32 @@ bool gpu_train_init(model_t *m) {
         free(t);
         return false;
     }
-    static const struct { int type; const char *mvt, *mm, *mmw; } FNS[] = {
-        { T_F32, "k_tmvt_f32", "k_tmm_f32", "k_tmmw_f32" },
-        { T_F16, "k_tmvt_f16", "k_tmm_f16", "k_tmmw_f16" },
-        { T_BF16, "k_tmvt_bf16", "k_tmm_bf16", "k_tmmw_bf16" },
-        { T_Q8_0, "k_tmvt_q8_0", "k_tmm_q8_0", "k_tmmw_q8_0" },
-        { T_Q4_0, "k_tmvt_q4_0", "k_tmm_q4_0", "k_tmmw_q4_0" },
-        { T_Q4_1, "k_tmvt_q4_1", "k_tmm_q4_1", "k_tmmw_q4_1" },
-        { T_Q5_0, "k_tmvt_q5_0", "k_tmm_q5_0", "k_tmmw_q5_0" },
-        { T_Q5_1, "k_tmvt_q5_1", "k_tmm_q5_1", "k_tmmw_q5_1" },
-        { T_Q2_K, "k_tmvt_q2_K", "k_tmm_q2_K", "k_tmmw_q2_K" },
-        { T_Q3_K, "k_tmvt_q3_K", "k_tmm_q3_K", "k_tmmw_q3_K" },
-        { T_Q4_K, "k_tmvt_q4_K", "k_tmm_q4_K", "k_tmmw_q4_K" },
-        { T_Q5_K, "k_tmvt_q5_K", "k_tmm_q5_K", "k_tmmw_q5_K" },
-        { T_Q6_K, "k_tmvt_q6_K", "k_tmm_q6_K", "k_tmmw_q6_K" },
-        { T_IQ4_NL, "k_tmvt_iq4_nl", "k_tmm_iq4_nl", "k_tmmw_iq4_nl" },
-        { T_IQ4_XS, "k_tmvt_iq4_xs", "k_tmm_iq4_xs", "k_tmmw_iq4_xs" },
-        { T_IQ2_XXS, "k_tmvt_iq2_xxs", "k_tmm_iq2_xxs", "k_tmmw_iq2_xxs" },
-        { T_IQ2_XS, "k_tmvt_iq2_xs", "k_tmm_iq2_xs", "k_tmmw_iq2_xs" },
-        { T_IQ2_S, "k_tmvt_iq2_s", "k_tmm_iq2_s", "k_tmmw_iq2_s" },
-        { T_IQ3_XXS, "k_tmvt_iq3_xxs", "k_tmm_iq3_xxs", "k_tmmw_iq3_xxs" },
-        { T_IQ3_S, "k_tmvt_iq3_s", "k_tmm_iq3_s", "k_tmmw_iq3_s" },
-        { T_IQ1_S, "k_tmvt_iq1_s", "k_tmm_iq1_s", "k_tmmw_iq1_s" },
-        { T_IQ1_M, "k_tmvt_iq1_m", "k_tmm_iq1_m", "k_tmmw_iq1_m" },
-        { T_MXFP4, "k_tmvt_mxfp4", "k_tmm_mxfp4", "k_tmmw_mxfp4" },
-        { T_NVFP4, "k_tmvt_nvfp4", "k_tmm_nvfp4", "k_tmmw_nvfp4" },
-        { T_Q2_0, "k_tmvt_q2_0", "k_tmm_q2_0", "k_tmmw_q2_0" },
+    static const struct { int type; const char *mvt, *mm, *mmw, *mms; } FNS[] = {
+        { T_F32, "k_tmvt_f32", "k_tmm_f32", "k_tmmw_f32", "k_tmms_f32" },
+        { T_F16, "k_tmvt_f16", "k_tmm_f16", "k_tmmw_f16", "k_tmms_f16" },
+        { T_BF16, "k_tmvt_bf16", "k_tmm_bf16", "k_tmmw_bf16", "k_tmms_bf16" },
+        { T_Q8_0, "k_tmvt_q8_0", "k_tmm_q8_0", "k_tmmw_q8_0", "k_tmms_q8_0" },
+        { T_Q4_0, "k_tmvt_q4_0", "k_tmm_q4_0", "k_tmmw_q4_0", "k_tmms_q4_0" },
+        { T_Q4_1, "k_tmvt_q4_1", "k_tmm_q4_1", "k_tmmw_q4_1", "k_tmms_q4_1" },
+        { T_Q5_0, "k_tmvt_q5_0", "k_tmm_q5_0", "k_tmmw_q5_0", "k_tmms_q5_0" },
+        { T_Q5_1, "k_tmvt_q5_1", "k_tmm_q5_1", "k_tmmw_q5_1", "k_tmms_q5_1" },
+        { T_Q2_K, "k_tmvt_q2_K", "k_tmm_q2_K", "k_tmmw_q2_K", "k_tmms_q2_K" },
+        { T_Q3_K, "k_tmvt_q3_K", "k_tmm_q3_K", "k_tmmw_q3_K", "k_tmms_q3_K" },
+        { T_Q4_K, "k_tmvt_q4_K", "k_tmm_q4_K", "k_tmmw_q4_K", "k_tmms_q4_K" },
+        { T_Q5_K, "k_tmvt_q5_K", "k_tmm_q5_K", "k_tmmw_q5_K", "k_tmms_q5_K" },
+        { T_Q6_K, "k_tmvt_q6_K", "k_tmm_q6_K", "k_tmmw_q6_K", "k_tmms_q6_K" },
+        { T_IQ4_NL, "k_tmvt_iq4_nl", "k_tmm_iq4_nl", "k_tmmw_iq4_nl", "k_tmms_iq4_nl" },
+        { T_IQ4_XS, "k_tmvt_iq4_xs", "k_tmm_iq4_xs", "k_tmmw_iq4_xs", "k_tmms_iq4_xs" },
+        { T_IQ2_XXS, "k_tmvt_iq2_xxs", "k_tmm_iq2_xxs", "k_tmmw_iq2_xxs", "k_tmms_iq2_xxs" },
+        { T_IQ2_XS, "k_tmvt_iq2_xs", "k_tmm_iq2_xs", "k_tmmw_iq2_xs", "k_tmms_iq2_xs" },
+        { T_IQ2_S, "k_tmvt_iq2_s", "k_tmm_iq2_s", "k_tmmw_iq2_s", "k_tmms_iq2_s" },
+        { T_IQ3_XXS, "k_tmvt_iq3_xxs", "k_tmm_iq3_xxs", "k_tmmw_iq3_xxs", "k_tmms_iq3_xxs" },
+        { T_IQ3_S, "k_tmvt_iq3_s", "k_tmm_iq3_s", "k_tmmw_iq3_s", "k_tmms_iq3_s" },
+        { T_IQ1_S, "k_tmvt_iq1_s", "k_tmm_iq1_s", "k_tmmw_iq1_s", "k_tmms_iq1_s" },
+        { T_IQ1_M, "k_tmvt_iq1_m", "k_tmm_iq1_m", "k_tmmw_iq1_m", "k_tmms_iq1_m" },
+        { T_MXFP4, "k_tmvt_mxfp4", "k_tmm_mxfp4", "k_tmmw_mxfp4", "k_tmms_mxfp4" },
+        { T_NVFP4, "k_tmvt_nvfp4", "k_tmm_nvfp4", "k_tmmw_nvfp4", "k_tmms_nvfp4" },
+        { T_Q2_0, "k_tmvt_q2_0", "k_tmm_q2_0", "k_tmmw_q2_0", "k_tmms_q2_0" },
     };
     for (size_t i = 0; i < sizeof(FNS) / sizeof(*FNS); i++) {
         if (cu.ModuleGetFunction(&t->f_tmvt[FNS[i].type], t->mod,
@@ -7721,6 +7721,9 @@ bool gpu_train_init(model_t *m) {
         if (cu.ModuleGetFunction(&t->f_tmmw[FNS[i].type], t->mod,
                                  FNS[i].mmw) != 0)
             t->f_tmmw[FNS[i].type] = NULL;
+        if (cu.ModuleGetFunction(&t->f_tmms[FNS[i].type], t->mod,
+                                 FNS[i].mms) != 0)
+            t->f_tmms[FNS[i].type] = NULL;
     }
     size_t free_b = 0, total_b = 0;
     if (cu.MemGetInfo(&free_b, &total_b) != 0) free_b = 0;
@@ -7981,16 +7984,33 @@ static bool train_mm(train_gpu_t *t, const gguf_tensor *w, const float *x,
     if (cu.MemcpyHtoD(t->d_dx, xp, sizeof(float) * nx) != 0) return false;
     mv_args a = { n_in, n_out, 0, 0, nb, n_in, n_out };
     void *p[] = { &weights, &t->d_dx, &t->d_dy, &a, &t->dummy };
-    // the 32-column twin past one narrow tile: the same per-column
-    // arithmetic, each weight decoded once for 32 columns instead of 16
-    bool wide = nb > TMM_NC && t->f_tmmw[w->type];
-    unsigned blocks = (unsigned)((n_out + TMM_WARPS * TMM_RW - 1) /
-                                 (TMM_WARPS * TMM_RW));
-    int ncb = wide ? TMM_NCW : TMM_NC;
-    unsigned cols = (unsigned)((nb + ncb - 1) / ncb);
+    // Three kernels with one per-column arithmetic (lane-strided fmaf chains,
+    // one warp_sum), so the pick moves no bit: past two narrow tiles the
+    // staged k_tmms (each weight decoded once for TMS_CG * TMS_NC columns),
+    // past one the 32-column twin, else k_tmm. RUNNER_TRAIN_MMS=0 keeps the
+    // staged kernel out (the comparison test-train-gpu makes; read per call
+    // so the test can switch it, a getenv beside a kernel launch).
+    const char *mms_env = getenv("RUNNER_TRAIN_MMS");
+    bool mms_on = !(mms_env && strcmp(mms_env, "0") == 0);
+    bool staged = mms_on && nb > 2 * TMM_NC && t->f_tmms[w->type];
+    bool wide = !staged && nb > TMM_NC && t->f_tmmw[w->type];
+    unsigned blocks, cols, threads;
+    if (staged) {
+        blocks = (unsigned)((n_out + TMS_RG * TMS_RW - 1) / (TMS_RG * TMS_RW));
+        cols = (unsigned)((nb + TMS_CG * TMS_NC - 1) / (TMS_CG * TMS_NC));
+        threads = TMS_RG * TMS_CG * 32;
+    } else {
+        int ncb = wide ? TMM_NCW : TMM_NC;
+        blocks = (unsigned)((n_out + TMM_WARPS * TMM_RW - 1) /
+                            (TMM_WARPS * TMM_RW));
+        cols = (unsigned)((nb + ncb - 1) / ncb);
+        threads = TMM_WARPS * 32;
+    }
+    CUfunction fn = staged ? t->f_tmms[w->type]
+                  : wide ? t->f_tmmw[w->type] : t->f_tmm[w->type];
     double k0 = plat_now();
-    if (cu.LaunchKernel(wide ? t->f_tmmw[w->type] : t->f_tmm[w->type], blocks,
-                        cols, 1, TMM_WARPS * 32, 1, 1, 0, NULL, p, NULL) != 0 ||
+    if (cu.LaunchKernel(fn, blocks, cols, 1, threads, 1, 1, 0, NULL, p,
+                        NULL) != 0 ||
         cu.CtxSynchronize() != 0)
         return false;
     t->k_mm += plat_now() - k0;

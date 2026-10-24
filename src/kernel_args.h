@@ -112,5 +112,12 @@ typedef struct {
 #define TMM_NCW 32
 #define TMM_WARPS 8
 #define TMM_RW 4        // rows a warp of k_tmm / k_tmmw carries
+// k_tmms: rows a warp carries, row groups and column groups a block (one
+// warp each pair), and the columns a warp carries: a block is TMS_RG *
+// TMS_RW rows by TMS_CG * TMS_NC columns, (TMS_RG * TMS_CG) warps
+#define TMS_RW 8
+#define TMS_RG 2
+#define TMS_CG 4
+#define TMS_NC 16
 
 #endif // RUNNER_KERNEL_ARGS_H

@@ -4,13 +4,17 @@
 //   transposed  gpu_train_mvt == the CPU trainer's chain (dequant_row, then
 //               an ascending-j fmaf per element, a zero dy skipped), memcmp
 //   forward     gpu_train_mm is batch-invariant: every column of a 77-column
-//               call (the 32-column kernel, three tiles) equals the same
+//               call (the staged kernel, two column tiles) equals the same
 //               column computed alone and in a 5-column call (the 16-column
-//               kernel),
-//               memcmp; and it is the product (each column within 2^-16 of
-//               sum|w x| of a double-precision reference)
+//               kernel) and in the 77-column call with the staged kernel off
+//               (RUNNER_TRAIN_MMS=0: the 32-column kernel), memcmp; and it is
+//               the product (each column within 2^-16 of sum|w x| of a
+//               double-precision reference)
 //
 // Skips (not passes) without a CUDA device. Prints each type's throughput.
+// RUNNER_TRAIN_GPU_BENCH=1 adds a kernel benchmark: four types at 4096 x
+// 5120, 64 and 512 columns, the staged kernel against the per-warp ones
+// (the kernels' time alone, best of five).
 #include "runner.h"
 
 #include <math.h>
@@ -166,6 +170,17 @@ int main(void) {
         ok = gpu_train_mm(&m, &w, x, N_IN, y, N_OUT, N_IN, N_OUT, NULL, B);
         double t2 = clk();
         CHECK(ok, "%s: gpu_train_mm declined", TYPES[k].name);
+        if (ok) {
+            // the same 77 columns through the per-warp kernels
+            float *yw = malloc(sizeof(float) * B * N_OUT);
+            setenv("RUNNER_TRAIN_MMS", "0", 1);
+            bool okw = gpu_train_mm(&m, &w, x, N_IN, yw, N_OUT, N_IN, N_OUT, NULL, B);
+            unsetenv("RUNNER_TRAIN_MMS");
+            CHECK(okw && !memcmp(yw, y, sizeof(float) * B * N_OUT),
+                  "%s: the staged kernel's %d columns differ from the per-warp "
+                  "kernel's", TYPES[k].name, B);
+            free(yw);
+        }
         bool ok5 = ok && gpu_train_mm(&m, &w, x + 3 * N_IN, N_IN, y5, N_OUT, N_IN,
                                       N_OUT, NULL, 5);
         CHECK(!ok || ok5, "%s: gpu_train_mm declined 5 columns", TYPES[k].name);
@@ -232,8 +247,48 @@ int main(void) {
         free(xs); free(ys);
         keep[sizeof(TYPES) / sizeof(*TYPES)] = w.data;
     }
+    const char *bench = getenv("RUNNER_TRAIN_GPU_BENCH");
+    void *bkeep[4] = {0};   // freed after the context, like keep[]
+    if (bench && strcmp(bench, "0") != 0) {
+        static const struct { int type; const char *name; int f16[2]; } BT[] = {
+            { T_IQ3_S, "iq3_s", {0, -1} }, { T_Q4_K, "q4_K", {0, 2} },
+            { T_Q6_K, "q6_K", {208, -1} }, { T_Q8_0, "q8_0", {0, -1} },
+        };
+        enum { BN_IN = 5120, BN_OUT = 4096, BB = 512 };
+        float *bx = malloc(sizeof(float) * (size_t)BB * BN_IN);
+        float *by = malloc(sizeof(float) * (size_t)BB * BN_OUT);
+        for (size_t i = 0; i < (size_t)BB * BN_IN; i++) bx[i] = frnd();
+        for (size_t k = 0; k < sizeof(BT) / sizeof(*BT); k++) {
+            gguf_tensor w;
+            memset(&w, 0, sizeof(w));
+            w.type = (uint32_t)BT[k].type; w.scale = 1.0f;
+            w.ne[0] = BN_IN; w.ne[1] = BN_OUT;
+            w.data = make_rows(BT[k].type, BT[k].f16, BN_IN, BN_OUT, &w.nbytes);
+            for (int nb = 64; nb <= BB; nb *= 8)
+                for (int staged = 1; staged >= 0; staged--) {
+                    if (!staged) setenv("RUNNER_TRAIN_MMS", "0", 1);
+                    double best = 1e9;
+                    for (int rep = 0; rep < 5; rep++) {
+                        double t_mm, t_mvt, k_mm, k_mvt;
+                        long n_mm, n_mvt;
+                        gpu_train_prof(&m, &t_mm, &n_mm, &t_mvt, &n_mvt, &k_mm, &k_mvt);
+                        if (!gpu_train_mm(&m, &w, bx, BN_IN, by, BN_OUT, BN_IN,
+                                          BN_OUT, NULL, nb)) break;
+                        gpu_train_prof(&m, &t_mm, &n_mm, &t_mvt, &n_mvt, &k_mm, &k_mvt);
+                        if (k_mm < best) best = k_mm;
+                    }
+                    unsetenv("RUNNER_TRAIN_MMS");
+                    printf("bench %-6s %4d columns %-8s %7.3f ms  %6.2f TFLOP/s\n",
+                           BT[k].name, nb, staged ? "staged" : "per-warp", best * 1e3,
+                           2.0 * BN_IN * BN_OUT * nb / best / 1e12);
+                }
+            bkeep[k] = w.data;
+        }
+        free(bx); free(by);
+    }
     gpu_train_free(&m);
     for (size_t k = 0; k < sizeof(keep) / sizeof(*keep); k++) free(keep[k]);
+    for (size_t k = 0; k < sizeof(bkeep) / sizeof(*bkeep); k++) free(bkeep[k]);
     printf("%s: %d types\n", g_fail ? "FAIL" : "PASS", tested);
     return g_fail;
 }
