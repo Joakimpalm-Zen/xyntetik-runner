@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Training: the adapter's own backward passes run 4 to 11 times faster,
+  with the same bytes.** Every site's rank-r products (B^T dy, A x, the
+  dA and dB updates, the adapter's share of dx) walked one strided chain at
+  a time, about 3 GFLOP/s a thread. They now run several chains side by
+  side over contiguous rows, with the accumulators held in registers. On
+  an Apple M1, one thread, Qwen3-0.6B Q8_0 at rank 8 over 256 positions:
+  1.96 s to 0.17 s a step. On the 26B Clef backbone with `--train-gpu` and
+  6 threads of a datacenter MIG slice: 6.2-6.5 s to 1.3-1.5 s a step, and
+  steady steps from 59-61 s to 53-55 s. Each element keeps its summation
+  order, so adapters are byte-identical to before: on every fixture
+  family and objective, at ranks 1, 5, 16 and 33 beside the default 8,
+  and on the 26B pair.
+
 - **`--train-gpu`: the device budget is an input you can name, and the
   record names it.** The weights are cached as long as the budget allows,
   and the rest train on the CPU, where a tensor's products take the CPU's
