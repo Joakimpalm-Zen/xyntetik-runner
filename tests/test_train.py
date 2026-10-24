@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -320,15 +321,28 @@ def test_provenance_record_escapes_data_and_output_paths(
 
 
 def test_provenance_hashes_binary_when_invoked_through_path(
-        runner_bin, base, tmp_path):
+        runner_bin, base, tmp_path, monkeypatch):
+    # argv0 stays the bare name, which the runner cannot open from its cwd,
+    # so the recorded hash has to come from the running image. The file to
+    # start is resolved here, in the PATH this test builds: on Windows
+    # subprocess does not search the child's env PATH (CreateProcess searches
+    # the parent's current directory, then the parent's PATH), so the bare
+    # name only ever started through the current directory, and
+    # NoDefaultCurrentDirectoryInExePath=1 in an operator's environment turned
+    # that off. The variable is set here (in this process, where CreateProcess
+    # reads it, and so in env) to keep that environment covered.
+    monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "1")
     out = tmp_path / "path-invoked.gguf"
     env = dict(os.environ)
     env["PATH"] = str(runner_bin.parent) + os.pathsep + env.get("PATH", "")
+    exe = shutil.which(runner_bin.name, path=env["PATH"])
+    assert exe and os.path.samefile(exe, runner_bin), exe
     cmd = [runner_bin.name, "-m", str(base / "base.gguf"),
            "--train", str(base / "corpus.txt"), "--train-steps", "1",
            "--lr", "3e-3", "--train-out", str(out), "-t", "2"]
-    p = subprocess.run(cmd, cwd=tmp_path, stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE, timeout=600, env=env)
+    p = subprocess.run(cmd, executable=os.path.abspath(exe), cwd=tmp_path,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       timeout=600, env=env)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     rec = json.loads(pathlib.Path(f"{out}.train.json").read_text())
     assert rec["build"]["binary_sha256"] == hashlib.sha256(
