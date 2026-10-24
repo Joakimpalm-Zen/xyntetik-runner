@@ -35,6 +35,18 @@ static uint32_t rnd32(void) {
 }
 static float frnd(void) { return (float)(int32_t)rnd32() / 2147483648.0f; }
 
+// RUNNER_TRAIN_MMS for the next products (0 unsets it); the engine reads it
+// at every call. MinGW's headers declare no setenv or unsetenv.
+static void set_mms(int v) {
+    const char *val = v == 1 ? "1" : v == 2 ? "2" : "";
+#ifdef _WIN32
+    _putenv_s("RUNNER_TRAIN_MMS", val);   // "" removes it
+#else
+    if (v) setenv("RUNNER_TRAIN_MMS", val, 1);
+    else unsetenv("RUNNER_TRAIN_MMS");
+#endif
+}
+
 static void put16(uint8_t *p, uint16_t v) { memcpy(p, &v, 2); }
 static uint16_t get16(const uint8_t *p) { uint16_t v; memcpy(&v, p, 2); return v; }
 // a finite block scale, either sign, 2^-10 .. 2^-4
@@ -174,9 +186,9 @@ int main(void) {
             // the same 77 columns through the staged kernels (R8.20, opt-in)
             float *yw = malloc(sizeof(float) * B * N_OUT);
             for (int v = 1; v <= 2; v++) {
-                setenv("RUNNER_TRAIN_MMS", v == 1 ? "1" : "2", 1);
+                set_mms(v);
                 bool okw = gpu_train_mm(&m, &w, x, N_IN, yw, N_OUT, N_IN, N_OUT, NULL, B);
-                unsetenv("RUNNER_TRAIN_MMS");
+                set_mms(0);
                 CHECK(okw && !memcmp(yw, y, sizeof(float) * B * N_OUT),
                       "%s: the %s kernel's %d columns differ from the per-warp "
                       "kernel's", TYPES[k].name, v == 1 ? "staged" : "pipelined", B);
@@ -269,7 +281,7 @@ int main(void) {
             for (int nb = 64; nb <= BB; nb *= 8)
                 for (int v = 0; v <= 2; v++) {
                     static const char *const VN[] = { "per-warp", "staged", "pipelined" };
-                    if (v) setenv("RUNNER_TRAIN_MMS", v == 1 ? "1" : "2", 1);
+                    if (v) set_mms(v);
                     double best = 1e9;
                     for (int rep = 0; rep < 5; rep++) {
                         double t_mm, t_mvt, k_mm, k_mvt;
@@ -280,7 +292,7 @@ int main(void) {
                         gpu_train_prof(&m, &t_mm, &n_mm, &t_mvt, &n_mvt, &k_mm, &k_mvt);
                         if (k_mm < best) best = k_mm;
                     }
-                    unsetenv("RUNNER_TRAIN_MMS");
+                    set_mms(0);
                     printf("bench %-6s %4d columns %-9s %7.3f ms  %6.2f TFLOP/s\n",
                            BT[k].name, nb, VN[v], best * 1e3,
                            2.0 * BN_IN * BN_OUT * nb / best / 1e12);
