@@ -48,6 +48,7 @@
     {
       "id": "cloudflare-clef-iq3_m",
       "model": "Cloudflare Clef (clef, on Qwen3.8-27B)",
+      "family": "Cloudflare Clef",
       "tier": "tier1",
       "claim": "Text path only: a decision model served at /v1/systemone; requests with images or videos are refused. The model card's two examples reproduce on the CPU with this file, which shows the head binds and decides; it is not a fidelity measurement of the quantized file.",
       "vision_upstream": true,
@@ -135,6 +136,7 @@
     {
       "id": "qwen3.8-27b-ud-q4_k_m",
       "model": "Qwen3.8-27B",
+      "family": "Qwen3.8",
       "tier": "tier1",
       "claim": "Unsloth's dynamic Q4_K_M of Qwen3.8-27B, text path: it passes the quant bar against the Q8_0 sibling; the qwen35 CUDA path was measured on other quantizations of the same model.",
       "architecture": "qwen35",
@@ -222,6 +224,7 @@
     {
       "id": "gemma-4-12b-it-qat-q4_0",
       "model": "Gemma 4 12B",
+      "family": "Gemma 4",
       "tier": "tier1",
       "claim": "Text path only: Google's quantization-aware Q4_0 release, its mmproj file not loaded; the gemma4 tool protocol passes report cases A and B on CUDA, and case C (prose then call) fails on the family's own call-first format.",
       "vision_upstream": true,
@@ -307,6 +310,7 @@
     {
       "id": "gemma-4-26b-a4b-it-qat-q4_0",
       "model": "Gemma 4 26B-A4B",
+      "family": "Gemma 4",
       "tier": "tier1",
       "claim": "Text path only: Google's quantization-aware Q4_0 release of the MoE model, its mmproj file not loaded; no float32 reference has been run on the MoE layout.",
       "vision_upstream": true,
@@ -391,6 +395,7 @@
     {
       "id": "gemma-4-31b-it-q4_0",
       "model": "Gemma 4 31B",
+      "family": "Gemma 4",
       "tier": "tier1",
       "claim": "Text path only: ggml-org's post-training Q4_0 of Gemma 4 31B, not Google's QAT file; the existing 31B evidence is bound to this file's sha256.",
       "vision_upstream": true,
@@ -475,6 +480,7 @@
     {
       "id": "muse-glimmer-30b-kquant",
       "model": "Muse-Glimmer-30B",
+      "family": "Muse-Glimmer-30B",
       "tier": "tier1",
       "claim": "Text path only: Meta's own Q4_K_M, which passes the fidelity bar against the BF16 parent; the vision encoder is outside the admitted path.",
       "vision_upstream": true,
@@ -559,6 +565,7 @@
     {
       "id": "granite-4.2-8b-q4_k_m",
       "model": "Granite-4.2-8B",
+      "family": "Granite-4.2-8B",
       "tier": "tier1",
       "claim": "IBM's official Q4_K_M of Granite 4.2 8B, text path: the granite42 tool protocol and two client loops pass on an 8 GB CUDA card; case C is open.",
       "architecture": "granite",
@@ -644,6 +651,7 @@
     {
       "id": "granite-4.2-8b-q8_0",
       "model": "Granite-4.2-8B",
+      "family": "Granite-4.2-8B",
       "tier": "tier1",
       "claim": "IBM's official Q8_0 of Granite 4.2 8B, text path: the reference sibling of the Q4_K_M row's quant bar.",
       "architecture": "granite",
@@ -727,6 +735,7 @@
     {
       "id": "trinity-nano-preview-q8_0",
       "model": "Trinity Nano",
+      "family": "Trinity Nano",
       "tier": "tier1",
       "claim": "Arcee's Q8_0 of Trinity Nano Preview, text path, CPU only by admission: the one afmoe file Runner actively validates.",
       "architecture": "afmoe",
@@ -818,6 +827,7 @@
     {
       "id": "qwen3.8-27b-gsq-rco-iq3_s-recovered",
       "model": "Qwen3.8-27B",
+      "family": "Qwen3.8",
       "tier": "tier1",
       "claim": "ISTA-DASLab's IQ3_S file with every quantised block's fp16 scales retrained against the BF16 parent, text path: it reads inside the fidelity bar against that parent and is not a lossless Qwen3.8-27B.",
       "architecture": "qwen35",
@@ -907,6 +917,7 @@
     {
       "id": "qwen3.8-27b-mtp-q8_0",
       "model": "Qwen3.8-27B",
+      "family": "Qwen3.8",
       "tier": "tier1",
       "claim": "The NextN/MTP predictor head for Qwen3.8-27B, loaded with --mtp-file beside a trunk: it only proposes tokens, so the text is the trunk's own greedy output; it is a speed feature, not a model.",
       "architecture": "qwen35",
@@ -998,6 +1009,7 @@
     {
       "id": "xyntetik-kvist-14b-bf16",
       "model": "Xyntetik-Kvist-14B",
+      "family": "Xyntetik-Kvist-14B",
       "tier": "tier1",
       "claim": "Built for one job, tool-calling agent loops on this runner from a 24 GB card, and not a drop-in replacement for Muse-Glimmer-30B or any general-purpose model: a dense 14B student distilled from Muse-Glimmer-30B, this is its BF16 file.",
       "architecture": "muse-glimmer",
@@ -1080,6 +1092,7 @@
     {
       "id": "xyntetik-kvist-14b-q8_0",
       "model": "Xyntetik-Kvist-14B",
+      "family": "Xyntetik-Kvist-14B",
       "tier": "tier1",
       "claim": "Built for one job, tool-calling agent loops on this runner from a 24 GB card, and not a drop-in replacement for Muse-Glimmer-30B or any general-purpose model: a dense 14B student distilled from Muse-Glimmer-30B, this is its Q8_0 file.",
       "architecture": "muse-glimmer",
@@ -1162,6 +1175,7 @@
     {
       "id": "xyntetik-kvist-14b-q5_0-mix",
       "model": "Xyntetik-Kvist-14B",
+      "family": "Xyntetik-Kvist-14B",
       "tier": "tier1",
       "claim": "Built for one job, tool-calling agent loops on this runner from a 24 GB card, and not a drop-in replacement for Muse-Glimmer-30B or any general-purpose model: a dense 14B student distilled from Muse-Glimmer-30B, this is its Q5_0 mix file.",
       "architecture": "muse-glimmer",
@@ -1244,6 +1258,7 @@
     {
       "id": "xyntetik-kvist-14b-iq4_nl-mix",
       "model": "Xyntetik-Kvist-14B",
+      "family": "Xyntetik-Kvist-14B",
       "tier": "tier1",
       "claim": "Built for one job, tool-calling agent loops on this runner from a 24 GB card, and not a drop-in replacement for Muse-Glimmer-30B or any general-purpose model: a dense 14B student distilled from Muse-Glimmer-30B, this is its IQ4_NL mix file.",
       "architecture": "muse-glimmer",
@@ -1326,6 +1341,7 @@
     {
       "id": "qwen3-30b-a3b-expq4_0-attnq8_0",
       "model": "Qwen3-30B-A3B selective precision",
+      "family": "Qwen3",
       "tier": "tier1",
       "claim": "Qwen3-30B-A3B with attention Q8_0 and experts Q4_0, text path: it passes the fidelity bar against the first-party Q8_0 where the official uniform Q4_K_M fails it.",
       "architecture": "qwen3moe",
@@ -1409,6 +1425,7 @@
     {
       "id": "qwen3-coder-30b-a3b-instruct-keep120-q4_k_m",
       "model": "Qwen3-Coder-30B-A3B keep-120",
+      "family": "Qwen3",
       "tier": "tier1",
       "claim": "An expert-pruned Qwen3-Coder-30B-A3B (120 of 128 experts kept) at Q4_K_M, text path: it passes the original and the current fidelity bar against its parent.",
       "architecture": "qwen3moe",
@@ -1491,6 +1508,7 @@
     {
       "id": "gemma-4-e2b-it-q4_k_m-q4_0-mix",
       "model": "Gemma 4 E2B",
+      "family": "Gemma 4",
       "tier": "tier1",
       "claim": "Text path only: the smoke-test file from the quickstart; it fails the fidelity bar against its own BF16 parent (77.75% of tokens agree, mean KLD 0.286) and is a way to try Runner on an 8 GB machine, not a faithful gemma-4-E2B.",
       "vision_upstream": true,
@@ -1593,6 +1611,7 @@
     {
       "id": "nvidia-nemotron-nano-9b-v2-q8_0",
       "model": "NVIDIA Nemotron Nano 9B v2",
+      "family": "NVIDIA Nemotron Nano 9B v2",
       "tier": "tier1",
       "claim": "A plain Q8_0 of NVIDIA's Nemotron-Nano-9B-v2 (Mamba-2 hybrid), text path: 100% margin-qualified top-1 against NVIDIA's float32 reference at Q8_0 over 100 positions; the 2,000-position rerun did not finish.",
       "architecture": "nemotron_h",
@@ -1679,6 +1698,7 @@
     {
       "id": "gemma-4-31b-it-attn48-removed-q4_0",
       "model": "Gemma 4 31B, attention block 48 removed",
+      "family": "Gemma 4",
       "tier": "tier1",
       "claim": "Text path only: Google's QAT Q4_0 of Gemma 4 31B with one attention sublayer physically removed; it tracks its parent at clean KLD 0.0223 on 44,413 held-out positions and loads only in Runner (llama.cpp refuses it by name).",
       "vision_upstream": true,
@@ -1763,6 +1783,7 @@
     {
       "id": "muse-glimmer-30b-surgical-4p75-q4_k",
       "model": "Muse-Glimmer-30B surgical",
+      "family": "Muse-Glimmer-30B",
       "tier": "tier1",
       "claim": "Text path only: Muse-Glimmer-30B with 4.75% of the decoder removed and healed, at Q4_K; it passes the bar against the unmodified BF16 parent on a held-out split.",
       "vision_upstream": true,
@@ -1846,6 +1867,7 @@
     {
       "id": "muse-glimmer-30b-surgical-6p34-q8_0",
       "model": "Muse-Glimmer-30B surgical",
+      "family": "Muse-Glimmer-30B",
       "tier": "tier1",
       "claim": "Text path only: Muse-Glimmer-30B with 6.34% of the decoder removed (the FFN sublayers of layers 4, 7, 9 and 48), at Q8_0; it passes the bar against the unmodified BF16 parent on a held-out split.",
       "vision_upstream": true,
@@ -1929,6 +1951,7 @@
     {
       "id": "muse-glimmer-30b-surgical-6p34-q4_k-recovered",
       "model": "Muse-Glimmer-30B surgical",
+      "family": "Muse-Glimmer-30B",
       "tier": "tier1",
       "claim": "Text path only: the 6.34% surgical Muse-Glimmer-30B at Q4_K with retrained scales; it passes the bar (0.04949, 97.90%) where plain Q4_K of the same model fails it (0.05815).",
       "vision_upstream": true,
@@ -2012,6 +2035,7 @@
     {
       "id": "qwen3-4b-runner-tooluse-merged-q8_0",
       "model": "Qwen3-4B Runner ToolUse",
+      "family": "Qwen3",
       "tier": "tier1",
       "claim": "Qwen3-4B with the tool-use LoRA merged and written at Q8_0, text path: a qwen3 client loop passes on CUDA; it is an adaptation demonstration, not a general improvement over Qwen3-4B.",
       "architecture": "qwen3",
@@ -2095,6 +2119,7 @@
     {
       "id": "qwen3-4b-runner-tooluse-lora",
       "model": "Qwen3-4B Runner ToolUse",
+      "family": "Qwen3",
       "tier": "tier1",
       "claim": "The tool-use LoRA adapter for Qwen3-4B, served with --lora on the base its card names (bartowski's Q4_K_M): an adapter, not a model.",
       "architecture": "qwen3",
@@ -2183,6 +2208,7 @@
     {
       "id": "qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head",
       "model": "Qwen3.8-Flash-Next",
+      "family": "Qwen3.8",
       "tier": "tier1",
       "claim": "Experimental: the qwen4exp architecture is admitted with its publisher float32 comparison still unmeasured, and no gate has run on this 4-part file; the admission evidence is on the upstream 2-part trunk.",
       "architecture": "qwen4exp",
@@ -2292,6 +2318,7 @@
     {
       "id": "qwen3.8-flash-next-mtp-q8_0",
       "model": "Qwen3.8-Flash-Next",
+      "family": "Qwen3.8",
       "tier": "tier1",
       "claim": "Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for --mtp-file, built from the publisher's BF16 checkpoint for ISTA-DASLab's IQ3_S trunk, whose qwen4exp architecture is admitted with its publisher float32 comparison still unmeasured; no gate has run on it.",
       "architecture": "qwen4exp",
@@ -2388,6 +2415,7 @@
     {
       "id": "gpt-oss-20b-keep30-mxfp4",
       "model": "gpt-oss-20b keep-30",
+      "family": "gpt-oss",
       "tier": "tier2",
       "claim": "A 32-to-30-expert derivative of gpt-oss-20b that does not pass the current fidelity bar; its card leads with the measured status and it stays published as a disclosed near-miss.",
       "architecture": "gpt-oss",
@@ -2414,6 +2442,7 @@
     {
       "id": "qwen3-4b-q4_k_m-bartowski",
       "model": "Qwen3-4B",
+      "family": "Qwen3",
       "tier": "tier2",
       "claim": "The base the published tool-use adapter was trained through and runs on, named by sha256 on the adapter's card: maintained on report, and run on every release only as the adapter's base in its composed smoke.",
       "architecture": "qwen3",
@@ -2439,6 +2468,7 @@
     {
       "id": "qwen3.8-flash-next-gsq-rco-iq3_s",
       "model": "Qwen3.8-Flash-Next",
+      "family": "Qwen3.8",
       "tier": "tier2",
       "claim": "Experimental: ISTA-DASLab's IQ3_S trunk of Qwen3.8-Flash-Next, the file the published MTP head was built for and the one the qwen4exp admission evidence measured; maintained on report, and run on every release only as that head's trunk in its composed smoke.",
       "architecture": "qwen4exp",
@@ -2472,6 +2502,7 @@
     {
       "id": "arch-llama",
       "model": "Llama-style dense families (llama)",
+      "family": "Llama",
       "tier": "tier2",
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
@@ -2488,6 +2519,7 @@
     {
       "id": "arch-mistral",
       "model": "Mistral (mistral)",
+      "family": "Mistral",
       "tier": "tier2",
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
@@ -2504,6 +2536,7 @@
     {
       "id": "arch-smollm",
       "model": "SmolLM (smollm)",
+      "family": "SmolLM",
       "tier": "tier2",
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
@@ -2520,6 +2553,7 @@
     {
       "id": "arch-stablelm",
       "model": "StableLM (stablelm)",
+      "family": "StableLM",
       "tier": "tier2",
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
@@ -2536,6 +2570,7 @@
     {
       "id": "arch-qwen2",
       "model": "Qwen2 (qwen2)",
+      "family": "Qwen2",
       "tier": "tier2",
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
@@ -2552,6 +2587,7 @@
     {
       "id": "arch-gemma3",
       "model": "Gemma 3 (gemma3)",
+      "family": "Gemma 3",
       "tier": "tier2",
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
@@ -2568,6 +2604,7 @@
     {
       "id": "arch-phi3",
       "model": "Phi-3 (phi3)",
+      "family": "Phi-3",
       "tier": "tier2",
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
@@ -2584,6 +2621,7 @@
     {
       "id": "arch-apertus",
       "model": "Apertus (apertus)",
+      "family": "Apertus",
       "tier": "tier2",
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
@@ -2600,6 +2638,7 @@
     {
       "id": "arch-granitehybrid",
       "model": "Granite 4 h-series hybrid (granitehybrid)",
+      "family": "Granite 4",
       "tier": "tier2",
       "scope": "architecture",
       "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",

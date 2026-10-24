@@ -178,11 +178,17 @@ and `--docs-check` (the README's model list and this page against the roster).
 <a id="cards-and-site"></a>
 ## The README, the cards and the site
 
-The README lists each Tier 1 model as one collapsed block. Its line sums up
-each backend over the model's files: ✅ when every file without a declared
-limit there is recorded, partial when some are, – when none is, n/a when
-every file has the limit, and failed when any file recorded a failure.
-Inside, one row per file carries its CPU, CUDA, Metal and Train cells: a
+The README lists the Tier 1 models by family, one collapsed block per
+family in the roster's order, its models sorted by name; this page groups
+every tier but Upcoming the same way. A family's line sums up every file of
+its models, per backend and for Train: ✅ when every file is recorded,
+🟨 *k of n* when k of its n files are (a declared limit beside recorded
+files counts as not run), a hyphen when none is, n/a when every file has a
+declared limit there, and failed when any file recorded a failure. For
+Train, recorded means the LoRA backward admits the file, and a refusal
+counts as a declared limit. Inside, each model's line names it with its
+label (text path only, experimental), and its table gives one row per
+file with its CPU, CUDA, Metal and Train cells: a
 recorded gate as its version and date, `failed` with its version and date
 for a recorded failure, `n/a` linked to the manual's support matrix, and a
 blank cell where nobody has run the gate yet. The Train cell is the
@@ -247,10 +253,12 @@ render shows drift until the cards are pushed, and exit 3 is a warning.
 <a id="tier1"></a>
 ## Tier 1, actively validated
 
-### Text path only: Cloudflare Clef (clef, on Qwen3.8-27B)
+### Cloudflare Clef
+
+#### Text path only: Cloudflare Clef (clef, on Qwen3.8-27B)
 
 <a id="cloudflare-clef-iq3_m"></a>
-#### `Cloudflare_clef-IQ3_M.gguf`
+##### `Cloudflare_clef-IQ3_M.gguf`
 
 Text path only: a decision model served at /v1/systemone; requests with images or videos are refused. The model card's two examples reproduce on the CPU with this file, which shows the head binds and decides; it is not a fidelity measurement of the quantized file.
 
@@ -271,375 +279,12 @@ Text path only: a decision model served at /v1/systemone; requests with images o
 - **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
-### Text path only: Gemma 4 12B
+### Qwen3.8
 
-<a id="gemma-4-12b-it-qat-q4_0"></a>
-#### `gemma-4-12b-it-qat-q4_0.gguf`
-
-Text path only: Google's quantization-aware Q4_0 release, its mmproj file not loaded; the gemma4 tool protocol passes report cases A and B on CUDA, and case C (prose then call) fails on the family's own call-first format.
-
-- **File:** `gemma-4-12b-it-qat-q4_0.gguf` (sha256 `93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b`, 6,975,879,296 bytes, from [google/gemma-4-12B-it-qat-q4_0-gguf](https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf) at revision `29d097773436`).
-- **Upstream checkpoint:** google/gemma-4-12B-it.
-- **Quantization:** Q4_0 (Google QAT).
-- **Features claimed:** text, tools (gemma4). A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison exists):** Family: gemma-4-E2B bf16 against Google's float32 reference (1.5.0 golden pass). This file: 4/6 greedy against llama.cpp (2026-08-05), agreement with another engine.
-- **Context tested:** not recorded.
-- **Known limitations:** No vision: the mmproj file is not loaded.
-- **Still missing:** Metal and CPU rows on the 12B; pinned output; Metal re-gate hardware.
-- **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `109c0663eb8c13c0`, [pin](../tests/compatibility/tier-smoke/gemma-4-12b-it-qat-q4_0.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-### Text path only: Gemma 4 26B-A4B
-
-<a id="gemma-4-26b-a4b-it-qat-q4_0"></a>
-#### `gemma-4-26B_q4_0-it.gguf`
-
-Text path only: Google's quantization-aware Q4_0 release of the MoE model, its mmproj file not loaded; no float32 reference has been run on the MoE layout.
-
-- **File:** `gemma-4-26B_q4_0-it.gguf` (sha256 `3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d`, 14,439,363,584 bytes, from [google/gemma-4-26B-A4B-it-qat-q4_0-gguf](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf) at revision `d1c082be9cf3`).
-- **Upstream checkpoint:** google/gemma-4-26B-A4B-it.
-- **Quantization:** Q4_0 (Google QAT).
-- **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison is feasible and owed):** anchor: agreement with another engine, not fidelity. The smallest MoE member is this model (104 GB in float32, feasible on the lab CPU box and owed); llama.cpp agreement sits inside the documented routing-chaos KL floor.
-- **Context tested:** not recorded.
-- **Known limitations:** Metal last validated 2026-09-01 on a 128 GB loaner; no Metal device in the lab can re-gate it.
-- **Still missing:** A float32 run or keeping the another-engine label; the tool gate on the file; pinned output; Metal re-gate hardware.
-- **Evidence:** [docs/model-evidence.md](model-evidence.md), [tests/compatibility/models.json](../tests/compatibility/models.json).
-- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `c697fa9c64f4a370`, [pin](../tests/compatibility/tier-smoke/gemma-4-26b-a4b-it-qat-q4_0.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
-- **LoRA training:** no: MoE FFN (gemma-4 dual-branch) (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** no: --lora does not cover the gemma-4 dual-branch FFN yet (runner 1.5.1, 2026-10-24).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-### Text path only: Gemma 4 31B
-
-<a id="gemma-4-31b-it-q4_0"></a>
-#### `gemma-4-31B-it-Q4_0.gguf`
-
-Text path only: ggml-org's post-training Q4_0 of Gemma 4 31B, not Google's QAT file; the existing 31B evidence is bound to this file's sha256.
-
-- **File:** `gemma-4-31B-it-Q4_0.gguf` (sha256 `031dc1c5fa9c5a0abbf3c39c5173fb2af65f5ac2dc2a090268561d3c72dcd834`, 17,992,313,088 bytes, from [ggml-org/gemma-4-31B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF) at revision `3d47a7e680fb`).
-- **Upstream checkpoint:** google/gemma-4-31B-it.
-- **Quantization:** Q4_0 (ggml-org, post-training).
-- **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison exists):** Family: gemma-4-E2B bf16 against Google's float32 reference (1.5.0 golden pass). This file: 5/6 greedy against llama.cpp, 64/64 token-identical against llama.cpp on Metal (2026-09-01), agreement with another engine; a float32 run on the 31B (124 GB) is feasible on the lab CPU box and owed.
-- **Context tested:** not recorded.
-- **Known limitations:** Metal last validated 2026-09-01 on a 128 GB loaner; no Metal device in the lab can re-gate it.
-- **Still missing:** A float32 run or the another-engine label; the tool gate; pinned output; Metal re-gate hardware.
-- **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/model-evidence.md](model-evidence.md).
-- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `6e01ea7bc489371c`, [pin](../tests/compatibility/tier-smoke/gemma-4-31b-it-q4_0.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-### Text path only: Gemma 4 31B, attention block 48 removed
-
-<a id="gemma-4-31b-it-attn48-removed-q4_0"></a>
-#### `gemma-4-31B-it-attn48-removed-q4_0.gguf`
-
-Text path only: Google's QAT Q4_0 of Gemma 4 31B with one attention sublayer physically removed; it tracks its parent at clean KLD 0.0223 on 44,413 held-out positions and loads only in Runner (llama.cpp refuses it by name).
-
-- **File:** `gemma-4-31B-it-attn48-removed-q4_0.gguf` (sha256 `d7eaef9a8c05d8ad5cc63e4b37767113498b6ec6a31863519f5399f12cdb3134`, 17,576,681,600 bytes, from [Joakimpalm-Zen/gemma-4-31B-it-attn48-removed-Q4_0-GGUF](https://huggingface.co/Joakimpalm-Zen/gemma-4-31B-it-attn48-removed-Q4_0-GGUF) at revision `c704744772b4`).
-- **Upstream checkpoint:** google/gemma-4-31B-it.
-- **Quantization:** Q4_0 (Google QAT), one attention sublayer removed.
-- **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison exists):** Against its parent, Google's QAT Q4_0: clean KLD 0.0223 on 44,413 held-out positions (2026-08-30, on the identical zeroed form). Family: gemma-4-E2B bf16 against Google's float32 reference.
-- **Context tested:** not recorded.
-- **Still missing:** Pinned output.
-- **Evidence:** [docs/sublayer-removal.md](sublayer-removal.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md).
-- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `fbb8f3caf0ab7e53`, [pin](../tests/compatibility/tier-smoke/gemma-4-31b-it-attn48-removed-q4_0.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
-- **LoRA training:** no: removed sublayers (--remove-sublayer artifact) (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** no: --lora does not cover a model with removed sublayers yet (1 removed by --remove-sublayer) (runner 1.5.1, 2026-10-24).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-### Text path only: Gemma 4 E2B
-
-<a id="gemma-4-e2b-it-q4_k_m-q4_0-mix"></a>
-#### `gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf`
-
-Text path only: the smoke-test file from the quickstart; it fails the fidelity bar against its own BF16 parent (77.75% of tokens agree, mean KLD 0.286) and is a way to try Runner on an 8 GB machine, not a faithful gemma-4-E2B.
-
-- **File:** `gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf` (sha256 `16ffaa2ea568e7a0c9b5c6ddbd39a376879f9ac007861334974de39f4cc52e3f`, 2,631,015,904 bytes, from [Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF](https://huggingface.co/Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF) at revision `37c8fa438245`).
-- **Upstream checkpoint:** google/gemma-4-E2B-it.
-- **Quantization:** Q4_K_M/Q4_0 mix.
-- **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison exists):** Family: gemma-4-E2B bf16 against Google's float32 reference, where Runner is the closer engine (1.5.0 golden pass); that pass's served row is a different file (q4_0 throughout), not this mix.
-- **Context tested:** not recorded.
-- **Still missing:** nothing the audit named
-- **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on macos-arm64-metal, metal backend, the policy's age limit.
-- **CPU:** ✅ v1.5.1 2026-10-23 on macos-arm64-metal at commit `7660980968b4`, output sha256 `4132fa520bc517ed`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.cpu.txt)
-- **CUDA:** ☐ not run
-- **Metal:** ✅ v1.5.1 2026-10-23 on macos-arm64-metal at commit `7660980968b4`, output sha256 `4132fa520bc517ed`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.metal.txt)
-- **LoRA training:** supported (runner 1.5.1, 2026-10-23).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-23).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-### Granite-4.2-8B
-
-<a id="granite-4.2-8b-q4_k_m"></a>
-#### `granite-4.2-8b-Q4_K_M.gguf`
-
-IBM's official Q4_K_M of Granite 4.2 8B, text path: the granite42 tool protocol and two client loops pass on an 8 GB CUDA card; case C is open.
-
-- **File:** `granite-4.2-8b-Q4_K_M.gguf` (sha256 `16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311`, 5,347,917,952 bytes, from [ibm-granite/granite-4.2-8b-GGUF](https://huggingface.co/ibm-granite/granite-4.2-8b-GGUF) at revision `93f3f6a8938e`).
-- **Upstream checkpoint:** ibm-granite/granite-4.2-8b.
-- **Quantization:** Q4_K_M (IBM).
-- **Features claimed:** text, tools (granite42). A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison exists):** Family: granite-4.2-3B bf16 against IBM's float32 reference, 100% margin-qualified top-1 (1.5.0 golden pass). This file: Q4_K_M vs Q8_0 bar PASS (400 positions, mean KLD 0.0036); tokenizer 0/721, template 22/22.
-- **Context tested:** not recorded.
-- **Still missing:** Metal and CPU rows; pinned output.
-- **Evidence:** [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Per-release smoke:** on windows-x86_64-cuda, cuda backend, the policy's age limit.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-23 on windows-x86_64-cuda at commit `349af6e65185`, output sha256 `ff1cd210d7a92cd2`, [pin](../tests/compatibility/tier-smoke/granite-4.2-8b-q4_k_m.windows-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-23).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-23).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-<a id="granite-4.2-8b-q8_0"></a>
-#### `granite-4.2-8b-Q8_0.gguf`
-
-IBM's official Q8_0 of Granite 4.2 8B, text path: the reference sibling of the Q4_K_M row's quant bar.
-
-- **File:** `granite-4.2-8b-Q8_0.gguf` (sha256 `fb66ad5750680c77c76b9dc095961375f14fc88ba15fd5fc084ef6e6701bad77`, 9,345,613,952 bytes, from [ibm-granite/granite-4.2-8b-GGUF](https://huggingface.co/ibm-granite/granite-4.2-8b-GGUF) at revision `93f3f6a8938e`).
-- **Upstream checkpoint:** ibm-granite/granite-4.2-8b.
-- **Quantization:** Q8_0 (IBM).
-- **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison exists):** Family: granite-4.2-3B bf16 against IBM's float32 reference, 100% margin-qualified top-1 (1.5.0 golden pass).
-- **Context tested:** not recorded.
-- **Still missing:** Backend rows on the file; pinned output.
-- **Evidence:** [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md).
-- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `9e4082576850d0a8`, [pin](../tests/compatibility/tier-smoke/granite-4.2-8b-q8_0.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-### Text path only: Muse-Glimmer-30B
-
-<a id="muse-glimmer-30b-kquant"></a>
-#### `Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf`
-
-Text path only: Meta's own Q4_K_M, which passes the fidelity bar against the BF16 parent; the vision encoder is outside the admitted path.
-
-- **File:** `Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf` (sha256 `4cc57c0f51040a226e5a72cc47b7613f7772950e460a665f7083de89f183f60e`, 16,756,683,904 bytes, from [meta-models/Muse-Glimmer-30B-GGUF](https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF) at revision `b44f1072cf75`).
-- **Upstream checkpoint:** meta-models/Muse-Glimmer-30B.
-- **Quantization:** Q4_K_M (Meta).
-- **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. The only member is 30B (120 GB in float32); the bar is measured against the BF16 parent (quant frontier report, 2026-08-20) and greedy against llama.cpp b10353.
-- **Context tested:** not recorded.
-- **Known limitations:** No vision encoder. Metal last validated 2026-08-11; no lab Metal device fits the file.
-- **Still missing:** A live tool-protocol run on one file; backend rows; pinned output; Metal re-gate hardware.
-- **Evidence:** [docs/model-evidence.md](model-evidence.md), [tests/compatibility/models.json](../tests/compatibility/models.json).
-- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `bfe1008c84ebfae4`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-kquant.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-### Text path only: Muse-Glimmer-30B surgical
-
-<a id="muse-glimmer-30b-surgical-4p75-q4_k"></a>
-#### `Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf`
-
-Text path only: Muse-Glimmer-30B with 4.75% of the decoder removed and healed, at Q4_K; it passes the bar against the unmodified BF16 parent on a held-out split.
-
-- **File:** `Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf` (sha256 `103aa117dfce88974bd78e03ee6ca6601c720f01a1ec24ee1cfd0e5fe2f77ce6`, 15,686,266,304 bytes, from [Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q4_K-GGUF](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q4_K-GGUF) at revision `38f6284ec919`).
-- **Upstream checkpoint:** meta-models/Muse-Glimmer-30B.
-- **Quantization:** Q4_K.
-- **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. The family's only member is 30B (120 GB in float32). Against the unmodified BF16 parent: 97.74% / 0.04810 on a held-out split.
-- **Context tested:** not recorded.
-- **Still missing:** Backend rows; pinned output; a live tool-protocol run.
-- **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `9d806b71f48e1049`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-surgical-4p75-q4_k.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-<a id="muse-glimmer-30b-surgical-6p34-q8_0"></a>
-#### `Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf`
-
-Text path only: Muse-Glimmer-30B with 6.34% of the decoder removed (the FFN sublayers of layers 4, 7, 9 and 48), at Q8_0; it passes the bar against the unmodified BF16 parent on a held-out split.
-
-- **File:** `Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf` (sha256 `d7bb5c6f3b7170160322c684f338c0db630ea24ab09b896a6c97c8c415f58d4d`, 29,612,961,216 bytes, from [Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q8_0-GGUF](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q8_0-GGUF) at revision `e95fcd1a298c`).
-- **Upstream checkpoint:** meta-models/Muse-Glimmer-30B.
-- **Quantization:** Q8_0.
-- **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. The family's only member is 30B (120 GB in float32). Against the unmodified BF16 parent: 98.34% / 0.03883 on a held-out split.
-- **Context tested:** not recorded.
-- **Still missing:** Backend rows; pinned output; a live tool-protocol run.
-- **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on linux-x86_64-cuda, cpu backend, the policy's age limit.
-- **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `3b2c21c82306`, output sha256 `40a1110e1716fb3d`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-surgical-6p34-q8_0.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** ☐ not run
-- **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-<a id="muse-glimmer-30b-surgical-6p34-q4_k-recovered"></a>
-#### `Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf`
-
-Text path only: the 6.34% surgical Muse-Glimmer-30B at Q4_K with retrained scales; it passes the bar (0.04949, 97.90%) where plain Q4_K of the same model fails it (0.05815).
-
-- **File:** `Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf` (sha256 `12a429483b18aefcfd9cdc41afb156f339d610be0fdd66fdaf5391e9df1cbb19`, 15,686,266,304 bytes, from [Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-6p34-Q4_K-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-6p34-Q4_K-recovered-GGUF) at revision `164d823e32a3`).
-- **Upstream checkpoint:** meta-models/Muse-Glimmer-30B.
-- **Quantization:** Q4_K, recovered scales.
-- **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. The family's only member is 30B (120 GB in float32). Against the unmodified BF16 parent: mean KLD 0.04949, margin-qualified top-1 97.90%.
-- **Context tested:** not recorded.
-- **Still missing:** Backend rows; pinned output; a live tool-protocol run.
-- **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `80e114dfae593916`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-surgical-6p34-q4_k-recovered.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-### NVIDIA Nemotron Nano 9B v2
-
-<a id="nvidia-nemotron-nano-9b-v2-q8_0"></a>
-#### `NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf`
-
-A plain Q8_0 of NVIDIA's Nemotron-Nano-9B-v2 (Mamba-2 hybrid), text path: 100% margin-qualified top-1 against NVIDIA's float32 reference at Q8_0 over 100 positions; the 2,000-position rerun did not finish.
-
-- **File:** `NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf` (sha256 `d3224286484df1ae79c2b74d2a0913e1bbb5a364b0dd7c1061c95fa97ee608d7`, 9,458,093,632 bytes, from [Joakimpalm-Zen/NVIDIA-Nemotron-Nano-9B-v2-Q8_0-GGUF](https://huggingface.co/Joakimpalm-Zen/NVIDIA-Nemotron-Nano-9B-v2-Q8_0-GGUF) at revision `3b6a1cf5035f`).
-- **Upstream checkpoint:** nvidia/NVIDIA-Nemotron-Nano-9B-v2.
-- **Quantization:** Q8_0.
-- **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison exists):** NVIDIA's float32 reference (golden pass 2026-09-07, 100 positions): margin-qualified top-1 100% at bf16 and Q8_0; Runner's mean KL 0.0041 at Q8_0 against llama.cpp's 0.0054. CPU and CUDA greedy byte-identical on this file.
-- **Context tested:** not recorded.
-- **Still missing:** The tool gate (native protocol since 2026-10-09); pinned output; the 2,000-position rerun.
-- **Evidence:** [docs/golden-pass-2026-09-07.md](golden-pass-2026-09-07.md).
-- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `e23a8c77690649fb`, [pin](../tests/compatibility/tier-smoke/nvidia-nemotron-nano-9b-v2-q8_0.linux-x86_64-cuda.cuda.txt)
-- **Metal:** [n/a](../MANUAL.md#support-matrix): Metal has no SSM path; a Metal build runs this file on the CPU.
-- **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (nemotron_h) (runner 1.5.1, 2026-10-24).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-### Qwen3-30B-A3B selective precision
-
-<a id="qwen3-30b-a3b-expq4_0-attnq8_0"></a>
-#### `Qwen3-30B-A3B-expq4_0-attnq8_0.gguf`
-
-Qwen3-30B-A3B with attention Q8_0 and experts Q4_0, text path: it passes the fidelity bar against the first-party Q8_0 where the official uniform Q4_K_M fails it.
-
-- **File:** `Qwen3-30B-A3B-expq4_0-attnq8_0.gguf` (sha256 `df02efa815a74e6207f9e01f2d38272c1e2718bb23aec544709a02a2c7d5b206`, 17,988,417,024 bytes, from [Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF) at revision `6cdb710bcd55`).
-- **Upstream checkpoint:** Qwen/Qwen3-30B-A3B.
-- **Quantization:** Q8_0 attention / Q4_0 experts.
-- **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. A float32 reference of the 30B (120 GB) is not run; the bar is against the byte-verified first-party Q8_0 (v2 top-1 99.50%, mean KLD 0.0345).
-- **Context tested:** not recorded.
-- **Still missing:** Pinned output.
-- **Evidence:** [tests/compatibility/models.json](../tests/compatibility/models.json), [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `9c80990c12a550f6`, [pin](../tests/compatibility/tier-smoke/qwen3-30b-a3b-expq4_0-attnq8_0.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-### Qwen3-4B Runner ToolUse
-
-<a id="qwen3-4b-runner-tooluse-merged-q8_0"></a>
-#### `merged-Q8_0.gguf`
-
-Qwen3-4B with the tool-use LoRA merged and written at Q8_0, text path: a qwen3 client loop passes on CUDA; it is an adaptation demonstration, not a general improvement over Qwen3-4B.
-
-- **File:** `merged-Q8_0.gguf` (sha256 `b9d21e525d91b20a1fc3437cf34c7ecfa03afda722d960b95bcfd113f2b7ea02`, 4,280,405,440 bytes, from [Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M](https://huggingface.co/Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M) at revision `5902b309ee51`).
-- **Upstream checkpoint:** Qwen/Qwen3-4B.
-- **Quantization:** Q8_0.
-- **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison exists):** Family: Qwen3-4B bf16 against Qwen's float32 reference, 100% margin-qualified top-1 (1.5.0 golden pass; its served row is Qwen3-4B Q4_K_M, not this file).
-- **Context tested:** not recorded.
-- **Still missing:** Pinned output.
-- **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/adaptation-engine.md](adaptation-engine.md).
-- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `aa1a1647a3e4b534`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-merged-q8_0.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-<a id="qwen3-4b-runner-tooluse-lora"></a>
-#### `Qwen3-4B-ToolUse-LoRA.gguf`
-
-The tool-use LoRA adapter for Qwen3-4B, served with --lora on the base its card names (bartowski's Q4_K_M): an adapter, not a model.
-
-- **File:** `Qwen3-4B-ToolUse-LoRA.gguf` (sha256 `ea38f80c33d381c9aa62c874920d2fa058dd307e7186e9b7c347d782f35b88e4`, 66,094,752 bytes, from [Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M](https://huggingface.co/Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M) at revision `5902b309ee51`).
-- **Upstream checkpoint:** Qwen/Qwen3-4B.
-- **Quantization:** adapter (F32/F16 LoRA tensors).
-- **Runs with:** [Qwen3-4B](#qwen3-4b-q4_k_m-bartowski), loaded beside it with `--lora`; the smoke and its pin are of that composed run.
-- **Features claimed:** adapters. A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison exists):** The base model's anchor: Qwen3-4B bf16 against Qwen's float32 reference (1.5.0 golden pass). The adapter itself has no float32 reference.
-- **Context tested:** not recorded.
-- **Still missing:** Pinned output of the composed run (the base named on the card plus this adapter).
-- **Evidence:** [docs/adaptation-engine.md](adaptation-engine.md), [docs/lora.md](lora.md).
-- **Per-release smoke:** on linux-x86_64-cuda, cpu backend, the policy's age limit.
-- **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `3b2c21c82306`, output sha256 `9a878ce06241ebaa`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** ☐ not run
-- **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-### Qwen3-Coder-30B-A3B keep-120
-
-<a id="qwen3-coder-30b-a3b-instruct-keep120-q4_k_m"></a>
-#### `Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf`
-
-An expert-pruned Qwen3-Coder-30B-A3B (120 of 128 experts kept) at Q4_K_M, text path: it passes the original and the current fidelity bar against its parent.
-
-- **File:** `Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf` (sha256 `3ac8568224a15ea49db6affdd195ba48e8b2d7c6325c7849b9829381e89163a1`, 17,531,967,808 bytes, from [Joakimpalm-Zen/Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M-GGUF) at revision `3fd968c75417`).
-- **Upstream checkpoint:** Qwen/Qwen3-Coder-30B-A3B-Instruct.
-- **Quantization:** Q4_K_M, 120 experts.
-- **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. A float32 reference of the 30B is not run; the bars are against the unpruned parent.
-- **Context tested:** not recorded.
-- **Still missing:** Pinned output; a tool gate on this file (the recorded qwen3-coder tool run is on the unpruned Q4_K_M).
-- **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `f049d30f2e67e4a9`, [pin](../tests/compatibility/tier-smoke/qwen3-coder-30b-a3b-instruct-keep120-q4_k_m.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
-
-### Qwen3.8-27B
+#### Qwen3.8-27B
 
 <a id="qwen3.8-27b-ud-q4_k_m"></a>
-#### `Qwen3.8-27B-UD-Q4_K_M.gguf`
+##### `Qwen3.8-27B-UD-Q4_K_M.gguf`
 
 Unsloth's dynamic Q4_K_M of Qwen3.8-27B, text path: it passes the quant bar against the Q8_0 sibling; the qwen35 CUDA path was measured on other quantizations of the same model.
 
@@ -660,7 +305,7 @@ Unsloth's dynamic Q4_K_M of Qwen3.8-27B, text path: it passes the quant bar agai
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="qwen3.8-27b-gsq-rco-iq3_s-recovered"></a>
-#### `Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf`
+##### `Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf`
 
 ISTA-DASLab's IQ3_S file with every quantised block's fp16 scales retrained against the BF16 parent, text path: it reads inside the fidelity bar against that parent and is not a lossless Qwen3.8-27B.
 
@@ -681,7 +326,7 @@ ISTA-DASLab's IQ3_S file with every quantised block's fp16 scales retrained agai
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="qwen3.8-27b-mtp-q8_0"></a>
-#### `Qwen3.8-27B-MTP-Q8_0.gguf`
+##### `Qwen3.8-27B-MTP-Q8_0.gguf`
 
 The NextN/MTP predictor head for Qwen3.8-27B, loaded with --mtp-file beside a trunk: it only proposes tokens, so the text is the trunk's own greedy output; it is a speed feature, not a model.
 
@@ -702,10 +347,10 @@ The NextN/MTP predictor head for Qwen3.8-27B, loaded with --mtp-file beside a tr
 - **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
-### Experimental: Qwen3.8-Flash-Next
+#### Experimental: Qwen3.8-Flash-Next
 
 <a id="qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head"></a>
-#### `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf` (4 parts)
+##### `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf` (4 parts)
 
 Experimental: the qwen4exp architecture is admitted with its publisher float32 comparison still unmeasured, and no gate has run on this 4-part file; the admission evidence is on the upstream 2-part trunk.
 
@@ -726,7 +371,7 @@ Experimental: the qwen4exp architecture is admitted with its publisher float32 c
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="qwen3.8-flash-next-mtp-q8_0"></a>
-#### `Qwen3.8-Flash-Next-MTP-Q8_0.gguf`
+##### `Qwen3.8-Flash-Next-MTP-Q8_0.gguf`
 
 Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for --mtp-file, built from the publisher's BF16 checkpoint for ISTA-DASLab's IQ3_S trunk, whose qwen4exp architecture is admitted with its publisher float32 comparison still unmeasured; no gate has run on it.
 
@@ -747,10 +392,269 @@ Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for 
 - **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
+### Gemma 4
+
+#### Text path only: Gemma 4 12B
+
+<a id="gemma-4-12b-it-qat-q4_0"></a>
+##### `gemma-4-12b-it-qat-q4_0.gguf`
+
+Text path only: Google's quantization-aware Q4_0 release, its mmproj file not loaded; the gemma4 tool protocol passes report cases A and B on CUDA, and case C (prose then call) fails on the family's own call-first format.
+
+- **File:** `gemma-4-12b-it-qat-q4_0.gguf` (sha256 `93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b`, 6,975,879,296 bytes, from [google/gemma-4-12B-it-qat-q4_0-gguf](https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf) at revision `29d097773436`).
+- **Upstream checkpoint:** google/gemma-4-12B-it.
+- **Quantization:** Q4_0 (Google QAT).
+- **Features claimed:** text, tools (gemma4). A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Family: gemma-4-E2B bf16 against Google's float32 reference (1.5.0 golden pass). This file: 4/6 greedy against llama.cpp (2026-08-05), agreement with another engine.
+- **Context tested:** not recorded.
+- **Known limitations:** No vision: the mmproj file is not loaded.
+- **Still missing:** Metal and CPU rows on the 12B; pinned output; Metal re-gate hardware.
+- **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `109c0663eb8c13c0`, [pin](../tests/compatibility/tier-smoke/gemma-4-12b-it-qat-q4_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
+#### Text path only: Gemma 4 26B-A4B
+
+<a id="gemma-4-26b-a4b-it-qat-q4_0"></a>
+##### `gemma-4-26B_q4_0-it.gguf`
+
+Text path only: Google's quantization-aware Q4_0 release of the MoE model, its mmproj file not loaded; no float32 reference has been run on the MoE layout.
+
+- **File:** `gemma-4-26B_q4_0-it.gguf` (sha256 `3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d`, 14,439,363,584 bytes, from [google/gemma-4-26B-A4B-it-qat-q4_0-gguf](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf) at revision `d1c082be9cf3`).
+- **Upstream checkpoint:** google/gemma-4-26B-A4B-it.
+- **Quantization:** Q4_0 (Google QAT).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison is feasible and owed):** anchor: agreement with another engine, not fidelity. The smallest MoE member is this model (104 GB in float32, feasible on the lab CPU box and owed); llama.cpp agreement sits inside the documented routing-chaos KL floor.
+- **Context tested:** not recorded.
+- **Known limitations:** Metal last validated 2026-09-01 on a 128 GB loaner; no Metal device in the lab can re-gate it.
+- **Still missing:** A float32 run or keeping the another-engine label; the tool gate on the file; pinned output; Metal re-gate hardware.
+- **Evidence:** [docs/model-evidence.md](model-evidence.md), [tests/compatibility/models.json](../tests/compatibility/models.json).
+- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `c697fa9c64f4a370`, [pin](../tests/compatibility/tier-smoke/gemma-4-26b-a4b-it-qat-q4_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** no: MoE FFN (gemma-4 dual-branch) (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** no: --lora does not cover the gemma-4 dual-branch FFN yet (runner 1.5.1, 2026-10-24).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
+#### Text path only: Gemma 4 31B
+
+<a id="gemma-4-31b-it-q4_0"></a>
+##### `gemma-4-31B-it-Q4_0.gguf`
+
+Text path only: ggml-org's post-training Q4_0 of Gemma 4 31B, not Google's QAT file; the existing 31B evidence is bound to this file's sha256.
+
+- **File:** `gemma-4-31B-it-Q4_0.gguf` (sha256 `031dc1c5fa9c5a0abbf3c39c5173fb2af65f5ac2dc2a090268561d3c72dcd834`, 17,992,313,088 bytes, from [ggml-org/gemma-4-31B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF) at revision `3d47a7e680fb`).
+- **Upstream checkpoint:** google/gemma-4-31B-it.
+- **Quantization:** Q4_0 (ggml-org, post-training).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Family: gemma-4-E2B bf16 against Google's float32 reference (1.5.0 golden pass). This file: 5/6 greedy against llama.cpp, 64/64 token-identical against llama.cpp on Metal (2026-09-01), agreement with another engine; a float32 run on the 31B (124 GB) is feasible on the lab CPU box and owed.
+- **Context tested:** not recorded.
+- **Known limitations:** Metal last validated 2026-09-01 on a 128 GB loaner; no Metal device in the lab can re-gate it.
+- **Still missing:** A float32 run or the another-engine label; the tool gate; pinned output; Metal re-gate hardware.
+- **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/model-evidence.md](model-evidence.md).
+- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `6e01ea7bc489371c`, [pin](../tests/compatibility/tier-smoke/gemma-4-31b-it-q4_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
+#### Text path only: Gemma 4 31B, attention block 48 removed
+
+<a id="gemma-4-31b-it-attn48-removed-q4_0"></a>
+##### `gemma-4-31B-it-attn48-removed-q4_0.gguf`
+
+Text path only: Google's QAT Q4_0 of Gemma 4 31B with one attention sublayer physically removed; it tracks its parent at clean KLD 0.0223 on 44,413 held-out positions and loads only in Runner (llama.cpp refuses it by name).
+
+- **File:** `gemma-4-31B-it-attn48-removed-q4_0.gguf` (sha256 `d7eaef9a8c05d8ad5cc63e4b37767113498b6ec6a31863519f5399f12cdb3134`, 17,576,681,600 bytes, from [Joakimpalm-Zen/gemma-4-31B-it-attn48-removed-Q4_0-GGUF](https://huggingface.co/Joakimpalm-Zen/gemma-4-31B-it-attn48-removed-Q4_0-GGUF) at revision `c704744772b4`).
+- **Upstream checkpoint:** google/gemma-4-31B-it.
+- **Quantization:** Q4_0 (Google QAT), one attention sublayer removed.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Against its parent, Google's QAT Q4_0: clean KLD 0.0223 on 44,413 held-out positions (2026-08-30, on the identical zeroed form). Family: gemma-4-E2B bf16 against Google's float32 reference.
+- **Context tested:** not recorded.
+- **Still missing:** Pinned output.
+- **Evidence:** [docs/sublayer-removal.md](sublayer-removal.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md).
+- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `fbb8f3caf0ab7e53`, [pin](../tests/compatibility/tier-smoke/gemma-4-31b-it-attn48-removed-q4_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** no: removed sublayers (--remove-sublayer artifact) (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** no: --lora does not cover a model with removed sublayers yet (1 removed by --remove-sublayer) (runner 1.5.1, 2026-10-24).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
+#### Text path only: Gemma 4 E2B
+
+<a id="gemma-4-e2b-it-q4_k_m-q4_0-mix"></a>
+##### `gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf`
+
+Text path only: the smoke-test file from the quickstart; it fails the fidelity bar against its own BF16 parent (77.75% of tokens agree, mean KLD 0.286) and is a way to try Runner on an 8 GB machine, not a faithful gemma-4-E2B.
+
+- **File:** `gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf` (sha256 `16ffaa2ea568e7a0c9b5c6ddbd39a376879f9ac007861334974de39f4cc52e3f`, 2,631,015,904 bytes, from [Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF](https://huggingface.co/Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF) at revision `37c8fa438245`).
+- **Upstream checkpoint:** google/gemma-4-E2B-it.
+- **Quantization:** Q4_K_M/Q4_0 mix.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Family: gemma-4-E2B bf16 against Google's float32 reference, where Runner is the closer engine (1.5.0 golden pass); that pass's served row is a different file (q4_0 throughout), not this mix.
+- **Context tested:** not recorded.
+- **Still missing:** nothing the audit named
+- **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
+- **Per-release smoke:** on macos-arm64-metal, metal backend, the policy's age limit.
+- **CPU:** ✅ v1.5.1 2026-10-23 on macos-arm64-metal at commit `7660980968b4`, output sha256 `4132fa520bc517ed`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ✅ v1.5.1 2026-10-23 on macos-arm64-metal at commit `7660980968b4`, output sha256 `4132fa520bc517ed`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.metal.txt)
+- **LoRA training:** supported (runner 1.5.1, 2026-10-23).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-23).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
+### Muse-Glimmer-30B
+
+#### Text path only: Muse-Glimmer-30B
+
+<a id="muse-glimmer-30b-kquant"></a>
+##### `Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf`
+
+Text path only: Meta's own Q4_K_M, which passes the fidelity bar against the BF16 parent; the vision encoder is outside the admitted path.
+
+- **File:** `Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf` (sha256 `4cc57c0f51040a226e5a72cc47b7613f7772950e460a665f7083de89f183f60e`, 16,756,683,904 bytes, from [meta-models/Muse-Glimmer-30B-GGUF](https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF) at revision `b44f1072cf75`).
+- **Upstream checkpoint:** meta-models/Muse-Glimmer-30B.
+- **Quantization:** Q4_K_M (Meta).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. The only member is 30B (120 GB in float32); the bar is measured against the BF16 parent (quant frontier report, 2026-08-20) and greedy against llama.cpp b10353.
+- **Context tested:** not recorded.
+- **Known limitations:** No vision encoder. Metal last validated 2026-08-11; no lab Metal device fits the file.
+- **Still missing:** A live tool-protocol run on one file; backend rows; pinned output; Metal re-gate hardware.
+- **Evidence:** [docs/model-evidence.md](model-evidence.md), [tests/compatibility/models.json](../tests/compatibility/models.json).
+- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `bfe1008c84ebfae4`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-kquant.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
+#### Text path only: Muse-Glimmer-30B surgical
+
+<a id="muse-glimmer-30b-surgical-4p75-q4_k"></a>
+##### `Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf`
+
+Text path only: Muse-Glimmer-30B with 4.75% of the decoder removed and healed, at Q4_K; it passes the bar against the unmodified BF16 parent on a held-out split.
+
+- **File:** `Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf` (sha256 `103aa117dfce88974bd78e03ee6ca6601c720f01a1ec24ee1cfd0e5fe2f77ce6`, 15,686,266,304 bytes, from [Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q4_K-GGUF](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q4_K-GGUF) at revision `38f6284ec919`).
+- **Upstream checkpoint:** meta-models/Muse-Glimmer-30B.
+- **Quantization:** Q4_K.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. The family's only member is 30B (120 GB in float32). Against the unmodified BF16 parent: 97.74% / 0.04810 on a held-out split.
+- **Context tested:** not recorded.
+- **Still missing:** Backend rows; pinned output; a live tool-protocol run.
+- **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
+- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `9d806b71f48e1049`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-surgical-4p75-q4_k.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
+<a id="muse-glimmer-30b-surgical-6p34-q8_0"></a>
+##### `Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf`
+
+Text path only: Muse-Glimmer-30B with 6.34% of the decoder removed (the FFN sublayers of layers 4, 7, 9 and 48), at Q8_0; it passes the bar against the unmodified BF16 parent on a held-out split.
+
+- **File:** `Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf` (sha256 `d7bb5c6f3b7170160322c684f338c0db630ea24ab09b896a6c97c8c415f58d4d`, 29,612,961,216 bytes, from [Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q8_0-GGUF](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q8_0-GGUF) at revision `e95fcd1a298c`).
+- **Upstream checkpoint:** meta-models/Muse-Glimmer-30B.
+- **Quantization:** Q8_0.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. The family's only member is 30B (120 GB in float32). Against the unmodified BF16 parent: 98.34% / 0.03883 on a held-out split.
+- **Context tested:** not recorded.
+- **Still missing:** Backend rows; pinned output; a live tool-protocol run.
+- **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
+- **Per-release smoke:** on linux-x86_64-cuda, cpu backend, the policy's age limit.
+- **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `3b2c21c82306`, output sha256 `40a1110e1716fb3d`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-surgical-6p34-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
+<a id="muse-glimmer-30b-surgical-6p34-q4_k-recovered"></a>
+##### `Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf`
+
+Text path only: the 6.34% surgical Muse-Glimmer-30B at Q4_K with retrained scales; it passes the bar (0.04949, 97.90%) where plain Q4_K of the same model fails it (0.05815).
+
+- **File:** `Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf` (sha256 `12a429483b18aefcfd9cdc41afb156f339d610be0fdd66fdaf5391e9df1cbb19`, 15,686,266,304 bytes, from [Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-6p34-Q4_K-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-6p34-Q4_K-recovered-GGUF) at revision `164d823e32a3`).
+- **Upstream checkpoint:** meta-models/Muse-Glimmer-30B.
+- **Quantization:** Q4_K, recovered scales.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. The family's only member is 30B (120 GB in float32). Against the unmodified BF16 parent: mean KLD 0.04949, margin-qualified top-1 97.90%.
+- **Context tested:** not recorded.
+- **Still missing:** Backend rows; pinned output; a live tool-protocol run.
+- **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
+- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `80e114dfae593916`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-surgical-6p34-q4_k-recovered.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
+### Granite-4.2-8B
+
+#### Granite-4.2-8B
+
+<a id="granite-4.2-8b-q4_k_m"></a>
+##### `granite-4.2-8b-Q4_K_M.gguf`
+
+IBM's official Q4_K_M of Granite 4.2 8B, text path: the granite42 tool protocol and two client loops pass on an 8 GB CUDA card; case C is open.
+
+- **File:** `granite-4.2-8b-Q4_K_M.gguf` (sha256 `16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311`, 5,347,917,952 bytes, from [ibm-granite/granite-4.2-8b-GGUF](https://huggingface.co/ibm-granite/granite-4.2-8b-GGUF) at revision `93f3f6a8938e`).
+- **Upstream checkpoint:** ibm-granite/granite-4.2-8b.
+- **Quantization:** Q4_K_M (IBM).
+- **Features claimed:** text, tools (granite42). A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Family: granite-4.2-3B bf16 against IBM's float32 reference, 100% margin-qualified top-1 (1.5.0 golden pass). This file: Q4_K_M vs Q8_0 bar PASS (400 positions, mean KLD 0.0036); tokenizer 0/721, template 22/22.
+- **Context tested:** not recorded.
+- **Still missing:** Metal and CPU rows; pinned output.
+- **Evidence:** [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Per-release smoke:** on windows-x86_64-cuda, cuda backend, the policy's age limit.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-23 on windows-x86_64-cuda at commit `349af6e65185`, output sha256 `ff1cd210d7a92cd2`, [pin](../tests/compatibility/tier-smoke/granite-4.2-8b-q4_k_m.windows-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.5.1, 2026-10-23).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-23).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
+<a id="granite-4.2-8b-q8_0"></a>
+##### `granite-4.2-8b-Q8_0.gguf`
+
+IBM's official Q8_0 of Granite 4.2 8B, text path: the reference sibling of the Q4_K_M row's quant bar.
+
+- **File:** `granite-4.2-8b-Q8_0.gguf` (sha256 `fb66ad5750680c77c76b9dc095961375f14fc88ba15fd5fc084ef6e6701bad77`, 9,345,613,952 bytes, from [ibm-granite/granite-4.2-8b-GGUF](https://huggingface.co/ibm-granite/granite-4.2-8b-GGUF) at revision `93f3f6a8938e`).
+- **Upstream checkpoint:** ibm-granite/granite-4.2-8b.
+- **Quantization:** Q8_0 (IBM).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Family: granite-4.2-3B bf16 against IBM's float32 reference, 100% margin-qualified top-1 (1.5.0 golden pass).
+- **Context tested:** not recorded.
+- **Still missing:** Backend rows on the file; pinned output.
+- **Evidence:** [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md).
+- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `9e4082576850d0a8`, [pin](../tests/compatibility/tier-smoke/granite-4.2-8b-q8_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
 ### Trinity Nano
 
+#### Trinity Nano
+
 <a id="trinity-nano-preview-q8_0"></a>
-#### `Trinity-Nano-Preview-Q8_0.gguf`
+##### `Trinity-Nano-Preview-Q8_0.gguf`
 
 Arcee's Q8_0 of Trinity Nano Preview, text path, CPU only by admission: the one afmoe file Runner actively validates.
 
@@ -772,8 +676,10 @@ Arcee's Q8_0 of Trinity Nano Preview, text path, CPU only by admission: the one 
 
 ### Xyntetik-Kvist-14B
 
+#### Xyntetik-Kvist-14B
+
 <a id="xyntetik-kvist-14b-bf16"></a>
-#### `Xyntetik-Kvist-14B-BF16.gguf`
+##### `Xyntetik-Kvist-14B-BF16.gguf`
 
 Built for one job, tool-calling agent loops on this runner from a 24 GB card, and not a drop-in replacement for Muse-Glimmer-30B or any general-purpose model: a dense 14B student distilled from Muse-Glimmer-30B, this is its BF16 file.
 
@@ -794,7 +700,7 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="xyntetik-kvist-14b-q8_0"></a>
-#### `Xyntetik-Kvist-14B-Q8_0.gguf`
+##### `Xyntetik-Kvist-14B-Q8_0.gguf`
 
 Built for one job, tool-calling agent loops on this runner from a 24 GB card, and not a drop-in replacement for Muse-Glimmer-30B or any general-purpose model: a dense 14B student distilled from Muse-Glimmer-30B, this is its Q8_0 file.
 
@@ -815,7 +721,7 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="xyntetik-kvist-14b-q5_0-mix"></a>
-#### `Xyntetik-Kvist-14B-Q5_0-mix.gguf`
+##### `Xyntetik-Kvist-14B-Q5_0-mix.gguf`
 
 Built for one job, tool-calling agent loops on this runner from a 24 GB card, and not a drop-in replacement for Muse-Glimmer-30B or any general-purpose model: a dense 14B student distilled from Muse-Glimmer-30B, this is its Q5_0 mix file.
 
@@ -836,7 +742,7 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="xyntetik-kvist-14b-iq4_nl-mix"></a>
-#### `Xyntetik-Kvist-14B-IQ4_NL-mix.gguf`
+##### `Xyntetik-Kvist-14B-IQ4_NL-mix.gguf`
 
 Built for one job, tool-calling agent loops on this runner from a 24 GB card, and not a drop-in replacement for Muse-Glimmer-30B or any general-purpose model: a dense 14B student distilled from Muse-Glimmer-30B, this is its IQ4_NL mix file.
 
@@ -856,31 +762,133 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
+### Qwen3
+
+#### Qwen3-30B-A3B selective precision
+
+<a id="qwen3-30b-a3b-expq4_0-attnq8_0"></a>
+##### `Qwen3-30B-A3B-expq4_0-attnq8_0.gguf`
+
+Qwen3-30B-A3B with attention Q8_0 and experts Q4_0, text path: it passes the fidelity bar against the first-party Q8_0 where the official uniform Q4_K_M fails it.
+
+- **File:** `Qwen3-30B-A3B-expq4_0-attnq8_0.gguf` (sha256 `df02efa815a74e6207f9e01f2d38272c1e2718bb23aec544709a02a2c7d5b206`, 17,988,417,024 bytes, from [Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF) at revision `6cdb710bcd55`).
+- **Upstream checkpoint:** Qwen/Qwen3-30B-A3B.
+- **Quantization:** Q8_0 attention / Q4_0 experts.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. A float32 reference of the 30B (120 GB) is not run; the bar is against the byte-verified first-party Q8_0 (v2 top-1 99.50%, mean KLD 0.0345).
+- **Context tested:** not recorded.
+- **Still missing:** Pinned output.
+- **Evidence:** [tests/compatibility/models.json](../tests/compatibility/models.json), [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
+- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `9c80990c12a550f6`, [pin](../tests/compatibility/tier-smoke/qwen3-30b-a3b-expq4_0-attnq8_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
+#### Qwen3-4B Runner ToolUse
+
+<a id="qwen3-4b-runner-tooluse-merged-q8_0"></a>
+##### `merged-Q8_0.gguf`
+
+Qwen3-4B with the tool-use LoRA merged and written at Q8_0, text path: a qwen3 client loop passes on CUDA; it is an adaptation demonstration, not a general improvement over Qwen3-4B.
+
+- **File:** `merged-Q8_0.gguf` (sha256 `b9d21e525d91b20a1fc3437cf34c7ecfa03afda722d960b95bcfd113f2b7ea02`, 4,280,405,440 bytes, from [Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M](https://huggingface.co/Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M) at revision `5902b309ee51`).
+- **Upstream checkpoint:** Qwen/Qwen3-4B.
+- **Quantization:** Q8_0.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Family: Qwen3-4B bf16 against Qwen's float32 reference, 100% margin-qualified top-1 (1.5.0 golden pass; its served row is Qwen3-4B Q4_K_M, not this file).
+- **Context tested:** not recorded.
+- **Still missing:** Pinned output.
+- **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/adaptation-engine.md](adaptation-engine.md).
+- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `aa1a1647a3e4b534`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-merged-q8_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
+<a id="qwen3-4b-runner-tooluse-lora"></a>
+##### `Qwen3-4B-ToolUse-LoRA.gguf`
+
+The tool-use LoRA adapter for Qwen3-4B, served with --lora on the base its card names (bartowski's Q4_K_M): an adapter, not a model.
+
+- **File:** `Qwen3-4B-ToolUse-LoRA.gguf` (sha256 `ea38f80c33d381c9aa62c874920d2fa058dd307e7186e9b7c347d782f35b88e4`, 66,094,752 bytes, from [Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M](https://huggingface.co/Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M) at revision `5902b309ee51`).
+- **Upstream checkpoint:** Qwen/Qwen3-4B.
+- **Quantization:** adapter (F32/F16 LoRA tensors).
+- **Runs with:** [Qwen3-4B](#qwen3-4b-q4_k_m-bartowski), loaded beside it with `--lora`; the smoke and its pin are of that composed run.
+- **Features claimed:** adapters. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** The base model's anchor: Qwen3-4B bf16 against Qwen's float32 reference (1.5.0 golden pass). The adapter itself has no float32 reference.
+- **Context tested:** not recorded.
+- **Still missing:** Pinned output of the composed run (the base named on the card plus this adapter).
+- **Evidence:** [docs/adaptation-engine.md](adaptation-engine.md), [docs/lora.md](lora.md).
+- **Per-release smoke:** on linux-x86_64-cuda, cpu backend, the policy's age limit.
+- **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `3b2c21c82306`, output sha256 `9a878ce06241ebaa`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
+#### Qwen3-Coder-30B-A3B keep-120
+
+<a id="qwen3-coder-30b-a3b-instruct-keep120-q4_k_m"></a>
+##### `Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf`
+
+An expert-pruned Qwen3-Coder-30B-A3B (120 of 128 experts kept) at Q4_K_M, text path: it passes the original and the current fidelity bar against its parent.
+
+- **File:** `Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf` (sha256 `3ac8568224a15ea49db6affdd195ba48e8b2d7c6325c7849b9829381e89163a1`, 17,531,967,808 bytes, from [Joakimpalm-Zen/Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M-GGUF) at revision `3fd968c75417`).
+- **Upstream checkpoint:** Qwen/Qwen3-Coder-30B-A3B-Instruct.
+- **Quantization:** Q4_K_M, 120 experts.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. A float32 reference of the 30B is not run; the bars are against the unpruned parent.
+- **Context tested:** not recorded.
+- **Still missing:** Pinned output; a tool gate on this file (the recorded qwen3-coder tool run is on the unpruned Q4_K_M).
+- **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
+- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `f049d30f2e67e4a9`, [pin](../tests/compatibility/tier-smoke/qwen3-coder-30b-a3b-instruct-keep120-q4_k_m.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
+### NVIDIA Nemotron Nano 9B v2
+
+#### NVIDIA Nemotron Nano 9B v2
+
+<a id="nvidia-nemotron-nano-9b-v2-q8_0"></a>
+##### `NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf`
+
+A plain Q8_0 of NVIDIA's Nemotron-Nano-9B-v2 (Mamba-2 hybrid), text path: 100% margin-qualified top-1 against NVIDIA's float32 reference at Q8_0 over 100 positions; the 2,000-position rerun did not finish.
+
+- **File:** `NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf` (sha256 `d3224286484df1ae79c2b74d2a0913e1bbb5a364b0dd7c1061c95fa97ee608d7`, 9,458,093,632 bytes, from [Joakimpalm-Zen/NVIDIA-Nemotron-Nano-9B-v2-Q8_0-GGUF](https://huggingface.co/Joakimpalm-Zen/NVIDIA-Nemotron-Nano-9B-v2-Q8_0-GGUF) at revision `3b6a1cf5035f`).
+- **Upstream checkpoint:** nvidia/NVIDIA-Nemotron-Nano-9B-v2.
+- **Quantization:** Q8_0.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** NVIDIA's float32 reference (golden pass 2026-09-07, 100 positions): margin-qualified top-1 100% at bf16 and Q8_0; Runner's mean KL 0.0041 at Q8_0 against llama.cpp's 0.0054. CPU and CUDA greedy byte-identical on this file.
+- **Context tested:** not recorded.
+- **Still missing:** The tool gate (native protocol since 2026-10-09); pinned output; the 2,000-position rerun.
+- **Evidence:** [docs/golden-pass-2026-09-07.md](golden-pass-2026-09-07.md).
+- **Per-release smoke:** on linux-x86_64-cuda, cuda backend, the policy's age limit.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda at commit `a3a741236eb0`, output sha256 `e23a8c77690649fb`, [pin](../tests/compatibility/tier-smoke/nvidia-nemotron-nano-9b-v2-q8_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Metal has no SSM path; a Metal build runs this file on the CPU.
+- **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.5.1, 2026-10-24).
+- **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (nemotron_h) (runner 1.5.1, 2026-10-24).
+- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
 <a id="tier2"></a>
 ## Tier 2, maintained on report
 
-### Apertus (apertus)
+### gpt-oss
 
-<a id="arch-apertus"></a>
-#### Apertus (apertus)
-
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
-
-- **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
-
-### Gemma 3 (gemma3)
-
-<a id="arch-gemma3"></a>
-#### Gemma 3 (gemma3)
-
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
-
-- **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
-
-### gpt-oss-20b keep-30
+#### gpt-oss-20b keep-30
 
 <a id="gpt-oss-20b-keep30-mxfp4"></a>
-#### `gpt-oss-20b-keep30-MXFP4.gguf`
+##### `gpt-oss-20b-keep30-MXFP4.gguf`
 
 A 32-to-30-expert derivative of gpt-oss-20b that does not pass the current fidelity bar; its card leads with the measured status and it stays published as a disclosed near-miss.
 
@@ -888,84 +896,124 @@ A 32-to-30-expert derivative of gpt-oss-20b that does not pass the current fidel
 - **Published below Tier 1:** Owner decision 2026-10-22: a published file may be Tier 2 when its card already leads with its measured shortfall.
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
-### Granite 4 h-series hybrid (granitehybrid)
+### Qwen3
 
-<a id="arch-granitehybrid"></a>
-#### Granite 4 h-series hybrid (granitehybrid)
-
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
-
-- **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
-
-### Llama-style dense families (llama)
-
-<a id="arch-llama"></a>
-#### Llama-style dense families (llama)
-
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
-
-- **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
-
-### Mistral (mistral)
-
-<a id="arch-mistral"></a>
-#### Mistral (mistral)
-
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
-
-- **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
-
-### Phi-3 (phi3)
-
-<a id="arch-phi3"></a>
-#### Phi-3 (phi3)
-
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
-
-- **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
-
-### Qwen2 (qwen2)
-
-<a id="arch-qwen2"></a>
-#### Qwen2 (qwen2)
-
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
-
-- **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
-
-### Qwen3-4B
+#### Qwen3-4B
 
 <a id="qwen3-4b-q4_k_m-bartowski"></a>
-#### `Qwen_Qwen3-4B-Q4_K_M.gguf`
+##### `Qwen_Qwen3-4B-Q4_K_M.gguf`
 
 The base the published tool-use adapter was trained through and runs on, named by sha256 on the adapter's card: maintained on report, and run on every release only as the adapter's base in its composed smoke.
 
 - **File:** `Qwen_Qwen3-4B-Q4_K_M.gguf` (sha256 `fbe1d5edd4ce802ae3ae7c7e4ab7d09789d697fdac1fc7929f8df4ca3c41bae3`, 2,497,280,960 bytes, from [bartowski/Qwen_Qwen3-4B-GGUF](https://huggingface.co/bartowski/Qwen_Qwen3-4B-GGUF) at revision `cb76885dc66d`).
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
-### Experimental: Qwen3.8-Flash-Next
+### Qwen3.8
+
+#### Experimental: Qwen3.8-Flash-Next
 
 <a id="qwen3.8-flash-next-gsq-rco-iq3_s"></a>
-#### `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf` (2 parts)
+##### `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf` (2 parts)
 
 Experimental: ISTA-DASLab's IQ3_S trunk of Qwen3.8-Flash-Next, the file the published MTP head was built for and the one the qwen4exp admission evidence measured; maintained on report, and run on every release only as that head's trunk in its composed smoke.
 
 - **File:** `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf` (sha256 `4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3`, 54,817,524,224 bytes, from [ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) at revision `ed59f92082b1`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf` (sha256 `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113`, 28,800,138,432 bytes, from [ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) at revision `ed59f92082b1`).
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
-### SmolLM (smollm)
+### Llama
 
-<a id="arch-smollm"></a>
-#### SmolLM (smollm)
+#### Llama-style dense families (llama)
+
+<a id="arch-llama"></a>
+##### Llama-style dense families (llama)
 
 Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
 
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
-### StableLM (stablelm)
+### Mistral
+
+#### Mistral (mistral)
+
+<a id="arch-mistral"></a>
+##### Mistral (mistral)
+
+Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+
+- **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
+
+### SmolLM
+
+#### SmolLM (smollm)
+
+<a id="arch-smollm"></a>
+##### SmolLM (smollm)
+
+Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+
+- **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
+
+### StableLM
+
+#### StableLM (stablelm)
 
 <a id="arch-stablelm"></a>
-#### StableLM (stablelm)
+##### StableLM (stablelm)
+
+Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+
+- **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
+
+### Qwen2
+
+#### Qwen2 (qwen2)
+
+<a id="arch-qwen2"></a>
+##### Qwen2 (qwen2)
+
+Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+
+- **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
+
+### Gemma 3
+
+#### Gemma 3 (gemma3)
+
+<a id="arch-gemma3"></a>
+##### Gemma 3 (gemma3)
+
+Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+
+- **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
+
+### Phi-3
+
+#### Phi-3 (phi3)
+
+<a id="arch-phi3"></a>
+##### Phi-3 (phi3)
+
+Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+
+- **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
+
+### Apertus
+
+#### Apertus (apertus)
+
+<a id="arch-apertus"></a>
+##### Apertus (apertus)
+
+Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+
+- **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
+
+### Granite 4
+
+#### Granite 4 h-series hybrid (granitehybrid)
+
+<a id="arch-granitehybrid"></a>
+##### Granite 4 h-series hybrid (granitehybrid)
 
 Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
 

@@ -9,6 +9,8 @@ configurations are re-checked on every release, and it carries the result of
 that check per backend so the README can show it without anybody typing it.
 
 Rows are one per model FILE (a sharded set is one file with several parts).
+Every Tier 1 and Tier 2 row names its `family`, the display name the README
+and docs/model-support.md list its model under beside its sibling models.
 A Tier 1 row's backend cell is one of exactly three things:
 
   * a recorded gate: written by `--record` from a smoke run's result file,
@@ -262,6 +264,12 @@ def validate(doc, devices):
         for k in ("model", "claim", "architecture"):
             if not _text(row.get(k)):
                 errs.append(f"{where}: {k}")
+        # the README and docs/model-support.md list a row's model under its
+        # family; an Upcoming row is listed by its model alone
+        if tier in ("tier1", "tier2") and not _text(row.get("family")):
+            errs.append(f"{where}: a {tier} row names its family")
+        elif "family" in row and not _text(row["family"]):
+            errs.append(f"{where}: family is a display name, not {row['family']!r}")
         claim = row.get("claim") or ""
         # owner decision 4 and section 3: the qualifier is the first thing
         # a reader sees, never a footnote
@@ -381,6 +389,15 @@ def validate(doc, devices):
             for p in ev:
                 if not _text(p) or not _repo_path_exists(p):
                     errs.append(f"{where}: evidence {p!r} does not exist")
+    # a model is listed once, so all of its rows sit under one family
+    families = {}
+    for row in doc.get("rows") or []:
+        if _text(row.get("model")) and _text(row.get("family")):
+            families.setdefault(row["model"], set()).add(row["family"])
+    for model, fams in sorted(families.items()):
+        if len(fams) > 1:
+            errs.append(f"model {model!r}: its rows name the families {sorted(fams)}; "
+                        f"a model is listed under one family")
     return errs
 
 
@@ -584,12 +601,36 @@ def _file_title(row):
     return f"`{files[0]['name']}`" + (f" ({len(files)} parts)" if len(files) > 1 else "")
 
 
+def family_of(row):
+    """The family a row is listed under: its `family`, or for a row that
+    names none (an Upcoming row) its model."""
+    return row.get("family") or row["model"]
+
+
+def _family_groups(rows):
+    """Rows grouped by family, the families in the order of each one's
+    first row (the roster's order), each family's models as _model_groups
+    sorts them."""
+    fams = {}
+    for r in rows:
+        fams.setdefault(family_of(r), []).append(r)
+    return [(fam, _model_groups(rs)) for fam, rs in fams.items()]
+
+
+def tier1_families(doc):
+    """The families the README lists: one (family, models) per Tier 1
+    family in roster order, its models as (qualifiers, model, rows) sorted
+    by name, each with its roster files in roster order."""
+    return [(fam, [(_qualifiers(rs), model, rs) for model, rs in groups])
+            for fam, groups in _family_groups(
+                [r for r in doc["rows"] if r["tier"] == "tier1"])]
+
+
 def tier1_groups(doc):
     """The models every surface lists (the README, the site): one
-    (qualifiers, model, rows) per Tier 1 model, sorted by name, each with
-    its roster files in roster order."""
-    return [(_qualifiers(rows), model, rows)
-            for model, rows in _model_groups([r for r in doc["rows"] if r["tier"] == "tier1"])]
+    (qualifiers, model, rows) per Tier 1 model, family by family in the
+    README's order."""
+    return [g for _, models in tier1_families(doc) for g in models]
 
 
 def upcoming_names(doc):
@@ -605,13 +646,19 @@ def upcoming_names(doc):
 
 
 README_LABELS = ("CPU", "CUDA", "Metal")
-NONE_RUN = "–"
+NONE_RUN = "-"
+PARTIAL = "🟨"
 README_LEGEND = (
     "✅ *version date*: recorded gate · blank: nobody has run it yet · n/a: declared "
     "limit, linked to the manual · failed *version date*: recorded failure · Train: the "
     "file's own `--adapt-info` answer, where ✅ means the LoRA backward admits the file, "
-    "not that training it gives good results. A model's line sums up its files: ✅ all "
-    f"recorded, partial some, {NONE_RUN} none run. Each file name links to its envelope.")
+    "not that training it gives good results. A family's line sums up every file of its "
+    "models, per backend and for Train: ✅ all recorded · "
+    f"{PARTIAL} *k of n*: k of its n files recorded, a declared limit beside them "
+    "counted as not run · a hyphen: none run · n/a: a declared limit on every file · "
+    "failed: a recorded failure on any file. For Train, recorded means the LoRA "
+    "backward admits the file, and a refusal counts as a declared limit. Each file "
+    "name links to its envelope.")
 
 
 def _esc(text):
@@ -652,38 +699,70 @@ def _readme_file(row):
             f"<code>{_esc(files[0]['name'])}</code></a>{parts}</td>")
 
 
-def backend_summary(rows, backend):
-    """One backend's status over a model's files, for its summary line. A
-    file with a declared limit there is left out: n/a when every file has
-    the limit, failed when any other recorded a failure, ✅ when every
-    other is recorded, NONE_RUN when none is, partial otherwise."""
-    owed = [c for c in (r["backends"].get(backend) for r in rows)
-            if not (c and c["kind"] == "limit")]
-    if not owed:
+def _cell_state(cell):
+    """A backend cell as a family line counts it: "ok" for a recorded pass,
+    "fail", "limit", or None when nobody ran it."""
+    if cell is None:
+        return None
+    if cell["kind"] == "limit":
+        return "limit"
+    return "ok" if cell["result"] == "pass" else "fail"
+
+
+def _train_state(lora):
+    """A Train answer as a family line counts it: a file the LoRA backward
+    admits is recorded, a refusal is the engine's declared limit."""
+    if lora is None:
+        return None
+    return "ok" if lora["training"]["supported"] else "limit"
+
+
+def family_mark(states):
+    """One backend's (or Train's) mark over a family's files, from each
+    file's state: n/a when every file has the limit, failed when any
+    recorded a failure, ✅ when every file is recorded, NONE_RUN when none
+    is, and PARTIAL with k of n otherwise. n counts every file, so a limit
+    beside recorded files counts as not run."""
+    if all(s == "limit" for s in states):
         return "n/a"
-    if any(c and c["result"] != "pass" for c in owed):
+    if "fail" in states:
         return "failed"
-    if all(owed):
+    k, n = states.count("ok"), len(states)
+    if k == n:
         return "✅"
-    return "partial" if any(owed) else NONE_RUN
+    return f"{PARTIAL} {k} of {n}" if k else NONE_RUN
 
 
-def _summary(quals, model, rows):
-    """A model block's summary line. It is HTML (GitHub renders no markdown
-    inside <summary>), so the name is escaped and bold is <b>."""
+def _family_summary(family, models):
+    """A family block's summary line, plain text: the bold family name, how
+    many models it holds, and a mark per backend and for Train over every
+    file of those models. It is HTML (GitHub renders no markdown inside
+    <summary>), so the name is escaped and bold is <b>."""
+    rows = [r for _, _, rs in models for r in rs]
+    marks = [f"{label} {family_mark([_cell_state(r['backends'].get(b)) for r in rows])}"
+             for b, label in zip(BACKENDS, README_LABELS)]
+    marks.append("Train " + family_mark([_train_state(r.get("lora")) for r in rows]))
+    n = len(models)
+    return (f"<summary><b>{_esc(family)}</b>, {n} model{'' if n == 1 else 's'}: "
+            + " · ".join(marks) + "</summary>")
+
+
+def _model_heading(quals, model):
+    """A model's line inside its family's block: the bold name, then its
+    label in plain words."""
     label = "".join(", " + q[0].lower() + q[1:] for q in quals)
-    chips = " ".join(f"<code>{name}&nbsp;{backend_summary(rows, b)}</code>"
-                     for b, name in zip(BACKENDS, README_LABELS))
-    return f"<summary><b>{_esc(model)}</b>{_esc(label)} {chips}</summary>"
+    return f"<p><b>{_esc(model)}</b>{_esc(label)}</p>"
 
 
 def render_readme(doc):
     """The block between README_BEGIN and README_END.
 
-    The legend, then one collapsed <details> block per Tier 1 model: its
-    summary line names it, its label in plain words and a status per
-    backend over its files; inside, a table with one row per roster file of
-    that model, run or not, the file name linked to its envelope. Every
+    The legend, then one collapsed <details> block per Tier 1 family, in
+    the roster's order: its summary line names the family, counts its
+    models and gives a mark per backend and for Train over all their files;
+    inside, each model's line (its name and its label in plain words) and a
+    table with one row per roster file of that model, run or not, the file
+    name linked to its envelope. Every
     roster file is one the release gate holds Runner to, and a quant the
     matrix admits outside the roster is the matrix's claim, not this list's.
     Upcoming models follow as one line of names, in the roster's order (the
@@ -697,14 +776,18 @@ def render_readme(doc):
     # the legend, the blocks and the Upcoming paragraph
     head = "".join(f"<th>{h}</th>" for h in ("File",) + README_LABELS + ("Train",))
     lines = ["", "", README_LEGEND, ""]
-    for quals, model, rows in tier1_groups(doc):
-        lines += ["<details>", _summary(quals, model, rows), "<table>",
-                  f"<thead><tr>{head}</tr></thead>", "<tbody>"]
-        for r in rows:
-            cells = [_readme_file(r)] + [readme_mark(r["backends"].get(b)) for b in BACKENDS]
-            cells.append(readme_train(r.get("lora")))
-            lines.append("<tr>" + "".join(cells) + "</tr>")
-        lines += ["</tbody>", "</table>", "</details>", ""]
+    for family, models in tier1_families(doc):
+        lines += ["<details>", _family_summary(family, models)]
+        for quals, model, rows in models:
+            lines += [_model_heading(quals, model), "<table>",
+                      f"<thead><tr>{head}</tr></thead>", "<tbody>"]
+            for r in rows:
+                cells = [_readme_file(r)] + [readme_mark(r["backends"].get(b))
+                                             for b in BACKENDS]
+                cells.append(readme_train(r.get("lora")))
+                lines.append("<tr>" + "".join(cells) + "</tr>")
+            lines += ["</tbody>", "</table>"]
+        lines += ["</details>", ""]
     lines += ["**Upcoming** (planned, not supported yet): "
               + ", ".join(upcoming_names(doc)) + ".", "", ""]
     return "\n".join(lines)
@@ -755,11 +838,11 @@ def _files(row):
     return out
 
 
-def _row_doc(row, by_id):
+def _row_doc(row, by_id, level=4):
     files = row.get("files") or []
     title = f"`{files[0]['name']}`" + (f" ({len(files)} parts)" if len(files) > 1 else "") \
         if files else row["model"]
-    lines = [f'<a id="{row["id"]}"></a>', f"#### {title}", "", row["claim"], ""]
+    lines = [f'<a id="{row["id"]}"></a>', f"{'#' * level} {title}", "", row["claim"], ""]
     if files:
         lines.append("- **File:** " + "; ".join(_files(row)) + ".")
     up = row.get("upstream")
@@ -813,7 +896,8 @@ def _row_doc(row, by_id):
 
 def render_doc(doc):
     """The block between DOC_BEGIN and DOC_END: every row's envelope by
-    tier, the exempt repositories, and the transition log."""
+    tier, family and model (an Upcoming model on its own, in the order of
+    admission), the exempt repositories, and the transition log."""
     by_id = {r["id"]: r for r in doc["rows"]}
     lines = ["", ""]
     for tier in TIERS:
@@ -827,13 +911,18 @@ def render_doc(doc):
             groups = {}
             for r in rows:
                 groups.setdefault(r["model"], []).append(r)
-            groups = list(groups.items())
-        else:
-            groups = _model_groups(rows)
-        for model, rs in groups:
-            lines += [f"### {_qualified(rs, model)}", ""]
-            for r in rs:
-                lines += _row_doc(r, by_id)
+            for model, rs in groups.items():
+                lines += [f"### {_qualified(rs, model)}", ""]
+                for r in rs:
+                    lines += _row_doc(r, by_id)
+            continue
+        # the README's grouping: families in roster order, models by name
+        for family, groups in _family_groups(rows):
+            lines += [f"### {family}", ""]
+            for model, rs in groups:
+                lines += [f"#### {_qualified(rs, model)}", ""]
+                for r in rs:
+                    lines += _row_doc(r, by_id, level=5)
     lines += ['<a id="exempt"></a>', "## Published, not a Runner model file", ""]
     for e in doc.get("exempt") or []:
         path = f" (`{e['path']}`)" if e.get("path") else ""

@@ -214,6 +214,18 @@ def test_a_tier2_repo_says_its_tier_and_reason_and_carries_no_marks():
     assert "greedy smoke" not in text
 
 
+def test_a_card_block_is_per_file_and_ignores_the_family():
+    """The README lists models by family; a card covers one repository's
+    files and names no family, so moving a row between families leaves
+    every card block byte for byte as it was."""
+    doc = e2b_roster()
+    doc["rows"][0]["family"] = "Gemma 4"
+    before = mt.render_card_block(doc, E2B_REPO)
+    doc["rows"][0]["family"] = "Another family"
+    assert mt.render_card_block(doc, E2B_REPO) == before
+    assert "family" not in "\n".join(before).lower()
+
+
 def test_the_cards_are_the_repositories_of_published_rows():
     doc = {"schema": mt.SCHEMA, "exempt": [], "rows": [
         row("a", "A.gguf", "Joakimpalm-Zen/b-GGUF"),

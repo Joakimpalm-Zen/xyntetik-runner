@@ -362,9 +362,9 @@ def _mark_html(cell, link=True):
 
 def tiers_table_html(doc: dict) -> str:
     """The "Actively validated models" table: the README's models as one
-    table, a row per Tier 1 model (its qualifier before its bold name), a
-    sub-row per roster file with the cards' marks, then the Upcoming models
-    as names."""
+    table, a row per Tier 1 model (its qualifier before its bold name),
+    family by family in the README's order, a sub-row per roster file with
+    the cards' marks, then the Upcoming models as names."""
     out = ['<div class="table-wrap">', '<table class="data tiers">',
            "<thead><tr><th>Model</th><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th>"
            "<th>Train</th><th>Evidence</th></tr></thead>", "<tbody>"]

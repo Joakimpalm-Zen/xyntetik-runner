@@ -353,10 +353,11 @@ check, failing it or past its age limit.
 
 <!-- model-tiers:begin (rendered from docs/model-tiers.json by scripts/model-tiers.py --write-docs; do not edit) -->
 
-✅ *version date*: recorded gate · blank: nobody has run it yet · n/a: declared limit, linked to the manual · failed *version date*: recorded failure · Train: the file's own `--adapt-info` answer, where ✅ means the LoRA backward admits the file, not that training it gives good results. A model's line sums up its files: ✅ all recorded, partial some, – none run. Each file name links to its envelope.
+✅ *version date*: recorded gate · blank: nobody has run it yet · n/a: declared limit, linked to the manual · failed *version date*: recorded failure · Train: the file's own `--adapt-info` answer, where ✅ means the LoRA backward admits the file, not that training it gives good results. A family's line sums up every file of its models, per backend and for Train: ✅ all recorded · 🟨 *k of n*: k of its n files recorded, a declared limit beside them counted as not run · a hyphen: none run · n/a: a declared limit on every file · failed: a recorded failure on any file. For Train, recorded means the LoRA backward admits the file, and a refusal counts as a declared limit. Each file name links to its envelope.
 
 <details>
-<summary><b>Cloudflare Clef (clef, on Qwen3.8-27B)</b>, text path only <code>CPU&nbsp;–</code> <code>CUDA&nbsp;✅</code> <code>Metal&nbsp;n/a</code></summary>
+<summary><b>Cloudflare Clef</b>, 1 model: CPU - · CUDA ✅ · Metal n/a · Train ✅</summary>
+<p><b>Cloudflare Clef (clef, on Qwen3.8-27B)</b>, text path only</p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
@@ -366,47 +367,57 @@ check, failing it or past its age limit.
 </details>
 
 <details>
-<summary><b>Gemma 4 12B</b>, text path only <code>CPU&nbsp;–</code> <code>CUDA&nbsp;✅</code> <code>Metal&nbsp;–</code></summary>
+<summary><b>Qwen3.8</b>, 2 models: CPU 🟨 1 of 5 · CUDA 🟨 4 of 5 · Metal n/a · Train 🟨 3 of 5</summary>
+<p><b>Qwen3.8-27B</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#qwen3.8-27b-ud-q4_k_m"><code>Qwen3.8-27B-UD-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="docs/model-support.md#qwen3.8-27b-gsq-rco-iq3_s-recovered"><code>Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="docs/model-support.md#qwen3.8-27b-mtp-q8_0"><code>Qwen3.8-27B-MTP-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+<p><b>Qwen3.8-Flash-Next</b>, experimental</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head"><code>Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf</code></a> (4 parts)</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td>no: hyper-connections (qwen4exp)</td></tr>
+<tr><td><a href="docs/model-support.md#qwen3.8-flash-next-mtp-q8_0"><code>Qwen3.8-Flash-Next-MTP-Q8_0.gguf</code></a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td>no: hyper-connections (qwen4exp)</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Gemma 4</b>, 5 models: CPU 🟨 1 of 5 · CUDA 🟨 4 of 5 · Metal 🟨 1 of 5 · Train 🟨 3 of 5</summary>
+<p><b>Gemma 4 12B</b>, text path only</p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="docs/model-support.md#gemma-4-12b-it-qat-q4_0"><code>gemma-4-12b-it-qat-q4_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
 </tbody>
 </table>
-</details>
-
-<details>
-<summary><b>Gemma 4 26B-A4B</b>, text path only <code>CPU&nbsp;–</code> <code>CUDA&nbsp;✅</code> <code>Metal&nbsp;–</code></summary>
+<p><b>Gemma 4 26B-A4B</b>, text path only</p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="docs/model-support.md#gemma-4-26b-a4b-it-qat-q4_0"><code>gemma-4-26B_q4_0-it.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td>no: MoE FFN (gemma-4 dual-branch)</td></tr>
 </tbody>
 </table>
-</details>
-
-<details>
-<summary><b>Gemma 4 31B</b>, text path only <code>CPU&nbsp;–</code> <code>CUDA&nbsp;✅</code> <code>Metal&nbsp;–</code></summary>
+<p><b>Gemma 4 31B</b>, text path only</p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="docs/model-support.md#gemma-4-31b-it-q4_0"><code>gemma-4-31B-it-Q4_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
 </tbody>
 </table>
-</details>
-
-<details>
-<summary><b>Gemma 4 31B, attention block 48 removed</b>, text path only <code>CPU&nbsp;–</code> <code>CUDA&nbsp;✅</code> <code>Metal&nbsp;–</code></summary>
+<p><b>Gemma 4 31B, attention block 48 removed</b>, text path only</p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="docs/model-support.md#gemma-4-31b-it-attn48-removed-q4_0"><code>gemma-4-31B-it-attn48-removed-q4_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td>no: removed sublayers (--remove-sublayer artifact)</td></tr>
 </tbody>
 </table>
-</details>
-
-<details>
-<summary><b>Gemma 4 E2B</b>, text path only <code>CPU&nbsp;✅</code> <code>CUDA&nbsp;–</code> <code>Metal&nbsp;✅</code></summary>
+<p><b>Gemma 4 E2B</b>, text path only</p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
@@ -416,28 +427,15 @@ check, failing it or past its age limit.
 </details>
 
 <details>
-<summary><b>Granite-4.2-8B</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;✅</code> <code>Metal&nbsp;–</code></summary>
-<table>
-<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
-<tbody>
-<tr><td><a href="docs/model-support.md#granite-4.2-8b-q4_k_m"><code>granite-4.2-8b-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-23</td></tr>
-<tr><td><a href="docs/model-support.md#granite-4.2-8b-q8_0"><code>granite-4.2-8b-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-</tbody>
-</table>
-</details>
-
-<details>
-<summary><b>Muse-Glimmer-30B</b>, text path only <code>CPU&nbsp;–</code> <code>CUDA&nbsp;✅</code> <code>Metal&nbsp;–</code></summary>
+<summary><b>Muse-Glimmer-30B</b>, 2 models: CPU 🟨 1 of 4 · CUDA 🟨 3 of 4 · Metal - · Train ✅</summary>
+<p><b>Muse-Glimmer-30B</b>, text path only</p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="docs/model-support.md#muse-glimmer-30b-kquant"><code>Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
 </tbody>
 </table>
-</details>
-
-<details>
-<summary><b>Muse-Glimmer-30B surgical</b>, text path only <code>CPU&nbsp;partial</code> <code>CUDA&nbsp;partial</code> <code>Metal&nbsp;–</code></summary>
+<p><b>Muse-Glimmer-30B surgical</b>, text path only</p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
@@ -449,71 +447,20 @@ check, failing it or past its age limit.
 </details>
 
 <details>
-<summary><b>NVIDIA Nemotron Nano 9B v2</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;✅</code> <code>Metal&nbsp;n/a</code></summary>
+<summary><b>Granite-4.2-8B</b>, 1 model: CPU - · CUDA ✅ · Metal - · Train ✅</summary>
+<p><b>Granite-4.2-8B</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="docs/model-support.md#nvidia-nemotron-nano-9b-v2-q8_0"><code>NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td>no: recurrent architecture (Mamba-2)</td></tr>
+<tr><td><a href="docs/model-support.md#granite-4.2-8b-q4_k_m"><code>granite-4.2-8b-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-23</td></tr>
+<tr><td><a href="docs/model-support.md#granite-4.2-8b-q8_0"><code>granite-4.2-8b-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
 </tbody>
 </table>
 </details>
 
 <details>
-<summary><b>Qwen3-30B-A3B selective precision</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;✅</code> <code>Metal&nbsp;–</code></summary>
-<table>
-<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
-<tbody>
-<tr><td><a href="docs/model-support.md#qwen3-30b-a3b-expq4_0-attnq8_0"><code>Qwen3-30B-A3B-expq4_0-attnq8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-</tbody>
-</table>
-</details>
-
-<details>
-<summary><b>Qwen3-4B Runner ToolUse</b> <code>CPU&nbsp;partial</code> <code>CUDA&nbsp;partial</code> <code>Metal&nbsp;–</code></summary>
-<table>
-<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
-<tbody>
-<tr><td><a href="docs/model-support.md#qwen3-4b-runner-tooluse-merged-q8_0"><code>merged-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-<tr><td><a href="docs/model-support.md#qwen3-4b-runner-tooluse-lora"><code>Qwen3-4B-ToolUse-LoRA.gguf</code></a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-</tbody>
-</table>
-</details>
-
-<details>
-<summary><b>Qwen3-Coder-30B-A3B keep-120</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;✅</code> <code>Metal&nbsp;–</code></summary>
-<table>
-<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
-<tbody>
-<tr><td><a href="docs/model-support.md#qwen3-coder-30b-a3b-instruct-keep120-q4_k_m"><code>Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-</tbody>
-</table>
-</details>
-
-<details>
-<summary><b>Qwen3.8-27B</b> <code>CPU&nbsp;–</code> <code>CUDA&nbsp;✅</code> <code>Metal&nbsp;n/a</code></summary>
-<table>
-<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
-<tbody>
-<tr><td><a href="docs/model-support.md#qwen3.8-27b-ud-q4_k_m"><code>Qwen3.8-27B-UD-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-<tr><td><a href="docs/model-support.md#qwen3.8-27b-gsq-rco-iq3_s-recovered"><code>Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-<tr><td><a href="docs/model-support.md#qwen3.8-27b-mtp-q8_0"><code>Qwen3.8-27B-MTP-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-</tbody>
-</table>
-</details>
-
-<details>
-<summary><b>Qwen3.8-Flash-Next</b>, experimental <code>CPU&nbsp;partial</code> <code>CUDA&nbsp;✅</code> <code>Metal&nbsp;n/a</code></summary>
-<table>
-<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
-<tbody>
-<tr><td><a href="docs/model-support.md#qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head"><code>Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf</code></a> (4 parts)</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td>no: hyper-connections (qwen4exp)</td></tr>
-<tr><td><a href="docs/model-support.md#qwen3.8-flash-next-mtp-q8_0"><code>Qwen3.8-Flash-Next-MTP-Q8_0.gguf</code></a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td>no: hyper-connections (qwen4exp)</td></tr>
-</tbody>
-</table>
-</details>
-
-<details>
-<summary><b>Trinity Nano</b> <code>CPU&nbsp;✅</code> <code>CUDA&nbsp;n/a</code> <code>Metal&nbsp;n/a</code></summary>
+<summary><b>Trinity Nano</b>, 1 model: CPU ✅ · CUDA n/a · Metal n/a · Train n/a</summary>
+<p><b>Trinity Nano</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
@@ -523,7 +470,8 @@ check, failing it or past its age limit.
 </details>
 
 <details>
-<summary><b>Xyntetik-Kvist-14B</b> <code>CPU&nbsp;partial</code> <code>CUDA&nbsp;partial</code> <code>Metal&nbsp;–</code></summary>
+<summary><b>Xyntetik-Kvist-14B</b>, 1 model: CPU 🟨 1 of 4 · CUDA 🟨 3 of 4 · Metal - · Train ✅</summary>
+<p><b>Xyntetik-Kvist-14B</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
@@ -531,6 +479,43 @@ check, failing it or past its age limit.
 <tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-q8_0"><code>Xyntetik-Kvist-14B-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
 <tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-q5_0-mix"><code>Xyntetik-Kvist-14B-Q5_0-mix.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
 <tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-iq4_nl-mix"><code>Xyntetik-Kvist-14B-IQ4_NL-mix.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Qwen3</b>, 3 models: CPU 🟨 1 of 4 · CUDA 🟨 3 of 4 · Metal - · Train ✅</summary>
+<p><b>Qwen3-30B-A3B selective precision</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#qwen3-30b-a3b-expq4_0-attnq8_0"><code>Qwen3-30B-A3B-expq4_0-attnq8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+<p><b>Qwen3-4B Runner ToolUse</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#qwen3-4b-runner-tooluse-merged-q8_0"><code>merged-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="docs/model-support.md#qwen3-4b-runner-tooluse-lora"><code>Qwen3-4B-ToolUse-LoRA.gguf</code></a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+<p><b>Qwen3-Coder-30B-A3B keep-120</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#qwen3-coder-30b-a3b-instruct-keep120-q4_k_m"><code>Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>NVIDIA Nemotron Nano 9B v2</b>, 1 model: CPU - · CUDA ✅ · Metal n/a · Train n/a</summary>
+<p><b>NVIDIA Nemotron Nano 9B v2</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="docs/model-support.md#nvidia-nemotron-nano-9b-v2-q8_0"><code>NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td>no: recurrent architecture (Mamba-2)</td></tr>
 </tbody>
 </table>
 </details>

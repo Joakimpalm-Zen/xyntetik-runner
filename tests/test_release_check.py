@@ -108,7 +108,7 @@ def tier_roster(tmp_path, gated_on="2026-10-22", version="1.5.0"):
                    "backends": ["cpu", "cuda", "metal"]},
         "exempt": [],
         "rows": [{
-            "id": "toy-q8_0", "model": "Toy", "tier": "tier1",
+            "id": "toy-q8_0", "model": "Toy", "family": "Toy", "tier": "tier1",
             "claim": "A toy Tier 1 row.", "architecture": "llama",
             "upstream": {"checkpoint": "toy/toy", "revision": None},
             "files": [{"name": "toy.gguf", "sha256": "a" * 64, "bytes": 1}],
