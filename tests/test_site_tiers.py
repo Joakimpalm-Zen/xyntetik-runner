@@ -217,7 +217,12 @@ def test_the_built_pages_carry_the_render_of_the_roster_they_were_built_from(tmp
     assert "✅ v1.5.1 2026-10-23" in kvist_q8(runner)
     assert "✅ v1.5.2 2026-11-02" in kvist_q8(runner2)
     assert "v1.5.1" not in kvist_q8(runner2)
-    assert "✅ v1.5.2 2026-11-02" in index2 and "v1.5.2" not in index
+    # The landing page also names the newest release in CHANGELOG.md, which
+    # can be the very version `later` marks with (it was, on the 1.5.2
+    # release commit), so a bare version string cannot tell the two builds
+    # apart. A mark is a version and its date: that is what must not leak.
+    assert "✅ v1.5.1 2026-10-23" in index and "✅ v1.5.2 2026-11-02" not in index
+    assert "✅ v1.5.2 2026-11-02" in index2 and "✅ v1.5.1 2026-10-23" not in index2
 
 
 def test_a_card_naming_a_repo_the_roster_does_not_know_fails_the_build(tmp_path):
