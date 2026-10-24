@@ -74,8 +74,8 @@
       },
       "last_verified": {
         "date": "2026-10-24",
-        "commit": "b9022b78b304508edb85f77136199411304ca506",
-        "ran": "make test PYTHON=python with pytest (every C gate and the pytest suites: 1,903 + 208 + 26 + 20 + 7 passed) and scripts/conformance.sh 512/7 on 403fafe2, whose sources and tests differ from this release only in the version string (and a Makefile comment); compat_matrix.py gemma-4-e4b-it-qat-q4_0 --verify-files --load --execute-checks complete on the 1.6.0 build; make release-check",
+        "commit": "fd91aa6c4fa03f2f555adbf51494f6ff5ca9b2a2",
+        "ran": "make test PYTHON=python with pytest (every C gate and the pytest suites: 1,903 + 208 + 26 + 20 + 7 passed); scripts/conformance.sh 512/7; compat_matrix.py gemma-4-e4b-it-qat-q4_0 --verify-files --load --execute-checks complete; make release-check",
         "result": "pass",
         "caps": {
           "version": "1.6.0",
