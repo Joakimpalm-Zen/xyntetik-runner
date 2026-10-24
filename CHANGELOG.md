@@ -5,6 +5,23 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--train-gpu`: every model's adapter is not 1.6.0's byte for byte, and
+  the forward products run about twice as fast.** The forward's weight
+  products (the taped forward, the recompute and the heads) move to a
+  register-blocked kernel that sums each output in another order: four
+  chains of 16-input chunks, each a serial fused multiply-add, folded in
+  order. It stays within rounding of a CPU run, deterministic and
+  batch-invariant (a column's value does not depend on the columns sharing
+  its call), and the CPU trainer's bytes are unchanged. IQ3_S, Q4_K and
+  Q6_K weights are decoded eight at a time. Kernel time at 64 and 512
+  columns against the previous kernel: on a datacenter MIG slice 2.07x and
+  2.74x (IQ3_S), 1.76x and 2.27x (Q4_K), 1.57x and 2.07x (Q6_K), 1.81x and
+  2.30x (Q8_0); on an RTX 3070 2.05x and 2.99x, 1.87x and 2.82x, 1.70x and
+  2.39x, 1.82x and 2.59x. A 26B Clef IQ3_S step on the slice with 6 threads:
+  59.1 s to 50.4 s (two interleaved rounds), its forward kernels 15.4 s to
+  6.0 s. `RUNNER_TRAIN_MM_KERNEL=warp` runs the previous kernels, for
+  comparison.
+
 - **`--train-gpu` on Qwen3.5 and Clef: the Gated DeltaNet recurrence runs
   on the GPU too, and these models' adapters are not 1.6.0's byte for
   byte.** The recurrence of the DeltaNet layers ran on the CPU beside the
