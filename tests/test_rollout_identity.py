@@ -18,7 +18,12 @@ is the reason the loop passes -b 1: from 8 rows up the CPU reads a quantized
 weight through a dequantized f32 tile, exact per output but not the solo dot
 (docs/kernel-routes.md), and every logprob after the prompt then moves in the
 last bits. If that route is ever made exact, the check fails with a message
-saying the -b 1 is no longer needed.
+saying the -b 1 is no longer needed. It reads the route directly (the same
+text scored through it and one position per forward), not through sampled
+tokens: those carry only the few differences the f16 KV cache does not round
+away, from 32 of 39 logprobs on an Apple M1 to 1 of 39 on an x86 host and
+none at all on one CI runner, which failed the check while the route still
+differed at about half the positions.
 
 The claim is an identity between two paths of one binary, so its main
 assertion has no anchor outside the system, by its nature. The precision check
@@ -27,6 +32,7 @@ logprob that is not the %.9g of some f32 was not printed from the engine's
 float.
 """
 import json
+import os
 import pathlib
 import struct
 import subprocess
@@ -220,14 +226,30 @@ def test_a_fresh_adapter_scores_as_the_bare_base_sampled(runner_bin, tmp_path, f
     assert trained == [lps for _, _, lps in rollouts]
 
 
+def _score(runner_bin, d, adapter, text, chunked):
+    env = dict(os.environ)
+    env.pop("RUNNER_SCORE_CHUNKED", None)
+    if chunked:
+        env["RUNNER_SCORE_CHUNKED"] = "1"
+    p = subprocess.run([str(runner_bin), "-m", str(d / "base.gguf"), "--lora",
+                        str(adapter), "--gpu", "off", "-t", "2", "-c", CTX,
+                        "--score", "-p", text], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=600, env=env)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")[-2000:]
+    return json.loads(p.stdout.decode().strip().splitlines()[-1])["logprobs"]
+
+
 def test_default_batched_prompt_pass_still_differs_on_a_quantized_base(runner_bin, tmp_path):
+    """The batch route a default prompt pass takes (RUNNER_SCORE_CHUNKED=1
+    scores through it) against one position per forward, the trainer's
+    numerics, on the same text, base and adapter."""
     d = _fixture(runner_bin, tmp_path, "q8_0")
     adapter = _adapter(runner_bin, d)
-    pids = _prompt_ids(runner_bin, d / "base.gguf")
-    rollouts = _rollouts(runner_bin, d / "base.gguf", adapter, [], pids)
-    trained = _trained(runner_bin, d, rollouts, adapter)
-    deltas = [abs(a - b) for (_, _, s), t in zip(rollouts, trained)
-              for a, b in zip(s, t)]
+    text = CORPUS[:120]
+    solo = _score(runner_bin, d, adapter, text, False)
+    batched = _score(runner_bin, d, adapter, text, True)
+    assert len(solo) == len(batched) > 8, (len(solo), len(batched))
+    deltas = [abs(a - b) for a, b in zip(solo, batched)]
     assert any(deltas), (
         "the default batched prompt pass now matches the trainer bit for bit "
         "on a quantized base: the -b 1 in train-grpo-lite.py (and this "
