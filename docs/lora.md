@@ -853,7 +853,9 @@ rule's verdict),
 
 **Environment.** `RUNNER_TRAIN_GPU=1` (the CUDA assist, same bytes; `--train-gpu`
 is the whole step on the GPU), `RUNNER_TRAIN_PROF=1`
-(per-step phase times on stderr), `RUNNER_TRAIN_ROWS=N` (positions the trained
+(per-step phase times on stderr, with each phase's device share under
+`--train-gpu`), `RUNNER_DEBUG_TIME=1` (the forward's stage times at the end
+of a run, under `--train-gpu` split into device and host), `RUNNER_TRAIN_ROWS=N` (positions the trained
 forward runs at once, 16 by default, 1 one at a time; the same bytes at every
 width, which the tests hold), `RUNNER_SCORE_CHUNKED=1` (batched scoring).
 
