@@ -499,6 +499,106 @@ extern "C" __global__ void __launch_bounds__(TMR_KS * 64) fname(MV_PARAMS) {  \
     }                                                                          \
 }
 
+// k_tmvtr / k_tmvtrn: the transposed product for --train-gpu, dx[t][i] +=
+// sum_j W[j][i] dy[t][j], on k_tmmr's contract: the sum over j is four
+// chains of TMR_BK-row chunks dealt round-robin, each a serial fmaf from
+// zero, folded in order, then added to dx's incoming value. Not the CPU
+// chain, which k_tmvt keeps for RUNNER_TRAIN_GPU's assist (whose adapters
+// are the CPU's bytes); batch-invariant and deterministic, the same bits
+// from either twin. A block holds TMR_BM inputs and BT positions; a chunk's
+// rows are decoded in runs of 8 consecutive inputs.
+#define TRAIN_MVTR(fname, name, BS, TS, BT, TM, TN)                           \
+extern "C" __global__ void __launch_bounds__(TMR_KS * 64) fname(MV_PARAMS) {  \
+    (void)bias;                                                                \
+    __shared__ __align__(16) float ws[TMR_KS][TMR_BK][TMR_BM + 4];             \
+    __shared__ __align__(16) float ds[TMR_KS][TMR_BK][(BT) + 4];               \
+    const int TX = (BT) / (TN);                                                \
+    int g = (int)(threadIdx.x >> 6), lt = (int)(threadIdx.x & 63);             \
+    int tx = lt % TX, ty = lt / TX;                                            \
+    int i0 = (int)blockIdx.x * TMR_BM, t0 = (int)blockIdx.y * (BT);            \
+    ulong64 rb = TQ_ROW(BS, TS);                                               \
+    const uchar *w0 = wb + a.w_off;                                            \
+    float acc[TM][TN];                                                         \
+    _Pragma("unroll")                                                          \
+    for (int m = 0; m < (TM); m++)                                             \
+        _Pragma("unroll")                                                      \
+        for (int n = 0; n < (TN); n++) acc[m][n] = 0.0f;                       \
+    int nch = (a.n_out + TMR_BK - 1) / TMR_BK;                                 \
+    for (int it = 0; it * TMR_KS < nch; it++) {                                \
+        int ch = it * TMR_KS + g, j0 = ch * TMR_BK;                            \
+        int kn = ch < nch ? (a.n_out - j0 < TMR_BK ? a.n_out - j0 : TMR_BK) : 0; \
+        __syncthreads();                                                       \
+        for (int e = lt; e < TMR_BK * (TMR_BM / 8); e += 64) {                 \
+            int kk = e / (TMR_BM / 8), i8 = (e % (TMR_BM / 8)) * 8;            \
+            float wv[8];                                                       \
+            if (kk < kn && i0 + i8 + 8 <= a.n_in) {                            \
+                tdq8_##name(w0 + (ulong64)(j0 + kk) * rb, i0 + i8, wv);         \
+            } else {                                                           \
+                _Pragma("unroll")                                              \
+                for (int j = 0; j < 8; j++)                                    \
+                    wv[j] = kk < kn && i0 + i8 + j < a.n_in                    \
+                        ? tdq_##name(w0 + (ulong64)(j0 + kk) * rb, i0 + i8 + j) : 0.0f; \
+            }                                                                  \
+            _Pragma("unroll")                                                  \
+            for (int j = 0; j < 8; j++) ws[g][kk][i8 + j] = wv[j];             \
+        }                                                                      \
+        for (int e = lt; e < (BT) * TMR_BK; e += 64) {                         \
+            int kk = e % TMR_BK, c = e / TMR_BK;                               \
+            ds[g][kk][c] = kk < kn && t0 + c < a.batch                         \
+                ? x[(ulong64)(t0 + c) * a.xs + j0 + kk] : 0.0f;                \
+        }                                                                      \
+        __syncthreads();                                                       \
+        for (int kk = 0; kk < kn; kk++) {                                      \
+            float av[TM], bv[TN];                                              \
+            _Pragma("unroll")                                                  \
+            for (int m = 0; m < (TM); m += 4) {                                \
+                float4 v = *(const float4 *)&ws[g][kk][ty * (TM) + m];         \
+                av[m] = v.x; av[m + 1] = v.y; av[m + 2] = v.z; av[m + 3] = v.w; \
+            }                                                                  \
+            _Pragma("unroll")                                                  \
+            for (int n = 0; n < (TN); n += 4) {                                \
+                float4 v = *(const float4 *)&ds[g][kk][tx * (TN) + n];         \
+                bv[n] = v.x; bv[n + 1] = v.y; bv[n + 2] = v.z; bv[n + 3] = v.w; \
+            }                                                                  \
+            _Pragma("unroll")                                                  \
+            for (int m = 0; m < (TM); m++)                                     \
+                _Pragma("unroll")                                              \
+                for (int n = 0; n < (TN); n++)                                 \
+                    acc[m][n] = fmaf(av[m], bv[n], acc[m][n]);                 \
+        }                                                                      \
+    }                                                                          \
+    float *red = &ws[0][0][0];                                                 \
+    for (int s = 1; s < TMR_KS; s++) {                                         \
+        __syncthreads();                                                       \
+        if (g == s) {                                                          \
+            _Pragma("unroll")                                                  \
+            for (int m = 0; m < (TM); m++)                                     \
+                _Pragma("unroll")                                              \
+                for (int n = 0; n < (TN); n++)                                 \
+                    red[(ty * (TM) + m) * (BT) + tx * (TN) + n] = acc[m][n];   \
+        }                                                                      \
+        __syncthreads();                                                       \
+        if (g == 0) {                                                          \
+            _Pragma("unroll")                                                  \
+            for (int m = 0; m < (TM); m++)                                     \
+                _Pragma("unroll")                                              \
+                for (int n = 0; n < (TN); n++)                                 \
+                    acc[m][n] += red[(ty * (TM) + m) * (BT) + tx * (TN) + n];  \
+        }                                                                      \
+    }                                                                          \
+    if (g == 0) {                                                              \
+        _Pragma("unroll")                                                      \
+        for (int m = 0; m < (TM); m++) {                                       \
+            int i = i0 + ty * (TM) + m;                                        \
+            _Pragma("unroll")                                                  \
+            for (int n = 0; n < (TN); n++) {                                   \
+                int c = t0 + tx * (TN) + n;                                    \
+                if (i < a.n_in && c < a.batch) y[(ulong64)c * a.ys + i] += acc[m][n]; \
+            }                                                                  \
+        }                                                                      \
+    }                                                                          \
+}
+
 #define TRAIN_KERNELS(name, BS, TS)                                            \
 extern "C" __global__ void k_tmvt_##name(MV_PARAMS) {                         \
     (void)bias;                                                                \
@@ -545,7 +645,9 @@ extern "C" __global__ void k_tmvt_##name(MV_PARAMS) {                         \
 TRAIN_MM(k_tmm_##name, name, BS, TS, TMM_NC, TMM_RW)                           \
 TRAIN_MM(k_tmmw_##name, name, BS, TS, TMM_NCW, TMM_RW)                         \
 TRAIN_MMR(k_tmmr_##name, name, BS, TS, TMR_BN, 8, 8)                           \
-TRAIN_MMR(k_tmmrn_##name, name, BS, TS, TMR_BNN, 4, 4)
+TRAIN_MMR(k_tmmrn_##name, name, BS, TS, TMR_BNN, 4, 4)                         \
+TRAIN_MVTR(k_tmvtr_##name, name, BS, TS, TMR_BN, 8, 8)                         \
+TRAIN_MVTR(k_tmvtrn_##name, name, BS, TS, TMR_BNN, 4, 4)
 
 TRAIN_KERNELS(f32, 1, 4)
 TRAIN_KERNELS(f16, 1, 2)

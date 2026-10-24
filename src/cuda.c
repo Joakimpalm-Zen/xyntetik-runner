@@ -7660,6 +7660,8 @@ typedef struct {
     // R8.20 attempt 3: the register-blocked forward product and its narrow
     // twin (one arithmetic, so either gives a column the same bits)
     CUfunction  f_tmmr[KT_N], f_tmmrn[KT_N];
+    // the transposed product's register-blocked twins, --train-gpu only
+    CUfunction  f_tmvtr[KT_N], f_tmvtrn[KT_N];
     // R8.21: the DeltaNet recurrence (k_tdn_fw, k_tdn_bw) and its buffers.
     // A recompute leaves its inputs and checkpoints there for the same
     // layer's reverse sweep; dn_owner names the recompute they belong to
@@ -7767,6 +7769,12 @@ bool gpu_train_init(model_t *m) {
         snprintf(nm, sizeof nm, "k_tmmrn_%s", FNS[i].mm + 6);
         if (cu.ModuleGetFunction(&t->f_tmmrn[FNS[i].type], t->mod, nm) != 0)
             t->f_tmmrn[FNS[i].type] = NULL;
+        snprintf(nm, sizeof nm, "k_tmvtr_%s", FNS[i].mm + 6);
+        if (cu.ModuleGetFunction(&t->f_tmvtr[FNS[i].type], t->mod, nm) != 0)
+            t->f_tmvtr[FNS[i].type] = NULL;
+        snprintf(nm, sizeof nm, "k_tmvtrn_%s", FNS[i].mm + 6);
+        if (cu.ModuleGetFunction(&t->f_tmvtrn[FNS[i].type], t->mod, nm) != 0)
+            t->f_tmvtrn[FNS[i].type] = NULL;
     }
     size_t free_b = 0, total_b = 0;
     if (cu.MemGetInfo(&free_b, &total_b) != 0) free_b = 0;
@@ -7920,7 +7928,7 @@ static CUdeviceptr tg_weights(train_gpu_t *t, const gguf_tensor *w) {
 }
 
 static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
-                      float *dx, int n_in, int n_out, int nb);
+                      float *dx, int n_in, int n_out, int nb, bool dev);
 
 bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
                    float *dx, int n_in, int n_out, int nb) {
@@ -7930,14 +7938,14 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
     if (!t || !w || w->scale != 1.0f || w->type >= KT_N || !t->f_tmvt[w->type])
         return false;
     double t0 = plat_now();
-    bool ok = train_mvt(t, w, dy, dx, n_in, n_out, nb);
+    bool ok = train_mvt(t, w, dy, dx, n_in, n_out, nb, m->train_dev);
     t->t_mvt += plat_now() - t0;
     t->n_mvt += ok;
     return ok;
 }
 
 static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
-                      float *dx, int n_in, int n_out, int nb) {
+                      float *dx, int n_in, int n_out, int nb, bool dev) {
     if (cu.CtxSetCurrent(t->ctx) != 0) return false;
     CUdeviceptr weights = tg_weights(t, w);
     if (!weights) return false;
@@ -7951,11 +7959,29 @@ static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
         return false;
     mv_args a = { n_in, n_out, 0, 0, nb, n_out, n_in };
     void *p[] = { &weights, &t->d_dy, &t->d_dx, &a, &t->dummy };
-    unsigned blocks = (unsigned)((n_in + TV_IT - 1) / TV_IT);
-    unsigned rows = (unsigned)((nb + TV_TT - 1) / TV_TT);
+    // --train-gpu takes the register-blocked twins (k_tmvtr past 32 columns,
+    // k_tmvtrn up to them); the assist (RUNNER_TRAIN_GPU=1) keeps k_tmvt, the
+    // CPU chain's bits. RUNNER_TRAIN_MVT_KERNEL=chain takes k_tmvt in device
+    // mode too, for comparison (read per call, like RUNNER_TRAIN_MM_KERNEL).
+    const char *ke = getenv("RUNNER_TRAIN_MVT_KERNEL");
+    bool tile = dev && !(ke && !strcmp(ke, "chain")) && t->f_tmvtr[w->type] &&
+                t->f_tmvtrn[w->type];
+    CUfunction f;
+    unsigned blocks, rows, threads;
+    if (tile) {
+        int ncb = nb > 2 * TMR_BNN ? TMR_BN : TMR_BNN;
+        f = ncb == TMR_BN ? t->f_tmvtr[w->type] : t->f_tmvtrn[w->type];
+        blocks = (unsigned)((n_in + TMR_BM - 1) / TMR_BM);
+        rows = (unsigned)((nb + ncb - 1) / ncb);
+        threads = TMR_KS * 64;
+    } else {
+        f = t->f_tmvt[w->type];
+        blocks = (unsigned)((n_in + TV_IT - 1) / TV_IT);
+        rows = (unsigned)((nb + TV_TT - 1) / TV_TT);
+        threads = TV_IT * TV_TT / 8;
+    }
     double k0 = plat_now();
-    if (cu.LaunchKernel(t->f_tmvt[w->type], blocks, rows, 1,
-                        TV_IT * TV_TT / 8, 1, 1, 0, NULL, p, NULL) != 0 ||
+    if (cu.LaunchKernel(f, blocks, rows, 1, threads, 1, 1, 0, NULL, p, NULL) != 0 ||
         cu.CtxSynchronize() != 0)
         return false;
     t->k_mvt += plat_now() - k0;
