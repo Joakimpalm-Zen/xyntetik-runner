@@ -181,6 +181,30 @@ def test_adapter_bytes_do_not_depend_on_the_thread_count(runner_bin, base, tmp_p
     assert a1.read_bytes() == a3.read_bytes(), (family, "adapter bytes depend on -t")
 
 
+# R8.20: the adapter's rank-r passes run blocks (4 positions x 8 ranks, 4 dB
+# rows x 8 ranks, 16 dx columns), the full block vectorized and a partial
+# block at every edge. Ranks 1, 5 and 33 and an FFN width of 77 put a partial
+# block at each edge, and -t 1 against -t 3 moves the thread ranges' edges,
+# so a position or row sits in a full block in one run and a partial one in
+# the other: the two paths must keep the same chains. This gate has no
+# absolute anchor (one binary agreeing with itself); the anchor for these
+# passes is the finite-difference gradient gate (test-lora-grad), and the
+# bytes against the unblocked loops were compared across builds when the
+# blocking landed.
+@pytest.mark.parametrize("rank", [1, 5, 33])
+def test_rank_r_partial_blocks_keep_the_chains(runner_bin, tmp_path, rank):
+    d = tmp_path / "fx"
+    d.mkdir()
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--n-ff", "77",
+                    str(d / "base.gguf")], check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    (d / "corpus.txt").write_text(CORPUS)
+    a1, a3 = tmp_path / "t1.gguf", tmp_path / "t3.gguf"
+    l1 = _train(runner_bin, d, a1, steps=4, extra=("--lora-rank", str(rank), "-t", "1"))
+    l3 = _train(runner_bin, d, a3, steps=4, extra=("--lora-rank", str(rank), "-t", "3"))
+    assert l1 == l3, (rank, l1, l3)
+    assert a1.read_bytes() == a3.read_bytes(), (rank, "adapter bytes depend on -t")
+
+
 # R8.19 --train-gpu: every weight product of a step on CUDA. Not the CPU's
 # bytes (the device products add in another order) but the same training
 # within rounding: 4 steps a family against the CPU run, every step's loss
