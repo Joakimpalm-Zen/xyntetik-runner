@@ -59,12 +59,12 @@ def _train(runner_bin, base_dir, out, data="corpus.txt", steps=20, extra=()):
     return losses
 
 
-def _run_train(runner_bin, base_dir, out, data, extra=()):
+def _run_train(runner_bin, base_dir, out, data, extra=(), env=None):
     cmd = [runner_bin, "-m", str(base_dir / "base.gguf"),
            "--train", str(base_dir / data), "--train-steps", "1",
            "--lr", "3e-3", "--train-out", str(out), "-t", "2", *extra]
     return subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, timeout=600)
+                          stderr=subprocess.PIPE, timeout=600, env=env)
 
 
 def _score(runner_bin, base_dir, lora=None):
@@ -213,10 +213,14 @@ def test_train_gpu_is_refused_without_training_or_a_device(runner_bin, base, tmp
                        stderr=subprocess.PIPE, timeout=120)
     assert p.returncode != 0
     assert b"--train-gpu runs a --train or --train-dpo step" in p.stderr
+    # Hide every CUDA device from the child so the refusal shows on any host,
+    # a CUDA host with a usable GPU included: a skip here used to carry the
+    # words "GPU is usable", which the CUDA lane's no-skip rule rejects.
     out = tmp_path / "ad.gguf"
-    p = _run_train(runner_bin, base, out, "corpus.txt", extra=("--train-gpu",))
-    if p.returncode == 0:
-        pytest.skip("a GPU is usable here: the refusal cannot be shown")
+    no_device = dict(os.environ, CUDA_VISIBLE_DEVICES="")
+    p = _run_train(runner_bin, base, out, "corpus.txt", extra=("--train-gpu",),
+                   env=no_device)
+    assert p.returncode != 0, p.stdout[-400:]
     assert b"--train-gpu needs a CUDA build and an NVIDIA GPU" in p.stderr
     assert not out.exists(), "a refused run wrote an adapter"
 
