@@ -7657,6 +7657,9 @@ typedef struct {
     // bits, and the batch-invariant forward product, for every type the
     // CPU trainer decodes
     CUfunction  f_tmvt[KT_N], f_tmm[KT_N], f_tmmw[KT_N];
+    // R8.20 attempt 3: the register-blocked forward product and its narrow
+    // twin (one arithmetic, so either gives a column the same bits)
+    CUfunction  f_tmmr[KT_N], f_tmmrn[KT_N];
     // R8.21: the DeltaNet recurrence (k_tdn_fw, k_tdn_bw) and its buffers.
     // A recompute leaves its inputs and checkpoints there for the same
     // layer's reverse sweep; dn_owner names the recompute they belong to
@@ -7757,6 +7760,13 @@ bool gpu_train_init(model_t *m) {
         if (cu.ModuleGetFunction(&t->f_tmmw[FNS[i].type], t->mod,
                                  FNS[i].mmw) != 0)
             t->f_tmmw[FNS[i].type] = NULL;
+        char nm[48];
+        snprintf(nm, sizeof nm, "k_tmmr_%s", FNS[i].mm + 6);
+        if (cu.ModuleGetFunction(&t->f_tmmr[FNS[i].type], t->mod, nm) != 0)
+            t->f_tmmr[FNS[i].type] = NULL;
+        snprintf(nm, sizeof nm, "k_tmmrn_%s", FNS[i].mm + 6);
+        if (cu.ModuleGetFunction(&t->f_tmmrn[FNS[i].type], t->mod, nm) != 0)
+            t->f_tmmrn[FNS[i].type] = NULL;
     }
     size_t free_b = 0, total_b = 0;
     if (cu.MemGetInfo(&free_b, &total_b) != 0) free_b = 0;
@@ -8235,16 +8245,33 @@ static bool train_mm(train_gpu_t *t, const gguf_tensor *w, const float *x,
     if (cu.MemcpyHtoD(t->d_dx, xp, sizeof(float) * nx) != 0) return false;
     mv_args a = { n_in, n_out, 0, 0, nb, n_in, n_out };
     void *p[] = { &weights, &t->d_dx, &t->d_dy, &a, &t->dummy };
-    // the 32-column twin past one narrow tile: the same per-column
-    // arithmetic, each weight decoded once for 32 columns instead of 16
-    bool wide = nb > TMM_NC && t->f_tmmw[w->type];
-    unsigned blocks = (unsigned)((n_out + TMM_WARPS * TMM_RW - 1) /
-                                 (TMM_WARPS * TMM_RW));
-    int ncb = wide ? TMM_NCW : TMM_NC;
-    unsigned cols = (unsigned)((nb + ncb - 1) / ncb);
+    // The register-blocked kernels (k_tmmr, k_tmmrn past 32 columns and up
+    // to them); RUNNER_TRAIN_MM_KERNEL=warp takes the per-warp ones instead
+    // (k_tmm, k_tmmw past one 16-column tile), the arithmetic before R8.20
+    // attempt 3, for comparison. Within a family every column gets the same
+    // bits from either kernel; the two families differ, so one family serves
+    // a whole run (read per call so test-train-gpu can compare them).
+    const char *ke = getenv("RUNNER_TRAIN_MM_KERNEL");
+    bool warp = (ke && !strcmp(ke, "warp")) || !t->f_tmmr[w->type] ||
+                !t->f_tmmrn[w->type];
+    CUfunction f;
+    unsigned blocks, cols, threads;
+    if (warp) {
+        bool wide = nb > TMM_NC && t->f_tmmw[w->type];
+        int ncb = wide ? TMM_NCW : TMM_NC;
+        f = wide ? t->f_tmmw[w->type] : t->f_tmm[w->type];
+        blocks = (unsigned)((n_out + TMM_WARPS * TMM_RW - 1) / (TMM_WARPS * TMM_RW));
+        cols = (unsigned)((nb + ncb - 1) / ncb);
+        threads = TMM_WARPS * 32;
+    } else {
+        int ncb = nb > 2 * TMR_BNN ? TMR_BN : TMR_BNN;
+        f = ncb == TMR_BN ? t->f_tmmr[w->type] : t->f_tmmrn[w->type];
+        blocks = (unsigned)((n_out + TMR_BM - 1) / TMR_BM);
+        cols = (unsigned)((nb + ncb - 1) / ncb);
+        threads = TMR_KS * 64;
+    }
     double k0 = plat_now();
-    if (cu.LaunchKernel(wide ? t->f_tmmw[w->type] : t->f_tmm[w->type], blocks,
-                        cols, 1, TMM_WARPS * 32, 1, 1, 0, NULL, p, NULL) != 0 ||
+    if (cu.LaunchKernel(f, blocks, cols, 1, threads, 1, 1, 0, NULL, p, NULL) != 0 ||
         cu.CtxSynchronize() != 0)
         return false;
     t->k_mm += plat_now() - k0;

@@ -230,6 +230,93 @@ static __device__ __forceinline__ float tdq_q2_0(const uchar *rw, int i) {
     return (float)((int)((b[2 + (e >> 2)] >> ((e & 3) * 2)) & 3) - 1) * f16f(b);
 }
 
+// tdq8_<type>(row, i0, o): weights i0 .. i0 + 7 of a row (i0 a multiple of
+// 8), each the value tdq_<type> gives it by the same expression, so the
+// same bits. The register-blocked kernels decode a run at a time: IQ3_S,
+// Q4_K and Q6_K share the run's block header, scale and grid words instead
+// of reading them once a weight; the rest take their weights one by one.
+// tdq_run_<type>: whether the kernels decode the type in runs (else one
+// weight a thread, consecutive threads on consecutive weights of a row,
+// which keeps a simple type's byte reads coalesced).
+#define TDQ8_EACH(name)                                                        \
+static const bool tdq_run_##name = false;                                      \
+static __device__ __forceinline__ void tdq8_##name(const uchar *rw, int i0,   \
+                                                   float *o) {                \
+    _Pragma("unroll")                                                          \
+    for (int j = 0; j < 8; j++) o[j] = tdq_##name(rw, i0 + j);                 \
+}
+TDQ8_EACH(f32)
+TDQ8_EACH(f16)
+TDQ8_EACH(bf16)
+TDQ8_EACH(q8_0)
+TDQ8_EACH(q4_0)
+TDQ8_EACH(q4_1)
+TDQ8_EACH(q5_0)
+TDQ8_EACH(q5_1)
+TDQ8_EACH(q2_K)
+TDQ8_EACH(q3_K)
+TDQ8_EACH(q5_K)
+TDQ8_EACH(iq4_nl)
+TDQ8_EACH(iq4_xs)
+TDQ8_EACH(iq2_xxs)
+TDQ8_EACH(iq2_xs)
+TDQ8_EACH(iq2_s)
+TDQ8_EACH(iq3_xxs)
+TDQ8_EACH(iq1_s)
+TDQ8_EACH(iq1_m)
+TDQ8_EACH(mxfp4)
+TDQ8_EACH(nvfp4)
+TDQ8_EACH(q2_0)
+
+static const bool tdq_run_q4_K = true;
+static __device__ __forceinline__ void tdq8_q4_K(const uchar *rw, int i0, float *o) {
+    int i = i0;
+    const uchar *b = TQ_BLK(256, 144);
+    int e = i0 & 255, g = e >> 5, l0 = e & 31;
+    uchar sc, mn;
+    get_scale_min_k4(g, b + 4, &sc, &mn);
+    float d = f16f(b), dm = f16f(b + 2);
+    const uchar *qs = b + 16 + 32 * (g >> 1) + l0;
+    _Pragma("unroll")
+    for (int j = 0; j < 8; j++) {
+        int q = (g & 1) ? (qs[j] >> 4) : (qs[j] & 0xF);
+        o[j] = d * (float)sc * (float)q - dm * (float)mn;
+    }
+}
+static const bool tdq_run_q6_K = true;
+static __device__ __forceinline__ void tdq8_q6_K(const uchar *rw, int i0, float *o) {
+    int i = i0;
+    const uchar *b = TQ_BLK(256, 210);
+    int e = i0 & 255, half = e >> 7, r = e & 127, seg = r >> 5, l0 = r & 31;
+    const uchar *ql = b + half * 64, *qh = b + 128 + half * 32;
+    int s = ((const signed char *)(b + 192))[half * 8 + 2 * seg + (l0 >> 4)];
+    float d = f16f(b + 208);
+    _Pragma("unroll")
+    for (int j = 0; j < 8; j++) {
+        int l = l0 + j;
+        int lo = (seg & 1) ? ql[l + 32] : ql[l];
+        int q = (int)(((seg & 2) ? (lo >> 4) : (lo & 0xF)) | (((qh[l] >> (2 * seg)) & 3) << 4)) - 32;
+        o[j] = d * (float)(s * q);
+    }
+}
+static const bool tdq_run_iq3_s = true;
+static __device__ __forceinline__ void tdq8_iq3_s(const uchar *rw, int i0, float *o) {
+    int i = i0;
+    const uchar *b = TQ_BLK(256, 110);
+    int e = i0 & 255, ib = e >> 5, l = (e >> 3) & 3;
+    unsigned sc = b[106 + (ib >> 1)];
+    float db = f16f(b) * (float)(1 + 2 * ((ib & 1) ? (sc >> 4) : (sc & 0xF)));
+    unsigned hb = b[66 + ib];
+    unsigned g0 = kiq3s_grid[b[2 + 8 * ib + 2 * l] | ((hb << (8 - 2 * l)) & 256)];
+    unsigned g1 = kiq3s_grid[b[2 + 8 * ib + 2 * l + 1] | ((hb << (7 - 2 * l)) & 256)];
+    unsigned sg = b[74 + 4 * ib + l];
+    _Pragma("unroll")
+    for (int j = 0; j < 8; j++) {
+        float mag = (float)(((j < 4 ? g0 : g1) >> (8 * (j & 3))) & 0xFF);
+        o[j] = db * ((sg >> j) & 1 ? -mag : mag);
+    }
+}
+
 // a row's bytes from its element count
 #define TQ_ROW(BS, TS) ((ulong64)(a.n_in / (BS)) * (TS))
 
@@ -301,6 +388,117 @@ extern "C" __global__ void fname(MV_PARAMS) {                                 \
         }                                                                      \
 }
 
+// k_tmmr / k_tmmrn (R8.20 attempt 3): the same product, register-blocked.
+// Output (j, t) is the sum of TMR_KS chains: chain g takes the input chunks
+// c with c % TMR_KS == g (TMR_BK inputs a chunk), each chunk's inputs in
+// order, one fmaf a term from zero; the chains fold as ((c0 + c1) + c2) + c3.
+// That contract names neither the columns sharing a launch nor the block
+// shape, so a column's value is the same in either twin and at any batch:
+// batch-invariant, and deterministic. A block holds TMR_BM rows and BN
+// columns; group g of its 64 threads runs chain g, decoding its chunk of the
+// tile's weights into shared memory once for all BN columns, and each thread
+// keeps a TM x TN tile of the outputs in registers, so one staged weight and
+// one staged activation feed TM x TN multiply-adds between them.
+#define TRAIN_MMR(fname, name, BS, TS, BN, TM, TN)                            \
+extern "C" __global__ void __launch_bounds__(TMR_KS * 64) fname(MV_PARAMS) {  \
+    (void)bias;                                                                \
+    __shared__ __align__(16) float ws[TMR_KS][TMR_BK][TMR_BM + 4];             \
+    __shared__ __align__(16) float xs[TMR_KS][TMR_BK][(BN) + 4];               \
+    const int TX = (BN) / (TN);                                                \
+    int g = (int)(threadIdx.x >> 6), lt = (int)(threadIdx.x & 63);             \
+    int tx = lt % TX, ty = lt / TX;                                            \
+    int r0 = (int)blockIdx.x * TMR_BM, c0 = (int)blockIdx.y * (BN);            \
+    ulong64 rb = TQ_ROW(BS, TS);                                               \
+    const uchar *w0 = wb + a.w_off;                                            \
+    float acc[TM][TN];                                                         \
+    _Pragma("unroll")                                                          \
+    for (int m = 0; m < (TM); m++)                                             \
+        _Pragma("unroll")                                                      \
+        for (int n = 0; n < (TN); n++) acc[m][n] = 0.0f;                       \
+    int nch = (a.n_in + TMR_BK - 1) / TMR_BK;                                  \
+    for (int it = 0; it * TMR_KS < nch; it++) {                                \
+        int ch = it * TMR_KS + g, k0 = ch * TMR_BK;                            \
+        int kn = ch < nch ? (a.n_in - k0 < TMR_BK ? a.n_in - k0 : TMR_BK) : 0; \
+        __syncthreads();                                                       \
+        if (!tdq_run_##name)                                                   \
+            for (int e = lt; e < TMR_BM * TMR_BK; e += 64) {                   \
+                int kk = e % TMR_BK, r = e / TMR_BK;                           \
+                ws[g][kk][r] = kk < kn && r0 + r < a.n_out                     \
+                    ? tdq_##name(w0 + (ulong64)(r0 + r) * rb, k0 + kk) : 0.0f; \
+            }                                                                  \
+        /* runs of 8 inputs of one row a thread (TMR_BK / 8 runs a row) */    \
+        else for (int e = lt; e < TMR_BM * (TMR_BK / 8); e += 64) {            \
+            int r = e / (TMR_BK / 8), kk0 = (e % (TMR_BK / 8)) * 8;            \
+            float wv[8];                                                       \
+            if (r0 + r < a.n_out && kk0 + 8 <= kn) {                           \
+                tdq8_##name(w0 + (ulong64)(r0 + r) * rb, k0 + kk0, wv);         \
+            } else {                                                           \
+                _Pragma("unroll")                                              \
+                for (int j = 0; j < 8; j++)                                    \
+                    wv[j] = r0 + r < a.n_out && kk0 + j < kn                   \
+                        ? tdq_##name(w0 + (ulong64)(r0 + r) * rb, k0 + kk0 + j) : 0.0f; \
+            }                                                                  \
+            _Pragma("unroll")                                                  \
+            for (int j = 0; j < 8; j++) ws[g][kk0 + j][r] = wv[j];             \
+        }                                                                      \
+        for (int e = lt; e < (BN) * TMR_BK; e += 64) {                         \
+            int kk = e % TMR_BK, c = e / TMR_BK;                               \
+            xs[g][kk][c] = kk < kn && c0 + c < a.batch                         \
+                ? x[(ulong64)(c0 + c) * a.xs + k0 + kk] : 0.0f;                \
+        }                                                                      \
+        __syncthreads();                                                       \
+        for (int kk = 0; kk < kn; kk++) {                                      \
+            float av[TM], bv[TN];                                              \
+            _Pragma("unroll")                                                  \
+            for (int m = 0; m < (TM); m += 4) {                                \
+                float4 v = *(const float4 *)&ws[g][kk][ty * (TM) + m];         \
+                av[m] = v.x; av[m + 1] = v.y; av[m + 2] = v.z; av[m + 3] = v.w; \
+            }                                                                  \
+            _Pragma("unroll")                                                  \
+            for (int n = 0; n < (TN); n += 4) {                                \
+                float4 v = *(const float4 *)&xs[g][kk][tx * (TN) + n];         \
+                bv[n] = v.x; bv[n + 1] = v.y; bv[n + 2] = v.z; bv[n + 3] = v.w; \
+            }                                                                  \
+            _Pragma("unroll")                                                  \
+            for (int m = 0; m < (TM); m++)                                     \
+                _Pragma("unroll")                                              \
+                for (int n = 0; n < (TN); n++)                                 \
+                    acc[m][n] = fmaf(av[m], bv[n], acc[m][n]);                 \
+        }                                                                      \
+    }                                                                          \
+    /* the chains fold in order through shared memory (the staging, reused) */ \
+    float *red = &ws[0][0][0];                                                 \
+    for (int s = 1; s < TMR_KS; s++) {                                         \
+        __syncthreads();                                                       \
+        if (g == s) {                                                          \
+            _Pragma("unroll")                                                  \
+            for (int m = 0; m < (TM); m++)                                     \
+                _Pragma("unroll")                                              \
+                for (int n = 0; n < (TN); n++)                                 \
+                    red[(ty * (TM) + m) * (BN) + tx * (TN) + n] = acc[m][n];   \
+        }                                                                      \
+        __syncthreads();                                                       \
+        if (g == 0) {                                                          \
+            _Pragma("unroll")                                                  \
+            for (int m = 0; m < (TM); m++)                                     \
+                _Pragma("unroll")                                              \
+                for (int n = 0; n < (TN); n++)                                 \
+                    acc[m][n] += red[(ty * (TM) + m) * (BN) + tx * (TN) + n];  \
+        }                                                                      \
+    }                                                                          \
+    if (g == 0) {                                                              \
+        _Pragma("unroll")                                                      \
+        for (int m = 0; m < (TM); m++) {                                       \
+            int r = r0 + ty * (TM) + m;                                        \
+            _Pragma("unroll")                                                  \
+            for (int n = 0; n < (TN); n++) {                                   \
+                int c = c0 + tx * (TN) + n;                                    \
+                if (r < a.n_out && c < a.batch) y[(ulong64)c * a.ys + r] = acc[m][n]; \
+            }                                                                  \
+        }                                                                      \
+    }                                                                          \
+}
+
 #define TRAIN_KERNELS(name, BS, TS)                                            \
 extern "C" __global__ void k_tmvt_##name(MV_PARAMS) {                         \
     (void)bias;                                                                \
@@ -345,7 +543,9 @@ extern "C" __global__ void k_tmvt_##name(MV_PARAMS) {                         \
         if (live && t0 + c < a.batch) y[(ulong64)(t0 + c) * a.ys + i] = acc[c]; \
 }                                                                              \
 TRAIN_MM(k_tmm_##name, name, BS, TS, TMM_NC, TMM_RW)                           \
-TRAIN_MM(k_tmmw_##name, name, BS, TS, TMM_NCW, TMM_RW)
+TRAIN_MM(k_tmmw_##name, name, BS, TS, TMM_NCW, TMM_RW)                         \
+TRAIN_MMR(k_tmmr_##name, name, BS, TS, TMR_BN, 8, 8)                           \
+TRAIN_MMR(k_tmmrn_##name, name, BS, TS, TMR_BNN, 4, 4)
 
 TRAIN_KERNELS(f32, 1, 4)
 TRAIN_KERNELS(f16, 1, 2)
