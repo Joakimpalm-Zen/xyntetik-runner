@@ -64,7 +64,7 @@ chmod +x runner-macos-arm64 && mv runner-macos-arm64 runner
 <details>
 <summary>Linux (x86_64)</summary>
 
-The published v1.6.0 asset requires GLIBC 2.43 and fails on Ubuntu 24.04.
+The published 1.6.0 asset requires GLIBC 2.43 and fails on Ubuntu 24.04.
 On affected hosts, [build from source](#build-and-platforms) until a corrected
 asset is published. [Validation and ABI fix](docs/golden-pass-2026-10-25.md).
 
@@ -1628,11 +1628,11 @@ page while runner runs and put back at exit; redirected output is UTF-8 bytes
 either way. A line typed into the interactive chat at a console is read as
 UTF-16 and kept as UTF-8, whatever the console's input code page.
 
-The loose v1.6.0 Linux release binary has a confirmed compatibility regression:
+The loose 1.6.0 Linux release binary has a confirmed compatibility regression:
 `sqrtf@GLIBC_2.43` prevents startup on Ubuntu 24.04 (GLIBC 2.39) and other
 systems below 2.43. The previous 1.5.0 binary requires at most GLIBC 2.38.
 The release workflow now pins Ubuntu 24.04 and rejects imports above 2.38;
-a locally rebuilt v1.6.0 passes startup and fixture inference on GLIBC 2.38.
+a locally rebuilt 1.6.0 passes startup and fixture inference on GLIBC 2.38.
 This change does not replace the published asset. Build from source for an
 affected host until a corrected release is published. The independently
 built container has a separate Debian build baseline.
