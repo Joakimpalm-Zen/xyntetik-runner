@@ -1,0 +1,6 @@
+runner 1.6.0
+tag:        v1.6.0
+commit:     869d72e89a74e2d147ceadf5400e10d9fe9e877c
+built:      2026-10-24T12:56:10Z
+runner-os:  ubuntu-latest
+march:      x86-64-v3

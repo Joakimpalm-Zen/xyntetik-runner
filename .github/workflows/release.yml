@@ -22,7 +22,8 @@ jobs:
           # x86 builds pin -march=x86-64-v3 (AVX2/FMA/F16C, what the hot
           # kernels use) instead of the Makefile's -march=native, so a binary
           # built on whatever CPU the CI runner has runs on any AVX2 machine.
-          - os: ubuntu-latest
+          # Preserve the 1.5.0 Linux ABI; ubuntu-latest can change libc.
+          - os: ubuntu-24.04
             artifact: runner-linux-x86_64
             binary: runner
             march: x86-64-v3
@@ -51,6 +52,9 @@ jobs:
             mingw-w64-ucrt-x86_64-python
       - name: build
         run: make CFLAGS="-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=${{ matrix.march }}"
+      - name: Linux GLIBC compatibility
+        if: runner.os == 'Linux'
+        run: python3 scripts/check-glibc.py ./runner --max-version 2.38
       - name: version matches the tag
         run: |
           BUILT=$(./${{ matrix.binary }} --version)
@@ -75,6 +79,14 @@ jobs:
           runner-os:  ${{ matrix.os }}
           march:      ${{ matrix.march }}
           EOF
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            {
+              echo "compiler:   $(cc --version | head -1)"
+              echo "libc:       $(getconf GNU_LIBC_VERSION)"
+              echo "cflags:     -O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=${{ matrix.march }}"
+              python3 scripts/check-glibc.py ./runner --max-version 2.38
+            } >> BUILD-INFO.txt
+          fi
           python3 scripts/check-release.py --tag "${GITHUB_REF_NAME}" \
             --binary "./${{ matrix.binary }}" --readme README.md \
             --changelog CHANGELOG.md --build-info BUILD-INFO.txt \

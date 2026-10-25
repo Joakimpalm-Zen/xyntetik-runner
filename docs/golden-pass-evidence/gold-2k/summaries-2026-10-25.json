@@ -1,0 +1,2317 @@
+{
+ "schema_version": "xyntetik.runner.gold-logits.summaries.v1",
+ "measured": "2026-10-24/25",
+ "runner": "1.6.0, runner main 33c2a08f (the v1.6.0 merge), clang build",
+ "baseline": "1.5.0 release asset runner-linux-x86_64 (the binary 2026-10-22 scored, sha256 4dfc4684...)",
+ "scorer": "scripts/gold-logits.py as of PR #354 (sha256 0be651b4...)",
+ "corpus": "tests/fixtures/gold-corpus-2k.txt",
+ "positions_requested": 2000,
+ "stride": 1,
+ "context": 4096,
+ "reference": "transformers 5.16.1, float32, CPU (apertus-8b: bfloat16 weights widened to float32 at use, bitwise identical to the float32 load)",
+ "llama_cpp": "73a43d1; -fa off at bf16, -fa on at the served quant",
+ "runs": {
+  "apertus-8b-bf16": {
+   "positions": 2000,
+   "hf": "hf/apertus-8b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "ApertusForCausalLM",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "apertus-8b-bf16.gguf",
+     "mean_kld_vs_gold": 9.219632461765826e-05,
+     "max_kld_vs_gold": 0.014842711073850488,
+     "top1_agreement_pct": 99.85,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "apertus-8b-bf16.gguf",
+     "mean_kld_vs_gold": 0.0007364311504659226,
+     "max_kld_vs_gold": 0.030417763003430656,
+     "top1_agreement_pct": 99.65,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 11
+    }
+   },
+   "significance": {
+    "qualified_positions": 1369,
+    "margin_qualified_hits_a": 1369,
+    "margin_qualified_hits_b": 1369,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 37.61862677833747,
+    "kld_wilcoxon_p": 1.066366769996464e-309,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "a closer"
+   }
+  },
+  "apertus-8b-served": {
+   "positions": 2000,
+   "hf": "hf/apertus-8b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "ApertusForCausalLM",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Apertus-8B-Instruct-2509-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.050739271506841155,
+     "max_kld_vs_gold": 0.7840101792267865,
+     "top1_agreement_pct": 89.75,
+     "margin_qualified_top1_pct": 98.1008035062089,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Apertus-8B-Instruct-2509-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.07726759518679552,
+     "max_kld_vs_gold": 1.348152534019712,
+     "top1_agreement_pct": 86.7,
+     "margin_qualified_top1_pct": 96.42074506939372,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 25
+    }
+   },
+   "significance": {
+    "qualified_positions": 1369,
+    "margin_qualified_hits_a": 1343,
+    "margin_qualified_hits_b": 1320,
+    "discordant_a_only": 32,
+    "discordant_b_only": 9,
+    "mcnemar_exact_p": 0.000430857042374555,
+    "kld_wilcoxon_z": 27.44861669004528,
+    "kld_wilcoxon_p": 7.216833758639152e-166,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "a closer"
+   }
+  },
+  "gemma-3-4b-it-bf16": {
+   "positions": 2000,
+   "hf": "hf/gemma-3-4b-it",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Gemma3ForConditionalGeneration",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "gemma-3-4b-it-bf16.gguf",
+     "mean_kld_vs_gold": 2.872316355812054e-05,
+     "max_kld_vs_gold": 0.016380934524889354,
+     "top1_agreement_pct": 99.9,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "gemma-3-4b-it-bf16.gguf",
+     "mean_kld_vs_gold": 0.0004608307446699952,
+     "max_kld_vs_gold": 0.026104254316872622,
+     "top1_agreement_pct": 99.45,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1550,
+    "margin_qualified_hits_a": 1550,
+    "margin_qualified_hits_b": 1550,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 37.821533746983576,
+    "kld_wilcoxon_p": 5.03069827713e-313,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "a closer"
+   }
+  },
+  "gemma-3-4b-it-served": {
+   "positions": 2000,
+   "hf": "hf/gemma-3-4b-it",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Gemma3ForConditionalGeneration",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "google_gemma-3-4b-it-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.06696150370837273,
+     "max_kld_vs_gold": 3.591980818728015,
+     "top1_agreement_pct": 88.15,
+     "margin_qualified_top1_pct": 96.19354838709677,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "google_gemma-3-4b-it-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.07719437352602633,
+     "max_kld_vs_gold": 3.6221301018184775,
+     "top1_agreement_pct": 86.8,
+     "margin_qualified_top1_pct": 95.48387096774194,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1550,
+    "margin_qualified_hits_a": 1491,
+    "margin_qualified_hits_b": 1480,
+    "discordant_a_only": 21,
+    "discordant_b_only": 10,
+    "mcnemar_exact_p": 0.07075554598122835,
+    "kld_wilcoxon_z": 12.003218993531974,
+    "kld_wilcoxon_p": 3.417415392262977e-33,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "a closer"
+   }
+  },
+  "gemma-4-e2b-it-forcebos-bf16": {
+   "positions": 2000,
+   "hf": "hf/gemma-4-e2b-it",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Gemma4ForConditionalGeneration",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": true,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "gemma-4-E2B-bf16.gguf",
+     "mean_kld_vs_gold": 4.4286247709212316e-05,
+     "max_kld_vs_gold": 0.018733849697300273,
+     "top1_agreement_pct": 99.9,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "gemma-4-E2B-bf16.gguf",
+     "mean_kld_vs_gold": 0.0005675372743520059,
+     "max_kld_vs_gold": 0.054476501282520434,
+     "top1_agreement_pct": 99.25,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1610,
+    "margin_qualified_hits_a": 1610,
+    "margin_qualified_hits_b": 1610,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 38.22301156893742,
+    "kld_wilcoxon_p": 1.16817e-319,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "a closer"
+   }
+  },
+  "gemma-4-e2b-it-forcebos-served": {
+   "positions": 2000,
+   "hf": "hf/gemma-4-e2b-it",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Gemma4ForConditionalGeneration",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": true,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "gemma-4-E2B-q4_0.gguf",
+     "mean_kld_vs_gold": 0.8128381811406687,
+     "max_kld_vs_gold": 14.235576372990172,
+     "top1_agreement_pct": 61.8,
+     "margin_qualified_top1_pct": 69.44099378881988,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "gemma-4-E2B-q4_0.gguf",
+     "mean_kld_vs_gold": 0.7909694496907222,
+     "max_kld_vs_gold": 13.73788342586688,
+     "top1_agreement_pct": 61.35,
+     "margin_qualified_top1_pct": 68.88198757763975,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1610,
+    "margin_qualified_hits_a": 1118,
+    "margin_qualified_hits_b": 1109,
+    "discordant_a_only": 45,
+    "discordant_b_only": 36,
+    "mcnemar_exact_p": 0.3741744176047079,
+    "kld_wilcoxon_z": -6.079117558439236,
+    "kld_wilcoxon_p": 1.208457403649834e-09,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "b closer"
+   }
+  },
+  "granite-4.0-h-micro-bf16": {
+   "positions": 2000,
+   "hf": "hf/granite-4.0-h-micro",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "GraniteMoeHybridForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "granite-4.0-h-micro-bf16.gguf",
+     "mean_kld_vs_gold": 8.236622899327686e-05,
+     "max_kld_vs_gold": 0.02132932918386921,
+     "top1_agreement_pct": 99.95,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "granite-4.0-h-micro-bf16.gguf",
+     "mean_kld_vs_gold": 0.0007496388284087506,
+     "max_kld_vs_gold": 0.04189147598663177,
+     "top1_agreement_pct": 99.9,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 10
+    }
+   },
+   "significance": {
+    "qualified_positions": 1437,
+    "margin_qualified_hits_a": 1437,
+    "margin_qualified_hits_b": 1437,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 38.30686894235613,
+    "kld_wilcoxon_p": 4.71e-321,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "a closer"
+   }
+  },
+  "granite-4.0-h-micro-served": {
+   "positions": 2000,
+   "hf": "hf/granite-4.0-h-micro",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "GraniteMoeHybridForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "granite-4.0-h-micro-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.09563972154111242,
+     "max_kld_vs_gold": 1.7426295109894225,
+     "top1_agreement_pct": 84.8,
+     "margin_qualified_top1_pct": 94.36325678496868,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "granite-4.0-h-micro-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.10389241818440689,
+     "max_kld_vs_gold": 1.416742876239075,
+     "top1_agreement_pct": 84.4,
+     "margin_qualified_top1_pct": 94.36325678496868,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 4
+    }
+   },
+   "significance": {
+    "qualified_positions": 1437,
+    "margin_qualified_hits_a": 1356,
+    "margin_qualified_hits_b": 1356,
+    "discordant_a_only": 18,
+    "discordant_b_only": 18,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 12.56749471725206,
+    "kld_wilcoxon_p": 3.1866249434436495e-36,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "a closer"
+   }
+  },
+  "granite-4.2-3b-bf16": {
+   "positions": 1983,
+   "hf": "hf/granite-4.2-3b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "GraniteForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 1,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "granite-4.2-3b-bf16.gguf",
+     "mean_kld_vs_gold": 0.00011248807297333824,
+     "max_kld_vs_gold": 0.020053956854091132,
+     "top1_agreement_pct": 99.84871406959152,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 1983,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "granite-4.2-3b-bf16.gguf",
+     "mean_kld_vs_gold": 0.0007004297779062951,
+     "max_kld_vs_gold": 0.10334928977576169,
+     "top1_agreement_pct": 99.44528492183561,
+     "margin_qualified_top1_pct": 99.93002099370189,
+     "matched_by_id_positions": 1983,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 4
+    }
+   },
+   "significance": {
+    "qualified_positions": 1429,
+    "margin_qualified_hits_a": 1429,
+    "margin_qualified_hits_b": 1428,
+    "discordant_a_only": 1,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 37.15920937211823,
+    "kld_wilcoxon_p": 3.112890158278832e-302,
+    "kld_wilcoxon_n": 1983,
+    "verdict": "a closer"
+   }
+  },
+  "granite-4.2-3b-served": {
+   "positions": 1983,
+   "hf": "hf/granite-4.2-3b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "GraniteForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 1,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "granite-4.2-3b-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.1623161035493774,
+     "max_kld_vs_gold": 14.255788629523163,
+     "top1_agreement_pct": 80.48411497730712,
+     "margin_qualified_top1_pct": 91.25262421273618,
+     "matched_by_id_positions": 1983,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "granite-4.2-3b-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.17020014562980934,
+     "max_kld_vs_gold": 11.317537238116008,
+     "top1_agreement_pct": 80.68582955118508,
+     "margin_qualified_top1_pct": 90.97270818754373,
+     "matched_by_id_positions": 1983,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 1
+    }
+   },
+   "significance": {
+    "qualified_positions": 1429,
+    "margin_qualified_hits_a": 1304,
+    "margin_qualified_hits_b": 1300,
+    "discordant_a_only": 21,
+    "discordant_b_only": 17,
+    "mcnemar_exact_p": 0.6271025701571489,
+    "kld_wilcoxon_z": 8.494022057066958,
+    "kld_wilcoxon_p": 1.9960640239487996e-17,
+    "kld_wilcoxon_n": 1982,
+    "verdict": "a closer"
+   }
+  },
+  "qwen2.5-0.5b-bf16": {
+   "positions": 1999,
+   "hf": "hf/qwen2.5-0.5b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen2ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 1,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "qwen2.5-0.5b-bf16.gguf",
+     "mean_kld_vs_gold": 0.00015402079366733746,
+     "max_kld_vs_gold": 0.025374460542865854,
+     "top1_agreement_pct": 99.79989994997499,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 1999,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "qwen2.5-0.5b-bf16.gguf",
+     "mean_kld_vs_gold": 0.0014224061503909271,
+     "max_kld_vs_gold": 0.03576613239966298,
+     "top1_agreement_pct": 99.44972486243121,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 1999,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 8
+    }
+   },
+   "significance": {
+    "qualified_positions": 1342,
+    "margin_qualified_hits_a": 1342,
+    "margin_qualified_hits_b": 1342,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 37.411789283350096,
+    "kld_wilcoxon_p": 2.5132062782968845e-306,
+    "kld_wilcoxon_n": 1999,
+    "verdict": "a closer"
+   }
+  },
+  "qwen2.5-0.5b-served": {
+   "positions": 1999,
+   "hf": "hf/qwen2.5-0.5b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen2ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 1,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.04707060094256441,
+     "max_kld_vs_gold": 1.9610524847361543,
+     "top1_agreement_pct": 90.54527263631816,
+     "margin_qualified_top1_pct": 98.95678092399403,
+     "matched_by_id_positions": 1999,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.05089979250630624,
+     "max_kld_vs_gold": 0.8574684258641369,
+     "top1_agreement_pct": 89.64482241120561,
+     "margin_qualified_top1_pct": 98.80774962742176,
+     "matched_by_id_positions": 1999,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 4
+    }
+   },
+   "significance": {
+    "qualified_positions": 1342,
+    "margin_qualified_hits_a": 1328,
+    "margin_qualified_hits_b": 1326,
+    "discordant_a_only": 6,
+    "discordant_b_only": 4,
+    "mcnemar_exact_p": 0.75390625,
+    "kld_wilcoxon_z": 14.406858878546771,
+    "kld_wilcoxon_p": 4.685398628494883e-47,
+    "kld_wilcoxon_n": 1999,
+    "verdict": "a closer"
+   }
+  },
+  "qwen3-0.6b-bf16": {
+   "positions": 2000,
+   "hf": "hf/qwen3-0.6b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen3ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Qwen3-0.6B-bf16.gguf",
+     "mean_kld_vs_gold": 0.00013366716211331804,
+     "max_kld_vs_gold": 0.021926875644096202,
+     "top1_agreement_pct": 99.95,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Qwen3-0.6B-bf16.gguf",
+     "mean_kld_vs_gold": 0.0007259618618924975,
+     "max_kld_vs_gold": 0.032860427784651765,
+     "top1_agreement_pct": 99.55,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1387,
+    "margin_qualified_hits_a": 1387,
+    "margin_qualified_hits_b": 1387,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 37.424508186314654,
+    "kld_wilcoxon_p": 1.560961703542801e-306,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "a closer"
+   }
+  },
+  "qwen3-0.6b-served": {
+   "positions": 2000,
+   "hf": "hf/qwen3-0.6b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen3ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Qwen3-0.6B-q4_0.gguf",
+     "mean_kld_vs_gold": 0.3039501323220998,
+     "max_kld_vs_gold": 3.7214465745313547,
+     "top1_agreement_pct": 69.55,
+     "margin_qualified_top1_pct": 81.32660418168709,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Qwen3-0.6B-q4_0.gguf",
+     "mean_kld_vs_gold": 0.3045710574941714,
+     "max_kld_vs_gold": 3.520921892767936,
+     "top1_agreement_pct": 69.45,
+     "margin_qualified_top1_pct": 81.25450612833454,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 1
+    }
+   },
+   "significance": {
+    "qualified_positions": 1387,
+    "margin_qualified_hits_a": 1128,
+    "margin_qualified_hits_b": 1127,
+    "discordant_a_only": 10,
+    "discordant_b_only": 9,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 1.6654941584023633,
+    "kld_wilcoxon_p": 0.0958142081065774,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  },
+  "qwen3-4b-bf16": {
+   "positions": 2000,
+   "hf": "hf/qwen3-4b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen3ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Qwen_Qwen3-4B-bf16.gguf",
+     "mean_kld_vs_gold": 3.8541416636455705e-05,
+     "max_kld_vs_gold": 0.01434668248977018,
+     "top1_agreement_pct": 99.9,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Qwen_Qwen3-4B-bf16.gguf",
+     "mean_kld_vs_gold": 0.0003615159825886217,
+     "max_kld_vs_gold": 0.029533596026835994,
+     "top1_agreement_pct": 99.6,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 15
+    }
+   },
+   "significance": {
+    "qualified_positions": 1516,
+    "margin_qualified_hits_a": 1516,
+    "margin_qualified_hits_b": 1516,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 38.30768196398208,
+    "kld_wilcoxon_p": 4.565e-321,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "a closer"
+   }
+  },
+  "qwen3-4b-served": {
+   "positions": 2000,
+   "hf": "hf/qwen3-4b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen3ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Qwen3-4B-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.1398974498500195,
+     "max_kld_vs_gold": 5.363960160045679,
+     "top1_agreement_pct": 83.0,
+     "margin_qualified_top1_pct": 92.0844327176781,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Qwen3-4B-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.145460608324535,
+     "max_kld_vs_gold": 8.481901428285774,
+     "top1_agreement_pct": 82.7,
+     "margin_qualified_top1_pct": 91.88654353562005,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 13
+    }
+   },
+   "significance": {
+    "qualified_positions": 1516,
+    "margin_qualified_hits_a": 1396,
+    "margin_qualified_hits_b": 1393,
+    "discordant_a_only": 12,
+    "discordant_b_only": 9,
+    "mcnemar_exact_p": 0.6636238098144531,
+    "kld_wilcoxon_z": 6.6371214010449044,
+    "kld_wilcoxon_p": 3.198681961756951e-11,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "a closer"
+   }
+  },
+  "qwen3.5-0.8b-bf16": {
+   "positions": 2000,
+   "hf": "hf/qwen3.5-0.8b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen3_5ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "qwen3.5-0.8b-bf16.gguf",
+     "mean_kld_vs_gold": 2.7496714847498834e-05,
+     "max_kld_vs_gold": 0.014650142362134992,
+     "top1_agreement_pct": 99.95,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "qwen3.5-0.8b-bf16.gguf",
+     "mean_kld_vs_gold": 0.0005550391933119442,
+     "max_kld_vs_gold": 0.029239070939926982,
+     "top1_agreement_pct": 99.8,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 13
+    }
+   },
+   "significance": {
+    "qualified_positions": 1356,
+    "margin_qualified_hits_a": 1356,
+    "margin_qualified_hits_b": 1356,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 38.42657669794738,
+    "kld_wilcoxon_p": 5e-323,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "a closer"
+   }
+  },
+  "qwen3.5-0.8b-served": {
+   "positions": 2000,
+   "hf": "hf/qwen3.5-0.8b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen3_5ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Qwen3.5-0.8B-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.06317283175337948,
+     "max_kld_vs_gold": 0.6217310801299624,
+     "top1_agreement_pct": 87.7,
+     "margin_qualified_top1_pct": 97.71386430678466,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Qwen3.5-0.8B-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.06895122767580023,
+     "max_kld_vs_gold": 0.754917965306522,
+     "top1_agreement_pct": 86.75,
+     "margin_qualified_top1_pct": 96.976401179941,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 10
+    }
+   },
+   "significance": {
+    "qualified_positions": 1356,
+    "margin_qualified_hits_a": 1325,
+    "margin_qualified_hits_b": 1315,
+    "discordant_a_only": 16,
+    "discordant_b_only": 6,
+    "mcnemar_exact_p": 0.052478790283203125,
+    "kld_wilcoxon_z": 12.89049659464463,
+    "kld_wilcoxon_p": 5.091489696162157e-38,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "a closer"
+   }
+  },
+  "smollm2-135m-bf16": {
+   "positions": 1984,
+   "hf": "hf/smollm2-135m",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "LlamaForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "smollm2-135m-bf16.gguf",
+     "mean_kld_vs_gold": 0.0001436058916062705,
+     "max_kld_vs_gold": 0.03252434190290963,
+     "top1_agreement_pct": 99.94959677419355,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 1984,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "smollm2-135m-bf16.gguf",
+     "mean_kld_vs_gold": 0.0017227118063984713,
+     "max_kld_vs_gold": 0.054055055043215665,
+     "top1_agreement_pct": 99.39516129032258,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 1984,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 42
+    }
+   },
+   "significance": {
+    "qualified_positions": 1311,
+    "margin_qualified_hits_a": 1311,
+    "margin_qualified_hits_b": 1311,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 37.76187824842206,
+    "kld_wilcoxon_p": 4.802002884223e-312,
+    "kld_wilcoxon_n": 1984,
+    "verdict": "a closer"
+   }
+  },
+  "smollm2-135m-served": {
+   "positions": 1984,
+   "hf": "hf/smollm2-135m",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "LlamaForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "SmolLM2-135M-Instruct-Q8_0.gguf",
+     "mean_kld_vs_gold": 0.0074992698516019845,
+     "max_kld_vs_gold": 0.08237838863918266,
+     "top1_agreement_pct": 98.03427419354838,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 1984,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "SmolLM2-135M-Instruct-Q8_0.gguf",
+     "mean_kld_vs_gold": 0.014714847595687629,
+     "max_kld_vs_gold": 0.13177902409143508,
+     "top1_agreement_pct": 95.36290322580645,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 1984,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 42
+    }
+   },
+   "significance": {
+    "qualified_positions": 1311,
+    "margin_qualified_hits_a": 1311,
+    "margin_qualified_hits_b": 1311,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 31.51297400819163,
+    "kld_wilcoxon_p": 5.769524723929574e-218,
+    "kld_wilcoxon_n": 1984,
+    "verdict": "a closer"
+   }
+  },
+  "stablelm-2-1.6b-bf16": {
+   "positions": 2000,
+   "hf": "hf/stablelm-2-1.6b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "StableLmForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "stablelm-2-1.6b-bf16.gguf",
+     "mean_kld_vs_gold": 0.00023787091413354395,
+     "max_kld_vs_gold": 0.03104649635876959,
+     "top1_agreement_pct": 99.75,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "stablelm-2-1.6b-bf16.gguf",
+     "mean_kld_vs_gold": 0.000889157983539687,
+     "max_kld_vs_gold": 0.03780106043832117,
+     "top1_agreement_pct": 99.45,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1335,
+    "margin_qualified_hits_a": 1335,
+    "margin_qualified_hits_b": 1335,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 36.25286659269949,
+    "kld_wilcoxon_p": 8.955514094169644e-288,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "a closer"
+   }
+  },
+  "trinity-nano-bf16": {
+   "positions": 2000,
+   "hf": "hf/trinity-nano",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "AfmoeForCausalLM",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "trinity-nano-bf16.gguf",
+     "mean_kld_vs_gold": 0.04627163009039159,
+     "max_kld_vs_gold": 2.470452537789565,
+     "top1_agreement_pct": 90.9,
+     "margin_qualified_top1_pct": 98.6784140969163,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "trinity-nano-bf16.gguf",
+     "mean_kld_vs_gold": 0.04532809643145342,
+     "max_kld_vs_gold": 2.1538483775874813,
+     "top1_agreement_pct": 90.75,
+     "margin_qualified_top1_pct": 98.60499265785609,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 1
+    }
+   },
+   "significance": {
+    "qualified_positions": 1362,
+    "margin_qualified_hits_a": 1344,
+    "margin_qualified_hits_b": 1343,
+    "discordant_a_only": 4,
+    "discordant_b_only": 3,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": -1.0626966957387776,
+    "kld_wilcoxon_p": 0.28791951981414343,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  },
+  "trinity-nano-served": {
+   "positions": 2000,
+   "hf": "hf/trinity-nano",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "AfmoeForCausalLM",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Trinity-Nano-Preview-Q8_0.gguf",
+     "mean_kld_vs_gold": 0.06446102308512573,
+     "max_kld_vs_gold": 2.6067371016611225,
+     "top1_agreement_pct": 88.8,
+     "margin_qualified_top1_pct": 97.65051395007342,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Trinity-Nano-Preview-Q8_0.gguf",
+     "mean_kld_vs_gold": 0.061007303034718116,
+     "max_kld_vs_gold": 2.0123627800793686,
+     "top1_agreement_pct": 88.45,
+     "margin_qualified_top1_pct": 97.79735682819383,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 1
+    }
+   },
+   "significance": {
+    "qualified_positions": 1362,
+    "margin_qualified_hits_a": 1330,
+    "margin_qualified_hits_b": 1332,
+    "discordant_a_only": 16,
+    "discordant_b_only": 18,
+    "mcnemar_exact_p": 0.8641662404406816,
+    "kld_wilcoxon_z": 1.482951445720359,
+    "kld_wilcoxon_p": 0.13808731148238354,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  }
+ },
+ "runs_vs_1_5_0": {
+  "apertus-8b-bf16": {
+   "positions": 2000,
+   "hf": "hf/apertus-8b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "ApertusForCausalLM",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "apertus-8b-bf16.gguf",
+     "mean_kld_vs_gold": 9.219632461765826e-05,
+     "max_kld_vs_gold": 0.014842711073850488,
+     "top1_agreement_pct": 99.85,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "apertus-8b-bf16.gguf",
+     "mean_kld_vs_gold": 0.00011155648667001649,
+     "max_kld_vs_gold": 0.020681057526606754,
+     "top1_agreement_pct": 99.9,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1369,
+    "margin_qualified_hits_a": 1369,
+    "margin_qualified_hits_b": 1369,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": -3.225450366694198,
+    "kld_wilcoxon_p": 0.0012577464201479552,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "b closer"
+   }
+  },
+  "apertus-8b-served": {
+   "positions": 2000,
+   "hf": "hf/apertus-8b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "ApertusForCausalLM",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Apertus-8B-Instruct-2509-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.050739271506841155,
+     "max_kld_vs_gold": 0.7840101792267865,
+     "top1_agreement_pct": 89.75,
+     "margin_qualified_top1_pct": 98.1008035062089,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Apertus-8B-Instruct-2509-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.05076405277040294,
+     "max_kld_vs_gold": 0.7849789809840372,
+     "top1_agreement_pct": 89.75,
+     "margin_qualified_top1_pct": 98.1008035062089,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1369,
+    "margin_qualified_hits_a": 1343,
+    "margin_qualified_hits_b": 1343,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 1.7753682238512558,
+    "kld_wilcoxon_p": 0.07583710721162373,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  },
+  "gemma-3-4b-it-bf16": {
+   "positions": 2000,
+   "hf": "hf/gemma-3-4b-it",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Gemma3ForConditionalGeneration",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "gemma-3-4b-it-bf16.gguf",
+     "mean_kld_vs_gold": 2.872316355812054e-05,
+     "max_kld_vs_gold": 0.016380934524889354,
+     "top1_agreement_pct": 99.9,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "gemma-3-4b-it-bf16.gguf",
+     "mean_kld_vs_gold": 4.316786172824262e-05,
+     "max_kld_vs_gold": 0.016385032155381386,
+     "top1_agreement_pct": 100.0,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1550,
+    "margin_qualified_hits_a": 1550,
+    "margin_qualified_hits_b": 1550,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": -3.2726443363144235,
+    "kld_wilcoxon_p": 0.0010654645642897724,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "b closer"
+   }
+  },
+  "gemma-3-4b-it-served": {
+   "positions": 2000,
+   "hf": "hf/gemma-3-4b-it",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Gemma3ForConditionalGeneration",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "google_gemma-3-4b-it-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.06696150370837273,
+     "max_kld_vs_gold": 3.591980818728015,
+     "top1_agreement_pct": 88.15,
+     "margin_qualified_top1_pct": 96.19354838709677,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "google_gemma-3-4b-it-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.06695999412218263,
+     "max_kld_vs_gold": 3.592715905457316,
+     "top1_agreement_pct": 88.15,
+     "margin_qualified_top1_pct": 96.19354838709677,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1550,
+    "margin_qualified_hits_a": 1491,
+    "margin_qualified_hits_b": 1491,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 2.4997317772511076,
+    "kld_wilcoxon_p": 0.012428736782643572,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "a closer"
+   }
+  },
+  "gemma-4-e2b-it-forcebos-bf16": {
+   "positions": 2000,
+   "hf": "hf/gemma-4-e2b-it",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Gemma4ForConditionalGeneration",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": true,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "gemma-4-E2B-bf16.gguf",
+     "mean_kld_vs_gold": 4.4286247709212316e-05,
+     "max_kld_vs_gold": 0.018733849697300273,
+     "top1_agreement_pct": 99.9,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "gemma-4-E2B-bf16.gguf",
+     "mean_kld_vs_gold": 4.1329907663523765e-05,
+     "max_kld_vs_gold": 0.018742724699580687,
+     "top1_agreement_pct": 99.9,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1610,
+    "margin_qualified_hits_a": 1610,
+    "margin_qualified_hits_b": 1610,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 0.6452294484747155,
+    "kld_wilcoxon_p": 0.5187785050716938,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  },
+  "gemma-4-e2b-it-forcebos-served": {
+   "positions": 2000,
+   "hf": "hf/gemma-4-e2b-it",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Gemma4ForConditionalGeneration",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": true,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "gemma-4-E2B-q4_0.gguf",
+     "mean_kld_vs_gold": 0.8128381811406687,
+     "max_kld_vs_gold": 14.235576372990172,
+     "top1_agreement_pct": 61.8,
+     "margin_qualified_top1_pct": 69.44099378881988,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "gemma-4-E2B-q4_0.gguf",
+     "mean_kld_vs_gold": 0.8126169331296298,
+     "max_kld_vs_gold": 14.236994217280557,
+     "top1_agreement_pct": 61.8,
+     "margin_qualified_top1_pct": 69.44099378881988,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1610,
+    "margin_qualified_hits_a": 1118,
+    "margin_qualified_hits_b": 1118,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": -0.8317598386553935,
+    "kld_wilcoxon_p": 0.4055445171376317,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  },
+  "granite-4.0-h-micro-bf16": {
+   "positions": 2000,
+   "hf": "hf/granite-4.0-h-micro",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "GraniteMoeHybridForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "granite-4.0-h-micro-bf16.gguf",
+     "mean_kld_vs_gold": 8.236622899327686e-05,
+     "max_kld_vs_gold": 0.02132932918386921,
+     "top1_agreement_pct": 99.95,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "granite-4.0-h-micro-bf16.gguf",
+     "mean_kld_vs_gold": 8.286647631796835e-05,
+     "max_kld_vs_gold": 0.021331934741555387,
+     "top1_agreement_pct": 99.95,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1437,
+    "margin_qualified_hits_a": 1437,
+    "margin_qualified_hits_b": 1437,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 1.9329008427066272,
+    "kld_wilcoxon_p": 0.05324841405563029,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  },
+  "granite-4.0-h-micro-served": {
+   "positions": 2000,
+   "hf": "hf/granite-4.0-h-micro",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "GraniteMoeHybridForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "granite-4.0-h-micro-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.09563972154111242,
+     "max_kld_vs_gold": 1.7426295109894225,
+     "top1_agreement_pct": 84.8,
+     "margin_qualified_top1_pct": 94.36325678496868,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "granite-4.0-h-micro-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.09562289360691767,
+     "max_kld_vs_gold": 1.7427711499759042,
+     "top1_agreement_pct": 84.8,
+     "margin_qualified_top1_pct": 94.36325678496868,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1437,
+    "margin_qualified_hits_a": 1356,
+    "margin_qualified_hits_b": 1356,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 2.71622782164512,
+    "kld_wilcoxon_p": 0.006603046320112525,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "a closer"
+   }
+  },
+  "granite-4.2-3b-bf16": {
+   "positions": 1984,
+   "hf": "hf/granite-4.2-3b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "GraniteForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "granite-4.2-3b-bf16.gguf",
+     "mean_kld_vs_gold": 0.0001124340137018826,
+     "max_kld_vs_gold": 0.020053956854091132,
+     "top1_agreement_pct": 99.84879032258064,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 1984,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "granite-4.2-3b-bf16.gguf",
+     "mean_kld_vs_gold": 0.00011368774728156631,
+     "max_kld_vs_gold": 0.02978661838115868,
+     "top1_agreement_pct": 99.8991935483871,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 1984,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1429,
+    "margin_qualified_hits_a": 1429,
+    "margin_qualified_hits_b": 1429,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": -3.062266365514176,
+    "kld_wilcoxon_p": 0.002196678825725295,
+    "kld_wilcoxon_n": 1984,
+    "verdict": "b closer"
+   }
+  },
+  "granite-4.2-3b-served": {
+   "positions": 1984,
+   "hf": "hf/granite-4.2-3b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "GraniteForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "granite-4.2-3b-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.16226247967968163,
+     "max_kld_vs_gold": 14.255788629523163,
+     "top1_agreement_pct": 80.49395161290323,
+     "margin_qualified_top1_pct": 91.25262421273618,
+     "matched_by_id_positions": 1984,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "granite-4.2-3b-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.16229308666542425,
+     "max_kld_vs_gold": 14.264642657703607,
+     "top1_agreement_pct": 80.49395161290323,
+     "margin_qualified_top1_pct": 91.25262421273618,
+     "matched_by_id_positions": 1984,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1429,
+    "margin_qualified_hits_a": 1304,
+    "margin_qualified_hits_b": 1304,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 0.4928036827635872,
+    "kld_wilcoxon_p": 0.6221513083014306,
+    "kld_wilcoxon_n": 1983,
+    "verdict": "not distinguishable"
+   }
+  },
+  "qwen2.5-0.5b-bf16": {
+   "positions": 2000,
+   "hf": "hf/qwen2.5-0.5b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen2ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "qwen2.5-0.5b-bf16.gguf",
+     "mean_kld_vs_gold": 0.00015394542262620135,
+     "max_kld_vs_gold": 0.025374460542865854,
+     "top1_agreement_pct": 99.8,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "qwen2.5-0.5b-bf16.gguf",
+     "mean_kld_vs_gold": 0.00022939365316352315,
+     "max_kld_vs_gold": 0.033892648330810224,
+     "top1_agreement_pct": 99.8,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1342,
+    "margin_qualified_hits_a": 1342,
+    "margin_qualified_hits_b": 1342,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": -0.19249254877092797,
+    "kld_wilcoxon_p": 0.8473564039955859,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  },
+  "qwen2.5-0.5b-served": {
+   "positions": 2000,
+   "hf": "hf/qwen2.5-0.5b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen2ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.047107208351322594,
+     "max_kld_vs_gold": 1.9610524847361543,
+     "top1_agreement_pct": 90.55,
+     "margin_qualified_top1_pct": 98.95678092399403,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.04710436698320097,
+     "max_kld_vs_gold": 1.9627645773853264,
+     "top1_agreement_pct": 90.55,
+     "margin_qualified_top1_pct": 98.95678092399403,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1342,
+    "margin_qualified_hits_a": 1328,
+    "margin_qualified_hits_b": 1328,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 0.5524288371706297,
+    "kld_wilcoxon_p": 0.5806545778640022,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  },
+  "qwen3-0.6b-bf16": {
+   "positions": 2000,
+   "hf": "hf/qwen3-0.6b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen3ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Qwen3-0.6B-bf16.gguf",
+     "mean_kld_vs_gold": 0.00013366716211331804,
+     "max_kld_vs_gold": 0.021926875644096202,
+     "top1_agreement_pct": 99.95,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Qwen3-0.6B-bf16.gguf",
+     "mean_kld_vs_gold": 0.00012138008929443336,
+     "max_kld_vs_gold": 0.021914010959740226,
+     "top1_agreement_pct": 99.95,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1387,
+    "margin_qualified_hits_a": 1387,
+    "margin_qualified_hits_b": 1387,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": -2.384282706367176,
+    "kld_wilcoxon_p": 0.017112450651786678,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "b closer"
+   }
+  },
+  "qwen3-0.6b-served": {
+   "positions": 2000,
+   "hf": "hf/qwen3-0.6b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen3ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Qwen3-0.6B-q4_0.gguf",
+     "mean_kld_vs_gold": 0.3039501323220998,
+     "max_kld_vs_gold": 3.7214465745313547,
+     "top1_agreement_pct": 69.55,
+     "margin_qualified_top1_pct": 81.32660418168709,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Qwen3-0.6B-q4_0.gguf",
+     "mean_kld_vs_gold": 0.3041432903388347,
+     "max_kld_vs_gold": 3.718373871015977,
+     "top1_agreement_pct": 69.55,
+     "margin_qualified_top1_pct": 81.32660418168709,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1387,
+    "margin_qualified_hits_a": 1128,
+    "margin_qualified_hits_b": 1128,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": -0.02133213885212818,
+    "kld_wilcoxon_p": 0.9829807065711371,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  },
+  "qwen3-4b-bf16": {
+   "positions": 2000,
+   "hf": "hf/qwen3-4b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen3ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Qwen_Qwen3-4B-bf16.gguf",
+     "mean_kld_vs_gold": 3.8541416636455705e-05,
+     "max_kld_vs_gold": 0.01434668248977018,
+     "top1_agreement_pct": 99.9,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Qwen_Qwen3-4B-bf16.gguf",
+     "mean_kld_vs_gold": 4.1826199132412405e-05,
+     "max_kld_vs_gold": 0.014344407855328135,
+     "top1_agreement_pct": 99.9,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1516,
+    "margin_qualified_hits_a": 1516,
+    "margin_qualified_hits_b": 1516,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": -1.5591819019814124,
+    "kld_wilcoxon_p": 0.11895333308453364,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  },
+  "qwen3-4b-served": {
+   "positions": 2000,
+   "hf": "hf/qwen3-4b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen3ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Qwen3-4B-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.1398974498500195,
+     "max_kld_vs_gold": 5.363960160045679,
+     "top1_agreement_pct": 83.0,
+     "margin_qualified_top1_pct": 92.0844327176781,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Qwen3-4B-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.1399190481549349,
+     "max_kld_vs_gold": 5.346385800893287,
+     "top1_agreement_pct": 83.0,
+     "margin_qualified_top1_pct": 92.0844327176781,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1516,
+    "margin_qualified_hits_a": 1396,
+    "margin_qualified_hits_b": 1396,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 0.908029010231968,
+    "kld_wilcoxon_p": 0.363862894714854,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  },
+  "qwen3.5-0.8b-bf16": {
+   "positions": 2000,
+   "hf": "hf/qwen3.5-0.8b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen3_5ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "qwen3.5-0.8b-bf16.gguf",
+     "mean_kld_vs_gold": 2.7496714847498834e-05,
+     "max_kld_vs_gold": 0.014650142362134992,
+     "top1_agreement_pct": 99.95,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "qwen3.5-0.8b-bf16.gguf",
+     "mean_kld_vs_gold": 2.7650491079521877e-05,
+     "max_kld_vs_gold": 0.014651981304102541,
+     "top1_agreement_pct": 99.95,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1356,
+    "margin_qualified_hits_a": 1356,
+    "margin_qualified_hits_b": 1356,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": -0.12129508352761813,
+    "kld_wilcoxon_p": 0.9034573140442873,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  },
+  "qwen3.5-0.8b-served": {
+   "positions": 2000,
+   "hf": "hf/qwen3.5-0.8b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "Qwen3_5ForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Qwen3.5-0.8B-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.06317283175337948,
+     "max_kld_vs_gold": 0.6217310801299624,
+     "top1_agreement_pct": 87.7,
+     "margin_qualified_top1_pct": 97.71386430678466,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Qwen3.5-0.8B-Q4_K_M.gguf",
+     "mean_kld_vs_gold": 0.06317602910444153,
+     "max_kld_vs_gold": 0.621745972686821,
+     "top1_agreement_pct": 87.7,
+     "margin_qualified_top1_pct": 97.71386430678466,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1356,
+    "margin_qualified_hits_a": 1325,
+    "margin_qualified_hits_b": 1325,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": -1.1304872132162302,
+    "kld_wilcoxon_p": 0.25827098342062027,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  },
+  "smollm2-135m-bf16": {
+   "positions": 1984,
+   "hf": "hf/smollm2-135m",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "LlamaForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "smollm2-135m-bf16.gguf",
+     "mean_kld_vs_gold": 0.0001436058916062705,
+     "max_kld_vs_gold": 0.03252434190290963,
+     "top1_agreement_pct": 99.94959677419355,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 1984,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "smollm2-135m-bf16.gguf",
+     "mean_kld_vs_gold": 0.0001389752411586403,
+     "max_kld_vs_gold": 0.03254485824530071,
+     "top1_agreement_pct": 99.94959677419355,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 1984,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1311,
+    "margin_qualified_hits_a": 1311,
+    "margin_qualified_hits_b": 1311,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": -1.5319168721660488,
+    "kld_wilcoxon_p": 0.1255429494187434,
+    "kld_wilcoxon_n": 1984,
+    "verdict": "not distinguishable"
+   }
+  },
+  "smollm2-135m-served": {
+   "positions": 1984,
+   "hf": "hf/smollm2-135m",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "LlamaForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "SmolLM2-135M-Instruct-Q8_0.gguf",
+     "mean_kld_vs_gold": 0.0074992698516019845,
+     "max_kld_vs_gold": 0.08237838863918266,
+     "top1_agreement_pct": 98.03427419354838,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 1984,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "SmolLM2-135M-Instruct-Q8_0.gguf",
+     "mean_kld_vs_gold": 0.007494968896955474,
+     "max_kld_vs_gold": 0.08228167176335532,
+     "top1_agreement_pct": 98.03427419354838,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 1984,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1311,
+    "margin_qualified_hits_a": 1311,
+    "margin_qualified_hits_b": 1311,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 0.7774982626299716,
+    "kld_wilcoxon_p": 0.4368648590824281,
+    "kld_wilcoxon_n": 1984,
+    "verdict": "not distinguishable"
+   }
+  },
+  "stablelm-2-1.6b-bf16": {
+   "positions": 2000,
+   "hf": "hf/stablelm-2-1.6b",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "StableLmForCausalLM",
+   "special_prefix_tokens": 0,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "stablelm-2-1.6b-bf16.gguf",
+     "mean_kld_vs_gold": 0.00023787091413354395,
+     "max_kld_vs_gold": 0.03104649635876959,
+     "top1_agreement_pct": 99.75,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "stablelm-2-1.6b-bf16.gguf",
+     "mean_kld_vs_gold": 0.0002302063930762185,
+     "max_kld_vs_gold": 0.02483536107571911,
+     "top1_agreement_pct": 99.85,
+     "margin_qualified_top1_pct": 100.0,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1335,
+    "margin_qualified_hits_a": 1335,
+    "margin_qualified_hits_b": 1335,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": -0.6659808575940271,
+    "kld_wilcoxon_p": 0.5054233359204586,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  },
+  "trinity-nano-bf16": {
+   "positions": 2000,
+   "hf": "hf/trinity-nano",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "AfmoeForCausalLM",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "trinity-nano-bf16.gguf",
+     "mean_kld_vs_gold": 0.04627163009039159,
+     "max_kld_vs_gold": 2.470452537789565,
+     "top1_agreement_pct": 90.9,
+     "margin_qualified_top1_pct": 98.6784140969163,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "trinity-nano-bf16.gguf",
+     "mean_kld_vs_gold": 0.04602393590469989,
+     "max_kld_vs_gold": 2.469091235083261,
+     "top1_agreement_pct": 90.65,
+     "margin_qualified_top1_pct": 98.60499265785609,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1362,
+    "margin_qualified_hits_a": 1344,
+    "margin_qualified_hits_b": 1343,
+    "discordant_a_only": 4,
+    "discordant_b_only": 3,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 0.3906762489234582,
+    "kld_wilcoxon_p": 0.6960365570052796,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "not distinguishable"
+   }
+  },
+  "trinity-nano-served": {
+   "positions": 2000,
+   "hf": "hf/trinity-nano",
+   "corpus": "tests/fixtures/gold-corpus-2k.txt",
+   "reference_class": "AfmoeForCausalLM",
+   "special_prefix_tokens": 1,
+   "special_prefix_forced": false,
+   "token_spelling": "in-sentence (anchored decode)",
+   "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+   "positions_skipped_no_logprobs": 0,
+   "fresh_prompt": false,
+   "reference_dtype": "float32",
+   "reference_device": "cpu",
+   "sides": {
+    "a": {
+     "model": "Trinity-Nano-Preview-Q8_0.gguf",
+     "mean_kld_vs_gold": 0.06446102308512573,
+     "max_kld_vs_gold": 2.6067371016611225,
+     "top1_agreement_pct": 88.8,
+     "margin_qualified_top1_pct": 97.65051395007342,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    },
+    "b": {
+     "model": "Trinity-Nano-Preview-Q8_0.gguf",
+     "mean_kld_vs_gold": 0.06259040813156576,
+     "max_kld_vs_gold": 2.6123006190947313,
+     "top1_agreement_pct": 88.5,
+     "margin_qualified_top1_pct": 97.43024963289281,
+     "matched_by_id_positions": 2000,
+     "positions_with_dropped_mass": 0,
+     "max_dropped_gold_mass": 0.0,
+     "id_spelling_mismatches": 0
+    }
+   },
+   "significance": {
+    "qualified_positions": 1362,
+    "margin_qualified_hits_a": 1330,
+    "margin_qualified_hits_b": 1327,
+    "discordant_a_only": 6,
+    "discordant_b_only": 3,
+    "mcnemar_exact_p": 0.5078125,
+    "kld_wilcoxon_z": -2.5444866819935035,
+    "kld_wilcoxon_p": 0.010943848497516964,
+    "kld_wilcoxon_n": 2000,
+    "verdict": "b closer"
+   }
+  }
+ }
+}

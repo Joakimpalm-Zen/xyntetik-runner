@@ -1,0 +1,58 @@
+{
+ "published150": {
+  "sha256": "4dfc46845050c73aebffd37b91baf90517d55a5b0d6019c3085fe7bfa75109c9",
+  "maximum_glibc": "2.38",
+  "compiler": "String dump of section '.comment':\n  [     0]  GCC: (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "needed": [
+   "libm.so.6",
+   "libmvec.so.1",
+   "libc.so.6"
+  ],
+  "startup_returncode": 0,
+  "stdout": "runner 1.5.0\n",
+  "stderr": "",
+  "symbols_at_maximum": [
+   "0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.38) __isoc23_fscanf",
+   "0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.38) __isoc23_sscanf",
+   "0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.38) __isoc23_strtoull",
+   "0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.38) __isoc23_strtoll"
+  ],
+  "published_checksum_verified": true
+ },
+ "published160": {
+  "sha256": "0e0f10b8ff9747e3573e68ca58a6e2596e2b5d1542b9c3031140912cb94dc321",
+  "maximum_glibc": "2.43",
+  "compiler": "String dump of section '.comment':\n  [     0]  GCC: (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+  "needed": [
+   "libm.so.6",
+   "libmvec.so.1",
+   "libc.so.6"
+  ],
+  "startup_returncode": 1,
+  "stdout": "",
+  "stderr": "runner-linux-x86_64: /lib/x86_64-linux-gnu/libm.so.6: version `GLIBC_2.43' not found (required by runner-linux-x86_64)\n",
+  "symbols_at_maximum": [
+   "0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.43) sqrtf"
+  ],
+  "published_checksum_verified": true
+ },
+ "rebuilt160": {
+  "sha256": "dc8b38edcef8ad46e72985e9e0922e3b06ab17e717ce04d694e0b2c08bb5c1cb",
+  "maximum_glibc": "2.38",
+  "compiler": "String dump of section '.comment':\n  [     0]  GCC: (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "needed": [
+   "libm.so.6",
+   "libmvec.so.1",
+   "libc.so.6"
+  ],
+  "startup_returncode": 0,
+  "stdout": "runner 1.6.0\n",
+  "stderr": "",
+  "symbols_at_maximum": [
+   "0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.38) __isoc23_fscanf",
+   "0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.38) __isoc23_sscanf",
+   "0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.38) __isoc23_strtoull",
+   "0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.38) __isoc23_strtoll"
+  ]
+ }
+}
