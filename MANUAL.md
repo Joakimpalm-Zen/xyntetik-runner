@@ -64,6 +64,10 @@ chmod +x runner-macos-arm64 && mv runner-macos-arm64 runner
 <details>
 <summary>Linux (x86_64)</summary>
 
+The published v1.6.0 asset requires GLIBC 2.43 and fails on Ubuntu 24.04.
+On affected hosts, [build from source](#build-and-platforms) until a corrected
+asset is published. [Validation and ABI fix](docs/golden-pass-2026-10-25.md).
+
 ```sh
 curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/runner-linux-x86_64
 curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/SHA256SUMS
@@ -1623,6 +1627,15 @@ same way. A console on stdout or stderr is switched to the UTF-8 output code
 page while runner runs and put back at exit; redirected output is UTF-8 bytes
 either way. A line typed into the interactive chat at a console is read as
 UTF-16 and kept as UTF-8, whatever the console's input code page.
+
+The loose v1.6.0 Linux release binary has a confirmed compatibility regression:
+`sqrtf@GLIBC_2.43` prevents startup on Ubuntu 24.04 (GLIBC 2.39) and other
+systems below 2.43. The previous 1.5.0 binary requires at most GLIBC 2.38.
+The release workflow now pins Ubuntu 24.04 and rejects imports above 2.38;
+a locally rebuilt v1.6.0 passes startup and fixture inference on GLIBC 2.38.
+This change does not replace the published asset. Build from source for an
+affected host until a corrected release is published. The independently
+built container has a separate Debian build baseline.
 
 ### Container image
 
@@ -4272,6 +4285,13 @@ families were scored against their publishers' implementations in float32
 on Runner's 1.5.0 release (2026-10-22; first on 2026-09-07), both tiers, 2,000
 corpus positions each, with the other engine given its stronger
 configuration at each tier ([report](docs/golden-pass-2026-10-22.md)).
+
+The count below belongs to the published 1.5.0 Linux binary. The
+[2026-10-25 pass](docs/golden-pass-2026-10-25.md) reads **19 of 23** for a local
+Clang build of the 1.6.0 source, with Trinity Nano served no longer
+distinguishable from llama.cpp. The published 1.6.0 Linux binary was not
+scored: its GLIBC_2.43 requirement prevents startup on Ubuntu 24.04. Neither
+count establishes the result for an unmeasured release/build.
 
 On how close the whole output distribution is to the reference, Runner
 is closer on twenty of twenty-three rows, at p-values that leave no room

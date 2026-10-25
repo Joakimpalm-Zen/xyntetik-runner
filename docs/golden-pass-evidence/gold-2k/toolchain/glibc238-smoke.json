@@ -1,0 +1,68 @@
+{
+ "g150-v3-0": {
+  "command": [
+   "glibc238/lib/ld-linux-x86-64.so.2",
+   "--library-path",
+   "glibc238/lib",
+   "validation/g150-v3",
+   "--version"
+  ],
+  "returncode": 0,
+  "stdout": "runner 1.5.0\n",
+  "stderr": ""
+ },
+ "g150-v3-1": {
+  "command": [
+   "glibc238/lib/ld-linux-x86-64.so.2",
+   "--library-path",
+   "glibc238/lib",
+   "validation/g150-v3",
+   "-m",
+   "validation/test.gguf",
+   "-p",
+   "hello",
+   "-n",
+   "8",
+   "--temp",
+   "0",
+   "--gpu",
+   "off"
+  ],
+  "returncode": 0,
+  "stdout": "hellooooooooo\n",
+  "stderr": "loaded validation/test.gguf | llama | 2 layers | ctx 256 | 32 threads | 0.00s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 9 tok, 5552.65 tok/s | gen: 8 tok, 19002.20 tok/s\n"
+ },
+ "g160-v3-0": {
+  "command": [
+   "glibc238/lib/ld-linux-x86-64.so.2",
+   "--library-path",
+   "glibc238/lib",
+   "validation/g160-v3",
+   "--version"
+  ],
+  "returncode": 0,
+  "stdout": "runner 1.6.0\n",
+  "stderr": ""
+ },
+ "g160-v3-1": {
+  "command": [
+   "glibc238/lib/ld-linux-x86-64.so.2",
+   "--library-path",
+   "glibc238/lib",
+   "validation/g160-v3",
+   "-m",
+   "validation/test.gguf",
+   "-p",
+   "hello",
+   "-n",
+   "8",
+   "--temp",
+   "0",
+   "--gpu",
+   "off"
+  ],
+  "returncode": 0,
+  "stdout": "hellooooooooo\n",
+  "stderr": "loaded validation/test.gguf | llama | 2 layers | ctx 256 | 13 threads | 0.00s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 9 tok, 48733.47 tok/s | gen: 8 tok, 27064.97 tok/s\n"
+ }
+}

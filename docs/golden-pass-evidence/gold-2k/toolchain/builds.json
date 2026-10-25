@@ -1,0 +1,62 @@
+{
+ "g150-v3": {
+  "source": "f913dcaf037a287e161621021f95915ba1ae2e04",
+  "command": [
+   "make",
+   "-j8",
+   "runner",
+   "CC=/usr/bin/gcc",
+   "CFLAGS=-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=x86-64-v3",
+   "PYTHON=python3"
+  ],
+  "sha256": "4dfc46845050c73aebffd37b91baf90517d55a5b0d6019c3085fe7bfa75109c9"
+ },
+ "g160-v3": {
+  "source": "869d72e89a74e2d147ceadf5400e10d9fe9e877c",
+  "command": [
+   "make",
+   "-j8",
+   "runner",
+   "CC=/usr/bin/gcc",
+   "CFLAGS=-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=x86-64-v3",
+   "PYTHON=python3"
+  ],
+  "sha256": "dc8b38edcef8ad46e72985e9e0922e3b06ab17e717ce04d694e0b2c08bb5c1cb"
+ },
+ "c150-v3": {
+  "source": "f913dcaf037a287e161621021f95915ba1ae2e04",
+  "command": [
+   "make",
+   "-j8",
+   "runner",
+   "CC=clang --no-default-config --sysroot=/",
+   "CFLAGS=-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=x86-64-v3",
+   "PYTHON=python3"
+  ],
+  "sha256": "2a03f2a692e1172ca27af7899013811d48d06689f768dd6c2244b30683a87c86"
+ },
+ "c150-native": {
+  "source": "f913dcaf037a287e161621021f95915ba1ae2e04",
+  "command": [
+   "make",
+   "-j8",
+   "runner",
+   "CC=clang --no-default-config --sysroot=/",
+   "CFLAGS=-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=native",
+   "PYTHON=python3"
+  ],
+  "sha256": "2cc232d0af8b97bbd1db6c1819b74d918fa95fb2d738438b995891d249f692d7"
+ },
+ "g150-native": {
+  "source": "f913dcaf037a287e161621021f95915ba1ae2e04",
+  "command": [
+   "make",
+   "-j8",
+   "runner",
+   "CC=/usr/bin/gcc",
+   "CFLAGS=-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=native",
+   "PYTHON=python3"
+  ],
+  "sha256": "4f0a17b55db2c39ddfd7b441bff3f40a8a3b07499d6d58b2d63b194dacc17e61"
+ }
+}

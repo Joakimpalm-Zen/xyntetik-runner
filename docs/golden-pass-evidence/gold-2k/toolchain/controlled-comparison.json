@@ -1,0 +1,102 @@
+{
+ "qwen3-0.6b-bf16": [
+  {
+   "a": "g150-v3",
+   "b": "g160-v3",
+   "entire_json_equal": true,
+   "logprob_positions_different": 0,
+   "argmax_positions_different": 0,
+   "n_scored": 1529
+  },
+  {
+   "a": "g150-v3",
+   "b": "a150",
+   "entire_json_equal": true,
+   "logprob_positions_different": 0,
+   "argmax_positions_different": 0,
+   "n_scored": 1529
+  },
+  {
+   "a": "g150-v3",
+   "b": "c150-v3",
+   "entire_json_equal": false,
+   "logprob_positions_different": 1475,
+   "argmax_positions_different": 0,
+   "n_scored": 1529
+  },
+  {
+   "a": "c150-v3",
+   "b": "c150-native",
+   "entire_json_equal": false,
+   "logprob_positions_different": 1470,
+   "argmax_positions_different": 0,
+   "n_scored": 1529
+  },
+  {
+   "a": "g150-v3",
+   "b": "g150-native",
+   "entire_json_equal": false,
+   "logprob_positions_different": 1479,
+   "argmax_positions_different": 1,
+   "n_scored": 1529
+  },
+  {
+   "a": "c150-native",
+   "b": "c150-conda-native",
+   "entire_json_equal": true,
+   "logprob_positions_different": 0,
+   "argmax_positions_different": 0,
+   "n_scored": 1529
+  }
+ ],
+ "trinity-served": [
+  {
+   "a": "g150-v3",
+   "b": "g160-v3",
+   "entire_json_equal": true,
+   "logprob_positions_different": 0,
+   "argmax_positions_different": 0,
+   "n_scored": 1438
+  },
+  {
+   "a": "g150-v3",
+   "b": "a150",
+   "entire_json_equal": true,
+   "logprob_positions_different": 0,
+   "argmax_positions_different": 0,
+   "n_scored": 1438
+  },
+  {
+   "a": "g150-v3",
+   "b": "c150-v3",
+   "entire_json_equal": false,
+   "logprob_positions_different": 1434,
+   "argmax_positions_different": 46,
+   "n_scored": 1438
+  },
+  {
+   "a": "c150-v3",
+   "b": "c150-native",
+   "entire_json_equal": false,
+   "logprob_positions_different": 1436,
+   "argmax_positions_different": 38,
+   "n_scored": 1438
+  },
+  {
+   "a": "g150-v3",
+   "b": "g150-native",
+   "entire_json_equal": false,
+   "logprob_positions_different": 1434,
+   "argmax_positions_different": 52,
+   "n_scored": 1438
+  },
+  {
+   "a": "c150-native",
+   "b": "c150-conda-native",
+   "entire_json_equal": true,
+   "logprob_positions_different": 0,
+   "argmax_positions_different": 0,
+   "n_scored": 1438
+  }
+ ]
+}
