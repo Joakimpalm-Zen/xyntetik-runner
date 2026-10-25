@@ -64,6 +64,19 @@ jobs:
         run: |
           python3 scripts/make-test-model.py test.gguf
           ./${{ matrix.binary }} -m test.gguf -p "hello" -n 8 --temp 0
+      - name: Linux GLIBC 2.38 runtime smoke
+        if: runner.os == 'Linux'
+        run: |
+          curl --fail --location --retry 3 -o libc6_2.38-1ubuntu6.3_amd64.deb https://old-releases.ubuntu.com/ubuntu/pool/main/g/glibc/libc6_2.38-1ubuntu6.3_amd64.deb
+          echo 'f29a9f1b26a2990310b78bb18767c287effe4d9f785a3b98e1efe425242dd4ca  libc6_2.38-1ubuntu6.3_amd64.deb' | sha256sum -c -
+          dpkg-deb -x libc6_2.38-1ubuntu6.3_amd64.deb glibc238
+          loader=$(find "$PWD/glibc238" -type f -name ld-linux-x86-64.so.2 -print -quit)
+          test -n "$loader"
+          libdir=$(dirname "$loader")
+          test "$("$loader" --library-path "$libdir" ./runner --version)" = "$(./runner --version)"
+          ./runner -m test.gguf -p hello -n 8 --temp 0 --gpu off > fixture-host.txt
+          "$loader" --library-path "$libdir" ./runner -m test.gguf -p hello -n 8 --temp 0 --gpu off > fixture-glibc238.txt
+          cmp fixture-host.txt fixture-glibc238.txt
       - name: package artifact
         # "copy one binary to a node" stays true: the archive holds the bare
         # binary plus provenance, and the loose binary is still published
@@ -83,6 +96,7 @@ jobs:
             {
               echo "compiler:   $(cc --version | head -1)"
               echo "libc:       $(getconf GNU_LIBC_VERSION)"
+              echo "image:      $ImageOS $ImageVersion"
               echo "cflags:     -O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=${{ matrix.march }}"
               python3 scripts/check-glibc.py ./runner --max-version 2.38
             } >> BUILD-INFO.txt
