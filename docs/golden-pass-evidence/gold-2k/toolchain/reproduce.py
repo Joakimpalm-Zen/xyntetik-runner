@@ -43,6 +43,8 @@ for n, src, compiler, arch in configs:
     assert not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=src)
     command = ['make', '-j8', 'runner', 'CC=' + compiler, 'CFLAGS=' + flags + arch, 'PYTHON=python3']
     with (out / (n + '-build.log')).open('w') as log:
+        # make does not track compiler/flag changes; each probe needs fresh objects.
+        subprocess.run(['make', 'clean'], cwd=src, stdout=log, stderr=subprocess.STDOUT, check=True)
         subprocess.run(command, cwd=src, stdout=log, stderr=subprocess.STDOUT, check=True)
     shutil.copy2(Path(src) / 'runner', out / n)
     manifest[n] = {'source': actual, 'command': command,
