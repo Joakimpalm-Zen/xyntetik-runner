@@ -64,9 +64,9 @@ chmod +x runner-macos-arm64 && mv runner-macos-arm64 runner
 <details>
 <summary>Linux (x86_64)</summary>
 
-The published 1.6.0 asset requires GLIBC 2.43 and fails on Ubuntu 24.04.
-On affected hosts, [build from source](#build-and-platforms) until a corrected
-asset is published. [Validation and ABI fix](docs/golden-pass-2026-10-25.md).
+The 1.6.1 Linux asset restores the previous GLIBC 2.38 ceiling and starts on
+Ubuntu 24.04. Upgrade from 1.6.0, whose asset requires GLIBC 2.43.
+[Release validation](docs/linux-1.6.1-candidate.md).
 
 ```sh
 curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/runner-linux-x86_64
@@ -1631,11 +1631,12 @@ UTF-16 and kept as UTF-8, whatever the console's input code page.
 The loose 1.6.0 Linux release binary has a confirmed compatibility regression:
 `sqrtf@GLIBC_2.43` prevents startup on Ubuntu 24.04 (GLIBC 2.39) and other
 systems below 2.43. The previous 1.5.0 binary requires at most GLIBC 2.38.
-The release workflow now pins Ubuntu 24.04 and rejects imports above 2.38;
-a locally rebuilt 1.6.0 passes startup and fixture inference on GLIBC 2.38.
-This change does not replace the published asset. Build from source for an
-affected host until a corrected release is published. The independently
-built container has a separate Debian build baseline.
+Release 1.6.1 keeps the 1.6.0 engine sources. Its release workflow pins
+Ubuntu 24.04 and rejects imports above 2.38. Linux startup and fixture
+inference pass on Ubuntu 24.04 and an isolated GLIBC 2.38 runtime. Upgrade
+to 1.6.1 on an affected host. Compiler/libc build settings change, so replay
+remains bound to the exact binary and the 1.6.1 Golden count is unmeasured.
+The independently built container has a separate Debian build baseline.
 
 ### Container image
 

@@ -74,6 +74,8 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
+> **Published release: 1.6.1.** The [compatibility hotfix](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) restores the previous Linux GLIBC 2.38 ceiling and starts on Ubuntu 24.04. Its engine sources come from the 1.6.0 tag; this development branch includes later training changes. The 1.6.1 Golden count remains unmeasured. [Validation](docs/linux-1.6.1-candidate.md).
+
 > **Version `1.6.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x
 > ([versioning policy](docs/versioning.md)). This page is the short version;
