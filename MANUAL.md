@@ -1532,7 +1532,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.6.0
+./runner --version   # -> runner 1.6.1
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA

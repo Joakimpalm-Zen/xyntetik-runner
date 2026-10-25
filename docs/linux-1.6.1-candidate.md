@@ -20,10 +20,14 @@ smokes, not publisher-reference scoring or certification of arbitrary Linux
 distributions. The checksum file authenticates consistency with this CI run;
 a published release's SHA256SUMS must be verified again after publication.
 
-Before tagging or publication, the normal release-check still requires a
-new per-version compatibility report with executed checks and current device
-and tier evidence. Do not relabel a 1.6.0 report as a 1.6.1 measurement. The
-five Golden instrument rows are Qwen3-0.6B bf16, granite-4.2-3B bf16,
+The candidate includes a new [per-version compatibility report](compat-reports/1.6.1-2026-10-25-macos-arm64-gemma-4-e4b-it-qat-q4_0.json):
+the checksum-pinned Gemma-4 E4B QAT Q4_0 file passed load and chat on the
+1.6.1 macOS CPU build. Its paging warning and slow timings are retained.
+This is a new measurement, not a relabeled 1.6.0 report, and proves neither
+Linux ABI compatibility nor Golden fidelity. Local release-check passes;
+current device and tier evidence must be checked again before any tag.
+
+The five Golden instrument rows are Qwen3-0.6B bf16, granite-4.2-3B bf16,
 Gemma-3-4B bf16, Apertus-8B bf16, and Trinity Nano served. Reuse the existing
 inputs, controls, positions and scoring settings; preserve failures and dropped
 positions. Follow with the full 23-row candidate asset pass before asserting
