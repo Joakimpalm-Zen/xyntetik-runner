@@ -5,18 +5,6 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
-- **Linux releases preserve the previous GLIBC floor.** The published 1.6.0
-  binary imports `sqrtf@GLIBC_2.43` and fails on Ubuntu 24.04. The release
-  build now pins Ubuntu 24.04, rejects imports above GLIBC 2.38, and records
-  compiler/libc/flags in BUILD-INFO. This change prepares future builds; it
-  does not replace the published asset.
-- **The fidelity headline names the measured build.** The published 1.5.0
-  Linux binary reads 20/23; the local Clang native build of 1.6.0 reads
-  19/23. Both compiler and CPU target independently change the score in
-  controlled probes. The [Golden Pass](docs/golden-pass-2026-10-25.md)
-  retains all rows and position-level evidence, corrects the invalid
-  bisect attribution, and states what remains unmeasured.
-
 - **README: the actively validated models are listed by family.** One
   collapsed block per family (Gemma 4, Qwen3, Qwen3.8 and the others), in
   the roster's order, its line a plain overview per backend and for Train:
@@ -123,6 +111,40 @@ Current release and unreleased changes. Compatibility follows the
   (`cuda_kv_gather`), so a record says which route ran. The three were
   counted and never reported, until a compiler flagged them as set and
   never read; CPU and Metal runs report 0.
+
+## v1.6.1 - 2026-10-25
+
+**Linux compatibility hotfix.** The loose Linux binary restores the previous
+GLIBC 2.38 ceiling and starts on Ubuntu 24.04. The 1.6.0 asset requires
+GLIBC 2.43 through `sqrtf` and fails before startup on that system.
+Upgrade to 1.6.1 on affected hosts.
+
+**Build-sensitive outputs remain a limitation.** This patch keeps the 1.6.0
+inference and training engine sources, apart from the version constant,
+while returning Linux builds to Ubuntu 24.04 / GCC 13.3 with x86-64-v3.
+Compiler and architecture flags independently change scores. Exact replay
+stays bound to the binary. The published 1.5.0 binary's 20/23 and local Clang
+native 1.6.0 build's 19/23 remain separate measurements; the published 1.6.0
+and 1.6.1 Golden counts are unknown. All-row source equivalence remains
+unproven. The five instrument rows and full 23-row asset pass remain queued.
+[Golden evidence and build controls](docs/golden-pass-2026-10-25.md).
+
+- Linux packaging pins Ubuntu 24.04, rejects imported GLIBC symbols above
+  2.38, and records compiler, libc, hosted image and flags in BUILD-INFO.
+- Six focused real-ELF tests pass. Linux CI verifies SHA256SUMS, extracted
+  archive bytes, startup and fixture inference on Ubuntu 24.04 and a
+  checksum-verified isolated GLIBC 2.38 runtime. The release build repeats
+  the Linux ABI and runtime smokes before packaging.
+- The pinned Gemma-4 E4B QAT Q4_0 file passes load and chat on the 1.6.1
+  macOS CPU build. Its paging warning and slow timings are retained in the
+  [new compatibility report](docs/compat-reports/1.6.1-2026-10-25-macos-arm64-gemma-4-e4b-it-qat-q4_0.json).
+- The complete required PR CI matrix and local release-check pass. Device
+  and Tier 1 records remain current; the existing 1.6.0 device evidence is
+  retained with the same engine sources, rather than relabeled as a new
+  CUDA measurement. Later main training optimizations are excluded.
+- README, manual and site carry the compatibility fix and measured-build
+  qualifications together. Model files and adapters are unchanged; their
+  existing roster validation marks retain the versions actually measured.
 
 ## v1.6.0 - 2026-10-24
 
