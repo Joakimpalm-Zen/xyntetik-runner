@@ -1,6 +1,6 @@
-# Linux 1.6.1 compatibility candidate
+# Linux 1.6.1 compatibility release
 
-This candidate starts at the v1.6.0 tag, commit
+This patch starts at the v1.6.0 tag, commit
 `869d72e89a74e2d147ceadf5400e10d9fe9e877c`. Apart from the version constant,
 its engine sources are unchanged. Subsequent main training optimizations are
 excluded. The maintenance PR targets `release/1.6.x`, which starts at that
@@ -20,7 +20,7 @@ smokes, not publisher-reference scoring or certification of arbitrary Linux
 distributions. The checksum file authenticates consistency with this CI run;
 a published release's SHA256SUMS must be verified again after publication.
 
-The candidate includes a new [per-version compatibility report](compat-reports/1.6.1-2026-10-25-macos-arm64-gemma-4-e4b-it-qat-q4_0.json):
+The release includes a new [per-version compatibility report](compat-reports/1.6.1-2026-10-25-macos-arm64-gemma-4-e4b-it-qat-q4_0.json):
 the checksum-pinned Gemma-4 E4B QAT Q4_0 file passed load and chat on the
 1.6.1 macOS CPU build. Its paging warning and slow timings are retained.
 This is a new measurement, not a relabeled 1.6.0 report, and proves neither
@@ -35,14 +35,22 @@ its headline count. A later published binary must be tied to the validated
 candidate by checksum, or validated independently.
 
 The published 1.5.0 binary's 20/23 and local Clang native 1.6.0 build's 19/23
-remain separate measurements. Published 1.6.0 scoring and this candidate's
+remain separate measurements. Published 1.6.0 scoring and 1.6.1's
 headline count are unknown. Compiler and architecture each independently
 change scores; no source scoring regression is confirmed and all-row source
 equivalence remains unproven. See the retained
 [Golden Pass](golden-pass-2026-10-25.md) and
 [build controls](golden-pass-evidence/gold-2k/toolchain/README.md).
 
-README impact: the version banner identifies the candidate and the measured
+README impact: the version banner identifies the compatibility release and the measured
 fidelity claims stay scoped to their binaries. The manual and site carry the
 same qualifications. External model-card updates belong to the release
-review; this candidate does not publish model files, cards or adapters.
+review; model files and adapters are unchanged, and existing model-card roster marks keep their measured versions.
+
+Release validation uses the standard annotated-tag workflow: three platform
+binaries and archives plus SHA256SUMS are built into a GitHub draft; assets
+are verified before publication. The Linux release job checks the imported
+ceiling, native startup/inference and isolated GLIBC 2.38 startup/inference
+on the exact binary it packages. Earlier candidate binary SHA256 is
+`23efbbb2796f5d120caf6c78ca80cdad655c2d8a5263783423f94917d65cb4b6`;
+[Linux CI evidence](https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/40181544876).
