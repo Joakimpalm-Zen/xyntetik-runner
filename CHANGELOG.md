@@ -3,6 +3,23 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## v1.6.1 — compatibility candidate, not published
+
+- **Linux release builds preserve the previous GLIBC ceiling.** Pin Ubuntu
+  24.04, reject imported symbols above GLIBC 2.38, and record the compiler,
+  libc and build flags. The published 1.6.0 Linux binary requires GLIBC 2.43
+  and fails on Ubuntu 24.04. This candidate branches from the 1.6.0 tag;
+  inference and training engine sources are unchanged apart from the version.
+- **Fidelity claims name the measured binary.** The published 1.5.0 binary
+  reads 20/23 and a local Clang native 1.6.0 build reads 19/23. Compiler and
+  architecture flags each change scores. This candidate's Golden count
+  remains unmeasured; all prior results and limitations are preserved in the
+  [Golden Pass](docs/golden-pass-2026-10-25.md).
+- Candidate CI verifies checksums, startup and fixture inference on Ubuntu
+  24.04 and an isolated GLIBC 2.38 runtime. These checks do not replace the
+  five instrument rows or full 23-row asset pass. Release tagging, publication,
+  and external model-card changes await the release review.
+
 ## v1.6.0 - 2026-10-24
 
 Numbered 1.6.0 under the [versioning policy](docs/versioning.md): a 1.x minor

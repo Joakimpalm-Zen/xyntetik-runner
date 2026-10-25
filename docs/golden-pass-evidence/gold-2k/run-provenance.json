@@ -1,0 +1,19 @@
+{
+ "runner_source": "33c2a08fee8fbd08dd564396466c7c532df12cf2",
+ "published160_source": "869d72e89a74e2d147ceadf5400e10d9fe9e877c",
+ "runner_sha256": "002178488e79e7020908cb0efd675b8b26c3dd81868faed87fc75fc0ebc693f8",
+ "baseline_sha256": "4dfc46845050c73aebffd37b91baf90517d55a5b0d6019c3085fe7bfa75109c9",
+ "scorer_sha256": "0be651b41c8e6e36c4025b9980a0688e2ddcf16442248b8d1abcd079d0ecd6b2",
+ "corpus_sha256": "56e9fcba658f72ae029598926ccb84beadf71757c603cf59aaf587a70b78d066",
+ "llama_cpp": "73a43d1",
+ "python": "3.14.8",
+ "torch": "2.14.0+cpu",
+ "transformers": "5.16.1",
+ "tokenizers": "0.23.2",
+ "runtime_glibc": "2.39",
+ "cpu": "AMD Ryzen Threadripper 9980X",
+ "runner_compiler": "Clang 23.1.4",
+ "runner_arch_flags": "-march=native",
+ "runner_flags": "-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=native -O3 -ffast-math -std=gnu11 -march=native -DRUNNER_GPU_CUDA",
+ "note": "Original script fetched origin/main at run start. Its observed pinned commit is recorded above; replay must check out that commit rather than future main."
+}
