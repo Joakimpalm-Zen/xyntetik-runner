@@ -74,7 +74,7 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
-> Compatibility candidate: 1.6.1 keeps the 1.6.0 engine and restores the previous Linux GLIBC ceiling. It is not published; Linux CI and the asset Golden Pass determine its validation status.
+> **Linux compatibility fix:** 1.6.1 restores the previous GLIBC 2.38 ceiling and starts on Ubuntu 24.04. It keeps the 1.6.0 engine sources; Linux build settings change, and its Golden score remains unmeasured. [Release validation](docs/linux-1.6.1-candidate.md).
 
 > **Version `1.6.1`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x

@@ -87,7 +87,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
 <pre><code>curl localhost:8080/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Say hello in one sentence."}]}'</code></pre>
       <div class="rows">
-        <div><span>Linux</span><p>The asset is <code>runner-linux-x86_64</code>. The published v1.6.0 binary requires GLIBC 2.43 and fails on Ubuntu 24.04. On affected hosts, build from source until a corrected asset is published. See the <a href="{{repo}}/blob/main/docs/golden-pass-2026-10-25.md">validation report</a>; check with <code>sha256sum -c --ignore-missing SHA256SUMS</code>.</p></div>
+        <div><span>Linux</span><p>The asset is <code>runner-linux-x86_64</code>. Release 1.6.1 restores the previous GLIBC 2.38 ceiling and starts on Ubuntu 24.04. Upgrade from 1.6.0, whose binary requires GLIBC 2.43. The 1.6.1 Golden score remains unmeasured. See the <a href="{{repo}}/blob/main/docs/golden-pass-2026-10-25.md">validation report</a>; check with <code>sha256sum -c --ignore-missing SHA256SUMS</code>.</p></div>
         <div><span>Windows</span><p><code>runner-windows-x86_64.exe</code>, with a notification-area controller.</p></div>
         <div><span>macOS note</span><p>The binaries are not yet notarized. A <code>curl</code> download runs as shown; a browser download gets quarantined by Gatekeeper. Clear it with <code>xattr -d com.apple.quarantine runner</code> or right-click and Open once.</p></div>
         <div><span>From source</span><p><code>make</code> builds the release binary with no dependencies beyond a C compiler; CUDA and Metal kernels are embedded at build time. <a href="{{repo}}/blob/main/MANUAL.md#build-and-platforms">Build and platforms</a>.</p></div>
