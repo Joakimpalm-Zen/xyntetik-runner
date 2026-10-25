@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Linux releases preserve the previous GLIBC floor.** The published 1.6.0
+  binary imports `sqrtf@GLIBC_2.43` and fails on Ubuntu 24.04. The release
+  build now pins Ubuntu 24.04, rejects imports above GLIBC 2.38, and records
+  compiler/libc/flags in BUILD-INFO. This change prepares future builds; it
+  does not replace the published asset.
+- **The fidelity headline names the measured build.** The published 1.5.0
+  Linux binary reads 20/23; the local Clang native build of 1.6.0 reads
+  19/23. Both compiler and CPU target independently change the score in
+  controlled probes. The [Golden Pass](docs/golden-pass-2026-10-25.md)
+  retains all rows and position-level evidence, corrects the invalid
+  bisect attribution, and states what remains unmeasured.
+
 - **README: the actively validated models are listed by family.** One
   collapsed block per family (Gemma 4, Qwen3, Qwen3.8 and the others), in
   the roster's order, its line a plain overview per backend and for Train:

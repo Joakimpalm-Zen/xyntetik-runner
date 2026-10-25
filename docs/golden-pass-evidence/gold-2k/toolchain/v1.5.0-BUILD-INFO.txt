@@ -1,0 +1,6 @@
+runner 1.5.0
+tag:        v1.5.0
+commit:     f913dcaf037a287e161621021f95915ba1ae2e04
+built:      2026-10-21T22:30:18Z
+runner-os:  ubuntu-latest
+march:      x86-64-v3

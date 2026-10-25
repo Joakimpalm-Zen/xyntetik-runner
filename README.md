@@ -56,7 +56,9 @@ It takes about a minute to try: [quick start](#quick-start).
   and Anthropic APIs, so your apps and coding agents connect without changes.
 - **Measured, not assumed.** Twelve model families have been scored against
   their publishers' own implementations, and Runner is closer to the
-  reference than llama.cpp on 20 of 23 rows. A model it does not know is
+  reference than llama.cpp on 20 of 23 rows with the published 1.5.0 Linux binary,
+  and 19 of 23 with a local Clang build of 1.6.0
+  ([build conditions](docs/golden-pass-2026-10-25.md)). A model it does not know is
   refused by name, never guessed at.
 - **Yours.** Free forever under Apache 2.0, built in Sweden, and your prompts
   never leave your machine.
@@ -576,8 +578,9 @@ check, failing it or past its age limit.
   download with `-hf`. Experimental layouts and backend limits are listed
   in the [support matrix](MANUAL.md#support-matrix).
 - **How Runner compares.** Closer to the publisher's reference than
-  llama.cpp on 20 of 23 measured rows, and level or ahead on the reference's
-  chosen token on 22 of 23. [Evidence](MANUAL.md#evidence-and-tradeoffs) ·
+  llama.cpp on 20 of 23 measured rows with the published 1.5.0 Linux binary;
+  a local Clang build of 1.6.0 reads 19 of 23. Both are level or ahead on the
+  reference's chosen token on 22 of 23. [Build conditions](docs/golden-pass-2026-10-25.md). [Evidence](MANUAL.md#evidence-and-tradeoffs) ·
   [Speed tables](docs/benchmarks.md)
 
 <a id="all-commands"></a>

@@ -1,0 +1,232 @@
+{
+ "gold1025-apertus-8b-bf16-vs-llama.json": {
+  "original_sha256": "2ea35f2f6ea746b54f2fc574bb0193c4a7b97627490a7ca3835172f9e4ce0727",
+  "archived_file": "positions/gold1025-apertus-8b-bf16-vs-llama.json.gz",
+  "archived_sha256": "b5144ee37b377f262e85ba570ccb740373762157a443e03e446fce2575f31cc5"
+ },
+ "gold1025-apertus-8b-bf16-vs-150.json": {
+  "original_sha256": "f779cc9cc01aec3baf038d615c7b7ca7327f713f4f30ee49dcc0c83e887238ba",
+  "archived_file": "positions/gold1025-apertus-8b-bf16-vs-150.json.gz",
+  "archived_sha256": "ed757901eeefad388b3691ea45d904aef5bb3ed26914a1e2cc8a1ffdc75e187d"
+ },
+ "gold1025-apertus-8b-served-vs-llama.json": {
+  "original_sha256": "8aad83167d2f63ed6744dee69f5df40a1fdf22f9e2907519d1382219e3e4da55",
+  "archived_file": "positions/gold1025-apertus-8b-served-vs-llama.json.gz",
+  "archived_sha256": "42ca870caff0bd2cd0e01e485e2cd2fd5c78a972dfd7cb462854d81a24d80f12"
+ },
+ "gold1025-apertus-8b-served-vs-150.json": {
+  "original_sha256": "b4ce1196876a432d67e9f5b12ab10ad7259d2487d38dd7f2585e5b9a154139fe",
+  "archived_file": "positions/gold1025-apertus-8b-served-vs-150.json.gz",
+  "archived_sha256": "112277fe861fb24202956815be5256450489e77f1983f65d5341487dfb54d4d5"
+ },
+ "gold1025-gemma-3-4b-it-bf16-vs-llama.json": {
+  "original_sha256": "b57c9726262277cef32b3b103a636e581caa48f14a1ca9efb810baadbb7010ce",
+  "archived_file": "positions/gold1025-gemma-3-4b-it-bf16-vs-llama.json.gz",
+  "archived_sha256": "11a3cb2848e06237e2c07e0d208c49909aaed26dc7aea734112dbb85bbf997b8"
+ },
+ "gold1025-gemma-3-4b-it-bf16-vs-150.json": {
+  "original_sha256": "12d17013aea6fc7507c59a67b0e332d858a7f06ec922e0821376cfce0e96a267",
+  "archived_file": "positions/gold1025-gemma-3-4b-it-bf16-vs-150.json.gz",
+  "archived_sha256": "24daba5af3bbc71f307323b70f01c20f95d874c017bb80845eb32d1a2b6ce651"
+ },
+ "gold1025-gemma-3-4b-it-served-vs-llama.json": {
+  "original_sha256": "2a855af5830770e6c6ba3771edd809e57082b20f0369979b21bb4f5e27b7bb2e",
+  "archived_file": "positions/gold1025-gemma-3-4b-it-served-vs-llama.json.gz",
+  "archived_sha256": "79e5c3ef49aa8861b7d93b93d10b5ba06fb3fce1e2814b8c6d9df912095429bf"
+ },
+ "gold1025-gemma-3-4b-it-served-vs-150.json": {
+  "original_sha256": "7446d645c92d29954393d9162b391c6f575e934e4bd93bce14b32a7f8ad59f1d",
+  "archived_file": "positions/gold1025-gemma-3-4b-it-served-vs-150.json.gz",
+  "archived_sha256": "7e2335f9af7a90b20c8df385b7010f6250ce295505bfe6edbbbeb2d5b012984a"
+ },
+ "gold1025-gemma-4-e2b-it-forcebos-bf16-vs-llama.json": {
+  "original_sha256": "7bac19533a3ab7d4534eb0c7a5b506c7a15e83ca44ea8c9bc88e3fa63431896e",
+  "archived_file": "positions/gold1025-gemma-4-e2b-it-forcebos-bf16-vs-llama.json.gz",
+  "archived_sha256": "1a242541d22d850bd0a8fa9bd5c5073f5808ff77946cf26375717d61b7ab9774"
+ },
+ "gold1025-gemma-4-e2b-it-forcebos-bf16-vs-150.json": {
+  "original_sha256": "e29882d7fb6d3c98eb0dac3048559f71020f352a3781c6ac153a53f997330977",
+  "archived_file": "positions/gold1025-gemma-4-e2b-it-forcebos-bf16-vs-150.json.gz",
+  "archived_sha256": "d2517aa51bac5d885c21b460df3786b02ec0437c72dbd22b0c62cbdb5ab376cf"
+ },
+ "gold1025-gemma-4-e2b-it-forcebos-served-vs-llama.json": {
+  "original_sha256": "c07ef827cae8249526dac8e0d22b46edf87d177db72c4213cc1a0bdb3836450b",
+  "archived_file": "positions/gold1025-gemma-4-e2b-it-forcebos-served-vs-llama.json.gz",
+  "archived_sha256": "5febaf2dba0b9bc7f9f23dfd5981d60a2cea7b4c48d22ce51b5f082bc2ebcf1a"
+ },
+ "gold1025-gemma-4-e2b-it-forcebos-served-vs-150.json": {
+  "original_sha256": "c3f3850263ea9be80c413246e05e60db8de06a77e4f06f43c75d7a34cbe66961",
+  "archived_file": "positions/gold1025-gemma-4-e2b-it-forcebos-served-vs-150.json.gz",
+  "archived_sha256": "1b9f849aec6aa31ae832c410e06980c4b3d2834dbf835cd3cf83dbe9d3c705e3"
+ },
+ "gold1025-granite-4.0-h-micro-bf16-vs-llama.json": {
+  "original_sha256": "9b328f22368fff730e03b245319b25db1d7dae99953392f610376ae097bdda22",
+  "archived_file": "positions/gold1025-granite-4.0-h-micro-bf16-vs-llama.json.gz",
+  "archived_sha256": "e636c3bbb20d13d5376a59e3a26a90c318b2e2c54f27312ab48af23ed759871e"
+ },
+ "gold1025-granite-4.0-h-micro-bf16-vs-150.json": {
+  "original_sha256": "40c63c16ee8677eba95791742c70f3fec84840e7240140b1fb24a778acb1741e",
+  "archived_file": "positions/gold1025-granite-4.0-h-micro-bf16-vs-150.json.gz",
+  "archived_sha256": "6443901f8d3a9cd2454e5cb9acf0b33c60a55ec75358f4a6e748d144bf864b1c"
+ },
+ "gold1025-granite-4.0-h-micro-served-vs-llama.json": {
+  "original_sha256": "406d65256f07d0ade31c738870b8e60c696b289f872a64b04d3d83ee15dc627a",
+  "archived_file": "positions/gold1025-granite-4.0-h-micro-served-vs-llama.json.gz",
+  "archived_sha256": "18ba95b0a7772a122d4a677c3e849793dabe887bb89dfee4595cb0e459e77fc8"
+ },
+ "gold1025-granite-4.0-h-micro-served-vs-150.json": {
+  "original_sha256": "7db319a9e892d25cc43d07aea6e6494c69e8e99dcfbf899a8a7b77132a5fdf18",
+  "archived_file": "positions/gold1025-granite-4.0-h-micro-served-vs-150.json.gz",
+  "archived_sha256": "3ca9f3c51b7bf013140c33d44c8c91e0c9e74d63c6518e96bd989a88de8728bf"
+ },
+ "gold1025-granite-4.2-3b-bf16-vs-llama.json": {
+  "original_sha256": "33974e79a9ac4c619a5134abadcfc76bbc31397bb556550969d1f8f54d50102e",
+  "archived_file": "positions/gold1025-granite-4.2-3b-bf16-vs-llama.json.gz",
+  "archived_sha256": "3cedf92347b25fa9528a47c916e6933ca1f0f00b169498ae921aa9e99f0528b2"
+ },
+ "gold1025-granite-4.2-3b-bf16-vs-150.json": {
+  "original_sha256": "8950ecf5d543744cfb8f61a295aa22a52e65a1ad3986854b428fa63df2c46812",
+  "archived_file": "positions/gold1025-granite-4.2-3b-bf16-vs-150.json.gz",
+  "archived_sha256": "1ac51eadf3d296e6767d264245641011fd5243a58643c9cfd02f7d59599c9fa7"
+ },
+ "gold1025-granite-4.2-3b-served-vs-llama.json": {
+  "original_sha256": "eb7eed26c9953d8462e2ddc8c352050ab22c157925c34849ee6b334ab6529ce9",
+  "archived_file": "positions/gold1025-granite-4.2-3b-served-vs-llama.json.gz",
+  "archived_sha256": "5791fafbf6ff3af8e3389185204e84e99d48cc3e9e684a3ac337b8c4e8eac3e2"
+ },
+ "gold1025-granite-4.2-3b-served-vs-150.json": {
+  "original_sha256": "0a08a7235668485c8b2cff33a6fd7aa1404b0ea453020079f1198bbe5c88615e",
+  "archived_file": "positions/gold1025-granite-4.2-3b-served-vs-150.json.gz",
+  "archived_sha256": "ea328d4fcea95ce62a99ce71a6cc675fcd7abde74612fc5529208f5aa83a8b70"
+ },
+ "gold1025-qwen2.5-0.5b-bf16-vs-llama.json": {
+  "original_sha256": "36596566c3dcdc8dfec7d8dd0fe832a9e45c50a66b576036a1b49786c840d9d6",
+  "archived_file": "positions/gold1025-qwen2.5-0.5b-bf16-vs-llama.json.gz",
+  "archived_sha256": "9023639ae184563154830c81af52a9035bfe1686d3d5d697d5797f3395e9fffa"
+ },
+ "gold1025-qwen2.5-0.5b-bf16-vs-150.json": {
+  "original_sha256": "266308948c20e6a3565030cf5130c2d4d5da2eb720074f1f6981248c3b61eb39",
+  "archived_file": "positions/gold1025-qwen2.5-0.5b-bf16-vs-150.json.gz",
+  "archived_sha256": "dc73ef6889c92a034c7d6e09e001aaed9d2781dd853d5f4372991ecf8d9e211c"
+ },
+ "gold1025-qwen2.5-0.5b-served-vs-llama.json": {
+  "original_sha256": "9e3f13bc31368af374eb0d1f8692790033dec5bd144199c32f816c41f607623c",
+  "archived_file": "positions/gold1025-qwen2.5-0.5b-served-vs-llama.json.gz",
+  "archived_sha256": "28134a9b3f5aa3f9e8606e738ee199bdfb0108ea33b32713be15bdfe2ccb0684"
+ },
+ "gold1025-qwen2.5-0.5b-served-vs-150.json": {
+  "original_sha256": "473b0475e9bf33250ace71dc7ef44e4563bb30f442027555e4c56e6ef32b1173",
+  "archived_file": "positions/gold1025-qwen2.5-0.5b-served-vs-150.json.gz",
+  "archived_sha256": "7e105c9c2ee070e94b937dc9f4ad9f1baa35ba088952a835d5ea9fec45eb63a0"
+ },
+ "gold1025-qwen3-0.6b-bf16-vs-llama.json": {
+  "original_sha256": "17fade7945b591202e283d77154e18316559258684c1ebf624cbcb80fb221809",
+  "archived_file": "positions/gold1025-qwen3-0.6b-bf16-vs-llama.json.gz",
+  "archived_sha256": "d60954ac3fc8947cc060724535e6ef0fb36b658294d62a09bb81c3b5c715b204"
+ },
+ "gold1025-qwen3-0.6b-bf16-vs-150.json": {
+  "original_sha256": "906c57bed49e217da8cefee098c8229fe9476b4afbe122f26b5ae79546dc12db",
+  "archived_file": "positions/gold1025-qwen3-0.6b-bf16-vs-150.json.gz",
+  "archived_sha256": "fc57e26c31c25215ff7149bcfdaf8a413ac1e6d5503a15d99eda4b5d9d04a7bd"
+ },
+ "gold1025-qwen3-0.6b-served-vs-llama.json": {
+  "original_sha256": "42940ab519a88bc4234797860d68c1ba4ab94170d8acf338925b87ae31976706",
+  "archived_file": "positions/gold1025-qwen3-0.6b-served-vs-llama.json.gz",
+  "archived_sha256": "03205cb15763a1b1fc3e071eaf8d364d4d20ea7abd74d4f8f1229d709a6357c8"
+ },
+ "gold1025-qwen3-0.6b-served-vs-150.json": {
+  "original_sha256": "6f941908a599b3c1dfe284002d0481f24574b54e188ea36fa3824be4369d50fb",
+  "archived_file": "positions/gold1025-qwen3-0.6b-served-vs-150.json.gz",
+  "archived_sha256": "ecca8d48dba47c03964e683aa43fd332dc59dd6152f4a3192623e6b9da8d65c5"
+ },
+ "gold1025-qwen3-4b-bf16-vs-llama.json": {
+  "original_sha256": "d94c7594760466def3134421bdd9badca68f6d19c5f21bfd95edba6f446bbd24",
+  "archived_file": "positions/gold1025-qwen3-4b-bf16-vs-llama.json.gz",
+  "archived_sha256": "439541784250634bf91cf2dbbf7dd0218085bcf27d9059dca38664f7d2dc605e"
+ },
+ "gold1025-qwen3-4b-bf16-vs-150.json": {
+  "original_sha256": "dc5701194b6e38fde728cb9bcb3e7ef4db6b0e8db7753e1c0043ab79dec80272",
+  "archived_file": "positions/gold1025-qwen3-4b-bf16-vs-150.json.gz",
+  "archived_sha256": "45f186197398588a9f7cd0e7b8ec731d906b206576467c9daf8f380a3d88cf15"
+ },
+ "gold1025-qwen3-4b-served-vs-llama.json": {
+  "original_sha256": "da9b6c8abf5849c84fbbb593c887eb009e72dce1846b6ea4bff2b2bcb32cb67f",
+  "archived_file": "positions/gold1025-qwen3-4b-served-vs-llama.json.gz",
+  "archived_sha256": "973bed31d05f2a72d1e6ad2d3f8f0286f34205118df69528380d1082234dc143"
+ },
+ "gold1025-qwen3-4b-served-vs-150.json": {
+  "original_sha256": "90bee27b0643f2bc4a988c24ef6d351f2e06817d71a67087aca36f4be4d2c3af",
+  "archived_file": "positions/gold1025-qwen3-4b-served-vs-150.json.gz",
+  "archived_sha256": "f2aecb02648e9aba31e677f102b8eb6a9f35605c7e3a906a769a12d89ee24125"
+ },
+ "gold1025-qwen3.5-0.8b-bf16-vs-llama.json": {
+  "original_sha256": "e2beeda4a929d4671734024a7b00e21790791e410364559efb00a42355f63a82",
+  "archived_file": "positions/gold1025-qwen3.5-0.8b-bf16-vs-llama.json.gz",
+  "archived_sha256": "342815d6dcbb41c83ee7fefb08fdc82fe1f4addc138fee1c01412bb6288af559"
+ },
+ "gold1025-qwen3.5-0.8b-bf16-vs-150.json": {
+  "original_sha256": "2a762bdff86095d3e32b9249d156e5a73de50cbfb8bf95dfbaf903e27534ee25",
+  "archived_file": "positions/gold1025-qwen3.5-0.8b-bf16-vs-150.json.gz",
+  "archived_sha256": "110ee3ae5008c4860385a6d1bfaf75b5975aa2c6ebd5d1df3e116cd4c10478d6"
+ },
+ "gold1025-qwen3.5-0.8b-served-vs-llama.json": {
+  "original_sha256": "f3367ae3dd0fa9aab09d995c0ab0f798a5d5fd0dd9bc5f2a724a37d2852d2d4f",
+  "archived_file": "positions/gold1025-qwen3.5-0.8b-served-vs-llama.json.gz",
+  "archived_sha256": "fc224a4eab275bae91caf0c835f4d8c1fbc4f8584d7e9920255db60e8f9c3929"
+ },
+ "gold1025-qwen3.5-0.8b-served-vs-150.json": {
+  "original_sha256": "bea62089b6226d45fe63e91cb46cafd29fb2c8ec7bd807f0e90ba0b749f6d5d3",
+  "archived_file": "positions/gold1025-qwen3.5-0.8b-served-vs-150.json.gz",
+  "archived_sha256": "b345c242ef2b319a26da4a1e42afb83491b0e6794d50bb4b785e2729062c2064"
+ },
+ "gold1025-smollm2-135m-bf16-vs-llama.json": {
+  "original_sha256": "6b3c4942c65500422b2bf50e24ac26009e9962ef490b0971981d1e2241f915f0",
+  "archived_file": "positions/gold1025-smollm2-135m-bf16-vs-llama.json.gz",
+  "archived_sha256": "260bbfcc2128ef5915bfcd500181f9eac02c2b69c605a7e31b7921913fe4cbd4"
+ },
+ "gold1025-smollm2-135m-bf16-vs-150.json": {
+  "original_sha256": "c8635e27ba731a732c518effb4505a552715efd3636a67ffd914092fd6619622",
+  "archived_file": "positions/gold1025-smollm2-135m-bf16-vs-150.json.gz",
+  "archived_sha256": "1fc4b1e896e72eca488f977f071461f44cbae9fe291dfea9dd14c5661953336d"
+ },
+ "gold1025-smollm2-135m-served-vs-llama.json": {
+  "original_sha256": "a0250856a39aa865da2692bc81f09862455b85ca52e682908f11fcc0c0b55f2a",
+  "archived_file": "positions/gold1025-smollm2-135m-served-vs-llama.json.gz",
+  "archived_sha256": "d741509bc75b8054695f9cd04d85e6b19f35fd12d81cbc977a016343457b9a41"
+ },
+ "gold1025-smollm2-135m-served-vs-150.json": {
+  "original_sha256": "0e8104eade26b0f7bb9d00ca04b11bab43348233b7d71f23362b420f9ca944ae",
+  "archived_file": "positions/gold1025-smollm2-135m-served-vs-150.json.gz",
+  "archived_sha256": "a04209449be067528490db351c46b166ad1d9d1a2d13eb28e8c334ccccbb57ab"
+ },
+ "gold1025-stablelm-2-1.6b-bf16-vs-llama.json": {
+  "original_sha256": "9bb847bf437331c95de52790418bd52d663604b8aafd11b9d0554b0256ee13ed",
+  "archived_file": "positions/gold1025-stablelm-2-1.6b-bf16-vs-llama.json.gz",
+  "archived_sha256": "4544812f15769ff53ee00f4814b9cdefae2ee6d5f16cb38da057cc347da4e05f"
+ },
+ "gold1025-stablelm-2-1.6b-bf16-vs-150.json": {
+  "original_sha256": "2a6917e33c961a59e9deac363a722aa23a7085a858b481abd5f35e3e2e596b38",
+  "archived_file": "positions/gold1025-stablelm-2-1.6b-bf16-vs-150.json.gz",
+  "archived_sha256": "2f5993d45e280d7f2eea591283a24a8cf74beab2df0289f33c212a4a336a39dc"
+ },
+ "gold1025-trinity-nano-bf16-vs-llama.json": {
+  "original_sha256": "cf40870814c099985ea8cfe7cffe75bb4ffcc6d61147d3317dfa28a7b95341ca",
+  "archived_file": "positions/gold1025-trinity-nano-bf16-vs-llama.json.gz",
+  "archived_sha256": "6bccf60f22e2230ec8255021a6b286ef85c0aa20c6a8db875adfd2f27507fbc9"
+ },
+ "gold1025-trinity-nano-bf16-vs-150.json": {
+  "original_sha256": "1c0c9d04300a9fb78a10858ab78b6181f2984c7c2cdcda4e9bafeadb180bdd55",
+  "archived_file": "positions/gold1025-trinity-nano-bf16-vs-150.json.gz",
+  "archived_sha256": "7d75743d0d8e56e93416b6ac08ece6fae7a6ce16d65d7b8eb001ad7b671fbcb9"
+ },
+ "gold1025-trinity-nano-served-vs-llama.json": {
+  "original_sha256": "0808d15b1f52019e3a1866cdbff35e04abd36a62de7ab2ea5f1138a523c65e5a",
+  "archived_file": "positions/gold1025-trinity-nano-served-vs-llama.json.gz",
+  "archived_sha256": "c49875f9758340092372c00f93da6d954227f56ccd24771937fea1f687add952"
+ },
+ "gold1025-trinity-nano-served-vs-150.json": {
+  "original_sha256": "7ec50d81d9e090b928e1e4ddb88b9cefe6ed564b5b9cc99d17df294e46f7c164",
+  "archived_file": "positions/gold1025-trinity-nano-served-vs-150.json.gz",
+  "archived_sha256": "5a2eb4935d838b9d0e739344388072bc374ad9394e1c3721f1e5244f1f8a78fb"
+ }
+}
