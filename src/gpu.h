@@ -303,6 +303,17 @@ void   gpu_train_dn_counts(model_t *m, long *dev, long *failed);
 // ends and before any CPU code reads a state. gpu_train_dn_reset: the host
 // states were zeroed (model_recurrent_reset), so are the device's.
 bool   gpu_train_dn_pull(model_t *m);
+// A --train-gpu step's attention backward (the score and softmax adjoint,
+// model.c attn_bw_run) on the device: dq += .., dk += .., dv += .. from the
+// layer's f16 K / V cache rows, q and dao (tdn_args.h tab_args). Within
+// rounding of the CPU's (its probabilities are recomputed in another
+// order); deterministic. false = the caller computes it on the CPU (a
+// failure is noted once on stderr). gpu_train_attn_counts: the record's
+// calls run on the device and failed there.
+bool   gpu_train_attn_bw(model_t *m, const tab_args *a, const void *kc,
+                         const void *vc, const float *q, const float *dao,
+                         float *dq, float *dk, float *dv);
+void   gpu_train_attn_counts(model_t *m, long *dev, long *failed);
 void   gpu_train_dn_reset(model_t *m);
 // where the weights went: tensors and bytes cached on the device, the ones
 // the budget kept on the CPU, and the budget with whether a flag set it (the

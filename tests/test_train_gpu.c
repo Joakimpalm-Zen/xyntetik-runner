@@ -305,6 +305,87 @@ static void dn_check(model_t *m, int nh, int ng, int hv, int T) {
     dn_ref_free(&r);
 }
 
+// The attention backward on the device (gpu_train_attn_bw) against a
+// double-precision reference of model.c attn_bw_run's equations: scores q.k
+// times the scale over the window, softmax, dp = dao.v, ds = p (dp -
+// sum_pd) scale, dq += ds k, dk += ds q, dv += p dao, with K and V f16 rows.
+// dq, dk, dv within 2^-12 of each one's largest magnitude, bit for bit the
+// same on a second run, at GQA, a sliding window, a window past one block of
+// TAB_TB positions and head widths 64 and 256.
+static void ab_check(model_t *m, int T, int H, int kv_mul, int hd, int swa) {
+    int n_kv = H / kv_mul, q_dim = H * hd, kv_dim = n_kv * hd;
+    size_t row = (size_t)kv_dim * 2;
+    uint8_t *kc = malloc(row * T), *vc = malloc(row * T);
+    float *q = malloc(sizeof(float) * T * q_dim), *dao = malloc(sizeof(float) * T * q_dim);
+    float *o[2][3];
+    size_t on[3] = { (size_t)T * q_dim, (size_t)T * kv_dim, (size_t)T * kv_dim };
+    for (int r = 0; r < 2; r++)
+        for (int i = 0; i < 3; i++) o[r][i] = calloc(on[i], sizeof(float));
+    double *kd = malloc(sizeof(double) * T * kv_dim), *vd = malloc(sizeof(double) * T * kv_dim);
+    for (int i = 0; i < T * kv_dim; i++) {
+        uint16_t kh = f32_to_f16(frnd()), vh = f32_to_f16(frnd());
+        memcpy(kc + 2 * (size_t)i, &kh, 2);
+        memcpy(vc + 2 * (size_t)i, &vh, 2);
+        kd[i] = f16_to_f32(kh);
+        vd[i] = f16_to_f32(vh);
+    }
+    for (int i = 0; i < T * q_dim; i++) { q[i] = frnd(); dao[i] = frnd(); }
+    float scale = 1.0f / sqrtf((float)hd);
+    tab_args a = { T, H, kv_mul, hd, q_dim, kv_dim, swa, row, row, scale };
+    bool ok = true;
+    for (int r = 0; ok && r < 2; r++)
+        ok = gpu_train_attn_bw(m, &a, kc, vc, q, dao, o[r][0], o[r][1], o[r][2]);
+    CHECK(ok, "attn hd %d: the device declined", hd);
+    double *ref[3];
+    for (int i = 0; i < 3; i++) ref[i] = calloc(on[i], sizeof(double));
+    double *p = malloc(sizeof(double) * T), *dp = malloc(sizeof(double) * T);
+    for (int t = 0; t < T; t++)
+        for (int h = 0; h < H; h++) {
+            int kvh = h / kv_mul, t0 = swa > 0 && t - swa + 1 > 0 ? t - swa + 1 : 0;
+            const float *qh = q + (size_t)t * q_dim + h * hd, *dh = dao + (size_t)t * q_dim + h * hd;
+            double mx = -1e300, sum = 0, spd = 0;
+            for (int s = t0; s <= t; s++) {
+                double sc = 0;
+                for (int i = 0; i < hd; i++) sc += qh[i] * kd[(size_t)s * kv_dim + kvh * hd + i];
+                p[s] = sc * scale;
+                if (p[s] > mx) mx = p[s];
+            }
+            for (int s = t0; s <= t; s++) { p[s] = exp(p[s] - mx); sum += p[s]; }
+            for (int s = t0; s <= t; s++) {
+                p[s] /= sum;
+                dp[s] = 0;
+                for (int i = 0; i < hd; i++) dp[s] += dh[i] * vd[(size_t)s * kv_dim + kvh * hd + i];
+                spd += p[s] * dp[s];
+            }
+            for (int s = t0; s <= t; s++) {
+                double ds = p[s] * (dp[s] - spd) * scale;
+                for (int i = 0; i < hd; i++) {
+                    ref[0][(size_t)t * q_dim + h * hd + i] += ds * kd[(size_t)s * kv_dim + kvh * hd + i];
+                    ref[1][(size_t)s * kv_dim + kvh * hd + i] += ds * qh[i];
+                    ref[2][(size_t)s * kv_dim + kvh * hd + i] += p[s] * dh[i];
+                }
+            }
+        }
+    static const char *const NAMES[3] = { "dq", "dk", "dv" };
+    for (int i = 0; ok && i < 3; i++) {
+        double mx = 0, worst = 0;
+        for (size_t j = 0; j < on[i]; j++) {
+            if (fabs(ref[i][j]) > mx) mx = fabs(ref[i][j]);
+            double e = fabs(o[0][i][j] - ref[i][j]);
+            if (e > worst) worst = e;
+        }
+        CHECK(worst <= mx / 4096, "attn hd %d swa %d: %s off by %.3g of max %.3g",
+              hd, swa, NAMES[i], worst, mx);
+        CHECK(!memcmp(o[0][i], o[1][i], sizeof(float) * on[i]),
+              "attn hd %d: %s differs between two runs", hd, NAMES[i]);
+    }
+    printf("attn T %d H %d kv_mul %d hd %d swa %d: %s\n", T, H, kv_mul, hd, swa,
+           ok ? "checked" : "declined");
+    for (int r = 0; r < 2; r++) for (int i = 0; i < 3; i++) free(o[r][i]);
+    for (int i = 0; i < 3; i++) free(ref[i]);
+    free(kc); free(vc); free(q); free(dao); free(kd); free(vd); free(p); free(dp);
+}
+
 int main(void) {
     f16_init();
     model_t m;
@@ -493,6 +574,9 @@ int main(void) {
         }
         free(bx); free(by);
     }
+    ab_check(&m, 77, 4, 2, 64, 0);
+    ab_check(&m, 150, 8, 4, 64, 0);
+    ab_check(&m, 90, 4, 1, 256, 24);
     dn_check(&m, 4, 2, 128, 77);
     dn_check(&m, 3, 3, 64, 40);
     dn_check(&m, 4, 2, 40, 33);

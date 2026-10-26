@@ -4831,15 +4831,17 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
         gpu_train_placement(&rt->m, &on_dev, &dev_b, &on_cpu, &cpu_b, &bud, &bud_set);
         // R8.21: the DeltaNet recurrence's calls on the device and the ones
         // that failed there and ran on the CPU (both 0 on other models)
-        long dn_dev, dn_failed;
+        long dn_dev, dn_failed, ab_dev, ab_failed;
         gpu_train_dn_counts(&rt->m, &dn_dev, &dn_failed);
+        gpu_train_attn_counts(&rt->m, &ab_dev, &ab_failed);
         sb_fmt(&rec, "\",\"budget_bytes\":%llu,\"budget_from\":\"%s\","
                      "\"tensors_on_device\":%d,\"device_bytes\":%llu,"
                      "\"tensors_on_cpu\":%d,\"cpu_bytes\":%llu,"
-                     "\"deltanet_device_calls\":%ld,\"deltanet_failed_calls\":%ld},",
+                     "\"deltanet_device_calls\":%ld,\"deltanet_failed_calls\":%ld,"
+                     "\"attention_device_calls\":%ld,\"attention_failed_calls\":%ld},",
                (unsigned long long)bud, bud_set ? "--train-gpu-budget" : "free memory",
                on_dev, (unsigned long long)dev_b, on_cpu, (unsigned long long)cpu_b,
-               dn_dev, dn_failed);
+               dn_dev, dn_failed, ab_dev, ab_failed);
     }
     // R8.17: the held-out sets (rows and teacher hashed like the data), the
     // kill rule and the step a resumed run started from

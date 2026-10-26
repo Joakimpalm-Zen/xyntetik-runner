@@ -940,3 +940,113 @@ k_tdn_bw(const float *cv, const float *beta, const float *decay,
         }
     }
 }
+
+// ---- the attention backward of a training step (--train-gpu) ----
+//
+// model.c attn_bw_p1 / attn_bw_p2's arithmetic over the window in blocks of
+// TAB_TB positions t. k_tab_p, one block a (t, head): the scores against the
+// cached keys s in the window, their softmax, dp = dao . v_s, sum_pd and the
+// score gradient ds = p (dp - sum_pd) scale, into the block's P and DS rows;
+// the max and the sums fold in one fixed tree a block. k_tab_dq, one block a
+// (t, head): dq += sum_s ds k_s, a serial chain over s. k_tab_dkv, one block
+// a (s, kv head): dk += ds q_t and dv += p dao_t over the block's t
+// ascending and the group's heads ascending, the CPU's own order, blocks in
+// ascending t. Deterministic; only p differs from the CPU (another order of
+// the same sums), so the result is within rounding of it.
+static __device__ __forceinline__ int tab_t0(const tab_args &a, int t) {
+    return a.swa > 0 && t - a.swa + 1 > 0 ? t - a.swa + 1 : 0;
+}
+
+static __device__ __forceinline__ float tab_blockred(float v, float *red, bool max) {
+    int tid = (int)threadIdx.x;
+    red[tid] = v;
+    __syncthreads();
+    for (int off = TAB_THREADS / 2; off > 0; off >>= 1) {
+        if (tid < off) red[tid] = max ? fmaxf(red[tid], red[tid + off]) : red[tid] + red[tid + off];
+        __syncthreads();
+    }
+    float r = red[0];
+    __syncthreads();
+    return r;
+}
+
+extern "C" __global__ void __launch_bounds__(TAB_THREADS)
+k_tab_p(const uchar *kc, const uchar *vc, const float *q, const float *dao,
+        float *P, float *DS, tab_args a, int tb0) {
+    __shared__ float qs[TAB_MAX_HD], das[TAB_MAX_HD], red[TAB_THREADS];
+    int tt = (int)blockIdx.x, h = (int)blockIdx.y, t = tb0 + tt, tid = (int)threadIdx.x;
+    if (t >= a.T) return;
+    int kvh = h / a.kv_mul, hd = a.hd;
+    for (int i = tid; i < hd; i += TAB_THREADS) {
+        qs[i] = q[(ulong64)t * a.q_dim + h * hd + i];
+        das[i] = dao[(ulong64)t * a.q_dim + h * hd + i];
+    }
+    __syncthreads();
+    float *p = P + ((ulong64)tt * a.n_head + h) * a.T;
+    float *ds = DS + ((ulong64)tt * a.n_head + h) * a.T;
+    int t0 = tab_t0(a, t);
+    float mx = -__int_as_float(0x7f800000);   // -inf
+    for (int s = t0 + tid; s <= t; s += TAB_THREADS) {
+        const uchar *kh = kc + (ulong64)s * a.k_row_b + (ulong64)kvh * hd * 2;
+        float sc = 0.0f;
+        for (int i = 0; i < hd; i++) sc = fmaf(qs[i], f16f(kh + 2 * i), sc);
+        p[s] = sc * a.scale;
+        mx = fmaxf(mx, p[s]);
+    }
+    mx = tab_blockred(mx, red, true);
+    float sum = 0.0f;
+    for (int s = t0 + tid; s <= t; s += TAB_THREADS) {
+        p[s] = expf(p[s] - mx);
+        sum += p[s];
+    }
+    sum = tab_blockred(sum, red, false);
+    float spd = 0.0f;
+    for (int s = t0 + tid; s <= t; s += TAB_THREADS) {
+        p[s] /= sum;
+        const uchar *vh = vc + (ulong64)s * a.v_row_b + (ulong64)kvh * hd * 2;
+        float dp = 0.0f;
+        for (int i = 0; i < hd; i++) dp = fmaf(das[i], f16f(vh + 2 * i), dp);
+        ds[s] = dp;
+        spd = fmaf(p[s], dp, spd);
+    }
+    spd = tab_blockred(spd, red, false);
+    for (int s = t0 + tid; s <= t; s += TAB_THREADS)
+        ds[s] = p[s] * (ds[s] - spd) * a.scale;
+}
+
+extern "C" __global__ void __launch_bounds__(TAB_THREADS)
+k_tab_dq(const uchar *kc, const float *DS, float *dq, tab_args a, int tb0) {
+    int tt = (int)blockIdx.x, h = (int)blockIdx.y, t = tb0 + tt;
+    if (t >= a.T) return;
+    int kvh = h / a.kv_mul, hd = a.hd, t0 = tab_t0(a, t);
+    const float *ds = DS + ((ulong64)tt * a.n_head + h) * a.T;
+    for (int i = (int)threadIdx.x; i < hd; i += TAB_THREADS) {
+        float *o = dq + (ulong64)t * a.q_dim + h * hd + i;
+        float acc = *o;
+        for (int s = t0; s <= t; s++)
+            acc = fmaf(ds[s], f16f(kc + (ulong64)s * a.k_row_b + ((ulong64)kvh * hd + i) * 2), acc);
+        *o = acc;
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(TAB_THREADS)
+k_tab_dkv(const float *q, const float *dao, const float *P, const float *DS,
+          float *dk, float *dv, tab_args a, int tb0, int tbn) {
+    int s = (int)blockIdx.x, kvh = (int)blockIdx.y, hd = a.hd;
+    for (int i = (int)threadIdx.x; i < hd; i += TAB_THREADS) {
+        float *ko = dk + (ulong64)s * a.kv_dim + kvh * hd + i;
+        float *vo = dv + (ulong64)s * a.kv_dim + kvh * hd + i;
+        float dka = *ko, dva = *vo;
+        for (int tt = 0; tt < tbn; tt++) {
+            int t = tb0 + tt;
+            if (t < s || s < tab_t0(a, t)) continue;
+            for (int h = kvh * a.kv_mul; h < (kvh + 1) * a.kv_mul; h++) {
+                ulong64 r = ((ulong64)tt * a.n_head + h) * a.T + s;
+                dka = fmaf(DS[r], q[(ulong64)t * a.q_dim + h * hd + i], dka);
+                dva = fmaf(P[r], dao[(ulong64)t * a.q_dim + h * hd + i], dva);
+            }
+        }
+        *ko = dka;
+        *vo = dva;
+    }
+}
