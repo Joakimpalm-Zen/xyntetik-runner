@@ -92,3 +92,34 @@ The **published 1.6.0 Linux asset has a confirmed compatibility regression**, re
 [Run provenance](golden-pass-evidence/gold-2k/run-provenance.json) records the exact source, binary/scorer/corpus hashes and reference package versions; [input-files.json](golden-pass-evidence/gold-2k/input-files.json) records read-back hashes of the staged model and HF files. The archived run script fetched main at start; it actually pinned `33c2a08fee8fbd08dd564396466c7c532df12cf2`. Replays must use that commit, not a future main.
 
 Every table cell is generated from the matching summary in [summaries-2026-10-25.json](golden-pass-evidence/gold-2k/summaries-2026-10-25.json). Gemma E2B uses the explicit `gemma-4-e2b-it-forcebos-{bf16,served}` keys in both passes. [source-files.json](golden-pass-evidence/gold-2k/source-files.json) maps all 46 original result names and SHA256s to archived per-position JSON; only local paths/endpoints were sanitized, and numeric results were preserved. [position-audit.json](golden-pass-evidence/gold-2k/position-audit.json) checks every matched position against the October 22 raw files and verifies side-a repeatability across the two new passes. Scientific notation uses `1.4e-4`. No rows or unfavorable values were removed. [Document generator](golden-pass-evidence/gold-2k/make-doc-1025.py).
+
+
+## 2026-10-26: the published 1.6.1 asset
+
+The 1.6.1 release replaces the 1.6.0 Linux binary (same engine source; the release job pinned to Ubuntu 24.04 with an
+imported-symbol check). Its published `runner-linux-x86_64` (sha256 `23efbbb2796f5d120caf6c78ca80cdad655c2d8a5263783423f94917d65cb4b6`,
+checked against the release's SHA256SUMS; GCC 13.3, highest symbol version GLIBC_2.38) was scored on all 23 rows with
+the instrument above: the same corpus, 2,000 positions, scorer, llama.cpp 73a43d1, reference and CPU settings, each row
+against llama.cpp and against the published 1.5.0 asset. Summaries:
+[`summaries-2026-10-26-asset-1.6.1.json`](golden-pass-evidence/gold-2k/summaries-2026-10-26-asset-1.6.1.json).
+
+**Against llama.cpp the published 1.6.1 binary reads closer to the publisher's reference on 20 of 23 rows** by the
+Wilcoxon verdict, the count of the 10-22 page. The three rows that do not:
+
+- **gemma-4-E2B, served: llama.cpp closer** (mean KL 0.8126 against 0.7910, Wilcoxon p 1.9e-9), as on 10-22.
+- **Qwen3-0.6B, served: not distinguishable** (0.3041 against 0.3046, p 0.096), as on 10-22.
+- **Trinity Nano, bf16: not distinguishable** (0.0460 against 0.0453, p 0.28), as on 10-22.
+
+On the reference's chosen token it is level or ahead on 22 of 23 rows (behind on Trinity Nano served, 97.43% against
+97.80%, as on 10-22), and it has the lower mean KL on 20. Trinity Nano served, the row this page's clang build moved to
+"not distinguishable", reads "1.6.1 closer" on the published binary (0.0626 against 0.0610, p 0.0023), as 1.5.0 did.
+
+**Against the published 1.5.0 asset, all 23 rows are identical at every scored position**: the two binaries give the
+same per-position divergence everywhere, so the Wilcoxon test is undefined on every row and every verdict is "not
+distinguishable". Built the same way, the 1.6.x engine changes nothing these 23 rows measure. The 19-of-23 count and the
+moves earlier on this page belong to the clang build this page scored; the README's count is the published binary's, 20
+of 23.
+
+Matched positions: as on 10-22 and earlier on this page, llama.cpp's side drops one position on Qwen2.5-0.5B (both tiers)
+and granite-4.2-3B (both tiers); every comparison above is over the positions both passes scored (at least 1,983), and
+the original scorer's statistics are applied unchanged to those positions.
