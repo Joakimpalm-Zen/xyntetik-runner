@@ -7682,6 +7682,12 @@ typedef struct {
     size_t      cap_dy, cap_dx;
     float      *h_x, *h_y;        // the forward's packed host rows
     size_t      cap_hx, cap_hy;
+    // R8.20 pinned staging: the host side of every product's copies in
+    // page-locked memory (the transposed product's dy and dx too), so the
+    // DMA runs from it directly; RUNNER_TRAIN_PINNED=0 keeps pageable copies
+    bool        pin;
+    float      *h_dy, *h_dx;
+    size_t      cap_hdy, cap_hdx;
     // RUNNER_TRAIN_PROF: wall time inside the two calls (transfers and the
     // sync included) and their counts, since the last gpu_train_prof
     double      t_mm, t_mvt, k_mm, k_mvt;   // k_: the launch and its sync alone
@@ -7824,6 +7830,8 @@ bool gpu_train_init(model_t *m) {
             "%.1f GB%s, %.1f GB reserved)\n", name, t->vram_budget / 1e9,
             t->budget_set ? ", --train-gpu-budget" : ", the free memory",
             t->arena_size / 1e9);
+    const char *pe = getenv("RUNNER_TRAIN_PINNED");
+    t->pin = cu.MemAllocHost && cu.MemFreeHost && !(pe && !strcmp(pe, "0"));
     m->train_gpu = t;
     m->train_gpu_err = 0;
     return true;
@@ -7846,8 +7854,15 @@ void gpu_train_free(model_t *m) {
     free(t->cache);
     free(t->dn_slot);
     free(t->cpu_kept);
-    free(t->h_x);
-    free(t->h_y);
+    if (t->pin) {
+        if (t->h_x) cu.MemFreeHost(t->h_x);
+        if (t->h_y) cu.MemFreeHost(t->h_y);
+        if (t->h_dy) cu.MemFreeHost(t->h_dy);
+        if (t->h_dx) cu.MemFreeHost(t->h_dx);
+    } else {
+        free(t->h_x);
+        free(t->h_y);
+    }
     free(t);
     m->train_gpu = NULL;
 }
@@ -7929,6 +7944,7 @@ static CUdeviceptr tg_weights(train_gpu_t *t, const gguf_tensor *w) {
 
 static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
                       float *dx, int n_in, int n_out, int nb, bool dev);
+static bool tg_host(train_gpu_t *t, float **buf, size_t *cap, size_t n);
 
 bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
                    float *dx, int n_in, int n_out, int nb) {
@@ -7954,8 +7970,19 @@ static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
     if (!tg_scratch(&t->d_dy, &t->cap_dy, ny) ||
         !tg_scratch(&t->d_dx, &t->cap_dx, nx))
         return false;
-    if (cu.MemcpyHtoD(t->d_dy, dy, ny) != 0 ||
-        cu.MemcpyHtoD(t->d_dx, dx, nx) != 0)
+    const float *dyp = dy;
+    float *dxp = dx;
+    if (t->pin) {   // through the page-locked staging
+        if (!tg_host(t, &t->h_dy, &t->cap_hdy, ny / sizeof(float)) ||
+            !tg_host(t, &t->h_dx, &t->cap_hdx, nx / sizeof(float)))
+            return false;
+        memcpy(t->h_dy, dy, ny);
+        memcpy(t->h_dx, dx, nx);
+        dyp = t->h_dy;
+        dxp = t->h_dx;
+    }
+    if (cu.MemcpyHtoD(t->d_dy, dyp, ny) != 0 ||
+        cu.MemcpyHtoD(t->d_dx, dxp, nx) != 0)
         return false;
     mv_args a = { n_in, n_out, 0, 0, nb, n_out, n_in };
     void *p[] = { &weights, &t->d_dy, &t->d_dx, &a, &t->dummy };
@@ -7985,13 +8012,23 @@ static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
         cu.CtxSynchronize() != 0)
         return false;
     t->k_mvt += plat_now() - k0;
-    return cu.MemcpyDtoH(dx, t->d_dx, nx) == 0;
+    if (cu.MemcpyDtoH(dxp, t->d_dx, nx) != 0) return false;
+    if (dxp != dx) memcpy(dx, dxp, nx);
+    return true;
 }
 
-static bool tg_host(float **buf, size_t *cap, size_t n) {
+static bool tg_host(train_gpu_t *t, float **buf, size_t *cap, size_t n) {
     if (*cap >= n) return true;
-    float *b = realloc(*buf, sizeof(float) * n);
-    if (!b) return false;
+    float *b;
+    if (t->pin) {
+        void *pb = NULL;
+        if (cu.MemAllocHost(&pb, sizeof(float) * n) != 0) return false;
+        if (*buf) cu.MemFreeHost(*buf);
+        b = pb;
+    } else {
+        b = realloc(*buf, sizeof(float) * n);
+        if (!b) return false;
+    }
     *buf = b;
     *cap = n;
     return true;
@@ -8258,11 +8295,11 @@ static bool train_mm(train_gpu_t *t, const gguf_tensor *w, const float *x,
     size_t nx = (size_t)nb * n_in, ny = (size_t)nb * n_out;
     if (!tg_scratch(&t->d_dx, &t->cap_dx, sizeof(float) * nx) ||
         !tg_scratch(&t->d_dy, &t->cap_dy, sizeof(float) * ny) ||
-        !tg_host(&t->h_y, &t->cap_hy, ny))
+        !tg_host(t, &t->h_y, &t->cap_hy, ny))
         return false;
     const float *xp = x;
-    if (x_stride != n_in) {
-        if (!tg_host(&t->h_x, &t->cap_hx, nx)) return false;
+    if (x_stride != n_in || t->pin) {
+        if (!tg_host(t, &t->h_x, &t->cap_hx, nx)) return false;
         for (int c = 0; c < nb; c++)
             memcpy(t->h_x + (size_t)c * n_in, x + (size_t)c * x_stride,
                    sizeof(float) * (size_t)n_in);
