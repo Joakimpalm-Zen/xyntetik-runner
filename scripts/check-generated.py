@@ -9,10 +9,11 @@ its committed source into a temporary file and compares when the source artifact
 is present — a mismatch means the header is stale and must be re-embedded.
 
 The byte-embedding step is pure Python and reproducible on any host, so this
-runs in CI without a CUDA or Metal toolchain. (It does not verify the upstream
-kernels.cu -> kernels.ptx compile, which is nvcc/toolchain-dependent; that stays
-a development-machine step. When `src/kernels.ptx` is absent, the committed PTX
-header's `.target` is still checked against the documented CUDA minimum.)
+runs in CI without a CUDA or Metal toolchain. (The upstream kernels.cu ->
+kernels.ptx compile is checked by the ptx-reproducible workflow, which builds the
+pinned toolchain in tools/ptx-toolchain. When `src/kernels.ptx` is absent, the
+committed PTX header's `.target` is still checked against the documented CUDA
+minimum.)
 """
 import os
 import re

@@ -1,0 +1,40 @@
+name: ptx-reproducible
+
+# The committed PTX headers (src/kernels_ptx.h, src/kernels_ptx80.h) are
+# regenerated from source with the pinned toolchain (tools/ptx-toolchain) and
+# must match byte for byte (R8.23). nvcc needs no GPU, so a hosted runner
+# builds them.
+on:
+  pull_request:
+    paths: &ptx_inputs
+      - 'src/kernels*'
+      - 'src/kernel_args.h'
+      - 'src/tdn_args.h'
+      - 'src/iq_decode.h'
+      - 'src/kq_stage.h'
+      - 'scripts/embed-ptx.py'
+      - 'tools/ptx-toolchain/**'
+      - '.github/workflows/ptx-reproducible.yml'
+  push:
+    branches: [main]
+    paths: *ptx_inputs
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ptx-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  regenerate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: micromamba
+        run: |
+          curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/1.5.10 | tar -xj -C "$RUNNER_TEMP" bin/micromamba
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: make ptx with the pinned toolchain
+        run: MAMBA_ROOT_PREFIX="$RUNNER_TEMP/mamba" tools/ptx-toolchain/make-ptx.sh "$RUNNER_TEMP/ptx-toolchain"
+      - name: the committed headers, byte for byte
+        run: git diff --exit-code --stat src/kernels_ptx.h src/kernels_ptx80.h

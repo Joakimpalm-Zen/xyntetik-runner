@@ -1,0 +1,15 @@
+# The toolchain that reproduces the committed PTX headers byte for byte
+# (checked 2026-10-26: make ptx of runner main c57ad005 -> src/kernels_ptx.h 160f13f4..., src/kernels_ptx80.h 0e290c2a...)
+nvcc: Cuda compilation tools, release 13.0, V13.0.88
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+cuda-cccl_linux-64: 13.0.85 (1, nvidia)
+cuda-crt-dev_linux-64: 13.0.88 (0, nvidia)
+cuda-cudart-dev_linux-64: 13.0.96 (h376f20c_0, conda-forge)
+cuda-nvcc-tools: 13.0.88 (he02047a_0, conda-forge)
+cuda-nvvm-tools: 13.0.88 (h4bc722e_0, conda-forge)
+gcc_impl_linux-64: 15.2.0 (he0086c7_19, conda-forge)
+gxx_impl_linux-64: 15.2.0 (hda75c37_19, conda-forge)
+sysroot_linux-64: 2.39 (hc4b9eeb_6, conda-forge)
+host compiler: x86_64-conda-linux-gnu-gcc (conda-forge gcc 15.2.0-19) 15.2.0
+nvcc flags: -ptx -arch=compute_75 -O3 (src/kernels.cu), -ptx -arch=compute_80 -O3 (src/kernels_sm80.cu), -ccbin x86_64-conda-linux-gnu-gcc
+layout: targets/x86_64-linux/nvvm -> ../../nvvm (nvcc.profile looks for cicc there; the packages do not create it)

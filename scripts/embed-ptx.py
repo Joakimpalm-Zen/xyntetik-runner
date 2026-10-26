@@ -6,6 +6,7 @@ development machines only); the generated header is committed so normal builds
 and CI need no CUDA toolkit.
 """
 import os
+import re
 
 # EMBED_IN / EMBED_NAME select the compute_80 module (kernels_sm80.ptx ->
 # k_ptx80_src) that make ptx embeds beside the compute_75 one.
@@ -31,9 +32,39 @@ for i, ln in enumerate(lines):
         lines[i] = ".version 7.8"
         break
 
+# The toolchain the PTX is built with, named in the header (R8.23): the
+# pinned versions from tools/ptx-toolchain/versions.txt, the file make-ptx.sh
+# and the ptx-reproducible workflow build it from.
+def toolchain_line():
+    path = os.path.join(os.path.dirname(__file__), "..", "tools", "ptx-toolchain",
+                        "versions.txt")
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+    parts = []
+    m = re.search(r"Cuda compilation tools, release [\d.]+, V([\d.]+)", text)
+    if m:
+        parts.append("nvcc " + m.group(1))
+    names = {"cuda-crt-dev_linux-64": "crt", "cuda-cccl_linux-64": "cccl",
+             "cuda-cudart-dev_linux-64": "cudart-dev"}
+    for ln in text.splitlines():
+        key, _, val = ln.partition(": ")
+        if key in names:
+            parts.append(names[key] + " " + val.split()[0])
+    m = re.search(r"host compiler: .*\((conda-forge gcc [\d.-]+)\)", text)
+    if m:
+        parts.append("host " + m.group(1))
+    return ("// Toolchain: " + ", ".join(parts) +
+            " (tools/ptx-toolchain/make-ptx.sh with ptx-linux-64.lock).")
+
+
 name = os.environ.get("EMBED_NAME") or "k_ptx_src"
-out = [f"// Generated from {os.path.basename(src).replace('.ptx', '.cu')} via scripts/embed-ptx.py — do not edit.",
-       f"static const char *{name} ="]
+out = [f"// Generated from {os.path.basename(src).replace('.ptx', '.cu')} via scripts/embed-ptx.py — do not edit."]
+if toolchain_line():
+    out.append(toolchain_line())
+out.append(f"static const char *{name} =")
 for ln in lines:
     esc = ln.replace("\\", "\\\\").replace('"', '\\"')
     out.append(f'    "{esc}\\n"')

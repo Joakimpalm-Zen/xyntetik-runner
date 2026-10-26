@@ -342,3 +342,4 @@ evals/tooluse-shifted/results/*.json
 tests/compatibility/out/**
 !tests/compatibility/out/README.md
 tests/conformance/out-sanitized/
+.ptx-toolchain/

@@ -3281,11 +3281,12 @@ clean:
 	rm -f $(addprefix fuzz-,$(FUZZ_TARGETS))
 	rm -rf fuzz-corpus
 
-# regenerate the committed PTX header (dev machines only: needs nvcc + a host
-# compiler). Normal builds and CI use the committed src/kernels_ptx.h.
-# nvcc needs a host C++ compiler; on toolchain-in-a-prefix machines (conda cross
-# compilers) the default `gcc` is not on PATH, so pass NVCC_CCBIN explicitly:
-#   make ptx NVCC_CCBIN=x86_64-conda-linux-gnu-gcc
+# regenerate the committed PTX headers. Normal builds and CI use the committed
+# src/kernels_ptx.h and src/kernels_ptx80.h. Run it through
+# tools/ptx-toolchain/make-ptx.sh, which builds the pinned toolchain
+# (tools/ptx-toolchain/ptx-linux-64.lock) and reproduces the committed headers
+# byte for byte; another nvcc, other runtime headers or another host compiler
+# change kernels (R8.23). The ptx-reproducible workflow checks it.
 NVCC ?= nvcc
 NVCC_CCBIN ?=
 ptx: src/kernels.cu src/kernels_sm80.cu src/kernels_tc2.cuh src/kernels_tc2_iq.cuh \
