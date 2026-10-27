@@ -1,10 +1,10 @@
 {
   "schema": "xyntetik.runner.device-evidence.v1",
   "policy": {
-    "why": "CI proves what CI can reach. These are the device classes it cannot: they are physical machines in a lab, and nothing watches how long it has been since one of them last ran the gates. The Windows suite went nineteen days and eight failures before anybody noticed. A class belongs here only if a hosted runner cannot verify it; everything else belongs in .github/workflows/ci.yml.",
+    "why": "CI proves what CI can reach. These are the device classes it cannot: they are physical machines in a lab, and nothing watches how long it has been since one of them last ran the gates. The Windows suite went nineteen days and eight failures before anybody noticed. A class belongs here only if a hosted runner cannot verify it; everything else belongs in .github/workflows/ci.yml. Since 2026-10-27 the age is a backstop, not a schedule: a class is re-run when a change touches a path it covers (the pull request names it) and the gate refuses only a record older than the backstop. The 45 and 30-day limits before that re-ran every class on the calendar whether or not anything on its path had changed, which cost lab time and bought nothing a user could see.",
     "gate": "scripts/check-release.py refuses a tag while any owned class here is STALE, FAILING or NEVER, the same way it refuses a README and site that link different Hugging Face repositories. A borrowed class refuses only on a recorded failure.",
     "recording": "Rows are written by scripts/device-evidence.py --record from the runner's own --caps output on the machine in question, and the class's `expect` block refuses a recording made on the wrong one. A row is a machine's statement about a machine, not a line somebody typed.",
-    "default_max_age_days": 45,
+    "default_max_age_days": 120,
     "ownership": "Each class says whose machine it is: owned (the project's own hardware, which the gate may require to be fresh) or borrowed (lent with no terms, usable while it is there, never depended on). A borrowed class is reported like any other and its records stay dated evidence, but its age never refuses a tag; a recorded failure on it still does, because a failure is a fact about the engine, not about who owns the box."
   },
   "classes": [
@@ -14,7 +14,6 @@
       "covers": "the MinGW build, every Windows-only path in the harness, and the only display-attached NVIDIA card in the lab, which is a test surface a headless datacenter GPU does not have (v0.4.2 reported every desktop card as unified memory and a headless box would have passed it)",
       "host": "the Windows CUDA host, RTX 3070 8 GB, CUDA 13.3, MSYS2 UCRT64",
       "ownership": "owned",
-      "max_age_days": 30,
       "expect": {
         "os": "windows",
         "arch": "x86_64",
@@ -43,7 +42,6 @@
       "host": "the Linux CUDA host (RTX PRO 6000, MIG slice)",
       "ownership": "borrowed",
       "terms": "lent by a private contact with no terms (decision 2026-10-27): the lab may use it while it is there and must never depend on it; nothing Runner needs may exist only on it",
-      "max_age_days": 45,
       "expect": {
         "os": "linux",
         "arch": "x86_64",
@@ -71,7 +69,6 @@
       "covers": "the Metal backend and the second device family that is itself a gate (the M1 caught the M5's fast-math rope contraction bug). GitHub's macOS runner builds this configuration on every push but is not where the Metal gates are trusted from.",
       "host": "the lab's Apple Silicon Mac, and whichever Apple Silicon box is on loan",
       "ownership": "owned",
-      "max_age_days": 45,
       "expect": {
         "os": "macos",
         "arch": "arm64",

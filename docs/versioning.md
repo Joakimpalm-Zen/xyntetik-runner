@@ -73,6 +73,15 @@ These were never cross-version promises, and 1.0 does not make them one:
 - **Build internals**: Makefile targets other than `make` and `make test`,
   test fixtures and the `scripts/` directory.
 
+## When a release is cut
+
+A release is cut when there is a user-visible change to ship: a feature, a
+fix, a model file admitted or a limit declared. There is no schedule, and
+merged work waits on main until such a change exists. The gates above run
+at that moment, not on a calendar: the device ledger and the model roster
+hold their records for 120 days as a backstop, and a record is renewed
+earlier only when a change touches the path it covers.
+
 ## Support
 
 The latest 1.x release is supported. Fixes land in the next release; there are
