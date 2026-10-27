@@ -175,7 +175,7 @@ def serve(args, adapter, port):
 def served_model_id(port):
     """The id the server serves (GET /v1/models), or None. The chat leg must
     name a served model: a placeholder is refused with 404 and a refused
-    request is not a decision (the first ZEN run scored 150 refusals per
+    request is not a decision (the first Windows-host run scored 150 refusals per
     arm as 52 none-matches, 2026-09-23)."""
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=20) as r:
@@ -479,7 +479,7 @@ def chat_request(model_id, messages, tools):
         "tool_choice": "auto",
         "temperature": 0,
         # Qwen3 thinks by default and a 64-token budget was spent inside
-        # the think block on every prompt (the first ZEN run: 0 calls,
+        # the think block on every prompt (the first Windows-host run: 0 calls,
         # every row finish_reason length). The leg measures the decision,
         # not the reasoning budget: thinking off, a budget a call fits in.
         "enable_thinking": False,

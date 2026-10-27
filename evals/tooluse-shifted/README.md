@@ -210,7 +210,7 @@ The box was running a training job beside these arms (load 12 to 23); one
 arm lost its server under that load and was rerun. Right tool / exact of
 150 on the raw leg, tool / exact on the native leg:
 
-| arm | raw, ZEN (8 threads) | raw, lab (16 threads) | native, ZEN | native, lab |
+| arm | raw, Windows host (8 threads) | raw, Linux host (16 threads) | native, Windows host | native, Linux host |
 |---|---|---|---|---|
 | base | 92 / 46 | 92 / 46 | 103 / 71 | 103 / 71 |
 | published (Q4_K_M) | 103 / 57 | 103 / 57 | 104 / 67 | 104 / 67 |
@@ -221,10 +221,10 @@ Row-level agreement between the hosts, not just the totals: base,
 published and BF16 arms are identical on every one of the 150 rows on
 both legs, outputs and verdicts, across a different OS, compiler and
 thread count. The Q8_0 arm agrees on 149 of 150 raw outputs and 149 of
-150 native verdicts between ZEN and the lab at 8 threads: one raw row
+150 native verdicts between the Windows host and the Linux host at 8 threads: one raw row
 (`none_case_32`) diverges 134 characters into a long answer with the same
 verdict, and one native row (`multi_intent_27`) resolves to a different
-call (`ls_recursive` on ZEN, no call on the lab) with top-2 margins of 0.08
+call (`ls_recursive` on the Windows host, no call on the Linux host) with top-2 margins of 0.08
 and 0.13, not a tie. The adapter path is the only one that differs at all
 between the two x86 hosts; the base forward is identical on all 150 rows.
 The lab's 16-thread Q8_0 record differs from its 8-thread one on three
