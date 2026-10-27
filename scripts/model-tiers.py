@@ -3,7 +3,7 @@
 each one last passed its gate on each backend.
 
 A tier is a maintenance and validation commitment, not a compatibility list:
-the support matrix, `--caps` and `--doctor` say what loads, and the evidence
+the support matrix, `--info caps` and `--info doctor` say what loads, and the evidence
 documents say what was measured. This file says which of those
 configurations are re-checked on every release, and it carries the result of
 that check per backend so docs/model-support.md can show it without anybody
@@ -16,14 +16,14 @@ A Tier 1 row's backend cell is one of exactly three things:
 
   * a recorded gate: written by `--record` from a smoke run's result file,
     naming the Runner version, the day, the device class, the commit, the
-    machine's own `--caps` fingerprint and the digest of the output it
+    machine's own `--info caps` fingerprint and the digest of the output it
     compared;
   * a declared limit: the backend has no path for this file, with the
     support-matrix link that says so;
   * null: nobody ran the gate. Never a pass, and never inferred from a
     neighbouring file or backend.
 
-The same run records the file's `--adapt-info` answer (policy decision 6):
+The same run records the file's `--info adapter` answer (policy decision 6):
 whether the LoRA backward admits the file and whether an adapter can be
 served on it, each with the refusal sentence when not. A row's
 `transitions` is its tier history, newest last; the transition log in
@@ -79,7 +79,7 @@ FEATURES = ("text", "tools", "structured_output", "reasoning", "vision",
 #               reference.
 FP32_REFERENCE = ("measured", "owed", "infeasible", "self")
 # What the file is, and how a companion is loaded beside the row it runs
-# with: an MTP head as `-m TRUNK --mtp-file HEAD`, an adapter as
+# with: an MTP head as `-m TRUNK --draft mtp:HEAD`, an adapter as
 # `-m BASE --lora ADAPTER`. A model file runs on its own.
 FILE_KINDS = {"model": None, "mtp-head": "mtp-file", "adapter": "lora"}
 ANOTHER_ENGINE = "anchor: agreement with another engine, not fidelity"
@@ -212,7 +212,7 @@ def _lora_errors(where, lora):
     if lora is None:
         return []
     if not isinstance(lora, dict):
-        return [f"{where}: lora is null or a recorded --adapt-info answer"]
+        return [f"{where}: lora is null or a recorded --info adapter answer"]
     errs = []
     for half in ("training", "adapter_serving"):
         h = lora.get(half)
@@ -471,7 +471,7 @@ def stale(doc, now, out=None, borrowed=None):
 
 def record(doc, row_id, res, devices):
     """Write one smoke run's result into its row: the backend cell and the
-    file's --adapt-info answer. Refuses anything that would make the roster
+    file's --info adapter answer. Refuses anything that would make the roster
     say something no machine said."""
     if res.get("schema") != RESULT_SCHEMA:
         raise SystemExit(f"result schema is {res.get('schema')!r}, expected {RESULT_SCHEMA!r}")
@@ -549,7 +549,7 @@ def record(doc, row_id, res, devices):
     }
     info = res.get("adapt_info")
     if not isinstance(info, dict):
-        raise SystemExit("the result carries no --adapt-info answer")
+        raise SystemExit("the result carries no --info adapter answer")
     row["lora"] = {
         "training": {"supported": info["training"]["supported"],
                      "reason": info["training"]["reason"]},
@@ -657,7 +657,7 @@ PARTIAL = "🟨"
 OVERVIEW_LEGEND = (
     "✅ *version date*: recorded gate · blank: nobody has run it yet · n/a: declared "
     "limit, linked to the manual · failed *version date*: recorded failure · Train: the "
-    "file's own `--adapt-info` answer, where ✅ means the LoRA backward admits the file, "
+    "file's own `--info adapter` answer, where ✅ means the LoRA backward admits the file, "
     "not that training it gives good results. A family's line sums up every file of its "
     "models, per backend and for Train: ✅ all recorded · "
     f"{PARTIAL} *k of n*: k of its n files recorded, a declared limit beside them "
@@ -690,7 +690,7 @@ def overview_mark(cell, borrowed=frozenset()):
 
 
 def overview_train(lora):
-    """The Train cell: the recorded --adapt-info answer, blank when no gate
+    """The Train cell: the recorded --info adapter answer, blank when no gate
     has recorded one; a refusal is the engine's sentence and may wrap."""
     if lora is None:
         return "<td></td>"
@@ -828,7 +828,7 @@ def _cell_detail(cell, borrowed=frozenset()):
 
 def _lora_detail(lora):
     if lora is None:
-        return ["- **LoRA:** ☐ not run (no gate has recorded the file's `--adapt-info` answer)."]
+        return ["- **LoRA:** ☐ not run (no gate has recorded the file's `--info adapter` answer)."]
     out = []
     for half, label in (("training", "training"), ("adapter_serving", "adapter serving")):
         h = lora[half]
@@ -866,7 +866,7 @@ def _row_doc(row, by_id, level=4, borrowed=frozenset()):
         lines.append(f"- **Quantization:** {row['quantization']}.")
     rw = row.get("runs_with")
     if rw:
-        flag = {"mtp-file": "--mtp-file", "lora": "--lora"}[rw["as"]]
+        flag = {"mtp-file": "--draft mtp:FILE", "lora": "--lora"}[rw["as"]]
         base = by_id.get(rw["row"], {})
         lines.append(f"- **Runs with:** [{base.get('model', rw['row'])}](#{rw['row']}), "
                      f"loaded beside it with `{flag}`; the smoke and its pin are of "

@@ -294,7 +294,7 @@ ISTA-DASLab's IQ3_S file with every quantised block's fp16 scales retrained agai
 <a id="qwen3.8-27b-mtp-q8_0"></a>
 ##### `Qwen3.8-27B-MTP-Q8_0.gguf`
 
-The NextN/MTP predictor head for Qwen3.8-27B, loaded with --draft mtp:beside a trunk: it only proposes tokens, so the text is the trunk's own greedy output; it is a speed feature, not a model.
+The NextN/MTP predictor head for Qwen3.8-27B, loaded with --draft mtp:FILE beside a trunk: it only proposes tokens, so the text is the trunk's own greedy output; it is a speed feature, not a model.
 
 - **File:** `Qwen3.8-27B-MTP-Q8_0.gguf` (sha256 `89e31f13400bac27b888f10bab02ff4d8da1f8610fa078dc32f9f3f0d2b6f6c9`, 3,164,006,784 bytes, from [Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF) at revision `7b10f923a7f7`).
 - **Upstream checkpoint:** Qwen/Qwen3.8-27B.
@@ -348,11 +348,11 @@ Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for 
 - **Features claimed:** mtp. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison is feasible and owed):** The trunk's greedy output is the reference: the head proposes and the trunk decides. The trunk itself is experimental (see the trunk row).
 - **Context tested:** not recorded.
-- **Still missing:** Every gate, run beside ISTA-DASLab's 2-part trunk (the 4-part set already carries a head, and --draft mtp:refuses a second one).
+- **Still missing:** Every gate, run beside ISTA-DASLab's 2-part trunk (the 4-part set already carries a head, and --draft mtp:FILE refuses a second one).
 - **Evidence:** [MANUAL.md#placement-and-memory](../MANUAL.md#placement-and-memory).
 - **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cpu backend, the policy's age limit.
 - **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `d10ba25da7047454`, [pin](../tests/compatibility/tier-smoke/qwen3.8-flash-next-mtp-q8_0.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** [n/a](../MANUAL.md#support-matrix): --draft mtp draft decoding on CUDA needs the whole trunk on the device; the IQ3_S trunk this head runs with holds 18 of 48 layers on a 24 GB device, and the partial split refuses with an error naming --gpu off (Linux CUDA host, 2026-10-25, runner f960e470). The head is smoked on the CPU path of the same class.
+- **CUDA:** [n/a](../MANUAL.md#support-matrix): --draft mtp decoding on CUDA needs the whole trunk on the device; the IQ3_S trunk this head runs with holds 18 of 48 layers on a 24 GB device, and the partial split refuses with an error naming --gpu off (Linux CUDA host, 2026-10-25, runner f960e470). The head is smoked on the CPU path of the same class.
 - **Metal:** [n/a](../MANUAL.md#support-matrix): MTP/NextN draft-head consumption is not implemented on Metal.
 - **LoRA training:** no: hyper-connections (qwen4exp) (runner 1.5.1, 2026-10-24).
 - **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
