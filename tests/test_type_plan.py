@@ -10,7 +10,6 @@ experts are stored stacked, one 3-D tensor per layer carrying every expert with
 a single type, so a rule can move a whole expert bank and nothing finer.
 """
 import json
-import os
 import pathlib
 import struct
 import subprocess
@@ -19,14 +18,6 @@ import sys
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-
-
-@pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if os.name == "nt" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
 
 
 @pytest.fixture(scope="module")

@@ -14,7 +14,7 @@ import sys
 import pytest
 
 from test_hf_fetch import (  # noqa: F401  (fixtures)
-    calls, fixture_model, hub, resolve_calls, run, runner_bin, sha256)
+    calls, fixture_model, hub, resolve_calls, run, sha256)
 
 
 def canon(p):

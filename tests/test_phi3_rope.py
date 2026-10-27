@@ -20,14 +20,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 PROMPT = "the runner reads a prompt in windows and every weight matrix is multiplied"
 
 
-@pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
 def _make(tmp_path, name, *extra):
     path = tmp_path / f"{name}.gguf"
     subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py",

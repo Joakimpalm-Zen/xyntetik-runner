@@ -146,14 +146,6 @@ def test_summary_reports_adapter_disagreement_and_carries_no_labels(tmp_path):
 
 
 @pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
-@pytest.fixture(scope="module")
 def model():
     path = ROOT / "test.gguf"
     if not path.exists():

@@ -118,29 +118,20 @@ static bool record_token(jv *v, int n_vocab, int32_t *out) {
     return true;
 }
 
-static int hex_nibble(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
 static bool record_hex(jv *v, const char **out, size_t *out_n) {
     if (!v || v->type != J_STR) return false;
     size_t n = strlen(v->str);
     if (n % 2 != 0) return false;
     for (size_t i = 0; i < n; i++)
-        if (hex_nibble(v->str[i]) < 0) return false;
+        if (hex_digit_value(v->str[i]) < 0) return false;
     *out = v->str;
     *out_n = n / 2;
     return true;
 }
 
-// Read a whole file into a NUL-terminated malloc'd buffer, or NULL on any
-// error: open, seek, a negative or oversized length (ftell can return -1 and a
-// hostile/special file can be enormous), allocation, or a read error. The size
-// cap also keeps the later size arithmetic well clear of overflow. *out_len
-// gets the byte count (excluding the terminator).
+// The largest file the CLI reads whole (plat_read_file): a hostile or special
+// file can be enormous, and the cap keeps the later size arithmetic well
+// clear of overflow.
 #define MAX_INPUT_FILE (256u * 1024u * 1024u)
 // Seed bytes for --keygen: the OS generator, never the C library's.
 // Build flavor: the portable bit-exact configuration (make T3=1) marks its
@@ -188,32 +179,12 @@ static bool os_random(uint8_t *out, size_t n) {
 // next receipt to it and for checking a link.
 static bool receipt_chain_hash(const char *path, char out[65]);
 
-static char *read_file(const char *path, size_t *out_len) {
-    FILE *f = plat_fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0 || (unsigned long)sz > MAX_INPUT_FILE || fseek(f, 0, SEEK_SET) != 0) {
-        fclose(f);
-        return NULL;
-    }
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    size_t got = fread(buf, 1, (size_t)sz, f);
-    bool err = ferror(f) != 0;
-    fclose(f);
-    if (err) { free(buf); return NULL; }
-    buf[got] = 0;
-    if (out_len) *out_len = got;
-    return buf;
-}
-
 // A JSON schema's identity in a record (R1.1.2): the sha256 of its compact
 // JSON, key order kept -- what serve receipts record for a request's schema,
 // so how the file is spelled (indentation, spacing) is not identity.
 static bool schema_file_digest(const char *path, char hex[65]) {
     size_t n = 0;
-    char *b = read_file(path, &n);
+    char *b = plat_read_file(path, MAX_INPUT_FILE, &n);
     if (!b) return false;
     jv *v = json_parse(b, n);
     free(b);
@@ -408,7 +379,7 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
 
 static bool receipt_chain_hash(const char *path, char out[65]) {
     size_t n = 0;
-    char *buf = read_file(path, &n);
+    char *buf = plat_read_file(path, MAX_INPUT_FILE, &n);
     if (!buf) return false;
     jv *j = json_parse(buf, n);
     free(buf);
@@ -569,7 +540,7 @@ static bool dpo_pairs_load(tokenizer *tok, const char *path, bool no_bos,
                            int wctx, int eot_id, bool eot_all,
                            dpo_pair **out, int *out_n) {
     size_t data_n = 0;
-    char *data = read_file(path, &data_n);
+    char *data = plat_read_file(path, MAX_INPUT_FILE, &data_n);
     if (!data) {
         fprintf(stderr, "error: cannot read %s\n", path);
         return false;
@@ -753,7 +724,7 @@ static bool train_examples_load(tokenizer *tok, int n_vocab, const char *path,
                                 bool no_bos, int wctx, int eot_id, bool eot_all,
                                 bool ids_only, train_ex **out, int *out_n) {
     size_t data_n = 0;
-    char *data = read_file(path, &data_n);
+    char *data = plat_read_file(path, MAX_INPUT_FILE, &data_n);
     if (!data) {
         fprintf(stderr, "error: cannot read %s (regular files up to %u MiB "
                 "are supported)\n", path, MAX_INPUT_FILE / (1024u * 1024u));
@@ -2595,7 +2566,7 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
             return true;
         }
         size_t dn = 0;
-        char *dbuf = read_file(o->detect_path, &dn);
+        char *dbuf = plat_read_file(o->detect_path, MAX_INPUT_FILE, &dn);
         if (!dbuf) {
             fprintf(stderr, "error: --detect-watermark: cannot read %s\n", o->detect_path);
             *rc = 1;
@@ -2767,7 +2738,7 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
     if (o->prompt) o->prompt = *owned_prompt = unescape(o->prompt);
     if (o->prompt_file) {
         size_t flen = 0;
-        char *fdata = read_file(o->prompt_file, &flen);
+        char *fdata = plat_read_file(o->prompt_file, MAX_INPUT_FILE, &flen);
         if (!fdata) { fprintf(stderr, "error: cannot read %s\n", o->prompt_file); *rc = 1; return true; }
         size_t plen = o->prompt ? strlen(o->prompt) : 0;
         if (flen > SIZE_MAX - plen - 1) {   // checked concat length
@@ -2943,7 +2914,7 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
                                cli_verify *vr, int *rc) {
     if (o->verify_path) {
         size_t vlen = 0;
-        char *vbuf = read_file(o->verify_path, &vlen);
+        char *vbuf = plat_read_file(o->verify_path, MAX_INPUT_FILE, &vlen);
         if (!vbuf) {
             fprintf(stderr, "UNVERIFIABLE: cannot read %s\n", o->verify_path);
             *rc = 3;
@@ -3878,7 +3849,7 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
     }
     if (o->schema_file) {
         size_t ssz = 0;
-        char *sbuf = read_file(o->schema_file, &ssz);
+        char *sbuf = plat_read_file(o->schema_file, MAX_INPUT_FILE, &ssz);
         if (!sbuf) { fprintf(stderr, "error: cannot read %s\n", o->schema_file); return false; }
         struct jv *sj = json_parse(sbuf, ssz);
         free(sbuf);
@@ -5105,8 +5076,8 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
         size_t byte_cmp_n = replay_out.n < expected_bytes_n
                           ? replay_out.n : expected_bytes_n;
         for (size_t i = 0; i < byte_cmp_n; i++) {
-            int expected = hex_nibble(expected_hex[i * 2]) * 16 +
-                           hex_nibble(expected_hex[i * 2 + 1]);
+            int expected = hex_digit_value(expected_hex[i * 2]) * 16 +
+                           hex_digit_value(expected_hex[i * 2 + 1]);
             if ((unsigned char)replay_out.buf[i] != expected) {
                 byte_div_at = i;
                 break;
@@ -5142,8 +5113,8 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
         rc = 2;
     } else {
         int want = byte_div_at < expected_bytes_n
-                 ? hex_nibble(expected_hex[byte_div_at * 2]) * 16 +
-                   hex_nibble(expected_hex[byte_div_at * 2 + 1]) : -1;
+                 ? hex_digit_value(expected_hex[byte_div_at * 2]) * 16 +
+                   hex_digit_value(expected_hex[byte_div_at * 2 + 1]) : -1;
         int got = byte_div_at < replay_out.n
                 ? (unsigned char)replay_out.buf[byte_div_at] : -1;
         printf("{\"schema_version\":\"xyntetik.runner.verify.v1\","

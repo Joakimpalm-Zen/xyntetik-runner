@@ -1429,6 +1429,42 @@ bool plat_replace_file(const char *tmp_path, const char *path) {
 #endif
 }
 
+char *plat_read_file(const char *path, size_t max_bytes, size_t *n_out) {
+    FILE *f = plat_fopen(path, "rb");
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    long sz = ftell(f);
+    if (sz < 0 || (max_bytes && (unsigned long)sz > max_bytes) || fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return NULL; }
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    bool err = ferror(f) != 0;
+    fclose(f);
+    if (err || got != (size_t)sz) { free(buf); return NULL; }
+    buf[got] = 0;
+    if (n_out) *n_out = got;
+    return buf;
+}
+
+bool plat_mkdir_exist_ok(const char *path) {
+    if (plat_mkdir(path, 0755) == 0 || errno == EEXIST) return true;
+#ifdef _WIN32
+    return GetLastError() == ERROR_ALREADY_EXISTS;
+#else
+    return false;
+#endif
+}
+
+const char *plat_path_base(const char *path) {
+    const char *b = path;
+    for (const char *c = path; *c; c++)
+        if (*c == '/' || *c == '\\') b = c + 1;
+    return b;
+}
+
 char *plat_executable_path(void) {
 #ifdef __linux__
     // Opening this magic link reads the running image even when argv[0] was a

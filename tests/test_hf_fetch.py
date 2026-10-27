@@ -42,14 +42,6 @@ sys.exit(3)
 
 
 @pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
-@pytest.fixture(scope="module")
 def fixture_model(tmp_path_factory):
     m = tmp_path_factory.mktemp("m") / "test.gguf"
     subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(m)],
@@ -205,7 +197,6 @@ def test_a_listing_with_a_traversing_name_is_refused_whole(runner_bin, hub, tmp_
         # nothing was fetched: the listing was the only transfer
         assert resolve_calls(hub["log"]) == [], (bad, calls(hub["log"]))
         assert not (tmp_path / "escape-Q8_0.gguf").exists()
-
 
 
 def test_a_listing_with_an_impossible_size_is_refused(runner_bin, hub):

@@ -26,47 +26,17 @@ The generated files are committed, so running the tests needs neither.
 """
 import json
 import os
-import struct
+
+from gguf_fixture import ku, ks, kb, kas, kaf, kai, write_gguf
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTDIR = os.path.join(REPO, "tests", "fixtures")
 MODEL_REPO = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
-GGUF_U32, GGUF_F32, GGUF_STR, GGUF_ARR, GGUF_I32, GGUF_BOOL = 4, 6, 8, 9, 5, 7
 
-
-def s(x):
-    b = x.encode("utf-8")
-    return struct.pack("<Q", len(b)) + b
-
-
-def kv_u32(k, v):  return s(k) + struct.pack("<II", GGUF_U32, v)
-def kv_str(k, v):  return s(k) + struct.pack("<I", GGUF_STR) + s(v)
-def kv_bool(k, v): return s(k) + struct.pack("<IB", GGUF_BOOL, 1 if v else 0)
-
-
-def kv_arr_str(k, items):
-    out = [s(k) + struct.pack("<IIQ", GGUF_ARR, GGUF_STR, len(items))]
-    out.extend(s(it) for it in items)
-    return b"".join(out)
-
-
-def kv_arr_f32(k, items):
-    return (s(k) + struct.pack("<IIQ", GGUF_ARR, GGUF_F32, len(items)) +
-            struct.pack(f"<{len(items)}f", *items))
-
-
-def kv_arr_i32(k, items):
-    return (s(k) + struct.pack("<IIQ", GGUF_ARR, GGUF_I32, len(items)) +
-            struct.pack(f"<{len(items)}i", *items))
-
-
-def write_gguf(path, kvs):
-    meta = b"".join(kvs)
-    # no tensors: n_tensors is 0 and the tensor-info block is empty
-    head = struct.pack("<IIQQ", 0x46554747, 3, 0, len(kvs)) + meta
-    with open(path, "wb") as f:
-        f.write(head + b"\0" * ((-len(head)) % 32))
+def write_vocab(path, kvs):
+    # no tensors: metadata only, announced with its size
+    write_gguf(path, [], kvs, announce=False)
     print(f"wrote {os.path.relpath(path, REPO)} ({os.path.getsize(path) / 1024:.0f} KB)")
 
 
@@ -95,22 +65,22 @@ def main():
     merges = [m if isinstance(m, str) else " ".join(m) for m in raw_merges]
 
     common = [
-        kv_str("general.architecture", "llama"),
-        kv_str("tokenizer.ggml.model", "llama"),
-        kv_arr_str("tokenizer.ggml.tokens", tokens),
-        kv_arr_i32("tokenizer.ggml.token_type", ttype),
-        kv_u32("tokenizer.ggml.bos_token_id", 1),
-        kv_u32("tokenizer.ggml.eos_token_id", 2),
-        kv_u32("tokenizer.ggml.unknown_token_id", 0),
-        kv_bool("tokenizer.ggml.add_bos_token", True),
+        ks("general.architecture", "llama"),
+        ks("tokenizer.ggml.model", "llama"),
+        kas("tokenizer.ggml.tokens", tokens),
+        kai("tokenizer.ggml.token_type", ttype),
+        ku("tokenizer.ggml.bos_token_id", 1),
+        ku("tokenizer.ggml.eos_token_id", 2),
+        ku("tokenizer.ggml.unknown_token_id", 0),
+        kb("tokenizer.ggml.add_bos_token", True),
     ]
 
     os.makedirs(OUTDIR, exist_ok=True)
-    write_gguf(os.path.join(OUTDIR, "vocab-spm.gguf"),
-               common + [kv_arr_f32("tokenizer.ggml.scores", scores)])
-    write_gguf(os.path.join(OUTDIR, "vocab-spm-zeroscores.gguf"),
-               common + [kv_arr_f32("tokenizer.ggml.scores", [0.0] * n),
-                         kv_arr_str("tokenizer.ggml.merges", merges)])
+    write_vocab(os.path.join(OUTDIR, "vocab-spm.gguf"),
+               common + [kaf("tokenizer.ggml.scores", scores)])
+    write_vocab(os.path.join(OUTDIR, "vocab-spm-zeroscores.gguf"),
+               common + [kaf("tokenizer.ggml.scores", [0.0] * n),
+                         kas("tokenizer.ggml.merges", merges)])
 
 
 def bpe_alphabet():
@@ -167,14 +137,14 @@ def make_bpe_fixtures():
 
 
     common = [
-        kv_str("general.architecture", "llama"),
-        kv_str("tokenizer.ggml.model", "gpt2"),
-        kv_arr_str("tokenizer.ggml.tokens", tokens),
-        kv_arr_i32("tokenizer.ggml.token_type", [1] * len(tokens)),
-        kv_arr_str("tokenizer.ggml.merges", merges),
-        kv_u32("tokenizer.ggml.bos_token_id", 0),
-        kv_u32("tokenizer.ggml.eos_token_id", 0),
-        kv_bool("tokenizer.ggml.add_bos_token", False),
+        ks("general.architecture", "llama"),
+        ks("tokenizer.ggml.model", "gpt2"),
+        kas("tokenizer.ggml.tokens", tokens),
+        kai("tokenizer.ggml.token_type", [1] * len(tokens)),
+        kas("tokenizer.ggml.merges", merges),
+        ku("tokenizer.ggml.bos_token_id", 0),
+        ku("tokenizer.ggml.eos_token_id", 0),
+        kb("tokenizer.ggml.add_bos_token", False),
     ]
     for name, pre in [("vocab-bpe-llama3.gguf", "llama-bpe"),
                       ("vocab-bpe-gpt4o.gguf", "gpt-4o"),
@@ -182,8 +152,8 @@ def make_bpe_fixtures():
                       ("vocab-bpe-qwen35.gguf", "qwen35"),
                       ("vocab-bpe-smollm.gguf", "smollm"),
                       ("vocab-bpe-granite-docling.gguf", "granite-docling")]:
-        write_gguf(os.path.join(OUTDIR, name),
-                   common + [kv_str("tokenizer.ggml.pre", pre)])
+        write_vocab(os.path.join(OUTDIR, name),
+                   common + [ks("tokenizer.ggml.pre", pre)])
 
 
 def make_bpe_spm_fixture():
@@ -219,16 +189,16 @@ def make_bpe_spm_fixture():
                 tokens.append(acc)
                 ttype.append(1)
 
-    write_gguf(os.path.join(OUTDIR, "vocab-bpe-spm-gemma4.gguf"), [
-        kv_str("general.architecture", "gemma4"),
-        kv_str("tokenizer.ggml.model", "gemma4"),
-        kv_arr_str("tokenizer.ggml.tokens", tokens),
-        kv_arr_i32("tokenizer.ggml.token_type", ttype),
-        kv_arr_str("tokenizer.ggml.merges", merges),
-        kv_u32("tokenizer.ggml.bos_token_id", 2),
-        kv_u32("tokenizer.ggml.eos_token_id", 1),
-        kv_u32("tokenizer.ggml.unknown_token_id", 3),
-        kv_bool("tokenizer.ggml.add_bos_token", False),
+    write_vocab(os.path.join(OUTDIR, "vocab-bpe-spm-gemma4.gguf"), [
+        ks("general.architecture", "gemma4"),
+        ks("tokenizer.ggml.model", "gemma4"),
+        kas("tokenizer.ggml.tokens", tokens),
+        kai("tokenizer.ggml.token_type", ttype),
+        kas("tokenizer.ggml.merges", merges),
+        ku("tokenizer.ggml.bos_token_id", 2),
+        ku("tokenizer.ggml.eos_token_id", 1),
+        ku("tokenizer.ggml.unknown_token_id", 3),
+        kb("tokenizer.ggml.add_bos_token", False),
     ])
 
 

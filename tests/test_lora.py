@@ -36,14 +36,6 @@ PROMPT = "the quick brown fox jumps over the lazy dog and keeps on running"
 
 
 @pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
-@pytest.fixture(scope="module")
 def fx(tmp_path_factory):
     d = tmp_path_factory.mktemp("lora")
     base = d / "base.gguf"

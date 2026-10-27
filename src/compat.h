@@ -171,6 +171,18 @@ const char *plat_page_fault_counter(void);
 // (plat_capacity). 0 where unavailable.
 uint64_t    plat_ram_available_bytes(void);
 bool        plat_file_readable(const char *path);
+// A whole regular file as a malloc'd buffer with a NUL after the last byte
+// (*n_out gets the byte count without it). NULL when the file cannot be
+// opened or measured, is larger than max_bytes (0 = no cap), cannot be
+// allocated, or does not read back in full: a short or failed read is an
+// error, never a shorter file.
+char       *plat_read_file(const char *path, size_t max_bytes, size_t *n_out);
+// The last path component: what follows the last '/' or '\\' (both count on
+// every platform, so a path spelled the other platform's way still names
+// its file), or the whole string when it has neither.
+const char *plat_path_base(const char *path);
+// mkdir that counts an existing directory as success (mode 0755 on POSIX)
+bool        plat_mkdir_exist_ok(const char *path);
 double      plat_now(void);        // monotonic seconds
 
 // The ANSI code page of this process: the one Windows' narrow (-A) APIs and

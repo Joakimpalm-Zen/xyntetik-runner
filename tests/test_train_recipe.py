@@ -27,14 +27,6 @@ LINES = [
 POS = 5
 
 
-@pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
 def write_npy(path, descr, shape, payload):
     dims = ", ".join(str(s) for s in shape)
     hdr = "{'descr': '%s', 'fortran_order': False, 'shape': (%s), }" % (descr, dims)

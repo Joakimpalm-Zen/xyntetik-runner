@@ -19,26 +19,6 @@
 #define PACK_MAX_RECEIPTS 100000
 #define BUNDLE_MAX_FILE (256u * 1024u * 1024u)
 
-static char *slurp(const char *path, size_t *n) {
-    FILE *f = plat_fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0 || (unsigned long)sz > BUNDLE_MAX_FILE || fseek(f, 0, SEEK_SET)) {
-        fclose(f);
-        return NULL;
-    }
-    char *b = malloc((size_t)sz + 1);
-    if (!b) { fclose(f); return NULL; }
-    size_t got = fread(b, 1, (size_t)sz, f);
-    bool err = ferror(f) != 0;
-    fclose(f);
-    if (err || got != (size_t)sz) { free(b); return NULL; }
-    b[got] = 0;
-    *n = got;
-    return b;
-}
-
 static bool spill(const char *path, const void *data, size_t n) {
     FILE *f = plat_fopen(path, "wb");
     bool ok = f && fwrite(data, 1, n, f) == n && fflush(f) == 0;
@@ -52,20 +32,6 @@ static void join(char *out, size_t cap, const char *dir, const char *name) {
     snprintf(out, cap, "%s%s%s", dir, slash ? "" : "/", name);
 }
 
-static const char *base_of(const char *p) {
-    const char *b = p;
-    for (const char *c = p; *c; c++)
-        if (*c == '/' || *c == '\\') b = c + 1;
-    return b;
-}
-
-static int hexval(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
 // sha256 of the key bytes a hex string spells: the receipt key's fingerprint
 static bool key_fingerprint(const char *hex, char out[65]) {
     size_t n = strlen(hex);
@@ -73,7 +39,7 @@ static bool key_fingerprint(const char *hex, char out[65]) {
     uint8_t *b = malloc(n / 2);
     if (!b) return false;
     for (size_t i = 0; i < n / 2; i++) {
-        int hi = hexval(hex[2 * i]), lo = hexval(hex[2 * i + 1]);
+        int hi = hex_digit_value(hex[2 * i]), lo = hex_digit_value(hex[2 * i + 1]);
         if (hi < 0 || lo < 0) { free(b); return false; }
         b[i] = (uint8_t)(hi << 4 | lo);
     }
@@ -92,18 +58,11 @@ static bool chain_recompute(const char *rec, size_t n, char out[65]) {
     return true;
 }
 
-static void put_str(sbuf *b, const char *s) {
-    if (!s) { sb_lit(b, "null"); return; }
-    sb_lit(b, "\"");
-    sb_esc(b, s, strlen(s));
-    sb_lit(b, "\"");
-}
-
 // ------------------------------------------------------------------ export
 
 int bundle_export(const bundle_opts *o) {
     size_t rn = 0;
-    char *rec = slurp(o->receipt, &rn);
+    char *rec = plat_read_file(o->receipt, BUNDLE_MAX_FILE, &rn);
     if (!rec) {
         fprintf(stderr, "error: bundle: cannot read receipt %s\n", o->receipt);
         return 1;
@@ -163,13 +122,13 @@ int bundle_export(const bundle_opts *o) {
         goto out;
     }
     size_t sn = 0, pn = 0;
-    if (o->model_sig && !(sig = slurp(o->model_sig, &sn))) {
+    if (o->model_sig && !(sig = plat_read_file(o->model_sig, BUNDLE_MAX_FILE, &sn))) {
         fprintf(stderr, "error: bundle: cannot read %s\n", o->model_sig);
         goto out;
     }
     char key_fp[65] = "";
     if (o->model_pubkey) {
-        if (!(pub = slurp(o->model_pubkey, &pn)) ||
+        if (!(pub = plat_read_file(o->model_pubkey, BUNDLE_MAX_FILE, &pn)) ||
             !oms_pubkey_fingerprint(o->model_pubkey, key_fp)) {
             fprintf(stderr, "error: bundle: %s is not a readable PEM public "
                     "key\n", o->model_pubkey);
@@ -200,7 +159,7 @@ int bundle_export(const bundle_opts *o) {
     jv *model = jv_get(j, "model"), *build = jv_get(j, "build");
     sbuf m = {0};
     sb_lit(&m, "{\"schema_version\":\"" BUNDLE_SCHEMA "\",\"created_utc\":");
-    put_str(&m, utc);
+    sb_str(&m, utc);
     sb_fmt(&m, ",\"files\":[{\"name\":\"receipt.json\",\"sha256\":\"%s\","
                "\"bytes\":%zu}", h_rec, rn);
     if (sig) sb_fmt(&m, ",{\"name\":\"model.sig\",\"sha256\":\"%s\",\"bytes\":%zu}",
@@ -208,46 +167,46 @@ int bundle_export(const bundle_opts *o) {
     if (pub) sb_fmt(&m, ",{\"name\":\"model-pubkey.pem\",\"sha256\":\"%s\","
                         "\"bytes\":%zu}", h_pub, pn);
     sb_lit(&m, "],\"receipt\":{\"file\":\"receipt.json\",\"chain_hash\":");
-    put_str(&m, chain);
+    sb_str(&m, chain);
     sb_lit(&m, ",\"chain_prev\":");
-    put_str(&m, jv_str(jv_get(jv_get(j, "chain"), "prev"), NULL));
+    sb_str(&m, jv_str(jv_get(jv_get(j, "chain"), "prev"), NULL));
     // never a key spelled "signature" inside the manifest: a signed record's
     // own signature is its LAST `,"signature"` (envelope.c), so a nested one
     // would be read as the manifest's
     sb_lit(&m, ",\"signed_by\":");
     if (st == RSIG_OK) {
         sb_lit(&m, "{\"algo\":");
-        put_str(&m, algo);
+        sb_str(&m, algo);
         sb_lit(&m, ",\"public_key\":");
-        put_str(&m, pk);
+        sb_str(&m, pk);
         sb_lit(&m, ",\"fingerprint\":");
-        put_str(&m, fp);
+        sb_str(&m, fp);
         sb_lit(&m, "}");
     } else {
         sb_lit(&m, "null");
     }
     sb_lit(&m, "},\"model\":{\"name\":");
-    put_str(&m, base_of(jv_str(jv_get(model, "path"), "")));
+    sb_str(&m, plat_path_base(jv_str(jv_get(model, "path"), "")));
     sb_lit(&m, ",\"sha256\":");
-    put_str(&m, jv_str(jv_get(model, "sha256"), NULL));
+    sb_str(&m, jv_str(jv_get(model, "sha256"), NULL));
     sb_lit(&m, ",\"oms\":");
     jv *ms = jv_get(j, "model_signature");
     if (ms) jv_dump(ms, &m);
     else    sb_lit(&m, "null");
     sb_lit(&m, ",\"signature_file\":");
-    put_str(&m, sig ? "model.sig" : NULL);
+    sb_str(&m, sig ? "model.sig" : NULL);
     sb_lit(&m, ",\"key_file\":");
-    put_str(&m, pub ? "model-pubkey.pem" : NULL);
+    sb_str(&m, pub ? "model-pubkey.pem" : NULL);
     sb_lit(&m, ",\"key_fingerprint\":");
-    put_str(&m, pub ? key_fp : NULL);
+    sb_str(&m, pub ? key_fp : NULL);
     sb_lit(&m, "},\"binary\":{\"runner\":");
-    put_str(&m, jv_str(jv_get(j, "runner"), NULL));
+    sb_str(&m, jv_str(jv_get(j, "runner"), NULL));
     sb_lit(&m, ",\"sha256\":");
-    put_str(&m, jv_str(jv_get(build, "binary_sha256"), NULL));
+    sb_str(&m, jv_str(jv_get(build, "binary_sha256"), NULL));
     sb_lit(&m, ",\"os\":");
-    put_str(&m, jv_str(jv_get(build, "os"), NULL));
+    sb_str(&m, jv_str(jv_get(build, "os"), NULL));
     sb_lit(&m, ",\"arch\":");
-    put_str(&m, jv_str(jv_get(build, "arch"), NULL));
+    sb_str(&m, jv_str(jv_get(build, "arch"), NULL));
     sb_lit(&m, "},\"check\":\"runner --check-bundle DIR\",\"replay\":");
     {
         sbuf r = {0};
@@ -255,7 +214,7 @@ int bundle_export(const bundle_opts *o) {
                    "DIR/receipt.json");
         if (st == RSIG_OK) { sb_lit(&r, " --trust-key "); sb_put(&r, pk, strlen(pk)); }
         sb_put(&r, "", 1);
-        put_str(&m, r.failed ? "" : r.s);
+        sb_str(&m, r.failed ? "" : r.s);
         free(r.s);
     }
     sb_lit(&m, ",\"statement\":\"--check-bundle proves these files are the "
@@ -300,7 +259,7 @@ int bundle_check(const char *dir, const char *trust_hex) {
     char path[4096];
     join(path, sizeof path, dir, "bundle.json");
     size_t mn = 0;
-    char *man = slurp(path, &mn);
+    char *man = plat_read_file(path, BUNDLE_MAX_FILE, &mn);
     if (!man) {
         printf("UNVERIFIABLE: bundle %s: no readable bundle.json\n", dir);
         return 3;
@@ -355,7 +314,7 @@ int bundle_check(const char *dir, const char *trust_hex) {
     if (!plain_name(rname)) { rc = bad(dir, "no receipt file named", NULL); goto out; }
     join(path, sizeof path, dir, rname);
     size_t rn = 0;
-    if (!(rec = slurp(path, &rn))) { rc = bad(dir, "the receipt is unreadable", rname); goto out; }
+    if (!(rec = plat_read_file(path, BUNDLE_MAX_FILE, &rn))) { rc = bad(dir, "the receipt is unreadable", rname); goto out; }
     char chain[65];
     const char *mchain = jv_str(jv_get(mr, "chain_hash"), "");
     r = json_parse(rec, rn);
@@ -505,7 +464,7 @@ int pack_export(const pack_opts *o) {
         char path[4200];
         join(path, sizeof path, o->receipts_dir, names[i]);
         r[i].name = names[i];
-        if (!(r[i].bytes = slurp(path, &r[i].n)) ||
+        if (!(r[i].bytes = plat_read_file(path, BUNDLE_MAX_FILE, &r[i].n)) ||
             !(r[i].j = json_parse(r[i].bytes, r[i].n)) ||
             strcmp(jv_str(jv_get(r[i].j, "schema_version"), ""),
                    "xyntetik.runner.transcript.v1")) {
@@ -547,18 +506,18 @@ int pack_export(const pack_opts *o) {
     }
     size_t sn = 0, pn = 0, en = 0;
     char key_fp[65] = "", h_env[65] = "";
-    if (o->model_sig && !(sig = slurp(o->model_sig, &sn))) {
+    if (o->model_sig && !(sig = plat_read_file(o->model_sig, BUNDLE_MAX_FILE, &sn))) {
         fprintf(stderr, "error: pack: cannot read %s\n", o->model_sig);
         goto out;
     }
-    if (o->model_pubkey && (!(pub = slurp(o->model_pubkey, &pn)) ||
+    if (o->model_pubkey && (!(pub = plat_read_file(o->model_pubkey, BUNDLE_MAX_FILE, &pn)) ||
                             !oms_pubkey_fingerprint(o->model_pubkey, key_fp))) {
         fprintf(stderr, "error: pack: %s is not a readable PEM public key\n",
                 o->model_pubkey);
         goto out;
     }
     if (o->envelope) {
-        if (!(env = slurp(o->envelope, &en))) {
+        if (!(env = plat_read_file(o->envelope, BUNDLE_MAX_FILE, &en))) {
             fprintf(stderr, "error: pack: cannot read %s\n", o->envelope);
             goto out;
         }
@@ -572,18 +531,18 @@ int pack_export(const pack_opts *o) {
         }
     }
     for (int a = 0; a < o->n_attach; a++) {
-        const char *bn = base_of(o->attach[a]);
+        const char *bn = plat_path_base(o->attach[a]);
         if (!plain_name(bn) || reserved_name(bn)) {
             fprintf(stderr, "error: pack: attachment name %s is reserved or not a "
                     "plain file name\n", bn);
             goto out;
         }
         for (int b2 = 0; b2 < a; b2++)
-            if (!strcmp(bn, base_of(o->attach[b2]))) {
+            if (!strcmp(bn, plat_path_base(o->attach[b2]))) {
                 fprintf(stderr, "error: pack: two attachments are named %s\n", bn);
                 goto out;
             }
-        if (!(att[a] = slurp(o->attach[a], &attn[a]))) {
+        if (!(att[a] = plat_read_file(o->attach[a], BUNDLE_MAX_FILE, &attn[a]))) {
             fprintf(stderr, "error: pack: cannot read %s\n", o->attach[a]);
             goto out;
         }
@@ -620,7 +579,7 @@ int pack_export(const pack_opts *o) {
 #endif
     strftime(utc, sizeof utc, "%Y-%m-%dT%H:%M:%SZ", &g);
     sb_lit(&m, "{\"schema_version\":\"" PACK_SCHEMA "\",\"created_utc\":");
-    put_str(&m, utc);
+    sb_str(&m, utc);
     sb_lit(&m, ",\"files\":[");
     bool first = true;
     bool wrote_ok = true;
@@ -649,12 +608,12 @@ int pack_export(const pack_opts *o) {
     }
     for (int a = 0; a < o->n_attach && wrote_ok; a++) {
         char p[4200], h[65];
-        const char *bn = base_of(o->attach[a]);
+        const char *bn = plat_path_base(o->attach[a]);
         join(p, sizeof p, o->out_dir, bn);
         envelope_data_sha256(att[a], attn[a], h);
         wrote_ok = spill(p, att[a], attn[a]);
         sb_lit(&m, ",{\"name\":");
-        put_str(&m, bn);
+        sb_str(&m, bn);
         sb_fmt(&m, ",\"role\":\"attachment\",\"sha256\":\"%s\",\"bytes\":%zu}", h, attn[a]);
     }
     // the inferences, in write order, and whether they form one unbroken
@@ -667,52 +626,52 @@ int pack_export(const pack_opts *o) {
         if (i && (!prev || strcmp(prev, r[i - 1].hash))) breaks++;
         sb_fmt(&m, "%s{\"id\":\"%s\",\"file\":\"%s\",\"chain_prev\":",
                i ? "," : "", r[i].hash, r[i].name);
-        put_str(&m, prev);
+        sb_str(&m, prev);
         sb_lit(&m, ",\"api\":");
-        put_str(&m, jv_str(jv_get(sv, "api"), NULL));
+        sb_str(&m, jv_str(jv_get(sv, "api"), NULL));
         sb_lit(&m, ",\"request_id\":");
-        put_str(&m, jv_str(jv_get(sv, "request_id"), NULL));
+        sb_str(&m, jv_str(jv_get(sv, "request_id"), NULL));
         sb_lit(&m, ",\"shaped_by\":");
         jv *sb2 = jv_get(sv, "shaped_by");
         if (sb2) jv_dump(sb2, &m); else sb_lit(&m, "null");
         sb_lit(&m, ",\"signer_fingerprint\":");
-        put_str(&m, r[i].signed_ok ? r[i].fp : NULL);
+        sb_str(&m, r[i].signed_ok ? r[i].fp : NULL);
         sb_lit(&m, ",\"envelope_verdict\":");
-        put_str(&m, jv_str(jv_get(jv_get(j, "envelope"), "verdict"), NULL));
+        sb_str(&m, jv_str(jv_get(jv_get(j, "envelope"), "verdict"), NULL));
         sb_lit(&m, "}");
     }
     // "segment", never "chain": a signed record's own chain is its LAST
     // `,"chain":` (see the manifest note in bundle_export)
     sb_fmt(&m, "],\"segment\":{\"receipts\":%d,\"contiguous\":%s,\"breaks\":%d,"
                "\"first_prev\":", nr, breaks ? "false" : "true", breaks);
-    put_str(&m, jv_str(jv_get(jv_get(r[0].j, "chain"), "prev"), NULL));
+    sb_str(&m, jv_str(jv_get(jv_get(r[0].j, "chain"), "prev"), NULL));
     sb_fmt(&m, ",\"last_hash\":\"%s\"}", r[nr - 1].hash);
     jv *model = jv_get(r[0].j, "model"), *build = jv_get(r[0].j, "build");
     sb_lit(&m, ",\"model\":{\"name\":");
-    put_str(&m, base_of(jv_str(jv_get(model, "path"), "")));
+    sb_str(&m, plat_path_base(jv_str(jv_get(model, "path"), "")));
     sb_lit(&m, ",\"sha256\":");
-    put_str(&m, jv_str(jv_get(model, "sha256"), NULL));
+    sb_str(&m, jv_str(jv_get(model, "sha256"), NULL));
     sb_lit(&m, ",\"oms\":");
     jv *ms = jv_get(r[0].j, "model_signature");
     if (ms) jv_dump(ms, &m); else sb_lit(&m, "null");
     sb_lit(&m, ",\"signature_file\":");
-    put_str(&m, sig ? "model.sig" : NULL);
+    sb_str(&m, sig ? "model.sig" : NULL);
     sb_lit(&m, ",\"key_file\":");
-    put_str(&m, pub ? "model-pubkey.pem" : NULL);
+    sb_str(&m, pub ? "model-pubkey.pem" : NULL);
     sb_lit(&m, ",\"key_fingerprint\":");
-    put_str(&m, pub ? key_fp : NULL);
+    sb_str(&m, pub ? key_fp : NULL);
     sb_lit(&m, "},\"binary\":{\"runner\":");
-    put_str(&m, jv_str(jv_get(r[0].j, "runner"), NULL));
+    sb_str(&m, jv_str(jv_get(r[0].j, "runner"), NULL));
     sb_lit(&m, ",\"sha256\":");
-    put_str(&m, jv_str(jv_get(build, "binary_sha256"), NULL));
+    sb_str(&m, jv_str(jv_get(build, "binary_sha256"), NULL));
     sb_lit(&m, ",\"os\":");
-    put_str(&m, jv_str(jv_get(build, "os"), NULL));
+    sb_str(&m, jv_str(jv_get(build, "os"), NULL));
     sb_lit(&m, ",\"arch\":");
-    put_str(&m, jv_str(jv_get(build, "arch"), NULL));
+    sb_str(&m, jv_str(jv_get(build, "arch"), NULL));
     sb_lit(&m, "},\"envelope\":");
     if (env) {
         sb_fmt(&m, "{\"file\":\"envelope.json\",\"sha256\":\"%s\",\"verdict\":", h_env);
-        put_str(&m, jv_str(jv_get(jv_get(r[0].j, "envelope"), "verdict"), NULL));
+        sb_str(&m, jv_str(jv_get(jv_get(r[0].j, "envelope"), "verdict"), NULL));
         sb_lit(&m, "}");
     } else {
         sb_lit(&m, "null");
@@ -747,7 +706,7 @@ int pack_export(const pack_opts *o) {
         }
         for (int a = 0; a < o->n_attach; a++) {
             char p[4200];
-            join(p, sizeof p, o->out_dir, base_of(o->attach[a]));
+            join(p, sizeof p, o->out_dir, plat_path_base(o->attach[a]));
             plat_remove(p);
         }
         goto out;
@@ -775,7 +734,7 @@ int pack_check(const char *dir, const char *trust_hex) {
     char path[4200];
     join(path, sizeof path, dir, "pack.json");
     size_t mn = 0;
-    char *man = slurp(path, &mn);
+    char *man = plat_read_file(path, BUNDLE_MAX_FILE, &mn);
     if (!man) {
         printf("UNVERIFIABLE: pack %s: no readable pack.json\n", dir);
         return 3;
@@ -860,7 +819,7 @@ int pack_check(const char *dir, const char *trust_hex) {
         char fp[4200];
         join(fp, sizeof fp, dir, name);
         size_t rn = 0;
-        char *rec = slurp(fp, &rn);
+        char *rec = plat_read_file(fp, BUNDLE_MAX_FILE, &rn);
         jv *rj = rec ? json_parse(rec, rn) : NULL;
         char h[65], pk[SIGN_PUBHEX_CAP] = "", kfp[65] = "";
         const char *why = NULL;

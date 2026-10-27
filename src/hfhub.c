@@ -155,15 +155,6 @@ int hf_select_file(const char *const *names, int n, const char *tag, char *err, 
 
 // -------------------------------------------------------------- transfer
 
-static bool mkdir_one(const char *p) {
-    if (plat_mkdir(p, 0755) == 0 || errno == EEXIST) return true;
-#ifdef _WIN32
-    return GetLastError() == ERROR_ALREADY_EXISTS;
-#else
-    return false;
-#endif
-}
-
 // mkdir -p over `path`'s directories (the last component included)
 static bool mkdir_p(const char *path) {
     char buf[2048];
@@ -178,10 +169,10 @@ static bool mkdir_p(const char *path) {
 #else
         bool drive_root = false;
 #endif
-        if (!drive_root && !mkdir_one(buf)) return false;
+        if (!drive_root && !plat_mkdir_exist_ok(buf)) return false;
         buf[i] = c;
     }
-    return mkdir_one(buf);
+    return plat_mkdir_exist_ok(buf);
 }
 
 static bool file_size(const char *path, long long *size) {
@@ -217,22 +208,6 @@ static int curl_get(const char *url, const char *out, bool quiet, char *err, siz
     if (rc == -1) snprintf(err, errcap, "cannot run %s (set RUNNER_CURL, or install curl)", curl_program());
     else if (rc != 0) snprintf(err, errcap, "%s exited %d fetching %s", curl_program(), rc, url);
     return rc;
-}
-
-static char *read_whole(const char *path, size_t *len) {
-    FILE *f = plat_fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long n = ftell(f);
-    if (n < 0 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-    char *buf = malloc((size_t)n + 1);
-    if (!buf) { fclose(f); return NULL; }
-    size_t got = fread(buf, 1, (size_t)n, f);
-    fclose(f);
-    if (got != (size_t)n) { free(buf); return NULL; }
-    buf[n] = 0;
-    if (len) *len = (size_t)n;
-    return buf;
 }
 
 static bool cache_root(char *out, size_t cap) {
@@ -450,7 +425,7 @@ static char *fetch_impl(const char *spec, const char *flag, bool strict, hf_file
         return NULL;
     }
     size_t jn = 0;
-    char *js = read_whole(api_path, &jn);
+    char *js = plat_read_file(api_path, 0, &jn);
     jv *doc = js ? json_parse(js, jn) : NULL;
     free(js);
     jv *sib = doc ? jv_get(doc, "siblings") : NULL;

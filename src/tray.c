@@ -596,15 +596,6 @@ static int fetch_served_models(int port, char names[][128], int cap) {
 
 // ------------------------------------------------------------------- menu
 
-static const char *base_name(const char *p) {
-    const char *b = strrchr(p, '/');
-#ifdef _WIN32
-    const char *b2 = strrchr(p, '\\');
-    if (b2 && (!b || b2 > b)) b = b2;
-#endif
-    return b ? b + 1 : p;
-}
-
 static void label_copy(char *out, size_t cap, const char *text) {
     if (!cap) return;
     size_t n = strlen(text);
@@ -647,7 +638,7 @@ int tray_menu_build(tray_item *it, int cap) {
     if (st == MG_MISSING) {
         PUT(.kind = TRAY_K_LABEL);
         snprintf(row->label, sizeof row->label,
-                 "⚠ model file missing: %.470s", base_name(g_cfg.last_model));
+                 "⚠ model file missing: %.470s", plat_path_base(g_cfg.last_model));
     }
     if (g_lease_refused >= 0 && (st == MG_OFF || st == MG_EXITED)) {
         PUT(.kind = TRAY_K_LABEL);
@@ -662,7 +653,7 @@ int tray_menu_build(tray_item *it, int cap) {
     if (st == MG_STARTING) {
         PUT(.kind = TRAY_K_LABEL);
         snprintf(row->label, sizeof row->label,
-                 "● starting %.470s… (loading model)", base_name(g_cfg.last_model));
+                 "● starting %.470s… (loading model)", plat_path_base(g_cfg.last_model));
         PUT(.kind = TRAY_K_SUB_BEGIN);
         PUT(.kind = TRAY_K_ACTION, .action = TRAY_ACT_STOP_INSTANCE,
             .arg = g_managed_pid);
@@ -725,12 +716,12 @@ int tray_menu_build(tray_item *it, int cap) {
         PUT(.kind = TRAY_K_ACTION, .action = TRAY_ACT_PICK_MODEL);
         snprintf(row->label, sizeof row->label,
                  "Choose another model… (%.470s is gone)",
-                 base_name(g_cfg.last_model));
+                 plat_path_base(g_cfg.last_model));
     } else if (g_cfg.last_model[0]) {
         PUT(.kind = TRAY_K_ACTION, .action = TRAY_ACT_START_MANAGED);
         snprintf(row->label, sizeof row->label, "%s default runner (%.470s)",
                  st == MG_EXITED ? "Restart" : "Start",
-                 base_name(g_cfg.last_model));
+                 plat_path_base(g_cfg.last_model));
     } else {
         // This row is about the tray's OWN saved default, and the rows above
         // list every runner on the machine however it was started: a label

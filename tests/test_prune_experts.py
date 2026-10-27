@@ -32,14 +32,6 @@ PROMPT, N_GEN = "hello world", 8
 
 
 @pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if os.name == "nt" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
-@pytest.fixture(scope="module")
 def pruneprobe_model(tmp_path_factory):
     base = tmp_path_factory.mktemp("prune") / "m"
     subprocess.run([sys.executable, ROOT / "scripts/make-test-moe.py", str(base)],

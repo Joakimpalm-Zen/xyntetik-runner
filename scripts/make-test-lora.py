@@ -29,27 +29,18 @@ ssm_out) and its FFN, and on the first full-attention layer's q/k/v/output.
 LORA_ARCH overrides the architecture the adapter declares (a qwen35 adapter
 for a clef base is what llama.cpp's converter writes from the backbone).
 """
+import io
 import os
 import struct
 import sys
+
+from gguf_fixture import kf, ks, read_header, write_gguf, T_F32, T_F16
 
 BASE, OUT = sys.argv[1], sys.argv[2]
 BASE_ARCH = "llama"
 # LORA_ALPHA lets a test build two adapters that differ only in alpha
 ALPHA = float(os.environ.get("LORA_ALPHA", "8.0"))
 RANK = 4
-
-U32, F32T, STR = 4, 6, 8
-T_F32 = 0
-
-
-def s(x):
-    b = x.encode()
-    return struct.pack("<Q", len(b)) + b
-
-
-def ks(k, v): return s(k) + struct.pack("<I", STR) + s(v)
-def kf(k, v): return s(k) + struct.pack("<If", F32T, v)
 
 
 _seed = 0x1234
@@ -61,73 +52,18 @@ def rnd():
     return (_seed / 0x7FFFFFFF - 0.5) * 0.2
 
 
-def write_gguf(path, kvs, tensors):
-    m = b"".join(kvs)
-    info, off = b"", 0
-    for name, dims, payload, *rest in tensors:
-        info += s(name) + struct.pack("<I", len(dims))
-        info += b"".join(struct.pack("<Q", d) for d in dims)
-        info += struct.pack("<IQ", rest[0] if rest else T_F32, off)
-        off = (off + len(payload) + 31) & ~31
-    head = struct.pack("<IIQQ", 0x46554747, 3, len(tensors), len(kvs)) + m + info
-    with open(path, "wb") as f:
-        f.write(head + b"\0" * ((-len(head)) % 32))
-        for name, dims, payload, *rest in tensors:
-            f.write(payload)
-            f.write(b"\0" * ((-len(payload)) % 32))
-    print(f"wrote {path}")
-
-
 # ---- read the base: header walk sufficient for F32 fixture tensors
 def read_base(path):
     d = open(path, "rb").read()
-    magic, ver, n_t, n_kv = struct.unpack_from("<IIQQ", d, 0)
-    assert magic == 0x46554747
-    off = 24
-
-    def rstr():
-        nonlocal off
-        n = struct.unpack_from("<Q", d, off)[0]
-        off += 8
-        v = d[off:off + n].decode()
-        off += n
-        return v
-
-    def skip_val(t):
-        nonlocal off
-        sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
-        if t == 8:
-            rstr()
-        elif t == 9:
-            et, n = struct.unpack_from("<IQ", d, off)
-            off += 12
-            for _ in range(n):
-                skip_val(et)
-        else:
-            off += sizes[t]
-
+    kv, directory, end = read_header(io.BytesIO(d))
     global BASE_ARCH
-    for _ in range(n_kv):
-        key = rstr()
-        t = struct.unpack_from("<I", d, off)[0]
-        off += 4
-        if key == "general.architecture" and t == STR:
-            # the adapter must name the base's architecture (the loader
-            # refuses a mismatch); granite and muse-glimmer fixtures are not llama
-            n = struct.unpack_from("<Q", d, off)[0]
-            BASE_ARCH = d[off + 8:off + 8 + n].decode("utf-8")
-        skip_val(t)
-    tens = []
-    for _ in range(n_t):
-        name = rstr()
-        nd = struct.unpack_from("<I", d, off)[0]
-        off += 4
-        dims = list(struct.unpack_from("<%dQ" % nd, d, off))
-        off += 8 * nd
-        ttype, toff = struct.unpack_from("<IQ", d, off)
-        off += 12
-        tens.append([name, dims, ttype, toff])
-    data0 = (off + 31) & ~31
+    arch = kv.get("general.architecture")
+    if isinstance(arch, str):
+        # the adapter must name the base's architecture (the loader
+        # refuses a mismatch); granite and muse-glimmer fixtures are not llama
+        BASE_ARCH = arch
+    tens = [[name, dims, ttype, toff] for name, dims, ttype, toff in directory]
+    data0 = (end + 31) & ~31
     return d, tens, data0
 
 
@@ -198,17 +134,16 @@ meta = [ks("general.architecture", os.environ.get("LORA_ARCH", BASE_ARCH)),
 
 _seed = 0x1234
 adap = adapter_tensors(zero_b=False)
-write_gguf(OUT + ".adapter.gguf", meta, adap)
+write_gguf(OUT + ".adapter.gguf", adap, meta)
 
 _seed = 0x1234
-write_gguf(OUT + ".zero.gguf", meta, adapter_tensors(zero_b=True))
+write_gguf(OUT + ".zero.gguf", adapter_tensors(zero_b=True), meta)
 
 # the F16 twin: identical values rounded to half precision, T_F16 tensors
-T_F16 = 1
 f16 = [(n, d, struct.pack("<%de" % (len(p_) // 4),
                           *struct.unpack("<%df" % (len(p_) // 4), p_)), T_F16)
        for n, d, p_ in adap]
-write_gguf(OUT + ".f16.gguf", meta, f16)
+write_gguf(OUT + ".f16.gguf", f16, meta)
 
 # merged reference: base bytes with W += (alpha/r) * B @ A on the targets,
 # using the SAME adapter values (same seed replay)
@@ -264,21 +199,21 @@ for name, dims in all_target_dims():
     base = name[:-len(".weight")]
     full.append((f"{base}.weight.lora_a", [nin, FULL_RANK], pack_f(a)))
     full.append((f"{base}.weight.lora_b", [FULL_RANK, nout], pack_f(b)))
-write_gguf(OUT + ".full.gguf", meta, full)
+write_gguf(OUT + ".full.gguf", full, meta)
 
 # hostile variants
 nin, nout = targets[ANCHOR][0][0], targets[ANCHOR][0][1]
 AW = ANCHOR   # "blk.N.<proj>.weight"
 bad = [(f"{AW}.lora_a", [nin + 2, RANK], pack_f([0.1] * (RANK * (nin + 2)))),
        (f"{AW}.lora_b", [RANK, nout], pack_f([0.1] * (nout * RANK)))]
-write_gguf(OUT + ".badshape.gguf", meta, bad)
+write_gguf(OUT + ".badshape.gguf", bad, meta)
 extra = [(f"{AW}.lora_a", [nin, RANK, 2],
           pack_f([0.1] * (2 * RANK * nin))),
          (f"{AW}.lora_b", [RANK, nout],
           pack_f([0.1] * (nout * RANK)))]
-write_gguf(OUT + ".extradim.gguf", meta, extra)
+write_gguf(OUT + ".extradim.gguf", extra, meta)
 half = [(f"{AW}.lora_a", [nin, RANK], pack_f([0.1] * (RANK * nin)))]
-write_gguf(OUT + ".halfpair.gguf", meta, half)
+write_gguf(OUT + ".halfpair.gguf", half, meta)
 # A second tensor for the SAME (projection, side). The name is distinct, so
 # gguf's duplicate-name rule does not see it, and the merge loader's
 # name parse read the trailing "2" as nothing at all -- both landed in the one
@@ -287,4 +222,4 @@ write_gguf(OUT + ".halfpair.gguf", meta, half)
 dup = [(f"{AW}.lora_a", [nin, RANK], pack_f([0.1] * (RANK * nin))),
        (f"{AW}.lora_a2", [nin, RANK], pack_f([0.9] * (RANK * nin))),
        (f"{AW}.lora_b", [RANK, nout], pack_f([0.1] * (nout * RANK)))]
-write_gguf(OUT + ".dupside.gguf", meta, dup)
+write_gguf(OUT + ".dupside.gguf", dup, meta)

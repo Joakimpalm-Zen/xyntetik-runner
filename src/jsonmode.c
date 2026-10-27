@@ -184,10 +184,6 @@ bool jsonv_value_end(const jsonv *v) {
                              v->st == S_NUM_FRAC || v->st == S_NUM_EXP);
 }
 
-static bool is_ws(uint8_t c) {
-    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
-}
-
 static bool push(jsonv *v, uint8_t c) {
     // against the TOTAL depth, so a submachine cannot spend a budget its
     // parent has already spent (see depth_floor)
@@ -238,11 +234,11 @@ static bool feed_byte(jsonv *v, uint8_t c, bool *reconsume) {
         return false;
 
     case S_ARR_FIRST:
-        if (c == ']' && !is_ws(c)) { v->depth--; value_done(v); return true; }
+        if (c == ']' && !json_is_ws(c)) { v->depth--; value_done(v); return true; }
         // fall through: anything else must start a value
         FALLTHROUGH;
     case S_VALUE:
-        if (is_ws(c)) return true;
+        if (json_is_ws(c)) return true;
         if (c == '{') { v->st = S_KEY_OR_END; return push(v, 'O'); }
         if (c == '[') { v->st = S_ARR_FIRST; return push(v, 'A'); }
         if (c == '"') { v->st = S_STRING; v->sub = 0; return true; }
@@ -255,7 +251,7 @@ static bool feed_byte(jsonv *v, uint8_t c, bool *reconsume) {
         return false;
 
     case S_KEY_OR_END:
-        if (is_ws(c)) return true;
+        if (json_is_ws(c)) return true;
         if (c == '"') {
             // FAIL CLOSED at guard capacity: an untracked key would reopen
             // the duplicate hole; `}` stays legal here, so refusing the key
@@ -269,7 +265,7 @@ static bool feed_byte(jsonv *v, uint8_t c, bool *reconsume) {
         return false;
 
     case S_KEY_EXPECT:
-        if (is_ws(c)) return true;
+        if (json_is_ws(c)) return true;
         if (c == '"') {
             v->st = S_KEY; v->sub = 0;
             v->khash = json_key_hash_init();
@@ -345,12 +341,12 @@ static bool feed_byte(jsonv *v, uint8_t c, bool *reconsume) {
     }
 
     case S_COLON:
-        if (is_ws(c)) return true;
+        if (json_is_ws(c)) return true;
         if (c == ':') { v->st = S_VALUE; return true; }
         return false;
 
     case S_AFTER: {
-        if (is_ws(c)) return true;
+        if (json_is_ws(c)) return true;
         uint8_t top = v->depth > 0 ? v->stack[v->depth - 1] : 0;
         if (c == ',' && top == 'O') {
             // FAIL CLOSED at guard capacity, at the comma rather than the

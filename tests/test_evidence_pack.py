@@ -24,14 +24,6 @@ sys.path.insert(0, str(ROOT / "tests" / "conformance"))
 from harness import RunnerServer  # noqa: E402
 
 
-@pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
 def _run(runner_bin, *args):
     return subprocess.run([str(runner_bin), *map(str, args)], cwd=ROOT,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,

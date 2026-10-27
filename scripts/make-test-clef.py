@@ -15,6 +15,8 @@ import os
 import struct
 import sys
 
+from gguf_fixture import s, ku, kf, ks, kb, kas, kaf, kai, kau, ones
+
 OUT = sys.argv[1] if len(sys.argv) > 1 else "test-clef.gguf"
 if str(OUT).startswith("-"):
     sys.exit(f"usage: {sys.argv[0]} [OUTPUT]: writes the fixture to OUTPUT (got {str(OUT)!r})")
@@ -24,24 +26,6 @@ STATE, GROUPS, VHEADS, CONV = 8, 2, 4, 4
 W, H, HF, ROUTING, JOINT = 16, 4, 32, 2, 2       # the head
 VOCAB = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
 TTYPE = [2, 3, 3] + [6] * 256
-U32, F32, STR, ARR, I32, BOOL = 4, 6, 8, 9, 5, 7
-
-
-def s(x):
-    b = x.encode()
-    return struct.pack("<Q", len(b)) + b
-def ku(k, v): return s(k) + struct.pack("<II", U32, v)
-def kf(k, v): return s(k) + struct.pack("<If", F32, v)
-def ks(k, v): return s(k) + struct.pack("<I", STR) + s(v)
-def kb(k, v): return s(k) + struct.pack("<IB", BOOL, bool(v))
-def kas(k, xs):
-    return s(k) + struct.pack("<IIQ", ARR, STR, len(xs)) + b"".join(s(x) for x in xs)
-def kaf(k, xs):
-    return s(k) + struct.pack("<IIQ", ARR, F32, len(xs)) + struct.pack(f"<{len(xs)}f", *xs)
-def kai(k, xs):
-    return s(k) + struct.pack("<IIQ", ARR, I32, len(xs)) + struct.pack(f"<{len(xs)}i", *xs)
-def kau(k, xs):
-    return s(k) + struct.pack("<IIQ", ARR, U32, len(xs)) + struct.pack(f"<{len(xs)}I", *xs)
 
 
 seed = 0x35
@@ -50,7 +34,6 @@ def rnd(scale=0.08):
     seed = (seed * 1103515245 + 12345) & 0x7fffffff
     return (seed / 0x7fffffff - .5) * scale
 def data(n, scale=0.08): return struct.pack(f"<{n}f", *(rnd(scale) for _ in range(n)))
-def ones(n): return struct.pack(f"<{n}f", *([1.] * n))
 def near_one(n): return struct.pack(f"<{n}f", *(1. + rnd(0.2) for _ in range(n)))
 def vals(xs): return struct.pack(f"<{len(xs)}f", *xs)
 

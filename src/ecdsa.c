@@ -78,18 +78,11 @@ void ec_digest(ec_hash h, const void *m, size_t n, uint8_t *out) {
 
 static void bn_zero(bn *a) { memset(a, 0, sizeof *a); }
 
-static int hexval(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
 static bool bn_from_hex(bn *a, const char *h) {
     bn_zero(a);
     size_t n = strlen(h);
     for (size_t i = 0; i < n; i++) {
-        int v = hexval(h[n - 1 - i]);
+        int v = hex_digit_value(h[n - 1 - i]);
         if (v < 0) return false;
         size_t limb = i / 8, shift = (i % 8) * 4;
         if (limb >= L_MAX) return false;

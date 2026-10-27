@@ -302,19 +302,13 @@ static const char *envelope_state_name(int s) {
     }
 }
 
-static void put_str(sbuf *b, const char *s) {
-    sb_lit(b, "\"");
-    sb_esc(b, s, strlen(s));
-    sb_lit(b, "\"");
-}
-
 void provenance_render(sbuf *b, const char *model_id) {
     pthread_mutex_lock(&mu);
     sb_lit(b, "\"build\":{\"binary_sha256\":");
-    if (binary_ok) put_str(b, binary_sha);
+    if (binary_ok) sb_str(b, binary_sha);
     else           sb_lit(b, "null");
     sb_lit(b, ",\"compiler\":");
-    put_str(b, __VERSION__);
+    sb_str(b, __VERSION__);
     sb_lit(b, ",\"os\":\"" PROV_OS "\",\"arch\":\"" RUNNER_BUILD_ARCH "\"");
 #ifdef RUNNER_T3_BUILD
     sb_lit(b, ",\"flavor\":\"t3\"");
@@ -336,11 +330,11 @@ void provenance_render(sbuf *b, const char *model_id) {
                    : hstate == H_DONE  ? "done"
                    : hstate == H_HASHING ? "hashing" : "unreadable";
     sb_lit(b, "{\"id\":");
-    put_str(b, model_id ? model_id : "");
+    sb_str(b, model_id ? model_id : "");
     sb_lit(b, ",\"path\":");
-    put_str(b, model_path);
+    sb_str(b, model_path);
     sb_lit(b, ",\"sha256\":");
-    if (!changed && hstate == H_DONE) put_str(b, model_sha);
+    if (!changed && hstate == H_DONE) sb_str(b, model_sha);
     else                              sb_lit(b, "null");
     sb_fmt(b, ",\"sha256_state\":\"%s\"", st);
     if (load_id_ok) sb_fmt(b, ",\"size\":%llu", (unsigned long long)load_id.size);
@@ -351,15 +345,15 @@ void provenance_render(sbuf *b, const char *model_id) {
     else             sb_lit(b, "null");
     sb_fmt(b, ",\"envelope\":{\"state\":\"%s\",\"detail\":",
            envelope_state_name(env_state));
-    put_str(b, env_detail);
+    sb_str(b, env_detail);
     sb_lit(b, "}},\"adapter\":");
     if (!adapter_path) {
         sb_lit(b, "null");
     } else {
         sb_lit(b, "{\"path\":");
-        put_str(b, adapter_path);
+        sb_str(b, adapter_path);
         sb_lit(b, ",\"sha256\":");
-        if (adapter_ok) put_str(b, adapter_sha);
+        if (adapter_ok) sb_str(b, adapter_sha);
         else            sb_lit(b, "null");
         sb_fmt(b, ",\"scale\":%g,\"signature\":", (double)adapter_scale);
         if (asig_json[0]) sb_put(b, asig_json, strlen(asig_json));

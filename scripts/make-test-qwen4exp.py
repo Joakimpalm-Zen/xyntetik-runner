@@ -16,6 +16,8 @@ import os
 import struct
 import sys
 
+from gguf_fixture import s, ku, kf, ks, kb, kas, kaf, kai, kau, kau64, ones
+
 OUT = sys.argv[1] if len(sys.argv) > 1 else "test-qwen4exp.gguf"
 # the first argument is the output path: an option there (`--help`) used to
 # be taken as a file name prefix and wrote a set of "--help.*" files
@@ -44,26 +46,6 @@ PLE_ROWS = PLE_OFF[-1] + PLE_VOCAB[-1]
 PLE_MULT = [23703573157769, 20109073645365, 8052911324071]   # the release file's
 VOCAB = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
 TTYPE = [2, 3, 3] + [6] * 256
-U8, I8, U16, I16, U32, I32, F32, BOOL, STR, ARR, U64 = 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
-
-
-def s(x):
-    b = x.encode()
-    return struct.pack("<Q", len(b)) + b
-def ku(k, v): return s(k) + struct.pack("<II", U32, v)
-def kf(k, v): return s(k) + struct.pack("<If", F32, v)
-def ks(k, v): return s(k) + struct.pack("<I", STR) + s(v)
-def kb(k, v): return s(k) + struct.pack("<IB", BOOL, bool(v))
-def kas(k, xs):
-    return s(k) + struct.pack("<IIQ", ARR, STR, len(xs)) + b"".join(s(x) for x in xs)
-def kaf(k, xs):
-    return s(k) + struct.pack("<IIQ", ARR, F32, len(xs)) + struct.pack(f"<{len(xs)}f", *xs)
-def kai(k, xs):
-    return s(k) + struct.pack("<IIQ", ARR, I32, len(xs)) + struct.pack(f"<{len(xs)}i", *xs)
-def kau(k, xs):
-    return s(k) + struct.pack("<IIQ", ARR, U32, len(xs)) + struct.pack(f"<{len(xs)}I", *xs)
-def kau64(k, xs):
-    return s(k) + struct.pack("<IIQ", ARR, U64, len(xs)) + struct.pack(f"<{len(xs)}Q", *xs)
 
 
 seed = int(os.environ.get("QWEN4EXP_TEST_SEED", "0x4e"), 0)
@@ -72,7 +54,6 @@ def rnd():
     seed = (seed * 1103515245 + 12345) & 0x7fffffff
     return (seed / 0x7fffffff - .5) * .08
 def data(n): return struct.pack(f"<{n}f", *(rnd() for _ in range(n)))
-def ones(n): return struct.pack(f"<{n}f", *([1.] * n))
 def vals(xs): return struct.pack(f"<{len(xs)}f", *xs)
 # QWEN4EXP_TEST_ZERO=ple,hc,moe,attn,lin zeroes a component's output so a
 # two-engine comparison can name the component that disagrees: the PLE table

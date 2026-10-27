@@ -100,7 +100,8 @@ def alive(state: ServerState, *, endpoint_factory: Any = None, timeout: float = 
     return bool(models) and str(models[0]) == Path(state.model).name
 
 
-def _free_port() -> int:
+def free_port() -> int:
+    """A TCP port the loopback interface can bind right now."""
     import socket
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -131,7 +132,7 @@ def served_runner(home: Path, cfg: dict[str, object], *, runner: str = "", model
                 return endpoint_factory(state.base_url, timeout=request_timeout), False
             stop_server(home)
         extra = ("--lora", adapter) if adapter else ()
-        launch = ServerLaunch(executable=runner, model=model, port=_free_port(),
+        launch = ServerLaunch(executable=runner, model=model, port=free_port(),
                               context_size=int(str(cfg.get("ctx") or 8192)),
                               gpu=str(cfg.get("gpu") or "auto"),
                               threads=int(str(cfg.get("threads") or 0)) or None,

@@ -9,6 +9,8 @@ import random
 import struct
 import sys
 
+from gguf_fixture import s, ku, ki, kf, ks, kb, kas, kaf, kai, kau, kab, ones
+
 OUT = "test.gguf"
 SUPPRESS_ALL_BUT_EOS = False
 ZERO_FIRST_DIM = False
@@ -415,46 +417,6 @@ if BPE_PRE is not None:
     TTYPE[3:3 + 256] = [1] * 256  # normal tokens
 N_VOCAB = len(VOCAB)
 
-GGUF_U32, GGUF_F32, GGUF_STR, GGUF_ARR, GGUF_I32, GGUF_BOOL = 4, 6, 8, 9, 5, 7
-
-
-def s(x):
-    b = x.encode()
-    return struct.pack("<Q", len(b)) + b
-
-
-def kv_u32(k, v):  return s(k) + struct.pack("<II", GGUF_U32, v)
-def kv_f32(k, v):  return s(k) + struct.pack("<If", GGUF_F32, v)
-def kv_str(k, v):  return s(k) + struct.pack("<I", GGUF_STR) + s(v)
-def kv_bool(k, v): return s(k) + struct.pack("<IB", GGUF_BOOL, 1 if v else 0)
-
-
-def kv_arr_str(k, items):
-    # one join, not repeated bytes concatenation: a 250k-entry special list
-    # (the quadratic-sort regression fixture) took 12 s to write that way
-    return (s(k) + struct.pack("<IIQ", GGUF_ARR, GGUF_STR, len(items)) +
-            b"".join(s(it) for it in items))
-
-
-def kv_arr_f32(k, items):
-    return (s(k) + struct.pack("<IIQ", GGUF_ARR, GGUF_F32, len(items)) +
-            struct.pack(f"<{len(items)}f", *items))
-
-
-def kv_arr_bool(k, items):
-    return (s(k) + struct.pack("<IIQ", GGUF_ARR, GGUF_BOOL, len(items)) +
-            bytes(1 if x else 0 for x in items))
-
-
-def kv_arr_i32(k, items):
-    return (s(k) + struct.pack("<IIQ", GGUF_ARR, GGUF_I32, len(items)) +
-            struct.pack(f"<{len(items)}i", *items))
-
-
-def kv_arr_u32(k, items):
-    return (s(k) + struct.pack("<IIQ", GGUF_ARR, GGUF_U32, len(items)) +
-            struct.pack(f"<{len(items)}I", *items))
-
 
 # deterministic pseudo-random floats (no numpy dependency)
 _state = 0x12345678
@@ -476,10 +438,6 @@ def tensor_data(n, scale=1.0):
         raw = struct.pack(f"<{1 << 16}f", *block)
         return (raw * (n // (1 << 16) + 1))[:n * 4]
     return struct.pack(f"<{n}f", *(rnd() * scale for _ in range(n)))
-
-
-def ones(n):
-    return struct.pack(f"<{n}f", *([1.0] * n))
 
 
 tensors = [("token_embd.weight", [N_EMBD, N_VOCAB], tensor_data(N_EMBD * N_VOCAB)),
@@ -635,78 +593,78 @@ if ARCH == "phi3":
     ]
 
 meta_kvs = [
-    kv_str("general.architecture", ARCH),
-    kv_u32(f"{ARCH}.block_count", N_LAYER + MTP_LAYERS),
-    kv_u32(f"{ARCH}.context_length", 256),
-    kv_u32(f"{ARCH}.embedding_length", N_EMBD),
-    (kv_arr_u32(f"{ARCH}.feed_forward_length",
+    ks("general.architecture", ARCH),
+    ku(f"{ARCH}.block_count", N_LAYER + MTP_LAYERS),
+    ku(f"{ARCH}.context_length", 256),
+    ku(f"{ARCH}.embedding_length", N_EMBD),
+    (kau(f"{ARCH}.feed_forward_length",
                 [0 if ("mlp", l) in DECLARE_REMOVED else N_FF
                  for l in range(N_LAYER + MTP_LAYERS)])
      if any(p == "mlp" for p, _ in DECLARE_REMOVED) else
-     kv_arr_u32(f"{ARCH}.feed_forward_length", FFN_WIDTHS) if FFN_WIDTHS
-     else kv_u32(f"{ARCH}.feed_forward_length", N_FF)),
-    (kv_arr_u32(f"{ARCH}.attention.head_count",
+     kau(f"{ARCH}.feed_forward_length", FFN_WIDTHS) if FFN_WIDTHS
+     else ku(f"{ARCH}.feed_forward_length", N_FF)),
+    (kau(f"{ARCH}.attention.head_count",
                 [0 if ("attn", l) in DECLARE_REMOVED else N_HEAD
                  for l in range(N_LAYER + MTP_LAYERS)])
      if any(p == "attn" for p, _ in DECLARE_REMOVED) else
-     kv_u32(f"{ARCH}.attention.head_count", N_HEAD)),
+     ku(f"{ARCH}.attention.head_count", N_HEAD)),
     # G4HETERO publishes head_count_kv as a per-layer ARRAY below instead
     *([] if G4HETERO else
-      [kv_arr_u32(f"{ARCH}.attention.head_count_kv",
+      [kau(f"{ARCH}.attention.head_count_kv",
                   [0 if ("attn", l) in DECLARE_REMOVED else N_KV
                    for l in range(N_LAYER + MTP_LAYERS)])
        if any(p == "attn" for p, _ in DECLARE_REMOVED) else
-       kv_u32(f"{ARCH}.attention.head_count_kv", N_KV)]),
-    kv_f32(f"{ARCH}.attention.layer_norm_rms_epsilon", 1e-5),
-    kv_f32(f"{ARCH}.rope.freq_base", 10000.0),
-    kv_str("tokenizer.ggml.model", "gpt2" if BPE_PRE is not None else "llama"),
-    kv_arr_str("tokenizer.ggml.tokens", VOCAB),
-    kv_arr_f32("tokenizer.ggml.scores", [0.0] * N_VOCAB),
-    kv_arr_i32("tokenizer.ggml.token_type", TTYPE),
-    kv_u32("tokenizer.ggml.bos_token_id", 1),
-    kv_u32("tokenizer.ggml.eos_token_id", 2),
-    kv_bool("tokenizer.ggml.add_bos_token", True),
+       ku(f"{ARCH}.attention.head_count_kv", N_KV)]),
+    kf(f"{ARCH}.attention.layer_norm_rms_epsilon", 1e-5),
+    kf(f"{ARCH}.rope.freq_base", 10000.0),
+    ks("tokenizer.ggml.model", "gpt2" if BPE_PRE is not None else "llama"),
+    kas("tokenizer.ggml.tokens", VOCAB),
+    kaf("tokenizer.ggml.scores", [0.0] * N_VOCAB),
+    kai("tokenizer.ggml.token_type", TTYPE),
+    ku("tokenizer.ggml.bos_token_id", 1),
+    ku("tokenizer.ggml.eos_token_id", 2),
+    kb("tokenizer.ggml.add_bos_token", True),
 ]
 if HEAD_DIM:
     meta_kvs += [
-        kv_u32(f"{ARCH}.attention.key_length", HEAD_DIM),
-        kv_u32(f"{ARCH}.attention.value_length", HEAD_DIM),
-        kv_u32(f"{ARCH}.rope.dimension_count", ROPE_DIM or HEAD_DIM),
+        ku(f"{ARCH}.attention.key_length", HEAD_DIM),
+        ku(f"{ARCH}.attention.value_length", HEAD_DIM),
+        ku(f"{ARCH}.rope.dimension_count", ROPE_DIM or HEAD_DIM),
     ]
 elif ROPE_DIM:
-    meta_kvs.append(kv_u32(f"{ARCH}.rope.dimension_count", ROPE_DIM))
+    meta_kvs.append(ku(f"{ARCH}.rope.dimension_count", ROPE_DIM))
 if POOLING is not None:
-    meta_kvs.append(kv_u32(f"{ARCH}.pooling_type", POOLING))
+    meta_kvs.append(ku(f"{ARCH}.pooling_type", POOLING))
 if SAMPLING:
-    meta_kvs += [kv_f32("general.sampling.temp", float(SAMPLING[0])),
-                 kv_f32("general.sampling.top_p", float(SAMPLING[1])),
-                 s("general.sampling.top_k") + struct.pack("<Ii", GGUF_I32, int(SAMPLING[2]))]
+    meta_kvs += [kf("general.sampling.temp", float(SAMPLING[0])),
+                 kf("general.sampling.top_p", float(SAMPLING[1])),
+                 ki("general.sampling.top_k", int(SAMPLING[2]))]
     if len(SAMPLING) > 3:
-        meta_kvs.append(kv_f32("general.sampling.min_p", float(SAMPLING[3])))
+        meta_kvs.append(kf("general.sampling.min_p", float(SAMPLING[3])))
 if ADD_EOS:
-    meta_kvs.append(kv_bool("tokenizer.ggml.add_eos_token", True))
+    meta_kvs.append(kb("tokenizer.ggml.add_eos_token", True))
 if BPE_PRE is not None:
-    meta_kvs += [kv_str("tokenizer.ggml.pre", BPE_PRE),
-                 kv_arr_str("tokenizer.ggml.merges", [])]
+    meta_kvs += [ks("tokenizer.ggml.pre", BPE_PRE),
+                 kas("tokenizer.ggml.merges", [])]
 if CHAT_TEMPLATE is not None:
-    meta_kvs.append(kv_str("tokenizer.chat_template", CHAT_TEMPLATE))
+    meta_kvs.append(ks("tokenizer.chat_template", CHAT_TEMPLATE))
 if YARN_FACTOR is not None:
     meta_kvs += [
-        kv_str(f"{ARCH}.rope.scaling.type", "yarn"),
-        kv_f32(f"{ARCH}.rope.scaling.factor", YARN_FACTOR),
-        kv_u32(f"{ARCH}.rope.scaling.original_context_length", YARN_ORIG_CTX),
+        ks(f"{ARCH}.rope.scaling.type", "yarn"),
+        kf(f"{ARCH}.rope.scaling.factor", YARN_FACTOR),
+        ku(f"{ARCH}.rope.scaling.original_context_length", YARN_ORIG_CTX),
     ]
 if ESERIES_SHARED_KV or ESERIES_PLE:
     # every third layer is a full-attention layer, the rest slide
     pattern = [(i % 3) != 2 for i in range(N_LAYER)]
     meta_kvs += [
-        kv_u32(f"{ARCH}.attention.key_length", N_EMBD // N_HEAD),
-        kv_u32(f"{ARCH}.attention.value_length", N_EMBD // N_HEAD),
-        kv_u32(f"{ARCH}.attention.key_length_swa", N_EMBD // N_HEAD),
-        kv_u32(f"{ARCH}.attention.sliding_window", 32),
-        kv_arr_bool(f"{ARCH}.attention.sliding_window_pattern", pattern),
-        kv_u32(f"{ARCH}.rope.dimension_count", N_EMBD // N_HEAD),
-        kv_f32(f"{ARCH}.final_logit_softcapping", 30.0),
+        ku(f"{ARCH}.attention.key_length", N_EMBD // N_HEAD),
+        ku(f"{ARCH}.attention.value_length", N_EMBD // N_HEAD),
+        ku(f"{ARCH}.attention.key_length_swa", N_EMBD // N_HEAD),
+        ku(f"{ARCH}.attention.sliding_window", 32),
+        kab(f"{ARCH}.attention.sliding_window_pattern", pattern),
+        ku(f"{ARCH}.rope.dimension_count", N_EMBD // N_HEAD),
+        kf(f"{ARCH}.final_logit_softcapping", 30.0),
     ]
 if ARCH == "gemma4" and not (ESERIES_SHARED_KV or ESERIES_PLE or G4HETERO):
     # gemma4's loader defaults attention.key_length to 512 when the key is
@@ -723,10 +681,10 @@ if ARCH == "gemma4" and not (ESERIES_SHARED_KV or ESERIES_PLE or G4HETERO):
     # (empty) output passed. The --eseries and --gemma4-hetero branches below
     # publish these keys already, which is why only the plain arch was dark.
     meta_kvs += [
-        kv_u32(f"{ARCH}.attention.key_length", N_EMBD // N_HEAD),
-        kv_u32(f"{ARCH}.attention.value_length", N_EMBD // N_HEAD),
-        kv_u32(f"{ARCH}.attention.key_length_swa", N_EMBD // N_HEAD),
-        kv_u32(f"{ARCH}.rope.dimension_count", N_EMBD // N_HEAD),
+        ku(f"{ARCH}.attention.key_length", N_EMBD // N_HEAD),
+        ku(f"{ARCH}.attention.value_length", N_EMBD // N_HEAD),
+        ku(f"{ARCH}.attention.key_length_swa", N_EMBD // N_HEAD),
+        ku(f"{ARCH}.rope.dimension_count", N_EMBD // N_HEAD),
     ]
 if G4HETERO:
     pattern = [g4_swa(i) for i in range(N_LAYER)]
@@ -734,17 +692,17 @@ if G4HETERO:
         # every gemma-4 export carries both E-series keys; the dense 12B/26B/
         # 31B files publish them with value 0 (only a non-zero value makes a
         # file E-series, and a loader or writer keying on presence is wrong)
-        kv_u32(f"{ARCH}.embedding_length_per_layer_input", 0),
-        kv_u32(f"{ARCH}.attention.shared_kv_layers", 0),
-        kv_u32(f"{ARCH}.attention.key_length", 32),
-        kv_u32(f"{ARCH}.attention.key_length_swa", 32 if G4_HD32 else 16),
-        kv_arr_u32(f"{ARCH}.attention.head_count_kv",
+        ku(f"{ARCH}.embedding_length_per_layer_input", 0),
+        ku(f"{ARCH}.attention.shared_kv_layers", 0),
+        ku(f"{ARCH}.attention.key_length", 32),
+        ku(f"{ARCH}.attention.key_length_swa", 32 if G4_HD32 else 16),
+        kau(f"{ARCH}.attention.head_count_kv",
                    [g4_kv(i) for i in range(N_LAYER)]),
-        kv_u32(f"{ARCH}.attention.sliding_window", 32),
-        kv_arr_bool(f"{ARCH}.attention.sliding_window_pattern", pattern),
-        kv_u32(f"{ARCH}.rope.dimension_count", 32),
-        kv_u32(f"{ARCH}.rope.dimension_count_swa", 32 if G4_HD32 else 16),
-        kv_f32(f"{ARCH}.final_logit_softcapping", 30.0),
+        ku(f"{ARCH}.attention.sliding_window", 32),
+        kab(f"{ARCH}.attention.sliding_window_pattern", pattern),
+        ku(f"{ARCH}.rope.dimension_count", 32),
+        ku(f"{ARCH}.rope.dimension_count_swa", 32 if G4_HD32 else 16),
+        kf(f"{ARCH}.final_logit_softcapping", 30.0),
     ]
 if GRANITE:
     # same keys and code paths as the real exports, but fixture-sane
@@ -752,70 +710,70 @@ if GRANITE:
     # collapse a 64-dim random model into single-token degeneracy, which
     # made the residual-scale differential test vacuously pass-or-fail
     meta_kvs += [
-        kv_f32(f"{ARCH}.embedding_scale", 2.0),
-        kv_f32(f"{ARCH}.attention.scale", 0.25),
-        kv_f32(f"{ARCH}.residual_scale", GRANITE_RESID),
-        kv_f32(f"{ARCH}.logit_scale", 16.0),
+        kf(f"{ARCH}.embedding_scale", 2.0),
+        kf(f"{ARCH}.attention.scale", 0.25),
+        kf(f"{ARCH}.residual_scale", GRANITE_RESID),
+        kf(f"{ARCH}.logit_scale", 16.0),
     ]
 if MUSE:
     meta_kvs += [
-        kv_u32(f"{ARCH}.attention.key_length", MUSE_HD),
-        kv_u32(f"{ARCH}.attention.value_length", MUSE_HD),
-        kv_u32(f"{ARCH}.rope.dimension_count", MUSE_HD),
-        kv_u32(f"{ARCH}.attention.sliding_window", 32),
-        kv_arr_bool(f"{ARCH}.attention.sliding_window_pattern",
+        ku(f"{ARCH}.attention.key_length", MUSE_HD),
+        ku(f"{ARCH}.attention.value_length", MUSE_HD),
+        ku(f"{ARCH}.rope.dimension_count", MUSE_HD),
+        ku(f"{ARCH}.attention.sliding_window", 32),
+        kab(f"{ARCH}.attention.sliding_window_pattern",
                     [muse_swa(i) for i in range(N_LAYER)]),
-        kv_f32(f"{ARCH}.logit_scale", 0.5),
-        kv_f32(f"{ARCH}.final_logit_softcapping", 30.0),
+        kf(f"{ARCH}.logit_scale", 0.5),
+        kf(f"{ARCH}.final_logit_softcapping", 30.0),
     ]
 if ESERIES_SHARED_KV:
     meta_kvs.append(
-        kv_u32(f"{ARCH}.attention.shared_kv_layers", ESERIES_SHARED_KV))
+        ku(f"{ARCH}.attention.shared_kv_layers", ESERIES_SHARED_KV))
 if ESERIES_PLE:
     meta_kvs.append(
-        kv_u32(f"{ARCH}.embedding_length_per_layer_input", ESERIES_PLE))
+        ku(f"{ARCH}.embedding_length_per_layer_input", ESERIES_PLE))
 if APERTUS:
     _id = APERTUS == "IDENT"
     meta_kvs += [
-        kv_f32("xielu.alpha_n", 0.0 if _id else 0.8),
-        kv_f32("xielu.alpha_p", 0.0 if _id else 0.8),
-        kv_f32("xielu.beta",    1.0 if _id else 0.5),
-        kv_f32("xielu.eps",     -1e-6),
+        kf("xielu.alpha_n", 0.0 if _id else 0.8),
+        kf("xielu.alpha_p", 0.0 if _id else 0.8),
+        kf("xielu.beta",    1.0 if _id else 0.5),
+        kf("xielu.eps",     -1e-6),
     ]
 if ATTN_NOPE_STEP:
     meta_kvs += [
-        kv_u32(f"{ARCH}.attention.no_rope_layer_step", ATTN_NOPE_STEP),
-        kv_u32(f"{ARCH}.attention.attn_temp_floor_scale", ATTN_TEMP_FLOOR),
-        kv_f32(f"{ARCH}.attention.attn_temp_scale", ATTN_TEMP_SCALE),
-        kv_f32(f"{ARCH}.attention.attn_temp_offset", 1.0),
+        ku(f"{ARCH}.attention.no_rope_layer_step", ATTN_NOPE_STEP),
+        ku(f"{ARCH}.attention.attn_temp_floor_scale", ATTN_TEMP_FLOOR),
+        kf(f"{ARCH}.attention.attn_temp_scale", ATTN_TEMP_SCALE),
+        kf(f"{ARCH}.attention.attn_temp_offset", 1.0),
     ]
 if ARCH == "phi3":
     meta_kvs += [
-        kv_u32(f"{ARCH}.rope.scaling.original_context_length", 256),
-        kv_f32(f"{ARCH}.rope.scaling.attn_factor", 1.19),
-        kv_u32(f"{ARCH}.rope.dimension_count", N_EMBD // N_HEAD),
+        ku(f"{ARCH}.rope.scaling.original_context_length", 256),
+        kf(f"{ARCH}.rope.scaling.attn_factor", 1.19),
+        ku(f"{ARCH}.rope.dimension_count", N_EMBD // N_HEAD),
     ]
 if SWA_WINDOW_ONLY:
-    meta_kvs.append(kv_u32(f"{ARCH}.attention.sliding_window", SWA_WINDOW_ONLY))
+    meta_kvs.append(ku(f"{ARCH}.attention.sliding_window", SWA_WINDOW_ONLY))
 if SWA_WINDOW:
     meta_kvs += [
-        kv_u32(f"{ARCH}.attention.sliding_window", SWA_WINDOW),
-        kv_u32(f"{ARCH}.attention.sliding_window_pattern", SWA_PATTERN or 2),
+        ku(f"{ARCH}.attention.sliding_window", SWA_WINDOW),
+        ku(f"{ARCH}.attention.sliding_window_pattern", SWA_PATTERN or 2),
     ]
 if MTP_LAYERS:
-    meta_kvs.append(kv_u32(f"{ARCH}.nextn_predict_layers", MTP_LAYERS))
+    meta_kvs.append(ku(f"{ARCH}.nextn_predict_layers", MTP_LAYERS))
 if AGENT_PROFILE:
     meta_kvs += [
-        kv_u32("gridcore.agent.protocol_version", 1),
-        kv_u32("gridcore.agent.tokenizer_version", 1),
-        kv_str("gridcore.agent.schema_id", "gridcore.agent.action.v1"),
-        kv_str("gridcore.agent.schema_digest", "a" * 64),
-        kv_arr_str("gridcore.agent.required_features", AGENT_FEATURES),
+        ku("gridcore.agent.protocol_version", 1),
+        ku("gridcore.agent.tokenizer_version", 1),
+        ks("gridcore.agent.schema_id", "gridcore.agent.action.v1"),
+        ks("gridcore.agent.schema_digest", "a" * 64),
+        kas("gridcore.agent.required_features", AGENT_FEATURES),
     ]
 if SUPPRESS_ALL_BUT_EOS:
     # every token except </s> is suppressed: greedy generation must emit EOS
     # immediately, so a completion prints only the echoed prompt
-    meta_kvs.append(kv_arr_i32("tokenizer.ggml.suppress_tokens",
+    meta_kvs.append(kai("tokenizer.ggml.suppress_tokens",
                                [i for i in range(N_VOCAB) if i != 2]))
 meta = b"".join(meta_kvs)
 

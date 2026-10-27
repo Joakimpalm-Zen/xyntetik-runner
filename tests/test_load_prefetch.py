@@ -10,20 +10,11 @@ behavior: default silent, opt-in announces, --mlock suppresses even then.
 import os
 import pathlib
 import subprocess
-import sys
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 LINE = "prefetch: hinted"
-
-
-@pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
 
 
 def run(runner_bin, *extra, env_extra=None):

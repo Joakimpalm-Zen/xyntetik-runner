@@ -20,6 +20,9 @@
 #define O_BINARY 0
 #endif
 
+// the largest PEM or signature bundle read whole (plat_read_file)
+#define OMS_MAX_FILE (64u << 20)
+
 static void set(oms_result *r, const char *status, const char *reason) {
     snprintf(r->status, sizeof r->status, "%s", status);
     snprintf(r->reason, sizeof r->reason, "%s", reason);
@@ -58,22 +61,6 @@ static long b64_decode(const char *s, size_t n, uint8_t *out) {
     return k;
 }
 
-static char *read_all(const char *path, size_t *n_out) {
-    FILE *f = plat_fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0 || sz > (64L << 20)) { fclose(f); return NULL; }
-    rewind(f);
-    char *b = malloc((size_t)sz + 1);
-    if (!b) { fclose(f); return NULL; }
-    size_t n = fread(b, 1, (size_t)sz, f);
-    fclose(f);
-    b[n] = 0;
-    if (n_out) *n_out = n;
-    return b;
-}
-
 // PEM "PUBLIC KEY" block -> DER bytes (caller frees)
 static uint8_t *pem_public_key_der(const char *pem, size_t n, size_t *der_len) {
     const char *b = strstr(pem, "-----BEGIN PUBLIC KEY-----");
@@ -94,7 +81,7 @@ static uint8_t *pem_public_key_der(const char *pem, size_t n, size_t *der_len) {
 
 bool oms_pubkey_fingerprint(const char *pem_path, char hex[65]) {
     size_t n = 0;
-    char *pem = read_all(pem_path, &n);
+    char *pem = plat_read_file(pem_path, OMS_MAX_FILE, &n);
     if (!pem) return false;
     size_t der_len = 0;
     uint8_t *der = pem_public_key_der(pem, n, &der_len);
@@ -103,12 +90,6 @@ bool oms_pubkey_fingerprint(const char *pem_path, char hex[65]) {
     envelope_data_sha256(der, der_len, hex);
     free(der);
     return true;
-}
-
-static const char *base_name(const char *p) {
-    const char *b = p;
-    for (const char *q = p; *q; q++) if (*q == '/' || *q == '\\') b = q + 1;
-    return b;
 }
 
 static bool name_matches(const char *name, const char *model_path);
@@ -158,7 +139,7 @@ static bool digest_equal(const char *want, const char *have) {
 static bool name_matches(const char *name, const char *model_path) {
     if (!name) return false;
     if (strcmp(name, ".") == 0) return true;   // single-file model, the file itself
-    const char *bn = base_name(model_path);
+    const char *bn = plat_path_base(model_path);
     size_t nl = strlen(name), bl = strlen(bn);
     if (strcmp(name, bn) == 0) return true;
     return nl > bl && name[nl - bl - 1] == '/' && strcmp(name + nl - bl, bn) == 0;
@@ -168,9 +149,9 @@ bool oms_verify_file(const char *bundle_path, const char *pubkey_pem_path,
                      const char *model_path, oms_result *out) {
     memset(out, 0, sizeof *out);
     size_t bn = 0, kn = 0;
-    char *bundle = read_all(bundle_path, &bn);
+    char *bundle = plat_read_file(bundle_path, OMS_MAX_FILE, &bn);
     if (!bundle) { set(out, "missing", "cannot read the signature bundle"); return false; }
-    char *pem = pubkey_pem_path ? read_all(pubkey_pem_path, &kn) : NULL;
+    char *pem = pubkey_pem_path ? plat_read_file(pubkey_pem_path, OMS_MAX_FILE, &kn) : NULL;
     if (!pem) {
         free(bundle);
         set(out, "unverified", pubkey_pem_path ? "cannot read the public key"
@@ -493,7 +474,7 @@ static void parent_name(const char *path, char *out, size_t cap) {
     while (n && abs[n - 1] != '/' && abs[n - 1] != '\\') n--;   // drop the file
     while (n && (abs[n - 1] == '/' || abs[n - 1] == '\\')) n--;
     abs[n] = 0;
-    const char *b = base_name(abs);
+    const char *b = plat_path_base(abs);
     snprintf(out, cap, "%s", *b ? b : "model");
 }
 
@@ -501,7 +482,7 @@ bool oms_sign_file(const char *model_path, const char *key_pem_path,
                    const char *out_path, oms_sign_info *info) {
     memset(info, 0, sizeof *info);
     size_t kn = 0;
-    char *pem = read_all(key_pem_path, &kn);
+    char *pem = plat_read_file(key_pem_path, OMS_MAX_FILE, &kn);
     if (!pem) {
         fprintf(stderr, "error: --sign-model: cannot read the key %s\n", key_pem_path);
         return false;
@@ -561,7 +542,7 @@ bool oms_sign_file(const char *model_path, const char *key_pem_path,
         bool split = split_suffix(model_path, &no, &count, &plen) && count > 1;
         char subject[256];
         if (split) parent_name(model_path, subject, sizeof subject);
-        else snprintf(subject, sizeof subject, "%s", base_name(model_path));
+        else snprintf(subject, sizeof subject, "%s", plat_path_base(model_path));
         sbuf res = {0};
         uint8_t *roots = malloc((size_t)count * 32);
         bool files_ok = roots != NULL;
@@ -588,7 +569,7 @@ bool oms_sign_file(const char *model_path, const char *key_pem_path,
                 sscanf(hex + 2 * k, "%2x", &v);
                 roots[(size_t)(i - 1) * 32 + (size_t)k] = (uint8_t)v;
             }
-            const char *nm = split ? base_name(part) : ".";
+            const char *nm = split ? plat_path_base(part) : ".";
             sb_fmt(&res, "%s      {\n        \"algorithm\": \"sha256\",\n"
                    "        \"digest\": \"%s\",\n        \"name\": \"",
                    i > 1 ? ",\n" : "", hex);

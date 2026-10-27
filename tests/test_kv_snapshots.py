@@ -35,14 +35,6 @@ QUESTION = MEMORY + " question: where is the key? answer:"
 
 
 @pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
-@pytest.fixture(scope="module")
 def fx(runner_bin, tmp_path_factory):
     d = tmp_path_factory.mktemp("kvsnap")
     model, other, m32 = d / "model.gguf", d / "other.gguf", d / "m32.gguf"
