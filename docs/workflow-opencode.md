@@ -25,13 +25,13 @@ request is mostly prefill.
 1. Download and verify Runner as in the README's
    [quick start](../README.md#quick-start).
 
-2. Ask whether it fits before downloading it. `--fit` needs only the file's
+2. Ask whether it fits before downloading it. `--info fit` needs only the file's
    header, so a ranged read of the first 16 MiB is enough:
 
    ```sh
    curl -r 0-16777215 -L -o head.gguf \
      https://huggingface.co/ibm-granite/granite-4.2-8b-GGUF/resolve/main/granite-4.2-8b-Q4_K_M.gguf
-   ./runner --fit head.gguf -c 16384
+   ./runner -m head.gguf --info fit -c 16384
    ```
 
    On the RTX 3070 above it reads `FITS — 35 of 40 layers on the GPU`, and the
@@ -116,7 +116,7 @@ Limits that were observed, not predicted:
   computed, but on a machine that prefills under about 30 tok/s the first
   turn is that slow.
 - An 8 GB Apple Silicon Mac with other applications open did not hold a
-  3.4 GB model and a 16,384-token context in memory (2026-10-02: `--fit`
+  3.4 GB model and a 16,384-token context in memory (2026-10-02: `--info fit`
   said `PAGES`, and the loop ran at 0.1 tok/s). On that class of machine a
   3B model at four bits is what fits, and a 3B model completed this task in
   one of two attempts: the second time it invented a path and stopped. That
@@ -128,7 +128,7 @@ Limits that were observed, not predicted:
 Run the diagnostic with the same model and flags, and read the findings:
 
 ```sh
-./runner -hf ibm-granite/granite-4.2-8b-GGUF:Q4_K_M -c 16384 --doctor > doctor.json
+./runner -hf ibm-granite/granite-4.2-8b-GGUF:Q4_K_M -c 16384 --info doctor > doctor.json
 ```
 
 The report says where the layers ran and why, which template and sampler
@@ -140,7 +140,7 @@ Three things it separates:
 
 - **Slow**: the `placement` block shows layers on the CPU that you expected
   on the GPU, or the `memory` block shows less available RAM than the model
-  needs (`--fit` gives the arithmetic).
+  needs (`--info fit` gives the arithmetic).
 - **Tool calls arrive as text**: the `template` block shows whether the
   server recognised the model's family (`recognised`) and which tool protocol
   it will use (`tool_family`, `native_tool_protocol`).

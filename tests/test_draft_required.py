@@ -95,8 +95,13 @@ def test_draft_required_without_a_draft_is_rejected(runner_bin, model):
 def test_draft_required_also_guards_interactive_chat(
         runner_bin, model, unusable_draft):
     """Chat is a local CLI mode with the same stderr-only fallback channel."""
-    p = _run(runner_bin, model,
-             ["-i", "--draft", str(unusable_draft), "--draft-required"])
+    # chat never reads -p, and a prompt beside -i is refused as a second
+    # mode before the draft check runs, so this run carries none
+    p = subprocess.run(
+        [runner_bin, "-m", str(model), "-n", "1", "-t", "2", "--gpu", "off",
+         "--no-tray", "-i", "--draft", str(unusable_draft), "--draft-required"],
+        cwd=ROOT, env=dict(os.environ), input=b"",
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
     assert p.returncode != 0
     assert b"--draft-required" in p.stderr
 

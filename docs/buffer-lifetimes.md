@@ -116,7 +116,7 @@ boundary activation back through the host `x` buffer.
 
 ## Planner accounting
 
-`--fit` (`model_fit_report()`, `model_fit_gpu()`) answers from the header
+`--info fit` (`model_fit_report()`, `model_fit_gpu()`) answers from the header
 alone. It separates the whole file (`weights`), the bytes touched per token
 (`hot`, smaller for a sparse MoE), KV per token and at the requested context
 for each KV format, and on a discrete GPU a fixed charge for the token
@@ -138,5 +138,5 @@ It does **not** separate:
   so a resident server shows up only as less free memory.
 
 Those are where a future planner would add accounting; measure against
-`--doctor` and the idle tool before relying on an estimate
+`--info doctor` and the idle tool before relying on an estimate
 ([performance](performance.md)).

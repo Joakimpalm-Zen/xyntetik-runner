@@ -95,7 +95,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       </div>
       <div class="callout mt-2">
         <span class="t">Testing Runner?</span>
-        <p>Runner is at 1.0 and hardware coverage is still limited; that is an invitation, not an apology. An unusual GGUF, a coding agent, an NVIDIA or Apple setup, or a model family not in the support matrix: the result is wanted, success or failure alike. <a href="{{repo}}/issues">Open an issue</a> with <code>runner --version</code>, <code>runner --caps</code>, the model's exact filename and the load log. Independent reproductions of the determinism claims are credited in the docs, as the first one already is.</p>
+        <p>Runner is at 1.0 and hardware coverage is still limited; that is an invitation, not an apology. An unusual GGUF, a coding agent, an NVIDIA or Apple setup, or a model family not in the support matrix: the result is wanted, success or failure alike. <a href="{{repo}}/issues">Open an issue</a> with <code>runner --version</code>, <code>runner --info caps</code>, the model's exact filename and the load log. Independent reproductions of the determinism claims are credited in the docs, as the first one already is.</p>
       </div>
     </div>
   </div>
@@ -116,8 +116,8 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       <p>Finding out that a model does not fit usually means downloading 20 GB and watching it crash. The answer is already written in the first few megabytes of the file. Runner reads just that part and tells you, with the arithmetic.</p>
 <pre><code>curl -r 0-16777215 -L -o head.gguf \
   https://huggingface.co/ORG/REPO/resolve/main/MODEL.gguf
-./runner --fit head.gguf -c 16384</code></pre>
-      <p>On an RTX 3070 it named the same split the loader then used in 70 of 72 cases and was one layer cautious in the other two (six models, two context sizes, four cache formats, 2026-10-03). <code>--caps</code> says what the machine can run and <code>--doctor</code> loads a model, probes it and reports. <a href="{{repo}}/blob/main/MANUAL.md#deciding-before-you-download">How the verdict is computed</a></p>
+./runner -m head.gguf --info fit -c 16384</code></pre>
+      <p>On an RTX 3070 it named the same split the loader then used in 70 of 72 cases and was one layer cautious in the other two (six models, two context sizes, four cache formats, 2026-10-03). <code>--info caps</code> says what the machine can run and <code>--info doctor</code> loads a model, probes it and reports. <a href="{{repo}}/blob/main/MANUAL.md#deciding-before-you-download">How the verdict is computed</a></p>
     </div>
   </div>
 </section>
@@ -133,11 +133,11 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
     <div>
 <pre><code>{"default": "keep", "rules": [{"match": "_exps.weight", "type": "q4_0"}]}</code></pre>
 <pre><code># keep some tensors sharp and squeeze others, from a plan file
-./runner -m model-Q8_0.gguf --quantize out.gguf --type-plan plan.json
+./runner -m model-Q8_0.gguf --rewrite out.gguf --type-plan plan.json
 # drop the experts a mixture-of-experts model rarely uses
-./runner -m model.gguf --quantize pruned.gguf --prune-experts keep.json
+./runner -m model.gguf --rewrite pruned.gguf --prune-experts keep.json
 # remove one block's attention or feed-forward sublayer
-./runner -m model.gguf --quantize cut.gguf --remove-sublayer attn:48
+./runner -m model.gguf --rewrite cut.gguf --remove-sublayer attn:48
 # then score the result against its parent
 python3 scripts/kld-compare-raw.py --model-a out.gguf \
     --model-b model-Q8_0.gguf --runner ./runner \
@@ -209,7 +209,7 @@ python3 scripts/kld-compare-raw.py --model-a out.gguf \
       </div>
       <div class="card">
         <h3>Ask what fits before loading anything</h3>
-        <p><code>--caps</code> needs no model file and returns one JSON document with live RAM and VRAM, backend and GPU limits, admitted quant types and architectures, placement modes and model-count limits. <code>--fit</code> answers the same question for a specific file from its GGUF header, the first few megabytes, so a ranged read decides whether the rest of the download is worth starting. On a discrete GPU it computes the loader's own layer split for each KV cache format and judges RAM by what stays on the host: on an RTX 3070 it named the loader's exact layer count in 70 of 72 cases and one layer fewer in the other two.</p>
+        <p><code>--info caps</code> needs no model file and returns one JSON document with live RAM and VRAM, backend and GPU limits, admitted quant types and architectures, placement modes and model-count limits. <code>--info fit</code> answers the same question for a specific file from its GGUF header, the first few megabytes, so a ranged read decides whether the rest of the download is worth starting. On a discrete GPU it computes the loader's own layer split for each KV cache format and judges RAM by what stays on the host: on an RTX 3070 it named the loader's exact layer count in 70 of 72 cases and one layer fewer in the other two.</p>
       </div>
       <div class="card">
         <h3>Decisions you can gate</h3>
@@ -225,7 +225,7 @@ python3 scripts/kld-compare-raw.py --model-a out.gguf \
       </div>
       <div class="card">
         <h3>One report to attach</h3>
-        <p><code>runner --doctor</code> loads the model, runs one short probe and prints one JSON report: version, placement, template, sampler, memory, timings, and findings each with a next step. It holds no prompt or reply text unless you ask for it. <code>--caps</code>, <code>--fit</code> and <code>--tool-info</code> answer the narrower questions as JSON.</p>
+        <p><code>runner --info doctor</code> loads the model, runs one short probe and prints one JSON report: version, placement, template, sampler, memory, timings, and findings each with a next step. It holds no prompt or reply text unless you ask for it. <code>--info caps</code>, <code>--info fit</code> and <code>--info tools</code> answer the narrower questions as JSON.</p>
       </div>
       <div class="card">
         <h3>Smaller caches, longer contexts</h3>
@@ -237,11 +237,11 @@ python3 scripts/kld-compare-raw.py --model-a out.gguf \
       </div>
       <div class="card">
         <h3>Model surgery, with provenance</h3>
-        <p><code>--quantize</code> with per-tensor type plans, <code>--prune-experts</code> for stacked MoE layouts, <code>--merge-lora</code> with a provenance record, <code>--context-surgery</code> to compile a YaRN target into a native GGUF, and <code>--remove-sublayer</code> to physically drop a block's attention or FFN and declare the absence in the header. Each rewrite is deterministic and reparsed before success.</p>
+        <p><code>--rewrite</code> with per-tensor type plans, <code>--prune-experts</code> for stacked MoE layouts, <code>--merge-lora</code> with a provenance record, <code>--context-surgery</code> to compile a YaRN target into a native GGUF, and <code>--remove-sublayer</code> to physically drop a block's attention or FFN and declare the absence in the header. Each rewrite is deterministic and reparsed before success.</p>
       </div>
       <div class="card">
         <h3>Speculative decoding from four draft sources</h3>
-        <p>A draft model, an n-gram lookup, the model's own MTP head where a single-block export carries one (<code>--mtp</code>, token-identical, measured 1.31x on code on a Threadripper; the gain depends on the machine, and both measurements are published), and context-grounded drafts that need no weights at all.</p>
+        <p>A draft model, an n-gram lookup, the model's own MTP head where a single-block export carries one (<code>--draft mtp</code>, token-identical, measured 1.31x on code on a Threadripper; the gain depends on the machine, and both measurements are published), and context-grounded drafts that need no weights at all.</p>
       </div>
       <div class="card">
         <h3>Structured output as a sampler guarantee</h3>
@@ -277,7 +277,7 @@ python3 scripts/kld-compare-raw.py --model-a out.gguf \
       </div>
       <div class="card">
         <h3>Records a reviewer can check</h3>
-        <p>A served turn is a receipt; receipts chain; <code>--export-pack</code> gathers them with the model signature and the measured envelope into one evidence pack that <code>--check-pack</code> verifies offline. <a href="/runner/reproducible-lora-training-receipts/">Receipts and the audit demo</a>.</p>
+        <p>A served turn is a receipt; receipts chain; <code>runner attest pack</code> gathers them with the model signature and the measured envelope into one evidence pack that <code>runner attest check-pack</code> verifies offline. <a href="/runner/reproducible-lora-training-receipts/">Receipts and the audit demo</a>.</p>
       </div>
       <div class="card">
         <h3>Compatibility as a promise</h3>
@@ -308,14 +308,14 @@ python3 scripts/kld-compare-raw.py --model-a out.gguf \
     <div class="section-head">
       <p class="eyebrow">Support matrix</p>
       <h2>Named, gated, and refused by name outside the list.</h2>
-      <p><code>runner --caps</code> publishes the architecture IDs the current binary admits. The full per-family notes, with the measured evidence behind each row, are in the <a href="{{repo}}/blob/main/MANUAL.md#support-matrix">manual's support matrix</a>. Summary as of {{version}}:</p>
+      <p><code>runner --info caps</code> publishes the architecture IDs the current binary admits. The full per-family notes, with the measured evidence behind each row, are in the <a href="{{repo}}/blob/main/MANUAL.md#support-matrix">manual's support matrix</a>. Summary as of {{version}}:</p>
     </div>
     <div class="rows">
       <div><span>Backends</span><p>CPU (x86 AVX2/FMA, ARM NEON), CUDA (driver API, embedded PTX), Metal (embedded shaders, unified memory). Linux x86_64, macOS arm64, Windows x86_64 release binaries.</p></div>
       <div><span>Architectures</span><p><code>llama</code>, <code>mistral</code>, <code>smollm</code>, <code>stablelm</code>, <code>qwen2</code>, <code>qwen3</code>, <code>qwen35</code> (Gated DeltaNet hybrid), <code>qwen4exp</code> (experimental; placement/context and reference limits in the manual), <code>qwen3moe</code>, <code>gemma3</code>, <code>gemma4</code> (dense, MoE, E-series, native tool protocol), <code>phi3</code>, <code>gpt-oss</code>, <code>apertus</code>, <code>afmoe</code>, <code>muse-glimmer</code>, <code>granite</code>, <code>granitehybrid</code> and <code>nemotron_h</code> (Mamba-2 hybrids), <code>nemotron_h_moe</code>. Admission is layout-specific: an unsupported tensor arrangement is refused even when the architecture ID is listed.</p></div>
       <div><span>Formats</span><p>GGUF v2/v3, mmap host weights, standard multi-part sets. k-quants and legacy quants, MXFP4, NVFP4 with its per-tensor scale companion, the IQ1 to IQ4 codebook families. CUDA serves all of them, NVFP4 with the export's per-tensor scale companion applied in the kernel and the IQ1 to IQ3 codebook types with device twins of the CPU decoders; Metal serves the IQ1 to IQ3 families with its own kernels too, and only NVFP4 stays on the CPU there. A backend without the kernel refuses loudly, naming the tensor and type.</p></div>
       <div><span>Serving</span><p>OpenAI Chat Completions, Responses, legacy completions, embeddings and rerank, Anthropic Messages, <code>/v1/decide</code>, SSE streaming, parallel slots, model swap and unload, prefix reuse, reasoning budgets and the loop guard, Prometheus <code>/metrics</code>, native tool protocols for gemma4, granite4, Apertus, Harmony, atem, Muse recipients, Qwen's JSON calls and the function-XML families (Ornith, Granite 4.2, Qwen 3.8, Qwen3-Coder), each rendered from the publisher's template and checked token for token. A GGUF's own sampling defaults are used when it carries them.</p></div>
-      <div><span>Training</span><p>LoRA through the quantized base on the CPU, and with the optional CUDA assist (<code>RUNNER_TRAIN_GPU=1</code>) that is the faster arm on a consumer card: Qwen2.5-7B Q4_K_M at 64.8 s per step against 76.5 on eight CPU threads, RTX 3070, with the adapter bytes gated identical either way. Adapters served with <code>--lora</code> on the CPU, CUDA and Metal; <code>--adapt-info</code> says whether a model can take one before you train; <code>--train-dpo</code> trains from preference pairs against the frozen base.</p></div>
+      <div><span>Training</span><p>LoRA through the quantized base on the CPU, and with the optional CUDA assist (<code>RUNNER_TRAIN_GPU=1</code>) that is the faster arm on a consumer card: Qwen2.5-7B Q4_K_M at 64.8 s per step against 76.5 on eight CPU threads, RTX 3070, with the adapter bytes gated identical either way. Adapters served with <code>--lora</code> on the CPU, CUDA and Metal; <code>--info adapter</code> says whether a model can take one before you train; <code>runner train --dpo</code> trains from preference pairs against the frozen base.</p></div>
       <div><span>Provenance</span><p>Replay-verifiable transcripts; Ed25519- or ML-DSA-44-signed, chained receipts with a one-exit-code verifier; evidence packs that gather receipts, the model signature and the measured envelope for offline review; OpenSSF Model Signing verification of the loaded GGUF by the key method; session images that suspend, resume and fork a generation.</p></div>
       <div><span>Desktop</span><p>macOS menu bar and Windows notification-area controller. Release binaries for Linux, macOS and Windows with a SHA256SUMS file, and a container image on GHCR.</p></div>
       <div><span>Not implemented</span><p>Vulkan; TLS, auth and remote bind (loopback only, by design); remote or streamed GGUF parts; <code>qwen2moe</code>, <code>deepseek2</code>, <code>kimi</code> and MLA attention; Mamba and Jamba; MTP on GPU backends; OMS certificate and keyless signature methods; full GBNF; image and document inputs; hosted tools; response persistence; parallel tool calls on the Responses and Messages surfaces.</p></div>
@@ -381,7 +381,7 @@ src/ed25519.c         signing subset of TweetNaCl (receipts)</code></pre>
     <div class="sticky">
       <p class="eyebrow">How it is built</p>
       <h2>Readable in an afternoon.</h2>
-      <p>Host weights stay quantized in the mapped GGUF and are dequantized while computing. CUDA copies selected weights and compute buffers to VRAM; Metal wraps the mapped weights in unified memory. The load log and <code>--caps</code> are the sizing sources for an exact model and machine.</p>
+      <p>Host weights stay quantized in the mapped GGUF and are dequantized while computing. CUDA copies selected weights and compute buffers to VRAM; Metal wraps the mapped weights in unified memory. The load log and <code>--info caps</code> are the sizing sources for an exact model and machine.</p>
       <p>The complete map, the command-line reference and the compatibility evidence are in the <a href="{{repo}}/blob/main/MANUAL.md">manual</a>; release history with each version's measurements is in the <a href="{{repo}}/blob/main/CHANGELOG.md">changelog</a>.</p>
       <div class="btn-row">
         <a class="btn btn-primary" href="{{repo}}/releases/latest">Download {{version}}</a>

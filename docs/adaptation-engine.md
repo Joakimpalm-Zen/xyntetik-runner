@@ -34,7 +34,7 @@ models do not inherit the target's adapter.
 
 ## Training admission
 
-`--train` (with or without `--train-teacher`) and `--train-dpo` keep the
+`runner train` (with or without `--teacher`) and `runner train --dpo` keep the
 base CPU-resident, use f16 KV, and update only adapter parameters. Supported
 dense SiLU/GELU paths include attention gates/head transforms, sliding
 windows, partial-dimension RoPE, sandwich norms, and the covered Gemma
@@ -53,7 +53,7 @@ unsupported gating/group/bias/shared-expert shapes, Gemma dual-branch MoE, the
 Mamba-2 hybrids, qwen4exp's hyper-connections, MoE on a DeltaNet model,
 removed sublayers, attention sinks, LayerNorm (StableLM), and unimplemented
 backward properties refuse by name. Derived-K (`RUNNER_TIEDV`), ring KV, and non-f16 training caches
-retain their refusals. `--adapt-info` reports serving and training support
+retain their refusals. `--info adapter` reports serving and training support
 for the actual loaded model.
 
 CUDA training is opt-in two ways. `RUNNER_TRAIN_GPU=1` puts the backward's
@@ -77,7 +77,7 @@ adapter bytes and deterministic loss trajectory. Different builds/ISAs
 need not write the same bytes. Prompt/completion JSONL masks prompt loss;
 weighted examples, training context, and opt-in end-of-turn tokens retain
 their specified behavior. DPO evaluates the frozen reference through an
-adapter bypass rather than a second base-weight copy. `--train-teacher`
+adapter bypass rather than a second base-weight copy. `--teacher`
 replaces the cross-entropy with the KL divergence from a teacher's top-k
 distribution plus one tail bucket to the student's, per completion position,
 under the same masks and weights; a one-hot teacher reproduces the
@@ -92,7 +92,7 @@ merge, quantize, and serving receipts.
 
 ## Merge survival
 
-`--merge-lora OUT` folds the adapter delta into each adapted projection and
+`--rewrite OUT --merge-lora` folds the adapter delta into each adapted projection and
 writes a standalone GGUF at the source tensor type or `--quant` target.
 Untouched tensors and zero-delta pairs preserve their specified copy behavior.
 The quantization grid can round away a learned delta, so the exact serving

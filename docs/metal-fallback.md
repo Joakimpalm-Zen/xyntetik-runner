@@ -19,7 +19,7 @@ CI coverage:
 - `make test-metal-fallback` runs on macOS CI.
 - `tests/test_metal_ownership.m` exercises repeated disable/free state changes
   without requiring a Metal device.
-- When `runner --caps` reports a Metal device, the same target runs a real tiny
+- When `runner --info caps` reports a Metal device, the same target runs a real tiny
   model with `RUNNER_METAL_INJECT_FAILURE=once` plus macOS malloc checking
   (`MallocScribble=1`, `MallocGuardEdges=1`) and compares fallback output to
   `--gpu off`.

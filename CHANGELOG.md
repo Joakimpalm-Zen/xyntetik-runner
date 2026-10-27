@@ -5,6 +5,32 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **One command line, one mode, shorter spellings.** The flags that were
+  really verbs are refused in pairs instead of resolved by dispatch order
+  (`-p hi --serve` used to start the server and drop the prompt; `--score
+  --decide F` decided and never scored). Two groups moved to subcommands:
+  `runner attest keygen|sign|check|lineage|bundle|check-bundle|pack|
+  check-pack|sign-model|watermark-keygen|detect` holds the record, key,
+  bundle and pack utilities, and `runner train DATA -m MODEL` the trainer
+  with short option names (`--steps`, `--out`, `--dpo`, ...); both are
+  rewrites of the flags behind them, so the records, exit codes and tests
+  are unchanged. Merged spellings: `--json [FILE]`, `--think on|off|auto`,
+  `--tray [off|auto]`, `--gpu auto|off|N`, `--reserve P` or
+  `vram=P,ram=P,cpu=P`, `--rope linear=F,yarn=F,base=F`, `--draft
+  PATH|mtp|mtp:FILE|lookup`, `--score [N]`, `--record PATH` (the transcript
+  of a one-shot run, the receipts directory of a server; `--record-keep`,
+  `--record-prev`), `--rewrite OUT` with `--merge-lora` or
+  `--context-surgery` as the trigger (each pass keeps its own record kind),
+  and `--info caps|tools|adapter|doctor|fit`. `--trust-key` also takes a
+  file holding the key. Serve-mode defaults: a server queues for a held GPU
+  (`--wait-for-vram 300`; `0` refuses at once) and yields its model on
+  request (`--yield-on-request on`; `off` keeps it); `--port` and `--ttl`
+  are refused without `--serve`. Every older spelling is still accepted and
+  means the same (MANUAL.md, "Older spellings"); `runner --help` lists the
+  current ones and its attestation and training sections moved to the two
+  subcommands' `--help`. README, manual, site and guides use the current
+  spellings; dated reports keep the ones they were run with.
+
 - **Tier 1 follows pull.** The actively validated list held 27 files, a
   maintenance promise sized to the proof thesis rather than to use. It now
   holds the project's own published files whose repository shows at least

@@ -183,4 +183,4 @@ def test_allow_erased_alone_is_refused(runner_bin, fixtures):
                         "-p", "hi", "-n", "1"], cwd=ROOT, stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, timeout=120)
     assert p.returncode != 0
-    assert b"--merge-allow-erased requires --merge-lora" in p.stderr
+    assert b"--merge-allow-erased requires --rewrite OUT --merge-lora" in p.stderr

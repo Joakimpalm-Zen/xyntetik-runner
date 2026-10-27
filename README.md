@@ -25,7 +25,7 @@ exists to replace those guesses with answers you can check.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="site/assets/readme-fit-dark.svg">
-    <img src="site/assets/readme-fit-light.svg" alt="runner --fit reading the first 16 MB of Granite 4.2 8B on an RTX 3070: FITS, 35 of 40 layers on the GPU" width="560">
+    <img src="site/assets/readme-fit-light.svg" alt="runner --fit (today --info fit) reading the first 16 MB of Granite 4.2 8B on an RTX 3070: FITS, 35 of 40 layers on the GPU" width="560">
   </picture>
 </p>
 <p align="center"><sub>Real output: Runner asked about Granite 4.2 8B on an RTX 3070 (October 2026), shortened to fit. <a href="docs/compat-reports/fit-capture-1.0.2-2026-10-06-rtx3070.md">Full capture</a></sub></p>
@@ -155,7 +155,7 @@ or follow one of these.
 <a id="runtime-and-hardware"></a>
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Know whether a model fits before you download it
 
-On an RTX 3070, `--fit` named the same GPU and CPU split the
+On an RTX 3070, `--info fit` named the same GPU and CPU split the
 loader then used in 70 of 72 cases and was one layer cautious in the other
 two, never optimistic (six models, two context sizes, four cache formats).
 
@@ -170,7 +170,7 @@ arithmetic.
 # fetch only the first 16 MB of a model, then ask
 curl -r 0-16777215 -L -o head.gguf \
   https://huggingface.co/ORG/REPO/resolve/main/MODEL.gguf
-./runner --fit head.gguf -c 16384
+./runner -m head.gguf --info fit -c 16384
 ```
 
 ```console
@@ -179,8 +179,8 @@ curl -r 0-16777215 -L -o head.gguf \
   verdict       FITS — 35 of 40 layers on the GPU, 6.53 GiB of RAM to spare at ctx 16384
 ```
 
-`./runner --caps` says what this machine and build can run, and
-`./runner -m model.gguf --doctor` loads a model, probes it and reports.
+`./runner --info caps` says what this machine and build can run, and
+`./runner -m model.gguf --info doctor` loads a model, probes it and reports.
 [How the verdict is computed](MANUAL.md#deciding-before-you-download)
 
 <a id="models-and-conversion"></a>
@@ -204,11 +204,11 @@ then tells you how far the result drifted from the original.
 
 ```sh
 # keep some tensors sharp and squeeze others, from a plan file
-./runner -m model-Q8_0.gguf --quantize out.gguf --type-plan plan.json
+./runner -m model-Q8_0.gguf --rewrite out.gguf --type-plan plan.json
 # drop the experts a mixture-of-experts model rarely uses
-./runner -m model.gguf --quantize pruned.gguf --prune-experts keep.json
+./runner -m model.gguf --rewrite pruned.gguf --prune-experts keep.json
 # remove one block's attention or feed-forward sublayer
-./runner -m model.gguf --quantize cut.gguf --remove-sublayer attn:48
+./runner -m model.gguf --rewrite cut.gguf --remove-sublayer attn:48
 # then score the result against its parent
 python3 scripts/kld-compare-raw.py --model-a out.gguf --model-b model-Q8_0.gguf \
     --runner ./runner --corpus corpus.txt --max-positions 400 --out fidelity.json
@@ -236,7 +236,7 @@ and shrinks the other half to 4 bits.
 ./runner -m model.gguf --serve -c 32768 --kv q8     # the gentler setting, about half
 ```
 
-`--fit` shows what each setting buys on your machine before you load anything.
+`--info fit` shows what each setting buys on your machine before you load anything.
 [Cache formats and their measured cost](MANUAL.md#long-contexts)
 
 <a id="designed-to-stay-on"></a>
@@ -332,8 +332,8 @@ adapter is written beside a record of what made it.
 **How.**
 
 ```sh
-./runner -m base-Q4_K_M.gguf --train data.jsonl --train-steps 200 \
-  --lora-rank 8 --train-out adapter.gguf
+./runner train data.jsonl -m base-Q4_K_M.gguf --steps 200 \
+  --lora-rank 8 --out adapter.gguf
 ./runner -m base-Q4_K_M.gguf --lora adapter.gguf --serve
 ```
 
@@ -368,7 +368,7 @@ no change on its path re-checked since.
   against it every release. [Endpoints](MANUAL.md#endpoints) ·
   [Coding-agent setup](MANUAL.md#coding-agent-evidence)
 - <a id="structured-output"></a>**Structured output.** `--json`,
-  `--json-schema FILE` or the API's `response_format` guarantee the shape of
+  `--json FILE` or the API's `response_format` guarantee the shape of
   the answer, and `"confirm_below": 0.8` reports whether the model was sure
   enough to skip a human. [Details](MANUAL.md#structured-output)
 - **Rerank without a second model.** `POST /v1/rerank` scores documents
@@ -395,8 +395,8 @@ no change on its path re-checked since.
 - <a id="desktop-tray"></a>**Desktop tray.** On macOS and Windows an icon
   shows which models are loaded and starts or stops them.
   [Details](MANUAL.md#desktop-tray)
-- **Draft decoding.** `--draft small.gguf`, `--mtp`, `--mtp-file head.gguf`
-  (a NextN/MTP head shipped as a companion file) or `--draft-lookup`.
+- **Draft decoding.** `--draft small.gguf`, `--draft mtp`, `--draft mtp:head.gguf`
+  (a NextN/MTP head shipped as a companion file) or `--draft lookup`.
   [Details](MANUAL.md#runtime-and-hardware)
 - **Pause and resume a generation.** Session images with `--sessions DIR`.
   [Details](docs/session-images.md)
@@ -436,18 +436,18 @@ replays it.
 **How.**
 
 ```sh
-./runner -m model.gguf -p "Say hello in one sentence." -s 42 --transcript run.json
+./runner -m model.gguf -p "Say hello in one sentence." -s 42 --record run.json
 ./runner -m model.gguf --verify run.json     # VERIFIED, DIVERGED or UNVERIFIABLE
 ```
 
-Around that core: signed and chained receipts (`--keygen`, `--sign-key`),
-evidence packs a reviewer checks offline (`--export-pack`, `--check-pack`),
+Around that core: signed and chained receipts (`runner attest keygen`, `--sign-key`),
+evidence packs a reviewer checks offline (`runner attest pack`, `runner attest check-pack`),
 signature checks on the model file itself (`--model-sig`), and a text
-watermark with its detector (`--watermark`, `--detect-watermark`).
+watermark with its detector (`--watermark`, `runner attest detect`).
 
 **Where a model came from.** Each step that makes a model file (quantize,
 train, merge) writes a signed record beside it that names its inputs by
-sha256. `--lineage` walks a file, or a served answer's receipt, back to the
+sha256. `runner attest lineage` walks a file, or a served answer's receipt, back to the
 download it started from, and `--require-eval` refuses a file without a
 passing evaluation made for those exact bytes.
 [Lineage walkthrough](docs/lineage-walkthrough.md) ·
@@ -484,7 +484,7 @@ Ran a file or the engine on your own hardware? Open a
 [result report](https://github.com/Joakimpalm-Zen/xyntetik-runner/issues/new?template=result_report.yml);
 success and failure are both wanted, and each is credited by name in
 [community results](docs/community-results.md). For a problem, include
-`runner --version`, `runner --caps`, the model's exact filename and the load
+`runner --version`, `runner --info caps`, the model's exact filename and the load
 log. [SECURITY.md](SECURITY.md) has the threat model and
 [CONTRIBUTING.md](CONTRIBUTING.md) the correctness gates.
 

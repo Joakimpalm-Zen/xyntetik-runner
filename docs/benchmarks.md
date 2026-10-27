@@ -71,13 +71,13 @@ or was held to the publisher's float32 model over 2,000 positions before it
 became a default (the CHANGELOG names the rows); `--gpu-route reference`
 runs the previous arithmetic.
 
-Method: runner `--bench-json -n 128 -b 512 --gpu-layers 99` (`--gpu off`
+Method: runner `--bench-json -n 128 -b 512 --gpu 99` (`--gpu off`
 for the Apple M1's CPU arm; 16 threads on the slice, 4 on the RTX 3070 host
 and the Apple M1), default routes; llama.cpp `llama-bench -p L -n 0` for
 prefill and `-p 0 -n 128 -d L` for decode at the same depth, `-r 2 -ngl 99`
 (`-ngl 0` for the CPU arm), flash attention and the 512-token micro-batch at
 their defaults. Two rounds, a warm-up discarded; cells are medians.
-`--gpu-layers 99` forces every layer onto the card: on the RTX 3070 the
+`--gpu 99` forces every layer onto the card: on the RTX 3070 the
 baseline could not hold granite-4.2-8b at 16K and Kvist-14B at 8K within the
 600-second timeout, and llama.cpp's granite-4.2-8b 16K prefill falls to 158
 tok/s from 2,418 at 8K (a memory-pressure row for it, not a ratio to read).
@@ -254,7 +254,7 @@ weights). The Flash-Next rows run the experts on the host CPU, where
 llama.cpp's own rounds differ by up to 5x on a shared machine; read them as
 a range, not a ratio.
 
-Method: runner `--bench-json -n 128 -b 512 --gpu-layers 99` (`--gpu off` for
+Method: runner `--bench-json -n 128 -b 512 --gpu 99` (`--gpu off` for
 the Apple M1's CPU arm; 16 threads on the slice, 4 on the RTX 3070 host and
 the Apple M1); llama.cpp `llama-bench -p L -n 0` for prefill and `-p 0 -n
 128 -d L` for decode at the same depth, `-r 2 -ngl 99` (`-ngl 0` for the
@@ -609,7 +609,7 @@ this benchmark's own control run, fixed and now guarded by a test.
 ```sh
 # runner rows (median of 3; verify the gpu-split line reports full=1)
 ./runner -m model.gguf -f prompt-512tok.txt -n 128 --temp 0 -s 1 \
-         --ignore-eos --gpu-layers 99
+         --ignore-eos --gpu 99
 
 # llama.cpp rows
 llama-bench -m model.gguf -p 512 -n 128 -ngl 99 -r 2

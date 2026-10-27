@@ -359,7 +359,7 @@ def test_requires_quantize_out(runner_bin, parent):
     p = _run(runner_bin, ["-m", parent, "--remove-sublayer", "attn:1",
                           "-p", "hi", "-n", "1"])
     assert p.returncode != 0
-    assert b"--remove-sublayer requires --quantize" in p.stderr
+    assert b"--remove-sublayer shapes a rewrite and requires --rewrite OUT" in p.stderr
 
 
 def test_adapters_and_training_refuse_a_removed_model(runner_bin, parent, tmp_path):

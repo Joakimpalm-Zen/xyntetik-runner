@@ -62,9 +62,9 @@ def _trays(instances_dir):
 # requirement. (The seed's refusal stood here until seed 0 was accepted.)
 REFUSALS = [
     (["-i", "-f", "no-such-prompt.txt"], b"cannot read no-such-prompt.txt"),
-    (["--serve", "--receipts-keep", "3"], b"--receipts-keep needs --receipts DIR"),
+    (["--serve", "--receipts-keep", "3"], b"--record-keep keeps the newest receipts and needs --serve --record DIR"),
     (["--serve", "--adapter", "a=a.gguf", "--lora", "a.gguf"], b"--adapter and --lora are exclusive"),
-    (["--serve", "--merge-allow-erased"], b"--merge-allow-erased requires --merge-lora OUT"),
+    (["--serve", "--merge-allow-erased"], b"--merge-allow-erased requires --rewrite OUT --merge-lora"),
     (["--serve", "--require-eval", "fidelity"], b"--require-eval fidelity"),
 ]
 

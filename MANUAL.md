@@ -145,7 +145,7 @@ $response.choices[0].message.content
 > tokens across releases and the support matrix move with the evidence. The
 > [versioning policy](docs/versioning.md) lists exactly what is kept. CI builds
 > and smoke-tests Linux, macOS and Windows, and hardware coverage is still
-> limited: include `runner --version`, `runner --caps`, the model's exact
+> limited: include `runner --version`, `runner --info caps`, the model's exact
 > filename and the load log in issue reports. Read [SECURITY.md](SECURITY.md) for the threat model and
 > [CONTRIBUTING.md](CONTRIBUTING.md) for the required correctness gates.
 
@@ -162,7 +162,7 @@ $response.choices[0].message.content
 | Suspend a generation and resume or fork it later | Session images (`--sessions DIR`) in the [CLI reference](#conversion-diagnostics-and-integration) |
 | Test local coding tasks alongside an existing agent | [Shadow mode](#shadow-mode-what-could-your-local-model-have-done) |
 | Choose, convert or prune a model | [Models and conversion](#models-and-conversion), [published artifacts](#published-artifacts), [support matrix](#support-matrix) |
-| Check fit, manage hardware or report a problem | [Check before downloading](#deciding-before-you-download), [runtime and hardware](#runtime-and-hardware), `runner --doctor` |
+| Check fit, manage hardware or report a problem | [Check before downloading](#deciding-before-you-download), [runtime and hardware](#runtime-and-hardware), `runner --info doctor` |
 
 ## Use cases
 
@@ -201,7 +201,7 @@ GGUF you already serve, with no FP16 copy, on CPU or CUDA, and serve it beside
 the base on any backend. The same data, seed and config write a byte-identical
 adapter, with a provenance sidecar. [Adaptation](#adaptation)
 
-**A model that lives on your workstation.** `--fit` answers whether a model
+**A model that lives on your workstation.** `--info fit` answers whether a model
 fits from its header before the download; processes on one GPU share a VRAM
 registry instead of crashing each other; an idle server unloads on a timer or
 lets the operating system reclaim its memory; a tray on macOS and Windows
@@ -235,7 +235,7 @@ A map of what the binary does, with the section that documents each part.
   images and context snapshots. [Record and verify a run](#record-and-verify-a-run)
 - **Training and adapters.** LoRA training through quantized GGUF weights on
   CPU and CUDA, `--lora` serving on CPU, CUDA and Metal, `--merge-lora`,
-  `--adapt-info`. [Adaptation](#adaptation)
+  `--info adapter`. [Adaptation](#adaptation)
 - **Models and formats.** 19 admitted architectures, refused by name when
   unknown; 24 weight formats including the K-quants, all seven codebook
   i-quants, MXFP4 and NVFP4; KV caches in f16, q8, fp4 and split k8v4, with a
@@ -244,7 +244,7 @@ A map of what the binary does, with the section that documents each part.
   sublayer removal. [Support matrix](#support-matrix),
   [models and conversion](#models-and-conversion)
 - **Hardware and coexistence.** CPU (AVX2/FMA, NEON), CUDA with tensor cores,
-  Metal; `--caps`, `--fit` and `--doctor`; a cross-process VRAM registry;
+  Metal; `--info caps`, `--info fit` and `--info doctor`; a cross-process VRAM registry;
   evictable weights; a desktop tray on macOS and Windows; a container image
   on GHCR; the opt-in T3 build for the same bytes on any machine.
   [Runtime and hardware](#runtime-and-hardware), [builds](#build-and-platforms)
@@ -283,9 +283,9 @@ directory, or a size that is not a whole byte count, is refused whole):
 
 # Speculative decoding: draft model, MTP head, or prompt lookup.
 ./runner -m big.gguf --draft small.gguf -p "Continue this code"
-./runner -m qwen3.5-4b-mtp.gguf --mtp --gpu off -p "Continue this code"
-./runner -m trunk.gguf --mtp-file trunk-mtp.gguf -p "Continue this code"
-./runner -m model.gguf --draft-lookup -f transcript.txt -p "Summarize the text above"
+./runner -m qwen3.5-4b-mtp.gguf --draft mtp --gpu off -p "Continue this code"
+./runner -m trunk.gguf --draft mtp:trunk-mtp.gguf -p "Continue this code"
+./runner -m model.gguf --draft lookup -f transcript.txt -p "Summarize the text above"
 ```
 
 ## What Runner adds
@@ -368,7 +368,7 @@ guarantees the SHAPE of a call at any quantization, not its contents
 <a id="adaptation"></a>
 ### Train the GGUF you actually serve
 
-**What it is.** `--train` fits a LoRA adapter, a small set of extra weights
+**What it is.** `runner train` fits a LoRA adapter, a small set of extra weights
 on the model's projections, through the quantized GGUF the binary serves.
 There is no 16-bit training copy, no second framework and no conversion
 step afterwards: the serving forward pass is the training forward pass,
@@ -390,7 +390,7 @@ Budget hours, not minutes, and expect a Python training stack to be
 faster per step. What Runner buys for that is one numerical path and an
 auditable artifact.
 
-**Small data memorizes.** A step is one example, so `--train-steps 60`
+**Small data memorizes.** A step is one example, so `--steps 60`
 over 4 examples is 15 passes over the data. On data that small the adapter
 memorizes its completions, and when they share one answer it learns that
 every prompt of that shape gets that answer. Measured on MiniCPM5-1B Q4_K_M
@@ -400,8 +400,8 @@ questions, 5 passes to 42% and 15 passes to 62%; at `--lr 5e-4`, 15 passes
 gave it to 92%. A reference PEFT run with the same settings gave the same
 numbers, so this is the data and the settings, not the trainer. Keep it to
 one to three passes, add examples where other questions keep their usual
-answers, and use `--train-eot` so a short answer ends instead of repeating.
-`--train` prints a warning before the first step when the passes, one
+answers, and use `--eot` so a short answer ends instead of repeating.
+`runner train` prints a warning before the first step when the passes, one
 shared answer, the learning rate or a missing end-of-turn token make this
 likely.
 
@@ -476,9 +476,9 @@ of the delta its output kept and refuses one that keeps under half
 ([`--merge-lora`](#cli-merge-lora), `--merge-allow-erased` to override).
 A merged Q8_0 or F16 file is a standalone GGUF any runtime can serve.
 
-Flags and their semantics: [`--train`](#cli-train), [`--lora`](#cli-lora),
-[`--adapter`](#cli-adapter), [`--merge-lora`](#cli-merge-lora), `--train-dpo`,
-`--adapt-info` and `--lora-sig` (rows in the
+Flags and their semantics: [`runner train`](#cli-train), [`--lora`](#cli-lora),
+[`--adapter`](#cli-adapter), [`--merge-lora`](#cli-merge-lora), `runner train --dpo`,
+`--info adapter` and `--lora-sig` (rows in the
 [command-line reference](#command-line-reference)). Every feature in order:
 [the complete adapter guide](docs/lora.md). Start with the
 [training walkthrough](docs/train-lora-on-quantized-gguf.md) or
@@ -530,7 +530,7 @@ a standalone GGUF any runtime can serve (with its own provenance record -
 and the honest caveat that a quantized merge rounds the delta; `--lora` is
 the exact form), and `scripts/train-grpo-lite.py` closes the loop into
 seeded, replayable reinforcement fine-tuning, in which every round checks
-that the trainer scores its rollouts bit for bit as the sampler did. `--train-dpo` trains from
+that the trainer scores its rollouts bit for bit as the sampler did. `runner train --dpo` trains from
 `prompt`/`chosen`/`rejected` pairs against the frozen base as the reference
 (no second model copy: the adapter is bypassed for the reference pass),
 gated on the gradient's identity with two weighted cross-entropy backwards
@@ -551,12 +551,12 @@ These capabilities help when managing several models or evaluating decisions:
   left by dead processes are reaped. It makes a GPU something you can schedule
   rather than something you hope fits.
 - **You can ask what fits before loading anything.** The usual way to find out
-  whether a model fits is to load it and wait for the failure. `--caps` needs no
+  whether a model fits is to load it and wait for the failure. `--info caps` needs no
   model file and returns one JSON document containing live RAM/VRAM, backend and
   GPU limits, CPU and GPU quant lists, admitted architectures, placement modes,
   and model-count limits. A supervisor, tray controller, or CI job can reject an
   incompatible placement before dispatch, which removes a whole class of
-  load-wait-fail-retry loops. For a specific file, `--fit` answers the same
+  load-wait-fail-retry loops. For a specific file, `--info fit` answers the same
   question from the model's GGUF header - the first few megabytes - so a ranged
   read decides whether the rest of the download is worth starting.
 - **Constrained decisions come with a confidence signal.** `choice_logprobs`
@@ -591,12 +591,12 @@ Record the model, executable, inputs, settings and output, then replay the
 transcript to check the result:
 
 ```sh
-./runner -m model.gguf -p "Say hello in one sentence." -s 42 --transcript run.json
+./runner -m model.gguf -p "Say hello in one sentence." -s 42 --record run.json
 ./runner -m model.gguf --verify run.json
 ```
 
 Verification reports `VERIFIED`, `DIVERGED` or `UNVERIFIABLE`, with distinct
-exit codes. Signing is optional: `--keygen` creates a key and `--sign-key`
+exit codes. Signing is optional: `runner attest keygen` creates a key and `--sign-key`
 signs a transcript. Chaining, trusted-key checks, Ed25519 and ML-DSA-44
 signatures, and model-signature verification are documented in the
 [CLI reference](#conversion-diagnostics-and-integration).
@@ -611,14 +611,14 @@ measurement it ran inside. It is recorded, not replayed.
 Mac: a signed 1,000-token record, a verifying replay, and three forgeries
 refused ([docs/audit-demo.md](docs/audit-demo.md)).
 
-For a reviewer, `--export-pack RECEIPTS_DIR --pack-out DIR` gathers a
+For a reviewer, `runner attest pack RECEIPTS_DIR DIR` gathers a
 server's receipts (one model, one build) into one evidence pack: every
 receipt, the model signature and key, the envelope manifest the receipts
-name (`--pack-envelope`), and any further records a reviewer needs, such as
-approval decisions, as attachments (`--pack-attach`, listed by sha256 and not
+name (`--envelope`), and any further records a reviewer needs, such as
+approval decisions, as attachments (`--attach`, listed by sha256 and not
 interpreted). Each inference's id is its receipt's chain hash, and the pack
 states whether the receipts form one unbroken segment of the server's chain,
-so a receipt left out between two others shows. `--check-pack DIR` verifies
+so a receipt left out between two others shows. `runner attest check-pack DIR` verifies
 all of it offline; each packed receipt still replays with `--verify`.
 
 Keep the same executable and model available for replay. The
@@ -633,7 +633,7 @@ guard, `ignore_eos`, a scripted reply) and which tool calls the turn delivered
 (`tool_calls`, name and arguments). Replaying without those could only
 disagree with the record, so `--verify` refuses such a record as
 `UNVERIFIABLE` and names the constraint instead of reporting `DIVERGED`. A
-record made under `--json`, `--json-schema` or `--ignore-eos`, on the CLI or
+record made under `--json`, `--json FILE` or `--ignore-eos`, on the CLI or
 served (a `response_format` of `json_schema` or `json_object`), replays when
 the verifier is given the same one (the schema is matched by digest, not
 spelling); a constraint the verifier adds that the record does not name is
@@ -642,12 +642,12 @@ loop guard are not replayed: the record names them and does not carry what
 would rebuild them.
 
 <a id="lineage"></a>
-### Where a file came from: `--lineage`
+### Where a file came from: `runner attest lineage`
 
 Every step that makes a model or adapter file leaves a provenance record
-beside it: `--quantize` (with `--prune-experts`, `--remove-sublayer` or
+beside it: `--rewrite` (with `--prune-experts`, `--remove-sublayer` or
 `--type-plan`) writes `OUT.gguf.quant.json`, `--merge-lora` writes
-`.merge.json`, `--train` writes `.train.json` and `--context-surgery` writes
+`.merge.json`, `runner train` writes `.train.json` and `--context-surgery` writes
 `.context.json`. Each record names its input and output files by sha256,
 the options that shaped the bytes and the runner that ran it, and for each
 input that was itself made by a step it links that step's record by path
@@ -655,13 +655,13 @@ and sha256. With `--sign-key` the record is signed in place, the same chain
 and signature objects a receipt carries.
 
 ```sh
-./runner -m base.gguf --train data.txt --train-out a.gguf --sign-key key.json
-./runner -m base.gguf --lora a.gguf --merge-lora merged.gguf --sign-key key.json
-./runner -m merged.gguf --quantize final.gguf --quant q8_0 --sign-key key.json
-./runner --lineage final.gguf --trust-key <public key>
+./runner train data.txt -m base.gguf --out a.gguf --sign-key key.json
+./runner -m base.gguf --lora a.gguf --rewrite merged.gguf --merge-lora --sign-key key.json
+./runner -m merged.gguf --rewrite final.gguf --quant q8_0 --sign-key key.json
+./runner attest lineage final.gguf --trust-key <public key>
 ```
 
-`--lineage` walks the chain back and prints one line per step. A link is
+`runner attest lineage` walks the chain back and prints one line per step. A link is
 VERIFIED when the next step's input hash is this step's output hash, the
 record is byte for byte the one the next step recorded, the output file
 (where it is still on disk) hashes to its record, and the signature
@@ -673,14 +673,14 @@ to another folder, they verify without the model files, looked up by name
 when their recorded paths are gone. Exit 0 every link verified and signed,
 1 consistent but not all signed, 2 broken or no record.
 
-A receipt links the chain too. A one-shot `--transcript` record and every
-`--receipts` record of a served answer name the model (and adapter) by
+A receipt links the chain too. A one-shot `--record` file and every
+receipt of a served answer (`--serve --record DIR`) name the model (and adapter) by
 sha256, and when a step on this machine made that file, the receipt links
-the step's record. `--lineage run.json` starts from the answer: the
+the step's record. `runner attest lineage run.json` starts from the answer: the
 receipt's own signature, then the model and the adapter walked back
 through their records to their origins.
 
-`--lineage DIR` on a `--receipts` folder answers which file answered what.
+`runner attest lineage DIR` on a receipts directory answers which file answered what.
 It groups the answers by model and adapter version, shows each version's
 answer count and time span, prints the order versions served in (a version
 that comes back after another, `timeline: v1 x2 v2 x1 v1 x1`, is a rollback),
@@ -710,7 +710,7 @@ scripts/eval-record.py agent --model q.gguf --evidence evidence.jsonl \
     --attempts attempts/ --min-verified 4 --sign-key key.json
 ```
 
-`--lineage` shows a file's evaluations beside its chain, VERIFIED or
+`runner attest lineage` shows a file's evaluations beside its chain, VERIFIED or
 UNSIGNED by their signature, and STALE when the file changed after its
 evaluation (the record names another hash). `--require-eval fidelity`
 (or `agent`) refuses to load a model without a passing, current one; with
@@ -789,7 +789,7 @@ by `shadow server`, so a second delegation a minute after the first does
 not pay the model load again.
 
 Without `-m`, `--shadow-mode` looks for GGUF files under the usual
-directories, asks the runner's own `--fit` about each, and proposes the
+directories, asks the runner's own `--info fit` about each, and proposes the
 largest that fits at the offload context; the list it looked at is
 printed, and `-m` always wins.
 
@@ -893,8 +893,8 @@ next model can be loaded from it.
 | `runner -m model.gguf --serve` | yes |
 | `runner -m model.gguf -i` | yes |
 | `runner -m model.gguf -p "..."` | no |
-| `--caps`, `--quantize`, `--bench-json`, `--version` | no |
-| anything with `--no-tray` | no |
+| `--info caps`, `--rewrite`, `--bench-json`, `--version` | no |
+| anything with `--tray off` | no |
 | pipes, scripts, CI, Linux | no |
 
 A terminal on **either** stdin or stdout is what counts as "a person launched
@@ -904,7 +904,7 @@ a two-second process should not leave a menu-bar icon behind it.
 
 `--tray` means *be* the tray rather than run a model. It is required wherever
 there is no terminal - launchd, Task Scheduler, a service wrapper - because
-every launch in the table above needs one. `--no-tray` opts out everywhere.
+every launch in the table above needs one. `--tray off` opts out everywhere.
 
 One tray runs per machine; a second exits naming the pid that owns the icon.
 The tray is spawned detached with its own session, so stopping a server with
@@ -946,7 +946,7 @@ Runner provides two sampler-level guarantees:
 
 - `--json` or OpenAI `response_format.type=json_object` emits one valid JSON
   object.
-- `--json-schema FILE`, OpenAI `json_schema`, Responses `text.format`, and tool
+- `--json FILE`, OpenAI `json_schema`, Responses `text.format`, and tool
   parameter schemas compile to a streaming conformance validator.
 
 The supported schema subset covers objects, arrays, strings, numbers,
@@ -1098,7 +1098,7 @@ size. A partially downloaded GGUF can otherwise look like a model failure.
 The [quick start](#quick-start) uses Granite 4.1 3B Q8_0. The choices below
 separate a fidelity-gated starting point from a smaller smoke test and a
 larger project artifact. File size is not the total RAM requirement; use
-[`--fit`](#deciding-before-you-download) for the model and context you need.
+[`--info fit`](#deciding-before-you-download) for the model and context you need.
 
 | Model | File size | Role |
 |---|---|---|
@@ -1143,7 +1143,7 @@ Repack weight matrices to `q8_0`, `q4_0`, `q3_k`, `q4_k`, `q6_k`, `f16`, or
 `bf16`:
 
 ```sh
-./runner -m model-f16.gguf --quantize model-q4.gguf --quant q4_0
+./runner -m model-f16.gguf --rewrite model-q4.gguf --quant q4_0
 ```
 
 Norms, biases, and rope factors stay f32; tensors already smaller than the
@@ -1181,10 +1181,10 @@ evaluation against the unpruned parent.
 
 ```sh
 # Prune only; surviving tensors keep their current quant type.
-./runner -m model.gguf --quantize pruned.gguf --prune-experts keep.json
+./runner -m model.gguf --rewrite pruned.gguf --prune-experts keep.json
 
 # Prune and requantize the survivors.
-./runner -m model.gguf --quantize pruned-q4.gguf \
+./runner -m model.gguf --rewrite pruned-q4.gguf \
   --prune-experts keep.json --quant q4_0
 ```
 
@@ -1205,7 +1205,7 @@ built that way still has to say where it runs.** GGUF defines ONE
 `<arch>.expert_count` for the whole model. Every prune plan now also writes
 `<arch>.expert_count_per_layer`, a `u32` array with one entry per block (`0`
 for a non-MoE block) holding each layer's real post-prune count; a plain
-`--quantize` carries it through and a later plan re-authors it. When a plan
+`--rewrite` carries it through and a later plan re-authors it. When a plan
 leaves every MoE layer at the same new count, the global key is rewritten as
 well and both agree. When layers end at different counts, or some are left
 unpruned, the global key deliberately stays at the parent's number, which
@@ -1229,9 +1229,9 @@ measurement against the parent, made elsewhere.
 
 ```sh
 # drop block 48's attention; survivors keep their bytes
-./runner -m model.gguf --quantize cut.gguf --remove-sublayer attn:48
+./runner -m model.gguf --rewrite cut.gguf --remove-sublayer attn:48
 # several at once, and requantize the survivors in the same pass
-./runner -m model.gguf --quantize cut-q8.gguf \
+./runner -m model.gguf --rewrite cut-q8.gguf \
   --remove-sublayer attn:48,mlp:12 --quant q8_0
 ```
 
@@ -1260,7 +1260,7 @@ Limits, each refused rather than approximated: dense blocks only (MoE
 FFNs, the hybrid SSM families, gemma-4 E-series shared-KV/per-layer
 embeddings, fused-QKV exports and NextN heads are declined by name), one
 head width across the file (a non-zero entry that differs from the rest is
-heterogeneous geometry, not a removal), and no `--lora` or `--train` on a
+heterogeneous geometry, not a removal), and no `--lora` or `runner train` on a
 removed file yet. `docs/sublayer-removal.md` has the design and the gates.
 
 ### Published artifacts
@@ -1422,7 +1422,7 @@ of the reports stay up with a pointer to the canonical dataset.
 
 ## Support matrix
 
-`runner --caps` publishes the architecture IDs admitted by the current binary.
+`runner --info caps` publishes the architecture IDs admitted by the current binary.
 Open the architecture table below for model-specific paths and limitations.
 
 **Model support tiers.** Which files Runner re-checks on every release is a
@@ -1446,8 +1446,8 @@ weight-normed routers, gate-less shared experts), not missing quant support.
 A **sharded** GGUF takes a full Metal offload directly: each part's mapping
 gets its own tensor-boundary wraps, gated byte-identical to both the CPU path
 and the single merged file (`make test-metal-split`; measured on a real
-2-part 86 GB set). A partial `--gpu-layers` split of a sharded set refuses to
-CPU — merge to one file with `--quantize OUT --quant keep` first if a layer
+2-part 86 GB set). A partial `--gpu N` split of a sharded set refuses to
+CPU — merge to one file with `--rewrite OUT --quant keep` first if a layer
 split is what you need. The loader accepts both duplicated-metadata shards
 and the standard compact form where only part one carries model metadata;
 explicit contradictions between parts are still rejected.
@@ -1469,7 +1469,7 @@ merely dense matvec/matmul support.
 |---|---|
 | `llama`, `mistral`, `smollm`, `stablelm` | Llama-style dense families with family tokenizers/templates. |
 | `qwen2`, `qwen3` | QKV-bias and per-head-QK-norm variants. |
-| `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU and CUDA. Qwen3.8-27B (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore (its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike); a CUDA-resident recurrent layer runs speculative decode (per-row recurrent checkpoints restore a partially accepted round) and declines grammar fast-forward. |
+| `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU and CUDA. Qwen3.8-27B (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--draft mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore (its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike); a CUDA-resident recurrent layer runs speculative decode (per-row recurrent checkpoints restore a partially accepted round) and declines grammar fast-forward. |
 | `clef` | Cloudflare's Clef decision models (Cloudflare/clef on Qwen3.8-27B, Cloudflare/clef-flash on Qwen3.5-9B): the `qwen35` backbone plus the joint schema head, served at `POST /v1/systemone` and `--systemone FILE` ([Clef decisions](#clef-decisions-v1systemone)). Text input only; a request with images or videos is refused. Gold against the publisher's `joint_schema_model.py` in `docs/clef-admission-2026-10-16.md`. |
 | `qwen3moe` | Fused and legacy split sparse-MoE layouts on CPU/CUDA; supported fused layouts on Metal. |
 | `gemma3` | Regular and QAT layouts, sliding-window attention, sandwich norms. The 27B (62 blocks) scales attention by its config's `query_pre_attn_scalar`, which is n_embd / n_head (168), not its 128-wide heads; every other size uses the head width (`tests/test_attn_scale.c`). |
@@ -1499,7 +1499,7 @@ silently dropped branch.
 |---|---|
 | File format | GGUF v2/v3, mmap/file-mapped host weights, including standard local multi-part sets. |
 | Tokenizers | SPM and byte-level BPE with llama, qwen2/qwen35, smollm, afmoe, tekken, llama4/gpt-4o, Gemma, and GPT-2-family (including `granite-docling`) pre-tokenization rules. The qwen2 and qwen35 tokenizers apply the NFC normalizer Qwen's `tokenizer.json` declares, so decomposed text (`e` plus U+0301) tokenizes as the publisher's tokenizer does; a `clef` file uses Clef's own qwen2 split although its GGUF declares `qwen35`. |
-| Quantizations | `--caps` lists the admitted tensor formats: the k-quant and legacy families plus MXFP4, NVFP4 (two-level, with its per-tensor scale companion applied) and the codebook i-quants (IQ1_S/M, IQ2_XXS/XS/S, IQ3_XXS/S, IQ4_NL/XS). CUDA serves every one of them; Metal admits the codebook i-quants through its current dense kernels and retains separate NVFP4/MoE/layout refusals, naming the tensor and type that caused a fallback. |
+| Quantizations | `--info caps` lists the admitted tensor formats: the k-quant and legacy families plus MXFP4, NVFP4 (two-level, with its per-tensor scale companion applied) and the codebook i-quants (IQ1_S/M, IQ2_XXS/XS/S, IQ3_XXS/S, IQ4_NL/XS). CUDA serves every one of them; Metal admits the codebook i-quants through its current dense kernels and retains separate NVFP4/MoE/layout refusals, naming the tensor and type that caused a fallback. |
 | Transformer | RMSNorm, adjacent-pair and NeoX RoPE, grouped-query attention, SwiGLU/GELU/xIELU family paths, tied embeddings, dense and selected sparse MoE. |
 | Sampling | Greedy, temperature, top-k, top-p, min-p, repeat penalty, stop strings, JSON/schema constraints, speculative decoding. |
 | Context | Batched prefill, f16/q8 KV, linear/YaRN/llama-3 scaling, automatic extension. |
@@ -1511,7 +1511,7 @@ Not implemented: Vulkan; TLS/auth; remote bind; remote/streamed GGUF parts; the
 `qwen2moe`/`deepseek2`/`kimi` architecture IDs (their shared-expert *layout* is
 implemented, as above - the architectures are not admitted) or MLA attention;
 Mamba/Jamba; MTP/NextN draft-head consumption on Metal, on a partial CUDA
-split, or with more than one predictor block (`--mtp` serves the single-block
+split, or with more than one predictor block (`--draft mtp` serves the single-block
 case on the CPU and on CUDA with the whole trunk on the device; without the
 flag the tensors load and are skipped, so dense decoding is unchanged);
 OMS model signatures by the certificate or keyless (Fulcio/Rekor) methods, or
@@ -1608,7 +1608,7 @@ tables in [docs/portable-bitexact-2026-09-05.md](docs/portable-bitexact-2026-09-
 CI builds all three and runs the suite on hosted machines, which have no GPU.
 The accelerated halves of that table are verified on physical hardware, and
 [docs/device-evidence.json](docs/device-evidence.json) records when each was
-last run, written from the runner's own `--caps` on the machine in question.
+last run, written from the runner's own `--info caps` on the machine in question.
 `make release-check` refuses a tag while one the project owns is stale, so the
 table above is a claim somebody re-checks rather than one that decays quietly.
 A class the ledger marks borrowed (lent with no terms) is reported the same way
@@ -1621,8 +1621,8 @@ The build also runs `windres` (binutils, which that gcc package depends on)
 to embed the application manifest that makes UTF-8 the process code page,
 and stops with an error when it is missing. Non-ASCII prompts, file paths and
 environment values are UTF-8 on Windows 10 version 1903 and later, as on Linux
-and macOS; `runner --caps` reports `"code_page":{"ansi":65001,"utf8_manifest":true}`
-there. Older Windows ignores the manifest (`--caps` then shows the legacy code
+and macOS; `runner --info caps` reports `"code_page":{"ansi":65001,"utf8_manifest":true}`
+there. Older Windows ignores the manifest (`--info caps` then shows the legacy code
 page, such as 1252, beside `"utf8_manifest":true`), and runner reads the
 command line and the environment in their UTF-16 form and opens every file
 through the UTF-16 Windows APIs itself, so the same text and paths arrive the
@@ -1670,9 +1670,9 @@ keep any deployment on a trusted host.
 
 Inside a container Runner sizes from the container's limits, not the host's:
 the CPU quota (`--cpus`, cgroup `cpu.max`) and the memory limit (`--memory`,
-`memory.max`) set the default thread count, the batch default and what `--fit`
+`memory.max`) set the default thread count, the batch default and what `--info fit`
 and the load checks count as available RAM, for cgroup v2 and v1 alike.
-`runner --caps` reports those effective numbers with the host's beside them
+`runner --info caps` reports those effective numbers with the host's beside them
 (`host`, `limits`), so a launcher can see both.
 
 The image is **CPU by default, but GPU-capable without a separate variant.** The
@@ -1691,7 +1691,7 @@ docker run --rm --gpus all --network host -v "$PWD/models:/models" \
 CUDA runtime the driver-API path never calls.) Verified on an RTX 3070 via WSL2
 (2026-08-19, Docker 29.1.3 + NVIDIA Container Toolkit 1.19.1): the same
 distroless image run with `--gpus all` reports `"gpu":{"backend":"cuda","name":
-"NVIDIA GeForce RTX 3070",…}` from `runner --caps` and prints `gpu: CUDA backend
+"NVIDIA GeForce RTX 3070",…}` from `runner --info caps` and prints `gpu: CUDA backend
 on NVIDIA GeForce RTX 3070` with VRAM accounting at load; the identical image run
 without `--gpus` reports `"gpu":null` and runs on CPU (`libcuda.so.1` absent), so
 the flag is what makes the difference. A generation attempt in that case says
@@ -1743,7 +1743,7 @@ that variant at load, naming the tensor, rather than decode it as NaN. `scripts/
 the companions; `tests/test_nvfp4_scale.py` holds the gate against an F32
 anchor with the companion folded in.
 
-`runner --caps` is the live source of truth for a particular executable and
+`runner --info caps` is the live source of truth for a particular executable and
 machine. Architecture and MoE layout checks still happen at model load; a
 listed tensor kernel does not imply that every architecture using that tensor
 is implemented on that backend.
@@ -1751,15 +1751,15 @@ is implemented on that backend.
 **Metal:** Apple Silicon uses zero-copy mapped weights and unified-memory KV.
 Metal supports f16 and q8 KV, dense and selected MoE layouts, and tiled prefill
 GEMMs. Full offload is the preferred and default shape. A file above
-`gpu.max_working_set_bytes` in `--caps` takes a leading-layer split when the
+`gpu.max_working_set_bytes` in `--info caps` takes a leading-layer split when the
 tensor layout allows a contiguous prefix wrap *and* the whole model still fits
 in RAM; when it does not, the backend falls back to CPU rather than split,
 because pinning part of a model that does not fit measured 8–35x slower than
-CPU-only on an 8 GB M1. `--gpu-layers N` forces a split anyway. Multi-part
+CPU-only on an 8 GB M1. `--gpu N` forces a split anyway. Multi-part
 (split) GGUF sets take a **full Metal offload**: the weight wraps are keyed by
 host address, so each part's mapping gets its own tensor-boundary wraps, and a
 2-part 86 GB set measured byte-identical to the single file it was merged
-from. What a split set cannot take is a partial **layer** split (`--gpu-layers`
+from. What a split set cannot take is a partial **layer** split (`--gpu N`
 below the layer count), whose prefix arithmetic cannot span separate
 mappings — that combination refuses loudly and runs on the CPU, as does a set
 whose whole size exceeds the Metal working-set budget. The embedded shader
@@ -1918,7 +1918,7 @@ activation to int8 (per 32 elements) and runs the IQ3_S, IQ3_XXS, IQ4_XS,
 Q4_K and Q8_0 GEMVs as `dp4a` integer dots at 1 to 8 columns, the route
 llama.cpp's MMVQ takes. A speculative verify row then costs little more than
 a decoded one. Qwen3.8-27B IQ3_S with its MTP head on a 24 GB MIG slice:
-plain decode 13.9 to 14.8 tok/s, `--mtp-file --draft-k 3` 22.0 (1.6x the
+plain decode 13.9 to 14.8 tok/s, `--draft mtp:FILE --draft-k 3` 22.0 (1.6x the
 float route's plain decode), the drafted text byte-identical to the route's
 own plain decode. It is **off by default** because it is not the float
 route's bits: device against CPU `--score` on the same file moves from 0 to
@@ -1934,9 +1934,9 @@ Vulkan is not implemented; AMD and Intel GPUs use the CPU path.
 
 - A requested context above the training length applies model metadata for
   linear/YaRN/llama-3 rope scaling, or automatic YaRN extension when metadata
-  does not supply a native scheme. `--yarn-factor` compounds a native YaRN
-  regime without changing its original context; `--rope-scale` remains a
-  linear override. `--rope-scale`, `--yarn-factor`, and `--rope-base` override
+  does not supply a native scheme. `--rope yarn=F` compounds a native YaRN
+  regime without changing its original context; `--rope linear=F` remains a
+  linear override. `--rope linear=F`, `--rope yarn=F`, and `--rope base=F` override
   that behavior.
 - `--kv q8` stores q8_0 blocks when every layer's head dimension is divisible
   by 32. It works on CPU, CUDA, and Metal, participates in capacity auto-fit,
@@ -2096,7 +2096,7 @@ envelope: tool-calling gate=pass — truncation 6/6, schema-shape@Q4_0, agent-to
 
 A manifest with no `tool_calling` block prints nothing extra. You can also query
 a model's native tool protocol directly, without any manifest, with `runner
---tool-info -m model.gguf`, which prints
+--info tools -m model.gguf`, which prints
 `{"tool_family":…,"native_tool_protocol":…,"template":…,"sampling_preset":…}`. The full block, the evidence each
 field comes from, and the honesty caveats (notably that *schema-shape holding at
 `Q4_0`* is about the call **shape**, not the argument values) are documented in
@@ -2118,14 +2118,90 @@ flags into unrelated feature sections.
 | `--pull REPO[:TAG]` | Download and verify what `-hf` would fetch, print the result and exit; no model is loaded. A mode of its own. [Details](#cli-pull). |
 | `-i` | Stateful interactive chat. |
 | `--serve` | Start the HTTP server. |
-| `--tray` | Be the macOS/Windows tray controller instead of running a model. Required where there is no terminal. See [Desktop tray](#desktop-tray). |
-| `--no-tray` | Opt out of the tray everywhere, including the one that otherwise follows `--serve` and `-i`. |
-| `--port N` | Server port, default `8080`. |
-| `--parallel N` | Independent inference slots, default `1`; eligible CUDA/Metal dense models use microbatched decode. [Details](#cli-parallel). |
-| `--ttl N` | Swap-mode idle unload timeout, default `300`; `0` disables it. |
+| `--tray [off\|auto]` | Bare: be the macOS/Windows tray controller instead of running a model, required where there is no terminal. `off` opts out of the tray everywhere, including the one that otherwise follows `--serve` and `-i`; `auto` is that default spelled out. See [Desktop tray](#desktop-tray). |
+| `--port N` | Server port, default `8080`. Refused without `--serve`. |
+| `--parallel N` | Independent inference slots, default `1`; eligible CUDA/Metal dense models use microbatched decode. Valid with `--serve`, and with `--info fit` to size the estimate for the slots. [Details](#cli-parallel). |
+| `--ttl N` | Swap-mode idle unload timeout, default `300`; `0` disables it. Refused without `--serve`. |
 | `--force-uncertified` | Load a model even when its measured-envelope sidecar records an `outside-envelope` verdict for this runtime (refused by default). See [Measured-envelope gate](#measured-envelope-gate). |
-| `--json` | Constrain output to one valid JSON object. With `--pull`, print the pull's result as one JSON object instead. |
-| `--json-schema FILE` | Constrain output to the schema in `FILE`. |
+| `--json [FILE]` | Constrain output to one valid JSON object, or to the JSON Schema in `FILE`. The two are different constraints and a record names the one it ran under. With `--pull`, print the pull's result as one JSON object instead. |
+| `--info KIND` | Answer one question and exit. `caps`: machine, backend, quant, architecture, placement and sampling capabilities as JSON, no model needed. `tools`: load `-m` and print its tool-call protocol, chat template and sampling preset. `adapter`: whether a LoRA adapter can be served on `-m` and trained on it, with the sentence the real operation would refuse with. `doctor`: load `-m`, run one short probe and print a diagnostic report. `fit`: whether `-m` fits this machine, from its header alone. [Details](#cli-info). |
+| `--doctor-include-text` | With `--info doctor`: keep the probe's prompt and reply text in the report. Read the report before sharing it. |
+| `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics, with a `route` object for the run: every `paths` entry its forwards took (`batch` prefill, `solo` decode, `keep` verify rounds, `mtp`, `micro`) with the forward count and widest rows, the backend facts of `RUNNER_DEBUG_ROUTE`, the process's `kernels` counters (GEMM dispatches by weight type, CUDA split-K, CUDA attention kernels (`cuda_attn_tile` counts every tiled prefill tile, `cuda_attn_tc` the tensor-core ones among them, `cuda_attn_dec_gqa` the grouped decode launches) and KV copy-backs, Metal fast matvec and attention kernels, CPU multi-row dots), the `compiler`, `codegen` flags and `tuning` switches. |
+| `--score [N]` | Return teacher-forced token logprobs, NLL, perplexity and top-1 metrics as JSON over the raw `-p`/`-f` text. With `N` (1 to 256), also report each position's N most likely tokens as `[id, logprob]` pairs, best first, in a `top` array. [Details](#cli-score). |
+| `--decide FILE` | Typed decisions: one `/v1/decide` request per line of `FILE` (`state`, `questions[{question, options}]`), one response per line on stdout; the options are scored verbatim in context, no sampling. `-` reads stdin. |
+| `--systemone FILE` | Clef typed decisions: one `/v1/systemone` request (`model`, `state`, `questions`) per line of `FILE`, one response per line on stdout. `-` reads stdin. |
+| `--shadow-mode` | Install shadow mode for Claude Code and Codex if present, asking first (`--yes` skips the question); `-m MODEL` names the model the `/shadow` offload serves. Hands off to the stdlib-only Python client beside the binary (`python/src`); see the shadow-mode section. |
+| `--version` | Print the version and exit. |
+| `-h`, `--help` | Print the option reference to stdout and exit `0`. Help asked for is written to stdout; help printed because something went wrong goes to stderr with a non-zero exit. |
+| `--parent-pid N` | Exit when process `N` dies, whichever of its threads launched the Runner: at once on Linux 5.3 or later and on Windows, within 2 s elsewhere. A process already gone is refused. Intended for supervisor cleanup. |
+| `-v` | Print verbose model and memory details, including allocated versus reachable sliding-window KV. [Details](#cli-v). |
+
+**One mode per run.** A line that names two modes (`-p` beside `--serve`,
+`--score` beside `--decide`, `--info caps` beside `--info fit`) is refused
+naming both, in whichever order they came. It used to be resolved by the
+order `main()` dispatched them, so `-p hi --serve` started the server and
+dropped the prompt. A prompt beside a mode that never reads one (`--serve`,
+`-i`, `--info tools`, `--verify`, `runner train`) is refused the same way;
+`-p` and `-f` go with a one-shot run, `--score` or `--bench-json`.
+
+### Subcommands
+
+Two groups of work have their own command. Each is a rewrite of the flags
+behind it: the subcommand takes its positionals and short option names, maps
+them to the runner's flags, and passes every other token through as given,
+so the flags' own checks, records and tests are what run. `runner attest
+--help` and `runner train --help` print each one's reference.
+
+`runner attest` holds the record, key, bundle and pack utilities, which need
+files and never a model. `--trust-key K` is the key's hex, `sha256:` plus the
+hex SHA-256 of its bytes, or a file holding either (`keygen`'s output as
+written).
+
+| Command | Purpose |
+|---|---|
+| `runner attest keygen OUT [--algo ed25519\|ml-dsa-44]` | Write a receipt-signing key (`xyntetik.runner.signkey.v1`: `algo`, the 32-byte seed and the public key as hex) to `OUT` and print the public key; the seed comes from the OS generator. `ed25519` (default; RFC 8032, 32-byte key, 64-byte signature) or `ml-dsa-44` (FIPS 204, post-quantum; 1312-byte key, 2420-byte signature; deterministic keygen and signing, verified against the NIST ACVP known answers). Verification accepts both; the record's signature object names its algorithm. Keep the file private. |
+| `runner attest sign RECORD --key KEYFILE [--prev PREV]` | Sign a JSON object in place, the transcript's chain and signature objects; `--prev` links it to a previous signed record. Shadow delegation receipts use this generic interface. |
+| `runner attest check RECORD [--trust-key K]` | Verify one record's signature and chain fields. |
+| `runner attest lineage FILE [--trust-key K]` | Walk the provenance chain of a model or adapter file, of its record, of an answer's receipt, or of a `--record` directory (versions served, timeline, chain continuity) back to its origins: each step's record re-hashed and checked against the next, each signature verified, `--trust-key` pinning the signer. Exit 0 verified and signed, 1 consistent but not all signed, 2 broken or no record. [Details](#lineage). |
+| `runner attest bundle RECEIPT OUT_DIR [--model-sig F] [--model-pubkey F] [--key KEYFILE]` | Put a receipt, the OMS model signature and its key, the receipt key's fingerprint (sha256 of the key bytes) and a `xyntetik.runner.bundle.v1` manifest of every file's sha256 into one directory a verifier can take; `--key` also signs the manifest. A receipt whose chain does not recompute is refused, not bundled. |
+| `runner attest check-bundle DIR [--trust-key K]` | Verify a bundle offline: the files are the ones listed, the receipt's chain hash recomputes, its signature is the one the manifest names, both key fingerprints recompute, and the manifest's own signature (pinned with `--trust-key`). Exit 0 OK, 2 BAD naming the file or check, 3 UNVERIFIABLE. The check does not replay the inference; the bundled receipt does, with `-m MODEL --verify DIR/receipt.json`. |
+| `runner attest pack RECEIPTS_DIR OUT_DIR [--envelope F] [--attach F]... [--model-sig F] [--model-pubkey F] [--key KEYFILE]` | An evidence pack (`xyntetik.runner.evidence-pack.v1`): every `receipt-*.json` of a receipts directory (one model, one binary, one envelope manifest, or the export refuses), the OMS model signature and key, the envelope manifest the receipts name by digest (`--envelope`, refused when it is not that one) and up to 16 attachments (`--attach`, repeatable: oversight records, a tool cassette; listed by sha256, never interpreted), under `pack.json`: every file with its role and sha256, one inference per receipt (id = chain hash, the request id and surface, what shaped it, the signer's fingerprint, the envelope verdict), and the chain `segment` they form (`contiguous`, `breaks`). `--key` signs the manifest. |
+| `runner attest check-pack DIR [--trust-key K]` | Verify a pack offline: the files are the ones listed and no unlisted receipt sits beside them, each receipt's chain recomputes to its id, each signature is the one named, the segment is the one stated, every receipt names the manifest's model, binary and envelope, and the manifest's own signature (pinned with `--trust-key`). Exit 0 OK, 2 BAD, 3 UNVERIFIABLE. Does not replay: each receipt does, with `-m MODEL --verify`. |
+| `runner attest sign-model MODEL --key KEY.pem [--out SIG]` | Write an OMS bundle for `MODEL` (every part of a split GGUF) to `MODEL.sig`, or to `SIG`, signed with a PEM EC private key (SEC1 or PKCS#8, unencrypted, P-256/384/521) by deterministic ECDSA: the same key and model always give the same bytes. An existing bundle is never overwritten. [Details](#cli-sign-model). |
+| `runner attest watermark-keygen OUT` | Write a new watermark key (`xyntetik.runner.watermark_key.v1`, mode 0600, never overwritten) and print its id. |
+| `runner attest detect FILE --key WMKEY [-m MODEL]` | Score `FILE` against the watermark key: a transcript record or receipt (its own token ids, the prompt as context; no `-m`) or a text (tokenized by `-m`'s tokenizer). Prints a `xyntetik.runner.watermark_detect.v1` object (mean g-value, z, one-sided p) and exits 0 `WATERMARKED` (z >= 4), 2 `NOT_DETECTED`, 3 `INSUFFICIENT` (fewer than 16 scored tokens). |
+
+`runner train DATA -m MODEL` trains a deterministic AdamW LoRA adapter
+through the quantized GGUF the binary serves. `DATA` is plain text, or
+`.jsonl` lines `{"prompt","completion","weight"}` with the prompt masked from
+the loss (or `prompt_tokens` and `completion_tokens` id arrays, used as
+given); with `--dpo` it holds `{"prompt","chosen","rejected"}` pairs. The
+adapter is written beside a provenance record. [Details](#cli-train).
+
+| Command | Purpose |
+|---|---|
+| `runner train DATA --dpo` | DPO (arXiv 2305.18290) over the adapter from preference pairs; the reference policy is these same weights with the adapter bypassed, so it costs no second copy. CPU forward/backward path. Does not activate the output adapter. |
+| `runner train`: `--dpo-beta F` | DPO reference-deviation coefficient (default `0.1`). |
+| `runner train`: `--steps N`, `--lr F`, `--ctx N`, `--out F`, `--save-every N`, `--lora-rank R` | Optimizer steps (`100`), learning rate (`1e-4`), training context (`128`), the adapter GGUF to write (`adapter-out.gguf`), a checkpoint every N steps (`0`: never), and the fresh adapter's rank when no `--lora` is given (`8`). |
+| `runner train`: `--lora FILE`, `--lora-scale F` | Continue from this adapter instead of a fresh one; multiply its trained alpha/r. |
+| `runner train`: `--eot` | Append the selected template's end-of-turn token to each JSONL completion target. Opt-in; without it the supplied completion is the complete target. |
+| `runner train`: `--logprobs F` | Per step, one JSON line with the logprob of every completion token under the forward that step trains through (before its update). |
+| `runner train`: `--teacher DIR` | Fit each completion position to a teacher's distribution instead of the next token, the KL divergence from the teacher's top-k plus one tail bucket to the student's. `DIR` holds `topk_idx.npy` (int32) and `topk_logp.npy` (float32), each `[lines, positions, k]`, as `scripts/kd-teacher.py` writes them from a parent GGUF; `DATA` must use the id form. [Details](docs/lora.md#6-distillation-toward-a-parent-model). |
+| `runner train`: `--lr-schedule constant\|cosine`, `--lr-warmup N`, `--lr-floor F` | A linear warmup over N steps, then a constant learning rate or a cosine down to F x `--lr` (0.1) at the last step. |
+| `runner train`: `--batch N` | N rows per optimizer step, the loss and gradient the mean over their positions (rows in file order). Without it, one row a step, its loss summed over its positions. |
+| `runner train`: `--weight-decay F` | AdamW's decoupled weight decay (`0.01`); `0` is plain Adam. |
+| `runner train`: `--train-gpu` | Every weight product of a step on an NVIDIA GPU (CUDA build), the weights cached there, and on Qwen3.5 and Clef the Gated DeltaNet recurrence. Within rounding of a CPU run, not its bytes; the record names the device. An error without a usable device. [Details](docs/lora.md#training-on-the-gpu---train-gpu). |
+| `runner train`: `--gpu-budget BYTES` | The device memory `--train-gpu`'s weights may take (default: the free memory at the start, less 512 MB). Weights past it train on the CPU, and which weights the device holds decides the adapter's bits, so the record names the budget and the split, and passing the recorded `budget_bytes` here reproduces them. An error when the device does not have it free. |
+| `runner train`: `--resume CKPT` | Continue the run that wrote checkpoint CKPT: its adapter, AdamW moments (`CKPT.optim`), step and next rows; byte-identical to the run that never stopped. |
+| `runner train`: `--eval LABEL=ROWS[,TEACHER]`, `--eval-every N` | Held-out sets (up to 8) evaluated with no update at step 0, every N steps and at the last: mean loss per position, `top1_topk` and `top1_vocab`. |
+| `runner train`: `--kill-at S`, `--kill-metric LABEL`, `--kill-min-rel R` | At step S, unless LABEL's loss fell by at least R from step 0: save, write `OUT.killed.json`, exit 3 (else `OUT.kill-check.json`). |
+| `runner train`: `--stop-file F` | After each step, if F exists: save a checkpoint and exit 75. |
+| `runner train`: `--sign-key F` | Sign the training record in place. |
+
+The longer spellings (`--train DATA`, `--train-dpo DATA`, `--train-steps`,
+`--train-ctx`, `--train-out`, `--train-batch`, `--train-resume`,
+`--train-eval`, `--train-teacher`, `--train-logprobs`, `--train-eot`,
+`--train-gpu-budget`) are still accepted on the main command line.
 
 <a id="cli-pull"></a>
 #### `--pull REPO[:TAG]`
@@ -2177,23 +2253,26 @@ per step, measured faster in aggregate at 4-8 slots on Metal, and
 | Option | Purpose |
 |---|---|
 | `-n N` | Maximum generated tokens, default `256`; `-1` runs until EOS. |
-| `-c N` | Context length; default is the smaller of model maximum and 4096. `0` auto-fits with a reservation. |
+| `-c N` | Context length; default is the smaller of model maximum and 4096. Under `--reserve` the default is the auto-fit instead: the context the reservation leaves after the weights. `-c 0` says the same thing explicitly. |
 | `-b N` | Prompt batch size: `64` with `--gpu off`; otherwise `64`, `256` or `512` by total RAM (inside a container, its memory limit). Explicit `-b` overrides. [Details](#cli-b). |
 | `-t N` | Worker threads; defaults to physical cores and is capped at `32`. Inside a container the default starts from the cgroup's CPU quota (`cpu.max`, rounded up) when that is below the CPUs the process may run on, so a container held to 26 CPUs on a 128-CPU host sizes for 26. The cap is measured, not assumed: decode PEAKS at 32 threads and regresses above it on many-core hardware (a 64-core Zen 5 box in 2026-08, and a 128-core sweep in 2026-08 where both models peaked at 32 while the previous default of 64 cost up to -41% decode and -55% prefill). Only machines with more than 64 logical CPUs are affected; below that the default is unchanged. An explicit `-t` is honoured up to 64. The default leaves the logical CPUs past the physical cores to the rest of the machine, and it is not the fastest setting everywhere (2026-10-20, one model file at a time, CPU only): on an Apple M1, 8 threads (performance and efficiency cores) read prompts 11-18% faster than the default 4 and decoded 2-11% faster; on a 4-core, 8-thread desktop CPU, 8 threads decoded 5-22% faster than 4; on 16 cores of a shared server, 32 threads read prompts 18-23% faster than 16 and decoded between 17% slower and 9% faster. A machine that runs nothing else can set `-t` to its logical CPU count; measure on the workload first. |
 | `-s N` | RNG seed; default is time-based. The seed is mixed through splitmix64 into the state the sampler starts from, as a request's `seed` is, so seeds 1, 2, 3 start unrelated streams from their first token. Every value, `0` included, is a seed. With `--serve`, each request that samples takes the next place in one server-wide order, and an unseeded one draws from the seed and that place, so the same requests in the same order sample the same output at any `--parallel`. A request's own `seed` wins; a greedy or refused request takes no place. |
-| `--think` / `--no-think` | Select thinking or non-thinking prompt shape in interactive chat only; family support varies. [Details](#cli-think). |
+| `--think [on\|off\|auto]` | In interactive chat only: request the family's thinking prompt shape (`on`; bare `--think` is `on`), its non-thinking shape (`off`), or what the family's own reference template renders (`auto`, the default). Family support varies. [Details](#cli-think). |
 | `--temp F` | Temperature; `0` is greedy and disables repeat penalty. |
 | `--top-k N` | Top-k sampling; `0` disables it. Several presets ship `0`, where setting it is a measured decode-throughput win that also changes the sampled distribution - see [`--top-k 40`](#--top-k-40-a-faster-constrained-decode-with-different-semantics). |
 | `--top-p F` | Nucleus sampling threshold. |
 | `--min-p F` | Probability floor relative to the top candidate; `0` disables it. |
 | `--repeat-penalty F` | Recent-token penalty; `1` disables it. |
-| `--rope-scale F` | Force linear rope position scaling. |
-| `--yarn-factor F` | Override a model's native YaRN factor while preserving its original context and correction parameters. Refuses models without YaRN metadata and conflicts with `--rope-scale`. |
-| `--rope-base F` | Override the rope frequency base. |
+| `--rope linear=F,yarn=F,base=F` | Position scaling, a comma list of named settings. `linear=F` forces linear rope position scaling. `yarn=F` overrides a model's native YaRN factor while preserving its original context and correction parameters; refuses models without YaRN metadata and excludes `linear`. `base=F` overrides the rope frequency base. Beyond the training context YaRN is applied automatically without any of this. |
 | `--system TEXT` | System prompt in interactive chat (`-i`) only; refused in raw one-shot and server modes. |
 | `--chat-template NAME` | Override the chat template. See the complete list and family-specific thinking behavior below. [Details](#cli-chat-template). |
 | `--no-bos` | Do not add the beginning-of-sequence token (the file's `tokenizer.ggml.add_bos_token`, or without that key its family's default: SentencePiece, Llama 3 and Mistral Tekken add one). A raw prompt that already starts with the token gets it twice unless this is set. |
 | `--ignore-eos` | Continue generation past end-of-text tokens. |
+| `--reasoning-budget N` | Close a reasoning turn once it has spent N tokens (budget forcing; `0` is off, the default). Per request: `reasoning_max_tokens`. Needs a model whose reasoning turn ends on a single token. |
+| `--reasoning-budget-message S` | The sentence the forced close writes before the close token (default: a short neutral one; `""` for a bare close). Per request: `reasoning_budget_message`. |
+| `--reasoning-temp F` | Temperature for reasoning turns only; calls and answers keep the request's own sampler (off by default). Per request: `reasoning_temperature`, with `reasoning_top_p`, `reasoning_min_p` and `reasoning_top_k`. |
+| `--loop-guard` | Close a reasoning turn that starts repeating (a span repeated back to back); off by default. Per request: `loop_guard`, `loop_guard_span`, `loop_guard_repeats`, `loop_guard_window`, `loop_guard_everywhere`. |
+| `--bare-recipients` | Muse only: write a bare tool name verbatim in the system turn's valid-recipients line (`read`) instead of the reference's namespace pattern (`read.*`); off by default (the reference rendering). Per request: `bare_recipients`. |
 
 <a id="cli-b"></a>
 #### `-b N`
@@ -2207,7 +2286,7 @@ machine's ambient load would make "the same command" produce different tokens on
 day. A fixed machine fact cannot. `-b` always overrides.
 
 <a id="cli-think"></a>
-#### `--think` / `--no-think`
+#### `--think [on|off|auto]`
 
 In interactive chat (`-i`), request the model family's thinking or non-thinking prompt
 shape. They are refused in raw one-shot and server modes rather than being silently
@@ -2241,29 +2320,22 @@ instance instead.
 
 | Option | Purpose |
 |---|---|
-| `--gpu auto\|off` | Auto-detect offload, or force CPU. |
-| `--gpu-layers N` | Force the first `N` layers onto the GPU; `0` means no GPU. Omit for auto-fit. On Metal it also overrides the residency veto: a model larger than available RAM is refused for auto-selected partial offload, because nothing pinned can be held resident and the measured result was 8-35x slower decode, but an explicit `--gpu-layers N` splits it anyway. |
+| `--gpu auto\|off\|N` | Auto-detect offload (the default), force CPU, or force exactly the first `N` layers onto the GPU with the rest on the CPU; `0` means no GPU. Omit the count for auto-fit. On Metal a count also overrides the residency veto: a model larger than available RAM is refused for auto-selected partial offload, because nothing pinned can be held resident and the measured result was 8-35x slower decode, but an explicit `--gpu N` splits it anyway. |
 | `--gpu-route R` | CUDA only: which tensor-core, attention and MoE kernels whose sums differ from the reference kernels run, `reference` or a comma list of `tc2`, `sm80`, `attn-tile`, `attn-dec`, `attn-tc`, `moe-tc`, `moe-grouped`. Transcripts and receipts record the set and `--verify` replays with the record's. [Details](#cli-gpu-route). |
 | `--cpu-moe [N\|auto]` | CUDA hybrid placement: keep all, the deepest `N`, or an auto-fit set of expert FFNs in system RAM. |
-| `--wait-for-vram [S]` | Wait for another registered runner to release VRAM, default `300` seconds, instead of failing immediately. |
+| `--wait-for-vram [S]` | When another registered runner is holding the GPU, queue for up to `S` seconds instead of refusing (bare: `300`). `--serve` queues by default, since a server under a service manager should wait for its turn; every other mode refuses at once, naming who holds what, and `0` spells that out for a server too. |
 | `--vram-priority N` | Advisory priority tag on this claim, default `0` (also `RUNNER_VRAM_PRIORITY`). See [VRAM registry: priority and cooperative yield](#vram-registry-priority-and-cooperative-yield). |
-| `--yield-on-request` | In `--serve`, release the resident model at the next idle point when another process has asked it to. See the same section. |
-| `--reserve P` | Limit this process to `P` percent of total RAM and VRAM. |
-| `--reserve-vram P` | Override the VRAM reservation percentage used by the CUDA layer-fit budget. [Details](#cli-reserve-vram). |
-| `--reserve-ram P` | Override only the RAM budget. |
-| `--reserve-cpu P` | Size the default thread count as a percentage of cores. |
+| `--yield-on-request [on\|off]` | In `--serve`, release the resident model at the next idle point when another process has asked it to (`vram_request_yield`). A request, never preemption. `on` by default when serving (bare `--yield-on-request` is `on`); `off` keeps the model. See the same section. |
+| `--reserve P` or `--reserve vram=P,ram=P,cpu=P` | One percentage caps this process at `P` percent of total RAM and VRAM; the named form sets each budget on its own: `vram` (the CUDA layer-fit budget, [details](#cli-reserve-vram)), `ram`, and `cpu` (size the default thread count as a percentage of cores). Without `-c` the context is auto-fit to what the reservation leaves after the weights. |
 | `--kv f16\|q8\|k8v4\|fp4` | Choose KV cache storage; precision, memory use and backend support differ by format. [Details](#cli-kv). |
 | `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
-| `--draft PATH` | Use a same-vocabulary draft GGUF for speculative decoding; admission and backend restrictions apply. A server given a swap registry (`-m a=...,b=...`) refuses to start with `--draft`, which needs a single served model. [Details](#cli-draft). |
-| `--draft-k N` | Draft tokens per speculative round, default `4`. Also the width for `--mtp` and `--draft-lookup`. All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
-| `--mtp` | Use the model’s single NextN/MTP predictor block for speculative decoding: on the CPU, and on CUDA when the whole trunk is on the device (a partial split refuses with an error naming `--gpu off`). [Details](#cli-mtp). |
-| `--mtp-file PATH` | The NextN/MTP predictor block from a companion GGUF when the model file was exported without one (llama.cpp's MTP-only layout: same architecture and depth, `nextn_predict_layers` 1, the block at index `block_count - 1`; the trunk's embeddings and LM head are used). Implies `--mtp`. Built for Qwen3.8-Flash-Next by `scripts/make-mtp-companion.py` from the publisher's BF16 checkpoint, provenance in the header; the Qwen3.8-27B head (llama.cpp's `convert_hf_to_gguf.py --mtp`) loads the same way. Same placement rule as `--mtp`. |
-| `--draft-lookup` | Draft from repeated prompt context without a second model; uses the `--draft-k` round width (default `4`). [Details](#cli-draft-lookup). |
+| `--draft SOURCE` | Speculative decoding from one source per run, named by its spelling. `PATH`: a same-vocabulary draft GGUF ([details](#cli-draft)). `mtp`: the model's own NextN/MTP predictor block ([details](#cli-mtp)). `mtp:FILE`: that block from a companion GGUF when the model file was exported without one ([details](#cli-mtp)). `lookup`: n-gram matches in the context itself, no weights and no draft forward ([details](#cli-draft-lookup)). A second source on the line is refused, not ignored. A server given a swap registry (`-m a=...,b=...`) refuses to start with a draft, which needs a single served model. |
+| `--draft-k N` | Draft tokens per speculative round, default `4`, for every draft source. All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
 | `--draft-required` | Fail instead of falling back to plain decoding when a requested draft model is refused. [Details](#cli-draft-required). |
 
 <a id="cli-reserve-vram"></a>
-#### `--reserve-vram P`
+#### `--reserve vram=P`
 
 Override only the VRAM budget. The CUDA layer fit spends a budget that starts from the
 driver's free-memory view, is bounded by the OS video-memory budget for this process
@@ -2310,7 +2382,7 @@ hides under the bandwidth floor at batch 1 becomes the critical path with column
 and a large dense target with a small draft decoded slower speculative than plain
 despite a good acceptance rate (docs/metal-decode-dispatch-budget-2026-09-01.md); on the
 CPU a wide round costs its per-column dots; on an RTX 3070 it pays where most of a
-window is accepted and costs where little is: `--draft-lookup` on an input-grounded
+window is accepted and costs where little is: `--draft lookup` on an input-grounded
 prompt decodes Qwen3-4B at 143 tok/s against 103 plain and Qwen2.5-7B at 84 against 71,
 but where about one token a round is accepted Qwen3-4B runs at 102 against 106; a
 Qwen2.5-7B target with a 1.5B draft model runs at 65 against 71, and the Qwen3.5-4B MTP
@@ -2318,12 +2390,12 @@ head at 61 against 94. A mixture-of-experts target pays most for a round, which 
 every row through the per-token expert path: on the datacenter MIG slice
 Qwen3-30B-A3B with Qwen3-0.6B as the draft decodes at 64 to 108 tok/s against 117 to 119
 plain on three prompts, while Qwen2.5-7B with a 0.5B draft gains (89 against 76 where
-most of a window is accepted). The same holds for `--mtp` and `--draft-lookup`. In serve mode `GET
+most of a window is accepted). The same holds for `--draft mtp` and `--draft lookup`. In serve mode `GET
 /v1/capabilities` reports whether the draft is actually `active`, so a harness never
 measures the fallback as speculative decoding.
 
 <a id="cli-mtp"></a>
-#### `--mtp`
+#### `--draft mtp`
 
 Draft from the model's own NextN/MTP predictor block instead of a second model.
 Single-model serving preserves the head and draft width after `/unload`, `keep_alive:
@@ -2338,16 +2410,16 @@ threads, AVX-512): 1.31x decode on code and 1.08x on prose at `--draft-k 1` with
 `RUNNER_CPU_I8=1`, 1.17x and parity on the default f32 route, acceptance 75-94% for the
 first draft; wider windows lose on this hybrid model because every divergent round
 re-folds its recurrent state, and a 4-core AVX2 desktop is compute-bound in the dot
-itself and decodes SLOWER with `--mtp` at every width. Numbers, the profile, and the two
+itself and decodes SLOWER with `--draft mtp` at every width. Numbers, the profile, and the two
 walk fixes it took are in `docs/performance.md`. With every layer on a CUDA device
-`--mtp` is slower than plain decoding on Qwen3.5 too: on an RTX 3070 (Qwen3.5-4B
+`--draft mtp` is slower than plain decoding on Qwen3.5 too: on an RTX 3070 (Qwen3.5-4B
 Q4_K_M, 256 greedy tokens, three prompts, 2026-10-21) plain decode runs at 94 tok/s
-and `--mtp` at 61 to 84 while accepting 2.8 to 3.7 tokens a round: a verify
+and `--draft mtp` at 61 to 84 while accepting 2.8 to 3.7 tokens a round: a verify
 round costs more than the plain steps of the tokens it accepts. The text is the
 plain path's either way.
 
 <a id="cli-draft-lookup"></a>
-#### `--draft-lookup`
+#### `--draft lookup`
 
 The fourth draft source, and the only one that needs no weights and no draft forward:
 prompt lookup. Each round the last n context tokens (prompt plus everything generated so
@@ -2360,7 +2432,7 @@ the plain path's on every backend, greedy and seeded alike, because the target's
 walk decides every token from rows that are single decode steps' bits (see
 [`--draft`](#cli-draft); pinned in `make test` on three prompt shapes; the search
 itself is pinned against hand-computed proposals). One draft source per run: combining
-it with `--draft` or `--mtp` is refused at startup rather than silently ignored; grammar
+it with `--draft` or `--draft mtp` is refused at startup rather than silently ignored; grammar
 fast-forward still composes, as it does with the others. In serve mode a request may
 add `draft_hints`, up to 16 strings the caller expects the model to restate (a file
 about to be quoted, a tool result): they are searched when the context has no match and
@@ -2391,69 +2463,73 @@ whether the draft is `active` there.
 
 | Option | Purpose |
 |---|---|
-| `--quantize OUT` | Rewrite the loaded model to `OUT` and exit. |
-| `--context-surgery OUT` | Compile `-c TARGET --yarn-factor FACTOR` into a native-YaRN GGUF and write `OUT.context.json` provenance. The target must equal original context × factor and extend both source values. Every tensor payload is independently reparsed and byte-compared before success; precision does not change. |
-| `--quant q8_0\|q4_0\|q3_k\|q4_k\|q6_k\|f16\|bf16\|keep` | Requantization target; default `q4_0`, or keep per-tensor types when pruning or merging alone. Requires `--quantize` or `--merge-lora`; without either the flag is refused rather than ignored. |
+| `--rewrite OUT` | The one tensor-rewrite pass: write a rewritten model to `OUT` and exit, with a provenance record beside it. Without a trigger it is a requantization (see `--quant`); `--merge-lora` and `--context-surgery` are its triggers, one per pass. Each kind of pass keeps its own record (`OUT.quant.json`, `OUT.merge.json`, `OUT.context.json`), so a lineage walk reads the same records it always read. |
+| `--quant q8_0\|q4_0\|q3_k\|q4_k\|q6_k\|f16\|bf16\|keep` | Requantization target; default `q4_0`, or keep per-tensor types when pruning, removing or merging alone. Requires `--rewrite`; without it the flag is refused rather than ignored. |
 | `--type-plan PLAN.json` | Apply a per-tensor rewrite plan; first matching substring rule wins. [Details](#cli-type-plan). |
 | `--type-plan-strict` | With `--type-plan`: fail before writing anything when a rule would be declined (block width, never-grow) or fall back to a 32-block type, instead of reporting it and building the file. Off by default. |
-| `--merge-lora OUT` | Merge an adapter into a standalone GGUF. Quantized merges round the delta; a merge that keeps under 50% of it is refused. [Details](#cli-merge-lora). |
+| `--merge-lora` | Trigger: `--rewrite OUT` folds `--lora` into the base weights and writes a standalone GGUF. Quantized merges round the delta; a merge that keeps under 50% of it is refused. [Details](#cli-merge-lora). |
 | `--merge-allow-erased` | With `--merge-lora`: write the merge even when the output grid rounded the delta away. [Details](#cli-merge-lora). |
-| `--prune-experts FILE` | Apply a per-layer MoE expert keep-list while rewriting. Requires `--quantize`. |
-| `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it, on the CPU, CUDA and Metal; a removed FFN must be a dense one. Requires `--quantize`. See [Sublayer removal](#sublayer-removal). |
-| `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics, with a `route` object for the run: every `paths` entry its forwards took (`batch` prefill, `solo` decode, `keep` verify rounds, `mtp`, `micro`) with the forward count and widest rows, the backend facts of `RUNNER_DEBUG_ROUTE`, the process's `kernels` counters (GEMM dispatches by weight type, CUDA split-K, CUDA attention kernels (`cuda_attn_tile` counts every tiled prefill tile, `cuda_attn_tc` the tensor-core ones among them, `cuda_attn_dec_gqa` the grouped decode launches) and KV copy-backs, Metal fast matvec and attention kernels, CPU multi-row dots), the `compiler`, `codegen` flags and `tuning` switches. |
+| `--context-surgery` | Trigger: `--rewrite OUT` compiles `-c TARGET --rope yarn=FACTOR` into a native-YaRN GGUF and writes `OUT.context.json` provenance. The target must equal original context × factor and extend both source values. Every tensor payload is independently reparsed and byte-compared before success; precision does not change. |
+| `--prune-experts FILE` | Apply a per-layer MoE expert keep-list while rewriting. Requires `--rewrite`. |
+| `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it, on the CPU, CUDA and Metal; a removed FFN must be a dense one. Requires `--rewrite`. See [Sublayer removal](#sublayer-removal). |
 | `--lora FILE`, `--lora-scale F` | Serve a LoRA adapter with the frozen base; supports CPU, CUDA and Metal, with explicit architecture restrictions. [Details](#cli-lora). |
 | `--adapter NAME=PATH` | With `--serve`: load an adapter once and select it per request as `"model": "<model>:NAME"`. [Details](#cli-adapter). |
-| `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank` | Train a deterministic AdamW LoRA adapter from text or weighted prompt/completion JSONL. [Details](#cli-train). |
-| `--score` | Return teacher-forced token logprobs, NLL, perplexity and top-1 metrics as JSON. [Details](#cli-score). |
-| `--score-top N` | With `--score`, also report each position's N (1 to 256) most likely tokens as `[id, logprob]` pairs, best first, in a `top` array. [Details](#cli-score). |
-| `--transcript FILE` | Record a one-shot run’s hashes, settings, tokens, output bytes and chain hash for replay. [Details](#cli-transcript). |
-| `--verify FILE` | Replay a transcript against `-m` and report `VERIFIED` (exit 0), `DIVERGED` at a token or output byte (exit 2), or `UNVERIFIABLE` for an invalid record, an artifact mismatch, or output shaped by a constraint the replay would not reproduce (exit 3; `--json`, `--json-schema` and `--ignore-eos` must match the record's `constraints`). The recorded replay settings override conflicting CLI values. See [the exact determinism scope](docs/determinism-scope.md). |
-| `--keygen FILE` | Write a receipt-signing key (`xyntetik.runner.signkey.v1`: `algo`, the 32-byte seed and the public key as hex) to FILE and print the public key. Needs no `-m`; the seed comes from the OS generator. Keep the file private. |
-| `--keygen-algo ALGO` | With `--keygen`: `ed25519` (default; RFC 8032, 32-byte key, 64-byte signature) or `ml-dsa-44` (FIPS 204, post-quantum; 1312-byte key, 2420-byte signature; deterministic keygen and signing, verified against the NIST ACVP known answers). Verification accepts both; the record's signature object names its algorithm. |
-| `--sign-record FILE`, `--record-prev FILE`, `--check-record FILE` | Sign a JSON object in place with `--sign-key`, optionally link it to a previous signed record, or verify its signature and chain fields. Shadow delegation receipts use this generic interface. |
-| `--receipts DIR`, `--receipts-keep N` | With `--serve`: every finished generation on the chat, completions, Responses and Messages surfaces writes the `--transcript` record into `DIR` as `receipt-<sequence>.json`, so `-m MODEL --verify FILE` replays it; chained in write order (each record's `chain.prev` is the previous one's hash, continued across restarts from the newest record, and a newest record that does not parse refuses the start rather than beginning a second chain), signed with `--sign-key` when given, and with a `serve` object naming the surface, the request id, how the prompt's KV was obtained (`prompt_reuse`, `cached_tokens`) and what shaped the output beyond the sampler (`shaped_by`: `json_schema`, `json_mode`, `tools`, `stop`, `reasoning_budget`, `loop_guard`, ...; `constraints` gives each with what identifies it, and `tool_calls` the calls the turn delivered, buffered or streamed). A turn shaped only by a JSON schema, JSON mode or `ignore_eos` replays under the same flag (`--json-schema FILE` matched by digest, `--json`, `--ignore-eos`); `--verify` refuses any other shaping as `UNVERIFIABLE` rather than replay it without what shaped it. A tool turn parsed from the model's native syntax without a grammar is not a constraint: its tokens are the sampler's. Each response's `runner_telemetry.receipt` names its `file` and `chain_hash`. The model and binary digests come from the load-time provenance, so the first receipt waits for the background model digest. `--receipts-keep N` keeps the newest N (default all). Receipts hold the prompt and the output and never leave `DIR`. Replay prefills the prompt in one batch. A record whose prompt was prefilled cold in one batch replays exactly; one whose prefix KV was reused (a cached prefix, or an earlier turn's decoded rows) replayed VERIFIED at T1 on the test fixtures, but CPU prefill is not batch-invariant on every host (measured 2026-10-01 on arm64, granite-4.1-3b Q8_0: 92% of batched prefill dots differ in the last bits from the same dot decoded alone), so such a record can report `DIVERGED` at a near-tie. `serve.prompt_reuse` says which kind a record is. |
-| `--export-pack RECEIPTS_DIR`, `--pack-out DIR`, `--pack-envelope F`, `--pack-attach F`, `--check-pack DIR` | An evidence pack (`xyntetik.runner.evidence-pack.v1`): every `receipt-*.json` of a receipts directory (one model, one binary, one envelope manifest, or the export refuses), the OMS model signature and key (`--model-sig`, `--model-pubkey`), the envelope manifest the receipts name by digest (`--pack-envelope`, refused when it is not that one) and up to 16 attachments (`--pack-attach`, repeatable: oversight records, a tool cassette; listed by sha256, never interpreted), under `pack.json`: every file with its role and sha256, one inference per receipt (id = chain hash, the request id and surface, what shaped it, the signer's fingerprint, the envelope verdict), and the chain `segment` they form (`contiguous`, `breaks`). `--sign-key` signs the manifest. `--check-pack` verifies offline: the files are the ones listed and no unlisted receipt sits beside them, each receipt's chain recomputes to its id, each signature is the one named, the segment is the one stated, every receipt names the manifest's model, binary and envelope, and the manifest's own signature (pinned with `--trust-key`). Exit 0 OK, 2 BAD, 3 UNVERIFIABLE. Does not replay: each receipt does, with `-m MODEL --verify`. Needs no `-m`. |
-| `--export-bundle RECEIPT`, `--bundle-out DIR`, `--check-bundle DIR` | Put a receipt, the OMS model signature (`--model-sig`) and its key (`--model-pubkey`), the receipt key's fingerprint (sha256 of the key bytes) and a `xyntetik.runner.bundle.v1` manifest of every file's sha256 into one directory a verifier can take; `--sign-key` also signs the manifest. `--check-bundle` verifies it offline: the files are the ones listed, the receipt's chain hash recomputes, its signature is the one the manifest names, both key fingerprints recompute, and the manifest's own signature (pinned with `--trust-key`). Exit 0 OK, 2 BAD naming the file or check, 3 UNVERIFIABLE. A receipt whose chain does not recompute is refused, not bundled. The check does not replay the inference; the bundled receipt does, with `-m MODEL --verify DIR/receipt.json`. Needs no `-m`. |
-| `--train-eot` | Append the selected template's end-of-turn token to each JSONL completion target. Opt-in; without it the supplied completion is the complete target. |
-| `--train-teacher DIR` | With `--train`: fit each completion position to a teacher's distribution instead of the next token, the KL divergence from the teacher's top-k plus one tail bucket to the student's. DIR holds `topk_idx.npy` (int32) and `topk_logp.npy` (float32), each `[lines, positions, k]`, as `scripts/kd-teacher.py` writes them from a parent GGUF; the `--train` file must use the id form. [Details](docs/lora.md#6-distillation-toward-a-parent-model). |
-| `--lr-schedule constant\|cosine`, `--lr-warmup N`, `--lr-floor F` | With `--train`: a linear warmup over N steps, then a constant learning rate or a cosine down to F x `--lr` (0.1) at the last step. |
-| `--train-batch N` | With `--train`: N rows per optimizer step, the loss and gradient the mean over their positions (rows in file order). Without it, one row a step, its loss summed over its positions. |
-| `--weight-decay F` | AdamW's decoupled weight decay (`0.01`); `0` is plain Adam. |
-| `--train-gpu` | With `--train` or `--train-dpo`: every weight product of a step on an NVIDIA GPU (CUDA build), the weights cached there, and on Qwen3.5 and Clef the Gated DeltaNet recurrence. Within rounding of a CPU run, not its bytes; the record names the device. An error without a usable device. [Details](docs/lora.md#training-on-the-gpu---train-gpu). |
-| `--train-gpu-budget BYTES` | The device memory `--train-gpu`'s weights may take (default: the free memory at the start, less 512 MB). Weights past it train on the CPU, and which weights the device holds decides the adapter's bits, so the record names the budget and the split, and passing the recorded `budget_bytes` here reproduces them. An error when the device does not have it free. |
-| `--train-resume CKPT` | Continue the run that wrote checkpoint CKPT: its adapter, AdamW moments (`CKPT.optim`), step and next rows; byte-identical to the run that never stopped. |
-| `--train-eval LABEL=ROWS[,TEACHER]`, `--eval-every N` | Held-out sets (up to 8) evaluated with no update at step 0, every N steps and at the last: mean loss per position, `top1_topk` and `top1_vocab`. |
-| `--kill-at S`, `--kill-metric LABEL`, `--kill-min-rel R` | At step S, unless LABEL's loss fell by at least R from step 0: save, write `OUT.killed.json`, exit 3 (else `OUT.kill-check.json`). |
-| `--stop-file F` | After each step, if F exists: save a checkpoint and exit 75. |
-| `--train-dpo FILE` | Train an adapter from JSONL `prompt`, `chosen`, `rejected` pairs. CPU forward/backward path; the frozen base is the reference, evaluated with the adapter bypassed. Does not activate the output adapter. |
-| `--dpo-beta F` | DPO reference-deviation coefficient (default `0.1`). Uses the existing training step, learning-rate, context and output options. |
-| `--require-eval KIND` | Refuse to load `-m` unless it carries a passing evaluation of KIND (`fidelity` or `agent`, written by `scripts/eval-record.py`) made for this very file, signed by `--trust-key` when one is given. Hashes the model at load. [Details](#evaluation-records). |
-| `--lineage FILE` | Walk the provenance chain of a model or adapter file, of its record, of an answer's receipt, or of a `--receipts` folder (versions served, timeline, chain continuity) back to its origins: each step's record re-hashed and checked against the next, each signature verified, `--trust-key` pinning the signer. Exit 0 verified and signed, 1 consistent but not all signed, 2 broken or no record. [Details](#lineage). |
-| `--sign-key FILE` | With `--quantize`, `--merge-lora`, `--train` or `--context-surgery`: sign the step's provenance record in place. With `--transcript`: sign the receipt with the key in FILE. The signature object is appended inside the record after the chain and covers every byte before its own `,"signature"` key, chain hash included, so any Ed25519 (or ML-DSA-44) library verifies it from the file bytes and the embedded public key alone. |
-| `--transcript-prev FILE` | With `--transcript`: link the new receipt to FILE (FILE's chain hash becomes this record's `chain.prev`; a chain head carries 64 zeros). With `--verify`: check that link, `UNVERIFIABLE` on a break. |
+| `--record PATH` | With `-p`: record the run's hashes, settings, tokens, output bytes and chain hash to the file `PATH` for replay ([details](#cli-transcript)). With `--serve`: `PATH` is a directory, and every finished generation on the chat, completions, Responses and Messages surfaces writes the same record into it as `receipt-<sequence>.json`, so `-m MODEL --verify FILE` replays it; chained in write order (each record's `chain.prev` is the previous one's hash, continued across restarts from the newest record, and a newest record that does not parse refuses the start rather than beginning a second chain), signed with `--sign-key` when given, and with a `serve` object naming the surface, the request id, how the prompt's KV was obtained (`prompt_reuse`, `cached_tokens`) and what shaped the output beyond the sampler (`shaped_by`: `json_schema`, `json_mode`, `tools`, `stop`, `reasoning_budget`, `loop_guard`, ...; `constraints` gives each with what identifies it, and `tool_calls` the calls the turn delivered, buffered or streamed). A turn shaped only by a JSON schema, JSON mode or `ignore_eos` replays under the same flag (`--json FILE` matched by digest, `--json`, `--ignore-eos`); `--verify` refuses any other shaping as `UNVERIFIABLE` rather than replay it without what shaped it. A tool turn parsed from the model's native syntax without a grammar is not a constraint: its tokens are the sampler's. Each response's `runner_telemetry.receipt` names its `file` and `chain_hash`. The model and binary digests come from the load-time provenance, so the first receipt waits for the background model digest. Receipts hold the prompt and the output and never leave the directory. Replay prefills the prompt in one batch. A record whose prompt was prefilled cold in one batch replays exactly; one whose prefix KV was reused (a cached prefix, or an earlier turn's decoded rows) replayed VERIFIED at T1 on the test fixtures, but CPU prefill is not batch-invariant on every host (measured 2026-10-01 on arm64, granite-4.1-3b Q8_0: 92% of batched prefill dots differ in the last bits from the same dot decoded alone), so such a record can report `DIVERGED` at a near-tie. `serve.prompt_reuse` says which kind a record is. |
+| `--record-keep N` | With `--serve --record DIR`: keep the newest N receipts (default all). |
+| `--record-prev FILE` | With `--record`: link the new record to FILE (FILE's chain hash becomes this record's `chain.prev`; a chain head carries 64 zeros). With `--verify`: check that link, `UNVERIFIABLE` on a break. |
+| `--verify FILE` | Replay a record against `-m` and report `VERIFIED` (exit 0), `DIVERGED` at a token or output byte (exit 2), or `UNVERIFIABLE` for an invalid record, an artifact mismatch, or output shaped by a constraint the replay would not reproduce (exit 3; `--json`, `--json FILE` and `--ignore-eos` must match the record's `constraints`). The recorded replay settings override conflicting CLI values. See [the exact determinism scope](docs/determinism-scope.md). |
 | `--require-signed` | With `--verify`: an unsigned record is `UNVERIFIABLE`. Signature, trust and link checks all run before the model is loaded for the replay. |
-| `--trust-key HEX` | With `--verify`: the record must be signed by this public key, given as its hex bytes or as `sha256:` plus the hex SHA-256 of those bytes (an ML-DSA-44 key is 2624 hex characters; its digest fits a policy file); unsigned, or signed by any other key, is `UNVERIFIABLE`. The verdict JSON carries `signed`, `public_key` and `prev` either way. |
+| `--trust-key K` | The public key a record, bundle, pack, lineage, evaluation or snapshot manifest must be signed by: its hex bytes, `sha256:` plus the hex SHA-256 of those bytes (an ML-DSA-44 key is 2624 hex characters; its digest fits a policy file), or a file holding either (`runner attest keygen`'s output as written). With `--verify`: unsigned, or signed by any other key, is `UNVERIFIABLE`; the verdict JSON carries `signed`, `public_key` and `prev` either way. |
+| `--sign-key FILE` | With `--rewrite` or `runner train`: sign the step's provenance record in place. With `--record`: sign the receipt with the key in FILE. The signature object is appended inside the record after the chain and covers every byte before its own `,"signature"` key, chain hash included, so any Ed25519 (or ML-DSA-44) library verifies it from the file bytes and the embedded public key alone. |
+| `--require-eval KIND` | Refuse to load `-m` unless it carries a passing evaluation of KIND (`fidelity` or `agent`, written by `scripts/eval-record.py`) made for this very file, signed by `--trust-key` when one is given. Hashes the model at load. [Details](#evaluation-records). |
 | `--model-sig FILE` | Verify an OpenSSF Model Signing bundle against the model and supplied public key. [Details](#cli-model-sig). |
 | `--lora-sig FILE` | The OMS bundle for the `--lora` adapter (default `<adapter>.sig`), verified with `--model-pubkey`; `--require-signed-model` requires it. [Details](#cli-model-sig). |
 | `--model-pubkey FILE` | The PEM `PUBLIC KEY` (EC, P-256/384/521) an OMS bundle must verify with. Given without `--model-sig`, it turns an auto-detected `<model>.sig` into a gate. |
 | `--require-signed-model` | Refuse to load `-m` unless an OMS bundle is present and verifies with `--model-pubkey`. The policy applies to named registry entries, every serving slot, and reloads after unload or TTL expiry. Registry refusals return HTTP 409 with `model_signature_refused`; the server stays available. Without `--model-sig`, each load discovers that model's own `.sig` sidecar. |
 | `--kv-snapshots DIR` | With `--serve`: let named contexts be written to DIR as signed KV snapshots and loaded back by a later server, so an agent's memory outlives the process and a run can prove which memory it started from. Opt-in; nothing is read from DIR unless a request names it. With `--trust-key` (the public key, or `sha256:` of its bytes), or else with `--sign-key`, a snapshot loads only when its manifest is signed by that key (409 `snapshot_untrusted` otherwise); with neither there is no anchor, a manifest is held only to the key it names, and the response's `signed_by` says who that was. See `POST /v1/runner/contexts/{id}/snapshot`. |
 | `--sessions DIR` | With `--serve`: session images over HTTP, `POST /v1/runner/sessions` (with `suspend_after`) and `POST /v1/runner/sessions/{id}/resume` (with `fork_seed` to fork), `GET` and `DELETE /v1/runner/sessions/{id}`; the images are the CLI's and live in `DIR`. [Details](#cli-session-images). |
-| `--session-out FILE`, `--suspend-after N`, `--resume FILE`, `--fork-seed N` | Suspend a `-p` generation to one file and resume it later, exactly, or fork it under a new seed. The resumed continuation and its image are byte-identical to what the uninterrupted run makes. CPU only, the solo step loop (no `--draft`, `--mtp`, `--draft-lookup`, `--watermark`), a finite `-n`; an image is never overwritten. [Details](#cli-session-images). |
-| `--watermark KEY` | Mark sampled output with a tournament-sampling watermark (SynthID-Text's construction) under the key in KEY: every sampled token on the `-p` path and every sampled turn in `--serve`. Off by default; greedy decoding (`--temp 0`) is never changed; averaged over keys the output distribution is unchanged. Transcripts and receipts record the key's id (`watermark`), responses report it in `runner_telemetry.watermark`, and `--verify` replays a marked record only with its key. [Details](#cli-watermark). |
-| `--watermark-keygen FILE` | Write a new watermark key (`xyntetik.runner.watermark_key.v1`, mode 0600, never overwritten) and print its id. Needs no `-m`. |
-| `--detect-watermark FILE` | Score FILE against `--watermark`'s key: a transcript record or receipt (its own token ids, the prompt as context; needs no `-m`) or a text (tokenized by `-m`'s tokenizer). Prints a `xyntetik.runner.watermark_detect.v1` object (mean g-value, z, one-sided p) and exits 0 `WATERMARKED` (z >= 4), 2 `NOT_DETECTED`, 3 `INSUFFICIENT` (fewer than 16 scored tokens). |
-| `--sign-model FILE`, `--model-key KEY.pem` | Write an OMS bundle for FILE (every part of a split GGUF) to `FILE.sig`, or to `--model-sig OUT`, signed with a PEM EC private key (SEC1 or PKCS#8, unencrypted, P-256/384/521) by deterministic ECDSA: the same key and model always give the same bytes. An existing bundle is never overwritten. Needs no `-m`. [Details](#cli-sign-model). |
-| `--caps` | Print machine, backend, quant, architecture, placement, and sampling capabilities as JSON. `cpu_cores`, `ram_bytes` and `ram_available_bytes` are what this process may use; inside a container that is the host narrowed by its cgroup limits, and `host` carries the machine's own three numbers while `limits` names the source (`cgroup2`, `cgroup1` or `none`), the CPU quota and the memory limit (`null` when there is none). On Windows `code_page` gives the process's ANSI code page (`ansi`; 65001 is UTF-8) and whether the executable carries the UTF-8 manifest (`utf8_manifest`); it is `null` elsewhere. |
-| `--tool-info` | With `-m`, print the model's tool-call protocol, chat template and sampling preset as JSON (`{"tool_family":…,"native_tool_protocol":…,"template":…,"sampling_preset":…}`) and exit. No manifest required. |
-| `--adapt-info` | With `-m`, print as JSON whether a LoRA adapter can be served on this model and whether one can be trained on it, each with the sentence the real operation would refuse with, plus which GPU backend of this build carries adapter kernels. Inference, adapter serving and training are three admission lists; this reads the last two without running either. |
-| `--doctor` | With `-m`, load the model, run one short probe and print a diagnostic report as JSON: version, where the layers actually ran, the template and sampler in effect, memory, timings, and findings with a next step each. Exit 2 when a finding is `broken`. Memory and threads are what the process may use; inside a container an `info` finding, `container_limits`, gives its CPU and RAM beside the host's (`container limits apply: 26 of 128 CPUs, 80.0 GiB of 249.6 GiB RAM`) and does not change the verdict. A BPE file whose pre-tokenizer name (`tokenizer.ggml.pre`) has no split rule in this build is a `degraded` finding, `tokenizer_pre_unknown`: it loads with the GPT-2 split, which may not be the publisher's. The report holds no prompt or reply text unless `--doctor-include-text` is given; read it before sharing. |
-| `--shadow-mode` | Install shadow mode for Claude Code and Codex if present, asking first (`--yes` skips the question); `-m MODEL` names the model the `/shadow` offload serves. Hands off to the stdlib-only Python client beside the binary (`python/src`); see the shadow-mode section. |
-| `--fit PATH` | Estimate whether a GGUF fits this machine and exit: RAM, and on a discrete GPU how many layers the offload budget holds for each KV format. Reads only the header, so a partial download answers the question. Honours `--gpu off`, `--gpu-layers` and `--reserve-vram`. Inside a container the available RAM is what its cgroup memory limit leaves, not the host's. |
-| `--version` | Print the version and exit. |
-| `-h`, `--help` | Print the option reference to stdout and exit `0`. Help asked for is written to stdout; help printed because something went wrong goes to stderr with a non-zero exit. |
-| `--parent-pid N` | Exit when process `N` dies, whichever of its threads launched the Runner: at once on Linux 5.3 or later and on Windows, within 2 s elsewhere. A process already gone is refused. Intended for supervisor cleanup. |
-| `-v` | Print verbose model and memory details, including allocated versus reachable sliding-window KV. [Details](#cli-v). |
+| `--session-out FILE`, `--suspend-after N`, `--resume FILE`, `--fork-seed N` | Suspend a `-p` generation to one file and resume it later, exactly, or fork it under a new seed. The resumed continuation and its image are byte-identical to what the uninterrupted run makes. CPU only, the solo step loop (no `--draft`, no `--watermark`), a finite `-n`; an image is never overwritten. [Details](#cli-session-images). |
+| `--watermark KEY` | Mark sampled output with a tournament-sampling watermark (SynthID-Text's construction) under the key in KEY: every sampled token on the `-p` path and every sampled turn in `--serve`. Off by default; greedy decoding (`--temp 0`) is never changed; averaged over keys the output distribution is unchanged. Transcripts and receipts record the key's id (`watermark`), responses report it in `runner_telemetry.watermark`, and `--verify` replays a marked record only with its key. `runner attest watermark-keygen` writes a key and `runner attest detect` scores a record or text against it. [Details](#cli-watermark). |
+
+<a id="cli-info"></a>
+#### `--info KIND`
+
+The questions answered without generating. `caps` prints machine, backend, quant,
+architecture, placement, and sampling capabilities as JSON and needs no model.
+`cpu_cores`, `ram_bytes` and `ram_available_bytes` are what this process may use;
+inside a container that is the host narrowed by its cgroup limits, and `host`
+carries the machine's own three numbers while `limits` names the source (`cgroup2`,
+`cgroup1` or `none`), the CPU quota and the memory limit (`null` when there is
+none). On Windows `code_page` gives the process's ANSI code page (`ansi`; 65001 is
+UTF-8) and whether the executable carries the UTF-8 manifest (`utf8_manifest`); it
+is `null` elsewhere.
+
+`tools` loads `-m` and prints the model's tool-call protocol, chat template and
+sampling preset as JSON (`{"tool_family":…,"native_tool_protocol":…,"template":…,
+"sampling_preset":…}`). No manifest required.
+
+`adapter` loads `-m` and prints as JSON whether a LoRA adapter can be served on this
+model and whether one can be trained on it, each with the sentence the real
+operation would refuse with, plus which GPU backend of this build carries adapter
+kernels. Inference, adapter serving and training are three admission lists; this
+reads the last two without running either.
+
+`doctor` loads `-m`, runs one short probe and prints a diagnostic report as JSON:
+version, where the layers actually ran, the template and sampler in effect, memory,
+timings, and findings with a next step each. Exit 2 when a finding is `broken`.
+Memory and threads are what the process may use; inside a container an `info`
+finding, `container_limits`, gives its CPU and RAM beside the host's (`container
+limits apply: 26 of 128 CPUs, 80.0 GiB of 249.6 GiB RAM`) and does not change the
+verdict. A BPE file whose pre-tokenizer name (`tokenizer.ggml.pre`) has no split
+rule in this build is a `degraded` finding, `tokenizer_pre_unknown`: it loads with
+the GPT-2 split, which may not be the publisher's. The report holds no prompt or
+reply text unless `--doctor-include-text` is given; read it before sharing.
+
+`fit` estimates whether `-m` fits this machine and exits: RAM, and on a discrete GPU
+how many layers the offload budget holds for each KV format. It reads only the
+header, so a partial download answers the question. Honours `--gpu off`, `--gpu N`,
+`--reserve vram=P` and `--parallel N`. Inside a container the available RAM is what
+its cgroup memory limit leaves, not the host's.
 
 <a id="cli-type-plan"></a>
 #### `--type-plan PLAN.json`
@@ -2461,7 +2537,7 @@ whether the draft is `active` there.
 Per-tensor rewrite plan. First substring rule wins; types are `keep`, `q8_0`, `q4_0`,
 `q3_k`, `q4_k`, `q6_k`, `f16`, and `bf16`. Example:
 `{"default":"keep","rules":[{"match":"_exps.weight","type":"q3_k"}]}`. Requires
-`--quantize`. A rule whose type's block does not divide the row width is honoured in the
+`--rewrite`. A rule whose type's block does not divide the row width is honoured in the
 32-block fallback type (reported BY NAME with the type asked for and the type written);
 a rule that would not make the tensor smaller leaves that tensor at its source type and
 is reported the same way, so the built file can differ from the plan as written.
@@ -2469,7 +2545,7 @@ is reported the same way, so the built file can differ from the plan as written.
 fallbacks and declines, before you build.
 
 <a id="cli-merge-lora"></a>
-#### `--merge-lora OUT`
+#### `--rewrite OUT --merge-lora`
 
 Fold `--lora` into the base weights and write a standalone GGUF that runs in any GGUF
 runtime: `W' = W + (alpha/r)·B·A` per adapted projection, each tensor requantized to its
@@ -2549,7 +2625,7 @@ server started with `--lora` on the same adapter, and the zero adapter exactly a
 the bare base (`tests/test_adapter_routing.py`).
 
 <a id="cli-train"></a>
-#### `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank`, `--train-logprobs`, `--train-teacher`, `--train-resume`
+#### `runner train DATA`
 
 AdamW LoRA training in the serving binary (position-batched and threaded under a
 byte-exact contract - 4B trains at ~15 s/step on 12 threads of a many-core host; `--train-gpu` puts
@@ -2564,22 +2640,22 @@ with the prompt masked from the loss and per-example weights (the policy-gradien
 `{"prompt_tokens":[...],"completion_tokens":[...],"weight":w}`, used exactly as given (no
 BOS added, nothing re-tokenized): the form for training on what a sampler produced, since
 decoding sampled ids and tokenizing the text again is not an identity (a byte token that
-ends mid-character decodes to U+FFFD). `--train-logprobs FILE` writes one JSON line per
+ends mid-character decodes to U+FFFD). `--logprobs FILE` writes one JSON line per
 step, `{"step","example","first","logprobs"}`: the logprob of every target token from
 `first` on, under the forward that step trains through, before its update, through the
-same normalizer as the server's logprobs, so the two compare bit for bit. `--train-teacher DIR`
+same normalizer as the server's logprobs, so the two compare bit for bit. `--teacher DIR`
 fits each completion position to a teacher's top-k distribution (KL, with the rest of the
 vocabulary as one tail bucket) instead of the next token: distillation, for bringing a
 quantized file back toward its parent ([guide](docs/lora.md#6-distillation-toward-a-parent-model)), with a
 learning-rate schedule, batches, held-out evals, a kill rule and a stop file
 when a distillation pipeline's recipe needs them. `--save-every` checkpoints
-carry the optimizer state, and `--train-resume` continues such a run exactly. Fresh adapters start as an exact no-op (A seeded,
-B zero); checkpoints are adapter GGUFs that `--lora` loads back. `--train` with `--lora`
+carry the optimizer state, and `--resume` continues such a run exactly. Fresh adapters start as an exact no-op (A seeded,
+B zero); checkpoints are adapter GGUFs that `--lora` loads back. `runner train` with `--lora`
 continues that adapter: it keeps its rank and alpha, AdamW starts fresh (`--lora` loads
-the weights only; `--train-resume` loads a checkpoint's optimizer state too), and the record names it as `from_adapter`, hashed before the
-first step, so `--lineage` walks back through every earlier run. Deterministic by
+the weights only; `--resume` loads a checkpoint's optimizer state too), and the record names it as `from_adapter`, hashed before the
+first step, so `runner attest lineage` walks back through every earlier run. Deterministic by
 default: same data + same seed produce a byte-identical adapter file, gated in `make
-test`. One example per step, cycled in file order; before the first step `--train`
+test`. One example per step, cycled in file order; before the first step `runner train`
 warns when the run is likely to memorize (more than three passes over fewer than 200
 examples, one completion shared by more than half of them, `--lr` above twice the
 default, short completions without an end-of-turn token; see
@@ -2602,7 +2678,7 @@ at least `1/n_vocab`, so the reported count is bracketed by the reported logprob
 scorer that disagrees with itself fails loudly rather than returning a confident wrong
 perplexity.
 
-`--score-top N` adds each position's distribution head: `top[i]` lists the N most likely
+`--score N` adds each position's distribution head: `top[i]` lists the N most likely
 next tokens after position i as `[id, logprob]`, best first, ties to the lower id, from the
 same logits as `logprobs` and `argmax`. A distribution-level comparison (KL divergence
 against a reference such as the publisher's float32 model, `scripts/gold-logits.py
@@ -2660,7 +2736,7 @@ path's bytes and is not a route either: it is on for gemma-4 MoE and gpt-oss
 flag and ignore it.
 
 <a id="cli-transcript"></a>
-#### `--transcript FILE`
+#### `--record FILE`
 
 Record a one-shot `-p` run as `xyntetik.runner.transcript.v1`: model, adapter and binary
 hashes; the effective execution profile (including fallback KV type, GPU layer
@@ -2706,10 +2782,10 @@ Machine-readable marking of generated text (the kind EU AI Act Article 50 asks f
 with no second model and, averaged over keys, no change to the output distribution:
 
 ```
-runner --watermark-keygen wm.key                     # once per deployment
-runner -m model.gguf -p "..." --watermark wm.key --transcript run.json
-runner --detect-watermark run.json --watermark wm.key    # WATERMARKED, z and p
-runner --serve -m model.gguf --watermark wm.key --receipts receipts/
+runner attest watermark-keygen wm.key                     # once per deployment
+runner -m model.gguf -p "..." --watermark wm.key --record run.json
+runner attest detect run.json --watermark wm.key    # WATERMARKED, z and p
+runner --serve -m model.gguf --watermark wm.key --record receipts/
 ```
 
 The construction is SynthID-Text's tournament sampling (Dathathri et al., Nature 2024):
@@ -2735,13 +2811,13 @@ the same g-values; detection with the key, none with another key or on unmarked
 output, `--verify`, serve receipts, text).
 
 <a id="cli-sign-model"></a>
-#### `--sign-model FILE`
+#### `runner attest sign-model FILE`
 
 Signs a model so `--model-pubkey` (or the reference `model_signing verify key`) can
 check it, without Python or openssl on the signing machine:
 
 ```
-runner --sign-model model.gguf --model-key signing.pem        # writes model.gguf.sig
+runner attest sign-model model.gguf --key signing.pem        # writes model.gguf.sig
 openssl pkey -in signing.pem -pubout -out signing.pub.pem     # what verifiers are given
 runner -m model.gguf --model-pubkey signing.pub.pem --require-signed-model
 ```
@@ -2777,7 +2853,7 @@ runner -m model.gguf --resume s.img --fork-seed 11                  # or a fork 
 The image is one file: a `xyntetik.runner.session.v1` JSON header (the model's sha256
 and the engine's model key, context length, KV type, prompt length, token count, the
 `-n` budget and how much of it is spent, the sampler's settings and rng state, the
-`--json` / `--json-schema` constraint by digest, `--ignore-eos`, the runner version and
+`--json` / `--json` constraint by digest, `--ignore-eos`, the runner version and
 the binary's sha256), then the token ids, the KV of every position plus a recurrent
 model's fold state (the prefix cache's entry layout), and the next token's logits,
 closed by a SHA-256 over every byte before it. What the state does not hold (the
@@ -2786,7 +2862,7 @@ rebuilt on resume by replaying the generated tokens through the step's own bookk
 It carries no timestamp, so the same state is the same bytes. That is the gate: a run
 straight through to `-n` imaged at its end, and the same run suspended half way, resumed
 and imaged at its end, write the identical file. `tests/test_session_images.py` checks
-this under seeded sampling with a repeat penalty, greedy, `--json`, `--json-schema` and a
+this under seeded sampling with a repeat penalty, greedy, `--json`, `--json` and a
 Mamba-2 hybrid, and through a chain of two suspensions.
 
 `--resume` takes the sampler, context length, KV type, budget and constraint from the
@@ -2794,15 +2870,15 @@ image, and refuses `-s`, `-n`, `-c`, `--kv`, `--temp`, `--top-k`, `--top-p`, `--
 and `--repeat-penalty` rather than silently overriding them, as it refuses `--json` or
 `--ignore-eos` on an image made without them. It also refuses a model whose sha256 or engine model key differs from the image's, an
 image whose trailer does not match its bytes, and a schema image without the same
-`--json-schema` (the schema itself is not in the image, only its digest). Resumed by a
+`--json` (the schema itself is not in the image, only its digest). Resumed by a
 different binary, it warns: the continuation is exact only on the build that suspended
 it. `--fork-seed N` replaces the image's rng state with `N` mixed as `-s` is, so a fork is reproducible
 and shares the image's tokens as its prefix. `--session-out` refuses an existing file
 before loading anything. A generation that ends (end of text, a closed document) before
 its image point has nothing to resume: no image is written and the run exits 1.
-Images are CPU-only and use the solo step loop, so no `--draft`, `--mtp` or
-`--draft-lookup`. They cannot be combined with `--serve`, `-i`, `--verify`,
-`--transcript` or `--watermark` (an image does not carry the watermark key a marked
+Images are CPU-only and use the solo step loop, so no `--draft`, `--draft mtp` or
+`--draft lookup`. They cannot be combined with `--serve`, `-i`, `--verify`,
+`--record` or `--watermark` (an image does not carry the watermark key a marked
 continuation would need). A model whose KV cache is a ring or tied-V cannot be imaged.
 
 A server started with `--sessions DIR` does the same over HTTP, on whatever backend it
@@ -2827,7 +2903,7 @@ is asked for; like a session's own `seed`, it is a whole number from 0 to 2^53 -
 prefill to its last token, so it does not share batches with other slots, and a resume
 is exact on the backend and build that suspended it. A recurrent model on a device
 cannot be imaged (its state is not the host's to restore; serve it with `--gpu off`), and
-an image made under `--json` or `--json-schema` is resumed by the CLI, not the server.
+an image made under `--json` or `--json` is resumed by the CLI, not the server.
 Gate: `tests/test_server_sessions.py`, red when a resume does not restore the image's
 rng state. `scripts/session-demo.py` runs the whole cycle (suspend, exact resume, eight
 forks, keep one) and [docs/session-images.md](docs/session-images.md) says what it
@@ -2846,11 +2922,11 @@ can use.
 
 #### Deciding before you download
 
-`--fit` answers "will this run here" from a model's GGUF **header**, which is
+`--info fit` answers "will this run here" from a model's GGUF **header**, which is
 the first few megabytes of the file:
 
 ```console
-$ runner --fit Trinity-Nano-Preview-Q4_K_M.gguf
+$ runner -m Trinity-Nano-Preview-Q4_K_M.gguf --info fit
 fit: Trinity-Nano-Preview-Q4_K_M.gguf
   model         afmoe, 56 layers, MoE 128 experts, 8 used
   weights       3.53 GiB
@@ -2870,9 +2946,9 @@ The verdict is `FITS`, `FITS WITH --kv q8` (or `k8v4`, or `fp4`), or `PAGES`, al
 arithmetic that produced it.
 
 On a discrete CUDA GPU the leading layers go to the card, so RAM only has to
-hold the rest. `--fit` then reads the same offload budget the loader splits
+hold the rest. `--info fit` then reads the same offload budget the loader splits
 against (the driver's free memory, the OS video-memory budget on Windows,
-`--reserve-vram` and the loader's headroom), computes the loader's split from
+`--reserve vram=P` and the loader's headroom), computes the loader's split from
 the header for each KV format, and gives the verdict from what stays on the
 host. The card holds only what the forward reads there: the layers' weights,
 the output head on a full split (a tied head is the embedding table) and the
@@ -2884,7 +2960,7 @@ Apple silicon and integrated CUDA devices the GPU shares RAM, and the RAM
 answer above is the whole answer.
 
 ```console
-$ runner --fit granite-4.2-8b-Q4_K_M.gguf -c 16384
+$ runner -m granite-4.2-8b-Q4_K_M.gguf --info fit -c 16384
   ...
   available RAM 9.43 GiB right now
   gpu           NVIDIA GeForce RTX 3070, offload budget 6.95 GiB right now (0.64 GiB of it for scratch and headroom)
@@ -2902,19 +2978,19 @@ because the host keeps the authoritative copy of every layer's cache. For a spar
 the file size, because only the routed experts a token selects are touched -
 which is why a 3.53 GiB file can be a comfortable fit in 3.25 GiB.
 
-`--fit` does not download anything. Fetch a header yourself with a ranged read - 16 MiB covers a large
+`--info fit` does not download anything. Fetch a header yourself with a ranged read - 16 MiB covers a large
 vocabulary; smaller models need far less:
 
 ```sh
 curl -r 0-16777215 -L -o head.gguf \
   https://huggingface.co/ORG/REPO/resolve/main/MODEL.gguf
-runner --fit head.gguf
+runner -m head.gguf --info fit
 ```
 
 The sizes reported from a truncated header are the **whole** model's, because
 they come from the tensor descriptors rather than from how many bytes arrived.
 Loading such a file still fails, as it should: the normal loader refuses a GGUF
-whose data section does not cover the tensors it declares, and `--fit` reads
+whose data section does not cover the tensors it declares, and `--info fit` reads
 through a separate path rather than relaxing that check.
 
 ### Usage behavior
@@ -2925,7 +3001,7 @@ for benchmarks and deterministic comparison gates.
 
 Sampling defaults come from a per-family preset selected from the detected
 chat template, model metadata and filename. The chosen preset is logged at
-load, `--caps` publishes the full preset table with each preset's source,
+load, `--info caps` publishes the full preset table with each preset's source,
 and explicit sampling flags always win. At `--temp 0`, runner returns the
 model argmax without applying repeat penalty. The presets are the
 publishers' pinned `generation_config.json` values where a publisher ships
@@ -2977,9 +3053,35 @@ requests.
 On macOS and Windows, a session you sit with - a bare invocation, `--serve`, or
 `-i` - also raises the desktop tray, which is left running afterwards. One-shot
 `-p` runs, tooling modes, pipes, scripts, CI, and Linux keep text-mode
-behavior, and `--no-tray` opts out everywhere. A run refused by an argument
+behavior, and `--tray off` opts out everywhere. A run refused by an argument
 check raises nothing: the tray is detached, so one spawned by a process that
 then exits would outlive it. See [Desktop tray](#desktop-tray).
+
+### Older spellings
+
+Every spelling below is still accepted and means exactly what the spelling that
+replaced it means; scripts written against it keep working. The reference above
+and `runner --help` present the current one.
+
+| Current | Replaces |
+|---|---|
+| `--json FILE` | `--json-schema FILE` |
+| `--think off` | `--no-think` |
+| `--tray off` | `--no-tray` |
+| `--gpu N` | `--gpu-layers N` |
+| `--reserve vram=P,ram=P,cpu=P` | `--reserve-vram P`, `--reserve-ram P`, `--reserve-cpu P` |
+| `--rope linear=F,yarn=F,base=F` | `--rope-scale F`, `--yarn-factor F`, `--rope-base F` |
+| `--draft mtp`, `--draft mtp:FILE`, `--draft lookup` | `--mtp`, `--mtp-file FILE`, `--draft-lookup` |
+| `--score N` | `--score-top N` |
+| `--record PATH` | `--transcript FILE` (one-shot), `--receipts DIR` (`--serve`) |
+| `--record-keep N` | `--receipts-keep N` |
+| `--record-prev FILE` | `--transcript-prev FILE` |
+| `--rewrite OUT`, with `--merge-lora` or `--context-surgery` as the trigger | `--quantize OUT`, `--merge-lora OUT`, `--context-surgery OUT` |
+| `--info caps`, `--info tools`, `--info adapter`, `--info doctor`, `--info fit` | `--caps`, `--tool-info`, `--adapt-info`, `--doctor`, `--fit PATH` (with `--info fit` the path is `-m`'s) |
+| `runner train DATA` and its options | `--train DATA`, `--train-dpo DATA`, `--train-steps`, `--train-ctx`, `--train-out`, `--train-batch`, `--train-resume`, `--train-eval`, `--train-teacher`, `--train-logprobs`, `--train-eot`, `--train-gpu-budget` |
+| `runner attest <verb>` | `--keygen`, `--keygen-algo`, `--sign-record`, `--record-prev`, `--check-record`, `--lineage`, `--export-bundle` with `--bundle-out`, `--check-bundle`, `--export-pack` with `--pack-out`, `--pack-envelope`, `--pack-attach`, `--check-pack`, `--sign-model` with `--model-key`, `--watermark-keygen`, `--detect-watermark` |
+| `--wait-for-vram 0` | the former default for `--serve` (refuse at once; a server now queues 300 s unless told otherwise) |
+| `--yield-on-request off` | the former default for `--serve` (keep the model; a server now yields on request unless told otherwise) |
 
 ## Serving and APIs
 
@@ -3012,12 +3114,12 @@ non-loopback authorities.
 | `GET /v1/models` | Registered models and current residency. |
 | `GET /v1/capabilities` | The build (`version`, the `--version` string, plus `build_flavor` on a T3 build), server process ID, active model, sampling preset, optional Xyntetik agent profile, and the EFFECTIVE execution mode: `slots` (the slot count actually running) and `draft` (`requested`/`active`, the `source` when active: `model`, `mtp` or `lookup`, plus a `reason` when a requested draft was refused). `active` reflects a configured draft in at least one resident slot, including multi-slot serving, and becomes false while the target is unloaded. `mtp.consumed` likewise reflects resident engines using the head; per-request telemetry separately reports whether that request speculated. |
 | `GET /v1/runner/prefix-cache` | Prefix-cache size, limits, and counters. Takes no request body and remains available while inference is active. |
-| `GET /v1/runner/provenance` | What the server can vouch for about itself, in the receipt's vocabulary: `build.binary_sha256` (the executable, hashed at start), the resident `model` (`sha256` of the file, hashed in the background when something first needs it: this route, an `expect_resident` digest, or, from the load on, a server with `--receipts`, `--sessions` or `--kv-snapshots`; a reload of the same unchanged file reuses its digest. `sha256_state` reads `hashing` until it is known, and `changed_since_load` with the digest withheld when the file on disk no longer has the size and timestamps it had at load), the load-time OMS `signature` verdict and `envelope` state, the `adapter` and its digest, the `profile` (device, threads, context, KV type, slots) and the effective `config`. `model` and `profile` are `null` while nothing is resident. Not an attestation: a process can only report on itself. Takes no request body. |
+| `GET /v1/runner/provenance` | What the server can vouch for about itself, in the receipt's vocabulary: `build.binary_sha256` (the executable, hashed at start), the resident `model` (`sha256` of the file, hashed in the background when something first needs it: this route, an `expect_resident` digest, or, from the load on, a server with `--record`, `--sessions` or `--kv-snapshots`; a reload of the same unchanged file reuses its digest. `sha256_state` reads `hashing` until it is known, and `changed_since_load` with the digest withheld when the file on disk no longer has the size and timestamps it had at load), the load-time OMS `signature` verdict and `envelope` state, the `adapter` and its digest, the `profile` (device, threads, context, KV type, slots) and the effective `config`. `model` and `profile` are `null` while nothing is resident. Not an attestation: a process can only report on itself. Takes no request body. |
 | `POST /v1/runner/prefix-cache/clear` | Release cached prefixes without unloading the model. Takes no request body and remains available while inference is active. |
 | `POST /v1/runner/contexts` | Pin a named context: `{"id": ..., "prompt": ...}` (raw text) or `{"id": ..., "messages": [...], "tools": [...]}` (rendered by the model's template WITHOUT the assistant generation prompt, so it is exactly what a later request with the same leading messages renders first). The prompt is prefilled once and its KV snapshot pinned: no TTL, never evicted by traffic, counted in `RUNNER_PREFIX_CACHE_MB` (`507` with code `context_budget` when it does not fit beside the other pins). Re-pinning an id replaces it. A request carrying `"context_id": id` must start with the context's tokens: it is refused with `404` (`context_not_found`) or `409` (`context_mismatch`, naming the first differing token) rather than served cold, and `runner_telemetry.context` reports `{id, tokens}` beside the usual `prompt_cached_tokens`. `context_id` needs the prefix cache (`cache_prompt`/`prefix_cache` not false) and is refused with `echo`/`prompt_logprobs`. A model whose template folds the system turn into the first user turn renders nothing for system messages alone and says so. Ids are 1 to 64 characters of `[A-Za-z0-9._:-]`. |
 | `GET /v1/runner/contexts` | The pinned contexts: `id`, `tokens`, `bytes`, `hits`, `age_seconds`. Takes no request body. |
 | `DELETE /v1/runner/contexts/{id}` | Release one context (`404` when there is none). `POST /v1/runner/prefix-cache/clear` and `/unload` release every context with the rest of the cache. |
-| `POST /v1/runner/contexts/{id}/snapshot` | With `--kv-snapshots DIR`: write context `id` to `DIR/<name>.kv` (the prefix cache's own `runner.prefix.v1` format, one entry) and `DIR/<name>.kv.json`, a `xyntetik.runner.kv_snapshot.v1` manifest naming the KV file's sha256 and size, the token count and the sha256 of the token ids, the served model's sha256 and the engine's model key, the KV type and context length, the binary's sha256, and `producer.receipt` when the body names one (`{"receipt": "receipt-<n>.json"}`, a receipt this server wrote whose chain recomputes). The manifest is chained like any record and signed with `--sign-key` (`--check-record` verifies it). Body `{}` or `{"name", "receipt"}`; `name` defaults to the id; an existing snapshot is never overwritten (`409 snapshot_exists`). Loading is `POST /v1/runner/contexts` with `{"id": ..., "snapshot": "<name>"}`: the manifest must recompute and verify, the `.kv` bytes must be the ones it names, and the model and KV type must be this server's, else `409` (`snapshot_record_invalid`, `snapshot_digest_mismatch`, `snapshot_model_mismatch`, `snapshot_kv_type_mismatch`). A request built on a loaded context names the snapshot in its receipt (`serve.kv_snapshot`: name, KV sha256, manifest chain hash) and replays from its prompt tokens like any other. |
+| `POST /v1/runner/contexts/{id}/snapshot` | With `--kv-snapshots DIR`: write context `id` to `DIR/<name>.kv` (the prefix cache's own `runner.prefix.v1` format, one entry) and `DIR/<name>.kv.json`, a `xyntetik.runner.kv_snapshot.v1` manifest naming the KV file's sha256 and size, the token count and the sha256 of the token ids, the served model's sha256 and the engine's model key, the KV type and context length, the binary's sha256, and `producer.receipt` when the body names one (`{"receipt": "receipt-<n>.json"}`, a receipt this server wrote whose chain recomputes). The manifest is chained like any record and signed with `--sign-key` (`runner attest check` verifies it). Body `{}` or `{"name", "receipt"}`; `name` defaults to the id; an existing snapshot is never overwritten (`409 snapshot_exists`). Loading is `POST /v1/runner/contexts` with `{"id": ..., "snapshot": "<name>"}`: the manifest must recompute and verify, the `.kv` bytes must be the ones it names, and the model and KV type must be this server's, else `409` (`snapshot_record_invalid`, `snapshot_digest_mismatch`, `snapshot_model_mismatch`, `snapshot_kv_type_mismatch`). A request built on a loaded context names the snapshot in its receipt (`serve.kv_snapshot`: name, KV sha256, manifest chain hash) and replays from its prompt tokens like any other. |
 | `GET /health` | Server and resident-model health, the build (`version`, and `build_flavor` on a T3 build), plus this process's `rss_bytes`/`peak_rss_bytes` and cumulative `tokens_prompt`, `tokens_generated`, `generate_seconds`, `batch_steps` and `batch_sequences`. |
 | `GET /metrics` | The same process counters in Prometheus text exposition 0.0.4 (`text/plain; version=0.0.4`), under the `runner_` prefix, with the prefix-cache and speculation counters alongside. Always on with `--serve`, takes no request body, and remains available while inference is active. |
 | `POST /unload` | Release resident model, draft and prefix-cache memory; the next request reloads on demand. Deferred to the next safe point while a load or generation is in flight (the reply says `"deferred":true`). Needs the registry: a server without one refuses with `409` rather than reporting a success it cannot deliver - see the residency note below. |
@@ -3641,7 +3743,7 @@ before a call is kept as content and a call after prose is still a call,
 on the Chat, Responses and Anthropic surfaces, buffered and streamed;
 the same holds for Qwen2.5/Qwen3's JSON `<tool_call>` protocol, whose
 grammar hands off from free text to a constrained call at the full opener
-and admits as many calls as `parallel_tool_calls` allows. `--tool-info`
+and admits as many calls as `parallel_tool_calls` allows. `--info tools`
 reports `qwen3_xml` for this family and `qwen_json` for the ChatML JSON
 protocol, both native. Not measured here: any checkpoint's task quality.
 
@@ -3655,7 +3757,7 @@ one is held by a grammar of one entry, or one to eight when parallel. Before
 real 9B Q8_0 file the generic envelope scored 39 of 40 and the native protocol
 39 of 39 with one case excused
 ([evidence](docs/compat-reports/nemotron-nano-native-tools-2026-10-09/README.md)).
-`--tool-info` reports `nemotron_json`.
+`--info tools` reports `nemotron_json`.
 
 Mistral v0.3 (`mistral`) and Mistral-Nemo (`mistral-nemo`) speak their own
 protocol: the declarations as one `[AVAILABLE_TOOLS] [...]` list before the
@@ -3678,7 +3780,7 @@ The v0.1 framing (`mistral-v1`) has no tool protocol and stays generic.
 v0.3 files converted before the publisher replaced its template embed the
 v0.1 form; detection reads the vocabulary for that case (v0.1 and v0.2 have
 no `[AVAILABLE_TOOLS]` token, v0.3 does) and serves such a file the v0.3
-framing and its tools without a flag. `--tool-info` reports `mistral_json`.
+framing and its tools without a flag. `--info tools` reports `mistral_json`.
 
 Qwen3-Coder, Qwen 3.8, Granite 4.2 and Ornith speak the same
 function/parameter XML and share one contract. A `tool_choice: auto` turn
@@ -3755,7 +3857,7 @@ re-encoded: on the Linux CUDA host with the real vocabularies, Qwen 3.8, Granite
 references on every case, tool replays included.
 
 `enable_thinking`, either at the top level or inside `chat_template_kwargs`,
-is the request-level form of `--think`/`--no-think`. Omitting it is not the
+is the request-level form of `--think`/`--think off`. Omitting it is not the
 same as sending `false`: an absent field renders whatever the model family's
 own reference template renders, and that default differs per family, so
 collapsing "unspecified" onto one of them would misrender the other.
@@ -4443,12 +4545,12 @@ src/tray*.c           macOS/Windows desktop controller
 src/compat.c          platform process, memory, mmap, clock, and socket helpers;
                       the UTF-8 doors to file names, argv and the environment
 src/runner.rc         Windows resources: the UTF-8 application manifest
-src/main.c            CLI parsing, utility modes, and --caps
+src/main.c            CLI parsing, utility modes, and --info caps
 python/               supported Python client and subprocess integration
 ```
 
 Host weights remain quantized in the mapped GGUF and are dequantized while
 computing. CPU memory is approximately mapped weights plus KV and scratch.
 CUDA copies selected weights and compute/KV buffers to VRAM; Metal wraps mapped
-weights in unified memory. The load log and `--caps` are the sizing sources for
+weights in unified memory. The load log and `--info caps` are the sizing sources for
 an exact model/machine combination.

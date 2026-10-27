@@ -126,7 +126,7 @@ miscompute:
 while the complete sparse expert FFN executes directly from the mmap in system
 RAM. Only the post-attention activation tile crosses the PCIe boundary per
 layer. The CUDA upload is packed by tensor role, so skipped expert tensors do
-not consume address-space-sized holes in VRAM. `runner --caps` advertises this
+not consume address-space-sized holes in VRAM. `runner --info caps` advertises this
 as `tensor_placement.cpu_moe` for controllers and advisors.
 
 This mode covers fused Qwen3-MoE and legacy split Mixtral expert layouts. Its
@@ -146,7 +146,7 @@ tensors, which are NULL on a MoE layer, so it undercounted each MoE layer by
 its experts (~all of its weight) and never offloaded. The split now accounts
 the full per-layer weight (attention + router + every expert, fused or split).
 
-VRAM budgets were simulated on the 24 GB slice with `--reserve-vram PCT` (caps
+VRAM budgets were simulated on the 24 GB slice with `--reserve vram=PCT` (caps
 usage to PCT% of total). **Every partial-offload configuration is token-
 identical to Runner's CPU path on the same quantized GGUF**, or to the
 full-GPU quantized run where the model fits, so offload is transparent to
@@ -171,11 +171,11 @@ already-trusted dense path is the oracle (no separate reference engine):
 - `moe1` — fused, top-1, one expert zeroed → identical to dense.
 - `moe2` — fused, top-2 with a zero router (0.5/0.5) → identical to dense.
 - `moe3` — **split** layout, top-1 → identical to dense.
-- partial-offload/fallback path — `--gpu-layers 1` exercises the split when a
+- partial-offload/fallback path — `--gpu 1` exercises the split when a
   GPU is present and falls back cleanly to CPU on synthetic CI hosts.
-- expert-tensor placement — `--cpu-moe --gpu-layers 2` keeps the fixture's
+- expert-tensor placement — `--cpu-moe --gpu 2` keeps the fixture's
   attention layers on CUDA, runs fused experts on the host, and must remain
-  byte-identical to the dense oracle; `--caps` must advertise the feature.
+  byte-identical to the dense oracle; `--info caps` must advertise the feature.
 
 All assert byte-identical greedy output; the FFN is scaled so a broken MoE
 produces different tokens (verified during development).
@@ -284,7 +284,7 @@ GPU numbers. CI continues to exercise the harness with fixtures.
   [`gpt-oss-20b-keep30`](https://huggingface.co/Joakimpalm-Zen/gpt-oss-20b-keep30-MXFP4-GGUF)
   artifact instead (see the 0.1.6/0.1.7 notes). The
   loader now prints requested-vs-limit bytes when this allocation fails,
-  and `--caps` publishes the ceiling as `gpu.max_working_set_bytes`.
+  and `--info caps` publishes the ceiling as `gpu.max_working_set_bytes`.
 - **GELU dual-branch MoE** (gemma-4) is implemented on CPU, CUDA and Metal; see
   the `gemma4-moe` section above. `expert_shared_count`-style shared-expert MoE
   (Qwen2-MoE / DeepSeek) remains refused, behind its own validation.

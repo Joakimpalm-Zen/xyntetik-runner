@@ -8,7 +8,7 @@ Existing supported families remain maintained, including admitted Qwen
 layouts and experimental `qwen4exp`. A family name or geographic origin is
 not proof that every checkpoint, quantization, context layout, or backend
 is supported. Check the [support matrix](../MANUAL.md#support-matrix),
-`runner --caps`, and `runner -m model.gguf --doctor` for the actual case.
+`runner --info caps`, and `runner -m model.gguf --info doctor` for the actual case.
 
 Current admitted families include Llama, Gemma, Phi, gpt-oss, dense and
 hybrid Granite, Trinity/AFMoE, Nemotron, Mistral-derived layouts, SmolLM,

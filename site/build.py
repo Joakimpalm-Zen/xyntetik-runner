@@ -250,9 +250,9 @@ def chart_answers() -> str:
     w, h = 560, 332
     mono = 'font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"'
     rows = [
-        ("will it fit", "runner --fit granite-4.2-8b-Q4_K_M.gguf -c 16384",
+        ("will it fit", "runner -m granite-4.2-8b-Q4_K_M.gguf --info fit -c 16384",
          [("verdict", "FITS: 35 of 40 layers on the GPU, 6.53 GiB of RAM to spare", "ok")]),
-        ("what did shrinking it cost", "runner -m gemma-4-31B.gguf --quantize cut.gguf --remove-sublayer attn:48",
+        ("what did shrinking it cost", "runner -m gemma-4-31B.gguf --rewrite cut.gguf --remove-sublayer attn:48",
          [("cost", "KLD 0.0223 vs the parent, 44,413 positions; file 74.3 MB smaller", "ok")]),
         ("what exactly did it say", "runner --verify run.transcript.json",
          [("VERIFIED", "exit 0: every token and every output byte replayed", "ok")]),

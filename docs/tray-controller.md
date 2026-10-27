@@ -10,7 +10,7 @@ v1; on Linux `--tray` prints an honest error.
 there is no terminal (launchd, Task Scheduler, a service wrapper). A session
 you sit with — a bare invocation, `--serve`, or `-i` — raises one for you and
 leaves it running afterwards; one-shot `-p` runs and tooling modes do not, and
-`--no-tray` opts out everywhere. The README's Desktop tray section has the full
+`--tray off` opts out everywhere. The README's Desktop tray section has the full
 table.
 
 That spawned tray is a detached child with its own session, so Ctrl-C on a
@@ -37,7 +37,7 @@ Every runner process in a *run* mode (one-shot generation, `--serve`,
 Records are written atomically (tmp + rename) and removed at normal exit.
 A crash leaves a stale file; **every reader sweeps** — any record whose pid
 is no longer alive is deleted on sight, so the directory is self-healing.
-Utility modes (`--quantize`, `--caps`, `--bench-json`, `--version`) do not
+Utility modes (`--rewrite`, `--info caps`, `--bench-json`, `--version`) do not
 register.
 
 A swap-mode server (`--serve` with a `name=path` model list) registers with

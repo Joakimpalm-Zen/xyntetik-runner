@@ -8,8 +8,8 @@ number that stopped each idea, is in
 
 ## Choosing and measuring a route
 
-- `--fit` estimates placement before load; `--caps` describes this build
-  and hardware, and `--doctor` reports the loaded model. A requested GPU
+- `--info fit` estimates placement before load; `--info caps` describes this build
+  and hardware, and `--info doctor` reports the loaded model. A requested GPU
   is not proof that every layer or expert executed there.
 - NVIDIA support starts at **NVIDIA Turing / compute capability 7.5 or newer**.
   The embedded PTX target and the manual are checked against the source
@@ -51,7 +51,7 @@ investigate reproducible differences beyond the measured baseline spread.
 
 ## Drafting and batching
 
-`--draft`, `--mtp`, `--mtp-file`, and `--draft-lookup` preserve target
+`--draft`, `--draft mtp`, `--draft mtp:FILE`, and `--draft lookup` preserve target
 verification and accepted-token accounting. Their supported architecture,
 backend, and cache-state combinations differ; the manual and capability
 response describe the actual admission. Draft count, verification width,

@@ -232,7 +232,7 @@ def test_rewrite_only_flags_require_quantize(runner_bin, model, flag, arg):
     """
     proc = _run(runner_bin, model, flag, arg, "-p", "hi", "-n", "1", "--temp", "0")
     assert proc.returncode != 0, proc.stdout[-200:]
-    assert b"requires --quantize" in proc.stderr, proc.stderr[-300:]
+    assert b"requires --rewrite OUT" in proc.stderr, proc.stderr[-300:]
 
 
 def test_quantize_still_accepts_all_three(runner_bin, model, tmp_path):
