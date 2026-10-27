@@ -203,8 +203,3 @@ bool receipts_record_path(const char *file, char *path, size_t cap) {
     return on;
 }
 
-void receipts_reset(void) {
-    pthread_mutex_lock(&RC.mu);
-    RC.on = false;
-    pthread_mutex_unlock(&RC.mu);
-}

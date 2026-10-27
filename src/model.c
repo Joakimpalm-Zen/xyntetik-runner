@@ -1492,21 +1492,6 @@ static bool model_load_inner(model_t *m, const char *path, const model_params *p
     return model_alloc_runtime(m, p);
 }
 
-double model_resident_fraction(const model_t *m) {
-    if (!m || !gguf_mapped_size(&m->gf)) return -1.0;
-    double weighted = 0.0;
-    uint64_t measured = 0;
-    for (uint32_t i = 0; i < gguf_map_count(&m->gf); i++) {
-        size_t size;
-        void *map = gguf_map_part(&m->gf, i, &size);
-        double fraction = plat_resident_fraction(map, size);
-        if (fraction < 0.0) return -1.0;
-        weighted += fraction * (double)size;
-        measured += size;
-    }
-    return measured ? weighted / (double)measured : -1.0;
-}
-
 // Say so at load time when the weights cannot fit in what the machine has
 // left, because every signal downstream stays green while they page: the tok/s
 // counter, /health and --caps all look fine while a five-token reply takes a
@@ -13130,8 +13115,6 @@ void model_mtp_note_hidden(model_t *m, const float *h) {
     if (!m->mtp_ready || !h || !mtp_alloc(m)) return;
     memcpy(m->mtp_pending, h, sizeof(float) * (size_t)m->mtp_hw);
 }
-
-const float *model_mtp_pending(const model_t *m) { return m->mtp_pending; }
 
 // RUNNER_MTP_DUMP=path: one line per head logits vector (position, argmax,
 // its logit, the top-2 gap and a checksum), the same on every backend, so
