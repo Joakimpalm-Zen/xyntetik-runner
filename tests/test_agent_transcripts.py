@@ -55,14 +55,6 @@ def _call(name, **params):
 
 
 @pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
-@pytest.fixture(scope="module")
 def model(tmp_path_factory):
     m = tmp_path_factory.mktemp("d4a") / "model.gguf"
     subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(m)],

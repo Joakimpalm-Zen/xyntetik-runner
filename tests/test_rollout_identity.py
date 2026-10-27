@@ -55,14 +55,6 @@ PROMPTS = ["the runner trains the adapter", "the corpus is learned by"]
 SEEDS = [11, 12]
 
 
-@pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
 def _fixture(runner_bin, tmp_path, family):
     if family == "f32":
         d = tmp_path / "fx"

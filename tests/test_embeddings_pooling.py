@@ -34,14 +34,6 @@ from harness import RunnerServer  # noqa: E402
 EOS = 2   # the fixture's tokenizer.ggml.eos_token_id
 
 
-@pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
 def _fixture(tmp_path_factory, name, *flags):
     m = tmp_path_factory.mktemp("pool") / f"{name}.gguf"
     subprocess.run([sys.executable, str(ROOT / "scripts/make-test-model.py"),

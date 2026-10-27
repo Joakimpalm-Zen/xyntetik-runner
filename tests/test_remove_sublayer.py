@@ -29,14 +29,6 @@ GGUF_U32, GGUF_ARR = 4, 9
 
 
 @pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if os.name == "nt" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
-@pytest.fixture(scope="module")
 def parent(tmp_path_factory):
     out = tmp_path_factory.mktemp("rm") / "parent.gguf"
     subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py",

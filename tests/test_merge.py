@@ -20,14 +20,6 @@ SENT = "the merged model and the adapted model say the same thing."
 
 
 @pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
-@pytest.fixture(scope="module")
 def fixtures():
     base, adapter = ROOT / "test.gguf", ROOT / "test-lora.adapter.gguf"
     if not base.exists() or not adapter.exists():

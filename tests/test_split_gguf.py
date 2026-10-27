@@ -10,14 +10,6 @@ N_SHARDS = 3
 
 
 @pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
-@pytest.fixture(scope="module")
 def whole(tmp_path_factory):
     model = tmp_path_factory.mktemp("split") / "whole.gguf"
     subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(model)],

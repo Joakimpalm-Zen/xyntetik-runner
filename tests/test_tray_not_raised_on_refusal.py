@@ -30,14 +30,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 TRAY_PLATFORMS = ("darwin", "win32")
 
 
-@pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
 @pytest.fixture
 def registry(tmp_path):
     """An empty instance registry, so nothing pre-existing hides a spawn."""

@@ -28,14 +28,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if os.name == "nt" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
-@pytest.fixture(scope="module")
 def models(tmp_path_factory):
     base = tmp_path_factory.mktemp("moe") / "m"
     subprocess.run([sys.executable, ROOT / "scripts/make-test-moe.py", str(base)],

@@ -36,14 +36,6 @@ BODY = {"prompt": PROMPT, "temperature": 0, "max_tokens": 6, "logprobs": 1}
 
 
 @pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
-@pytest.fixture(scope="module")
 def adapters(tmp_path_factory):
     base = ROOT / "test.gguf"
     if not base.exists():

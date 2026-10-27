@@ -34,14 +34,6 @@ INSTRUCTION = ("Judge whether the document answers the query. "
                "Answer yes or no.")
 
 
-@pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
 def _fixture(tmp_path_factory, name, *flags):
     m = tmp_path_factory.mktemp("rerank") / f"{name}.gguf"
     subprocess.run([sys.executable, str(ROOT / "scripts/make-test-model.py"),

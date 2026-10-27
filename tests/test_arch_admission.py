@@ -21,14 +21,6 @@ def _make_model(path, arch):
     )
 
 
-@pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
 def test_unknown_arch_is_refused(runner_bin, tmp_path):
     model = tmp_path / "mystery.gguf"
     _make_model(model, "mystery")

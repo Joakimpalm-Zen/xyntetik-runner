@@ -31,14 +31,6 @@ PROMPT = "the quick brown fox jumps over the lazy dog"  # ~59 fixture tokens
 N_CTX = 160  # 59 + 8 fits twice, not three times, when requests append
 
 
-@pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
 def _make(tmp_path_factory, name, extra):
     p = tmp_path_factory.mktemp(name) / "m.gguf"
     subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py",

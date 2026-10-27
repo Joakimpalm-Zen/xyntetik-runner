@@ -65,14 +65,6 @@ MOE_REFUSED = [
 
 
 @pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
-@pytest.fixture(scope="module")
 def has_metal(runner_bin):
     import json
     caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,

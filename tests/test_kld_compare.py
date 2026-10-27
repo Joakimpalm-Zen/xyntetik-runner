@@ -24,14 +24,6 @@ CORPUS_TEXT = (
 
 
 @pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if os.name == "nt" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
-
-
-@pytest.fixture(scope="module")
 def small_model():
     m = ROOT / "models" / "SmolLM2-135M-Instruct-Q8_0.gguf"
     if not m.exists():

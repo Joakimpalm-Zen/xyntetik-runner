@@ -18,7 +18,6 @@ The readout's contract, pinned on the tiny dense fixture:
     silent partial answer.
 """
 import json
-import os
 import pathlib
 import socket
 import subprocess
@@ -30,14 +29,6 @@ import urllib.request
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-
-
-@pytest.fixture(scope="module")
-def runner_bin():
-    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
-    if not exe.exists():
-        pytest.skip("runner binary not built")
-    return exe
 
 
 @pytest.fixture(scope="module")
