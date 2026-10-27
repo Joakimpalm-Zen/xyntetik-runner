@@ -17,6 +17,8 @@
 #include "runner.h"
 
 #define KS_SCHEMA "xyntetik.runner.kv_snapshot.v1"
+// the largest manifest or receipt a snapshot directory is read back from
+#define KS_MAX_FILE (16u << 20)
 // the runner.prefix.v1 layout: magic, entry count, then the entry's model
 // key, token count and KV size before its token ids
 #define KS_TOKENS_AT (16 + 4 + 8 + 4 + 8)
@@ -135,22 +137,6 @@ static bool exists(const char *path) {
     return f != NULL;
 }
 
-static char *slurp(const char *path, size_t *n_out) {
-    FILE *f = plat_fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0 || sz > (16L << 20)) { fclose(f); return NULL; }
-    rewind(f);
-    char *b = malloc((size_t)sz + 1);
-    if (!b) { fclose(f); return NULL; }
-    size_t n = fread(b, 1, (size_t)sz, f);
-    fclose(f);
-    b[n] = 0;
-    *n_out = n;
-    return b;
-}
-
 // the chain object of a record recomputes over the bytes before it
 static bool chain_ok(const char *buf, size_t n, char hash_out[65]) {
     const char *c = NULL;
@@ -188,7 +174,7 @@ bool kvsnap_save(const engine *e, const char *ctx, jv *req, sbuf *out,
             return fail(err, 400, "invalid_value", "receipt must name a "
                         "receipt-<sequence>.json this server writes (--receipts)");
         size_t rn = 0;
-        char *rb = slurp(rpath, &rn);
+        char *rb = plat_read_file(rpath, KS_MAX_FILE, &rn);
         if (!rb) return fail(err, 404, "receipt_not_found", "no receipt %s", rfile);
         bool ok = chain_ok(rb, rn, rchain);
         free(rb);
@@ -295,7 +281,7 @@ bool kvsnap_save(const engine *e, const char *ctx, jv *req, sbuf *out,
             break;
         }
         size_t mn = 0;
-        char *mb = slurp(manpath, &mn);
+        char *mb = plat_read_file(manpath, KS_MAX_FILE, &mn);
         char mchain[65] = "";
         bool mok = mb && chain_ok(mb, mn, mchain);
         free(mb);
@@ -331,7 +317,7 @@ bool kvsnap_load(const engine *e, const char *id, const char *name, sbuf *out,
     snprintf(kvpath, sizeof kvpath, "%s/%s.kv", KS.dir, name);
     snprintf(manpath, sizeof manpath, "%s/%s.kv.json", KS.dir, name);
     size_t mn = 0;
-    char *mb = slurp(manpath, &mn);
+    char *mb = plat_read_file(manpath, KS_MAX_FILE, &mn);
     if (!mb) return fail(err, 404, "snapshot_not_found", "no snapshot %s", name);
     jv *man = json_parse(mb, mn);
     char mchain[65] = "";

@@ -219,22 +219,6 @@ static int curl_get(const char *url, const char *out, bool quiet, char *err, siz
     return rc;
 }
 
-static char *read_whole(const char *path, size_t *len) {
-    FILE *f = plat_fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long n = ftell(f);
-    if (n < 0 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-    char *buf = malloc((size_t)n + 1);
-    if (!buf) { fclose(f); return NULL; }
-    size_t got = fread(buf, 1, (size_t)n, f);
-    fclose(f);
-    if (got != (size_t)n) { free(buf); return NULL; }
-    buf[n] = 0;
-    if (len) *len = (size_t)n;
-    return buf;
-}
-
 static bool cache_root(char *out, size_t cap) {
     const char *c = getenv("RUNNER_HF_CACHE");
     if (c && *c) return snprintf(out, cap, "%s", c) < (int)cap;
@@ -450,7 +434,7 @@ static char *fetch_impl(const char *spec, const char *flag, bool strict, hf_file
         return NULL;
     }
     size_t jn = 0;
-    char *js = read_whole(api_path, &jn);
+    char *js = plat_read_file(api_path, 0, &jn);
     jv *doc = js ? json_parse(js, jn) : NULL;
     free(js);
     jv *sib = doc ? jv_get(doc, "siblings") : NULL;

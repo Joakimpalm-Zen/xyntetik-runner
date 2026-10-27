@@ -19,26 +19,6 @@
 #define PACK_MAX_RECEIPTS 100000
 #define BUNDLE_MAX_FILE (256u * 1024u * 1024u)
 
-static char *slurp(const char *path, size_t *n) {
-    FILE *f = plat_fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0 || (unsigned long)sz > BUNDLE_MAX_FILE || fseek(f, 0, SEEK_SET)) {
-        fclose(f);
-        return NULL;
-    }
-    char *b = malloc((size_t)sz + 1);
-    if (!b) { fclose(f); return NULL; }
-    size_t got = fread(b, 1, (size_t)sz, f);
-    bool err = ferror(f) != 0;
-    fclose(f);
-    if (err || got != (size_t)sz) { free(b); return NULL; }
-    b[got] = 0;
-    *n = got;
-    return b;
-}
-
 static bool spill(const char *path, const void *data, size_t n) {
     FILE *f = plat_fopen(path, "wb");
     bool ok = f && fwrite(data, 1, n, f) == n && fflush(f) == 0;
@@ -103,7 +83,7 @@ static void put_str(sbuf *b, const char *s) {
 
 int bundle_export(const bundle_opts *o) {
     size_t rn = 0;
-    char *rec = slurp(o->receipt, &rn);
+    char *rec = plat_read_file(o->receipt, BUNDLE_MAX_FILE, &rn);
     if (!rec) {
         fprintf(stderr, "error: bundle: cannot read receipt %s\n", o->receipt);
         return 1;
@@ -163,13 +143,13 @@ int bundle_export(const bundle_opts *o) {
         goto out;
     }
     size_t sn = 0, pn = 0;
-    if (o->model_sig && !(sig = slurp(o->model_sig, &sn))) {
+    if (o->model_sig && !(sig = plat_read_file(o->model_sig, BUNDLE_MAX_FILE, &sn))) {
         fprintf(stderr, "error: bundle: cannot read %s\n", o->model_sig);
         goto out;
     }
     char key_fp[65] = "";
     if (o->model_pubkey) {
-        if (!(pub = slurp(o->model_pubkey, &pn)) ||
+        if (!(pub = plat_read_file(o->model_pubkey, BUNDLE_MAX_FILE, &pn)) ||
             !oms_pubkey_fingerprint(o->model_pubkey, key_fp)) {
             fprintf(stderr, "error: bundle: %s is not a readable PEM public "
                     "key\n", o->model_pubkey);
@@ -300,7 +280,7 @@ int bundle_check(const char *dir, const char *trust_hex) {
     char path[4096];
     join(path, sizeof path, dir, "bundle.json");
     size_t mn = 0;
-    char *man = slurp(path, &mn);
+    char *man = plat_read_file(path, BUNDLE_MAX_FILE, &mn);
     if (!man) {
         printf("UNVERIFIABLE: bundle %s: no readable bundle.json\n", dir);
         return 3;
@@ -355,7 +335,7 @@ int bundle_check(const char *dir, const char *trust_hex) {
     if (!plain_name(rname)) { rc = bad(dir, "no receipt file named", NULL); goto out; }
     join(path, sizeof path, dir, rname);
     size_t rn = 0;
-    if (!(rec = slurp(path, &rn))) { rc = bad(dir, "the receipt is unreadable", rname); goto out; }
+    if (!(rec = plat_read_file(path, BUNDLE_MAX_FILE, &rn))) { rc = bad(dir, "the receipt is unreadable", rname); goto out; }
     char chain[65];
     const char *mchain = jv_str(jv_get(mr, "chain_hash"), "");
     r = json_parse(rec, rn);
@@ -505,7 +485,7 @@ int pack_export(const pack_opts *o) {
         char path[4200];
         join(path, sizeof path, o->receipts_dir, names[i]);
         r[i].name = names[i];
-        if (!(r[i].bytes = slurp(path, &r[i].n)) ||
+        if (!(r[i].bytes = plat_read_file(path, BUNDLE_MAX_FILE, &r[i].n)) ||
             !(r[i].j = json_parse(r[i].bytes, r[i].n)) ||
             strcmp(jv_str(jv_get(r[i].j, "schema_version"), ""),
                    "xyntetik.runner.transcript.v1")) {
@@ -547,18 +527,18 @@ int pack_export(const pack_opts *o) {
     }
     size_t sn = 0, pn = 0, en = 0;
     char key_fp[65] = "", h_env[65] = "";
-    if (o->model_sig && !(sig = slurp(o->model_sig, &sn))) {
+    if (o->model_sig && !(sig = plat_read_file(o->model_sig, BUNDLE_MAX_FILE, &sn))) {
         fprintf(stderr, "error: pack: cannot read %s\n", o->model_sig);
         goto out;
     }
-    if (o->model_pubkey && (!(pub = slurp(o->model_pubkey, &pn)) ||
+    if (o->model_pubkey && (!(pub = plat_read_file(o->model_pubkey, BUNDLE_MAX_FILE, &pn)) ||
                             !oms_pubkey_fingerprint(o->model_pubkey, key_fp))) {
         fprintf(stderr, "error: pack: %s is not a readable PEM public key\n",
                 o->model_pubkey);
         goto out;
     }
     if (o->envelope) {
-        if (!(env = slurp(o->envelope, &en))) {
+        if (!(env = plat_read_file(o->envelope, BUNDLE_MAX_FILE, &en))) {
             fprintf(stderr, "error: pack: cannot read %s\n", o->envelope);
             goto out;
         }
@@ -583,7 +563,7 @@ int pack_export(const pack_opts *o) {
                 fprintf(stderr, "error: pack: two attachments are named %s\n", bn);
                 goto out;
             }
-        if (!(att[a] = slurp(o->attach[a], &attn[a]))) {
+        if (!(att[a] = plat_read_file(o->attach[a], BUNDLE_MAX_FILE, &attn[a]))) {
             fprintf(stderr, "error: pack: cannot read %s\n", o->attach[a]);
             goto out;
         }
@@ -775,7 +755,7 @@ int pack_check(const char *dir, const char *trust_hex) {
     char path[4200];
     join(path, sizeof path, dir, "pack.json");
     size_t mn = 0;
-    char *man = slurp(path, &mn);
+    char *man = plat_read_file(path, BUNDLE_MAX_FILE, &mn);
     if (!man) {
         printf("UNVERIFIABLE: pack %s: no readable pack.json\n", dir);
         return 3;
@@ -860,7 +840,7 @@ int pack_check(const char *dir, const char *trust_hex) {
         char fp[4200];
         join(fp, sizeof fp, dir, name);
         size_t rn = 0;
-        char *rec = slurp(fp, &rn);
+        char *rec = plat_read_file(fp, BUNDLE_MAX_FILE, &rn);
         jv *rj = rec ? json_parse(rec, rn) : NULL;
         char h[65], pk[SIGN_PUBHEX_CAP] = "", kfp[65] = "";
         const char *why = NULL;
