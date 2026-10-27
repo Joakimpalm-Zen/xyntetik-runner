@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Tier 1 follows pull.** The actively validated list held 27 files, a
+  maintenance promise sized to the proof thesis rather than to use. It now
+  holds the project's own published files whose repository shows at least
+  1,000 downloads on the Hub in the last 30 days, read at each release and
+  written into the row's transition: 8 files today (Xyntetik-Kvist-14B,
+  the Qwen3.8-27B GSQ-RCO recovery with its MTP head, the Flash-Next pair).
+  The other 19 move to Tier 2, maintained on report, with their records
+  kept as dated evidence and their transition stating the count or that the
+  file is its publisher's. Nothing stops loading, and no published file is
+  withdrawn. The Clef IQ3_S recovery repository
+  (`Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF`: the base and two
+  adapters, below the house bar as its card states) is admitted at Tier 2.
+
 - **One rendered table: the Hugging Face cards and the site link to the
   README's model list instead of re-rendering it.** Each published file's
   card now carries one sentence and a link per file to its row in
