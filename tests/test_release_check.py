@@ -124,7 +124,7 @@ def tier_roster(tmp_path, gated_on="2026-10-22", version="1.5.0"):
     return path
 
 
-def device_ledger(tmp_path, days_ago=1, result="pass"):
+def device_ledger(tmp_path, days_ago=1, result="pass", ownership=None):
     """A ledger with one class, verified `days_ago` days ago.
 
     The real one lives in docs/ and describes real hardware; a test that read
@@ -141,6 +141,7 @@ def device_ledger(tmp_path, days_ago=1, result="pass"):
         "classes": [{
             "id": "test-class",
             "max_age_days": 45,
+            **({"ownership": ownership} if ownership else {}),
             "last_verified": {"date": when.isoformat(), "commit": "abc123",
                               "ran": "make test", "result": result},
         }],
@@ -580,6 +581,28 @@ def test_release_check_refuses_a_missing_device_ledger(monkeypatch, tmp_path):
     args = good_args(tmp_path)
     args.device_evidence = tmp_path / "gone.json"
     assert check_release.check(args) is False
+
+
+@needs_git_checkout
+def test_release_check_accepts_stale_evidence_on_borrowed_hardware(monkeypatch, tmp_path):
+    """Owner decision 2026-10-27: a lent machine may be used, never depended
+    on, so its age cannot hold a release; a failure on it still does."""
+    _pinned(monkeypatch)
+    args = good_args(tmp_path)
+    args.device_evidence = device_ledger(tmp_path, days_ago=200, ownership="borrowed")
+    assert check_release.check(args) is True
+    args.device_evidence = device_ledger(tmp_path, days_ago=1, result="fail",
+                                         ownership="borrowed")
+    assert check_release.check(args) is False
+
+
+@needs_git_checkout
+def test_release_check_accepts_a_stale_tier1_row_on_borrowed_hardware(monkeypatch, tmp_path):
+    _pinned(monkeypatch)
+    args = good_args(tmp_path)
+    args.device_evidence = device_ledger(tmp_path, days_ago=1, ownership="borrowed")
+    args.model_tiers = tier_roster(tmp_path, gated_on="2026-08-01")
+    assert check_release.check(args) is True
 
 
 @needs_git_checkout

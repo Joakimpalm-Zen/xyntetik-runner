@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The release gate no longer depends on borrowed hardware.** Each device
+  class in `docs/device-evidence.json` now says whose machine it is
+  (`ownership`: owned or borrowed; absent means owned). A borrowed class
+  (lent with no terms, usable while it is there, never depended on) is
+  reported by both gates like any other, but a missing or old record on it
+  never refuses a tag; a recorded failure on it still does, because a
+  failure is a fact about the engine. The Linux CUDA host is marked
+  borrowed. The README's model list and the site's table show a gate
+  recorded on borrowed hardware with a superscript b, and
+  [docs/model-support.md](docs/model-support.md) names it on the row. The
+  Hugging Face cards do not change.
+
 - **`--train-gpu`: the attention backward runs on the GPU, and every
   model's adapter changes bytes again.** The score and softmax adjoint of
   every attention layer ran on the CPU beside the device's products. Three

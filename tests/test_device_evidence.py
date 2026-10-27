@@ -25,16 +25,19 @@ spec.loader.exec_module(de)
 TODAY = datetime.date(2026, 9, 7)
 
 
-def ledger(tmp_path, **row):
+def ledger(tmp_path, ownership=None, **row):
+    cls = {
+        "id": "box",
+        "max_age_days": 30,
+        "expect": {"os": "windows", "gpu_backend": "cuda"},
+        "last_verified": row or None,
+    }
+    if ownership:
+        cls["ownership"] = ownership
     doc = {
         "schema": de.SCHEMA,
         "policy": {"default_max_age_days": 45},
-        "classes": [{
-            "id": "box",
-            "max_age_days": 30,
-            "expect": {"os": "windows", "gpu_backend": "cuda"},
-            "last_verified": row or None,
-        }],
+        "classes": [cls],
     }
     p = tmp_path / "ledger.json"
     p.write_text(json.dumps(doc) + "\n", encoding="utf-8")
@@ -71,6 +74,38 @@ def test_a_failing_run_is_not_coverage(tmp_path):
 def test_a_class_with_no_evidence_is_refused(tmp_path):
     doc = de.load(ledger(tmp_path))
     assert de.check(doc, TODAY) == ["box"]
+
+
+# Borrowed hardware (owner decision 2026-10-27): a machine lent with no
+# terms may be used and must not be depended on, so its age cannot hold a
+# release. A failure recorded on it is still a failure of the engine.
+
+def test_a_stale_borrowed_class_is_reported_but_does_not_refuse(tmp_path, capsys):
+    doc = de.load(ledger(tmp_path, ownership="borrowed", **fresh(31)))
+    assert de.check(doc, TODAY) == []
+    out = capsys.readouterr().out
+    assert out.startswith("STALE") and "borrowed hardware" in out
+
+
+def test_a_borrowed_class_with_no_evidence_does_not_refuse(tmp_path):
+    doc = de.load(ledger(tmp_path, ownership="borrowed"))
+    assert de.check(doc, TODAY) == []
+
+
+def test_a_failure_on_a_borrowed_class_still_refuses(tmp_path):
+    doc = de.load(ledger(tmp_path, ownership="borrowed", **fresh(1, result="fail")))
+    assert de.check(doc, TODAY) == ["box"]
+
+
+def test_an_owned_class_is_the_default(tmp_path):
+    """The field can only loosen the gate on purpose, never by omission."""
+    assert de.ownership({"id": "x"}) == "owned"
+    assert de.check(de.load(ledger(tmp_path, ownership="owned", **fresh(31))), TODAY) == ["box"]
+
+
+def test_an_unknown_ownership_is_refused(tmp_path):
+    with pytest.raises(SystemExit, match="ownership"):
+        de.check(de.load(ledger(tmp_path, ownership="rented", **fresh(1))), TODAY)
 
 
 def test_the_check_prints_every_class_not_only_the_bad_ones(tmp_path, capsys):

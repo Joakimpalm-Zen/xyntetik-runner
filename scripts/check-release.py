@@ -360,9 +360,10 @@ def check(args):
     # suite runs on hosted machines with no GPU; nothing there can say when a
     # claimed device last ran the gates, and nothing was watching when the
     # Windows suite went nineteen days and eight failures. This refuses a tag
-    # while a class the README claims is stale, failing, or has never been
-    # recorded — the same refusal shape as the README/site parity check, for
-    # the same reason: a claim nobody re-verifies decays into a wrong one.
+    # while an owned class the README claims is stale, failing, or has never
+    # been recorded, the same refusal shape as the README/site parity check,
+    # for the same reason: a claim nobody re-verifies decays into a wrong one.
+    # A borrowed class is reported too; only a recorded failure on it refuses.
     if args.device_evidence:
         if not args.device_evidence.exists():
             ok &= fail(f"device evidence ledger {args.device_evidence} does not "
@@ -383,7 +384,9 @@ def check(args):
     # because a path-to-file map would be a second hand-kept list and a
     # maximum age needs nothing but the cell's own date. A row never gated,
     # gated on another class, failing on any backend or past its age
-    # refuses the tag.
+    # refuses the tag, except that a missing or old record on borrowed
+    # hardware (ownership in the device ledger) never does: the project
+    # may use a lent machine and must not depend on it (2026-10-27).
     tiers = getattr(args, "model_tiers", None)
     if tiers:
         if not tiers.exists():

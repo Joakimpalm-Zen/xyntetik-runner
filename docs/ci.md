@@ -136,8 +136,11 @@ they are not substitutes for the existing targets.
 Hosted runners have no GPU. The device classes the README claims are
 verified on lab machines and recorded in `docs/device-evidence.json` by
 `scripts/device-evidence.py --record` from the runner's own `--caps` output;
-`scripts/check-release.py` refuses a tag while any class is stale, failing or
-never recorded (`docs/compatibility-program.md`). `scripts/cuda-gate.sh`
+`scripts/check-release.py` refuses a tag while any owned class is stale,
+failing or never recorded (`docs/compatibility-program.md`); a class the
+ledger marks borrowed (lent with no terms) is reported the same way, and only
+a recorded failure on it refuses, because the project may use a lent machine
+and must not depend on one. `scripts/cuda-gate.sh`
 is the CUDA gate a lab box runs from a fresh build, and
 `scripts/check-ptx-source.py` compares regenerated PTX against the committed
 header with the pinned nvcc; both are run by hand on the box and their
