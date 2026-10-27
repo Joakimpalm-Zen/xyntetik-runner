@@ -159,7 +159,7 @@ def render_sheet(runner: str, *, version: str = "", readme: Path | None = None,
         lines.append("Full documentation:")
     lines += [f"{README_URL} and {SITE_URL}.", ""]
     if facts:
-        lines += ["## This machine (from `runner --caps`)", ""]
+        lines += ["## This machine (from `runner --info caps`)", ""]
         ram = facts.get("ram_bytes")
         if isinstance(ram, (int, float)):
             lines.append(f"- RAM: {ram / 2**30:.0f} GiB; CPU cores: {facts.get('cpu_cores', '?')}; "
@@ -175,7 +175,7 @@ def render_sheet(runner: str, *, version: str = "", readme: Path | None = None,
                      f"Manual section: \"{c.readme_section}\".")
     lines += ["", "## How to use it from here", "",
               "- Serve a model: `runner --serve -m MODEL.gguf` (OpenAI-compatible on http://127.0.0.1:8080).",
-              "- Check a model fits first: `runner --fit MODEL.gguf`.",
+              "- Check a model fits first: `runner -m MODEL.gguf --info fit`.",
               "- Ask the ledger what the local model has proven and offload where it has: `/shadow`.",
               ""]
     return "\n".join(lines)
