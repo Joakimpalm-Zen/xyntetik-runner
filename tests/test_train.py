@@ -236,6 +236,9 @@ def test_train_gpu_matches_cpu_within_rounding(runner_bin, base, tmp_path, famil
     dn = rec["products"]["deltanet_device_calls"]
     assert (dn > 0) == (family in ("qwen35", "clef")), (family, rec["products"])
     assert rec["products"]["deltanet_failed_calls"] == 0, rec["products"]
+    # every family has attention layers, and their backward ran on the device
+    assert rec["products"]["attention_device_calls"] > 0, (family, rec["products"])
+    assert rec["products"]["attention_failed_calls"] == 0, rec["products"]
 
 
 # Which weights the device holds decides a --train-gpu adapter's bits (a

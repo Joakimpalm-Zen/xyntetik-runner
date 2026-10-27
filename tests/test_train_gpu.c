@@ -20,6 +20,7 @@
 // Skips (not passes) without a CUDA device. Prints each type's throughput.
 #include "runner.h"
 #include "dn_ref.h"
+#include "attn_ref.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -305,6 +306,45 @@ static void dn_check(model_t *m, int nh, int ng, int hv, int T) {
     dn_ref_free(&r);
 }
 
+// The attention backward on the device (gpu_train_attn_bw) against the
+// double-precision reference (tests/attn_ref.h, the CPU test's too): dq, dk,
+// dv within 2^-12 of each one's largest magnitude and bit for bit the same
+// on a second run, at GQA, a sliding window, a window past one block of
+// TAB_TB positions and head widths 64 and 256.
+static void ab_check(model_t *m, int T, int H, int kv_mul, int hd, int swa) {
+    ab_shape s = ab_shape_of(T, H, kv_mul, hd, swa);
+    size_t row = (size_t)s.kv_dim * 2, nq = (size_t)T * s.q_dim, nk = (size_t)T * s.kv_dim;
+    uint8_t *kc = malloc(row * T), *vc = malloc(row * T);
+    float *q = malloc(sizeof(float) * nq), *dao = malloc(sizeof(float) * nq);
+    float *o[2][3];
+    size_t on[3] = { nq, nk, nk };
+    for (int r = 0; r < 2; r++)
+        for (int i = 0; i < 3; i++) o[r][i] = calloc(on[i], sizeof(float));
+    double *ref[3];
+    for (int i = 0; i < 3; i++) ref[i] = calloc(on[i], sizeof(double));
+    ab_ref_fill(&s, 0x2545F4914F6CDD1Dull ^ (uint64_t)(T * 31 + hd), kc, vc, q, dao);
+    float scale = 1.0f / sqrtf((float)hd);
+    ab_ref_run(&s, scale, kc, vc, q, dao, ref[0], ref[1], ref[2]);
+    tab_args a = { T, H, kv_mul, hd, s.q_dim, s.kv_dim, swa, row, row, scale };
+    bool ok = true;
+    for (int r = 0; ok && r < 2; r++)
+        ok = gpu_train_attn_bw(m, &a, kc, vc, q, dao, o[r][0], o[r][1], o[r][2]);
+    CHECK(ok, "attn hd %d: the device declined", hd);
+    static const char *const NAMES[3] = { "dq", "dk", "dv" };
+    for (int i = 0; ok && i < 3; i++) {
+        double rel = ab_ref_rel(o[0][i], ref[i], on[i]);
+        CHECK(rel <= 1.0 / 4096, "attn T %d hd %d swa %d: %s off by %.3g of its "
+              "largest magnitude", T, hd, swa, NAMES[i], rel);
+        CHECK(!memcmp(o[0][i], o[1][i], sizeof(float) * on[i]),
+              "attn hd %d: %s differs between two runs", hd, NAMES[i]);
+    }
+    printf("attn T %d H %d kv_mul %d hd %d swa %d: %s\n", T, H, kv_mul, hd, swa,
+           ok ? "checked" : "declined");
+    for (int r = 0; r < 2; r++) for (int i = 0; i < 3; i++) free(o[r][i]);
+    for (int i = 0; i < 3; i++) free(ref[i]);
+    free(kc); free(vc); free(q); free(dao);
+}
+
 int main(void) {
     f16_init();
     model_t m;
@@ -493,6 +533,9 @@ int main(void) {
         }
         free(bx); free(by);
     }
+    ab_check(&m, 77, 4, 2, 64, 0);
+    ab_check(&m, 150, 8, 4, 64, 0);
+    ab_check(&m, 90, 4, 1, 256, 24);
     dn_check(&m, 4, 2, 128, 77);
     dn_check(&m, 3, 3, 64, 40);
     dn_check(&m, 4, 2, 40, 33);

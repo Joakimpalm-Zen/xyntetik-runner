@@ -144,7 +144,11 @@ and must not depend on one. `scripts/cuda-gate.sh`
 is the CUDA gate a lab box runs from a fresh build, and
 `scripts/check-ptx-source.py` compares regenerated PTX against the committed
 header with the pinned nvcc; both are run by hand on the box and their
-records committed. There is no hosted or self-hosted device workflow.
+records committed. There is no hosted or self-hosted device workflow. The
+PTX itself needs no device: the `ptx-reproducible` workflow builds the pinned
+toolchain from `tools/ptx-toolchain/ptx-linux-64.lock` on a hosted runner,
+regenerates both headers with `tools/ptx-toolchain/make-ptx.sh` and fails on
+any byte difference from the committed ones.
 `scripts/cuda-gate.sh BUILD_DIR [OUT_DIR]` reads its settings
 (`GATE_MODEL`, `GATE_PYTHON`, `RUNNER_LLAMA_CPP_BIN` and the others its
 header lists) from the environment and from `cuda-gate.env` beside the

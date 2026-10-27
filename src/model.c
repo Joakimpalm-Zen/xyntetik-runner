@@ -9996,7 +9996,12 @@ NUM_STAGE void lbw_attention(model_t *m, int l, int T, float *dx, lbw_state *s, 
     // is exactly the serial sweep's order restricted to that slice, so the
     // bytes cannot depend on the thread count. Reads K/V from the cache
     // (the f16-rounded values the forward attended over).
-    if (ok) {
+    // R8.20: under --train-gpu on the device (within rounding of this one;
+    // the CPU runs it when the device call fails, noted once)
+    tab_args ta = { T, n_head, kv_mul, hd, q_dim, kv_dim, swa,
+                    (unsigned long long)k_row_b, (unsigned long long)v_row_b, scale };
+    if (ok && !(t_mv_dev == m &&
+                gpu_train_attn_bw(m, &ta, kc_l, vc_l, q, dao, dq, dk, dv))) {
         attn_bw_job aj = { kc_l, vc_l, q, dao, dq, dk, dv, T, n_head,
                            kv_mul, hd, q_dim, kv_dim, k_row_b, v_row_b, scale, swa };
         ok = attn_bw_run(m->tp, &aj);

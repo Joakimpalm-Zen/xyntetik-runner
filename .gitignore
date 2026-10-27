@@ -149,6 +149,8 @@ test-mvt-chains
 test-mvt-chains.exe
 test-dn-recurrence
 test-dn-recurrence.exe
+test-attn-bw
+test-attn-bw.exe
 # per-PID scratch registries left by tests/test_vram_registry.c
 vramreg-test-*/
 # the cross-process VRAM ledger, when plat_runtime_dir() resolves to "." —
@@ -340,3 +342,4 @@ evals/tooluse-shifted/results/*.json
 tests/compatibility/out/**
 !tests/compatibility/out/README.md
 tests/conformance/out-sanitized/
+.ptx-toolchain/
