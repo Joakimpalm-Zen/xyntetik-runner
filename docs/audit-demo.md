@@ -12,9 +12,9 @@ scripts/audit-demo.sh path/to/model.gguf # or any local GGUF
 
 ## What it does
 
-1. `--keygen` makes an Ed25519 signing key and prints its public half.
+1. `runner attest keygen` makes an Ed25519 signing key and prints its public half.
 2. The model writes 1,000 tokens at temperature 0.8, seed 42, with
-   `--transcript run.json --sign-key key.json`. The record holds the model's
+   `--record run.json --sign-key key.json`. The record holds the model's
    and the binary's sha256, the profile and settings, the seed, the prompt
    and output token ids and bytes, a chain hash over all of it and a
    signature over the chain.

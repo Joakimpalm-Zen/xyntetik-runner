@@ -135,7 +135,7 @@ they are not substitutes for the existing targets.
 
 Hosted runners have no GPU. The device classes the README claims are
 verified on lab machines and recorded in `docs/device-evidence.json` by
-`scripts/device-evidence.py --record` from the runner's own `--caps` output;
+`scripts/device-evidence.py --record` from the runner's own `--info caps` output;
 `scripts/check-release.py` refuses a tag while any owned class is stale,
 failing or never recorded (`docs/compatibility-program.md`); a class the
 ledger marks borrowed (lent with no terms) is reported the same way, and only

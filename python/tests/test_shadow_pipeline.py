@@ -496,7 +496,7 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     # the harnesses are told Runner is here and what it can do, in their own instruction files
     sheet = home / ".xyntetik" / "shadow" / "runner-capabilities.md"
     assert sheet.is_file() and "OpenAI-compatible" in sheet.read_text(encoding="utf-8")
-    assert "`--fit`" in sheet.read_text(encoding="utf-8") and "runner --help" in sheet.read_text(encoding="utf-8")
+    assert "--info fit`" in sheet.read_text(encoding="utf-8") and "runner --help" in sheet.read_text(encoding="utf-8")
     claude_md = home / ".claude" / "CLAUDE.md"
     agents_md = home / ".codex" / "AGENTS.md"
     for note, cmd in ((claude_md, "/shadow"), (agents_md, "the shadow prompt")):

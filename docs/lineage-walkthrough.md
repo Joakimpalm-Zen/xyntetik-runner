@@ -17,7 +17,7 @@ The chain:
 7. ask, at the end, where an answer came from.
 
 Every step writes a record beside its output, every record names its inputs by
-sha256, and a signing key signs each record. `--lineage` then walks any file, or
+sha256, and a signing key signs each record. `runner attest lineage` then walks any file, or
 any served answer, back to its origins.
 
 **What "prove" means here.** These records prove *what ran and on which bytes*:
@@ -28,7 +28,7 @@ measured, against what, with which thresholds.
 ## 1. A signing key
 
 ```text
-$ ./runner --keygen keys/sign.json
+$ ./runner attest keygen keys/sign.json
 signing key -> keys/sign.json (keep it private; the ed25519 public key is f7142ff28869958f701008b28e9aafda4b19ba3c22d62ec589ebcd09f8576c5e)
 {"schema_version":"xyntetik.runner.signkey.v1","algo":"ed25519","public_key":"f7142ff28869958f701008b28e9aafda4b19ba3c22d62ec589ebcd09f8576c5e"}
 ```
@@ -47,7 +47,7 @@ $ sha256sum models/qwen3-0.6b-bf16.gguf
 ```
 
 ```text
-$ ./runner -m models/qwen3-0.6b-bf16.gguf --quantize models/qwen3-0.6b-q8_0.gguf --quant q8_0 --sign-key keys/sign.json
+$ ./runner -m models/qwen3-0.6b-bf16.gguf --rewrite models/qwen3-0.6b-q8_0.gguf --quant q8_0 --sign-key keys/sign.json
 quantize: general.file_type 7 (MOSTLY_Q8_0) — output histogram: F32:113 Q8_0:198
 quantize: models/qwen3-0.6b-bf16.gguf -> models/qwen3-0.6b-q8_0.gguf (Q8_0): 198 tensors converted, 113 kept
 quantize: provenance -> models/qwen3-0.6b-q8_0.gguf.quant.json
@@ -59,7 +59,7 @@ signature.
 
 ## 3. Train a LoRA on the quantized file
 
-Eight prompt and completion pairs, in the format `--train` reads:
+Eight prompt and completion pairs, in the format `runner train` reads:
 
 ```text
 $ head -2 data/capitals.jsonl
@@ -68,7 +68,7 @@ $ head -2 data/capitals.jsonl
 ```
 
 ```text
-$ ./runner -m models/qwen3-0.6b-q8_0.gguf --train data/capitals.jsonl --train-steps 20 --lora-rank 8 --train-out adapters/capitals.gguf --sign-key keys/sign.json -t 8
+$ ./runner train data/capitals.jsonl -m models/qwen3-0.6b-q8_0.gguf --steps 20 --lora-rank 8 --out adapters/capitals.gguf --sign-key keys/sign.json -t 8
 loaded models/qwen3-0.6b-q8_0.gguf | qwen3 | 28 layers | ctx 4096 | 8 threads | 0.02s
 sampling: qwen3 (temp 0.60, top_p 0.95, top_k 20, min_p 0.00, repeat_penalty 1.00)
 sampling: from the file (general.sampling.*): temp 0.60, top_p 0.95, top_k 20
@@ -95,7 +95,7 @@ measures how much of the adapter's change the output kept, and refuses a merge
 that keeps under half of it. Here is a Q8_0 base merged back into Q8_0:
 
 ```text
-$ ./runner -m models/qwen3-0.6b-q8_0.gguf --lora adapters/capitals.gguf --merge-lora models/qwen3-0.6b-capitals-q8_0.gguf --quant q8_0 --sign-key keys/sign.json
+$ ./runner -m models/qwen3-0.6b-q8_0.gguf --lora adapters/capitals.gguf --rewrite models/qwen3-0.6b-capitals-q8_0.gguf --merge-lora --quant q8_0 --sign-key keys/sign.json
 quantize: general.file_type 7 (MOSTLY_Q8_0) — output histogram: F32:113 Q8_0:198
 error: the merge kept 18.2% of the adapter's delta (3.34% of the adapted bytes differ from the base written alone at the same type), under the 50% floor: the output grid rounded the fine-tune away, so models/qwen3-0.6b-capitals-q8_0.gguf would behave like the base. Merge into a type wider than the base's own (--quant f16 keeps the delta as computed; q8_0 is enough only over a narrower base, such as a 4-bit one), serve base + --lora, or pass --merge-allow-erased to write it anyway (destination left untouched)
 ```
@@ -112,7 +112,7 @@ written back onto the grid the base already sits on, most of the change
 rounds away. Nothing was installed, and the next merge goes to F16:
 
 ```text
-$ ./runner -m models/qwen3-0.6b-q8_0.gguf --lora adapters/capitals.gguf --merge-lora models/qwen3-0.6b-capitals-f16.gguf --quant f16 --sign-key keys/sign.json
+$ ./runner -m models/qwen3-0.6b-q8_0.gguf --lora adapters/capitals.gguf --rewrite models/qwen3-0.6b-capitals-f16.gguf --merge-lora --quant f16 --sign-key keys/sign.json
 quantize: general.file_type 1 (MOSTLY_F16) — output histogram: F32:113 F16:198
 quantize: models/qwen3-0.6b-q8_0.gguf -> models/qwen3-0.6b-capitals-f16.gguf (F16): 198 tensors converted, 113 kept
 merge: 196 adapted projections folded into the weights
@@ -176,7 +176,7 @@ error: --require-eval fidelity: no fidelity evaluation beside the model (models/
 ## 6. Walk the chain from the file
 
 ```text
-$ ./runner --lineage models/qwen3-0.6b-capitals-f16.gguf --trust-key f7142ff28869958f701008b28e9aafda4b19ba3c22d62ec589ebcd09f8576c5e
+$ ./runner attest lineage models/qwen3-0.6b-capitals-f16.gguf --trust-key f7142ff28869958f701008b28e9aafda4b19ba3c22d62ec589ebcd09f8576c5e
 lineage of models/qwen3-0.6b-capitals-f16.gguf (sha256 650b712bdf98)
   merge -> models/qwen3-0.6b-capitals-f16.gguf sha256 650b712bdf98  VERIFIED (signed f7142ff28869958f...)  [runner 1.2.0, record qwen3-0.6b-capitals-f16.gguf.merge.json]
     base: models/qwen3-0.6b-q8_0.gguf sha256 2f588d123645
@@ -204,11 +204,11 @@ means broken.
 
 ## 7. Walk the chain from an answer
 
-Served with `--receipts`, every answer leaves a signed receipt that names the
+Served with `--record`, every answer leaves a signed receipt that names the
 model file by sha256 and links its record:
 
 ```text
-$ ./runner -m models/qwen3-0.6b-capitals-f16.gguf --serve --receipts receipts --sign-key keys/sign.json
+$ ./runner -m models/qwen3-0.6b-capitals-f16.gguf --serve --record receipts --sign-key keys/sign.json
 ```
 
 Two questions, sent to `/v1/completions` as `Q: ...\nA:`. The merged model
@@ -221,7 +221,7 @@ receipt-0000000002.json
 ```
 
 ```text
-$ ./runner --lineage receipts --trust-key f7142ff28869958f701008b28e9aafda4b19ba3c22d62ec589ebcd09f8576c5e
+$ ./runner attest lineage receipts --trust-key f7142ff28869958f701008b28e9aafda4b19ba3c22d62ec589ebcd09f8576c5e
 lineage of the receipts in receipts: 2 answers
   receipts: 2 signed, 0 unsigned, 0 bad; chain continuous
   timeline: v1 x2
@@ -250,7 +250,7 @@ chain's continuity and each receipt's signature checked first.
 A copy of the files with one byte of the adapter flipped:
 
 ```text
-$ ./runner --lineage models/qwen3-0.6b-capitals-f16.gguf --trust-key f7142ff28869958f701008b28e9aafda4b19ba3c22d62ec589ebcd09f8576c5e
+$ ./runner attest lineage models/qwen3-0.6b-capitals-f16.gguf --trust-key f7142ff28869958f701008b28e9aafda4b19ba3c22d62ec589ebcd09f8576c5e
 lineage of models/qwen3-0.6b-capitals-f16.gguf (sha256 650b712bdf98)
   merge -> models/qwen3-0.6b-capitals-f16.gguf sha256 650b712bdf98  VERIFIED (signed f7142ff28869958f...)  [runner 1.2.0, record qwen3-0.6b-capitals-f16.gguf.merge.json]
     base: models/qwen3-0.6b-q8_0.gguf sha256 2f588d123645
@@ -272,9 +272,9 @@ The walk names the step whose file no longer matches its record, and exits 2.
 ## Reference
 
 The flags and record formats are in the manual:
-- [`--lineage`](../MANUAL.md#command-line-reference), `--sign-key`, `--trust-key`, `--keygen`;
+- [`runner attest lineage`](../MANUAL.md#command-line-reference), `--sign-key`, `--trust-key`, `runner attest keygen`;
 - [`--merge-lora`](../MANUAL.md#cli-merge-lora) and what a merge keeps;
-- [`--train`](../MANUAL.md#cli-train);
+- [`runner train`](../MANUAL.md#cli-train);
 - `--require-eval` and `scripts/eval-record.py`.
 
 Training on quantized files is in

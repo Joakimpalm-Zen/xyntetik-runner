@@ -1,4 +1,4 @@
-# Context-grounded drafts: `--draft-lookup`
+# Context-grounded drafts: `--draft lookup`
 
 Measured 2026-09-04 on an Apple M1 (8 physical cores, 8 GB, macOS 26.6.1),
 CPU path, runner 0.4.7 plus this change, greedy, `-c 2048`, default threads
@@ -10,7 +10,7 @@ tables. The negative rows stay.
 ## What it is
 
 The fourth draft source of the speculative walk, after the draft model
-(`--draft`), the target's own MTP head (`--mtp`) and grammar fast-forward.
+(`--draft`), the target's own MTP head (`--draft mtp`) and grammar fast-forward.
 It needs no weights and no draft forward. Each round the engine takes the
 last n tokens of the context (prompt plus everything generated so far, the
 pending token included), n from 5 down to 3, longest match first, finds the
@@ -28,8 +28,8 @@ the source's wording, small code edits, tool results echoed back into the
 reply. Where it costs is a compute-bound decode with drafts that get
 rejected, because each proposal is one more column of the verify batch.
 
-Composition: one draft source per run. `--draft-lookup` beside `--draft` or
-`--mtp` is refused at startup, not silently ignored. Grammar fast-forward
+Composition: one draft source per run. `--draft lookup` beside `--draft` or
+`--draft mtp` is refused at startup, not silently ignored. Grammar fast-forward
 still preempts it under an active constraint, as it does the other sources.
 
 ## Gate 1, identity (anchor)
@@ -38,7 +38,7 @@ still preempts it under an active constraint, as it does the other sources.
 greedy bytes equal to the undrafted run at `--draft-k` 1 and 4 on a
 repeating prompt (the lookup drafted every round), a prompt with no repeats
 (it drafted nothing) and a multi-turn chat that echoes a tool result;
-seeded-sampling token ids (`--transcript`, seed 11, temperature 0.9,
+seeded-sampling token ids (`--record`, seed 11, temperature 0.9,
 40 tokens with `--ignore-eos`) equal on the repeating and tool-echo prompts.
 On SmolLM2-135M-Instruct Q8_0 (skipped when the file is absent): a sentence
 seen three times is continued byte-identically with 35 of 40 drafts accepted,
@@ -101,7 +101,7 @@ model's chat shape, 128 tokens requested, greedy, `--draft-k 4`.
 
 ### granite-4.1-3b Q8_0: not measurable on this machine today
 
-The brief named this model. `runner --fit` on the day:
+The brief named this model. `runner --info fit` on the day:
 
 ```
   weights       3.37 GiB
@@ -155,7 +155,7 @@ overhead-bound (a 145 MB weight pass at 100+ tok/s is far under the M1's
 bandwidth), so a 5-row verify is not free, and the summary and code-edit
 rows land at parity despite 80% acceptance on the edit. TinyLlama at Q2_K is
 compute-bound in the dequant (11 to 17 tok/s for 1.1B parameters), which is
-the regime `docs/performance.md` already records for `--mtp` on a 4-core
+the regime `docs/performance.md` already records for `--draft mtp` on a 4-core
 AVX2 desktop: every added column costs close to a full forward, and even
 92% acceptance on the repeat row buys only 1.07x while every other row loses
 7 to 16%. These are the negative results and they stay: on a compute-bound
@@ -190,13 +190,13 @@ A harness often knows text the model is about to write that is not in the
 prompt: the file it asked to have quoted back, the next step of a plan, a
 tool result it will restate. `draft_hints`, an array of up to 16 strings
 (256 KiB in total) on any generation request to a server started with
-`--draft-lookup`, hands that text to the same verify walk. Each round the
+`--draft lookup`, hands that text to the same verify walk. Each round the
 context is searched first; on a miss the last n context tokens are searched
 for in the hints (the same n from 5 down to 3, never across two hints) and
 what follows the first occurrence is proposed. The walk decides every token,
 so a hint that turns out wrong costs verify columns and never changes the
 output; the request is refused with 400 where the hints could not be used
-(no `--draft-lookup`), not ignored.
+(no `--draft lookup`), not ignored.
 
 `runner_telemetry.speculation` gains `hint_drafted` and `hint_accepted` on a
 request that sent hints, counted inside `lookup_drafted` and

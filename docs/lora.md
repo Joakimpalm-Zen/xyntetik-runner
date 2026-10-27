@@ -46,20 +46,20 @@ the design, numerical contracts and gates are in
 
 | Feature | What it does for you | How |
 | --- | --- | --- |
-| Admission check | Says whether this model can serve and train an adapter, and why not | `--adapt-info` |
-| Train from text | Fits an adapter to a plain-text corpus | `--train corpus.txt` |
-| Train from prompt and completion pairs | Learns the completions only; the prompt is context | `--train data.jsonl` |
+| Admission check | Says whether this model can serve and train an adapter, and why not | `--info adapter` |
+| Train from text | Fits an adapter to a plain-text corpus | `runner train corpus.txt` |
+| Train from prompt and completion pairs | Learns the completions only; the prompt is context | `runner train data.jsonl` |
 | Weighted examples | Weights each example, negative weights included | `"weight"` on a line |
 | Train on token ids | Trains on exact token ids, with no re-tokenization | `"prompt_tokens"`, `"completion_tokens"` |
-| Teach the model to stop | Adds the end-of-turn token as a target | `--train-eot`, `"end_of_turn"` |
+| Teach the model to stop | Adds the end-of-turn token as a target | `--eot`, `"end_of_turn"` |
 | Memorization warnings | Warns before the first step when the data is likely to be memorized | automatic |
 | Checkpoints | Writes the adapter every N steps | `--save-every N` |
-| Continue an adapter | Trains an existing adapter further, and records which one | `--train` with `--lora` |
+| Continue an adapter | Trains an existing adapter further, and records which one | `runner train` with `--lora` |
 | CUDA training assist | Runs the backward's largest products on an NVIDIA GPU, same bytes | `RUNNER_TRAIN_GPU=1` |
 | GPU training | Runs every weight product of a step on an NVIDIA GPU, within rounding of a CPU run | `--train-gpu` |
-| Trainer logprobs | Reports the logprob of every target token each step trains on | `--train-logprobs FILE` |
-| Preference training | DPO from chosen and rejected answers, with no second model copy | `--train-dpo`, `--dpo-beta` |
-| Distillation | Fits the adapter to a teacher's distributions instead of a text, to bring a quantized file back toward its parent | `--train-teacher`, `scripts/kd-teacher.py` |
+| Trainer logprobs | Reports the logprob of every target token each step trains on | `--logprobs FILE` |
+| Preference training | DPO from chosen and rejected answers, with no second model copy | `runner train --dpo`, `--dpo-beta` |
+| Distillation | Fits the adapter to a teacher's distributions instead of a text, to bring a quantized file back toward its parent | `--teacher`, `scripts/kd-teacher.py` |
 | Reinforcement loop | Samples, scores and trains in rounds, checking that sampler and trainer agree bit for bit | `scripts/train-grpo-lite.py` |
 | Evaluate | Teacher-forced logprobs, perplexity and top-1 rate, with or without the adapter | `--score` |
 | Serve one adapter | Applies the adapter on the CPU, CUDA or Metal | `--lora`, `--lora-scale` |
@@ -67,9 +67,9 @@ the design, numerical contracts and gates are in
 | Merge | Folds the adapter into a standalone GGUF, and refuses a merge that would erase it | `--merge-lora`, `--quant`, `--merge-allow-erased` |
 | Provenance records | Records the base, data, starting adapter, settings and build of every run | `.train.json`, `.merge.json` |
 | Sign records | Signs a training or merge record in place | `--sign-key` |
-| Sign adapter files | Signs an adapter file and requires the signature at load | `--sign-model`, `--lora-sig`, `--require-signed-model` |
-| Lineage | Walks an adapter's history back to the base and data | `--lineage` |
-| Receipts and replay | Records which adapter answered, and replays the answer exactly | `--transcript`, `--receipts`, `--verify` |
+| Sign adapter files | Signs an adapter file and requires the signature at load | `runner attest sign-model`, `--lora-sig`, `--require-signed-model` |
+| Lineage | Walks an adapter's history back to the base and data | `runner attest lineage` |
+| Receipts and replay | Records which adapter answered, and replays the answer exactly | `--record`, `--record`, `--verify` |
 | llama.cpp interop | Loads llama.cpp-format adapters, and writes adapters llama.cpp loads | GGUF adapter format |
 
 ## What it is for, and what it costs
@@ -91,7 +91,7 @@ artifact you can audit.
 ## 1. Check that a model can take an adapter
 
 ```sh
-./runner -m model.gguf --adapt-info
+./runner -m model.gguf --info adapter
 ```
 
 ```json
@@ -101,7 +101,7 @@ artifact you can audit.
 ```
 
 Inference, adapter serving and training are three separate admission lists.
-`--adapt-info` reads the last two without running either. When something is
+`--info adapter` reads the last two without running either. When something is
 not supported, `reason` is the exact sentence the real operation would refuse
 with. `device_kernels` names the GPU backend that applies the adapter on its
 own blocks (`cuda` or `metal`), and is `null` when serving the adapter means
@@ -109,13 +109,13 @@ the CPU (`--gpu off`). Training is always hosted on the CPU.
 
 ## 2. Prepare the training data
 
-`--train` reads three kinds of input. The file extension decides: a `.jsonl`
+`runner train` reads three kinds of input. The file extension decides: a `.jsonl`
 file is read line by line, anything else as plain text.
 
 ### Plain text
 
 Any text file. Runner tokenizes the whole file and cuts it into windows of
-`--train-ctx` tokens (default 128), each overlapping the next by one token,
+`--ctx` tokens (default 128), each overlapping the next by one token,
 so every transition is trained exactly once per pass. Every token is a
 target.
 
@@ -170,7 +170,7 @@ removes that gap.
 
 Without an end-of-turn token as a target, an adapter learns its answer but
 not that the turn ends there, so after the trained answer the model keeps
-generating, and it tends to repeat the answer. `--train-eot` appends the
+generating, and it tends to repeat the answer. `--eot` appends the
 model's end-of-turn token to every completion; `"end_of_turn": true` does it
 for one line. The token is the one that ends an assistant turn in the
 model's own chat template (or its end-of-sequence token when the template
@@ -180,7 +180,7 @@ after it. A model that declares no such token refuses the request by name.
 
 ### Small data memorizes
 
-A step is one example, so `--train-steps 60` over 4 examples is 15 passes over
+A step is one example, so `--steps 60` over 4 examples is 15 passes over
 the data. On data that small the adapter memorizes its completions, and when
 they share one answer it learns that every prompt of that shape gets that
 answer. Measured on MiniCPM5-1B Q4_K_M with four questions that all answer
@@ -190,7 +190,7 @@ to 62%; at `--lr 5e-4`, 15 passes gave it to 92%. A reference PEFT run with
 the same settings gave the same numbers, so this is the data and the
 settings, not the trainer.
 
-Before the first step, `--train` warns when:
+Before the first step, `runner train` warns when:
 
 - the run is more than three passes over fewer than 200 examples;
 - more than half of the completions are the same text;
@@ -199,13 +199,13 @@ Before the first step, `--train` warns when:
 
 Training still runs after a warning. To avoid memorizing, keep it to one to
 three passes, add examples where other questions keep their usual answers,
-and use `--train-eot`.
+and use `--eot`.
 
 ## 3. Train
 
 ```sh
-./runner -m base-Q4_K_M.gguf --train data.jsonl --train-steps 200 \
-  --lora-rank 8 --train-out adapter.gguf
+./runner train data.jsonl -m base-Q4_K_M.gguf --steps 200 \
+  --lora-rank 8 --out adapter.gguf
 ```
 
 What happens:
@@ -222,7 +222,7 @@ What happens:
 - Each step prints one JSON line: `{"step","example","tokens","loss","step_s","tok_s"}`.
   The loss is the per-token mean over the example's targets, signed by the
   weight.
-- At the end the adapter is written to `--train-out` (default
+- At the end the adapter is written to `--out` (default
   `adapter-out.gguf`) together with its record, `adapter.gguf.train.json`
   (see [Records](#12-records-signatures-and-lineage)).
 
@@ -230,16 +230,16 @@ The knobs:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--train-steps N` | 100 | Optimizer steps; one example per step |
+| `--steps N` | 100 | Optimizer steps; one example per step |
 | `--lr F` | 1e-4 | AdamW learning rate (beta1 0.9, beta2 0.999, eps 1e-8, weight decay 0.01) |
 | `--lora-rank R` | 8 | Rank of a fresh adapter, 1 to 512. Alpha is twice the rank, so the delta's scale alpha/rank is 2 |
-| `--train-ctx N` | 128 | Training window in tokens; the effective window is the smaller of this and `-c` |
+| `--ctx N` | 128 | Training window in tokens; the effective window is the smaller of this and `-c` |
 | `-s SEED` | fixed | Seed for the adapter's initial A matrices; without it the seed is fixed, so runs repeat |
 | `--save-every N` | 0 (off) | Write a checkpoint every N steps |
 | `-t N` | auto | CPU threads; the adapter bytes do not depend on it |
 
-Training loads the model on the CPU, even in a CUDA or Metal build: `--train`
-and `--train-dpo` keep the base frozen and memory-mapped, and only the
+Training loads the model on the CPU, even in a CUDA or Metal build: `runner train`
+and `runner train --dpo` keep the base frozen and memory-mapped, and only the
 adapter's parameters and their optimizer state change. A step reads each
 weight once per 16 positions (`RUNNER_TRAIN_ROWS`).
 
@@ -279,10 +279,10 @@ The weights are cached as long as the device budget allows, and the rest
 train on the CPU, where a tensor's products take the CPU's order. So the
 adapter's bits depend on that split, and the budget decides it. By default
 the budget is the device's free memory at the start, less 512 MB;
-`--train-gpu-budget BYTES` names it instead. The record carries
+`--gpu-budget BYTES` names it instead. The record carries
 `budget_bytes` and `budget_from`, and `tensors_on_device`, `device_bytes`,
 `tensors_on_cpu` and `cpu_bytes`. To reproduce a run's adapter, pass its
-recorded `budget_bytes` as `--train-gpu-budget`: the same budget gives the
+recorded `budget_bytes` as `--gpu-budget`: the same budget gives the
 same split, and the same split gives the same bits.
 
 The budget is reserved on the device at the start, so a run either gets it
@@ -298,7 +298,7 @@ does. Without a usable CUDA device it says so once and trains on the CPU.
 
 ### See the logprobs a step trains on
 
-`--train-logprobs FILE` writes one JSON line per step:
+`--logprobs FILE` writes one JSON line per step:
 
 ```json
 {"step": 1, "example": 0, "first": 25, "logprobs": [-5.73344898, -5.13397217]}
@@ -316,18 +316,18 @@ the starting adapter.
 
 ## 4. Continue, checkpoint and resume
 
-**Checkpoints.** `--save-every N` writes the adapter to `--train-out` every N
+**Checkpoints.** `--save-every N` writes the adapter to `--out` every N
 steps (and at the last step), and beside it the optimizer's state,
 `OUT.optim`: the AdamW moments, the step and the next rows. Each checkpoint is
 also kept as `OUT.step-NNNNN` with its own `.optim`. Every write goes to a
 temporary file first and is then installed, so a failure leaves the previous
 checkpoint in place.
 
-**Resume a run.** `--train-resume CKPT` continues the run that wrote the
+**Resume a run.** `--resume CKPT` continues the run that wrote the
 checkpoint `CKPT` (`OUT` or one of its `OUT.step-NNNNN` copies): the adapter,
 the moments, the step (so the learning-rate schedule picks up where it was)
 and the next rows. Give the rest of the command as the run had it, with the
-same `--train-steps`. A resumed run writes the same adapter, byte for byte,
+same `--steps`. A resumed run writes the same adapter, byte for byte,
 as the run that never stopped, and its record names the step it resumed at. A
 sidecar written for a different adapter file is refused.
 
@@ -335,8 +335,8 @@ sidecar written for a different adapter file is refused.
 further:
 
 ```sh
-./runner -m base-Q4_K_M.gguf --lora adapter.gguf --train more.jsonl \
-  --train-steps 100 --train-out adapter-2.gguf
+./runner -m base-Q4_K_M.gguf --lora adapter.gguf runner train more.jsonl \
+  --steps 100 --out adapter-2.gguf
 ```
 
 - The adapter keeps its own rank and alpha; `--lora-rank` applies only to a
@@ -344,17 +344,17 @@ further:
 - `--lora` loads the weights only, so a continued run starts AdamW fresh. It
   is a new run from those weights: training 100 steps and then 100 more is not
   the same as 200 steps in one run. To continue the same run, use
-  `--train-resume` on a checkpoint instead.
+  `--resume` on a checkpoint instead.
 - The record names the adapter the run started from (`from_adapter`, with its
-  hash and its own record), and `--lineage` walks back through every earlier
+  hash and its own record), and `runner attest lineage` walks back through every earlier
   run. The starting adapter is identified before the first step, so the record
-  is right even when `--train-out` names the same file. Train to a new file
+  is right even when `--out` names the same file. Train to a new file
   anyway: training in place overwrites the earlier adapter and its record, and
   the lineage then shows that history as broken.
 
 ## 5. Preference training (DPO)
 
-`--train-dpo FILE` trains from preference pairs, one per line:
+`runner train --dpo FILE` trains from preference pairs, one per line:
 
 ```json
 {"prompt": "Reply in one sentence: what is a GGUF file?", "chosen": " A single-file model format.", "rejected": " Well, it depends on many things..."}
@@ -363,8 +363,8 @@ further:
 It implements DPO (Rafailov et al., arXiv 2305.18290). The reference policy is
 the same frozen base with the adapter switched off for that pass, so DPO needs
 no second copy of the model. `--dpo-beta F` (default 0.1) weighs how far the
-adapter may move from the reference. `end_of_turn` per line and `--train-eot`
-work as in `--train`, and the step, learning-rate, context, rank, output and
+adapter may move from the reference. `end_of_turn` per line and `--eot`
+work as in `runner train`, and the step, learning-rate, context, rank, output and
 signing options are shared. One pair is one step, cycled in file order. The
 record's `objective` is `dpo`, with `dpo_beta`.
 
@@ -375,7 +375,7 @@ tokens takes just under an hour on a CUDA host.
 
 ## 6. Distillation toward a parent model
 
-`--train-teacher DIR` changes what `--train` fits. Each completion position is
+`--teacher DIR` changes what `runner train` fits. Each completion position is
 fitted to a teacher's distribution instead of the next token of a text: the
 loss is the KL divergence from the teacher's top-k tokens, with the rest of the
 vocabulary as one tail bucket, to the student's. The use it was built for is
@@ -386,20 +386,20 @@ rounding error, which cross-entropy on a text does not aim at.
 DIR holds two NumPy arrays, both shaped `[lines, positions, k]`:
 
 - `topk_idx.npy` (int32): the teacher's top-k token ids for completion token
-  `p` of line `n` of the `--train` file;
+  `p` of line `n` of the `runner train` file;
 - `topk_logp.npy` (float32): their natural-log probabilities over the
   teacher's whole vocabulary.
 
-The `--train` file must use the id form, since the teacher scored exactly those
+The `runner train` file must use the id form, since the teacher scored exactly those
 tokens, and an end-of-turn token cannot be appended (put it in
 `completion_tokens`). `scripts/kd-teacher.py` writes all three files from a
-parent GGUF, through `runner --score --score-top K`:
+parent GGUF, through `runner --score --score K`:
 
 ```sh
 python3 scripts/kd-teacher.py --runner ./runner --parent model-Q8_0.gguf \
     --docs docs.jsonl --topk 64 --out teacher/ -- --gpu off
-./runner -m model-Q4_0.gguf --gpu off --train teacher/train.jsonl \
-    --train-teacher teacher/ --train-ctx 256 --train-steps 100 --train-out kd.gguf
+./runner -m model-Q4_0.gguf --gpu off runner train teacher/train.jsonl \
+    --teacher teacher/ --ctx 256 --steps 100 --out kd.gguf
 ```
 
 A teacher from another pipeline, such as the publisher's float32 model in
@@ -415,9 +415,9 @@ KL = sum_i p_i (log p_i - log q_i) + p_tail (log p_tail - log q_tail)
 
 A one-hot teacher (k 1, log-probability 0 on the next token) is the
 cross-entropy, bit for bit, so prompt masking and `"weight"` work as in plain
-`--train`, and the reported loss is the mean KL per completion position.
+`runner train`, and the reported loss is the mean KL per completion position.
 Before the first step the teacher is read once, and refused when its shape does
-not match the `--train` file or a row lists an id outside the vocabulary, an
+not match the `runner train` file or a row lists an id outside the vocabulary, an
 id twice, a token the model suppresses, a non-finite log-probability, or
 probabilities summing past one. The record's `objective` is `kl-to-teacher`,
 with the teacher's `k`, its positions and both arrays hashed.
@@ -442,17 +442,17 @@ or decay: the closer a student starts to its teacher, the lower the rate it
 needs. Start low (5e-5) and watch the per-step loss, comparing each example
 with its own earlier pass.
 
-**A distillation run's recipe.** These flags give `--train` what a
+**A distillation run's recipe.** These flags give `runner train` what a
 distillation pipeline's own trainer has (they apply to cross-entropy too):
 
 - `--lr-warmup N` raises the learning rate linearly over the first N steps;
   `--lr-schedule cosine` then lowers it along a cosine to `--lr-floor F` times
   `--lr` at the last step (0.1 by default; `constant` keeps it).
-- `--train-batch N` takes N rows a step, and the loss and gradient are the
+- `--batch N` takes N rows a step, and the loss and gradient are the
   mean over all their positions. Rows are used in file order, wrapping at the
   end; write the file in the order you want them drawn.
 - `--weight-decay 0` turns AdamW into plain Adam (the default decay is 0.01).
-- `--train-eval LABEL=ROWS[,TEACHER]` (up to eight) is a held-out set,
+- `--eval LABEL=ROWS[,TEACHER]` (up to eight) is a held-out set,
   evaluated with no update at step 0, every `--eval-every N` steps and at the
   last: its mean loss per position, and two top-1 agreements, `top1_topk`
   (among the teacher's listed tokens the student ranks the teacher's first
@@ -464,11 +464,11 @@ distillation pipeline's own trainer has (they apply to cross-entropy too):
   otherwise it writes `OUT.kill-check.json` and goes on.
 - `--stop-file F`: after every step (its eval, checkpoint and kill check), if
   F exists the run saves a checkpoint and exits with status 75, ready for
-  `--train-resume`.
+  `--resume`.
 
 Every step line carries `lr`, `grad_norm_max` and `grad_norm_mean` (each
 layer's L2 over its adapter gradients, the largest and the mean), and with
-`--train-batch` the `rows` it drew. A step whose loss or gradient is not
+`--batch` the `rows` it drew. A step whose loss or gradient is not
 finite stops the run with an error before it touches the adapter.
 
 The objective is gated in `tests/test_kd_grad.c`: a one-hot teacher against the
@@ -619,7 +619,7 @@ server.
 
 ```sh
 ./runner -m base-Q4_K_M.gguf --lora adapter.gguf \
-  --merge-lora merged-Q8_0.gguf --quant q8_0
+  --rewrite merged-Q8_0.gguf --merge-lora --quant q8_0
 ```
 
 A merge computes `W' = W + (alpha/r) · B · A` for every adapted projection and
@@ -682,12 +682,12 @@ the command fail.
 ### Signing records
 
 ```sh
-./runner --keygen keys/sign.json
-./runner -m base.gguf --train data.jsonl --train-out adapter.gguf --sign-key keys/sign.json
+./runner attest keygen keys/sign.json
+./runner train data.jsonl -m base.gguf --out adapter.gguf --sign-key keys/sign.json
 ```
 
 `--sign-key` signs the training, merge or quantization record in place
-(Ed25519 by default, or ML-DSA-44 with `--keygen-algo ml-dsa-44`). The
+(Ed25519 by default, or ML-DSA-44 with `--algo ml-dsa-44`). The
 signature covers every byte of the record before it, so any Ed25519 or ML-DSA
 library verifies it from the file and the embedded public key alone.
 
@@ -698,7 +698,7 @@ policy as the model. An adapter file gets an OpenSSF Model Signing bundle the
 same way a model does:
 
 ```sh
-./runner --sign-model adapter.gguf --model-key key.pem        # writes adapter.gguf.sig
+./runner attest sign-model adapter.gguf --key key.pem        # writes adapter.gguf.sig
 ./runner -m base.gguf --lora adapter.gguf --model-pubkey key.pub \
   --require-signed-model --serve
 ```
@@ -714,24 +714,24 @@ verdict is recorded as `adapter_signature` in receipts and as the adapter's
 ### Lineage
 
 ```sh
-./runner --lineage merged-Q8_0.gguf
+./runner attest lineage merged-Q8_0.gguf
 ```
 
-`--lineage` walks a file's records back to its origins: the merged file to the
+`runner attest lineage` walks a file's records back to its origins: the merged file to the
 base and the adapter, the adapter to its base, data and starting adapter, the
 base to its quantization. Each record is re-hashed, each link is checked
 against the next step, each file still on disk is checked against its recorded
 hash, and each signature is verified (`--trust-key` pins the signer). Exit 0
 means verified and signed, 1 consistent but not all signed, 2 broken. On a
-`--receipts` folder it lists which model and adapter versions answered, and
+`--record` folder it lists which model and adapter versions answered, and
 when. [The lineage walkthrough](lineage-walkthrough.md) runs the whole chain,
 from quantization through training, merging, evaluation and serving, to a
 flipped byte.
 
 ## 13. Receipts and replay with an adapter
 
-A one-shot run recorded with `--transcript FILE`, and every served answer under
-`--receipts DIR`, records the adapter: its path, sha256, scale and record link.
+A one-shot run recorded with `--record FILE`, and every served answer under
+`--record DIR`, records the adapter: its path, sha256, scale and record link.
 `--verify` replays the record and needs the same adapter: without `--lora`, with
 a different adapter, or with `--lora` on a record that ran without one, the
 verdict is `UNVERIFIABLE`. Replay with the matching adapter returns `VERIFIED`
@@ -783,7 +783,7 @@ It refuses by name: adapters on the experts themselves, other MoE routers
 hybrids (Granite 4.0 H, Nemotron-H), qwen4exp's hyper-connections, MoE on a
 DeltaNet model, Gemma's dual-branch MoE,
 removed sublayers, LayerNorm (StableLM; the backward has the RMSNorm adjoint
-only), and the derived-K and ring KV caches. `--adapt-info` gives the sentence
+only), and the derived-K and ring KV caches. `--info adapter` gives the sentence
 for the model you have.
 Every covered shape is pinned by a finite-difference gate in `make test` on a
 fixture that carries it.
@@ -838,16 +838,16 @@ covered by them.
 
 ## 18. Reference
 
-**Flags.** `--adapt-info`; `--train FILE`, `--train-steps`, `--lr`,
-`--train-ctx`, `--train-out`, `--save-every`, `--lora-rank`, `--train-eot`,
-`--train-logprobs`, `--train-teacher DIR`, `--lr-schedule`, `--lr-warmup`,
-`--lr-floor`, `--train-batch`, `--weight-decay`, `--train-resume CKPT`,
-`--train-eval`, `--eval-every`, `--kill-at`, `--kill-metric`,
-`--kill-min-rel`, `--stop-file`, `-s`; `--train-dpo FILE`, `--dpo-beta`; `--lora FILE`,
-`--lora-scale`, `--lora-sig`; `--adapter NAME=PATH`; `--merge-lora OUT`,
-`--quant`, `--merge-allow-erased`; `--score`; `--sign-key`, `--keygen`,
-`--sign-model`, `--model-key`, `--model-pubkey`, `--require-signed-model`;
-`--lineage`, `--trust-key`; `--transcript`, `--receipts`, `--verify`. Each
+**Flags.** `--info adapter`; `runner train FILE`, `--steps`, `--lr`,
+`--ctx`, `--out`, `--save-every`, `--lora-rank`, `--eot`,
+`--logprobs`, `--teacher DIR`, `--lr-schedule`, `--lr-warmup`,
+`--lr-floor`, `--batch`, `--weight-decay`, `--resume CKPT`,
+`--eval`, `--eval-every`, `--kill-at`, `--kill-metric`,
+`--kill-min-rel`, `--stop-file`, `-s`; `runner train --dpo FILE`, `--dpo-beta`; `--lora FILE`,
+`--lora-scale`, `--lora-sig`; `--adapter NAME=PATH`; `--rewrite OUT --merge-lora`,
+`--quant`, `--merge-allow-erased`; `--score`; `--sign-key`, `runner attest keygen`,
+`runner attest sign-model`, `--key`, `--model-pubkey`, `--require-signed-model`;
+`runner attest lineage`, `--trust-key`; `--record`, `--record`, `--verify`. Each
 row is in the [command-line reference](../MANUAL.md#command-line-reference).
 
 **Files.** `ADAPTER.gguf` (the adapter), `ADAPTER.gguf.train.json` (its record),

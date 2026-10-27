@@ -58,7 +58,7 @@ prompt again: each starts from the image's KV.
 The gate is byte identity: an image written at the end of a run straight
 through and one written at the end of the same run suspended and resumed are
 the same file (`tests/test_session_images.py`, under seeded sampling with a
-repeat penalty, greedy decoding, `--json`, `--json-schema`, a Mamba-2 hybrid
+repeat penalty, greedy decoding, `--json`, `--json`, a Mamba-2 hybrid
 and two suspensions in a row; `tests/test_server_sessions.py` for the
 server). That holds for the same build on the same kind of host. An image
 resumed by another build warns, and one carried to another backend (a Mac's

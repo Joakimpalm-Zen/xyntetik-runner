@@ -1,7 +1,7 @@
 # Model admission evidence
 
-Use the [support matrix](../MANUAL.md#support-matrix), `--caps`, and
-`--doctor` for current architecture/layout/backend admission. A model-family
+Use the [support matrix](../MANUAL.md#support-matrix), `--info caps`, and
+`--info doctor` for current architecture/layout/backend admission. A model-family
 label does not certify every quantization, context/cache layout, adapter,
 or device. The [coverage inventory](../tests/compatibility/coverage.json)
 separates executed evidence from missing checks.

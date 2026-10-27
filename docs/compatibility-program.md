@@ -10,7 +10,7 @@ models, devices, reference assets, or dependencies are not passes.
 `tests/compatibility/models.json` pins real GGUFs and their reference/check
 parameters. Model files are not committed. The coverage inventory also
 records admitted layouts with no pinned artifact or independent anchor;
-being listed by `--caps` does not certify a model automatically.
+being listed by `--info caps` does not certify a model automatically.
 
 ```sh
 python3 scripts/compat_matrix.py --verify-files --load   --reference /path/to/llama-cli   --out tests/compatibility/out/model-load.json

@@ -14,11 +14,11 @@ does not make it, and the absence is deliberate.
   fewer heads than threads position chunks and channel slices) without
   reordering any sum; `test-attn-split` holds its logits byte for byte
   at 1, 2, 3, 4 and 7 threads on every cache kind, solo and batched.
-- **Training byte-determinism, same build.** `--train` with identical
+- **Training byte-determinism, same build.** `runner train` with identical
   inputs reproduces the same adapter file, byte for byte, verified by
   sha256 in CI. The `.train.json` sidecar records the binary sha,
   compiler, OS, and arch that produced it.
-- **Transcript replay tiers** (`--transcript` / `--verify`):
+- **Transcript replay tiers** (`--record` / `--verify`):
   - **T1, same binary**: bit-exact replay of a recorded run; verified
     token ids and raw streamed output bytes equal the record exactly. Raw
     bytes are authoritative because an individual byte-token piece need not
@@ -27,7 +27,7 @@ does not make it, and the absence is deliberate.
     architecture. Token ids must match; floating-point internals may
     not, and the boundary is libm (`expf` differs between platforms),
     compiler reassociation under fast-math, and SIMD reduction order.
-- **Quantization determinism.** `--quantize` and `--merge-lora` write
+- **Quantization determinism.** `--rewrite` and `--merge-lora` write
   the same output bytes for the same inputs on the same build.
 
 ## Measured, not yet claimed: T3, any machine, same bytes

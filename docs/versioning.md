@@ -68,7 +68,7 @@ These were never cross-version promises, and 1.0 does not make them one:
 - **`RUNNER_*` environment variables** are tuning and diagnostic switches
   and can change in any release, including those the README mentions.
 - **Log and progress text** on stderr is for people, not parsers. Use the
-  JSON outputs (`--caps`, `--doctor`, `--bench-json`, `--tool-info`,
+  JSON outputs (`--info caps`, `--info doctor`, `--bench-json`, `--info tools`,
   `runner_telemetry`) instead.
 - **Build internals**: Makefile targets other than `make` and `make test`,
   test fixtures and the `scripts/` directory.

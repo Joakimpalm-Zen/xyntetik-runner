@@ -48,15 +48,15 @@ CAPABILITIES: tuple[Capability, ...] = (
                ("--serve",), "Truncated tool calls that still parse"),
     Capability("Structured output",
                "Constrain generation to one valid JSON object or to a JSON Schema.",
-               ("--json", "--json-schema"), "Structured output"),
+               ("--json",), "Structured output"),
     Capability("Know whether a model fits before downloading or serving it",
                "The fit check reads a GGUF header and answers with the machine's RAM and VRAM; the "
                "capabilities dump says what this machine has.",
-               ("--fit", "--caps"), "Placement and memory"),
+               ("--info",), "Placement and memory"),
     Capability("Placement and memory control",
                "GPU on or off, N layers on the GPU and the rest on the CPU, MoE experts kept in "
                "RAM, an 8-bit KV cache, a budget as a share of the machine.",
-               ("--gpu", "--gpu-layers", "--cpu-moe", "--kv", "--reserve"), "Placement and memory"),
+               ("--gpu", "--cpu-moe", "--kv", "--reserve"), "Placement and memory"),
     Capability("Several runners sharing one GPU without fighting",
                "Wait for VRAM held by another runner, priorities, yield the resident model on "
                "request, unload an idle model after a while.",
@@ -65,34 +65,34 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability("Faster decoding with a draft",
                "Speculative decoding from a small same-vocabulary model, from the model's own "
                "next-token head, or from n-gram matches in the context.",
-               ("--draft", "--mtp", "--draft-lookup"), "Runtime and hardware"),
+               ("--draft",), "Runtime and hardware"),
     Capability("Train a LoRA adapter on the GGUF you serve, and serve it",
                "AdamW LoRA training in the serving binary on the quantized weights, "
                "deterministic, with the adapter loaded beside the frozen base or folded in.",
-               ("--train", "--lora", "--merge-lora"), "Train the GGUF you actually serve"),
+               ("runner train", "--lora", "--merge-lora"), "Train the GGUF you actually serve"),
     Capability("Requantize, set per-tensor precision, prune experts, remove sublayers",
                "Rewrite a model to another quantization, a per-tensor precision plan, fewer MoE "
                "experts or fewer attention or MLP sublayers, and measure what it cost.",
-               ("--quantize", "--quant", "--type-plan", "--prune-experts", "--remove-sublayer"),
+               ("--rewrite", "--quant", "--type-plan", "--prune-experts", "--remove-sublayer"),
                "Requantization and expert pruning"),
     Capability("Verifiable receipts and signed models",
                "Record a run as a replay-verifiable transcript, sign it, chain it, and refuse "
                "a model whose signature does not verify.",
-               ("--transcript", "--verify", "--keygen", "--model-sig", "--require-signed-model"),
+               ("--record", "--verify", "runner attest", "--model-sig", "--require-signed-model"),
                "Conversion, diagnostics, and integration"),
     Capability("Long contexts",
                "YaRN and rope scaling, compiled into the model's metadata when wanted.",
-               ("--yarn-factor", "--rope-scale", "--context-surgery"), "Long contexts"),
+               ("--rope", "--context-surgery"), "Long contexts"),
     Capability("Scoring and benchmarking",
                "Teacher-forced per-token log-probabilities and a small decode benchmark as JSON.",
                ("--score", "--bench-json"), "Conversion, diagnostics, and integration"),
     Capability("Interactive chat and one-shot prompts from the terminal",
                "A chat with the family's thinking mode on or off, or a single prompt from text "
                "or a file.",
-               ("-i", "-p", "-f", "--think", "--no-think"), "Modes and input"),
+               ("-i", "-p", "-f", "--think"), "Modes and input"),
     Capability("A desktop tray that shows what is loaded",
                "On macOS and Windows the runner can sit in the menu bar or tray.",
-               ("--tray", "--no-tray"), "Desktop tray"),
+               ("--tray",), "Desktop tray"),
     Capability("Shadow mode: what could the local model have done, and offload where it is proven",
                "Capture your own work, replay it with the local model under frozen tests, "
                "offload tasks where the evidence shows verified successes, adapt overnight.",
@@ -126,7 +126,7 @@ def _run(runner: str, *args: str, timeout: float = 20.0) -> str:
 
 
 def machine_facts(runner: str) -> dict[str, Any]:
-    text = _run(runner, "--caps")
+    text = _run(runner, "--info", "caps")
     for line in text.splitlines():
         line = line.strip()
         if line.startswith("{"):
@@ -159,7 +159,7 @@ def render_sheet(runner: str, *, version: str = "", readme: Path | None = None,
         lines.append("Full documentation:")
     lines += [f"{README_URL} and {SITE_URL}.", ""]
     if facts:
-        lines += ["## This machine (from `runner --caps`)", ""]
+        lines += ["## This machine (from `runner --info caps`)", ""]
         ram = facts.get("ram_bytes")
         if isinstance(ram, (int, float)):
             lines.append(f"- RAM: {ram / 2**30:.0f} GiB; CPU cores: {facts.get('cpu_cores', '?')}; "
@@ -175,7 +175,7 @@ def render_sheet(runner: str, *, version: str = "", readme: Path | None = None,
                      f"Manual section: \"{c.readme_section}\".")
     lines += ["", "## How to use it from here", "",
               "- Serve a model: `runner --serve -m MODEL.gguf` (OpenAI-compatible on http://127.0.0.1:8080).",
-              "- Check a model fits first: `runner --fit MODEL.gguf`.",
+              "- Check a model fits first: `runner -m MODEL.gguf --info fit`.",
               "- Ask the ledger what the local model has proven and offload where it has: `/shadow`.",
               ""]
     return "\n".join(lines)

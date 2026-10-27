@@ -891,7 +891,7 @@ def test_the_legend_comes_first_and_names_every_mark():
     text = mt.render_overview(roster())
     legend = text.strip().split("\n")[0]
     assert text.index(legend) < text.index("<details>")
-    for word in ("✅", "blank", "n/a", "failed", "`--adapt-info`", "🟨 *k of n*",
+    for word in ("✅", "blank", "n/a", "failed", "`--info adapter`", "🟨 *k of n*",
                  "a hyphen: none run", "family", "envelope"):
         assert word in legend, word
     # no en or em dash in the prose or the marks

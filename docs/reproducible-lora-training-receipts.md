@@ -3,7 +3,7 @@
 **Question.** Is LoRA training reproducible, and can I prove which adapter
 came from which run, which data and which base?
 
-**Answer.** On the same build, yes, byte for byte: `--train` with the same
+**Answer.** On the same build, yes, byte for byte: `runner train` with the same
 data, seed and configuration writes the same adapter file, verified by
 sha256 in CI. Every adapter is written with a `.train.json` sidecar that
 records the base, data and adapter sha256, the adapter a continued run
@@ -30,7 +30,7 @@ a later reader can check what ran.
 
 ## Receipts for inference runs
 
-Recorded runs carry the same discipline. `--transcript FILE` records a
+Recorded runs carry the same discipline. `--record FILE` records a
 one-shot run as a signed record: model, adapter and binary hashes, the
 effective execution profile, the exact seed and sampling configuration,
 prompt and output token ids, and the exact streamed output bytes.
@@ -42,8 +42,8 @@ prompt and output token ids, and the exact streamed output bytes.
 - **T2, cross-ISA.** Token-level replay on another machine or architecture;
   floating-point internals may differ, and the boundary is libm.
 
-Receipts chain (`--transcript-prev`), are signed with an Ed25519 key you
-generate (`--keygen`, `--sign-key`), and the loaded model can be verified
+Receipts chain (`--record-prev`), are signed with an Ed25519 key you
+generate (`runner attest keygen`, `--sign-key`), and the loaded model can be verified
 against an OpenSSF Model Signing bundle (`--model-sig`, `--model-pubkey`).
 Flag rows are in the [command-line reference](../MANUAL.md#command-line-reference).
 

@@ -41,8 +41,8 @@ Two readings a zero could also carry are refused, not guessed: an
 ## What the writer does
 
 ```
-./runner -m parent.gguf --quantize cut.gguf --remove-sublayer attn:48
-./runner -m parent.gguf --quantize cut.gguf --remove-sublayer attn:48,mlp:12 --quant q8_0
+./runner -m parent.gguf --rewrite cut.gguf --remove-sublayer attn:48
+./runner -m parent.gguf --rewrite cut.gguf --remove-sublayer attn:48,mlp:12 --quant q8_0
 ```
 
 - Scope, per removed block: every `blk.N.attn_*` tensor except the
@@ -102,7 +102,7 @@ Two readings a zero could also carry are refused, not guessed: an
   gemma-4's dual-branch MoE. Before this change the walk could only reach a
   removed block through the nemotron_h jump, which lands on the dense FFN;
   a build with that jump fails those MoE cases.
-- Refused by name: `--lora`, `--train`, the MTP head on such a file, and
+- Refused by name: `--lora`, `runner train`, the MTP head on such a file, and
   the families the writer refuses.
 
 ## Gates (`tests/test_remove_sublayer.py`, in `make test`)
@@ -127,7 +127,7 @@ Two readings a zero could also carry are refused, not guessed: an
   present tensor is refused (a hostile fixture from
   `make-test-model.py --declare-removed`).
 - **Refusals.** MoE MLP, hybrid, bad specs, double removal, `--lora`,
-  `--train`, and the GPU path (on a Metal host).
+  `runner train`, and the GPU path (on a Metal host).
 
 The model-level counterpart of the anchor was measured before this
 feature existed: on the real Gemma 31B artifact, the masked and the zeroed

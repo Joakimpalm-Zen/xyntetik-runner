@@ -1040,8 +1040,13 @@ static char *unescape(const char *s) {
 // that answers that question on the error stream cannot be piped.
 static void usage_to(FILE *f, const char *prog) {
     fprintf(f,
-        "usage: %s -m model.gguf [options]\n\n"
-        "options:\n"
+        "usage: %s -m model.gguf [options]\n"
+        "       runner attest <verb> ...          records, keys, bundles, packs,\n"
+        "                                         signatures (runner attest --help)\n"
+        "       runner train DATA -m model.gguf   LoRA training (runner train --help)\n\n"
+        "One mode per run: a line that names two (-p beside --serve, --score\n"
+        "beside --decide) is refused, never resolved by order.\n\n"
+        "model and mode:\n"
         "  -m PATH        GGUF model file\n"
         "  -hf REPO[:TAG] fetch the GGUF from the Hugging Face Hub instead\n"
         "                 (owner/repo, TAG picks the quant when the repo has\n"
@@ -1054,88 +1059,158 @@ static void usage_to(FILE *f, const char *prog) {
         "  -f FILE        read prompt from file, as written (appended after -p text)\n"
         "  -i             interactive chat mode\n"
         "  --serve        HTTP server mode (OpenAI-compatible API)\n"
-        "  --tray         BE the desktop tray/menu-bar controller (macOS,\n"
-        "                 Windows) instead of running a model. Required when\n"
-        "                 there is no terminal — launchd, Task Scheduler, a\n"
-        "                 service wrapper — since the launches below all need\n"
-        "                 one. Bare `runner` at a terminal, or a double-click,\n"
-        "                 does the same thing without the flag\n"
-        "  --no-tray      opt out of the tray entirely. The tray otherwise\n"
-        "                 follows any session you sit with (--serve, -i) at a\n"
-        "                 terminal and is LEFT RUNNING afterwards, so the next\n"
-        "                 model can be loaded from it. One-shot -p runs and\n"
-        "                 tooling modes never raise one\n"
-        "  --port N       server port (default 8080)\n"
+        "  --tray [off|auto]  bare: BE the desktop tray/menu-bar controller\n"
+        "                 (macOS, Windows) instead of running a model. Required\n"
+        "                 when there is no terminal (launchd, Task Scheduler, a\n"
+        "                 service wrapper); bare `runner` at a terminal, or a\n"
+        "                 double-click, does the same. auto (the default): the\n"
+        "                 tray follows a session you sit with (--serve, -i) at\n"
+        "                 a terminal and is LEFT RUNNING afterwards; one-shot\n"
+        "                 -p runs and tooling modes never raise one. off: no\n"
+        "                 tray at all\n"
+        "  --port N       server port (default 8080; --serve only)\n"
         "  --parallel N   parallel inference slots in server mode (default 1)\n"
         "                 -m \"name=path,name2=path2\" serves multiple models,\n"
         "                 loading the requested one on demand (swap mode)\n"
         "  --ttl N        swap mode: unload an idle model after N seconds\n"
-        "                 (default 300, 0 = never)\n"
+        "                 (default 300, 0 = never; --serve only)\n"
         "  --force-uncertified  load a model whose measured-envelope sidecar\n"
         "                 records an OUTSIDE-envelope verdict for this runtime\n"
-        "                 (refused by default) — loads with a loud warning\n"
-        "  --json         constrain output to a single valid JSON object\n"
-        "                 (with --pull: print the result as one JSON object)\n"
-        "  --json-schema F constrain output to the JSON Schema in file F\n"
-        "  --quantize OUT rewrite the model to OUT.gguf (see --quant) and exit\n"
-        "  --context-surgery OUT  compile -c/--yarn-factor into GGUF metadata;\n"
-        "                 tensor payloads are independently verified unchanged\n"
+        "                 (refused by default): loads with a loud warning\n"
+        "  --json [FILE]  constrain output to a single valid JSON object, or\n"
+        "                 to the JSON Schema in FILE (with --pull: print the\n"
+        "                 result as one JSON object)\n"
+        "  --info KIND    answer a question and exit. caps: machine\n"
+        "                 capabilities as JSON (needs no -m). tools: load -m\n"
+        "                 and print its native tool-call protocol, chat\n"
+        "                 template and sampling preset. adapter: whether an\n"
+        "                 adapter can be served on -m and trained on it, with\n"
+        "                 the reason when it cannot. doctor: load -m, run one\n"
+        "                 short probe and print a diagnostic report (version,\n"
+        "                 placement, template, sampler, memory, timings,\n"
+        "                 findings and a next step each; no prompt or reply\n"
+        "                 text unless --doctor-include-text is given). fit:\n"
+        "                 whether -m fits this machine (RAM, and on a discrete\n"
+        "                 GPU the layers the offload budget holds); reads only\n"
+        "                 the header, so a partial download works\n"
+        "  --doctor-include-text  with --info doctor: keep the probe's text\n"
+        "  --bench-json   run a small decode benchmark and print JSON metrics\n"
+        "  --score [N]    teacher-forced scoring: per-token log P(token|prefix)\n"
+        "                 over the raw -p/-f text (no template, no sampling),\n"
+        "                 printed as JSON with NLL and perplexity; N (1-256)\n"
+        "                 also prints each position's N most likely tokens\n"
+        "  --decide FILE  typed decisions: one /v1/decide request per line of\n"
+        "                 FILE (state, questions[{question, options}]), one\n"
+        "                 response per line on stdout; options scored verbatim\n"
+        "                 in context, no sampling (- reads stdin)\n"
+        "  --systemone FILE  Clef typed decisions: one /v1/systemone request\n"
+        "                 (model, state, questions) per line of FILE, one\n"
+        "                 response per line on stdout (- reads stdin)\n"
+        "  --shadow-mode  install shadow mode for Claude Code and Codex if present\n"
+        "                 (asks first; --yes skips the question); -m MODEL names\n"
+        "                 the model the /shadow offload will serve\n"
+        "  --version      print the runner version and exit\n"
+        "  -v             verbose model info\n"
+        "  -h, --help     print this help to stdout and exit\n\n"
+        "rewriting the file (one pass, one output):\n"
+        "  --rewrite OUT  write a rewritten model to OUT.gguf and exit, with a\n"
+        "                 provenance record beside it. Without a trigger below\n"
+        "                 this is a requantization (see --quant)\n"
         "  --quant T      quantize target: q8_0 | q4_0 | q3_k | q4_k | q6_k |\n"
-        "                 f16 | bf16 | keep (default q4_0, or keep if\n"
-        "                 --prune-experts or --merge-lora is the reason to\n"
-        "                 rewrite)\n"
-        "  --transcript F record the one-shot -p run as a replay-verifiable\n"
-        "                 transcript (xyntetik.runner.transcript.v1): model and\n"
-        "                 binary sha256, profile, config, seed, prompt and\n"
-        "                 output token ids, chain hash. Same binary + same\n"
-        "                 record replays bit-exact; cross-ISA replays\n"
-        "                 token-exact (libm differs)\n"
-        "  --verify F     replay a transcript (see --transcript) against the\n"
+        "                 f16 | bf16 | keep (default q4_0, or keep when\n"
+        "                 --prune-experts, --remove-sublayer or --merge-lora is\n"
+        "                 the reason to rewrite)\n"
+        "  --type-plan PLAN.json  per-tensor precision while rewriting:\n"
+        "                 {\"default\":\"keep\",\"rules\":[{\"match\":\"_exps.weight\",\n"
+        "                 \"type\":\"q4_0\"}]}. First matching rule wins; types are\n"
+        "                 keep|q8_0|q4_0|q3_k|q4_k|q6_k|f16|bf16. Per-tensor is\n"
+        "                 the finest GGUF can express: experts are stored\n"
+        "                 stacked, one tensor per layer, so per-EXPERT\n"
+        "                 precision is not representable\n"
+        "  --type-plan-strict  with --type-plan: fail before writing when\n"
+        "                 any rule would be declined or fall back, instead of\n"
+        "                 reporting it and writing the file\n"
+        "  --prune-experts LIST.json  drop MoE experts per layer while\n"
+        "                 rewriting: {\"layer_N\":[kept expert ids...]};\n"
+        "                 a layer absent from the file keeps every expert.\n"
+        "                 Combine with --quant to also requantize survivors\n"
+        "  --remove-sublayer attn:N[,mlp:M,...]  drop block N's attention\n"
+        "                 (or block M's dense FFN) tensors while rewriting;\n"
+        "                 the absence is declared by a 0 in the per-block\n"
+        "                 attention.head_count / head_count_kv (or\n"
+        "                 feed_forward_length) array, llama.cpp's own\n"
+        "                 convention; the block's pre-norm stays. The runner\n"
+        "                 omits the branch and reserves no KV rows for it\n"
+        "                 (CPU path). A mechanism, not a quality claim:\n"
+        "                 measure the artifact against its parent\n"
+        "  --merge-lora   trigger: fold --lora into the base weights instead,\n"
+        "                 W' = W + (alpha/r)*B*A per adapted projection, each\n"
+        "                 tensor requantized to its own type (or --quant T),\n"
+        "                 with an OUT.gguf.merge.json record. The merged file\n"
+        "                 runs in any GGUF runtime, but a quantized output type\n"
+        "                 rounds the delta through its grid: measure the merged\n"
+        "                 artifact before trusting it; base + --lora stays the\n"
+        "                 exact form. Refused (destination untouched) when the\n"
+        "                 output keeps under 50%% of the delta; the kept share\n"
+        "                 and changed bytes go in the record\n"
+        "  --merge-allow-erased  with --merge-lora: write the merge even\n"
+        "                 when the output grid rounded the delta away\n"
+        "  --context-surgery  trigger: compile -c and --rope yarn=F into the\n"
+        "                 GGUF metadata instead; tensor payloads are\n"
+        "                 independently verified unchanged\n\n"
+        "records and verification (runner attest --help for the rest):\n"
+        "  --record PATH  with -p: record the run as a replay-verifiable\n"
+        "                 transcript at PATH (xyntetik.runner.transcript.v1:\n"
+        "                 model and binary sha256, profile, config, seed,\n"
+        "                 prompt and output token ids, chain hash; same binary\n"
+        "                 + same record replays bit-exact, cross-ISA replays\n"
+        "                 token-exact). With --serve: PATH is a directory that\n"
+        "                 receives one such receipt per finished generation,\n"
+        "                 chained in write order across restarts; each\n"
+        "                 response's runner_telemetry.receipt names its file\n"
+        "  --record-keep N  with --serve: keep the newest N receipts (default\n"
+        "                 0: all)\n"
+        "  --record-prev F  with --record: link the new record to F (its chain\n"
+        "                 hash becomes this record's chain.prev); with\n"
+        "                 --verify: check that link (UNVERIFIABLE on a break)\n"
+        "  --sign-key F   with --record: sign the receipt with the key in F;\n"
+        "                 with --rewrite or runner train: sign the step's\n"
+        "                 provenance record (a signature over every byte\n"
+        "                 before the ,\"signature\" key, chain hash included;\n"
+        "                 the object names the algo)\n"
+        "  --verify F     replay a transcript (see --record) against the\n"
         "                 loaded -m model and byte-diff the result. Verdicts:\n"
         "                 VERIFIED (exit 0; tier T1 same-binary or T2\n"
         "                 token-replay), DIVERGED at token N (exit 2),\n"
         "                 UNVERIFIABLE (exit 3: bad chain hash, wrong model\n"
         "                 sha, wrong adapter, or output shaped by a constraint\n"
-        "                 the replay would not reproduce; --json, --json-schema\n"
-        "                 and --ignore-eos must match the record's). The\n"
-        "                 record's config and seed override CLI sampling flags\n"
+        "                 the replay would not reproduce; --json and\n"
+        "                 --ignore-eos must match the record's). The record's\n"
+        "                 config and seed override CLI sampling flags\n"
+        "  --require-signed  with --verify: an unsigned record is UNVERIFIABLE\n"
+        "  --trust-key K  the public key a record, bundle, pack, lineage or\n"
+        "                 snapshot manifest must be signed by: its hex, sha256:\n"
+        "                 plus the hex SHA-256 of its bytes, or a file holding\n"
+        "                 either (runner attest keygen's output as written)\n"
         "  --require-eval K  refuse to load -m unless it carries a passing\n"
         "                 evaluation of kind K (fidelity | agent) made for\n"
         "                 this file, signed by --trust-key when given\n"
         "                 (scripts/eval-record.py writes them)\n"
-        "  --lineage F    walk F's provenance chain (a model or adapter file,\n"
-        "                 or its record) back to its origins: every link\n"
-        "                 re-hashed, every signature checked (--trust-key\n"
-        "                 pins the signer); exit 0 verified and signed,\n"
-        "                 1 consistent but not all signed, 2 broken or no record;\n"
-        "                 on a --receipts folder: the model and adapter versions\n"
-        "                 that answered, when and in what order, then each\n"
-        "                 version's chain\n"
-        "  --sign-record F  sign any JSON object file in place with --sign-key,\n"
-        "                 the transcript's chain + signature (--record-prev P\n"
-        "                 links it to record P); --check-record F verifies one\n"
-        "  --export-bundle R  with --bundle-out DIR: put receipt R, its model\n"
-        "                 signature (--model-sig) and key (--model-pubkey), the\n"
-        "                 receipt key's fingerprint and a sha256 manifest in one\n"
-        "                 directory a verifier can take; --sign-key signs the\n"
-        "                 manifest. Needs no -m\n"
-        "  --bundle-out DIR  where --export-bundle writes (created)\n"
-        "  --check-bundle DIR  verify a bundle offline: files match the\n"
-        "                 manifest, the receipt chain recomputes, signatures\n"
-        "                 verify (--trust-key pins the manifest signer). Exit\n"
-        "                 0 OK, 2 BAD, 3 UNVERIFIABLE. Does not replay: that is\n"
-        "                 --verify with the model\n"
-        "  --export-pack D  with --pack-out DIR: an evidence pack of every\n"
-        "                 receipt-*.json in D (one model, one build), the model\n"
-        "                 signature and key, --pack-envelope F (the envelope\n"
-        "                 manifest the receipts name) and --pack-attach F files\n"
-        "                 (oversight records, ...; repeatable), under a sha256\n"
-        "                 manifest with one inference per receipt and the chain\n"
-        "                 they form; --sign-key signs it. Needs no -m\n"
-        "  --pack-out DIR  where --export-pack writes (created)\n"
-        "  --pack-envelope F, --pack-attach F  see --export-pack\n"
-        "  --check-pack DIR  verify a pack offline like --check-bundle, and\n"
-        "                 that the receipts form the chain it states\n"
+        "  --model-sig F  OpenSSF Model Signing bundle for -m (default: -m's\n"
+        "                 path + .sig when it exists); verified against\n"
+        "                 --model-pubkey at load, key method only (P-256/384/521)\n"
+        "  --model-pubkey F  PEM public key the model signature must verify\n"
+        "                 with; an explicit --model-sig that does not verify\n"
+        "                 refuses the load\n"
+        "  --require-signed-model  refuse to load -m unless its OMS signature\n"
+        "                 verifies with --model-pubkey\n"
+        "  --lora-sig F   OMS bundle for the --lora adapter (default: its path\n"
+        "                 + .sig when it exists); verified with --model-pubkey,\n"
+        "                 and required by --require-signed-model like the model\n"
+        "  --watermark F  mark sampled output with the tournament watermark\n"
+        "                 key F (-p runs and --serve; off by default; greedy is\n"
+        "                 never changed); records carry its key id, and\n"
+        "                 --verify replays a marked record only with F\n"
         "  --sessions DIR  with --serve: POST /v1/runner/sessions starts a\n"
         "                 raw-prompt generation that suspend_after N images\n"
         "                 into DIR; POST /v1/runner/sessions/{id}/resume\n"
@@ -1159,101 +1234,21 @@ static void usage_to(FILE *f, const char *prog) {
         "                 the continuation, and its image, are the ones the\n"
         "                 uninterrupted run makes, byte for byte\n"
         "  --fork-seed N  with --resume: continue under rng seed N instead of\n"
-        "                 the image's own (a reproducible fork)\n"
-        "  --watermark F  mark sampled output with the tournament watermark\n"
-        "                 key F (-p runs and --serve; off by default; greedy is\n"
-        "                 never changed); records carry its key id, and\n"
-        "                 --verify replays a marked record only with F\n"
-        "  --watermark-keygen F  write a new watermark key to F; needs no -m\n"
-        "  --detect-watermark F  score F against --watermark's key: a\n"
-        "                 transcript record (no -m) or a text (-m for its\n"
-        "                 tokenizer). Exit 0 WATERMARKED, 2 NOT_DETECTED,\n"
-        "                 3 INSUFFICIENT\n"
-        "  --keygen F     write a receipt-signing key (xyntetik.runner.signkey\n"
-        "                 .v1) to F and print its public key; needs no -m\n"
-        "  --keygen-algo A  ed25519 (default; 32-byte key, 64-byte signature)\n"
-        "                 or ml-dsa-44 (FIPS 204 post-quantum; 1312-byte key,\n"
-        "                 2420-byte signature, deterministic)\n"
-        "  --receipts DIR  with --serve: write a receipt (the --transcript\n"
-        "                 record, replayable by --verify) for every finished\n"
-        "                 generation into DIR, chained in write order across\n"
-        "                 restarts and signed with --sign-key when given; each\n"
-        "                 response's runner_telemetry.receipt names its file\n"
-        "  --receipts-keep N  keep the newest N receipts (default 0: all)\n"
-        "  --sign-key F   with --transcript or --receipts: sign the receipt\n"
-        "                 with the key in F; with --quantize, --merge-lora,\n"
-        "                 --train or --context-surgery: sign the step's\n"
-        "                 provenance record\n"
-        "                 (a signature over every byte before the ,\"signature\"\n"
-        "                 key, chain hash included; the object names the algo)\n"
-        "  --transcript-prev F  with --transcript: link the receipt to F (its\n"
-        "                 chain hash becomes this record's chain.prev); with\n"
-        "                 --verify: check that link (UNVERIFIABLE on a break)\n"
-        "  --require-signed  with --verify: an unsigned record is UNVERIFIABLE\n"
-        "  --trust-key HEX   with --verify: the record must be signed by this\n"
-        "                 Ed25519 public key (a signature by any other key is\n"
-        "                 UNVERIFIABLE)\n"
-        "  --model-sig F  OpenSSF Model Signing bundle for -m (default: -m's\n"
-        "                 path + .sig when it exists); verified against\n"
-        "                 --model-pubkey at load, key method only (P-256/384/521)\n"
-        "  --model-pubkey F  PEM public key the model signature must verify\n"
-        "                 with; an explicit --model-sig that does not verify\n"
-        "                 refuses the load\n"
-        "  --require-signed-model  refuse to load -m unless its OMS signature\n"
-        "                 verifies with --model-pubkey\n"
-        "  --sign-model F  write an OMS bundle for model F (every part of a\n"
-        "                 split GGUF) to F.sig, or to --model-sig; deterministic\n"
-        "                 ECDSA (RFC 6979) with --model-key. Needs no -m\n"
-        "  --model-key F  the PEM EC private key --sign-model signs with (SEC1\n"
-        "                 or PKCS#8, unencrypted, P-256/384/521)\n"
-        "  --merge-lora OUT  fold --lora into the base weights and write\n"
-        "                 OUT.gguf + an OUT.gguf.merge.json provenance record:\n"
-        "                 W' = W + (alpha/r)*B*A per adapted projection, each\n"
-        "                 tensor requantized to its own type (or --quant T).\n"
-        "                 The merged file runs in any GGUF runtime, but a\n"
-        "                 quantized output type rounds the delta through its\n"
-        "                 grid — measure the merged artifact before trusting\n"
-        "                 it; base + --lora stays the exact form. Refused\n"
-        "                 (destination untouched) when the output keeps under\n"
-        "                 50%% of the delta; the kept share and changed\n"
-        "                 bytes go in the record\n"
-        "  --merge-allow-erased  with --merge-lora: write the merge even\n"
-        "                 when the output grid rounded the delta away\n"
-        "  --type-plan-strict  with --type-plan: fail before writing when\n"
-        "                 any rule would be declined or fall back, instead of\n"
-        "                 reporting it and writing the file\n"
-        "  --type-plan PLAN.json  per-tensor precision while rewriting:\n"
-        "                 {\"default\":\"keep\",\"rules\":[{\"match\":\"_exps.weight\",\n"
-        "                 \"type\":\"q4_0\"}]}. First matching rule wins; types are\n"
-        "                 keep|q8_0|q4_0|q3_k|q4_k|q6_k|f16|bf16. Per-tensor is\n"
-        "                 the finest GGUF can\n"
-        "                 express: experts are stored stacked, one tensor per\n"
-        "                 layer, so per-EXPERT precision is not representable\n"
-        "  --remove-sublayer attn:N[,mlp:M,...]  drop block N's attention\n"
-        "                 (or block M's dense FFN) tensors while rewriting;\n"
-        "                 the absence is declared by a 0 in the per-block\n"
-        "                 attention.head_count / head_count_kv (or\n"
-        "                 feed_forward_length) array, llama.cpp's own\n"
-        "                 convention; the block's pre-norm stays. The runner\n"
-        "                 omits the branch and reserves no KV rows for it\n"
-        "                 (CPU path). A mechanism, not a quality claim:\n"
-        "                 measure the artifact against its parent\n"
-        "  --prune-experts LIST.json  drop MoE experts per layer while\n"
-        "                 rewriting: {\"layer_N\":[kept expert ids...]};\n"
-        "                 a layer absent from the file keeps every expert.\n"
-        "                 Combine with --quant to also requantize survivors\n"
+        "                 the image's own (a reproducible fork)\n\n"
+        "generation:\n"
         "  -n N           max tokens to generate (default 256, -1 = until EOS)\n"
-        "  -c N           context length (default: min(model max, 4096));\n"
-        "                 beyond the training context, YaRN rope scaling is\n"
-        "                 applied automatically\n"
+        "  -c N           context length (default: min(model max, 4096); under\n"
+        "                 --reserve the default is the auto-fit instead, the\n"
+        "                 context the reservation leaves after the weights)\n"
         "  -b N           prompt batch size (default 64 with --gpu off;\n"
         "                 otherwise auto-sized from free RAM: 64/256/512)\n"
         "  -t N           threads (default: physical cores, capped at 32)\n"
         "  -s N           RNG seed (default: time)\n"
-        "  --think        in -i chat, request the family's thinking prompt shape\n"
-        "  --no-think     in -i chat, request its non-thinking shape; otherwise\n"
-        "                 runner renders what the family's own reference\n"
-        "                 template renders. Server requests use enable_thinking\n"
+        "  --think [on|off|auto]  in -i chat, request the family's thinking\n"
+        "                 prompt shape (on; bare --think is on), its\n"
+        "                 non-thinking shape (off), or what the family's own\n"
+        "                 reference template renders (auto, the default).\n"
+        "                 Server requests use enable_thinking\n"
         "  --temp F       temperature (0 = greedy: returns the model's argmax\n"
         "                 with no repeat penalty applied)\n"
         "  --top-k N      top-k (0 = off)\n"
@@ -1261,11 +1256,14 @@ static void usage_to(FILE *f, const char *prog) {
         "  --min-p F      min-p vs the top candidate (0 = off)\n"
         "  --repeat-penalty F  penalty on recently emitted tokens (1 = off)\n"
         "                 the five options above default to the model family's\n"
-        "                 published settings; see --caps for the preset table\n"
-        "  --rope-scale F force linear rope position scaling by F\n"
-        "  --yarn-factor F override a model's native YaRN factor; preserves\n"
-        "                 its original context and correction parameters\n"
-        "  --rope-base F  override rope frequency base\n"
+        "                 published settings; see --info caps for the presets\n"
+        "  --rope SPEC    position scaling, a comma list of linear=F (force\n"
+        "                 linear rope scaling by F), yarn=F (override a model's\n"
+        "                 native YaRN factor, keeping its original context and\n"
+        "                 correction parameters) and base=F (override the rope\n"
+        "                 frequency base); linear and yarn exclude each other.\n"
+        "                 Beyond the training context, YaRN is applied\n"
+        "                 automatically without any of this\n"
         "  --system TEXT  system prompt for interactive chat (-i) only\n"
         "  --chat-template chatml|chatml-think|llama2|llama3|mistral|mistral-v1|\n"
         "                 mistral-nemo|zephyr|phi3|phi4|gemma|gemma4|gemma4-mainline|\n"
@@ -1276,9 +1274,31 @@ static void usage_to(FILE *f, const char *prog) {
         "                 valid with a multi-model -m swap set\n"
         "  --no-bos       do not add BOS token\n"
         "  --ignore-eos   keep generating past end-of-text tokens\n"
-        "  --gpu auto|off GPU offload if a backend is available (default auto)\n"
-        "  --gpu-layers N force N leading layers on the GPU, rest on CPU\n"
-        "                 (0 = no GPU, same as --gpu off; omit for auto-fit)\n"
+        "  --reasoning-budget N  close a reasoning turn once it has spent N\n"
+        "                 tokens (budget forcing; 0 = off, the default). Per\n"
+        "                 request: reasoning_max_tokens. Needs a model whose\n"
+        "                 reasoning turn ends on a single token\n"
+        "  --reasoning-budget-message S  the sentence the forced close writes\n"
+        "                 before the close token (default: a short neutral\n"
+        "                 one; \"\" for a bare close). Per request:\n"
+        "                 reasoning_budget_message\n"
+        "  --reasoning-temp F  temperature for REASONING turns only; calls and\n"
+        "                 answers keep the request's own sampler (off by\n"
+        "                 default). Per request: reasoning_temperature, with\n"
+        "                 reasoning_top_p / reasoning_min_p / reasoning_top_k\n"
+        "  --loop-guard   close a reasoning turn that starts repeating (a span\n"
+        "                 repeated back to back); off by default. Per request:\n"
+        "                 loop_guard, loop_guard_span/repeats/window,\n"
+        "                 loop_guard_everywhere\n"
+        "  --bare-recipients  Muse only: write a bare tool name verbatim in\n"
+        "                 the system turn's valid-recipients line (\"read\")\n"
+        "                 instead of the reference's namespace pattern\n"
+        "                 (\"read.*\"); off by default (the reference\n"
+        "                 rendering). Per request: bare_recipients\n\n"
+        "placement and memory:\n"
+        "  --gpu auto|off|N  GPU offload if a backend is available (auto, the\n"
+        "                 default), none (off), or exactly N leading layers on\n"
+        "                 the GPU with the rest on the CPU (0 = off)\n"
         "  --gpu-route R  CUDA arithmetic routes: reference, or a comma list of\n"
         "                 tc2, sm80, attn-tile, attn-dec, attn-tc, moe-tc,\n"
         "                 moe-grouped (recorded in transcripts and receipts;\n"
@@ -1289,24 +1309,26 @@ static void usage_to(FILE *f, const char *prog) {
         "                 deepest N expert layers (the rest stay on the GPU);\n"
         "                 auto = fill the VRAM budget with expert banks first\n"
         "  --wait-for-vram [S]  when another registered runner is holding the\n"
-        "                 GPU, queue for up to S seconds (default 300) instead\n"
-        "                 of refusing. Without it a runner that does not fit\n"
-        "                 fails immediately, naming who holds what.\n"
+        "                 GPU, queue for up to S seconds instead of refusing\n"
+        "                 (bare: 300). --serve queues by default; 0 refuses at\n"
+        "                 once, naming who holds what, which is the default\n"
+        "                 for every other mode\n"
         "  --vram-priority N  advisory small-integer priority (default 0,\n"
         "                 also RUNNER_VRAM_PRIORITY). Shown in the refusal\n"
         "                 listing; among several --wait-for-vram waiters on\n"
         "                 one GPU, a higher N is admitted first once space\n"
         "                 frees, but only among waiters that currently fit.\n"
         "                 No effect without --wait-for-vram.\n"
-        "  --yield-on-request  in --serve, release the resident model at the\n"
-        "                 next idle point between requests when another\n"
+        "  --yield-on-request [on|off]  in --serve, release the resident model\n"
+        "                 at the next idle point between requests when another\n"
         "                 process has asked it to (vram_request_yield). A\n"
-        "                 request, never preemption: nothing forces this.\n"
-        "  --reserve P    cap this runner at P%% of TOTAL VRAM and RAM. With\n"
-        "                 -c 0 the context is auto-fit to whatever the\n"
-        "                 reservation leaves after the weights\n"
-        "  --reserve-vram P / --reserve-ram P   as --reserve, one budget only\n"
-        "  --reserve-cpu P  size the thread count as P%% of cores\n"
+        "                 request, never preemption: nothing forces this. On\n"
+        "                 by default when serving; off keeps the model\n"
+        "  --reserve P | vram=P,ram=P,cpu=P  cap this runner at P%% of TOTAL\n"
+        "                 VRAM and RAM (one number), or each budget by name:\n"
+        "                 vram, ram, or cpu (size the thread count as P%% of\n"
+        "                 cores). Without -c the context is auto-fit to\n"
+        "                 whatever the reservation leaves after the weights\n"
         "  --kv f16|q8|k8v4|fp4  KV cache storage (default f16). q8 roughly\n"
         "                 halves the cache; k8v4 keeps K at q8 and stores V as\n"
         "                 fp4 (about 41%% of f16); fp4 stores both as fp4 (about\n"
@@ -1321,136 +1343,169 @@ static void usage_to(FILE *f, const char *prog) {
         "  --moe-prefetch on|off|auto   hand routed experts to the OS as whole\n"
         "                 blocks before the FFN reads them (MoE models only).\n"
         "                 auto (default): on for Apple Silicon when the weights\n"
-        "                 exceed available RAM — measured 1.26-1.43x decode\n"
-        "                 there — and off elsewhere, where the same A/B\n"
+        "                 exceed available RAM, measured 1.26-1.43x decode\n"
+        "                 there, and off elsewhere, where the same A/B\n"
         "                 measured nothing on fast storage\n"
-        "  --draft PATH   small same-vocab GGUF for speculative decoding\n"
-        "                 (one-shot, chat, and single-model --serve)\n"
+        "  --draft SOURCE  speculative decoding from one source per run: PATH\n"
+        "                 (a small same-vocab GGUF; one-shot, chat and\n"
+        "                 single-model --serve), mtp (the model's own\n"
+        "                 NextN/MTP head, CPU path), mtp:FILE (that head from a\n"
+        "                 companion GGUF, llama.cpp's MTP-only export, when the\n"
+        "                 model file carries none) or lookup (n-gram matches in\n"
+        "                 the context itself: no weights, no draft forward)\n"
         "  --draft-k N    draft tokens per round (default 4)\n"
-        "  --mtp          draft from the model's own NextN/MTP head (CPU path)\n"
-        "  --mtp-file PATH  the NextN/MTP head from a companion GGUF (llama.cpp's\n"
-        "                 MTP-only export) when the model file carries none; implies --mtp\n"
-        "  --draft-lookup draft from n-gram matches in the context itself\n"
-        "                 (prompt lookup: no weights, no draft forward; one\n"
-        "                 draft source per run, exclusive with --draft/--mtp)\n"
-        "  --reasoning-budget N  close a reasoning turn once it has spent N\n"
-        "                 tokens (budget forcing; 0 = off, the default). Per\n"
-        "                 request: reasoning_max_tokens. Needs a model whose\n"
-        "                 reasoning turn ends on a single token\n"
-        "  --bare-recipients  Muse only: write a bare tool name verbatim in\n"
-        "                 the system turn's valid-recipients line (\"read\")\n"
-        "                 instead of the reference's namespace pattern\n"
-        "                 (\"read.*\"); off by default (the reference\n"
-        "                 rendering). Per request: bare_recipients\n"
-        "  --loop-guard   close a reasoning turn that starts repeating (a span\n"
-        "                 repeated back to back); off by default. Per request:\n"
-        "                 loop_guard, loop_guard_span/repeats/window,\n"
-        "                 loop_guard_everywhere\n"        "  --reasoning-temp F  temperature for REASONING turns only; calls and\n"
-        "                 answers keep the request's own sampler (off by\n"
-        "                 default). Per request: reasoning_temperature, with\n"
-        "                 reasoning_top_p / reasoning_min_p / reasoning_top_k\n"        "  --reasoning-budget-message S  the sentence the forced close writes\n"
-        "                 before the close token (default: a short neutral\n"
-        "                 one; \"\" for a bare close). Per request:\n"
-        "                 reasoning_budget_message\n"
-        "  --draft-required  fail instead of decoding plain if --draft is\n"
+        "  --draft-required  fail instead of decoding plain if --draft PATH is\n"
         "                 refused (local CLI only; serve mode reports\n"
-        "                 draft.active from /v1/capabilities)\n"
-        "  --bench-json   run a small decode benchmark and print JSON metrics\n"
-        "  --score        teacher-forced scoring: per-token log P(token|prefix)\n"
-        "                 over the raw -p/-f text (no template, no sampling),\n"
-        "                 printed as JSON with NLL and perplexity\n"
-        "  --score-top N  with --score: also print each position's N (1-256)\n"
-        "                 most likely tokens with their logprobs, best first\n"
-        "  --decide FILE  typed decisions: one /v1/decide request per line of\n"
-        "                 FILE (state, questions[{question, options}]), one\n"
-        "                 response per line on stdout; options scored verbatim\n"
-        "                 in context, no sampling (- reads stdin)\n"
-        "  --systemone FILE  Clef typed decisions: one /v1/systemone request\n"
-        "                 (model, state, questions) per line of FILE, one\n"
-        "                 response per line on stdout (- reads stdin)\n"
+        "                 draft.active from /v1/capabilities)\n\n"
+        "adapters:\n"
         "  --lora FILE    load a LoRA adapter GGUF beside the frozen base\n"
         "                 (dense projections, on the CPU and on an offloaded\n"
         "                 CUDA or Metal block; fails closed otherwise)\n"
         "  --lora-scale F multiply the adapter's trained alpha/r (default 1.0)\n"
-        "  --lora-sig F   OMS bundle for the --lora adapter (default: its path\n"
-        "                 + .sig when it exists); verified with --model-pubkey,\n"
-        "                 and required by --require-signed-model like the model\n"
         "  --adapter NAME=PATH  with --serve: load a LoRA adapter once and serve\n"
         "                 it per request as \"model\": \"<model>:NAME\" (CPU\n"
         "                 hooks, --gpu off; repeatable, up to 16; exclusive\n"
-        "                 with --lora; --lora-scale applies)\n"
-        "  --train FILE   AdamW LoRA training (CPU): plain text, or .jsonl\n"
-        "                 lines {\"prompt\",\"completion\",\"weight\"} with the\n"
-        "                 prompt masked from the loss (or \"prompt_tokens\" and\n"
-        "                 \"completion_tokens\" id arrays, used as given).\n"
-        "                 Deterministic by default: same data + seed ->\n"
-        "                 byte-identical adapter\n"
-        "  --train-logprobs F  with --train: per step, one JSON line with the\n"
-        "                 logprob of every completion token under the forward\n"
-        "                 that step trains through (before its update)\n"
-        "  --train-teacher DIR  with --train: distill instead of cross-entropy.\n"
-        "                 DIR holds topk_idx.npy (int32) and topk_logp.npy\n"
-        "                 (float32), each [lines, positions, k]: the teacher's\n"
-        "                 top-k ids and natural-log probabilities for completion\n"
-        "                 token p of line n. Loss: KL(teacher top-k + tail ||\n"
-        "                 student). Needs the id form of --train\n"
+        "                 with --lora; --lora-scale applies)\n\n"
+        "process:\n"
+        "  --parent-pid N exit when process N dies, not when the thread that\n"
+        "                 launched this one does (supervisor cleanup)\n\n"
+        "older spellings, still accepted and meaning the same: --json-schema F\n"
+        "(--json F); --no-think (--think off); --no-tray (--tray off); --gpu-layers N\n"
+        "(--gpu N); --reserve-vram P, --reserve-ram P, --reserve-cpu P (--reserve\n"
+        "vram=P,...); --rope-scale F, --yarn-factor F, --rope-base F (--rope\n"
+        "linear=F, yarn=F, base=F); --mtp, --mtp-file F, --draft-lookup (--draft mtp,\n"
+        "mtp:F, lookup); --score-top N (--score N); --transcript F and --receipts DIR\n"
+        "(--record PATH); --receipts-keep N (--record-keep N); --transcript-prev F\n"
+        "(--record-prev F); --quantize OUT, --merge-lora OUT, --context-surgery OUT\n"
+        "(--rewrite OUT with the trigger); --caps, --tool-info, --adapt-info,\n"
+        "--doctor, --fit PATH (--info caps|tools|adapter|doctor|fit); the --train\n"
+        "family (runner train); --keygen, --sign-record, --check-record, --lineage,\n"
+        "--export-bundle, --check-bundle, --export-pack, --check-pack, --sign-model,\n"
+        "--watermark-keygen, --detect-watermark (runner attest).\n",
+        prog);
+}
+
+// `runner attest <verb> ...`: the record, key, bundle and pack utilities,
+// which need files and never a model. Each verb is a rewrite of the flags
+// behind it (cli_expand_subcommand), so the flags' own checks and records
+// are what runs.
+static void usage_attest_to(FILE *f) {
+    fprintf(f,
+        "usage: runner attest <verb> [arguments] [options]\n\n"
+        "verbs:\n"
+        "  keygen OUT [--algo ed25519|ml-dsa-44]\n"
+        "        write a receipt-signing key (xyntetik.runner.signkey.v1) to\n"
+        "        OUT and print its public key. ed25519 is the default (32-byte\n"
+        "        key, 64-byte signature); ml-dsa-44 is FIPS 204 post-quantum\n"
+        "        (1312-byte key, 2420-byte signature, deterministic)\n"
+        "  sign RECORD --key KEYFILE [--prev PREV]\n"
+        "        sign any JSON object file in place: the transcript's chain and\n"
+        "        signature objects; --prev links it to record PREV\n"
+        "  check RECORD [--trust-key K]\n"
+        "        verify one record's signature and chain fields\n"
+        "  lineage FILE [--trust-key K]\n"
+        "        walk FILE's provenance chain (a model or adapter file, its\n"
+        "        record, an answer's receipt, or a receipts directory) back to\n"
+        "        its origins: every link re-hashed, every signature checked.\n"
+        "        Exit 0 verified and signed, 1 consistent but not all signed,\n"
+        "        2 broken or no record\n"
+        "  bundle RECEIPT OUT_DIR [--model-sig F] [--model-pubkey F] [--key KEYFILE]\n"
+        "        put the receipt, its model signature and key, the receipt\n"
+        "        key's fingerprint and a sha256 manifest in one directory a\n"
+        "        verifier can take; --key signs the manifest\n"
+        "  check-bundle DIR [--trust-key K]\n"
+        "        verify a bundle offline: files match the manifest, the chain\n"
+        "        recomputes, signatures verify. Exit 0 OK, 2 BAD, 3\n"
+        "        UNVERIFIABLE. Does not replay: that is --verify with the model\n"
+        "  pack RECEIPTS_DIR OUT_DIR [--envelope F] [--attach F]... [--model-sig F]\n"
+        "       [--model-pubkey F] [--key KEYFILE]\n"
+        "        an evidence pack of every receipt-*.json in RECEIPTS_DIR (one\n"
+        "        model, one build), the model signature and key, the envelope\n"
+        "        manifest the receipts name and attached files (oversight\n"
+        "        records, ...), under a sha256 manifest with one inference per\n"
+        "        receipt and the chain they form; --key signs it\n"
+        "  check-pack DIR [--trust-key K]\n"
+        "        verify a pack offline like check-bundle, and that the receipts\n"
+        "        form the chain it states\n"
+        "  sign-model MODEL --key KEY.pem [--out SIG]\n"
+        "        write an OpenSSF Model Signing bundle for MODEL (every part of\n"
+        "        a split GGUF) to MODEL.sig, or to SIG; deterministic ECDSA\n"
+        "        (RFC 6979) with a PEM EC private key (SEC1 or PKCS#8,\n"
+        "        unencrypted, P-256/384/521)\n"
+        "  watermark-keygen OUT\n"
+        "        write a new watermark key to OUT\n"
+        "  detect FILE --key WMKEY [-m MODEL]\n"
+        "        score FILE against the watermark key: a transcript record (no\n"
+        "        -m) or a text (-m for its tokenizer). Exit 0 WATERMARKED, 2\n"
+        "        NOT_DETECTED, 3 INSUFFICIENT\n\n"
+        "--trust-key K is the key's hex, sha256: plus the hex SHA-256 of its\n"
+        "bytes, or a file holding either (keygen's output as written). Any\n"
+        "other option is passed to the runner as given.\n");
+}
+
+// `runner train DATA -m MODEL ...`: AdamW LoRA training on the CPU, or on a
+// CUDA GPU with --train-gpu. The short option names below are rewritten to
+// the runner's training flags (cli_expand_subcommand).
+static void usage_train_to(FILE *f) {
+    fprintf(f,
+        "usage: runner train DATA -m model.gguf [options]\n\n"
+        "DATA is plain text, or .jsonl lines {\"prompt\",\"completion\",\"weight\"}\n"
+        "with the prompt masked from the loss (or \"prompt_tokens\" and\n"
+        "\"completion_tokens\" id arrays, used as given). Deterministic by\n"
+        "default: same data + seed -> byte-identical adapter, written beside\n"
+        "a provenance record.\n\n"
+        "options:\n"
+        "  --dpo          DATA holds preference pairs {\"prompt\",\"chosen\",\n"
+        "                 \"rejected\"}: DPO (arXiv 2305.18290) over the adapter;\n"
+        "                 the reference policy is these same weights with the\n"
+        "                 adapter bypassed, so it costs no second copy\n"
+        "  --dpo-beta F   DPO beta, the reference-deviation weight (0.1)\n"
+        "  --steps N      optimizer steps (100)\n"
+        "  --lr F         learning rate (1e-4)\n"
+        "  --ctx N        training context (128)\n"
+        "  --out F        adapter GGUF to write (adapter-out.gguf)\n"
+        "  --save-every N write a checkpoint every N steps (0: never)\n"
+        "  --lora FILE    continue from this adapter instead of a fresh one\n"
+        "  --lora-rank R  fresh-adapter rank when no --lora is given (8)\n"
+        "  --lora-scale F multiply the adapter's trained alpha/r (1.0)\n"
+        "  --eot          append the template's end-of-turn token to every\n"
+        "                 completion (a jsonl line can set \"end_of_turn\")\n"
+        "  --logprobs F   per step, one JSON line with the logprob of every\n"
+        "                 completion token under the forward that step trains\n"
+        "                 through (before its update)\n"
+        "  --teacher DIR  distill instead of cross-entropy. DIR holds\n"
+        "                 topk_idx.npy (int32) and topk_logp.npy (float32),\n"
+        "                 each [lines, positions, k]: the teacher's top-k ids\n"
+        "                 and natural-log probabilities for completion token p\n"
+        "                 of line n. Loss: KL(teacher top-k + tail || student).\n"
+        "                 Needs the id form of DATA\n"
         "  --lr-schedule constant|cosine --lr-warmup N --lr-floor F\n"
-        "                 with --train: linear warmup over N steps, then a\n"
-        "                 constant lr or a cosine down to F x --lr (0.1)\n"
-        "  --train-batch N  with --train: N rows per optimizer step, the\n"
-        "                 loss and gradient the mean over their positions\n"
+        "                 linear warmup over N steps, then a constant lr or a\n"
+        "                 cosine down to F x --lr (0.1)\n"
+        "  --batch N      N rows per optimizer step, the loss and gradient the\n"
+        "                 mean over their positions\n"
         "  --weight-decay F  AdamW decoupled decay (0.01; 0 is plain Adam)\n"
-        "  --train-resume CKPT  continue the run CKPT (an adapter --save-every\n"
+        "  --resume CKPT  continue the run CKPT (an adapter --save-every\n"
         "                 wrote) left: its moments, step and next rows\n"
-        "  --train-eval LABEL=ROWS[,TEACHER]  a held-out set (repeatable): at\n"
-        "                 step 0, every --eval-every N steps and the last, its\n"
-        "                 mean loss and top-1 agreement, no update\n"
+        "  --eval LABEL=ROWS[,TEACHER]  a held-out set (repeatable): at step\n"
+        "                 0, every --eval-every N steps and the last, its mean\n"
+        "                 loss and top-1 agreement, no update\n"
         "  --kill-at S --kill-metric LABEL --kill-min-rel R  at step S stop\n"
         "                 (exit 3) unless LABEL's loss fell by R from step 0\n"
         "  --stop-file F  after a step, if F exists: save and exit 75\n"
-        "  --train-gpu    with --train or --train-dpo: every weight product\n"
-        "                 of a step (and a Gated DeltaNet model's recurrence)\n"
-        "                 on a CUDA GPU. The adapter matches a CPU run within\n"
-        "                 tolerance, not byte for byte\n"
-        "  --train-gpu-budget BYTES  the device memory --train-gpu's weights\n"
-        "                 may take (default: the free memory); which weights\n"
-        "                 fit decides the adapter's bits, the record names it\n"
-        "  --train-eot    append the template's end-of-turn token to every\n"
-        "                 completion (a jsonl line can set \"end_of_turn\")\n"
-        "  --train-dpo F  preference pairs .jsonl {\"prompt\",\"chosen\",\n"
-        "                 \"rejected\"}: DPO (arXiv 2305.18290) over the\n"
-        "                 adapter; the reference policy is these same weights\n"
-        "                 with the adapter bypassed, so it costs no second copy\n"
-        "  --dpo-beta F   DPO beta, the reference-deviation weight (0.1)\n"
-        "  --train-steps N --lr F --train-ctx N --save-every N\n"
-        "                 training-loop knobs (defaults 100, 1e-4, 128, 0)\n"
-        "  --train-out F  adapter GGUF to write (default adapter-out.gguf)\n"
-        "  --lora-rank R  fresh-adapter rank when no --lora is given (8)\n"
-        "  --caps         print machine capabilities as JSON and exit\n"
-        "  --tool-info    load -m MODEL and print its native tool-call protocol,\n"
-        "                 chat template and sampling preset\n"
-        "  --adapt-info   load -m MODEL and print, as JSON, whether an adapter can\n"
-        "                 be served on it and trained on it, with the reason\n"
-        "                 when it cannot\n"
-        "  --doctor       load -m MODEL, run one short probe and print a diagnostic\n"
-        "                 report as JSON: version, placement, template, sampler,\n"
-        "                 memory, timings, findings and a next step for each.\n"
-        "                 The report holds no prompt or reply text unless\n"
-        "                 --doctor-include-text is given; read it before sharing\n"
-        "  --shadow-mode  install shadow mode for Claude Code and Codex if present\n"
-        "                 (asks first; --yes skips the question); -m MODEL names\n"
-        "                 the model the /shadow offload will serve\n"
-        "                 as one JSON line, then exit\n"
-        "  --fit PATH     estimate whether a GGUF fits this machine and exit:\n"
-        "                 RAM, and on a discrete GPU the layers the offload\n"
-        "                 budget would hold; reads only the header, so a\n"
-        "                 partial download works\n"
-        "  --version      print the runner version and exit\n"
-        "  --parent-pid N exit when process N dies, not when the thread that\n"
-        "                 launched this one does (supervisor cleanup)\n"
-        "  -v             verbose model info\n"
-        "  -h, --help     print this help to stdout and exit\n",
-        prog);
+        "  --train-gpu    every weight product of a step (and a Gated DeltaNet\n"
+        "                 model's recurrence) on a CUDA GPU. The adapter\n"
+        "                 matches a CPU run within tolerance, not byte for byte\n"
+        "  --gpu-budget BYTES  the device memory --train-gpu's weights may\n"
+        "                 take (default: the free memory); which weights fit\n"
+        "                 decides the adapter's bits, the record names it\n"
+        "  --sign-key F   sign the training record with the key in F\n\n"
+        "Every other option (-m, -s, -t, -c, --chat-template, --model-pubkey,\n"
+        "...) is the runner's own and passed through as given. The longer\n"
+        "spellings --train DATA, --train-dpo DATA, --train-steps, --train-ctx,\n"
+        "--train-out, --train-batch, --train-resume, --train-eval,\n"
+        "--train-teacher, --train-logprobs, --train-eot and --train-gpu-budget\n"
+        "are still accepted on the main command line.\n");
 }
 
 static void usage(const char *prog) { usage_to(stderr, prog); }
@@ -1957,6 +2012,15 @@ typedef struct {
     const char *decide_path;   // --decide FILE (jsonl of /v1/decide requests)
     const char *systemone_path; // --systemone FILE (jsonl of /v1/systemone requests)
     const char *fit_path;
+    // The merged spellings (--record, --rewrite, --info fit, the serve
+    // defaults), resolved onto the fields above once the whole line is
+    // parsed, in cli_resolve_shape(); the fields the modes read stay the
+    // ones they always read.
+    bool fit_info;                 // --info fit: fit-check -m without loading it
+    const char *record_path;       // --record PATH: receipts dir under --serve, else transcript
+    const char *rewrite_out;       // --rewrite OUT: the one tensor-rewrite verb
+    bool rewrite_merge, rewrite_context;   // its --merge-lora / --context-surgery triggers
+    bool vram_wait_given, yield_given, port_given, ttl_given;
     // serving
     int port, parallel, ttl;
     long parent_pid;
@@ -2094,6 +2158,72 @@ static bool recipe_flag(cli_opts *o, const char *flag) {
     return true;
 }
 
+// An optional operand: the next token when there is one and it is not a
+// flag (every flag starts with '-', and no optional operand is negative).
+// Consumes it. The caller decides what a NULL means.
+static const char *opt_operand(int argc, char **argv, int *i) {
+    if (*i + 1 < argc && argv[*i + 1][0] != '-') return argv[++*i];
+    return NULL;
+}
+
+// --reserve P | vram=P,ram=P,cpu=P: one percentage for VRAM and RAM, or
+// each budget by name. False with the error printed.
+static bool parse_reserve(cli_opts *o, const char *spec) {
+    bool all_digits = *spec != 0;
+    for (const char *c = spec; *c; c++) all_digits &= (*c >= '0' && *c <= '9');
+    if (all_digits) {
+        o->mp.reserve_vram_pct = o->mp.reserve_ram_pct =
+            (int)int_arg("--reserve", spec, 0, 100);
+        return true;
+    }
+    char buf[256];
+    if (strlen(spec) >= sizeof buf) goto bad;
+    strcpy(buf, spec);
+    for (char *item = buf, *next; item; item = next) {
+        next = strchr(item, ',');
+        if (next) *next++ = 0;
+        char *eq = strchr(item, '=');
+        if (!eq || !eq[1]) goto bad;
+        *eq = 0;
+        int pct = (int)int_arg("--reserve", eq + 1, 0, 100);
+        if (!strcmp(item, "vram")) o->mp.reserve_vram_pct = pct;
+        else if (!strcmp(item, "ram")) o->mp.reserve_ram_pct = pct;
+        else if (!strcmp(item, "cpu")) o->reserve_cpu_pct = pct;
+        else goto bad;
+    }
+    return true;
+bad:
+    fprintf(stderr, "error: --reserve expects a percentage, or a comma list of "
+            "vram=P, ram=P and cpu=P (got %s)\n", spec);
+    return false;
+}
+
+// --rope linear=F,yarn=F,base=F. False with the error printed.
+static bool parse_rope(cli_opts *o, const char *spec) {
+    char buf[256];
+    if (!*spec || strlen(spec) >= sizeof buf) goto bad;
+    strcpy(buf, spec);
+    for (char *item = buf, *next; item; item = next) {
+        next = strchr(item, ',');
+        if (next) *next++ = 0;
+        char *eq = strchr(item, '=');
+        if (!eq || !eq[1]) goto bad;
+        *eq = 0;
+        if (!strcmp(item, "linear"))
+            o->mp.rope_scale = (float)float_arg("--rope linear", eq + 1, 0, FLT_MAX);
+        else if (!strcmp(item, "yarn"))
+            o->mp.yarn_factor = (float)float_arg("--rope yarn", eq + 1, 1, FLT_MAX);
+        else if (!strcmp(item, "base"))
+            o->mp.rope_base = (float)float_arg("--rope base", eq + 1, 0, FLT_MAX);
+        else goto bad;
+    }
+    return true;
+bad:
+    fprintf(stderr, "error: --rope expects a comma list of linear=F, yarn=F and "
+            "base=F (got %s)\n", spec);
+    return false;
+}
+
 static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -2113,33 +2243,68 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "-v")) o->verbose = true;
         else if (!strcmp(a, "--serve")) o->serve = true;
         // gemma-4 renders a non-thinking prompt by default, matching its
-        // reference template; --think opts into the thinking shape
-        else if (!strcmp(a, "--think")) o->thinking = THINK_ON;
+        // reference template; --think (on) opts into the thinking shape,
+        // off into the non-thinking one, auto leaves it to the template
+        else if (!strcmp(a, "--think")) {
+            const char *v = opt_operand(argc, argv, &i);
+            if (!v || !strcmp(v, "on")) o->thinking = THINK_ON;
+            else if (!strcmp(v, "off")) o->thinking = THINK_OFF;
+            else if (!strcmp(v, "auto")) o->thinking = THINK_DEFAULT;
+            else { fprintf(stderr, "error: --think expects on, off or auto\n"); *rc = 1; return false; }
+        }
         else if (!strcmp(a, "--no-think")) o->thinking = THINK_OFF;
-        else if (!strcmp(a, "--tray")) { *rc = tray_main(); return false; }
-        // The standing opt-out, and no longer a no-op: it suppresses both the
-        // bare-invocation launch above and the tray that otherwise follows a
-        // --serve or -i session below.
+        // Bare --tray: BE the tray. --tray off is the standing opt-out, and
+        // no no-op: it suppresses both the bare-invocation launch above and
+        // the tray that otherwise follows a --serve or -i session below.
+        // --tray auto is that default, spelled out.
+        else if (!strcmp(a, "--tray")) {
+            const char *v = opt_operand(argc, argv, &i);
+            if (!v) { *rc = tray_main(); return false; }
+            if (!strcmp(v, "off")) o->no_tray = true;
+            else if (!strcmp(v, "auto")) o->no_tray = false;
+            else { fprintf(stderr, "error: --tray expects off or auto, or nothing (be the tray)\n"); *rc = 1; return false; }
+        }
         else if (!strcmp(a, "--no-tray")) o->no_tray = true;
         else if (!strcmp(a, "--force-uncertified")) o->force_uncertified = true;
-        else if (!strcmp(a, "--port")) o->port = (int)int_arg(a, NEXT, 1, 65535);
+        else if (!strcmp(a, "--port")) { o->port = (int)int_arg(a, NEXT, 1, 65535); o->port_given = true; }
         else if (!strcmp(a, "--parallel")) o->parallel = (int)int_arg(a, NEXT, 1, 16);
-        else if (!strcmp(a, "--ttl")) o->ttl = (int)int_arg(a, NEXT, -1, INT_MAX);
-        else if (!strcmp(a, "--json")) o->json_mode = true;
+        else if (!strcmp(a, "--ttl")) { o->ttl = (int)int_arg(a, NEXT, -1, INT_MAX); o->ttl_given = true; }
+        // --json alone constrains to one JSON object; --json FILE to the
+        // schema in FILE (the two are different constraints, and a record
+        // names the one it ran under)
+        else if (!strcmp(a, "--json")) {
+            const char *v = opt_operand(argc, argv, &i);
+            if (v) o->schema_file = v; else o->json_mode = true;
+        }
         else if (!strcmp(a, "--json-schema")) o->schema_file = NEXT;
+        // The one rewrite verb and its two triggers. The older verbs took
+        // the output themselves: a trigger followed by a non-flag token is
+        // that older form.
+        else if (!strcmp(a, "--rewrite")) o->rewrite_out = NEXT;
         else if (!strcmp(a, "--quantize")) o->quant_out = NEXT;
-        else if (!strcmp(a, "--context-surgery")) o->context_out = NEXT;
-        else if (!strcmp(a, "--merge-lora")) o->merge_out = NEXT;
+        else if (!strcmp(a, "--context-surgery")) {
+            const char *v = opt_operand(argc, argv, &i);
+            if (v) o->context_out = v; else o->rewrite_context = true;
+        }
+        else if (!strcmp(a, "--merge-lora")) {
+            const char *v = opt_operand(argc, argv, &i);
+            if (v) o->merge_out = v; else o->rewrite_merge = true;
+        }
         else if (!strcmp(a, "--merge-allow-erased")) o->merge_allow_erased = true;
+        // --record PATH is the transcript file of a one-shot run or the
+        // receipts directory of a server; which one is known once the whole
+        // line is parsed (cli_resolve_shape)
+        else if (!strcmp(a, "--record")) o->record_path = NEXT;
         else if (!strcmp(a, "--transcript")) o->transcript_path = NEXT;
         else if (!strcmp(a, "--verify")) o->verify_path = NEXT;
-        else if (!strcmp(a, "--transcript-prev")) o->transcript_prev = NEXT;
+        // one previous-record link, whichever record this run writes
+        else if (!strcmp(a, "--record-prev") || !strcmp(a, "--transcript-prev"))
+            o->transcript_prev = o->record_prev = NEXT;
         else if (!strcmp(a, "--sign-key")) o->sign_key = NEXT;
         else if (!strcmp(a, "--lineage")) o->lineage_path = NEXT;
         else if (!strcmp(a, "--require-eval")) o->require_eval = NEXT;
         else if (!strcmp(a, "--keygen")) o->keygen_path = NEXT;
         else if (!strcmp(a, "--sign-record")) o->sign_record = NEXT;
-        else if (!strcmp(a, "--record-prev")) o->record_prev = NEXT;
         else if (!strcmp(a, "--check-record")) o->check_record = NEXT;
         else if (!strcmp(a, "--export-bundle")) o->export_bundle = NEXT;
         else if (!strcmp(a, "--bundle-out")) o->bundle_out = NEXT;
@@ -2159,7 +2324,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             o->pack_attach[o->n_pack_attach++] = f;
         }
         else if (!strcmp(a, "--receipts")) o->receipts_dir = NEXT;
-        else if (!strcmp(a, "--receipts-keep"))
+        else if (!strcmp(a, "--record-keep") || !strcmp(a, "--receipts-keep"))
             o->receipts_keep = (int)int_arg(a, NEXT, 0, 100000000);
         else if (!strcmp(a, "--keygen-algo")) o->keygen_algo = NEXT;
         else if (!strcmp(a, "--require-signed")) o->require_signed = true;
@@ -2192,6 +2357,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "--top-p")) { o->ov.top_p = (float)float_arg(a, NEXT, 0, 1); o->ov.has_top_p = true; }
         else if (!strcmp(a, "--min-p")) { o->ov.min_p = (float)float_arg(a, NEXT, 0, 1); o->ov.has_min_p = true; }
         else if (!strcmp(a, "--repeat-penalty")) { o->ov.repeat_penalty = (float)float_arg(a, NEXT, FLT_MIN, FLT_MAX); o->ov.has_repeat_penalty = true; }
+        else if (!strcmp(a, "--rope")) { if (!parse_rope(o, NEXT)) { *rc = 1; return false; } }
         else if (!strcmp(a, "--rope-scale")) o->mp.rope_scale = (float)float_arg(a, NEXT, 0, FLT_MAX);
         else if (!strcmp(a, "--yarn-factor")) o->mp.yarn_factor = (float)float_arg(a, NEXT, 1, FLT_MAX);
         else if (!strcmp(a, "--rope-base")) o->mp.rope_base = (float)float_arg(a, NEXT, 0, FLT_MAX);
@@ -2214,7 +2380,18 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             const char *v = NEXT;
             if (!strcmp(v, "auto")) o->mp.gpu_mode = GPU_AUTO;
             else if (!strcmp(v, "off")) o->mp.gpu_mode = GPU_OFF;
-            else { fprintf(stderr, "error: --gpu expects auto or off\n"); *rc = 1; return false; }
+            else if (v[0] >= '0' && v[0] <= '9') {
+                // A layer count. An explicit 0 means what it says: no layers
+                // on the GPU. It used to be the "auto-fit" sentinel, which
+                // read as CPU but silently ran full-GPU, and that misreading
+                // produced vacuous CPU-vs-GPU certification evidence (GPU
+                // compared with GPU). Auto-fit is the default; omit the
+                // count to get it.
+                int n = (int)int_arg(a, v, 0, 100000);
+                if (n == 0) o->mp.gpu_mode = GPU_OFF;
+                else o->mp.gpu_layers_override = n;
+            }
+            else { fprintf(stderr, "error: --gpu expects auto, off or a layer count\n"); *rc = 1; return false; }
         }
         else if (!strcmp(a, "--kv")) {
             const char *v = NEXT;
@@ -2233,7 +2410,16 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             else if (!strcmp(v, "auto")) o->mp.moe_prefetch = 0;
             else { fprintf(stderr, "error: --moe-prefetch expects on, off or auto\n"); *rc = 1; return false; }
         }
-        else if (!strcmp(a, "--draft"))   o->draft_path = NEXT;
+        // one draft source per run, named by its spelling: a path, the
+        // model's own MTP head, that head from a companion file, or the
+        // context itself
+        else if (!strcmp(a, "--draft")) {
+            const char *v = NEXT;
+            if (!strcmp(v, "mtp")) { o->mp.mtp = true; o->mtp_on = true; }
+            else if (!strncmp(v, "mtp:", 4)) { o->mp.mtp_path = v + 4; o->mp.mtp = true; o->mtp_on = true; }
+            else if (!strcmp(v, "lookup")) o->draft_lookup = true;
+            else o->draft_path = v;
+        }
         else if (!strcmp(a, "--draft-required")) o->draft_required = true;
         else if (!strcmp(a, "--draft-k")) o->draft_k = (int)int_arg(a, NEXT, 1, 15);
         else if (!strcmp(a, "--mtp"))     { o->mp.mtp = true; o->mtp_on = true; }
@@ -2250,7 +2436,11 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "--bench-json")) o->bench_json = true;
         else if (!strcmp(a, "--doctor")) o->doctor = true;
         else if (!strcmp(a, "--doctor-include-text")) o->doctor = o->doctor_text = true;
-        else if (!strcmp(a, "--score")) o->score = true;
+        else if (!strcmp(a, "--score")) {
+            o->score = true;
+            const char *v = opt_operand(argc, argv, &i);
+            if (v) o->score_top = (int)int_arg(a, v, 1, 256);
+        }
         else if (!strcmp(a, "--score-top")) o->score_top = (int)int_arg(a, NEXT, 1, 256);
         else if (!strcmp(a, "--decide")) o->decide_path = NEXT;
         else if (!strcmp(a, "--systemone")) o->systemone_path = NEXT;
@@ -2350,14 +2540,10 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "--kill-metric") && recipe_flag(o, a)) o->kill_metric = NEXT;
         else if (!strcmp(a, "--kill-min-rel") && recipe_flag(o, a))
             o->kill_min_rel = (float)float_arg(a, NEXT, -1, 1);
-        else if (!strcmp(a, "--reserve")) o->mp.reserve_vram_pct = o->mp.reserve_ram_pct = (int)int_arg(a, NEXT, 0, 100);
+        else if (!strcmp(a, "--reserve")) { if (!parse_reserve(o, NEXT)) { *rc = 1; return false; } }
         else if (!strcmp(a, "--reserve-vram")) o->mp.reserve_vram_pct = (int)int_arg(a, NEXT, 0, 100);
         else if (!strcmp(a, "--gpu-layers")) {
-            // An explicit 0 means what it says: no layers on the GPU. It used
-            // to be the "auto-fit" sentinel, which read as CPU but silently
-            // ran full-GPU — that exact misreading produced vacuous
-            // CPU-vs-GPU certification evidence (GPU compared with GPU).
-            // Auto-fit is the default; omit the flag to get it.
+            // the older spelling of --gpu N; the same 0-means-off rule
             int n = (int)int_arg(a, NEXT, 0, 100000);
             if (n == 0) o->mp.gpu_mode = GPU_OFF;
             else o->mp.gpu_layers_override = n;
@@ -2380,17 +2566,35 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "--reserve-ram")) o->mp.reserve_ram_pct = (int)int_arg(a, NEXT, 0, 100);
         else if (!strcmp(a, "--reserve-cpu")) o->reserve_cpu_pct = (int)int_arg(a, NEXT, 0, 100);
         else if (!strcmp(a, "--wait-for-vram")) {
-            // optional argument: a bare --wait-for-vram waits the default, and
-            // anything that is not a number is left for the next iteration to
-            // parse as its own flag
+            // optional argument: a bare --wait-for-vram waits the default, 0
+            // refuses at once (the non-serve default, spelled out), and
+            // anything that is not a number is left for the next iteration
+            // to parse as its own flag
             o->mp.vram_wait_secs = 300;
+            o->vram_wait_given = true;
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
-                o->mp.vram_wait_secs = (int)int_arg(a, argv[++i], 1, 86400);
+                o->mp.vram_wait_secs = (int)int_arg(a, argv[++i], 0, 86400);
         }
         else if (!strcmp(a, "--vram-priority"))
             o->mp.vram_priority = (int)int_arg(a, NEXT, -1000, 1000);
-        else if (!strcmp(a, "--yield-on-request")) o->mp.yield_on_request = true;
+        else if (!strcmp(a, "--yield-on-request")) {
+            const char *v = opt_operand(argc, argv, &i);
+            o->yield_given = true;
+            if (!v || !strcmp(v, "on")) o->mp.yield_on_request = true;
+            else if (!strcmp(v, "off")) o->mp.yield_on_request = false;
+            else { fprintf(stderr, "error: --yield-on-request expects on or off\n"); *rc = 1; return false; }
+        }
         else if (!strcmp(a, "--parent-pid")) o->parent_pid = (long)int_arg(a, NEXT, 1, LONG_MAX);
+        // --info KIND: the questions answered without generating
+        else if (!strcmp(a, "--info")) {
+            const char *v = NEXT;
+            if (!strcmp(v, "caps")) o->caps = true;
+            else if (!strcmp(v, "tools")) o->tool_info = true;
+            else if (!strcmp(v, "adapter")) o->adapt_info = true;
+            else if (!strcmp(v, "doctor")) o->doctor = true;
+            else if (!strcmp(v, "fit")) o->fit_info = true;
+            else { fprintf(stderr, "error: --info expects caps, tools, adapter, doctor or fit\n"); *rc = 1; return false; }
+        }
         else if (!strcmp(a, "--caps")) o->caps = true;
         // --shadow-mode: hand off to the Python client's `shadow install`
         // (confirmation, hooks, the /shadow skill and prompt, the model to
@@ -2417,6 +2621,270 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else { fprintf(stderr, "unknown option %s\n", a); usage(argv[0]); *rc = 1; return false; }
     }
     return true;
+}
+
+// The verbs a line can name, each by the spelling the refusal uses. One
+// per run: main() used to resolve two by the order it dispatched them, so
+// `-p hi --serve` served and dropped the prompt, and `--score --decide F`
+// decided and never scored. A prompt counts as the one-shot verb only when
+// no other verb consumes it (--score, --bench-json, --session-out and
+// --record read -p; the rest never do).
+static int cli_verbs(const cli_opts *o, const char **names, int cap) {
+    int n = 0;
+    #define VERB(cond, name) do { if ((cond) && n < cap) names[n++] = (name); } while (0)
+    VERB(o->interactive, "-i");
+    VERB(o->serve, "--serve");
+    VERB(o->pull_spec, "--pull");
+    VERB(o->rewrite_out || o->quant_out || o->merge_out || o->context_out,
+         o->rewrite_out ? "--rewrite" : o->quant_out ? "--quantize"
+         : o->merge_out ? "--merge-lora" : "--context-surgery");
+    VERB(o->train_path, "--train");
+    VERB(o->dpo_path, "--train-dpo");
+    VERB(o->verify_path, "--verify");
+    VERB(o->detect_path, "--detect-watermark");
+    VERB(o->decide_path, "--decide");
+    VERB(o->systemone_path, "--systemone");
+    VERB(o->score, "--score");
+    VERB(o->doctor, "--info doctor");
+    VERB(o->bench_json, "--bench-json");
+    VERB(o->resume_path, "--resume");
+    VERB(o->tool_info, "--info tools");
+    VERB(o->adapt_info, "--info adapter");
+    VERB(o->caps, "--info caps");
+    VERB(o->fit_info || o->fit_path, o->fit_info ? "--info fit" : "--fit");
+    VERB(o->shadow_mode, "--shadow-mode");
+    VERB(o->keygen_path, "--keygen");
+    VERB(o->sign_record, "--sign-record");
+    VERB(o->check_record, "--check-record");
+    VERB(o->lineage_path, "--lineage");
+    VERB(o->export_bundle, "--export-bundle");
+    VERB(o->check_bundle, "--check-bundle");
+    VERB(o->export_pack, "--export-pack");
+    VERB(o->check_pack, "--check-pack");
+    VERB(o->sign_model, "--sign-model");
+    VERB(o->watermark_keygen, "--watermark-keygen");
+    #undef VERB
+    return n;
+}
+
+// The verbs that read the prompt. Anything else beside -p or -f is a
+// prompt that would be accepted and then ignored, the shape this project
+// refuses by name.
+static bool cli_verb_reads_prompt(const char *verb) {
+    return !strcmp(verb, "--score") || !strcmp(verb, "--bench-json");
+}
+
+// The merged spellings resolved onto the fields the modes read, the one-verb
+// rule, and the defaults a mode implies. Runs on the parsed line before any
+// mode does. False with the error printed.
+static bool cli_resolve_shape(cli_opts *o) {
+    const char *verbs[4];
+    int n = cli_verbs(o, verbs, 4);
+    if (n > 1) {
+        fprintf(stderr, "error: one mode per run: %s and %s are two; give one of them\n",
+                verbs[0], verbs[1]);
+        return false;
+    }
+    // --rewrite OUT with its trigger is the older verb that took OUT itself
+    if (o->rewrite_merge && o->rewrite_context) {
+        fprintf(stderr, "error: --merge-lora and --context-surgery are two rewrites; "
+                "one trigger per --rewrite\n");
+        return false;
+    }
+    if ((o->rewrite_merge || o->rewrite_context) && !o->rewrite_out) {
+        fprintf(stderr, "error: %s is a --rewrite trigger and needs --rewrite OUT\n",
+                o->rewrite_merge ? "--merge-lora" : "--context-surgery");
+        return false;
+    }
+    if (o->rewrite_out) {
+        if (o->rewrite_merge) o->merge_out = o->rewrite_out;
+        else if (o->rewrite_context) o->context_out = o->rewrite_out;
+        else o->quant_out = o->rewrite_out;
+    }
+    // --record PATH: the receipts directory of a server, the transcript
+    // file of anything else
+    if (o->record_path) {
+        if (o->serve) o->receipts_dir = o->record_path;
+        else o->transcript_path = o->record_path;
+    }
+    // --info fit reads -m's header; the older --fit took the path itself
+    if (o->fit_info) {
+        if (!o->model_path) {
+            fprintf(stderr, "error: --info fit estimates whether -m fits; give -m PATH\n");
+            return false;
+        }
+        o->fit_path = o->model_path;
+    }
+    // the serve-only knobs, refused elsewhere rather than ignored
+    if (o->port_given && !o->serve) {
+        fprintf(stderr, "error: --port is the server's port and needs --serve\n");
+        return false;
+    }
+    if (o->ttl_given && !o->serve) {
+        fprintf(stderr, "error: --ttl unloads an idle served model and needs --serve\n");
+        return false;
+    }
+    if (o->parallel > 1 && !o->serve && !o->fit_path) {
+        fprintf(stderr, "error: --parallel sizes server slots and needs --serve "
+                "(or --info fit, to size for them)\n");
+        return false;
+    }
+    // A server under a service manager queues for a held GPU and yields the
+    // model when asked; a terminal run fails fast, naming who holds what,
+    // and keeps what it loaded. Both spelled out override.
+    if (o->serve && !o->vram_wait_given) o->mp.vram_wait_secs = 300;
+    if (o->serve && !o->yield_given) o->mp.yield_on_request = true;
+    return true;
+}
+
+// --trust-key names a key by its hex, by sha256: of its bytes, or by a file
+// holding either (runner attest keygen's output as written). A file is read
+// here, once, into storage that lives for the process.
+static bool cli_resolve_trust_key(cli_opts *o) {
+    static char keybuf[8192];
+    if (!o->trust_key || !strncmp(o->trust_key, "sha256:", 7)) return true;
+    size_t n = 0;
+    char *data = plat_read_file(o->trust_key, sizeof keybuf - 1, &n);
+    if (!data) return true;   // not a file: the hex itself
+    const char *hex = NULL;
+    jv *j = json_parse(data, n);
+    if (j) hex = jv_str(jv_get(j, "public_key"), NULL);
+    if (!hex) {
+        // a bare hex (or sha256:) string, trimmed
+        char *s = data;
+        while (*s == ' ' || *s == '\n' || *s == '\r' || *s == '\t') s++;
+        char *e = s + strlen(s);
+        while (e > s && (e[-1] == ' ' || e[-1] == '\n' || e[-1] == '\r' || e[-1] == '\t')) *--e = 0;
+        hex = s;
+    }
+    bool ok = *hex && strlen(hex) < sizeof keybuf;
+    if (ok) { strcpy(keybuf, hex); o->trust_key = keybuf; }
+    else fprintf(stderr, "error: --trust-key %s: the file holds no key\n", o->trust_key);
+    if (j) jv_free(j);
+    free(data);
+    return ok;
+}
+
+// The prompt beside a verb that never reads it, refused by name once the
+// inputs have resolved (so a missing -f file is still reported as such).
+static bool cli_prompt_fits_verb(const cli_opts *o) {
+    if (!o->prompt) return true;
+    const char *verbs[2];
+    int n = cli_verbs(o, verbs, 2);
+    if (n == 0 || cli_verb_reads_prompt(verbs[0])) return true;
+    if (!strcmp(verbs[0], "--resume")) return true;   // refused by its own rule
+    fprintf(stderr, "error: one mode per run: -p (a one-shot prompt) and %s are two; "
+            "%s never reads a prompt, and -p or -f go with a one-shot run, --score "
+            "or --bench-json\n", verbs[0], verbs[0]);
+    return false;
+}
+
+// `runner attest <verb> ...` and `runner train DATA ...` are rewrites of the
+// flags behind them: the sub-parser takes the verb's positionals and its
+// own short option names, maps them, and passes every other token through
+// as given, so the flags' own checks, records and tests are what run.
+// *argc/*argv become the rewritten line (storage lives for the process);
+// returns an exit status when the subcommand ends here (help, a bad verb),
+// else -1.
+typedef struct { const char *from, *to; } sub_alias;
+
+static void argv_push(char ***out, int *n, int *cap, const char *s) {
+    if (*n == *cap) {
+        *cap = *cap ? *cap * 2 : 32;
+        *out = realloc(*out, sizeof **out * (size_t)*cap);
+        if (!*out) { fprintf(stderr, "error: out of memory\n"); exit(1); }
+    }
+    (*out)[(*n)++] = (char *)s;
+}
+
+static int cli_expand_subcommand(int *argc, char ***argv) {
+    if (*argc < 2) return -1;
+    const char *sub = (*argv)[1];
+    bool attest = !strcmp(sub, "attest"), train = !strcmp(sub, "train");
+    if (!attest && !train) return -1;
+    char **out = NULL;
+    int n = 0, cap = 0;
+    argv_push(&out, &n, &cap, (*argv)[0]);
+    int i = 2;
+    if (*argc == 2 || !strcmp((*argv)[2], "--help") || !strcmp((*argv)[2], "-h")) {
+        bool asked = *argc > 2;
+        if (attest) usage_attest_to(asked ? stdout : stderr);
+        else usage_train_to(asked ? stdout : stderr);
+        return asked ? 0 : 1;
+    }
+    // the verb's positionals, mapped to the flags that took them
+    static const sub_alias train_aliases[] = {
+        { "--steps", "--train-steps" }, { "--out", "--train-out" },
+        { "--ctx", "--train-ctx" }, { "--batch", "--train-batch" },
+        { "--resume", "--train-resume" }, { "--eval", "--train-eval" },
+        { "--teacher", "--train-teacher" }, { "--logprobs", "--train-logprobs" },
+        { "--eot", "--train-eot" }, { "--gpu-budget", "--train-gpu-budget" },
+        { NULL, NULL },
+    };
+    static const sub_alias attest_aliases[] = {   // --key per verb, below
+        { "--prev", "--record-prev" }, { "--algo", "--keygen-algo" },
+        { "--out", "--model-sig" }, { "--envelope", "--pack-envelope" },
+        { "--attach", "--pack-attach" }, { NULL, NULL },
+    };
+    const sub_alias *aliases = train ? train_aliases : attest_aliases;
+    const char *key_flag = NULL;   // what --key means for this verb
+    if (train) {
+        const char *data = (*argv)[i++];
+        if (data[0] == '-') {
+            fprintf(stderr, "error: runner train needs DATA first (runner train --help)\n");
+            return 1;
+        }
+        // --dpo anywhere on the line picks the pair form of DATA
+        bool dpo = false;
+        for (int k = i; k < *argc; k++) dpo |= !strcmp((*argv)[k], "--dpo");
+        argv_push(&out, &n, &cap, dpo ? "--train-dpo" : "--train");
+        argv_push(&out, &n, &cap, data);
+    } else {
+        const char *verb = (*argv)[i++];
+        struct { const char *name, *flag, *second, *key; int npos; } const verbs[] = {
+            { "keygen", "--keygen", NULL, NULL, 1 },
+            { "sign", "--sign-record", NULL, "--sign-key", 1 },
+            { "check", "--check-record", NULL, NULL, 1 },
+            { "lineage", "--lineage", NULL, NULL, 1 },
+            { "bundle", "--export-bundle", "--bundle-out", "--sign-key", 2 },
+            { "check-bundle", "--check-bundle", NULL, NULL, 1 },
+            { "pack", "--export-pack", "--pack-out", "--sign-key", 2 },
+            { "check-pack", "--check-pack", NULL, NULL, 1 },
+            { "sign-model", "--sign-model", NULL, "--model-key", 1 },
+            { "watermark-keygen", "--watermark-keygen", NULL, NULL, 1 },
+            { "detect", "--detect-watermark", NULL, "--watermark", 1 },
+        };
+        int v = -1;
+        for (int k = 0; k < (int)(sizeof verbs / sizeof verbs[0]); k++)
+            if (!strcmp(verb, verbs[k].name)) v = k;
+        if (v < 0) {
+            fprintf(stderr, "error: runner attest: unknown verb %s (runner attest --help)\n", verb);
+            return 1;
+        }
+        key_flag = verbs[v].key;
+        for (int k = 0; k < verbs[v].npos; k++) {
+            if (i >= *argc || (*argv)[i][0] == '-') {
+                fprintf(stderr, "error: runner attest %s needs %s (runner attest --help)\n",
+                        verb, verbs[v].npos == 2 ? (k == 0 ? "its input and OUT_DIR" : "OUT_DIR")
+                                                 : "its argument");
+                return 1;
+            }
+            argv_push(&out, &n, &cap, k == 0 ? verbs[v].flag : verbs[v].second);
+            argv_push(&out, &n, &cap, (*argv)[i++]);
+        }
+    }
+    for (; i < *argc; i++) {
+        const char *a = (*argv)[i];
+        if (train && !strcmp(a, "--dpo")) continue;
+        if (key_flag && !strcmp(a, "--key")) { argv_push(&out, &n, &cap, key_flag); continue; }
+        const sub_alias *al = NULL;
+        for (const sub_alias *x = aliases; x->from; x++) if (!strcmp(a, x->from)) al = x;
+        argv_push(&out, &n, &cap, al ? al->to : a);
+    }
+    argv_push(&out, &n, &cap, NULL);
+    *argc = n - 1;
+    *argv = out;
+    return -1;
 }
 
 // These options shape render_messages() in the stateful chat loop below.
@@ -3473,12 +3941,13 @@ static int run_quantize(const cli_opts *o) {
 static bool cli_configure_serving(const cli_opts *o) {
     if (o->receipts_dir && !o->serve) {
         fprintf(stderr, "error: --receipts writes one receipt per served "
-                "request and needs --serve (use --transcript for a one-shot "
-                "run)\n");
+                "request and needs --serve (--record PATH is the transcript "
+                "of a one-shot run and the receipts directory of a server)\n");
         return false;
     }
     if (o->receipts_keep && !o->receipts_dir) {
-        fprintf(stderr, "error: --receipts-keep needs --receipts DIR\n");
+        fprintf(stderr, "error: --record-keep keeps the newest receipts and needs "
+                "--serve --record DIR\n");
         return false;
     }
     if (o->receipts_dir) {
@@ -3526,12 +3995,12 @@ static bool cli_rewrite_flags_ok(const cli_opts *o) {
                        : o->quant_type    ? "--quant"
                        : NULL;
     if (orphan) {
-        fprintf(stderr, "error: %s requires --quantize OUT (or "
-                "--merge-lora OUT for --quant)\n", orphan);
+        fprintf(stderr, "error: %s shapes a rewrite and requires --rewrite OUT\n",
+                orphan);
         return false;
     }
     if (o->merge_allow_erased) {
-        fprintf(stderr, "error: --merge-allow-erased requires --merge-lora OUT\n");
+        fprintf(stderr, "error: --merge-allow-erased requires --rewrite OUT --merge-lora\n");
         return false;
     }
     return true;
@@ -6053,6 +6522,8 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
 
     if (!cli_parse(o, argc, argv, &rc)) return rc;
     if (o->pull_spec) return run_pull(o);
+    if (!cli_resolve_shape(o)) return 1;
+    if (!cli_resolve_trust_key(o)) return 1;
 
     if (!cli_chat_flags_ok(o)) return 1;
     if (run_record_utility(o, &rc)) return rc;
@@ -6075,6 +6546,7 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
     if (o->caps) return run_caps();
     if (cli_resolve_inputs(o, argv[0], detect_text != NULL, owned_prompt, &rc))
         return rc;
+    if (!cli_prompt_fits_verb(o)) return 1;
     if (cli_prepare_session(o, &simg, &rc)) return rc;
     if (cli_prepare_verify(o, &wmk, wm_on, &vr, &rc)) return rc;
     cli_resolve_threads(o);
@@ -6197,6 +6669,8 @@ int main(int argc, char **argv) {
     // before anything reads argv or the environment: on Windows both arrive
     // in the ANSI code page unless the manifest made that UTF-8 (compat.h)
     plat_utf8_startup(&argc, &argv);
+    int sub = cli_expand_subcommand(&argc, &argv);
+    if (sub >= 0) return sub;
     char *owned_prompt = NULL;
     int rc = cli_main(argc, argv, &owned_prompt);
     free(owned_prompt);

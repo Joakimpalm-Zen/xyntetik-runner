@@ -45,17 +45,17 @@ into Q8_0 99.5% (`survival` in the merge record; `--merge-allow-erased` override
 ## Commands
 
 ```sh
-./runner -m base-Q4_K_M.gguf --train data.jsonl --train-steps 200 \
-  --lora-rank 8 --train-out adapter.gguf
+./runner train data.jsonl -m base-Q4_K_M.gguf --steps 200 \
+  --lora-rank 8 --out adapter.gguf
 ./runner -m base-Q4_K_M.gguf --lora adapter.gguf --serve
-./runner -m base-Q4_K_M.gguf --lora adapter.gguf --merge-lora merged-Q8_0.gguf --quant q8_0
+./runner -m base-Q4_K_M.gguf --lora adapter.gguf --rewrite merged-Q8_0.gguf --merge-lora --quant q8_0
 ```
 
-Flag reference: `--train`, `--train-steps`, `--lr`, `--train-ctx`,
-`--train-out`, `--save-every`, `--lora-rank`, `--train-eot`,
-`--train-logprobs`, `--train-dpo`, `--dpo-beta`, `--lora`, `--lora-scale`,
+Flag reference: `runner train`, `--steps`, `--lr`, `--ctx`,
+`--out`, `--save-every`, `--lora-rank`, `--eot`,
+`--logprobs`, `runner train --dpo`, `--dpo-beta`, `--lora`, `--lora-scale`,
 `--lora-sig`, `--adapter`, `--merge-lora`, `--merge-allow-erased`,
-`--adapt-info`, `--score` in the [command-line reference](../MANUAL.md#command-line-reference).
+`--info adapter`, `--score` in the [command-line reference](../MANUAL.md#command-line-reference).
 
 ## Where the numbers come from
 

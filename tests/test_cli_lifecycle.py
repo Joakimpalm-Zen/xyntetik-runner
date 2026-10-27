@@ -71,9 +71,14 @@ def test_an_early_exit_ends_parsing_where_it_stands(runner_bin):
 @pytest.mark.parametrize("value,ok", [("0", False), ("1", True), ("65535", True),
                                       ("65536", False)])
 def test_port_domain_is_the_tcp_port_range(runner_bin, value, ok):
-    p = run(runner_bin, "--port", value, "--caps")
-    assert (p.returncode == 0) == ok, p.stderr
-    if not ok:
+    """--port is a server knob (refused without --serve), so a valid value
+    is proven by the run reaching the model that is not there."""
+    p = run(runner_bin, "--port", value, "--serve", "-m", "no-such-model.gguf",
+            "--no-tray")
+    assert p.returncode != 0
+    if ok:
+        assert "cannot open" in p.stderr, p.stderr
+    else:
         assert "--port expects an integer in [1, 65535]" in p.stderr
 
 
@@ -97,11 +102,13 @@ def test_a_word_after_cpu_moe_is_parsed_as_its_own_option(runner_bin):
     assert p.returncode == 1 and "unknown option x" in p.stderr
 
 
-@pytest.mark.parametrize("value", ["0", "86401"])
+@pytest.mark.parametrize("value", ["86401", "99999999"])
 def test_wait_for_vram_bounds_are_checked_when_given(runner_bin, value):
+    """0 is a value (refuse at once, the non-serve default spelled out), so
+    the lower bound is not a refusal; the upper one still is."""
     p = run(runner_bin, "--wait-for-vram", value, "--caps")
     assert p.returncode == 1
-    assert "--wait-for-vram expects an integer in [1, 86400]" in p.stderr
+    assert "--wait-for-vram expects an integer in [0, 86400]" in p.stderr
 
 
 @pytest.mark.parametrize("spec,why", [
@@ -165,16 +172,16 @@ BEFORE_LOAD = [
      "--quant and --type-plan cannot be used together"),
     (["--quantize", "o.gguf", "--quant", "nope"], 1, "--quant 'nope' is not a writable type"),
     (["--receipts", "d", "-p", "x"], 1, "--receipts writes one receipt per served request"),
-    (["--receipts-keep", "3", "--serve"], 1, "--receipts-keep needs --receipts DIR"),
+    (["--receipts-keep", "3", "--serve"], 1, "--record-keep keeps the newest receipts and needs --serve --record DIR"),
     (["--kv-snapshots", "d", "-p", "x"], 1, "--kv-snapshots saves and loads named contexts"),
     (["--sessions", "d", "-p", "x"], 1, "--sessions keeps the server's session images"),
     (["--adapter", "a=a.gguf", "-p", "x"], 1, "--adapter routes adapters per request and needs --serve"),
     (["--adapter", "a=a.gguf", "--lora", "a.gguf", "--serve"], 1, "--adapter and --lora are exclusive"),
-    (["--prune-experts", "p.json", "-p", "x"], 1, "--prune-experts requires --quantize OUT"),
-    (["--remove-sublayer", "attn:1", "-p", "x"], 1, "--remove-sublayer requires --quantize OUT"),
-    (["--type-plan", "p.json", "-p", "x"], 1, "--type-plan requires --quantize OUT"),
-    (["--quant", "q8_0", "-p", "x"], 1, "--quant requires --quantize OUT"),
-    (["--merge-allow-erased", "-p", "x"], 1, "--merge-allow-erased requires --merge-lora OUT"),
+    (["--prune-experts", "p.json", "-p", "x"], 1, "--prune-experts shapes a rewrite and requires --rewrite OUT"),
+    (["--remove-sublayer", "attn:1", "-p", "x"], 1, "--remove-sublayer shapes a rewrite and requires --rewrite OUT"),
+    (["--type-plan", "p.json", "-p", "x"], 1, "--type-plan shapes a rewrite and requires --rewrite OUT"),
+    (["--quant", "q8_0", "-p", "x"], 1, "--quant shapes a rewrite and requires --rewrite OUT"),
+    (["--merge-allow-erased", "-p", "x"], 1, "--merge-allow-erased requires --rewrite OUT --merge-lora"),
 ]
 
 
@@ -205,13 +212,15 @@ def test_signing_utilities_ignore_the_generation_flags(runner_bin, tmp_path):
     assert "--sign-record needs --sign-key FILE" in p.stderr
 
 
-def test_fit_answers_before_caps(runner_bin, model):
-    """Two answers asked for in one run: the fit check is the one given,
-    whichever order the flags came in."""
+def test_two_answers_asked_in_one_run_are_refused_by_name(runner_bin, model):
+    """Two answers asked for in one run used to resolve by dispatch order
+    (the fit check won over --caps whichever came first); now the line is
+    refused naming both, in either order."""
     for args in (["--fit", model, "--caps"], ["--caps", "--fit", model]):
         p = run(runner_bin, *args)
-        assert p.returncode == 0, p.stderr
-        assert p.stdout.startswith("fit: "), p.stdout[:80]
+        assert p.returncode == 1, p.stderr
+        assert "one mode per run" in p.stderr and "--fit" in p.stderr, p.stderr
+        assert p.stdout == ""
 
 
 def test_a_utility_mode_needs_no_prompt(runner_bin, model):

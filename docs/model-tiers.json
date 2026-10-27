@@ -1,7 +1,7 @@
 {
   "schema": "xyntetik.runner.model-tiers.v1",
   "policy": {
-    "why": "A tier is a maintenance and validation commitment, not a compatibility list. The support matrix, --caps and --doctor say what loads; the evidence documents say what was measured; this roster says which files are re-checked on every release and carries that check's result per backend, so the README renders it and nobody types it.",
+    "why": "A tier is a maintenance and validation commitment, not a compatibility list. The support matrix, --info caps and --info doctor say what loads; the evidence documents say what was measured; this roster says which files are re-checked on every release and carries that check's result per backend, so the README renders it and nobody types it.",
     "tiers": {
       "tier1": "Actively validated: scheduled validation and proactive maintenance for the configurations the row names; gated on every release.",
       "tier2": "Maintained on report: no scheduled full-model revalidation; regression tests keep running and shared-path changes are tested with representative coverage.",
@@ -11,7 +11,7 @@
     "cells": "A Tier 1 backend cell is a recorded gate (kind gate), a declared limit (kind limit, with the support-matrix link) or null (nobody ran the gate). A cell never carries a mark from a neighbouring file or backend.",
     "recording": "Gate cells and the lora answer are written by scripts/model-tiers.py --record from a smoke run's result file, never by hand.",
     "gate": "scripts/check-release.py refuses a tag while any Tier 1 row is not current: its smoke cell (the backend and device class the row names) missing, recorded on another class, older than the row's max_age_days (default_max_age_days unless the row sets a tighter one), or a recorded failure on any of its backends. The mechanism is the device ledger's maximum age, not a map from source paths to files. A row whose smoke class is borrowed hardware (ownership in docs/device-evidence.json) is reported the same way but its age never refuses a tag: its records are dated evidence the project may use and must not depend on. A recorded failure refuses the tag on any class. The age is a backstop, not a schedule (2026-10-27): a row is re-run when a pull request changes a path its model uses and names the row, and the gate refuses only a record older than the backstop.",
-    "lora": "The file's runner --adapt-info answer at the gate run: whether the LoRA backward admits the file (training) and whether an adapter can be served on it (adapter_serving), each with the refusal sentence when not. It says the backward admits the file; it is not a training-quality claim.",
+    "lora": "The file's runner --info adapter answer at the gate run: whether the LoRA backward admits the file (training) and whether an adapter can be served on it (adapter_serving), each with the refusal sentence when not. It says the backward admits the file; it is not a training-quality claim.",
     "last_validated_release": "The Runner version of the newest passing recorded gate on the row when its tier changed; null when the roster had recorded none, which is every row at the 2026-10-22 migration (the roster postdates the evidence the audit read).",
     "default_max_age_days": 120,
     "backends": [
@@ -974,7 +974,7 @@
       "model": "Qwen3.8-27B",
       "family": "Qwen3.8",
       "tier": "tier1",
-      "claim": "The NextN/MTP predictor head for Qwen3.8-27B, loaded with --mtp-file beside a trunk: it only proposes tokens, so the text is the trunk's own greedy output; it is a speed feature, not a model.",
+      "claim": "The NextN/MTP predictor head for Qwen3.8-27B, loaded with --draft mtp:FILE beside a trunk: it only proposes tokens, so the text is the trunk's own greedy output; it is a speed feature, not a model.",
       "architecture": "qwen35",
       "upstream": {
         "checkpoint": "Qwen/Qwen3.8-27B",
@@ -2445,7 +2445,7 @@
       "model": "Qwen3.8-Flash-Next",
       "family": "Qwen3.8",
       "tier": "tier1",
-      "claim": "Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for --mtp-file, built from the publisher's BF16 checkpoint for ISTA-DASLab's IQ3_S trunk, whose qwen4exp architecture is admitted with its publisher float32 comparison still unmeasured; no gate has run on it.",
+      "claim": "Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for --draft mtp:FILE, built from the publisher's BF16 checkpoint for ISTA-DASLab's IQ3_S trunk, whose qwen4exp architecture is admitted with its publisher float32 comparison still unmeasured; no gate has run on it.",
       "architecture": "qwen4exp",
       "upstream": {
         "checkpoint": "Qwen/Qwen3.8-Flash-Next",
@@ -2478,7 +2478,7 @@
         "evidence": [
           "MANUAL.md#placement-and-memory"
         ],
-        "missing": "Every gate, run beside ISTA-DASLab's 2-part trunk (the 4-part set already carries a head, and --mtp-file refuses a second one)."
+        "missing": "Every gate, run beside ISTA-DASLab's 2-part trunk (the 4-part set already carries a head, and --draft mtp:FILE refuses a second one)."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
@@ -2506,7 +2506,7 @@
         },
         "cuda": {
           "kind": "limit",
-          "reason": "--mtp draft decoding on CUDA needs the whole trunk on the device; the IQ3_S trunk this head runs with holds 18 of 48 layers on a 24 GB device, and the partial split refuses with an error naming --gpu off (Linux CUDA host, 2026-10-25, runner f960e470). The head is smoked on the CPU path of the same class.",
+          "reason": "--draft mtp decoding on CUDA needs the whole trunk on the device; the IQ3_S trunk this head runs with holds 18 of 48 layers on a 24 GB device, and the partial split refuses with an error naming --gpu off (Linux CUDA host, 2026-10-25, runner f960e470). The head is smoked on the CPU path of the same class.",
           "matrix": "MANUAL.md#support-matrix"
         },
         "metal": {

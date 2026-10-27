@@ -116,7 +116,7 @@ nav: runner
         <p>Every run writes a record of its base, data, starting adapter, settings and build. Sign records and adapter files, require the signature at load, walk an adapter's lineage back to its base and data, and replay a served answer with the adapter that gave it.</p>
       </div>
     </div>
-    <p class="mt-2">Each feature, with its commands, limits and measurements: <a href="{{repo}}/blob/main/docs/lora.md">the complete adapter guide</a>. Check a model first with <code>--adapt-info</code>; adapters load and save in llama.cpp's format, both ways.</p>
+    <p class="mt-2">Each feature, with its commands, limits and measurements: <a href="{{repo}}/blob/main/docs/lora.md">the complete adapter guide</a>. Check a model first with <code>--info adapter</code>; adapters load and save in llama.cpp's format, both ways.</p>
   </div>
 </section>
 
@@ -124,8 +124,8 @@ nav: runner
   <div class="wrap split rev">
     <div>
 <pre><code># train through the quantized base you will serve
-./runner -m base-Q4_K_M.gguf --train data.jsonl --train-steps 200 \
-    --lora-rank 8 --train-out adapter.gguf
+./runner train data.jsonl -m base-Q4_K_M.gguf --steps 200 \
+    --lora-rank 8 --out adapter.gguf
 # adapter.gguf.train.json now records base/data/adapter sha256, seed, config, binary
 
 # serve the adapter beside the frozen base (the exact form)
@@ -133,11 +133,11 @@ nav: runner
 
 # fold it into a standalone file for any GGUF runtime: 8-bit or better
 ./runner -m base-Q4_K_M.gguf --lora adapter.gguf \
-    --merge-lora merged-Q8_0.gguf --quant q8_0
+    --rewrite merged-Q8_0.gguf --merge-lora --quant q8_0
 
 # teacher-forced logprobs for evals and rewards
 ./runner -m base-Q4_K_M.gguf --lora adapter.gguf -f eval.txt --score</code></pre>
-      <p class="small muted">Flags: <code>--adapt-info</code>, <code>--train</code>, <code>--train-steps</code>, <code>--lr</code>, <code>--train-ctx</code>, <code>--train-out</code>, <code>--save-every</code>, <code>--lora-rank</code>, <code>--train-eot</code>, <code>--train-logprobs</code>, <code>--train-dpo</code>, <code>--dpo-beta</code>, <code>--lora</code>, <code>--lora-scale</code>, <code>--lora-sig</code>, <code>--adapter</code>, <code>--merge-lora</code>, <code>--merge-allow-erased</code>, <code>--score</code>, <code>--lineage</code>. <a href="{{repo}}/blob/main/MANUAL.md#command-line-reference">Command-line reference</a>. <code>scripts/train-grpo-lite.py</code> closes the loop into seeded, replayable reinforcement fine-tuning.</p>
+      <p class="small muted">Flags: <code>--info adapter</code>, <code>runner train</code>, <code>--steps</code>, <code>--lr</code>, <code>--ctx</code>, <code>--out</code>, <code>--save-every</code>, <code>--lora-rank</code>, <code>--eot</code>, <code>--logprobs</code>, <code>runner train --dpo</code>, <code>--dpo-beta</code>, <code>--lora</code>, <code>--lora-scale</code>, <code>--lora-sig</code>, <code>--adapter</code>, <code>--merge-lora</code>, <code>--merge-allow-erased</code>, <code>--score</code>, <code>runner attest lineage</code>. <a href="{{repo}}/blob/main/MANUAL.md#command-line-reference">Command-line reference</a>. <code>scripts/train-grpo-lite.py</code> closes the loop into seeded, replayable reinforcement fine-tuning.</p>
     </div>
     <div class="sticky">
       <p class="eyebrow">Run it</p>
