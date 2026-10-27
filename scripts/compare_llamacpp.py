@@ -8,18 +8,22 @@ results as pending.
 """
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
 import platform
 import shlex
-import socket
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+
+# the shared helpers live beside this script; a test that loads this file by
+# path has not put the directory on sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from server_probe import free_port  # noqa: E402
+from file_digest import sha256_file  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,20 +84,6 @@ def git_head(path):
         if not isinstance(proc, Exception) and proc.returncode == 0:
             return proc.stdout.strip()
     return None
-
-
-def sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def free_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
 
 
 def request_json(url, body=None, timeout=60):

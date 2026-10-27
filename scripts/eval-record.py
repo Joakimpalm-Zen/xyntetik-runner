@@ -34,7 +34,6 @@ error (no record written).
 import argparse
 import ast
 import glob
-import hashlib
 import json
 import os
 import pathlib
@@ -42,17 +41,11 @@ import subprocess
 import sys
 import tempfile
 
+from file_digest import sha256_file
+
 SCHEMA = "xyntetik.runner.eval.v1"
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SIDECARS = (".quant.json", ".merge.json", ".train.json", ".context.json")
-
-
-def sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def sidecar(path):

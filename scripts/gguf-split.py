@@ -20,6 +20,8 @@ understand what any of them mean.
 import struct
 import sys
 
+from gguf_fixture import s
+
 T_U8, T_I8, T_U16, T_I16, T_U32, T_I32, T_F32, T_BOOL = range(8)
 T_STR, T_ARR, T_U64, T_I64, T_F64 = 8, 9, 10, 11, 12
 SCALAR = {T_U8: 1, T_I8: 1, T_U16: 2, T_I16: 2, T_U32: 4, T_I32: 4,
@@ -61,11 +63,6 @@ def skip_value(r, t):
             r.take(SCALAR[at] * n)
     else:
         r.take(SCALAR[t])
-
-
-def s(x):
-    b = x.encode() if isinstance(x, str) else x
-    return struct.pack("<Q", len(b)) + b
 
 
 def main():

@@ -23,14 +23,13 @@ import sys
 import tempfile
 import time
 
+# the shared helpers live beside this script; a test that loads this file by
+# path has not put the directory on sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from server_probe import free_port  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def free_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
 
 
 def server_tx_queue(tcp_path, server_port, client_port):

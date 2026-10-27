@@ -6,20 +6,15 @@ from importlib.metadata import version
 import json
 import os
 from pathlib import Path
-import socket
 import subprocess
 import sys
 import time
 import urllib.request
 
+from server_probe import free_port
+
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def free_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
 
 
 def wait_ready(base, proc):

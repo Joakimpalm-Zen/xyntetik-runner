@@ -39,7 +39,6 @@ import hashlib
 import json
 import os
 import platform
-import socket
 import statistics
 import subprocess
 import sys
@@ -47,6 +46,12 @@ import time
 import urllib.error
 import urllib.request
 from collections import Counter
+
+# the shared helpers live beside this script; a test that loads this file by
+# path has not put the directory on sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from server_probe import free_port  # noqa: E402
+from file_digest import sha256_file  # noqa: E402
 
 RECORD_VERSION = "tool_choice_boundary_record_v1"
 
@@ -145,14 +150,6 @@ def load_bank(path):
     return rows, hashlib.sha256(data).hexdigest()
 
 
-def sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 # ---------------------------------------------------------------- serving
 
 def _get(url, path, timeout=2):
@@ -181,12 +178,6 @@ def wait_ready(url, timeout):
         except Exception:
             time.sleep(1)
     return False
-
-
-def free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 def serve(args, adapter, port):

@@ -236,6 +236,11 @@ Nothing here gates a merge; these are how a claim gets a number behind it.
 - **`make-vocab-fixture.py`** - tokenizer vocab fixtures in `tests/fixtures/`.
 - **`gguf_fixture.py`** - the GGUF byte encoding (metadata entries, the file
   layout, a header reader) that every generator above imports; not a tool.
+- **`server_probe.py`** - what a served endpoint lists, whether it is up, and a
+  free loopback port; imported by the comparison and calibration scripts; not
+  a tool.
+- **`file_digest.py`** - the SHA-256 of a file as every record-writing script
+  computes it; not a tool.
 - **`tokenizer-corpus.py` / `difftok.py`** - regenerate / diff the 721-string
   tokenizer conformance corpus against Hugging Face reference tokenizers;
   revision-bound `--capture` files make the reference side replayable offline.

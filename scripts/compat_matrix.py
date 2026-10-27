@@ -6,7 +6,6 @@ substitutes a similarly named GGUF: its SHA-256 must match before execution.
 """
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +15,11 @@ import signal
 import subprocess
 import sys
 import time
+
+# the shared helpers live beside this script; a test that loads this file by
+# path has not put the directory on sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from file_digest import sha256_file  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +34,6 @@ GREEDY_SCRIPT = ROOT / "scripts" / "reference_compare.py"
 # parameterised class they list lands as not_executed with a specific reason.
 SCHEMA_VERSIONS = ("xyntetik.runner.model-compat.v1",
                    "xyntetik.runner.model-compat.v2")
-
 
 
 def _kill_group(pid, grace=2.0):
@@ -307,14 +310,6 @@ def load_manifest(path):
     return data
 
 
-def sha256(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def command_version(command):
     try:
         proc = subprocess.run([str(command), "--version"], text=True,
@@ -555,7 +550,7 @@ def main(argv=None):
             failed = True
         elif args.verify_files or args.load or args.execute_checks:
             item["resolved_file"] = entry["file"]
-            actual = sha256(path)
+            actual = sha256_file(path)
             item["actual_sha256"] = actual
             item["file_status"] = "pass" if actual == entry["sha256"] else "fail"
             failed |= actual != entry["sha256"]

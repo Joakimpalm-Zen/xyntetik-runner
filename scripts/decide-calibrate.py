@@ -49,7 +49,6 @@ No third-party imports -- usable anywhere the runner builds.
 """
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -66,6 +65,7 @@ from pathlib import Path
 # path has not put the directory on sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from server_probe import served_model_ids  # noqa: E402
+from file_digest import sha256_file  # noqa: E402
 
 SCHEMA_VERSION = "xyntetik.runner.decide-calibrate.v1"
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -80,13 +80,6 @@ RENDERINGS = ("raw-v1", "continuation-v1")
 
 
 # --------------------------------------------------------------- input ---
-
-def sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def read_questions(path, max_questions=None):

@@ -83,6 +83,11 @@ _spec.loader.exec_module(mt)
 sys.path.insert(0, os.path.join(ROOT, "tests", "conformance"))
 from _process import RunnerServer  # noqa: E402
 
+# the shared helpers live beside this script; a test that loads this file by
+# path has not put the directory on sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from file_digest import sha256_file  # noqa: E402
+
 BANNER_RE = re.compile(r"^gpu: (Metal|CUDA) backend on .*$", re.M)
 THREADS_RE = re.compile(r"^loaded .*\| (\d+) threads\b", re.M)
 
@@ -95,14 +100,6 @@ def runner_cmd(path):
 def run(cmd, timeout):
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           timeout=timeout)
-
-
-def sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(16 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
 
 
 def rel(path):

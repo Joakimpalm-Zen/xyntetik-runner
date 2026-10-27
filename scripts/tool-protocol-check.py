@@ -27,13 +27,14 @@ Usage:
 Exit status is 0 only if every case passed.
 """
 import argparse
-import hashlib
 import json
 import platform
 import sys
 import time
 import urllib.error
 import urllib.request
+
+from file_digest import sha256_file
 
 BASH = {"type": "function", "function": {
     "name": "bash", "description": "Run a shell command",
@@ -62,14 +63,6 @@ CASES = {
 }
 FRAMING = ("<tool_call", "<|tool_call", "<function=", "<parameter=",
            "<atem:invoke", "to=functions.")
-
-
-def sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def get(base, path):
@@ -212,9 +205,9 @@ def main():
         "host": platform.node(), "platform": platform.platform(),
         "base_url": args.base_url, "model": model,
         "model_file": args.model_file,
-        "model_sha256": sha256(args.model_file) if args.model_file else None,
+        "model_sha256": sha256_file(args.model_file) if args.model_file else None,
         "runner": args.runner,
-        "runner_sha256": sha256(args.runner) if args.runner else None,
+        "runner_sha256": sha256_file(args.runner) if args.runner else None,
         "capabilities_route": bool(caps),
         "sampling_served": caps.get("sampling"),
         "context": caps.get("context"),
