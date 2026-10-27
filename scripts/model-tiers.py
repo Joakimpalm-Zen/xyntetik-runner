@@ -586,15 +586,6 @@ def _mark(cell, base=""):
     return f"[{text}]({base}{link})" if link else text
 
 
-def train_mark(lora):
-    """The file's recorded --adapt-info training answer, or not run."""
-    if lora is None:
-        return "☐ not run"
-    t = lora["training"]
-    if t["supported"]:
-        return f"✅ v{lora['runner_version']} {lora['date']}"
-    return "no: " + t["reason"]
-
 
 def _qualifiers(rows):
     pre = ["Experimental"] if any(r.get("experimental") for r in rows) else []
@@ -614,11 +605,6 @@ def _model_groups(rows):
         groups.setdefault(r["model"], []).append(r)
     return sorted(groups.items(), key=lambda kv: (kv[0].casefold(), kv[0]))
 
-
-def _file_title(row):
-    """A file as the README names it: a sharded set by its first part."""
-    files = row["files"]
-    return f"`{files[0]['name']}`" + (f" ({len(files)} parts)" if len(files) > 1 else "")
 
 
 def family_of(row):

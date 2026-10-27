@@ -741,7 +741,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
         if cfg.get("tandem", True) and model and Path(model).is_file():
             out = str(Path(str(cfg.get("out") or default_out())).expanduser())
             if args.event == "prompt":
-                repo_or_none = _repo_of(Path(cwd))
+                repo_or_none = repository_root(Path(cwd))
                 records = _read_records(Path(out) / "evidence.jsonl")
                 tandem.emit(tandem.hook_prompt(home, session_id=rec["session_id"], cwd=cwd,
                                                prompt=rec["prompt"], repo=repo_or_none, records=records,
@@ -756,9 +756,6 @@ def cmd_capture(args: argparse.Namespace) -> int:
         pass
     return 0
 
-
-def _repo_of(cwd: Path) -> Path | None:
-    return repository_root(cwd)
 
 
 _MODEL_SHA_CACHE: dict[str, tuple[float, str]] = {}
@@ -931,7 +928,7 @@ def cmd_delegate(args: argparse.Namespace) -> int:
         if not model:
             print("error: no model in the shadow config", file=sys.stderr)
             return 2
-        repo = _repo_of(Path(args.repo).resolve())
+        repo = repository_root(Path(args.repo).resolve())
         if repo is None:
             print(f"error: {args.repo} is not inside a git repository", file=sys.stderr)
             return 2
@@ -1212,11 +1209,6 @@ def cmd_tandem(args: argparse.Namespace) -> int:
           f"{cfg.get('tandem_wall', tandem.DEFAULT_WALL_S):g}s (measured default; see tandem.py)")
     return 0
 
-
-def _served_model(endpoint: RunnerEndpoint) -> str:
-    caps = endpoint.capabilities()
-    models = [m.get("id") for m in caps.get("models", []) if isinstance(m, dict)]
-    return str(models[0]) if models else "model"
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:

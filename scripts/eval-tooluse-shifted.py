@@ -127,11 +127,6 @@ def limit_rows(rows, per_category):
     return out
 
 
-def load_labels_and_verify():
-    """v1 entry point kept for callers of the first scorer."""
-    rows, h = load_set("v1")
-    return canonical_labels(rows, "v1"), h
-
 
 def sha256_file(path):
     """Compute SHA256 of a file."""
@@ -823,17 +818,6 @@ def write_decisions(decide_leg, path):
 
 
 # ------------------------------------------------------------------ rescore
-
-def summarize_native(results, n):
-    counts = fresh_counts()
-    for r in results:
-        if r.get("refusal"):
-            counts["refusals"] += 1
-            continue
-        if r.get("empty"):
-            counts["empty_outputs"] += 1
-        tally(counts, r)
-    return counts
 
 
 def rescore_record(record, rows, catalog, schemas, target=0.9):
