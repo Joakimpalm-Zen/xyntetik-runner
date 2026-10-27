@@ -620,6 +620,14 @@ def check_page(path: str, out: str, known_paths: set[str]) -> list[str]:
 
 # ----------------------------------------------------------------- main ---
 
+def _expand_chart(m: re.Match[str]) -> str:
+    """A {{chart:name}} placeholder: the chart's rendered SVG."""
+    kind, name = m.group(1), m.group(2)
+    if kind == "chart":
+        return CHARTS[name]()
+    raise KeyError(kind)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Build xyntetik.com into site/_site.")
     ap.add_argument("--roster", type=Path, default=Path(MT.ROSTER),
@@ -646,12 +654,7 @@ def main(argv: list[str] | None = None) -> int:
 
     problems: list[str] = []
     for meta, body in pages:
-        def sub(m: re.Match[str]) -> str:
-            kind, name = m.group(1), m.group(2)
-            if kind == "chart":
-                return CHARTS[name]()
-            raise KeyError(kind)
-        body = re.sub(r"\{\{(chart):([a-z_]+)\}\}", sub, body)
+        body = re.sub(r"\{\{(chart):([a-z_]+)\}\}", _expand_chart, body)
         body = re.sub(r"\{\{mark:([a-z]+):(\d+)\}\}", lambda m: mark(m.group(1), "", int(m.group(2))), body)
         body = re.sub(r"\{\{heromark:([a-z]+)\}\}", lambda m: inline_mark(m.group(1)), body)
         body = (body.replace("{{repo}}", REPO).replace("{{hfd}}", HFD).replace("{{hf}}", HF)

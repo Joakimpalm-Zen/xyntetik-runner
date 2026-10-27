@@ -262,6 +262,20 @@ def agent_torture_axis(entry, report_name):
     }
 
 
+def guarantee_holds(k, v):
+    """Whether one guarantee block of the tool-calling axis passes: every
+    truncation rung recovered, schema conformance and tool selection both at
+    1.0, the torture gate at pass. Anything else does not gate."""
+    if k == "truncation_recovery":
+        return bool(v.get("holds")) and v.get("rungs_passed") == v.get("rungs_total")
+    if k == "schema_shape":
+        return v.get("schema_conformance_rate") == 1.0 and \
+            v.get("tool_selection_rate") == 1.0
+    if k == "agent_torture":
+        return v.get("gate") == "pass"
+    return False
+
+
 def build_tool_calling(trunc, shape, torture, native):
     """Assemble the reported-only axis. gate is `pass` only when every PRESENT
     guarantee block passes AND all three are present; `partial` when guarantee
@@ -273,18 +287,8 @@ def build_tool_calling(trunc, shape, torture, native):
     if not any(blocks.values()):
         return None
     GATE = ("truncation_recovery", "schema_shape", "agent_torture")
-
-    def _ok(k, v):
-        if k == "truncation_recovery":
-            return bool(v.get("holds")) and v.get("rungs_passed") == v.get("rungs_total")
-        if k == "schema_shape":
-            return v.get("schema_conformance_rate") == 1.0 and \
-                v.get("tool_selection_rate") == 1.0
-        if k == "agent_torture":
-            return v.get("gate") == "pass"
-        return False
     present = {k: blocks[k] for k in GATE if blocks.get(k)}
-    if any(not _ok(k, v) for k, v in present.items()):
+    if any(not guarantee_holds(k, v) for k, v in present.items()):
         gate = "fail"
     elif len(present) == len(GATE):
         gate = "pass"

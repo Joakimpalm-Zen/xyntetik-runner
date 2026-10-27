@@ -19,15 +19,19 @@ def normalize(text):
     return " ".join(text.split())
 
 
+def embedded_text(path):
+    """The text a byte-embedded header (src/kernels_ptx*.h) carries: its
+    string literals, joined."""
+    header = (ROOT / path).read_text()
+    return "".join(ast.literal_eval(line.strip()) for line in header.splitlines()
+                   if line.strip().startswith('"'))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--nvcc", default=os.environ.get("NVCC", "nvcc"))
     args = ap.parse_args()
-    def embedded_of(path):
-        header = (ROOT / path).read_text()
-        return "".join(ast.literal_eval(line.strip()) for line in header.splitlines()
-                       if line.strip().startswith('"'))
-    embedded = embedded_of("src/kernels_ptx.h")
+    embedded = embedded_text("src/kernels_ptx.h")
     pin = re.search(r"Cuda compilation tools, release [^,]+, (V[\d.]+)", embedded)
     try:
         actual = subprocess.check_output([args.nvcc, "--version"], text=True)
@@ -48,7 +52,7 @@ def main():
             if os.environ.get("NVCC_CCBIN"):
                 cmd[1:1] = ["-ccbin", os.environ["NVCC_CCBIN"]]
             subprocess.run(cmd, cwd=ROOT, check=True, timeout=300)
-            if normalize(embedded_of(header)) != normalize(output.read_text()):
+            if normalize(embedded_text(header)) != normalize(output.read_text()):
                 out = ROOT / ".build/ci" / ("regenerated-" + output.name)
                 out.parent.mkdir(parents=True, exist_ok=True)
                 out.write_bytes(output.read_bytes())

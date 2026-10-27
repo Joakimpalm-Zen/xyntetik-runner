@@ -127,6 +127,13 @@ def quantize_q8_0(a16):
     return out
 
 
+def nbytes(typ, shape):
+    """The stored size of a tensor: F32 and BF16 by element, Q8_0 by its
+    34-byte block of 32."""
+    n = int(np.prod(shape))
+    return {TYPE_F32: 4 * n, TYPE_BF16: 2 * n, TYPE_Q8_0: n // 32 * 34}[typ]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--raw", required=True, help="directory of <tensor>.bin files (raw BF16 bytes)")
@@ -260,10 +267,6 @@ def main():
                         + ("large matrices BF16" if a.bf16 else "large matrices Q8_0") + ", no calibration"))
     kvs.append(kv_bytes("xyntetik.mtp.trunk", T_STR, "companion to ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF IQ3_S"))
     kvs.append(kv_bytes("xyntetik.mtp.license", T_STR, "Qwen Community License 1.0, as the source checkpoint"))
-
-    def nbytes(typ, shape):
-        n = int(np.prod(shape))
-        return {TYPE_F32: 4 * n, TYPE_BF16: 2 * n, TYPE_Q8_0: n // 32 * 34}[typ]
 
     infos = b""
     off = 0

@@ -136,6 +136,12 @@ def gap(top, chosen, other):
     return abs(top[chosen] - top[other])
 
 
+def _measured(gap):
+    """A gap for the tie test: a measured number as it is, None (the other
+    engine's pick is outside this engine's top-k) as no tie at all."""
+    return 9e9 if gap is None else gap
+
+
 def classify(rows, tie_nats):
     """Split the non-identical rows into near-ties and real divergences.
 
@@ -149,13 +155,10 @@ def classify(rows, tie_nats):
     A length mismatch is a real divergence with no contending pair to measure,
     so it is never forgiven as a tie.
     """
-    def measured(value):
-        return 9e9 if value is None else value
-
     diverged = [r for r in rows if r["status"] == "diverged"]
     ties = [r for r in diverged
-            if measured(r["reference_gap_nats"]) <= tie_nats
-            and measured(r["runner_gap_nats"]) <= tie_nats]
+            if _measured(r["reference_gap_nats"]) <= tie_nats
+            and _measured(r["runner_gap_nats"]) <= tie_nats]
     real = [r for r in rows
             if r["status"] == "length_mismatch"
             or (r["status"] == "diverged" and r not in ties)]
