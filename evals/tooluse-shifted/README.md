@@ -113,7 +113,7 @@ Results contain:
 
 1. **Rates are properties of this set only.** The 150 hand-written prompts are a fixed benchmark, not a representative sample of any traffic. Results do not transfer to other sets without re-measurement.
 
-2. **Two x86 hosts, no Apple host.** the Windows CUDA host and the lab box (Linux); the M1 run paged and was abandoned. The two retrained adapters are the published recipe's adapters, not byte copies of the lost originals.
+2. **Two x86 hosts, no Apple host.** the Windows CUDA host and the Linux CUDA host; the M1 run paged and was abandoned. The two retrained adapters are the published recipe's adapters, not byte copies of the lost originals.
 
 3. **Greedy and constraint sampling are different instruments.** Raw leg (greedy decoding) and native leg (constrained tool_choice) measure different model behaviors. Both should be reported; neither alone is sufficient.
 
@@ -202,7 +202,7 @@ argument-level decisions the native leg records (`choice_records`) rather
 than whole-call exact match; and raise n so a 10-count gap is more than two
 standard deviations. Rates are properties of this set, never of traffic.
 
-### Second host: the lab box (x86, 128 cores, CPU), 2026-09-23
+### Second host: the Linux CUDA host (x86, 128 cores, CPU), 2026-09-23
 
 Same set, same scorer, same base file and adapters (sha256 verified),
 runner main at 9b825fc, `--gpu off`, 16 threads (the Q8_0 arm also at 8).
