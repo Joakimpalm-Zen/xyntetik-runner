@@ -23,7 +23,7 @@ import argparse
 import json
 import sys
 
-from gguf_fixture import read_header
+from gguf_fixture import get_u32, read_header_typed
 
 # ggml type -> (block elements, bytes per block). Only the types this quantizer
 # can read as a source or write as a target need to be here.
@@ -47,12 +47,16 @@ PLAN_TYPE = {"q8_0": "Q8_0", "q4_0": "Q4_0", "q3_k": "Q3_K", "q4_k": "Q4_K",
 def _read(f):
     """(tensors, data_start, alignment) from a GGUF header + tensor directory."""
     try:
-        kv, directory, pos = read_header(f)
+        kv, directory, pos = read_header_typed(f)
     except ValueError:
         sys.exit("not a GGUF file")
-    alignment = kv.get("general.alignment")
-    if not isinstance(alignment, int):
-        alignment = 32
+    # general.alignment as the quantizer reads it (gguf_get_u32: a bool,
+    # string, negative or out-of-range value is the default), and refused
+    # as the quantizer refuses it, so the prediction is never for a file the
+    # rewrite would not write
+    alignment = get_u32(kv, "general.alignment", 32)
+    if alignment == 0 or alignment & (alignment - 1):
+        sys.exit(f"general.alignment={alignment} is not a power of two")
     tensors = [(name, ttype, ne) for name, ne, ttype, _offset in directory]
     # The rewrite copies every KV and SETS general.file_type. A source without
     # that key therefore grows by one entry, which can push data_start a whole

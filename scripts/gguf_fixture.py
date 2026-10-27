@@ -18,8 +18,11 @@ Metadata encoders return the bytes of one key-value entry:
 
 write_gguf(path, tensors, kvs) lays out a version-3 file with 32-byte
 alignment; a tensor is (name, dims, payload) for F32 or (name, dims,
-payload, ggml_type). read_header(f) is the inverse for the header part.
+payload, ggml_type). read_header(f) is the inverse for the header part;
+read_header_typed(f) keeps each value's metadata type, and get_u32 reads a
+u32 key the way Runner's gguf_get_u32 does.
 """
+import math
 import struct
 
 GGUF_MAGIC = 0x46554747
@@ -94,15 +97,16 @@ _SCALAR = {U8: "<B", I8: "<b", U16: "<H", I16: "<h", U32: "<I", I32: "<i",
            F32: "<f", BOOL: "<?", U64: "<Q", I64: "<q", F64: "<d"}
 
 
-def read_header(f):
+def read_header_typed(f):
     """Parse the header of an open GGUF file: (kv, tensors, end).
 
-    `kv` maps every metadata key to its decoded Python value (arrays as
-    lists, strings decoded with replacement), `tensors` is a list of
-    (name, dims, ggml_type, offset) in file order, and `end` is the byte
-    offset just past the tensor directory; the data section begins at the
-    next multiple of the file's alignment (`kv.get("general.alignment", 32)`).
-    Raises ValueError when the magic is not GGUF."""
+    `kv` maps every metadata key to (gguf_type, value): the value decoded to
+    Python (arrays as lists, strings decoded with replacement) beside the
+    type it was stored as, which a reader needs to apply Runner's rules for
+    a key (get_u32). `tensors` is a list of (name, dims, ggml_type, offset)
+    in file order, and `end` is the byte offset just past the tensor
+    directory; the data section begins at the next multiple of the file's
+    alignment. Raises ValueError when the magic is not GGUF."""
     def u32():
         return struct.unpack("<I", f.read(4))[0]
 
@@ -127,7 +131,8 @@ def read_header(f):
     kv = {}
     for _ in range(n_kv):
         key = rstr()
-        kv[key] = val(u32())
+        t = u32()
+        kv[key] = (t, val(t))
     tensors = []
     for _ in range(n_tensors):
         name = rstr()
@@ -135,3 +140,31 @@ def read_header(f):
         ttype, offset = u32(), u64()
         tensors.append((name, dims, ttype, offset))
     return kv, tensors, f.tell()
+
+
+def read_header(f):
+    """read_header_typed without the types: (kv, tensors, end) with `kv`
+    mapping each key to its value alone."""
+    kv, tensors, end = read_header_typed(f)
+    return {k: v for k, (_t, v) in kv.items()}, tensors, end
+
+
+def get_u32(kv, key, default):
+    """A u32 metadata value as Runner reads it (gguf.c: gguf_get_u32), from
+    a read_header_typed `kv`: an unsigned type within u32 range, a signed
+    type that is non-negative and within range, or a finite, non-negative,
+    integral float within range; anything else, a bool, string or array
+    included, is the default."""
+    if key not in kv:
+        return default
+    t, v = kv[key]
+    if t in (U8, U16, U32, U64):
+        return v if v <= 0xFFFFFFFF else default
+    if t in (I8, I16, I32, I64):
+        return v if 0 <= v <= 0xFFFFFFFF else default
+    if t in (F32, F64):
+        if not math.isfinite(v) or math.copysign(1.0, v) < 0 or v > 0xFFFFFFFF or v != int(v):
+            return default
+        return int(v)
+    return default
+
