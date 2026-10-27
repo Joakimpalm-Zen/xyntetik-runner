@@ -49,45 +49,21 @@ import math
 import struct
 import sys
 
+from gguf_fixture import read_header
+
 E2M1 = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
 GGML_TYPE_NVFP4 = 40
 QK, SUB = 64, 16
 BLOCK_BYTES = 36
 
 
-def read_header(f):
-    magic, ver, ntens, nkv = struct.unpack("<IIQQ", f.read(24))
-    if magic != 0x46554747:
+def tensor_directory(f):
+    """(tensors, data_start): the tensor directory as (name, dims, type, offset)
+    and where the 32-byte-aligned data section begins."""
+    try:
+        _kv, tensors, pos = read_header(f)
+    except ValueError:
         raise SystemExit("not a GGUF file")
-
-    def rstr():
-        n = struct.unpack("<Q", f.read(8))[0]
-        return f.read(n).decode("utf-8", "replace")
-
-    def skipval(t):
-        fixed = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
-        if t == 8:
-            rstr()
-        elif t == 9:
-            et = struct.unpack("<I", f.read(4))[0]
-            n = struct.unpack("<Q", f.read(8))[0]
-            for _ in range(n):
-                skipval(et)
-        else:
-            f.read(fixed[t])
-
-    for _ in range(nkv):
-        rstr()
-        skipval(struct.unpack("<I", f.read(4))[0])
-    tensors = []
-    for _ in range(ntens):
-        name = rstr()
-        nd = struct.unpack("<I", f.read(4))[0]
-        ne = [struct.unpack("<Q", f.read(8))[0] for _ in range(nd)]
-        ty = struct.unpack("<I", f.read(4))[0]
-        off = struct.unpack("<Q", f.read(8))[0]
-        tensors.append((name, ne, ty, off))
-    pos = f.tell()
     return tensors, (pos + 31) // 32 * 32
 
 
@@ -130,7 +106,7 @@ def main(argv):
     if len(argv) < 2:
         raise SystemExit(__doc__)
     with open(argv[1], "rb") as f:
-        tensors, data_start = read_header(f)
+        tensors, data_start = tensor_directory(f)
         nv = [t for t in tensors if t[2] == GGML_TYPE_NVFP4]
         print(f"NVFP4 tensors: {len(nv)} of {len(tensors)}")
         if not nv:

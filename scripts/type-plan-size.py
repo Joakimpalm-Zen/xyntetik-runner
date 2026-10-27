@@ -21,8 +21,9 @@ this answers the precision question only.
 """
 import argparse
 import json
-import struct
 import sys
+
+from gguf_fixture import read_header
 
 # ggml type -> (block elements, bytes per block). Only the types this quantizer
 # can read as a source or write as a target need to be here.
@@ -45,55 +46,19 @@ PLAN_TYPE = {"q8_0": "Q8_0", "q4_0": "Q4_0", "q3_k": "Q3_K", "q4_k": "Q4_K",
 
 def _read(f):
     """(tensors, data_start, alignment) from a GGUF header + tensor directory."""
-    def u32():
-        return struct.unpack("<I", f.read(4))[0]
-
-    def u64():
-        return struct.unpack("<Q", f.read(8))[0]
-
-    def s():
-        return f.read(u64()).decode("utf-8", "replace")
-
-    sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
-
-    def skip(t):
-        if t == 9:
-            et, n = u32(), u64()
-            for _ in range(n):
-                skip(et)
-        elif t == 8:
-            s()
-        else:
-            f.read(sizes[t])
-
-    if f.read(4) != b"GGUF":
+    try:
+        kv, directory, pos = read_header(f)
+    except ValueError:
         sys.exit("not a GGUF file")
-    u32()
-    n_tensors, n_kv = u64(), u64()
-    alignment = 32
-    have_file_type = False
-    for _ in range(n_kv):
-        key = s()
-        t = u32()
-        if key == FILE_TYPE_KEY:
-            have_file_type = True
-        if key == "general.alignment" and t == 4:
-            alignment = u32()
-        else:
-            skip(t)
-    tensors = []
-    for _ in range(n_tensors):
-        name = s()
-        ne = [u64() for _ in range(u32())]
-        ttype = u32()
-        u64()  # offset
-        tensors.append((name, ttype, ne))
-    pos = f.tell()
+    alignment = kv.get("general.alignment")
+    if not isinstance(alignment, int):
+        alignment = 32
+    tensors = [(name, ttype, ne) for name, ne, ttype, _offset in directory]
     # The rewrite copies every KV and SETS general.file_type. A source without
     # that key therefore grows by one entry, which can push data_start a whole
     # alignment unit further and make an otherwise exact prediction 32 bytes
     # short (observed on the make-test-moe fixtures, which carry no file_type).
-    if not have_file_type:
+    if FILE_TYPE_KEY not in kv:
         pos += 8 + len(FILE_TYPE_KEY) + 4 + 4    # str len + key + kv type + u32
     data_start = (pos + alignment - 1) // alignment * alignment
     return tensors, data_start, alignment

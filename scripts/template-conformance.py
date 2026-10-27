@@ -44,10 +44,11 @@ import hashlib
 import json
 import os
 import re
-import struct
 import subprocess
 import sys
 import urllib.request
+
+from gguf_fixture import read_header
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")
@@ -693,33 +694,11 @@ def hf_raw(repo, path, tries=3):
 
 
 def gguf_kv(path):
-    def u32(f):
-        return struct.unpack("<I", f.read(4))[0]
-
-    def u64(f):
-        return struct.unpack("<Q", f.read(8))[0]
-
-    def rstr(f):
-        return f.read(u64(f)).decode("utf-8", "replace")
-
-    def val(f, t):
-        if t == 8:
-            return rstr(f)
-        if t == 9:
-            at, n = u32(f), u64(f)
-            return [val(f, at) for _ in range(n)]
-        fmt = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i", 6: "<f",
-               7: "<?", 10: "<Q", 11: "<q", 12: "<d"}[t]
-        return struct.unpack(fmt, f.read(struct.calcsize(fmt)))[0]
-
     with open(path, "rb") as f:
-        magic, _ver, _nt, n_kv = struct.unpack("<IIQQ", f.read(24))
-        if magic != 0x46554747:
+        try:
+            kv, _tensors, _end = read_header(f)
+        except ValueError:
             raise SystemExit("%s is not a GGUF file" % path)
-        kv = {}
-        for _ in range(n_kv):
-            k = rstr(f)
-            kv[k] = val(f, u32(f))
     return kv
 
 

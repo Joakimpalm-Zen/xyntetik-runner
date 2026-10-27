@@ -29,11 +29,12 @@ ssm_out) and its FFN, and on the first full-attention layer's q/k/v/output.
 LORA_ARCH overrides the architecture the adapter declares (a qwen35 adapter
 for a clef base is what llama.cpp's converter writes from the backbone).
 """
+import io
 import os
 import struct
 import sys
 
-from gguf_fixture import kf, ks, write_gguf, STR, T_F32, T_F16
+from gguf_fixture import kf, ks, read_header, write_gguf, T_F32, T_F16
 
 BASE, OUT = sys.argv[1], sys.argv[2]
 BASE_ARCH = "llama"
@@ -54,53 +55,15 @@ def rnd():
 # ---- read the base: header walk sufficient for F32 fixture tensors
 def read_base(path):
     d = open(path, "rb").read()
-    magic, ver, n_t, n_kv = struct.unpack_from("<IIQQ", d, 0)
-    assert magic == 0x46554747
-    off = 24
-
-    def rstr():
-        nonlocal off
-        n = struct.unpack_from("<Q", d, off)[0]
-        off += 8
-        v = d[off:off + n].decode()
-        off += n
-        return v
-
-    def skip_val(t):
-        nonlocal off
-        sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
-        if t == 8:
-            rstr()
-        elif t == 9:
-            et, n = struct.unpack_from("<IQ", d, off)
-            off += 12
-            for _ in range(n):
-                skip_val(et)
-        else:
-            off += sizes[t]
-
+    kv, directory, end = read_header(io.BytesIO(d))
     global BASE_ARCH
-    for _ in range(n_kv):
-        key = rstr()
-        t = struct.unpack_from("<I", d, off)[0]
-        off += 4
-        if key == "general.architecture" and t == STR:
-            # the adapter must name the base's architecture (the loader
-            # refuses a mismatch); granite and muse-glimmer fixtures are not llama
-            n = struct.unpack_from("<Q", d, off)[0]
-            BASE_ARCH = d[off + 8:off + 8 + n].decode("utf-8")
-        skip_val(t)
-    tens = []
-    for _ in range(n_t):
-        name = rstr()
-        nd = struct.unpack_from("<I", d, off)[0]
-        off += 4
-        dims = list(struct.unpack_from("<%dQ" % nd, d, off))
-        off += 8 * nd
-        ttype, toff = struct.unpack_from("<IQ", d, off)
-        off += 12
-        tens.append([name, dims, ttype, toff])
-    data0 = (off + 31) & ~31
+    arch = kv.get("general.architecture")
+    if isinstance(arch, str):
+        # the adapter must name the base's architecture (the loader
+        # refuses a mismatch); granite and muse-glimmer fixtures are not llama
+        BASE_ARCH = arch
+    tens = [[name, dims, ttype, toff] for name, dims, ttype, toff in directory]
+    data0 = (end + 31) & ~31
     return d, tens, data0
 
 
