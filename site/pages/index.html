@@ -122,13 +122,13 @@ bare: yes
           </tr>
           <tr>
             <td>How close is the output to the model publisher's own implementation?</td>
-            <td><span class="y win">Closer than llama.cpp on 20 of 23 rows with the published 1.5.0 Linux binary; 19 of 23 with a local Clang build of 1.6.0</span></td>
+            <td><span class="y win">Closer than llama.cpp on 20 of 23 rows with the published 1.6.1 Linux binary, which reads identically to the published 1.5.0 binary at every scored position</span></td>
             <td><span class="n">llama.cpp, given its stronger configuration at each size</span></td>
           </tr>
         </tbody>
       </table>
     </div>
-    <p class="small muted mt-1">Training: <a href="{{repo}}/blob/main/docs/train-lora-on-quantized-gguf.md">docs/train-lora-on-quantized-gguf.md</a>. Tool calls: 2026-08-19, <a href="{{repo}}/blob/main/docs/truncation-benchmark.md">docs/truncation-benchmark.md</a>. Idle memory: 2026-09-01, <a href="{{repo}}/blob/main/docs/idle-coexistence-120b-m5max-2026-09-01.md">docs/idle-coexistence-120b-m5max-2026-09-01.md</a>. Publisher reference: 2026-09-07, <a href="{{repo}}/blob/main/docs/golden-pass-2026-09-07.md">docs/golden-pass-2026-09-07.md</a>. Speed tables and every other measurement are on the <a href="/evidence/">evidence page</a>.</p>
+    <p class="small muted mt-1">Training: <a href="{{repo}}/blob/main/docs/train-lora-on-quantized-gguf.md">docs/train-lora-on-quantized-gguf.md</a>. Tool calls: 2026-08-19, <a href="{{repo}}/blob/main/docs/truncation-benchmark.md">docs/truncation-benchmark.md</a>. Idle memory: 2026-09-01, <a href="{{repo}}/blob/main/docs/idle-coexistence-120b-m5max-2026-09-01.md">docs/idle-coexistence-120b-m5max-2026-09-01.md</a>. Publisher reference: 2026-10-25, <a href="{{repo}}/blob/main/docs/golden-pass-2026-10-25.md">docs/golden-pass-2026-10-25.md</a>. Speed tables and every other measurement are on the <a href="/evidence/">evidence page</a>.</p>
   </div>
 </section>
 
@@ -213,7 +213,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       <a class="btn" href="https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae" rel="noopener">Xyntetik-Runner releases</a>
       <a class="btn" href="/evidence/#artifacts">The artifact ledger</a>
     </div>
-    <p class="small muted mt-1">A card's last-validated line is rendered from the Runner support roster when this site is built: a ✅ is a reproduced greedy smoke at that Runner version and date, not a verdict on the answers. Every file and backend is in the <a href="/runner/#validated">Runner page's table</a>.</p>
+    <p class="small muted mt-1">Every published file's card links to its row in the Runner support roster, where a recorded mark is a reproduced greedy smoke at that Runner version and date, not a verdict on the answers. The files re-checked on a release are listed in the <a href="{{repo}}#validated-models">README's model list</a>.</p>
   </div>
 </section>
 

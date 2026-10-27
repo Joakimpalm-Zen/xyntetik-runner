@@ -43,7 +43,7 @@ nav: evidence
       <div>
         <div class="value">20 of 23</div>
         <div class="label">rows where Runner's output is <a href="#gold">closer to the model publisher's own float32 implementation</a> than llama.cpp's, across twelve families</div>
-        <span class="measured">2,000 requested positions per row. Published 1.5.0 Linux binary, 2026-10-22. A local Clang build of 1.6.0 reads 19 of 23; <a href="{{repo}}/blob/main/docs/golden-pass-2026-10-25.md">build conditions and limitations</a>.</span>
+        <span class="measured">2,000 requested positions per row. Published 1.6.1 Linux binary, 2026-10-26, identical to the published 1.5.0 binary at every scored position; a local Clang build of the same source reads 19 of 23, the compiler's doing. <a href="{{repo}}/blob/main/docs/golden-pass-2026-10-25.md">Build conditions and limitations</a>.</span>
       </div>
       <div>
         <div class="value">0.69 to 1.00</div>
@@ -321,7 +321,7 @@ nav: evidence
       <h2>Measured against each model's own implementation, not against another engine.</h2>
       <p>Runner does the model's arithmetic without the shortcuts faster engines take: activations stay in 32-bit float instead of being rounded to 8 bits before every multiply, and attention accumulates in 32-bit float instead of 16. That costs speed where prefill is compute-bound. To see what it buys, the yardstick is the model publisher's own reference implementation run in full precision, not a second engine that may have taken the same shortcuts.</p>
     </div>
-    <p>The table below measures the published 1.5.0 Linux binary. A local Clang build of 1.6.0 reads 19 of 23 rows; the published 1.6.0 Linux asset has not been scored because it fails to start on Ubuntu 24.04. <a href="{{repo}}/blob/main/docs/golden-pass-2026-10-25.md">Controlled build comparison and compatibility regression</a>.</p>
+    <p>The table below is the published 1.5.0 Linux binary's reading, and the published 1.6.1 binary reproduces it at every scored position (2026-10-26). A local Clang build of the same source reads 19 of 23 rows, the compiler's doing; the 1.6.0 Linux asset, which did not start on Ubuntu 24.04, was replaced by 1.6.1. <a href="{{repo}}/blob/main/docs/golden-pass-2026-10-25.md">Controlled build comparison, compatibility regression and the 1.6.1 asset pass</a>.</p>
     <details class="table-view" open>
       <summary>Twelve families against their publishers' implementations in float32, both tiers, 2,000 corpus positions each, measured on Runner 1.5.0 2026-10-22</summary>
       <div class="table-wrap">
