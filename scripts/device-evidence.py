@@ -12,7 +12,9 @@ else.
 The failure mode is not "a test broke". It is "nothing could see that nothing
 had been checked". So this file gates on the thing that actually decays,
 which is STALENESS PER DEVICE CLASS, and `make release-check` refuses a tag
-when a class the README claims has gone past its policy.
+when an owned class the README claims has gone past its policy. A borrowed
+class (lent, no terms) is reported the same way; its age never refuses a tag,
+a recorded failure on it does.
 
 Two rules keep it from becoming a spreadsheet nobody trusts:
 
@@ -57,6 +59,21 @@ def age_days(row, now):
     return (now - datetime.date.fromisoformat(row["date"])).days
 
 
+OWNERSHIPS = ("owned", "borrowed")
+
+
+def ownership(cls):
+    """Whose machine a class is: "owned" (the project's, which the gate may
+    require to be fresh) or "borrowed" (lent with no terms, usable while it
+    is there, never depended on). A class that says nothing is owned, so
+    the field can only loosen a gate on purpose, never by omission."""
+    value = cls.get("ownership", "owned")
+    if value not in OWNERSHIPS:
+        raise SystemExit("class %s: ownership %r is not one of %s" % (
+            cls.get("id"), value, "/".join(OWNERSHIPS)))
+    return value
+
+
 def check(doc, now, out=None):
     """Report every class; return the list of stale ones.
 
@@ -73,9 +90,14 @@ def check(doc, now, out=None):
     for cls in doc["classes"]:
         last = cls.get("last_verified")
         limit = cls.get("max_age_days", doc["policy"]["default_max_age_days"])
+        borrowed = ownership(cls) == "borrowed"
+        # a borrowed class (lent, no terms) is reported like the others and
+        # its age never refuses a tag; a recorded failure still does, since
+        # a failure is a fact about the engine, not about who owns the box
         if not last:
             state, detail = "NEVER", "no evidence recorded"
-            stale.append(cls["id"])
+            if not borrowed:
+                stale.append(cls["id"])
         else:
             days = age_days(last, now)
             detail = "%s, %d day%s ago, %s" % (
@@ -85,9 +107,12 @@ def check(doc, now, out=None):
                 stale.append(cls["id"])
             elif days > limit:
                 state = "STALE"
-                stale.append(cls["id"])
+                if not borrowed:
+                    stale.append(cls["id"])
             else:
                 state = "ok"
+        if borrowed:
+            detail += ", borrowed hardware: dated evidence, its age does not gate"
         print("%-6s %-*s  %s (policy %d days)" % (state, width, cls["id"],
                                                   detail, limit), file=out)
     return stale

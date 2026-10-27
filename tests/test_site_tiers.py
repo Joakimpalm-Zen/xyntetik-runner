@@ -171,7 +171,7 @@ def test_a_recorded_cell_shows_its_version_and_date_and_links_its_row():
            if "Xyntetik-Kvist-14B-Q8_0.gguf" in r][0]
     cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)
     assert [text_of(c) for c in cells[2:6]] == [
-        "☐ not run", "✅ v1.5.1 2026-10-23", "☐ not run", "☐ not run"]
+        "☐ not run", "✅ v1.5.1 b 2026-10-23", "☐ not run", "☐ not run"]
     assert ('href="https://github.com/Joakimpalm-Zen/xyntetik-runner/blob/main/'
             'docs/model-support.md#xyntetik-kvist-14b-q8_0"') in cells[6]
 
@@ -258,8 +258,10 @@ def test_the_built_pages_carry_the_render_of_the_roster_they_were_built_from(tmp
     def kvist_q8(page):
         return [r for r in re.findall(r"<tr>.*?</tr>", page, re.S)
                 if "Xyntetik-Kvist-14B-Q8_0.gguf" in r][0]
-    assert "✅ v1.5.1 2026-10-23" in kvist_q8(runner)
-    assert "✅ v1.5.2 2026-11-02" in kvist_q8(runner2)
+    # recorded on linux-x86_64-cuda, borrowed in the committed ledger: the
+    # table carries the superscript, the card line (index) does not
+    assert "✅ v1.5.1<sup>b</sup> 2026-10-23" in kvist_q8(runner)
+    assert "✅ v1.5.2<sup>b</sup> 2026-11-02" in kvist_q8(runner2)
     assert "v1.5.1" not in kvist_q8(runner2)
     # The landing page also names the newest release in CHANGELOG.md, which
     # can be the very version `later` marks with (it was, on the 1.5.2

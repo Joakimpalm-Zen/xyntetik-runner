@@ -572,6 +572,65 @@ def test_rows_below_tier1_are_not_gated():
     assert mt.stale(roster(row), TODAY) == []
 
 
+# Borrowed hardware (owner decision 2026-10-27): a row whose smoke class is
+# a lent machine is reported like the others, but a missing or old record
+# on it never holds a release; a recorded failure does on any class.
+
+LENT = frozenset({"macos-arm64-metal"})
+
+
+def test_a_stale_row_on_borrowed_hardware_does_not_refuse(capsys):
+    doc = gated(metal=gate("2026-09-07"))
+    assert mt.stale(doc, TODAY, borrowed=LENT) == []
+    out = capsys.readouterr().out
+    assert out.startswith("STALE") and "borrowed hardware" in out
+
+
+def test_a_never_gated_row_on_borrowed_hardware_does_not_refuse():
+    assert mt.stale(gated(), TODAY, borrowed=LENT) == []
+
+
+def test_a_failing_cell_on_borrowed_hardware_still_refuses():
+    doc = gated(metal=gate("2026-10-22", result="fail"))
+    assert mt.stale(doc, TODAY, borrowed=LENT) == ["toy-q8_0"]
+
+
+def test_a_stale_row_on_owned_hardware_refuses_whatever_else_is_borrowed():
+    doc = gated(metal=gate("2026-09-07"))
+    assert mt.stale(doc, TODAY, borrowed=frozenset({"linux-x86_64-cuda"})) == ["toy-q8_0"]
+
+
+def test_borrowed_classes_come_from_the_ledgers_ownership_field():
+    devices = {"classes": [{"id": "a", "ownership": "borrowed"},
+                           {"id": "b", "ownership": "owned"}, {"id": "c"}]}
+    assert mt.borrowed_classes(devices) == frozenset({"a"})
+
+
+def test_the_committed_ledger_marks_the_lent_linux_host_borrowed():
+    """The decision this encodes: the Linux CUDA host is lent with no terms."""
+    assert "linux-x86_64-cuda" in mt.borrowed_classes()
+    assert "windows-x86_64-cuda" not in mt.borrowed_classes()
+
+
+def test_a_readme_mark_on_borrowed_hardware_carries_the_superscript():
+    cell = gate("2026-10-22")
+    assert "<sup>b</sup>" in mt.readme_mark(cell, LENT)
+    assert "<sup>b</sup>" not in mt.readme_mark(cell, frozenset())
+    # the legend always explains the superscript; the cells carry it only
+    # when their class is borrowed
+    assert "<sup>b</sup>" in mt.README_LEGEND
+    cells = lambda text: text.split("<details>", 1)[1]
+    assert "<sup>b</sup>" in cells(mt.render_readme(gated(metal=cell), LENT))
+    assert "<sup>b</sup>" not in cells(mt.render_readme(gated(metal=cell), frozenset()))
+
+
+def test_the_support_doc_names_borrowed_hardware_on_the_row():
+    text = mt.render_doc(gated(metal=gate("2026-10-22")), LENT)
+    assert "(borrowed hardware" in text
+    assert "(borrowed hardware" not in mt.render_doc(gated(metal=gate("2026-10-22")),
+                                                     frozenset())
+
+
 def test_the_stale_report_prints_every_tier1_row(capsys):
     mt.stale(gated(metal=gate("2026-10-22")), TODAY)
     assert "toy-q8_0" in capsys.readouterr().out

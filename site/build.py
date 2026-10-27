@@ -351,12 +351,20 @@ def _load_tiers():
 
 MT = _load_tiers()
 MARK_LABELS = ("CPU", "CUDA", "Metal")
+BORROWED = MT.borrowed_classes()
 
 
-def _mark_html(cell, link=True):
+def _mark_html(cell, link=True, lent=True):
     text, href = MT.mark_parts(cell)
     if href and link:
         return f'<a href="{REPO}/blob/main/{esc(href)}">{esc(text)}</a>'
+    # the table carries the README's superscript for a gate recorded on
+    # borrowed hardware; a card's one-line summary does not (the cards
+    # on the Hub do not change)
+    if lent and MT.cell_borrowed(cell, BORROWED):
+        # after the version, before the date, as the README places it
+        head, date = text.rsplit(" ", 1)
+        return f"{esc(head)}<sup>b</sup> {esc(date)}"
     return esc(text)
 
 
@@ -405,7 +413,7 @@ def validated_html(doc: dict, repos: list[str]) -> str:
     groups: dict[str, list[dict]] = {}
     for r in rows:
         if r["tier"] == "tier1":
-            marks = [f"{label} {_mark_html(r['backends'].get(b), link=False)}"
+            marks = [f"{label} {_mark_html(r['backends'].get(b), link=False, lent=False)}"
                      for b, label in zip(MT.BACKENDS, MARK_LABELS)]
             marks.append("Train " + esc(MT.train_mark(r.get("lora"))))
             # a narrow card breaks the line between marks, never inside one

@@ -1609,8 +1609,11 @@ CI builds all three and runs the suite on hosted machines, which have no GPU.
 The accelerated halves of that table are verified on physical hardware, and
 [docs/device-evidence.json](docs/device-evidence.json) records when each was
 last run, written from the runner's own `--caps` on the machine in question.
-`make release-check` refuses a tag while one of them is stale, so the table
-above is a claim somebody re-checks rather than one that decays quietly.
+`make release-check` refuses a tag while one the project owns is stale, so the
+table above is a claim somebody re-checks rather than one that decays quietly.
+A class the ledger marks borrowed (lent with no terms) is reported the same way
+but its age never holds a release: its records are dated evidence the project
+may use and does not depend on.
 
 On Windows, install `make` and `mingw-w64-ucrt-x86_64-gcc` from an MSYS2 UCRT64
 shell, then run `make`.

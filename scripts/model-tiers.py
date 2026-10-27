@@ -136,6 +136,24 @@ def device_classes(devices):
     return {c["id"]: c.get("expect") or {} for c in devices.get("classes", [])}
 
 
+def borrowed_classes(devices=None):
+    """The ids of the device classes the project does not own (ownership
+    "borrowed" in the device ledger: lent with no terms, usable while there,
+    never depended on). Their records are dated evidence like any other;
+    their age never refuses a tag, a recorded failure on them does. With no
+    ledger given, the committed one."""
+    if devices is None:
+        with open(DEVICE_EVIDENCE, encoding="utf-8") as f:
+            devices = json.load(f)
+    return frozenset(c["id"] for c in devices.get("classes", [])
+                     if c.get("ownership") == "borrowed")
+
+
+def cell_borrowed(cell, borrowed):
+    """Whether a backend cell is a gate recorded on borrowed hardware."""
+    return bool(cell) and cell.get("kind") == "gate" and cell.get("device_class") in borrowed
+
+
 def _date(s):
     try:
         datetime.date.fromisoformat(s)
@@ -407,16 +425,23 @@ def today(override=None):
     return datetime.datetime.now(datetime.timezone.utc).date()
 
 
-def stale(doc, now, out=None):
+def stale(doc, now, out=None, borrowed=None):
     """Report every Tier 1 row; return the ids of those that are not current.
 
     Prints the fresh rows too, as the device ledger does: the number that
     matters is how old the freshest evidence is, and a check that only
     speaks when it is angry trains a reader to take silence for coverage.
+
+    A row whose smoke class is borrowed hardware is reported the same way,
+    but a missing or old record on it is not in the returned list: the
+    project may use that machine and must not depend on it, so its absence
+    cannot hold a release. A recorded failure is returned on any class.
     """
     # resolved here, not in the signature, so a replaced stdout (pytest's
     # capture) is the one written to
     out = out or sys.stdout
+    if borrowed is None:
+        borrowed = borrowed_classes()
     default = doc["policy"]["default_max_age_days"]
     rows = [r for r in doc["rows"] if r["tier"] == "tier1"]
     width = max((len(r["id"]) for r in rows), default=0)
@@ -442,7 +467,10 @@ def stale(doc, now, out=None):
                 where, cell["runner_version"], cell["date"], days,
                 "" if days == 1 else "s")
             state = "STALE" if days > limit else "ok"
-        if state != "ok":
+        lent = smoke["device_class"] in borrowed
+        if lent:
+            detail += ", borrowed hardware: dated evidence, its age does not gate"
+        if state == "FAILING" or (state != "ok" and not lent):
             bad.append(row["id"])
         print("%-7s %-*s  %s (policy %d days)" % (state, width, row["id"], detail, limit),
               file=out)
@@ -657,7 +685,9 @@ README_LEGEND = (
     f"{PARTIAL} *k of n*: k of its n files recorded, a declared limit beside them "
     "counted as not run · a hyphen: none run · n/a: a declared limit on every file · "
     "failed: a recorded failure on any file. For Train, recorded means the LoRA "
-    "backward admits the file, and a refusal counts as a declared limit. Each file "
+    "backward admits the file, and a refusal counts as a declared limit. A mark "
+    "with <sup>b</sup> was recorded on borrowed hardware: dated evidence the project "
+    "may use and does not depend on, so its age never holds a release. Each file "
     "name links to its envelope.")
 
 
@@ -665,18 +695,20 @@ def _esc(text):
     return html.escape(text, quote=False)
 
 
-def readme_mark(cell):
+def readme_mark(cell, borrowed=frozenset()):
     """A backend cell of the README's file table, as its <td>: the states of
     mark_parts, compact. A recorded gate is its version over its date in a
     cell that does not wrap (GitHub's table layout otherwise splits a date
     at its hyphens when a neighbour claims the width), not run is a blank
-    cell, a declared limit is n/a linked to the matrix."""
+    cell, a declared limit is n/a linked to the matrix. A gate recorded on
+    borrowed hardware carries a superscript b after its version."""
     if cell is None:
         return "<td></td>"
     if cell["kind"] == "limit":
         return f'<td><a href="{html.escape(cell["matrix"])}">n/a</a></td>'
     word = "✅" if cell["result"] == "pass" else "failed"
-    return f"<td nowrap>{word} {cell['runner_version']}<br>{cell['date']}</td>"
+    lent = "<sup>b</sup>" if cell_borrowed(cell, borrowed) else ""
+    return f"<td nowrap>{word} {cell['runner_version']}{lent}<br>{cell['date']}</td>"
 
 
 def readme_train(lora):
@@ -754,7 +786,7 @@ def _model_heading(quals, model):
     return f"<p><b>{_esc(model)}</b>{_esc(label)}</p>"
 
 
-def render_readme(doc):
+def render_readme(doc, borrowed=None):
     """The block between README_BEGIN and README_END.
 
     The legend, then one collapsed <details> block per Tier 1 family, in
@@ -774,6 +806,8 @@ def render_readme(doc):
     """
     # a blank line on each side keeps the markers' HTML comments apart from
     # the legend, the blocks and the Upcoming paragraph
+    if borrowed is None:
+        borrowed = borrowed_classes()
     head = "".join(f"<th>{h}</th>" for h in ("File",) + README_LABELS + ("Train",))
     lines = ["", "", README_LEGEND, ""]
     for family, models in tier1_families(doc):
@@ -782,7 +816,7 @@ def render_readme(doc):
             lines += [_model_heading(quals, model), "<table>",
                       f"<thead><tr>{head}</tr></thead>", "<tbody>"]
             for r in rows:
-                cells = [_readme_file(r)] + [readme_mark(r["backends"].get(b))
+                cells = [_readme_file(r)] + [readme_mark(r["backends"].get(b), borrowed)
                                              for b in BACKENDS]
                 cells.append(readme_train(r.get("lora")))
                 lines.append("<tr>" + "".join(cells) + "</tr>")
@@ -802,13 +836,14 @@ def _from_docs(path):
     return path[len("docs/"):] if path.startswith("docs/") else "../" + path
 
 
-def _cell_detail(cell):
+def _cell_detail(cell, borrowed=frozenset()):
     if cell is None:
         return "☐ not run"
     if cell["kind"] == "limit":
         return f"[n/a]({_from_docs(cell['matrix'])}): {cell['reason']}"
     pin = cell["evidence"]
-    return (f"{_mark(cell)} on {cell['device_class']} at commit "
+    lent = " (borrowed hardware)" if cell_borrowed(cell, borrowed) else ""
+    return (f"{_mark(cell)} on {cell['device_class']}{lent} at commit "
             f"`{(cell.get('commit') or 'unknown')[:12]}`, output sha256 "
             f"`{cell['output_sha256'][:16]}`, [pin]({_from_docs(pin)})")
 
@@ -838,7 +873,7 @@ def _files(row):
     return out
 
 
-def _row_doc(row, by_id, level=4):
+def _row_doc(row, by_id, level=4, borrowed=frozenset()):
     files = row.get("files") or []
     title = f"`{files[0]['name']}`" + (f" ({len(files)} parts)" if len(files) > 1 else "") \
         if files else row["model"]
@@ -881,12 +916,14 @@ def _row_doc(row, by_id, level=4):
         sm = row["smoke"]
         age = (f"an age limit of {row['max_age_days']} days" if row.get("max_age_days")
                else "the policy's age limit")
-        lines.append(f"- **Per-release smoke:** on {sm['device_class']}, {sm['backend']} "
-                     f"backend, {age}.")
+        lent = (" (borrowed hardware: dated evidence, its age does not hold a release)"
+                if sm["device_class"] in borrowed else "")
+        lines.append(f"- **Per-release smoke:** on {sm['device_class']}{lent}, "
+                     f"{sm['backend']} backend, {age}.")
     if row.get("backends"):
         for b in BACKENDS:
             lines.append(f"- **{b.upper() if b != 'metal' else 'Metal'}:** "
-                         f"{_cell_detail(row['backends'].get(b))}")
+                         f"{_cell_detail(row['backends'].get(b), borrowed)}")
     if row["tier"] == "tier1" or row.get("lora") is not None:
         lines += _lora_detail(row.get("lora"))
     hist = "; ".join(f"{TIER_NAMES[t['tier']]} from {t['effective']}" for t in row["transitions"])
@@ -894,10 +931,12 @@ def _row_doc(row, by_id, level=4):
     return lines
 
 
-def render_doc(doc):
+def render_doc(doc, borrowed=None):
     """The block between DOC_BEGIN and DOC_END: every row's envelope by
     tier, family and model (an Upcoming model on its own, in the order of
     admission), the exempt repositories, and the transition log."""
+    if borrowed is None:
+        borrowed = borrowed_classes()
     by_id = {r["id"]: r for r in doc["rows"]}
     lines = ["", ""]
     for tier in TIERS:
@@ -914,7 +953,7 @@ def render_doc(doc):
             for model, rs in groups.items():
                 lines += [f"### {_qualified(rs, model)}", ""]
                 for r in rs:
-                    lines += _row_doc(r, by_id)
+                    lines += _row_doc(r, by_id, borrowed=borrowed)
             continue
         # the README's grouping: families in roster order, models by name
         for family, groups in _family_groups(rows):
@@ -922,7 +961,7 @@ def render_doc(doc):
             for model, rs in groups:
                 lines += [f"#### {_qualified(rs, model)}", ""]
                 for r in rs:
-                    lines += _row_doc(r, by_id, level=5)
+                    lines += _row_doc(r, by_id, level=5, borrowed=borrowed)
     lines += ['<a id="exempt"></a>', "## Published, not a Runner model file", ""]
     for e in doc.get("exempt") or []:
         path = f" (`{e['path']}`)" if e.get("path") else ""
@@ -948,10 +987,12 @@ def render_doc(doc):
     return "\n".join(lines)
 
 
-def _blocks(doc):
+def _blocks(doc, borrowed=None):
     """(path, begin, end, rendered text) for every rendered block."""
-    return [(README, README_BEGIN, README_END, render_readme(doc)),
-            (DOC, DOC_BEGIN, DOC_END, render_doc(doc))]
+    if borrowed is None:
+        borrowed = borrowed_classes()
+    return [(README, README_BEGIN, README_END, render_readme(doc, borrowed)),
+            (DOC, DOC_BEGIN, DOC_END, render_doc(doc, borrowed))]
 
 
 def _replace_block(text, begin, end, body, path):
@@ -962,10 +1003,10 @@ def _replace_block(text, begin, end, body, path):
     return head + begin + body + end + tail
 
 
-def docs_drift(doc):
+def docs_drift(doc, borrowed=None):
     """The files whose rendered block differs from the roster's render."""
     bad = []
-    for path, begin, end, body in _blocks(doc):
+    for path, begin, end, body in _blocks(doc, borrowed):
         with open(path, encoding="utf-8") as f:
             text = f.read()
         if _replace_block(text, begin, end, body, path) != text:
@@ -973,9 +1014,9 @@ def docs_drift(doc):
     return bad
 
 
-def write_docs(doc):
+def write_docs(doc, borrowed=None):
     """Re-render every block from the roster (after a --record or --retire)."""
-    for path, begin, end, body in _blocks(doc):
+    for path, begin, end, body in _blocks(doc, borrowed):
         with open(path, encoding="utf-8") as f:
             text = f.read()
         new = _replace_block(text, begin, end, body, path)
@@ -1438,7 +1479,7 @@ def main():
                              + "\n".join(errs))
         save(doc, args.json)
         if is_committed_roster(args.json):
-            write_docs(doc)
+            write_docs(doc, borrowed_classes(devices))
         cell = row["backends"][res["backend"]]
         print(f"recorded {args.record} {res['backend']}: {cell['result']} at "
               f"{cell['runner_version']} on {cell['date']} ({cell['device_class']})")
@@ -1454,9 +1495,9 @@ def main():
         if errs:
             raise SystemExit("the roster does not validate:\n" + "\n".join(errs))
         if args.write_docs:
-            write_docs(doc)
+            write_docs(doc, borrowed_classes(devices))
             return 0
-        bad = docs_drift(doc)
+        bad = docs_drift(doc, borrowed_classes(devices))
         for b in bad:
             print(f"{b}: the rendered block differs from docs/model-tiers.json; "
                   f"run scripts/model-tiers.py --write-docs", file=sys.stderr)
@@ -1469,7 +1510,7 @@ def main():
         return _report(cards_push(doc, args.cards_push, args.yes),
                        ("refused", "unreachable"))
     if args.stale:
-        bad = stale(doc, today(args.today))
+        bad = stale(doc, today(args.today), borrowed=borrowed_classes(devices))
         if bad:
             # the rows went to stdout, which a pipe buffers while stderr is
             # written at once: flush, or a reader of both in one pipe gets
