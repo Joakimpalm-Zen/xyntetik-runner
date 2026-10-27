@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **One rendered table: the Hugging Face cards and the site link to the
+  README's model list instead of re-rendering it.** Each published file's
+  card now carries one sentence and a link per file to its row in
+  [docs/model-support.md](docs/model-support.md), with no marks or dates,
+  so it cannot drift; the `cards-drift` workflow and the
+  `--cards`, `--cards-check` and `--cards-push` commands are gone. The
+  site's Runner page links to the README's list and the support roster in
+  place of its own copy of the table, and the landing page's model cards
+  link to their Hub repositories.
+
 - **The validation gates run on change, not on the calendar.** The device
   ledger and the model roster held their records to 30 or 45 days, which
   re-ran every class and every Tier 1 file on a schedule whether or not

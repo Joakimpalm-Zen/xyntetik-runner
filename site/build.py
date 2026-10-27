@@ -334,12 +334,9 @@ CHARTS = {
 # ----------------------------------------------------------- the roster --
 #
 # The support roster (docs/model-tiers.json) is read when the site is built
-# and rendered by scripts/model-tiers.py's own functions, the ones the README
-# list and the Hugging Face cards are rendered by, so the site cannot word
-# a mark differently from the cards or keep a stale copy of one.
-# `{{tiers:table}}` is the README's list as one table;
-# `{{validated:OWNER/REPO[,OWNER/REPO]}}` is a model card's
-# one-line summary for the roster files of the repositories it names.
+# for the release version and date; its marks are rendered once, in the
+# README and docs/model-support.md, and the site links there instead of
+# carrying a copy (owner decision 2026-10-27).
 
 def _load_tiers():
     spec = importlib.util.spec_from_file_location(
@@ -350,86 +347,6 @@ def _load_tiers():
 
 
 MT = _load_tiers()
-MARK_LABELS = ("CPU", "CUDA", "Metal")
-BORROWED = MT.borrowed_classes()
-
-
-def _mark_html(cell, link=True, lent=True):
-    text, href = MT.mark_parts(cell)
-    if href and link:
-        return f'<a href="{REPO}/blob/main/{esc(href)}">{esc(text)}</a>'
-    # the table carries the README's superscript for a gate recorded on
-    # borrowed hardware; a card's one-line summary does not (the cards
-    # on the Hub do not change)
-    if lent and MT.cell_borrowed(cell, BORROWED):
-        # after the version, before the date, as the README places it
-        head, date = text.rsplit(" ", 1)
-        return f"{esc(head)}<sup>b</sup> {esc(date)}"
-    return esc(text)
-
-
-def tiers_table_html(doc: dict) -> str:
-    """The "Actively validated models" table: the README's models as one
-    table, a row per Tier 1 model (its qualifier before its bold name),
-    family by family in the README's order, a sub-row per roster file with
-    the cards' marks, then the Upcoming models as names."""
-    out = ['<div class="table-wrap">', '<table class="data tiers">',
-           "<thead><tr><th>Model</th><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th>"
-           "<th>Train</th><th>Evidence</th></tr></thead>", "<tbody>"]
-    for quals, model, rows in MT.tier1_groups(doc):
-        label = "".join(esc(q) + ": " for q in quals) + f"<strong>{esc(model)}</strong>"
-        out.append(f'<tr class="group"><td colspan="7">{label}</td></tr>')
-        for r in rows:
-            files = r["files"]
-            name = f"<code>{esc(files[0]['name'])}</code>" + (
-                f" ({len(files)} parts)" if len(files) > 1 else "")
-            cells = [f'<td class="mark">{_mark_html(r["backends"].get(b))}</td>'
-                     for b in MT.BACKENDS]
-            train = MT.train_mark(r.get("lora"))
-            # a mark stays on one line; a refusal sentence wraps
-            kind = "train" if train.startswith("no: ") else "mark"
-            cells.append(f'<td class="{kind}">{esc(train)}</td>')
-            cells.append(f'<td><a href="{REPO}/blob/main/{MT.SUPPORT_DOC}#{esc(r["id"])}">'
-                         "envelope</a></td>")
-            out.append(f'<tr><td></td><td class="file">{name}</td>{"".join(cells)}</tr>')
-    out += ["</tbody>", "</table>", "</div>",
-            '<p class="small muted mt-1"><strong>Upcoming</strong>, not counted as validated: '
-            + esc(", ".join(MT.upcoming_names(doc))) + ".</p>"]
-    return "\n".join(out)
-
-
-def validated_html(doc: dict, repos: list[str]) -> str:
-    """A model card's "Last validated" line for the roster files of the named
-    repositories, with the table's marks and no links (the card is one).
-    Files that share every mark share a line; files that differ are named.
-    KeyError when the repositories hold no roster file."""
-    rows = []
-    for repo in repos:
-        rows += [r for r in MT.repo_rows(doc, repo) if r not in rows]
-    if not rows:
-        # a card that covers no roster file carries no line; naming one in
-        # a page is a mistake the build reports
-        raise KeyError(", ".join(repos))
-    groups: dict[str, list[dict]] = {}
-    for r in rows:
-        if r["tier"] == "tier1":
-            marks = [f"{label} {_mark_html(r['backends'].get(b), link=False, lent=False)}"
-                     for b, label in zip(MT.BACKENDS, MARK_LABELS)]
-            marks.append("Train " + esc(MT.train_mark(r.get("lora"))))
-            # a narrow card breaks the line between marks, never inside one
-            key = " · ".join(f'<span class="nw">{m}</span>' for m in marks)
-        else:
-            key = esc(MT.TIER_NAMES[r["tier"]]) + ", no backend marks"
-        groups.setdefault(key, []).append(r)
-    if len(groups) == 1:
-        (key, rs), = groups.items()
-        n = len(rs)
-        head = ("Last validated" if n == 1 else
-                "Last validated, both files" if n == 2 else f"Last validated, all {n} files")
-        return f'<span class="measured validated">{head}: {key}</span>'
-    parts = [", ".join(f"<code>{esc(r['files'][0]['name'])}</code>" for r in rs) + ": " + key
-             for key, rs in groups.items()]
-    return '<span class="measured validated">Last validated: ' + "; ".join(parts) + "</span>"
 
 
 # ----------------------------------------------------------------- shell --
@@ -735,17 +652,6 @@ def main(argv: list[str] | None = None) -> int:
                 return CHARTS[name]()
             raise KeyError(kind)
         body = re.sub(r"\{\{(chart):([a-z_]+)\}\}", sub, body)
-        body = body.replace("{{tiers:table}}", tiers_table_html(roster))
-
-        def validated(m: re.Match[str]) -> str:
-            repos = m.group(1).split(",")
-            try:
-                return validated_html(roster, repos)
-            except KeyError:
-                problems.append(f"{meta['path']}: {{{{validated:{m.group(1)}}}}} names "
-                                f"{', '.join(repos)}, which hold no roster file")
-                return ""
-        body = re.sub(r"\{\{validated:([A-Za-z0-9._/,-]+)\}\}", validated, body)
         body = re.sub(r"\{\{mark:([a-z]+):(\d+)\}\}", lambda m: mark(m.group(1), "", int(m.group(2))), body)
         body = re.sub(r"\{\{heromark:([a-z]+)\}\}", lambda m: inline_mark(m.group(1)), body)
         body = (body.replace("{{repo}}", REPO).replace("{{hfd}}", HFD).replace("{{hf}}", HF)
