@@ -14,8 +14,10 @@ Current release and unreleased changes. Compatibility follows the
   unchanged. On an RTX 3070 beside 4 threads, medians of three: two
   Qwen2.5-7B Q4_K_M steps of 512 tokens 15.9 s to 14.4 s, two Qwen3.5-4B
   steps 12.8 s to 12.4 s; the attention backward 0.22-0.31 s to 0.04 s a
-  step. The record counts the calls (`attention_device_calls`,
-  `attention_failed_calls`).
+  step. On the 26B Clef IQ3_S with 6 threads of a datacenter MIG slice,
+  interleaved runs of two steps: a step 28.5 s to 25.7 s, the attention
+  layers 3.2-3.5 s to 0.4 s a step, the same losses. The record counts the
+  calls (`attention_device_calls`, `attention_failed_calls`).
 
 - **`make ptx` has one pinned toolchain, and CI holds the committed PTX to
   it.** `tools/ptx-toolchain/make-ptx.sh` builds the toolchain from a conda
