@@ -311,6 +311,7 @@ PUBLISHED_REPOS = {
     "Muse-Glimmer-30B-Surgical-6p34-Q4_K-recovered-GGUF", "Xyntetik-Kvist-14B",
     "Xyntetik-Kvist-14B-GGUF", "Xyntetik-Kvist-14B-research-checkpoints",
     "Xyntetik-Blad-Genesis-0.7M", "Qwen3.8-Flash-Next-MTP-GGUF",
+    "Cloudflare-clef-IQ3_S-recovered-GGUF",
 }
 
 
@@ -346,7 +347,8 @@ def test_the_owner_decisions_of_2026_10_22_are_in_the_roster():
     by_file = {f["name"]: row for row in rows.values()
                for f in row.get("files", [])}
     assert by_file["gpt-oss-20b-keep30-MXFP4.gguf"]["tier"] == "tier2"
-    assert by_file["Trinity-Nano-Preview-Q8_0.gguf"]["tier"] == "tier1"
+    # Tier 1 until 2026-10-27, when Tier 1 began to follow pull
+    assert by_file["Trinity-Nano-Preview-Q8_0.gguf"]["tier"] == "tier2"
     flash = by_file["Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf"]
     assert flash["tier"] == "tier1"
     assert mt.first_word(flash["claim"]) == "Experimental"
@@ -354,13 +356,11 @@ def test_the_owner_decisions_of_2026_10_22_are_in_the_roster():
 
 
 def test_the_committed_families_are_the_owners_list():
-    """The owner's 2026-10-24 request named the Tier 1 families; the README
-    lists them in the order of each one's first row."""
+    """Since 2026-10-27 Tier 1 follows pull: the families whose repositories
+    showed at least 1,000 downloads in 30 days; the README lists them in
+    the order of each one's first row."""
     families = [f for f, _ in mt.tier1_families(committed())]
-    assert set(families) == {
-        "Gemma 4", "Qwen3", "Qwen3.8", "Muse-Glimmer-30B", "Xyntetik-Kvist-14B",
-        "Granite-4.2-8B", "NVIDIA Nemotron Nano 9B v2", "Cloudflare Clef",
-        "Trinity Nano"}
+    assert set(families) == {"Qwen3.8", "Xyntetik-Kvist-14B"}
     first = {}
     for r in committed()["rows"]:
         if r["tier"] == "tier1":

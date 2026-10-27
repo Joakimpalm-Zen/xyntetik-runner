@@ -18,7 +18,8 @@
       "cpu",
       "cuda",
       "metal"
-    ]
+    ],
+    "admission": "Tier 1 follows pull (owner decision 2026-10-27): it holds the project's own published files whose repository shows at least 1,000 downloads on the Hub in the last 30 days, read at each release and written into the transition that moves a row; a head or an adapter follows its base. A file under the bar, and every file another publisher maintains, is Tier 2: maintained on report, its records kept as dated evidence, never gated. A row moves back up when its repository crosses the bar at a release."
   },
   "exempt": [
     {
@@ -49,7 +50,7 @@
       "id": "cloudflare-clef-iq3_m",
       "model": "Cloudflare Clef (clef, on Qwen3.8-27B)",
       "family": "Cloudflare Clef",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "Text path only: a decision model served at /v1/systemone; requests with images or videos are refused. The model card's two examples reproduce on the CPU with this file, which shows the head binds and decides; it is not a fidelity measurement of the quantized file.",
       "vision_upstream": true,
       "architecture": "clef",
@@ -130,6 +131,12 @@
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
       ]
     },
@@ -137,7 +144,7 @@
       "id": "qwen3.8-27b-ud-q4_k_m",
       "model": "Qwen3.8-27B",
       "family": "Qwen3.8",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "Unsloth's dynamic Q4_K_M of Qwen3.8-27B, text path: it passes the quant bar against the Q8_0 sibling; the qwen35 CUDA path was measured on other quantizations of the same model.",
       "architecture": "qwen35",
       "upstream": {
@@ -218,6 +225,12 @@
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
       ]
     },
@@ -225,7 +238,7 @@
       "id": "gemma-4-12b-it-qat-q4_0",
       "model": "Gemma 4 12B",
       "family": "Gemma 4",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "Text path only: Google's quantization-aware Q4_0 release, its mmproj file not loaded; the gemma4 tool protocol passes report cases A and B on CUDA, and case C (prose then call) fails on the family's own call-first format.",
       "vision_upstream": true,
       "architecture": "gemma4",
@@ -304,6 +317,12 @@
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
       ]
     },
@@ -311,7 +330,7 @@
       "id": "gemma-4-26b-a4b-it-qat-q4_0",
       "model": "Gemma 4 26B-A4B",
       "family": "Gemma 4",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "Text path only: Google's quantization-aware Q4_0 release of the MoE model, its mmproj file not loaded; no float32 reference has been run on the MoE layout.",
       "vision_upstream": true,
       "architecture": "gemma4",
@@ -389,6 +408,12 @@
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
       ]
     },
@@ -396,7 +421,7 @@
       "id": "gemma-4-31b-it-q4_0",
       "model": "Gemma 4 31B",
       "family": "Gemma 4",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "Text path only: ggml-org's post-training Q4_0 of Gemma 4 31B, not Google's QAT file; the existing 31B evidence is bound to this file's sha256.",
       "vision_upstream": true,
       "architecture": "gemma4",
@@ -474,6 +499,12 @@
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
       ]
     },
@@ -481,7 +512,7 @@
       "id": "muse-glimmer-30b-kquant",
       "model": "Muse-Glimmer-30B",
       "family": "Muse-Glimmer-30B",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "Text path only: Meta's own Q4_K_M, which passes the fidelity bar against the BF16 parent; the vision encoder is outside the admitted path.",
       "vision_upstream": true,
       "architecture": "muse-glimmer",
@@ -559,6 +590,12 @@
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
       ]
     },
@@ -566,7 +603,7 @@
       "id": "granite-4.2-8b-q4_k_m",
       "model": "Granite-4.2-8B",
       "family": "Granite-4.2-8B",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "IBM's official Q4_K_M of Granite 4.2 8B, text path: the granite42 tool protocol and two client loops pass on an 8 GB CUDA card; case C is open.",
       "architecture": "granite",
       "upstream": {
@@ -645,6 +682,12 @@
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
       ]
     },
@@ -652,7 +695,7 @@
       "id": "granite-4.2-8b-q8_0",
       "model": "Granite-4.2-8B",
       "family": "Granite-4.2-8B",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "IBM's official Q8_0 of Granite 4.2 8B, text path: the reference sibling of the Q4_K_M row's quant bar.",
       "architecture": "granite",
       "upstream": {
@@ -729,6 +772,12 @@
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's Tier 1 roster (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
       ]
     },
@@ -736,7 +785,7 @@
       "id": "trinity-nano-preview-q8_0",
       "model": "Trinity Nano",
       "family": "Trinity Nano",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "Arcee's Q8_0 of Trinity Nano Preview, text path, CPU only by admission: the one afmoe file Runner actively validates.",
       "architecture": "afmoe",
       "upstream": {
@@ -821,6 +870,12 @@
           "effective": "2026-10-22",
           "reason": "Migration: owner decision 2026-10-22, Tier 1 as the pinned afmoe file (the manual's 8 GB recommendation and a 1.5.0 golden-pass row).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
       ]
     },
@@ -1342,7 +1397,7 @@
       "id": "qwen3-30b-a3b-expq4_0-attnq8_0",
       "model": "Qwen3-30B-A3B selective precision",
       "family": "Qwen3",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "Qwen3-30B-A3B with attention Q8_0 and experts Q4_0, text path: it passes the fidelity bar against the first-party Q8_0 where the official uniform Q4_K_M fails it.",
       "architecture": "qwen3moe",
       "upstream": {
@@ -1419,14 +1474,21 @@
           "effective": "2026-10-22",
           "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 760 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
-      ]
+      ],
+      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 760 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "qwen3-coder-30b-a3b-instruct-keep120-q4_k_m",
       "model": "Qwen3-Coder-30B-A3B keep-120",
       "family": "Qwen3",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "An expert-pruned Qwen3-Coder-30B-A3B (120 of 128 experts kept) at Q4_K_M, text path: it passes the original and the current fidelity bar against its parent.",
       "architecture": "qwen3moe",
       "upstream": {
@@ -1502,14 +1564,21 @@
           "effective": "2026-10-22",
           "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 813 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
-      ]
+      ],
+      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 813 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "gemma-4-e2b-it-q4_k_m-q4_0-mix",
       "model": "Gemma 4 E2B",
       "family": "Gemma 4",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "Text path only: the smoke-test file from the quickstart; it fails the fidelity bar against its own BF16 parent (77.75% of tokens agree, mean KLD 0.286) and is a way to try Runner on an 8 GB machine, not a faithful gemma-4-E2B.",
       "vision_upstream": true,
       "architecture": "gemma4",
@@ -1605,14 +1674,21 @@
           "effective": "2026-10-22",
           "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 552 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
-      ]
+      ],
+      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 552 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "nvidia-nemotron-nano-9b-v2-q8_0",
       "model": "NVIDIA Nemotron Nano 9B v2",
       "family": "NVIDIA Nemotron Nano 9B v2",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "A plain Q8_0 of NVIDIA's Nemotron-Nano-9B-v2 (Mamba-2 hybrid), text path: 100% margin-qualified top-1 against NVIDIA's float32 reference at Q8_0 over 100 positions; the 2,000-position rerun did not finish.",
       "architecture": "nemotron_h",
       "upstream": {
@@ -1692,14 +1768,21 @@
           "effective": "2026-10-22",
           "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 496 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
-      ]
+      ],
+      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 496 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "gemma-4-31b-it-attn48-removed-q4_0",
       "model": "Gemma 4 31B, attention block 48 removed",
       "family": "Gemma 4",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "Text path only: Google's QAT Q4_0 of Gemma 4 31B with one attention sublayer physically removed; it tracks its parent at clean KLD 0.0223 on 44,413 held-out positions and loads only in Runner (llama.cpp refuses it by name).",
       "vision_upstream": true,
       "architecture": "gemma4",
@@ -1777,14 +1860,21 @@
           "effective": "2026-10-22",
           "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 454 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
-      ]
+      ],
+      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 454 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "muse-glimmer-30b-surgical-4p75-q4_k",
       "model": "Muse-Glimmer-30B surgical",
       "family": "Muse-Glimmer-30B",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "Text path only: Muse-Glimmer-30B with 4.75% of the decoder removed and healed, at Q4_K; it passes the bar against the unmodified BF16 parent on a held-out split.",
       "vision_upstream": true,
       "architecture": "muse-glimmer",
@@ -1861,14 +1951,21 @@
           "effective": "2026-10-22",
           "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 298 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
-      ]
+      ],
+      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 298 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "muse-glimmer-30b-surgical-6p34-q8_0",
       "model": "Muse-Glimmer-30B surgical",
       "family": "Muse-Glimmer-30B",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "Text path only: Muse-Glimmer-30B with 6.34% of the decoder removed (the FFN sublayers of layers 4, 7, 9 and 48), at Q8_0; it passes the bar against the unmodified BF16 parent on a held-out split.",
       "vision_upstream": true,
       "architecture": "muse-glimmer",
@@ -1945,14 +2042,21 @@
           "effective": "2026-10-22",
           "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 339 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
-      ]
+      ],
+      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 339 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "muse-glimmer-30b-surgical-6p34-q4_k-recovered",
       "model": "Muse-Glimmer-30B surgical",
       "family": "Muse-Glimmer-30B",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "Text path only: the 6.34% surgical Muse-Glimmer-30B at Q4_K with retrained scales; it passes the bar (0.04949, 97.90%) where plain Q4_K of the same model fails it (0.05815).",
       "vision_upstream": true,
       "architecture": "muse-glimmer",
@@ -2029,14 +2133,21 @@
           "effective": "2026-10-22",
           "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 292 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
-      ]
+      ],
+      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 292 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "qwen3-4b-runner-tooluse-merged-q8_0",
       "model": "Qwen3-4B Runner ToolUse",
       "family": "Qwen3",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "Qwen3-4B with the tool-use LoRA merged and written at Q8_0, text path: a qwen3 client loop passes on CUDA; it is an adaptation demonstration, not a general improvement over Qwen3-4B.",
       "architecture": "qwen3",
       "upstream": {
@@ -2113,14 +2224,21 @@
           "effective": "2026-10-22",
           "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 639 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
-      ]
+      ],
+      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 639 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "qwen3-4b-runner-tooluse-lora",
       "model": "Qwen3-4B Runner ToolUse",
       "family": "Qwen3",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "The tool-use LoRA adapter for Qwen3-4B, served with --lora on the base its card names (bartowski's Q4_K_M): an adapter, not a model.",
       "architecture": "qwen3",
       "upstream": {
@@ -2202,8 +2320,15 @@
           "effective": "2026-10-22",
           "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 639 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "last_validated_release": "1.5.1"
         }
-      ]
+      ],
+      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 639 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head",
@@ -2648,6 +2773,115 @@
           "tier": "tier2",
           "effective": "2026-10-22",
           "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
+      "id": "cloudflare-clef-iq3_s-recovered",
+      "model": "Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B)",
+      "family": "Cloudflare Clef",
+      "tier": "tier2",
+      "claim": "Text path only: a decision model served at /v1/systemone; requests with images or videos are refused. The project's own IQ3_S quantization of the Clef backbone with two recovery adapters trained on it; the house bar against the BF16 twin (mean KLD at most 0.05 and margin-qualified top-1 at least 97% on 500 held-out positions) is NOT met: the base reads 0.0879 / 94.0%, the best adapter 0.0736 / 95.6%, stated on the card with the evidence.",
+      "vision_upstream": true,
+      "architecture": "clef",
+      "upstream": {
+        "checkpoint": "Cloudflare/clef",
+        "revision": "0b331204bb13fbd2ca93a64df1956f5b55478ce5"
+      },
+      "files": [
+        {
+          "name": "Clef-backbone-IQ3_S.gguf",
+          "repo": "Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF",
+          "revision": "9e9ce879b6cbf9ba4e959f5b4329ebeb0885bbde",
+          "sha256": "dafa8752f756f21c941ffee1df6ab93fec499eaeddfea7e5ba5ba601abf747cb",
+          "bytes": 12419329216
+        }
+      ],
+      "quantization": "IQ3_S",
+      "published": true,
+      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.",
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Admitted 2026-10-27 at Tier 2 (owner decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
+      "id": "cloudflare-clef-iq3_s-recovery-qr-001e-lora",
+      "model": "Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B)",
+      "family": "Cloudflare Clef",
+      "tier": "tier2",
+      "claim": "Text path only: the QR-001e recovery adapter for the project's Clef IQ3_S backbone, served with --lora on that file: an adapter, not a model; the best recovery round (house reading 0.0736 / 95.6%), below the house bar, as its card states.",
+      "vision_upstream": true,
+      "architecture": "clef",
+      "upstream": {
+        "checkpoint": "Cloudflare/clef",
+        "revision": "0b331204bb13fbd2ca93a64df1956f5b55478ce5"
+      },
+      "files": [
+        {
+          "name": "clef-IQ3_S-recovery-QR-001e.lora.F16.gguf",
+          "repo": "Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF",
+          "revision": "9e9ce879b6cbf9ba4e959f5b4329ebeb0885bbde",
+          "sha256": "67e249a6d95c20e1128f4f1ceabde9b1c311988a1154766562c5c44e56380b64",
+          "bytes": 233523840
+        }
+      ],
+      "quantization": "adapter (F16 LoRA tensors)",
+      "published": true,
+      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.",
+      "file_kind": "adapter",
+      "runs_with": {
+        "row": "cloudflare-clef-iq3_s-recovered",
+        "as": "lora"
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Admitted 2026-10-27 at Tier 2 (owner decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
+      "id": "cloudflare-clef-iq3_s-recovery-qr-001b-lora",
+      "model": "Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B)",
+      "family": "Cloudflare Clef",
+      "tier": "tier2",
+      "claim": "Text path only: the QR-001b recovery adapter for the project's Clef IQ3_S backbone, served with --lora on that file: an adapter, not a model; the first recovery round (house reading 0.0757 / 95.6%), below the house bar, as its card states.",
+      "vision_upstream": true,
+      "architecture": "clef",
+      "upstream": {
+        "checkpoint": "Cloudflare/clef",
+        "revision": "0b331204bb13fbd2ca93a64df1956f5b55478ce5"
+      },
+      "files": [
+        {
+          "name": "clef-IQ3_S-recovery-QR-001b.lora.F16.gguf",
+          "repo": "Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF",
+          "revision": "9e9ce879b6cbf9ba4e959f5b4329ebeb0885bbde",
+          "sha256": "2816dff4dbe0db506cf9c1b21d89f164a851f8a0b12fb253da3762a7928e1ae9",
+          "bytes": 233523936
+        }
+      ],
+      "quantization": "adapter (F16 LoRA tensors)",
+      "published": true,
+      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.",
+      "file_kind": "adapter",
+      "runs_with": {
+        "row": "cloudflare-clef-iq3_s-recovered",
+        "as": "lora"
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-27",
+          "reason": "Admitted 2026-10-27 at Tier 2 (owner decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar.",
           "last_validated_release": null
         }
       ]
