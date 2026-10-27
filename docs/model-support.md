@@ -202,58 +202,21 @@ blank cell where nobody has run the gate yet. The Train cell is the
 recorded `--adapt-info` answer, ✅ with its version and date or `no:` and
 the refusal. The file name links to its row on this page.
 
-The same marks are published in two more places, rendered from the roster
-and never typed by hand, where not run is written out as `☐ not run` and a
-version carries its `v`.
+The README's block and this page are the only renders of the marks
+(2026-10-27: one rendered table). Two more places link to them instead of
+carrying a copy, so neither can drift and nothing watches them:
 
 - **The Hugging Face cards.** Every repository that holds a published row's
-  file carries a `xyntetik-validated` block on its card: one line per roster
-  file of that repository with its CPU, CUDA, Metal and Train marks
-  and a link to the file's row on this page, or, for a published file below
-  Tier 1, its tier and the reason with no marks. The block is the last
-  bullets of the card's own `xyntetik-status` block; a card without a status
-  block carries it as a quote of its own right after the H1. Only the block
-  is ever written, and the rest of the card is its author's.
-- **xyntetik.com.** The site's build reads the roster: the Runner page's
-  "Actively validated models" section is the README's list as one table,
-  and each model card on the landing page carries a "Last validated" line
-  for the roster files of the repositories it names (a card that covers no
-  roster file carries none). The Pages workflow rebuilds the site when the
-  roster changes.
-
-After a `--record` lands on main, the cards are pushed as an explicit step;
-`--record` never touches them:
-
-```sh
-# fetch every published card (no token needed) and write it, block placed,
-# to OUTDIR/<owner>--<repo>/README.md for review
-python3 scripts/model-tiers.py --cards OUTDIR
-# with the test interpreter (below): a dry run, what would be uploaded and
-# anything that would be refused, then the upload, one commit per repository
-python scripts/model-tiers.py --cards-push OUTDIR
-python scripts/model-tiers.py --cards-push OUTDIR --yes
-# read-only: every card's block against the roster's render
-python3 scripts/model-tiers.py --cards-check
-```
-
-Run the push with the project's test interpreter (the one `make
-test-python-deps` names), with `huggingface_hub` and its HTTP stack
-installed in it; an interpreter that cannot import them is refused with the
-reason before anything is uploaded, so a `python3` without them is not a
-silent fallback. The push uses the token `huggingface_hub` finds on its own
-and never reads, prints or passes one. It refuses a card rendered from an older roster, and a card that
-changed on the Hub outside the block since it was fetched; the commit is
-made on the revision it compared against, so an edit that lands in between
-is refused by the Hub rather than overwritten. `--cards` and the push refuse
-a card with malformed markers or one that does not mention every roster
-file of its repository.
-
-`--cards-check` exits 0 when every card matches, 1 on drift or a refused
-card, and 3 when the only trouble is a Hub it could not read (a timeout, a
-dropped connection, HTTP 429 or 5xx), which says nothing about the cards.
-The `cards-drift` workflow runs it on every push to main and weekly, never
-on a pull request and not as a required check: a merge that changes the
-render shows drift until the cards are pushed, and exit 3 is a warning.
+  file carries a `xyntetik-validated` block on its card, the last bullets
+  of the card's own `xyntetik-status` block: one sentence, then one line
+  per roster file of the repository naming it and linking to its row on
+  this page (the row's id is the anchor). The block carries no marks or
+  dates. A new published file's card gets the same block by hand, copied
+  from any other card with the file name and anchor changed; nothing
+  renders or pushes it.
+- **xyntetik.com.** The Runner page's "Actively validated models" section
+  links to the README's model list and to this page; the landing page's
+  model cards link to their Hub repositories, whose cards link here.
 
 <!-- model-tiers:rows:begin (rendered from docs/model-tiers.json by scripts/model-tiers.py --write-docs; do not edit) -->
 

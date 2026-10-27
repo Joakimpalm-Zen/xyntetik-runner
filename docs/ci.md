@@ -187,9 +187,7 @@ startup for a week).
 source/document agreement and the existence of referenced evidence files.
 These checks do not assert that historical evidence has been remeasured.
 
-`cards-drift.yml` asks the Hugging Face Hub whether each published model
-card's last-validated block is still the roster's render
-(`scripts/model-tiers.py --cards-check`, [docs/model-support.md](model-support.md#cards-and-site)).
-It runs on push to main and weekly, never on a pull request, and is not a
-required check, because the cards are pushed by hand after the merge that
-changes the render. Drift fails it; a Hub it cannot read is a warning.
+There is no job that watches the Hugging Face cards: since 2026-10-27 a
+card links to its file's row in [docs/model-support.md](model-support.md)
+instead of carrying a copy of its marks ([the README, the cards and the
+site](model-support.md#cards-and-site)), so nothing there can drift.

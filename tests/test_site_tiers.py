@@ -116,171 +116,19 @@ def site_words(cell):
     return text_of(cell) if cell else "☐ not run"
 
 
-def test_the_table_has_the_readmes_rows_in_the_readmes_order():
-    """The site keeps one table where the README has a block per family:
-    the same models in the same order, the same files in each, and each
-    cell the same mark in the site's words."""
-    doc = fixture()
-    html = site.tiers_table_html(doc)
-    readme = readme_models(doc)
-    groups = re.split(r'<tr class="group">', html)[1:]
-    assert len(groups) == len(readme)
-    for chunk, (model, rows) in zip(groups, readme):
-        label, *subrows = [text_of(r) for r in re.findall(r"<td.*?</tr>", chunk, re.S)]
-        assert re.sub(r"^(?:(?:Experimental|Text path only): )*", "", label) == model
-        assert len(subrows) == len(rows)
-        for got, cells in zip(subrows, rows):
-            assert got == " ".join([site_words(c) for c in cells] + ["envelope"])
+def test_the_runner_page_links_to_the_readmes_list_and_the_roster():
+    """Since 2026-10-27 the site carries no copy of the marks: the Runner
+    page links to the README's model list and to docs/model-support.md."""
+    text = (ROOT / "site" / "pages" / "runner.html").read_text(encoding="utf-8")
+    assert "{{tiers:table}}" not in text
+    assert "{{repo}}#validated-models" in text
+    assert "docs/model-support.md" in text
 
 
-def test_a_familys_line_is_computed_from_its_files():
-    """The cleared roster with marks set here: Granite-4.2-8B with both
-    files recorded on CUDA, Xyntetik-Kvist-14B with one of its four files
-    recorded there, and Trinity Nano, whose CUDA and Metal are declared
-    limits in the committed roster and whose training is refused. The
-    Qwen3.8 family's MTP Q8_0 head is a declared CUDA limit beside four
-    files recorded there, which counts as not run. Written out by hand."""
-    doc = fixture()
-    for r in doc["rows"]:
-        if r["id"] in ("granite-4.2-8b-q4_k_m", "granite-4.2-8b-q8_0"):
-            r["backends"]["cuda"] = gate("2026-10-23", "1.5.1")
-            r["lora"] = lora("2026-10-23", "1.5.1")
-        if r["id"] == "trinity-nano-preview-q8_0":
-            r["lora"] = dict(lora("2026-10-23", "1.5.1"),
-                             training={"supported": False, "reason": "MoE router"})
-        if r.get("family") == "Qwen3.8" and r["tier"] == "tier1" and \
-                r["backends"]["cuda"] is None:
-            r["backends"]["cuda"] = gate("2026-10-23", "1.5.1")
-    fams = family_marks(doc)
-    assert fams["Granite-4.2-8B"] == {"CPU": "-", "CUDA": "✅", "Metal": "-", "Train": "✅"}
-    assert fams["Xyntetik-Kvist-14B"] == {
-        "CPU": "-", "CUDA": "🟨 1 of 4", "Metal": "-", "Train": "-"}
-    assert fams["Trinity Nano"] == {"CPU": "-", "CUDA": "n/a", "Metal": "n/a", "Train": "n/a"}
-    assert fams["Qwen3.8"] == {"CPU": "-", "CUDA": "🟨 4 of 5", "Metal": "n/a", "Train": "-"}
-    # the E2B mix is the only Gemma 4 file the fixture records
-    assert fams["Gemma 4"] == {"CPU": "🟨 1 of 5", "CUDA": "-", "Metal": "🟨 1 of 5",
-                               "Train": "🟨 1 of 5"}
-    summary = re.search(r"<summary><b>Gemma 4</b>.*?</summary>", mt.render_readme(doc)).group(0)
-    assert summary == ("<summary><b>Gemma 4</b>, 5 models: CPU 🟨 1 of 5 · CUDA - · "
-                       "Metal 🟨 1 of 5 · Train 🟨 1 of 5</summary>")
-
-
-def test_a_recorded_cell_shows_its_version_and_date_and_links_its_row():
-    html = site.tiers_table_html(fixture())
-    row = [r for r in re.findall(r"<tr>.*?</tr>", html, re.S)
-           if "Xyntetik-Kvist-14B-Q8_0.gguf" in r][0]
-    cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)
-    assert [text_of(c) for c in cells[2:6]] == [
-        "☐ not run", "✅ v1.5.1 b 2026-10-23", "☐ not run", "☐ not run"]
-    assert ('href="https://github.com/Joakimpalm-Zen/xyntetik-runner/blob/main/'
-            'docs/model-support.md#xyntetik-kvist-14b-q8_0"') in cells[6]
-
-
-def test_a_declared_limit_links_the_manuals_support_matrix():
-    html = site.tiers_table_html(fixture())
-    row = [r for r in re.findall(r"<tr>.*?</tr>", html, re.S)
-           if "Trinity-Nano-Preview-Q8_0.gguf" in r][0]
-    assert ('<a href="https://github.com/Joakimpalm-Zen/xyntetik-runner/blob/main/'
-            'MANUAL.md#support-matrix">n/a</a>') in row
-
-
-def test_upcoming_models_follow_the_table_as_names_in_roster_order():
-    doc = fixture()
-    html = site.tiers_table_html(doc)
-    names = ", ".join(mt.upcoming_names(doc))
-    assert names.startswith("Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only)")
-    assert f"not counted as validated: {names}." in text_of(html)
-
-
-def test_a_card_summary_names_the_marks_of_its_repos_files():
-    doc = fixture()
-    one = site.validated_html(doc, ["Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF"])
-    assert text_of(one) == ("Last validated: CPU ✅ v1.5.1 2026-10-23 · CUDA ☐ not run"
-                            " · Metal ✅ v1.5.1 2026-10-23 · Train ✅ v1.5.1 2026-10-23")
-    # files whose marks differ are named; files whose marks agree share a line
-    kvist = text_of(site.validated_html(doc, [KVIST_GGUF]))
-    assert kvist == (
-        "Last validated: Xyntetik-Kvist-14B-BF16.gguf, Xyntetik-Kvist-14B-Q5_0-mix.gguf, "
-        "Xyntetik-Kvist-14B-IQ4_NL-mix.gguf: CPU ☐ not run · CUDA ☐ not run · "
-        "Metal ☐ not run · Train ☐ not run; Xyntetik-Kvist-14B-Q8_0.gguf: CPU ☐ not run"
-        " · CUDA ✅ v1.5.1 2026-10-23 · Metal ☐ not run · Train ☐ not run")
-    # a card is a link, so its summary carries none of its own
-    assert "<a " not in site.validated_html(doc, ["Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF"])
-
-
-def test_every_file_of_a_card_with_one_set_of_marks_is_counted():
-    doc = cleared()
-    n = len(mt.repo_rows(doc, KVIST_GGUF))
-    assert n >= 3
-    kvist = text_of(site.validated_html(doc, [KVIST_GGUF]))
-    assert kvist == (f"Last validated, all {n} files: CPU ☐ not run · CUDA ☐ not run · "
-                     "Metal ☐ not run · Train ☐ not run")
-
-
-def test_a_card_that_covers_no_roster_file_has_no_line(tmp_path):
-    """The GENESIS card's repository is exempt (no GGUF, not a Runner
-    model): the site prints no line for it, and never an exempt reason."""
-    doc = json.loads(ROSTER.read_text(encoding="utf-8"))
-    genesis = "Joakimpalm-Zen/Xyntetik-Blad-Genesis-0.7M"
-    assert genesis in {e["repo"] for e in doc["exempt"]}
-    try:
-        site.validated_html(doc, [genesis])
-        raise AssertionError("an exempt repository rendered a line")
-    except KeyError:
-        pass
-    _, index = build(tmp_path, doc)
-    card = index.split("GENESIS: learning with no human text", 1)[1].split("</a>", 1)[0]
-    assert "Last validated" not in card and "support roster" not in card
-
-
-def build(tmp_path, doc):
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    roster = tmp_path / "roster.json"
-    roster.write_text(json.dumps(doc), encoding="utf-8")
-    out = tmp_path / "site"
-    r = subprocess.run([sys.executable, str(ROOT / "site" / "build.py"),
-                        "--roster", str(roster), "--out", str(out)],
-                       capture_output=True, text=True)
-    assert r.returncode == 0, r.stderr
-    return ((out / "runner" / "index.html").read_text(encoding="utf-8"),
-            (out / "index.html").read_text(encoding="utf-8"))
-
-
-def test_the_built_pages_carry_the_render_of_the_roster_they_were_built_from(tmp_path):
-    doc = fixture()
-    runner, index = build(tmp_path / "a", doc)
-    assert site.tiers_table_html(doc) in runner
-    assert site.validated_html(doc, [KVIST_GGUF]) in index
-    # a roster change changes the built pages: no stale copy anywhere
-    later = fixture(day="2026-11-02", version="1.5.2")
-    runner2, index2 = build(tmp_path / "b", later)
-
-    def kvist_q8(page):
-        return [r for r in re.findall(r"<tr>.*?</tr>", page, re.S)
-                if "Xyntetik-Kvist-14B-Q8_0.gguf" in r][0]
-    # recorded on linux-x86_64-cuda, borrowed in the committed ledger: the
-    # table carries the superscript, the card line (index) does not
-    assert "✅ v1.5.1<sup>b</sup> 2026-10-23" in kvist_q8(runner)
-    assert "✅ v1.5.2<sup>b</sup> 2026-11-02" in kvist_q8(runner2)
-    assert "v1.5.1" not in kvist_q8(runner2)
-    # The landing page also names the newest release in CHANGELOG.md, which
-    # can be the very version `later` marks with (it was, on the 1.5.2
-    # release commit), so a bare version string cannot tell the two builds
-    # apart. A mark is a version and its date: that is what must not leak.
-    assert "✅ v1.5.1 2026-10-23" in index and "✅ v1.5.2 2026-11-02" not in index
-    assert "✅ v1.5.2 2026-11-02" in index2 and "✅ v1.5.1 2026-10-23" not in index2
-
-
-def test_a_card_naming_a_repo_the_roster_does_not_know_fails_the_build(tmp_path):
-    doc = fixture()
-    doc["rows"] = [r for r in doc["rows"]
-                   if not any(f.get("repo") == KVIST_GGUF for f in r.get("files") or [])]
-    roster = tmp_path / "roster.json"
-    roster.write_text(json.dumps(doc), encoding="utf-8")
-    r = subprocess.run([sys.executable, str(ROOT / "site" / "build.py"),
-                        "--roster", str(roster), "--out", str(tmp_path / "site")],
-                       capture_output=True, text=True)
-    assert r.returncode != 0 and KVIST_GGUF in r.stderr
+def test_no_page_source_carries_a_validated_placeholder():
+    for page in (ROOT / "site" / "pages").glob("*.html"):
+        text = page.read_text(encoding="utf-8")
+        assert "{{validated:" not in text, page.name
 
 
 def test_no_page_source_types_a_dated_mark():
