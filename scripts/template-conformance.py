@@ -921,6 +921,22 @@ def write_harmony_fixture():
 
 # ------------------------------------------------------- jinja (reference)
 
+# The callables transformers installs on its template environment, as the
+# reference templates expect them: `_jinja_raise_exception`, `_jinja_tojson` with json.dumps'
+# defaults, and `_jinja_strftime_now`.
+def _jinja_raise_exception(message):
+    raise TemplateError(message)
+
+
+def _jinja_tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
+    return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent,
+                      separators=separators, sort_keys=sort_keys)
+
+
+def _jinja_strftime_now(fmt):
+    return datetime.datetime.now().strftime(fmt)
+
+
 def jinja_env():
     import jinja2.ext
     from jinja2.exceptions import TemplateError
@@ -929,17 +945,6 @@ def jinja_env():
     # transformers' _compile_jinja_template, reproduced: trim_blocks and
     # lstrip_blocks are ON there, and getting them wrong manufactures fake
     # whitespace drift in every template that indents its {% %} tags.
-    def raise_exception(message):
-        raise TemplateError(message)
-
-    def tojson(x, ensure_ascii=False, indent=None, separators=None,
-               sort_keys=False):
-        return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent,
-                          separators=separators, sort_keys=sort_keys)
-
-    def strftime_now(fmt):
-        return datetime.datetime.now().strftime(fmt)
-
     # `{% generation %}` / `{% endgeneration %}` are HuggingFace's
     # assistant-masking markers (they tell a trainer which span is the
     # assistant's, and transformers installs an extension for them). They
@@ -948,9 +953,9 @@ def jinja_env():
     # Trinity Nano's 21 cases are NOT CHECKED rather than compared.
     env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True,
                                         extensions=[jinja2.ext.loopcontrols])
-    env.filters["tojson"] = tojson
-    env.globals["raise_exception"] = raise_exception
-    env.globals["strftime_now"] = strftime_now
+    env.filters["tojson"] = _jinja_tojson
+    env.globals["raise_exception"] = _jinja_raise_exception
+    env.globals["strftime_now"] = _jinja_strftime_now
     return env
 
 
@@ -1427,7 +1432,7 @@ def run(args):
             elif tools:
                 # Reference templates assume tool_call.arguments is a MAPPING:
                 # muse raises outright on a string, harmony/qwen/granite run
-                # it through |tojson and would double-encode one. OpenAI wire
+                # it through |_jinja_tojson and would double-encode one. OpenAI wire
                 # format is a JSON string, which is what runner is handed.
                 # Parsing it for the oracle side compares the two renderers on
                 # the same call rather than on an input the template rejects.

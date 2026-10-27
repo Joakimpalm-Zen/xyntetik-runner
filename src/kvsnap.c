@@ -104,8 +104,6 @@ bool kvsnap_configure(const char *dir, const char *sign_key, const char *trust_k
     return true;
 }
 
-bool kvsnap_enabled(void) { return KS.on; }
-
 static bool fail(kvsnap_err *err, int status, const char *code, const char *fmt, ...)
     RUNNER_PRINTF(4, 5);
 static bool fail(kvsnap_err *err, int status, const char *code, const char *fmt, ...) {

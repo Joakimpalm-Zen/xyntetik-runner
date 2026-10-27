@@ -56,14 +56,6 @@ static rs_entry **rs_find(const char *id) {
     return NULL;
 }
 
-void respstore_configure(size_t budget_bytes, double ttl_s) {
-    pthread_mutex_lock(&RS.mu);
-    RS.configured = true;
-    RS.budget = budget_bytes;
-    RS.ttl = ttl_s;
-    pthread_mutex_unlock(&RS.mu);
-}
-
 void respstore_reset_from_env(void) {
     pthread_mutex_lock(&RS.mu);
     while (RS.head) rs_drop(&RS.head);

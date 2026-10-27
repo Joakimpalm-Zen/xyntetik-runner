@@ -35,8 +35,6 @@ bool receipts_enabled(void);
 // chain_out itself; name_out (64 bytes) receives the file name and
 // chain_out (65) the record's chain hash.
 bool receipts_write(transcript_info *ti, char name_out[64], char chain_out[65]);
-// Forget the configuration (server teardown).
-void receipts_reset(void);
 // R1.12: the path of receipt `file` (a plain receipt-<sequence>.json name)
 // in DIR; false when receipts are off or the name is not one of theirs.
 bool receipts_record_path(const char *file, char *path, size_t cap);

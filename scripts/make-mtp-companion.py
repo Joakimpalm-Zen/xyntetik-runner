@@ -101,12 +101,6 @@ def bf16_to_f32(a16):
     return (a16.astype(np.uint32) << 16).view(np.float32)
 
 
-def f32_to_bf16(a32):
-    """Round to nearest even, like the publisher's own BF16 storage."""
-    u = np.ascontiguousarray(a32, dtype=np.float32).view(np.uint32).astype(np.uint64)
-    r = ((u >> 16) & 1) + 0x7FFF
-    return ((u + r) >> 16).astype(np.uint16)
-
 
 def quantize_q8_0(a16):
     """ggml Q8_0: blocks of 32 along the input axis, f16 scale + 32 int8. Takes the BF16

@@ -35,7 +35,6 @@
 // anchor and a manifest is held only to the key it names. False with the
 // reason on stderr.
 bool kvsnap_configure(const char *dir, const char *sign_key, const char *trust_key);
-bool kvsnap_enabled(void);
 
 typedef struct {
     int         status;    // HTTP status of the refusal

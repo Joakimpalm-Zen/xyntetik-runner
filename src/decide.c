@@ -175,11 +175,6 @@ static bool score_mode(engine *e, const char *prompt, tok_mode mode,
     return ok;
 }
 
-bool decide_score(engine *e, const char *prompt, const char *const *options, int n_opt,
-                  decide_result *out, int *prompt_tokens, const char **err) {
-    return score_mode(e, prompt, TOK_TEXT, options, n_opt, out, prompt_tokens, err, NULL);
-}
-
 // ---------------------------------------------------------------- request
 
 static const char *jstr(const jv *o, const char *k) {

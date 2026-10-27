@@ -79,18 +79,6 @@ def set_config_key(home: Path, key: str, value: object) -> Path:
     return path
 
 
-def set_config_adapter(home: Path, adapter: str) -> Path:
-    """Record (or clear, with "") the promoted adapter the offload serves."""
-    path = home / CONFIG_REL
-    data = read_config(home)
-    if adapter:
-        data["adapter"] = adapter
-    else:
-        data.pop("adapter", None)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(path, json.dumps(data, indent=2) + "\n")
-    return path
-
 
 MODEL_DIRS = ("models", "Models", ".cache/lm-studio/models", ".lmstudio/models",
               ".cache/huggingface/hub")

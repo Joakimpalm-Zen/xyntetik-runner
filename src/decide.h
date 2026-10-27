@@ -25,13 +25,6 @@ typedef struct {
     int    n_tok;  // scored tokens (the option's in-context token count)
 } decide_result;
 
-// Scores n_opt option strings against prompt on e's KV. Returns false with
-// *err set (a static string) on a caller error (empty option, option that
-// tokenises to nothing, prompt too short to score against) or on an engine
-// failure (out of memory, context overflow). *prompt_tokens receives the
-// prompt's token count. The KV is left holding a valid prefix.
-bool decide_score(engine *e, const char *prompt, const char *const *options, int n_opt,
-                  decide_result *out, int *prompt_tokens, const char **err);
 
 // One request in the /v1/decide shape (state, answer_prefix, rendering,
 // questions[]) to

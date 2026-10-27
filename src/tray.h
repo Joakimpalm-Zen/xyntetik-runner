@@ -52,8 +52,6 @@ int  tray_menu_build(tray_item *items, int cap);
 // the user cancelled); every other action ignores `text`.
 void tray_menu_act(int action, long arg, const char *text);
 
-// True while ≥1 runner instance is live — the backend shows the badge dot.
-bool tray_any_running(void);
 
 // Make sure a tray controller exists, without becoming one. Spawns a detached
 // `<self> --tray` when no tray record is live, and does nothing when one is.

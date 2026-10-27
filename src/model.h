@@ -1154,9 +1154,6 @@ bool   model_file_identity(const char *path, const char *registry,
                            uint64_t *size, uint64_t *ino,
                            int64_t *mtime, int64_t *ctime);
 
-// Fraction of this model's mapped weights currently in physical memory, or
-// -1.0 when the platform will not say. Cheap enough to call per request.
-double model_resident_fraction(const model_t *m);
 // The architecture admission allowlist, exposed so `--caps` publishes exactly
 // what `model_load` accepts (one source of truth). Wrong-math archs
 // (granite/gemma2/gemma) are deliberately absent — they load but miscompute.
@@ -1367,7 +1364,6 @@ void         model_mtp_reset(model_t *m, int pos);
 bool         model_mtp_feed(model_t *m, int32_t tok);
 void         model_mtp_note_hidden(model_t *m, const float *h);
 void         model_mtp_note_row(model_t *m, int b);   // row b of the last forward, host or device
-const float *model_mtp_pending(const model_t *m);
 float       *model_mtp_draft_logits(model_t *m);
 float       *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos);
 const float *model_mtp_hidden(const model_t *m);

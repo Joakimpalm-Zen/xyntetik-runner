@@ -17,8 +17,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-// budget 0 disables storing (every put is refused); ttl_s <= 0 keeps forever.
-void  respstore_configure(size_t budget_bytes, double ttl_s);
 // Read RUNNER_RESPONSES_STORE_MB / _TTL and configure; drops every entry.
 void  respstore_reset_from_env(void);
 // input_json: a JSON array of input items; body_json: the response object.

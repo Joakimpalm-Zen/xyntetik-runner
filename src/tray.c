@@ -834,16 +834,6 @@ void tray_ensure_running(void) {
 #endif
 }
 
-bool tray_any_running(void) {
-    int n = 0, live = 0;
-    instance_rec *r = instances_list(&n);
-    // the tray's own record must not light the running dot
-    for (int i = 0; i < n; i++)
-        if (strcmp(r[i].mode, "tray") != 0) live++;
-    instances_list_free(r, n);
-    return live > 0;
-}
-
 // GET /health on loopback and read active_requests. Same best-effort shape as
 // fetch_served_models: short timeout, and any failure returns 0 so an
 // unreachable server reads as "not working" rather than inventing activity.
