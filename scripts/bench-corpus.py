@@ -26,6 +26,8 @@ Results are machine data; keep them out of the repository.
 import argparse, hashlib, json, os, platform, re, shlex, socket, subprocess, sys, threading, time
 import urllib.error, urllib.request
 
+from server_probe import free_port
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # one token a word on every tokenizer the corpus has met: single letters
 WORDS = "a b c d e f g h i j k l m n o p q r s t u v w x y z".split()
@@ -37,10 +39,6 @@ LIVE = []
 
 def others_running():
     return sum(1 for p in LIVE if p.poll() is None)
-
-
-def free_port():
-    s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
 
 def runner_args(exe, model, ctx, threads):

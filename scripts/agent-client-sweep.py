@@ -27,7 +27,6 @@ Usage:
                         [--deadline S] --out sweep.json
 """
 import argparse
-import hashlib
 import json
 import os
 import platform
@@ -39,13 +38,7 @@ import tempfile
 import time
 import urllib.request
 
-
-def sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+from file_digest import sha256_file
 
 
 def get(base, path):
@@ -285,9 +278,9 @@ def main():
               "host": platform.node(), "platform": platform.platform(),
               "base_url": a.base_url, "model": s.model,
               "model_file": a.model_file,
-              "model_sha256": sha256(a.model_file) if a.model_file else None,
+              "model_sha256": sha256_file(a.model_file) if a.model_file else None,
               "runner": a.runner, "runner_version": runner_ver,
-              "runner_sha256": sha256(a.runner) if a.runner else None,
+              "runner_sha256": sha256_file(a.runner) if a.runner else None,
               "sampling_served": s.caps.get("sampling"),
               "template": s.caps.get("template"),
               "tool_protocol": s.caps.get("tool_protocol"),

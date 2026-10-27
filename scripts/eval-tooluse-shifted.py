@@ -28,12 +28,17 @@ import math
 import os
 import platform
 import signal
-import socket
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+
+# the shared helpers live beside this script; a test that loads this file by
+# path has not put the directory on sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from server_probe import free_port  # noqa: E402
+from file_digest import sha256_file  # noqa: E402
 
 EVAL_DIR = "evals/tooluse-shifted"
 SETS = {
@@ -127,16 +132,6 @@ def limit_rows(rows, per_category):
     return out
 
 
-
-def sha256_file(path):
-    """Compute SHA256 of a file."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def runner_version(binary):
     """Get runner version string."""
     try:
@@ -145,13 +140,6 @@ def runner_version(binary):
         return out.splitlines()[0] if out else None
     except Exception:
         return None
-
-
-def free_port():
-    """Find a free TCP port."""
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 def serve(args, adapter, port):

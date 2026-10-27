@@ -21,7 +21,6 @@ Exit 0 only when step 3 is exact and the forks are reproducible.
 import argparse
 import json
 import pathlib
-import socket
 import subprocess
 import sys
 import tempfile
@@ -29,15 +28,11 @@ import time
 import urllib.error
 import urllib.request
 
+from server_probe import free_port
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PROMPT = ("Three travellers reach a fork in a mountain road at dusk. The first "
           "says")
-
-
-def free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 def call(base, path, body=None, method=None):

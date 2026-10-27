@@ -28,19 +28,16 @@ beside the fidelity verdict but never changes it. The differentiator as measured
 data — each field null when its evidence is absent, never invented.
 """
 import argparse
-import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-
-def sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+# the shared helpers live beside this script; a test that loads this file by
+# path has not put the directory on sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from file_digest import sha256_file  # noqa: E402
 
 
 def runner_caps(runner):
@@ -297,6 +294,11 @@ def build_tool_calling(trunc, shape, torture, native):
     return {**blocks, "gate": gate}
 
 
+def _check_status(v):
+    """A check's status: the "status" of a dict entry, or the bare word."""
+    return v.get("status") if isinstance(v, dict) else v
+
+
 def build_manifest(args):
     caps = runner_caps(args.runner)
     sha = sha256_file(args.model)
@@ -328,10 +330,8 @@ def build_manifest(args):
     # Reserving `outside-envelope` for won't-run keeps a serviceable model (a MoE
     # that fails byte-identity but passes fidelity) out of the refusal path.
     checks_raw = (entry or {}).get("checks") or {}
-    def _stat(v):
-        return v.get("status") if isinstance(v, dict) else v
-    refused = (_stat(checks_raw.get("load")) == "fail"
-               or any(_stat(v) in ("wont_fit", "load_fatal") for v in checks_raw.values())
+    refused = (_check_status(checks_raw.get("load")) == "fail"
+               or any(_check_status(v) in ("wont_fit", "load_fatal") for v in checks_raw.values())
                or any(isinstance(v, dict) and v.get("refusal") for v in checks_raw.values()))
     if gate == "pass" and args.reference_sha:
         verdict = "certified"

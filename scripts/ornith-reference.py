@@ -8,13 +8,17 @@ same short greedy prompt.
 """
 
 import argparse
-import hashlib
 import json
 import os
 import re
 import struct
 import subprocess
 import sys
+
+# the shared helpers live beside this script; a test that loads this file by
+# path has not put the directory on sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from file_digest import sha256_file  # noqa: E402
 
 
 GGML_TYPES = {
@@ -161,14 +165,6 @@ def validate_layout(metadata, tensor_names):
     }
 
 
-def sha256(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        while chunk := stream.read(8 * 1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def run_smoke(command, timeout):
     completed = subprocess.run(
         command, text=True, capture_output=True, timeout=timeout
@@ -216,7 +212,7 @@ def main():
     }
     ok = layout["ok"]
     if args.expected_sha256:
-        actual_hash = sha256(args.model)
+        actual_hash = sha256_file(args.model)
         report["model"]["sha256"] = actual_hash
         report["model"]["sha256_ok"] = actual_hash == args.expected_sha256
         ok = ok and report["model"]["sha256_ok"]

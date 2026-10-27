@@ -29,14 +29,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-
-def free_port():
-    import socket
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
+from server_probe import free_port
 
 
 def one_spawn(exe, model, delay, timeout):

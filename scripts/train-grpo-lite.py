@@ -43,11 +43,12 @@ import os
 import pathlib
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import time
 import urllib.request
+
+from server_probe import free_port
 
 PROMPTS = [
     ("search_files", "find all Python files in the src directory"),
@@ -90,14 +91,6 @@ def reward(tool, text):
     if not isinstance(args, dict) or not str(args.get("pattern", "")).strip():
         return 0.3
     return 1.0
-
-
-def free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
 
 
 def sample(port, prompt, seed, max_tokens, temperature, prompt_ids):

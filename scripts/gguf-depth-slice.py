@@ -20,6 +20,11 @@ prints per-layer residual-stream input/output cosine; block influence is
 import struct
 import sys
 
+try:
+    from gguf_fixture import s
+except ImportError:
+    raise SystemExit("gguf-depth-slice.py needs scripts/gguf_fixture.py beside it")
+
 T_U8, T_I8, T_U16, T_I16, T_U32, T_I32, T_F32, T_BOOL = range(8)
 T_STR, T_ARR, T_U64, T_I64, T_F64 = 8, 9, 10, 11, 12
 SCALAR = {T_U8: "<B", T_I8: "<b", T_U16: "<H", T_I16: "<h", T_U32: "<I",
@@ -43,11 +48,6 @@ class R:
     def u32(self): return struct.unpack("<I", self.take(4))[0]
     def u64(self): return struct.unpack("<Q", self.take(8))[0]
     def st(self): return self.take(self.u64())
-
-
-def s(x):
-    b = x if isinstance(x, bytes) else x.encode()
-    return struct.pack("<Q", len(b)) + b
 
 
 def read_value(r, t):

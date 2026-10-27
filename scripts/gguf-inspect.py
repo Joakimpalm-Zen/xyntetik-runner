@@ -13,6 +13,11 @@ import struct
 import sys
 from collections import Counter, defaultdict
 
+try:
+    from gguf_fixture import read_header
+except ImportError:
+    raise SystemExit("gguf-inspect.py needs scripts/gguf_fixture.py beside it")
+
 GGML_TYPE_NAME = {
     0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 6: "Q5_0", 7: "Q5_1",
     8: "Q8_0", 9: "Q8_1", 10: "Q2_K", 11: "Q3_K", 12: "Q4_K", 13: "Q5_K",
@@ -24,40 +29,6 @@ GGML_TYPE_NAME = {
 GGUF_KV_TYPE = {0: "u8", 1: "i8", 2: "u16", 3: "i16", 4: "u32", 5: "i32",
                 6: "f32", 7: "bool", 8: "str", 9: "arr", 10: "u64",
                 11: "i64", 12: "f64"}
-
-
-def u32(f): return struct.unpack("<I", f.read(4))[0]
-def u64(f): return struct.unpack("<Q", f.read(8))[0]
-
-
-def read_str(f):
-    n = u64(f)
-    return f.read(n).decode("utf-8", "replace")
-
-
-def skip_scalar(f, t):
-    sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
-    if t == 8:
-        read_str(f)
-    elif t == 9:
-        at = u32(f)
-        n = u64(f)
-        for _ in range(n):
-            skip_scalar(f, at)
-    else:
-        f.read(sizes[t])
-
-
-def read_value(f, t):
-    if t == 8:
-        return read_str(f)
-    if t == 9:
-        at = u32(f)
-        n = u64(f)
-        return [read_value(f, at) for _ in range(n)]
-    fmt = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i",
-          6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d"}[t]
-    return struct.unpack(fmt, f.read(struct.calcsize(fmt)))[0]
 
 
 def is_expert_tensor(name):
@@ -76,12 +47,9 @@ def main():
     magic, version, n_tensors, n_kv = struct.unpack("<IIQQ", f.read(24))
     if magic != 0x46554747:
         sys.exit(f"not a GGUF file (magic {magic:#x})")
-
-    kv = {}
-    for _ in range(n_kv):
-        k = read_str(f)
-        t = u32(f)
-        kv[k] = read_value(f, t)
+    f.seek(0)
+    kv, directory, _end = read_header(f)
+    tensors = [(name, len(ne), ne, ttype, offset) for name, ne, ttype, offset in directory]
 
     arch = kv.get("general.architecture", "?")
     print(f"file: {path}")
@@ -99,15 +67,6 @@ def main():
             if isinstance(v, str) and len(v) > 80:
                 v = v[:80] + f"...({len(v)} chars)"
             print(f"  {key}: {v}")
-
-    tensors = []
-    for _ in range(n_tensors):
-        name = read_str(f)
-        n_dims = u32(f)
-        ne = [u64(f) for _ in range(n_dims)]
-        ttype = u32(f)
-        offset = u64(f)
-        tensors.append((name, n_dims, ne, ttype, offset))
 
     overall = Counter()
     expert = Counter()

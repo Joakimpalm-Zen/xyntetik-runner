@@ -23,7 +23,6 @@ Exit status is 0 only if every prompt matched.
 import argparse
 import json
 import os
-import socket
 import re
 import subprocess
 import sys
@@ -31,6 +30,11 @@ import time
 import urllib.request
 import pathlib
 from pathlib import Path
+
+# the shared helpers live beside this script; a test that loads this file by
+# path has not put the directory on sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from server_probe import free_port  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -205,12 +209,6 @@ def run_result(near_tie, real, total):
     if real > 0 or near_tie > max(1, int(NEAR_TIE_CAP * total)):
         return "fail"
     return "pass" if near_tie == 0 else "pass_margin_qualified"
-
-
-def free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 def post(url, body, timeout):

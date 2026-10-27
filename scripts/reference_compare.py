@@ -8,12 +8,17 @@ template differences. Exact generated UTF-8 text is compared at temperature 0.
 import argparse
 import json
 import os
-from pathlib import Path
-import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+# the shared helpers live beside this script; a test that loads this file by
+# path has not put the directory on sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from server_probe import free_port  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,12 +46,6 @@ def command_version(command):
                              capture_output=True, timeout=15)
     lines = (process.stdout + process.stderr).strip().splitlines()
     return lines[0] if lines else None
-
-
-def free_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
 
 
 def port_pair(base):

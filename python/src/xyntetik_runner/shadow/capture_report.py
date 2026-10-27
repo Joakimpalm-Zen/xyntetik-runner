@@ -192,6 +192,11 @@ def rebuild_cleanup(rb: dict[str, Any]) -> None:
         subprocess.run(["git", "-C", repo, "worktree", "prune"], capture_output=True, text=True)
 
 
+def _workspace_manifest(r: dict[str, Any]) -> str:
+    """The combined manifest digest of a record's workspace state, or ""."""
+    return str(((r.get("state") or {}).get("workspace") or {}).get("combined_sha256") or "")
+
+
 def binding(thread: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """How each verification is bound to a state, and any before/after mismatch.
 
@@ -209,10 +214,8 @@ def binding(thread: list[dict[str, Any]]) -> list[dict[str, Any]]:
                silently matched to the nearest one.
     """
     states = [r for r in thread if ((r.get("state") or {}).get("workspace") or {}).get("repos")]
-    def mani(r: dict[str, Any]) -> str:
-        return str(((r.get("state") or {}).get("workspace") or {}).get("combined_sha256") or "")
-    pre = mani(states[0]) if states else ""
-    post = mani(states[-1]) if states else ""
+    pre = _workspace_manifest(states[0]) if states else ""
+    post = _workspace_manifest(states[-1]) if states else ""
     out = []
     for r in thread:
         v = r.get("verification")

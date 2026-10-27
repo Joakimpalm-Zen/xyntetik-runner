@@ -26,7 +26,6 @@ Usage:
                      [--prompt-file PATH] [--max-tokens N] [--label TEXT]
 """
 import argparse
-import hashlib
 import json
 import platform
 import sys
@@ -34,18 +33,12 @@ import time
 import urllib.error
 import urllib.request
 
+from file_digest import sha256_file
+
 BOUNDARY_SLACK = 8   # tokens a template may re-tokenize at the reply boundary
 FILLER = ("You are a coding agent working in a repository. The project has "
           "a Makefile, a src directory with C files, a tests directory with "
           "Python and C tests, a README and a CHANGELOG. ")
-
-
-def sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def get(base, path):
@@ -111,9 +104,9 @@ def main():
         "host": platform.node(), "platform": platform.platform(),
         "base_url": args.base_url, "model": model,
         "model_file": args.model_file,
-        "model_sha256": sha256(args.model_file) if args.model_file else None,
+        "model_sha256": sha256_file(args.model_file) if args.model_file else None,
         "runner": args.runner,
-        "runner_sha256": sha256(args.runner) if args.runner else None,
+        "runner_sha256": sha256_file(args.runner) if args.runner else None,
         "sampling_served": caps.get("sampling"), "template": caps.get("template"),
         "context": caps.get("context"), "max_tokens": args.max_tokens,
         "turns": {}, "checks": {}, "verdict": "NOT RUN",

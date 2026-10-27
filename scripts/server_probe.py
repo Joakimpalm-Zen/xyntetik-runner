@@ -1,14 +1,23 @@
 """What a running Runner (or any OpenAI-style) endpoint serves and whether it
 is up yet: the probes the comparison and calibration scripts share
-(kld-compare.py, kld-compare-raw.py, decide-calibrate.py).
+(kld-compare.py, kld-compare-raw.py, decide-calibrate.py), and the free
+loopback port the harnesses start a server on.
 
 A script imports this from its own directory; one that a test loads by file
 path puts that directory on sys.path first.
 """
 import http.client
 import json
+import socket
 import sys
 import urllib.request
+
+
+def free_port():
+    """A TCP port the loopback interface can bind right now."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def served_model_ids(endpoint, timeout=20):
