@@ -51,15 +51,21 @@ def _histogram_from_log(log):
     return {k: int(v) for k, v in re.findall(r"(\w+):(\d+)", m.group(1))}
 
 
-def _write_one_tensor(path, name, ne, ttype, data_bytes):
+def _write_one_tensor(path, name, ne, ttype, data_bytes, kvs=()):
+    """`kvs` are encoded metadata entries (key, type, value bytes)."""
     name = name.encode()
-    header = (b"GGUF" + struct.pack("<IQQ", 3, 1, 0) +
+    header = (b"GGUF" + struct.pack("<IQQ", 3, 1, len(kvs)) + b"".join(kvs) +
               struct.pack("<Q", len(name)) + name +
               struct.pack("<I", len(ne)) +
               b"".join(struct.pack("<Q", n) for n in ne) +
               struct.pack("<IQ", ttype, 0))
     data_start = (len(header) + 31) & ~31
     path.write_bytes(header + bytes(data_start - len(header)) + bytes(data_bytes))
+
+
+def _kv(key, gguf_type, value_bytes):
+    key = key.encode()
+    return struct.pack("<Q", len(key)) + key + struct.pack("<I", gguf_type) + value_bytes
 
 
 def _write_bf16_norm(path):
@@ -152,3 +158,47 @@ def test_all_codebook_source_types_are_sized(runner_bin, tmp_path,
     assert pred["predicted_bytes"] == out.stat().st_size
     # Every codebook type is smaller than Q8_0, so the never-grow rule keeps it.
     assert pred["histogram"] == _histogram_from_log(log) == {type_name: 1}
+
+
+# general.alignment as metadata: the quantizer reads it with gguf_get_u32
+# (gguf.c), so a value that is not a u32 in Runner's sense (a bool, a negative
+# integer, an integer past 2^32 - 1) is the default 32, and a u32-valued one
+# of any integer type is honoured. The prediction has to follow the same
+# reading (a regression caught in review on 2026-10-27: the estimator took any
+# Python int, bool included, and a 2^32 u64 predicted a 4 GiB file).
+@pytest.mark.parametrize("label,gguf_type,payload", [
+    ("bool-false", 7, b"\0"),
+    ("bool-true", 7, b"\1"),
+    ("int-negative", 5, struct.pack("<i", -1)),
+    ("u64-past-u32", 10, struct.pack("<Q", 2 ** 32)),
+    ("u32-64", 4, struct.pack("<I", 64)),
+    ("i32-64", 5, struct.pack("<i", 64)),
+    ("f32-64", 6, struct.pack("<f", 64.0)),
+    ("u32-32", 4, struct.pack("<I", 32)),
+])
+def test_alignment_metadata_is_read_as_the_quantizer_reads_it(runner_bin, tmp_path,
+                                                             label, gguf_type, payload):
+    model = tmp_path / f"{label}.gguf"
+    _write_one_tensor(model, "output_norm.weight", [32], 0, 32 * 4,
+                      kvs=[_kv("general.alignment", gguf_type, payload)])
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"default": "keep", "rules": []}))
+    pred = _predict(model, plan)
+    out = tmp_path / "out.gguf"
+    _build(runner_bin, model, plan, out)
+    assert pred["predicted_bytes"] == out.stat().st_size
+
+
+def test_an_alignment_that_is_not_a_power_of_two_is_refused_like_the_quantizer(runner_bin, tmp_path):
+    model = tmp_path / "align48.gguf"
+    _write_one_tensor(model, "output_norm.weight", [32], 0, 32 * 4,
+                      kvs=[_kv("general.alignment", 4, struct.pack("<I", 48))])
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"default": "keep", "rules": []}))
+    proc = subprocess.run([sys.executable, SCRIPT, str(model), str(plan), "--json"],
+                          cwd=ROOT, capture_output=True, text=True)
+    assert proc.returncode != 0 and "general.alignment=48 is not a power of two" in proc.stderr
+    built = subprocess.run([runner_bin, "-m", str(model), "--quantize", str(tmp_path / "out.gguf"),
+                            "--type-plan", str(plan)], cwd=ROOT, capture_output=True, text=True)
+    assert built.returncode != 0 and "general.alignment=48 is not a power of two" in built.stderr
+
