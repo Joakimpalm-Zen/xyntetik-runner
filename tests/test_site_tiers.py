@@ -3,8 +3,8 @@
 built from docs/model-tiers.json, never copied into the page sources.
 
 The anchors are marks written out by hand for fixture cells whose version
-and date are known, and the committed roster's own README render: the site
-table holds the same rows in the same order as the README's family blocks.
+and date are known, and the committed roster's own overview render: the site
+table holds the same rows in the same order as the overview's family blocks.
 """
 
 import html as htmllib
@@ -84,12 +84,12 @@ def text_of(html):
     return htmllib.unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)).strip())
 
 
-def readme_models(doc):
-    """(model, file rows) per model of the README's blocks, family by
+def overview_models(doc):
+    """(model, file rows) per model of the overview's blocks, family by
     family and model by model within each, a file row as the contents of
     its cells."""
     out = []
-    for block in re.findall(r"<details>\n(.*?)\n</details>", mt.render_readme(doc), re.S):
+    for block in re.findall(r"<details>\n(.*?)\n</details>", mt.render_overview(doc), re.S):
         for line, table in re.findall(r"<p>(.*?)</p>\n(<table>.*?</table>)", block, re.S):
             model = htmllib.unescape(re.match(r"<b>(.*?)</b>", line).group(1))
             rows = [re.findall(r"<td[^>]*>(.*?)</td>", tr)
@@ -100,29 +100,30 @@ def readme_models(doc):
 
 def family_marks(doc):
     """Family name to its summary line's marks (label to mark), in the
-    README's order."""
+    overview's order."""
     out = {}
-    for s in re.findall(r"<summary>(.*?)</summary>", mt.render_readme(doc)):
+    for s in re.findall(r"<summary>(.*?)</summary>", mt.render_overview(doc)):
         m = re.match(r"<b>(.*?)</b>, \d+ models?: (.*)$", s)
         out[htmllib.unescape(m.group(1))] = dict(x.split(" ", 1) for x in m.group(2).split(" · "))
     return out
 
 
 def site_words(cell):
-    """A README cell as the site's table words it. The README writes the
+    """An overview cell as the site's table words it. The overview writes the
     same marks compactly: not run as a blank cell, the version without its
     "v" and over its date. These forms are written out by hand."""
     cell = re.sub(r"^(✅|failed) (\S+)<br>(\S+)$", r"\1 v\2 \3", cell)
     return text_of(cell) if cell else "☐ not run"
 
 
-def test_the_runner_page_links_to_the_readmes_list_and_the_roster():
+def test_the_runner_page_links_to_the_overview_and_the_readme_section():
     """Since 2026-10-27 the site carries no copy of the marks: the Runner
-    page links to the README's model list and to docs/model-support.md."""
+    page links to the overview in docs/model-support.md and to the README's
+    section, which says what the check is."""
     text = (ROOT / "site" / "pages" / "runner.html").read_text(encoding="utf-8")
     assert "{{tiers:table}}" not in text
+    assert "docs/model-support.md#overview" in text
     assert "{{repo}}#validated-models" in text
-    assert "docs/model-support.md" in text
 
 
 def test_no_page_source_carries_a_validated_placeholder():

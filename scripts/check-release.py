@@ -7,7 +7,6 @@ packaged README and workflow comments must not drift.
 """
 
 import argparse
-import importlib.util
 import json
 import re
 import subprocess
@@ -33,23 +32,6 @@ RELEASE_STRING_RE = re.compile(
     r"(?<![\w.\-])(v?\d+\.\d+\.\d+-alpha)(?![\w.\-])"
     r"|(?<![\w.\-])(v\d+\.\d+\.\d+)(?![\w.\-])"
     r"|\b[Rr]unner:?[ \t]+`?(v?\d+\.\d+\.\d+(?:-alpha)?)(?![\w.\-])")
-
-
-# The README's tier table (rendered from docs/model-tiers.json) is a set of
-# dated records: a cell gated on an earlier release and still inside its age
-# limit names that release on the day a later one is tagged. Its freshness
-# is the tier gate's business, below, and its text is held to the roster by
-# the render-parity test, so the stale-string scan reads around the block.
-_tiers_spec = importlib.util.spec_from_file_location(
-    "model_tiers", ROOT / "scripts" / "model-tiers.py")
-_tiers = importlib.util.module_from_spec(_tiers_spec)
-_tiers_spec.loader.exec_module(_tiers)
-TIER_BLOCK = re.compile(re.escape(_tiers.README_BEGIN) + ".*?"
-                        + re.escape(_tiers.README_END), re.S)
-
-
-def outside_generated_blocks(text):
-    return TIER_BLOCK.sub("", text)
 
 
 def fail(msg):
@@ -271,8 +253,7 @@ def check(args):
         ok &= fail(f"README does not identify the {version} banner")
     if f"./runner --version   # -> runner {version}" not in readme + manual:
         ok &= fail("README version-output example is not in sync")
-    for stale in stale_release_strings(outside_generated_blocks(readme), version,
-                                       args.tag):
+    for stale in stale_release_strings(readme, version, args.tag):
         ok &= fail(f"README contains stale release string {stale!r}")
     for stale in stale_release_strings(manual, version, args.tag):
         ok &= fail(f"MANUAL.md contains stale release string {stale!r}")
