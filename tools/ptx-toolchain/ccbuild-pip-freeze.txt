@@ -1,0 +1,44 @@
+annotated-types==0.7.0
+anthropic==0.117.0
+anyio==4.14.2
+certifi==2026.6.17
+charset-normalizer==3.4.9
+click==8.4.2
+colorama @ file:///home/conda/feedstock_root/build_artifacts/colorama_1733218098505/work
+distro==1.9.0
+docstring_parser==0.18.0
+exceptiongroup @ file:///home/conda/feedstock_root/build_artifacts/exceptiongroup_1763918002538/work
+filelock==3.31.1
+fsspec==2026.6.0
+gguf==0.19.0
+git-filter-repo==2.47.0
+gridcore-runner-client @ git+https://github.com/Joakimpalm-Zen/gridcore-runner.git@61e72ce7c0a76ac3cef6265b94a6bde1c5fea508#subdirectory=python
+h11==0.16.0
+hf-xet==1.5.2
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==1.24.0
+idna==3.18
+iniconfig @ file:///home/conda/feedstock_root/build_artifacts/iniconfig_1760831328738/work
+Jinja2==3.1.6
+jiter==0.16.0
+MarkupSafe==3.0.3
+numpy==2.5.1
+openai==2.46.0
+packaging @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_packaging_1777103621/work
+pluggy @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_pluggy_1764896838/work
+pydantic==2.13.4
+pydantic_core==2.46.4
+Pygments @ file:///home/conda/feedstock_root/build_artifacts/pygments_1774796700044/work
+pytest @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_pytest_1782127176/work
+PyYAML==6.0.3
+regex==2026.7.19
+requests==2.34.2
+sentencepiece==0.2.2
+sniffio==1.3.1
+tokenizers==0.23.1
+tomli @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_tomli_1774492402/work
+tqdm==4.69.0
+typing-inspection==0.4.2
+typing_extensions @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_typing_extensions_1783002732/work
+urllib3==2.7.0

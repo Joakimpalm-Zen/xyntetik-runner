@@ -7635,6 +7635,8 @@ typedef struct {
 // R8.21: the DeltaNet recurrence's device buffers (train_gpu_t.dn)
 enum { DN_CV, DN_BETA, DN_DECAY, DN_STATE, DN_Y, DN_CKPT, DN_SB, DN_DY, DN_DQ,
        DN_DK, DN_DV, DN_DBETA, DN_DDEC, DN_NBUF };
+// the attention backward's device buffers (train_gpu_t.ab)
+enum { AB_K, AB_V, AB_Q, AB_DAO, AB_DQ, AB_DK, AB_DV, AB_P, AB_DS, AB_NBUF };
 
 // A forward layer's recurrent state, kept on the device between the rounds
 // of a step (known by its host buffer). at says which copy is current: the
@@ -7673,6 +7675,13 @@ typedef struct {
     bool        dn_noted;
     double      t_dn;             // RUNNER_TRAIN_PROF: wall inside the calls
     long        n_dn, n_dn_failed;   // the record: calls run, calls failed
+    // the attention backward (k_tab_p, k_tab_dq, k_tab_dkv) and its buffers
+    CUfunction  f_tab_p, f_tab_dq, f_tab_dkv;
+    CUdeviceptr ab[AB_NBUF];
+    size_t      ab_cap[AB_NBUF];
+    long        n_ab, n_ab_failed;
+    bool        ab_noted;
+    double      t_ab;
     tdn_slot   *dn_slot;          // the forward's states, one a layer
     int         n_dn_slot, cap_dn_slot;
     CUdeviceptr dummy;            // zeroed no-bias operand
@@ -7749,6 +7758,10 @@ bool gpu_train_init(model_t *m) {
         { T_NVFP4, "k_tmvt_nvfp4", "k_tmm_nvfp4", "k_tmmw_nvfp4" },
         { T_Q2_0, "k_tmvt_q2_0", "k_tmm_q2_0", "k_tmmw_q2_0" },
     };
+    if (cu.ModuleGetFunction(&t->f_tab_p, t->mod, "k_tab_p") != 0 ||
+        cu.ModuleGetFunction(&t->f_tab_dq, t->mod, "k_tab_dq") != 0 ||
+        cu.ModuleGetFunction(&t->f_tab_dkv, t->mod, "k_tab_dkv") != 0)
+        t->f_tab_p = t->f_tab_dq = t->f_tab_dkv = NULL;
     if (cu.ModuleGetFunction(&t->f_tdn_fw, t->mod, "k_tdn_fw") != 0 ||
         cu.ModuleGetFunction(&t->f_tdn_bw, t->mod, "k_tdn_bw") != 0)
         t->f_tdn_fw = t->f_tdn_bw = NULL;
@@ -7839,6 +7852,8 @@ void gpu_train_free(model_t *m) {
         for (int i = 0; i < DN_NBUF; i++)
             if (t->dn[i]) cu.MemFree(t->dn[i]);
         for (int i = 0; i < t->n_dn_slot; i++) cu.MemFree(t->dn_slot[i].dev);
+        for (int i = 0; i < AB_NBUF; i++)
+            if (t->ab[i]) cu.MemFree(t->ab[i]);
         cu.MemFree(t->dummy);
         cu.ModuleUnload(t->mod);
     }
@@ -8032,7 +8047,7 @@ void gpu_train_prof(model_t *m, double *t_mm, long *n_mm, double *t_mvt,
 
 double gpu_train_dev_wall(model_t *m) {
     train_gpu_t *t = m->train_gpu;
-    return t ? t->t_mm + t->t_mvt + t->t_dn : 0;
+    return t ? t->t_mm + t->t_mvt + t->t_dn + t->t_ab : 0;
 }
 
 // ------------------- R8.21: the DeltaNet recurrence of a training step
@@ -8241,6 +8256,93 @@ bool gpu_train_dn_bw(model_t *m, const tdn_args *a, const float *cv,
         tdn_note(t, "reverse sweep");
     }
     return ok;
+}
+
+// ------------------- the attention backward of a training step
+// (kernels_train.cuh k_tab_*): the window in blocks of TAB_TB positions, each
+// block's probabilities and score gradients, then dq for its rows and dK /
+// dV's terms from them, the blocks in ascending order.
+static bool tab_buf(train_gpu_t *t, int i, size_t need) {
+    return tg_scratch(&t->ab[i], &t->ab_cap[i], need);
+}
+
+static bool train_attn_bw(train_gpu_t *t, const tab_args *a, const void *kc,
+                          const void *vc, const float *q, const float *dao,
+                          float *dq, float *dk, float *dv) {
+    if (cu.CtxSetCurrent(t->ctx) != 0) return false;
+    size_t T = (size_t)a->T, H = (size_t)a->n_head;
+    size_t nk = T * a->k_row_b, nv = T * a->v_row_b;
+    size_t nq = sizeof(float) * T * (size_t)a->q_dim;
+    size_t nkv = sizeof(float) * T * (size_t)a->kv_dim;
+    size_t tb = T < TAB_TB ? T : TAB_TB;
+    size_t np = sizeof(float) * tb * H * T;
+    if (!tab_buf(t, AB_K, nk) || !tab_buf(t, AB_V, nv) || !tab_buf(t, AB_Q, nq) ||
+        !tab_buf(t, AB_DAO, nq) || !tab_buf(t, AB_DQ, nq) || !tab_buf(t, AB_DK, nkv) ||
+        !tab_buf(t, AB_DV, nkv) || !tab_buf(t, AB_P, np) || !tab_buf(t, AB_DS, np))
+        return false;
+    if (cu.MemcpyHtoD(t->ab[AB_K], kc, nk) != 0 || cu.MemcpyHtoD(t->ab[AB_V], vc, nv) != 0 ||
+        cu.MemcpyHtoD(t->ab[AB_Q], q, nq) != 0 || cu.MemcpyHtoD(t->ab[AB_DAO], dao, nq) != 0 ||
+        cu.MemcpyHtoD(t->ab[AB_DQ], dq, nq) != 0 || cu.MemcpyHtoD(t->ab[AB_DK], dk, nkv) != 0 ||
+        cu.MemcpyHtoD(t->ab[AB_DV], dv, nkv) != 0)
+        return false;
+    tab_args aa = *a;
+    unsigned nkvh = (unsigned)(a->n_head / a->kv_mul);
+    for (int tb0 = 0; tb0 < a->T; tb0 += TAB_TB) {
+        int tbn = a->T - tb0 < TAB_TB ? a->T - tb0 : TAB_TB;
+        void *pp[] = { &t->ab[AB_K], &t->ab[AB_V], &t->ab[AB_Q], &t->ab[AB_DAO],
+                       &t->ab[AB_P], &t->ab[AB_DS], &aa, &tb0 };
+        void *pq[] = { &t->ab[AB_K], &t->ab[AB_DS], &t->ab[AB_DQ], &aa, &tb0 };
+        void *pk[] = { &t->ab[AB_Q], &t->ab[AB_DAO], &t->ab[AB_P], &t->ab[AB_DS],
+                       &t->ab[AB_DK], &t->ab[AB_DV], &aa, &tb0, &tbn };
+        if (cu.LaunchKernel(t->f_tab_p, (unsigned)tbn, (unsigned)a->n_head, 1,
+                            TAB_THREADS, 1, 1, 0, NULL, pp, NULL) != 0 ||
+            cu.LaunchKernel(t->f_tab_dq, (unsigned)tbn, (unsigned)a->n_head, 1,
+                            TAB_THREADS, 1, 1, 0, NULL, pq, NULL) != 0 ||
+            cu.LaunchKernel(t->f_tab_dkv, (unsigned)(tb0 + tbn), nkvh, 1,
+                            TAB_THREADS, 1, 1, 0, NULL, pk, NULL) != 0)
+            return false;
+    }
+    // all three come back before any lands, so a failed copy leaves the
+    // caller's sums as they were for the CPU to add into
+    size_t nh = (nq + 2 * nkv) / sizeof(float);
+    if (!tg_host(&t->h_y, &t->cap_hy, nh)) return false;
+    float *hq = t->h_y, *hk = hq + nq / sizeof(float), *hv = hk + nkv / sizeof(float);
+    if (cu.CtxSynchronize() != 0 || cu.MemcpyDtoH(hq, t->ab[AB_DQ], nq) != 0 ||
+        cu.MemcpyDtoH(hk, t->ab[AB_DK], nkv) != 0 ||
+        cu.MemcpyDtoH(hv, t->ab[AB_DV], nkv) != 0)
+        return false;
+    memcpy(dq, hq, nq);
+    memcpy(dk, hk, nkv);
+    memcpy(dv, hv, nkv);
+    return true;
+}
+
+bool gpu_train_attn_bw(model_t *m, const tab_args *a, const void *kc,
+                       const void *vc, const float *q, const float *dao,
+                       float *dq, float *dk, float *dv) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_tab_p || a->T < 1 || a->hd < 1 || a->hd > TAB_MAX_HD ||
+        a->kv_mul < 1 || a->n_head % a->kv_mul)
+        return false;
+    double t0 = plat_now();
+    bool ok = train_attn_bw(t, a, kc, vc, q, dao, dq, dk, dv);
+    t->t_ab += plat_now() - t0;
+    if (ok) t->n_ab++;
+    else {
+        t->n_ab_failed++;
+        if (!t->ab_noted) {
+            t->ab_noted = true;
+            fprintf(stderr, "train-gpu: the attention backward failed on the "
+                    "device and ran on the CPU (this run's values mix the two)\n");
+        }
+    }
+    return ok;
+}
+
+void gpu_train_attn_counts(model_t *m, long *dev, long *failed) {
+    train_gpu_t *t = m->train_gpu;
+    *dev = t ? t->n_ab : 0;
+    *failed = t ? t->n_ab_failed : 0;
 }
 
 void gpu_train_dn_counts(model_t *m, long *dev, long *failed) {

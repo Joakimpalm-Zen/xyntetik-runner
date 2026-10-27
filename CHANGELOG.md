@@ -5,6 +5,30 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--train-gpu`: the attention backward runs on the GPU, and every
+  model's adapter changes bytes again.** The score and softmax adjoint of
+  every attention layer ran on the CPU beside the device's products. Three
+  kernels take it over; they recompute the attention probabilities in
+  another order than the CPU, so a `--train-gpu` adapter changes (within
+  rounding of a CPU run, deterministic). The CPU trainer's bytes are
+  unchanged. On an RTX 3070 beside 4 threads, medians of three: two
+  Qwen2.5-7B Q4_K_M steps of 512 tokens 15.9 s to 14.4 s, two Qwen3.5-4B
+  steps 12.8 s to 12.4 s; the attention backward 0.22-0.31 s to 0.04 s a
+  step. On the 26B Clef IQ3_S with 6 threads of a datacenter MIG slice,
+  interleaved runs of two steps: a step 28.5 s to 25.7 s, the attention
+  layers 3.2-3.5 s to 0.4 s a step, the same losses. The record counts the
+  calls (`attention_device_calls`, `attention_failed_calls`).
+
+- **`make ptx` has one pinned toolchain, and CI holds the committed PTX to
+  it.** `tools/ptx-toolchain/make-ptx.sh` builds the toolchain from a conda
+  lockfile (nvcc 13.0.88, crt 13.0.88, cccl 13.0.85, cudart-dev 13.0.96,
+  gcc 15.2.0) and reproduces the committed PTX byte for byte; the
+  `ptx-reproducible` workflow runs it on every kernel change and fails on
+  any difference. The same nvcc with MSVC as the host compiler changes 58
+  kernels, so PTX built any other way is not committed. A new test holds
+  the CPU attention backward to a double-precision reference: the gradient
+  checks could not see an error of a tenth of a percent there.
+
 - **README: the actively validated models are listed by family.** One
   collapsed block per family (Gemma 4, Qwen3, Qwen3.8 and the others), in
   the roster's order, its line a plain overview per backend and for Train:

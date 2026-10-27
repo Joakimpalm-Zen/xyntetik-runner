@@ -20,4 +20,21 @@ typedef struct {
     int T, C, nh, ng, sk, hv, convdim, keydim, inner;
 } tdn_args;
 
+// The attention backward of a training step on the device (kernels_train.cuh
+// k_tab_*, cuda.c gpu_train_attn_bw): positions a block of the sweep takes
+// (model.c's ATB), the widest head and the threads a kernel block runs.
+#define TAB_TB 64
+#define TAB_MAX_HD 512
+#define TAB_THREADS 256
+
+// A layer's shape for them: T positions, n_head query heads in groups of
+// kv_mul a kv head, hd values a head, q / dao rows q_dim apart, dk / dv rows
+// kv_dim apart, K and V cache rows k_row_b / v_row_b bytes apart (f16), the
+// score scale and the sliding window (0: none).
+typedef struct {
+    int T, n_head, kv_mul, hd, q_dim, kv_dim, swa;
+    unsigned long long k_row_b, v_row_b;
+    float scale;
+} tab_args;
+
 #endif // RUNNER_TDN_ARGS_H

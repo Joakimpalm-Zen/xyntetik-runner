@@ -3002,6 +3002,19 @@ bool gpu_train_dn_pull(model_t *mm) {
 
 void gpu_train_dn_reset(model_t *mm) { (void)mm; }
 
+bool gpu_train_attn_bw(model_t *mm, const tab_args *a, const void *kc,
+                       const void *vc, const float *q, const float *dao,
+                       float *dq, float *dk, float *dv) {
+    (void)mm; (void)a; (void)kc; (void)vc; (void)q; (void)dao; (void)dq;
+    (void)dk; (void)dv;
+    return false;
+}
+
+void gpu_train_attn_counts(model_t *mm, long *dev, long *failed) {
+    (void)mm;
+    *dev = *failed = 0;
+}
+
 void gpu_train_placement(model_t *mm, int *on_dev, size_t *dev_bytes,
                          int *on_cpu, size_t *cpu_bytes, size_t *budget,
                          bool *budget_set) {
