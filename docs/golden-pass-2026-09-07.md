@@ -658,4 +658,4 @@ llama.cpp figures, labelled as agreement with another engine.
   llama.cpp-anchored envelopes until a smaller member exists.
 - The tool-calling behaviour behind the declarations (R4.12.3, R4.13.3).
 - Sampling defaults from each publisher's card, which is R4.12.6 and
-  needs an owner decision before the runner reads them.
+  needs a decision before the runner reads them.

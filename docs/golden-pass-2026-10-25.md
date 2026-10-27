@@ -74,7 +74,7 @@ On the 11 served rows 1.6.0 and 1.5.0 are not distinguishable on 8; 1.6.0 reads 
 
 ## Method notes
 
-- Host: the lab box's CPU route (`--gpu off`), every server at `-t 16 -c 4096`, fresh servers per pass, the GPU hidden from every server. No CPU pinning (the host's cores are shared). Files read from local NVMe copies, each checked against the sha256 of its read.
+- Host: the Linux host's CPU route (`--gpu off`), every server at `-t 16 -c 4096`, fresh servers per pass, the GPU hidden from every server. No CPU pinning (the host's cores are shared). Files read from local NVMe copies, each checked against the sha256 of its read.
 - gemma-4-E2B is scored on the 10-22 pair itself (the bf16 converted by llama.cpp 73a43d1 and the q4_0 that 1.5.0 wrote from it), so its rows compare files, not conversions.
 - The reference is transformers 5.16.1 in float32 on the CPU; for Apertus-8B, bfloat16 storage widened to float32 at use (`goldref-bf16.py`), as on 10-22.
 - The published 1.6.0 asset was not scored: it does not start on this host (Ubuntu 24.04, glibc 2.39). It is built with GCC 15.2 and binds `sqrtf` at GLIBC_2.43; the 1.5.0 asset needs at most GLIBC_2.38 (GCC 13.3). The page scores a clang build of `33c2a08f` instead.

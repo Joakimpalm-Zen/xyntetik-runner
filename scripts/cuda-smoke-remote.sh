@@ -20,7 +20,7 @@ set -eu
 # No default: a public repository is not the place to record whose machine
 # this is or where it sits on a private network.
 HOST=${HOST:?set HOST=user@host for the Windows CUDA box}
-REMOTE_DIR=${REMOTE_DIR:-C:/Users/zen/cuda-smoke}
+REMOTE_DIR=${REMOTE_DIR:-C:/runner-check/cuda-smoke}
 BINARY=""
 MODEL=""
 EXPECT_VERSION=""
