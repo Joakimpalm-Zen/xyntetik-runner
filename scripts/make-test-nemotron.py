@@ -26,8 +26,9 @@ Usage:  make-test-nemotron.py <out-prefix>
 Writes <out>.gguf (valid) and <out>.missing-ssm_d.gguf (drops one SSM tensor,
 so admission must FAIL CLOSED naming it — the hostile-GGUF discipline).
 """
-import struct
 import sys
+
+from gguf_fixture import ku, kf, ks, kb, kas, kaf, kai, kau, pack, ones, write_gguf
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "test-nemotron"
 # the first argument is the output path: an option there (`--help`) used to
@@ -57,23 +58,6 @@ LAYERS = len(LAYER_KV)
 
 VOCAB = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
 TTYPE = [2, 3, 3] + [6] * 256
-U32, F32, STR, ARR, I32, BOOL = 4, 6, 8, 9, 5, 7
-T_F32 = 0
-
-
-def s(x):
-    b = x.encode()
-    return struct.pack("<Q", len(b)) + b
-
-
-def ku(k, v): return s(k) + struct.pack("<II", U32, v)
-def kf(k, v): return s(k) + struct.pack("<If", F32, v)
-def ks(k, v): return s(k) + struct.pack("<I", STR) + s(v)
-def kb(k, v): return s(k) + struct.pack("<IB", BOOL, bool(v))
-def kas(k, xs): return s(k) + struct.pack("<IIQ", ARR, STR, len(xs)) + b"".join(s(x) for x in xs)
-def kaf(k, xs): return s(k) + struct.pack("<IIQ", ARR, F32, len(xs)) + struct.pack(f"<{len(xs)}f", *xs)
-def kai(k, xs): return s(k) + struct.pack("<IIQ", ARR, I32, len(xs)) + struct.pack(f"<{len(xs)}i", *xs)
-def kau(k, xs): return s(k) + struct.pack("<IIQ", ARR, U32, len(xs)) + struct.pack(f"<{len(xs)}I", *xs)
 
 
 _seed = 0x5510
@@ -84,8 +68,6 @@ def rnd():
 
 
 def flist(n): return [rnd() for _ in range(n)]
-def pack(xs): return struct.pack(f"<{len(xs)}f", *xs)
-def ones(n): return pack([1.0] * n)
 def negs(n): return pack([-(0.5 + abs(rnd())) for _ in range(n)])
 
 
@@ -120,23 +102,6 @@ def meta():
         kai("tokenizer.ggml.token_type", TTYPE), ku("tokenizer.ggml.bos_token_id", 1),
         ku("tokenizer.ggml.eos_token_id", 2), kb("tokenizer.ggml.add_bos_token", True),
     ]
-
-
-def write(path, tensors, kvs):
-    m = b"".join(kvs)
-    info, off = b"", 0
-    for name, dims, payload in tensors:
-        info += s(name) + struct.pack("<I", len(dims))
-        info += b"".join(struct.pack("<Q", d) for d in dims)
-        info += struct.pack("<IQ", T_F32, off)
-        off = (off + len(payload) + 31) & ~31
-    head = struct.pack("<IIQQ", 0x46554747, 3, len(tensors), len(kvs)) + m + info
-    with open(path, "wb") as f:
-        f.write(head + b"\0" * ((-len(head)) % 32))
-        for _, _, payload in tensors:
-            f.write(payload)
-            f.write(b"\0" * ((-len(payload)) % 32))
-    print(f"wrote {path}")
 
 
 def ssm_layer(i, drop=None):
@@ -194,5 +159,5 @@ def build(drop=None):
     return ts
 
 
-write(f"{OUT}.gguf", build(), meta())
-write(f"{OUT}.missing-ssm_d.gguf", build(drop="ssm_d"), meta())
+write_gguf(f"{OUT}.gguf", build(), meta())
+write_gguf(f"{OUT}.missing-ssm_d.gguf", build(drop="ssm_d"), meta())

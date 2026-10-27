@@ -949,7 +949,11 @@ TEST_LORA_GRAD_SRC = tests/test_lora_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o 
 $(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-prope.gguf test-lora-prope.full.gguf test-prope-neox.gguf test-lora-prope-neox.full.gguf test-ornith.gguf test-lora-ornith.full.gguf test-clef.gguf test-lora-clef.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
 
-test-lora.full.gguf: test.gguf scripts/make-test-lora.py
+# Every fixture generator imports this module for the GGUF byte encoding, so a
+# fixture is stale when it changes: it is a prerequisite beside each generator.
+GGUF_FIXTURE_LIB = scripts/gguf_fixture.py
+
+test-lora.full.gguf: test.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test.gguf test-lora
 
 # DPO gate: the pairwise objective and its gradient, checked three ways
@@ -972,7 +976,7 @@ TEST_KD_GRAD_SRC = tests/test_kd_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
 $(TEST_KD_GRAD): $(TEST_KD_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-granite.gguf test-lora-granite.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_KD_GRAD_SRC) -o $@ $(LDFLAGS)
 
-test-lora-q8.full.gguf: test-q8.gguf scripts/make-test-lora.py
+test-lora-q8.full.gguf: test-q8.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-q8.gguf test-lora-q8
 
 # D8 slice 1: device transposed matvec vs the CPU trainer's chain (skips
@@ -1001,7 +1005,7 @@ $(TEST_MVCANON): $(TEST_MVCANON_SRC) src/quants.c $(HDR) test.gguf test-q8.gguf
 	$(CC) $(CFLAGS) -ffp-contract=off -DRUNNER_CANON_KERNELS -I src \
 	    $(TEST_MVCANON_SRC) src/quants.c -o $@ $(LDFLAGS)
 
-test-yarn.gguf: scripts/make-test-model.py
+test-yarn.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --yarn 32,4096 test-yarn.gguf
 
 # qwen4exp (R4.26.1, experimental): hyper-connection streams, the Engram
@@ -1009,39 +1013,39 @@ test-yarn.gguf: scripts/make-test-model.py
 # experts. Random weights; the gate is "loads, binds every tensor, the CPU
 # forward runs and every logit is finite". The reference anchor is the
 # llama.cpp and fp32 comparisons in R4.26.3, not this.
-test-qwen4exp.gguf: scripts/make-test-qwen4exp.py
+test-qwen4exp.gguf: scripts/make-test-qwen4exp.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-qwen4exp.py test-qwen4exp.gguf
 
 # gemma3 at the 27B's block count and at the 1B's, both with heads narrower
 # than n_embd / n_head so the two attention-scale rules disagree
-test-gemma3-62.gguf: scripts/make-test-model.py
+test-gemma3-62.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --gemma3 --layers 62 --head-dim 8 test-gemma3-62.gguf
-test-gemma3-26.gguf: scripts/make-test-model.py
+test-gemma3-26.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --gemma3 --layers 26 --head-dim 8 test-gemma3-26.gguf
 
-test-qk.gguf: scripts/make-test-model.py
+test-qk.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --qk-norm test-qk.gguf
 
 # NoPE every layer with a live attention temperature (floor 1): the LoRA
 # backward must skip the rotation and apply the temperature's adjoint
-test-nope.gguf: scripts/make-test-model.py
+test-nope.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py test-nope.gguf --attn-knobs 1,0.5,1
 
-test-lora-nope.full.gguf: test-nope.gguf scripts/make-test-lora.py
+test-lora-nope.full.gguf: test-nope.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-nope.gguf test-lora-nope
 
 # R8.16: partial-dimension rope, half of each 16-wide head rotated, in the
 # interleaved-pair (llama) and the split-half (neox, qwen3) layouts
-test-prope.gguf: scripts/make-test-model.py
+test-prope.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py test-prope.gguf --rope-dim 8
 
-test-lora-prope.full.gguf: test-prope.gguf scripts/make-test-lora.py
+test-lora-prope.full.gguf: test-prope.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-prope.gguf test-lora-prope
 
-test-prope-neox.gguf: scripts/make-test-model.py
+test-prope-neox.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py test-prope-neox.gguf --arch qwen3 --rope-dim 8
 
-test-lora-prope-neox.full.gguf: test-prope-neox.gguf scripts/make-test-lora.py
+test-lora-prope-neox.full.gguf: test-prope-neox.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-prope-neox.gguf test-lora-prope-neox
 
 # R8.9.4 dense-shape variants in the backward: granite's muP scalars
@@ -1049,35 +1053,35 @@ test-lora-prope-neox.full.gguf: test-prope-neox.gguf scripts/make-test-lora.py
 # embeddings) and muse-glimmer's attention output gate, QK and sandwich
 # norms, 3-local:1-global sliding pattern with NoPE full layers, scaled and
 # softcapped logits
-test-granite.gguf: scripts/make-test-model.py
+test-granite.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --granite test-granite.gguf
 
-test-lora-granite.full.gguf: test-granite.gguf scripts/make-test-lora.py
+test-lora-granite.full.gguf: test-granite.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-granite.gguf test-lora-granite
 
-test-muse.gguf: scripts/make-test-model.py
+test-muse.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --muse-glimmer test-muse.gguf
 
-test-lora-muse.full.gguf: test-muse.gguf scripts/make-test-lora.py
+test-lora-muse.full.gguf: test-muse.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-muse.gguf test-lora-muse
 
 # R17.3: router-sensitive MoE fixtures (written together by one run) and
 # their attention-only adapters, for the LoRA backward's strict FD gate
-test-moe-train.moe4-train.gguf: scripts/make-test-moe.py
+test-moe-train.moe4-train.gguf: scripts/make-test-moe.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-moe.py test-moe-train > /dev/null
 test-moe-train.moe4-train-nonorm.gguf: test-moe-train.moe4-train.gguf
-test-lora-moe4.full.gguf: test-moe-train.moe4-train.gguf scripts/make-test-lora.py
+test-lora-moe4.full.gguf: test-moe-train.moe4-train.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-moe-train.moe4-train.gguf test-lora-moe4 > /dev/null
-test-lora-moe4n.full.gguf: test-moe-train.moe4-train-nonorm.gguf scripts/make-test-lora.py
+test-lora-moe4n.full.gguf: test-moe-train.moe4-train-nonorm.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n > /dev/null
 
 # R8.9.5: gemma3's GELU (not SiLU) gated FFN, the first refusal gemma3 and
 # gemma4 hit under --train. No SWA keys are written -- that adjoint is
 # already covered by the muse fixture above -- so this isolates ACT_GELU.
-test-gemma3.gguf: scripts/make-test-model.py
+test-gemma3.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --gemma3 test-gemma3.gguf
 
-test-lora-gemma3.full.gguf: test-gemma3.gguf scripts/make-test-lora.py
+test-lora-gemma3.full.gguf: test-gemma3.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-gemma3.gguf test-lora-gemma3
 
 # R8.9.6: gemma-4 shapes in the backward. Dense (weightless V norm), the
@@ -1085,28 +1089,28 @@ test-lora-gemma3.full.gguf: test-gemma3.gguf scripts/make-test-lora.py
 # projection), and the E-series (shared KV, per-layer embeddings; 3 sharing
 # layers, PLE width 8: wide enough to exercise every adjoint, narrow enough
 # that the gate's directional derivative resolves it).
-test-gemma4.gguf: scripts/make-test-model.py
+test-gemma4.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --arch gemma4 test-gemma4.gguf
 
-test-lora-gemma4.full.gguf: test-gemma4.gguf scripts/make-test-lora.py
+test-lora-gemma4.full.gguf: test-gemma4.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-gemma4.gguf test-lora-gemma4
 
-test-g4v.gguf: scripts/make-test-model.py
+test-g4v.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --arch gemma4 --drop-v 1 test-g4v.gguf
 
-test-lora-g4v.full.gguf: test-g4v.gguf scripts/make-test-lora.py
+test-lora-g4v.full.gguf: test-g4v.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-g4v.gguf test-lora-g4v
 
-test-es8.gguf: scripts/make-test-model.py
+test-es8.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --eseries 3,8 --drop-kv shared test-es8.gguf
 
-test-lora-es8.full.gguf: test-es8.gguf scripts/make-test-lora.py
+test-lora-es8.full.gguf: test-es8.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-es8.gguf test-lora-es8
 
-test-qkw.gguf: scripts/make-test-model.py
+test-qkw.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --qk-norm --wide test-qkw.gguf
 
-test-lora-qk.full.gguf: test-qk.gguf scripts/make-test-lora.py
+test-lora-qk.full.gguf: test-qk.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-qk.gguf test-lora-qk
 
 # fused-int8 CPU dot tolerance gate: the CPU twin of the TC gate — teacher-
@@ -1529,29 +1533,29 @@ test-gpu-stub: $(CPU_STUB_SRC) $(HDR)
 	    $(CPU_STUB_SRC) -o runner-gpu-stub $(LDFLAGS)
 	@./runner-gpu-stub --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); assert d.get('gpu') is None, d.get('gpu'); print('cpu-only backend stub ok (links a runner, and --caps reports no GPU)')"
 
-test.gguf: scripts/make-test-model.py
+test.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py test.gguf
 
 # tiny qwen35 recurrent (SSM) fixture — 3 recurrent + 1 attention layer — for
 # the recurrent-state cache-seam gate (make-test-model.py cannot emit an SSM arch)
-test-ornith.gguf: scripts/make-test-ornith.py
+test-ornith.gguf: scripts/make-test-ornith.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-ornith.py test-ornith.gguf
 
 # R8.16: full-coverage adapters on the qwen35 and clef fixtures (every
 # DeltaNet projection, the fused Q/gate and K/V/output of the attention
 # layer, every FFN) for the backward through the recurrence
-test-lora-ornith.full.gguf: test-ornith.gguf scripts/make-test-lora.py
+test-lora-ornith.full.gguf: test-ornith.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	LORA_TARGETS=qwen35 $(PYTHON) scripts/make-test-lora.py test-ornith.gguf test-lora-ornith
 
-test-clef.gguf: scripts/make-test-clef.py
+test-clef.gguf: scripts/make-test-clef.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-clef.py test-clef.gguf
 
-test-lora-clef.full.gguf: test-clef.gguf scripts/make-test-lora.py
+test-lora-clef.full.gguf: test-clef.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	LORA_TARGETS=qwen35 $(PYTHON) scripts/make-test-lora.py test-clef.gguf test-lora-clef
 
 # same geometry/vocab, different weights: a draft model that genuinely diverges
 # from the target, so the speculative fold-rollback gate exercises rejection
-test-ornith-draft.gguf: scripts/make-test-ornith.py
+test-ornith-draft.gguf: scripts/make-test-ornith.py $(GGUF_FIXTURE_LIB)
 	ORNITH_TEST_SEED=0x2b992ddf $(PYTHON) scripts/make-test-ornith.py test-ornith-draft.gguf
 
 # The same fixture with its matmul weights stored Q8_0. test.gguf is F32, and
@@ -1562,21 +1566,21 @@ test-ornith-draft.gguf: scripts/make-test-ornith.py
 # 2026-07-28 and `make test` stayed green for three weeks
 # (docs/cuda-microbatch-identity-2026-08-18.md). This fixture is what makes the
 # gate mean something.
-test-q8.gguf: scripts/make-test-model.py
+test-q8.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --quant q8_0 test-q8.gguf
 
 # Q4_K reaches Metal's default fast decode matvec (k_mvf_q4_K, the owner's
 # 2026-10-23 promotion), whose microbatch columns must be the solo step's
 # bits: the batch and spec identity gates run on it. 256-wide rows, so the
 # K-quant superblocks tile; written by the runner's own quantizer.
-test-q4k.gguf: scripts/make-test-model.py runner
+test-q4k.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB) runner
 	$(PYTHON) scripts/make-test-model.py --wide test-q4k-src.gguf > /dev/null
 	./$(RUNNER_EXE) -m test-q4k-src.gguf --quantize test-q4k.gguf --quant q4_k > /dev/null
 	rm -f test-q4k-src.gguf
 
 # BF16 reaches its own CUDA decode-microbatch twins. The F32 and Q8_0 runs do
 # not execute k_gemvb_bf16_x4/_x8, so neither can hold their identity contract.
-test-bf16.gguf: scripts/make-test-model.py
+test-bf16.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --quant bf16 test-bf16.gguf
 
 # Ornith/Qwen3.5 CPU tracer: a committed generator builds a tiny hybrid model
@@ -2472,7 +2476,7 @@ endif
 # with a prerequisite and no rule. Neither of those recipes runs in `make
 # test`, so on a fresh tree test-es.gguf never existed at all and `make test`
 # stopped here with "No rule to make target test-es.gguf".
-test-swa.gguf:
+test-swa.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --arch qwen3 --swa 8,2 test-swa.gguf
 
 # The E-series fixture the fuse roster (and the sanitizer fixture list in
@@ -2481,7 +2485,7 @@ test-swa.gguf:
 # the one that recipe used to leave behind as its last iteration. The eseries
 # loop now writes its own scratch file, so this rule is the only producer of
 # test-es.gguf and its config cannot silently change under the fuse gate.
-test-es.gguf: scripts/make-test-model.py
+test-es.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --eseries 3,16 test-es.gguf
 
 # The fixture prerequisites are macOS-only: on Linux the recipe body is a

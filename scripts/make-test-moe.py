@@ -24,6 +24,10 @@ import math
 import struct
 import sys
 
+from gguf_fixture import (
+    s, ku, kf, ks, kb, kas, kaf, kai, kau, kab,
+    pack, ones, write_gguf, T_MXFP4)
+
 OUT = sys.argv[1] if len(sys.argv) > 1 else "test-moe"
 # the first argument is the output path: an option there (`--help`) used to
 # be taken as a file name prefix and wrote a set of "--help.*" files
@@ -43,24 +47,6 @@ OVF = "--act-fp16-overflow" in sys.argv[2:]
 E, HEADS, KV, FF, LAYERS = 32, 4, 2, 64, 2
 VOCAB = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
 TTYPE = [2, 3, 3] + [6] * 256
-U32, F32, STR, ARR, I32, BOOL = 4, 6, 8, 9, 5, 7
-T_F32, T_MXFP4 = 0, 39
-
-
-def s(x):
-    b = x.encode()
-    return struct.pack("<Q", len(b)) + b
-
-
-def ku(k, v): return s(k) + struct.pack("<II", U32, v)
-def kf(k, v): return s(k) + struct.pack("<If", F32, v)
-def ks(k, v): return s(k) + struct.pack("<I", STR) + s(v)
-def kb(k, v): return s(k) + struct.pack("<IB", BOOL, bool(v))
-def kas(k, xs): return s(k) + struct.pack("<IIQ", ARR, STR, len(xs)) + b"".join(s(x) for x in xs)
-def kaf(k, xs): return s(k) + struct.pack("<IIQ", ARR, F32, len(xs)) + struct.pack(f"<{len(xs)}f", *xs)
-def kai(k, xs): return s(k) + struct.pack("<IIQ", ARR, I32, len(xs)) + struct.pack(f"<{len(xs)}i", *xs)
-def kau(k, xs): return s(k) + struct.pack("<IIQ", ARR, U32, len(xs)) + struct.pack(f"<{len(xs)}I", *xs)
-def kab(k, xs): return s(k) + struct.pack("<IIQ", ARR, BOOL, len(xs)) + bytes(1 if x else 0 for x in xs)
 
 
 _seed = 0x50E
@@ -71,8 +57,6 @@ def rnd():
 
 
 def flist(n): return [rnd() for _ in range(n)]
-def pack(xs): return struct.pack(f"<{len(xs)}f", *xs)
-def ones(n): return pack([1.0] * n)
 def zeros(n): return pack([0.0] * n)
 
 
@@ -106,29 +90,6 @@ def base_meta(arch, extra):
         ku("tokenizer.ggml.eos_token_id", 2), kb("tokenizer.ggml.add_bos_token", True),
     ]
     return kvs
-
-
-def write(path, tensors, kvs):
-    meta = b"".join(kvs)
-    info, off = b"", 0
-    for item in tensors:
-        if len(item) == 3:
-            name, dims, payload = item
-            typ = T_F32
-        else:
-            name, dims, payload, typ = item
-        info += s(name) + struct.pack("<I", len(dims))
-        info += b"".join(struct.pack("<Q", d) for d in dims)
-        info += struct.pack("<IQ", typ, off)
-        off = (off + len(payload) + 31) & ~31
-    head = struct.pack("<IIQQ", 0x46554747, 3, len(tensors), len(kvs)) + meta + info
-    with open(path, "wb") as f:
-        f.write(head + b"\0" * ((-len(head)) % 32))
-        for item in tensors:
-            payload = item[2]
-            f.write(payload)
-            f.write(b"\0" * ((-len(payload)) % 32))
-    print(f"wrote {path}")
 
 
 # --- shared weights (generated once so all three files agree) -----------------
@@ -223,27 +184,27 @@ def moe_ffn_split(i, n_expert, expert1_down):
 dense = list(shared)
 for i in range(LAYERS):
     dense += dense_ffn(i)
-write(f"{OUT}.dense.gguf", dense, base_meta("llama", []))
+write_gguf(f"{OUT}.dense.gguf", dense, base_meta("llama", []))
 
 # moe1: expert_used=1, expert 0 = dense, expert 1 = zeros
 moe1 = list(shared)
 for i in range(LAYERS):
     moe1 += moe_ffn(i, 2, [0.0] * (FF * E))
-write(f"{OUT}.moe1.gguf", moe1,
+write_gguf(f"{OUT}.moe1.gguf", moe1,
       base_meta("llama", [ku("llama.expert_count", 2), ku("llama.expert_used_count", 1)]))
 
 # moe2: expert_used=2, both experts = dense
 moe2 = list(shared)
 for i in range(LAYERS):
     moe2 += moe_ffn(i, 2, ffn[i]["down"])
-write(f"{OUT}.moe2.gguf", moe2,
+write_gguf(f"{OUT}.moe2.gguf", moe2,
       base_meta("llama", [ku("llama.expert_count", 2), ku("llama.expert_used_count", 2)]))
 
 # moe3: legacy SPLIT per-expert layout, expert_used=1, expert 0 = dense (like moe1)
 moe3 = list(shared)
 for i in range(LAYERS):
     moe3 += moe_ffn_split(i, 2, [0.0] * (FF * E))
-write(f"{OUT}.moe3.gguf", moe3,
+write_gguf(f"{OUT}.moe3.gguf", moe3,
       base_meta("llama", [ku("llama.expert_count", 2), ku("llama.expert_used_count", 1)]))
 
 # moe4: real router, distinct experts, top-2 of 4. Not dense-equivalent by
@@ -252,7 +213,7 @@ write(f"{OUT}.moe3.gguf", moe3,
 moe4 = list(shared)
 for i in range(LAYERS):
     moe4 += moe_ffn_routed(i, 4)
-write(f"{OUT}.moe4.gguf", moe4,
+write_gguf(f"{OUT}.moe4.gguf", moe4,
       base_meta("llama", [ku("llama.expert_count", 4), ku("llama.expert_used_count", 2)]))
 
 # afmoe with the router deliberately reduced to the CUDA/Metal device
@@ -266,7 +227,7 @@ for i in range(LAYERS):
         (f"blk.{i}.attn_gate.weight", [E, E], pack(flist(E * E))),
     ]
     afmoe_plain += moe_ffn_routed(i, 4)
-write(f"{OUT}.afmoe-plain.gguf", afmoe_plain,
+write_gguf(f"{OUT}.afmoe-plain.gguf", afmoe_plain,
       base_meta("afmoe", [
           ku("afmoe.expert_count", 4),
           ku("afmoe.expert_used_count", 2),
@@ -314,7 +275,7 @@ def emit(name, downs_fn, extra, probs_b=None, probs_b_suffix="weight"):
     ts = list(shared)
     for i in range(LAYERS):
         ts += moe_ffn_n(i, downs_fn(i), probs_b, probs_b_suffix)
-    write(f"{OUT}.{name}.gguf", ts, base_meta("llama", extra))
+    write_gguf(f"{OUT}.{name}.gguf", ts, base_meta("llama", extra))
 
 
 ZEROS_FF_E = [0.0] * (FF * E)
@@ -599,7 +560,7 @@ for _tag, _fn, _norm, _base in GATING:
              ku("llama.expert_gating_func", _fn)]
     if not _norm:
         _meta.append(kb("llama.expert_weights_norm", False))
-    write(f"{OUT}.{_tag}.gguf", _ts, base_meta("llama", _meta))
+    write_gguf(f"{OUT}.{_tag}.gguf", _ts, base_meta("llama", _meta))
 check_gating_sensitivity(GATING, _gate_routers)
 
 # --- shared always-on expert. The routed experts are all zeros and the SHARED
@@ -627,7 +588,7 @@ for _tag, _gated in (("shexp", False), ("shexpg", True)):
         ]
         if _gated:
             _ts.append((f"blk.{_i}.ffn_gate_inp_shexp.weight", [E, 1], zeros(E)))
-    write(f"{OUT}.{_tag}.gguf", _ts,
+    write_gguf(f"{OUT}.{_tag}.gguf", _ts,
           base_meta("llama", [ku("llama.expert_count", 2),
                               ku("llama.expert_used_count", 1),
                               ku("llama.expert_shared_count", 1),
@@ -669,7 +630,7 @@ for _i in range(LAYERS):
         (f"blk.{_i}.ffn_down_exps.bias", [E, 2],
          pack([0.015 * (((j + 3 * _i) % 7) - 3) for j in range(E * 2)])),
     ]
-write(f"{OUT}.gptoss-mxfp4.gguf", gptoss,
+write_gguf(f"{OUT}.gptoss-mxfp4.gguf", gptoss,
       base_meta("gpt-oss", [ku("gpt-oss.expert_count", 2),
                             ku("gpt-oss.expert_used_count", 2),
                             ku("gpt-oss.expert_feed_forward_length", FF),
@@ -683,7 +644,7 @@ write(f"{OUT}.gptoss-mxfp4.gguf", gptoss,
 # the shipping gpt-oss models (top-4 of 32/128), and dropping it moves the
 # logits by percent rather than by ulps. Measured on the CUDA fused MoE path:
 # 0.0044 of logit range with the bias dropped, 3.8e-08 with it applied.
-write(f"{OUT}.gptoss-top1.gguf", gptoss,
+write_gguf(f"{OUT}.gptoss-top1.gguf", gptoss,
       base_meta("gpt-oss", [ku("gpt-oss.expert_count", 2),
                             ku("gpt-oss.expert_used_count", 1),
                             ku("gpt-oss.expert_feed_forward_length", FF),
@@ -694,7 +655,7 @@ write(f"{OUT}.gptoss-top1.gguf", gptoss,
 # original context, as every gpt-oss config ships). tests/test_rope_yarn.c
 # reads the frequency table the loader builds from it against OpenAI's
 # reference, which does not round the ramp's correction range.
-write(f"{OUT}.gptoss-yarn.gguf", gptoss,
+write_gguf(f"{OUT}.gptoss-yarn.gguf", gptoss,
       base_meta("gpt-oss", [ku("gpt-oss.expert_count", 2),
                             ku("gpt-oss.expert_used_count", 2),
                             ku("gpt-oss.expert_feed_forward_length", FF),
@@ -740,7 +701,7 @@ for _i in range(LAYERS):
         (f"blk.{_i}.post_ffw_norm_2.weight", [E], ones(E)),
         (f"blk.{_i}.layer_output_scale.weight", [1], pack([0.92 + 0.03 * _i])),
     ]
-write(f"{OUT}.gemma4-moe.gguf", gemma4,
+write_gguf(f"{OUT}.gemma4-moe.gguf", gemma4,
       base_meta("gemma4", [ku("gemma4.expert_count", 2),
                            ku("gemma4.expert_used_count", 2),
                            ku("gemma4.expert_feed_forward_length", FF),
@@ -812,7 +773,7 @@ _g4h_meta = [
     kai("tokenizer.ggml.token_type", TTYPE), ku("tokenizer.ggml.bos_token_id", 1),
     ku("tokenizer.ggml.eos_token_id", 2), kb("tokenizer.ggml.add_bos_token", True),
 ]
-write(f"{OUT}.gemma4-moe-hetero.gguf", g4h, _g4h_meta)
+write_gguf(f"{OUT}.gemma4-moe-hetero.gguf", g4h, _g4h_meta)
 
 # R17.3: MoE fixtures for the LoRA backward's finite-difference gate. moe4's
 # experts are scaled copies of one FFN and its router logits sit within
@@ -840,6 +801,6 @@ for _tag, _norm in (("moe4-train", True), ("moe4-train-nonorm", False)):
     _ts = list(shared)
     for i in range(LAYERS):
         _ts += moe_ffn_train(i, 4, 6.0)
-    write(f"{OUT}.{_tag}.gguf", _ts,
+    write_gguf(f"{OUT}.{_tag}.gguf", _ts,
           base_meta("llama", [ku("llama.expert_count", 4), ku("llama.expert_used_count", 2),
                               kb("llama.expert_weights_norm", _norm)]))

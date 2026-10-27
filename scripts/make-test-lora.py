@@ -33,23 +33,13 @@ import os
 import struct
 import sys
 
+from gguf_fixture import kf, ks, write_gguf, STR, T_F32, T_F16
+
 BASE, OUT = sys.argv[1], sys.argv[2]
 BASE_ARCH = "llama"
 # LORA_ALPHA lets a test build two adapters that differ only in alpha
 ALPHA = float(os.environ.get("LORA_ALPHA", "8.0"))
 RANK = 4
-
-U32, F32T, STR = 4, 6, 8
-T_F32 = 0
-
-
-def s(x):
-    b = x.encode()
-    return struct.pack("<Q", len(b)) + b
-
-
-def ks(k, v): return s(k) + struct.pack("<I", STR) + s(v)
-def kf(k, v): return s(k) + struct.pack("<If", F32T, v)
 
 
 _seed = 0x1234
@@ -59,23 +49,6 @@ def rnd():
     global _seed
     _seed = (_seed * 1103515245 + 12345) & 0x7FFFFFFF
     return (_seed / 0x7FFFFFFF - 0.5) * 0.2
-
-
-def write_gguf(path, kvs, tensors):
-    m = b"".join(kvs)
-    info, off = b"", 0
-    for name, dims, payload, *rest in tensors:
-        info += s(name) + struct.pack("<I", len(dims))
-        info += b"".join(struct.pack("<Q", d) for d in dims)
-        info += struct.pack("<IQ", rest[0] if rest else T_F32, off)
-        off = (off + len(payload) + 31) & ~31
-    head = struct.pack("<IIQQ", 0x46554747, 3, len(tensors), len(kvs)) + m + info
-    with open(path, "wb") as f:
-        f.write(head + b"\0" * ((-len(head)) % 32))
-        for name, dims, payload, *rest in tensors:
-            f.write(payload)
-            f.write(b"\0" * ((-len(payload)) % 32))
-    print(f"wrote {path}")
 
 
 # ---- read the base: header walk sufficient for F32 fixture tensors
@@ -198,17 +171,16 @@ meta = [ks("general.architecture", os.environ.get("LORA_ARCH", BASE_ARCH)),
 
 _seed = 0x1234
 adap = adapter_tensors(zero_b=False)
-write_gguf(OUT + ".adapter.gguf", meta, adap)
+write_gguf(OUT + ".adapter.gguf", adap, meta)
 
 _seed = 0x1234
-write_gguf(OUT + ".zero.gguf", meta, adapter_tensors(zero_b=True))
+write_gguf(OUT + ".zero.gguf", adapter_tensors(zero_b=True), meta)
 
 # the F16 twin: identical values rounded to half precision, T_F16 tensors
-T_F16 = 1
 f16 = [(n, d, struct.pack("<%de" % (len(p_) // 4),
                           *struct.unpack("<%df" % (len(p_) // 4), p_)), T_F16)
        for n, d, p_ in adap]
-write_gguf(OUT + ".f16.gguf", meta, f16)
+write_gguf(OUT + ".f16.gguf", f16, meta)
 
 # merged reference: base bytes with W += (alpha/r) * B @ A on the targets,
 # using the SAME adapter values (same seed replay)
@@ -264,21 +236,21 @@ for name, dims in all_target_dims():
     base = name[:-len(".weight")]
     full.append((f"{base}.weight.lora_a", [nin, FULL_RANK], pack_f(a)))
     full.append((f"{base}.weight.lora_b", [FULL_RANK, nout], pack_f(b)))
-write_gguf(OUT + ".full.gguf", meta, full)
+write_gguf(OUT + ".full.gguf", full, meta)
 
 # hostile variants
 nin, nout = targets[ANCHOR][0][0], targets[ANCHOR][0][1]
 AW = ANCHOR   # "blk.N.<proj>.weight"
 bad = [(f"{AW}.lora_a", [nin + 2, RANK], pack_f([0.1] * (RANK * (nin + 2)))),
        (f"{AW}.lora_b", [RANK, nout], pack_f([0.1] * (nout * RANK)))]
-write_gguf(OUT + ".badshape.gguf", meta, bad)
+write_gguf(OUT + ".badshape.gguf", bad, meta)
 extra = [(f"{AW}.lora_a", [nin, RANK, 2],
           pack_f([0.1] * (2 * RANK * nin))),
          (f"{AW}.lora_b", [RANK, nout],
           pack_f([0.1] * (nout * RANK)))]
-write_gguf(OUT + ".extradim.gguf", meta, extra)
+write_gguf(OUT + ".extradim.gguf", extra, meta)
 half = [(f"{AW}.lora_a", [nin, RANK], pack_f([0.1] * (RANK * nin)))]
-write_gguf(OUT + ".halfpair.gguf", meta, half)
+write_gguf(OUT + ".halfpair.gguf", half, meta)
 # A second tensor for the SAME (projection, side). The name is distinct, so
 # gguf's duplicate-name rule does not see it, and the merge loader's
 # name parse read the trailing "2" as nothing at all -- both landed in the one
@@ -287,4 +259,4 @@ write_gguf(OUT + ".halfpair.gguf", meta, half)
 dup = [(f"{AW}.lora_a", [nin, RANK], pack_f([0.1] * (RANK * nin))),
        (f"{AW}.lora_a2", [nin, RANK], pack_f([0.9] * (RANK * nin))),
        (f"{AW}.lora_b", [RANK, nout], pack_f([0.1] * (nout * RANK)))]
-write_gguf(OUT + ".dupside.gguf", meta, dup)
+write_gguf(OUT + ".dupside.gguf", dup, meta)
