@@ -614,6 +614,16 @@ def pair_pooled(results, suite, key="ok"):
     return n, ao, bo, db, dc
 
 
+def print_pooled_line(label, n, ao, bo, db, dc):
+    """One POOLED row: both arms' counts, the delta with its paired 95% CI,
+    the discordant pairs and McNemar's p."""
+    lo, hi = paired_ci(n, db, dc)
+    print("POOLED %-10s f16 %4d/%-4d  q8 %4d/%-4d  %+6.1fpp  "
+          "95%% CI [%+.1f, %+.1f]pp  discordant %d/%d  p=%.3f" % (
+              label, ao, n, bo, n, 100.0 * (bo - ao) / n, lo, hi,
+              db, dc, mcnemar_p(db, dc)))
+
+
 def report(results):
     print("\n" + "=" * 78)
     print("QUALITY: f16 vs q8 KV cache (paired, temperature 0)")
@@ -651,23 +661,15 @@ def report(results):
                      mcnemar_p(db, dc), db, dc))
 
     print("\n" + "-" * 78)
-
-    def pooled_line(label, n, ao, bo, db, dc):
-        lo, hi = paired_ci(n, db, dc)
-        print("POOLED %-10s f16 %4d/%-4d  q8 %4d/%-4d  %+6.1fpp  "
-              "95%% CI [%+.1f, %+.1f]pp  discordant %d/%d  p=%.3f" % (
-                  label, ao, n, bo, n, 100.0 * (bo - ao) / n, lo, hi,
-                  db, dc, mcnemar_p(db, dc)))
-
     for suite in ("retrieval", "tools", None):
         n, ao, bo, db, dc = pair_pooled(results, suite)
         if n:
-            pooled_line(suite or "ALL", n, ao, bo, db, dc)
+            print_pooled_line(suite or "ALL", n, ao, bo, db, dc)
     # tool-name accuracy separately: picking the wrong function is a different
     # and more serious failure than fumbling an argument
     n, ao, bo, db, dc = pair_pooled(results, "tools", key="name_ok")
     if n:
-        pooled_line("tool-name", n, ao, bo, db, dc)
+        print_pooled_line("tool-name", n, ao, bo, db, dc)
 
 
 def gate(results, args):

@@ -55,6 +55,13 @@ def category_counts(data):
     return out
 
 
+def pass_rate_key(r):
+    """The leaderboard order: pass rate, then the size of the matrix."""
+    t = r["data"].get("totals", {})
+    requests = t.get("requests", 0)
+    return (t.get("passed", 0) / requests if requests else 0.0, requests)
+
+
 def build_rows(reports):
     """Rows of the table, best total pass RATE first.
 
@@ -64,11 +71,7 @@ def build_rows(reports):
     one. This ordering is the published leaderboard. Ties on rate go to the
     larger matrix, which is the more evidence for the same result.
     """
-    def rate(r):
-        t = r["data"].get("totals", {})
-        requests = t.get("requests", 0)
-        return (t.get("passed", 0) / requests if requests else 0.0, requests)
-    return sorted(reports, key=rate, reverse=True)
+    return sorted(reports, key=pass_rate_key, reverse=True)
 
 
 # ---- the table's cells: one report field each, "-" when it is absent

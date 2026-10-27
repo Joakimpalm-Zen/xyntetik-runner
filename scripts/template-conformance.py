@@ -816,6 +816,16 @@ def harmony_render_live(cases):
     return None, "; ".join(tried)
 
 
+def _harmony_meta(doc, how):
+    """The provenance a harmony render set is recorded with: its source
+    (live library or committed fixture, with the library version), the
+    digest of the renders, and when they were made."""
+    return {"source": "%s:openai-harmony %s"
+                      % (how, doc.get("library_version", "?")),
+            "sha256": sha(json.dumps(doc["renders"], sort_keys=True)),
+            "fetched_at": doc.get("generated_at", "live")}
+
+
 def harmony_oracle(cases):
     """(renders, meta, rot, err) for the harmony family."""
     live, lerr = harmony_render_live(cases)
@@ -823,13 +833,6 @@ def harmony_oracle(cases):
     if os.path.exists(HARMONY_FIXTURE):
         with open(HARMONY_FIXTURE) as f:
             fixture = json.load(f)
-
-    def meta_for(doc, how):
-        return {"source": "%s:openai-harmony %s"
-                          % (how, doc.get("library_version", "?")),
-                "sha256": sha(json.dumps(doc["renders"], sort_keys=True)),
-                "fetched_at": doc.get("generated_at", "live")}
-
     if live:
         rot = []
         if fixture:
@@ -849,9 +852,9 @@ def harmony_oracle(cases):
                     "without the library compares against, so it must not "
                     "drift. Regenerate: make template-conformance-harmony-"
                     "oracle" % (len(stale), ", ".join(sorted(stale)[:4])))
-        return live["renders"], meta_for(live, "lib"), rot, None
+        return live["renders"], _harmony_meta(live, "lib"), rot, None
     if fixture:
-        return fixture["renders"], meta_for(fixture, "fixture"), [], None
+        return fixture["renders"], _harmony_meta(fixture, "fixture"), [], None
     return None, None, [], (
         "the harmony oracle is the openai-harmony library, and neither the "
         "library nor the committed fixture %s is available (%s). Install it "

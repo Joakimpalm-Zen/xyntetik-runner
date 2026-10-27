@@ -603,6 +603,13 @@ def build_report(reference, zero_point, variant_rows, configuration):
     }
 
 
+def _pct(rate_obj):
+    """A rate as the markdown table prints it: percent with its count, or n/a."""
+    if not rate_obj or rate_obj["rate"] is None:
+        return "n/a"
+    return f"{rate_obj['rate'] * 100:.1f}% ({rate_obj['count']}/{rate_obj['scored']})"
+
+
 def render_markdown(report):
     lines = [f"# Quant fidelity — {report['reference']['label']} reference\n"]
     zp = report["zero_point"]
@@ -615,12 +622,6 @@ def render_markdown(report):
               "not executed"]
     lines.append("| " + " | ".join(header) + " |")
     lines.append("|" + "|".join(["---"] * len(header)) + "|")
-
-    def pct(rate_obj):
-        if not rate_obj or rate_obj["rate"] is None:
-            return "n/a"
-        return f"{rate_obj['rate'] * 100:.1f}% ({rate_obj['count']}/{rate_obj['scored']})"
-
     for row in report["variants"]:
         if row["status"] != "measured":
             lines.append("| " + " | ".join([
@@ -635,8 +636,8 @@ def render_markdown(report):
         not_exec = len(row["tool_fidelity_not_executed"]) + len(row["kld_not_executed"])
         lines.append("| " + " | ".join([
             row["label"], "yes" if row["is_reference"] else "",
-            pct(tf["schema_conformance"]), pct(tf["tool_selection"]),
-            pct(tf["argument_agreement"]), mean_kld, top1, str(not_exec)]) + " |")
+            _pct(tf["schema_conformance"]), _pct(tf["tool_selection"]),
+            _pct(tf["argument_agreement"]), mean_kld, top1, str(not_exec)]) + " |")
     return "\n".join(lines) + "\n"
 
 

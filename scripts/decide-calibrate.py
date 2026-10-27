@@ -52,6 +52,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import random
 import statistics
 import subprocess
@@ -60,6 +61,11 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# the shared probe lives beside this script; a test that loads this file by
+# path has not put the directory on sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from server_probe import served_model_ids  # noqa: E402
 
 SCHEMA_VERSION = "xyntetik.runner.decide-calibrate.v1"
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -200,24 +206,6 @@ def build_payload(state, model_name, answer_prefix, group_rows, rendering=None):
     if rendering is not None:
         payload["rendering"] = rendering
     return payload
-
-
-def served_model_ids(endpoint, timeout=20):
-    """The ids the endpoint serves (GET /v1/models), or None if the endpoint
-    does not answer. One request at startup turns a wrong --model-name into a
-    one-line error instead of a full-length run of 404s (found on the
-    the Linux CUDA host 2026-09-22: 25 minutes, 1,303 failures, exit 0)."""
-    url = endpoint.rstrip("/") + "/v1/models"
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return None
-    ids = []
-    for m in body.get("data", []) if isinstance(body, dict) else []:
-        if isinstance(m, dict) and m.get("id"):
-            ids.append(m["id"])
-    return ids
 
 
 def post_decide(endpoint, payload, timeout=120,

@@ -119,6 +119,14 @@ def wait_ready(base, process, timeout):
     raise RuntimeError(f"server startup timed out: {last}")
 
 
+def _memory_mib(value):
+    """nvidia-smi's memory column as an int, None when it prints [N/A]."""
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 def nvidia_snapshot():
     proc = run([
         "nvidia-smi",
@@ -128,21 +136,15 @@ def nvidia_snapshot():
     if isinstance(proc, Exception) or proc.returncode != 0:
         return None
     rows = []
-    def memory_mib(value):
-        try:
-            return int(value)
-        except ValueError:
-            return None
-
     for line in proc.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(",")]
         if len(parts) >= 5:
             rows.append({
                 "name": parts[0],
                 "driver_version": parts[1],
-                "memory_used_mib": memory_mib(parts[2]),
-                "memory_free_mib": memory_mib(parts[3]),
-                "memory_total_mib": memory_mib(parts[4]),
+                "memory_used_mib": _memory_mib(parts[2]),
+                "memory_free_mib": _memory_mib(parts[3]),
+                "memory_total_mib": _memory_mib(parts[4]),
             })
     return rows or None
 

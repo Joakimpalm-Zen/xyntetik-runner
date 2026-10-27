@@ -14,6 +14,7 @@ wrong: the band edge, and which side's margin is consulted.
 """
 import importlib.util
 import pathlib
+import sys
 
 import pytest
 
@@ -238,7 +239,7 @@ def test_every_position_is_counted_exactly_once(monkeypatch, tmp_path):
         return _Resp(stop_body if (a_side and pos % 3 == 0) else text_body)
 
     monkeypatch.setattr(kld_raw.urllib.request, "urlopen", fake)
-    monkeypatch.setattr(kld_raw, "served_model_ids", lambda ep: ["a", "b"])
+    monkeypatch.setattr(sys.modules["server_probe"], "served_model_ids", lambda ep: ["a", "b"])
     corpus = tmp_path / "c.txt"
     corpus.write_text(" ".join(f"w{i}" for i in range(40)))
     out = tmp_path / "r.json"
