@@ -309,7 +309,7 @@ difference in any option's probability, over all 1,096 scored rows, is 0.0126.
 
 This is the arithmetic-level agreement the v1 pass could not show. There the
 one arm that differed across hosts was the adapter trained through Q8_0, 149
-of 150 rows between ZEN and the lab box; here the same adapter agrees on all
+of 150 rows between the Windows CUDA host and the Linux CUDA host; here the same adapter agrees on all
 274 rows between the two compute paths on ONE host. The v1 difference is
 therefore a cross-HOST property, not a property of the adapter serving path,
 which is what a single host cannot separate.

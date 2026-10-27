@@ -145,7 +145,7 @@ def no_class_message(caps, classes, where):
     """Why no class matched: every class the ledger has, the caps fields each
     one expected otherwise, and how a GPU class's CPU cell is run. A bare
     "matches device classes []" sent the operator of a CPU row on the Linux
-    CUDA lab box, run with the GPU hidden, to read the script."""
+    CUDA host, run with the GPU hidden, to read the script."""
     if not classes:
         return f"{where} names no device classes"
     keys = []

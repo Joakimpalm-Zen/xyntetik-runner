@@ -22,7 +22,7 @@ A Tier 1 row's backend cell is one of exactly three things:
   * null: nobody ran the gate. Never a pass, and never inferred from a
     neighbouring file or backend.
 
-The same run records the file's `--adapt-info` answer (owner decision 6):
+The same run records the file's `--adapt-info` answer (policy decision 6):
 whether the LoRA backward admits the file and whether an adapter can be
 served on it, each with the refusal sentence when not. A row's
 `transitions` is its tier history, newest last; the transition log in
@@ -283,7 +283,7 @@ def validate(doc, devices):
         elif "family" in row and not _text(row["family"]):
             errs.append(f"{where}: family is a display name, not {row['family']!r}")
         claim = row.get("claim") or ""
-        # owner decision 4 and section 3: the qualifier is the first thing
+        # policy decision 4 and section 3: the qualifier is the first thing
         # a reader sees, never a footnote
         if row.get("experimental") and first_word(claim) != "Experimental":
             errs.append(f"{where}: an experimental row's claim starts with 'Experimental'")
@@ -311,7 +311,7 @@ def validate(doc, devices):
         if ts and ts[-1].get("tier") != tier:
             errs.append(f"{where}: the latest transition leads to {ts[-1].get('tier')!r}, "
                         f"not to the row's tier {tier!r}")
-        # owner decision 1: a published file is Tier 1 unless the exception
+        # policy decision 1: a published file is Tier 1 unless the exception
         # is decided and written down (gpt-oss-20b-keep30, 2026-10-22)
         if row.get("published") and tier != "tier1" and \
                 not _text(row.get("published_exception")):

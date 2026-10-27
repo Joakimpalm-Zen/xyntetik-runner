@@ -83,7 +83,7 @@ def spm_capture(model_file, corpus, added_tokens_json=None):
     whose text spells one of that model's control or user-defined pieces.
 
     Where a publisher ships the SentencePiece model the model was trained
-    with, that model is the reference (2026-10-03, owner decision on R6.2.2:
+    with, that model is the reference (2026-10-03, decision on R6.2.2:
     Mistral v0.3, Phi-3.5 and Salamandra; their tokenizer.json files differ
     from their own SentencePiece models on leading whitespace). The library
     reads a spelled `<s>` or `[INST]` as text, where the runner, like a chat

@@ -460,7 +460,7 @@ def main(argv):
         # is NOT comparable across it, and a report that does not say which
         # rule produced it is the failure this field exists to prevent.
         "schema_version": "xyntetik.runner.kld-raw.v3",
-# ADOPTED 2026-08-14 (owner decision): margin-qualified top-1 is the
+# ADOPTED 2026-08-14 (policy decision): margin-qualified top-1 is the
 # publication criterion; plain top-1 is reported beside it forever.
         "tie_band_nats": args.tie_band,
         # what each served side ran with, so an A/B of one switch says which

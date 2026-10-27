@@ -319,7 +319,7 @@ def main():
     # matrix claimed. CPU/GPU divergence that only opens up after a few dozen
     # tokens — KV-cache paths, accumulated rounding, sliding-window edges — is
     # precisely what this gate exists to catch, and a 16-token run cannot see it.
-    # Owner decision 2026-08-08: raise the tool to the contract and re-certify,
+    # Decision 2026-08-08: raise the tool to the contract and re-certify,
     # publishing whatever un-certifies, rather than lower the contract to the tool.
     ap.add_argument("--tokens", type=int, default=128)
     ap.add_argument("--ctx", type=int, default=2048)
