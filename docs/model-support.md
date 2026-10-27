@@ -26,7 +26,7 @@ Three rules no tier overrides:
 |---|---|
 | Tier 1, actively validated | Scheduled validation and proactive maintenance for the configurations the row names. Correctness claims are tied to recorded evidence with a version and date. Gated on every release. |
 | Tier 2, maintained on report | Previously admitted; no scheduled full-model revalidation. Existing regression tests keep running, and a change to a shared execution path (kernel, architecture code, tokenizer, template, scheduler) is tested with representative coverage that includes the affected families. A reproducible report is investigated, the fix is validated on the affected configuration where feasible, and it leaves a regression test behind. |
-| Tier 3, unmaintained | No dedicated validation or model-specific development. The implementation and the dated evidence remain; current-build correctness is not claimed. The 1.x loading promise still applies. No members: the first entry needs an owner decision and a transition-log entry. |
+| Tier 3, unmaintained | No dedicated validation or model-specific development. The implementation and the dated evidence remain; current-build correctness is not claimed. The 1.x loading promise still applies. No members: the first entry needs a policy decision and a transition-log entry. |
 | Upcoming, planned admission | A Tier 1 candidate whose implementation or validation is incomplete. Listed apart from Tier 1 and never counted as actively supported. Promotion is by evidence, not by whether the weights fit in memory. |
 
 Moving a model down a tier changes the commitment; it does not erase earlier
