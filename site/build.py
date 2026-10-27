@@ -336,7 +336,7 @@ CHARTS = {
 # The support roster (docs/model-tiers.json) is read when the site is built
 # for the release version and date; its marks are rendered once, in the
 # README and docs/model-support.md, and the site links there instead of
-# carrying a copy (owner decision 2026-10-27).
+# carrying a copy (policy decision 2026-10-27).
 
 def _load_tiers():
     spec = importlib.util.spec_from_file_location(

@@ -39,7 +39,7 @@ other string the runner produces exactly the SentencePiece model's ids.
   nothing in the file identifies this normalizer; implementing it needs a
   detection rule (the model name or a vocabulary fingerprint) and NFC tables.
 
-## What changed (owner decision, 2026-10-03)
+## What changed (decision of 2026-10-03)
 
 The Mistral v0.3, Phi-3.5 and Salamandra references are now captured from
 the SentencePiece model and gate at 0 of 721 (7, 10 and 7 special-marker rows

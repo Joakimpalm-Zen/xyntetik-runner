@@ -26,7 +26,7 @@ Three rules no tier overrides:
 |---|---|
 | Tier 1, actively validated | Scheduled validation and proactive maintenance for the configurations the row names. Correctness claims are tied to recorded evidence with a version and date. Gated on every release. |
 | Tier 2, maintained on report | Previously admitted; no scheduled full-model revalidation. Existing regression tests keep running, and a change to a shared execution path (kernel, architecture code, tokenizer, template, scheduler) is tested with representative coverage that includes the affected families. A reproducible report is investigated, the fix is validated on the affected configuration where feasible, and it leaves a regression test behind. |
-| Tier 3, unmaintained | No dedicated validation or model-specific development. The implementation and the dated evidence remain; current-build correctness is not claimed. The 1.x loading promise still applies. No members: the first entry needs an owner decision and a transition-log entry. |
+| Tier 3, unmaintained | No dedicated validation or model-specific development. The implementation and the dated evidence remain; current-build correctness is not claimed. The 1.x loading promise still applies. No members: the first entry needs a policy decision and a transition-log entry. |
 | Upcoming, planned admission | A Tier 1 candidate whose implementation or validation is incomplete. Listed apart from Tier 1 and never counted as actively supported. Promotion is by evidence, not by whether the weights fit in memory. |
 
 Moving a model down a tier changes the commitment; it does not erase earlier
@@ -309,7 +309,7 @@ Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for 
 - **Evidence:** [MANUAL.md#placement-and-memory](../MANUAL.md#placement-and-memory).
 - **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cpu backend, the policy's age limit.
 - **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `d10ba25da7047454`, [pin](../tests/compatibility/tier-smoke/qwen3.8-flash-next-mtp-q8_0.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** [n/a](../MANUAL.md#support-matrix): --mtp draft decoding on CUDA needs the whole trunk on the device; the IQ3_S trunk this head runs with holds 18 of 48 layers on a 24 GB device, and the partial split refuses with an error naming --gpu off (lab box, 2026-10-25, runner f960e470). The head is smoked on the CPU path of the same class.
+- **CUDA:** [n/a](../MANUAL.md#support-matrix): --mtp draft decoding on CUDA needs the whole trunk on the device; the IQ3_S trunk this head runs with holds 18 of 48 layers on a 24 GB device, and the partial split refuses with an error naming --gpu off (Linux CUDA host, 2026-10-25, runner f960e470). The head is smoked on the CPU path of the same class.
 - **Metal:** [n/a](../MANUAL.md#support-matrix): MTP/NextN draft-head consumption is not implemented on Metal.
 - **LoRA training:** no: hyper-connections (qwen4exp) (runner 1.5.1, 2026-10-24).
 - **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
@@ -442,7 +442,7 @@ Text path only: a decision model served at /v1/systemone; requests with images o
 - **File:** `Clef-backbone-IQ3_S.gguf` (sha256 `dafa8752f756f21c941ffee1df6ab93fec499eaeddfea7e5ba5ba601abf747cb`, 12,419,329,216 bytes, from [Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF) at revision `9e9ce879b6cb`).
 - **Upstream checkpoint:** Cloudflare/clef at revision `0b331204bb13`.
 - **Quantization:** IQ3_S.
-- **Published below Tier 1:** Owner decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.
+- **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.
 - **Tier history:** Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
 
 <a id="cloudflare-clef-iq3_s-recovery-qr-001e-lora"></a>
@@ -454,7 +454,7 @@ Text path only: the QR-001e recovery adapter for the project's Clef IQ3_S backbo
 - **Upstream checkpoint:** Cloudflare/clef at revision `0b331204bb13`.
 - **Quantization:** adapter (F16 LoRA tensors).
 - **Runs with:** [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B)](#cloudflare-clef-iq3_s-recovered), loaded beside it with `--lora`; the smoke and its pin are of that composed run.
-- **Published below Tier 1:** Owner decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.
+- **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.
 - **Tier history:** Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
 
 <a id="cloudflare-clef-iq3_s-recovery-qr-001b-lora"></a>
@@ -466,7 +466,7 @@ Text path only: the QR-001b recovery adapter for the project's Clef IQ3_S backbo
 - **Upstream checkpoint:** Cloudflare/clef at revision `0b331204bb13`.
 - **Quantization:** adapter (F16 LoRA tensors).
 - **Runs with:** [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B)](#cloudflare-clef-iq3_s-recovered), loaded beside it with `--lora`; the smoke and its pin are of that composed run.
-- **Published below Tier 1:** Owner decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.
+- **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.
 - **Tier history:** Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
 
 ### Qwen3.8
@@ -588,7 +588,7 @@ Text path only: Google's QAT Q4_0 of Gemma 4 31B with one attention sublayer phy
 - **File:** `gemma-4-31B-it-attn48-removed-q4_0.gguf` (sha256 `d7eaef9a8c05d8ad5cc63e4b37767113498b6ec6a31863519f5399f12cdb3134`, 17,576,681,600 bytes, from [Joakimpalm-Zen/gemma-4-31B-it-attn48-removed-Q4_0-GGUF](https://huggingface.co/Joakimpalm-Zen/gemma-4-31B-it-attn48-removed-Q4_0-GGUF) at revision `c704744772b4`).
 - **Upstream checkpoint:** google/gemma-4-31B-it.
 - **Quantization:** Q4_0 (Google QAT), one attention sublayer removed.
-- **Published below Tier 1:** Owner decision 2026-10-27: Tier 1 follows pull; 454 downloads in 30 days, under the 1,000 bar.
+- **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 454 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Against its parent, Google's QAT Q4_0: clean KLD 0.0223 on 44,413 held-out positions (2026-08-30, on the identical zeroed form). Family: gemma-4-E2B bf16 against Google's float32 reference.
 - **Context tested:** not recorded.
@@ -612,7 +612,7 @@ Text path only: the smoke-test file from the quickstart; it fails the fidelity b
 - **File:** `gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf` (sha256 `16ffaa2ea568e7a0c9b5c6ddbd39a376879f9ac007861334974de39f4cc52e3f`, 2,631,015,904 bytes, from [Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF](https://huggingface.co/Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF) at revision `37c8fa438245`).
 - **Upstream checkpoint:** google/gemma-4-E2B-it.
 - **Quantization:** Q4_K_M/Q4_0 mix.
-- **Published below Tier 1:** Owner decision 2026-10-27: Tier 1 follows pull; 552 downloads in 30 days, under the 1,000 bar.
+- **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 552 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Family: gemma-4-E2B bf16 against Google's float32 reference, where Runner is the closer engine (1.5.0 golden pass); that pass's served row is a different file (q4_0 throughout), not this mix.
 - **Context tested:** not recorded.
@@ -662,7 +662,7 @@ Text path only: Muse-Glimmer-30B with 4.75% of the decoder removed and healed, a
 - **File:** `Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf` (sha256 `103aa117dfce88974bd78e03ee6ca6601c720f01a1ec24ee1cfd0e5fe2f77ce6`, 15,686,266,304 bytes, from [Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q4_K-GGUF](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q4_K-GGUF) at revision `38f6284ec919`).
 - **Upstream checkpoint:** meta-models/Muse-Glimmer-30B.
 - **Quantization:** Q4_K.
-- **Published below Tier 1:** Owner decision 2026-10-27: Tier 1 follows pull; 298 downloads in 30 days, under the 1,000 bar.
+- **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 298 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. The family's only member is 30B (120 GB in float32). Against the unmodified BF16 parent: 97.74% / 0.04810 on a held-out split.
 - **Context tested:** not recorded.
@@ -684,7 +684,7 @@ Text path only: Muse-Glimmer-30B with 6.34% of the decoder removed (the FFN subl
 - **File:** `Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf` (sha256 `d7bb5c6f3b7170160322c684f338c0db630ea24ab09b896a6c97c8c415f58d4d`, 29,612,961,216 bytes, from [Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q8_0-GGUF](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q8_0-GGUF) at revision `e95fcd1a298c`).
 - **Upstream checkpoint:** meta-models/Muse-Glimmer-30B.
 - **Quantization:** Q8_0.
-- **Published below Tier 1:** Owner decision 2026-10-27: Tier 1 follows pull; 339 downloads in 30 days, under the 1,000 bar.
+- **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 339 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. The family's only member is 30B (120 GB in float32). Against the unmodified BF16 parent: 98.34% / 0.03883 on a held-out split.
 - **Context tested:** not recorded.
@@ -706,7 +706,7 @@ Text path only: the 6.34% surgical Muse-Glimmer-30B at Q4_K with retrained scale
 - **File:** `Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf` (sha256 `12a429483b18aefcfd9cdc41afb156f339d610be0fdd66fdaf5391e9df1cbb19`, 15,686,266,304 bytes, from [Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-6p34-Q4_K-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-6p34-Q4_K-recovered-GGUF) at revision `164d823e32a3`).
 - **Upstream checkpoint:** meta-models/Muse-Glimmer-30B.
 - **Quantization:** Q4_K, recovered scales.
-- **Published below Tier 1:** Owner decision 2026-10-27: Tier 1 follows pull; 292 downloads in 30 days, under the 1,000 bar.
+- **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 292 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. The family's only member is 30B (120 GB in float32). Against the unmodified BF16 parent: mean KLD 0.04949, margin-qualified top-1 97.90%.
 - **Context tested:** not recorded.
@@ -803,7 +803,7 @@ Qwen3-30B-A3B with attention Q8_0 and experts Q4_0, text path: it passes the fid
 - **File:** `Qwen3-30B-A3B-expq4_0-attnq8_0.gguf` (sha256 `df02efa815a74e6207f9e01f2d38272c1e2718bb23aec544709a02a2c7d5b206`, 17,988,417,024 bytes, from [Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF) at revision `6cdb710bcd55`).
 - **Upstream checkpoint:** Qwen/Qwen3-30B-A3B.
 - **Quantization:** Q8_0 attention / Q4_0 experts.
-- **Published below Tier 1:** Owner decision 2026-10-27: Tier 1 follows pull; 760 downloads in 30 days, under the 1,000 bar.
+- **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 760 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. A float32 reference of the 30B (120 GB) is not run; the bar is against the byte-verified first-party Q8_0 (v2 top-1 99.50%, mean KLD 0.0345).
 - **Context tested:** not recorded.
@@ -837,7 +837,7 @@ Qwen3-4B with the tool-use LoRA merged and written at Q8_0, text path: a qwen3 c
 - **File:** `merged-Q8_0.gguf` (sha256 `b9d21e525d91b20a1fc3437cf34c7ecfa03afda722d960b95bcfd113f2b7ea02`, 4,280,405,440 bytes, from [Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M](https://huggingface.co/Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M) at revision `5902b309ee51`).
 - **Upstream checkpoint:** Qwen/Qwen3-4B.
 - **Quantization:** Q8_0.
-- **Published below Tier 1:** Owner decision 2026-10-27: Tier 1 follows pull; 639 downloads in 30 days, under the 1,000 bar.
+- **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 639 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Family: Qwen3-4B bf16 against Qwen's float32 reference, 100% margin-qualified top-1 (1.5.0 golden pass; its served row is Qwen3-4B Q4_K_M, not this file).
 - **Context tested:** not recorded.
@@ -860,7 +860,7 @@ The tool-use LoRA adapter for Qwen3-4B, served with --lora on the base its card 
 - **Upstream checkpoint:** Qwen/Qwen3-4B.
 - **Quantization:** adapter (F32/F16 LoRA tensors).
 - **Runs with:** [Qwen3-4B](#qwen3-4b-q4_k_m-bartowski), loaded beside it with `--lora`; the smoke and its pin are of that composed run.
-- **Published below Tier 1:** Owner decision 2026-10-27: Tier 1 follows pull; 639 downloads in 30 days, under the 1,000 bar.
+- **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 639 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** adapters. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** The base model's anchor: Qwen3-4B bf16 against Qwen's float32 reference (1.5.0 golden pass). The adapter itself has no float32 reference.
 - **Context tested:** not recorded.
@@ -884,7 +884,7 @@ An expert-pruned Qwen3-Coder-30B-A3B (120 of 128 experts kept) at Q4_K_M, text p
 - **File:** `Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf` (sha256 `3ac8568224a15ea49db6affdd195ba48e8b2d7c6325c7849b9829381e89163a1`, 17,531,967,808 bytes, from [Joakimpalm-Zen/Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M-GGUF) at revision `3fd968c75417`).
 - **Upstream checkpoint:** Qwen/Qwen3-Coder-30B-A3B-Instruct.
 - **Quantization:** Q4_K_M, 120 experts.
-- **Published below Tier 1:** Owner decision 2026-10-27: Tier 1 follows pull; 813 downloads in 30 days, under the 1,000 bar.
+- **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 813 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. A float32 reference of the 30B is not run; the bars are against the unpruned parent.
 - **Context tested:** not recorded.
@@ -910,7 +910,7 @@ A plain Q8_0 of NVIDIA's Nemotron-Nano-9B-v2 (Mamba-2 hybrid), text path: 100% m
 - **File:** `NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf` (sha256 `d3224286484df1ae79c2b74d2a0913e1bbb5a364b0dd7c1061c95fa97ee608d7`, 9,458,093,632 bytes, from [Joakimpalm-Zen/NVIDIA-Nemotron-Nano-9B-v2-Q8_0-GGUF](https://huggingface.co/Joakimpalm-Zen/NVIDIA-Nemotron-Nano-9B-v2-Q8_0-GGUF) at revision `3b6a1cf5035f`).
 - **Upstream checkpoint:** nvidia/NVIDIA-Nemotron-Nano-9B-v2.
 - **Quantization:** Q8_0.
-- **Published below Tier 1:** Owner decision 2026-10-27: Tier 1 follows pull; 496 downloads in 30 days, under the 1,000 bar.
+- **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 496 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** NVIDIA's float32 reference (golden pass 2026-09-07, 100 positions): margin-qualified top-1 100% at bf16 and Q8_0; Runner's mean KL 0.0041 at Q8_0 against llama.cpp's 0.0054. CPU and CUDA greedy byte-identical on this file.
 - **Context tested:** not recorded.
@@ -934,7 +934,7 @@ A plain Q8_0 of NVIDIA's Nemotron-Nano-9B-v2 (Mamba-2 hybrid), text path: 100% m
 A 32-to-30-expert derivative of gpt-oss-20b that does not pass the current fidelity bar; its card leads with the measured status and it stays published as a disclosed near-miss.
 
 - **File:** `gpt-oss-20b-keep30-MXFP4.gguf` (sha256 `e6b884b3de28a78858097bbee25c9c503975992a2bbc8943e0ef2c4bbbc14312`, 11,472,833,184 bytes, from [Joakimpalm-Zen/gpt-oss-20b-keep30-MXFP4-GGUF](https://huggingface.co/Joakimpalm-Zen/gpt-oss-20b-keep30-MXFP4-GGUF) at revision `d6bfb80ce279`).
-- **Published below Tier 1:** Owner decision 2026-10-22: a published file may be Tier 2 when its card already leads with its measured shortfall.
+- **Published below Tier 1:** Policy decision 2026-10-22: a published file may be Tier 2 when its card already leads with its measured shortfall.
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
 ### Llama
@@ -1085,7 +1085,7 @@ Text path only: the vision projector is not loaded, and Runner does not load the
 Not validated: the granite architecture is admitted and IBM's official GGUF exists, but no gate has run on a 30B file.
 
 - **Numerical anchor:** Family: granite-4.2-3B bf16 against IBM's float32 reference covers the family.
-- **Missing for Tier 1:** One gate run on the Linux CUDA lab box: quant bar, tool gate, pinned output, device record; a file pinned by sha256.
+- **Missing for Tier 1:** One gate run on the Linux CUDA host: quant bar, tool gate, pinned output, device record; a file pinned by sha256.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
 ### Nemotron 3.5 Lightning-30B-A3B
@@ -1173,7 +1173,7 @@ Not admitted: a new architecture.
 Not admitted: a new architecture.
 
 - **Numerical anchor:** A float32 reference is feasible.
-- **Missing for Tier 1:** An admission; it fits every box and a float32 reference (48 GB) is feasible on the lab box, so it is a full admission candidate.
+- **Missing for Tier 1:** An admission; it fits every box and a float32 reference (48 GB) is feasible on the Linux CUDA host, so it is a full admission candidate.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
 <a id="exempt"></a>
@@ -1200,26 +1200,26 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-22 | [Muse-Glimmer-30B, `Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf`](#muse-glimmer-30b-kquant) | Tier 1, actively validated | Migration: on the owner's Tier 1 roster (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Granite-4.2-8B, `granite-4.2-8b-Q4_K_M.gguf`](#granite-4.2-8b-q4_k_m) | Tier 1, actively validated | Migration: on the owner's Tier 1 roster (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Granite-4.2-8B, `granite-4.2-8b-Q8_0.gguf`](#granite-4.2-8b-q8_0) | Tier 1, actively validated | Migration: on the owner's Tier 1 roster (audit 2026-10-22). | none recorded |
-| 2026-10-22 | [Trinity Nano, `Trinity-Nano-Preview-Q8_0.gguf`](#trinity-nano-preview-q8_0) | Tier 1, actively validated | Migration: owner decision 2026-10-22, Tier 1 as the pinned afmoe file (the manual's 8 GB recommendation and a 1.5.0 golden-pass row). | none recorded |
-| 2026-10-22 | [Qwen3.8-27B, `Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf`](#qwen3.8-27b-gsq-rco-iq3_s-recovered) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [Qwen3.8-27B, `Qwen3.8-27B-MTP-Q8_0.gguf`](#qwen3.8-27b-mtp-q8_0) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [Xyntetik-Kvist-14B, `Xyntetik-Kvist-14B-BF16.gguf`](#xyntetik-kvist-14b-bf16) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [Xyntetik-Kvist-14B, `Xyntetik-Kvist-14B-Q8_0.gguf`](#xyntetik-kvist-14b-q8_0) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [Xyntetik-Kvist-14B, `Xyntetik-Kvist-14B-Q5_0-mix.gguf`](#xyntetik-kvist-14b-q5_0-mix) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [Xyntetik-Kvist-14B, `Xyntetik-Kvist-14B-IQ4_NL-mix.gguf`](#xyntetik-kvist-14b-iq4_nl-mix) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [Qwen3-30B-A3B selective precision, `Qwen3-30B-A3B-expq4_0-attnq8_0.gguf`](#qwen3-30b-a3b-expq4_0-attnq8_0) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [Qwen3-Coder-30B-A3B keep-120, `Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf`](#qwen3-coder-30b-a3b-instruct-keep120-q4_k_m) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [Gemma 4 E2B, `gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf`](#gemma-4-e2b-it-q4_k_m-q4_0-mix) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [NVIDIA Nemotron Nano 9B v2, `NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf`](#nvidia-nemotron-nano-9b-v2-q8_0) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [Gemma 4 31B, attention block 48 removed, `gemma-4-31B-it-attn48-removed-q4_0.gguf`](#gemma-4-31b-it-attn48-removed-q4_0) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [Muse-Glimmer-30B surgical, `Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf`](#muse-glimmer-30b-surgical-4p75-q4_k) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [Muse-Glimmer-30B surgical, `Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf`](#muse-glimmer-30b-surgical-6p34-q8_0) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [Muse-Glimmer-30B surgical, `Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf`](#muse-glimmer-30b-surgical-6p34-q4_k-recovered) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [Qwen3-4B Runner ToolUse, `merged-Q8_0.gguf`](#qwen3-4b-runner-tooluse-merged-q8_0) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [Qwen3-4B Runner ToolUse, `Qwen3-4B-ToolUse-LoRA.gguf`](#qwen3-4b-runner-tooluse-lora) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1. | none recorded |
-| 2026-10-22 | [Qwen3.8-Flash-Next, `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf`](#qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head) | Tier 1, actively validated | Migration: published file, Tier 1 by owner decision 1; owner decision 2026-10-22: stays Tier 1 with 'experimental' first. | none recorded |
-| 2026-10-22 | [Qwen3.8-Flash-Next, `Qwen3.8-Flash-Next-MTP-Q8_0.gguf`](#qwen3.8-flash-next-mtp-q8_0) | Tier 1, actively validated | Migration: published file, Tier 1 by owner decision 1; owner decision 2026-10-22: stays Tier 1 with 'experimental' first. | none recorded |
-| 2026-10-22 | [gpt-oss-20b keep-30, `gpt-oss-20b-keep30-MXFP4.gguf`](#gpt-oss-20b-keep30-mxfp4) | Tier 2, maintained on report | Migration: owner decision 2026-10-22, Tier 2 with its near-miss disclosure; it stays published. | none recorded |
+| 2026-10-22 | [Trinity Nano, `Trinity-Nano-Preview-Q8_0.gguf`](#trinity-nano-preview-q8_0) | Tier 1, actively validated | Migration: policy decision 2026-10-22, Tier 1 as the pinned afmoe file (the manual's 8 GB recommendation and a 1.5.0 golden-pass row). | none recorded |
+| 2026-10-22 | [Qwen3.8-27B, `Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf`](#qwen3.8-27b-gsq-rco-iq3_s-recovered) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [Qwen3.8-27B, `Qwen3.8-27B-MTP-Q8_0.gguf`](#qwen3.8-27b-mtp-q8_0) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [Xyntetik-Kvist-14B, `Xyntetik-Kvist-14B-BF16.gguf`](#xyntetik-kvist-14b-bf16) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [Xyntetik-Kvist-14B, `Xyntetik-Kvist-14B-Q8_0.gguf`](#xyntetik-kvist-14b-q8_0) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [Xyntetik-Kvist-14B, `Xyntetik-Kvist-14B-Q5_0-mix.gguf`](#xyntetik-kvist-14b-q5_0-mix) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [Xyntetik-Kvist-14B, `Xyntetik-Kvist-14B-IQ4_NL-mix.gguf`](#xyntetik-kvist-14b-iq4_nl-mix) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [Qwen3-30B-A3B selective precision, `Qwen3-30B-A3B-expq4_0-attnq8_0.gguf`](#qwen3-30b-a3b-expq4_0-attnq8_0) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [Qwen3-Coder-30B-A3B keep-120, `Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf`](#qwen3-coder-30b-a3b-instruct-keep120-q4_k_m) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [Gemma 4 E2B, `gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf`](#gemma-4-e2b-it-q4_k_m-q4_0-mix) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [NVIDIA Nemotron Nano 9B v2, `NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf`](#nvidia-nemotron-nano-9b-v2-q8_0) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [Gemma 4 31B, attention block 48 removed, `gemma-4-31B-it-attn48-removed-q4_0.gguf`](#gemma-4-31b-it-attn48-removed-q4_0) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [Muse-Glimmer-30B surgical, `Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf`](#muse-glimmer-30b-surgical-4p75-q4_k) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [Muse-Glimmer-30B surgical, `Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf`](#muse-glimmer-30b-surgical-6p34-q8_0) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [Muse-Glimmer-30B surgical, `Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf`](#muse-glimmer-30b-surgical-6p34-q4_k-recovered) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [Qwen3-4B Runner ToolUse, `merged-Q8_0.gguf`](#qwen3-4b-runner-tooluse-merged-q8_0) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [Qwen3-4B Runner ToolUse, `Qwen3-4B-ToolUse-LoRA.gguf`](#qwen3-4b-runner-tooluse-lora) | Tier 1, actively validated | Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1. | none recorded |
+| 2026-10-22 | [Qwen3.8-Flash-Next, `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf`](#qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head) | Tier 1, actively validated | Migration: published file, Tier 1 by policy decision 1; policy decision 2026-10-22: stays Tier 1 with 'experimental' first. | none recorded |
+| 2026-10-22 | [Qwen3.8-Flash-Next, `Qwen3.8-Flash-Next-MTP-Q8_0.gguf`](#qwen3.8-flash-next-mtp-q8_0) | Tier 1, actively validated | Migration: published file, Tier 1 by policy decision 1; policy decision 2026-10-22: stays Tier 1 with 'experimental' first. | none recorded |
+| 2026-10-22 | [gpt-oss-20b keep-30, `gpt-oss-20b-keep30-MXFP4.gguf`](#gpt-oss-20b-keep30-mxfp4) | Tier 2, maintained on report | Migration: policy decision 2026-10-22, Tier 2 with its near-miss disclosure; it stays published. | none recorded |
 | 2026-10-22 | [Qwen3-4B, `Qwen_Qwen3-4B-Q4_K_M.gguf`](#qwen3-4b-q4_k_m-bartowski) | Tier 2, maintained on report | Migration: the base of a Tier 1 adapter, added 2026-10-23 so the adapter's smoke can run; not on the owner's Tier 1 roster. | none recorded |
 | 2026-10-22 | [Qwen3.8-Flash-Next, `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`](#qwen3.8-flash-next-gsq-rco-iq3_s) | Tier 2, maintained on report | Migration: the trunk of a Tier 1 MTP head, added 2026-10-23 so the head's smoke can run; not on the owner's Tier 1 roster. | none recorded |
 | 2026-10-22 | [Llama-style dense families (llama)](#arch-llama) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
@@ -1243,27 +1243,27 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-22 | [Nemotron 3.5 Super VL-120B-A12B](#nemotron-3.5-super-vl-120b-a12b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Kolibri-1 (Aleph Alpha, 78B)](#kolibri-1) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains)](#mellum2.1-12b-a2.5b-thinking) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
-| 2026-10-27 | [Cloudflare Clef (clef, on Qwen3.8-27B), `Cloudflare_clef-IQ3_M.gguf`](#cloudflare-clef-iq3_m) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Qwen3.8-27B, `Qwen3.8-27B-UD-Q4_K_M.gguf`](#qwen3.8-27b-ud-q4_k_m) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Gemma 4 12B, `gemma-4-12b-it-qat-q4_0.gguf`](#gemma-4-12b-it-qat-q4_0) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Gemma 4 26B-A4B, `gemma-4-26B_q4_0-it.gguf`](#gemma-4-26b-a4b-it-qat-q4_0) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Gemma 4 31B, `gemma-4-31B-it-Q4_0.gguf`](#gemma-4-31b-it-q4_0) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Muse-Glimmer-30B, `Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf`](#muse-glimmer-30b-kquant) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Granite-4.2-8B, `granite-4.2-8b-Q4_K_M.gguf`](#granite-4.2-8b-q4_k_m) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Granite-4.2-8B, `granite-4.2-8b-Q8_0.gguf`](#granite-4.2-8b-q8_0) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Trinity Nano, `Trinity-Nano-Preview-Q8_0.gguf`](#trinity-nano-preview-q8_0) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Qwen3-30B-A3B selective precision, `Qwen3-30B-A3B-expq4_0-attnq8_0.gguf`](#qwen3-30b-a3b-expq4_0-attnq8_0) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 760 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Qwen3-Coder-30B-A3B keep-120, `Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf`](#qwen3-coder-30b-a3b-instruct-keep120-q4_k_m) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 813 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Gemma 4 E2B, `gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf`](#gemma-4-e2b-it-q4_k_m-q4_0-mix) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 552 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [NVIDIA Nemotron Nano 9B v2, `NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf`](#nvidia-nemotron-nano-9b-v2-q8_0) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 496 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Gemma 4 31B, attention block 48 removed, `gemma-4-31B-it-attn48-removed-q4_0.gguf`](#gemma-4-31b-it-attn48-removed-q4_0) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 454 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Muse-Glimmer-30B surgical, `Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf`](#muse-glimmer-30b-surgical-4p75-q4_k) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 298 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Muse-Glimmer-30B surgical, `Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf`](#muse-glimmer-30b-surgical-6p34-q8_0) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 339 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Muse-Glimmer-30B surgical, `Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf`](#muse-glimmer-30b-surgical-6p34-q4_k-recovered) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 292 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Qwen3-4B Runner ToolUse, `merged-Q8_0.gguf`](#qwen3-4b-runner-tooluse-merged-q8_0) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 639 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Qwen3-4B Runner ToolUse, `Qwen3-4B-ToolUse-LoRA.gguf`](#qwen3-4b-runner-tooluse-lora) | Tier 2, maintained on report | Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 639 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
-| 2026-10-27 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `Clef-backbone-IQ3_S.gguf`](#cloudflare-clef-iq3_s-recovered) | Tier 2, maintained on report | Admitted 2026-10-27 at Tier 2 (owner decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar. | none recorded |
-| 2026-10-27 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `clef-IQ3_S-recovery-QR-001e.lora.F16.gguf`](#cloudflare-clef-iq3_s-recovery-qr-001e-lora) | Tier 2, maintained on report | Admitted 2026-10-27 at Tier 2 (owner decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar. | none recorded |
-| 2026-10-27 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `clef-IQ3_S-recovery-QR-001b.lora.F16.gguf`](#cloudflare-clef-iq3_s-recovery-qr-001b-lora) | Tier 2, maintained on report | Admitted 2026-10-27 at Tier 2 (owner decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar. | none recorded |
+| 2026-10-27 | [Cloudflare Clef (clef, on Qwen3.8-27B), `Cloudflare_clef-IQ3_M.gguf`](#cloudflare-clef-iq3_m) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Qwen3.8-27B, `Qwen3.8-27B-UD-Q4_K_M.gguf`](#qwen3.8-27b-ud-q4_k_m) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Gemma 4 12B, `gemma-4-12b-it-qat-q4_0.gguf`](#gemma-4-12b-it-qat-q4_0) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Gemma 4 26B-A4B, `gemma-4-26B_q4_0-it.gguf`](#gemma-4-26b-a4b-it-qat-q4_0) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Gemma 4 31B, `gemma-4-31B-it-Q4_0.gguf`](#gemma-4-31b-it-q4_0) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Muse-Glimmer-30B, `Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf`](#muse-glimmer-30b-kquant) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Granite-4.2-8B, `granite-4.2-8b-Q4_K_M.gguf`](#granite-4.2-8b-q4_k_m) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Granite-4.2-8B, `granite-4.2-8b-Q8_0.gguf`](#granite-4.2-8b-q8_0) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Trinity Nano, `Trinity-Nano-Preview-Q8_0.gguf`](#trinity-nano-preview-q8_0) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Qwen3-30B-A3B selective precision, `Qwen3-30B-A3B-expq4_0-attnq8_0.gguf`](#qwen3-30b-a3b-expq4_0-attnq8_0) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 760 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Qwen3-Coder-30B-A3B keep-120, `Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf`](#qwen3-coder-30b-a3b-instruct-keep120-q4_k_m) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 813 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Gemma 4 E2B, `gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf`](#gemma-4-e2b-it-q4_k_m-q4_0-mix) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 552 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [NVIDIA Nemotron Nano 9B v2, `NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf`](#nvidia-nemotron-nano-9b-v2-q8_0) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 496 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Gemma 4 31B, attention block 48 removed, `gemma-4-31B-it-attn48-removed-q4_0.gguf`](#gemma-4-31b-it-attn48-removed-q4_0) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 454 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Muse-Glimmer-30B surgical, `Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf`](#muse-glimmer-30b-surgical-4p75-q4_k) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 298 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Muse-Glimmer-30B surgical, `Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf`](#muse-glimmer-30b-surgical-6p34-q8_0) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 339 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Muse-Glimmer-30B surgical, `Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf`](#muse-glimmer-30b-surgical-6p34-q4_k-recovered) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 292 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Qwen3-4B Runner ToolUse, `merged-Q8_0.gguf`](#qwen3-4b-runner-tooluse-merged-q8_0) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 639 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Qwen3-4B Runner ToolUse, `Qwen3-4B-ToolUse-LoRA.gguf`](#qwen3-4b-runner-tooluse-lora) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 639 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence. | 1.5.1 |
+| 2026-10-27 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `Clef-backbone-IQ3_S.gguf`](#cloudflare-clef-iq3_s-recovered) | Tier 2, maintained on report | Admitted 2026-10-27 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar. | none recorded |
+| 2026-10-27 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `clef-IQ3_S-recovery-QR-001e.lora.F16.gguf`](#cloudflare-clef-iq3_s-recovery-qr-001e-lora) | Tier 2, maintained on report | Admitted 2026-10-27 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar. | none recorded |
+| 2026-10-27 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `clef-IQ3_S-recovery-QR-001b.lora.F16.gguf`](#cloudflare-clef-iq3_s-recovery-qr-001b-lora) | Tier 2, maintained on report | Admitted 2026-10-27 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar. | none recorded |
 
 <!-- model-tiers:rows:end -->

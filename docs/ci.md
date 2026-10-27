@@ -141,7 +141,7 @@ failing or never recorded (`docs/compatibility-program.md`); a class the
 ledger marks borrowed (lent with no terms) is reported the same way, and only
 a recorded failure on it refuses, because the project may use a lent machine
 and must not depend on one. `scripts/cuda-gate.sh`
-is the CUDA gate a lab box runs from a fresh build, and
+is the CUDA gate a CUDA host runs from a fresh build, and
 `scripts/check-ptx-source.py` compares regenerated PTX against the committed
 header with the pinned nvcc; both are run by hand on the box and their
 records committed. There is no hosted or self-hosted device workflow. The

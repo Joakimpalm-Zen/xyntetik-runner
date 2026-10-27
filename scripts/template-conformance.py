@@ -222,7 +222,7 @@ FAMILIES = {
     # templates differ token-affecting-ly at exactly one site -- the mainline
     # pre-seeds an empty CLOSED thought block on the thinking-off generation
     # prompt -- so both renders must be checked or that site goes unmeasured.
-    # Owner decision 2026-08-19: keep E2B as the E-series oracle, add this.
+    # Decision 2026-08-19: keep E2B as the E-series oracle, add this.
     # The gemma-4 tokenizer vocab is byte-identical across every checkpoint
     # (verified: 262144 tokens / 514906 merges share one hash on 12B, 26B-A4B,
     # E2B and E4B), so the token check falls back to the E-series GGUF when a

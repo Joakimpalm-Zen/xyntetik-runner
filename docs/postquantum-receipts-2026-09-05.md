@@ -89,7 +89,7 @@ indistinguishable from the Ed25519 path at the process level.
 
 R12.2 is **validated**: the thesis was "quantum-resistant receipts are
 worth having and the cost is bearable", and both halves measured true. What
-remains is an owner decision:
+remains is a policy decision:
 
 1. **Keep as an option (default Ed25519)**: what the branch does. A tenant
    who needs it picks it per key; the format and verifier already speak

@@ -1,6 +1,6 @@
 #!/bin/bash
 # The scheduled CUDA gate (R6.9): the device checks hosted CI cannot run, as
-# one script a lab box runs from a fresh build of main.
+# one script a CUDA host runs from a fresh build of main.
 #
 #   scripts/cuda-gate.sh BUILD_DIR [OUT_DIR]
 #

@@ -5,7 +5,7 @@
     "tiers": {
       "tier1": "Actively validated: scheduled validation and proactive maintenance for the configurations the row names; gated on every release.",
       "tier2": "Maintained on report: no scheduled full-model revalidation; regression tests keep running and shared-path changes are tested with representative coverage.",
-      "tier3": "Unmaintained: no dedicated validation; the implementation and dated evidence remain and the 1.x loading promise still applies. No members; the first entry needs an owner decision and a transition-log entry.",
+      "tier3": "Unmaintained: no dedicated validation; the implementation and dated evidence remain and the 1.x loading promise still applies. No members; the first entry needs a policy decision and a transition-log entry.",
       "upcoming": "Planned admission: a Tier 1 candidate whose implementation or validation is incomplete; never counted as actively supported."
     },
     "cells": "A Tier 1 backend cell is a recorded gate (kind gate), a declared limit (kind limit, with the support-matrix link) or null (nobody ran the gate). A cell never carries a mark from a neighbouring file or backend.",
@@ -19,7 +19,7 @@
       "cuda",
       "metal"
     ],
-    "admission": "Tier 1 follows pull (owner decision 2026-10-27): it holds the project's own published files whose repository shows at least 1,000 downloads on the Hub in the last 30 days, read at each release and written into the transition that moves a row; a head or an adapter follows its base. A file under the bar, and every file another publisher maintains, is Tier 2: maintained on report, its records kept as dated evidence, never gated. A row moves back up when its repository crosses the bar at a release."
+    "admission": "Tier 1 follows pull (policy decision 2026-10-27): it holds the project's own published files whose repository shows at least 1,000 downloads on the Hub in the last 30 days, read at each release and written into the transition that moves a row; a head or an adapter follows its base. A file under the bar, and every file another publisher maintains, is Tier 2: maintained on report, its records kept as dated evidence, never gated. A row moves back up when its repository crosses the bar at a release."
   },
   "exempt": [
     {
@@ -135,7 +135,7 @@
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ]
@@ -229,7 +229,7 @@
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ]
@@ -321,7 +321,7 @@
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ]
@@ -412,7 +412,7 @@
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ]
@@ -503,7 +503,7 @@
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ]
@@ -594,7 +594,7 @@
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ]
@@ -686,7 +686,7 @@
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ]
@@ -776,7 +776,7 @@
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ]
@@ -868,13 +868,13 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: owner decision 2026-10-22, Tier 1 as the pinned afmoe file (the manual's 8 GB recommendation and a 1.5.0 golden-pass row).",
+          "reason": "Migration: policy decision 2026-10-22, Tier 1 as the pinned afmoe file (the manual's 8 GB recommendation and a 1.5.0 golden-pass row).",
           "last_validated_release": null
         },
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ]
@@ -964,7 +964,7 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         }
       ]
@@ -1056,7 +1056,7 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         }
       ]
@@ -1139,7 +1139,7 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         }
       ]
@@ -1222,7 +1222,7 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         }
       ]
@@ -1305,7 +1305,7 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         }
       ]
@@ -1388,7 +1388,7 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         }
       ]
@@ -1472,17 +1472,17 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         },
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 760 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 760 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ],
-      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 760 downloads in 30 days, under the 1,000 bar."
+      "published_exception": "Policy decision 2026-10-27: Tier 1 follows pull; 760 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "qwen3-coder-30b-a3b-instruct-keep120-q4_k_m",
@@ -1562,17 +1562,17 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         },
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 813 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 813 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ],
-      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 813 downloads in 30 days, under the 1,000 bar."
+      "published_exception": "Policy decision 2026-10-27: Tier 1 follows pull; 813 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "gemma-4-e2b-it-q4_k_m-q4_0-mix",
@@ -1672,17 +1672,17 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         },
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 552 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 552 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ],
-      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 552 downloads in 30 days, under the 1,000 bar."
+      "published_exception": "Policy decision 2026-10-27: Tier 1 follows pull; 552 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "nvidia-nemotron-nano-9b-v2-q8_0",
@@ -1766,17 +1766,17 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         },
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 496 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 496 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ],
-      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 496 downloads in 30 days, under the 1,000 bar."
+      "published_exception": "Policy decision 2026-10-27: Tier 1 follows pull; 496 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "gemma-4-31b-it-attn48-removed-q4_0",
@@ -1858,17 +1858,17 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         },
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 454 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 454 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ],
-      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 454 downloads in 30 days, under the 1,000 bar."
+      "published_exception": "Policy decision 2026-10-27: Tier 1 follows pull; 454 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "muse-glimmer-30b-surgical-4p75-q4_k",
@@ -1949,17 +1949,17 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         },
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 298 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 298 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ],
-      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 298 downloads in 30 days, under the 1,000 bar."
+      "published_exception": "Policy decision 2026-10-27: Tier 1 follows pull; 298 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "muse-glimmer-30b-surgical-6p34-q8_0",
@@ -2040,17 +2040,17 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         },
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 339 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 339 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ],
-      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 339 downloads in 30 days, under the 1,000 bar."
+      "published_exception": "Policy decision 2026-10-27: Tier 1 follows pull; 339 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "muse-glimmer-30b-surgical-6p34-q4_k-recovered",
@@ -2131,17 +2131,17 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         },
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 292 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 292 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ],
-      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 292 downloads in 30 days, under the 1,000 bar."
+      "published_exception": "Policy decision 2026-10-27: Tier 1 follows pull; 292 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "qwen3-4b-runner-tooluse-merged-q8_0",
@@ -2222,17 +2222,17 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         },
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 639 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 639 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ],
-      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 639 downloads in 30 days, under the 1,000 bar."
+      "published_exception": "Policy decision 2026-10-27: Tier 1 follows pull; 639 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "qwen3-4b-runner-tooluse-lora",
@@ -2318,17 +2318,17 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by owner decision 1.",
+          "reason": "Migration: published under the maintainer's Hugging Face account, Tier 1 by policy decision 1.",
           "last_validated_release": null
         },
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Owner decision 2026-10-27: Tier 1 follows pull; the repository showed 639 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
+          "reason": "Policy decision 2026-10-27: Tier 1 follows pull; the repository showed 639 downloads in the 30 days to 2026-10-27, under the 1,000 bar. Maintained on report; it stays published and its records stay as dated evidence.",
           "last_validated_release": "1.5.1"
         }
       ],
-      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; 639 downloads in 30 days, under the 1,000 bar."
+      "published_exception": "Policy decision 2026-10-27: Tier 1 follows pull; 639 downloads in 30 days, under the 1,000 bar."
     },
     {
       "id": "qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head",
@@ -2434,7 +2434,7 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published file, Tier 1 by owner decision 1; owner decision 2026-10-22: stays Tier 1 with 'experimental' first.",
+          "reason": "Migration: published file, Tier 1 by policy decision 1; policy decision 2026-10-22: stays Tier 1 with 'experimental' first.",
           "last_validated_release": null
         }
       ],
@@ -2506,7 +2506,7 @@
         },
         "cuda": {
           "kind": "limit",
-          "reason": "--mtp draft decoding on CUDA needs the whole trunk on the device; the IQ3_S trunk this head runs with holds 18 of 48 layers on a 24 GB device, and the partial split refuses with an error naming --gpu off (lab box, 2026-10-25, runner f960e470). The head is smoked on the CPU path of the same class.",
+          "reason": "--mtp draft decoding on CUDA needs the whole trunk on the device; the IQ3_S trunk this head runs with holds 18 of 48 layers on a 24 GB device, and the partial split refuses with an error naming --gpu off (Linux CUDA host, 2026-10-25, runner f960e470). The head is smoked on the CPU path of the same class.",
           "matrix": "MANUAL.md#support-matrix"
         },
         "metal": {
@@ -2531,7 +2531,7 @@
         {
           "tier": "tier1",
           "effective": "2026-10-22",
-          "reason": "Migration: published file, Tier 1 by owner decision 1; owner decision 2026-10-22: stays Tier 1 with 'experimental' first.",
+          "reason": "Migration: published file, Tier 1 by policy decision 1; policy decision 2026-10-22: stays Tier 1 with 'experimental' first.",
           "last_validated_release": null
         }
       ],
@@ -2554,12 +2554,12 @@
         }
       ],
       "published": true,
-      "published_exception": "Owner decision 2026-10-22: a published file may be Tier 2 when its card already leads with its measured shortfall.",
+      "published_exception": "Policy decision 2026-10-22: a published file may be Tier 2 when its card already leads with its measured shortfall.",
       "transitions": [
         {
           "tier": "tier2",
           "effective": "2026-10-22",
-          "reason": "Migration: owner decision 2026-10-22, Tier 2 with its near-miss disclosure; it stays published.",
+          "reason": "Migration: policy decision 2026-10-22, Tier 2 with its near-miss disclosure; it stays published.",
           "last_validated_release": null
         }
       ]
@@ -2800,12 +2800,12 @@
       ],
       "quantization": "IQ3_S",
       "published": true,
-      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.",
+      "published_exception": "Policy decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.",
       "transitions": [
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Admitted 2026-10-27 at Tier 2 (owner decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar.",
+          "reason": "Admitted 2026-10-27 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar.",
           "last_validated_release": null
         }
       ]
@@ -2833,7 +2833,7 @@
       ],
       "quantization": "adapter (F16 LoRA tensors)",
       "published": true,
-      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.",
+      "published_exception": "Policy decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.",
       "file_kind": "adapter",
       "runs_with": {
         "row": "cloudflare-clef-iq3_s-recovered",
@@ -2843,7 +2843,7 @@
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Admitted 2026-10-27 at Tier 2 (owner decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar.",
+          "reason": "Admitted 2026-10-27 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar.",
           "last_validated_release": null
         }
       ]
@@ -2871,7 +2871,7 @@
       ],
       "quantization": "adapter (F16 LoRA tensors)",
       "published": true,
-      "published_exception": "Owner decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.",
+      "published_exception": "Policy decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.",
       "file_kind": "adapter",
       "runs_with": {
         "row": "cloudflare-clef-iq3_s-recovered",
@@ -2881,7 +2881,7 @@
         {
           "tier": "tier2",
           "effective": "2026-10-27",
-          "reason": "Admitted 2026-10-27 at Tier 2 (owner decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar.",
+          "reason": "Admitted 2026-10-27 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar.",
           "last_validated_release": null
         }
       ]
@@ -2945,7 +2945,7 @@
       "tier": "upcoming",
       "claim": "Not validated: the granite architecture is admitted and IBM's official GGUF exists, but no gate has run on a 30B file.",
       "architecture": "granite",
-      "missing": "One gate run on the Linux CUDA lab box: quant bar, tool gate, pinned output, device record; a file pinned by sha256.",
+      "missing": "One gate run on the Linux CUDA host: quant bar, tool gate, pinned output, device record; a file pinned by sha256.",
       "transitions": [
         {
           "tier": "upcoming",
@@ -3091,7 +3091,7 @@
       "tier": "upcoming",
       "claim": "Not admitted: a new architecture.",
       "architecture": "mellum",
-      "missing": "An admission; it fits every box and a float32 reference (48 GB) is feasible on the lab box, so it is a full admission candidate.",
+      "missing": "An admission; it fits every box and a float32 reference (48 GB) is feasible on the Linux CUDA host, so it is a full admission candidate.",
       "transitions": [
         {
           "tier": "upcoming",

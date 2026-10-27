@@ -50,7 +50,7 @@ class DegenerateBudget(ProtocolError):
     the budget (prelude_max = max_new / 2 in src/engine.c), so one token is the
     only budget that cannot be split: there the turn's "length" is the
     truthful answer, and the case is excused, counted apart from passed,
-    failed and declined (owner decision R4.12.3, 2026-10-03).
+    failed and declined (decision R4.12.3, 2026-10-03).
 
     Only the runner reports the signal. A runtime without it is scored as
     before on the same case, which is why the report and the printed summary
@@ -506,7 +506,7 @@ def make_report(results, runtime_name, version, model, elapsed_ms, peak_kb):
                        if r["status"] == "failed")
     passed = sum(r["status"] == "passed" for r in results)
     total = len(results)
-    # Two arms, reported separately (owner decision 2026-08-19): a "declined"
+    # Two arms, reported separately (decision of 2026-08-19): a "declined"
     # turn emitted no call at all; the model chose prose. "Attempted" cases are
     # the ones where a call WAS produced (passed + malformed). So call_rate is
     # "did it call?" and attempted_pass_rate is "when it called, was it right?".

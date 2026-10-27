@@ -1,5 +1,5 @@
 #!/bin/bash
-# The nightly CUDA job for a lab box that hosted CI cannot reach (R6.9):
+# The nightly CUDA job for a CUDA host that hosted CI cannot reach (R6.9):
 # pull main, build, run scripts/cuda-gate.sh, and make a red night visible.
 #
 #   scripts/cuda-nightly.sh BASE_DIR

@@ -113,7 +113,7 @@ Results contain:
 
 1. **Rates are properties of this set only.** The 150 hand-written prompts are a fixed benchmark, not a representative sample of any traffic. Results do not transfer to other sets without re-measurement.
 
-2. **Two x86 hosts, no Apple host.** the Windows CUDA host and the lab box (Linux); the M1 run paged and was abandoned. The two retrained adapters are the published recipe's adapters, not byte copies of the lost originals.
+2. **Two x86 hosts, no Apple host.** the Windows CUDA host and the Linux CUDA host; the M1 run paged and was abandoned. The two retrained adapters are the published recipe's adapters, not byte copies of the lost originals.
 
 3. **Greedy and constraint sampling are different instruments.** Raw leg (greedy decoding) and native leg (constrained tool_choice) measure different model behaviors. Both should be reported; neither alone is sufficient.
 
@@ -202,7 +202,7 @@ argument-level decisions the native leg records (`choice_records`) rather
 than whole-call exact match; and raise n so a 10-count gap is more than two
 standard deviations. Rates are properties of this set, never of traffic.
 
-### Second host: the lab box (x86, 128 cores, CPU), 2026-09-23
+### Second host: the Linux CUDA host (x86, 128 cores, CPU), 2026-09-23
 
 Same set, same scorer, same base file and adapters (sha256 verified),
 runner main at 9b825fc, `--gpu off`, 16 threads (the Q8_0 arm also at 8).
@@ -210,7 +210,7 @@ The box was running a training job beside these arms (load 12 to 23); one
 arm lost its server under that load and was rerun. Right tool / exact of
 150 on the raw leg, tool / exact on the native leg:
 
-| arm | raw, ZEN (8 threads) | raw, lab (16 threads) | native, ZEN | native, lab |
+| arm | raw, Windows host (8 threads) | raw, Linux host (16 threads) | native, Windows host | native, Linux host |
 |---|---|---|---|---|
 | base | 92 / 46 | 92 / 46 | 103 / 71 | 103 / 71 |
 | published (Q4_K_M) | 103 / 57 | 103 / 57 | 104 / 67 | 104 / 67 |
@@ -221,10 +221,10 @@ Row-level agreement between the hosts, not just the totals: base,
 published and BF16 arms are identical on every one of the 150 rows on
 both legs, outputs and verdicts, across a different OS, compiler and
 thread count. The Q8_0 arm agrees on 149 of 150 raw outputs and 149 of
-150 native verdicts between ZEN and the lab at 8 threads: one raw row
+150 native verdicts between the Windows host and the Linux host at 8 threads: one raw row
 (`none_case_32`) diverges 134 characters into a long answer with the same
 verdict, and one native row (`multi_intent_27`) resolves to a different
-call (`ls_recursive` on ZEN, no call on the lab) with top-2 margins of 0.08
+call (`ls_recursive` on the Windows host, no call on the Linux host) with top-2 margins of 0.08
 and 0.13, not a tie. The adapter path is the only one that differs at all
 between the two x86 hosts; the base forward is identical on all 150 rows.
 The lab's 16-thread Q8_0 record differs from its 8-thread one on three
@@ -309,7 +309,7 @@ difference in any option's probability, over all 1,096 scored rows, is 0.0126.
 
 This is the arithmetic-level agreement the v1 pass could not show. There the
 one arm that differed across hosts was the adapter trained through Q8_0, 149
-of 150 rows between ZEN and the lab box; here the same adapter agrees on all
+of 150 rows between the Windows CUDA host and the Linux CUDA host; here the same adapter agrees on all
 274 rows between the two compute paths on ONE host. The v1 difference is
 therefore a cross-HOST property, not a property of the adapter serving path,
 which is what a single host cannot separate.
