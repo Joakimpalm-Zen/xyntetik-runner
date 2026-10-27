@@ -361,7 +361,7 @@ def check(args):
     # claimed device last ran the gates, and nothing was watching when the
     # Windows suite went nineteen days and eight failures. This refuses a tag
     # while an owned class the README claims is stale, failing, or has never
-    # been recorded — the same refusal shape as the README/site parity check,
+    # been recorded, the same refusal shape as the README/site parity check,
     # for the same reason: a claim nobody re-verifies decays into a wrong one.
     # A borrowed class is reported too; only a recorded failure on it refuses.
     if args.device_evidence:
