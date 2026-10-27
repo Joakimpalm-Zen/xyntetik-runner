@@ -253,10 +253,11 @@ def test_every_polled_port_sits_below_the_ephemeral_ranges():
                                                            if p >= EPHEMERAL_FLOOR)
 
 
-@pytest.mark.parametrize("name", ["kld-compare", "kld-compare-raw"])
-def test_a_self_connected_socket_is_not_taken_for_a_server(name):
+def test_a_self_connected_socket_is_not_taken_for_a_server():
+    """Both comparison scripts poll through scripts/server_probe.py, the one
+    copy of the check since 2026-10-27."""
     import socket
-    mod = _load(name)
+    mod = _load("server_probe")
     s = socket.socket()
     try:
         s.bind(("127.0.0.1", 0))
