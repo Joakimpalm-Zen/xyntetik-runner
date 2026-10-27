@@ -32,13 +32,6 @@ static void join(char *out, size_t cap, const char *dir, const char *name) {
     snprintf(out, cap, "%s%s%s", dir, slash ? "" : "/", name);
 }
 
-static const char *base_of(const char *p) {
-    const char *b = p;
-    for (const char *c = p; *c; c++)
-        if (*c == '/' || *c == '\\') b = c + 1;
-    return b;
-}
-
 static int hexval(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -207,7 +200,7 @@ int bundle_export(const bundle_opts *o) {
         sb_lit(&m, "null");
     }
     sb_lit(&m, "},\"model\":{\"name\":");
-    put_str(&m, base_of(jv_str(jv_get(model, "path"), "")));
+    put_str(&m, plat_path_base(jv_str(jv_get(model, "path"), "")));
     sb_lit(&m, ",\"sha256\":");
     put_str(&m, jv_str(jv_get(model, "sha256"), NULL));
     sb_lit(&m, ",\"oms\":");
@@ -552,14 +545,14 @@ int pack_export(const pack_opts *o) {
         }
     }
     for (int a = 0; a < o->n_attach; a++) {
-        const char *bn = base_of(o->attach[a]);
+        const char *bn = plat_path_base(o->attach[a]);
         if (!plain_name(bn) || reserved_name(bn)) {
             fprintf(stderr, "error: pack: attachment name %s is reserved or not a "
                     "plain file name\n", bn);
             goto out;
         }
         for (int b2 = 0; b2 < a; b2++)
-            if (!strcmp(bn, base_of(o->attach[b2]))) {
+            if (!strcmp(bn, plat_path_base(o->attach[b2]))) {
                 fprintf(stderr, "error: pack: two attachments are named %s\n", bn);
                 goto out;
             }
@@ -629,7 +622,7 @@ int pack_export(const pack_opts *o) {
     }
     for (int a = 0; a < o->n_attach && wrote_ok; a++) {
         char p[4200], h[65];
-        const char *bn = base_of(o->attach[a]);
+        const char *bn = plat_path_base(o->attach[a]);
         join(p, sizeof p, o->out_dir, bn);
         envelope_data_sha256(att[a], attn[a], h);
         wrote_ok = spill(p, att[a], attn[a]);
@@ -669,7 +662,7 @@ int pack_export(const pack_opts *o) {
     sb_fmt(&m, ",\"last_hash\":\"%s\"}", r[nr - 1].hash);
     jv *model = jv_get(r[0].j, "model"), *build = jv_get(r[0].j, "build");
     sb_lit(&m, ",\"model\":{\"name\":");
-    put_str(&m, base_of(jv_str(jv_get(model, "path"), "")));
+    put_str(&m, plat_path_base(jv_str(jv_get(model, "path"), "")));
     sb_lit(&m, ",\"sha256\":");
     put_str(&m, jv_str(jv_get(model, "sha256"), NULL));
     sb_lit(&m, ",\"oms\":");
@@ -727,7 +720,7 @@ int pack_export(const pack_opts *o) {
         }
         for (int a = 0; a < o->n_attach; a++) {
             char p[4200];
-            join(p, sizeof p, o->out_dir, base_of(o->attach[a]));
+            join(p, sizeof p, o->out_dir, plat_path_base(o->attach[a]));
             plat_remove(p);
         }
         goto out;

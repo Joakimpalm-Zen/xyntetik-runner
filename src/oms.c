@@ -92,12 +92,6 @@ bool oms_pubkey_fingerprint(const char *pem_path, char hex[65]) {
     return true;
 }
 
-static const char *base_name(const char *p) {
-    const char *b = p;
-    for (const char *q = p; *q; q++) if (*q == '/' || *q == '\\') b = q + 1;
-    return b;
-}
-
 static bool name_matches(const char *name, const char *model_path);
 
 // A split GGUF part name, `<prefix>-NNNNN-of-MMMMM.gguf`: reports the
@@ -145,7 +139,7 @@ static bool digest_equal(const char *want, const char *have) {
 static bool name_matches(const char *name, const char *model_path) {
     if (!name) return false;
     if (strcmp(name, ".") == 0) return true;   // single-file model, the file itself
-    const char *bn = base_name(model_path);
+    const char *bn = plat_path_base(model_path);
     size_t nl = strlen(name), bl = strlen(bn);
     if (strcmp(name, bn) == 0) return true;
     return nl > bl && name[nl - bl - 1] == '/' && strcmp(name + nl - bl, bn) == 0;
@@ -480,7 +474,7 @@ static void parent_name(const char *path, char *out, size_t cap) {
     while (n && abs[n - 1] != '/' && abs[n - 1] != '\\') n--;   // drop the file
     while (n && (abs[n - 1] == '/' || abs[n - 1] == '\\')) n--;
     abs[n] = 0;
-    const char *b = base_name(abs);
+    const char *b = plat_path_base(abs);
     snprintf(out, cap, "%s", *b ? b : "model");
 }
 
@@ -548,7 +542,7 @@ bool oms_sign_file(const char *model_path, const char *key_pem_path,
         bool split = split_suffix(model_path, &no, &count, &plen) && count > 1;
         char subject[256];
         if (split) parent_name(model_path, subject, sizeof subject);
-        else snprintf(subject, sizeof subject, "%s", base_name(model_path));
+        else snprintf(subject, sizeof subject, "%s", plat_path_base(model_path));
         sbuf res = {0};
         uint8_t *roots = malloc((size_t)count * 32);
         bool files_ok = roots != NULL;
@@ -575,7 +569,7 @@ bool oms_sign_file(const char *model_path, const char *key_pem_path,
                 sscanf(hex + 2 * k, "%2x", &v);
                 roots[(size_t)(i - 1) * 32 + (size_t)k] = (uint8_t)v;
             }
-            const char *nm = split ? base_name(part) : ".";
+            const char *nm = split ? plat_path_base(part) : ".";
             sb_fmt(&res, "%s      {\n        \"algorithm\": \"sha256\",\n"
                    "        \"digest\": \"%s\",\n        \"name\": \"",
                    i > 1 ? ",\n" : "", hex);

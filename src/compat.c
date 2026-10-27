@@ -1449,6 +1449,22 @@ char *plat_read_file(const char *path, size_t max_bytes, size_t *n_out) {
     return buf;
 }
 
+bool plat_mkdir_exist_ok(const char *path) {
+    if (plat_mkdir(path, 0755) == 0 || errno == EEXIST) return true;
+#ifdef _WIN32
+    return GetLastError() == ERROR_ALREADY_EXISTS;
+#else
+    return false;
+#endif
+}
+
+const char *plat_path_base(const char *path) {
+    const char *b = path;
+    for (const char *c = path; *c; c++)
+        if (*c == '/' || *c == '\\') b = c + 1;
+    return b;
+}
+
 char *plat_executable_path(void) {
 #ifdef __linux__
     // Opening this magic link reads the running image even when argv[0] was a

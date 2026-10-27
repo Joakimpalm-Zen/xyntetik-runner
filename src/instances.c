@@ -48,15 +48,6 @@ static bool path_child(char *out, size_t cap, const char *base,
 
 static char lease_sep(void);   // the platform's path separator
 
-static bool mkdir_one(const char *p) {
-    if (plat_mkdir(p, 0755) == 0 || errno == EEXIST) return true;
-#ifdef _WIN32
-    return GetLastError() == ERROR_ALREADY_EXISTS;
-#else
-    return false;
-#endif
-}
-
 static bool path_exists(const char *p) {
     plat_stat_t st;
     return plat_stat(p, &st) == 0;
@@ -89,7 +80,7 @@ const char *instances_dir(void) {
         return NULL;
     }
     migrate_old_tree(base, '\\', "gridcore", a);
-    if (!mkdir_one(a) || !mkdir_one(b) || !mkdir_one(c)) { dir[0] = 0; return NULL; }
+    if (!plat_mkdir_exist_ok(a) || !plat_mkdir_exist_ok(b) || !plat_mkdir_exist_ok(c)) { dir[0] = 0; return NULL; }
     memcpy(dir, c, strlen(c) + 1);
 #else
     const char *base = getenv("HOME");
@@ -102,7 +93,7 @@ const char *instances_dir(void) {
         return NULL;
     }
     migrate_old_tree(base, '/', ".gridcore", a);
-    if (!mkdir_one(a) || !mkdir_one(b) || !mkdir_one(c)) { dir[0] = 0; return NULL; }
+    if (!plat_mkdir_exist_ok(a) || !plat_mkdir_exist_ok(b) || !plat_mkdir_exist_ok(c)) { dir[0] = 0; return NULL; }
     memcpy(dir, c, strlen(c) + 1);
 #endif
     return dir;
@@ -653,7 +644,7 @@ bool runner_lease_path(int port, char *out, size_t cap) {
     if (!cut) return false;
     *cut = 0;
     char dir[1100], name[32];
-    if (!path_child(dir, sizeof dir, root, lease_sep(), "leases") || !mkdir_one(dir))
+    if (!path_child(dir, sizeof dir, root, lease_sep(), "leases") || !plat_mkdir_exist_ok(dir))
         return false;
     snprintf(name, sizeof name, "runner-%d.pid", port);
     return path_child(out, cap, dir, lease_sep(), name);
@@ -668,7 +659,7 @@ bool runner_lease_acquire(runner_lease *l, const char *path) {
     if (!lease_sibling(claim, sizeof claim, path, l->token, "claim")) return false;
     for (int attempt = 0; attempt < 8; attempt++) {
         lease_remove_tree(claim);
-        if (!mkdir_one(claim) || !lease_write_claim(claim, l->token)) {
+        if (!plat_mkdir_exist_ok(claim) || !lease_write_claim(claim, l->token)) {
             lease_remove_tree(claim);
             return false;
         }

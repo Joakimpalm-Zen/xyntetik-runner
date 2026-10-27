@@ -155,15 +155,6 @@ int hf_select_file(const char *const *names, int n, const char *tag, char *err, 
 
 // -------------------------------------------------------------- transfer
 
-static bool mkdir_one(const char *p) {
-    if (plat_mkdir(p, 0755) == 0 || errno == EEXIST) return true;
-#ifdef _WIN32
-    return GetLastError() == ERROR_ALREADY_EXISTS;
-#else
-    return false;
-#endif
-}
-
 // mkdir -p over `path`'s directories (the last component included)
 static bool mkdir_p(const char *path) {
     char buf[2048];
@@ -178,10 +169,10 @@ static bool mkdir_p(const char *path) {
 #else
         bool drive_root = false;
 #endif
-        if (!drive_root && !mkdir_one(buf)) return false;
+        if (!drive_root && !plat_mkdir_exist_ok(buf)) return false;
         buf[i] = c;
     }
-    return mkdir_one(buf);
+    return plat_mkdir_exist_ok(buf);
 }
 
 static bool file_size(const char *path, long long *size) {
