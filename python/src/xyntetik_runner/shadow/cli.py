@@ -43,8 +43,8 @@ from xyntetik_runner.shadow.install import (harness_present, install, read_confi
                                             set_config_key, suggest_model, uninstall)
 from xyntetik_runner.process import spawn_detached
 from xyntetik_runner.shadow.routes import delegate, render_routes, route_table
-from xyntetik_runner.shadow.server import (DEFAULT_TTL, render_status as server_status, served_runner,
-                                           stop_server)
+from xyntetik_runner.shadow.server import (DEFAULT_TTL, free_port, render_status as server_status,
+                                           served_runner, stop_server)
 from xyntetik_runner.shadow.bank import build_bank
 
 from xyntetik_runner.shadow.scaffold import Scaffold
@@ -518,7 +518,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
                     rows.append({"model": label, "error": "no such file"})
                     continue
                 sha = file_sha256(path)
-                port = _free_port()
+                port = free_port()
                 launch = ServerLaunch(executable=args.runner, model=path, port=port,
                                       context_size=args.ctx, gpu=args.gpu,
                                       threads=args.threads or None,
@@ -552,13 +552,6 @@ def cmd_bench(args: argparse.Namespace) -> int:
     print(table, flush=True)
     print(f"written {out / 'bench.md'} and bench.json", flush=True)
     return 0
-
-
-def _free_port() -> int:
-    import socket
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
 
 
 def _quant_from_name(name: str) -> str:
