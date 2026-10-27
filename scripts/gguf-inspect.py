@@ -13,7 +13,10 @@ import struct
 import sys
 from collections import Counter, defaultdict
 
-from gguf_fixture import read_header
+try:
+    from gguf_fixture import read_header
+except ImportError:
+    raise SystemExit("gguf-inspect.py needs scripts/gguf_fixture.py beside it")
 
 GGML_TYPE_NAME = {
     0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 6: "Q5_0", 7: "Q5_1",

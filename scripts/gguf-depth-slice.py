@@ -20,7 +20,10 @@ prints per-layer residual-stream input/output cosine; block influence is
 import struct
 import sys
 
-from gguf_fixture import s
+try:
+    from gguf_fixture import s
+except ImportError:
+    raise SystemExit("gguf-depth-slice.py needs scripts/gguf_fixture.py beside it")
 
 T_U8, T_I8, T_U16, T_I16, T_U32, T_I32, T_F32, T_BOOL = range(8)
 T_STR, T_ARR, T_U64, T_I64, T_F64 = 8, 9, 10, 11, 12
