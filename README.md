@@ -350,55 +350,13 @@ can change them, which is a stated limit, not a promise broken.
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Actively validated models
 
 Runner keeps loading every model the [support matrix](MANUAL.md#support-matrix)
-admits; the files below are the ones it re-checks on every release, with one
+admits; the files linked below are the ones it re-checks on every release, with one
 greedy prompt compared byte for byte against a pinned output on the device
 each file names. A release is refused while any of them, on hardware the
 project owns, is missing that check, failing it, or older than 120 days with
 no change on its path re-checked since.
 
-<!-- model-tiers:begin (rendered from docs/model-tiers.json by scripts/model-tiers.py --write-docs; do not edit) -->
-
-✅ *version date*: recorded gate · blank: nobody has run it yet · n/a: declared limit, linked to the manual · failed *version date*: recorded failure · Train: the file's own `--adapt-info` answer, where ✅ means the LoRA backward admits the file, not that training it gives good results. A family's line sums up every file of its models, per backend and for Train: ✅ all recorded · 🟨 *k of n*: k of its n files recorded, a declared limit beside them counted as not run · a hyphen: none run · n/a: a declared limit on every file · failed: a recorded failure on any file. For Train, recorded means the LoRA backward admits the file, and a refusal counts as a declared limit. A mark with <sup>b</sup> was recorded on borrowed hardware: dated evidence the project may use and does not depend on, so its age never holds a release. Each file name links to its envelope.
-
-<details>
-<summary><b>Qwen3.8</b>, 2 models: CPU 🟨 1 of 4 · CUDA 🟨 3 of 4 · Metal n/a · Train 🟨 2 of 4</summary>
-<p><b>Qwen3.8-27B</b></p>
-<table>
-<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
-<tbody>
-<tr><td><a href="docs/model-support.md#qwen3.8-27b-gsq-rco-iq3_s-recovered"><code>Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-<tr><td><a href="docs/model-support.md#qwen3.8-27b-mtp-q8_0"><code>Qwen3.8-27B-MTP-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-</tbody>
-</table>
-<p><b>Qwen3.8-Flash-Next</b>, experimental</p>
-<table>
-<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
-<tbody>
-<tr><td><a href="docs/model-support.md#qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head"><code>Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf</code></a> (4 parts)</td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td>no: hyper-connections (qwen4exp)</td></tr>
-<tr><td><a href="docs/model-support.md#qwen3.8-flash-next-mtp-q8_0"><code>Qwen3.8-Flash-Next-MTP-Q8_0.gguf</code></a></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td><a href="MANUAL.md#support-matrix">n/a</a></td><td>no: hyper-connections (qwen4exp)</td></tr>
-</tbody>
-</table>
-</details>
-
-<details>
-<summary><b>Xyntetik-Kvist-14B</b>, 1 model: CPU 🟨 1 of 4 · CUDA 🟨 3 of 4 · Metal - · Train ✅</summary>
-<p><b>Xyntetik-Kvist-14B</b></p>
-<table>
-<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
-<tbody>
-<tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-bf16"><code>Xyntetik-Kvist-14B-BF16.gguf</code></a></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-<tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-q8_0"><code>Xyntetik-Kvist-14B-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-<tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-q5_0-mix"><code>Xyntetik-Kvist-14B-Q5_0-mix.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-<tr><td><a href="docs/model-support.md#xyntetik-kvist-14b-iq4_nl-mix"><code>Xyntetik-Kvist-14B-IQ4_NL-mix.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-</tbody>
-</table>
-</details>
-
-**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B), Mellum2.1-12B-A2.5B-Thinking (JetBrains).
-
-<!-- model-tiers:end -->
-
-[What each tier promises, every file's full envelope and how to run the check](docs/model-support.md)
+[The validated files by family, what each tier promises, every file's full envelope and how to run the check](docs/model-support.md#overview)
 
 <a id="more"></a>
 ## Also in the box

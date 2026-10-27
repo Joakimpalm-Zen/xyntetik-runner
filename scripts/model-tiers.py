@@ -6,11 +6,12 @@ A tier is a maintenance and validation commitment, not a compatibility list:
 the support matrix, `--caps` and `--doctor` say what loads, and the evidence
 documents say what was measured. This file says which of those
 configurations are re-checked on every release, and it carries the result of
-that check per backend so the README can show it without anybody typing it.
+that check per backend so docs/model-support.md can show it without anybody
+typing it.
 
 Rows are one per model FILE (a sharded set is one file with several parts).
-Every Tier 1 and Tier 2 row names its `family`, the display name the README
-and docs/model-support.md list its model under beside its sibling models.
+Every Tier 1 and Tier 2 row names its `family`, the display name
+docs/model-support.md lists its model under beside its sibling models.
 A Tier 1 row's backend cell is one of exactly three things:
 
   * a recorded gate: written by `--record` from a smoke run's result file,
@@ -31,13 +32,14 @@ docs/model-support.md is rendered from it.
     scripts/model-tiers.py --check
     scripts/model-tiers.py --stale [--today YYYY-MM-DD]
     scripts/model-tiers.py --record ROW --result smoke-result.json
-    scripts/model-tiers.py --write-docs     # re-render README.md's model list
+    scripts/model-tiers.py --write-docs     # re-render docs/model-support.md
     scripts/model-tiers.py --docs-check     # fail when it differs from the render
 
-The README's block and docs/model-support.md are the only renders. A
-published file's Hugging Face card and the site link to the file's row in
-docs/model-support.md (its id is the anchor) instead of carrying a copy of
-its marks, so neither can drift and nothing watches them (2026-10-27).
+docs/model-support.md is the only render: it opens with the Tier 1 files at
+a glance (one block per family, then the Upcoming models) and continues with
+every row's envelope. The README, a published file's Hugging Face card and
+the site link there (a row's id is the anchor) instead of carrying a copy of
+its marks, so none can drift and nothing watches them (2026-10-27).
 
 `--stale` is the release gate's question, asked the way
 scripts/device-evidence.py asks it of the device classes: every Tier 1 row's
@@ -91,10 +93,6 @@ COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
-README = os.path.join(ROOT, "README.md")
-README_BEGIN = ("<!-- model-tiers:begin (rendered from docs/model-tiers.json by "
-                "scripts/model-tiers.py --write-docs; do not edit) -->")
-README_END = "<!-- model-tiers:end -->"
 SUPPORT_DOC = "docs/model-support.md"
 DOC = os.path.join(ROOT, "docs", "model-support.md")
 DOC_BEGIN = ("<!-- model-tiers:rows:begin (rendered from docs/model-tiers.json by "
@@ -276,7 +274,7 @@ def validate(doc, devices):
         for k in ("model", "claim", "architecture"):
             if not _text(row.get(k)):
                 errs.append(f"{where}: {k}")
-        # the README and docs/model-support.md list a row's model under its
+        # docs/model-support.md lists a row's model under its
         # family; an Upcoming row is listed by its model alone
         if tier in ("tier1", "tier2") and not _text(row.get("family")):
             errs.append(f"{where}: a {tier} row names its family")
@@ -568,9 +566,9 @@ def record(doc, row_id, res, devices):
 def mark_parts(cell):
     """A backend cell's mark as (text, link): exactly one of a recorded gate
     with its version and date, a declared limit with the support-matrix path
-    it links to, or not run. docs/model-support.md renders these in full;
-    the README's file tables write the same states compactly
-    (readme_mark)."""
+    it links to, or not run. docs/model-support.md renders these in full
+    in each row's envelope; its overview tables write the same states
+    compactly (overview_mark)."""
     if cell is None:
         return "☐ not run", None
     if cell["kind"] == "limit":
@@ -640,7 +638,7 @@ def _family_groups(rows):
 
 
 def tier1_families(doc):
-    """The families the README lists: one (family, models) per Tier 1
+    """The families the overview lists: one (family, models) per Tier 1
     family in roster order, its models as (qualifiers, model, rows) sorted
     by name, each with its roster files in roster order."""
     return [(fam, [(_qualifiers(rs), model, rs) for model, rs in groups])
@@ -649,9 +647,9 @@ def tier1_families(doc):
 
 
 def tier1_groups(doc):
-    """The models every surface lists (the README, the site): one
+    """The models every surface lists (the overview, the site): one
     (qualifiers, model, rows) per Tier 1 model, family by family in the
-    README's order."""
+    overview's order."""
     return [g for _, models in tier1_families(doc) for g in models]
 
 
@@ -667,10 +665,10 @@ def upcoming_names(doc):
     return names
 
 
-README_LABELS = ("CPU", "CUDA", "Metal")
+OVERVIEW_LABELS = ("CPU", "CUDA", "Metal")
 NONE_RUN = "-"
 PARTIAL = "🟨"
-README_LEGEND = (
+OVERVIEW_LEGEND = (
     "✅ *version date*: recorded gate · blank: nobody has run it yet · n/a: declared "
     "limit, linked to the manual · failed *version date*: recorded failure · Train: the "
     "file's own `--adapt-info` answer, where ✅ means the LoRA backward admits the file, "
@@ -682,15 +680,15 @@ README_LEGEND = (
     "backward admits the file, and a refusal counts as a declared limit. A mark "
     "with <sup>b</sup> was recorded on borrowed hardware: dated evidence the project "
     "may use and does not depend on, so its age never holds a release. Each file "
-    "name links to its envelope.")
+    "name links to its envelope below.")
 
 
 def _esc(text):
     return html.escape(text, quote=False)
 
 
-def readme_mark(cell, borrowed=frozenset()):
-    """A backend cell of the README's file table, as its <td>: the states of
+def overview_mark(cell, borrowed=frozenset()):
+    """A backend cell of the overview's file table, as its <td>: the states of
     mark_parts, compact. A recorded gate is its version over its date in a
     cell that does not wrap (GitHub's table layout otherwise splits a date
     at its hyphens when a neighbour claims the width), not run is a blank
@@ -699,13 +697,13 @@ def readme_mark(cell, borrowed=frozenset()):
     if cell is None:
         return "<td></td>"
     if cell["kind"] == "limit":
-        return f'<td><a href="{html.escape(cell["matrix"])}">n/a</a></td>'
+        return f'<td><a href="{html.escape(_from_docs(cell["matrix"]))}">n/a</a></td>'
     word = "✅" if cell["result"] == "pass" else "failed"
     lent = "<sup>b</sup>" if cell_borrowed(cell, borrowed) else ""
     return f"<td nowrap>{word} {cell['runner_version']}{lent}<br>{cell['date']}</td>"
 
 
-def readme_train(lora):
+def overview_train(lora):
     """The Train cell: the recorded --adapt-info answer, blank when no gate
     has recorded one; a refusal is the engine's sentence and may wrap."""
     if lora is None:
@@ -716,12 +714,12 @@ def readme_train(lora):
     return f"<td>no: {_esc(t['reason'])}</td>"
 
 
-def _readme_file(row):
-    """The File cell: the name linked to its envelope, a sharded set by its
-    first part."""
+def _overview_file(row):
+    """The File cell: the name linked to its envelope further down the page,
+    a sharded set by its first part."""
     files = row["files"]
     parts = f" ({len(files)} parts)" if len(files) > 1 else ""
-    return (f'<td><a href="{SUPPORT_DOC}#{html.escape(row["id"])}">'
+    return (f'<td><a href="#{html.escape(row["id"])}">'
             f"<code>{_esc(files[0]['name'])}</code></a>{parts}</td>")
 
 
@@ -766,7 +764,7 @@ def _family_summary(family, models):
     <summary>), so the name is escaped and bold is <b>."""
     rows = [r for _, _, rs in models for r in rs]
     marks = [f"{label} {family_mark([_cell_state(r['backends'].get(b)) for r in rows])}"
-             for b, label in zip(BACKENDS, README_LABELS)]
+             for b, label in zip(BACKENDS, OVERVIEW_LABELS)]
     marks.append("Train " + family_mark([_train_state(r.get("lora")) for r in rows]))
     n = len(models)
     return (f"<summary><b>{_esc(family)}</b>, {n} model{'' if n == 1 else 's'}: "
@@ -780,8 +778,10 @@ def _model_heading(quals, model):
     return f"<p><b>{_esc(model)}</b>{_esc(label)}</p>"
 
 
-def render_readme(doc, borrowed=None):
-    """The block between README_BEGIN and README_END.
+def render_overview(doc, borrowed=None):
+    """The Tier 1 files at a glance, the opening of docs/model-support.md's
+    rendered block (render_doc). Until 2026-10-27 this was the README's
+    block; the README now says what the check is and links here.
 
     The legend, then one collapsed <details> block per Tier 1 family, in
     the roster's order: its summary line names the family, counts its
@@ -798,26 +798,24 @@ def render_readme(doc, borrowed=None):
     HTML block through until a blank line, so none may fall inside one, and
     only an HTML cell can be kept from wrapping.
     """
-    # a blank line on each side keeps the markers' HTML comments apart from
-    # the legend, the blocks and the Upcoming paragraph
     if borrowed is None:
         borrowed = borrowed_classes()
-    head = "".join(f"<th>{h}</th>" for h in ("File",) + README_LABELS + ("Train",))
-    lines = ["", "", README_LEGEND, ""]
+    head = "".join(f"<th>{h}</th>" for h in ("File",) + OVERVIEW_LABELS + ("Train",))
+    lines = [OVERVIEW_LEGEND, ""]
     for family, models in tier1_families(doc):
         lines += ["<details>", _family_summary(family, models)]
         for quals, model, rows in models:
             lines += [_model_heading(quals, model), "<table>",
                       f"<thead><tr>{head}</tr></thead>", "<tbody>"]
             for r in rows:
-                cells = [_readme_file(r)] + [readme_mark(r["backends"].get(b), borrowed)
-                                             for b in BACKENDS]
-                cells.append(readme_train(r.get("lora")))
+                cells = [_overview_file(r)] + [overview_mark(r["backends"].get(b), borrowed)
+                                               for b in BACKENDS]
+                cells.append(overview_train(r.get("lora")))
                 lines.append("<tr>" + "".join(cells) + "</tr>")
             lines += ["</tbody>", "</table>"]
         lines += ["</details>", ""]
     lines += ["**Upcoming** (planned, not supported yet): "
-              + ", ".join(upcoming_names(doc)) + ".", "", ""]
+              + ", ".join(upcoming_names(doc)) + "."]
     return "\n".join(lines)
 
 
@@ -926,13 +924,18 @@ def _row_doc(row, by_id, level=4, borrowed=frozenset()):
 
 
 def render_doc(doc, borrowed=None):
-    """The block between DOC_BEGIN and DOC_END: every row's envelope by
-    tier, family and model (an Upcoming model on its own, in the order of
-    admission), the exempt repositories, and the transition log."""
+    """The block between DOC_BEGIN and DOC_END: the Tier 1 overview
+    (render_overview), then every row's envelope by tier, family and model
+    (an Upcoming model on its own, in the order of admission), the exempt
+    repositories, and the transition log."""
     if borrowed is None:
         borrowed = borrowed_classes()
     by_id = {r["id"]: r for r in doc["rows"]}
-    lines = ["", ""]
+    # a blank line on each side keeps the marker's HTML comment apart from
+    # the legend; the <details> blocks are HTML, so no blank line falls
+    # inside one
+    lines = ["", "", '<a id="overview"></a>', "## Tier 1 at a glance", "",
+             render_overview(doc, borrowed), ""]
     for tier in TIERS:
         rows = [r for r in doc["rows"] if r["tier"] == tier]
         lines += [f'<a id="{tier}"></a>', f"## {TIER_NAMES[tier]}", ""]
@@ -949,7 +952,7 @@ def render_doc(doc, borrowed=None):
                 for r in rs:
                     lines += _row_doc(r, by_id, borrowed=borrowed)
             continue
-        # the README's grouping: families in roster order, models by name
+        # the overview's grouping: families in roster order, models by name
         for family, groups in _family_groups(rows):
             lines += [f"### {family}", ""]
             for model, rs in groups:
@@ -985,8 +988,7 @@ def _blocks(doc, borrowed=None):
     """(path, begin, end, rendered text) for every rendered block."""
     if borrowed is None:
         borrowed = borrowed_classes()
-    return [(README, README_BEGIN, README_END, render_readme(doc, borrowed)),
-            (DOC, DOC_BEGIN, DOC_END, render_doc(doc, borrowed))]
+    return [(DOC, DOC_BEGIN, DOC_END, render_doc(doc, borrowed))]
 
 
 def _replace_block(text, begin, end, body, path):

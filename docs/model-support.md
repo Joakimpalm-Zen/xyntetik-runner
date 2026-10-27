@@ -180,32 +180,34 @@ overwritten in place.
 
 The checks: `scripts/model-tiers.py --check` (the roster's structure),
 `--stale` (the release gate's question; `--today` fixes the day for a test)
-and `--docs-check` (the README's model list and this page against the roster).
+and `--docs-check` (this page against the roster).
 
 <a id="cards-and-site"></a>
-## The README, the cards and the site
+## The overview, the README, the cards and the site
 
-The README lists the Tier 1 models by family, one collapsed block per
-family in the roster's order, its models sorted by name; this page groups
-every tier but Upcoming the same way. A family's line sums up every file of
-its models, per backend and for Train: ✅ when every file is recorded,
-🟨 *k of n* when k of its n files are (a declared limit beside recorded
-files counts as not run), a hyphen when none is, n/a when every file has a
-declared limit there, and failed when any file recorded a failure. For
-Train, recorded means the LoRA backward admits the file, and a refusal
-counts as a declared limit. Inside, each model's line names it with its
-label (text path only, experimental), and its table gives one row per
-file with its CPU, CUDA, Metal and Train cells: a
+This page opens with the Tier 1 files at a glance: one collapsed block per
+family in the roster's order, its models sorted by name, then the Upcoming
+models as one line; the tiers below group every row the same way. A
+family's line sums up every file of its models, per backend and for Train:
+✅ when every file is recorded, 🟨 *k of n* when k of its n files are (a
+declared limit beside recorded files counts as not run), a hyphen when none
+is, n/a when every file has a declared limit there, and failed when any
+file recorded a failure. For Train, recorded means the LoRA backward admits
+the file, and a refusal counts as a declared limit. Inside, each model's
+line names it with its label (text path only, experimental), and its table
+gives one row per file with its CPU, CUDA, Metal and Train cells: a
 recorded gate as its version and date, `failed` with its version and date
 for a recorded failure, `n/a` linked to the manual's support matrix, and a
 blank cell where nobody has run the gate yet. The Train cell is the
 recorded `--adapt-info` answer, ✅ with its version and date or `no:` and
-the refusal. The file name links to its row on this page.
+the refusal. The file name links to its row further down this page.
 
-The README's block and this page are the only renders of the marks
-(2026-10-27: one rendered table). Two more places link to them instead of
-carrying a copy, so neither can drift and nothing watches them:
+This page is the only render of the marks (2026-10-27: one rendered table,
+moved here from the README the same day). Three more places link to it
+instead of carrying a copy, so none can drift and nothing watches them:
 
+- **The README.** Its "Actively validated models" section says what the
+  release check is and links to the overview here.
 - **The Hugging Face cards.** Every repository that holds a published row's
   file carries a `xyntetik-validated` block on its card, the last bullets
   of the card's own `xyntetik-status` block: one sentence, then one line
@@ -215,10 +217,51 @@ carrying a copy, so neither can drift and nothing watches them:
   from any other card with the file name and anchor changed; nothing
   renders or pushes it.
 - **xyntetik.com.** The Runner page's "Actively validated models" section
-  links to the README's model list and to this page; the landing page's
-  model cards link to their Hub repositories, whose cards link here.
+  links to the overview here and to the README's section; the landing
+  page's model cards link to their Hub repositories, whose cards link here.
 
 <!-- model-tiers:rows:begin (rendered from docs/model-tiers.json by scripts/model-tiers.py --write-docs; do not edit) -->
+
+<a id="overview"></a>
+## Tier 1 at a glance
+
+✅ *version date*: recorded gate · blank: nobody has run it yet · n/a: declared limit, linked to the manual · failed *version date*: recorded failure · Train: the file's own `--adapt-info` answer, where ✅ means the LoRA backward admits the file, not that training it gives good results. A family's line sums up every file of its models, per backend and for Train: ✅ all recorded · 🟨 *k of n*: k of its n files recorded, a declared limit beside them counted as not run · a hyphen: none run · n/a: a declared limit on every file · failed: a recorded failure on any file. For Train, recorded means the LoRA backward admits the file, and a refusal counts as a declared limit. A mark with <sup>b</sup> was recorded on borrowed hardware: dated evidence the project may use and does not depend on, so its age never holds a release. Each file name links to its envelope below.
+
+<details>
+<summary><b>Qwen3.8</b>, 2 models: CPU 🟨 1 of 4 · CUDA 🟨 3 of 4 · Metal n/a · Train 🟨 2 of 4</summary>
+<p><b>Qwen3.8-27B</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#qwen3.8-27b-gsq-rco-iq3_s-recovered"><code>Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="#qwen3.8-27b-mtp-q8_0"><code>Qwen3.8-27B-MTP-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+<p><b>Qwen3.8-Flash-Next</b>, experimental</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head"><code>Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf</code></a> (4 parts)</td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: hyper-connections (qwen4exp)</td></tr>
+<tr><td><a href="#qwen3.8-flash-next-mtp-q8_0"><code>Qwen3.8-Flash-Next-MTP-Q8_0.gguf</code></a></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: hyper-connections (qwen4exp)</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Xyntetik-Kvist-14B</b>, 1 model: CPU 🟨 1 of 4 · CUDA 🟨 3 of 4 · Metal - · Train ✅</summary>
+<p><b>Xyntetik-Kvist-14B</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#xyntetik-kvist-14b-bf16"><code>Xyntetik-Kvist-14B-BF16.gguf</code></a></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="#xyntetik-kvist-14b-q8_0"><code>Xyntetik-Kvist-14B-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="#xyntetik-kvist-14b-q5_0-mix"><code>Xyntetik-Kvist-14B-Q5_0-mix.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="#xyntetik-kvist-14b-iq4_nl-mix"><code>Xyntetik-Kvist-14B-IQ4_NL-mix.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+</details>
+
+**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B), Mellum2.1-12B-A2.5B-Thinking (JetBrains).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated

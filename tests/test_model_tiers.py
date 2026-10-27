@@ -170,7 +170,7 @@ def test_an_upcoming_row_says_what_is_missing():
 
 
 def test_a_tier1_or_tier2_row_names_its_family_and_an_upcoming_row_need_not():
-    """The README and docs/model-support.md list a model under its family,
+    """docs/model-support.md lists a model under its family,
     so a gated or maintained row without one has no place in either."""
     row = tier1_row()
     del row["family"]
@@ -222,7 +222,7 @@ def test_a_recorded_lora_answer_validates():
 
 
 def test_a_lora_refusal_carries_its_reason_and_a_yes_carries_none():
-    """The README's Train cell prints the refusal verbatim, so a refusal
+    """The overview's Train cell prints the refusal verbatim, so a refusal
     without one would render as `no: ` and a yes with one would be two
     answers at once."""
     assert any("training" in e for e in
@@ -612,16 +612,16 @@ def test_the_committed_ledger_marks_the_lent_linux_host_borrowed():
     assert "windows-x86_64-cuda" not in mt.borrowed_classes()
 
 
-def test_a_readme_mark_on_borrowed_hardware_carries_the_superscript():
+def test_an_overview_mark_on_borrowed_hardware_carries_the_superscript():
     cell = gate("2026-10-22")
-    assert "<sup>b</sup>" in mt.readme_mark(cell, LENT)
-    assert "<sup>b</sup>" not in mt.readme_mark(cell, frozenset())
+    assert "<sup>b</sup>" in mt.overview_mark(cell, LENT)
+    assert "<sup>b</sup>" not in mt.overview_mark(cell, frozenset())
     # the legend always explains the superscript; the cells carry it only
     # when their class is borrowed
-    assert "<sup>b</sup>" in mt.README_LEGEND
+    assert "<sup>b</sup>" in mt.OVERVIEW_LEGEND
     cells = lambda text: text.split("<details>", 1)[1]
-    assert "<sup>b</sup>" in cells(mt.render_readme(gated(metal=cell), LENT))
-    assert "<sup>b</sup>" not in cells(mt.render_readme(gated(metal=cell), frozenset()))
+    assert "<sup>b</sup>" in cells(mt.render_overview(gated(metal=cell), LENT))
+    assert "<sup>b</sup>" not in cells(mt.render_overview(gated(metal=cell), frozenset()))
 
 
 def test_the_support_doc_names_borrowed_hardware_on_the_row():
@@ -662,7 +662,7 @@ def test_record_refuses_a_companion_run_on_another_base():
     assert doc["rows"][1]["backends"]["metal"]["result"] == "pass"
 
 
-# --- the README section: a render of the roster, never typed --------------------
+# --- the overview (docs/model-support.md): a render of the roster, never typed --
 #
 # One collapsible block per Tier 1 family: a plain summary line (the bold
 # family name, its model count, a mark per backend and for Train over all
@@ -673,12 +673,12 @@ def test_record_refuses_a_companion_run_on_another_base():
 # is a blank cell, a limit is n/a linked to the manual; a family's mark is
 # ✅, 🟨 k of n, a hyphen or n/a.
 
-def readme_families(doc):
+def overview_families(doc):
     """(summary, models) per family block of the render, in order; a model
     is (its line, its file rows) and a file row is its list of <td>
     elements, attributes and all."""
     out = []
-    for block in re.findall(r"<details>\n(.*?)\n</details>", mt.render_readme(doc), re.S):
+    for block in re.findall(r"<details>\n(.*?)\n</details>", mt.render_overview(doc), re.S):
         summary = re.match(r"<summary>(.*)</summary>\n", block).group(1)
         models = []
         for line, table in re.findall(r"<p>(.*?)</p>\n(<table>.*?</table>)", block, re.S):
@@ -690,7 +690,7 @@ def readme_families(doc):
 
 
 def file_row(doc, name):
-    return [r for _, models in readme_families(doc) for _, rows in models
+    return [r for _, models in overview_families(doc) for _, rows in models
             for r in rows if name in r[0]][0]
 
 
@@ -700,14 +700,23 @@ def marks(summary):
     return dict(x.split(" ", 1) for x in m.group(1).split(" · "))
 
 
-def test_the_readme_block_is_the_render_of_the_roster():
-    """The help-parity pattern: the README's section between the two markers
-    is exactly what the roster renders, so it cannot drift from it.
-    After --record, `scripts/model-tiers.py --write-docs` rewrites it."""
+def test_the_readme_links_to_the_overview_and_carries_no_render():
+    """Since 2026-10-27 the marks are rendered once, in docs/model-support.md:
+    the README's section says what the check is and links to the overview,
+    and types no table, legend or Upcoming line of its own."""
     text = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert text.count(mt.README_BEGIN) == 1 and text.count(mt.README_END) == 1
-    block = text.split(mt.README_BEGIN, 1)[1].split(mt.README_END, 1)[0]
-    assert block == mt.render_readme(committed())
+    assert "docs/model-support.md#overview" in text
+    assert "model-tiers:begin" not in text and "<summary><b>" not in text
+    assert "**Upcoming**" not in text and mt.OVERVIEW_LEGEND not in text
+
+
+def test_the_doc_block_opens_with_the_overview():
+    """The rendered block of docs/model-support.md starts with the Tier 1
+    overview (its anchor, heading and legend), before the tiers."""
+    doc = committed()
+    text = mt.render_doc(doc).lstrip("\n")
+    assert text.startswith('<a id="overview"></a>\n## Tier 1 at a glance\n\n' + mt.OVERVIEW_LEGEND)
+    assert text.index("</details>") < text.index('<a id="tier1"></a>')
 
 
 def test_a_recorded_cell_renders_its_version_and_date_and_not_run_is_blank():
@@ -723,13 +732,14 @@ def test_a_declared_limit_renders_n_a_linked_to_the_matrix():
     doc = gated(metal=gate("2026-10-23"),
                 cuda={"kind": "limit", "reason": "no CUDA path",
                       "matrix": "MANUAL.md#support-matrix"})
-    assert file_row(doc, "toy-Q8_0.gguf")[2] == '<td><a href="MANUAL.md#support-matrix">n/a</a></td>'
+    # the link is written from docs/, where the overview lives
+    assert file_row(doc, "toy-Q8_0.gguf")[2] == '<td><a href="../MANUAL.md#support-matrix">n/a</a></td>'
 
 
 def test_a_failed_gate_never_renders_a_check_mark():
     doc = gated(metal=gate("2026-10-23", result="fail"))
     assert file_row(doc, "toy-Q8_0.gguf")[3] == "<td nowrap>failed 1.5.0<br>2026-10-23</td>"
-    (summary, _), = readme_families(doc)
+    (summary, _), = overview_families(doc)
     assert marks(summary)["Metal"] == "failed" and "✅" not in summary
 
 
@@ -747,9 +757,9 @@ def test_every_tier1_file_gets_its_row_even_unrun():
     """Every roster file is one the owner committed to validate, so it is
     listed, its cells blank until a gate records them; one shape for every
     model, run or not."""
-    (summary, [(line, rows)]), = readme_families(roster())
+    (summary, [(line, rows)]), = overview_families(roster())
     assert line == "<b>Toy</b>"
-    assert rows == [['<td><a href="docs/model-support.md#toy-q8_0"><code>toy-Q8_0.gguf'
+    assert rows == [['<td><a href="#toy-q8_0"><code>toy-Q8_0.gguf'
                      '</code></a></td>'] + ["<td></td>"] * 4]
     assert marks(summary) == {"CPU": "-", "CUDA": "-", "Metal": "-", "Train": "-"}
 
@@ -760,7 +770,7 @@ def test_each_family_is_one_collapsed_block_of_html_with_no_blank_line():
     family is its line and its table, one <tr> per file."""
     other = tier1_row(id="toy-b", model="Toy B")
     other["files"] = [{"name": "toy-b.gguf", "sha256": "e" * 64, "bytes": 1}]
-    text = mt.render_readme(roster(tier1_row(), other))
+    text = mt.render_overview(roster(tier1_row(), other))
     assert text.count("<details>") == 1
     block = text.split("<details>\n", 1)[1].split("</details>", 1)[0]
     lines = block.split("\n")
@@ -782,19 +792,19 @@ def test_the_summary_line_is_plain_text_and_the_label_follows_the_model_name():
     only, experimental) belongs to the model it qualifies."""
     doc = gated(metal=gate("2026-10-23"))
     doc["rows"][0].update(experimental=True, claim="Experimental: a toy.")
-    (summary, [(line, _)]), = readme_families(doc)
+    (summary, [(line, _)]), = overview_families(doc)
     assert line == "<b>Toy</b>, experimental"
     assert summary == "<b>Toy</b>, 1 model: CPU - · CUDA - · Metal ✅ · Train -"
     doc["rows"][0].update(vision_upstream=True)
-    assert readme_families(doc)[0][1][0][0] == "<b>Toy</b>, experimental, text path only"
-    text = mt.render_readme(doc)
+    assert overview_families(doc)[0][1][0][0] == "<b>Toy</b>, experimental, text path only"
+    text = mt.render_overview(doc)
     assert "Text path only:" not in text and "<code>CPU" not in text
     assert "&nbsp;" not in text
 
 
 def test_the_summary_is_html_so_family_and_model_names_are_escaped():
     doc = roster(tier1_row(model="Toy <R&D>", family="Fam <R&D>"))
-    (summary, [(line, _)]), = readme_families(doc)
+    (summary, [(line, _)]), = overview_families(doc)
     assert summary.startswith("<b>Fam &lt;R&amp;D&gt;</b>, 1 model: ")
     assert line == "<b>Toy &lt;R&amp;D&gt;</b>"
 
@@ -803,8 +813,8 @@ def test_the_file_name_links_its_envelope_and_a_sharded_set_counts_its_parts():
     row = tier1_row()
     row["files"] = [{"name": f"toy-0000{i}-of-00003.gguf", "sha256": SHA_A, "bytes": 1}
                     for i in (1, 2, 3)]
-    (_, [(_, rows)]), = readme_families(roster(row))
-    assert rows[0][0] == ('<td><a href="docs/model-support.md#toy-q8_0"><code>'
+    (_, [(_, rows)]), = overview_families(roster(row))
+    assert rows[0][0] == ('<td><a href="#toy-q8_0"><code>'
                           'toy-00001-of-00003.gguf</code></a> (3 parts)</td>')
 
 
@@ -835,7 +845,7 @@ def test_the_summary_sums_up_each_backend_over_every_file_of_the_family():
     f["backends"] = {"cpu": gate("2026-10-23"), "cuda": gate("2026-10-23"),
                      "metal": gate("2026-10-23")}
     f["lora"] = lora()
-    blocks = readme_families(roster(a, b, c, d, e, f))
+    blocks = overview_families(roster(a, b, c, d, e, f))
     assert [marks(s) for s, _ in blocks] == [
         {"CPU": "🟨 2 of 3", "CUDA": "🟨 1 of 3", "Metal": "n/a", "Train": "🟨 1 of 3"},
         {"CPU": "failed", "CUDA": "-", "Metal": "-", "Train": "n/a"},
@@ -857,13 +867,13 @@ def test_families_keep_roster_order_and_models_sort_by_name_within_one():
                       claim="Experimental: a toy.")
     first = tier1_row(id="first", model="First", family="First")
     first["files"] = [{"name": "first.gguf", "sha256": "f" * 64, "bytes": 1}]
-    blocks = readme_families(roster(zeta, first, zeta2, alpha))
+    blocks = overview_families(roster(zeta, first, zeta2, alpha))
     assert [s.split("</b>")[0] for s, _ in blocks] == ["<b>Last", "<b>First"]
     assert [line.split("</b>")[0] for line, _ in blocks[0][1]] == ["<b>alpha", "<b>Zeta"]
     assert [re.search(r"<code>(.*?)</code>", r[0]).group(1) for r in blocks[0][1][1][1]] == \
         ["toy-Q8_0.gguf", "zeta-b.gguf"]
-    assert mt.render_readme(roster(zeta, first, alpha, zeta2)) == \
-        mt.render_readme(roster(zeta, first, zeta2, alpha))
+    assert mt.render_overview(roster(zeta, first, alpha, zeta2)) == \
+        mt.render_overview(roster(zeta, first, zeta2, alpha))
     assert [m for _, m, _ in mt.tier1_groups(roster(zeta, first, zeta2, alpha))] == \
         ["alpha", "Zeta", "First"]
 
@@ -878,7 +888,7 @@ def test_a_declared_limit_links_the_manuals_support_matrix():
 
 
 def test_the_legend_comes_first_and_names_every_mark():
-    text = mt.render_readme(roster())
+    text = mt.render_overview(roster())
     legend = text.strip().split("\n")[0]
     assert text.index(legend) < text.index("<details>")
     for word in ("✅", "blank", "n/a", "failed", "`--adapt-info`", "🟨 *k of n*",
@@ -897,7 +907,7 @@ def test_upcoming_models_are_one_line_under_the_blocks_and_tier2_is_absent():
     up2 = dict(up, id="sooner", model="Sooner", vision_upstream=False)
     t2 = tier1_row(id="old", model="Old", tier="tier2")
     t2["transitions"][-1]["tier"] = "tier2"
-    text = mt.render_readme(roster(tier1_row(), t2, up, up2))
+    text = mt.render_overview(roster(tier1_row(), t2, up, up2))
     tail = text.rsplit("</details>", 1)[1]
     assert ("**Upcoming** (planned, not supported yet): Later VL (text path only), "
             "Sooner.") in tail.splitlines()
@@ -915,7 +925,7 @@ def test_the_support_doc_block_is_the_render_of_the_roster():
 
 
 def test_the_support_doc_lists_models_under_their_family_and_upcoming_alone():
-    """docs/model-support.md groups a tier the README's way (a family's
+    """docs/model-support.md groups a tier the overview's way (a family's
     heading, its models' headings, each file's envelope under its model);
     an Upcoming model keeps its own heading, in the order of admission."""
     t2 = tier1_row(id="old", model="Old", family="Elders", tier="tier2")
@@ -928,6 +938,8 @@ def test_the_support_doc_lists_models_under_their_family_and_upcoming_alone():
     other["files"] = [{"name": "toy-b.gguf", "sha256": "e" * 64, "bytes": 1}]
     text = mt.render_doc(roster(tier1_row(), t2, up, other))
     heads = [l for l in text.splitlines() if l.startswith("#")]
+    assert heads[0] == "## Tier 1 at a glance"
+    heads = heads[1:]
     assert heads[:7] == ["## Tier 1, actively validated", "### Toy", "#### Toy",
                          "##### `toy-Q8_0.gguf`", "#### Toy B", "##### `toy-b.gguf`",
                          "## Tier 2, maintained on report"]
@@ -936,12 +948,11 @@ def test_the_support_doc_lists_models_under_their_family_and_upcoming_alone():
     assert heads[up_at + 1:up_at + 3] == ["### Later", "#### Later"]
 
 
-def test_every_envelope_link_in_the_readme_lands_on_a_row():
+def test_every_envelope_link_in_the_overview_lands_on_a_row():
     import re
     doc = committed()
     anchors = set(re.findall(r'<a id="([^"]+)"></a>', mt.render_doc(doc)))
-    links = set(re.findall(r"docs/model-support\.md#([A-Za-z0-9._-]+)",
-                           mt.render_readme(doc)))
+    links = set(re.findall(r'href="#([A-Za-z0-9._-]+)"', mt.render_overview(doc)))
     assert links and links <= anchors, sorted(links - anchors)
 
 

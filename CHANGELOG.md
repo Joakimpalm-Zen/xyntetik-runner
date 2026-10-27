@@ -18,15 +18,17 @@ Current release and unreleased changes. Compatibility follows the
   (`Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF`: the base and two
   adapters, below the house bar as its card states) is admitted at Tier 2.
 
-- **One rendered table: the Hugging Face cards and the site link to the
-  README's model list instead of re-rendering it.** Each published file's
-  card now carries one sentence and a link per file to its row in
-  [docs/model-support.md](docs/model-support.md), with no marks or dates,
-  so it cannot drift; the `cards-drift` workflow and the
-  `--cards`, `--cards-check` and `--cards-push` commands are gone. The
-  site's Runner page links to the README's list and the support roster in
-  place of its own copy of the table, and the landing page's model cards
-  link to their Hub repositories.
+- **One rendered table, in docs/model-support.md.** The Tier 1 files at a
+  glance (one block per family, then the Upcoming models) open
+  [docs/model-support.md](docs/model-support.md), above every row's
+  envelope; the README's "Actively validated models" section says what the
+  release check is and links there instead of carrying the table. Each
+  published file's card carries one sentence and a link per file to its row
+  on that page, with no marks or dates, so it cannot drift; the
+  `cards-drift` workflow and the `--cards`, `--cards-check` and
+  `--cards-push` commands are gone. The site's Runner page links to the
+  overview and to the README's section in place of its own copy of the
+  table, and the landing page's model cards link to their Hub repositories.
 
 - **The validation gates run on change, not on the calendar.** The device
   ledger and the model roster held their records to 30 or 45 days, which
@@ -44,10 +46,9 @@ Current release and unreleased changes. Compatibility follows the
   reported by both gates like any other, but a missing or old record on it
   never refuses a tag; a recorded failure on it still does, because a
   failure is a fact about the engine. The Linux CUDA host is marked
-  borrowed. The README's model list and the site's table show a gate
-  recorded on borrowed hardware with a superscript b, and
-  [docs/model-support.md](docs/model-support.md) names it on the row. The
-  Hugging Face cards do not change.
+  borrowed. The overview in [docs/model-support.md](docs/model-support.md)
+  shows a gate recorded on borrowed hardware with a superscript b, and the
+  row names it. The Hugging Face cards do not change.
 
 - **`--train-gpu`: the attention backward runs on the GPU, and every
   model's adapter changes bytes again.** The score and softmax adjoint of

@@ -371,23 +371,15 @@ def test_stale_strings_are_found_in_the_current_spelling(monkeypatch, tmp_path,
     assert "stale release string 'v0.2.0'" in capsys.readouterr().err
 
 
-def test_the_generated_tier_table_may_name_an_older_release(monkeypatch, tmp_path,
-                                                           capsys):
-    """The README's tier table is a render of dated records: a cell gated on
-    1.1.4 and still inside its age limit says v1.1.4 on the day 1.2.0 is
-    tagged, and is not a stale claim about the release. Outside the
-    generated block the same string still refuses."""
+def test_a_dated_mark_in_the_readme_is_a_stale_string(monkeypatch, tmp_path, capsys):
+    """Until 2026-10-27 the README carried the rendered tier table, whose
+    dated cells could name an older release inside their age limit, and the
+    scan read around it. The marks live in docs/model-support.md now, so the
+    whole README is scanned: an older release named anywhere in it refuses."""
     _pinned(monkeypatch)
     args = good_args(tmp_path)
-    tiers = importlib.util.spec_from_file_location("mt", ROOT / "scripts/model-tiers.py")
-    mt = importlib.util.module_from_spec(tiers)
-    tiers.loader.exec_module(mt)
-    block = mt.README_BEGIN + "\n| | `toy.gguf` | ✅ v1.1.4 2026-10-01 |\n" + mt.README_END
     base = args.readme.read_text(encoding="utf-8")
-    write(args.readme, base + block + "\n")
-    check_release.check(args)
-    assert "v1.1.4" not in capsys.readouterr().err
-    write(args.readme, base + block + "\nold example v1.1.4\n")
+    write(args.readme, base + "old example v1.1.4\n")
     assert not check_release.check(args)
     assert "stale release string 'v1.1.4'" in capsys.readouterr().err
 
