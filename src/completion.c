@@ -2023,13 +2023,7 @@ static void anth_body(sbuf *r, gen_ctx *g, const resp_doc *d) {
     if (d->stop_reason) sb_fmt(r, "\"%s\"", d->stop_reason);
     else                sb_lit(r, "null");
     sb_lit(r, ",\"stop_sequence\":");
-    if (d->stop_seq) {
-        sb_lit(r, "\"");
-        sb_esc(r, d->stop_seq, strlen(d->stop_seq));
-        sb_lit(r, "\"");
-    } else {
-        sb_lit(r, "null");
-    }
+    sb_str(r, d->stop_seq);
     // Anthropic's cache_* usage fields describe *its* prompt-caching product
     // and are deliberately not claimed here; runner's prefix-cache figure is
     // reported in runner_telemetry, as it is on every other surface.
@@ -4320,13 +4314,7 @@ static void respond_stream_messages(const turn_result *t) {
         sbuf f = {0};
         sb_fmt(&f, ",\"delta\":{\"stop_reason\":\"%s\",\"stop_sequence\":",
                anth_stop_reason(finish, g->stop_hit != NULL));
-        if (g->stop_hit) {
-            sb_lit(&f, "\"");
-            sb_esc(&f, g->stop_hit, strlen(g->stop_hit));
-            sb_lit(&f, "\"");
-        } else {
-            sb_lit(&f, "null");
-        }
+        sb_str(&f, g->stop_hit);
         // message_delta carries the *cumulative* output token count, which
         // is the only place a streamed turn reports it
         sb_fmt(&f, "},\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d}",

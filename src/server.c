@@ -920,19 +920,12 @@ static void context_from_snapshot(slot_t *s, sock_t fd, const char *id,
 // (found 2026-10-05). Decode %XX (and only %XX; '+' is a literal here, not a
 // space) into a bounded buffer, then validate the DECODED id against the
 // same grammar every other door uses.
-static int hexval(int c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
 static bool path_segment_decode(const char *in, char *out, size_t cap) {
     size_t n = 0;
     for (const char *p = in; *p; p++) {
         int c = (unsigned char)*p;
         if (c == '%') {
-            int h = hexval(p[1]), l = p[1] ? hexval(p[2]) : -1;
+            int h = hex_digit_value(p[1]), l = p[1] ? hex_digit_value(p[2]) : -1;
             if (h < 0 || l < 0) return false;
             c = h * 16 + l;
             p += 2;

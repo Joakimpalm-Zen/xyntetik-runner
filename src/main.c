@@ -118,19 +118,12 @@ static bool record_token(jv *v, int n_vocab, int32_t *out) {
     return true;
 }
 
-static int hex_nibble(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
 static bool record_hex(jv *v, const char **out, size_t *out_n) {
     if (!v || v->type != J_STR) return false;
     size_t n = strlen(v->str);
     if (n % 2 != 0) return false;
     for (size_t i = 0; i < n; i++)
-        if (hex_nibble(v->str[i]) < 0) return false;
+        if (hex_digit_value(v->str[i]) < 0) return false;
     *out = v->str;
     *out_n = n / 2;
     return true;
@@ -5083,8 +5076,8 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
         size_t byte_cmp_n = replay_out.n < expected_bytes_n
                           ? replay_out.n : expected_bytes_n;
         for (size_t i = 0; i < byte_cmp_n; i++) {
-            int expected = hex_nibble(expected_hex[i * 2]) * 16 +
-                           hex_nibble(expected_hex[i * 2 + 1]);
+            int expected = hex_digit_value(expected_hex[i * 2]) * 16 +
+                           hex_digit_value(expected_hex[i * 2 + 1]);
             if ((unsigned char)replay_out.buf[i] != expected) {
                 byte_div_at = i;
                 break;
@@ -5120,8 +5113,8 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
         rc = 2;
     } else {
         int want = byte_div_at < expected_bytes_n
-                 ? hex_nibble(expected_hex[byte_div_at * 2]) * 16 +
-                   hex_nibble(expected_hex[byte_div_at * 2 + 1]) : -1;
+                 ? hex_digit_value(expected_hex[byte_div_at * 2]) * 16 +
+                   hex_digit_value(expected_hex[byte_div_at * 2 + 1]) : -1;
         int got = byte_div_at < replay_out.n
                 ? (unsigned char)replay_out.buf[byte_div_at] : -1;
         printf("{\"schema_version\":\"xyntetik.runner.verify.v1\","

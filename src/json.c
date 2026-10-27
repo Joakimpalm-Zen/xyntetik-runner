@@ -585,6 +585,13 @@ void sb_esc(sbuf *b, const char *s, size_t n) {
     free(tmp);
 }
 
+void sb_str(sbuf *b, const char *s) {
+    if (!s) { sb_lit(b, "null"); return; }
+    sb_lit(b, "\"");
+    sb_esc(b, s, strlen(s));
+    sb_lit(b, "\"");
+}
+
 // `comma` and `colon` are the only difference between the two public dumps:
 // "," / ":" is the compact wire format, ", " / ": " is what jinja's tojson
 // emits. Everything else -- escaping, number formatting, key order -- is
@@ -604,9 +611,7 @@ static void jv_dump_sep(const jv *v, sbuf *o,
         break;
     }
     case J_STR:
-        sb_lit(o, "\"");
-        sb_esc(o, v->str, strlen(v->str));
-        sb_lit(o, "\"");
+        sb_str(o, v->str);
         break;
     case J_ARR:
         sb_lit(o, "[");
@@ -620,9 +625,7 @@ static void jv_dump_sep(const jv *v, sbuf *o,
         sb_lit(o, "{");
         for (int i = 0; i < v->n; i++) {
             if (i) sb_lit(o, comma);
-            sb_lit(o, "\"");
-            sb_esc(o, v->keys[i], strlen(v->keys[i]));
-            sb_lit(o, "\"");
+            sb_str(o, v->keys[i]);
             sb_lit(o, colon);
             jv_dump_sep(v->items[i], o, comma, colon);
         }

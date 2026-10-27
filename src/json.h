@@ -87,6 +87,7 @@ void sb_fmt(sbuf *b, const char *fmt, ...) RUNNER_PRINTF(2, 3);
 void sb_fmt(sbuf *b, const char *fmt, ...);
 #endif
 void sb_esc(sbuf *b, const char *s, size_t n); // appends as JSON string content
+void sb_str(sbuf *b, const char *s);           // appends s as a quoted JSON string; NULL as null
 
 // re-serialize a parsed value (inverse of json_parse, minus formatting).
 // Compact -- no space after ':' or ',' -- and that is the HTTP API's format:

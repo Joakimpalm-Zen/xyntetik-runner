@@ -54,6 +54,14 @@ bool envelope_file_sha256(const char *path, char hex[65]);
 void envelope_data_sha256(const void *data, size_t n, char hex[65]);
 // the same digest as raw bytes (signature inputs)
 void envelope_data_sha256_raw(const void *data, size_t n, uint8_t out[32]);
+// The value of one hex digit, either case, or -1: the decoder for every hex
+// spelling this program reads back (digests, keys, signatures, %XX escapes).
+static inline int hex_digit_value(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
 
 // ---- notarized inference D1: xyntetik.runner.transcript.v1 ----------------
 // The record that makes one inference a REPLAYABLE COMPUTATION: everything a

@@ -32,13 +32,6 @@ static void join(char *out, size_t cap, const char *dir, const char *name) {
     snprintf(out, cap, "%s%s%s", dir, slash ? "" : "/", name);
 }
 
-static int hexval(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
 // sha256 of the key bytes a hex string spells: the receipt key's fingerprint
 static bool key_fingerprint(const char *hex, char out[65]) {
     size_t n = strlen(hex);
@@ -46,7 +39,7 @@ static bool key_fingerprint(const char *hex, char out[65]) {
     uint8_t *b = malloc(n / 2);
     if (!b) return false;
     for (size_t i = 0; i < n / 2; i++) {
-        int hi = hexval(hex[2 * i]), lo = hexval(hex[2 * i + 1]);
+        int hi = hex_digit_value(hex[2 * i]), lo = hex_digit_value(hex[2 * i + 1]);
         if (hi < 0 || lo < 0) { free(b); return false; }
         b[i] = (uint8_t)(hi << 4 | lo);
     }
@@ -63,13 +56,6 @@ static bool chain_recompute(const char *rec, size_t n, char out[65]) {
     if (!pos || (size_t)(pos - rec) > n) return false;
     envelope_data_sha256(rec, (size_t)(pos - rec), out);
     return true;
-}
-
-static void put_str(sbuf *b, const char *s) {
-    if (!s) { sb_lit(b, "null"); return; }
-    sb_lit(b, "\"");
-    sb_esc(b, s, strlen(s));
-    sb_lit(b, "\"");
 }
 
 // ------------------------------------------------------------------ export
@@ -173,7 +159,7 @@ int bundle_export(const bundle_opts *o) {
     jv *model = jv_get(j, "model"), *build = jv_get(j, "build");
     sbuf m = {0};
     sb_lit(&m, "{\"schema_version\":\"" BUNDLE_SCHEMA "\",\"created_utc\":");
-    put_str(&m, utc);
+    sb_str(&m, utc);
     sb_fmt(&m, ",\"files\":[{\"name\":\"receipt.json\",\"sha256\":\"%s\","
                "\"bytes\":%zu}", h_rec, rn);
     if (sig) sb_fmt(&m, ",{\"name\":\"model.sig\",\"sha256\":\"%s\",\"bytes\":%zu}",
@@ -181,46 +167,46 @@ int bundle_export(const bundle_opts *o) {
     if (pub) sb_fmt(&m, ",{\"name\":\"model-pubkey.pem\",\"sha256\":\"%s\","
                         "\"bytes\":%zu}", h_pub, pn);
     sb_lit(&m, "],\"receipt\":{\"file\":\"receipt.json\",\"chain_hash\":");
-    put_str(&m, chain);
+    sb_str(&m, chain);
     sb_lit(&m, ",\"chain_prev\":");
-    put_str(&m, jv_str(jv_get(jv_get(j, "chain"), "prev"), NULL));
+    sb_str(&m, jv_str(jv_get(jv_get(j, "chain"), "prev"), NULL));
     // never a key spelled "signature" inside the manifest: a signed record's
     // own signature is its LAST `,"signature"` (envelope.c), so a nested one
     // would be read as the manifest's
     sb_lit(&m, ",\"signed_by\":");
     if (st == RSIG_OK) {
         sb_lit(&m, "{\"algo\":");
-        put_str(&m, algo);
+        sb_str(&m, algo);
         sb_lit(&m, ",\"public_key\":");
-        put_str(&m, pk);
+        sb_str(&m, pk);
         sb_lit(&m, ",\"fingerprint\":");
-        put_str(&m, fp);
+        sb_str(&m, fp);
         sb_lit(&m, "}");
     } else {
         sb_lit(&m, "null");
     }
     sb_lit(&m, "},\"model\":{\"name\":");
-    put_str(&m, plat_path_base(jv_str(jv_get(model, "path"), "")));
+    sb_str(&m, plat_path_base(jv_str(jv_get(model, "path"), "")));
     sb_lit(&m, ",\"sha256\":");
-    put_str(&m, jv_str(jv_get(model, "sha256"), NULL));
+    sb_str(&m, jv_str(jv_get(model, "sha256"), NULL));
     sb_lit(&m, ",\"oms\":");
     jv *ms = jv_get(j, "model_signature");
     if (ms) jv_dump(ms, &m);
     else    sb_lit(&m, "null");
     sb_lit(&m, ",\"signature_file\":");
-    put_str(&m, sig ? "model.sig" : NULL);
+    sb_str(&m, sig ? "model.sig" : NULL);
     sb_lit(&m, ",\"key_file\":");
-    put_str(&m, pub ? "model-pubkey.pem" : NULL);
+    sb_str(&m, pub ? "model-pubkey.pem" : NULL);
     sb_lit(&m, ",\"key_fingerprint\":");
-    put_str(&m, pub ? key_fp : NULL);
+    sb_str(&m, pub ? key_fp : NULL);
     sb_lit(&m, "},\"binary\":{\"runner\":");
-    put_str(&m, jv_str(jv_get(j, "runner"), NULL));
+    sb_str(&m, jv_str(jv_get(j, "runner"), NULL));
     sb_lit(&m, ",\"sha256\":");
-    put_str(&m, jv_str(jv_get(build, "binary_sha256"), NULL));
+    sb_str(&m, jv_str(jv_get(build, "binary_sha256"), NULL));
     sb_lit(&m, ",\"os\":");
-    put_str(&m, jv_str(jv_get(build, "os"), NULL));
+    sb_str(&m, jv_str(jv_get(build, "os"), NULL));
     sb_lit(&m, ",\"arch\":");
-    put_str(&m, jv_str(jv_get(build, "arch"), NULL));
+    sb_str(&m, jv_str(jv_get(build, "arch"), NULL));
     sb_lit(&m, "},\"check\":\"runner --check-bundle DIR\",\"replay\":");
     {
         sbuf r = {0};
@@ -228,7 +214,7 @@ int bundle_export(const bundle_opts *o) {
                    "DIR/receipt.json");
         if (st == RSIG_OK) { sb_lit(&r, " --trust-key "); sb_put(&r, pk, strlen(pk)); }
         sb_put(&r, "", 1);
-        put_str(&m, r.failed ? "" : r.s);
+        sb_str(&m, r.failed ? "" : r.s);
         free(r.s);
     }
     sb_lit(&m, ",\"statement\":\"--check-bundle proves these files are the "
@@ -593,7 +579,7 @@ int pack_export(const pack_opts *o) {
 #endif
     strftime(utc, sizeof utc, "%Y-%m-%dT%H:%M:%SZ", &g);
     sb_lit(&m, "{\"schema_version\":\"" PACK_SCHEMA "\",\"created_utc\":");
-    put_str(&m, utc);
+    sb_str(&m, utc);
     sb_lit(&m, ",\"files\":[");
     bool first = true;
     bool wrote_ok = true;
@@ -627,7 +613,7 @@ int pack_export(const pack_opts *o) {
         envelope_data_sha256(att[a], attn[a], h);
         wrote_ok = spill(p, att[a], attn[a]);
         sb_lit(&m, ",{\"name\":");
-        put_str(&m, bn);
+        sb_str(&m, bn);
         sb_fmt(&m, ",\"role\":\"attachment\",\"sha256\":\"%s\",\"bytes\":%zu}", h, attn[a]);
     }
     // the inferences, in write order, and whether they form one unbroken
@@ -640,52 +626,52 @@ int pack_export(const pack_opts *o) {
         if (i && (!prev || strcmp(prev, r[i - 1].hash))) breaks++;
         sb_fmt(&m, "%s{\"id\":\"%s\",\"file\":\"%s\",\"chain_prev\":",
                i ? "," : "", r[i].hash, r[i].name);
-        put_str(&m, prev);
+        sb_str(&m, prev);
         sb_lit(&m, ",\"api\":");
-        put_str(&m, jv_str(jv_get(sv, "api"), NULL));
+        sb_str(&m, jv_str(jv_get(sv, "api"), NULL));
         sb_lit(&m, ",\"request_id\":");
-        put_str(&m, jv_str(jv_get(sv, "request_id"), NULL));
+        sb_str(&m, jv_str(jv_get(sv, "request_id"), NULL));
         sb_lit(&m, ",\"shaped_by\":");
         jv *sb2 = jv_get(sv, "shaped_by");
         if (sb2) jv_dump(sb2, &m); else sb_lit(&m, "null");
         sb_lit(&m, ",\"signer_fingerprint\":");
-        put_str(&m, r[i].signed_ok ? r[i].fp : NULL);
+        sb_str(&m, r[i].signed_ok ? r[i].fp : NULL);
         sb_lit(&m, ",\"envelope_verdict\":");
-        put_str(&m, jv_str(jv_get(jv_get(j, "envelope"), "verdict"), NULL));
+        sb_str(&m, jv_str(jv_get(jv_get(j, "envelope"), "verdict"), NULL));
         sb_lit(&m, "}");
     }
     // "segment", never "chain": a signed record's own chain is its LAST
     // `,"chain":` (see the manifest note in bundle_export)
     sb_fmt(&m, "],\"segment\":{\"receipts\":%d,\"contiguous\":%s,\"breaks\":%d,"
                "\"first_prev\":", nr, breaks ? "false" : "true", breaks);
-    put_str(&m, jv_str(jv_get(jv_get(r[0].j, "chain"), "prev"), NULL));
+    sb_str(&m, jv_str(jv_get(jv_get(r[0].j, "chain"), "prev"), NULL));
     sb_fmt(&m, ",\"last_hash\":\"%s\"}", r[nr - 1].hash);
     jv *model = jv_get(r[0].j, "model"), *build = jv_get(r[0].j, "build");
     sb_lit(&m, ",\"model\":{\"name\":");
-    put_str(&m, plat_path_base(jv_str(jv_get(model, "path"), "")));
+    sb_str(&m, plat_path_base(jv_str(jv_get(model, "path"), "")));
     sb_lit(&m, ",\"sha256\":");
-    put_str(&m, jv_str(jv_get(model, "sha256"), NULL));
+    sb_str(&m, jv_str(jv_get(model, "sha256"), NULL));
     sb_lit(&m, ",\"oms\":");
     jv *ms = jv_get(r[0].j, "model_signature");
     if (ms) jv_dump(ms, &m); else sb_lit(&m, "null");
     sb_lit(&m, ",\"signature_file\":");
-    put_str(&m, sig ? "model.sig" : NULL);
+    sb_str(&m, sig ? "model.sig" : NULL);
     sb_lit(&m, ",\"key_file\":");
-    put_str(&m, pub ? "model-pubkey.pem" : NULL);
+    sb_str(&m, pub ? "model-pubkey.pem" : NULL);
     sb_lit(&m, ",\"key_fingerprint\":");
-    put_str(&m, pub ? key_fp : NULL);
+    sb_str(&m, pub ? key_fp : NULL);
     sb_lit(&m, "},\"binary\":{\"runner\":");
-    put_str(&m, jv_str(jv_get(r[0].j, "runner"), NULL));
+    sb_str(&m, jv_str(jv_get(r[0].j, "runner"), NULL));
     sb_lit(&m, ",\"sha256\":");
-    put_str(&m, jv_str(jv_get(build, "binary_sha256"), NULL));
+    sb_str(&m, jv_str(jv_get(build, "binary_sha256"), NULL));
     sb_lit(&m, ",\"os\":");
-    put_str(&m, jv_str(jv_get(build, "os"), NULL));
+    sb_str(&m, jv_str(jv_get(build, "os"), NULL));
     sb_lit(&m, ",\"arch\":");
-    put_str(&m, jv_str(jv_get(build, "arch"), NULL));
+    sb_str(&m, jv_str(jv_get(build, "arch"), NULL));
     sb_lit(&m, "},\"envelope\":");
     if (env) {
         sb_fmt(&m, "{\"file\":\"envelope.json\",\"sha256\":\"%s\",\"verdict\":", h_env);
-        put_str(&m, jv_str(jv_get(jv_get(r[0].j, "envelope"), "verdict"), NULL));
+        sb_str(&m, jv_str(jv_get(jv_get(r[0].j, "envelope"), "verdict"), NULL));
         sb_lit(&m, "}");
     } else {
         sb_lit(&m, "null");

@@ -1620,10 +1620,6 @@ static int raw_prefix(const char *marker, int pos, uint8_t c) {
     return k;
 }
 
-static bool is_ws(uint8_t c) {
-    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
-}
-
 void sval_init(sval *v, const snode *root) {
     memset(v, 0, sizeof(*v));
     v->stack[0] = (sframe){ .node = root, .phase = P_START };
@@ -1968,7 +1964,7 @@ static int feed_byte(sval *v, uint8_t c) {
     // generic any-value subtree
     if (n->kind == SN_ANY) {
         if (f->phase == P_START) {
-            if (is_ws(c)) return leading_ws_ok(v);
+            if (json_is_ws(c)) return leading_ws_ok(v);
             // v->depth over-estimates the containers open above (a number
             // or string frame is not a container), which is the fail-closed
             // direction: the submachine gets a budget no larger than what is
@@ -2013,7 +2009,7 @@ static int feed_byte(sval *v, uint8_t c) {
 
     switch (f->phase) {
     case P_START:
-            if (is_ws(c) && !n->whitespace_significant)
+            if (json_is_ws(c) && !n->whitespace_significant)
             return leading_ws_ok(v);
         switch (n->kind) {
         case SN_COND: {
@@ -2237,7 +2233,7 @@ static int feed_byte(sval *v, uint8_t c) {
 
     case P_OBJ_KEY1:
     case P_OBJ_KEY:
-        if (is_ws(c)) return 0;
+        if (json_is_ws(c)) return 0;
         if (c == '}' && f->phase == P_OBJ_KEY1) {
             if (n->kind == SN_OBJ && !close_allowed(n, f->idx)) return -1;
             frame_done(v);
@@ -2342,13 +2338,13 @@ static int feed_byte(sval *v, uint8_t c) {
     }
 
     case P_OBJ_COLON:
-        if (is_ws(c)) return 0;
+        if (json_is_ws(c)) return 0;
         if (c != ':') return -1;
         f->phase = P_OBJ_NEXT; // resumed here after the child completes
         return push_value(v, n->kind == SN_MAP ? n->items : n->props[f->sub]) ? 0 : -1;
 
     case P_OBJ_NEXT:
-        if (is_ws(c)) return 0;
+        if (json_is_ws(c)) return 0;
         if (c == ',') {
             if (n->kind == SN_OBJ &&
                 (f->idx >= n->n_props || !key_candidates(n, f->idx))) return -1;
@@ -2368,7 +2364,7 @@ static int feed_byte(sval *v, uint8_t c) {
         return -1;
 
     case P_ARR_FIRST:
-        if (is_ws(c)) return 0;
+        if (json_is_ws(c)) return 0;
         if (c == ']') {
             if (n->min_items > 0) return -1;
             frame_done(v);
@@ -2380,7 +2376,7 @@ static int feed_byte(sval *v, uint8_t c) {
         return feed_byte(v, c);
 
     case P_ARR_NEXT:
-        if (is_ws(c)) return 0;
+        if (json_is_ws(c)) return 0;
         if (c == ',') {
             if (n->max_items >= 0 && f->idx >= n->max_items) return -1;
             f->idx++;

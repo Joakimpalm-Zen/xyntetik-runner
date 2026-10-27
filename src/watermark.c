@@ -91,13 +91,6 @@ bool wm_key_write(const char *path, const uint8_t key[32], char id_out[17]) {
     return ok;
 }
 
-static int hexv(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
 bool wm_key_load(const char *path, wm_key *k, char *err, size_t cap) {
     memset(k, 0, sizeof *k);
     FILE *f = plat_fopen(path, "rb");
@@ -113,7 +106,7 @@ bool wm_key_load(const char *path, wm_key *k, char *err, size_t cap) {
     const char *id = jv_str(jv_get(j, "key_id"), "");
     bool ok = j && strcmp(sv, KEY_SCHEMA) == 0 && strlen(kh) == 64;
     for (int i = 0; ok && i < 32; i++) {
-        int a = hexv(kh[2 * i]), b = hexv(kh[2 * i + 1]);
+        int a = hex_digit_value(kh[2 * i]), b = hex_digit_value(kh[2 * i + 1]);
         if (a < 0 || b < 0) ok = false;
         else k->key[i] = (uint8_t)(a * 16 + b);
     }

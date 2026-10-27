@@ -122,4 +122,10 @@ int jsonv_number_state(const jsonv *v);
 // force-complete the object (token budget ran out); returns bytes written
 int  jsonv_close(jsonv *v, char *out, int cap);
 
+// JSON insignificant whitespace (RFC 8259 section 2), shared by both
+// validators so they can never disagree about where a token may begin.
+static inline bool json_is_ws(uint8_t c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
 #endif // RUNNER_JSONMODE_H
