@@ -71,50 +71,54 @@ def build_rows(reports):
     return sorted(reports, key=rate, reverse=True)
 
 
+# ---- the table's cells: one report field each, "-" when it is absent
+
+def category_cell(counts_i, cat):
+    p, t = counts_i.get(cat, (0, 0))
+    return f"{p}/{t}" if t else "-"
+
+
+def total_cell(r):
+    t = r["data"].get("totals", {})
+    return f"{t.get('passed', 0)}/{t.get('requests', 0)}"
+
+
+def tps_cell(r):
+    m = r["data"].get("metrics", {})
+    v = m.get("valid_structured_tasks_per_second")
+    return f"{v:g}" if isinstance(v, (int, float)) else "-"
+
+
+def elapsed_cell(r):
+    m = r["data"].get("metrics", {})
+    ms = m.get("elapsed_ms")
+    return f"{ms / 1000:.1f}s" if isinstance(ms, (int, float)) else "-"
+
+
 def render(reports, markdown):
     rows = build_rows(reports)
     labels = [r["label"] for r in rows]
     counts = [category_counts(r["data"]) for r in rows]
-
-    def cell(counts_i, cat):
-        p, t = counts_i.get(cat, (0, 0))
-        return f"{p}/{t}" if t else "-"
-
     header = ["category", *labels]
+    width = max(len("stream normalization"), *(len(x) for x in labels))
+
+    def row(label, cells):
+        if markdown:
+            return "| " + " | ".join([label, *cells]) + " |"
+        return "  ".join(x.ljust(width) for x in (label, *cells))
+
     lines = []
     if markdown:
         lines.append("| " + " | ".join(header) + " |")
         lines.append("|" + "|".join(["---"] * len(header)) + "|")
     else:
-        width = max(len("stream normalization"), *(len(x) for x in labels))
         lines.append("  ".join(h.ljust(width) for h in header))
-
-    def row(label, cells):
-        if markdown:
-            return "| " + " | ".join([label, *cells]) + " |"
-        width = max(len("stream normalization"), *(len(x) for x in labels))
-        return "  ".join(x.ljust(width) for x in (label, *cells))
-
     for cat in CATEGORIES:
-        lines.append(row(CATEGORY_LABEL[cat], [cell(c, cat) for c in counts]))
-
+        lines.append(row(CATEGORY_LABEL[cat], [category_cell(c, cat) for c in counts]))
     # totals + throughput
-    def total_cell(r):
-        t = r["data"].get("totals", {})
-        return f"{t.get('passed', 0)}/{t.get('requests', 0)}"
     lines.append(row("valid structured calls" if markdown else "TOTAL",
                      [total_cell(r) for r in rows]))
-
-    def tps_cell(r):
-        m = r["data"].get("metrics", {})
-        v = m.get("valid_structured_tasks_per_second")
-        return f"{v:g}" if isinstance(v, (int, float)) else "-"
     lines.append(row("valid tasks/s", [tps_cell(r) for r in rows]))
-
-    def elapsed_cell(r):
-        m = r["data"].get("metrics", {})
-        ms = m.get("elapsed_ms")
-        return f"{ms / 1000:.1f}s" if isinstance(ms, (int, float)) else "-"
     lines.append(row("elapsed", [elapsed_cell(r) for r in rows]))
 
     model = reports[0]["data"].get("configuration", {}).get("model", "?")
