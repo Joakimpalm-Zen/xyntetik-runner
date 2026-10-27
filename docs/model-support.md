@@ -112,8 +112,11 @@ the Tier 1 rows it re-certifies.
 `scripts/check-release.py` refuses a tag while any Tier 1 row is not current,
 the same way it refuses stale device evidence: the row's smoke cell (the
 backend and device class the row names) was never recorded or was recorded on
-another class, it is older than the row's age limit (45 days unless the row
-sets a tighter one), or any backend of the row carries a recorded failure. A
+another class, it is older than the row's age limit (120 days unless the row
+sets a tighter one), or any backend of the row carries a recorded failure.
+The age is a backstop, not a schedule: a row is re-run when a pull request
+changes a path its model uses and names the row, and the backstop catches a
+row nobody has named in four months. A
 row whose smoke class is borrowed hardware (ownership in
 `docs/device-evidence.json`: lent with no terms, usable while it is there,
 never depended on) is reported the same way, but a missing or old record on

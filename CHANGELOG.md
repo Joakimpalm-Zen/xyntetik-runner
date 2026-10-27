@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The validation gates run on change, not on the calendar.** The device
+  ledger and the model roster held their records to 30 or 45 days, which
+  re-ran every class and every Tier 1 file on a schedule whether or not
+  anything on its path had changed. Both now hold a record for 120 days as a
+  backstop, with no per-class override, and a record is renewed earlier when
+  a pull request changes a path it covers and names it. Releases are cut
+  when a user-visible change exists, not on a schedule
+  ([docs/versioning.md](docs/versioning.md)).
+
 - **The release gate no longer depends on borrowed hardware.** Each device
   class in `docs/device-evidence.json` now says whose machine it is
   (`ownership`: owned or borrowed; absent means owned). A borrowed class

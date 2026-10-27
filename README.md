@@ -352,8 +352,9 @@ can change them, which is a stated limit, not a promise broken.
 Runner keeps loading every model the [support matrix](MANUAL.md#support-matrix)
 admits; the files below are the ones it re-checks on every release, with one
 greedy prompt compared byte for byte against a pinned output on the device
-each file names. A release is refused while any of them is missing that
-check, failing it or past its age limit.
+each file names. A release is refused while any of them, on hardware the
+project owns, is missing that check, failing it, or older than 120 days with
+no change on its path re-checked since.
 
 <!-- model-tiers:begin (rendered from docs/model-tiers.json by scripts/model-tiers.py --write-docs; do not edit) -->
 
