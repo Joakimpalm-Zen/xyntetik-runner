@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A slow weight upload says so.** The CUDA backend copies the weights to the
+  device straight from the model file's mapping, at whatever speed the storage
+  faults the pages in; a cold 8 GB file on a throttled disk took longer than
+  anyone waited, with nothing on stderr after the `gpu-split` lines, and was
+  killed as a hang (reported as `--score` with `--lora` hanging; the adapter
+  had not loaded yet). The copy now goes in 64 MB pieces and, once it has run
+  for two seconds, a `gpu: weights ... on the device` line every five seconds
+  gives the bytes placed, the rate from the file and the time left, then one
+  closing line with the whole upload's rate. A warm load prints nothing new.
+  `tests/test_upload_report.c` drives the policy with a synthetic clock;
+  `tests/test_cuda_upload_report.py` holds every weight copy to the reported
+  path.
 - **Model validation on demand, with a paper trail.** The tiers stay; the
   age limit on their records goes. A Tier 1 file is no longer re-tested on
   a schedule or when a record turns four months old: validation runs

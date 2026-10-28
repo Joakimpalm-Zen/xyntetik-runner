@@ -3278,7 +3278,13 @@ mapped weights. Threads are divided across slots. On CUDA the slots share one
 device upload, and its layer split is planned for all N of them (each its own
 KV cache and scratch), so every slot runs the same split; a server may put
 fewer layers on the card than a single slot would, and the `gpu-split` line
-says how many slots it planned for. Multi-model swap mode uses
+says how many slots it planned for. The weights then go to the device from
+the model file's mapping at the speed the storage delivers them: on a warm page
+cache that is seconds and silent; on a cold file over a slow or throttled disk
+it can be minutes, and after two seconds a `gpu: weights X of Y GB on the
+device` line every five seconds reports the bytes placed, the rate read from
+the file and the time left (an 8 GB file at 15 MB/s is nine minutes, not a
+hang). Multi-model swap mode uses
 one slot because only one model is resident at a time, and accepts up to 16
 registered models:
 
