@@ -1706,7 +1706,7 @@ static bool binding_add_range(uint64_t lo, uint64_t hi, void *ctx) {
                 "using CPU\n", len / 1e6, cu_err(rc));
         return false;
     }
-    rc = cu.MemcpyHtoD(d, (const uint8_t *)c->m->gf.map + lo, len);
+    rc = htod_reported(c->w, d, (const uint8_t *)c->m->gf.map + lo, len);
     if (rc != 0) {
         fprintf(stderr, "gpu: CUDA upload of a weight run failed: %s — using CPU\n",
                 cu_err(rc));
