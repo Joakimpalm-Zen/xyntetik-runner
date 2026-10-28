@@ -13,6 +13,7 @@
 // triggers a resync — and each GPU-written row is copied back to host so the
 // CPU path can always take over mid-run.
 #include "runner.h"
+#include "upload_report.h"
 #include "kernel_args.h"   // shared with src/kernels.cu — see the header
 #include "compat.h"     // plat_ram_available_bytes for the unified-pool budget
 #include <stdatomic.h>
@@ -507,6 +508,7 @@ typedef struct gpu_weights {
     gpu_weight_binding *bindings;       // packed non-expert tensors in this mode
     int         n_bindings, cap_bindings;
     bool        bound;                  // weights uploaded per tensor (bindings), not as one file prefix
+    upload_report rep;                  // progress of the weight upload (upload_report.h)
     size_t      bound_bytes;            // bytes the bindings hold (the banner's number when bound)
     int         gpu_layers;             // split decided by the first loader
     int         n_tab;                  // per-layer table length: n_layer, +1 with a bound MTP block
@@ -1621,6 +1623,25 @@ static int mtp_streams(const model_t *m) { return m->hyper_conn ? m->hc_count : 
 // Tensor-role placement cannot preserve mmap offsets in one compact device
 // allocation: the skipped experts are the holes. Upload each retained tensor
 // as a small binding and resolve matvecs by their stable GGUF file offset.
+// Every copy of weight bytes from the file mapping goes through here, in
+// UPLOAD_CHUNK_BYTES pieces, so a slow source (a cold file on slow storage: the
+// copy faults the pages in at the disk's speed) is reported while it runs
+// rather than looking like a hang. upload_report.h has the policy and the
+// incident; tests/test_cuda_upload_report.py holds every weight copy to this.
+static CUresult htod_reported(gpu_weights *w, CUdeviceptr dst, const void *src, size_t len) {
+    size_t done = 0;
+    char line[192];
+    while (done < len) {
+        size_t n = upload_chunk(len, done);
+        CUresult rc = cu.MemcpyHtoD(dst + done, (const uint8_t *)src + done, n);
+        if (rc != 0) return rc;
+        done += n;
+        if (upload_report_step(&w->rep, n, plat_now(), line, sizeof line))
+            fprintf(stderr, "gpu: %s\n", line);
+    }
+    return 0;
+}
+
 static bool binding_add(gpu_weights *w, const model_t *m, gguf_tensor *t) {
     if (!t) return true;
     uint64_t off = tensor_file_off(m, t);
@@ -1645,7 +1666,7 @@ static bool binding_add(gpu_weights *w, const model_t *m, gguf_tensor *t) {
                 "using CPU\n", t->name, cu_err(rc));
         return false;
     }
-    rc = cu.MemcpyHtoD(d, t->data, t->nbytes);
+    rc = htod_reported(w, d, t->data, t->nbytes);
     if (rc != 0) {
         fprintf(stderr, "gpu: CUDA upload for tensor %s failed: %s — using "
                 "CPU\n", t->name, cu_err(rc));
@@ -1685,7 +1706,7 @@ static bool binding_add_range(uint64_t lo, uint64_t hi, void *ctx) {
                 "using CPU\n", len / 1e6, cu_err(rc));
         return false;
     }
-    rc = cu.MemcpyHtoD(d, (const uint8_t *)c->m->gf.map + lo, len);
+    rc = htod_reported(c->w, d, (const uint8_t *)c->m->gf.map + lo, len);
     if (rc != 0) {
         fprintf(stderr, "gpu: CUDA upload of a weight run failed: %s — using CPU\n",
                 cu_err(rc));
@@ -2619,6 +2640,9 @@ static bool shared_upload_weights(gpu_weights *w, model_t *m, const shared_plan 
     // for a full split, a prefix for partial) so byte offsets stay valid.
     // Every instance sharing this upload indexes it with offsets computed
     // against its own mmap base, which is the same layout by construction.
+    // the whole file image for a full split, the planned prefix otherwise;
+    // the per-tensor fallback below adds up to about the same bytes
+    upload_report_begin(&w->rep, w->weights_len, plat_now());
     if (!w->bound) {
         // One contiguous prefix. When the allocation itself is refused,
         // retry the same split per tensor before giving the model to
@@ -2635,7 +2659,7 @@ static bool shared_upload_weights(gpu_weights *w, model_t *m, const shared_plan 
             w->weights_len = 0;
             w->img_off = 0;
         } else {
-            CK(cu.MemcpyHtoD(w->weights, (const uint8_t *)m->gf.map + w->img_off,
+            CK(htod_reported(w, w->weights, (const uint8_t *)m->gf.map + w->img_off,
                              w->weights_len));
         }
     }
@@ -2654,6 +2678,11 @@ static bool shared_upload_weights(gpu_weights *w, model_t *m, const shared_plan 
             ok = binding_add(w, m, L.t[i]);
         free(L.t);
         if (!ok) goto fail;
+    }
+    {
+        char line[192];
+        if (upload_report_end(&w->rep, plat_now(), line, sizeof line))
+            fprintf(stderr, "gpu: %s\n", line);
     }
     return true;
 fail:
