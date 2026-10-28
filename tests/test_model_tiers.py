@@ -473,10 +473,22 @@ def test_record_refuses_a_declared_limit_backend():
         record(smoke_result(), row)
 
 
-def test_record_refuses_a_row_below_tier1():
+def test_record_writes_a_tier2_cell_as_dated_evidence():
+    """A Tier 2 file a run includes is recorded like a Tier 1 file (a new
+    admission at Tier 2 records the pass that admitted it); the gate still
+    reads only Tier 1 rows."""
     row = tier1_row(tier="tier2")
     row["transitions"][-1]["tier"] = "tier2"
-    with pytest.raises(SystemExit, match="Tier 1"):
+    doc = record(smoke_result(), row)
+    cell = doc["rows"][0]["backends"]["metal"]
+    assert cell["result"] == "pass" and cell["runner_version"] == "1.5.1"
+    assert mt.gate(doc, TODAY) == []
+
+
+def test_record_refuses_a_row_below_tier2():
+    row = tier1_row(tier="tier3")
+    row["transitions"][-1]["tier"] = "tier3"
+    with pytest.raises(SystemExit, match="Tier 1 or Tier 2"):
         record(smoke_result(), row)
 
 

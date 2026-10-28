@@ -799,7 +799,8 @@
     "gemma-4-e4b-it-qat-q4_0",
     "gemma-4-26b-a4b-it-q4_0",
     "gemma-4-26b-a4b-it-qat-q4_0",
-    "gemma-4-12b-it-qat-q4_0"
+    "gemma-4-12b-it-qat-q4_0",
+    "nemotron-3.5-bolt-e4b-q4_k_m"
    ],
    "tool_protocol": {
     "status": "PASS",

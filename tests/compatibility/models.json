@@ -539,6 +539,36 @@
       }
     },
     {
+      "id": "nemotron-3.5-bolt-e4b-q4_k_m",
+      "architecture": "gemma4",
+      "family": "Gemma 4 E-series",
+      "file": "models/Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf",
+      "sha256": "c8af2b8aea10a690a1d9491db744a9446660173cb38fc489612b556615a69612",
+      "upstream": "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB",
+      "tokenizer_reference": "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16",
+      "tokenizer_reference_revision": "49843eed8db1f1c616c47af75cfd36e07aec0667",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/nemotron-3.5-bolt-e4b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "NVIDIA's post-train of Gemma-4-E4B-it (Nemotron 3.5 Bolt E4B), the publisher's own Q4_K_M (6,180,446,208 bytes, revision 1db54d5b of nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB), a 720-tensor full-form export like gemma-4-e4b-it-q4_k_m: token_embd Q8_0, 336 Q4_K and 42 Q6_K matrices, context 65,536. Added 2026-10-28 on the owner's request for the Metal laptop (Tier 2, maintained on report). Tokenizer: the publisher's tokenizer.json from the BF16 repository at 49843eed, captured 2026-10-28, 0 of 721 corpus strings differ. No llama.cpp reference is declared, so greedy_reference is not claimed; no CUDA host ran it, so cpu_cuda is not declared. The repository's DFlash drafter file (Nemotron-3.5-Bolt-E4B-DFlash-BF16.gguf) is not a Runner artifact: Runner has no DFlash path.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
+    },
+    {
       "id": "gemma-4-26b-a4b-it-q4_0",
       "architecture": "gemma4-moe",
       "family": "Gemma 4 MoE",

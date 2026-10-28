@@ -3,6 +3,21 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **Nemotron 3.5 Bolt E4B admitted at Tier 2.** NVIDIA's post-train of
+  Gemma-4-E4B-it in the publisher's own Q4_K_M
+  (`nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB`), on the owner's request for the
+  Metal laptop: pulled and verified through `--pull`, loaded on Metal,
+  tokenized as the publisher's tokenizer.json does (0 of 721 corpus strings
+  differ) and answered through its chat template; the validation smoke is
+  pinned and recorded on `macos-arm64-metal`. No fidelity measurement
+  against the BF16 parent yet, and the repository's DFlash drafter file is
+  not a Runner artifact. `scripts/tier-smoke.py --row` and
+  `scripts/model-tiers.py --record` now accept a Tier 2 row, so an
+  admission below Tier 1 records the pass that admitted it as dated
+  evidence; the release gate still reads only Tier 1 rows.
+
 ## v1.7.0 - 2026-10-28
 
 - **A slow weight upload says so.** The CUDA backend copies the weights to the

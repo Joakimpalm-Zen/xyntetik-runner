@@ -117,9 +117,9 @@ its Runner version and date into the row, which is the paper trail: the
 [overview](#overview) shows for every file when it was last validated and
 with which Runner, and an old mark stays dated rather than being re-run.
 
-**A new admission** records the pass that admitted it: the row moves to
-Tier 1 with the version, date and device class of its validation run written
-by `--record`, never typed.
+**A new admission** records the pass that admitted it: the row joins Tier 1,
+or Tier 2 when the pull bar is not met, with the version, date and device
+class of its validation run written by `--record`, never typed.
 
 `scripts/check-release.py` refuses a tag while any Tier 1 row has no recorded
 pass on the backend its smoke names, or any backend of the row carries a

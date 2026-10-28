@@ -2,7 +2,8 @@
 """The per-release smoke over the model roster (docs/model-tiers.json).
 
 For each Tier 1 file the roster gates on this machine's device class (or the
-one row named with --row): hash the file and refuse it unless it is the
+one row named with --row, which may be a Tier 2 row whose run is dated
+evidence and gates nothing): hash the file and refuse it unless it is the
 row's, ask the binary for its --caps and for the file's --adapt-info answer,
 serve the file and ask it one user turn through its own chat template (POST
 /v1/chat/completions, temperature 0, max_tokens n_predict, not streamed),
@@ -474,9 +475,12 @@ def main():
 
     tier1 = [r for r in doc["rows"] if r["tier"] == "tier1"]
     if args.row:
-        todo = [r for r in tier1 if r["id"] == args.row]
+        # a named row may be Tier 2: its run is dated evidence that gates
+        # nothing, and a Tier 2 admission records the pass that admitted it
+        todo = [r for r in doc["rows"] if r["id"] == args.row
+                and r["tier"] in ("tier1", "tier2") and r.get("smoke")]
         if not todo:
-            raise SystemExit(f"{args.row!r} is not a Tier 1 row")
+            raise SystemExit(f"{args.row!r} is not a Tier 1 or Tier 2 row with a smoke")
     else:
         todo = [r for r in tier1 if r["smoke"]["device_class"] == dc]
     failed = 0

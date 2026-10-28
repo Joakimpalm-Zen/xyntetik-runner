@@ -326,6 +326,62 @@
       ]
     },
     {
+      "id": "nemotron-3.5-bolt-e4b-q4_k_m",
+      "model": "Nemotron 3.5 Bolt E4B",
+      "family": "Gemma 4",
+      "tier": "tier2",
+      "claim": "Text path only: NVIDIA's post-train of Gemma-4-E4B-it in the publisher's own Q4_K_M, admitted on the owner's request to run on the Metal laptop; it loads, tokenizes as the publisher's tokenizer.json does and answers through its chat template, and no fidelity measurement against its BF16 parent has been made.",
+      "vision_upstream": true,
+      "architecture": "gemma4",
+      "upstream": {
+        "checkpoint": "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16",
+        "revision": "49843eed8db1f1c616c47af75cfd36e07aec0667"
+      },
+      "files": [
+        {
+          "name": "Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf",
+          "repo": "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB",
+          "revision": "1db54d5b12533ff1bcaa8e42cf4c667988a1f1be",
+          "sha256": "c8af2b8aea10a690a1d9491db744a9446660173cb38fc489612b556615a69612",
+          "bytes": 6180446208
+        }
+      ],
+      "quantization": "Q4_K_M (publisher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "owed",
+        "anchor": "Family: gemma-4-E2B bf16 against Google's float32 reference (1.5.0 golden pass). This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ) and a chat answer at temperature 0 on the Metal laptop; no fidelity or cross-engine number.",
+        "context": 4096,
+        "limitations": "No vision: the publisher's mmproj is not part of this repository and would not be loaded. 6.18 GB of weights page from disk on an 8 GB machine with other applications open; the validation run recorded that state.",
+        "evidence": [
+          "docs/compat-reports/1.7.0-2026-10-28-macos-arm64-nemotron-3.5-bolt-e4b-q4_k_m.json",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "Fidelity against the BF16 parent (nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16); CPU and CUDA cells; the repository's DFlash drafter file (Nemotron-3.5-Bolt-E4B-DFlash-BF16.gguf), which Runner has no path for."
+      },
+      "smoke": {
+        "device_class": "macos-arm64-metal",
+        "backend": "metal"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": null,
+        "metal": null
+      },
+      "lora": null,
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-28",
+          "reason": "Admitted 2026-10-28 at Tier 2 on the owner's request (policy decision 2026-10-27: Tier 1 follows pull; this is the publisher's file and its downloads are the publisher's). Maintained on report, with the admitting run recorded.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
       "id": "gemma-4-26b-a4b-it-qat-q4_0",
       "model": "Gemma 4 26B-A4B",
       "family": "Gemma 4",
