@@ -3,7 +3,7 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.7.0 - 2026-10-28
 
 - **A slow weight upload says so.** The CUDA backend copies the weights to the
   device straight from the model file's mapping, at whatever speed the storage
@@ -66,7 +66,10 @@ Current release and unreleased changes. Compatibility follows the
   file is its publisher's. Nothing stops loading, and no published file is
   withdrawn. The Clef IQ3_S recovery repository
   (`Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF`: the base and two
-  adapters, below the house bar as its card states) is admitted at Tier 2.
+  adapters, below the house bar as its card states) is admitted at Tier 2,
+  and on 2026-10-28 the repository's full decision model
+  (`Clef-IQ3_S.clef.gguf`: the IQ3_S backbone with the publisher's BF16
+  decision head) joins it there, with its decision figures as the anchor.
 
 - **One rendered table, in docs/model-support.md.** The Tier 1 files at a
   glance (one block per family, then the Upcoming models) open
@@ -222,6 +225,15 @@ Current release and unreleased changes. Compatibility follows the
   are byte-identical to before on every fixture family and objective, on
   those models, and against the per-element contract in
   `tests/test_mvt_chains.c` (all 25 weight types the trainer decodes).
+
+- **`type-plan-size` reads `general.alignment` as the quantizer reads it.**
+  The size estimator took any value under that key as the alignment (a
+  boolean gave 0 or 1, a 64-bit value predicted a 4 GiB file) where Runner
+  reads it as an unsigned 32-bit integer and wrote 288 bytes in each case.
+  The estimator now keeps each header value's type and mirrors
+  `gguf_get_u32`, refuses a zero or non-power-of-two alignment with the
+  quantizer's message, and nine cases compare its prediction with Runner's
+  actual output bytes.
 
 - **`--bench-json` names CUDA's attention routes.** Its kernels object now
   counts the tensor-core prefill tiles (`cuda_attn_tc`, among
