@@ -26,11 +26,11 @@ def test_weight_bytes_reach_the_device_through_the_reported_copy():
         if any(re.search(p, args) for p in WEIGHT_SOURCES):
             line = src.count("\n", 0, m.start()) + 1
             raw.append(f"src/cuda.c:{line}: cu.MemcpyHtoD({args.strip()[:60]}...)")
-    # the one raw copy allowed is the chunk inside htod_reported itself
-    inside = [r for r in raw if "src + done" in r]
-    assert len(inside) == 1, raw
-    others = [r for r in raw if r not in inside]
-    assert not others, "weight bytes copied without progress reporting:\n" + "\n".join(others)
+    assert not raw, "weight bytes copied without progress reporting:\n" + "\n".join(raw)
+    # the helper's own chunk copy is the one raw driver copy of weight bytes
+    helper = src[src.index("static CUresult htod_reported("):]
+    helper = helper[:helper.index("\n}\n")]
+    assert "cu.MemcpyHtoD(dst + done, (const uint8_t *)src + done, n)" in helper
 
 
 def test_the_prefix_and_binding_copies_use_it():
