@@ -2693,6 +2693,10 @@
       "tier": "tier2",
       "claim": "The base the published tool-use adapter was trained through and runs on, named by sha256 on the adapter's card: maintained on report, and run on every release only as the adapter's base in its composed smoke.",
       "architecture": "qwen3",
+      "upstream": {
+        "checkpoint": "Qwen/Qwen3-4B",
+        "revision": "1cfa9a7208912126459214e8b04321603b3df60c"
+      },
       "files": [
         {
           "name": "Qwen_Qwen3-4B-Q4_K_M.gguf",
@@ -2702,7 +2706,32 @@
           "bytes": 2497280960
         }
       ],
+      "quantization": "Q4_K_M (bartowski)",
       "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Family: Qwen3-4B bf16 against Qwen's float32 reference (1.5.0 golden pass). This file: load, publisher tokenizer agreement and a chat answer at temperature 0 on the Metal laptop; no fidelity number of its own.",
+        "context": 4096,
+        "limitations": "2.33 GiB of weights page from disk on an 8 GB machine with other applications open; the validation run recorded that state.",
+        "evidence": [
+          "docs/compat-reports/1.7.0-2026-10-28-macos-arm64-qwen3-4b-q4_k_m-bartowski.json",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "CUDA cell; a fidelity measurement of this file against the BF16 parent."
+      },
+      "smoke": {
+        "device_class": "macos-arm64-metal",
+        "backend": "metal"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": null,
+        "metal": null
+      },
+      "lora": null,
       "transitions": [
         {
           "tier": "tier2",

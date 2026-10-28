@@ -1,0 +1,70 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-10-28T21:17:46Z",
+  "host": {
+    "os": "Darwin",
+    "machine": "arm64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 1.7.0"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "qwen3-4b-q4_k_m-bartowski",
+      "architecture": "qwen3",
+      "file": "models/Qwen_Qwen3-4B-Q4_K_M.gguf",
+      "expected_sha256": "fbe1d5edd4ce802ae3ae7c7e4ab7d09789d697fdac1fc7929f8df4ca3c41bae3",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 7071.2,
+          "stderr_tail": "gpu: Metal backend on Apple M1 (zero-copy weights)\nwarning: weights are 2.5 GB but only 1.4 GB of RAM is available \u2014 expect the model to be evicted and every token to page from disk. --mlock pins them; a smaller model is the other fix.\nloaded ~/.cache/xyntetik-runner/hf/bartowski--Qwen_Qwen3-4B-GGUF/Qwen_Qwen3-4B-Q4_K_M.gguf | qwen3 | 36 layers | ctx 4096 | 4 threads | 0.31s\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\ngpu: decode fusion on (byte-identical; RUNNER_METAL_FUSE=0 disables)\n\nprompt: 3 tok, 0.52 tok/s | gen: 1 tok, 6.20 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 2472.3,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": ""
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 4379.99,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "2 + 2 equals 4.\n"
+        }
+      },
+      "resolved_file": "models/Qwen_Qwen3-4B-Q4_K_M.gguf",
+      "actual_sha256": "fbe1d5edd4ce802ae3ae7c7e4ab7d09789d697fdac1fc7929f8df4ca3c41bae3",
+      "file_status": "pass",
+      "complete": true
+    }
+  ],
+  "complete": true,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "pass": 1
+      },
+      "chat": {
+        "pass": 1
+      }
+    }
+  }
+}
