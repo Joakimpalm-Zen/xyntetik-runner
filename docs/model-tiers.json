@@ -368,7 +368,25 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.0",
+          "date": "2026-10-28",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "4a0a2c46ce3928fdf9bcd5a85375805e264fd9e0",
+          "caps": {
+            "version": "1.7.0",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "0ae60d3e43338350748be517a266cf38bbf595d150ebb8d2c044e13095757716",
+          "ran": "runner -m Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.windows-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "gate",
           "runner_version": "1.7.0",
