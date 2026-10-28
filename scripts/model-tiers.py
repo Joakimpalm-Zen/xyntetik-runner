@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""The model support roster: which files Runner actively validates, and when
-each one last passed its gate on each backend.
+"""The model support roster: which files Runner validates, and when each one
+last passed a validation run on each backend.
 
 A tier is a maintenance and validation commitment, not a compatibility list:
 the support matrix, `--info caps` and `--info doctor` say what loads, and the evidence
 documents say what was measured. This file says which of those
-configurations are re-checked on every release, and it carries the result of
-that check per backend so docs/model-support.md can show it without anybody
-typing it.
+configurations the project validates, and it carries the Runner version and
+date of each file's last validation run per backend so docs/model-support.md
+can show the paper trail without anybody typing it. A record is not re-run on
+a schedule or by age (policy decision 2026-10-28): validation runs happen in
+the bigger validation runs the owner starts and on immediate need, and a new
+admission records the pass that admitted it.
 
 Rows are one per model FILE (a sharded set is one file with several parts).
 Every Tier 1 and Tier 2 row names its `family`, the display name
@@ -30,24 +33,21 @@ served on it, each with the refusal sentence when not. A row's
 docs/model-support.md is rendered from it.
 
     scripts/model-tiers.py --check
-    scripts/model-tiers.py --stale [--today YYYY-MM-DD]
+    scripts/model-tiers.py --gate [--today YYYY-MM-DD]
     scripts/model-tiers.py --record ROW --result smoke-result.json
     scripts/model-tiers.py --write-docs     # re-render docs/model-support.md
     scripts/model-tiers.py --docs-check     # fail when it differs from the render
 
-docs/model-support.md is the only render: it opens with the Tier 1 files at
-a glance (one block per family, then the Upcoming models) and continues with
-every row's envelope. The README, a published file's Hugging Face card and
+docs/model-support.md is the only render: it opens with the validation runs
+at a glance (one block per family, Tier 1 then Tier 2, then the Upcoming
+models) and continues with every row's envelope. The README, a published file's Hugging Face card and
 the site link there (a row's id is the anchor) instead of carrying a copy of
 its marks, so none can drift and nothing watches them (2026-10-27).
 
-`--stale` is the release gate's question, asked the way
-scripts/device-evidence.py asks it of the device classes: every Tier 1 row's
-smoke cell (the backend and device class the row names) must exist, must have
-passed, and must be no older than the row's max age (the policy default
-unless the row sets a tighter one). A recorded failure on any backend of the
-row refuses too. scripts/check-release.py refuses a tag while any row is not
-current.
+`--gate` is the release gate's question: every Tier 1 row must hold a
+recorded pass on the backend its smoke names, and no backend of the row may
+hold a recorded failure. The record's age is printed and never refuses.
+scripts/check-release.py refuses a tag while any row fails that question.
 """
 
 import argparse
@@ -249,9 +249,6 @@ def validate(doc, devices):
     classes = device_classes(devices)
     errs = []
     policy = doc.get("policy") or {}
-    if not isinstance(policy.get("default_max_age_days"), int) or \
-            policy["default_max_age_days"] <= 0:
-        errs.append("policy.default_max_age_days must be a positive integer")
     if list(policy.get("backends") or []) != list(BACKENDS):
         errs.append(f"policy.backends must be {list(BACKENDS)}")
     for e in doc.get("exempt") or []:
@@ -352,9 +349,6 @@ def validate(doc, devices):
             if tier == "upcoming" and any(
                     (c or {}).get("kind") == "gate" for c in backends.values()):
                 errs.append(f"{where}: an Upcoming row carries no gate; promote it first")
-        mad = row.get("max_age_days")
-        if mad is not None and (not isinstance(mad, int) or mad <= 0):
-            errs.append(f"{where}: max_age_days {mad!r}")
         if tier == "upcoming" and not _text(row.get("missing")):
             errs.append(f"{where}: an Upcoming row says what is missing")
         if tier != "tier1":
@@ -417,29 +411,32 @@ def today(override=None):
     return datetime.datetime.now(datetime.timezone.utc).date()
 
 
-def stale(doc, now, out=None, borrowed=None):
-    """Report every Tier 1 row; return the ids of those that are not current.
+def gate(doc, now, out=None, borrowed=None):
+    """Report every Tier 1 row; return the ids of those the release gate
+    refuses: no recorded pass on the backend the row's smoke names, or a
+    recorded failure on any backend.
 
-    Prints the fresh rows too, as the device ledger does: the number that
-    matters is how old the freshest evidence is, and a check that only
-    speaks when it is angry trains a reader to take silence for coverage.
+    Prints the passing rows too, with the age of their record, as the device
+    ledger does: a check that only speaks when it is angry trains a reader
+    to take silence for coverage. The age is information for the paper
+    trail and never refuses (policy decision 2026-10-28: no re-testing on a
+    schedule; a record stands until the next validation run or an
+    immediate need re-runs it).
 
     A row whose smoke class is borrowed hardware is reported the same way,
-    but a missing or old record on it is not in the returned list: the
-    project may use that machine and must not depend on it, so its absence
-    cannot hold a release. A recorded failure is returned on any class.
+    but a missing record on it is not in the returned list: the project may
+    use that machine and must not depend on it, so its absence cannot hold
+    a release. A recorded failure is returned on any class.
     """
     # resolved here, not in the signature, so a replaced stdout (pytest's
     # capture) is the one written to
     out = out or sys.stdout
     if borrowed is None:
         borrowed = borrowed_classes()
-    default = doc["policy"]["default_max_age_days"]
     rows = [r for r in doc["rows"] if r["tier"] == "tier1"]
     width = max((len(r["id"]) for r in rows), default=0)
     bad = []
     for row in rows:
-        limit = row.get("max_age_days", default)
         smoke = row["smoke"]
         where = f"{smoke['device_class']} {smoke['backend']}"
         cells = row.get("backends") or {}
@@ -449,23 +446,19 @@ def stale(doc, now, out=None, borrowed=None):
         if failing:
             state, detail = "FAILING", "recorded failure on " + ", ".join(failing)
         elif (cell or {}).get("kind") != "gate":
-            state, detail = "NEVER", f"no smoke recorded on {where}"
-        elif cell["device_class"] != smoke["device_class"]:
-            state, detail = "NEVER", (f"the {smoke['backend']} cell was recorded on "
-                                      f"{cell['device_class']}; the row names {where}")
+            state, detail = "NEVER", f"no validation run recorded for {smoke['backend']} (the row names {where})"
         else:
             days = (now - datetime.date.fromisoformat(cell["date"])).days
-            detail = "%s, %s on %s, %d day%s ago" % (
-                where, cell["runner_version"], cell["date"], days,
-                "" if days == 1 else "s")
-            state = "STALE" if days > limit else "ok"
+            detail = "%s on %s, %s on %s, %d day%s ago" % (
+                smoke["backend"], cell["device_class"], cell["runner_version"],
+                cell["date"], days, "" if days == 1 else "s")
+            state = "ok"
         lent = smoke["device_class"] in borrowed
         if lent:
-            detail += ", borrowed hardware: dated evidence, its age does not gate"
+            detail += ", borrowed hardware: dated evidence, its absence does not gate"
         if state == "FAILING" or (state != "ok" and not lent):
             bad.append(row["id"])
-        print("%-7s %-*s  %s (policy %d days)" % (state, width, row["id"], detail, limit),
-              file=out)
+        print("%-7s %-*s  %s" % (state, width, row["id"], detail), file=out)
     return bad
 
 
@@ -623,13 +616,18 @@ def _family_groups(rows):
     return [(fam, _model_groups(rs)) for fam, rs in fams.items()]
 
 
-def tier1_families(doc):
-    """The families the overview lists: one (family, models) per Tier 1
+def families(doc, tier):
+    """The families the overview lists for a tier: one (family, models) per
     family in roster order, its models as (qualifiers, model, rows) sorted
     by name, each with its roster files in roster order."""
     return [(fam, [(_qualifiers(rs), model, rs) for model, rs in groups])
             for fam, groups in _family_groups(
-                [r for r in doc["rows"] if r["tier"] == "tier1"])]
+                [r for r in doc["rows"] if r["tier"] == tier])]
+
+
+def tier1_families(doc):
+    """The Tier 1 families, the ones every surface lists (the site)."""
+    return families(doc, "tier1")
 
 
 def tier1_groups(doc):
@@ -665,8 +663,7 @@ OVERVIEW_LEGEND = (
     "failed: a recorded failure on any file. For Train, recorded means the LoRA "
     "backward admits the file, and a refusal counts as a declared limit. A mark "
     "with <sup>b</sup> was recorded on borrowed hardware: dated evidence the project "
-    "may use and does not depend on, so its age never holds a release. Each file "
-    "name links to its envelope below.")
+    "may use and does not depend on. Each file name links to its envelope below.")
 
 
 def _esc(text):
@@ -702,8 +699,11 @@ def overview_train(lora):
 
 def _overview_file(row):
     """The File cell: the name linked to its envelope further down the page,
-    a sharded set by its first part."""
-    files = row["files"]
+    a sharded set by its first part; a row without a file (a Tier 2 model
+    admitted on report) by its model name."""
+    files = row.get("files") or []
+    if not files:
+        return f'<td><a href="#{html.escape(row["id"])}">{_esc(row["model"])}</a></td>'
     parts = f" ({len(files)} parts)" if len(files) > 1 else ""
     return (f'<td><a href="#{html.escape(row["id"])}">'
             f"<code>{_esc(files[0]['name'])}</code></a>{parts}</td>")
@@ -749,7 +749,7 @@ def _family_summary(family, models):
     file of those models. It is HTML (GitHub renders no markdown inside
     <summary>), so the name is escaped and bold is <b>."""
     rows = [r for _, _, rs in models for r in rs]
-    marks = [f"{label} {family_mark([_cell_state(r['backends'].get(b)) for r in rows])}"
+    marks = [f"{label} {family_mark([_cell_state((r.get('backends') or {}).get(b)) for r in rows])}"
              for b, label in zip(BACKENDS, OVERVIEW_LABELS)]
     marks.append("Train " + family_mark([_train_state(r.get("lora")) for r in rows]))
     n = len(models)
@@ -765,17 +765,20 @@ def _model_heading(quals, model):
 
 
 def render_overview(doc, borrowed=None):
-    """The Tier 1 files at a glance, the opening of docs/model-support.md's
+    """The validation runs at a glance, the opening of docs/model-support.md's
     rendered block (render_doc). Until 2026-10-27 this was the README's
-    block; the README now says what the check is and links here.
+    block; the README now says what the check is and links here. Since
+    2026-10-28 it lists Tier 2 the same way under Tier 1, so one table holds
+    the version and date of every file's last validation run.
 
-    The legend, then one collapsed <details> block per Tier 1 family, in
-    the roster's order: its summary line names the family, counts its
-    models and gives a mark per backend and for Train over all their files;
+    The legend, then one collapsed <details> block per family, Tier 1
+    families first and Tier 2 families under their own line, each in the
+    roster's order: its summary line names the family, counts its models
+    and gives a mark per backend and for Train over all their files;
     inside, each model's line (its name and its label in plain words) and a
     table with one row per roster file of that model, run or not, the file
-    name linked to its envelope. Every
-    roster file is one the release gate holds Runner to, and a quant the
+    name linked to its envelope. A Tier 1 file is one the release gate
+    holds Runner to; a Tier 2 file's marks are dated evidence. A quant the
     matrix admits outside the roster is the matrix's claim, not this list's.
     Upcoming models follow as one line of names, in the roster's order (the
     order of admission).
@@ -788,18 +791,26 @@ def render_overview(doc, borrowed=None):
         borrowed = borrowed_classes()
     head = "".join(f"<th>{h}</th>" for h in ("File",) + OVERVIEW_LABELS + ("Train",))
     lines = [OVERVIEW_LEGEND, ""]
-    for family, models in tier1_families(doc):
-        lines += ["<details>", _family_summary(family, models)]
-        for quals, model, rows in models:
-            lines += [_model_heading(quals, model), "<table>",
-                      f"<thead><tr>{head}</tr></thead>", "<tbody>"]
-            for r in rows:
-                cells = [_overview_file(r)] + [overview_mark(r["backends"].get(b), borrowed)
-                                               for b in BACKENDS]
-                cells.append(overview_train(r.get("lora")))
-                lines.append("<tr>" + "".join(cells) + "</tr>")
-            lines += ["</tbody>", "</table>"]
-        lines += ["</details>", ""]
+    for tier, intro in (("tier1", "**Tier 1, actively validated** (the release gate holds "
+                                  "Runner to these):"),
+                        ("tier2", "**Tier 2, maintained on report** (dated evidence, "
+                                  "not gated):")):
+        fams = families(doc, tier)
+        if not fams:
+            continue
+        lines += [intro, ""]
+        for family, models in fams:
+            lines += ["<details>", _family_summary(family, models)]
+            for quals, model, rows in models:
+                lines += [_model_heading(quals, model), "<table>",
+                          f"<thead><tr>{head}</tr></thead>", "<tbody>"]
+                for r in rows:
+                    cells = [_overview_file(r)] + [overview_mark((r.get("backends") or {}).get(b),
+                                                                 borrowed) for b in BACKENDS]
+                    cells.append(overview_train(r.get("lora")))
+                    lines.append("<tr>" + "".join(cells) + "</tr>")
+                lines += ["</tbody>", "</table>"]
+            lines += ["</details>", ""]
     lines += ["**Upcoming** (planned, not supported yet): "
               + ", ".join(upcoming_names(doc)) + "."]
     return "\n".join(lines)
@@ -892,12 +903,13 @@ def _row_doc(row, by_id, level=4, borrowed=frozenset()):
         lines.append(f"- **Missing for Tier 1:** {row['missing']}")
     if row.get("smoke"):
         sm = row["smoke"]
-        age = (f"an age limit of {row['max_age_days']} days" if row.get("max_age_days")
-               else "the policy's age limit")
-        lent = (" (borrowed hardware: dated evidence, its age does not hold a release)"
+        lent = (" (borrowed hardware: dated evidence, its absence does not hold a release)"
                 if sm["device_class"] in borrowed else "")
-        lines.append(f"- **Per-release smoke:** on {sm['device_class']}{lent}, "
-                     f"{sm['backend']} backend, {age}.")
+        cell = (row.get("backends") or {}).get(sm["backend"])
+        last = (f"last run {cell['runner_version']} on {cell['date']}"
+                if (cell or {}).get("kind") == "gate" else "no run recorded yet")
+        lines.append(f"- **Validation run:** on {sm['device_class']}{lent}, "
+                     f"{sm['backend']} backend; {last}.")
     if row.get("backends"):
         for b in BACKENDS:
             lines.append(f"- **{b.upper() if b != 'metal' else 'Metal'}:** "
@@ -910,8 +922,8 @@ def _row_doc(row, by_id, level=4, borrowed=frozenset()):
 
 
 def render_doc(doc, borrowed=None):
-    """The block between DOC_BEGIN and DOC_END: the Tier 1 overview
-    (render_overview), then every row's envelope by tier, family and model
+    """The block between DOC_BEGIN and DOC_END: the validation runs at a
+    glance (render_overview), then every row's envelope by tier, family and model
     (an Upcoming model on its own, in the order of admission), the exempt
     repositories, and the transition log."""
     if borrowed is None:
@@ -920,7 +932,7 @@ def render_doc(doc, borrowed=None):
     # a blank line on each side keeps the marker's HTML comment apart from
     # the legend; the <details> blocks are HTML, so no blank line falls
     # inside one
-    lines = ["", "", '<a id="overview"></a>', "## Tier 1 at a glance", "",
+    lines = ["", "", '<a id="overview"></a>', "## Validation runs at a glance", "",
              render_overview(doc, borrowed), ""]
     for tier in TIERS:
         rows = [r for r in doc["rows"] if r["tier"] == tier]
@@ -1019,17 +1031,18 @@ def main():
     ap.add_argument("--device-evidence", default=DEVICE_EVIDENCE)
     ap.add_argument("--check", action="store_true",
                     help="validate the roster's structure (no clock involved)")
-    ap.add_argument("--stale", action="store_true",
-                    help="the release gate: refuse while a Tier 1 row is not current")
-    ap.add_argument("--today", help="the day ages are measured from (tests); "
-                                    "default the UTC clock")
+    ap.add_argument("--gate", action="store_true",
+                    help="the release gate: refuse while a Tier 1 row has no recorded "
+                         "pass on its backend or a recorded failure on any")
+    ap.add_argument("--today", help="the day the printed ages are measured from "
+                                    "(tests); default the UTC clock")
     ap.add_argument("--record", metavar="ROW",
                     help="write a smoke run's result into ROW")
     ap.add_argument("--result", help="the result file scripts/tier-smoke.py wrote")
     ap.add_argument("--write-docs", action="store_true",
-                    help="re-render the README table from the roster")
+                    help="re-render docs/model-support.md from the roster")
     ap.add_argument("--docs-check", action="store_true",
-                    help="fail when the README table differs from the render")
+                    help="fail when docs/model-support.md differs from the render")
     args = ap.parse_args()
 
     doc = load(args.json)
@@ -1070,14 +1083,14 @@ def main():
             print(f"{b}: the rendered block differs from docs/model-tiers.json; "
                   f"run scripts/model-tiers.py --write-docs", file=sys.stderr)
         return 1 if bad else 0
-    if args.stale:
-        bad = stale(doc, today(args.today), borrowed=borrowed_classes(devices))
+    if args.gate:
+        bad = gate(doc, today(args.today), borrowed=borrowed_classes(devices))
         if bad:
             # the rows went to stdout, which a pipe buffers while stderr is
             # written at once: flush, or a reader of both in one pipe gets
             # the summary before the rows it summarises
             sys.stdout.flush()
-            print("\n%d Tier 1 file%s need%s a smoke run: %s" % (
+            print("\n%d Tier 1 file%s need%s a validation run: %s" % (
                 len(bad), "" if len(bad) == 1 else "s",
                 "s" if len(bad) == 1 else "", ", ".join(bad)), file=sys.stderr)
             return 1

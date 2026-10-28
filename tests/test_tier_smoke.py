@@ -55,7 +55,7 @@ def world(tmp_path):
     sha = hashlib.sha256(model.read_bytes()).hexdigest()
     roster = {
         "schema": mt.SCHEMA,
-        "policy": {"default_max_age_days": 45, "backends": ["cpu", "cuda", "metal"]},
+        "policy": {"backends": ["cpu", "cuda", "metal"]},
         "exempt": [],
         "rows": [{
             "id": "toy-q8_0", "model": "Toy", "family": "Toy", "tier": "tier1",

@@ -358,24 +358,23 @@ def check(args):
                 ok &= fail("device evidence is not current:\n" +
                            proc.stdout.rstrip())
 
-    # The Tier 1 model files (docs/model-tiers.json): each is gated on every
-    # release by its smoke on the device class its row names. The mechanism
-    # is the device ledger's, a maximum age per row with a policy default,
-    # rather than "older than the last release that touched its path",
-    # because a path-to-file map would be a second hand-kept list and a
-    # maximum age needs nothing but the cell's own date. A row never gated,
-    # gated on another class, failing on any backend or past its age
-    # refuses the tag, except that a missing or old record on borrowed
-    # hardware (ownership in the device ledger) never does: the project
-    # may use a lent machine and must not depend on it (2026-10-27).
+    # The Tier 1 model files (docs/model-tiers.json): each row carries the
+    # Runner version and date of its last validation run per backend. A row
+    # with no recorded pass on the backend its smoke names, or a recorded
+    # failure on any backend, refuses the tag; a record's age never does
+    # (policy decision 2026-10-28: no re-testing on a schedule, validation
+    # runs happen in the bigger validation runs and on immediate need, and
+    # the roster keeps the paper trail). A missing record on borrowed
+    # hardware (ownership in the device ledger) never refuses either: the
+    # project may use a lent machine and must not depend on it (2026-10-27).
     tiers = getattr(args, "model_tiers", None)
     if tiers:
         if not tiers.exists():
             ok &= fail(f"model tier roster {tiers} does not exist (it is the "
-                       f"record of which files every release re-checks)")
+                       f"record of every file's last validation run)")
         else:
             cmd = [sys.executable, str(ROOT / "scripts" / "model-tiers.py"),
-                   "--stale", "--json", str(tiers)]
+                   "--gate", "--json", str(tiers)]
             if args.device_evidence:
                 cmd += ["--device-evidence", str(args.device_evidence)]
             if getattr(args, "tiers_today", None):
@@ -383,7 +382,7 @@ def check(args):
             proc = subprocess.run(cmd, stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True)
             if proc.returncode != 0:
-                ok &= fail("Tier 1 model files are not current:\n" +
+                ok &= fail("Tier 1 model files are not recorded as passing:\n" +
                            proc.stdout.rstrip())
 
     return ok

@@ -88,24 +88,24 @@ def good_args(tmp_path):
     )
 
 
-# The tier gate is anchored on a fixed day, not the clock: the release under
-# test is "cut" on 2026-10-23 and the roster's one Tier 1 row was gated by
-# Runner 1.5.0, either the day before (fresh) or on 2026-08-01, 83 days
-# before and past the 45-day policy (stale).
+# The tier gate is anchored on a fixed day, not the clock, for the ages it
+# prints: the release under test is "cut" on 2026-10-23 and the roster's one
+# Tier 1 row was validated by Runner 1.5.0 the day before, or (since the
+# 2026-10-28 decision that age never refuses) months before, or never.
 TIERS_TODAY = "2026-10-23"
 
 
 def tier_roster(tmp_path, gated_on="2026-10-22", version="1.5.0"):
     path = tmp_path / "model-tiers.json"
-    cell = {"kind": "gate", "runner_version": version, "date": gated_on,
-            "device_class": "test-class", "result": "pass",
-            "commit": "b" * 40, "caps": {"version": version},
-            "output_sha256": "c" * 64, "ran": "scripts/tier-smoke.py",
-            "evidence": "docs/model-evidence.md"}
+    cell = None if gated_on is None else {
+        "kind": "gate", "runner_version": version, "date": gated_on,
+        "device_class": "test-class", "result": "pass",
+        "commit": "b" * 40, "caps": {"version": version},
+        "output_sha256": "c" * 64, "ran": "scripts/tier-smoke.py",
+        "evidence": "docs/model-evidence.md"}
     write(path, json.dumps({
         "schema": "xyntetik.runner.model-tiers.v1",
-        "policy": {"default_max_age_days": 45,
-                   "backends": ["cpu", "cuda", "metal"]},
+        "policy": {"backends": ["cpu", "cuda", "metal"]},
         "exempt": [],
         "rows": [{
             "id": "toy-q8_0", "model": "Toy", "family": "Toy", "tier": "tier1",
@@ -589,11 +589,11 @@ def test_release_check_accepts_stale_evidence_on_borrowed_hardware(monkeypatch, 
 
 
 @needs_git_checkout
-def test_release_check_accepts_a_stale_tier1_row_on_borrowed_hardware(monkeypatch, tmp_path):
+def test_release_check_accepts_a_never_validated_tier1_row_on_borrowed_hardware(monkeypatch, tmp_path):
     _pinned(monkeypatch)
     args = good_args(tmp_path)
     args.device_evidence = device_ledger(tmp_path, days_ago=1, ownership="borrowed")
-    args.model_tiers = tier_roster(tmp_path, gated_on="2026-08-01")
+    args.model_tiers = tier_roster(tmp_path, gated_on=None)
     assert check_release.check(args) is True
 
 
@@ -605,14 +605,23 @@ def test_release_check_accepts_fresh_device_evidence(monkeypatch, tmp_path):
     assert check_release.check(args) is True
 
 
-def test_release_check_refuses_a_stale_tier1_row(monkeypatch, tmp_path, capsys):
-    """A Tier 1 file is gated on every release: its smoke cell older than
-    the policy refuses the tag, as stale device evidence does."""
+def test_release_check_refuses_a_never_validated_tier1_row(monkeypatch, tmp_path, capsys):
+    """A Tier 1 file with no recorded pass on its backend refuses the tag."""
+    _pinned(monkeypatch)
+    args = good_args(tmp_path)
+    args.model_tiers = tier_roster(tmp_path, gated_on=None)
+    assert check_release.check(args) is False
+    assert "toy-q8_0" in capsys.readouterr().err
+
+
+@needs_git_checkout
+def test_release_check_accepts_an_old_tier1_record(monkeypatch, tmp_path):
+    """Policy decision 2026-10-28: a record's age never refuses a tag; the
+    roster keeps the version and date as the paper trail."""
     _pinned(monkeypatch)
     args = good_args(tmp_path)
     args.model_tiers = tier_roster(tmp_path, gated_on="2026-08-01")
-    assert check_release.check(args) is False
-    assert "toy-q8_0" in capsys.readouterr().err
+    assert check_release.check(args) is True
 
 
 @needs_git_checkout

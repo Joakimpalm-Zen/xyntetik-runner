@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Model validation on demand, with a paper trail.** The tiers stay; the
+  age limit on their records goes. A Tier 1 file is no longer re-tested on
+  a schedule or when a record turns four months old: validation runs
+  happen in the bigger validation runs the project starts and on immediate
+  need, each run writes its Runner version and date into the roster, and a
+  new admission records the pass that admitted it. `docs/model-support.md`
+  now opens with every validated file at a glance, Tier 1 and Tier 2 by
+  family, each cell the version and date of the file's last run, and the
+  release check (`scripts/model-tiers.py --gate`, formerly `--stale`)
+  refuses only a Tier 1 row with no recorded pass on its backend or a
+  recorded failure on any. No model was re-tested for this change; the
+  marks are the runs already recorded.
 - **One command line, one mode, shorter spellings.** The flags that were
   really verbs are refused in pairs instead of resolved by dispatch order
   (`-p hi --serve` used to start the server and drop the prompt; `--score

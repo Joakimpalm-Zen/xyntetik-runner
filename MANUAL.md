@@ -168,7 +168,7 @@ $response.choices[0].message.content
 
 **A coding agent on your own GPU.** Point OpenCode, Claude Code, Codex CLI,
 Continue, Cline or pi at `runner --serve`. Each client's first request is
-re-validated every release, tool calls use the model family's own protocol,
+checked in CI, tool calls use the model family's own protocol,
 and a call cut short by the budget still parses instead of failing the turn.
 [Coding-agent evidence](#coding-agent-evidence)
 
@@ -1425,10 +1425,12 @@ of the reports stay up with a pointer to the canonical dataset.
 `runner --info caps` publishes the architecture IDs admitted by the current binary.
 Open the architecture table below for model-specific paths and limitations.
 
-**Model support tiers.** Which files Runner re-checks on every release is a
-separate question, answered in the [model support tiers](docs/model-support.md):
-a tier is a maintenance and validation commitment for the files its row names,
-gated by a per-release smoke with a dated mark per backend. It is not this
+**Model support tiers.** Which files Runner validates, and when each one was
+last validated, is a separate question, answered in the
+[model support tiers](docs/model-support.md): a tier is a maintenance and
+validation commitment for the files its row names, with a dated mark per
+backend from its last validation run (nothing is re-tested on a schedule; a
+release refuses only a missing or failed record). It is not this
 matrix's claim about what loads, it never removes a loading path in 1.x, and it
 is not a statement about a model's answers.
 

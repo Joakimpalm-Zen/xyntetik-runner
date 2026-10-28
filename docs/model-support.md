@@ -1,14 +1,18 @@
 # Model support tiers
 
 A tier is a maintenance and validation commitment: it says which model files
-Runner re-checks on every release and what happens when one of them breaks. It
-is not a compatibility list and not a correctness verdict. What loads is the
+Runner validates, when each one last passed a validation run, and what happens
+when one of them breaks. It is not a compatibility list and not a correctness
+verdict. What loads is the
 [support matrix](../MANUAL.md#support-matrix), `runner --info caps` and
 `runner --info doctor`; what was measured is in the
 [model evidence](model-evidence.md) and the admission documents each row
 links. Every row on this page is rendered from
 [`docs/model-tiers.json`](model-tiers.json), and every mark carries the Runner
-version and date of the run that wrote it.
+version and date of the run that wrote it. Nothing is re-tested on a schedule
+(policy decision 2026-10-28): a mark stands until the next validation run or
+an immediate need re-runs it, and the page is the paper trail of when each
+file was last validated, with which Runner.
 
 Three rules no tier overrides:
 
@@ -24,7 +28,7 @@ Three rules no tier overrides:
 
 | Status | Runner's commitment |
 |---|---|
-| Tier 1, actively validated | Scheduled validation and proactive maintenance for the configurations the row names. Correctness claims are tied to recorded evidence with a version and date. Gated on every release. |
+| Tier 1, actively validated | Validated in the bigger validation runs and on immediate need, with proactive maintenance for the configurations the row names. Correctness claims are tied to recorded evidence with a version and date. A row with no recorded pass, or a recorded failure, refuses a release. |
 | Tier 2, maintained on report | Previously admitted; no scheduled full-model revalidation. Existing regression tests keep running, and a change to a shared execution path (kernel, architecture code, tokenizer, template, scheduler) is tested with representative coverage that includes the affected families. A reproducible report is investigated, the fix is validated on the affected configuration where feasible, and it leaves a regression test behind. |
 | Tier 3, unmaintained | No dedicated validation or model-specific development. The implementation and the dated evidence remain; current-build correctness is not claimed. The 1.x loading promise still applies. No members: the first entry needs a policy decision and a transition-log entry. |
 | Upcoming, planned admission | A Tier 1 candidate whose implementation or validation is incomplete. Listed apart from Tier 1 and never counted as actively supported. Promotion is by evidence, not by whether the weights fit in memory. |
@@ -57,8 +61,8 @@ experimental row starts with "Experimental".
 Each Tier 1 row names the upstream checkpoint, the file with its sha256 and
 the quantization, the features it claims, its numerical anchor, the context
 tested and the known limits, what is still missing, the device class and
-backend of its per-release smoke, a mark per backend, the file's LoRA
-compatibility, and its tier history. A head or an adapter also names the row
+backend of its validation run with the version and date of the last one, a
+mark per backend, the file's LoRA compatibility, and its tier history. A head or an adapter also names the row
 it runs with.
 
 The LoRA compatibility is the file's own `runner --info adapter` answer,
@@ -79,16 +83,16 @@ The evidence bar for Tier 1, and for promotion from Upcoming:
    (`scripts/template-conformance.py --require-tokens`); the tool protocol
    where the family has one.
 3. Repeatable: a pinned greedy output on the named file, which a later build is
-   compared against (the per-release smoke below).
+   compared against (the validation smoke below).
 4. A recorded run on a real device class, written by the machine.
 
 External hardware and community contributions count only as reproducible
 records with a realistic path to revalidation.
 
-## Two gates, and the release refusal
+## The validation run, and the release refusal
 
-**The per-release smoke, every Tier 1 file**, on the device class its row
-names. `scripts/tier-smoke.py` hashes the file against its row, records the
+**The validation smoke, every Tier 1 file and any Tier 2 file a run
+includes**, on the device class its row names. `scripts/tier-smoke.py` hashes the file against its row, records the
 file's `--info adapter` answer, serves the file and asks it one user turn
 through its own chat template, as a client would (`POST /v1/chat/completions`:
 list the eight planets of the Solar System in order, temperature 0, 48
@@ -104,25 +108,28 @@ that wrote it. The one-shot `-p` is not what the smoke measures: it is a raw
 prompt with no chat template, which an instruct model continues instead of
 answering.
 
-**Full re-certification**, the evidence bar above, only when a path the model
-uses changes: its kernels, its architecture code, its tokenizer, its template
-or the scheduler on its path. The pull request that changes such a path names
-the Tier 1 rows it re-certifies.
+**When it runs.** Not on a schedule and not by age. The smoke, and the full
+evidence bar above where a row's path changed, run in the bigger validation
+runs the project starts (a release campaign, a kernel or architecture
+rewrite) and on immediate need (a reported regression on a path the file
+uses). A pull request does not trigger a re-run by itself. Each run writes
+its Runner version and date into the row, which is the paper trail: the
+[overview](#overview) shows for every file when it was last validated and
+with which Runner, and an old mark stays dated rather than being re-run.
 
-`scripts/check-release.py` refuses a tag while any Tier 1 row is not current,
-the same way it refuses stale device evidence: the row's smoke cell (the
-backend and device class the row names) was never recorded or was recorded on
-another class, it is older than the row's age limit (120 days unless the row
-sets a tighter one), or any backend of the row carries a recorded failure.
-The age is a backstop, not a schedule: a row is re-run when a pull request
-changes a path its model uses and names the row, and the backstop catches a
-row nobody has named in four months. A
-row whose smoke class is borrowed hardware (ownership in
-`docs/device-evidence.json`: lent with no terms, usable while it is there,
-never depended on) is reported the same way, but a missing or old record on
-it does not refuse the tag; a recorded failure does on any class. A
-head or an adapter runs with the row it names, so every Tier 1 row can be
-gated; `scripts/model-tiers.py --check` refuses one that cannot.
+**A new admission** records the pass that admitted it: the row moves to
+Tier 1 with the version, date and device class of its validation run written
+by `--record`, never typed.
+
+`scripts/check-release.py` refuses a tag while any Tier 1 row has no recorded
+pass on the backend its smoke names, or any backend of the row carries a
+recorded failure. A record's age never refuses. A row whose smoke class is
+borrowed hardware (ownership in `docs/device-evidence.json`: lent with no
+terms, usable while it is there, never depended on) is reported the same
+way, but a missing record on it does not refuse the tag; a recorded failure
+does on any class. A head or an adapter runs with the row it names, so every
+Tier 1 row can be gated; `scripts/model-tiers.py --check` refuses one that
+cannot.
 
 ## Run the smoke and record it
 
@@ -158,9 +165,8 @@ hidden with an empty `CUDA_VISIBLE_DEVICES` leaves `--info caps` with no GPU, wh
 matches no GPU class. When no class matches, the refusal lists every class
 with the caps fields it expected otherwise; `--device-class` names the class
 outright. `--record` writes the
-cell and the `--info adapter` answer into the roster and re-renders the README's
-model list and this page: commit `docs/model-tiers.json`, `README.md` and this
-file together.
+cell and the `--info adapter` answer into the roster and re-renders this page:
+commit `docs/model-tiers.json` and this file together.
 
 The first run on a row and backend has no pin: run it once with `--pin`
 instead of `--record`, commit the pin, then run with `--record` from the clean
@@ -179,15 +185,17 @@ it, and the row is pinned again, with the reason in the commit. A pin is never
 overwritten in place.
 
 The checks: `scripts/model-tiers.py --check` (the roster's structure),
-`--stale` (the release gate's question; `--today` fixes the day for a test)
-and `--docs-check` (this page against the roster).
+`--gate` (the release gate's question; `--today` fixes the day the printed
+ages count from) and `--docs-check` (this page against the roster).
 
 <a id="cards-and-site"></a>
 ## The overview, the README, the cards and the site
 
-This page opens with the Tier 1 files at a glance: one collapsed block per
-family in the roster's order, its models sorted by name, then the Upcoming
-models as one line; the tiers below group every row the same way. A
+This page opens with the validation runs at a glance: one collapsed block
+per family in the roster's order, Tier 1 families first and Tier 2 families
+under their own line, each family's models sorted by name, then the Upcoming
+models as one line; the tiers below group every row the same way. The table
+is the record of when each file was last validated and with which Runner. A
 family's line sums up every file of its models, per backend and for Train:
 ✅ when every file is recorded, 🟨 *k of n* when k of its n files are (a
 declared limit beside recorded files counts as not run), a hyphen when none
@@ -223,9 +231,11 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <!-- model-tiers:rows:begin (rendered from docs/model-tiers.json by scripts/model-tiers.py --write-docs; do not edit) -->
 
 <a id="overview"></a>
-## Tier 1 at a glance
+## Validation runs at a glance
 
-✅ *version date*: recorded gate · blank: nobody has run it yet · n/a: declared limit, linked to the manual · failed *version date*: recorded failure · Train: the file's own `--info adapter` answer, where ✅ means the LoRA backward admits the file, not that training it gives good results. A family's line sums up every file of its models, per backend and for Train: ✅ all recorded · 🟨 *k of n*: k of its n files recorded, a declared limit beside them counted as not run · a hyphen: none run · n/a: a declared limit on every file · failed: a recorded failure on any file. For Train, recorded means the LoRA backward admits the file, and a refusal counts as a declared limit. A mark with <sup>b</sup> was recorded on borrowed hardware: dated evidence the project may use and does not depend on, so its age never holds a release. Each file name links to its envelope below.
+✅ *version date*: recorded gate · blank: nobody has run it yet · n/a: declared limit, linked to the manual · failed *version date*: recorded failure · Train: the file's own `--info adapter` answer, where ✅ means the LoRA backward admits the file, not that training it gives good results. A family's line sums up every file of its models, per backend and for Train: ✅ all recorded · 🟨 *k of n*: k of its n files recorded, a declared limit beside them counted as not run · a hyphen: none run · n/a: a declared limit on every file · failed: a recorded failure on any file. For Train, recorded means the LoRA backward admits the file, and a refusal counts as a declared limit. A mark with <sup>b</sup> was recorded on borrowed hardware: dated evidence the project may use and does not depend on. Each file name links to its envelope below.
+
+**Tier 1, actively validated** (the release gate holds Runner to these):
 
 <details>
 <summary><b>Qwen3.8</b>, 2 models: CPU 🟨 1 of 4 · CUDA 🟨 3 of 4 · Metal n/a · Train 🟨 2 of 4</summary>
@@ -261,6 +271,282 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
+**Tier 2, maintained on report** (dated evidence, not gated):
+
+<details>
+<summary><b>Cloudflare Clef</b>, 2 models: CPU - · CUDA 🟨 1 of 4 · Metal - · Train 🟨 1 of 4</summary>
+<p><b>Cloudflare Clef (clef, on Qwen3.8-27B)</b>, text path only</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#cloudflare-clef-iq3_m"><code>Cloudflare_clef-IQ3_M.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+<p><b>Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B)</b>, text path only</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#cloudflare-clef-iq3_s-recovered"><code>Clef-backbone-IQ3_S.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="#cloudflare-clef-iq3_s-recovery-qr-001e-lora"><code>clef-IQ3_S-recovery-QR-001e.lora.F16.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="#cloudflare-clef-iq3_s-recovery-qr-001b-lora"><code>clef-IQ3_S-recovery-QR-001b.lora.F16.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Qwen3.8</b>, 2 models: CPU - · CUDA 🟨 1 of 2 · Metal - · Train 🟨 1 of 2</summary>
+<p><b>Qwen3.8-27B</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#qwen3.8-27b-ud-q4_k_m"><code>Qwen3.8-27B-UD-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+<p><b>Qwen3.8-Flash-Next</b>, experimental</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#qwen3.8-flash-next-gsq-rco-iq3_s"><code>Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf</code></a> (2 parts)</td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Gemma 4</b>, 5 models: CPU 🟨 1 of 5 · CUDA 🟨 4 of 5 · Metal 🟨 1 of 5 · Train 🟨 3 of 5</summary>
+<p><b>Gemma 4 12B</b>, text path only</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#gemma-4-12b-it-qat-q4_0"><code>gemma-4-12b-it-qat-q4_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+<p><b>Gemma 4 26B-A4B</b>, text path only</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#gemma-4-26b-a4b-it-qat-q4_0"><code>gemma-4-26B_q4_0-it.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td>no: MoE FFN (gemma-4 dual-branch)</td></tr>
+</tbody>
+</table>
+<p><b>Gemma 4 31B</b>, text path only</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#gemma-4-31b-it-q4_0"><code>gemma-4-31B-it-Q4_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+<p><b>Gemma 4 31B, attention block 48 removed</b>, text path only</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#gemma-4-31b-it-attn48-removed-q4_0"><code>gemma-4-31B-it-attn48-removed-q4_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td>no: removed sublayers (--remove-sublayer artifact)</td></tr>
+</tbody>
+</table>
+<p><b>Gemma 4 E2B</b>, text path only</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#gemma-4-e2b-it-q4_k_m-q4_0-mix"><code>gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf</code></a></td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td nowrap>✅ 1.5.1<br>2026-10-23</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Muse-Glimmer-30B</b>, 2 models: CPU 🟨 1 of 4 · CUDA 🟨 3 of 4 · Metal - · Train ✅</summary>
+<p><b>Muse-Glimmer-30B</b>, text path only</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#muse-glimmer-30b-kquant"><code>Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+<p><b>Muse-Glimmer-30B surgical</b>, text path only</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#muse-glimmer-30b-surgical-4p75-q4_k"><code>Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="#muse-glimmer-30b-surgical-6p34-q8_0"><code>Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf</code></a></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="#muse-glimmer-30b-surgical-6p34-q4_k-recovered"><code>Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Granite-4.2-8B</b>, 1 model: CPU - · CUDA ✅ · Metal - · Train ✅</summary>
+<p><b>Granite-4.2-8B</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#granite-4.2-8b-q4_k_m"><code>granite-4.2-8b-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-23</td></tr>
+<tr><td><a href="#granite-4.2-8b-q8_0"><code>granite-4.2-8b-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Trinity Nano</b>, 1 model: CPU ✅ · CUDA n/a · Metal n/a · Train n/a</summary>
+<p><b>Trinity Nano</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#trinity-nano-preview-q8_0"><code>Trinity-Nano-Preview-Q8_0.gguf</code></a></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-23</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE router gating other than softmax</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Qwen3</b>, 4 models: CPU 🟨 1 of 5 · CUDA 🟨 3 of 5 · Metal - · Train 🟨 4 of 5</summary>
+<p><b>Qwen3-30B-A3B selective precision</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#qwen3-30b-a3b-expq4_0-attnq8_0"><code>Qwen3-30B-A3B-expq4_0-attnq8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+<p><b>Qwen3-4B</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#qwen3-4b-q4_k_m-bartowski"><code>Qwen_Qwen3-4B-Q4_K_M.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+<p><b>Qwen3-4B Runner ToolUse</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#qwen3-4b-runner-tooluse-merged-q8_0"><code>merged-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="#qwen3-4b-runner-tooluse-lora"><code>Qwen3-4B-ToolUse-LoRA.gguf</code></a></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+<p><b>Qwen3-Coder-30B-A3B keep-120</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#qwen3-coder-30b-a3b-instruct-keep120-q4_k_m"><code>Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>NVIDIA Nemotron Nano 9B v2</b>, 1 model: CPU - · CUDA ✅ · Metal n/a · Train n/a</summary>
+<p><b>NVIDIA Nemotron Nano 9B v2</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#nvidia-nemotron-nano-9b-v2-q8_0"><code>NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: recurrent architecture (Mamba-2)</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>gpt-oss</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<p><b>gpt-oss-20b keep-30</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#gpt-oss-20b-keep30-mxfp4"><code>gpt-oss-20b-keep30-MXFP4.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Llama</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<p><b>Llama-style dense families (llama)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#arch-llama">Llama-style dense families (llama)</a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Mistral</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<p><b>Mistral (mistral)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#arch-mistral">Mistral (mistral)</a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>SmolLM</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<p><b>SmolLM (smollm)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#arch-smollm">SmolLM (smollm)</a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>StableLM</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<p><b>StableLM (stablelm)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#arch-stablelm">StableLM (stablelm)</a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Qwen2</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<p><b>Qwen2 (qwen2)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#arch-qwen2">Qwen2 (qwen2)</a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Gemma 3</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<p><b>Gemma 3 (gemma3)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#arch-gemma3">Gemma 3 (gemma3)</a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Phi-3</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<p><b>Phi-3 (phi3)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#arch-phi3">Phi-3 (phi3)</a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Apertus</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<p><b>Apertus (apertus)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#arch-apertus">Apertus (apertus)</a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Granite 4</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<p><b>Granite 4 h-series hybrid (granitehybrid)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#arch-granitehybrid">Granite 4 h-series hybrid (granitehybrid)</a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
 **Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B), Mellum2.1-12B-A2.5B-Thinking (JetBrains).
 
 <a id="tier1"></a>
@@ -283,7 +569,7 @@ ISTA-DASLab's IQ3_S file with every quantised block's fp16 scales retrained agai
 - **Context tested:** not recorded.
 - **Still missing:** A CPU row on the file; pinned greedy output.
 - **Evidence:** [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `6bc726d37ed11e94`, [pin](../tests/compatibility/tier-smoke/qwen3.8-27b-gsq-rco-iq3_s-recovered.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): The qwen35 Gated DeltaNet hybrid has no Metal path; a Metal build runs this file on the CPU.
@@ -305,7 +591,7 @@ The NextN/MTP predictor head for Qwen3.8-27B, loaded with --draft mtp:FILE besid
 - **Context tested:** not recorded.
 - **Still missing:** Pinned output of the composed run (the trunk plus this head).
 - **Evidence:** [MANUAL.md#placement-and-memory](../MANUAL.md#placement-and-memory).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `6bc726d37ed11e94`, [pin](../tests/compatibility/tier-smoke/qwen3.8-27b-mtp-q8_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): MTP/NextN draft-head consumption is not implemented on Metal.
@@ -328,7 +614,7 @@ Experimental: the qwen4exp architecture is admitted with its publisher float32 c
 - **Context tested:** not recorded.
 - **Still missing:** Every gate on this file; the publisher float32 comparison.
 - **Evidence:** [docs/qwen4exp-admission-evidence/README.md](qwen4exp-admission-evidence/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `d10ba25da7047454`, [pin](../tests/compatibility/tier-smoke/qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): qwen4exp's Gated DeltaNet blocks have no Metal kernel (the support matrix names Gated DeltaNet among the operations Metal lacks); coverage.json records the architecture's Metal path as unsupported.
@@ -350,7 +636,7 @@ Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for 
 - **Context tested:** not recorded.
 - **Still missing:** Every gate, run beside ISTA-DASLab's 2-part trunk (the 4-part set already carries a head, and --draft mtp:FILE refuses a second one).
 - **Evidence:** [MANUAL.md#placement-and-memory](../MANUAL.md#placement-and-memory).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cpu backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `d10ba25da7047454`, [pin](../tests/compatibility/tier-smoke/qwen3.8-flash-next-mtp-q8_0.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** [n/a](../MANUAL.md#support-matrix): --draft mtp decoding on CUDA needs the whole trunk on the device; the IQ3_S trunk this head runs with holds 18 of 48 layers on a 24 GB device, and the partial split refuses with an error naming --gpu off (Linux CUDA host, 2026-10-25, runner f960e470). The head is smoked on the CPU path of the same class.
 - **Metal:** [n/a](../MANUAL.md#support-matrix): MTP/NextN draft-head consumption is not implemented on Metal.
@@ -375,7 +661,7 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **Context tested:** not recorded.
 - **Still missing:** Per-file backend rows; pinned output.
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cpu backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `3b2c21c82306`, output sha256 `c89c26e516c5d4dd`, [pin](../tests/compatibility/tier-smoke/xyntetik-kvist-14b-bf16.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
@@ -396,7 +682,7 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **Context tested:** not recorded.
 - **Still missing:** Per-file backend rows; pinned output.
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `c89c26e516c5d4dd`, [pin](../tests/compatibility/tier-smoke/xyntetik-kvist-14b-q8_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
@@ -417,7 +703,7 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **Context tested:** not recorded.
 - **Still missing:** Per-file backend rows; pinned output.
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `c89c26e516c5d4dd`, [pin](../tests/compatibility/tier-smoke/xyntetik-kvist-14b-q5_0-mix.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
@@ -438,7 +724,7 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **Context tested:** not recorded.
 - **Still missing:** Per-file backend rows; pinned output.
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `c89c26e516c5d4dd`, [pin](../tests/compatibility/tier-smoke/xyntetik-kvist-14b-iq4_nl-mix.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
@@ -467,7 +753,7 @@ Text path only: a decision model served at /v1/systemone; requests with images o
 - **Known limitations:** Text only: a request with images or videos is refused.
 - **Still missing:** A float32 gold run on a released checkpoint against its BF16 GGUF; the decision surface in the per-release smoke.
 - **Evidence:** [docs/clef-admission-2026-10-16.md](clef-admission-2026-10-16.md).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `a38540f4ff7fd6c7`, [pin](../tests/compatibility/tier-smoke/cloudflare-clef-iq3_m.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.
@@ -529,7 +815,7 @@ Unsloth's dynamic Q4_K_M of Qwen3.8-27B, text path: it passes the quant bar agai
 - **Context tested:** not recorded.
 - **Still missing:** A CPU row on the file; pinned greedy output.
 - **Evidence:** [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `44ffbc5ccee57adc`, [pin](../tests/compatibility/tier-smoke/qwen3.8-27b-ud-q4_k_m.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): The qwen35 Gated DeltaNet hybrid has no Metal path; a Metal build runs this file on the CPU.
@@ -565,7 +851,7 @@ Text path only: Google's quantization-aware Q4_0 release, its mmproj file not lo
 - **Known limitations:** No vision: the mmproj file is not loaded.
 - **Still missing:** Metal and CPU rows on the 12B; pinned output; Metal re-gate hardware.
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `109c0663eb8c13c0`, [pin](../tests/compatibility/tier-smoke/gemma-4-12b-it-qat-q4_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
@@ -589,7 +875,7 @@ Text path only: Google's quantization-aware Q4_0 release of the MoE model, its m
 - **Known limitations:** Metal last validated 2026-09-01 on a 128 GB loaner; no Metal device in the lab can re-gate it.
 - **Still missing:** A float32 run or keeping the another-engine label; the tool gate on the file; pinned output; Metal re-gate hardware.
 - **Evidence:** [docs/model-evidence.md](model-evidence.md), [tests/compatibility/models.json](../tests/compatibility/models.json).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `c697fa9c64f4a370`, [pin](../tests/compatibility/tier-smoke/gemma-4-26b-a4b-it-qat-q4_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
@@ -613,7 +899,7 @@ Text path only: ggml-org's post-training Q4_0 of Gemma 4 31B, not Google's QAT f
 - **Known limitations:** Metal last validated 2026-09-01 on a 128 GB loaner; no Metal device in the lab can re-gate it.
 - **Still missing:** A float32 run or the another-engine label; the tool gate; pinned output; Metal re-gate hardware.
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/model-evidence.md](model-evidence.md).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `6e01ea7bc489371c`, [pin](../tests/compatibility/tier-smoke/gemma-4-31b-it-q4_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
@@ -637,7 +923,7 @@ Text path only: Google's QAT Q4_0 of Gemma 4 31B with one attention sublayer phy
 - **Context tested:** not recorded.
 - **Still missing:** Pinned output.
 - **Evidence:** [docs/sublayer-removal.md](sublayer-removal.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `fbb8f3caf0ab7e53`, [pin](../tests/compatibility/tier-smoke/gemma-4-31b-it-attn48-removed-q4_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
@@ -661,7 +947,7 @@ Text path only: the smoke-test file from the quickstart; it fails the fidelity b
 - **Context tested:** not recorded.
 - **Still missing:** nothing the audit named
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on macos-arm64-metal, metal backend, the policy's age limit.
+- **Validation run:** on macos-arm64-metal, metal backend; last run 1.5.1 on 2026-10-23.
 - **CPU:** ✅ v1.5.1 2026-10-23 on macos-arm64-metal at commit `7660980968b4`, output sha256 `4132fa520bc517ed`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ✅ v1.5.1 2026-10-23 on macos-arm64-metal at commit `7660980968b4`, output sha256 `4132fa520bc517ed`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.metal.txt)
@@ -687,7 +973,7 @@ Text path only: Meta's own Q4_K_M, which passes the fidelity bar against the BF1
 - **Known limitations:** No vision encoder. Metal last validated 2026-08-11; no lab Metal device fits the file.
 - **Still missing:** A live tool-protocol run on one file; backend rows; pinned output; Metal re-gate hardware.
 - **Evidence:** [docs/model-evidence.md](model-evidence.md), [tests/compatibility/models.json](../tests/compatibility/models.json).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `bfe1008c84ebfae4`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-kquant.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
@@ -711,7 +997,7 @@ Text path only: Muse-Glimmer-30B with 4.75% of the decoder removed and healed, a
 - **Context tested:** not recorded.
 - **Still missing:** Backend rows; pinned output; a live tool-protocol run.
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `9d806b71f48e1049`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-surgical-4p75-q4_k.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
@@ -733,7 +1019,7 @@ Text path only: Muse-Glimmer-30B with 6.34% of the decoder removed (the FFN subl
 - **Context tested:** not recorded.
 - **Still missing:** Backend rows; pinned output; a live tool-protocol run.
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cpu backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `3b2c21c82306`, output sha256 `40a1110e1716fb3d`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-surgical-6p34-q8_0.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
@@ -755,7 +1041,7 @@ Text path only: the 6.34% surgical Muse-Glimmer-30B at Q4_K with retrained scale
 - **Context tested:** not recorded.
 - **Still missing:** Backend rows; pinned output; a live tool-protocol run.
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `80e114dfae593916`, [pin](../tests/compatibility/tier-smoke/muse-glimmer-30b-surgical-6p34-q4_k-recovered.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
@@ -780,7 +1066,7 @@ IBM's official Q4_K_M of Granite 4.2 8B, text path: the granite42 tool protocol 
 - **Context tested:** not recorded.
 - **Still missing:** Metal and CPU rows; pinned output.
 - **Evidence:** [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Per-release smoke:** on windows-x86_64-cuda, cuda backend, the policy's age limit.
+- **Validation run:** on windows-x86_64-cuda, cuda backend; last run 1.5.1 on 2026-10-23.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-23 on windows-x86_64-cuda at commit `349af6e65185`, output sha256 `ff1cd210d7a92cd2`, [pin](../tests/compatibility/tier-smoke/granite-4.2-8b-q4_k_m.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
@@ -801,7 +1087,7 @@ IBM's official Q8_0 of Granite 4.2 8B, text path: the reference sibling of the Q
 - **Context tested:** not recorded.
 - **Still missing:** Backend rows on the file; pinned output.
 - **Evidence:** [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `9e4082576850d0a8`, [pin](../tests/compatibility/tier-smoke/granite-4.2-8b-q8_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
@@ -826,7 +1112,7 @@ Arcee's Q8_0 of Trinity Nano Preview, text path, CPU only by admission: the one 
 - **Context tested:** not recorded.
 - **Still missing:** Pinned output.
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/model-evidence.md](model-evidence.md).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cpu backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.5.1 on 2026-10-23.
 - **CPU:** ✅ v1.5.1 2026-10-23 on linux-x86_64-cuda (borrowed hardware) at commit `e347e50fdd63`, output sha256 `b26e284a3452dbba`, [pin](../tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** [n/a](../MANUAL.md#support-matrix): afmoe (gated attention with sparse MoE) has no CUDA path; CUDA refuses it and the file runs on the CPU.
 - **Metal:** [n/a](../MANUAL.md#support-matrix): afmoe (gated attention with sparse MoE) has no Metal path; Metal refuses it and the file runs on the CPU.
@@ -852,7 +1138,7 @@ Qwen3-30B-A3B with attention Q8_0 and experts Q4_0, text path: it passes the fid
 - **Context tested:** not recorded.
 - **Still missing:** Pinned output.
 - **Evidence:** [tests/compatibility/models.json](../tests/compatibility/models.json), [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `9c80990c12a550f6`, [pin](../tests/compatibility/tier-smoke/qwen3-30b-a3b-expq4_0-attnq8_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
@@ -886,7 +1172,7 @@ Qwen3-4B with the tool-use LoRA merged and written at Q8_0, text path: a qwen3 c
 - **Context tested:** not recorded.
 - **Still missing:** Pinned output.
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/adaptation-engine.md](adaptation-engine.md).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `aa1a1647a3e4b534`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-merged-q8_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
@@ -909,7 +1195,7 @@ The tool-use LoRA adapter for Qwen3-4B, served with --lora on the base its card 
 - **Context tested:** not recorded.
 - **Still missing:** Pinned output of the composed run (the base named on the card plus this adapter).
 - **Evidence:** [docs/adaptation-engine.md](adaptation-engine.md), [docs/lora.md](lora.md).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cpu backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `3b2c21c82306`, output sha256 `9a878ce06241ebaa`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
@@ -933,7 +1219,7 @@ An expert-pruned Qwen3-Coder-30B-A3B (120 of 128 experts kept) at Q4_K_M, text p
 - **Context tested:** not recorded.
 - **Still missing:** Pinned output; a tool gate on this file (the recorded qwen3-coder tool run is on the unpruned Q4_K_M).
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `f049d30f2e67e4a9`, [pin](../tests/compatibility/tier-smoke/qwen3-coder-30b-a3b-instruct-keep120-q4_k_m.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
@@ -959,7 +1245,7 @@ A plain Q8_0 of NVIDIA's Nemotron-Nano-9B-v2 (Mamba-2 hybrid), text path: 100% m
 - **Context tested:** not recorded.
 - **Still missing:** The tool gate (native protocol since 2026-10-09); pinned output; the 2,000-position rerun.
 - **Evidence:** [docs/golden-pass-2026-09-07.md](golden-pass-2026-09-07.md).
-- **Per-release smoke:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its age does not hold a release), cuda backend, the policy's age limit.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `e23a8c77690649fb`, [pin](../tests/compatibility/tier-smoke/nvidia-nemotron-nano-9b-v2-q8_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): Metal has no SSM path; a Metal build runs this file on the CPU.
