@@ -2810,6 +2810,39 @@
       ]
     },
     {
+      "id": "cloudflare-clef-iq3_s-native",
+      "model": "Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B)",
+      "family": "Cloudflare Clef",
+      "tier": "tier2",
+      "claim": "Text path only: the full Clef decision model in one file, the project's IQ3_S backbone with Cloudflare's own BF16 joint decision head unchanged, served at /v1/systemone; requests with images or videos are refused. Measured against the BF16 parent with the same head on 2,000 typed decisions: 92.25% the parent's answer (92.95% with the QR-001e adapter), none of the parent's 704 confident decisions changed with the adapter; descriptive, there is no bar for decisions, and as text the backbone does NOT meet the house bar, as its card states.",
+      "architecture": "clef",
+      "upstream": {
+        "checkpoint": "Cloudflare/clef",
+        "revision": "0b331204bb13fbd2ca93a64df1956f5b55478ce5"
+      },
+      "files": [
+        {
+          "name": "Clef-IQ3_S.clef.gguf",
+          "repo": "Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF",
+          "revision": "0a24dd670d52ae92b798eea4c2c61ce01f62447c",
+          "sha256": "1e142e60b7067673971bbcbcb7af316409f530a24857770d30dae492932f0efe",
+          "bytes": 12675711328
+        }
+      ],
+      "quantization": "IQ3_S backbone, BF16 decision head",
+      "published": true,
+      "anchor": "Against the BF16 parent as a native Clef GGUF with the same head, 2,000 decisions of LocalLLaMA/typed-decisions at 7189f46b: 92.25% same answer, accuracy 73.45% (parent 72.30%), mean total variation 0.0501; the published Runner 1.6.1 asset reproduced 50 of 50 recorded answers with max |dlogit| 3.2e-4 (the card's evidence files).",
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-28",
+          "reason": "Admitted 2026-10-28 at Tier 2 on the owner's direct request (the head added to the 2026-10-27 repository; policy decision 2026-10-27: Tier 1 follows pull, and the repository is under the bar). The card leads with the measured shortfall against the house bar and reports decisions descriptively.",
+          "last_validated_release": null
+        }
+      ],
+      "published_exception": "Policy decision 2026-10-27: Tier 1 follows pull, and this repository is under the download bar. Published on the owner's direct request (2026-10-28) as the full decision model of the project's Clef IQ3_S files; its card leads with the measured shortfall against the house bar and reports decisions descriptively."
+    },
+    {
       "id": "cloudflare-clef-iq3_s-recovery-qr-001e-lora",
       "model": "Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B)",
       "family": "Cloudflare Clef",
