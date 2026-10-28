@@ -274,7 +274,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 **Tier 2, maintained on report** (dated evidence, not gated):
 
 <details>
-<summary><b>Cloudflare Clef</b>, 2 models: CPU - · CUDA 🟨 1 of 4 · Metal - · Train 🟨 1 of 4</summary>
+<summary><b>Cloudflare Clef</b>, 2 models: CPU - · CUDA 🟨 1 of 5 · Metal - · Train 🟨 1 of 5</summary>
 <p><b>Cloudflare Clef (clef, on Qwen3.8-27B)</b>, text path only</p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
@@ -287,6 +287,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="#cloudflare-clef-iq3_s-recovered"><code>Clef-backbone-IQ3_S.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="#cloudflare-clef-iq3_s-native"><code>Clef-IQ3_S.clef.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
 <tr><td><a href="#cloudflare-clef-iq3_s-recovery-qr-001e-lora"><code>clef-IQ3_S-recovery-QR-001e.lora.F16.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
 <tr><td><a href="#cloudflare-clef-iq3_s-recovery-qr-001b-lora"><code>clef-IQ3_S-recovery-QR-001b.lora.F16.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
 </tbody>
@@ -773,6 +774,18 @@ Text path only: a decision model served at /v1/systemone; requests with images o
 - **Quantization:** IQ3_S.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.
 - **Tier history:** Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
+
+<a id="cloudflare-clef-iq3_s-native"></a>
+##### `Clef-IQ3_S.clef.gguf`
+
+Text path only: the full Clef decision model in one file, the project's IQ3_S backbone with Cloudflare's own BF16 joint decision head unchanged, served at /v1/systemone; requests with images or videos are refused. Measured against the BF16 parent with the same head on 2,000 typed decisions: 92.25% the parent's answer (92.95% with the QR-001e adapter), none of the parent's 704 confident decisions changed with the adapter; descriptive, there is no bar for decisions, and as text the backbone does NOT meet the house bar, as its card states.
+
+- **File:** `Clef-IQ3_S.clef.gguf` (sha256 `1e142e60b7067673971bbcbcb7af316409f530a24857770d30dae492932f0efe`, 12,675,711,328 bytes, from [Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF) at revision `0a24dd670d52`).
+- **Upstream checkpoint:** Cloudflare/clef at revision `0b331204bb13`.
+- **Quantization:** IQ3_S backbone, BF16 decision head.
+- **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull, and this repository is under the download bar. Published on the owner's direct request (2026-10-28) as the full decision model of the project's Clef IQ3_S files; its card leads with the measured shortfall against the house bar and reports decisions descriptively.
+- **Numerical anchor:** Against the BF16 parent as a native Clef GGUF with the same head, 2,000 decisions of LocalLLaMA/typed-decisions at 7189f46b: 92.25% same answer, accuracy 73.45% (parent 72.30%), mean total variation 0.0501; the published Runner 1.6.1 asset reproduced 50 of 50 recorded answers with max |dlogit| 3.2e-4 (the card's evidence files).
+- **Tier history:** Tier 2, maintained on report from 2026-10-28 ([log](#transition-log)).
 
 <a id="cloudflare-clef-iq3_s-recovery-qr-001e-lora"></a>
 ##### `clef-IQ3_S-recovery-QR-001e.lora.F16.gguf`
@@ -1594,5 +1607,6 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-27 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `Clef-backbone-IQ3_S.gguf`](#cloudflare-clef-iq3_s-recovered) | Tier 2, maintained on report | Admitted 2026-10-27 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar. | none recorded |
 | 2026-10-27 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `clef-IQ3_S-recovery-QR-001e.lora.F16.gguf`](#cloudflare-clef-iq3_s-recovery-qr-001e-lora) | Tier 2, maintained on report | Admitted 2026-10-27 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar. | none recorded |
 | 2026-10-27 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `clef-IQ3_S-recovery-QR-001b.lora.F16.gguf`](#cloudflare-clef-iq3_s-recovery-qr-001b-lora) | Tier 2, maintained on report | Admitted 2026-10-27 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar. | none recorded |
+| 2026-10-28 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `Clef-IQ3_S.clef.gguf`](#cloudflare-clef-iq3_s-native) | Tier 2, maintained on report | Admitted 2026-10-28 at Tier 2 on the owner's direct request (the head added to the 2026-10-27 repository; policy decision 2026-10-27: Tier 1 follows pull, and the repository is under the bar). The card leads with the measured shortfall against the house bar and reports decisions descriptively. | none recorded |
 
 <!-- model-tiers:rows:end -->
