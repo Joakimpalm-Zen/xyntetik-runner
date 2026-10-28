@@ -58,6 +58,8 @@ test-template-oom.exe
 test-template-families
 test-template-families.exe
 test-sampler
+test-upload-report
+test-upload-report.exe
 test-sampler.exe
 test-shared-weights
 test-shared-weights.exe
