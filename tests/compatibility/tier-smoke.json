@@ -149,6 +149,30 @@
             "runner_version": "1.5.1",
             "commit": "50c5c94555759c50639c3870d16c367358da5f2c"
           }
+        },
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.macos-arm64-metal.metal.txt",
+          "sha256": "9a878ce06241ebaa98c9b52ec373e5ccdb72ceb80ffdd73cad2e8e736610c1b3",
+          "bytes": 232,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-28",
+            "runner_version": "1.7.0",
+            "commit": "3acdcfd7bd18f8208cfdee58eb6a291f4f99de06"
+          }
         }
       }
     },
@@ -868,6 +892,58 @@
             "date": "2026-10-28",
             "runner_version": "1.7.0",
             "commit": "3ad637c18f985201fd38806305593df8417422d6"
+          }
+        }
+      }
+    },
+    "qwen3-4b-q4_k_m-bartowski": {
+      "pins": {
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.macos-arm64-metal.metal.txt",
+          "sha256": "95be9f33ca7dbafb77f5441dc7d8be7951e7782f0fc0f78c53da1d218d29b71b",
+          "bytes": 241,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-28",
+            "runner_version": "1.7.0",
+            "commit": "3acdcfd7bd18f8208cfdee58eb6a291f4f99de06"
+          }
+        },
+        "macos-arm64-metal/cpu": {
+          "path": "tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.macos-arm64-metal.cpu.txt",
+          "sha256": "95be9f33ca7dbafb77f5441dc7d8be7951e7782f0fc0f78c53da1d218d29b71b",
+          "bytes": 241,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-28",
+            "runner_version": "1.7.0",
+            "commit": "3acdcfd7bd18f8208cfdee58eb6a291f4f99de06"
           }
         }
       }
