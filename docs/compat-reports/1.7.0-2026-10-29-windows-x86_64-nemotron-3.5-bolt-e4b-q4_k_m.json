@@ -1,0 +1,89 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-10-28T23:55:04Z",
+  "host": {
+    "os": "Windows",
+    "machine": "AMD64"
+  },
+  "runner": {
+    "path": "runner.exe",
+    "version": "runner 1.7.0"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "nemotron-3.5-bolt-e4b-q4_k_m",
+      "architecture": "gemma4",
+      "file": "models/Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf",
+      "expected_sha256": "c8af2b8aea10a690a1d9491db744a9446660173cb38fc489612b556615a69612",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1891.0,
+          "stderr_tail": "gemma4: E-series (per-layer embeddings + shared KV) \u00e2\u20ac\u201d verified against llama.cpp at the Q4_K noise floor rather than token-identically\nrope: using model frequency factors (rope_freqs.weight)\ngpu: OS video memory budget 7.60 GB for this process, 0.14 GB in use; offload budget 7.46 GB, headroom 0.54 GB\ngpu-split: budget=7.46GB fixed=0.56GB G=42/42 full=1 used=3.19GB\ngpu-split: prompt window 512 columns (batch 512, 3.56 GB spare, 253956 bytes a column)\ngpu: CUDA backend on NVIDIA GeForce RTX 3070 (3.1 GB weights in VRAM)\ngpu: VRAM 3.96 GB free of 8.59 GB after init (kv 0.23 GB + scratch 0.02 GB this instance)\nloaded Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf | gemma4 | 42 layers | ctx 4096 | 4 threads | 1.72s\nsampling: gemma4 (temp 0.00 \u00e2\u20ac\u201d greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\nsampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 64\n\nprompt: 4 tok, 116.18 tok/s | gen: 1 tok, 56.03 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 484.0,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": ""
+        },
+        "cpu_cuda": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 165085.53,
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
+            "RUNNER_MOE_EAGER": "1"
+          },
+          "min_prompt_tokens": 85,
+          "cpu_cuda_identity": null,
+          "identical": null,
+          "failed_prompts": [],
+          "report": "docs\\compat-reports\\cpu_cuda\\nemotron-3.5-bolt-e4b-q4_k_m.json",
+          "output_tail": "ok  : 'Q: What is 17 * 23?\\nA:'\nok  : 'The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.'\nok  : 'In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction'\nok  : \"def parse_header(buf, size):\\n    if size < 8:\\n        raise ValueError('short header')\\n    magic, version = struct.unpack('<II', buf[:8])\\n    if magic != GGUF_MAGIC:\\n        raise ValueError('not a gguf file')\\n    return magic, version\\n\\n# The loader above rejects a truncated header before unpacking it, which\"\nok  : 'The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who'\n\ncpu_cuda: pass \u00e2\u20ac\u201d 9/9 exact, 0 near-tie tolerated (eager routing)\n"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 2099.39,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "2 + 2 is **4**. \u00f0\u0178\u02dc\u0160\n"
+        }
+      },
+      "resolved_file": "models/Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf",
+      "actual_sha256": "c8af2b8aea10a690a1d9491db744a9446660173cb38fc489612b556615a69612",
+      "file_status": "pass",
+      "complete": true
+    }
+  ],
+  "complete": true,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "pass": 1
+      },
+      "cpu_cuda": {
+        "pass": 1
+      },
+      "chat": {
+        "pass": 1
+      }
+    }
+  }
+}
