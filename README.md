@@ -350,11 +350,13 @@ can change them, which is a stated limit, not a promise broken.
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Actively validated models
 
 Runner keeps loading every model the [support matrix](MANUAL.md#support-matrix)
-admits; the files linked below are the ones it re-checks on every release, with one
-greedy prompt compared byte for byte against a pinned output on the device
-each file names. A release is refused while any of them, on hardware the
-project owns, is missing that check, failing it, or older than 120 days with
-no change on its path re-checked since.
+admits; the files linked below are the ones it validates, each with one greedy
+prompt compared byte for byte against a pinned output on the device the file
+names, and the page records when each file last passed and with which Runner.
+Nothing is re-tested on a schedule: validation runs happen in the project's
+bigger validation runs and on immediate need. A release is refused while any
+Tier 1 file, on hardware the project owns, has no recorded pass or carries a
+recorded failure.
 
 [The validated files by family, what each tier promises, every file's full envelope and how to run the check](docs/model-support.md#overview)
 
