@@ -1,25 +1,24 @@
 {
   "schema": "xyntetik.runner.model-tiers.v1",
   "policy": {
-    "why": "A tier is a maintenance and validation commitment, not a compatibility list. The support matrix, --info caps and --info doctor say what loads; the evidence documents say what was measured; this roster says which files are re-checked on every release and carries that check's result per backend, so the README renders it and nobody types it.",
+    "why": "A tier is a maintenance and validation commitment, not a compatibility list. The support matrix, --info caps and --info doctor say what loads; the evidence documents say what was measured; this roster says which files the project validates and carries the Runner version and date of each file's last validation run per backend, so docs/model-support.md renders the paper trail and nobody types it.",
     "tiers": {
-      "tier1": "Actively validated: scheduled validation and proactive maintenance for the configurations the row names; gated on every release.",
+      "tier1": "Actively validated: the project's own published files above the pull bar, validated in the bigger validation runs and on immediate need, maintained proactively; a Tier 1 row with no recorded pass, or a recorded failure, refuses a release.",
       "tier2": "Maintained on report: no scheduled full-model revalidation; regression tests keep running and shared-path changes are tested with representative coverage.",
       "tier3": "Unmaintained: no dedicated validation; the implementation and dated evidence remain and the 1.x loading promise still applies. No members; the first entry needs a policy decision and a transition-log entry.",
       "upcoming": "Planned admission: a Tier 1 candidate whose implementation or validation is incomplete; never counted as actively supported."
     },
     "cells": "A Tier 1 backend cell is a recorded gate (kind gate), a declared limit (kind limit, with the support-matrix link) or null (nobody ran the gate). A cell never carries a mark from a neighbouring file or backend.",
     "recording": "Gate cells and the lora answer are written by scripts/model-tiers.py --record from a smoke run's result file, never by hand.",
-    "gate": "scripts/check-release.py refuses a tag while any Tier 1 row is not current: its smoke cell (the backend and device class the row names) missing, recorded on another class, older than the row's max_age_days (default_max_age_days unless the row sets a tighter one), or a recorded failure on any of its backends. The mechanism is the device ledger's maximum age, not a map from source paths to files. A row whose smoke class is borrowed hardware (ownership in docs/device-evidence.json) is reported the same way but its age never refuses a tag: its records are dated evidence the project may use and must not depend on. A recorded failure refuses the tag on any class. The age is a backstop, not a schedule (2026-10-27): a row is re-run when a pull request changes a path its model uses and names the row, and the gate refuses only a record older than the backstop.",
+    "gate": "scripts/check-release.py refuses a tag while a Tier 1 row has no recorded pass on the backend its smoke names, or a recorded failure on any of its backends. A record's age never refuses (policy decision 2026-10-28): nothing is re-tested on a schedule; validation runs happen in the bigger validation runs the owner starts and on immediate need (a reported regression on a path the file uses), and each run writes its Runner version and date into the row, which is the paper trail. A row whose smoke class is borrowed hardware (ownership in docs/device-evidence.json) is reported the same way, but a missing record on it never refuses a tag; a recorded failure refuses on any class.",
     "lora": "The file's runner --info adapter answer at the gate run: whether the LoRA backward admits the file (training) and whether an adapter can be served on it (adapter_serving), each with the refusal sentence when not. It says the backward admits the file; it is not a training-quality claim.",
     "last_validated_release": "The Runner version of the newest passing recorded gate on the row when its tier changed; null when the roster had recorded none, which is every row at the 2026-10-22 migration (the roster postdates the evidence the audit read).",
-    "default_max_age_days": 120,
     "backends": [
       "cpu",
       "cuda",
       "metal"
     ],
-    "admission": "Tier 1 follows pull (policy decision 2026-10-27): it holds the project's own published files whose repository shows at least 1,000 downloads on the Hub in the last 30 days, read at each release and written into the transition that moves a row; a head or an adapter follows its base. A file under the bar, and every file another publisher maintains, is Tier 2: maintained on report, its records kept as dated evidence, never gated. A row moves back up when its repository crosses the bar at a release."
+    "admission": "Tier 1 follows pull (policy decision 2026-10-27): it holds the project's own published files whose repository shows at least 1,000 downloads on the Hub in the last 30 days, read at each release and written into the transition that moves a row; a head or an adapter follows its base. A file under the bar, and every file another publisher maintains, is Tier 2: maintained on report, its records kept as dated evidence, never gated. A row moves back up when its repository crosses the bar at a release. An admitted row carries the pass that admitted it: the Runner version, date and device class of its validation run, written by --record from the run's result file before the row moves to Tier 1."
   },
   "exempt": [
     {

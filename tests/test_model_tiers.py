@@ -73,8 +73,7 @@ def tier1_row(**over):
 def roster(*rows):
     return {
         "schema": mt.SCHEMA,
-        "policy": {"default_max_age_days": 45,
-                   "backends": ["cpu", "cuda", "metal"]},
+        "policy": {"backends": ["cpu", "cuda", "metal"]},
         "exempt": [],
         "rows": list(rows) or [tier1_row()],
     }
@@ -509,7 +508,10 @@ def test_the_cli_records_into_the_roster_file(tmp_path):
     assert row["backends"]["metal"]["date"] == RUN_DAY
 
 
-# --- staleness: what scripts/check-release.py refuses a tag on ---------------
+# --- the gate: what scripts/check-release.py refuses a tag on ----------------
+# Policy decision 2026-10-28: a record is never re-run by age. The gate asks
+# only for a recorded pass on the backend the row names and no recorded
+# failure on any; the printed age is information for the paper trail.
 
 import datetime  # noqa: E402
 
@@ -529,75 +531,75 @@ def gated(**cells):
     return roster(row)
 
 
-def test_a_smoke_cell_inside_the_max_age_is_fresh():
-    assert mt.stale(gated(metal=gate("2026-10-22")), TODAY) == []
+def test_a_recorded_pass_on_the_named_backend_passes_the_gate():
+    assert mt.gate(gated(metal=gate("2026-10-22")), TODAY) == []
 
 
 def test_a_tier1_row_whose_smoke_never_ran_is_refused():
-    """The device ledger's NEVER: a row nobody gated is not current."""
-    assert mt.stale(gated(), TODAY) == ["toy-q8_0"]
+    """The device ledger's NEVER: a row nobody validated has no pass to show."""
+    assert mt.gate(gated(), TODAY) == ["toy-q8_0"]
 
 
-def test_a_smoke_cell_past_the_max_age_is_stale():
-    # 2026-09-07 is 46 days before 2026-10-23; the policy allows 45
-    assert mt.stale(gated(metal=gate("2026-09-07")), TODAY) == ["toy-q8_0"]
+def test_an_old_record_is_not_refused_and_its_age_is_printed(capsys):
+    """No re-testing by age: a pass from months ago stands until the next
+    validation run, and the report says how old it is."""
+    assert mt.gate(gated(metal=gate("2026-01-01")), TODAY) == []
+    out = capsys.readouterr().out
+    assert out.startswith("ok") and "295 days ago" in out and "1.5.0 on 2026-01-01" in out
 
 
-def test_the_boundary_day_is_not_stale():
-    assert mt.stale(gated(metal=gate("2026-09-08")), TODAY) == []
-
-
-def test_a_row_can_hold_a_tighter_max_age():
-    doc = gated(metal=gate("2026-10-12"))
-    doc["rows"][0]["max_age_days"] = 10
-    assert mt.stale(doc, TODAY) == ["toy-q8_0"]
+def test_the_roster_carries_no_age_policy():
+    """The age limit left with the decision: neither the policy nor a row
+    holds one, and the validator asks for none."""
+    doc = roster()
+    assert "default_max_age_days" not in doc["policy"]
+    assert errors(doc) == []
+    committed_policy = mt.load(ROSTER)["policy"]
+    assert "default_max_age_days" not in committed_policy
+    assert not any("max_age_days" in r for r in mt.load(ROSTER)["rows"])
 
 
 def test_a_failing_cell_on_any_backend_refuses():
     """Recent and red is worse than absent: a recorded failure on a backend
     the row is not gated on still says this file broke."""
     doc = gated(metal=gate("2026-10-22"), cpu=gate("2026-10-22", result="fail"))
-    assert mt.stale(doc, TODAY) == ["toy-q8_0"]
+    assert mt.gate(doc, TODAY) == ["toy-q8_0"]
 
 
-def test_a_smoke_from_another_device_class_does_not_count():
-    """Owner decision 3: the smoke runs on the class named in the row."""
+def test_a_pass_from_another_device_class_counts_and_is_named(capsys):
+    """A recorded pass stands wherever it ran; the report names the class
+    it ran on beside the one the row names for its next run."""
     doc = gated(metal=gate("2026-10-22", device_class="linux-x86_64-cuda"))
-    assert mt.stale(doc, TODAY) == ["toy-q8_0"]
+    assert mt.gate(doc, TODAY) == []
+    assert "metal on linux-x86_64-cuda" in capsys.readouterr().out
 
 
 def test_rows_below_tier1_are_not_gated():
     row = tier1_row(tier="tier2")
     row["transitions"][-1]["tier"] = "tier2"
-    assert mt.stale(roster(row), TODAY) == []
+    assert mt.gate(roster(row), TODAY) == []
 
 
 # Borrowed hardware (owner decision 2026-10-27): a row whose smoke class is
-# a lent machine is reported like the others, but a missing or old record
-# on it never holds a release; a recorded failure does on any class.
+# a lent machine is reported like the others, but a missing record on it
+# never holds a release; a recorded failure does on any class.
 
 LENT = frozenset({"macos-arm64-metal"})
 
 
-def test_a_stale_row_on_borrowed_hardware_does_not_refuse(capsys):
-    doc = gated(metal=gate("2026-09-07"))
-    assert mt.stale(doc, TODAY, borrowed=LENT) == []
+def test_a_never_gated_row_on_borrowed_hardware_does_not_refuse(capsys):
+    assert mt.gate(gated(), TODAY, borrowed=LENT) == []
     out = capsys.readouterr().out
-    assert out.startswith("STALE") and "borrowed hardware" in out
-
-
-def test_a_never_gated_row_on_borrowed_hardware_does_not_refuse():
-    assert mt.stale(gated(), TODAY, borrowed=LENT) == []
+    assert out.startswith("NEVER") and "borrowed hardware" in out
 
 
 def test_a_failing_cell_on_borrowed_hardware_still_refuses():
     doc = gated(metal=gate("2026-10-22", result="fail"))
-    assert mt.stale(doc, TODAY, borrowed=LENT) == ["toy-q8_0"]
+    assert mt.gate(doc, TODAY, borrowed=LENT) == ["toy-q8_0"]
 
 
-def test_a_stale_row_on_owned_hardware_refuses_whatever_else_is_borrowed():
-    doc = gated(metal=gate("2026-09-07"))
-    assert mt.stale(doc, TODAY, borrowed=frozenset({"linux-x86_64-cuda"})) == ["toy-q8_0"]
+def test_a_never_gated_row_on_owned_hardware_refuses_whatever_else_is_borrowed():
+    assert mt.gate(gated(), TODAY, borrowed=frozenset({"linux-x86_64-cuda"})) == ["toy-q8_0"]
 
 
 def test_borrowed_classes_come_from_the_ledgers_ownership_field():
@@ -631,19 +633,19 @@ def test_the_support_doc_names_borrowed_hardware_on_the_row():
                                                      frozenset())
 
 
-def test_the_stale_report_prints_every_tier1_row(capsys):
-    mt.stale(gated(metal=gate("2026-10-22")), TODAY)
+def test_the_gate_report_prints_every_tier1_row(capsys):
+    mt.gate(gated(metal=gate("2026-10-22")), TODAY)
     assert "toy-q8_0" in capsys.readouterr().out
 
 
-def test_the_stale_summary_follows_the_rows_in_one_pipe(tmp_path):
+def test_the_gate_summary_follows_the_rows_in_one_pipe(tmp_path):
     """check-release reads this check with stdout and stderr merged into
     one pipe; the per-row lines must come before the summary under them."""
     rpath = tmp_path / "tiers.json"
     dpath = tmp_path / "devices.json"
     mt.save(gated(), rpath)
     dpath.write_text(json.dumps(DEVICES), encoding="utf-8")
-    r = subprocess.run([sys.executable, str(SCRIPT), "--stale", "--json", str(rpath),
+    r = subprocess.run([sys.executable, str(SCRIPT), "--gate", "--json", str(rpath),
                         "--device-evidence", str(dpath), "--today", TODAY.isoformat()],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert r.returncode == 1
@@ -711,11 +713,12 @@ def test_the_readme_links_to_the_overview_and_carries_no_render():
 
 
 def test_the_doc_block_opens_with_the_overview():
-    """The rendered block of docs/model-support.md starts with the Tier 1
-    overview (its anchor, heading and legend), before the tiers."""
+    """The rendered block of docs/model-support.md starts with the validation
+    runs at a glance (its anchor, heading and legend), before the tiers."""
     doc = committed()
     text = mt.render_doc(doc).lstrip("\n")
-    assert text.startswith('<a id="overview"></a>\n## Tier 1 at a glance\n\n' + mt.OVERVIEW_LEGEND)
+    assert text.startswith('<a id="overview"></a>\n## Validation runs at a glance\n\n'
+                           + mt.OVERVIEW_LEGEND)
     assert text.index("</details>") < text.index('<a id="tier1"></a>')
 
 
@@ -898,21 +901,30 @@ def test_the_legend_comes_first_and_names_every_mark():
     assert "\u2013" not in text and "\u2014" not in text
 
 
-def test_upcoming_models_are_one_line_under_the_blocks_and_tier2_is_absent():
+def test_upcoming_models_are_one_line_under_the_blocks_and_tier2_has_its_own_line():
+    """Since 2026-10-28 the overview is the record of every file's last
+    validation run: Tier 1 families first, Tier 2 families under their own
+    line (dated evidence, not gated), Upcoming models as one line last."""
     up = {"id": "later", "model": "Later VL", "tier": "upcoming",
           "claim": "Text path only: not admitted.", "architecture": "later",
           "missing": "an admission", "vision_upstream": True,
           "transitions": [{"tier": "upcoming", "effective": "2026-10-22",
                            "reason": "test", "last_validated_release": None}]}
     up2 = dict(up, id="sooner", model="Sooner", vision_upstream=False)
-    t2 = tier1_row(id="old", model="Old", tier="tier2")
+    t2 = tier1_row(id="old", model="Old", family="Elders", tier="tier2")
     t2["transitions"][-1]["tier"] = "tier2"
     text = mt.render_overview(roster(tier1_row(), t2, up, up2))
     tail = text.rsplit("</details>", 1)[1]
     assert ("**Upcoming** (planned, not supported yet): Later VL (text path only), "
             "Sooner.") in tail.splitlines()
     assert "Later" not in text.rsplit("</details>", 1)[0]
-    assert "Old" not in text
+    t1_at = text.index("**Tier 1, actively validated**")
+    t2_at = text.index("**Tier 2, maintained on report**")
+    assert t1_at < text.index("<b>Toy</b>") < t2_at < text.index("<b>Elders</b>")
+    # the committed roster renders its Tier 2 families the same way
+    committed_text = mt.render_overview(committed())
+    assert "**Tier 2, maintained on report**" in committed_text
+    assert "<summary><b>Gemma 4</b>" in committed_text
 
 
 # --- docs/model-support.md: envelopes and the transition log, rendered ----------
@@ -938,7 +950,7 @@ def test_the_support_doc_lists_models_under_their_family_and_upcoming_alone():
     other["files"] = [{"name": "toy-b.gguf", "sha256": "e" * 64, "bytes": 1}]
     text = mt.render_doc(roster(tier1_row(), t2, up, other))
     heads = [l for l in text.splitlines() if l.startswith("#")]
-    assert heads[0] == "## Tier 1 at a glance"
+    assert heads[0] == "## Validation runs at a glance"
     heads = heads[1:]
     assert heads[:7] == ["## Tier 1, actively validated", "### Toy", "#### Toy",
                          "##### `toy-Q8_0.gguf`", "#### Toy B", "##### `toy-b.gguf`",
