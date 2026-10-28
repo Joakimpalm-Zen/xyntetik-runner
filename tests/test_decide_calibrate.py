@@ -14,8 +14,24 @@ import math
 import pathlib
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import socketserver
 
 import pytest
+
+
+class LoopbackServer(HTTPServer):
+    """HTTPServer whose bind skips the reverse lookup of its own address.
+
+    HTTPServer.server_bind names the server with socket.getfqdn, which on a
+    hosted macOS runner stalls about 35 s per server: the tier-smoke file
+    alone cost 18 of the macOS suite's 51 minutes on the 1.7.0 merge run,
+    32 s on Windows. A fake that answers on the loopback needs no name.
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "decide-calibrate.py"
@@ -123,7 +139,7 @@ class _Server:
                 self.end_headers()
                 self.wfile.write(data)
 
-        self.httpd = HTTPServer(("127.0.0.1", 0), Handler)
+        self.httpd = LoopbackServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
 

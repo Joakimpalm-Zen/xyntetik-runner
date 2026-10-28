@@ -21,6 +21,22 @@ import os
 import signal
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import socketserver
+
+
+class LoopbackServer(HTTPServer):
+    """HTTPServer whose bind skips the reverse lookup of its own address.
+
+    HTTPServer.server_bind names the server with socket.getfqdn, which on a
+    hosted macOS runner stalls about 35 s per server: the tier-smoke file
+    alone cost 18 of the macOS suite's 51 minutes on the 1.7.0 merge run,
+    32 s on Windows. A fake that answers on the loopback needs no name.
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
 
 argv = sys.argv[1:]
 DEFAULT = ("Here they are, in order from the Sun:\n\n1. Mercury: the smallest planet "
@@ -98,7 +114,7 @@ if "--serve" in argv:
         def log_message(self, *a):
             pass
 
-    server = HTTPServer(("127.0.0.1", port), Handler)
+    server = LoopbackServer(("127.0.0.1", port), Handler)
 
     def stop(*_):
         raise SystemExit(0)
