@@ -74,9 +74,9 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
-> **Published release: 1.6.1.** The [compatibility hotfix](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) restores the previous Linux GLIBC 2.38 ceiling and starts on Ubuntu 24.04. Its engine sources come from the 1.6.0 tag; this development branch includes later training changes. The 1.6.1 Golden count remains unmeasured. [Validation](docs/linux-1.6.1-candidate.md).
+> **Published release: 1.7.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) carries the training work, the one-mode command line and the validation paper trail of the [changelog](CHANGELOG.md). Its Linux asset keeps the GLIBC 2.38 ceiling and starts on Ubuntu 24.04 ([how that is held](docs/linux-1.6.1-candidate.md)).
 
-> **Version `1.6.1`.** The command line, the HTTP API, the record formats and
+> **Version `1.7.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x
 > ([versioning policy](docs/versioning.md)). This page is the short version;
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
@@ -463,7 +463,7 @@ passing evaluation made for those exact bytes.
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.6.1
+./runner --version   # -> runner 1.7.0
 ```
 
 Linux, macOS and Windows. NVIDIA GPUs need a driver with CUDA 13.0 support

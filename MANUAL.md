@@ -64,9 +64,9 @@ chmod +x runner-macos-arm64 && mv runner-macos-arm64 runner
 <details>
 <summary>Linux (x86_64)</summary>
 
-The 1.6.1 Linux asset restores the previous GLIBC 2.38 ceiling and starts on
-Ubuntu 24.04. Upgrade from 1.6.0, whose asset requires GLIBC 2.43.
-[Release validation](docs/linux-1.6.1-candidate.md).
+The Linux asset is built on Ubuntu 24.04 with a GLIBC 2.38 ceiling that the
+release workflow checks (since 1.6.1; the loose 1.6.0 asset required GLIBC
+2.43). [How it is held](docs/linux-1.6.1-candidate.md).
 
 ```sh
 curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/runner-linux-x86_64
@@ -1534,7 +1534,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.6.1
+./runner --version   # -> runner 1.7.0
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -1647,7 +1647,7 @@ The independently built container has a separate Debian build baseline.
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
 nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v1.6.1`) and `:latest`. Build it yourself with `docker build -t runner .`.
+tag carries the `v`, e.g. `:v1.7.0`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which
