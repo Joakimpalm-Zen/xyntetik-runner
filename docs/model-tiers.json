@@ -369,9 +369,38 @@
       "backends": {
         "cpu": null,
         "cuda": null,
-        "metal": null
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.7.0",
+          "date": "2026-10-28",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "6ec949e196245a5173ead275ffe80dd445e1b41f",
+          "caps": {
+            "version": "1.7.0",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "0ae60d3e43338350748be517a266cf38bbf595d150ebb8d2c044e13095757716",
+          "ran": "runner -m Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.macos-arm64-metal.metal.txt"
+        }
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.0",
+        "date": "2026-10-28"
+      },
       "transitions": [
         {
           "tier": "tier2",

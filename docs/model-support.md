@@ -313,7 +313,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Gemma 4</b>, 5 models: CPU 🟨 1 of 5 · CUDA 🟨 4 of 5 · Metal 🟨 1 of 5 · Train 🟨 3 of 5</summary>
+<summary><b>Gemma 4</b>, 6 models: CPU 🟨 1 of 6 · CUDA 🟨 4 of 6 · Metal 🟨 2 of 6 · Train 🟨 4 of 6</summary>
 <p><b>Gemma 4 12B</b>, text path only</p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
@@ -347,6 +347,13 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="#gemma-4-e2b-it-q4_k_m-q4_0-mix"><code>gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf</code></a></td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td nowrap>✅ 1.5.1<br>2026-10-23</td></tr>
+</tbody>
+</table>
+<p><b>Nemotron 3.5 Bolt E4B</b>, text path only</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#nemotron-3.5-bolt-e4b-q4_k_m"><code>Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf</code></a></td><td></td><td></td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.0<br>2026-10-28</td></tr>
 </tbody>
 </table>
 </details>
@@ -967,6 +974,30 @@ Text path only: the smoke-test file from the quickstart; it fails the fidelity b
 - **LoRA training:** supported (runner 1.5.1, 2026-10-23).
 - **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-23).
 - **Tier history:** Tier 1, actively validated from 2026-10-22; Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
+
+#### Text path only: Nemotron 3.5 Bolt E4B
+
+<a id="nemotron-3.5-bolt-e4b-q4_k_m"></a>
+##### `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf`
+
+Text path only: NVIDIA's post-train of Gemma-4-E4B-it in the publisher's own Q4_K_M, admitted on the owner's request to run on the Metal laptop; it loads, tokenizes as the publisher's tokenizer.json does and answers through its chat template, and no fidelity measurement against its BF16 parent has been made.
+
+- **File:** `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf` (sha256 `c8af2b8aea10a690a1d9491db744a9446660173cb38fc489612b556615a69612`, 6,180,446,208 bytes, from [nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB) at revision `1db54d5b1253`).
+- **Upstream checkpoint:** nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16 at revision `49843eed8db1`.
+- **Quantization:** Q4_K_M (publisher).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison is feasible and owed):** Family: gemma-4-E2B bf16 against Google's float32 reference (1.5.0 golden pass). This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ) and a chat answer at temperature 0 on the Metal laptop; no fidelity or cross-engine number.
+- **Context tested:** 4096.
+- **Known limitations:** No vision: the publisher's mmproj is not part of this repository and would not be loaded. 6.18 GB of weights page from disk on an 8 GB machine with other applications open; the validation run recorded that state.
+- **Still missing:** Fidelity against the BF16 parent (nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16); CPU and CUDA cells; the repository's DFlash drafter file (Nemotron-3.5-Bolt-E4B-DFlash-BF16.gguf), which Runner has no path for.
+- **Evidence:** [docs/compat-reports/1.7.0-2026-10-28-macos-arm64-nemotron-3.5-bolt-e4b-q4_k_m.json](compat-reports/1.7.0-2026-10-28-macos-arm64-nemotron-3.5-bolt-e4b-q4_k_m.json), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.0 on 2026-10-28.
+- **CPU:** ☐ not run
+- **CUDA:** ☐ not run
+- **Metal:** ✅ v1.7.0 2026-10-28 on macos-arm64-metal at commit `6ec949e19624`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.macos-arm64-metal.metal.txt)
+- **LoRA training:** supported (runner 1.7.0, 2026-10-28).
+- **LoRA adapter serving:** supported (runner 1.7.0, 2026-10-28).
+- **Tier history:** Tier 2, maintained on report from 2026-10-28 ([log](#transition-log)).
 
 ### Muse-Glimmer-30B
 
@@ -1607,6 +1638,7 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-27 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `Clef-backbone-IQ3_S.gguf`](#cloudflare-clef-iq3_s-recovered) | Tier 2, maintained on report | Admitted 2026-10-27 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar. | none recorded |
 | 2026-10-27 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `clef-IQ3_S-recovery-QR-001e.lora.F16.gguf`](#cloudflare-clef-iq3_s-recovery-qr-001e-lora) | Tier 2, maintained on report | Admitted 2026-10-27 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar. | none recorded |
 | 2026-10-27 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `clef-IQ3_S-recovery-QR-001b.lora.F16.gguf`](#cloudflare-clef-iq3_s-recovery-qr-001b-lora) | Tier 2, maintained on report | Admitted 2026-10-27 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar. | none recorded |
+| 2026-10-28 | [Nemotron 3.5 Bolt E4B, `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf`](#nemotron-3.5-bolt-e4b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-28 at Tier 2 on the owner's request (policy decision 2026-10-27: Tier 1 follows pull; this is the publisher's file and its downloads are the publisher's). Maintained on report, with the admitting run recorded. | none recorded |
 | 2026-10-28 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `Clef-IQ3_S.clef.gguf`](#cloudflare-clef-iq3_s-native) | Tier 2, maintained on report | Admitted 2026-10-28 at Tier 2 on the owner's direct request (the head added to the 2026-10-27 repository; policy decision 2026-10-27: Tier 1 follows pull, and the repository is under the bar). The card leads with the measured shortfall against the house bar and reports decisions descriptively. | none recorded |
 
 <!-- model-tiers:rows:end -->
