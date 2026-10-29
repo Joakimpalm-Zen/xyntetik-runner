@@ -3669,22 +3669,40 @@
           "kind": "gate",
           "runner_version": "1.7.1",
           "date": "2026-10-29",
-          "device_class": "macos-arm64-metal",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "a83670a85fdc37e73c53dbfe9224beb13a0d7020",
+          "commit": "771924318c514db96ab780a93fc09b99a2c2fdbf",
           "caps": {
             "version": "1.7.1",
-            "os": "macos",
-            "arch": "arm64",
+            "os": "windows",
+            "arch": "x86_64",
             "cpu_cores": 8,
-            "gpu_backend": "metal",
-            "gpu_name": "Apple M1"
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "d163df7b65c07bae1c21c464d50862af2fcd35054f22ad674c975a78aadd9600",
           "ran": "runner -m MiniCPM5-2B-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/minicpm5-2b-q8_0.macos-arm64-metal.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/minicpm5-2b-q8_0.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "771924318c514db96ab780a93fc09b99a2c2fdbf",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "d163df7b65c07bae1c21c464d50862af2fcd35054f22ad674c975a78aadd9600",
+          "ran": "runner -m MiniCPM5-2B-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/minicpm5-2b-q8_0.windows-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "gate",
           "runner_version": "1.7.1",
@@ -3778,22 +3796,40 @@
           "kind": "gate",
           "runner_version": "1.7.1",
           "date": "2026-10-29",
-          "device_class": "macos-arm64-metal",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "a83670a85fdc37e73c53dbfe9224beb13a0d7020",
+          "commit": "771924318c514db96ab780a93fc09b99a2c2fdbf",
           "caps": {
             "version": "1.7.1",
-            "os": "macos",
-            "arch": "arm64",
+            "os": "windows",
+            "arch": "x86_64",
             "cpu_cores": 8,
-            "gpu_backend": "metal",
-            "gpu_name": "Apple M1"
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "4ed9b06a2b3a14c9ddadca6bd1e3f16b9b5d582060a860bf3a72db043ec67e0a",
+          "ran": "runner -m MiniCPM5-2B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "771924318c514db96ab780a93fc09b99a2c2fdbf",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "16ee8166ecb8972e7308b12c4ac90ba6ea15b074e94182b3db73887942b67359",
-          "ran": "runner -m MiniCPM5-2B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.macos-arm64-metal.cpu.txt"
+          "ran": "runner -m MiniCPM5-2B-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cuda.txt"
         },
-        "cuda": null,
         "metal": {
           "kind": "gate",
           "runner_version": "1.7.1",

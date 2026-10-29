@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Validation runs at 1.7.1 on the Windows CUDA host: 2 rows** (MiniCPM5-2B,
+  RTX 3070, 2026-10-29, built at 77192431). `minicpm5-2b-q8_0` and
+  `minicpm5-2b-q4_k_m` pass on the CPU and on CUDA, both files resident on
+  the card. Every reply is byte-identical to the Mac pins except the
+  Q4_K_M's x86 CPU reply, which picks a different word in its first
+  sentence ("The smallest planet" against "The closest planet") and is
+  pinned on its own; it still names the fact.
 - **A rotated-basis ternary file is refused instead of answering garbage.**
   Prism ML's Ternary-Bonsai-2 GGUFs store every weight matrix in a
   Hadamard-rotated basis (`prism.hadamard.*`) and need the matching
