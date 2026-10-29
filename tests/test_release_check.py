@@ -1,7 +1,9 @@
 import argparse
 import importlib.util
 import json
+import os
 import pathlib
+import shutil
 import subprocess
 
 import pytest
@@ -719,11 +721,12 @@ def test_kl_tables_need_a_margin_qualified_column():
     assert check_release.kl_table_scan()   # the tree itself is clean
 
 
-def test_check_scans_the_tree_once_per_process(monkeypatch, tmp_path):
+def test_check_scans_the_tree_once_while_it_stands(monkeypatch, tmp_path):
     """The tree scans depend on the checkout, not on the release under test,
     so a process that calls check() repeatedly (this module does, twenty-eight
-    times) scans once. On the hosted Windows runner every repeat cost about
-    sixteen seconds and this file alone was the root pytest's wall."""
+    times) scans once while the tree is unchanged. On the hosted Windows runner
+    every repeat cost about sixteen seconds and this file alone was the root
+    pytest's wall."""
     calls = {"kl": 0, "private": 0, "home": 0}
 
     def counting(key):
@@ -732,20 +735,67 @@ def test_check_scans_the_tree_once_per_process(monkeypatch, tmp_path):
             return True
         return scan
 
-    monkeypatch.setattr(check_release, "_tree_verdict", None)
+    monkeypatch.setattr(check_release, "_tree_scan", None)
     monkeypatch.setattr(check_release, "kl_table_scan", counting("kl"))
     monkeypatch.setattr(check_release, "private_reference_scan", counting("private"))
     monkeypatch.setattr(check_release, "home_path_scan", counting("home"))
     monkeypatch.setattr(check_release, "binary_version", lambda _: "runner 1.2.0")
+    monkeypatch.setattr(check_release, "tree_state", lambda root=None: "tree as it stands")
     assert check_release.check(good_args(tmp_path))
     assert check_release.check(good_args(tmp_path))
     assert calls == {"kl": 1, "private": 1, "home": 1}
 
+    # The tree changes under the process: the next check() scans again, and
+    # a tree git cannot describe is never cached.
+    monkeypatch.setattr(check_release, "tree_state", lambda root=None: "tree after an edit")
+    assert check_release.check(good_args(tmp_path))
+    assert calls == {"kl": 2, "private": 2, "home": 2}
+    monkeypatch.setattr(check_release, "tree_state", lambda root=None: None)
+    assert check_release.check(good_args(tmp_path))
+    assert check_release.check(good_args(tmp_path))
+    assert calls == {"kl": 4, "private": 4, "home": 4}
 
-def test_a_failed_tree_scan_stays_failed_for_the_process(monkeypatch, tmp_path):
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git on PATH")
+def test_tree_state_sees_a_new_file_an_edit_and_a_commit(tmp_path):
+    """The key behind the memo follows what the scans read: a new untracked
+    file, a second edit of that file, a deletion and a commit are each a new
+    state; the same tree is the same state."""
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path)] + list(args), check=True,
+                       capture_output=True, text=True)
+    git("init", "-q")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+        "--allow-empty", "-m", "root")
+    state = check_release.tree_state(tmp_path)
+    assert state is not None and state == check_release.tree_state(tmp_path)
+
+    note = tmp_path / "docs-note.md"
+    note.write_text("| KL | margin |\n", encoding="utf-8")
+    with_file = check_release.tree_state(tmp_path)
+    assert with_file != state
+
+    note.write_text("| KL | margin |\n| 1 | 2 |\n", encoding="utf-8")
+    os.utime(note, ns=(os.stat(note).st_atime_ns, os.stat(note).st_mtime_ns + 10**9))
+    edited = check_release.tree_state(tmp_path)
+    assert edited not in (state, with_file)
+
+    git("add", "docs-note.md")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "note")
+    committed = check_release.tree_state(tmp_path)
+    assert committed not in (state, with_file, edited)
+    assert committed == check_release.tree_state(tmp_path)
+
+    note.unlink()
+    assert check_release.tree_state(tmp_path) not in (state, with_file, edited, committed)
+    assert check_release.tree_state(tmp_path / "not-a-checkout") is None
+
+
+def test_a_failed_tree_scan_stays_failed_while_the_tree_stands(monkeypatch, tmp_path):
     """The memo keeps a refusal as firmly as a pass: a scan that failed once
-    is not retried into a green by a later check() in the same process."""
-    monkeypatch.setattr(check_release, "_tree_verdict", None)
+    is not retried into a green by a later check() on the same tree."""
+    monkeypatch.setattr(check_release, "_tree_scan", None)
+    monkeypatch.setattr(check_release, "tree_state", lambda root=None: "tree as it stands")
     monkeypatch.setattr(check_release, "kl_table_scan", lambda: True)
     monkeypatch.setattr(check_release, "home_path_scan", lambda: True)
     monkeypatch.setattr(check_release, "private_reference_scan",
