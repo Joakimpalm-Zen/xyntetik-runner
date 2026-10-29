@@ -3,7 +3,7 @@
   "policy": {
     "why": "A tier is a maintenance and validation commitment, not a compatibility list. The support matrix, --info caps and --info doctor say what loads; the evidence documents say what was measured; this roster says which files the project validates and carries the Runner version and date of each file's last validation run per backend, so docs/model-support.md renders the paper trail and nobody types it.",
     "tiers": {
-      "tier1": "Actively validated: the project's own published files above the pull bar, validated in the bigger validation runs and on immediate need, maintained proactively; a Tier 1 row with no recorded pass, or a recorded failure, refuses a release.",
+      "tier1": "Actively validated: the project's own published files above the pull bar, and a publisher's file the owner names for active validation, validated in the bigger validation runs and on immediate need, maintained proactively; a Tier 1 row with no recorded pass, or a recorded failure, refuses a release.",
       "tier2": "Maintained on report: no scheduled full-model revalidation; regression tests keep running and shared-path changes are tested with representative coverage.",
       "tier3": "Unmaintained: no dedicated validation; the implementation and dated evidence remain and the 1.x loading promise still applies. No members; the first entry needs a policy decision and a transition-log entry.",
       "upcoming": "Planned admission: a Tier 1 candidate whose implementation or validation is incomplete; never counted as actively supported."
@@ -276,25 +276,43 @@
         "backend": "cuda"
       },
       "backends": {
-        "cpu": null,
-        "cuda": {
+        "cpu": {
           "kind": "gate",
-          "runner_version": "1.5.1",
-          "date": "2026-10-24",
-          "device_class": "linux-x86_64-cuda",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
           "caps": {
-            "version": "1.5.1",
-            "os": "linux",
+            "version": "1.7.1",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 26,
+            "cpu_cores": 8,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "109c0663eb8c13c0140d105f0144a8bd2517dfec2f21b3517e0facf4ea76b20c",
-          "ran": "runner -m gemma-4-12b-it-qat-q4_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/gemma-4-12b-it-qat-q4_0.linux-x86_64-cuda.cuda.txt"
+          "ran": "runner -m gemma-4-12b-it-qat-q4_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/gemma-4-12b-it-qat-q4_0.windows-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "109c0663eb8c13c0140d105f0144a8bd2517dfec2f21b3517e0facf4ea76b20c",
+          "ran": "runner -m gemma-4-12b-it-qat-q4_0.gguf --serve -c 512 -b 64 --gpu 47; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/gemma-4-12b-it-qat-q4_0.windows-x86_64-cuda.cuda.txt"
         },
         "metal": null
       },
@@ -307,8 +325,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.5.1",
-        "date": "2026-10-24"
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
@@ -329,7 +347,7 @@
       "id": "nemotron-3.5-bolt-e4b-q4_k_m",
       "model": "Nemotron 3.5 Bolt E4B",
       "family": "Gemma 4",
-      "tier": "tier2",
+      "tier": "tier1",
       "claim": "Text path only: NVIDIA's post-train of Gemma-4-E4B-it in the publisher's own Q4_K_M, admitted on the owner's request to run on the Metal laptop; it loads, tokenizes as the publisher's tokenizer.json does and answers through its chat template, and no fidelity measurement against its BF16 parent has been made.",
       "vision_upstream": true,
       "architecture": "gemma4",
@@ -445,6 +463,12 @@
           "effective": "2026-10-28",
           "reason": "Admitted 2026-10-28 at Tier 2 on the owner's request (policy decision 2026-10-27: Tier 1 follows pull; this is the publisher's file and its downloads are the publisher's). Maintained on report, with the admitting run recorded.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier1",
+          "effective": "2026-10-29",
+          "reason": "Owner decision 2026-10-29: promoted to Tier 1 for active validation (the publisher's file; the 2026-10-27 pull rule yields to the owner's call). The admitting Metal, CUDA and CPU cells and the train smoke stand as the record; the BF16-parent fidelity measurement is still owed.",
+          "last_validated_release": "1.7.0"
         }
       ],
       "measurements": [
@@ -877,25 +901,43 @@
         "backend": "cuda"
       },
       "backends": {
-        "cpu": null,
-        "cuda": {
+        "cpu": {
           "kind": "gate",
-          "runner_version": "1.5.1",
-          "date": "2026-10-24",
-          "device_class": "linux-x86_64-cuda",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
           "caps": {
-            "version": "1.5.1",
-            "os": "linux",
+            "version": "1.7.1",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 26,
+            "cpu_cores": 8,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "9e4082576850d0a87f71654360ded1ebc6fc5ae2141de754d8fefeca412d7bef",
-          "ran": "runner -m granite-4.2-8b-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/granite-4.2-8b-q8_0.linux-x86_64-cuda.cuda.txt"
+          "ran": "runner -m granite-4.2-8b-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/granite-4.2-8b-q8_0.windows-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "9e4082576850d0a87f71654360ded1ebc6fc5ae2141de754d8fefeca412d7bef",
+          "ran": "runner -m granite-4.2-8b-Q8_0.gguf --serve -c 512 -b 64 --gpu 32; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/granite-4.2-8b-q8_0.windows-x86_64-cuda.cuda.txt"
         },
         "metal": null
       },
@@ -908,8 +950,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.5.1",
-        "date": "2026-10-24"
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
@@ -969,22 +1011,22 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.5.1",
-          "date": "2026-10-23",
-          "device_class": "linux-x86_64-cuda",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "e347e50fdd634e3804367f46e7a3c6558934620a",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
           "caps": {
-            "version": "1.5.1",
-            "os": "linux",
+            "version": "1.7.1",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 26,
+            "cpu_cores": 8,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "b26e284a3452dbbafff6653a45966966cb5d9e42ba9503bd01d202f7b224ea96",
           "ran": "runner -m Trinity-Nano-Preview-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.linux-x86_64-cuda.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.windows-x86_64-cuda.cpu.txt"
         },
         "cuda": {
           "kind": "limit",
@@ -1006,8 +1048,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.5.1",
-        "date": "2026-10-23"
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
@@ -1070,22 +1112,22 @@
         "cpu": null,
         "cuda": {
           "kind": "gate",
-          "runner_version": "1.5.1",
-          "date": "2026-10-24",
-          "device_class": "linux-x86_64-cuda",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
           "caps": {
-            "version": "1.5.1",
-            "os": "linux",
+            "version": "1.7.1",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 26,
+            "cpu_cores": 8,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "6bc726d37ed11e94fa92cd8b4ea9c96eabe3945f5ca3fadb3dc547bf3139be01",
-          "ran": "runner -m Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/qwen3.8-27b-gsq-rco-iq3_s-recovered.linux-x86_64-cuda.cuda.txt"
+          "ran": "runner -m Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf --serve -c 512 -b 64 --gpu 38; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3.8-27b-gsq-rco-iq3_s-recovered.windows-x86_64-cuda.cuda.txt"
         },
         "metal": {
           "kind": "limit",
@@ -1102,8 +1144,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.5.1",
-        "date": "2026-10-24"
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
@@ -1415,22 +1457,22 @@
         "cpu": null,
         "cuda": {
           "kind": "gate",
-          "runner_version": "1.5.1",
-          "date": "2026-10-24",
-          "device_class": "linux-x86_64-cuda",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
           "caps": {
-            "version": "1.5.1",
-            "os": "linux",
+            "version": "1.7.1",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 26,
+            "cpu_cores": 8,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "c89c26e516c5d4dde10843f99aed6f51f3da2946799a9d774a06cc8a74fcfd65",
-          "ran": "runner -m Xyntetik-Kvist-14B-Q5_0-mix.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/xyntetik-kvist-14b-q5_0-mix.linux-x86_64-cuda.cuda.txt"
+          "ran": "runner -m Xyntetik-Kvist-14B-Q5_0-mix.gguf --serve -c 512 -b 64 --gpu 43; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/xyntetik-kvist-14b-q5_0-mix.windows-x86_64-cuda.cuda.txt"
         },
         "metal": null
       },
@@ -1443,8 +1485,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.5.1",
-        "date": "2026-10-24"
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
@@ -1495,25 +1537,43 @@
         "backend": "cuda"
       },
       "backends": {
-        "cpu": null,
-        "cuda": {
+        "cpu": {
           "kind": "gate",
-          "runner_version": "1.5.1",
-          "date": "2026-10-24",
-          "device_class": "linux-x86_64-cuda",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
           "caps": {
-            "version": "1.5.1",
-            "os": "linux",
+            "version": "1.7.1",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 26,
+            "cpu_cores": 8,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "c89c26e516c5d4dde10843f99aed6f51f3da2946799a9d774a06cc8a74fcfd65",
-          "ran": "runner -m Xyntetik-Kvist-14B-IQ4_NL-mix.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/xyntetik-kvist-14b-iq4_nl-mix.linux-x86_64-cuda.cuda.txt"
+          "ran": "runner -m Xyntetik-Kvist-14B-IQ4_NL-mix.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/xyntetik-kvist-14b-iq4_nl-mix.windows-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "c89c26e516c5d4dde10843f99aed6f51f3da2946799a9d774a06cc8a74fcfd65",
+          "ran": "runner -m Xyntetik-Kvist-14B-IQ4_NL-mix.gguf --serve -c 512 -b 64 --gpu 51; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/xyntetik-kvist-14b-iq4_nl-mix.windows-x86_64-cuda.cuda.txt"
         },
         "metal": null
       },
@@ -1526,8 +1586,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.5.1",
-        "date": "2026-10-24"
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
@@ -1763,24 +1823,42 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.5.1",
-          "date": "2026-10-23",
-          "device_class": "macos-arm64-metal",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "7660980968b431928827ed2a795db33892d1a661",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
           "caps": {
-            "version": "1.5.1",
-            "os": "macos",
-            "arch": "arm64",
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
             "cpu_cores": 8,
-            "gpu_backend": "metal",
-            "gpu_name": "Apple M1"
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "4132fa520bc517ed7697f3026b5ca584d275e9d03827a441040e5693a57987cc",
-          "ran": "runner -m e2b-q40.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.cpu.txt"
+          "ran": "runner -m gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "4132fa520bc517ed7697f3026b5ca584d275e9d03827a441040e5693a57987cc",
+          "ran": "runner -m gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.windows-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "gate",
           "runner_version": "1.5.1",
@@ -1810,8 +1888,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.5.1",
-        "date": "2026-10-23"
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
@@ -1869,25 +1947,43 @@
         "backend": "cuda"
       },
       "backends": {
-        "cpu": null,
-        "cuda": {
+        "cpu": {
           "kind": "gate",
-          "runner_version": "1.5.1",
-          "date": "2026-10-24",
-          "device_class": "linux-x86_64-cuda",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
           "caps": {
-            "version": "1.5.1",
-            "os": "linux",
+            "version": "1.7.1",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 26,
+            "cpu_cores": 8,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "e23a8c77690649fbbda0b826b6f889f2acb2812fc63196c087cdece96a98bd0d",
-          "ran": "runner -m NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/nvidia-nemotron-nano-9b-v2-q8_0.linux-x86_64-cuda.cuda.txt"
+          "ran": "runner -m NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/nvidia-nemotron-nano-9b-v2-q8_0.windows-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "e23a8c77690649fbbda0b826b6f889f2acb2812fc63196c087cdece96a98bd0d",
+          "ran": "runner -m NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf --serve -c 512 -b 64 --gpu 43; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/nvidia-nemotron-nano-9b-v2-q8_0.windows-x86_64-cuda.cuda.txt"
         },
         "metal": {
           "kind": "limit",
@@ -1904,8 +2000,8 @@
           "supported": false,
           "reason": "--lora does not cover Mamba-2 hybrid architectures yet (nemotron_h)"
         },
-        "runner_version": "1.5.1",
-        "date": "2026-10-24"
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
@@ -2329,25 +2425,43 @@
         "backend": "cuda"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "aa1a1647a3e4b5344f357f9fe3ab9ebe12647e7861a5c1153c5fb36aaa56f3af",
+          "ran": "runner -m merged-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-merged-q8_0.windows-x86_64-cuda.cpu.txt"
+        },
         "cuda": {
           "kind": "gate",
-          "runner_version": "1.5.1",
-          "date": "2026-10-24",
-          "device_class": "linux-x86_64-cuda",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
           "caps": {
-            "version": "1.5.1",
-            "os": "linux",
+            "version": "1.7.1",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 26,
+            "cpu_cores": 8,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "aa1a1647a3e4b5344f357f9fe3ab9ebe12647e7861a5c1153c5fb36aaa56f3af",
           "ran": "runner -m merged-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-merged-q8_0.linux-x86_64-cuda.cuda.txt"
+          "evidence": "tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-merged-q8_0.windows-x86_64-cuda.cuda.txt"
         },
         "metal": null
       },
@@ -2360,8 +2474,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.5.1",
-        "date": "2026-10-24"
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
@@ -2428,24 +2542,42 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.5.1",
-          "date": "2026-10-24",
-          "device_class": "linux-x86_64-cuda",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "3b2c21c82306d6aa25941c7b01e8b924ec323498",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
           "caps": {
-            "version": "1.5.1",
-            "os": "linux",
+            "version": "1.7.1",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 26,
+            "cpu_cores": 8,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "9a878ce06241ebaa98c9b52ec373e5ccdb72ceb80ffdd73cad2e8e736610c1b3",
           "ran": "runner -m Qwen_Qwen3-4B-Q4_K_M.gguf --lora Qwen3-4B-ToolUse-LoRA.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.linux-x86_64-cuda.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "9a878ce06241ebaa98c9b52ec373e5ccdb72ceb80ffdd73cad2e8e736610c1b3",
+          "ran": "runner -m Qwen_Qwen3-4B-Q4_K_M.gguf --lora Qwen3-4B-ToolUse-LoRA.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.windows-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "gate",
           "runner_version": "1.7.0",
@@ -2475,8 +2607,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.7.0",
-        "date": "2026-10-28"
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
@@ -2771,24 +2903,42 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.7.0",
-          "date": "2026-10-28",
-          "device_class": "macos-arm64-metal",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "b31730a9dc4527b36c746d2e35f285912ec8dc22",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
           "caps": {
-            "version": "1.7.0",
-            "os": "macos",
-            "arch": "arm64",
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
             "cpu_cores": 8,
-            "gpu_backend": "metal",
-            "gpu_name": "Apple M1"
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "95be9f33ca7dbafb77f5441dc7d8be7951e7782f0fc0f78c53da1d218d29b71b",
           "ran": "runner -m Qwen_Qwen3-4B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.macos-arm64-metal.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "95be9f33ca7dbafb77f5441dc7d8be7951e7782f0fc0f78c53da1d218d29b71b",
+          "ran": "runner -m Qwen_Qwen3-4B-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.windows-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "gate",
           "runner_version": "1.7.0",
@@ -2818,8 +2968,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.7.0",
-        "date": "2026-10-28"
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
@@ -3362,7 +3512,7 @@
       "id": "mellum2.1-12b-a2.5b-thinking-q4_k_m",
       "model": "Mellum2.1-12B-A2.5B-Thinking (JetBrains)",
       "family": "Mellum2.1",
-      "tier": "tier2",
+      "tier": "tier1",
       "claim": "Text path, JetBrains' own Q4_K_M. Publisher Q4_K_M against the publisher's BF16 parent: mean KLD 0.128, top-1 85.7% (Runner), 0.131 / 85.9% (llama.cpp); the file fails the 0.05 bar on both engines and the gap grows with depth. Against the publisher Q8_0 it fails the quant bar too (mean KLD 0.131, top-1 80.0%, 400 positions); Q8_0 (12.9 GB) is the fidelity file (Runner Q8_0 vs the parent 0.0187 / 94.3%), and the publisher's MXFP4_MOE file is untested.",
       "architecture": "mellum",
       "upstream": {
@@ -3464,6 +3614,12 @@
           "effective": "2026-10-29",
           "reason": "Admitted 2026-10-29 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull; this is the publisher's file and its downloads are the publisher's). The BF16-parent result is stated first; maintained on report, with the admitting run recorded.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier1",
+          "effective": "2026-10-29",
+          "reason": "Owner decision 2026-10-29: promoted to Tier 1 for active validation (the publisher's file; the 2026-10-27 pull rule yields to the owner's call). The admitting CPU and CUDA cells stand as the record; the row keeps its fidelity reading (the Q4_K_M fails the bar against the BF16 parent, Q8_0 is the fidelity file); the Metal row and the Q8_0 cells are still owed.",
+          "last_validated_release": "1.7.0"
         }
       ]
     }

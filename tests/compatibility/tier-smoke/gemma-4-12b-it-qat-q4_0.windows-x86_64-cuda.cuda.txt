@@ -1,0 +1,11 @@
+Mercury
+Venus
+Earth
+Mars
+Jupiter
+Saturn
+Uranus
+Neptune
+
+Mercury is the smallest planet and the closest one to the Sun, making it the fastest planet in orbit.
+Venus is the hottest planet

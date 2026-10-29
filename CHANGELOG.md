@@ -20,6 +20,26 @@ Current release and unreleased changes. Compatibility follows the
   from the 22 that `--info caps` lists. The counts are corrected and
   `tests/test_doc_counts.py` ties them, and the 24 weight formats, to
   `--info caps` so they cannot drift again.
+- **Validation runs at 1.7.1 on the Windows CUDA host: 8 rows** (Tier 2, RTX
+  3070, 2026-10-29). CPU and CUDA cells pass for `gemma-4-e2b-it-q4_k_m-q4_0-mix`,
+  `qwen3-4b-q4_k_m-bartowski`, `qwen3-4b-runner-tooluse-lora` (on that base),
+  `qwen3-4b-runner-tooluse-merged-q8_0`, `gemma-4-12b-it-qat-q4_0` (CUDA 47 of
+  48 layers), `granite-4.2-8b-q8_0` (32 of 40) and
+  `nvidia-nemotron-nano-9b-v2-q8_0` (43 of 56); `trinity-nano-preview-q8_0`
+  passes on the CPU (its CUDA cell is a declared limit). Every reply is
+  byte-identical to the row's earlier pins. The rows of 13.8 GB and up are
+  out of this host's reach and listed in the PR.
+- **Validation runs at 1.7.1 on the Windows CUDA host: 3 rows** (Tier 1, RTX
+  3070, 2026-10-29). `qwen3.8-27b-gsq-rco-iq3_s-recovered` CUDA (a layer
+  split, 38 of 64 layers), `xyntetik-kvist-14b-q5_0-mix` CUDA (43 of 52) and
+  `xyntetik-kvist-14b-iq4_nl-mix` CPU and CUDA (51 of 52) pass, each reply
+  byte-identical to the row's linux-x86_64-cuda pin. The other Tier 1 rows
+  are out of this host's reach and listed in the PR for the lab box.
+- **Mellum2.1-12B-A2.5B-Thinking Q4_K_M and Nemotron 3.5 Bolt E4B Q4_K_M move to
+  Tier 1** on the owner's decision of 2026-10-29: both are publisher files, so
+  the 2026-10-27 pull rule yields to the owner's call, and the tier policy now
+  says so. Their admitting cells stand as the record; the Mellum Metal row and
+  Q8_0 cells and the Bolt BF16-parent fidelity measurement are still owed.
 - **Mellum2.1-12B-A2.5B-Thinking admitted at Tier 2; its Q4_K_M fails the
   fidelity bar.** JetBrains' own Q4_K_M against JetBrains' BF16 parent,
   computed in float32 at 300 positions (token-id keyed): mean KLD 0.128 and

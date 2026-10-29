@@ -238,12 +238,23 @@ instead of carrying a copy, so none can drift and nothing watches them:
 **Tier 1, actively validated** (the release gate holds Runner to these):
 
 <details>
+<summary><b>Gemma 4</b>, 1 model: CPU ✅ · CUDA ✅ · Metal ✅ · Train ✅</summary>
+<p><b>Nemotron 3.5 Bolt E4B</b>, text path only</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#nemotron-3.5-bolt-e4b-q4_k_m"><code>Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-29</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
 <summary><b>Qwen3.8</b>, 2 models: CPU 🟨 1 of 4 · CUDA 🟨 3 of 4 · Metal n/a · Train 🟨 2 of 4</summary>
 <p><b>Qwen3.8-27B</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#qwen3.8-27b-gsq-rco-iq3_s-recovered"><code>Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="#qwen3.8-27b-gsq-rco-iq3_s-recovered"><code>Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf</code></a></td><td></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
 <tr><td><a href="#qwen3.8-27b-mtp-q8_0"><code>Qwen3.8-27B-MTP-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
 </tbody>
 </table>
@@ -258,15 +269,26 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Xyntetik-Kvist-14B</b>, 1 model: CPU 🟨 1 of 4 · CUDA 🟨 3 of 4 · Metal - · Train ✅</summary>
+<summary><b>Xyntetik-Kvist-14B</b>, 1 model: CPU 🟨 2 of 4 · CUDA 🟨 3 of 4 · Metal - · Train ✅</summary>
 <p><b>Xyntetik-Kvist-14B</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="#xyntetik-kvist-14b-bf16"><code>Xyntetik-Kvist-14B-BF16.gguf</code></a></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
 <tr><td><a href="#xyntetik-kvist-14b-q8_0"><code>Xyntetik-Kvist-14B-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-<tr><td><a href="#xyntetik-kvist-14b-q5_0-mix"><code>Xyntetik-Kvist-14B-Q5_0-mix.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-<tr><td><a href="#xyntetik-kvist-14b-iq4_nl-mix"><code>Xyntetik-Kvist-14B-IQ4_NL-mix.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="#xyntetik-kvist-14b-q5_0-mix"><code>Xyntetik-Kvist-14B-Q5_0-mix.gguf</code></a></td><td></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
+<tr><td><a href="#xyntetik-kvist-14b-iq4_nl-mix"><code>Xyntetik-Kvist-14B-IQ4_NL-mix.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Mellum2.1</b>, 1 model: CPU ✅ · CUDA ✅ · Metal - · Train ✅</summary>
+<p><b>Mellum2.1-12B-A2.5B-Thinking (JetBrains)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#mellum2.1-12b-a2.5b-thinking-q4_k_m"><code>Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td></td><td nowrap>✅ 1.7.0<br>2026-10-29</td></tr>
 </tbody>
 </table>
 </details>
@@ -313,12 +335,12 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Gemma 4</b>, 6 models: CPU 🟨 2 of 6 · CUDA 🟨 5 of 6 · Metal 🟨 2 of 6 · Train 🟨 4 of 6</summary>
+<summary><b>Gemma 4</b>, 5 models: CPU 🟨 2 of 5 · CUDA ✅ · Metal 🟨 1 of 5 · Train 🟨 3 of 5</summary>
 <p><b>Gemma 4 12B</b>, text path only</p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#gemma-4-12b-it-qat-q4_0"><code>gemma-4-12b-it-qat-q4_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="#gemma-4-12b-it-qat-q4_0"><code>gemma-4-12b-it-qat-q4_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
 </tbody>
 </table>
 <p><b>Gemma 4 26B-A4B</b>, text path only</p>
@@ -346,14 +368,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#gemma-4-e2b-it-q4_k_m-q4_0-mix"><code>gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf</code></a></td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td nowrap>✅ 1.5.1<br>2026-10-23</td></tr>
-</tbody>
-</table>
-<p><b>Nemotron 3.5 Bolt E4B</b>, text path only</p>
-<table>
-<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
-<tbody>
-<tr><td><a href="#nemotron-3.5-bolt-e4b-q4_k_m"><code>Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-29</td></tr>
+<tr><td><a href="#gemma-4-e2b-it-q4_k_m-q4_0-mix"><code>gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
 </tbody>
 </table>
 </details>
@@ -379,13 +394,13 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Granite-4.2-8B</b>, 1 model: CPU 🟨 1 of 2 · CUDA ✅ · Metal - · Train ✅</summary>
+<summary><b>Granite-4.2-8B</b>, 1 model: CPU ✅ · CUDA ✅ · Metal - · Train ✅</summary>
 <p><b>Granite-4.2-8B</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="#granite-4.2-8b-q4_k_m"><code>granite-4.2-8b-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td></td><td nowrap>✅ 1.7.0<br>2026-10-29</td></tr>
-<tr><td><a href="#granite-4.2-8b-q8_0"><code>granite-4.2-8b-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="#granite-4.2-8b-q8_0"><code>granite-4.2-8b-Q8_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
 </tbody>
 </table>
 </details>
@@ -396,13 +411,13 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#trinity-nano-preview-q8_0"><code>Trinity-Nano-Preview-Q8_0.gguf</code></a></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-23</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE router gating other than softmax</td></tr>
+<tr><td><a href="#trinity-nano-preview-q8_0"><code>Trinity-Nano-Preview-Q8_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE router gating other than softmax</td></tr>
 </tbody>
 </table>
 </details>
 
 <details>
-<summary><b>Qwen3</b>, 4 models: CPU 🟨 2 of 5 · CUDA 🟨 3 of 5 · Metal 🟨 2 of 5 · Train ✅</summary>
+<summary><b>Qwen3</b>, 4 models: CPU 🟨 3 of 5 · CUDA ✅ · Metal 🟨 2 of 5 · Train ✅</summary>
 <p><b>Qwen3-30B-A3B selective precision</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
@@ -414,15 +429,15 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#qwen3-4b-q4_k_m-bartowski"><code>Qwen_Qwen3-4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td></td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.0<br>2026-10-28</td></tr>
+<tr><td><a href="#qwen3-4b-q4_k_m-bartowski"><code>Qwen_Qwen3-4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
 </tbody>
 </table>
 <p><b>Qwen3-4B Runner ToolUse</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#qwen3-4b-runner-tooluse-merged-q8_0"><code>merged-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-<tr><td><a href="#qwen3-4b-runner-tooluse-lora"><code>Qwen3-4B-ToolUse-LoRA.gguf</code></a></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.0<br>2026-10-28</td></tr>
+<tr><td><a href="#qwen3-4b-runner-tooluse-merged-q8_0"><code>merged-Q8_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
+<tr><td><a href="#qwen3-4b-runner-tooluse-lora"><code>Qwen3-4B-ToolUse-LoRA.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
 </tbody>
 </table>
 <p><b>Qwen3-Coder-30B-A3B keep-120</b></p>
@@ -435,12 +450,12 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>NVIDIA Nemotron Nano 9B v2</b>, 1 model: CPU - · CUDA ✅ · Metal n/a · Train n/a</summary>
+<summary><b>NVIDIA Nemotron Nano 9B v2</b>, 1 model: CPU ✅ · CUDA ✅ · Metal n/a · Train n/a</summary>
 <p><b>NVIDIA Nemotron Nano 9B v2</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#nvidia-nemotron-nano-9b-v2-q8_0"><code>NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: recurrent architecture (Mamba-2)</td></tr>
+<tr><td><a href="#nvidia-nemotron-nano-9b-v2-q8_0"><code>NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: recurrent architecture (Mamba-2)</td></tr>
 </tbody>
 </table>
 </details>
@@ -555,21 +570,37 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
-<details>
-<summary><b>Mellum2.1</b>, 1 model: CPU ✅ · CUDA ✅ · Metal - · Train ✅</summary>
-<p><b>Mellum2.1-12B-A2.5B-Thinking (JetBrains)</b></p>
-<table>
-<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
-<tbody>
-<tr><td><a href="#mellum2.1-12b-a2.5b-thinking-q4_k_m"><code>Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td></td><td nowrap>✅ 1.7.0<br>2026-10-29</td></tr>
-</tbody>
-</table>
-</details>
-
 **Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated
+
+### Gemma 4
+
+#### Text path only: Nemotron 3.5 Bolt E4B
+
+<a id="nemotron-3.5-bolt-e4b-q4_k_m"></a>
+##### `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf`
+
+Text path only: NVIDIA's post-train of Gemma-4-E4B-it in the publisher's own Q4_K_M, admitted on the owner's request to run on the Metal laptop; it loads, tokenizes as the publisher's tokenizer.json does and answers through its chat template, and no fidelity measurement against its BF16 parent has been made.
+
+- **File:** `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf` (sha256 `c8af2b8aea10a690a1d9491db744a9446660173cb38fc489612b556615a69612`, 6,180,446,208 bytes, from [nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB) at revision `1db54d5b1253`).
+- **Upstream checkpoint:** nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16 at revision `49843eed8db1`.
+- **Quantization:** Q4_K_M (publisher).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison is feasible and owed):** Family: gemma-4-E2B bf16 against Google's float32 reference (1.5.0 golden pass). This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ) and a chat answer at temperature 0 on the Metal laptop and on the Windows CUDA host (CUDA, and CPU with the GPU off); the smoke reply is byte-identical across the Metal, CUDA and CPU cells (one output sha256), and the CPU-vs-CUDA check agreed on 9 of 9 prompts. A 20-step LoRA smoke with --train-gpu wrote an adapter that changes the answer. No fidelity or cross-engine number.
+- **Context tested:** 4096.
+- **Known limitations:** No vision: the publisher's mmproj is not part of this repository and would not be loaded. 6.18 GB of weights page from disk on an 8 GB machine with other applications open; the validation run recorded that state.
+- **Still missing:** Fidelity against the BF16 parent (nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16); the repository's DFlash drafter file (Nemotron-3.5-Bolt-E4B-DFlash-BF16.gguf), which Runner has no path for.
+- **Evidence:** [docs/compat-reports/1.7.0-2026-10-28-macos-arm64-nemotron-3.5-bolt-e4b-q4_k_m.json](compat-reports/1.7.0-2026-10-28-macos-arm64-nemotron-3.5-bolt-e4b-q4_k_m.json), [docs/compat-reports/1.7.0-2026-10-29-windows-x86_64-nemotron-3.5-bolt-e4b-q4_k_m.json](compat-reports/1.7.0-2026-10-29-windows-x86_64-nemotron-3.5-bolt-e4b-q4_k_m.json), [docs/compat-reports/train-smoke-1.7.0-2026-10-29-windows-x86_64-nemotron-3.5-bolt-e4b.md](compat-reports/train-smoke-1.7.0-2026-10-29-windows-x86_64-nemotron-3.5-bolt-e4b.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.0 on 2026-10-29.
+- **CPU:** ✅ v1.7.0 2026-10-29 on windows-x86_64-cuda at commit `659df503e435`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.windows-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.7.0 2026-10-28 on windows-x86_64-cuda at commit `4a0a2c46ce39`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.windows-x86_64-cuda.cuda.txt)
+- **Metal:** ✅ v1.7.0 2026-10-29 on macos-arm64-metal at commit `0800f47350d5`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.macos-arm64-metal.metal.txt)
+- **8 GB laptop fit (Metal, 2026-10-29, runner 1.7.0 at commit `0800f47350d5`):** one resident server at `-c 4096 -b 32 --kv q8 --mlock` on an 8 GB Apple Silicon laptop wires 3.19 GB of weights while the 2.99 GB row-gathered table stays pageable; a 262-token prompt answers in 4.0-5.1 s to the first token and decodes 128 tokens at 8.5-9.0 tok/s; the first response after 8 minutes idle took 4.7 s with `--mlock` and 24.9 s without it (the weights were evicted while idle); the laptop swaps other applications to hold the weights, and the sliding-window KV ring (`RUNNER_KV_RING=1`) saved 77 MB of cache without changing these figures while losing the prefix cache.
+- **LoRA training:** supported (runner 1.7.0, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.0, 2026-10-29).
+- **Tier history:** Tier 2, maintained on report from 2026-10-28; Tier 1, actively validated from 2026-10-29 ([log](#transition-log)).
 
 ### Qwen3.8
 
@@ -588,12 +619,12 @@ ISTA-DASLab's IQ3_S file with every quantised block's fp16 scales retrained agai
 - **Context tested:** not recorded.
 - **Still missing:** A CPU row on the file; pinned greedy output.
 - **Evidence:** [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.7.1 on 2026-10-29.
 - **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `6bc726d37ed11e94`, [pin](../tests/compatibility/tier-smoke/qwen3.8-27b-gsq-rco-iq3_s-recovered.linux-x86_64-cuda.cuda.txt)
+- **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `6bc726d37ed11e94`, [pin](../tests/compatibility/tier-smoke/qwen3.8-27b-gsq-rco-iq3_s-recovered.windows-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): The qwen35 Gated DeltaNet hybrid has no Metal path; a Metal build runs this file on the CPU.
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="qwen3.8-27b-mtp-q8_0"></a>
@@ -722,12 +753,12 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **Context tested:** not recorded.
 - **Still missing:** Per-file backend rows; pinned output.
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.7.1 on 2026-10-29.
 - **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `c89c26e516c5d4dd`, [pin](../tests/compatibility/tier-smoke/xyntetik-kvist-14b-q5_0-mix.linux-x86_64-cuda.cuda.txt)
+- **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `c89c26e516c5d4dd`, [pin](../tests/compatibility/tier-smoke/xyntetik-kvist-14b-q5_0-mix.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="xyntetik-kvist-14b-iq4_nl-mix"></a>
@@ -743,13 +774,39 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **Context tested:** not recorded.
 - **Still missing:** Per-file backend rows; pinned output.
 - **Evidence:** [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `c89c26e516c5d4dd`, [pin](../tests/compatibility/tier-smoke/xyntetik-kvist-14b-iq4_nl-mix.linux-x86_64-cuda.cuda.txt)
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.7.1 on 2026-10-29.
+- **CPU:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `c89c26e516c5d4dd`, [pin](../tests/compatibility/tier-smoke/xyntetik-kvist-14b-iq4_nl-mix.windows-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `c89c26e516c5d4dd`, [pin](../tests/compatibility/tier-smoke/xyntetik-kvist-14b-iq4_nl-mix.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
+
+### Mellum2.1
+
+#### Mellum2.1-12B-A2.5B-Thinking (JetBrains)
+
+<a id="mellum2.1-12b-a2.5b-thinking-q4_k_m"></a>
+##### `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf`
+
+Text path, JetBrains' own Q4_K_M. Publisher Q4_K_M against the publisher's BF16 parent: mean KLD 0.128, top-1 85.7% (Runner), 0.131 / 85.9% (llama.cpp); the file fails the 0.05 bar on both engines and the gap grows with depth. Against the publisher Q8_0 it fails the quant bar too (mean KLD 0.131, top-1 80.0%, 400 positions); Q8_0 (12.9 GB) is the fidelity file (Runner Q8_0 vs the parent 0.0187 / 94.3%), and the publisher's MXFP4_MOE file is untested.
+
+- **File:** `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf` (sha256 `ecc4d5b8107fc219e23c494b2d107552137637b6c6002ee713e0ba8af7fa2755`, 8,071,295,264 bytes, from [JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF](https://huggingface.co/JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF) at revision `4159d684ffdb`).
+- **Upstream checkpoint:** JetBrains/Mellum2.1-12B-A2.5B-Thinking at revision `92ddae9fc766`.
+- **Quantization:** Q4_K_M (publisher).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** This file against the BF16 parent computed in float32 (transformers' own mellum code, 300 positions to 7,420 tokens, token-id keyed): Runner 0.1282 mean KLD / 85.7% top-1 / 93.7% margin-qualified, llama.cpp b11748 0.1305 / 85.9% / 94.0% (298 scored), about 0.08 in words 0-750 and 0.16 past 2,000; Runner vs llama.cpp on this file 0.0177. Q8_0 against the parent: Runner 0.0187 / 94.3% / 100%, llama.cpp 0.0234 / 93.6% / 100%. Q4_K_M vs Q8_0 bar FAIL (400 positions, 0.131, 80.0%); tokenizer 0/721, template 23/23, a needle retrieved at 3,568 tokens. Record: shade research/evaluation/mellum-parity-2026-10-29 (README.md, reference/README.md, windows-q4/README.md).
+- **Context tested:** not recorded.
+- **Known limitations:** No fidelity claim for Q4_K_M: it fails the 0.05 bar against the BF16 parent on both engines, and the gap is the file, not the engine. The publisher's MXFP4_MOE file is the untested alternative. CUDA MoE on the scalar route; tensor-core and grouped routes not measured for this family. The 8.07 GB file does not load resident on an 8 GB machine, and on an 8 GB card it runs as a layer split.
+- **Still missing:** The Metal row; the Q8_0 cells (12.9 GB is not servable on the Windows CUDA host's 16 GB beside its other work).
+- **Evidence:** [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [docs/compat-reports/1.7.0-2026-10-29-windows-x86_64-mellum2.1-12b-a2.5b-thinking-q4_k_m.json](compat-reports/1.7.0-2026-10-29-windows-x86_64-mellum2.1-12b-a2.5b-thinking-q4_k_m.json), [docs/compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json](compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json).
+- **Validation run:** on windows-x86_64-cuda, cuda backend; last run 1.7.0 on 2026-10-29.
+- **CPU:** ✅ v1.7.0 2026-10-29 on windows-x86_64-cuda at commit `502805d33ecc`, output sha256 `d419bee5d375409e`, [pin](../tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q4_k_m.windows-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.7.0 2026-10-29 on windows-x86_64-cuda at commit `502805d33ecc`, output sha256 `d419bee5d375409e`, [pin](../tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q4_k_m.windows-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.7.0, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.0, 2026-10-29).
+- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-10-29; Tier 1, actively validated from 2026-10-29 ([log](#transition-log)).
 
 <a id="tier2"></a>
 ## Tier 2, maintained on report
@@ -882,12 +939,12 @@ Text path only: Google's quantization-aware Q4_0 release, its mmproj file not lo
 - **Known limitations:** No vision: the mmproj file is not loaded.
 - **Still missing:** Metal and CPU rows on the 12B; pinned output; Metal re-gate hardware.
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `109c0663eb8c13c0`, [pin](../tests/compatibility/tier-smoke/gemma-4-12b-it-qat-q4_0.linux-x86_64-cuda.cuda.txt)
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.7.1 on 2026-10-29.
+- **CPU:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `109c0663eb8c13c0`, [pin](../tests/compatibility/tier-smoke/gemma-4-12b-it-qat-q4_0.windows-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `109c0663eb8c13c0`, [pin](../tests/compatibility/tier-smoke/gemma-4-12b-it-qat-q4_0.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
 - **Tier history:** Tier 1, actively validated from 2026-10-22; Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
 
 #### Text path only: Gemma 4 26B-A4B
@@ -979,37 +1036,12 @@ Text path only: the smoke-test file from the quickstart; it fails the fidelity b
 - **Still missing:** nothing the audit named
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
 - **Validation run:** on macos-arm64-metal, metal backend; last run 1.5.1 on 2026-10-23.
-- **CPU:** ✅ v1.5.1 2026-10-23 on macos-arm64-metal at commit `7660980968b4`, output sha256 `4132fa520bc517ed`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.cpu.txt)
-- **CUDA:** ☐ not run
+- **CPU:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `4132fa520bc517ed`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.windows-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `4132fa520bc517ed`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ✅ v1.5.1 2026-10-23 on macos-arm64-metal at commit `7660980968b4`, output sha256 `4132fa520bc517ed`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.metal.txt)
-- **LoRA training:** supported (runner 1.5.1, 2026-10-23).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-23).
+- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
 - **Tier history:** Tier 1, actively validated from 2026-10-22; Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
-
-#### Text path only: Nemotron 3.5 Bolt E4B
-
-<a id="nemotron-3.5-bolt-e4b-q4_k_m"></a>
-##### `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf`
-
-Text path only: NVIDIA's post-train of Gemma-4-E4B-it in the publisher's own Q4_K_M, admitted on the owner's request to run on the Metal laptop; it loads, tokenizes as the publisher's tokenizer.json does and answers through its chat template, and no fidelity measurement against its BF16 parent has been made.
-
-- **File:** `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf` (sha256 `c8af2b8aea10a690a1d9491db744a9446660173cb38fc489612b556615a69612`, 6,180,446,208 bytes, from [nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB) at revision `1db54d5b1253`).
-- **Upstream checkpoint:** nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16 at revision `49843eed8db1`.
-- **Quantization:** Q4_K_M (publisher).
-- **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison is feasible and owed):** Family: gemma-4-E2B bf16 against Google's float32 reference (1.5.0 golden pass). This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ) and a chat answer at temperature 0 on the Metal laptop and on the Windows CUDA host (CUDA, and CPU with the GPU off); the smoke reply is byte-identical across the Metal, CUDA and CPU cells (one output sha256), and the CPU-vs-CUDA check agreed on 9 of 9 prompts. A 20-step LoRA smoke with --train-gpu wrote an adapter that changes the answer. No fidelity or cross-engine number.
-- **Context tested:** 4096.
-- **Known limitations:** No vision: the publisher's mmproj is not part of this repository and would not be loaded. 6.18 GB of weights page from disk on an 8 GB machine with other applications open; the validation run recorded that state.
-- **Still missing:** Fidelity against the BF16 parent (nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16); the repository's DFlash drafter file (Nemotron-3.5-Bolt-E4B-DFlash-BF16.gguf), which Runner has no path for.
-- **Evidence:** [docs/compat-reports/1.7.0-2026-10-28-macos-arm64-nemotron-3.5-bolt-e4b-q4_k_m.json](compat-reports/1.7.0-2026-10-28-macos-arm64-nemotron-3.5-bolt-e4b-q4_k_m.json), [docs/compat-reports/1.7.0-2026-10-29-windows-x86_64-nemotron-3.5-bolt-e4b-q4_k_m.json](compat-reports/1.7.0-2026-10-29-windows-x86_64-nemotron-3.5-bolt-e4b-q4_k_m.json), [docs/compat-reports/train-smoke-1.7.0-2026-10-29-windows-x86_64-nemotron-3.5-bolt-e4b.md](compat-reports/train-smoke-1.7.0-2026-10-29-windows-x86_64-nemotron-3.5-bolt-e4b.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.0 on 2026-10-29.
-- **CPU:** ✅ v1.7.0 2026-10-29 on windows-x86_64-cuda at commit `659df503e435`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.windows-x86_64-cuda.cpu.txt)
-- **CUDA:** ✅ v1.7.0 2026-10-28 on windows-x86_64-cuda at commit `4a0a2c46ce39`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.windows-x86_64-cuda.cuda.txt)
-- **Metal:** ✅ v1.7.0 2026-10-29 on macos-arm64-metal at commit `0800f47350d5`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.macos-arm64-metal.metal.txt)
-- **8 GB laptop fit (Metal, 2026-10-29, runner 1.7.0 at commit `0800f47350d5`):** one resident server at `-c 4096 -b 32 --kv q8 --mlock` on an 8 GB Apple Silicon laptop wires 3.19 GB of weights while the 2.99 GB row-gathered table stays pageable; a 262-token prompt answers in 4.0-5.1 s to the first token and decodes 128 tokens at 8.5-9.0 tok/s; the first response after 8 minutes idle took 4.7 s with `--mlock` and 24.9 s without it (the weights were evicted while idle); the laptop swaps other applications to hold the weights, and the sliding-window KV ring (`RUNNER_KV_RING=1`) saved 77 MB of cache without changing these figures while losing the prefix cache.
-- **LoRA training:** supported (runner 1.7.0, 2026-10-29).
-- **LoRA adapter serving:** supported (runner 1.7.0, 2026-10-29).
-- **Tier history:** Tier 2, maintained on report from 2026-10-28 ([log](#transition-log)).
 
 ### Muse-Glimmer-30B
 
@@ -1143,12 +1175,12 @@ IBM's official Q8_0 of Granite 4.2 8B, text path: the reference sibling of the Q
 - **Context tested:** not recorded.
 - **Still missing:** Backend rows on the file; pinned output.
 - **Evidence:** [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `9e4082576850d0a8`, [pin](../tests/compatibility/tier-smoke/granite-4.2-8b-q8_0.linux-x86_64-cuda.cuda.txt)
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.7.1 on 2026-10-29.
+- **CPU:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `9e4082576850d0a8`, [pin](../tests/compatibility/tier-smoke/granite-4.2-8b-q8_0.windows-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `9e4082576850d0a8`, [pin](../tests/compatibility/tier-smoke/granite-4.2-8b-q8_0.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
 - **Tier history:** Tier 1, actively validated from 2026-10-22; Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
 
 ### Trinity Nano
@@ -1168,12 +1200,12 @@ Arcee's Q8_0 of Trinity Nano Preview, text path, CPU only by admission: the one 
 - **Context tested:** not recorded.
 - **Still missing:** Pinned output.
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/model-evidence.md](model-evidence.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.5.1 on 2026-10-23.
-- **CPU:** ✅ v1.5.1 2026-10-23 on linux-x86_64-cuda (borrowed hardware) at commit `e347e50fdd63`, output sha256 `b26e284a3452dbba`, [pin](../tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.linux-x86_64-cuda.cpu.txt)
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.7.1 on 2026-10-29.
+- **CPU:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `b26e284a3452dbba`, [pin](../tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** [n/a](../MANUAL.md#support-matrix): afmoe (gated attention with sparse MoE) has no CUDA path; CUDA refuses it and the file runs on the CPU.
 - **Metal:** [n/a](../MANUAL.md#support-matrix): afmoe (gated attention with sparse MoE) has no Metal path; Metal refuses it and the file runs on the CPU.
-- **LoRA training:** no: MoE router gating other than softmax (runner 1.5.1, 2026-10-23).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-23).
+- **LoRA training:** no: MoE router gating other than softmax (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
 - **Tier history:** Tier 1, actively validated from 2026-10-22; Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
 
 ### Qwen3
@@ -1219,11 +1251,11 @@ The base the published tool-use adapter was trained through and runs on, named b
 - **Still missing:** CUDA cell; a fidelity measurement of this file against the BF16 parent.
 - **Evidence:** [docs/compat-reports/1.7.0-2026-10-28-macos-arm64-qwen3-4b-q4_k_m-bartowski.json](compat-reports/1.7.0-2026-10-28-macos-arm64-qwen3-4b-q4_k_m-bartowski.json), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.0 on 2026-10-28.
-- **CPU:** ✅ v1.7.0 2026-10-28 on macos-arm64-metal at commit `b31730a9dc45`, output sha256 `95be9f33ca7dbafb`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.macos-arm64-metal.cpu.txt)
-- **CUDA:** ☐ not run
+- **CPU:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `95be9f33ca7dbafb`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.windows-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `95be9f33ca7dbafb`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ✅ v1.7.0 2026-10-28 on macos-arm64-metal at commit `b31730a9dc45`, output sha256 `95be9f33ca7dbafb`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.macos-arm64-metal.metal.txt)
-- **LoRA training:** supported (runner 1.7.0, 2026-10-28).
-- **LoRA adapter serving:** supported (runner 1.7.0, 2026-10-28).
+- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
 #### Qwen3-4B Runner ToolUse
@@ -1242,12 +1274,12 @@ Qwen3-4B with the tool-use LoRA merged and written at Q8_0, text path: a qwen3 c
 - **Context tested:** not recorded.
 - **Still missing:** Pinned output.
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/adaptation-engine.md](adaptation-engine.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `aa1a1647a3e4b534`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-merged-q8_0.linux-x86_64-cuda.cuda.txt)
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.7.1 on 2026-10-29.
+- **CPU:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `aa1a1647a3e4b534`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-merged-q8_0.windows-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `aa1a1647a3e4b534`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-merged-q8_0.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
 - **Tier history:** Tier 1, actively validated from 2026-10-22; Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
 
 <a id="qwen3-4b-runner-tooluse-lora"></a>
@@ -1265,12 +1297,12 @@ The tool-use LoRA adapter for Qwen3-4B, served with --lora on the base its card 
 - **Context tested:** 512.
 - **Still missing:** nothing the audit named
 - **Evidence:** [docs/adaptation-engine.md](adaptation-engine.md), [docs/lora.md](lora.md), [tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.macos-arm64-metal.metal.txt](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.macos-arm64-metal.metal.txt).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.5.1 on 2026-10-24.
-- **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `3b2c21c82306`, output sha256 `9a878ce06241ebaa`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** ☐ not run
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.7.1 on 2026-10-29.
+- **CPU:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `9a878ce06241ebaa`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.windows-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `9a878ce06241ebaa`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ✅ v1.7.0 2026-10-28 on macos-arm64-metal at commit `b31730a9dc45`, output sha256 `9a878ce06241ebaa`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.macos-arm64-metal.metal.txt)
-- **LoRA training:** supported (runner 1.7.0, 2026-10-28).
-- **LoRA adapter serving:** supported (runner 1.7.0, 2026-10-28).
+- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
 - **Tier history:** Tier 1, actively validated from 2026-10-22; Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
 
 #### Qwen3-Coder-30B-A3B keep-120
@@ -1315,12 +1347,12 @@ A plain Q8_0 of NVIDIA's Nemotron-Nano-9B-v2 (Mamba-2 hybrid), text path: 100% m
 - **Context tested:** not recorded.
 - **Still missing:** The tool gate (native protocol since 2026-10-09); pinned output; the 2,000-position rerun.
 - **Evidence:** [docs/golden-pass-2026-09-07.md](golden-pass-2026-09-07.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `e23a8c77690649fb`, [pin](../tests/compatibility/tier-smoke/nvidia-nemotron-nano-9b-v2-q8_0.linux-x86_64-cuda.cuda.txt)
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.7.1 on 2026-10-29.
+- **CPU:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `e23a8c77690649fb`, [pin](../tests/compatibility/tier-smoke/nvidia-nemotron-nano-9b-v2-q8_0.windows-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `e23a8c77690649fb`, [pin](../tests/compatibility/tier-smoke/nvidia-nemotron-nano-9b-v2-q8_0.windows-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): Metal has no SSM path; a Metal build runs this file on the CPU.
-- **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (nemotron_h) (runner 1.5.1, 2026-10-24).
+- **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (nemotron_h) (runner 1.7.1, 2026-10-29).
 - **Tier history:** Tier 1, actively validated from 2026-10-22; Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
 
 ### gpt-oss
@@ -1434,32 +1466,6 @@ Admitted and maintained on report: existing regression tests keep running and sh
 Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
 
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
-
-### Mellum2.1
-
-#### Mellum2.1-12B-A2.5B-Thinking (JetBrains)
-
-<a id="mellum2.1-12b-a2.5b-thinking-q4_k_m"></a>
-##### `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf`
-
-Text path, JetBrains' own Q4_K_M. Publisher Q4_K_M against the publisher's BF16 parent: mean KLD 0.128, top-1 85.7% (Runner), 0.131 / 85.9% (llama.cpp); the file fails the 0.05 bar on both engines and the gap grows with depth. Against the publisher Q8_0 it fails the quant bar too (mean KLD 0.131, top-1 80.0%, 400 positions); Q8_0 (12.9 GB) is the fidelity file (Runner Q8_0 vs the parent 0.0187 / 94.3%), and the publisher's MXFP4_MOE file is untested.
-
-- **File:** `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf` (sha256 `ecc4d5b8107fc219e23c494b2d107552137637b6c6002ee713e0ba8af7fa2755`, 8,071,295,264 bytes, from [JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF](https://huggingface.co/JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF) at revision `4159d684ffdb`).
-- **Upstream checkpoint:** JetBrains/Mellum2.1-12B-A2.5B-Thinking at revision `92ddae9fc766`.
-- **Quantization:** Q4_K_M (publisher).
-- **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison exists):** This file against the BF16 parent computed in float32 (transformers' own mellum code, 300 positions to 7,420 tokens, token-id keyed): Runner 0.1282 mean KLD / 85.7% top-1 / 93.7% margin-qualified, llama.cpp b11748 0.1305 / 85.9% / 94.0% (298 scored), about 0.08 in words 0-750 and 0.16 past 2,000; Runner vs llama.cpp on this file 0.0177. Q8_0 against the parent: Runner 0.0187 / 94.3% / 100%, llama.cpp 0.0234 / 93.6% / 100%. Q4_K_M vs Q8_0 bar FAIL (400 positions, 0.131, 80.0%); tokenizer 0/721, template 23/23, a needle retrieved at 3,568 tokens. Record: shade research/evaluation/mellum-parity-2026-10-29 (README.md, reference/README.md, windows-q4/README.md).
-- **Context tested:** not recorded.
-- **Known limitations:** No fidelity claim for Q4_K_M: it fails the 0.05 bar against the BF16 parent on both engines, and the gap is the file, not the engine. The publisher's MXFP4_MOE file is the untested alternative. CUDA MoE on the scalar route; tensor-core and grouped routes not measured for this family. The 8.07 GB file does not load resident on an 8 GB machine, and on an 8 GB card it runs as a layer split.
-- **Still missing:** The Metal row; the Q8_0 cells (12.9 GB is not servable on the Windows CUDA host's 16 GB beside its other work).
-- **Evidence:** [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [docs/compat-reports/1.7.0-2026-10-29-windows-x86_64-mellum2.1-12b-a2.5b-thinking-q4_k_m.json](compat-reports/1.7.0-2026-10-29-windows-x86_64-mellum2.1-12b-a2.5b-thinking-q4_k_m.json), [docs/compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json](compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json).
-- **Validation run:** on windows-x86_64-cuda, cuda backend; last run 1.7.0 on 2026-10-29.
-- **CPU:** ✅ v1.7.0 2026-10-29 on windows-x86_64-cuda at commit `502805d33ecc`, output sha256 `d419bee5d375409e`, [pin](../tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q4_k_m.windows-x86_64-cuda.cpu.txt)
-- **CUDA:** ✅ v1.7.0 2026-10-29 on windows-x86_64-cuda at commit `502805d33ecc`, output sha256 `d419bee5d375409e`, [pin](../tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q4_k_m.windows-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.7.0, 2026-10-29).
-- **LoRA adapter serving:** supported (runner 1.7.0, 2026-10-29).
-- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-10-29 ([log](#transition-log)).
 
 <a id="tier3"></a>
 ## Tier 3, unmaintained
@@ -1681,6 +1687,8 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-27 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `clef-IQ3_S-recovery-QR-001b.lora.F16.gguf`](#cloudflare-clef-iq3_s-recovery-qr-001b-lora) | Tier 2, maintained on report | Admitted 2026-10-27 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar. | none recorded |
 | 2026-10-28 | [Nemotron 3.5 Bolt E4B, `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf`](#nemotron-3.5-bolt-e4b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-28 at Tier 2 on the owner's request (policy decision 2026-10-27: Tier 1 follows pull; this is the publisher's file and its downloads are the publisher's). Maintained on report, with the admitting run recorded. | none recorded |
 | 2026-10-28 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `Clef-IQ3_S.clef.gguf`](#cloudflare-clef-iq3_s-native) | Tier 2, maintained on report | Admitted 2026-10-28 at Tier 2 on the owner's direct request (the head added to the 2026-10-27 repository; policy decision 2026-10-27: Tier 1 follows pull, and the repository is under the bar). The card leads with the measured shortfall against the house bar and reports decisions descriptively. | none recorded |
+| 2026-10-29 | [Nemotron 3.5 Bolt E4B, `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf`](#nemotron-3.5-bolt-e4b-q4_k_m) | Tier 1, actively validated | Owner decision 2026-10-29: promoted to Tier 1 for active validation (the publisher's file; the 2026-10-27 pull rule yields to the owner's call). The admitting Metal, CUDA and CPU cells and the train smoke stand as the record; the BF16-parent fidelity measurement is still owed. | 1.7.0 |
 | 2026-10-29 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains), `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf`](#mellum2.1-12b-a2.5b-thinking-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-29 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull; this is the publisher's file and its downloads are the publisher's). The BF16-parent result is stated first; maintained on report, with the admitting run recorded. | none recorded |
+| 2026-10-29 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains), `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf`](#mellum2.1-12b-a2.5b-thinking-q4_k_m) | Tier 1, actively validated | Owner decision 2026-10-29: promoted to Tier 1 for active validation (the publisher's file; the 2026-10-27 pull rule yields to the owner's call). The admitting CPU and CUDA cells stand as the record; the row keeps its fidelity reading (the Q4_K_M fails the bar against the BF16 parent, Q8_0 is the fidelity file); the Metal row and the Q8_0 cells are still owed. | 1.7.0 |
 
 <!-- model-tiers:rows:end -->
