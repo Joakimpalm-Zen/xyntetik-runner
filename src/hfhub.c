@@ -248,6 +248,21 @@ static bool safe_rfilename(const char *rf) {
     }
 }
 
+// One segment of a repository id ("owner" or "repo"): what the Hub itself
+// allows in a name, letters, digits, '-', '_' and '.', and not "." or "..".
+// The id goes into the API URL and, with '/' turned into "--", names the
+// cache directory, so anything else (a space, '?', '#', '%', a backslash, a
+// ':' that is an NTFS stream separator on Windows) reached the request line or
+// the filesystem as typed.
+static bool safe_repo_segment(const char *s, size_t n) {
+    if (n == 0 || (n == 1 && s[0] == '.') || (n == 2 && s[0] == '.' && s[1] == '.')) return false;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (!isalnum(c) && c != '-' && c != '_' && c != '.') return false;
+    }
+    return true;
+}
+
 static void local_name(const char *rfilename, char *out, size_t cap) {
     size_t n = strlen(rfilename);
     if (n >= cap) n = cap - 1;
@@ -382,6 +397,11 @@ static char *fetch_impl(const char *spec, const char *flag, bool strict, hf_file
         return NULL;
     }
     memcpy(repo, spec, rn); repo[rn] = 0;
+    size_t on = (size_t)(slash - spec);
+    if (!safe_repo_segment(repo, on) || !safe_repo_segment(repo + on + 1, rn - on - 1)) {
+        snprintf(err, errcap, "%s wants owner/repo[:TAG], got %s", flag, spec);
+        return NULL;
+    }
     if (colon) memcpy(tag, colon + 1, strlen(colon + 1) + 1);
     if (colon && !tag[0]) { snprintf(err, errcap, "%s %s: empty tag after ':'", flag, spec); return NULL; }
 
