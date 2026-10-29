@@ -755,9 +755,11 @@
         "evidence": [
           "docs/granite-42-qwen38-cert-2026-09-06.md",
           "docs/golden-pass-2026-10-22.md",
-          "tests/compatibility/coverage.json"
+          "tests/compatibility/coverage.json",
+          "docs/compat-reports/1.7.0-2026-10-29-windows-x86_64-granite-4.2-8b-q4_k_m.json",
+          "docs/compat-reports/cpu_cuda/granite-4.2-8b-q4_k_m.json"
         ],
-        "missing": "Metal and CPU rows; pinned output."
+        "missing": "The Metal row."
       },
       "smoke": {
         "device_class": "windows-x86_64-cuda",
