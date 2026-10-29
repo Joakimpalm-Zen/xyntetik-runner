@@ -110,6 +110,12 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
                            ? TMPL_QWEN35_NOTHINK : TMPL_QWEN35;
             return TMPL_ORNITH;
         }
+        // MiMo writes Qwen3-Coder's XML compact, with no newline between
+        // the call opener and the function: checked first, or the line
+        // below claims it and renders newline-framed, non-thinking turns
+        if (strstr(meta_tmpl, "<|im_start|>") &&
+            strstr(meta_tmpl, "<tool_call><function="))
+            return TMPL_MIMO;
         if (strstr(meta_tmpl, "<|im_start|>") &&
             strstr(meta_tmpl, "<function=") && strstr(meta_tmpl, "<parameter="))
             return TMPL_QWEN3_CODER;
@@ -224,6 +230,7 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "mellum")) return TMPL_MELLUM;
     if (!strcmp(name, "minicpm5")) return TMPL_MINICPM5;
     if (!strcmp(name, "lfm2")) return TMPL_LFM2;
+    if (!strcmp(name, "mimo")) return TMPL_MIMO;
     if (!strcmp(name, "hermes4")) return TMPL_HERMES4;
     if (!strcmp(name, "llama2")) return TMPL_LLAMA2;
     if (!strcmp(name, "llama3")) return TMPL_LLAMA3;
@@ -298,6 +305,7 @@ const char *template_name(int t) {
         case TMPL_MELLUM: return "mellum";
         case TMPL_MINICPM5: return "minicpm5";
         case TMPL_LFM2: return "lfm2";
+        case TMPL_MIMO: return "mimo";
         case TMPL_HERMES4: return "hermes4";
         case TMPL_LLAMA3: return "llama3";  case TMPL_ZEPHYR: return "zephyr";
         case TMPL_GEMMA:  return "gemma";
@@ -685,6 +693,7 @@ bool template_think_tags(int tmpl, const char **open, const char **close) {
     if (tmpl_chatml_think(tmpl) || tmpl == TMPL_QWEN38 ||
         tmpl == TMPL_NEMOTRON || tmpl == TMPL_HERMES4 || tmpl == TMPL_MINICPM5 ||
         tmpl == TMPL_LFM2 ||
+        tmpl == TMPL_MIMO ||
         tmpl_granite42_like(tmpl) || tmpl_ornith_like(tmpl)) {
         *open = "<think>";
         *close = "</think>";
@@ -1797,6 +1806,45 @@ static size_t render_qwen35(int tmpl, const chat_msg *msgs, int n_msgs,
                    NULL, NULL);
         st->reasoning_open = !closed;
         st->opener = closed ? NULL : "<think>\n";
+    }
+    return off;
+}
+
+// TMPL_MIMO (XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B chat_template.jinja).
+// Turns are joined with nothing: `<|im_end|>` is never followed by a newline.
+// Declared tools are a system turn of their own, ahead of the caller's
+// system message; a `tool` result keeps its role; every assistant turn opens
+// with `<think>R</think>`, which the serving layer writes when the turn
+// carries reasoning (server.c) and this writes empty when it does not.
+static size_t render_mimo(int tmpl, const chat_msg *msgs, int n_msgs,
+                          bool add_assistant, int thinking, const jv *tools,
+                          char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    if (tools && tools->type == J_ARR && tools->n > 0) {
+        sbuf decl = {0};
+        tools_render_for(tmpl, tools, &decl);
+        if (decl.failed) { free(decl.s); return SIZE_MAX; }
+        off = emit(out, cap, off, "<|im_start|>system\n%s<|im_end|>",
+                   decl.s ? decl.s : "", NULL);
+        free(decl.s);
+    }
+    for (int i = 0; i < n_msgs; i++) {
+        if (!strcmp(msgs[i].role, "assistant")) {
+            off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+            if (!content_starts(msgs[i].content, "<think>"))
+                off = emit(out, cap, off, "<think></think>", NULL, NULL);
+            off = emit(out, cap, off, "%s<|im_end|>", msgs[i].content, NULL);
+        } else {
+            off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>",
+                       msgs[i].role, msgs[i].content);
+        }
+    }
+    if (add_assistant) {
+        off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+        // `enable_thinking is false` only: an absent value and true both
+        // leave the header bare and the model opens its own block
+        if ((thinking & THINK_MODE_MASK) == THINK_OFF)
+            off = emit(out, cap, off, "<think></think>", NULL, NULL);
     }
     return off;
 }
@@ -3170,6 +3218,8 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
         return render_qwen35(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_QWEN3_CODER:
         return render_qwen3_coder(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+    case TMPL_MIMO:
+        return render_mimo(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_QWEN38:
         return render_qwen38(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_GRANITE42:
@@ -3529,6 +3579,17 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
         pl_lit(out, "]");
         return;
     }
+    if (tmpl == TMPL_MIMO) {
+        // MiMo's render_tools macro, verbatim
+        if (!tools || tools->type != J_ARR || tools->n == 0) return;
+        pl_lit(out, "You are provided with the following tools:\n\n<tools>");
+        for (int i = 0; i < tools->n; i++) {
+            pl_lit(out, "\n");
+            jv_dump_tojson(tools->items[i], out);
+        }
+        pl_lit(out, "\n</tools>");
+        return;
+    }
     if (tmpl == TMPL_MINICPM5) {
         // openbmb/MiniCPM5-2B chat_template.jinja, the tool_definitions
         // block verbatim: the declarations as tojson, then the guideline
@@ -3870,6 +3931,29 @@ void tool_history_render_for(int tmpl, const jv *calls,
         const char *name = jv_str(jv_get(fn, "name"), NULL);
         const char *args = jv_str(jv_get(fn, "arguments"), "{}");
         if (!name) continue;
+        if (tmpl == TMPL_MIMO) {
+            // MiMo's render_tool_calls: no separator before or between calls,
+            // a mapping's members as <parameter=K>V</parameter> with a string
+            // value raw and anything else as tojson; arguments that are not
+            // an object go in as the string they are (its `is string` arm)
+            pl_fmt(out, "<tool_call><function=%s>", name);
+            jv *obj = json_parse(args, strlen(args));
+            if (obj && obj->type == J_OBJ) {
+                for (int k = 0; k < obj->n; k++) {
+                    pl_fmt(out, "<parameter=%s>", obj->keys[k]);
+                    if (obj->items[k]->type == J_STR)
+                        sb_put(out, obj->items[k]->str, strlen(obj->items[k]->str));
+                    else
+                        jv_dump_tojson(obj->items[k], out);
+                    pl_lit(out, "</parameter>");
+                }
+            } else if (args[0]) {
+                sb_put(out, args, strlen(args));
+            }
+            pl_lit(out, "</function></tool_call>");
+            jv_free(obj);
+            continue;
+        }
         if (tmpl == TMPL_MINICPM5) {
             // chat_template.jinja: a newline before every call except a
             // first one on a turn that said nothing, then
@@ -4526,6 +4610,16 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
         env->tools = tools;
         env->parse_only = true;
         env->max_calls = TOOL_STREAM_MAX_CALLS;
+    } else if (strict && tmpl == TMPL_MIMO && env->kind == TCH_AUTO) {
+        // MiMo's calls are Qwen3-Coder's XML written compact, which the XML
+        // parser reads (it skips the framing whitespace the compact form
+        // omits). Parsed, never constrained: the XML grammar writes the
+        // newline-framed form, so a required or named choice takes the
+        // generic envelope for that request.
+        env->proto = TP_QWEN_XML;
+        env->tools = tools;
+        env->parse_only = true;
+        env->max_calls = TOOL_STREAM_MAX_CALLS;
     } else if (strict && tmpl == TMPL_MINICPM5 && env->kind == TCH_AUTO) {
         // MiniCPM5's own XML, parsed on the way out and never constrained:
         // an auto turn is the model's free turn in the syntax its template
@@ -4650,7 +4744,9 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
     bool mcp_decl = (tmpl == TMPL_MINICPM5 &&
                      (!strict || env->proto == TP_MINICPM_XML)) ||
                     // LFM2 the same way: its declarations are its template's
-                    (tmpl == TMPL_LFM2 && (!strict || env->proto == TP_LFM2));
+                    (tmpl == TMPL_LFM2 && (!strict || env->proto == TP_LFM2)) ||
+                    (tmpl == TMPL_MIMO &&
+                     (!strict || env->proto == TP_QWEN_XML));
     *skip_generic = qwen || g4_native || nemo_native || tmpl == TMPL_APERTUS ||
                     mcp_decl ||
                     (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||

@@ -2318,7 +2318,7 @@ flag and ignore it rather than approximate one.
 Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
 `mistral-nemo`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
 `ornith`, `qwen35`, `qwen35-nothink`, `nemotron`, `nemotron35`, `hermes4`, `granite`, `granite4`, `granite42`,
-`qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `muse`, `harmony`, or
+`qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `mimo`, `muse`, `harmony`, or
 `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
 is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
 template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ
@@ -3823,6 +3823,24 @@ generation prompt keeps the single newline, as the template does. Detected
 by an untrimmed `{% generation %}` in a ChatML template. Template
 conformance: 21 of 21 cases, text and tokens, against
 `arcee-ai/Trinity-Nano-Preview`.
+
+MiMo (`mimo`, XiaomiMiMo's MiMo-V2.6-Distill-Qwen-9B) is ChatML joined with no
+newline after `<|im_end|>`: every assistant turn opens with
+`<think>`reasoning`</think>`, empty when the turn carries none; a tool result
+keeps its own `tool` turn; declared tools are a system turn of their own ahead
+of the caller's; and calls are Qwen3-Coder's function/parameter XML written
+compact, `<tool_call><function=N><parameter=K>V</parameter></function></tool_call>`
+(template conformance: 23 of 23 cases, text and tokens, against the
+publisher's template, which the GGUF carries byte for byte). It was detected
+as `qwen3-coder` before, which framed every turn with newlines and wrote no
+thought blocks. `enable_thinking: false` closes an empty block; true and
+absent leave the reply open. A `tool_choice: auto` turn is parsed by the
+Qwen3-Coder parser; a `required` or named choice takes the generic JSON
+envelope, since the XML grammar writes the newline-framed form. `--info tools`
+reports `qwen3_xml`. Its tokenizer.json splits with the qwen2 rule, letters
+without their combining marks, though the GGUF says `qwen35`; a file carrying
+MiMo's template is read with the qwen2 split, as Clef is (0 of 721 corpus
+strings differ, 3 under the declared rule).
 
 MiniCPM5 (`minicpm5`, detected from the example call its template's own
 guideline text spells) is Qwen3's ChatML and think shape with its own rules:

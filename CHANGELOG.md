@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **MiMo-V2.6-Distill-Qwen-9B renders with its own template and tokenizes as
+  its publisher does.** Its chat template was detected as Qwen3-Coder's, so
+  every turn was framed with newlines the template never writes and no
+  assistant turn carried its thought block. It is a family of its own
+  (`mimo`): turns joined with no newline, `<think>`reasoning`</think>` on every
+  assistant turn, a kept `tool` role, tools as a system turn of their own and
+  Qwen3-Coder's XML calls written compact, parsed by the Qwen3-Coder parser.
+  Template conformance against XiaomiMiMo's template is 23 of 23 in text and
+  tokens. Its tokenizer.json splits with the qwen2 rule while the GGUF
+  declares `qwen35`; a file carrying MiMo's template now reads with the qwen2
+  split, as Clef does, and 0 of 721 corpus strings differ (3 did, all
+  Devanagari or Thai). A `required` or named tool choice takes the generic
+  envelope on this family.
 - **LFM2.5-1.2B-Instruct Q8_0 and Q4_K_M admitted at Tier 2; the Q4_K_M fails
   the fidelity bar.** Against LiquidAI's BF16 parent computed in float32 the
   publisher's Q4_K_M reads 0.115 mean KLD over 300 positions, against a 0.05

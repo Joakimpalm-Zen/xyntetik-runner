@@ -226,6 +226,14 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
             prompt_lit(&b, "<think>\n");
             if (reason) sb_put(&b, reason, strlen(reason));
             prompt_lit(&b, "\n</think>\n\n");
+        } else if (tmpl == TMPL_MIMO && !strcmp(role, "assistant") &&
+                   reason && *reason) {
+            // MiMo writes `<think>` reasoning `</think>` on every assistant
+            // turn, unframed; with no reasoning the renderer writes the empty
+            // pair itself
+            prompt_lit(&b, "<think>");
+            sb_put(&b, reason, strlen(reason));
+            prompt_lit(&b, "</think>");
         } else if (tmpl_granite42_like(tmpl) && !strcmp(role, "assistant") &&
                    reason && reason[strspn(reason, " \t\n\r\f\v")]) {
             // granite 4.2 folds a non-blank reasoning_content in as
@@ -776,8 +784,9 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                               i == msgs->n - 1 && i > last_user) ||
                              ((tmpl_qwen35(s->tmpl) || s->tmpl == TMPL_MELLUM) &&
                               i > last_user) ||
-                             // MiniCPM5 writes the block on every assistant turn
-                             s->tmpl == TMPL_MINICPM5 ||
+                             // MiniCPM5 and MiMo write the block on every
+                             // assistant turn; LFM2 on the last one only
+                             s->tmpl == TMPL_MINICPM5 || s->tmpl == TMPL_MIMO ||
                              (s->tmpl == TMPL_LFM2 && i == last_assistant);
         char *content = message_text(msgs->items[i], s->tmpl, replay_reason,
                                      &oom);

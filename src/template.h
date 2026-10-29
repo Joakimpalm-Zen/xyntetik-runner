@@ -200,7 +200,18 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // `<|tool_call_start|>[name(key=value, ...)]<|tool_call_end|>`, the two
        // markers control tokens. Detected by `List of tools: [` beside the
        // opening marker. Appended last.
-       TMPL_LFM2 };
+       TMPL_LFM2,
+       // XiaomiMiMo MiMo-V2.6-Distill-Qwen-9B (chat_template.jinja, byte-
+       // identical to the bartowski GGUF's): ChatML with NO newline after
+       // <|im_end|>, every assistant turn written `<think>R</think>` + content
+       // (R empty when there is no reasoning), a `tool` role kept as its own
+       // turn, tools declared in a system turn of their own ahead of the
+       // caller's, and calls in a compact form of Qwen3-Coder's XML:
+       // <tool_call><function=N><parameter=K>V</parameter></function></tool_call>
+       // with no newlines. enable_thinking false closes an empty block on the
+       // generation prompt; true and absent leave it bare. Detected by that
+       // compact opener, which no other template writes. Appended last.
+       TMPL_MIMO };
 
 // The reasoning tags a TEMPLATE family writes, for the families whose
 // protocol (not their architecture) defines them: the `<think>` block of
@@ -351,6 +362,8 @@ bool template_roles_valid(int tmpl, const char *const *roles, int n,
 //
 //   TMPL_CHATML_THINK  Qwen/Qwen3-* tokenizer_config.json
 //   TMPL_MELLUM        JetBrains/Mellum2.1-12B-A2.5B-Thinking chat_template.jinja
+//   TMPL_MIMO          XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B chat_template.jinja
+//     (OFF appends '<think></think>', DEFAULT and ON nothing)
 //   TMPL_MINICPM5      openbmb/MiniCPM5-2B chat_template.jinja (think pre-seed
 //     on ON, closed block on OFF, nothing on DEFAULT: `enable_thinking is
 //     defined` gates both branches)
