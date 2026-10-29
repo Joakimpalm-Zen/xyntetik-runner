@@ -429,7 +429,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#qwen3-4b-q4_k_m-bartowski"><code>Qwen_Qwen3-4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td></td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.0<br>2026-10-28</td></tr>
+<tr><td><a href="#qwen3-4b-q4_k_m-bartowski"><code>Qwen_Qwen3-4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td></td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
 </tbody>
 </table>
 <p><b>Qwen3-4B Runner ToolUse</b></p>
@@ -1251,11 +1251,11 @@ The base the published tool-use adapter was trained through and runs on, named b
 - **Still missing:** CUDA cell; a fidelity measurement of this file against the BF16 parent.
 - **Evidence:** [docs/compat-reports/1.7.0-2026-10-28-macos-arm64-qwen3-4b-q4_k_m-bartowski.json](compat-reports/1.7.0-2026-10-28-macos-arm64-qwen3-4b-q4_k_m-bartowski.json), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.0 on 2026-10-28.
-- **CPU:** ✅ v1.7.0 2026-10-28 on macos-arm64-metal at commit `b31730a9dc45`, output sha256 `95be9f33ca7dbafb`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.macos-arm64-metal.cpu.txt)
+- **CPU:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `95be9f33ca7dbafb`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ✅ v1.7.0 2026-10-28 on macos-arm64-metal at commit `b31730a9dc45`, output sha256 `95be9f33ca7dbafb`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.macos-arm64-metal.metal.txt)
-- **LoRA training:** supported (runner 1.7.0, 2026-10-28).
-- **LoRA adapter serving:** supported (runner 1.7.0, 2026-10-28).
+- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
 #### Qwen3-4B Runner ToolUse
