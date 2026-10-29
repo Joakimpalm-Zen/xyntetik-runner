@@ -43,6 +43,7 @@ RELEASE_DATE = ""
 
 NAV = [
     ("runner", "Runner", "/runner/"),
+    ("dojo", "Dojo", "/dojo/"),
     ("evidence", "Evidence", "/evidence/"),
     ("about", "About", "/about/"),
     ("support", "Support", "/support/"),
