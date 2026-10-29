@@ -32,7 +32,8 @@ exists to replace those guesses with answers you can check.
 
 - **Ask before you download.** Runner reads the first few megabytes of a
   model and tells you whether it fits your machine, and how. It called the
-  real split in 70 of 72 tests and was never too optimistic.
+  real split in 70 of 72 tests (Runner 1.0.1, October 2026) and was never
+  too optimistic.
 - **Shrink a model and see what it cost.** One command and a one-line plan
   built a Qwen3-30B that is smaller than the official 4-bit file and closer
   to the original.
@@ -155,9 +156,11 @@ or follow one of these.
 <a id="runtime-and-hardware"></a>
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Know whether a model fits before you download it
 
-On an RTX 3070, `--info fit` named the same GPU and CPU split the
-loader then used in 70 of 72 cases and was one layer cautious in the other
-two, never optimistic (six models, two context sizes, four cache formats).
+On an RTX 3070 with Runner 1.0.1 (2026-10-03), `--info fit` named the same
+GPU and CPU split the loader then used in 70 of 72 cases and was one layer
+cautious in the other two, never optimistic (six models, two context sizes,
+four cache formats). The raw sweep is not in this repository, so treat the
+figure as that release's, not a promise for every build.
 
 **Why.** Finding out that a model does not fit usually means downloading
 20 GB and watching it crash. The answer is already written in the first few
