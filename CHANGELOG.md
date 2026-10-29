@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **E-series fit reports distinguish row-gathered weights.** `--info fit`
+  retains the whole file size and reports the per-layer token table separately
+  from the hot set used for its RAM verdict, including on discrete GPU splits.
+  The tied output head and model projection still count in full. Header-only
+  tests anchor the subtraction to Q8_0 block sizes. README, manual and site
+  updated; model cards unchanged because this changes the estimator, not an
+  artifact's measured performance or fidelity.
 - **The engine merge to main is green in about 12 minutes instead of 55.**
   `make test` is now three targets run in order, `test-gates-core`,
   `test-gates-batch` and `test-python`, and CI runs them as three parallel

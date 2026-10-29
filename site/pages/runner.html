@@ -209,7 +209,7 @@ python3 scripts/kld-compare-raw.py --model-a out.gguf \
       </div>
       <div class="card">
         <h3>Ask what fits before loading anything</h3>
-        <p><code>--info caps</code> needs no model file and returns one JSON document with live RAM and VRAM, backend and GPU limits, admitted quant types and architectures, placement modes and model-count limits. <code>--info fit</code> answers the same question for a specific file from its GGUF header, the first few megabytes, so a ranged read decides whether the rest of the download is worth starting. On a discrete GPU it computes the loader's own layer split for each KV cache format and judges RAM by what stays on the host: on an RTX 3070 it named the loader's exact layer count in 70 of 72 cases and one layer fewer in the other two.</p>
+        <p><code>--info caps</code> needs no model file and returns one JSON document with live RAM and VRAM, backend and GPU limits, admitted quant types and architectures, placement modes and model-count limits. <code>--info fit</code> answers the same question for a specific file from its GGUF header, the first few megabytes, so a ranged read decides whether the rest of the download is worth starting. On a discrete GPU it computes the loader's own layer split for each KV cache format and judges RAM by what stays on the host: on an RTX 3070 it named the loader's exact layer count in 70 of 72 cases and one layer fewer in the other two. For Gemma 4 E-series it separates the row-gathered per-layer embedding table from the resident hot set; allow extra RAM for touched rows and runtime scratch.</p>
       </div>
       <div class="card">
         <h3>Decisions you can gate</h3>

@@ -800,14 +800,27 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
 
     out->weights = gguf_mapped_size(g);
 
+    // E-series gathers one row per token from this table on the host, even
+    // under full GPU offload. The rest (including the tied output head and
+    // PLE model projection) must stay resident. Require the declared shape:
+    // --info fit runs before model admission and a name alone is not enough.
+    uint32_t ple_width = gguf_get_u32(g, FK("embedding_length_per_layer_input"), 0);
+    gguf_tensor *ple = gguf_find_tensor(g, "per_layer_token_embd.weight");
+    if (!strcmp(arch, "gemma4") && ple_width > 0 && ple_width <= MDL_DIM_MAX &&
+        ple && ple->n_dims == 2 &&
+        ple->ne[0] == (uint64_t)out->n_layer * ple_width &&
+        ple->nbytes <= out->weights)
+        out->gathered = ple->nbytes;
+    uint64_t resident = out->weights - out->gathered;
+
     uint64_t routed = fit_routed_expert_bytes(g);
     if (out->n_expert > 0 && out->n_expert_used > 0 &&
-        out->n_expert_used < out->n_expert && routed && routed <= out->weights) {
-        out->hot = out->weights - routed +
+        out->n_expert_used < out->n_expert && routed && routed <= resident) {
+        out->hot = resident - routed +
                    routed * (uint64_t)out->n_expert_used / (uint64_t)out->n_expert;
         out->sparse = true;
     } else {
-        out->hot = out->weights;
+        out->hot = resident;
     }
 
     // Same shape as model_kv_row_bytes: K and V, per layer, per token, each
@@ -947,9 +960,12 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
         } else {
             used = 0; dev_w = 0;   // not even the fixed charge fits: all CPU
         }
-        uint64_t host_w = f->weights > dev_w ? f->weights - dev_w : 0;
-        if (f->sparse && f->weights)   // the routed banks are touched sparsely
-            host_w = (uint64_t)((double)host_w * (double)f->hot / (double)f->weights);
+        // The gathered table stays on the host at every split, but does not
+        // become a full resident allocation merely because a GPU is present.
+        uint64_t resident = f->weights - f->gathered;
+        uint64_t host_w = resident > dev_w ? resident - dev_w : 0;
+        if (f->sparse && resident)   // the routed banks are touched sparsely
+            host_w = (uint64_t)((double)host_w * (double)f->hot / (double)resident);
         f->gpu_layers[k] = G;
         f->gpu_used[k] = used;
         f->host_need[k] = host_w + per_tok[k] * (uint64_t)f->n_ctx * slots;

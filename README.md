@@ -163,6 +163,8 @@ two, never optimistic (six models, two context sizes, four cache formats).
 20 GB and watching it crash. The answer is already written in the first few
 megabytes of the file. Runner reads just that part and tells you, with the
 arithmetic.
+For Gemma 4 E-series, it separates the row-gathered per-layer embedding table
+from the weights that must stay resident. Leave room for the rows a prompt touches.
 
 **How.**
 

@@ -295,6 +295,23 @@ static void test_fit_gpu(const char *fixture) {
     r1.available = r2.available = base.hot + base.kv_f16;
     ck(!strcmp(model_fit_verdict(&r1), "FITS"), "fit slots: one slot fits at f16");
     ck(strcmp(model_fit_verdict(&r2), "FITS") != 0, "fit slots: two slots at f16 do not");
+
+    // A row-gathered table never uploads. Removing 1024 such bytes from the
+    // host estimate must save exactly 1024 bytes at every split, not a share
+    // proportional to the device weights. The CLI header fixture tests the
+    // E-series classification; this checks the discrete-GPU accounting seam.
+    for (int cap = 0; cap <= 1; cap++) {
+        uint64_t budget = cap ? 1 : 1ull << 40;
+        model_fit flat = base, gathered = base;
+        gathered.gathered = 1024;
+        gathered.hot -= 1024;
+        model_fit_gpu(&g, &flat, budget, 512ull << 20, 0);
+        model_fit_gpu(&g, &gathered, budget, 512ull << 20, 0);
+        ck(flat.host_need[FIT_KV_F16] - gathered.host_need[FIT_KV_F16] == 1024,
+           "fit gpu: gathered bytes leave the host bill at full and zero offload");
+        ck(flat.gpu_used[FIT_KV_F16] == gathered.gpu_used[FIT_KV_F16],
+           "fit gpu: a host-only gathered table changes no device allocation");
+    }
     gguf_close(&g);
 }
 
