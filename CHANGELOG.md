@@ -12,6 +12,15 @@ Current release and unreleased changes. Compatibility follows the
   Q4_K_M's x86 CPU reply, which picks a different word in its first
   sentence ("The smallest planet" against "The closest planet") and is
   pinned on its own; it still names the fact.
+- **A rotated-basis ternary file is refused instead of answering garbage.**
+  Prism ML's Ternary-Bonsai-2 GGUFs store every weight matrix in a
+  Hadamard-rotated basis (`prism.hadamard.*`) and need the matching
+  activation rotation at run time. Their Q2_0 packing is a type Runner reads
+  and their architecture (`qwen35`) is admitted, so
+  `Ternary-Bonsai-2-2B-Q2_0.gguf` loaded and answered with garbage at exit 0.
+  Any file that declares the rotation is now refused at load, naming the key.
+  The PQ2_0 and PTQ1_0 packings use tensor types this build does not read.
+  Supporting the format is a separate decision.
 - **MiniCPM5-2B admitted at Tier 2; its Q4_K_M fails the fidelity bar.**
   openbmb's own Q4_K_M against openbmb's BF16 parent computed in float32 reads
   0.102 mean KLD and 86.0% top-1 over 300 positions, against a 0.05 bar, and
