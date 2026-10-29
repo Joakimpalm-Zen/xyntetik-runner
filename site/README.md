@@ -8,11 +8,11 @@ to `main` that touches `site/`.
   (title, description, path, nav). The shell (head, header, footer) is
   applied by the generator.
 - `assets/`: stylesheet, the small script (menu, reveal-on-scroll), the
-  ten brand marks under `marks/` (xyntetik, runner, suite, lab, zenova; light and dark), favicon, and the two README recordings.
+  twelve brand marks under `marks/` (xyntetik, runner, dojo, suite, lab, zenova; light and dark), favicon, the two README recordings and the two Dojo screenshots.
 - `{{chart:name}}` in a page renders an inline SVG from the data tables at
   the top of `build.py`. Those tables are copies of numbers in the README
   and `docs/`; every caption names the source document and the date.
-- `{{repo}}` and `{{hf}}` expand to the repository and Hugging Face URLs.
+- `{{repo}}`, `{{dojo}}` and `{{hf}}` expand to the Runner repository, the Dojo repository and the Hugging Face URLs.
 - `{{tiers:table}}` renders the "Actively validated models" table (the
   README's family blocks as one table, a row per model in the README's
   order) and

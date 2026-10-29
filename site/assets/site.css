@@ -409,6 +409,9 @@ details.table-view .table-wrap { margin-top: 0.6rem; }
 .triad { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.25rem; }
 .triad .card .status { margin-top: 0.4rem; }
 @media (max-width: 860px) { .triad { grid-template-columns: minmax(0, 1fr); } }
+.triad.quad { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; }
+@media (max-width: 1100px) { .triad.quad { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .triad.quad { grid-template-columns: minmax(0, 1fr); } }
 .company { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 1.25rem; align-items: start; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.5rem; }
 .company .mark { width: 72px; height: 72px; }
 .company p:last-child { margin-bottom: 0; }
@@ -453,3 +456,8 @@ details.table-view .table-wrap { margin-top: 0.6rem; }
   #personas .tile.ob, #personas .tile.ba { grid-column: auto; }
   #personas .tile.shared .who { grid-template-columns: 1fr; }
 }
+
+/* screenshots as figures (the Dojo page) */
+.fig.shot-img { padding: 0.75rem 0.75rem 0.9rem; }
+.fig.shot-img img { display: block; width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); }
+.fig.shot-img figcaption { padding: 0 0.4rem; }
