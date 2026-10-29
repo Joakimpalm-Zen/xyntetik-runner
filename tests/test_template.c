@@ -1817,6 +1817,106 @@ static void test_chatml_think_shape(void) {
     assert(strcmp(out, base) == 0);
 }
 
+// MiniCPM5 (openbmb/MiniCPM5-2B chat_template.jinja): Qwen3's ChatML with
+// three rules of its own, each pinned here against the template's bytes.
+//   - `enable_thinking is defined` gates BOTH branches of the generation
+//     prompt: true pre-seeds '<think>\n', false closes an empty block, an
+//     absent value leaves the header bare (Qwen3 never pre-seeds the open).
+//   - EVERY historical assistant turn whose content carries neither <think>
+//     nor </think> gets the empty block, with its leading newlines stripped
+//     (Qwen3 writes it on the trailing turn only).
+//   - tools are declared under the template's own guideline text and a call
+//     replays as <function name="N"><param name="K">V</param></function>,
+//     CDATA-wrapped where a string value holds '<', '&' or a newline.
+static void test_minicpm5_shape(void) {
+    char out[4096];
+    assert(template_detect("<|im_start|>system ... <think> ... <function name=\"function-name\">"
+                           "<param name=\"param-name\">param-value</param></function>",
+                           NULL) == TMPL_MINICPM5);
+    assert(template_from_name("minicpm5") == TMPL_MINICPM5);
+    assert(!strcmp(template_name(TMPL_MINICPM5), "minicpm5"));
+    const char *to = NULL, *tc = NULL;
+    assert(template_think_tags(TMPL_MINICPM5, &to, &tc) && !strcmp(to, "<think>"));
+
+    const chat_msg one[] = { CHAT_MSG("user", "HI") };
+    const char *base = "<|im_start|>user\nHI<|im_end|>\n<|im_start|>assistant\n";
+    render_messages(TMPL_MINICPM5, one, 1, true, THINK_DEFAULT, out, sizeof(out));
+    assert(strcmp(out, base) == 0);
+    render_messages(TMPL_MINICPM5, one, 1, true, THINK_ON, out, sizeof(out));
+    assert(strcmp(out, "<|im_start|>user\nHI<|im_end|>\n<|im_start|>assistant\n<think>\n") == 0);
+    render_messages(TMPL_MINICPM5, one, 1, true, THINK_OFF, out, sizeof(out));
+    assert(strcmp(out, "<|im_start|>user\nHI<|im_end|>\n<|im_start|>assistant\n"
+                       "<think>\n\n</think>\n\n") == 0);
+
+    // every historical assistant turn, not only the trailing one; leading
+    // newlines of the content go behind the block
+    const chat_msg hist[] = {
+        CHAT_MSG("user", "HI"),
+        CHAT_MSG("assistant", "A."),
+        CHAT_MSG("user", "More?"),
+        CHAT_MSG("assistant", "\n\nB."),
+    };
+    render_messages(TMPL_MINICPM5, hist, 4, true, THINK_DEFAULT, out, sizeof(out));
+    assert(strcmp(out, "<|im_start|>user\nHI<|im_end|>\n"
+                       "<|im_start|>assistant\n<think>\n\n</think>\n\nA.<|im_end|>\n"
+                       "<|im_start|>user\nMore?<|im_end|>\n"
+                       "<|im_start|>assistant\n<think>\n\n</think>\n\nB.<|im_end|>\n"
+                       "<|im_start|>assistant\n") == 0);
+    // a turn that carries its own block is written as it stands
+    const chat_msg own[] = {
+        CHAT_MSG("user", "HI"),
+        CHAT_MSG("assistant", "<think>\nwhy\n</think>\n\nC."),
+    };
+    render_messages(TMPL_MINICPM5, own, 2, false, THINK_DEFAULT, out, sizeof(out));
+    assert(strcmp(out, "<|im_start|>user\nHI<|im_end|>\n"
+                       "<|im_start|>assistant\n<think>\nwhy\n</think>\n\nC.<|im_end|>\n") == 0);
+    // Qwen3's renderer is untouched by the new rule
+    render_messages(TMPL_CHATML_THINK, hist, 4, false, THINK_DEFAULT, out, sizeof(out));
+    assert(strstr(out, "<think>\n\n</think>\n\nA.") == NULL);
+
+    // the XML call replay, newline rule and CDATA
+    const char *calls_src =
+        "[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"save\","
+        "\"arguments\":\"{\\\"text\\\":\\\"a<b\\\\nc\\\",\\\"n\\\":2,\\\"ok\\\":true}\"}},"
+        "{\"id\":\"c2\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\","
+        "\"arguments\":\"{\\\"city\\\":\\\"Oslo\\\"}\"}}]";
+    jv *calls = json_parse(calls_src, strlen(calls_src));
+    assert(calls && calls->n == 2);
+    sbuf b = {0};
+    tool_history_render_for(TMPL_MINICPM5, calls, false, &b);
+    assert(!strcmp(b.s, "<function name=\"save\"><param name=\"text\"><![CDATA[a<b\nc]]></param>"
+                        "<param name=\"n\">2</param><param name=\"ok\">True</param></function>\n"
+                        "<function name=\"get_weather\"><param name=\"city\">Oslo</param></function>"));
+    free(b.s); b = (sbuf){0};
+    tool_history_render_for(TMPL_MINICPM5, calls, true, &b);
+    assert(b.s[0] == '\n' && !strncmp(b.s + 1, "<function name=\"save\">", 22));
+    free(b.s);
+    jv_free(calls);
+
+    // the declaration: after the system text, or where <tool_def_sep> puts it
+    const char *tools_src =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\","
+        "\"description\":\"Weather.\",\"parameters\":{\"type\":\"object\","
+        "\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]";
+    jv *tools = json_parse(tools_src, strlen(tools_src));
+    const chat_msg sys[] = { CHAT_MSG("system", "Sys."), CHAT_MSG("user", "Q") };
+    render_messages_with_tools(TMPL_MINICPM5, sys, 2, true, THINK_DEFAULT, tools,
+                               out, sizeof(out));
+    assert(!strncmp(out, "<|im_start|>system\nSys.\n\n# Tools\n\nYou are provided with "
+                         "function signatures within <tools></tools> XML tags:\n<tools>\n"
+                         "{\"type\": \"function\"", 130));
+    assert(strstr(out, "- param-value may be multi-line. If it contains <, & or newline "
+                       "characters, wrap it in a CDATA block: <param name=\"param-name\">"
+                       "<![CDATA[...multi-line value...]]></param><|im_end|>\n<|im_start|>user\nQ"));
+    assert(strstr(out, "<tool_call>") == NULL);
+    const chat_msg sep[] = { CHAT_MSG("system", "Pre <tool_def_sep> post"), CHAT_MSG("user", "Q") };
+    render_messages_with_tools(TMPL_MINICPM5, sep, 2, true, THINK_DEFAULT, tools,
+                               out, sizeof(out));
+    assert(!strncmp(out, "<|im_start|>system\nPre # Tools\n\n", 32));
+    assert(strstr(out, "]]></param> post<|im_end|>\n<|im_start|>user\nQ<|im_end|>\n"));
+    jv_free(tools);
+}
+
 // Qwen3 strips absent reasoning from the last historical assistant turn but
 // still emits the empty thought wrapper. That framing is part of the training
 // prompt whether or not another generation prompt follows it.
@@ -2899,6 +2999,7 @@ int main(void) {
     test_gemma4_consecutive_assistant();
     test_gemma4_tool_turns();
     test_chatml_think_shape();
+    test_minicpm5_shape();
     test_chatml_think_trailing_history_keeps_empty_thought();
     test_chatml_tool_result_renders_as_a_user_tool_response();
     test_muse_tools_and_result_golden();

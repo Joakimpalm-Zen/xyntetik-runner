@@ -129,6 +129,13 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         if (strstr(meta_tmpl, "<|im_start|>") &&
             strstr(meta_tmpl, "You are Hermes, created by Nous Research."))
             return TMPL_HERMES4;
+        // MiniCPM5: ChatML with Qwen3's think shape and an XML tool protocol
+        // of its own; the example call in its guideline text is the phrase
+        // no other template writes.
+        if (strstr(meta_tmpl, "<|im_start|>") &&
+            strstr(meta_tmpl, "<function name=\"function-name\">"
+                              "<param name=\"param-name\">"))
+            return TMPL_MINICPM5;
         if (strstr(meta_tmpl, "<|im_start|>") && strstr(meta_tmpl, "<think>") &&
             strstr(meta_tmpl, "macro normalize_content("))
             return TMPL_MELLUM;
@@ -202,6 +209,7 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "chatml")) return TMPL_CHATML;
     if (!strcmp(name, "chatml-think")) return TMPL_CHATML_THINK;
     if (!strcmp(name, "mellum")) return TMPL_MELLUM;
+    if (!strcmp(name, "minicpm5")) return TMPL_MINICPM5;
     if (!strcmp(name, "hermes4")) return TMPL_HERMES4;
     if (!strcmp(name, "llama2")) return TMPL_LLAMA2;
     if (!strcmp(name, "llama3")) return TMPL_LLAMA3;
@@ -273,6 +281,7 @@ const char *template_name(int t) {
         case TMPL_CHATML: return "chatml";  case TMPL_LLAMA2: return "llama2";
         case TMPL_CHATML_THINK: return "chatml-think";
         case TMPL_MELLUM: return "mellum";
+        case TMPL_MINICPM5: return "minicpm5";
         case TMPL_HERMES4: return "hermes4";
         case TMPL_LLAMA3: return "llama3";  case TMPL_ZEPHYR: return "zephyr";
         case TMPL_GEMMA:  return "gemma";
@@ -632,7 +641,7 @@ int req_bare_recipients(struct jv *req) {
 
 bool template_think_tags(int tmpl, const char **open, const char **close) {
     if (tmpl_chatml_think(tmpl) || tmpl == TMPL_QWEN38 ||
-        tmpl == TMPL_NEMOTRON || tmpl == TMPL_HERMES4 ||
+        tmpl == TMPL_NEMOTRON || tmpl == TMPL_HERMES4 || tmpl == TMPL_MINICPM5 ||
         tmpl_granite42_like(tmpl) || tmpl_ornith_like(tmpl)) {
         *open = "<think>";
         *close = "</think>";
@@ -2107,14 +2116,33 @@ static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
         if (!strcmp(msgs[i].role, "user")) last_user = i;
     if (qwen_tools) {
         off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
-        if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
-            off = emit(out, cap, off, "%s\n\n", msgs[0].content, NULL);
-            first = 1;
-        }
         sbuf decl = {0};
         tools_render_for(tmpl, tools, &decl);
-        off = emit(out, cap, off, "%s<|im_end|>\n",
-                   decl.s ? decl.s : "", NULL);
+        // MiniCPM5 lets a system message place the declarations itself: a
+        // `<tool_def_sep>` marker in its text is replaced by them (the
+        // template's `messages[0].content.replace('<tool_def_sep>', ...)`);
+        // without the marker they follow the text after a blank line, as
+        // on Qwen3.
+        const char *sep = tmpl == TMPL_MINICPM5 && n_msgs > 0 &&
+                          !strcmp(msgs[0].role, "system")
+                              ? strstr(msgs[0].content, "<tool_def_sep>") : NULL;
+        if (sep) {
+            sbuf sys = {0};
+            sb_put(&sys, msgs[0].content, (size_t)(sep - msgs[0].content));
+            if (decl.s) sb_put(&sys, decl.s, decl.n);
+            sb_lit(&sys, sep + strlen("<tool_def_sep>"));
+            off = emit(out, cap, off, "%s<|im_end|>\n", sys.s ? sys.s : "", NULL);
+            if (sys.failed) off = SIZE_MAX;
+            free(sys.s);
+            first = 1;
+        } else {
+            if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
+                off = emit(out, cap, off, "%s\n\n", msgs[0].content, NULL);
+                first = 1;
+            }
+            off = emit(out, cap, off, "%s<|im_end|>\n",
+                       decl.s ? decl.s : "", NULL);
+        }
         free(decl.s);
     }
     for (int i = first; i < n_msgs; i++) {
@@ -2141,13 +2169,22 @@ static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
             tmpl == TMPL_CHATML_THINK && i == n_msgs - 1 &&
             i > last_user && !strcmp(msgs[i].role, "assistant") &&
             !content_starts(msgs[i].content, "<think>");
+        // MiniCPM5 writes the block on EVERY assistant turn whose content
+        // carries neither <think> nor </think> (chat_template.jinja: the
+        // `'<think>' not in content and '</think>' not in content` arm),
+        // and strips the content's leading newlines behind it.
+        bool mcp_empty_think =
+            tmpl == TMPL_MINICPM5 && !strcmp(msgs[i].role, "assistant") &&
+            !strstr(msgs[i].content, "<think>") &&
+            !strstr(msgs[i].content, "</think>");
+        const char *content = msgs[i].content;
+        if (mcp_empty_think) while (*content == '\n') content++;
         off = emit(out, cap, off, "<|im_start|>%s\n", msgs[i].role,
                    NULL);
-        if (qwen3_empty_think)
+        if (qwen3_empty_think || mcp_empty_think)
             off = emit(out, cap, off, "<think>\n\n</think>\n\n",
                        NULL, NULL);
-        off = emit(out, cap, off, "%s<|im_end|>\n", msgs[i].content,
-                   NULL);
+        off = emit(out, cap, off, "%s<|im_end|>\n", content, NULL);
     }
     if (add_assistant) {
         off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
@@ -2159,6 +2196,20 @@ static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
         if (tmpl_chatml_think(tmpl) && (thinking & THINK_MODE_MASK) == THINK_OFF)
             off = emit(out, cap, off, "<think>\n\n</think>\n\n",
                        NULL, NULL);
+        // MiniCPM5 reads enable_thinking only when the caller defined it:
+        // true opens the thought block for the model ('<think>\n'), false
+        // closes an empty one, and an absent value leaves the header bare.
+        if (tmpl == TMPL_MINICPM5) {
+            int mode = thinking & THINK_MODE_MASK;
+            if (mode == THINK_ON) {
+                off = emit(out, cap, off, "<think>\n", NULL, NULL);
+                st->reasoning_open = true;
+                st->opener = "<think>\n";
+            } else if (mode == THINK_OFF) {
+                off = emit(out, cap, off, "<think>\n\n</think>\n\n",
+                           NULL, NULL);
+            }
+        }
     }
     return off;
 }
@@ -3044,6 +3095,7 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_CHATML:
     case TMPL_CHATML_THINK:
     case TMPL_MELLUM:
+    case TMPL_MINICPM5:
         return render_chatml(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_LLAMA3:
         for (int i = 0; i < n_msgs; i++)
@@ -3377,6 +3429,31 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
                     "tool calls if any errors are found, or just respond to the user.");
         return;
     }
+    if (tmpl == TMPL_MINICPM5) {
+        // openbmb/MiniCPM5-2B chat_template.jinja, the tool_definitions
+        // block verbatim: the declarations as tojson, then the guideline
+        // text that spells the XML call shape and the CDATA rule.
+        if (!tools || tools->type != J_ARR || tools->n == 0) return;
+        pl_lit(out, "# Tools\n\nYou are provided with function signatures "
+                    "within <tools></tools> XML tags:\n<tools>");
+        for (int i = 0; i < tools->n; i++) {
+            pl_lit(out, "\n");
+            jv_dump_tojson(tools->items[i], out);
+        }
+        pl_lit(out, "\n</tools>\n\nTool usage guidelines:\n"
+                    "- You may call zero or more functions. If no function calls "
+                    "are needed, just answer normally and do not include any "
+                    "<function ... </function>.\n"
+                    "- When calling a function, return an XML object within "
+                    "<function ... </function> using:\n"
+                    "<function name=\"function-name\"><param name=\"param-name\">"
+                    "param-value</param></function>\n"
+                    "- param-value may be multi-line. If it contains <, & or "
+                    "newline characters, wrap it in a CDATA block: "
+                    "<param name=\"param-name\"><![CDATA[...multi-line value...]]>"
+                    "</param>");
+        return;
+    }
     bool qwen = tmpl == TMPL_CHATML || tmpl_chatml_think(tmpl);
     if (tmpl == TMPL_GRANITE4) {
         // ibm-granite/granite-4.0-h-* and granite-4.1-* chat_template,
@@ -3638,6 +3715,36 @@ void tool_history_render_for(int tmpl, const jv *calls,
         const char *name = jv_str(jv_get(fn, "name"), NULL);
         const char *args = jv_str(jv_get(fn, "arguments"), "{}");
         if (!name) continue;
+        if (tmpl == TMPL_MINICPM5) {
+            // chat_template.jinja: a newline before every call except a
+            // first one on a turn that said nothing, then
+            // <function name="N"><param name="K">V</param>...</function>.
+            // A string value holding '<', '&' or a newline is wrapped in
+            // CDATA; other values print as the template's `{{ param_value }}`
+            // does for the shapes it meets (True/False/None, numbers).
+            if (qwen_calls++ || turn_has_text) pl_lit(out, "\n");
+            pl_lit(out, "<function name=\"");
+            sb_put(out, name, strlen(name));
+            pl_lit(out, "\">");
+            jv *obj = json_parse(args, strlen(args));
+            if (obj && obj->type == J_OBJ) {
+                for (int k = 0; k < obj->n; k++) {
+                    pl_lit(out, "<param name=\"");
+                    sb_put(out, obj->keys[k], strlen(obj->keys[k]));
+                    pl_lit(out, "\">");
+                    const jv *v = obj->items[k];
+                    if (v->type == J_STR && strpbrk(v->str, "<&\n")) {
+                        pl_lit(out, "<![CDATA[");
+                        sb_put(out, v->str, strlen(v->str));
+                        pl_lit(out, "]]>");
+                    } else coder_value(v, out);
+                    pl_lit(out, "</param>");
+                }
+            }
+            pl_lit(out, "</function>");
+            jv_free(obj);
+            continue;
+        }
         if (tmpl_hermes_json(tmpl)) {
             // (Granite 4 follows Qwen's rule here.)
             // Hermes 4 writes the newline before EVERY call, the first of a
@@ -4256,7 +4363,17 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
             xml_fellback = true;
         }
     }
-    if (strict && xml && !xml_fellback) {
+    if (strict && tmpl == TMPL_MINICPM5 && env->kind == TCH_AUTO) {
+        // MiniCPM5's own XML, parsed on the way out and never constrained:
+        // an auto turn is the model's free turn in the syntax its template
+        // taught it. A required or named choice has no grammar here yet and
+        // takes the generic envelope for that one request, as an XML family
+        // does for a schema its grammar cannot hold (xml_fellback above).
+        env->proto = TP_MINICPM_XML;
+        env->tools = tools;
+        env->parse_only = true;
+        env->max_calls = TOOL_STREAM_MAX_CALLS;
+    } else if (strict && xml && !xml_fellback) {
         env->proto = TP_QWEN_XML;
         env->tools = tools;
         // One contract for the four: an auto turn is the model's own free
@@ -4362,10 +4479,18 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
     // Mistral v0.3 and Nemo likewise: their templates have no tool_choice.
     bool nemo_native = tmpl == TMPL_NEMOTRON || tmpl == TMPL_MISTRAL ||
                        tmpl == TMPL_MISTRAL_NEMO;
+    // MiniCPM5 declares in its template like the qwen families: whenever
+    // its own protocol is in force, and on a non-strict request (tool_choice
+    // none) too, since its template has no notion of tool_choice. A strict
+    // required or named choice fell back to the generic envelope above, and
+    // that envelope then renders its own teaching turn.
+    bool mcp_decl = tmpl == TMPL_MINICPM5 &&
+                    (!strict || env->proto == TP_MINICPM_XML);
     *skip_generic = qwen || g4_native || nemo_native || tmpl == TMPL_APERTUS ||
+                    mcp_decl ||
                     (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
                     tmpl == TMPL_HARMONY || xml_in_template;
-    return qwen || xml_in_template ||
+    return qwen || xml_in_template || mcp_decl ||
            (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
            (tmpl == TMPL_HARMONY && env->proto == TP_HARMONY) ||
            g4_native || nemo_native || tmpl == TMPL_APERTUS
@@ -4380,6 +4505,7 @@ const char *tool_envelope_protocol_name(const tool_envelope *e) {
         case TP_GEMMA4:     return "gemma4";
         case TP_QWEN:       return "qwen_json";
         case TP_QWEN_XML:   return "qwen3_xml";
+        case TP_MINICPM_XML: return "minicpm5_xml";
         case TP_NEMOTRON:   return "nemotron_json";
         case TP_MISTRAL:    return "mistral_json";
         default: break;
@@ -4399,6 +4525,7 @@ const char *tool_protocol_name(int tmpl, bool *native) {
         case TP_GEMMA4:   return "gemma4";
         case TP_QWEN:     return "qwen_json";
         case TP_QWEN_XML: return "qwen3_xml";
+        case TP_MINICPM_XML: return "minicpm5_xml";
         case TP_NEMOTRON: return "nemotron_json";
         case TP_MISTRAL:  return "mistral_json";
         default: break;
@@ -5117,6 +5244,164 @@ static int qwen_map(const tool_envelope *e, const char *doc, size_t n,
     return tc->failed || content->failed ? -1 : calls;
 }
 
+// MiniCPM5's native call, bare in the content (no <tool_call> framing):
+//   <function name="N"><param name="K">V</param>...</function>
+// A string value may arrive wrapped as <![CDATA[...]]>; the wrapper ends at
+// the first `]]></param>`, so an inner `]]>` followed by more text stays in
+// the value, and a bare '<' or '&' in an unwrapped value is text up to the
+// `</param>` that closes it. Values are typed by the declaration as
+// coder_one_call types them: a string parameter is the bytes as written,
+// anything else parses as JSON with the template's True/False/None spellings.
+// Malformed or truncated members reject the whole call; half a call never
+// becomes an executable one.
+#define MCP_CALL_OPEN "<function name=\""
+
+// Where a block that opens at `p` ends: one past its `</function>`, with
+// CDATA sections skipped so a value may spell the closing tag. 0 while the
+// block is still open.
+static size_t mcp_block_end(const char *p, size_t n) {
+    size_t i = 0;
+    for (;;) {
+        const char *cd = atem_find(p + i, p + n, "<![CDATA[");
+        const char *fe = atem_find(p + i, p + n, "</function>");
+        if (!fe) return 0;
+        if (cd && cd < fe) {
+            const char *ce = atem_find(cd + 9, p + n, "]]>");
+            if (!ce) return 0;
+            i = (size_t)(ce + 3 - p);
+            continue;
+        }
+        return (size_t)(fe + 11 - p);
+    }
+}
+
+static bool mcp_one_call(const tool_envelope *env, const char **pp,
+                         const char *end, int index, sbuf *tc) {
+    const char *p = *pp;
+    size_t ol = strlen(MCP_CALL_OPEN);
+    if ((size_t)(end-p) < ol || memcmp(p, MCP_CALL_OPEN, ol)) return false;
+    const char *name = p+ol, *ne = memchr(name, '"', (size_t)(end-name));
+    if (!ne || ne == name || ne+1 >= end || ne[1] != '>') return false;
+    jv *fn = NULL;
+    for (int i=0; env->tools && i<env->tools->n; i++) {
+        jv *f = jv_get(env->tools->items[i],"function");
+        if (!f) f = env->tools->items[i];
+        const char *n = jv_str(jv_get(f,"name"),"");
+        if (strlen(n)==(size_t)(ne-name) && !memcmp(n,name,(size_t)(ne-name))) { fn=f; break; }
+    }
+    if (!fn) return false;
+    jv *props = jv_get(jv_get(fn,"parameters"),"properties");
+    enum { MCP_MAX_PARAMS = 64 };
+    struct { const char *key; size_t key_n; sbuf json; int declared; } mem[MCP_MAX_PARAMS];
+    int n_mem = 0;
+    sbuf args = {0};
+    p = trim_left(ne+2, end);
+    while ((size_t)(end-p) >= 13 && !memcmp(p, "<param name=\"", 13)) {
+        const char *key=p+13, *ke=memchr(key,'"',(size_t)(end-key));
+        if (!ke || ke==key || ke+1>=end || ke[1]!='>' || n_mem == MCP_MAX_PARAMS) goto bad;
+        const char *v = ke+2, *e, *after;
+        if ((size_t)(end-v) >= 9 && !memcmp(v, "<![CDATA[", 9)) {
+            v += 9;
+            e = atem_find(v, end, "]]></param>");
+            if (!e) goto bad;
+            after = e + 11;
+        } else {
+            e = atem_find(v, end, "</param>");
+            if (!e) goto bad;
+            after = e + 8;
+        }
+        jv *spec=NULL; int declared = INT_MAX;
+        for (int i=0; props && props->type==J_OBJ && i<props->n; i++)
+            if (strlen(props->keys[i])==(size_t)(ke-key) && !memcmp(props->keys[i],key,(size_t)(ke-key))) { spec=props->items[i]; declared = i; }
+        const char *type=jv_str(jv_get(spec,"type"),"");
+        mem[n_mem].key = key; mem[n_mem].key_n = (size_t)(ke-key);
+        mem[n_mem].declared = declared;
+        sbuf *val = &mem[n_mem].json; memset(val, 0, sizeof *val);
+        n_mem++;
+        if (!strcmp(type,"string")) {
+            sb_lit(val,"\""); sb_esc(val,v,(int)(e-v)); sb_lit(val,"\"");
+        } else {
+            const char *b=trim_left(v,e), *z=trim_right(b,e);
+            jv *value=json_parse(b,(size_t)(z-b));
+            if (!value && z-b==4 && !memcmp(b,"True",4)) value=json_parse("true",4);
+            if (!value && z-b==5 && !memcmp(b,"False",5)) value=json_parse("false",5);
+            if (!value && z-b==4 && !memcmp(b,"None",4)) value=json_parse("null",4);
+            if (value) { jv_dump(value,val); jv_free(value); }
+            else if (!type[0]) { sb_lit(val,"\""); sb_esc(val,v,(int)(e-v)); sb_lit(val,"\""); }
+            else goto bad;
+        }
+        if (val->failed) goto bad;
+        p = trim_left(after, end);
+    }
+    if ((size_t)(end-p) < 11 || memcmp(p,"</function>",11)) goto bad;
+    p += 11;
+    sb_lit(&args,"{");
+    bool used[MCP_MAX_PARAMS] = {0};
+    for (int k = 0; k < n_mem; k++) {
+        int pick = -1;
+        for (int i = 0; i < n_mem; i++)
+            if (!used[i] && (pick < 0 || mem[i].declared < mem[pick].declared)) pick = i;
+        used[pick] = true;
+        if (k) sb_lit(&args,",");
+        sb_lit(&args,"\""); sb_esc(&args,mem[pick].key,(int)mem[pick].key_n); sb_lit(&args,"\":");
+        sb_put(&args, mem[pick].json.s ? mem[pick].json.s : "", mem[pick].json.n);
+    }
+    sb_lit(&args,"}");
+    for (int i = 0; i < n_mem; i++) free(mem[i].json.s);
+    n_mem = 0;
+    if (args.failed) goto bad;
+    jv *params = jv_get(fn,"parameters");
+    if (params) {
+        char err[192]; snode *schema=schema_compile(params,err,sizeof err);
+        if (!schema) goto bad;
+        sval state; sval_init(&state,schema);
+        bool ok=sval_feed(&state,args.s,(int)args.n) && state.done;
+        schema_free(schema);
+        if (!ok) goto bad;
+    }
+    if (env->kind==TCH_NAMED && (!env->named || strlen(env->named)!=(size_t)(ne-name) || memcmp(env->named,name,(size_t)(ne-name)))) goto bad;
+    sb_fmt(tc,"{\"id\":\"call_%d\",\"type\":\"function\",\"function\":{\"name\":\"",index);
+    sb_esc(tc,name,(int)(ne-name));sb_lit(tc,"\",\"arguments\":\"");
+    sb_esc(tc,args.s,(int)args.n);sb_lit(tc,"\"}}");
+    *pp=p;free(args.s);return !tc->failed;
+bad:
+    for (int i = 0; i < n_mem; i++) free(mem[i].json.s);
+    free(args.s);return false;
+}
+
+// The buffered MiniCPM5 turn: prose up to the first call is content, each
+// call maps through mcp_one_call, the turn ends at <|im_end|>. The same
+// verdicts as qwen_map: a call that does not parse against its declaration
+// refuses the document, a call past max_calls too.
+static int mcp_map(const tool_envelope *e, const char *doc, size_t n,
+                   sbuf *content, sbuf *tc) {
+    const char *p=doc, *end=doc+n;
+    int calls=0;
+    if (tool_trace_on())
+        fprintf(stderr, "tool-trace: minicpm5 document (%zu bytes):\n%.*s\n", n, (int)n, doc);
+    while (p<end) {
+        const char *open=atem_find(p,end,MCP_CALL_OPEN);
+        const char *stop=atem_find(p,end,"<|im_end|>");
+        if (!open || (stop && stop<open)) {
+            if (!calls) sb_put(content,p,(size_t)((stop?stop:end)-p));
+            break;
+        }
+        if (!calls && trim_left(p,open)<open) sb_put(content,p,(size_t)(open-p));
+        if (calls >= e->max_calls) {
+            if (tool_trace_on()) fprintf(stderr, "tool-trace: refused, call %d past max_calls %d\n", calls + 1, e->max_calls);
+            return -1;
+        }
+        const char *at=open;
+        if (calls) sb_lit(tc,",");
+        if (!mcp_one_call(e,&at,end,calls,tc)) {
+            if (tool_trace_on()) fprintf(stderr, "tool-trace: refused, call %d does not parse against its declaration\n", calls + 1);
+            return -1;
+        }
+        calls++;p=at;
+    }
+    return tc->failed || content->failed ? -1 : calls;
+}
+
 // Nemotron Nano's native turn: optional text, then ONE block
 // `<TOOLCALL>[{"name": "N", "arguments": {...}}, ...]</TOOLCALL>` holding the
 // turn's calls as a JSON list, then the turn end `<SPECIAL_12>`.
@@ -5229,6 +5514,7 @@ int tool_envelope_map_channels(const tool_envelope *e, const char *doc,
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, reasoning, content, tc);
     if (e->proto == TP_GEMMA4) return gemma4_map(e, doc, n, reasoning, content, tc);
     if (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) return qwen_map(e, doc, n, content, tc);
+    if (e->proto == TP_MINICPM_XML) return mcp_map(e, doc, n, content, tc);
     return tool_envelope_map(e, doc, n, content, tc);
 }
 
@@ -5238,6 +5524,7 @@ int tool_envelope_map(const tool_envelope *e, const char *doc, size_t n,
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, NULL, content, tc);
     if (e->proto == TP_GEMMA4) return gemma4_map(e, doc, n, NULL, content, tc);
     if (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) return qwen_map(e, doc, n, content, tc);
+    if (e->proto == TP_MINICPM_XML) return mcp_map(e, doc, n, content, tc);
     if (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL)
         return nemotron_map(e, doc, n, content, tc);
     if (e->proto == TP_ATEM) return atem_map(e, doc, n, content, tc);
@@ -5319,6 +5606,9 @@ enum { TS_TOOL, TS_ARGS, TS_FINAL_KEY, TS_FINAL_STR, TS_VALUE, TS_ATEM,
        // branch waits for <|eot|> before the client sees a byte.
        TS_G4_START, TS_G4_THOUGHT, TS_G4_CALLS, TS_G4_TEXT,
        TS_QWEN_START, TS_QWEN_CALLS, TS_QWEN_TEXT,
+       // MiniCPM5's native turn: prose, then bare <function name=...> blocks
+       // (no <tool_call> framing), each held until its </function> closes
+       TS_MCP_START, TS_MCP_CALLS, TS_MCP_TEXT,
        TS_NEMO_START, TS_NEMO_TEXT, TS_NEMO_BLOCK,
        TS_MUSE_HEADER, TS_MUSE_CONTENT,
        // parallel_tool_calls: between two entries of {"calls":[...]}. A
@@ -5606,6 +5896,7 @@ void tool_stream_init(tool_stream *s, const tool_envelope *e,
     s->state = e && e->proto == TP_HARMONY ? TS_HARMONY
              : e && e->proto == TP_GEMMA4 ? TS_G4_START
              : e && (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) ? TS_QWEN_START
+             : e && e->proto == TP_MINICPM_XML ? TS_MCP_START
              : e && (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL) ? TS_NEMO_START
              : e && e->proto == TP_ATEM ? TS_ATEM
              : e && e->proto == TP_MUSE_PLAIN ? TS_MUSE_HEADER : TS_TOOL;
@@ -5845,6 +6136,100 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
         int rc=emit && s->sink.content
             ? s->sink.content(s->sink.ud,s->head,(int)emit) : 0;
         head_drop(s,emit);s->state=TS_QWEN_TEXT;return rc;
+    }
+}
+
+// MiniCPM5, streamed: prose goes out as it comes, a <function name="...>
+// block is held until mcp_block_end sees its close and goes out whole as one
+// call, the turn end stops the stream. The family is never constrained, so
+// every block is parse-only: one that does not map is dropped with the fault
+// recorded, and the turn goes on so a valid call after it still arrives. A
+// prose mention of the opener is held like a call until the turn ends, then
+// dropped as a fault (tool_stream_finish_ex): the opener is the family's own
+// call syntax, not a tag prose has a reason to spell.
+static int ts_mcp(tool_stream *s, const char *bytes, int n) {
+    head_put(s,bytes,(size_t)n);
+    for (;;) {
+        if (s->state==TS_DONE || !s->head_n) return 0;
+        if (s->state==TS_MCP_CALLS) {
+            size_t close=mcp_block_end(s->head,s->head_n);
+            if (!close) return 0;
+            const char *at=s->head;
+            sbuf tc={0}, wrapped={0};
+            bool past_bound = s->env && s->n_calls >= s->env->max_calls;
+            if (past_bound || !mcp_one_call(s->env,&at,s->head+s->head_n,0,&tc)) {
+                free(tc.s);
+                s->fault=true;
+                if (tool_trace_on())
+                    fprintf(stderr, "tool-trace: minicpm5 block %s, dropped (%zu bytes):\n%.*s\n",
+                            past_bound ? "past max_calls" : "not a valid call",
+                            close, (int)close, s->head);
+                head_drop(s,close);
+                s->state=TS_MCP_TEXT;s->skip_ws=true;
+                continue;
+            }
+            sb_lit(&wrapped,"[");sb_put(&wrapped,tc.s,tc.n);sb_lit(&wrapped,"]");
+            jv *arr=json_parse(wrapped.s,wrapped.n);
+            jv *fn=arr && arr->n==1 ? jv_get(arr->items[0],"function") : NULL;
+            const char *name=jv_str(jv_get(fn,"name"),NULL);
+            const char *args=jv_str(jv_get(fn,"arguments"),NULL);
+            int rc=0;
+            if (!name || !args) rc=-1;
+            else {
+                s->called=s->any_called=true;
+                s->n_calls++;
+                if (s->sink.call_begin) rc=s->sink.call_begin(s->sink.ud,name);
+                if (!rc && s->sink.call_args) rc=s->sink.call_args(s->sink.ud,args,(int)strlen(args));
+                if (!rc && s->sink.call_end) rc=s->sink.call_end(s->sink.ud);
+            }
+            jv_free(arr);free(tc.s);free(wrapped.s);
+            head_drop(s,(size_t)(at-s->head));
+            s->state=TS_MCP_TEXT;s->skip_ws=true;
+            if (rc) return rc;
+            continue;
+        }
+        if (s->skip_ws) {
+            size_t i=0;
+            while (i<s->head_n && ts_ws(s->head[i])) i++;
+            if (i) head_drop(s,i);
+            if (!s->head_n) return 0;
+            s->skip_ws=false;
+        }
+        const char *open=strstr(s->head,MCP_CALL_OPEN);
+        const char *stop=strstr(s->head,QWEN_TURN_END);
+        if (stop && (!open || stop<open)) {
+            int rc=stop>s->head && s->sink.content
+                ? s->sink.content(s->sink.ud,s->head,(int)(stop-s->head)) : 0;
+            s->state=TS_DONE;s->head_n=0;return rc;
+        }
+        if (open) {
+            size_t prefix=(size_t)(open-s->head);
+            bool white=true;
+            for (size_t i=0;i<prefix;i++) if (!ts_ws(s->head[i])) white=false;
+            int rc=prefix && s->sink.content &&
+                   !(s->state==TS_MCP_START && white)
+                ? s->sink.content(s->sink.ud,s->head,(int)prefix) : 0;
+            head_drop(s,prefix);s->state=TS_MCP_CALLS;
+            if (rc) return rc;
+            continue;
+        }
+        size_t keep=0;
+        const char *markers[]={MCP_CALL_OPEN,QWEN_TURN_END};
+        for (int m=0;m<2;m++) {
+            size_t k=strlen(markers[m])-1;
+            if (k>s->head_n) k=s->head_n;
+            while (k && memcmp(s->head+s->head_n-k,markers[m],k)) k--;
+            if (k>keep) keep=k;
+        }
+        size_t emit=s->head_n-keep;
+        if (s->state==TS_MCP_START) {
+            bool white=true;
+            for (size_t i=0;i<emit;i++) if (!ts_ws(s->head[i])) white=false;
+            if (white) return 0;
+        }
+        int rc=emit && s->sink.content
+            ? s->sink.content(s->sink.ud,s->head,(int)emit) : 0;
+        head_drop(s,emit);s->state=TS_MCP_TEXT;return rc;
     }
 }
 
@@ -6088,6 +6473,9 @@ int tool_stream_feed(tool_stream *s, const char *bytes, int n) {
     case TS_QWEN_START:
     case TS_QWEN_CALLS:
     case TS_QWEN_TEXT: return ts_qwen(s, bytes, n);
+    case TS_MCP_START:
+    case TS_MCP_CALLS:
+    case TS_MCP_TEXT:  return ts_mcp(s, bytes, n);
     case TS_NEMO_START:
     case TS_NEMO_TEXT:
     case TS_NEMO_BLOCK: return ts_nemotron(s, bytes, n);
@@ -6130,6 +6518,22 @@ int tool_stream_finish_ex(tool_stream *s, bool truncated) {
             else if (!ts_qwen_block_is_call(s)) { rc = 0; framing = false; }
             else s->fault = true;
         }
+        if (s->head_n && !framing && s->sink.content)
+            rc = s->sink.content(s->sink.ud, s->head, (int)s->head_n);
+        s->head_n = 0;
+        s->state = TS_DONE;
+        if (s->fault) rc = -1;
+        return rc;
+    }
+    if (s->state == TS_MCP_START || s->state == TS_MCP_CALLS ||
+        s->state == TS_MCP_TEXT) {
+        // A held <function name="...> block that never closed is half a call:
+        // dropped, never completed, and a protocol fault unless a budget or
+        // deadline cut the turn. A partial opener at the tail is framing.
+        int rc = 0;
+        bool framing = s->state == TS_MCP_CALLS ||
+                       (s->state == TS_MCP_START && ts_partial(s, MCP_CALL_OPEN));
+        if (s->state == TS_MCP_CALLS && !truncated) s->fault = true;
         if (s->head_n && !framing && s->sink.content)
             rc = s->sink.content(s->sink.ud, s->head, (int)s->head_n);
         s->head_n = 0;

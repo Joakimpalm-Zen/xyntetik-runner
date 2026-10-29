@@ -570,6 +570,18 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
+<details>
+<summary><b>MiniCPM5</b>, 1 model: CPU ✅ · CUDA - · Metal ✅ · Train ✅</summary>
+<p><b>MiniCPM5-2B (openbmb)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#minicpm5-2b-q8_0"><code>MiniCPM5-2B-Q8_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
+<tr><td><a href="#minicpm5-2b-q4_k_m"><code>MiniCPM5-2B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
+</tbody>
+</table>
+</details>
+
 **Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
 
 <a id="tier1"></a>
@@ -1467,6 +1479,54 @@ Admitted and maintained on report: existing regression tests keep running and sh
 
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
+### MiniCPM5
+
+#### MiniCPM5-2B (openbmb)
+
+<a id="minicpm5-2b-q8_0"></a>
+##### `MiniCPM5-2B-Q8_0.gguf`
+
+Text path, the publisher's Q8_0, the fidelity file of the two: against the publisher's BF16 parent computed in float32 it reads 0.0033 mean KLD and 98.0% top-1 (300 positions, Metal).
+
+- **File:** `MiniCPM5-2B-Q8_0.gguf` (sha256 `c5415f8989bf88a8288f1b55a3cc371af53c07b0faa220a63bd7a990cfaba078`, 2,679,710,688 bytes, from [openbmb/MiniCPM5-2B-GGUF](https://huggingface.co/openbmb/MiniCPM5-2B-GGUF) at revision `2079a22f3bea`).
+- **Upstream checkpoint:** openbmb/MiniCPM5-2B at revision `f97400052a43`.
+- **Quantization:** Q8_0 (publisher).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against openbmb's BF16 parent computed in float32 on the CPU (transformers' own llama code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0033 mean KLD / 98.0% top-1 / 100% margin-qualified, Q4_K_M 0.102 / 86.0% / 94.6%; Q4_K_M against Q8_0 from the same score files 0.098 / 85.3%. Tokenizer 0/721 against the publisher's tokenizer.json at f9740005, template conformance 23/23 in text and tokens. Record: docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** 2.68 GB of weights page from disk on an 8 GB machine with other applications open. No llama.cpp column. A required or named tool choice takes the generic JSON envelope on this family.
+- **Still missing:** The Windows CUDA host's CPU and CUDA cells and the CPU-vs-CUDA check; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only).
+- **Evidence:** [docs/compat-reports/1.7.1-2026-10-29-macos-arm64-minicpm5-2b-q8_0.json](compat-reports/1.7.1-2026-10-29-macos-arm64-minicpm5-2b-q8_0.json), [docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md](compat-reports/minicpm5-2b-reference-2026-10-29/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.1 on 2026-10-29.
+- **CPU:** ✅ v1.7.1 2026-10-29 on macos-arm64-metal at commit `a83670a85fdc`, output sha256 `d163df7b65c07bae`, [pin](../tests/compatibility/tier-smoke/minicpm5-2b-q8_0.macos-arm64-metal.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ✅ v1.7.1 2026-10-29 on macos-arm64-metal at commit `a83670a85fdc`, output sha256 `d163df7b65c07bae`, [pin](../tests/compatibility/tier-smoke/minicpm5-2b-q8_0.macos-arm64-metal.metal.txt)
+- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
+- **Tier history:** Upcoming, planned admission from 2026-10-29; Tier 2, maintained on report from 2026-10-29 ([log](#transition-log)).
+
+<a id="minicpm5-2b-q4_k_m"></a>
+##### `MiniCPM5-2B-Q4_K_M.gguf`
+
+Text path, the publisher's Q4_K_M, which fails the fidelity bar: against the publisher's BF16 parent computed in float32 it reads 0.102 mean KLD and 86.0% top-1 (300 positions, Metal), against a 0.05 bar; the Q8_0 is the fidelity file.
+
+- **File:** `MiniCPM5-2B-Q4_K_M.gguf` (sha256 `ec2d5801640099e97d8d7e8003ad4d81f336e757811f03a26173dddf386602fd`, 1,561,318,368 bytes, from [openbmb/MiniCPM5-2B-GGUF](https://huggingface.co/openbmb/MiniCPM5-2B-GGUF) at revision `2079a22f3bea`).
+- **Upstream checkpoint:** openbmb/MiniCPM5-2B at revision `f97400052a43`.
+- **Quantization:** Q4_K_M (publisher).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against openbmb's BF16 parent computed in float32 on the CPU (transformers' own llama code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0033 mean KLD / 98.0% top-1 / 100% margin-qualified, Q4_K_M 0.102 / 86.0% / 94.6%; Q4_K_M against Q8_0 from the same score files 0.098 / 85.3%. Tokenizer 0/721 against the publisher's tokenizer.json at f9740005, template conformance 23/23 in text and tokens. Record: docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** No fidelity claim: the file fails the 0.05 bar against its parent on Runner, and the gap is the file's quantization, not the arithmetic (the Q8_0 of the same parent reads 0.0033 on the same build). No llama.cpp column. A required or named tool choice takes the generic JSON envelope on this family.
+- **Still missing:** The Windows CUDA host's CPU and CUDA cells and the CPU-vs-CUDA check; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only).
+- **Evidence:** [docs/compat-reports/1.7.1-2026-10-29-macos-arm64-minicpm5-2b-q4_k_m.json](compat-reports/1.7.1-2026-10-29-macos-arm64-minicpm5-2b-q4_k_m.json), [docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md](compat-reports/minicpm5-2b-reference-2026-10-29/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.1 on 2026-10-29.
+- **CPU:** ✅ v1.7.1 2026-10-29 on macos-arm64-metal at commit `a83670a85fdc`, output sha256 `16ee8166ecb8972e`, [pin](../tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.macos-arm64-metal.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ✅ v1.7.1 2026-10-29 on macos-arm64-metal at commit `a83670a85fdc`, output sha256 `16ee8166ecb8972e`, [pin](../tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.macos-arm64-metal.metal.txt)
+- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
+- **Tier history:** Upcoming, planned admission from 2026-10-29; Tier 2, maintained on report from 2026-10-29 ([log](#transition-log)).
+
 <a id="tier3"></a>
 ## Tier 3, unmaintained
 
@@ -1690,5 +1750,9 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-29 | [Nemotron 3.5 Bolt E4B, `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf`](#nemotron-3.5-bolt-e4b-q4_k_m) | Tier 1, actively validated | Owner decision 2026-10-29: promoted to Tier 1 for active validation (the publisher's file; the 2026-10-27 pull rule yields to the owner's call). The admitting Metal, CUDA and CPU cells and the train smoke stand as the record; the BF16-parent fidelity measurement is still owed. | 1.7.0 |
 | 2026-10-29 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains), `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf`](#mellum2.1-12b-a2.5b-thinking-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-29 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull; this is the publisher's file and its downloads are the publisher's). The BF16-parent result is stated first; maintained on report, with the admitting run recorded. | none recorded |
 | 2026-10-29 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains), `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf`](#mellum2.1-12b-a2.5b-thinking-q4_k_m) | Tier 1, actively validated | Owner decision 2026-10-29: promoted to Tier 1 for active validation (the publisher's file; the 2026-10-27 pull rule yields to the owner's call). The admitting CPU and CUDA cells stand as the record; the row keeps its fidelity reading (the Q4_K_M fails the bar against the BF16 parent, Q8_0 is the fidelity file); the Metal row and the Q8_0 cells are still owed. | 1.7.0 |
+| 2026-10-29 | [MiniCPM5-2B (openbmb), `MiniCPM5-2B-Q8_0.gguf`](#minicpm5-2b-q8_0) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the first of nine; the files did not tokenize as the publisher's tokenizer does until the minicpm5 pre-tokenizer rule, the BOS rule and the minicpm5 template family landed. | none recorded |
+| 2026-10-29 | [MiniCPM5-2B (openbmb), `MiniCPM5-2B-Q8_0.gguf`](#minicpm5-2b-q8_0) | Tier 2, maintained on report | Admitted 2026-10-29 at Tier 2 with the admitting Metal and CPU cells and a float32 reference measurement (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report. | none recorded |
+| 2026-10-29 | [MiniCPM5-2B (openbmb), `MiniCPM5-2B-Q4_K_M.gguf`](#minicpm5-2b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the first of nine; the files did not tokenize as the publisher's tokenizer does until the minicpm5 pre-tokenizer rule, the BOS rule and the minicpm5 template family landed. | none recorded |
+| 2026-10-29 | [MiniCPM5-2B (openbmb), `MiniCPM5-2B-Q4_K_M.gguf`](#minicpm5-2b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-29 at Tier 2 with the admitting Metal and CPU cells and a float32 reference measurement (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->

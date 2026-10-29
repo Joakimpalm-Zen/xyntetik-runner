@@ -429,6 +429,17 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     if (strcmp(pre, "llama-bpe") == 0)   t->pre = TOK_PRE_LLAMA3;
     else if (strcmp(pre, "dbrx") == 0)   t->pre = TOK_PRE_LLAMA3; // llama.cpp: "same as llama3" (granite 4.1 ships this)
     else if (strcmp(pre, "granite-docling") == 0) t->pre = TOK_PRE_GPT2; // llama.cpp: the plain GPT-2 regex (granite 4.2 ships this)
+    // minicpm5 (openbmb/MiniCPM5-2B tokenizer.json at f9740005): a Split on
+    // \p{N}{1,3} FOLLOWED BY the Llama 3 regex, applied in that order
+    // (llama.cpp's MINICPM5 table carries the two expressions verbatim). The
+    // digits fall into groups of three and letters absorb one leading
+    // punctuation mark ("-level"), as under llama-bpe; the GPT-2 fallback
+    // read 210 of the 721 corpus strings differently. The order matters
+    // once: a whitespace run that ends at a digit group is a whole piece
+    // before the Llama 3 regex ever sees it, so its `\s+(?!\S)` keeps the
+    // run entire ("  1" is "  ", "1"), where llama-bpe's single pass splits
+    // off the last space. Three of the 721 strings turn on that.
+    else if (strcmp(pre, "minicpm5") == 0) t->pre = TOK_PRE_MINICPM5;
     else if (strcmp(pre, "qwen2") == 0)  t->pre = TOK_PRE_QWEN2;
     // stablelm2: llama.cpp puts LLAMA_VOCAB_PRE_TYPE_STABLELM2 in the same
     // case as QWEN2, so it is the qwen2 regex, whose \p{N} matches ONE digit.
@@ -541,6 +552,16 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
                        (t->model == TOK_BPE && (strcmp(pre, "llama-bpe") == 0 ||
                                                 strcmp(pre, "tekken") == 0));
     t->add_bos = gguf_get_bool(g, "tokenizer.ggml.add_bos_token", bos_default);
+    // minicpm5: the publisher's tokenizer.json prepends <s> to every encode
+    // (its post_processor is a TemplateProcessing of `<s> $A`), and the chat
+    // template opens with `{{- bos_token }}`; the file's add_bos_token=false
+    // is the converter's copy of a tokenizer_config flag that governs the
+    // slow tokenizer, not the one the publisher ships. The model saw <s>
+    // first in every prompt, so the artifact's flag yields to the
+    // publisher's tokenizer here, and the template leaves BOS to the
+    // tokenizer as every family does (template-conformance allowlist
+    // minicpm5/bos).
+    if (strcmp(pre, "minicpm5") == 0) t->add_bos = true;
     t->add_space_prefix = gguf_get_bool(g, "tokenizer.ggml.add_space_prefix", true);
     t->add_eos = gguf_get_bool(g, "tokenizer.ggml.add_eos_token", false);
 
@@ -929,8 +950,12 @@ static int contraction_len(const uint32_t *cp, int i, int ncp) {
 // \p{L}, so a combining mark extends the run it follows and never starts a
 // symbol run; the leading-character clause is unchanged (a mark may still
 // lead, being [^\r\n\p{L}\p{N}]).
+// digit_ends: the digit groups were split off BEFORE this regex ran (MiniCPM5
+// applies \p{N}{1,3} as its own first pass), so a digit is the end of the
+// piece this regex sees and `\s+(?!\S)` keeps a whitespace run that ends at
+// one entire instead of leaving its last space to the digit.
 static int pre_split_next(const uint32_t *cp, int i, int ncp, int max_digits,
-                          bool marks_join) {
+                          bool marks_join, bool digit_ends) {
     int adv = contraction_len(cp, i, ncp);
     if (adv) return i + adv;
 #define RUN_LETTER(c) (cp_letter(c) || (marks_join && cp_mark(c)))
@@ -972,8 +997,9 @@ static int pre_split_next(const uint32_t *cp, int i, int ncp, int max_digits,
         for (int k = i; k < j; k++)
             if (cp[k] == '\r' || cp[k] == '\n') last_nl = k;
         if (last_nl >= 0) return last_nl + 1;
-        // \s+(?!\S) keeps a trailing space for the next pre-token
-        if (j < ncp && j - i > 1) j--;
+        // \s+(?!\S) keeps a trailing space for the next pre-token, unless
+        // that pre-token is a digit group already split off (digit_ends)
+        if (j < ncp && j - i > 1 && !(digit_ends && cp_digit(cp[j]))) j--;
         return j;
     }
 }
@@ -1457,13 +1483,14 @@ static int bpe_encode_split(tokenizer *t, const char *text, size_t n,
 
     // The split rules come from tokenizer.ggml.pre; anything unrecognised keeps
     // the original GPT-2 regex it has always used.
-    int max_digits = t->pre == TOK_PRE_LLAMA3 ? 3
+    int max_digits = (t->pre == TOK_PRE_LLAMA3 || t->pre == TOK_PRE_MINICPM5) ? 3
                    : (t->pre == TOK_PRE_QWEN2 || t->pre == TOK_PRE_QWEN35) ? 1 : 0;
     bool marks_join = t->pre == TOK_PRE_QWEN35;
+    bool digit_ends = t->pre == TOK_PRE_MINICPM5;
     for (int i = 0; i < ncp; ) {
         int end = t->pre == TOK_PRE_TEKKEN    ? tekken_split_next(cp, i, ncp)
                 : t->pre == TOK_PRE_LLAMA4    ? llama4_split_next(cp, i, ncp)
-                : max_digits                  ? pre_split_next(cp, i, ncp, max_digits, marks_join)
+                : max_digits                  ? pre_split_next(cp, i, ncp, max_digits, marks_join, digit_ends)
                 : t->pre == TOK_PRE_SMOLLM    ? smollm_split_next(cp, i, ncp)
                 : t->pre == TOK_PRE_AFMOE     ? afmoe_split_next(cp, i, ncp)
                                               : gpt2_split_next(cp, i, ncp);

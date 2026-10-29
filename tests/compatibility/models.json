@@ -1347,6 +1347,68 @@
       }
     },
     {
+      "id": "minicpm5-2b-q8_0",
+      "architecture": "llama",
+      "family": "MiniCPM5",
+      "file": "models/MiniCPM5-2B-Q8_0.gguf",
+      "sha256": "c5415f8989bf88a8288f1b55a3cc371af53c07b0faa220a63bd7a990cfaba078",
+      "upstream": "openbmb/MiniCPM5-2B-GGUF",
+      "tokenizer_reference": "openbmb/MiniCPM5-2B",
+      "tokenizer_reference_revision": "f97400052a43d642bbc6e9975e2397e3ae6a6b52",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/minicpm5-2b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "openbmb's own Q8_0 (2,679,710,688 bytes, revision 2079a22f of openbmb/MiniCPM5-2B-GGUF), architecture llama: 42 layers, GQA 16/2, head_dim 128, rope base 5e6, vocabulary 130,560. Tokenizer pre minicpm5 is the Llama 3 split applied after the digit groups are cut out, and BOS is prepended as the publisher's tokenizer.json does (the file's add_bos_token=false yields); 0 of 721 corpus strings differ from that tokenizer.json at f9740005. Template family minicpm5, conformance 23/23. Fidelity: against the BF16 parent computed in float32, 0.0033 mean KLD / 98.0% top-1 (300 positions). Record docs/compat-reports/minicpm5-2b-reference-2026-10-29. Checks run on the Metal laptop; the CPU-vs-CUDA check waits for the Windows CUDA host. No llama.cpp reference is declared, so greedy_reference is not claimed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>",
+            "<tool_call>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "minicpm5-2b-q4_k_m",
+      "architecture": "llama",
+      "family": "MiniCPM5",
+      "file": "models/MiniCPM5-2B-Q4_K_M.gguf",
+      "sha256": "ec2d5801640099e97d8d7e8003ad4d81f336e757811f03a26173dddf386602fd",
+      "upstream": "openbmb/MiniCPM5-2B-GGUF",
+      "tokenizer_reference": "openbmb/MiniCPM5-2B",
+      "tokenizer_reference_revision": "f97400052a43d642bbc6e9975e2397e3ae6a6b52",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/minicpm5-2b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "openbmb's own Q4_K_M (1,561,318,368 bytes, revision 2079a22f of openbmb/MiniCPM5-2B-GGUF), architecture llama: 42 layers, GQA 16/2, head_dim 128, rope base 5e6, vocabulary 130,560. Tokenizer pre minicpm5 is the Llama 3 split applied after the digit groups are cut out, and BOS is prepended as the publisher's tokenizer.json does (the file's add_bos_token=false yields); 0 of 721 corpus strings differ from that tokenizer.json at f9740005. Template family minicpm5, conformance 23/23. Fidelity: against the BF16 parent computed in float32, 0.102 mean KLD / 86.0% top-1 (300 positions), failing the 0.05 bar; the Q8_0 is the fidelity file. Record docs/compat-reports/minicpm5-2b-reference-2026-10-29. Checks run on the Metal laptop; the CPU-vs-CUDA check waits for the Windows CUDA host. No llama.cpp reference is declared, so greedy_reference is not claimed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>",
+            "<tool_call>"
+          ]
+        }
+      }
+    },
+    {
       "id": "qwen3.8-27b-ud-q4_k_m",
       "architecture": "qwen35",
       "family": "Qwen 3.8",

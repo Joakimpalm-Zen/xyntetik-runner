@@ -2315,7 +2315,7 @@ flag and ignore it rather than approximate one.
 Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
 `mistral-nemo`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
 `ornith`, `qwen35`, `qwen35-nothink`, `nemotron`, `nemotron35`, `hermes4`, `granite`, `granite4`, `granite42`,
-`qwen38`, `qwen3-coder`, `mellum`, `muse`, `harmony`, or `raw`;
+`qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `muse`, `harmony`, or `raw`;
 default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
 is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
 template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ
@@ -3800,6 +3800,30 @@ naming its call, all in the publisher templates' bytes (template conformance:
 both families clean in text and tokens). The templates require 9-character
 alphanumeric call ids; any other id (OpenAI's `call_...`) is mapped to one
 from its hash, the same for a call and its result, on all three surfaces.
+
+MiniCPM5 (`minicpm5`, detected from the example call its template's own
+guideline text spells) is Qwen3's ChatML and think shape with its own rules:
+a thought block on every historical assistant turn (empty when the turn
+carries none), `enable_thinking: true` pre-seeding the reply with an open
+`<think>` and `false` closing an empty one (an absent value leaves the
+header bare, as the template's `is defined` test does), and tool calls as
+`<function name="N"><param name="K">V</param></function>` under the
+template's guideline text, a string value wrapped in CDATA where it holds
+`<`, `&` or a newline (template conformance: 23 of 23 cases, text and
+tokens, against `openbmb/MiniCPM5-2B`). A `tool_choice: auto` turn is the
+model's free turn in that syntax, parsed on the way out, buffered and
+streamed: a call is typed by its declaration, a truncated call is dropped and
+never completed, a CDATA value keeps an inner `]]>` that no `</param>`
+follows, and a bare `<` in an unwrapped value is text. A `required` or named
+choice has no grammar in this syntax yet and takes the generic JSON envelope
+for that request, prompt and grammar together. `--info tools` reports
+`minicpm5_xml`. Its tokenizer pre (`minicpm5`) is the Llama 3 split applied
+after the digit groups are cut out, so a whitespace run ending at a digit
+stays whole; 0 of 721 corpus strings differ from the publisher's
+tokenizer.json. Every prompt starts with `<s>`, as the publisher's tokenizer
+prepends it on every encode and the template spells it: the file's
+`add_bos_token=false` is the converter's copy of a flag for a tokenizer the
+publisher does not ship, and it yields.
 `[TOOL_CALLS]` is a control token that decodes to nothing unless a grammar
 admits it by its spelling, so every choice is constrained, `auto` included:
 prose that ends at the model's stop or hands off to the list at the marker.
