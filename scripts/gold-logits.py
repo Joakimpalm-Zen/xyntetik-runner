@@ -145,6 +145,39 @@ def parse_top(d):
     return None
 
 
+def reference_logp(model, span, rows):
+    """The reference's log-probabilities at the scored rows only.
+
+    One forward over the whole span, as before, but the vocabulary
+    projection runs on the rows that are scored: `logits_to_keep` with a
+    tensor of positions (transformers' generation models take it). The full
+    logit tensor is rows x vocabulary in float32, and its log-softmax is a
+    second copy: on MiMo-V2.6-Distill-Qwen-9B (4,509 positions, 248,320
+    tokens) that is 4.5 GB twice on top of 38 GB of float32 weights, and
+    the lab container stopped answering under it (2026-10-29). 300 scored
+    rows are 0.3 GB. A model whose forward refuses the argument, or returns
+    every row anyway, falls back to the full tensor. Returns (logp, index,
+    path): logp[index[row]] is the row, and path says which way it went."""
+    import torch
+    keep = sorted(set(rows))
+    ids = torch.tensor([span])
+    with torch.no_grad():
+        try:
+            out = model(ids, logits_to_keep=torch.tensor(keep))
+            lg = out.logits[0]
+            if lg.shape[0] != len(keep):
+                raise TypeError("logits_to_keep ignored")
+            index = {r: i for i, r in enumerate(keep)}
+            path = "scored rows only"
+        except TypeError:
+            out = model(ids)
+            lg = out.logits[0]
+            index = {r: r for r in keep}
+            path = "full tensor"
+        logp = torch.log_softmax(lg.float(), dim=-1)
+    return logp, index, path
+
+
 def query(endpoint, model_name, prompt, top_n=20, fresh=False):
     payload = {"model": model_name, "prompt": prompt, "max_tokens": 1,
                "temperature": 0, "logprobs": top_n}
@@ -398,9 +431,10 @@ def main():
     if args.force_bos and not special and tok.bos_token_id is not None:
         special = [tok.bos_token_id]
     span = list(special) + list(body)
-    with torch.no_grad():
-        out = model(torch.tensor([span]))
-    logp = torch.log_softmax(out.logits[0].float(), dim=-1)
+    scored = [len(special) + args.min_prefix + n * args.stride - 1
+              for n in range(args.max_positions)]
+    logp, logp_row, logits_path = reference_logp(model, span, scored)
+    print("reference logits:", logits_path, file=sys.stderr)
 
     spell = token_speller(tok)
     # the reference's special tokens: what a server spells "" or not at all
@@ -424,7 +458,7 @@ def main():
         # would be scored on different contexts
         if tok(prefix, add_special_tokens=False)["input_ids"] != body[:pos]:
             continue
-        top = torch.topk(logp[len(special) + pos - 1], args.top_n)
+        top = torch.topk(logp[logp_row[len(special) + pos - 1]], args.top_n)
         gold_rows = [(int(i), spell(int(i)), float(v))
                      for v, i in zip(top.values, top.indices)]
         gold_top1_id = gold_rows[0][0]
@@ -453,6 +487,7 @@ def main():
 
     summary = {"positions": len(rows), "hf": args.hf, "corpus": args.corpus,
                "reference_class": type(model).__name__,
+               "reference_logits": logits_path,
                "special_prefix_tokens": len(special),
                "special_prefix_forced": bool(args.force_bos and special),
                "token_spelling": "in-sentence (anchored decode)",
