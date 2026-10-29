@@ -1632,7 +1632,13 @@ static int run_fit_check(const char *path, int n_ctx_want,
     if (f.n_seq > 1)
         printf("  slots         %d (--parallel): the weights once, a KV cache "
                "per slot; the cache below is all of them\n", f.n_seq);
-    if (f.sparse)
+    if (f.gathered) {
+        char gathered[32];
+        fit_gib(gathered, sizeof gathered, f.gathered);
+        printf("  hot set       %s  (weights streamed per token%s)\n", h,
+               f.sparse ? ", including only routed experts" : "");
+        printf("  row-gathered  %s  (per-layer token embedding; read by row)\n", gathered);
+    } else if (f.sparse)
         printf("  hot set       %s  (only the routed experts a token actually "
                "uses)\n", h);
     printf("  kv cache      %s at ctx %d, f16", kf, f.n_ctx);
@@ -1719,6 +1725,9 @@ static int run_fit_check(const char *path, int n_ctx_want,
     if (f.sparse)
         printf("  note          the verdict uses the hot set; a sparse MoE runs "
                "usefully while the file exceeds RAM\n");
+    if (f.gathered)
+        printf("  note          the verdict excludes the full row-gathered table; "
+               "allow extra RAM for touched rows, scratch and other processes\n");
     // The KV line is each layer's own rows (model_fit_report), as the loader
     // allocates them; what a load can still do differently is the opt-in
     // ring, which gives sliding-window layers only their window.

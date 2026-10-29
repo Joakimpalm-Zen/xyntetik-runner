@@ -2947,6 +2947,14 @@ note says the figure is the flat cache, which `RUNNER_KV_RING` shrinks.
 The verdict is `FITS`, `FITS WITH --kv q8` (or `k8v4`, or `fp4`), or `PAGES`, always with the
 arithmetic that produced it.
 
+For Gemma 4 E-series, `weights` remains the whole file size, while `hot set`
+excludes `per_layer_token_embd.weight`. That table is reported as `row-gathered`:
+the CPU reads only the selected token rows, and Metal leaves it outside its
+weight buffers. The verdict uses the hot set, including the tied output head
+and per-layer model projection. It is an estimate, so allow extra RAM for
+touched embedding rows, runtime scratch and other processes. The same exclusion
+applies to the host memory estimate for a discrete GPU split.
+
 On a discrete CUDA GPU the leading layers go to the card, so RAM only has to
 hold the rest. `--info fit` then reads the same offload budget the loader splits
 against (the driver's free memory, the OS video-memory budget on Windows,

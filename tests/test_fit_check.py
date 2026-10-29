@@ -10,12 +10,16 @@ Both halves are asserted here.
 """
 import pathlib
 import re
+import struct
 import subprocess
+import sys
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "test.gguf"
+sys.path.insert(0, str(ROOT / "scripts"))
+from gguf_fixture import ku, ks, s  # noqa: E402
 
 
 def run(runner_bin, *args):
@@ -117,3 +121,64 @@ def test_fit_does_not_fetch(runner_bin):
     p = run(runner_bin, "--fit", "https://example.invalid/model.gguf")
     assert p.returncode != 0
     assert b"http" not in p.stdout.lower()
+
+
+def _ple_header(path, arch="gemma4", ple_width=512):
+    """Only descriptors, never weights: 8.5 GiB of Q8_0 PLE rows.
+
+    Absolute byte anchor: Q8_0 stores 32 values in 34 bytes. The ordinary
+    tied token/output table and BF16 model projection remain in the hot set.
+    """
+    kv = [ks("general.architecture", arch),
+          ku(f"{arch}.block_count", 64),
+          ku(f"{arch}.embedding_length", 256),
+          ku(f"{arch}.embedding_length_per_layer_input", ple_width),
+          ku(f"{arch}.attention.head_count", 4),
+          ku(f"{arch}.attention.head_count_kv", 1),
+          ku(f"{arch}.context_length", 4096)]
+    tensors = [("per_layer_token_embd.weight", 32768, 262144, 8, 34 / 32),
+               ("token_embd.weight", 256, 262144, 8, 34 / 32),
+               ("per_layer_model_proj.weight", 256, 32768, 30, 2)]
+    directory, offset = b"", 0
+    for name, width, rows, kind, bytes_per_value in tensors:
+        directory += s(name) + struct.pack("<IQQIQ", 2, width, rows, kind, offset)
+        offset += int(width * rows * bytes_per_value)
+    head = struct.pack("<IIQQ", 0x46554747, 3, len(tensors), len(kv))
+    head += b"".join(kv) + directory
+    head += b"\0" * (-len(head) % 32)
+    path.write_bytes(head)
+    cold = 32768 * 262144 // 32 * 34
+    return len(head) + offset, cold
+
+
+def test_eseries_fit_excludes_only_the_row_gathered_table(runner_bin, tmp_path):
+    path = tmp_path / "ple-header.gguf"
+    total, cold = _ple_header(path)
+    p = run(runner_bin, "-m", str(path), "--info", "fit", "--gpu", "off", "-c", "512")
+    assert p.returncode == 0, p.stderr.decode()
+    out = p.stdout.decode()
+    assert path.stat().st_size < 1024
+    gib = 2 ** 30
+    assert re.search(rf"weights\s+{total / gib:.2f} GiB", out), out
+    assert re.search(rf"hot set\s+{(total - cold) / gib:.2f} GiB", out), out
+    assert re.search(rf"row-gathered\s+{cold / gib:.2f} GiB", out), out
+    assert "per-layer token embedding" in out
+    available = re.search(r"available RAM\s+([\d.]+) GiB", out)
+    if available and float(available[1]) > 0.2:
+        # Each of 64 layers owns 1 KV head of 64 f16 channels on both sides.
+        # Rounding the live available-RAM and printed slack costs <0.01 GiB.
+        kv = 64 * 64 * 2 * 2 * 512
+        slack = re.search(r"verdict\s+FITS[^\n]*?([\d.]+) GiB to spare", out)
+        assert slack, out
+        assert abs(float(available[1]) - float(slack[1])
+                   - (total - cold + kv) / gib) < 0.011, out
+
+
+@pytest.mark.parametrize("arch,ple_width", [("llama", 512), ("gemma4", 0), ("gemma4", 256)])
+def test_fit_does_not_discount_an_unrecognized_ple_table(runner_bin, tmp_path, arch, ple_width):
+    path = tmp_path / "not-ple.gguf"
+    _ple_header(path, arch, ple_width)
+    p = run(runner_bin, "-m", str(path), "--info", "fit", "--gpu", "off")
+    assert p.returncode == 0, p.stderr.decode()
+    assert "hot set" not in p.stdout.decode()
+    assert "row-gathered" not in p.stdout.decode()

@@ -1246,7 +1246,8 @@ typedef struct {
     int      n_layer, n_ctx, train_ctx, n_expert, n_expert_used;
     bool     sparse;             // routed-MoE: hot set is smaller than weights
     uint64_t weights;            // whole file, per the header
-    uint64_t hot;                // touched per token (== weights when dense)
+    uint64_t gathered;           // E-series token table: only selected rows are read
+    uint64_t hot;                // streamed per token, excluding gathered/unrouted rows
     uint64_t kv_f16_per_tok, kv_q8_per_tok, kv_fp4_per_tok, kv_k8v4_per_tok;
     uint64_t kv_f16, kv_q8, kv_fp4, kv_k8v4; // at n_ctx; 0 when that KV format is illegal
     uint64_t available;          // RAM available now, 0 = could not tell
