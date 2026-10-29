@@ -140,6 +140,11 @@ DIFFTOK = difftok
 TEST_BIND = test-bind
 endif
 
+# Workers for the root pytest (make test-python PYTEST_WORKERS=auto): empty
+# runs pytest in one process, as a local `make test` always has.
+PYTEST_WORKERS ?=
+PYTEST_XDIST = $(if $(PYTEST_WORKERS),-n $(PYTEST_WORKERS) --dist loadfile,)
+
 # Which GPU backend this build links. It was previously visible only to
 # test-split-guard, so source could not tell CUDA from Metal -- and the two
 # differ in what their attention kernels can address (see RUNNER_KV_RING).
@@ -2753,10 +2758,23 @@ test-metal:
 	$(MAKE) --no-print-directory test-metal-kv-fp4
 	$(MAKE) --no-print-directory test-metal-kv-q8
 
-test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
+# `make test` is three targets run one after another: the C gates, the batch
+# gates (the microbatch byte-identity family, long and independent), and the
+# python target (the client tests and the root pytest). A local run keeps the
+# same order and load as the one recipe this used to be; CI runs the three as
+# parallel jobs on macOS and Windows (R6.13 step 2), where the root pytest
+# also runs under pytest-xdist when PYTEST_WORKERS is set.
+test: test-gates
+	$(MAKE) --no-print-directory test-python PYTHON="$(PYTHON)"
+
+test-gates:
+	$(MAKE) --no-print-directory test-gates-core PYTHON="$(PYTHON)"
+	$(MAKE) --no-print-directory test-gates-batch PYTHON="$(PYTHON)"
+
+test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
-      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_SPEC_ID) $(TEST_ATTN_SPLIT) $(TEST_BIND) $(TEST_HOST_HEADER) \
+      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) test-lora.full.gguf \
@@ -2894,23 +2912,6 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(TEST_MSG_OOM_RUN)
 	./$(TEST_SHARED)
 	./$(TEST_FILE_ID)
-	./$(TEST_BATCH)
-	@# and again on a QUANTIZED fixture: the F32 run above cannot reach a
-	@# quantized matvec at all, so on its own it gates nothing real
-	./$(TEST_BATCH) test-q8.gguf
-	@# BF16 has separate width-classed CUDA twins; cover both x4 and x8.
-	./$(TEST_BATCH) test-bf16.gguf
-	@# A rope-enabled dense Mamba-2 hybrid must decline the CUDA microbatch:
-	@# fwd_batch has no recurrent/skip-layer path and would treat its NULL
-	@# attention projections as dense weights. The sequential fallback remains
-	@# the byte-identity reference until a real recurrent batch loop exists.
-	$(PYTHON) scripts/make-test-hybrid.py test-hybrid-batch --dense --rope
-	./$(TEST_BATCH) test-hybrid-batch.gguf 2
-	@# Apertus is dense but ungated: fwd_batch's gated FFN would pass its NULL
-	@# w_gate to enc_mv_batch. It must use the sequential GPU fallback until
-	@# that loop grows an explicit xIELU branch.
-	$(PYTHON) scripts/make-test-model.py --apertus REAL test-apertus-batch.gguf
-	./$(TEST_BATCH) test-apertus-batch.gguf 2
 	./$(TEST_PREFIX)
 	./$(TEST_GRAMMAR_FF)
 	./$(TEST_GRAMMAR_FF) test-ornith.gguf
@@ -3047,16 +3048,55 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(MAKE) --no-print-directory test-help-interface
 	$(MAKE) --no-print-directory test-shader-embed
 	$(MAKE) --no-print-directory test-metal PYTHON="$(PYTHON)"
-	./$(TEST_BATCH_ID) test.gguf
-	./$(TEST_BATCH_ID) test-q4k.gguf
 	@for f in test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf; do \
 	  ./$(TEST_SPEC_ID) $$f || exit 1; ./$(TEST_SPEC_ID) $$f cpu || exit 1; done
-	$(MAKE) --no-print-directory test-attn-split
 	$(PYTHON) scripts/check-generated.py
-	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
-	$(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_hf_fetch.py tests/test_pull.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_glibc_release.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_decide.py tests/test_clef.py tests/test_hf_spec_bounds.py tests/test_lora.py tests/test_lora_qwen35.py tests/test_train.py tests/test_train_teacher.py tests/test_train_recipe.py tests/test_deltanet_autograd.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_model_tiers.py tests/test_site_tiers.py tests/test_tier_smoke.py tests/test_difftok.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_cuda_upload_report.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_session_images.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_utf8_io.py tests/test_cli_lifecycle.py tests/test_cli_surface.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py
 	$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"
+
+# The microbatch gates: byte identity of the batched forward against the
+# sequential one on the F32, Q8_0 and BF16 fixtures (plus the two declines),
+# the Metal microbatch identity on two fixtures, and the attention split.
+# They are the longest gates and share nothing with the rest, so CI runs them
+# as their own job.
+test-gates-batch: runner $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_ATTN_SPLIT) test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-muse.gguf
+	./$(TEST_BATCH)
+	@# and again on a QUANTIZED fixture: the F32 run above cannot reach a
+	@# quantized matvec at all, so on its own it gates nothing real
+	./$(TEST_BATCH) test-q8.gguf
+	@# BF16 has separate width-classed CUDA twins; cover both x4 and x8.
+	./$(TEST_BATCH) test-bf16.gguf
+	@# A rope-enabled dense Mamba-2 hybrid must decline the CUDA microbatch:
+	@# fwd_batch has no recurrent/skip-layer path and would treat its NULL
+	@# attention projections as dense weights. The sequential fallback remains
+	@# the byte-identity reference until a real recurrent batch loop exists.
+	$(PYTHON) scripts/make-test-hybrid.py test-hybrid-batch --dense --rope
+	./$(TEST_BATCH) test-hybrid-batch.gguf 2
+	@# Apertus is dense but ungated: fwd_batch's gated FFN would pass its NULL
+	@# w_gate to enc_mv_batch. It must use the sequential GPU fallback until
+	@# that loop grows an explicit xIELU branch.
+	$(PYTHON) scripts/make-test-model.py --apertus REAL test-apertus-batch.gguf
+	./$(TEST_BATCH) test-apertus-batch.gguf 2
+	./$(TEST_BATCH_ID) test.gguf
+	./$(TEST_BATCH_ID) test-q4k.gguf
+	$(MAKE) --no-print-directory test-attn-split
+
+# The python half: the client tests and the root pytest. Its prerequisites
+# are the fixtures and gate binaries the root tests read by name: they skip,
+# not fail, without them (a local -n 3 run without test-instances and
+# test-tc-tol lost six cases to skips), so they are listed here instead of
+# being left to the old recipe's order.
+# PYTEST_WORKERS=N (or auto) runs the root pytest under pytest-xdist, whole
+# files per worker: every module's server fixture starts once per file.
+# The gate binaries the root tests drive or skip without: test-instances
+# (lease interop), test-tc-tol (TC eligibility, iquants), test-gpu-identity
+# (iquants), test-lora-grad (DeltaNet autograd), the manifest-less runner
+# (Windows console tests).
+test-python: test-python-deps runner $(DIFFTOK) $(TEST_INSTANCES) $(TEST_TC_TOL) $(TEST_GPU_ID) $(TEST_LORA_GRAD) $(RUNNER_NO_MANIFEST) \
+             test.gguf test-lora.full.gguf test-moe-train.moe4-train.gguf test-es.gguf
+	@[ -f test-moe-fixture.moe4.gguf ] || $(PYTHON) scripts/make-test-moe.py test-moe-fixture > /dev/null
+	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
+	$(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest $(PYTEST_XDIST) --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_hf_fetch.py tests/test_pull.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_glibc_release.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_decide.py tests/test_clef.py tests/test_hf_spec_bounds.py tests/test_lora.py tests/test_lora_qwen35.py tests/test_train.py tests/test_train_teacher.py tests/test_train_recipe.py tests/test_deltanet_autograd.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_model_tiers.py tests/test_site_tiers.py tests/test_tier_smoke.py tests/test_difftok.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_cuda_upload_report.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_session_images.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_utf8_io.py tests/test_cli_lifecycle.py tests/test_cli_surface.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py
 
 # --------------------------------------------------------------------------
 # Template conformance: runner's native C chat renderer vs the model's OWN
@@ -3332,6 +3372,10 @@ test-python-deps:
 		echo "install it with '$(PYTHON) -m pip install pytest' or set PYTHON to an interpreter that already has it"; \
 		exit 1; \
 	}
+	@[ -z "$(PYTEST_WORKERS)" ] || $(PYTHON) -c "import xdist" >/dev/null 2>&1 || { \
+		echo "error: PYTEST_WORKERS=$(PYTEST_WORKERS) needs pytest-xdist for $(PYTHON) (tests/ci/requirements.txt)"; \
+		exit 1; \
+	}
 	@echo "python test dependencies ok ($(PYTHON))"
 
 # Local commit-msg hook for the publication rule (AGENTS.md); CI runs the same
@@ -3396,6 +3440,7 @@ test-cuda-gated: runner test.gguf
 	    --allow-skip 'CUDA runtime is available' .build/ci/cuda-gated.xml
 
 .PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-qwen4exp test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity
+.PHONY: test-gates test-gates-core test-gates-batch test-python
 .PHONY: test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # The TypeScript client (R10.7): type-checked with the pinned compiler and run
