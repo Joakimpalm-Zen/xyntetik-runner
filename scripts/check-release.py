@@ -224,11 +224,58 @@ def kl_table_scan():
     return True
 
 
+# The three tree scans read this checkout, not the release under test, so
+# their verdict is kept for as long as the tree they read stands: main()
+# calls check() once, and the test module calls it twenty-eight times. On the
+# hosted Windows runner each round of the two git greps took about sixteen
+# seconds under four pytest workers (that one test file was 628 of the root
+# pytest's 1378 case-seconds and all of its 647 s wall), against a second on
+# the Mac. The scan functions stay uncached: the failure-mode tests call them
+# directly.
+_tree_scan = None  # (tree_state(), verdict) of the last scan round
+
+
+def tree_state(root=ROOT):
+    """What the tree scans read, as a comparable key: the checkout, its HEAD,
+    and every path git sees as changed or untracked (ignored paths are not
+    scanned either), each with its size and mtime so a second edit of the
+    same file is a new state. None when git cannot answer: nothing is cached
+    then, every check() scans."""
+    try:
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root,
+                              capture_output=True, text=True, timeout=60)
+        status = subprocess.run(["git", "status", "--porcelain", "-z", "-uall",
+                                 "--no-renames"], cwd=root,
+                                capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if head.returncode != 0 or status.returncode != 0:
+        return None
+    entries = []
+    for entry in status.stdout.split("\0"):
+        if not entry:
+            continue
+        try:
+            st = (Path(root) / entry[3:]).stat()
+            entries.append((entry, st.st_size, st.st_mtime_ns))
+        except OSError:
+            entries.append((entry, None, None))
+    return (str(root), head.stdout.strip(), tuple(entries))
+
+
+def tree_scans():
+    global _tree_scan
+    state = tree_state()
+    if state is not None and _tree_scan is not None and _tree_scan[0] == state:
+        return _tree_scan[1]
+    verdict = all([kl_table_scan(), private_reference_scan(), home_path_scan()])
+    _tree_scan = None if state is None else (state, verdict)
+    return verdict
+
+
 def check(args):
     ok = True
-    ok &= kl_table_scan()
-    ok &= private_reference_scan()
-    ok &= home_path_scan()
+    ok &= tree_scans()
     version = args.tag[1:] if args.tag.startswith("v") else args.tag
     expected_binary = f"runner {version}"
 
