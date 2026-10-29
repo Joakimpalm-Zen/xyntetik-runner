@@ -793,6 +793,34 @@
             "runner_version": "1.7.1",
             "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b"
           }
+        },
+        "windows-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/nvidia-nemotron-nano-9b-v2-q8_0.windows-x86_64-cuda.cuda.txt",
+          "sha256": "e23a8c77690649fbbda0b826b6f889f2acb2812fc63196c087cdece96a98bd0d",
+          "bytes": 205,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            },
+            "backend_args": [
+              "--gpu",
+              "43"
+            ]
+          },
+          "pinned": {
+            "date": "2026-10-29",
+            "runner_version": "1.7.1",
+            "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b"
+          }
         }
       }
     },
