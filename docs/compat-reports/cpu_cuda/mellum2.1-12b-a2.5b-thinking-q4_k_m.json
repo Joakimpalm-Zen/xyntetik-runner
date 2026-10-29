@@ -1,0 +1,90 @@
+{
+ "model": "~/bolt/mellum/hf/Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf",
+ "tokens": 128,
+ "context": 2048,
+ "routing": "eager",
+ "moe": true,
+ "dense_rule": null,
+ "extra_args": [],
+ "gpu_split": {
+  "layers_on_gpu": 24,
+  "layers_total": 28,
+  "output_weight_on_gpu": false,
+  "whole_graph": false
+ },
+ "cpu_cuda_identity": {
+  "result": "pass",
+  "exact": "9/9",
+  "gpu_arm_on_cpu": false,
+  "near_tie_tolerated": 0,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 9,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris.\nParis is known for landmarks like the Eiffel Tower and the Louvre Museum.\nParis is a global center for art, fashion, gastronomy, and culture.\nThe capital of Japan is Tokyo.\nTokyo is a bustling metropolis blending traditional and modern elements.\nTokyo is known for its technology, fashion, and cuisine.\nThe capital of Brazil is Bras\u00edlia.\nBras\u00edlia is a planned city with modernist architecture.\nBras\u00edlia is located in the heart of Brazil.\nThe capital of Canada is Ottawa.\nOttawa is located along the Ottawa River.\nOtt",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\n    if n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fibonacci(n-1) + fibonacci(n-2)\n\nprint(fibonacci(10))\n\n\nimport pytest\n\nfrom your_module import fibonacci\n\n\nclass TestFibonacci:\n    def test_fibonacci_zero(self):\n        assert fibonacci(0) == 0\n\n    def test_fibonacci_one(self):\n        assert fibonacci(1) == 1\n\n    def test_fibonacci_two(",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51",
+   "gpu": null
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there was a forest. In the forest lived an owl. The owl was a big bird. He liked to read books to the smaller birds. He would read them stories about love. $200$ smaller birds loved each story. The owl thought they were very funny. Once the owl started to read a story about a dog. The dog was a dog. The dog did not like the owl. The owl thought the dog was very sad. The owl wanted to make the dog happy. The owl wanted to give the dog a bone. But the owl did not have a bone. The owl",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 391\n\nQ: What is 17 * 24?\nA: 408\n\nQ: What is 17 * 25?\nA: 425\n\nQ: What is 17 * 26?\nA: 442\n\nQ: What is 17 * 27?\nA: 459\n\nQ: What is 17 * 28?\nA: 476\n\nQ: What is 17 * 29?\nA: 4",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " The data for the past 10 days is shown in the table below. On which day did the fog lift at the earliest hour?\n\n| Day | Wind Direction | Cloud Cover | Hour Fog Lifted |\n|-----|----------------|-------------|-----------------|\n| Mon | North            | Clear       | 9               |\n| Tue | South            | Partly Cloudy | 10              |\n| Wed | East             | Overcast    | 8               |\n| Thu | West             | Clear",
+   "gpu": null
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " of these duplicates was a major undertaking, requiring the re-examination of every entry in the catalogue. The work was completed in 1931, and the revised catalogue was published in 1932.\n\nIn 1931 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction of these duplicates was a major undertaking, requiring the re-examination of every entry in the catalogue. The work was completed in 1931, and the revised",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " is good.\n# But we must also guard against malformed data that *looks* like a header but is not.\n# For example, a file that starts with the magic number but then has garbage for the version field.\n# We'll try to read the version as an unsigned int; if it overflows or is insane, we reject.\n# However, struct.unpack will raise if the buffer is too short, but we already checked size.\n# So we can safely unpack.\n\n# But what if the version is 0? That's allowed? GGUF spec says version is 1,",
+   "gpu": null
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " expects the chaotic winding of older cities.  \n\nWhich of the following best explains why the district still appears regular today?  \n\nA. The bedrock beneath the oldest quarter is firmer than the reclaimed ground downriver.  \nB. The grid of streets was designed with seismic loads in mind after the 1755 earthquake.  \nC. The lower town was rebuilt quickly following the earthquake.  \nD. The Tag estuary provides a stable foundation for the hills.  \n\nWhat is the correct answer?  \n\nA, B, C, or D?\n</think>\n\nB",
+   "gpu": null
+  }
+ ]
+}
