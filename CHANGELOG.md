@@ -5,6 +5,24 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **MiniCPM5 loads with its own tokenizer rule and chat template.** The
+  GGUF names the pre-tokenizer `minicpm5`, which Runner did not know and read
+  with the GPT-2 split, so 210 of the 721 tokenizer corpus strings came out
+  differently from the publisher's tokenizer.json; it is now the Llama 3
+  split applied after the digit groups are cut out (`src/tokenizer.c`), and 0
+  of 721 differ. Every prompt starts with `<s>`, as the publisher's tokenizer
+  prepends it on every encode (the file's `add_bos_token=false` describes a
+  tokenizer the publisher does not ship). Its chat template, which Runner
+  rendered as Qwen3's, is a family of its own (`minicpm5`): a thought block
+  on every historical assistant turn, `enable_thinking: true` pre-seeding an
+  open `<think>`, and an XML tool protocol (`<function name=...><param
+  name=...>`, CDATA for a value holding `<`, `&` or a newline) declared under
+  the template's own guideline text and parsed on the way out, buffered and
+  streamed, with a truncated call never completed. Template conformance
+  against `openbmb/MiniCPM5-2B` is 23 of 23 in text and tokens; the BOS the
+  template spells is the tokenizer's, as on Llama 3 (allowlist
+  `minicpm5/bos`). A `required` or named tool choice takes the generic
+  envelope on this family.
 - **`-hf` and `--pull` refuse a name the Hub cannot hold.** An owner or
   repository name was only checked for its one `/`, so a space, `?`, `#`, `%`,
   a backslash, a `:` or a non-ASCII byte went into the API URL as typed and

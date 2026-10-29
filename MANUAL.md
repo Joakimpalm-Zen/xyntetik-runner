@@ -3820,7 +3820,10 @@ for that request, prompt and grammar together. `--info tools` reports
 `minicpm5_xml`. Its tokenizer pre (`minicpm5`) is the Llama 3 split applied
 after the digit groups are cut out, so a whitespace run ending at a digit
 stays whole; 0 of 721 corpus strings differ from the publisher's
-tokenizer.json.
+tokenizer.json. Every prompt starts with `<s>`, as the publisher's tokenizer
+prepends it on every encode and the template spells it: the file's
+`add_bos_token=false` is the converter's copy of a flag for a tokenizer the
+publisher does not ship, and it yields.
 `[TOOL_CALLS]` is a control token that decodes to nothing unless a grammar
 admits it by its spelling, so every choice is constrained, `auto` included:
 prose that ends at the model's stop or hands off to the list at the marker.

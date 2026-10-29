@@ -552,6 +552,16 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
                        (t->model == TOK_BPE && (strcmp(pre, "llama-bpe") == 0 ||
                                                 strcmp(pre, "tekken") == 0));
     t->add_bos = gguf_get_bool(g, "tokenizer.ggml.add_bos_token", bos_default);
+    // minicpm5: the publisher's tokenizer.json prepends <s> to every encode
+    // (its post_processor is a TemplateProcessing of `<s> $A`), and the chat
+    // template opens with `{{- bos_token }}`; the file's add_bos_token=false
+    // is the converter's copy of a tokenizer_config flag that governs the
+    // slow tokenizer, not the one the publisher ships. The model saw <s>
+    // first in every prompt, so the artifact's flag yields to the
+    // publisher's tokenizer here, and the template leaves BOS to the
+    // tokenizer as every family does (template-conformance allowlist
+    // minicpm5/bos).
+    if (strcmp(pre, "minicpm5") == 0) t->add_bos = true;
     t->add_space_prefix = gguf_get_bool(g, "tokenizer.ggml.add_space_prefix", true);
     t->add_eos = gguf_get_bool(g, "tokenizer.ggml.add_eos_token", false);
 
