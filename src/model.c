@@ -2638,20 +2638,20 @@ static bool bind_meta_gemma4(model_t *m, gguf_file *g, const char *arch) {
         // agreement is at the quantisation noise floor (the same profile a
         // long-verified dense model shows), not exact token identity.
         // CPU and CUDA, byte-identical to each other.
-        fprintf(stderr, "gemma4: E-series (per-layer embeddings%s) — "
-                "verified against llama.cpp at the Q4_K noise floor "
-                "rather than token-identically\n",
+        fprintf(stderr, "gemma4: E-series (per-layer embeddings%s); validated "
+                "at the quantization noise floor, not token-identically "
+                "(docs/model-support.md)\n",
                 m->kv_from_start < m->n_layer ? " + shared KV" : "");
     else if (gguf_get_u32(g, AK("expert_count"), 0) > 0)
         // The MoE variant used to print the dense line below, which read as
         // a llama.cpp token-identity claim this file never earned (lab,
         // 2026-10-17, on gemma-4-26B-A4B-it). Its evidence is its own.
-        fprintf(stderr, "gemma4: MoE variant (dual-branch FFN): CUDA verified "
-                "GPU/CPU-identical on gemma-4-26B-A4B-it; the dense variant's "
-                "llama.cpp token-identity check does not cover it "
+        fprintf(stderr, "gemma4: MoE variant (dual-branch FFN): CUDA and CPU "
+                "verified identical on gemma-4-26B-A4B-it; the dense variant's "
+                "token-identity check does not cover it "
                 "(docs/moe-support.md)\n");
     else
-        fprintf(stderr, "gemma4: dense variant verified against llama.cpp (token-identical greedy output on the official ggml-org GGUF); unofficial dequant conversions may still produce garbage — prefer official files\n");
+        fprintf(stderr, "gemma4: dense variant verified token-identical in greedy decoding on the official GGUF; unofficial dequant conversions may still produce garbage, prefer official files\n");
     m->embd_scale    = sqrtf((float)m->n_embd);
     m->ffn_act       = ACT_GELU;
     m->v_rmsnorm     = true;
@@ -2889,11 +2889,10 @@ static bool bind_meta_granitehybrid(model_t *m, gguf_file *g, const char *arch) 
     int n_attn = 0;
     for (int i = 0; i < m->n_layer; i++) if (m->l_head_kv[i] > 0) n_attn++;
     fprintf(stderr, "granitehybrid: Mamba-2 hybrid (%d recurrent + %d "
-            "attention layers) — greedy output verified against llama.cpp "
-            "b10353 on granite-4.0-h-small at Q4_K and Q8_0: token-"
-            "identical on high-confidence prompts, diverging only at "
-            "genuine near-ties (a ~0.03-nat argmax coin-flip at Q8_0; "
-            "runner and oracle rank the same top-2 — math verified)\n",
+            "attention layers); greedy output validated on "
+            "granite-4.0-h-small at Q4_K and Q8_0: token-identical on "
+            "high-confidence prompts, diverging only at genuine near-ties "
+            "(docs/model-support.md)\n",
             m->n_layer - n_attn, n_attn);
     return true;
 }
@@ -3037,9 +3036,9 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
                 m->n_expert_used, m->n_expert);
     else
         fprintf(stderr, "nemotron_h: Mamba-2 hybrid (%d recurrent + %d attention "
-                "+ %d MLP layers, n_group=%d grouped scan) — NON-MoE, NoPE "
-                "attention, gate-less squared-ReLU MLP; greedy output verified "
-                "against llama.cpp b10353 on Nemotron-Nano-9B-v2 Q8_0\n",
+                "+ %d MLP layers, n_group=%d grouped scan): NON-MoE, NoPE "
+                "attention, gate-less squared-ReLU MLP; greedy output validated "
+                "on Nemotron-Nano-9B-v2 Q8_0 (docs/model-support.md)\n",
                 n_rec, n_attn, n_mlp, m->ssm.groups);
     return true;
 }

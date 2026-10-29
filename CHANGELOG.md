@@ -5,6 +5,12 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Load notices state the engine's own evidence.** The architecture lines a
+  load prints for the Gemma 4 variants, `granitehybrid` and `nemotron_h` now say
+  what was validated and where the record is (`docs/model-support.md`,
+  `docs/moe-support.md`) instead of naming another engine as the yardstick; the
+  same for two `--help` lines. The evidence itself is unchanged and stays in
+  the docs, where every comparison keeps its second column.
 - **`--mlock` leaves the E-series per-layer token table pageable.** It
   wired the whole file, including the 2.99 GB table of a 6.18 GB E4B Q4_K_M
   that the forward reads one row per token. It now wires the hot ranges on
