@@ -247,6 +247,9 @@ typedef struct {
     uint64_t     procstart;
     // out
     bool         admitted;
+    bool         nobody_registered;   // no holder or loader on this GPU at all,
+                                      // any pid: there is nobody a queue could
+                                      // wait for (see vram_claim's loop)
     vram_status *st;
     char        *err;
     size_t       err_cap;
@@ -331,8 +334,21 @@ static char *claim_rmw(const char *in, size_t in_len, void *ud) {
         }
     }
 
-    // Not admitted this round. A queueing caller leaves a fresh waiter marker
-    // so others polling right now can see our priority and need.
+    // Not admitted this round. Count who could ever free the shortfall before
+    // our own waiter marker joins the table: every non-waiter entry, this
+    // process's own slots included (another thread of this server may release
+    // one). None at all, with an ask that does not fit, means the memory is
+    // held outside runner's accounting and no registered runner can hand it
+    // back, however long we queue. An ask that FITS but was deferred to a
+    // higher-priority waiter is not that case: that waiter is about to be
+    // admitted and will release in its own time, so the queue stays.
+    int listed = 0;
+    for (int i = 0; i < n; i++)
+        if (e[i].state != 'W') listed++;
+    c->nobody_registered = listed == 0 && c->need > avail;
+
+    // A queueing caller leaves a fresh waiter marker so others polling right
+    // now can see our priority and need.
     if (c->waiting && n < REG_MAX_ENTRIES) {
         reg_entry w = { .pid = c->pid, .seq = c->seq,
                         .procstart = c->procstart,
@@ -366,9 +382,6 @@ static char *claim_rmw(const char *in, size_t in_len, void *ud) {
         // every non-waiter entry — so a runner blocked by its own earlier
         // claim was told the memory was held by something outside runner's
         // accounting, one line above its own pid being named as holding it.
-        int listed = 0;
-        for (int i = 0; i < n; i++)
-            if (e[i].state != 'W') listed++;
         if (listed == 0)
             off = err_add(c->err, c->err_cap, off,
                 ".\n  No other runner is registered on this GPU — the memory is "
@@ -385,7 +398,9 @@ static char *claim_rmw(const char *in, size_t in_len, void *ud) {
                           e[i].pid, b, label, up, e[i].priority,
                           e[i].state == 'P' ? " (loading)" : "");
         }
-        if (off + 96 < c->err_cap)
+        // The hint is for a caller that refused at once; one that queued and
+        // was told there is nobody to wait for has already passed it.
+        if (!c->waiting && off + 96 < c->err_cap)
             err_add(c->err, c->err_cap, off,
                     "\n  pass --wait-for-vram [SECONDS] to queue instead of failing");
     }
@@ -441,6 +456,17 @@ vram_lease *vram_claim(const char *gpu_id, const char *model_path,
             if (err && err_cap) err[0] = 0;
         }
         if (c.admitted) break;
+        // The queue waits for OTHER REGISTERED RUNNERS to let go (the flag's
+        // contract). When the ledger lists no holder and no loader at all, the
+        // shortfall is memory outside runner's accounting and no poll can ever
+        // be admitted: a 300 s --serve default would sit out the whole budget
+        // before the caller's fallback (claim what is free, let the adaptive
+        // split trim layers) ran. Refuse now instead, exactly as wait 0 does;
+        // `st` reports the same no-holder state for the caller's decision.
+        if (waiting && c.nobody_registered) {
+            registry_rollback(path, c.pid, c.seq);   // drop our 'W' marker
+            return NULL;
+        }
         if (cancel && atomic_load(cancel)) {
             if (waiting) registry_rollback(path, c.pid, c.seq);   // drop our 'W' marker
             if (err && err_cap) snprintf(err, err_cap, "vram wait cancelled");
