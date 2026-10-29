@@ -1501,7 +1501,25 @@
         "backend": "cuda"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "c89c26e516c5d4dde10843f99aed6f51f3da2946799a9d774a06cc8a74fcfd65",
+          "ran": "runner -m Xyntetik-Kvist-14B-IQ4_NL-mix.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/xyntetik-kvist-14b-iq4_nl-mix.windows-x86_64-cuda.cpu.txt"
+        },
         "cuda": {
           "kind": "gate",
           "runner_version": "1.5.1",
@@ -1532,8 +1550,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.5.1",
-        "date": "2026-10-24"
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
