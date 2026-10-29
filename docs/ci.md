@@ -7,9 +7,16 @@ to them: macOS runs only what needs a Mac, the Metal gates of `make test`
 as the one named target `make test-metal` and the server conformance suite
 on the Metal path; Windows runs the build, its platform-only steps, the
 client tests and the server conformance suite. The whole suite runs on both
-(`macos-suite`, `windows-suite`) on every engine push to main, on the daily
-schedule and on dispatch. No numerical test or tolerance is removed to
-shorten the PR path.
+on every engine push to main, on the daily schedule and on dispatch, as
+three parallel jobs per platform (`macos-suite-gates-core`,
+`macos-suite-gates-batch`, `macos-suite-python`, and the `windows-suite-`
+three): `make test` is the union of the targets `test-gates-core` (the C
+self-checks), `test-gates-batch` (the microbatch identity family and the
+attention split, the longest gates) and `test-python` (the client tests and
+the root pytest, which the jobs run under pytest-xdist with
+`PYTEST_WORKERS=auto`, whole files per worker). A local `make test` runs
+the three in that order in one process, as before. No numerical test or
+tolerance is removed to shorten either path.
 
 Until 2026-10-13 a `unix` job carried some 450 lines of shell smokes beside
 `make test`, repeated by hand for Windows and drifting from that copy. Those

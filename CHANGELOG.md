@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The engine merge to main is green in about a third of the time.**
+  `make test` is now three targets run in order, `test-gates-core`,
+  `test-gates-batch` and `test-python`, and CI runs them as three parallel
+  jobs on macOS and on Windows instead of one fifty-minute step; the root
+  pytest runs under pytest-xdist there (`PYTEST_WORKERS=auto`, whole files
+  per worker). A local `make test` is unchanged in what it runs. No check
+  was removed: the microbatch gates, the Metal microbatch identity and the
+  attention split moved to `test-gates-batch`, the client tests and the root
+  pytest to `test-python`, everything else stayed in `test-gates-core`.
 - **Nemotron 3.5 Bolt E4B admitted at Tier 2.** NVIDIA's post-train of
   Gemma-4-E4B-it in the publisher's own Q4_K_M
   (`nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB`), on the owner's request for the

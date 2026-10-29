@@ -750,11 +750,17 @@ jobs:
   # self-skip; the device half is covered by docs/device-evidence.json and
   # the release check that reads it.
 
+  # The full Windows suite, the same three parts as macos-suite.
   windows-suite:
+    name: windows-suite-${{ matrix.part }}
     needs: changes
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.changes.outputs.engine == 'true')
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [gates-core, gates-batch, python]
     defaults:
       run:
         shell: msys2 {0}
@@ -770,15 +776,16 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-python
             mingw-w64-ucrt-x86_64-python-pytest
-      - name: make test
+            mingw-w64-ucrt-x86_64-python-pytest-xdist
+      - name: make test-${{ matrix.part }}
         env:
           PYTHONUTF8: "1"
-        run: python3 scripts/ci-run.py --timeout 5100 windows-suite -- make -j2 test
+        run: python3 scripts/ci-run.py --timeout 3300 windows-suite-${{ matrix.part }} -- make -j2 test-${{ matrix.part }} PYTEST_WORKERS=auto
       - name: CI timing and test reports
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          name: ci-reports-${{ github.job }}-${{ matrix.part }}-${{ runner.os }}
           path: .build/ci/
           if-no-files-found: ignore
 
@@ -835,23 +842,32 @@ jobs:
   # The hosted image trails the lab Macs by a macOS release, so a gate that
   # needs the newest Metal toolchain must skip with a reason here, as
   # tests/test_metal_tensor.m does, rather than fail a lane nobody reads.
+  # The full macOS suite as three parallel jobs (R6.13 step 2): the C gates,
+  # the batch gates and the python target, the three parts of `make test`.
+  # The python part runs the root pytest under pytest-xdist, one worker per
+  # core, whole files per worker.
   macos-suite:
+    name: macos-suite-${{ matrix.part }}
     needs: changes
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.changes.outputs.engine == 'true')
     runs-on: macos-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [gates-core, gates-batch, python]
     steps:
       - uses: actions/checkout@v7
       - name: install pytest
         run: |
           python3 -m venv .venv
           .venv/bin/pip install -r tests/ci/requirements.txt
-      - name: full suite
-        run: .venv/bin/python scripts/ci-run.py --timeout 5100 macos-suite -- make -j3 test PYTHON=.venv/bin/python
+      - name: make test-${{ matrix.part }}
+        run: .venv/bin/python scripts/ci-run.py --timeout 3300 macos-suite-${{ matrix.part }} -- make -j3 test-${{ matrix.part }} PYTHON=.venv/bin/python PYTEST_WORKERS=auto
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: macos-suite-report
+          name: macos-suite-report-${{ matrix.part }}
           path: .build/ci/
 
   # The one check branch protection requires for the engine matrix. A job
