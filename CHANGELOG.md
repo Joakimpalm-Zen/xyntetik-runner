@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Validation runs at 1.7.1 on the Windows CUDA host: 2 rows** (MiniCPM5-2B,
+  RTX 3070, 2026-10-29, built at 77192431). `minicpm5-2b-q8_0` and
+  `minicpm5-2b-q4_k_m` pass on the CPU and on CUDA, both files resident on
+  the card. Every reply is byte-identical to the Mac pins except the
+  Q4_K_M's x86 CPU reply, which picks a different word in its first
+  sentence ("The smallest planet" against "The closest planet") and is
+  pinned on its own; it still names the fact.
 - **MiniCPM5-2B admitted at Tier 2; its Q4_K_M fails the fidelity bar.**
   openbmb's own Q4_K_M against openbmb's BF16 parent computed in float32 reads
   0.102 mean KLD and 86.0% top-1 over 300 positions, against a 0.05 bar, and
