@@ -313,7 +313,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Gemma 4</b>, 6 models: CPU 🟨 1 of 6 · CUDA 🟨 5 of 6 · Metal 🟨 2 of 6 · Train 🟨 4 of 6</summary>
+<summary><b>Gemma 4</b>, 6 models: CPU 🟨 2 of 6 · CUDA 🟨 5 of 6 · Metal 🟨 2 of 6 · Train 🟨 4 of 6</summary>
 <p><b>Gemma 4 12B</b>, text path only</p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
@@ -353,7 +353,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#nemotron-3.5-bolt-e4b-q4_k_m"><code>Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.0<br>2026-10-28</td></tr>
+<tr><td><a href="#nemotron-3.5-bolt-e4b-q4_k_m"><code>Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.0<br>2026-10-29</td></tr>
 </tbody>
 </table>
 </details>
@@ -992,11 +992,11 @@ Text path only: NVIDIA's post-train of Gemma-4-E4B-it in the publisher's own Q4_
 - **Still missing:** Fidelity against the BF16 parent (nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16); CPU and CUDA cells; the repository's DFlash drafter file (Nemotron-3.5-Bolt-E4B-DFlash-BF16.gguf), which Runner has no path for.
 - **Evidence:** [docs/compat-reports/1.7.0-2026-10-28-macos-arm64-nemotron-3.5-bolt-e4b-q4_k_m.json](compat-reports/1.7.0-2026-10-28-macos-arm64-nemotron-3.5-bolt-e4b-q4_k_m.json), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.0 on 2026-10-28.
-- **CPU:** ☐ not run
+- **CPU:** ✅ v1.7.0 2026-10-29 on windows-x86_64-cuda at commit `659df503e435`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** ✅ v1.7.0 2026-10-28 on windows-x86_64-cuda at commit `4a0a2c46ce39`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ✅ v1.7.0 2026-10-28 on macos-arm64-metal at commit `6ec949e19624`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.macos-arm64-metal.metal.txt)
-- **LoRA training:** supported (runner 1.7.0, 2026-10-28).
-- **LoRA adapter serving:** supported (runner 1.7.0, 2026-10-28).
+- **LoRA training:** supported (runner 1.7.0, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.0, 2026-10-29).
 - **Tier history:** Tier 2, maintained on report from 2026-10-28 ([log](#transition-log)).
 
 ### Muse-Glimmer-30B
