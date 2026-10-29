@@ -604,6 +604,26 @@
     "metal": "NOT RUN"
    },
    "note": "Qwen3 chatml-think except that no empty think block is written for a trailing assistant turn: only non-empty reasoning after the last user query is replayed"
+  },
+  "minicpm5": {
+   "artifact": "minicpm5-2b-q8_0",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "the template renders the file's own tool declarations and XML calls (template-conformance minicpm5, 23/23 text and tokens, 2026-10-29) and the minicpm5_xml parser is pinned on fixtures (test_minicpm5_native_calls); the live tool gate has not been run on this artifact"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "the publisher's generation_config.json (f9740005) sets temperature 1.0 and top_p 0.95, which the file carries as general.sampling.*; no family preset"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   },
+   "note": "Qwen3's ChatML and think shape with a thought block on every historical assistant turn, an open <think> pre-seeded when enable_thinking is true, and XML tool calls (<function name=...><param name=...>, CDATA for a value holding <, & or a newline)"
   }
  },
  "architectures": {
@@ -615,7 +635,8 @@
     "mistral-v1",
     "mistral-nemo",
     "zephyr",
-    "chatml"
+    "chatml",
+    "minicpm5"
    ],
    "artifacts": [
     "llama-3.2-3b-instruct-q4_k_m",
@@ -625,7 +646,9 @@
     "mistral-nemo-instruct-2407-q4_k_m",
     "teuken-7b-instruct-commercial-v0.4-q4_k_m",
     "salamandra-7b-instruct-q4_k_m",
-    "tildeopen-30b-q4_k_m"
+    "tildeopen-30b-q4_k_m",
+    "minicpm5-2b-q8_0",
+    "minicpm5-2b-q4_k_m"
    ],
    "tool_protocol": {
     "status": "NOT RUN",

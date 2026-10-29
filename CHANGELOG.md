@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **MiniCPM5-2B admitted at Tier 2; its Q4_K_M fails the fidelity bar.**
+  openbmb's own Q4_K_M against openbmb's BF16 parent computed in float32 reads
+  0.102 mean KLD and 86.0% top-1 over 300 positions, against a 0.05 bar, and
+  0.098 against its own Q8_0. The Q8_0 (2.68 GB) is the fidelity file: 0.0033
+  and 98.0% against the same parent on the same build. Both rows carry Metal and
+  CPU cells from the Metal laptop with byte-identical replies; the Windows CUDA
+  host's cells and a llama.cpp column are not run
+  (`docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md`).
 - **MiniCPM5 loads with its own tokenizer rule and chat template.** The
   GGUF names the pre-tokenizer `minicpm5`, which Runner did not know and read
   with the GPT-2 split, so 210 of the 721 tokenizer corpus strings came out
