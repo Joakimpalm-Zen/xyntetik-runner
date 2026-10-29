@@ -4058,6 +4058,96 @@
         "runner_version": "1.7.1",
         "date": "2026-10-30"
       }
+    },
+    {
+      "id": "mimo-v2.6-distill-qwen-9b-q4_k_m",
+      "model": "MiMo-V2.6-Distill-Qwen-9B (XiaomiMiMo)",
+      "family": "MiMo",
+      "tier": "tier2",
+      "claim": "Text path, bartowski's Q4_K_M of XiaomiMiMo's Qwen3.5-9B distill: it loads, tokenizes as the publisher's tokenizer.json does, renders the publisher's own template token for token and answers through it on the CPU; no fidelity measurement against the BF16 checkpoint is recorded yet.",
+      "architecture": "qwen35",
+      "upstream": {
+        "checkpoint": "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B",
+        "revision": "1f09ddcc1a0ea45751ae0dfe2af20d533168c46f"
+      },
+      "files": [
+        {
+          "name": "MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf",
+          "repo": "bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF",
+          "revision": "4371da10c84fb26da3592d4cf312d24aa82b7b65",
+          "sha256": "4bca6f18c73f72270c7a20c2ea2bea581de8246e318714277120369d34048c81",
+          "bytes": 5841049120
+        }
+      ],
+      "quantization": "Q4_K_M (bartowski)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "owed",
+        "anchor": "This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json at 1f09ddcc, read with the qwen2 split the publisher's tokenizer uses), template conformance 23 of 23 in text and tokens against the publisher's chat_template.jinja (the GGUF carries it byte for byte), and a chat answer at temperature 0 on the Metal laptop's CPU. No fidelity or cross-engine number.",
+        "context": 4096,
+        "limitations": "No Metal cell: Runner's qwen35 hybrid path runs on the CPU and CUDA only. 5.84 GB of weights page from disk on an 8 GB machine (the CPU smoke took 13 minutes there). No vision: the mmproj file is not loaded. A required or named tool choice takes the generic JSON envelope on this family.",
+        "evidence": [
+          "docs/compat-reports/1.7.1-2026-10-29-macos-arm64-mimo-v2.6-distill-qwen-9b-q4_k_m.json",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "The float32 reference against XiaomiMiMo's BF16 checkpoint (started on the lab CPU lane 2026-10-29, result pending); the Windows CUDA host's CPU and CUDA cells; a Q8_0 row."
+      },
+      "smoke": {
+        "device_class": "macos-arm64-metal",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "f5b25f0ab89af5407c18203a5404addb4246fe19",
+          "caps": {
+            "version": "1.7.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "eea4d971ebfaa42d3826837743677b60c0979634e9d50a516c884abc604c3291",
+          "ran": "runner -m MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/mimo-v2.6-distill-qwen-9b-q4_k_m.macos-arm64-metal.cpu.txt"
+        },
+        "cuda": null,
+        "metal": null
+      },
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
+      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-29",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29, the second of nine; the file rendered as Qwen3-Coder's template and tokenized combining marks differently from the publisher's tokenizer until the mimo template family and the qwen2 split landed.",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-29",
+          "reason": "Admitted 2026-10-29 at Tier 2 with the admitting CPU cell from the Metal laptop and a float32 reference measurement (policy 2026-10-27). Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
     }
   ]
 }

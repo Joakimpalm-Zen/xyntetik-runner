@@ -1409,6 +1409,37 @@
       }
     },
     {
+      "id": "mimo-v2.6-distill-qwen-9b-q4_k_m",
+      "architecture": "qwen35",
+      "family": "MiMo",
+      "file": "models/MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf",
+      "sha256": "4bca6f18c73f72270c7a20c2ea2bea581de8246e318714277120369d34048c81",
+      "upstream": "bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF",
+      "tokenizer_reference": "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B",
+      "tokenizer_reference_revision": "1f09ddcc1a0ea45751ae0dfe2af20d533168c46f",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/mimo-v2.6-distill-qwen-9b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "bartowski's Q4_K_M (5,841,049,120 bytes, revision 4371da10 of bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF) of XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B, architecture qwen35 (32 layers, hidden 4096). The GGUF declares tokenizer pre qwen35 but the publisher's tokenizer.json at 1f09ddcc carries the qwen2 split; Runner reads a file carrying MiMo's template with the qwen2 split, and 0 of 721 corpus strings differ (3 did under the declared rule). Template family mimo, conformance 23/23. Checks run on the Metal laptop's CPU (qwen35 has no Metal path), so chat runs with the GPU off. No llama.cpp reference is declared, so greedy_reference is not claimed; the float32 reference is owed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "off",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>",
+            "<tool_call>"
+          ]
+        }
+      }
+    },
+    {
       "id": "qwen3.8-27b-ud-q4_k_m",
       "architecture": "qwen35",
       "family": "Qwen 3.8",

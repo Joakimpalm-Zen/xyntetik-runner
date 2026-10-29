@@ -594,6 +594,17 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
+<details>
+<summary><b>MiMo</b>, 1 model: CPU ✅ · CUDA - · Metal - · Train ✅</summary>
+<p><b>MiMo-V2.6-Distill-Qwen-9B (XiaomiMiMo)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#mimo-v2.6-distill-qwen-9b-q4_k_m"><code>MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td></td><td></td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
+</tbody>
+</table>
+</details>
+
 **Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
 
 <a id="tier1"></a>
@@ -1587,6 +1598,32 @@ Text path, LiquidAI's own Q4_K_M of LFM2.5-1.2B-Instruct, which fails the fideli
 - **LoRA adapter serving:** no: --lora does not cover the short-convolution hybrid yet (lfm2) (runner 1.7.1, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
+### MiMo
+
+#### MiMo-V2.6-Distill-Qwen-9B (XiaomiMiMo)
+
+<a id="mimo-v2.6-distill-qwen-9b-q4_k_m"></a>
+##### `MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf`
+
+Text path, bartowski's Q4_K_M of XiaomiMiMo's Qwen3.5-9B distill: it loads, tokenizes as the publisher's tokenizer.json does, renders the publisher's own template token for token and answers through it on the CPU; no fidelity measurement against the BF16 checkpoint is recorded yet.
+
+- **File:** `MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf` (sha256 `4bca6f18c73f72270c7a20c2ea2bea581de8246e318714277120369d34048c81`, 5,841,049,120 bytes, from [bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF](https://huggingface.co/bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF) at revision `4371da10c84f`).
+- **Upstream checkpoint:** XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B at revision `1f09ddcc1a0e`.
+- **Quantization:** Q4_K_M (bartowski).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison is feasible and owed):** This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json at 1f09ddcc, read with the qwen2 split the publisher's tokenizer uses), template conformance 23 of 23 in text and tokens against the publisher's chat_template.jinja (the GGUF carries it byte for byte), and a chat answer at temperature 0 on the Metal laptop's CPU. No fidelity or cross-engine number.
+- **Context tested:** 4096.
+- **Known limitations:** No Metal cell: Runner's qwen35 hybrid path runs on the CPU and CUDA only. 5.84 GB of weights page from disk on an 8 GB machine (the CPU smoke took 13 minutes there). No vision: the mmproj file is not loaded. A required or named tool choice takes the generic JSON envelope on this family.
+- **Still missing:** The float32 reference against XiaomiMiMo's BF16 checkpoint (started on the lab CPU lane 2026-10-29, result pending); the Windows CUDA host's CPU and CUDA cells; a Q8_0 row.
+- **Evidence:** [docs/compat-reports/1.7.1-2026-10-29-macos-arm64-mimo-v2.6-distill-qwen-9b-q4_k_m.json](compat-reports/1.7.1-2026-10-29-macos-arm64-mimo-v2.6-distill-qwen-9b-q4_k_m.json), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on macos-arm64-metal, cpu backend; last run 1.7.1 on 2026-10-29.
+- **CPU:** ✅ v1.7.1 2026-10-29 on macos-arm64-metal at commit `f5b25f0ab89a`, output sha256 `eea4d971ebfaa42d`, [pin](../tests/compatibility/tier-smoke/mimo-v2.6-distill-qwen-9b-q4_k_m.macos-arm64-metal.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
+- **Tier history:** Upcoming, planned admission from 2026-10-29; Tier 2, maintained on report from 2026-10-29 ([log](#transition-log)).
+
 <a id="tier3"></a>
 ## Tier 3, unmaintained
 
@@ -1814,6 +1851,8 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-29 | [MiniCPM5-2B (openbmb), `MiniCPM5-2B-Q8_0.gguf`](#minicpm5-2b-q8_0) | Tier 2, maintained on report | Admitted 2026-10-29 at Tier 2 with the admitting Metal and CPU cells and a float32 reference measurement (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report. | none recorded |
 | 2026-10-29 | [MiniCPM5-2B (openbmb), `MiniCPM5-2B-Q4_K_M.gguf`](#minicpm5-2b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the first of nine; the files did not tokenize as the publisher's tokenizer does until the minicpm5 pre-tokenizer rule, the BOS rule and the minicpm5 template family landed. | none recorded |
 | 2026-10-29 | [MiniCPM5-2B (openbmb), `MiniCPM5-2B-Q4_K_M.gguf`](#minicpm5-2b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-29 at Tier 2 with the admitting Metal and CPU cells and a float32 reference measurement (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report. | none recorded |
+| 2026-10-29 | [MiMo-V2.6-Distill-Qwen-9B (XiaomiMiMo), `MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf`](#mimo-v2.6-distill-qwen-9b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the second of nine; the file rendered as Qwen3-Coder's template and tokenized combining marks differently from the publisher's tokenizer until the mimo template family and the qwen2 split landed. | none recorded |
+| 2026-10-29 | [MiMo-V2.6-Distill-Qwen-9B (XiaomiMiMo), `MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf`](#mimo-v2.6-distill-qwen-9b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-29 at Tier 2 with the admitting CPU cell from the Metal laptop and a float32 reference measurement (policy 2026-10-27). Maintained on report. | none recorded |
 | 2026-10-30 | [LFM2.5-1.2B-Instruct (LiquidAI), `LFM2.5-1.2B-Instruct-Q8_0.gguf`](#lfm2.5-1.2b-instruct-q8_0) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29 (LFM2.5-24B-A2B); scope decided 2026-10-30 to admit the shared architecture through the dense 1.2B-Instruct first. The files did not load until the lfm2 architecture, its tokenizer rule and the lfm2 template family landed. | none recorded |
 | 2026-10-30 | [LFM2.5-1.2B-Instruct (LiquidAI), `LFM2.5-1.2B-Instruct-Q8_0.gguf`](#lfm2.5-1.2b-instruct-q8_0) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell and a float32 reference measurement (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report. | none recorded |
 | 2026-10-30 | [LFM2.5-1.2B-Instruct (LiquidAI), `LFM2.5-1.2B-Instruct-Q4_K_M.gguf`](#lfm2.5-1.2b-instruct-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29 (LFM2.5-24B-A2B); scope decided 2026-10-30 to admit the shared architecture through the dense 1.2B-Instruct first. The files did not load until the lfm2 architecture, its tokenizer rule and the lfm2 template family landed. | none recorded |

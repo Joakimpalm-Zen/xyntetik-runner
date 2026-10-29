@@ -662,6 +662,26 @@
     "metal": "UNSUPPORTED"
    },
    "note": "ChatML with the declarations as one `List of tools: [...]` system line, the thought kept on the last assistant turn only, results as their own tool turn, and calls as a Python list between two control-token markers"
+  },
+  "mimo": {
+   "artifact": "mimo-v2.6-distill-qwen-9b-q4_k_m",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "the template renders the file's own tool declarations and compact XML calls (template-conformance mimo, 23/23 text and tokens, 2026-10-29) and the Qwen3-Coder parser reads the compact form (test_mimo_compact_xml_calls); the live tool gate has not been run on this artifact"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "the publisher's generation_config.json (1f09ddcc) sets temperature 0.6, top_k 20, top_p 0.95, which the file carries as general.sampling.*; no family preset"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "UNSUPPORTED"
+   },
+   "note": "ChatML joined with no newline, <think>reasoning</think> on every assistant turn, a kept tool role, tools as a system turn of their own, Qwen3-Coder's XML calls written compact"
   }
  },
  "architectures": {
@@ -747,12 +767,14 @@
     "qwen38",
     "ornith",
     "qwen35",
-    "qwen35-nothink"
+    "qwen35-nothink",
+    "mimo"
    ],
    "artifacts": [
     "ornith-1.0-9b-q4_k_m",
     "qwen3.8-27b-ud-q4_k_m",
-    "qwen3.8-27b-gsq-rco-iq3_s-recovered"
+    "qwen3.8-27b-gsq-rco-iq3_s-recovered",
+    "mimo-v2.6-distill-qwen-9b-q4_k_m"
    ],
    "tool_protocol": {
     "status": "PASS",

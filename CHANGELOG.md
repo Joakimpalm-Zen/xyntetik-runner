@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **MiMo-V2.6-Distill-Qwen-9B Q4_K_M admitted at Tier 2, its fidelity not yet
+  measured.** bartowski's Q4_K_M of XiaomiMiMo's Qwen3.5-9B distill loads,
+  tokenizes as the publisher's tokenizer.json does (0 of 721), renders the
+  publisher's template token for token (23 of 23) and answers through it on
+  the CPU of the Metal laptop. The float32 reference against the BF16
+  checkpoint is owed, and so are the Windows CUDA host's cells; Runner's
+  `qwen35` path has no Metal backend, so the row has no Metal cell.
 - **MiMo-V2.6-Distill-Qwen-9B renders with its own template and tokenizes as
   its publisher does.** Its chat template was detected as Qwen3-Coder's, so
   every turn was framed with newlines the template never writes and no

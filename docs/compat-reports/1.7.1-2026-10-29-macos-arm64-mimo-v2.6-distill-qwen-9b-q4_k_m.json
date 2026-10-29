@@ -1,0 +1,70 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-10-29T23:10:23Z",
+  "host": {
+    "os": "Darwin",
+    "machine": "arm64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 1.7.1"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "mimo-v2.6-distill-qwen-9b-q4_k_m",
+      "architecture": "qwen35",
+      "file": "models/MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf",
+      "expected_sha256": "4bca6f18c73f72270c7a20c2ea2bea581de8246e318714277120369d34048c81",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 32537.5,
+          "stderr_tail": "warning: weights are 5.8 GB but only 1.6 GB of RAM is available \u2014 expect the model to be evicted and every token to page from disk. --mlock pins them; a smaller model is the other fix.\nloaded MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf | qwen35 | 32 layers | ctx 4096 | 4 threads | 0.09s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\nsampling: from the file (general.sampling.*): temp 0.60, top_p 0.95, top_k 20\n\nprompt: 3 tok, 0.19 tok/s | gen: 1 tok, 0.06 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 366.3,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": ""
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 129974.38,
+          "prompt": "What is 2+2?",
+          "gpu": "off",
+          "failure_reasons": [],
+          "output_tail": "2+2 = 4.\n"
+        }
+      },
+      "resolved_file": "models/MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf",
+      "actual_sha256": "4bca6f18c73f72270c7a20c2ea2bea581de8246e318714277120369d34048c81",
+      "file_status": "pass",
+      "complete": true
+    }
+  ],
+  "complete": true,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "pass": 1
+      },
+      "chat": {
+        "pass": 1
+      }
+    }
+  }
+}
