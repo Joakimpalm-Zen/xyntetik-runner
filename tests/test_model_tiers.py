@@ -751,6 +751,20 @@ def test_a_declared_limit_renders_n_a_linked_to_the_matrix():
     assert file_row(doc, "toy-Q8_0.gguf")[2] == '<td><a href="../MANUAL.md#support-matrix">n/a</a></td>'
 
 
+def test_a_measurement_renders_after_the_cells_and_only_when_present():
+    """A dated deployment measurement sits beside the gate cells it was
+    taken next to, one bullet each, and a row without one renders as before."""
+    plain = tier1_row()
+    lines = mt._row_doc(plain, {plain["id"]: plain})
+    measured = tier1_row(measurements=["**Fit (Metal, 2026-10-29):** 4.7 s.",
+                                       "**Second:** two."])
+    with_m = mt._row_doc(measured, {measured["id"]: measured})
+    metal = next(i for i, l in enumerate(with_m) if l.startswith("- **Metal:**"))
+    assert with_m[metal + 1:metal + 3] == ["- **Fit (Metal, 2026-10-29):** 4.7 s.",
+                                           "- **Second:** two."]
+    assert [l for l in with_m if l not in lines] == with_m[metal + 1:metal + 3]
+
+
 def test_a_failed_gate_never_renders_a_check_mark():
     doc = gated(metal=gate("2026-10-23", result="fail"))
     assert file_row(doc, "toy-Q8_0.gguf")[3] == "<td nowrap>failed 1.5.0<br>2026-10-23</td>"

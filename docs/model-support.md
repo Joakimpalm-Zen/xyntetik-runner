@@ -353,7 +353,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#nemotron-3.5-bolt-e4b-q4_k_m"><code>Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.0<br>2026-10-29</td></tr>
+<tr><td><a href="#nemotron-3.5-bolt-e4b-q4_k_m"><code>Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-29</td></tr>
 </tbody>
 </table>
 </details>
@@ -991,10 +991,11 @@ Text path only: NVIDIA's post-train of Gemma-4-E4B-it in the publisher's own Q4_
 - **Known limitations:** No vision: the publisher's mmproj is not part of this repository and would not be loaded. 6.18 GB of weights page from disk on an 8 GB machine with other applications open; the validation run recorded that state.
 - **Still missing:** Fidelity against the BF16 parent (nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16); the repository's DFlash drafter file (Nemotron-3.5-Bolt-E4B-DFlash-BF16.gguf), which Runner has no path for.
 - **Evidence:** [docs/compat-reports/1.7.0-2026-10-28-macos-arm64-nemotron-3.5-bolt-e4b-q4_k_m.json](compat-reports/1.7.0-2026-10-28-macos-arm64-nemotron-3.5-bolt-e4b-q4_k_m.json), [docs/compat-reports/1.7.0-2026-10-29-windows-x86_64-nemotron-3.5-bolt-e4b-q4_k_m.json](compat-reports/1.7.0-2026-10-29-windows-x86_64-nemotron-3.5-bolt-e4b-q4_k_m.json), [docs/compat-reports/train-smoke-1.7.0-2026-10-29-windows-x86_64-nemotron-3.5-bolt-e4b.md](compat-reports/train-smoke-1.7.0-2026-10-29-windows-x86_64-nemotron-3.5-bolt-e4b.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.0 on 2026-10-28.
+- **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.0 on 2026-10-29.
 - **CPU:** ✅ v1.7.0 2026-10-29 on windows-x86_64-cuda at commit `659df503e435`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** ✅ v1.7.0 2026-10-28 on windows-x86_64-cuda at commit `4a0a2c46ce39`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.windows-x86_64-cuda.cuda.txt)
-- **Metal:** ✅ v1.7.0 2026-10-28 on macos-arm64-metal at commit `6ec949e19624`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.macos-arm64-metal.metal.txt)
+- **Metal:** ✅ v1.7.0 2026-10-29 on macos-arm64-metal at commit `0800f47350d5`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.macos-arm64-metal.metal.txt)
+- **8 GB laptop fit (Metal, 2026-10-29, runner 1.7.0 at commit `0800f47350d5`):** one resident server at `-c 4096 -b 32 --kv q8 --mlock` on an 8 GB Apple Silicon laptop wires 3.19 GB of weights while the 2.99 GB row-gathered table stays pageable; a 262-token prompt answers in 4.0-5.1 s to the first token and decodes 128 tokens at 8.5-9.0 tok/s; the first response after 8 minutes idle took 4.7 s with `--mlock` and 24.9 s without it (the weights were evicted while idle); the laptop swaps other applications to hold the weights, and the sliding-window KV ring (`RUNNER_KV_RING=1`) saved 77 MB of cache without changing these figures while losing the prefix cache.
 - **LoRA training:** supported (runner 1.7.0, 2026-10-29).
 - **LoRA adapter serving:** supported (runner 1.7.0, 2026-10-29).
 - **Tier history:** Tier 2, maintained on report from 2026-10-28 ([log](#transition-log)).

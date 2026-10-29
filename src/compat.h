@@ -129,6 +129,9 @@ uint64_t    plat_ram_bytes(void);
 // return is a normal outcome to report, not an error to abort on.
 bool        plat_mlock(void *p, size_t size);
 void        plat_munlock(void *p, size_t size);
+// The VM page size mlock and munlock round to (4 KB on x86, 16 KB on Apple
+// Silicon); 0 when the platform will not say.
+size_t      plat_page_size(void);
 
 // Fraction of the mapping currently in physical memory, or -1.0 where the
 // platform will not say. This is the direct answer to "is the model resident",

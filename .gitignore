@@ -62,6 +62,7 @@ test-upload-report
 test-upload-report.exe
 test-sampler.exe
 test-shared-weights
+test-mlock
 test-shared-weights.exe
 test-bind
 test-bind.exe

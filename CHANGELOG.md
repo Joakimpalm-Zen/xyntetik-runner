@@ -5,6 +5,20 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--mlock` leaves the E-series per-layer token table pageable.** It
+  wired the whole file, including the 2.99 GB table of a 6.18 GB E4B Q4_K_M
+  that the forward reads one row per token. It now wires the hot ranges on
+  either side of that table, keeping the pages it shares with its neighbours.
+  Slots that share weights share one lock, held until the last of them is
+  freed; before, a slot that joined locked weights did not know they were
+  locked, so its GPU load could hand their host pages back. On Windows each
+  range now adds to the working-set minimum instead of resizing it alone.
+  `test-mlock` checks the wired bytes against the kernel's locked-memory
+  limit and hand-computed page boundaries. On an 8 GB Apple Silicon laptop
+  the Bolt E4B server wired 3.19 GB, and its first response after 8 minutes
+  idle took 4.7 s with `--mlock` against 24.9 s without it; the measurement
+  is the new `measurements` line of that row in `docs/model-support.md`. Help and manual updated; README,
+  site and model cards do not describe `--mlock` and are unchanged.
 - **E-series fit reports distinguish row-gathered weights.** `--info fit`
   retains the whole file size and reports the per-layer token table separately
   from the hot set used for its RAM verdict, including on discrete GPU splits.
