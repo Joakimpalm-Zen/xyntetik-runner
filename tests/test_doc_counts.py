@@ -13,11 +13,15 @@ import re
 import subprocess
 import sys
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNNER = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
 
 
 def _caps():
+    if not RUNNER.exists():
+        pytest.skip("build ./runner first (make)")
     out = subprocess.run([str(RUNNER), "--info", "caps"], stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL, check=True, timeout=30).stdout
     return json.loads(out)

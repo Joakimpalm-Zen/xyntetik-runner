@@ -17,7 +17,7 @@ Current release and unreleased changes. Compatibility follows the
   empty.
 - **The README and the manual state the counts the binary reports.** Both
   said how many architectures Runner admits (20 and 19) and both had drifted
-  from the 21 that `--info caps` lists. The counts are corrected and
+  from the 22 that `--info caps` lists. The counts are corrected and
   `tests/test_doc_counts.py` ties them, and the 24 weight formats, to
   `--info caps` so they cannot drift again.
 - **Mellum2.1-12B-A2.5B-Thinking admitted at Tier 2; its Q4_K_M fails the
