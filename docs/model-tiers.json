@@ -2470,22 +2470,22 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.5.1",
-          "date": "2026-10-24",
-          "device_class": "linux-x86_64-cuda",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "3b2c21c82306d6aa25941c7b01e8b924ec323498",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
           "caps": {
-            "version": "1.5.1",
-            "os": "linux",
+            "version": "1.7.1",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 26,
+            "cpu_cores": 8,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "9a878ce06241ebaa98c9b52ec373e5ccdb72ceb80ffdd73cad2e8e736610c1b3",
           "ran": "runner -m Qwen_Qwen3-4B-Q4_K_M.gguf --lora Qwen3-4B-ToolUse-LoRA.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.linux-x86_64-cuda.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.windows-x86_64-cuda.cpu.txt"
         },
         "cuda": null,
         "metal": {
@@ -2517,8 +2517,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.7.0",
-        "date": "2026-10-28"
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
