@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Validation runs at 1.7.1 on the Windows CUDA host: 8 rows** (Tier 2, RTX
+  3070, 2026-10-29). CPU and CUDA cells pass for `gemma-4-e2b-it-q4_k_m-q4_0-mix`,
+  `qwen3-4b-q4_k_m-bartowski`, `qwen3-4b-runner-tooluse-lora` (on that base),
+  `qwen3-4b-runner-tooluse-merged-q8_0`, `gemma-4-12b-it-qat-q4_0` (CUDA 47 of
+  48 layers), `granite-4.2-8b-q8_0` (32 of 40) and
+  `nvidia-nemotron-nano-9b-v2-q8_0` (43 of 56); `trinity-nano-preview-q8_0`
+  passes on the CPU (its CUDA cell is a declared limit). Every reply is
+  byte-identical to the row's earlier pins. The rows of 13.8 GB and up are
+  out of this host's reach and listed in the PR.
 - **Validation runs at 1.7.1 on the Windows CUDA host: 3 rows** (Tier 1, RTX
   3070, 2026-10-29). `qwen3.8-27b-gsq-rco-iq3_s-recovered` CUDA (a layer
   split, 38 of 64 layers), `xyntetik-kvist-14b-q5_0-mix` CUDA (43 of 52) and
