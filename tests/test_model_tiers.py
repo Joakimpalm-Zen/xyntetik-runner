@@ -356,10 +356,11 @@ def test_the_owner_decisions_of_2026_10_22_are_in_the_roster():
 
 def test_the_committed_families_are_the_owners_list():
     """Since 2026-10-27 Tier 1 follows pull: the families whose repositories
-    showed at least 1,000 downloads in 30 days; the README lists them in
-    the order of each one's first row."""
+    showed at least 1,000 downloads in 30 days, plus the publisher files the
+    owner named for active validation on 2026-10-29 (Bolt E4B, Mellum2.1);
+    the README lists them in the order of each one's first row."""
     families = [f for f, _ in mt.tier1_families(committed())]
-    assert set(families) == {"Qwen3.8", "Xyntetik-Kvist-14B"}
+    assert set(families) == {"Gemma 4", "Mellum2.1", "Qwen3.8", "Xyntetik-Kvist-14B"}
     first = {}
     for r in committed()["rows"]:
         if r["tier"] == "tier1":

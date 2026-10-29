@@ -5,6 +5,11 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Mellum2.1-12B-A2.5B-Thinking Q4_K_M and Nemotron 3.5 Bolt E4B Q4_K_M move to
+  Tier 1** on the owner's decision of 2026-10-29: both are publisher files, so
+  the 2026-10-27 pull rule yields to the owner's call, and the tier policy now
+  says so. Their admitting cells stand as the record; the Mellum Metal row and
+  Q8_0 cells and the Bolt BF16-parent fidelity measurement are still owed.
 - **Mellum2.1-12B-A2.5B-Thinking admitted at Tier 2; its Q4_K_M fails the
   fidelity bar.** JetBrains' own Q4_K_M against JetBrains' BF16 parent,
   computed in float32 at 300 positions (token-id keyed): mean KLD 0.128 and
