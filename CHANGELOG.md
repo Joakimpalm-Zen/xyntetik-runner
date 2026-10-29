@@ -5,6 +5,21 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`-hf` and `--pull` refuse a name the Hub cannot hold.** An owner or
+  repository name was only checked for its one `/`, so a space, `?`, `#`, `%`,
+  a backslash, a `:` or a non-ASCII byte went into the API URL as typed and
+  into the cache directory's name (`a\b--c` on a POSIX host, a stream separator
+  on an NTFS one), and `.` or `..` as a whole segment was accepted. Both
+  segments are now checked against the Hub's own alphabet (letters, digits,
+  `-`, `_`, `.`) before any request or directory exists, and the refusal is the
+  existing `wants owner/repo[:TAG]` one. Pinned by thirteen cases in
+  `tests/test_hf_spec_bounds.py`, each also asserting that the cache stays
+  empty.
+- **The README and the manual state the counts the binary reports.** Both
+  said how many architectures Runner admits (20 and 19) and both had drifted
+  from the 21 that `--info caps` lists. The counts are corrected and
+  `tests/test_doc_counts.py` ties them, and the 24 weight formats, to
+  `--info caps` so they cannot drift again.
 - **Mellum2.1-12B-A2.5B-Thinking admitted at Tier 2; its Q4_K_M fails the
   fidelity bar.** JetBrains' own Q4_K_M against JetBrains' BF16 parent,
   computed in float32 at 300 positions (token-id keyed): mean KLD 0.128 and
