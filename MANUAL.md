@@ -1474,6 +1474,7 @@ merely dense matvec/matmul support.
 | `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU and CUDA. Qwen3.8-27B (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--draft mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore (its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike); a CUDA-resident recurrent layer runs speculative decode (per-row recurrent checkpoints restore a partially accepted round) and declines grammar fast-forward. |
 | `clef` | Cloudflare's Clef decision models (Cloudflare/clef on Qwen3.8-27B, Cloudflare/clef-flash on Qwen3.5-9B): the `qwen35` backbone plus the joint schema head, served at `POST /v1/systemone` and `--systemone FILE` ([Clef decisions](#clef-decisions-v1systemone)). Text input only; a request with images or videos is refused. Gold against the publisher's `joint_schema_model.py` in `docs/clef-admission-2026-10-16.md`. |
 | `qwen3moe` | Fused and legacy split sparse-MoE layouts on CPU/CUDA; supported fused layouts on Metal. |
+| `mellum` | JetBrains Mellum2.x: `qwen3moe` attention and router (64 experts, top-8, no shared expert) with a 1,024-token sliding window on three of every four layers and YaRN on the full layers only; tokenizer pre `mellum2` is the SmolLM split; its own `mellum` chat template. CPU and CUDA; CUDA runs its MoE on the scalar route (the tensor-core and grouped routes are not measured for this family). Admitted 2026-10-29; the publisher Q4_K_M fails the 0.05 bar against its BF16 parent on both Runner and llama.cpp (the file, not the engine), and the record is in `docs/model-support.md`. |
 | `gemma3` | Regular and QAT layouts, sliding-window attention, sandwich norms. The 27B (62 blocks) scales attention by its config's `query_pre_attn_scalar`, which is n_embd / n_head (168), not its 128-wide heads; every other size uses the head width (`tests/test_attn_scale.c`). |
 | `gemma4` | Heterogeneous attention, thinking channels, E-series, supported dense/MoE layouts, and the family's native tool protocol. Both E-series export shapes load. A layer at or past `block_count - attention.shared_kv_layers` computes no K and no V (it attends over the cache an earlier layer filled), so the current quantized exports - the ggml-org Q4_0, Google's own QAT Q4_0 and the community QAT F16 - omit `attn_k.weight`, `attn_v.weight` and `attn_k_norm.weight` on exactly those layers: 666 tensors on E4B where the BF16 export has 720. Those three are optional on the shared-KV tail and still required on every KV-owning layer, where a missing one is refused by name. |
 | `phi3` | Fused QKV and gate/up tensors, LongRoPE factors. |
@@ -2303,7 +2304,7 @@ flag and ignore it rather than approximate one.
 Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
 `mistral-nemo`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
 `ornith`, `qwen35`, `qwen35-nothink`, `nemotron`, `nemotron35`, `hermes4`, `granite`, `granite4`, `granite42`,
-`qwen38`, `qwen3-coder`, `muse`, `harmony`, or `raw`;
+`qwen38`, `qwen3-coder`, `mellum`, `muse`, `harmony`, or `raw`;
 default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
 is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
 template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ
@@ -3142,9 +3143,14 @@ Legacy Completions scores the prompt teacher-forced.
 `logprobs: N` the logprob arrays cover the prompt's tokens first, then the
 generated ones; the first prompt token has nothing before it, so its
 `token_logprobs`, `top_logprobs` and `top_token_ids` entries are `null`, as
-OpenAI's echo spells them. `max_tokens: 0` scores without generating, which
-is the loglikelihood request an evaluation harness sends. `prompt_logprobs: K`
-(0 to 20, vLLM's spelling) adds `choices[0].prompt_logprobs`: `null`, then per
+OpenAI's echo spells them. A `top_logprobs` entry is a JSON object keyed by
+the candidate's text, so candidates whose text is the same (a byte-level
+vocabulary renders every lone partial UTF-8 byte as `�`) share one key
+holding the log of their summed probability. `top_token_ids` still lists
+every candidate id, and `top_token_logprobs`, aligned with it, carries each
+id's own logprob, so an id-keyed comparison loses nothing. `max_tokens: 0`
+scores without generating, which is the loglikelihood request an evaluation
+harness sends. `prompt_logprobs: K` (0 to 20, vLLM's spelling) adds `choices[0].prompt_logprobs`: `null`, then per
 position a map from token id to `{logprob, rank, decoded_token}` holding the
 actual token and the top K alternatives. The prompt is fed one token at a time
 from position 0 with no prefix reuse, the solo forward `--score` uses, so the
@@ -3872,6 +3878,11 @@ collapsing "unspecified" onto one of them would misrender the other.
 Qwen3 history also retains the reference template's empty
 `<think>\n\n</think>` block before a trailing historical assistant answer;
 this is replay framing, independent of whether the new turn enables thinking.
+Mellum2.1 (`mellum`) renders as Qwen3 does except at that one site: its
+template writes a thought block on an assistant turn after the last user
+query only when that turn's reasoning is non-empty, so a trailing historical
+answer is replayed with no empty block, and a non-empty `reasoning_content`
+is replayed on every assistant turn after the last user query.
 A turn that ends on a stop TOKEN also reports that token's own decision as
 `stop_logprobs` (its logprob, the top alternatives and their ids) whenever
 `logprobs` was requested. It rides beside `stop_token` rather than inside
