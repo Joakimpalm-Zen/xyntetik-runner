@@ -43,6 +43,16 @@ Current release and unreleased changes. Compatibility follows the
   name server arguments for one backend only, for example the layer split
   of a file larger than the card. The CPU cell does not receive them, and
   the pin records them, so the `ran` line shows the split.
+- **A VRAM queue with nobody to wait for returns at once.** `--wait-for-vram`
+  queues behind other registered runners. When the registry listed no holder at
+  all and the file was larger than the card, the queue still polled its whole
+  budget (300 s by default under `--serve`) before the load fell back to what
+  was free and the adaptive split trimmed layers onto the CPU; a layer-split
+  server, and the compat matrix's load and chat checks, lost five minutes a
+  start on the Windows CUDA host. The claim now refuses immediately when the
+  ledger is empty, the same verdict `--wait-for-vram 0` gives, and the fallback
+  runs at once. A queue behind a holder, including another slot of the same
+  server, waits as before. Pinned by two registry tests.
 
 ## v1.7.1 - 2026-10-29
 

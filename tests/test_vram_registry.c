@@ -800,6 +800,56 @@ static void test_cancelled_wait_gives_up_promptly(void) {
     vram_release(hog);
 }
 
+// A queue waits for other registered runners to let go. When the ledger lists
+// nobody at all, the shortfall is memory outside runner's accounting and no
+// poll can ever be admitted, so a wait would only sit out its whole budget:
+// --serve (300 s by default) on a file larger than the card spent five minutes
+// before its fallback (claim what is free, let the adaptive split trim layers)
+// ran, with no other runner anywhere near the GPU. The claim must come back
+// at once, with the same no-holder verdict the caller already handles.
+static void test_wait_with_nobody_registered_returns_at_once(void) {
+    const char *dir = scratch_dir();
+    const char *gpu = "wait-nobody-registered-test";
+    char path[600];
+    reg_file(dir, gpu, path, sizeof(path));
+    uint64_t free_all = 8 * GB;
+
+    vram_status st = {0};
+    char err[1024] = {0};
+    double t0 = plat_now();
+    vram_lease *l = vram_claim(gpu, "/models/larger-than-the-card.gguf", 20 * GB,
+                               0, fixed_free, &free_all, 300, NULL, &st, err, sizeof(err));
+    double waited = plat_now() - t0;
+    assert(!l && "a file larger than the card does not fit, so no lease");
+    assert(waited < 2.0 && "nobody registered: the queue must not run its 300 s budget");
+    assert(st.holders == 0 && st.available == 8 * GB &&
+           "the caller's fallback keys on the no-holder state, which must still be reported");
+    assert(strstr(err, "outside runner's accounting") && "the verdict names the cause");
+    assert(!strstr(err, "pass --wait-for-vram") && "a caller that queued is not told to queue");
+    assert(file_size(path) == 0 && "the early refusal leaves no phantom waiter marker");
+}
+
+// The short-circuit is for an EMPTY ledger only. A holder in this very process
+// (another slot of the same server) can still be released by another thread,
+// so a queue behind it keeps waiting its full budget as before.
+static void test_wait_behind_own_slot_still_waits(void) {
+    scratch_dir();
+    const char *gpu = "wait-own-slot-test";
+    uint64_t free_all = 24 * GB;
+
+    vram_lease *mine = vram_claim(gpu, "/models/slot-a.gguf", 20 * GB, 0,
+                                  fixed_free, &free_all, 0, NULL, NULL, NULL, 0);
+    assert(mine);
+    vram_status st = {0};
+    double t0 = plat_now();
+    assert(!vram_claim(gpu, "/models/slot-b.gguf", 20 * GB, 0, fixed_free,
+                       &free_all, 2, NULL, &st, NULL, 0));
+    double waited = plat_now() - t0;
+    assert(waited >= 1.5 && "our own slot may yet be released: the queue must wait it out");
+    assert(st.holders == 0 && "our own claim is not another runner");
+    vram_release(mine);
+}
+
 // A wait that runs out still has to explain itself: the timeout path produces
 // the same named-holder message the immediate refusal does, not a bare timeout.
 static void test_wait_timeout_still_names_the_holder(void) {
@@ -950,6 +1000,8 @@ int main(void) {
     test_cancelled_wait_gives_up_promptly();
     test_wait_timeout_still_names_the_holder();
     test_wait_timeout_leaves_no_phantom_waiter();
+    test_wait_with_nobody_registered_returns_at_once();
+    test_wait_behind_own_slot_still_waits();
     test_higher_priority_waiter_acquires_first();
 #else
     puts("vram registry: cross-process reaping tests need fork(); skipped on Windows");
