@@ -1515,7 +1515,9 @@ silently dropped branch.
 Not implemented: Vulkan; TLS/auth; remote bind; remote/streamed GGUF parts; the
 `qwen2moe`/`deepseek2`/`kimi` architecture IDs (their shared-expert *layout* is
 implemented, as above - the architectures are not admitted) or MLA attention;
-Mamba/Jamba; MTP/NextN draft-head consumption on Metal, on a partial CUDA
+Prism ML's rotated-basis ternary files (`prism.hadamard.*`, the
+Ternary-Bonsai-2 GGUFs: refused at load, since they would run but answer with
+garbage without the runtime rotation); Mamba/Jamba; MTP/NextN draft-head consumption on Metal, on a partial CUDA
 split, or with more than one predictor block (`--draft mtp` serves the single-block
 case on the CPU and on CUDA with the whole trunk on the device; without the
 flag the tensors load and are skipped, so dense decoding is unchanged);
