@@ -753,6 +753,48 @@ def test_python_children_get_a_utf8_console(monkeypatch, tmp_path):
         assert env["PYTHONIOENCODING"] == "utf-8"
 
 
+def test_child_pipes_are_decoded_as_utf8(monkeypatch, tmp_path):
+    """The children speak UTF-8 (above), but text=True decodes their pipes
+    with the locale encoding, cp1252 on Windows: the 2026-10-29 Windows
+    compat report stored runner's em dashes as mojibake. Every pipe the
+    matrix reads is decoded as UTF-8, on every platform."""
+    module = load_module()
+    seen = []
+
+    class Proc:
+        pid = 1
+        returncode = 0
+
+        def __init__(self, cmd, **kwargs):
+            seen.append(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def communicate(self, stdin_text=None, timeout=None):
+            return "", "gemma4: E-series \u2014 verified\n"
+
+    monkeypatch.setattr(module.subprocess, "Popen", Proc)
+    proc = module.run_group(["runner"], 5, capture_output=True, text=True)
+    assert proc.stderr == "gemma4: E-series \u2014 verified\n"
+    assert seen[0]["encoding"] == "utf-8" and seen[0]["errors"] == "replace"
+
+    def run(cmd, **kwargs):
+        seen.append(kwargs)
+        return type("C", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    module.command_version(tmp_path / "runner")
+    module.run_command([str(tmp_path / "runner")], 5)
+    module.run_load(tmp_path / "runner", tmp_path / "m.gguf", "off", 5)
+    assert len(seen) == 4
+    for kwargs in seen[1:]:
+        assert kwargs["encoding"] == "utf-8" and kwargs["errors"] == "replace"
+
+
 def test_reports_carry_no_machine_paths(tmp_path):
     """R6.2.x: every string of a report is rewritten relative to the models
     root, the repository, the output directory or the home directory, so a

@@ -795,6 +795,82 @@
           }
         }
       }
+    },
+    "nemotron-3.5-bolt-e4b-q4_k_m": {
+      "pins": {
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.macos-arm64-metal.metal.txt",
+          "sha256": "0ae60d3e43338350748be517a266cf38bbf595d150ebb8d2c044e13095757716",
+          "bytes": 198,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-28",
+            "runner_version": "1.7.0",
+            "commit": "e477418c416d70d508185b060ea84ab9ffdf6a8a"
+          }
+        },
+        "windows-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.windows-x86_64-cuda.cuda.txt",
+          "sha256": "0ae60d3e43338350748be517a266cf38bbf595d150ebb8d2c044e13095757716",
+          "bytes": 198,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-28",
+            "runner_version": "1.7.0",
+            "commit": "9b449094c15278a2503d4800e9c29753302f6258"
+          }
+        },
+        "windows-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.windows-x86_64-cuda.cpu.txt",
+          "sha256": "0ae60d3e43338350748be517a266cf38bbf595d150ebb8d2c044e13095757716",
+          "bytes": 198,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-28",
+            "runner_version": "1.7.0",
+            "commit": "3ad637c18f985201fd38806305593df8417422d6"
+          }
+        }
+      }
     }
   }
 }

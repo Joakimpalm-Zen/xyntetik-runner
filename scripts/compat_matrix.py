@@ -62,6 +62,19 @@ def _kill_group(pid, grace=2.0):
             return
 
 
+def utf8_pipes(kwargs):
+    """Decode a child's pipes as UTF-8 whatever the host locale says.
+
+    Runner and the python children write UTF-8 (the children are told to,
+    PYTHON_UTF8_ENV), but text=True decodes with the locale encoding, which
+    is cp1252 on Windows: the 2026-10-29 Windows report stored the em dashes
+    of runner's load banner as three mojibake bytes each.
+    """
+    kwargs.setdefault("encoding", "utf-8")
+    kwargs.setdefault("errors", "replace")
+    return kwargs
+
+
 def run_group(cmd, timeout, grace=2.0, **kwargs):
     """subprocess.run, but a timeout kills the child's whole process group.
 
@@ -83,6 +96,8 @@ def run_group(cmd, timeout, grace=2.0, **kwargs):
     stdin_text = kwargs.pop("stdin_text", None)
     if stdin_text is not None:
         kwargs["stdin"] = subprocess.PIPE
+    if kwargs.get("text"):
+        utf8_pipes(kwargs)
     with subprocess.Popen(cmd, start_new_session=True, **kwargs) as proc:
         try:
             out, err = proc.communicate(stdin_text, timeout=timeout)
@@ -313,7 +328,7 @@ def load_manifest(path):
 def command_version(command):
     try:
         proc = subprocess.run([str(command), "--version"], text=True,
-                              capture_output=True, timeout=15)
+                              capture_output=True, timeout=15, **utf8_pipes({}))
         return (proc.stdout + proc.stderr).strip().splitlines()[0]
     except (OSError, subprocess.TimeoutExpired, IndexError):
         return None
@@ -325,7 +340,7 @@ def run_load(runner, model, gpu, timeout):
         [str(runner), "-m", str(model), "-p", "Compatibility probe:",
          "-n", "1", "--temp", "0", "--gpu", gpu] +
         (["--wait-for-vram", "300"] if gpu == "auto" else []),
-        text=True, capture_output=True, timeout=timeout,
+        text=True, capture_output=True, timeout=timeout, **utf8_pipes({}),
         # certification evidence is scalar-path (TC promotion is
         # tolerance-gated separately; see docs/compatibility-program.md), and
         # computed where the row says (RUNNER_GPU_FALLBACK)
@@ -395,7 +410,7 @@ def run_command(command, timeout):
     started = time.monotonic()
     try:
         proc = subprocess.run(command, text=True, capture_output=True,
-                              timeout=timeout)
+                              timeout=timeout, **utf8_pipes({}))
     except OSError as exc:
         return {
             "status": "fail", "reason": "process_start_failed",

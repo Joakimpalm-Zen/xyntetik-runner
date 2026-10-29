@@ -474,8 +474,13 @@ def record(doc, row_id, res, devices):
     row = rows.get(row_id)
     if row is None:
         raise SystemExit(f"unknown row {row_id!r}")
-    if row["tier"] != "tier1":
-        raise SystemExit(f"{row_id} is {row['tier']}: only a Tier 1 row is gated")
+    if row["tier"] not in ("tier1", "tier2"):
+        # the smoke runs every Tier 1 file and any Tier 2 file a run includes
+        # (docs/model-support.md, "The validation run"); a Tier 2 admission
+        # records the pass that admitted it the same way, as dated evidence
+        # that gates no release
+        raise SystemExit(f"{row_id} is {row['tier']}: only a Tier 1 or Tier 2 row "
+                         f"records a validation run")
     backend = res.get("backend")
     if backend not in BACKENDS:
         raise SystemExit(f"backend {backend!r} is not one of {BACKENDS}")
