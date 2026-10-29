@@ -341,6 +341,12 @@
       }
     },
     "xyntetik-kvist-14b-iq4_nl-mix": {
+      "backend_args": {
+        "cuda": [
+          "--gpu",
+          "51"
+        ]
+      },
       "pins": {
         "linux-x86_64-cuda/cuda": {
           "path": "tests/compatibility/tier-smoke/xyntetik-kvist-14b-iq4_nl-mix.linux-x86_64-cuda.cuda.txt",
@@ -383,6 +389,34 @@
             "request": {
               "enable_thinking": false
             }
+          },
+          "pinned": {
+            "date": "2026-10-29",
+            "runner_version": "1.7.1",
+            "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b"
+          }
+        },
+        "windows-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/xyntetik-kvist-14b-iq4_nl-mix.windows-x86_64-cuda.cuda.txt",
+          "sha256": "c89c26e516c5d4dde10843f99aed6f51f3da2946799a9d774a06cc8a74fcfd65",
+          "bytes": 132,
+          "finish_reason": "stop",
+          "completion_tokens": 31,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            },
+            "backend_args": [
+              "--gpu",
+              "51"
+            ]
           },
           "pinned": {
             "date": "2026-10-29",
