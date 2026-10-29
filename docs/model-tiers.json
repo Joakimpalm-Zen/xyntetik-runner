@@ -276,7 +276,25 @@
         "backend": "cuda"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "109c0663eb8c13c0140d105f0144a8bd2517dfec2f21b3517e0facf4ea76b20c",
+          "ran": "runner -m gemma-4-12b-it-qat-q4_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/gemma-4-12b-it-qat-q4_0.windows-x86_64-cuda.cpu.txt"
+        },
         "cuda": {
           "kind": "gate",
           "runner_version": "1.5.1",
@@ -307,8 +325,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.5.1",
-        "date": "2026-10-24"
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
