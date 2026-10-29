@@ -178,9 +178,11 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
         // between is the caller's and goes in unmarked.
         // Qwen 3.5 writes the block (empty or not) only on the assistant
         // turns after the last user query, which the caller selects too.
+        // Mellum writes it only when the reasoning is non-empty.
         if ((tmpl == TMPL_ORNITH || tmpl == TMPL_QWEN38 ||
              ((tmpl == TMPL_CHATML_THINK || tmpl_qwen35(tmpl)) &&
-              replay_reason)) &&
+              replay_reason) ||
+             (tmpl == TMPL_MELLUM && replay_reason && reason && *reason)) &&
             !strcmp(role, "assistant")) {
             prompt_lit(&b, "<think>\n");
             if (reason) sb_put(&b, reason, strlen(reason));
@@ -641,7 +643,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         }
     }
     int last_user = -1;
-    if (s->tmpl == TMPL_CHATML_THINK || tmpl_qwen35(s->tmpl))
+    if (tmpl_chatml_think(s->tmpl) || tmpl_qwen35(s->tmpl))
         for (int i = 0; i < msgs->n; i++)
             if (!strcmp(chat_role(msgs->items[i]), "user")) last_user = i;
     for (int i = 0; i < msgs->n; i++) {
@@ -725,7 +727,8 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         }
         bool replay_reason = (s->tmpl == TMPL_CHATML_THINK &&
                               i == msgs->n - 1 && i > last_user) ||
-                             (tmpl_qwen35(s->tmpl) && i > last_user);
+                             ((tmpl_qwen35(s->tmpl) || s->tmpl == TMPL_MELLUM) &&
+                              i > last_user);
         char *content = message_text(msgs->items[i], s->tmpl, replay_reason,
                                      &oom);
         if (oom) break;

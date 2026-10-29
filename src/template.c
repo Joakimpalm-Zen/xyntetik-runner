@@ -129,6 +129,9 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         if (strstr(meta_tmpl, "<|im_start|>") &&
             strstr(meta_tmpl, "You are Hermes, created by Nous Research."))
             return TMPL_HERMES4;
+        if (strstr(meta_tmpl, "<|im_start|>") && strstr(meta_tmpl, "<think>") &&
+            strstr(meta_tmpl, "macro normalize_content("))
+            return TMPL_MELLUM;
         if (strstr(meta_tmpl, "<|im_start|>"))
             return strstr(meta_tmpl, "<think>") ? TMPL_CHATML_THINK
                                                 : TMPL_CHATML;
@@ -198,6 +201,7 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
 int template_from_name(const char *name) {
     if (!strcmp(name, "chatml")) return TMPL_CHATML;
     if (!strcmp(name, "chatml-think")) return TMPL_CHATML_THINK;
+    if (!strcmp(name, "mellum")) return TMPL_MELLUM;
     if (!strcmp(name, "hermes4")) return TMPL_HERMES4;
     if (!strcmp(name, "llama2")) return TMPL_LLAMA2;
     if (!strcmp(name, "llama3")) return TMPL_LLAMA3;
@@ -268,6 +272,7 @@ const char *template_name(int t) {
     switch (t) {
         case TMPL_CHATML: return "chatml";  case TMPL_LLAMA2: return "llama2";
         case TMPL_CHATML_THINK: return "chatml-think";
+        case TMPL_MELLUM: return "mellum";
         case TMPL_HERMES4: return "hermes4";
         case TMPL_LLAMA3: return "llama3";  case TMPL_ZEPHYR: return "zephyr";
         case TMPL_GEMMA:  return "gemma";
@@ -626,7 +631,7 @@ int req_bare_recipients(struct jv *req) {
 }
 
 bool template_think_tags(int tmpl, const char **open, const char **close) {
-    if (tmpl == TMPL_CHATML_THINK || tmpl == TMPL_QWEN38 ||
+    if (tmpl_chatml_think(tmpl) || tmpl == TMPL_QWEN38 ||
         tmpl == TMPL_NEMOTRON || tmpl == TMPL_HERMES4 ||
         tmpl_granite42_like(tmpl) || tmpl_ornith_like(tmpl)) {
         *open = "<think>";
@@ -2151,7 +2156,7 @@ static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
         // block, which is how the family is asked not to reason. Its
         // reference defaults thinking ON, so this is emitted only when a
         // caller explicitly turns it off -- never for THINK_DEFAULT.
-        if (tmpl == TMPL_CHATML_THINK && (thinking & THINK_MODE_MASK) == THINK_OFF)
+        if (tmpl_chatml_think(tmpl) && (thinking & THINK_MODE_MASK) == THINK_OFF)
             off = emit(out, cap, off, "<think>\n\n</think>\n\n",
                        NULL, NULL);
     }
@@ -3038,6 +3043,7 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
         return render_hermes4(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_CHATML:
     case TMPL_CHATML_THINK:
+    case TMPL_MELLUM:
         return render_chatml(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_LLAMA3:
         for (int i = 0; i < n_msgs; i++)
@@ -3371,7 +3377,7 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
                     "tool calls if any errors are found, or just respond to the user.");
         return;
     }
-    bool qwen = tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK;
+    bool qwen = tmpl == TMPL_CHATML || tmpl_chatml_think(tmpl);
     if (tmpl == TMPL_GRANITE4) {
         // ibm-granite/granite-4.0-h-* and granite-4.1-* chat_template,
         // verbatim (tools_system_message_prefix / _suffix)

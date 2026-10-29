@@ -480,7 +480,7 @@ static bool train_example_append(train_ex **exs, int *n_ex,
 static int train_eot_id(tokenizer *tok, int tmpl) {
     const char *s = NULL;
     switch (tmpl) {
-    case TMPL_CHATML: case TMPL_CHATML_THINK: case TMPL_HERMES4: case TMPL_QWEN38: case TMPL_QWEN3_CODER: s = "<|im_end|>"; break;
+    case TMPL_CHATML: case TMPL_CHATML_THINK: case TMPL_MELLUM: case TMPL_HERMES4: case TMPL_QWEN38: case TMPL_QWEN3_CODER: s = "<|im_end|>"; break;
     case TMPL_LLAMA3: s = "<|eot_id|>"; break;
     case TMPL_GEMMA: s = "<end_of_turn>"; break;
     case TMPL_GEMMA4: case TMPL_GEMMA4_MAINLINE: s = "<turn|>"; break;
@@ -1269,7 +1269,7 @@ static void usage_to(FILE *f, const char *prog) {
         "                 mistral-nemo|zephyr|phi3|phi4|gemma|gemma4|gemma4-mainline|\n"
         "                 apertus|ornith|qwen35|qwen35-nothink|nemotron|nemotron35|\n"
         "                 hermes4|granite|granite4|granite42|\n"
-        "                 qwen38|qwen3-coder|muse|harmony|raw\n"
+        "                 qwen38|qwen3-coder|mellum|muse|harmony|raw\n"
         "                 (default: auto). Applies to chat and --serve; not\n"
         "                 valid with a multi-model -m swap set\n"
         "  --no-bos       do not add BOS token\n"
