@@ -3462,7 +3462,7 @@
         {
           "tier": "tier2",
           "effective": "2026-10-29",
-          "reason": "Admitted 2026-10-29 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull; this is the publisher's file and its downloads are the publisher's). The quant bar result is stated first; maintained on report, with the admitting run recorded.",
+          "reason": "Admitted 2026-10-29 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull; this is the publisher's file and its downloads are the publisher's). The BF16-parent result is stated first; maintained on report, with the admitting run recorded.",
           "last_validated_release": null
         }
       ]
