@@ -975,22 +975,22 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.5.1",
-          "date": "2026-10-23",
-          "device_class": "linux-x86_64-cuda",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "e347e50fdd634e3804367f46e7a3c6558934620a",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
           "caps": {
-            "version": "1.5.1",
-            "os": "linux",
+            "version": "1.7.1",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 26,
+            "cpu_cores": 8,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "b26e284a3452dbbafff6653a45966966cb5d9e42ba9503bd01d202f7b224ea96",
           "ran": "runner -m Trinity-Nano-Preview-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.linux-x86_64-cuda.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.windows-x86_64-cuda.cpu.txt"
         },
         "cuda": {
           "kind": "limit",
@@ -1012,8 +1012,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.5.1",
-        "date": "2026-10-23"
+        "runner_version": "1.7.1",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
