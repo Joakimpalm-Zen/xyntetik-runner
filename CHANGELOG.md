@@ -14,7 +14,10 @@ Current release and unreleased changes. Compatibility follows the
   locked, so its GPU load could hand their host pages back. On Windows each
   range now adds to the working-set minimum instead of resizing it alone.
   `test-mlock` checks the wired bytes against the kernel's locked-memory
-  limit and hand-computed page boundaries. Help and manual updated; README,
+  limit and hand-computed page boundaries. On an 8 GB Apple Silicon laptop
+  the Bolt E4B server wired 3.19 GB, and its first response after 8 minutes
+  idle took 4.7 s with `--mlock` against 24.9 s without it; the measurement
+  is the new `measurements` line of that row in `docs/model-support.md`. Help and manual updated; README,
   site and model cards do not describe `--mlock` and are unchanged.
 - **E-series fit reports distinguish row-gathered weights.** `--info fit`
   retains the whole file size and reports the per-layer token table separately
