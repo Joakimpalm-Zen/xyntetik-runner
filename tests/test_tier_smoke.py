@@ -227,6 +227,21 @@ def test_a_row_can_set_its_own_minimum(world):
     assert r.returncode == 0, r.stdout
 
 
+def test_backend_args_reach_only_their_backend_and_the_pin_spec(world):
+    """A split for the GPU cell (a file larger than the card) is not passed to
+    the CPU cell, and the pin records it, so the ran line shows the split."""
+    man = manifest_of(world)
+    man["rows"]["toy-q8_0"] = {"backend_args": {"metal": ["--gpu", "20"]}}
+    world["manifest"].write_text(json.dumps(man), encoding="utf-8")
+    assert smoke(world, "--backend", "metal", "--pin").returncode == 0
+    assert result(world)["ran"].split("; ")[0].endswith("-b 64 --gpu 20")
+    assert smoke(world, "--backend", "cpu", "--pin").returncode == 0
+    assert "--gpu 20" not in result(world)["ran"]
+    pins = manifest_of(world)["rows"]["toy-q8_0"]["pins"]
+    assert pins["macos-arm64-metal/metal"]["spec"]["backend_args"] == ["--gpu", "20"]
+    assert "backend_args" not in pins["macos-arm64-metal/cpu"]["spec"]
+
+
 def test_a_pin_under_the_minimum_is_not_compared_against(world):
     """Raising the minimum retires the short pins it no longer accepts: the
     compare refuses them instead of passing on them."""

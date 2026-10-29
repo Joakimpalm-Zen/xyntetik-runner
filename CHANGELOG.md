@@ -5,6 +5,44 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Mellum2.1-12B-A2.5B-Thinking admitted at Tier 2; its Q4_K_M fails the
+  fidelity bar.** JetBrains' own Q4_K_M against JetBrains' BF16 parent,
+  computed in float32 at 300 positions (token-id keyed): mean KLD 0.128 and
+  top-1 85.7% on Runner, 0.131 and 85.9% on llama.cpp b11748. The file fails
+  the 0.05 bar on both engines, and the gap grows with depth (about 0.08 in
+  the first 750 words, 0.16 past 2,000). Against JetBrains' own Q8_0 it fails
+  the quant bar too (mean KLD 0.131, top-1 80.0%, 400 positions). The engine
+  reproduces the files as published: the two engines are 0.0177 apart on
+  the Q4_K_M, and against the parent Runner's Q8_0 reads 0.0187 and 94.3%,
+  llama.cpp's 0.0234 and 93.6%. So the gap is the file. Q8_0 (12.9 GB) is
+  the fidelity file, and the publisher's MXFP4_MOE file is untested. The new `mellum` architecture is Qwen3-MoE
+  attention and routing with a 1,024-token sliding window on three of every
+  four layers and YaRN on the full layers only. Its tokenizer pre `mellum2`
+  is the SmolLM split (0 of 721 corpus strings differ from the publisher's
+  tokenizer.json). A needle was retrieved at 3,568 tokens. CUDA runs its MoE
+  on the scalar route; the tensor-core and grouped routes are not measured
+  for this family. The 8.07 GB file does not load resident on an 8 GB
+  machine.
+- **The `mellum` chat template.** Mellum2.1 renders as Qwen3's
+  `chatml-think` except at one site. It writes a thought block on an
+  assistant turn after the last user query only when that turn's reasoning
+  is non-empty. So a trailing historical answer gets no empty
+  `<think>\n\n</think>`, and non-empty `reasoning_content` is replayed on
+  every assistant turn after the last user query. Auto-detected from the
+  file's template; template-conformance passes 23 of 23 cases in text and
+  tokens.
+- **`/v1/completions` `top_logprobs` never repeats a key.** Two candidate ids
+  whose text escapes the same (a byte-level vocabulary renders each lone
+  partial UTF-8 byte as `�`) were written as two members with one key,
+  which most JSON parsers collapse to the last. They are now one member
+  holding the log of their summed probability. `top_token_ids` keeps every
+  id, and the new `top_token_logprobs`, aligned with it, carries each id's
+  own logprob; `stop_logprobs` gains the same field. The Mellum2.1 parity
+  record found five positions that repeated a key.
+- **`scripts/tier-smoke.py`: `backend_args`.** A row's manifest entry can
+  name server arguments for one backend only, for example the layer split
+  of a file larger than the card. The CPU cell does not receive them, and
+  the pin records them, so the `ran` line shows the split.
 - **A VRAM queue with nobody to wait for returns at once.** `--wait-for-vram`
   queues behind other registered runners. When the registry listed no holder at
   all and the file was larger than the card, the queue still polled its whole

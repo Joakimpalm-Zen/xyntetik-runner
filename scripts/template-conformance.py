@@ -165,6 +165,18 @@ FAMILIES = {
         note="src/template.h cites 'Qwen/Qwen3-* tokenizer_config.json'",
         tool_family=True, thinking_var="enable_thinking",
         tokenizer=("Qwen3-4B-Q4_K_M.gguf", "Qwen3-4B-Q8_0.gguf")),
+    # JetBrains Mellum2.1 Thinking: ChatML with Qwen3's think shape and
+    # Hermes-JSON tool calls; no empty thought block on a trailing assistant
+    # turn. Its own template (4849 bytes, byte-identical to
+    # chat_template.jinja in the BF16 repository at 92ddae9f) is the oracle,
+    # read from the publisher's GGUF.
+    "mellum": Family(
+        "mellum",
+        ("gguf", "models/Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf"),
+        note="Mellum2.1-12B-A2.5B-Thinking's own template, read from the "
+             "publisher's Q4_K_M",
+        tool_family=True, thinking_var="enable_thinking",
+        tokenizer=("Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf",)),
     "llama2": Family(
         "llama2", ("hf", "unsloth/llama-2-7b-chat"),
         note="meta-llama/Llama-2-7b-chat-hf is gated (HTTP 401); this mirror "

@@ -304,6 +304,10 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
     extra = companion + list(spec.get("server_args") or [])
     if backend == "cpu":
         extra += ["--gpu", "off"]
+    # a row's arguments for one backend only, e.g. the layer split of a file
+    # larger than the card: {"cuda": ["--gpu", "30"]}
+    backend_args = list((spec.get("backend_args") or {}).get(backend) or [])
+    extra += backend_args
     body = {"messages": [{"role": "user", "content": spec["prompt"]}],
             "temperature": 0, "max_tokens": spec["n_predict"], "stream": False}
     body.update(spec.get("request") or {})
@@ -348,6 +352,8 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
     made_with = {"prompt": spec["prompt"], "n_predict": spec["n_predict"],
                  "ctx": spec["ctx"], "server_args": list(spec.get("server_args") or []),
                  "request": dict(spec.get("request") or {})}
+    if backend_args:
+        made_with["backend_args"] = backend_args
     if pin:
         if os.path.exists(pin_path) or key in entry:
             raise SystemExit(f"{row['id']} {key} is already pinned ({rel(pin_path)}); "

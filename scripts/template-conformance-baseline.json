@@ -38,7 +38,7 @@
     "in-progress": "someone is actively fixing this; see `note`"
   },
   "generated_by": "scripts/template-conformance.py --write-baseline",
-  "generated_at": "2026-10-09T15:51:27+00:00",
+  "generated_at": "2026-10-29T00:46:24+00:00",
   "oracles": {
     "apertus": {
       "source": "hf:swiss-ai/Apertus-8B-Instruct-2509",
@@ -99,6 +99,10 @@
     "lucie": {
       "source": "hf:OpenLLM-France/Lucie-7B-Instruct-v1.1",
       "sha256": "e9d57fea777237fa"
+    },
+    "mellum": {
+      "source": "gguf:models/Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf",
+      "sha256": "4593a34d52f3364a"
     },
     "mistral": {
       "source": "hf:mistralai/Mistral-7B-Instruct-v0.3",

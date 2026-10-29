@@ -198,6 +198,48 @@ static int lp_piece(slot_t *s, engine *e, int id, char *tb, size_t cap) {
     return n;
 }
 
+// One position's alternatives as the OpenAI string->float map. Two ids can
+// share a key: a byte-level vocabulary splits an emoji's UTF-8 across ids, and
+// every lone partial byte escapes to the same "\ufffd". A JSON object must not
+// repeat a key, so candidates whose ESCAPED spelling (what a parser sees) is
+// the same are merged into one entry, at the first one's place, carrying the
+// log of their summed probability. `top_token_ids` keeps every id, so a
+// comparison keyed by id loses nothing (Mellum2.1 parity record, 2026-10-29:
+// five positions repeated a key).
+static void append_top_map(sbuf *r, slot_t *s, engine *e, const lp_alt *row, int cnt) {
+    char tb[512];
+    sbuf key[20] = {{0}};
+    int n = 0;
+    while (n < cnt && n < 20 && row[n].id >= 0) {
+        int tn = lp_piece(s, e, row[n].id, tb, sizeof(tb));
+        sb_esc(&key[n], tb, (size_t)tn);
+        n++;
+    }
+    sb_lit(r, "{");
+    bool first = true;
+    for (int j = 0; j < n; j++) {
+        bool seen = false;
+        for (int k = 0; k < j && !seen; k++)
+            seen = key[k].n == key[j].n &&
+                   (key[j].n == 0 || memcmp(key[k].s, key[j].s, key[j].n) == 0);
+        if (seen) continue;
+        double mx = row[j].lp, sum = 0.0;
+        for (int k = j + 1; k < n; k++)
+            if (row[k].lp > mx) mx = row[k].lp;
+        for (int k = j; k < n; k++)
+            if (key[k].n == key[j].n &&
+                (key[j].n == 0 || memcmp(key[k].s, key[j].s, key[j].n) == 0))
+                sum += exp(row[k].lp - mx);
+        if (!first) sb_lit(r, ",");
+        first = false;
+        sb_lit(r, "\"");
+        if (key[j].n) sb_put(r, key[j].s, key[j].n);
+        sb_fmt(r, "\":%.9g", mx + log(sum));
+    }
+    sb_lit(r, "}");
+    for (int j = 0; j < n; j++) free(key[j].s);
+}
+
 // The terminator a generation stopped on. finish_reason "stop" covers a stop
 // string, a clean end and every stop TOKEN alike, and Muse's two closers
 // (<|eom|>, <|eot|>) mean different things to a harness (lab finding
@@ -218,22 +260,21 @@ static void append_stop_token(sbuf *r, slot_t *s, engine *e) {
     // -- and a ONE-SIDED stop, the case worth catching, disappears from both
     // the agreement and the KLD statistics (lab, 2026-09-25).
     if (e->stop_lp_at < 0) return;
-    char tb[512];
-    sb_fmt(r, ",\"stop_logprobs\":{\"logprob\":%.9g,\"top_logprobs\":{", e->stop_lp);
-    for (int j = 0; j < e->lp_n; j++) {
-        const lp_alt *a = &e->lp_top[(size_t)e->stop_lp_at * e->lp_n + j];
-        if (a->id < 0) break;
-        if (j) sb_lit(r, ",");
-        int tn = lp_piece(s, e, a->id, tb, sizeof(tb));
-        sb_lit(r, "\""); sb_esc(r, tb, tn);
-        sb_fmt(r, "\":%.9g", a->lp);
-    }
-    sb_lit(r, "},\"top_token_ids\":[");
+    sb_fmt(r, ",\"stop_logprobs\":{\"logprob\":%.9g,\"top_logprobs\":", e->stop_lp);
+    append_top_map(r, s, e, &e->lp_top[(size_t)e->stop_lp_at * e->lp_n], e->lp_n);
+    sb_lit(r, ",\"top_token_ids\":[");
     for (int j = 0; j < e->lp_n; j++) {
         const lp_alt *a = &e->lp_top[(size_t)e->stop_lp_at * e->lp_n + j];
         if (a->id < 0) break;
         if (j) sb_lit(r, ",");
         sb_fmt(r, "%d", a->id);
+    }
+    sb_lit(r, "],\"top_token_logprobs\":[");
+    for (int j = 0; j < e->lp_n; j++) {
+        const lp_alt *a = &e->lp_top[(size_t)e->stop_lp_at * e->lp_n + j];
+        if (a->id < 0) break;
+        if (j) sb_lit(r, ",");
+        sb_fmt(r, "%.9g", a->lp);
     }
     sb_lit(r, "]}");
 }
@@ -301,17 +342,7 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e,
         if (i == 0 && np) { sb_lit(r, "null"); continue; }
         const lp_alt *row = i < np ? &pg->ps.top[(size_t)i * pg->ps.top_n]
                                    : &e->lp_top[(size_t)(i - np) * e->lp_n];
-        int cnt = i < np ? pa : e->lp_n;
-        sb_lit(r, "{");
-        for (int j = 0; j < cnt; j++) {
-            const lp_alt *a = &row[j];
-            if (a->id < 0) break;
-            if (j) sb_lit(r, ",");
-            int tn = lp_piece(s, e, a->id, tb, sizeof(tb));
-            sb_lit(r, "\""); sb_esc(r, tb, tn);
-            sb_fmt(r, "\":%.9g", a->lp);
-        }
-        sb_lit(r, "}");
+        append_top_map(r, s, e, row, i < np ? pa : e->lp_n);
     }
     // The OpenAI top_logprobs shape is a string->float map with nowhere to put
     // an id, so the ids ride in a parallel array in the same order.
@@ -328,6 +359,25 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e,
             if (a->id < 0) break;
             if (j) sb_lit(r, ",");
             sb_fmt(r, "%d", a->id);
+        }
+        sb_lit(r, "]");
+    }
+    // Each id's own logprob, aligned with top_token_ids. top_logprobs merges
+    // candidates that share a spelling (append_top_map), so this is the only
+    // place an id-keyed comparison finds every candidate's number.
+    sb_lit(r, "],\"top_token_logprobs\":[");
+    for (int i = 0; i < np + e->lp_count; i++) {
+        if (i) sb_lit(r, ",");
+        if (i == 0 && np) { sb_lit(r, "null"); continue; }
+        const lp_alt *row = i < np ? &pg->ps.top[(size_t)i * pg->ps.top_n]
+                                   : &e->lp_top[(size_t)(i - np) * e->lp_n];
+        int cnt = i < np ? pa : e->lp_n;
+        sb_lit(r, "[");
+        for (int j = 0; j < cnt; j++) {
+            const lp_alt *a = &row[j];
+            if (a->id < 0) break;
+            if (j) sb_lit(r, ",");
+            sb_fmt(r, "%.9g", a->lp);
         }
         sb_lit(r, "]");
     }

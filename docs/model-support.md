@@ -555,7 +555,18 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
-**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B), Mellum2.1-12B-A2.5B-Thinking (JetBrains).
+<details>
+<summary><b>Mellum2.1</b>, 1 model: CPU ✅ · CUDA ✅ · Metal - · Train ✅</summary>
+<p><b>Mellum2.1-12B-A2.5B-Thinking (JetBrains)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#mellum2.1-12b-a2.5b-thinking-q4_k_m"><code>Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td></td><td nowrap>✅ 1.7.0<br>2026-10-29</td></tr>
+</tbody>
+</table>
+</details>
+
+**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated
@@ -1424,6 +1435,32 @@ Admitted and maintained on report: existing regression tests keep running and sh
 
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
+### Mellum2.1
+
+#### Mellum2.1-12B-A2.5B-Thinking (JetBrains)
+
+<a id="mellum2.1-12b-a2.5b-thinking-q4_k_m"></a>
+##### `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf`
+
+Text path, JetBrains' own Q4_K_M. Publisher Q4_K_M against the publisher's BF16 parent: mean KLD 0.128, top-1 85.7% (Runner), 0.131 / 85.9% (llama.cpp); the file fails the 0.05 bar on both engines and the gap grows with depth. Against the publisher Q8_0 it fails the quant bar too (mean KLD 0.131, top-1 80.0%, 400 positions); Q8_0 (12.9 GB) is the fidelity file (Runner Q8_0 vs the parent 0.0187 / 94.3%), and the publisher's MXFP4_MOE file is untested.
+
+- **File:** `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf` (sha256 `ecc4d5b8107fc219e23c494b2d107552137637b6c6002ee713e0ba8af7fa2755`, 8,071,295,264 bytes, from [JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF](https://huggingface.co/JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF) at revision `4159d684ffdb`).
+- **Upstream checkpoint:** JetBrains/Mellum2.1-12B-A2.5B-Thinking at revision `92ddae9fc766`.
+- **Quantization:** Q4_K_M (publisher).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** This file against the BF16 parent computed in float32 (transformers' own mellum code, 300 positions to 7,420 tokens, token-id keyed): Runner 0.1282 mean KLD / 85.7% top-1 / 93.7% margin-qualified, llama.cpp b11748 0.1305 / 85.9% / 94.0% (298 scored), about 0.08 in words 0-750 and 0.16 past 2,000; Runner vs llama.cpp on this file 0.0177. Q8_0 against the parent: Runner 0.0187 / 94.3% / 100%, llama.cpp 0.0234 / 93.6% / 100%. Q4_K_M vs Q8_0 bar FAIL (400 positions, 0.131, 80.0%); tokenizer 0/721, template 23/23, a needle retrieved at 3,568 tokens. Record: shade research/evaluation/mellum-parity-2026-10-29 (README.md, reference/README.md, windows-q4/README.md).
+- **Context tested:** not recorded.
+- **Known limitations:** No fidelity claim for Q4_K_M: it fails the 0.05 bar against the BF16 parent on both engines, and the gap is the file, not the engine. The publisher's MXFP4_MOE file is the untested alternative. CUDA MoE on the scalar route; tensor-core and grouped routes not measured for this family. The 8.07 GB file does not load resident on an 8 GB machine, and on an 8 GB card it runs as a layer split.
+- **Still missing:** The Metal row; the Q8_0 cells (12.9 GB is not servable on the Windows CUDA host's 16 GB beside its other work).
+- **Evidence:** [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [docs/compat-reports/1.7.0-2026-10-29-windows-x86_64-mellum2.1-12b-a2.5b-thinking-q4_k_m.json](compat-reports/1.7.0-2026-10-29-windows-x86_64-mellum2.1-12b-a2.5b-thinking-q4_k_m.json), [docs/compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json](compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json).
+- **Validation run:** on windows-x86_64-cuda, cuda backend; last run 1.7.0 on 2026-10-29.
+- **CPU:** ✅ v1.7.0 2026-10-29 on windows-x86_64-cuda at commit `502805d33ecc`, output sha256 `d419bee5d375409e`, [pin](../tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q4_k_m.windows-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.7.0 2026-10-29 on windows-x86_64-cuda at commit `502805d33ecc`, output sha256 `d419bee5d375409e`, [pin](../tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q4_k_m.windows-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.7.0, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.0, 2026-10-29).
+- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-10-29 ([log](#transition-log)).
+
 <a id="tier3"></a>
 ## Tier 3, unmaintained
 
@@ -1553,17 +1590,6 @@ Not admitted: a new architecture.
 - **Missing for Tier 1:** Read the model code first, then an admission; 78B at Q4 is about 45 GB, the lab CPU box only.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
-### Mellum2.1-12B-A2.5B-Thinking (JetBrains)
-
-<a id="mellum2.1-12b-a2.5b-thinking"></a>
-#### Mellum2.1-12B-A2.5B-Thinking (JetBrains)
-
-Not admitted: a new architecture.
-
-- **Numerical anchor:** A float32 reference is feasible.
-- **Missing for Tier 1:** An admission; it fits every box and a float32 reference (48 GB) is feasible on the Linux CUDA host, so it is a full admission candidate.
-- **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
-
 <a id="exempt"></a>
 ## Published, not a Runner model file
 
@@ -1630,7 +1656,7 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-22 | [Nemotron 3.5 Bolt-74B-A9B](#nemotron-3.5-bolt-74b-a9b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Nemotron 3.5 Super VL-120B-A12B](#nemotron-3.5-super-vl-120b-a12b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Kolibri-1 (Aleph Alpha, 78B)](#kolibri-1) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
-| 2026-10-22 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains)](#mellum2.1-12b-a2.5b-thinking) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
+| 2026-10-22 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains), `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf`](#mellum2.1-12b-a2.5b-thinking-q4_k_m) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-27 | [Cloudflare Clef (clef, on Qwen3.8-27B), `Cloudflare_clef-IQ3_M.gguf`](#cloudflare-clef-iq3_m) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
 | 2026-10-27 | [Qwen3.8-27B, `Qwen3.8-27B-UD-Q4_K_M.gguf`](#qwen3.8-27b-ud-q4_k_m) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
 | 2026-10-27 | [Gemma 4 12B, `gemma-4-12b-it-qat-q4_0.gguf`](#gemma-4-12b-it-qat-q4_0) | Tier 2, maintained on report | Policy decision 2026-10-27: Tier 1 follows pull; this is its publisher's file and the repository's downloads are the publisher's. Maintained on report; its records stay as dated evidence. | 1.5.1 |
@@ -1655,5 +1681,6 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-27 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `clef-IQ3_S-recovery-QR-001b.lora.F16.gguf`](#cloudflare-clef-iq3_s-recovery-qr-001b-lora) | Tier 2, maintained on report | Admitted 2026-10-27 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull, and a new repository has no downloads yet). The card leads with the measured shortfall against the house bar. | none recorded |
 | 2026-10-28 | [Nemotron 3.5 Bolt E4B, `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf`](#nemotron-3.5-bolt-e4b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-28 at Tier 2 on the owner's request (policy decision 2026-10-27: Tier 1 follows pull; this is the publisher's file and its downloads are the publisher's). Maintained on report, with the admitting run recorded. | none recorded |
 | 2026-10-28 | [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B), `Clef-IQ3_S.clef.gguf`](#cloudflare-clef-iq3_s-native) | Tier 2, maintained on report | Admitted 2026-10-28 at Tier 2 on the owner's direct request (the head added to the 2026-10-27 repository; policy decision 2026-10-27: Tier 1 follows pull, and the repository is under the bar). The card leads with the measured shortfall against the house bar and reports decisions descriptively. | none recorded |
+| 2026-10-29 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains), `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf`](#mellum2.1-12b-a2.5b-thinking-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-29 at Tier 2 (policy decision 2026-10-27: Tier 1 follows pull; this is the publisher's file and its downloads are the publisher's). The BF16-parent result is stated first; maintained on report, with the admitting run recorded. | none recorded |
 
 <!-- model-tiers:rows:end -->

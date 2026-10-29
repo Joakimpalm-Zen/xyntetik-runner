@@ -90,6 +90,10 @@
    "fixture": "plain",
    "reasoning": "none"
   },
+  "mellum": {
+   "fixture": "plain",
+   "reasoning": "tags"
+  },
   "mistral": {
    "fixture": "plain",
    "reasoning": "none"

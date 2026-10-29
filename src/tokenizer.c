@@ -443,6 +443,9 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     // excluded from the symbol run; qwen2 (Qwen 3) splits at every mark
     else if (strcmp(pre, "qwen35") == 0) t->pre = TOK_PRE_QWEN35;
     else if (strcmp(pre, "smollm") == 0) t->pre = TOK_PRE_SMOLLM;
+    // mellum2 (JetBrains Mellum2.x): Digits(individual_digits) then the GPT-2
+    // byte-level regex, smollm's pre-tokenizer exactly
+    else if (strcmp(pre, "mellum2") == 0) t->pre = TOK_PRE_SMOLLM;
     else if (strcmp(pre, "afmoe") == 0)  t->pre = TOK_PRE_AFMOE;
     else if (strcmp(pre, "tekken") == 0) t->pre = TOK_PRE_TEKKEN;
     // pixtral: llama.cpp's name for the Tekken regex with its Unicode letter

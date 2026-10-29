@@ -158,7 +158,15 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // and in a vocabulary without <s> as a special it tokenizes as three
        // characters, which is worse than the token merely being absent.
        // Not reachable through --chat-template: you cannot ask for it.
-       TMPL_LLAMA2_FALLBACK };
+       TMPL_LLAMA2_FALLBACK,
+       // JetBrains Mellum2.1 Thinking: Qwen3's ChatML, think and Hermes-JSON
+       // tool shape, with ONE rule changed: a thought block is written on an
+       // assistant turn after the last user query only when its reasoning
+       // is non-empty, so a trailing assistant message gets no empty thought
+       // block (Qwen3's template writes one there). Detected by the
+       // normalize_content macro its template opens with. Appended last so
+       // no other family's value moves.
+       TMPL_MELLUM };
 
 // The reasoning tags a TEMPLATE family writes, for the families whose
 // protocol (not their architecture) defines them: the `<think>` block of
@@ -233,8 +241,11 @@ static inline bool tmpl_granite42_like(int t) {
 // The families whose native tool call is the Hermes JSON block
 // (<tool_call>{"name": ..., "arguments": {...}}</tool_call>): one grammar,
 // one parser, one replay form.
+static inline bool tmpl_chatml_think(int t) {
+    return t == TMPL_CHATML_THINK || t == TMPL_MELLUM;
+}
 static inline bool tmpl_hermes_json(int t) {
-    return t == TMPL_CHATML || t == TMPL_CHATML_THINK || t == TMPL_HERMES4 ||
+    return t == TMPL_CHATML || tmpl_chatml_think(t) || t == TMPL_HERMES4 ||
            t == TMPL_GRANITE4;
 }
 static inline bool tmpl_qwen35(int t) {
@@ -300,6 +311,7 @@ bool template_roles_valid(int tmpl, const char *const *roles, int n,
 // `thinking` is THINK_DEFAULT / THINK_ON / THINK_OFF.
 //
 //   TMPL_CHATML_THINK  Qwen/Qwen3-* tokenizer_config.json
+//   TMPL_MELLUM        JetBrains/Mellum2.1-12B-A2.5B-Thinking chat_template.jinja
 //     enable_thinking defaults TRUE; the false branch appends
 //     '<think>\n\n</think>\n\n' after the assistant header. So DEFAULT and ON
 //     emit nothing extra and OFF appends the closed block.

@@ -1306,6 +1306,47 @@
       }
     },
     {
+      "id": "mellum2.1-12b-a2.5b-thinking-q4_k_m",
+      "architecture": "mellum",
+      "family": "JetBrains Mellum2.1",
+      "file": "models/Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf",
+      "sha256": "ecc4d5b8107fc219e23c494b2d107552137637b6c6002ee713e0ba8af7fa2755",
+      "upstream": "JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF",
+      "tokenizer_reference": "JetBrains/Mellum2.1-12B-A2.5B-Thinking",
+      "tokenizer_reference_revision": "92ddae9fc7665e9f801d141d2e5a6b2caf2460c4",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/mellum2.1-12b-a2.5b-thinking.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "JetBrains' own Q4_K_M (8,071,295,264 bytes, revision 4159d684 of JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF). Architecture mellum: Qwen3-MoE attention (q/k norm, GQA 32/4, head_dim 128) and router (64 experts, top-8, softmax renormalised, no shared expert), a 1,024-token sliding window on three of every four layers, YaRN (factor 16 over 8,192) on the full layers only, the local rope base from rope.freq_base_swa. Tokenizer pre mellum2 is the SmolLM split (digits one by one, GPT-2 byte level); 0 of 721 corpus strings differ from the publisher's tokenizer.json at 92ddae9f. The down_exps tensors are 896 wide, so the file carries them as Q8_0 in 14 layers and Q5_0 in 14. Fidelity: against the BF16 parent computed in float32 (token-id keyed, 300 positions), this file reads 0.128 mean KLD / 85.7% top-1 on Runner and 0.131 / 85.9% on llama.cpp b11748, failing the 0.05 bar on both, with the gap growing with depth; it also fails the quant bar against the publisher's Q8_0 (0.131, 80.0%, 400 positions). The Q8_0 is the fidelity file (Runner 0.0187 / 94.3%, llama.cpp 0.0234 / 93.6% against the parent); the shade record research/evaluation/mellum-parity-2026-10-29. CUDA runs MoE on the scalar route; Mellum is not on the tensor-core or grouped route lists. An 8 GB card holds part of the file, so cpu_cuda compares the CPU with a layer split. No llama.cpp reference is declared, so greedy_reference is not claimed.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
+            "RUNNER_MOE_EAGER": "1"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
+    },
+    {
       "id": "qwen3.8-27b-ud-q4_k_m",
       "architecture": "qwen35",
       "family": "Qwen 3.8",
