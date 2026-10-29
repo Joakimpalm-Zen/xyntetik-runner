@@ -1143,6 +1143,30 @@
             "runner_version": "1.7.0",
             "commit": "3acdcfd7bd18f8208cfdee58eb6a291f4f99de06"
           }
+        },
+        "windows-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.windows-x86_64-cuda.cpu.txt",
+          "sha256": "95be9f33ca7dbafb77f5441dc7d8be7951e7782f0fc0f78c53da1d218d29b71b",
+          "bytes": 241,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-29",
+            "runner_version": "1.7.1",
+            "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b"
+          }
         }
       }
     },
