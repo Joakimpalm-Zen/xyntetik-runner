@@ -236,7 +236,7 @@ A map of what the binary does, with the section that documents each part.
 - **Training and adapters.** LoRA training through quantized GGUF weights on
   CPU and CUDA, `--lora` serving on CPU, CUDA and Metal, `--merge-lora`,
   `--info adapter`. [Adaptation](#adaptation)
-- **Models and formats.** 19 admitted architectures, refused by name when
+- **Models and formats.** 22 admitted architectures, refused by name when
   unknown; 24 weight formats including the K-quants, all seven codebook
   i-quants, MXFP4 and NVFP4; KV caches in f16, q8, fp4 and split k8v4, with a
   ring for sliding-window layers; speculative decoding from a draft model, the
@@ -262,7 +262,9 @@ A map of what the binary does, with the section that documents each part.
 Run a GGUF. `-hf owner/repo[:TAG]` fetches it from the Hugging Face Hub
 instead of `-m` (the tag picks the quant when the repository has several;
 the file is cached under `~/.cache/xyntetik-runner/hf` and verified against
-the Hub's SHA-256 record before it loads; `HF_TOKEN` for gated repos; a
+the Hub's SHA-256 record before it loads; `HF_TOKEN` for gated repos; an
+owner or repository name outside the Hub's alphabet of letters, digits, `-`,
+`_` and `.` is refused before any request; a
 repository whose file list carries a name that would leave the cache
 directory, or a size that is not a whole byte count, is refused whole):
 

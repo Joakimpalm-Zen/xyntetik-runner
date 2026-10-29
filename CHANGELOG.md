@@ -5,6 +5,21 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`-hf` and `--pull` refuse a name the Hub cannot hold.** An owner or
+  repository name was only checked for its one `/`, so a space, `?`, `#`, `%`,
+  a backslash, a `:` or a non-ASCII byte went into the API URL as typed and
+  into the cache directory's name (`a\b--c` on a POSIX host, a stream separator
+  on an NTFS one), and `.` or `..` as a whole segment was accepted. Both
+  segments are now checked against the Hub's own alphabet (letters, digits,
+  `-`, `_`, `.`) before any request or directory exists, and the refusal is the
+  existing `wants owner/repo[:TAG]` one. Pinned by thirteen cases in
+  `tests/test_hf_spec_bounds.py`, each also asserting that the cache stays
+  empty.
+- **The README and the manual state the counts the binary reports.** Both
+  said how many architectures Runner admits (20 and 19) and both had drifted
+  from the 22 that `--info caps` lists. The counts are corrected and
+  `tests/test_doc_counts.py` ties them, and the 24 weight formats, to
+  `--info caps` so they cannot drift again.
 - **Validation runs at 1.7.1 on the Windows CUDA host: 8 rows** (Tier 2, RTX
   3070, 2026-10-29). CPU and CUDA cells pass for `gemma-4-e2b-it-q4_k_m-q4_0-mix`,
   `qwen3-4b-q4_k_m-bartowski`, `qwen3-4b-runner-tooluse-lora` (on that base),
