@@ -717,3 +717,40 @@ def test_kl_tables_need_a_margin_qualified_column():
     assert check_release.kl_tables_without_margin(html_bad, html=True)
     assert not check_release.kl_tables_without_margin(html_ok, html=True)
     assert check_release.kl_table_scan()   # the tree itself is clean
+
+
+def test_check_scans_the_tree_once_per_process(monkeypatch, tmp_path):
+    """The tree scans depend on the checkout, not on the release under test,
+    so a process that calls check() repeatedly (this module does, twenty-eight
+    times) scans once. On the hosted Windows runner every repeat cost about
+    sixteen seconds and this file alone was the root pytest's wall."""
+    calls = {"kl": 0, "private": 0, "home": 0}
+
+    def counting(key):
+        def scan():
+            calls[key] += 1
+            return True
+        return scan
+
+    monkeypatch.setattr(check_release, "_tree_verdict", None)
+    monkeypatch.setattr(check_release, "kl_table_scan", counting("kl"))
+    monkeypatch.setattr(check_release, "private_reference_scan", counting("private"))
+    monkeypatch.setattr(check_release, "home_path_scan", counting("home"))
+    monkeypatch.setattr(check_release, "binary_version", lambda _: "runner 1.2.0")
+    assert check_release.check(good_args(tmp_path))
+    assert check_release.check(good_args(tmp_path))
+    assert calls == {"kl": 1, "private": 1, "home": 1}
+
+
+def test_a_failed_tree_scan_stays_failed_for_the_process(monkeypatch, tmp_path):
+    """The memo keeps a refusal as firmly as a pass: a scan that failed once
+    is not retried into a green by a later check() in the same process."""
+    monkeypatch.setattr(check_release, "_tree_verdict", None)
+    monkeypatch.setattr(check_release, "kl_table_scan", lambda: True)
+    monkeypatch.setattr(check_release, "home_path_scan", lambda: True)
+    monkeypatch.setattr(check_release, "private_reference_scan",
+                        lambda: check_release.fail("private-repo references in public tree: x"))
+    monkeypatch.setattr(check_release, "binary_version", lambda _: "runner 1.2.0")
+    assert not check_release.check(good_args(tmp_path))
+    monkeypatch.setattr(check_release, "private_reference_scan", lambda: True)
+    assert not check_release.check(good_args(tmp_path))

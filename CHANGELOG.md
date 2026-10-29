@@ -25,6 +25,17 @@ Current release and unreleased changes. Compatibility follows the
   tests and the root pytest to `test-python`, everything else stayed in
   `test-gates-core`; one test that compared two fit reports byte for byte
   now masks the live free-RAM figure they quote.
+- **The Windows suite's python job no longer waits on one test file.**
+  `scripts/check-release.py` runs its tree scans (two `git grep` passes and
+  the KL-table walk over the docs) once per process instead of once per
+  `check()` call: the release workflow calls `check()` once, so it scans
+  exactly as before; the test module calls it twenty-eight times and now
+  scans once. On the hosted Windows runner every repeat cost about sixteen
+  seconds, so `tests/test_release_check.py` was 628 of the root pytest's
+  1378 case-seconds and the whole of its 647 s wall, and
+  `windows-suite-python` took 14 min 37 s on the 2026-10-29 merge against
+  the 15-minute gate. Two tests pin the once-per-process verdict and that a
+  failed scan stays failed. Same cases, same skips.
 - **Nemotron 3.5 Bolt E4B admitted at Tier 2.** NVIDIA's post-train of
   Gemma-4-E4B-it in the publisher's own Q4_K_M
   (`nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB`), on the owner's request for the

@@ -224,11 +224,27 @@ def kl_table_scan():
     return True
 
 
+# The three tree scans read this checkout, not the release under test, so
+# their verdict is one per process: main() calls check() once, and the test
+# module calls it twenty-eight times. On the hosted Windows runner each round
+# of the two git greps took about sixteen seconds under four pytest workers
+# (that one test file was 628 of the root pytest's 1378 case-seconds and all
+# of its 647 s wall), against a second on the Mac. The scan functions stay
+# uncached: the failure-mode tests call them directly.
+_tree_verdict = None
+
+
+def tree_scans():
+    global _tree_verdict
+    if _tree_verdict is None:
+        results = [kl_table_scan(), private_reference_scan(), home_path_scan()]
+        _tree_verdict = all(results)
+    return _tree_verdict
+
+
 def check(args):
     ok = True
-    ok &= kl_table_scan()
-    ok &= private_reference_scan()
-    ok &= home_path_scan()
+    ok &= tree_scans()
     version = args.tag[1:] if args.tag.startswith("v") else args.tag
     expected_binary = f"runner {version}"
 
