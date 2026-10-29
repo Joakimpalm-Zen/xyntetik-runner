@@ -1392,6 +1392,131 @@ static model_weights *mw_find(const char *path, const model_params *p,
     return NULL;
 }
 
+// ---- --mlock: wire the hot ranges, leave row-gathered tables pageable.
+//
+// The gemma-4 E-series per-layer token embedding is read one row per token
+// (model_ple_prepass), so locking it pins gigabytes a run never touches:
+// 2.99 GB of a 6.18 GB E4B Q4_K_M file. Everything else, including the BF16
+// projection that sits next to it and a tied output head, is streamed every
+// token and is what the lock is for.
+struct model_lock_span { uint32_t part; size_t off, len; };
+
+size_t model_lock_plan(size_t size, size_t page, const model_lock_range *cold,
+                       size_t n_cold, model_lock_range *out, size_t max) {
+    if (!size || !page || (page & (page - 1))) return 0;
+    // Each cold range shrinks to its whole pages; the hot ranges are the gaps
+    // between them. Selection order, because n_cold is one or two.
+    size_t n = 0, at = 0;
+    for (;;) {
+        size_t best_lo = size, best_hi = size;
+        for (size_t i = 0; i < n_cold; i++) {
+            if (cold[i].off >= size || !cold[i].len) continue;
+            size_t end = cold[i].len > size - cold[i].off ? size : cold[i].off + cold[i].len;
+            size_t lo = (cold[i].off + page - 1) & ~(page - 1);
+            size_t hi = end == size ? size : end & ~(page - 1);
+            if (lo >= hi || hi <= at) continue;
+            if (lo < at) lo = at;
+            if (lo < best_lo || (lo == best_lo && hi > best_hi)) { best_lo = lo; best_hi = hi; }
+        }
+        if (best_lo > at) {
+            if (n < max) out[n] = (model_lock_range){ at, best_lo - at };
+            n++;
+        }
+        if (best_lo >= size) break;
+        at = best_hi;
+        if (at >= size) break;
+    }
+    return n;
+}
+
+static void weights_unlock(const gguf_file *gf, const struct model_lock_span *s,
+                           uint32_t n) {
+    for (uint32_t i = n; i-- > 0;) {
+        size_t size;
+        uint8_t *map = gguf_map_part(gf, s[i].part, &size);
+        if (map && s[i].off + s[i].len <= size) plat_munlock(map + s[i].off, s[i].len);
+    }
+}
+
+// The hot spans of every mapping part. The row-gathered table is located by
+// its validated tensor pointer, never by a position in the file, and a split
+// GGUF may hold it in any part.
+static struct model_lock_span *weights_lock_spans(const model_t *m, uint32_t *n_out,
+                                                  uint64_t *hot, uint64_t *cold) {
+    const gguf_tensor *gathered = m->ple_tok_embd;
+    size_t page = plat_page_size();
+    uint32_t parts = gguf_map_count(&m->gf), n = 0;
+    struct model_lock_span *s = calloc((size_t)parts * 2 + 1, sizeof *s);
+    *n_out = 0; *hot = *cold = 0;
+    if (!s || !page) { free(s); return NULL; }
+    for (uint32_t i = 0; i < parts; i++) {
+        size_t size;
+        uint8_t *map = gguf_map_part(&m->gf, i, &size);
+        if (!map || !size) continue;
+        model_lock_range c = { 0, 0 }, r[2];
+        size_t n_cold = 0;
+        if (gathered && gathered->data && (const uint8_t *)gathered->data >= map &&
+            (const uint8_t *)gathered->data - map < (ptrdiff_t)size) {
+            c.off = (size_t)((const uint8_t *)gathered->data - map);
+            c.len = gathered->nbytes;
+            n_cold = 1;
+        }
+        size_t k = model_lock_plan(size, page, &c, n_cold, r, 2);
+        for (size_t j = 0; j < k && j < 2; j++) {
+            s[n++] = (struct model_lock_span){ i, r[j].off, r[j].len };
+            *hot += r[j].len;
+        }
+        // whatever the plan left out of this part is what stays pageable
+        size_t locked = 0;
+        for (size_t j = 0; j < k && j < 2; j++) locked += r[j].len;
+        *cold += size - locked;
+    }
+    *n_out = n;
+    return s;
+}
+
+// Lock once per mapping, on the owner. A shared record is locked under
+// g_weights_mu by the first instance that asks and stays locked until its
+// last holder frees it; a later instance sees the flag in the record and
+// never locks or unlocks on its own, so a failed or freed slot cannot drop
+// the pages a live one relies on. Returns 1 when this call wired the
+// weights, 0 when the owner already had, -1 on failure with errno preserved.
+static int weights_lock(model_t *m, uint64_t *hot, uint64_t *cold) {
+    model_t *owner = m->W ? &m->W->proto : m;
+    int rc = 0;
+    *hot = *cold = 0;
+    if (m->W) pthread_mutex_lock(&g_weights_mu);
+    if (!owner->weights_locked) {
+        uint32_t n = 0, done = 0;
+        struct model_lock_span *s = weights_lock_spans(owner, &n, hot, cold);
+        int err = s ? 0 : ENOMEM;
+        for (; s && done < n; done++) {
+            size_t size;
+            uint8_t *map = gguf_map_part(&owner->gf, s[done].part, &size);
+            errno = 0;
+            if (!plat_mlock(map + s[done].off, s[done].len)) {
+                err = errno ? errno : ENOMEM;
+                break;
+            }
+        }
+        if (s && done == n && n) {
+            owner->lock_spans = s;
+            owner->n_lock_spans = n;
+            owner->weights_locked = true;
+            rc = 1;
+        } else {
+            weights_unlock(&owner->gf, s, done);
+            free(s);
+            if (!err) err = EINVAL;   // nothing lockable in the mapping
+            rc = -1;
+            errno = err;
+        }
+    }
+    if (owner->weights_locked) m->weights_locked = true;
+    if (m->W) pthread_mutex_unlock(&g_weights_mu);
+    return rc;
+}
+
 // The immutable half. Freed by the last holder, or directly by model_free for
 // a load that failed before it could publish.
 static void model_free_weights(model_t *m) {
@@ -1430,18 +1555,15 @@ static void model_free_weights(model_t *m) {
     free(m->mtp_enorm_w); free(m->mtp_hnorm_w); free(m->mtp_head_norm_w);
     clef_head_free(m->clef);
     m->clef = NULL;
-    // Unlock before unmapping, and only the mapping this model_t actually
-    // locked: with shared weights several model_t alias one map, and munlock
-    // on a mapping we never locked is a silent no-op that would hide a failed
-    // lock rather than report it.
-    if (m->weights_locked) {
-        for (uint32_t i = 0; i < gguf_map_count(&m->gf); i++) {
-            size_t size;
-            void *map = gguf_map_part(&m->gf, i, &size);
-            if (map && size) plat_munlock(map, size);
-        }
-        m->weights_locked = false;
-    }
+    // Unlock before unmapping, and only the ranges this mapping's owner
+    // locked: with shared weights several model_t alias one map, and only the
+    // record's proto (freed by the last holder) or an unshared model reaches
+    // here.
+    weights_unlock(&m->gf, m->lock_spans, m->n_lock_spans);
+    free(m->lock_spans);
+    m->lock_spans = NULL;
+    m->n_lock_spans = 0;
+    m->weights_locked = false;
     gguf_close(&m->gf);
 }
 
@@ -1606,35 +1728,28 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
         model_free(m);
         return false;
     }
-    bool locked = false;
-    if (p && p->mlock && gguf_mapped_size(&m->gf)) {
-        uint32_t n = gguf_map_count(&m->gf), done = 0;
-        locked = true;
-        for (; done < n; done++) {
-            size_t size;
-            void *map = gguf_map_part(&m->gf, done, &size);
-            if (!map || !size || !plat_mlock(map, size)) { locked = false; break; }
-        }
-        if (!locked)
-            while (done > 0) {
-                size_t size;
-                void *map = gguf_map_part(&m->gf, --done, &size);
-                plat_munlock(map, size);
-            }
-        if (locked) {
-            m->weights_locked = true;
-            fprintf(stderr, "mlock: %.1f GB of weights wired into RAM\n",
-                    (double)gguf_mapped_size(&m->gf) / 1e9);
-        } else {
+    if (p->mlock && gguf_mapped_size(&m->gf)) {
+        uint64_t hot = 0, cold = 0;
+        int rc = weights_lock(m, &hot, &cold);
+        int err = errno;
+        if (rc > 0 && cold)
+            fprintf(stderr, "mlock: %.2f GB of weights wired into RAM; the %.2f GB "
+                    "row-gathered table stays pageable\n", (double)hot / 1e9,
+                    (double)cold / 1e9);
+        else if (rc > 0)
+            fprintf(stderr, "mlock: %.2f GB of weights wired into RAM\n",
+                    (double)hot / 1e9);
+        else if (rc < 0)
             // Not fatal, and not silent. A refusal here usually means the
             // process cannot raise its locked-memory limit (RLIMIT_MEMLOCK),
             // which is the common case on a stock Linux box.
             fprintf(stderr,
-                    "warning: --mlock could not wire %.1f GB (%s); continuing"
+                    "warning: --mlock could not wire %.2f GB (%s); continuing"
                     " without it, so the weights can still be evicted\n",
-                    (double)gguf_mapped_size(&m->gf) / 1e9, strerror(errno));
-        }
+                    (double)hot / 1e9, strerror(err));
+        // rc == 0: another instance sharing these weights already wired them
     }
+    bool locked = m->weights_locked;
     warn_if_it_will_not_stay_resident(m, locked);
     m->moe_prefetch = m->n_expert > 0 && !locked &&
                       moe_prefetch_default(m, p->moe_prefetch);

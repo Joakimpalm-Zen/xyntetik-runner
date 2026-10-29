@@ -227,8 +227,13 @@ typedef struct {
     gguf_file gf;
     // --mlock succeeded for this mapping, so model_free must unlock it before
     // unmapping. Tracked rather than re-derived: an munlock of a mapping that
-    // was never locked is a silent no-op that would hide a failed lock.
+    // was never locked is a silent no-op that would hide a failed lock. The
+    // ranges are owned by whoever frees the mapping: the shared record's
+    // proto when the weights are shared, the model itself otherwise. A
+    // sharing instance only copies the flag.
     bool      weights_locked;
+    struct model_lock_span *lock_spans;
+    uint32_t  n_lock_spans;
     char     *path;          // owned copy of the load path (shared-weight key)
     bool      file_id_ok;    // stat-backed identity below is valid
     uint64_t  file_size, file_ino;
@@ -1316,6 +1321,15 @@ bool     model_load_prefetch_wanted(uint64_t mapped, uint64_t available,
 bool     model_paging_note_wanted(uint64_t faults, int tokens);
 bool     model_residency_warning(uint64_t need, uint64_t hot, uint64_t have,
                                  bool locked, char *buf, size_t n);
+// --mlock plan for one mapping of `size` bytes: the hot ranges left after
+// removing the row-gathered (`cold`) byte ranges. Offsets are from the
+// mapping's start, which is page aligned. A cold range keeps only its whole
+// pages, so a page it shares with a hot neighbour stays locked; ranges
+// outside the mapping are clipped. Writes at most `max` ranges in ascending
+// order and returns how many there are (n_cold + 1 always suffices).
+typedef struct { size_t off, len; } model_lock_range;
+size_t   model_lock_plan(size_t size, size_t page, const model_lock_range *cold,
+                         size_t n_cold, model_lock_range *out, size_t max);
 // Advisory prefetch of the experts a router just selected. Fed by whichever
 // router ran, so it is architecture-agnostic; cannot change output.
 void     model_moe_prefetch(const model_t *m, const layer_t *ly,
