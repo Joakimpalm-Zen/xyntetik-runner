@@ -51,6 +51,27 @@ def test_opt_in_bypasses_admission_with_a_loud_warning(runner_bin, tmp_path):
     assert "refusing" not in err
 
 
+def test_a_rotated_basis_file_is_refused(runner_bin, tmp_path):
+    """Prism ML's ternary Bonsai files declare a Hadamard-rotated weight
+    basis (prism.hadamard.*) on an admitted architecture and, for the Q2_0
+    packing, an ordinary type. Without the runtime rotation the file loaded
+    and answered with garbage at exit 0 (Ternary-Bonsai-2-2B-Q2_0.gguf,
+    2026-10-29); the declaration must refuse the file, naming why."""
+    model = tmp_path / "rotated.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py",
+                    "--arch", "llama", "--prism-hadamard", str(model)],
+                   check=True, cwd=ROOT)
+    proc = subprocess.run(
+        [runner_bin, "-m", model, "-p", "hi", "-n", "1", "--gpu", "off"],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+    )
+    assert proc.returncode != 0, "a rotated-basis file must not load"
+    err = proc.stderr.decode(errors="replace")
+    assert "Hadamard-rotated basis" in err and "prism.hadamard." in err
+    assert "refused" in err
+    assert proc.stdout == b"", "nothing may be generated before the refusal"
+
+
 def test_known_arch_still_loads(runner_bin, tmp_path):
     model = tmp_path / "llama.gguf"
     _make_model(model, "llama")

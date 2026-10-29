@@ -2064,6 +2064,29 @@ static bool bind_admit_architecture(model_t *m, const char *arch) {
     return true;
 }
 
+// Prism ML's ternary Bonsai files (prism-ml/Ternary-Bonsai-2-*-gguf) store
+// every weight matrix in a Hadamard-rotated basis and declare it in
+// `prism.hadamard.*`: the runtime must multiply each listed matrix's input by
+// a sign vector and a blockwise Walsh-Hadamard transform, and invert it on
+// the embedding rows. Their Q2_0 packing is an ordinary type this build reads
+// and their architecture (qwen35) is admitted, so without this refusal the
+// file loaded and answered with garbage at exit 0 (measured 2026-10-29 on
+// Ternary-Bonsai-2-2B-Q2_0.gguf). Any key under the prefix refuses the file:
+// a rotation this build does not apply is never ignored.
+static bool bind_refuse_rotated_basis(model_t *m, gguf_file *g) {
+    for (uint64_t i = 0; i < g->n_kv; i++) {
+        if (strncmp(g->kv[i].key, "prism.hadamard.", 15) != 0) continue;
+        fprintf(stderr, "error: this '%s' file stores its weights in a "
+                "Hadamard-rotated basis (GGUF key %s, Prism ML's ternary "
+                "Bonsai format) and needs the matching activation rotation at "
+                "run time, which this build does not apply; it would load and "
+                "answer with garbage, so it is refused\n", m->arch,
+                g->kv[i].key);
+        return false;
+    }
+    return true;
+}
+
 // The geometry and numerics every architecture shares, with their defaults and
 // bounds.
 static bool bind_hparams(model_t *m, gguf_file *g, const char *arch, bool hybrid_typed) {
@@ -4272,6 +4295,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
 
     const char *arch = gguf_get_str(g, "general.architecture", "?");
     if (!bind_admit_architecture(m, arch)) return false;
+    if (!bind_refuse_rotated_basis(m, g)) return false;
     // The hybrid families type their blocks with zeros in the per-layer
     // arrays (nemotron_h: head_count_kv / feed_forward_length; granitehybrid:
     // head_count_kv). Their own blocks below read those arrays; the removal

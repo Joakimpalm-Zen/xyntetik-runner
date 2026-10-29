@@ -83,6 +83,7 @@ LAYERS = None      # --layers N: block count (a family's size tells some rules)
 HEAD_DIM = None    # --head-dim N: decouple head_dim from N_EMBD / N_HEAD
 ROPE_DIM = None    # --rope-dim N: rotate only the first N dims of each head
 SAMPLING = None
+PRISM_HADAMARD = False
 args = sys.argv[1:]
 i = 0
 while i < len(args):
@@ -147,6 +148,10 @@ while i < len(args):
         shared, ple = args[i].split(",")
         ESERIES_SHARED_KV, ESERIES_PLE = int(shared), int(ple)
         ARCH = "gemma4"
+    elif a == "--prism-hadamard":
+        # a Prism ML rotated-basis declaration (prism.hadamard.*), the keys
+        # Ternary-Bonsai-2 files carry; the loader must refuse such a file
+        PRISM_HADAMARD = True
     elif a == "--sampling":
         # "TEMP,TOP_P,TOP_K[,MIN_P]": the publisher sampling defaults a
         # converter copies into general.sampling.* (R4.12.6); TOP_K is
@@ -635,6 +640,11 @@ elif ROPE_DIM:
     meta_kvs.append(ku(f"{ARCH}.rope.dimension_count", ROPE_DIM))
 if POOLING is not None:
     meta_kvs.append(ku(f"{ARCH}.pooling_type", POOLING))
+if PRISM_HADAMARD:
+    meta_kvs += [ku("prism.hadamard.version", 2),
+                 ku("prism.hadamard.block_size", 64),
+                 ks("prism.hadamard.transform", "normalized-sylvester-walsh-hadamard"),
+                 kas("prism.hadamard.weight_names", ["blk.0.attn_q.weight"])]
 if SAMPLING:
     meta_kvs += [kf("general.sampling.temp", float(SAMPLING[0])),
                  kf("general.sampling.top_p", float(SAMPLING[1])),
