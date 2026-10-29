@@ -7,6 +7,7 @@
 
 #include <stdatomic.h>
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -133,22 +134,40 @@ static uint64_t machine_ram_bytes(void) {
     return ms.ullTotalPhys;
 }
 
+// Bytes this process holds locked, which the working-set minimum must cover.
+static volatile LONG64 g_win_locked;
+
 bool plat_mlock(void *p, size_t size) {
     if (!p || !size) return false;
     // The default working-set maximum is far below a model, so raise it first
     // or VirtualLock fails on anything worth locking. Both calls are allowed
-    // to fail: this is opt-in and reported, never fatal.
+    // to fail: this is opt-in and reported, never fatal. The minimum covers
+    // everything this process holds locked plus this range: --mlock locks a
+    // model as several ranges, and sizing each call alone would let the
+    // second shrink the budget the first is counted against.
     SIZE_T lo = 0, hi = 0;
     HANDLE self = GetCurrentProcess();
     if (GetProcessWorkingSetSize(self, &lo, &hi)) {
-        SIZE_T want = (SIZE_T)size + (64u << 20);   // headroom for everything else
-        if (hi < want) SetProcessWorkingSetSize(self, want, want);
+        SIZE_T want = (SIZE_T)g_win_locked + (SIZE_T)size + (64u << 20);   // headroom for everything else
+        if (lo < want) SetProcessWorkingSetSize(self, want, hi > want ? hi : want);
     }
-    return VirtualLock(p, size) != 0;
+    if (!VirtualLock(p, size)) {
+        errno = GetLastError() == ERROR_WORKING_SET_QUOTA ? EAGAIN : ENOMEM;
+        return false;
+    }
+    InterlockedExchangeAdd64(&g_win_locked, (LONG64)size);
+    return true;
 }
 
 void plat_munlock(void *p, size_t size) {
-    if (p && size) VirtualUnlock(p, size);
+    if (p && size && VirtualUnlock(p, size))
+        InterlockedExchangeAdd64(&g_win_locked, -(LONG64)size);
+}
+
+size_t plat_page_size(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return si.dwPageSize;
 }
 
 double plat_resident_fraction(const void *p, size_t size) {
@@ -615,6 +634,11 @@ bool plat_mlock(void *p, size_t size) {
 
 void plat_munlock(void *p, size_t size) {
     if (p && size) munlock(p, size);
+}
+
+size_t plat_page_size(void) {
+    long ps = sysconf(_SC_PAGESIZE);
+    return ps > 0 ? (size_t)ps : 0;
 }
 
 double plat_resident_fraction(const void *p, size_t size) {

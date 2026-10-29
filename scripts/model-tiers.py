@@ -919,6 +919,10 @@ def _row_doc(row, by_id, level=4, borrowed=frozenset()):
         for b in BACKENDS:
             lines.append(f"- **{b.upper() if b != 'metal' else 'Metal'}:** "
                          f"{_cell_detail(row['backends'].get(b), borrowed)}")
+    # Dated measurements beside the cells (a deployment's fit, a resume time):
+    # evidence a reader acts on that no gate cell records. Each is one bullet.
+    for m in row.get("measurements") or []:
+        lines.append(f"- {m}")
     if row["tier"] == "tier1" or row.get("lora") is not None:
         lines += _lora_detail(row.get("lora"))
     hist = "; ".join(f"{TIER_NAMES[t['tier']]} from {t['effective']}" for t in row["transitions"])

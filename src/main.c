@@ -1138,8 +1138,8 @@ static void usage_to(FILE *f, const char *prog) {
         "                 (or block M's dense FFN) tensors while rewriting;\n"
         "                 the absence is declared by a 0 in the per-block\n"
         "                 attention.head_count / head_count_kv (or\n"
-        "                 feed_forward_length) array, llama.cpp's own\n"
-        "                 convention; the block's pre-norm stays. The runner\n"
+        "                 feed_forward_length) array, the convention other\n"
+        "                 GGUF tooling reads; the block's pre-norm stays. The runner\n"
         "                 omits the branch and reserves no KV rows for it\n"
         "                 (CPU path). A mechanism, not a quality claim:\n"
         "                 measure the artifact against its parent\n"
@@ -1339,7 +1339,9 @@ static void usage_to(FILE *f, const char *prog) {
         "                 Off by default and allowed to fail: on a machine with\n"
         "                 little headroom, locking the model can cause the very\n"
         "                 pressure it avoids. Without it a loaded machine can\n"
-        "                 page the weights out and every token reads from disk\n"
+        "                 page the weights out and every token reads from disk.\n"
+        "                 A Gemma 4 E-series per-layer token table, read one row\n"
+        "                 per token, is left out and stays pageable\n"
         "  --moe-prefetch on|off|auto   hand routed experts to the OS as whole\n"
         "                 blocks before the FFN reads them (MoE models only).\n"
         "                 auto (default): on for Apple Silicon when the weights\n"
@@ -1350,7 +1352,7 @@ static void usage_to(FILE *f, const char *prog) {
         "                 (a small same-vocab GGUF; one-shot, chat and\n"
         "                 single-model --serve), mtp (the model's own\n"
         "                 NextN/MTP head, CPU path), mtp:FILE (that head from a\n"
-        "                 companion GGUF, llama.cpp's MTP-only export, when the\n"
+        "                 companion GGUF, an MTP-only export, when the\n"
         "                 model file carries none) or lookup (n-gram matches in\n"
         "                 the context itself: no weights, no draft forward)\n"
         "  --draft-k N    draft tokens per round (default 4)\n"
@@ -1632,7 +1634,13 @@ static int run_fit_check(const char *path, int n_ctx_want,
     if (f.n_seq > 1)
         printf("  slots         %d (--parallel): the weights once, a KV cache "
                "per slot; the cache below is all of them\n", f.n_seq);
-    if (f.sparse)
+    if (f.gathered) {
+        char gathered[32];
+        fit_gib(gathered, sizeof gathered, f.gathered);
+        printf("  hot set       %s  (weights streamed per token%s)\n", h,
+               f.sparse ? ", including only routed experts" : "");
+        printf("  row-gathered  %s  (per-layer token embedding; read by row)\n", gathered);
+    } else if (f.sparse)
         printf("  hot set       %s  (only the routed experts a token actually "
                "uses)\n", h);
     printf("  kv cache      %s at ctx %d, f16", kf, f.n_ctx);
@@ -1719,6 +1727,9 @@ static int run_fit_check(const char *path, int n_ctx_want,
     if (f.sparse)
         printf("  note          the verdict uses the hot set; a sparse MoE runs "
                "usefully while the file exceeds RAM\n");
+    if (f.gathered)
+        printf("  note          the verdict excludes the full row-gathered table; "
+               "allow extra RAM for touched rows, scratch and other processes\n");
     // The KV line is each layer's own rows (model_fit_report), as the loader
     // allocates them; what a load can still do differently is the opt-in
     // ring, which gives sliding-window layers only their window.

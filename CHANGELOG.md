@@ -43,6 +43,63 @@ Current release and unreleased changes. Compatibility follows the
   name server arguments for one backend only, for example the layer split
   of a file larger than the card. The CPU cell does not receive them, and
   the pin records them, so the `ran` line shows the split.
+
+## v1.7.1 - 2026-10-29
+
+- **Load notices state the engine's own evidence.** The architecture lines a
+  load prints for the Gemma 4 variants, `granitehybrid` and `nemotron_h` now say
+  what was validated and where the record is (`docs/model-support.md`,
+  `docs/moe-support.md`) instead of naming another engine as the yardstick; the
+  same for two `--help` lines. The evidence itself is unchanged and stays in
+  the docs, where every comparison keeps its second column.
+- **`--mlock` leaves the E-series per-layer token table pageable.** It
+  wired the whole file, including the 2.99 GB table of a 6.18 GB E4B Q4_K_M
+  that the forward reads one row per token. It now wires the hot ranges on
+  either side of that table, keeping the pages it shares with its neighbours.
+  Slots that share weights share one lock, held until the last of them is
+  freed; before, a slot that joined locked weights did not know they were
+  locked, so its GPU load could hand their host pages back. On Windows each
+  range now adds to the working-set minimum instead of resizing it alone.
+  `test-mlock` checks the wired bytes against the kernel's locked-memory
+  limit and hand-computed page boundaries. On an 8 GB Apple Silicon laptop
+  the Bolt E4B server wired 3.19 GB, and its first response after 8 minutes
+  idle took 4.7 s with `--mlock` against 24.9 s without it; the measurement
+  is the new `measurements` line of that row in `docs/model-support.md`. Help and manual updated; README,
+  site and model cards do not describe `--mlock` and are unchanged.
+- **E-series fit reports distinguish row-gathered weights.** `--info fit`
+  retains the whole file size and reports the per-layer token table separately
+  from the hot set used for its RAM verdict, including on discrete GPU splits.
+  The tied output head and model projection still count in full. Header-only
+  tests anchor the subtraction to Q8_0 block sizes. README, manual and site
+  updated; model cards unchanged because this changes the estimator, not an
+  artifact's measured performance or fidelity.
+- **The engine merge to main is green in about 12 minutes instead of 55.**
+  `make test` is now three targets run in order, `test-gates-core`,
+  `test-gates-batch` and `test-python`, and CI runs them as three parallel
+  jobs on macOS and on Windows instead of one fifty-minute step; the root
+  pytest runs under pytest-xdist there (`PYTEST_WORKERS=auto`, whole files
+  per worker; 1145 s to 490-603 s on the hosted Mac). Two dispatched runs
+  of the whole workflow took 10 min 30 s and 12 min 8 s with the same 2050
+  cases and the same 98 skips. A local `make test` is unchanged in what it
+  runs. No check was removed: the microbatch gates, the Metal microbatch
+  identity and the attention split moved to `test-gates-batch`, the client
+  tests and the root pytest to `test-python`, everything else stayed in
+  `test-gates-core`; one test that compared two fit reports byte for byte
+  now masks the live free-RAM figure they quote.
+- **The Windows suite's python job no longer waits on one test file.**
+  `scripts/check-release.py` runs its tree scans (two `git grep` passes and
+  the KL-table walk over the docs) once per tree state instead of once per
+  `check()` call, the state being the checkout, its HEAD and every changed
+  or untracked path with its size and mtime: the release workflow calls
+  `check()` once, so it scans exactly as before; the test module calls it
+  twenty-eight times on one unchanged tree and now scans once. On the hosted Windows runner every repeat cost about sixteen
+  seconds, so `tests/test_release_check.py` was 628 of the root pytest's
+  1378 case-seconds and the whole of its 647 s wall, and
+  `windows-suite-python` took 14 min 37 s on the 2026-10-29 merge against
+  the 15-minute gate. Three tests pin the verdict's lifetime (one tree, one scan; an
+  edit, a new file, a deletion or a commit is a new state), that a tree git
+  cannot describe is never cached, and that a failed scan stays failed.
+  Same cases, same skips.
 - **Nemotron 3.5 Bolt E4B admitted at Tier 2.** NVIDIA's post-train of
   Gemma-4-E4B-it in the publisher's own Q4_K_M
   (`nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB`), on the owner's request for the

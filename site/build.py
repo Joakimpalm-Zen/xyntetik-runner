@@ -35,6 +35,7 @@ HFD = "https://huggingface.co/datasets/Joakimpalm-Zen"
 HFORG = "https://huggingface.co/Xyntetik"
 ORIGIN = "https://xyntetik.com"
 GHCR = "https://github.com/Joakimpalm-Zen/xyntetik-runner/pkgs/container/xyntetik-runner"
+DOJO = "https://github.com/Joakimpalm-Zen/xyntetik-dojo"
 
 # Filled by main() before any page is rendered; read by jsonld().
 VERSION = ""
@@ -42,6 +43,7 @@ RELEASE_DATE = ""
 
 NAV = [
     ("runner", "Runner", "/runner/"),
+    ("dojo", "Dojo", "/dojo/"),
     ("evidence", "Evidence", "/evidence/"),
     ("about", "About", "/about/"),
     ("support", "Support", "/support/"),
@@ -407,7 +409,7 @@ def jsonld(path: str) -> str:
         "alternateName": "Xyntetik",
         "url": ORIGIN,
         "logo": ORIGIN + "/assets/marks/zenova-light.svg",
-        "sameAs": [REPO, HF, HFORG, GHCR],
+        "sameAs": [REPO, DOJO, HF, HFORG, GHCR],
     }
     graph: list[dict] = [org]
     if path == "/":
@@ -453,6 +455,40 @@ def jsonld(path: str) -> str:
             "version": VERSION.lstrip("v"),
             "dateModified": RELEASE_DATE,
             "targetProduct": {"@id": ORIGIN + "/runner/#app"},
+            "author": {"@id": ORIGIN + "/#zenova"},
+        })
+    if path == "/dojo/":
+        graph.append({
+            "@type": "SoftwareApplication",
+            "@id": ORIGIN + "/dojo/#app",
+            "name": "Xyntetik Dojo",
+            "alternateName": "xyntetik-dojo",
+            "description": ("One window for your coding agents, and a bus so they can talk. "
+                            "A free macOS app that runs Claude Code, Codex and pi on a local "
+                            "Runner model as terminal panes, on this Mac or over SSH, and gives "
+                            "each of them four small tools to list, read and message the others."),
+            "url": ORIGIN + "/dojo/",
+            "applicationCategory": "DeveloperApplication",
+            "operatingSystem": "macOS",
+            "softwareHelp": DOJO + "/blob/main/README.md",
+            "downloadUrl": DOJO,
+            "installUrl": ORIGIN + "/dojo/#install",
+            "license": "https://www.apache.org/licenses/LICENSE-2.0",
+            "isAccessibleForFree": True,
+            "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
+            "author": {"@id": ORIGIN + "/#zenova"},
+            "publisher": {"@id": ORIGIN + "/#zenova"},
+            "sameAs": [DOJO],
+        })
+        graph.append({
+            "@type": "SoftwareSourceCode",
+            "@id": DOJO + "#source",
+            "name": "xyntetik-dojo",
+            "codeRepository": DOJO,
+            "programmingLanguage": ["Swift", "Python"],
+            "runtimePlatform": "macOS",
+            "license": "https://www.apache.org/licenses/LICENSE-2.0",
+            "targetProduct": {"@id": ORIGIN + "/dojo/#app"},
             "author": {"@id": ORIGIN + "/#zenova"},
         })
     data = {"@context": "https://schema.org", "@graph": graph}
@@ -544,6 +580,7 @@ def shell(meta: dict, body: str, sha: str) -> str:
     <div>
       <h4>Xyntetik</h4>
       <a href="/about/">About and Zenova AB</a>
+      <a href="/dojo/">Dojo</a>
       <a href="/suite/">Suite</a>
       <a href="/shade/">Shade</a>
       <a href="/support/">Support the work</a>
@@ -657,7 +694,7 @@ def main(argv: list[str] | None = None) -> int:
         body = re.sub(r"\{\{(chart):([a-z_]+)\}\}", _expand_chart, body)
         body = re.sub(r"\{\{mark:([a-z]+):(\d+)\}\}", lambda m: mark(m.group(1), "", int(m.group(2))), body)
         body = re.sub(r"\{\{heromark:([a-z]+)\}\}", lambda m: inline_mark(m.group(1)), body)
-        body = (body.replace("{{repo}}", REPO).replace("{{hfd}}", HFD).replace("{{hf}}", HF)
+        body = (body.replace("{{repo}}", REPO).replace("{{dojo}}", DOJO).replace("{{hfd}}", HFD).replace("{{hf}}", HF)
                 .replace("{{version}}", version).replace("{{release_date}}", release_date))
         out = shell(meta, body, sha)
         problems += check_page(meta["path"], out, known)
@@ -690,7 +727,8 @@ def main(argv: list[str] | None = None) -> int:
         "Metal that serves, scores and trains LoRA through the quantized file it "
         "deploys, byte-reproducibly, keeps tool calls usable when the token budget "
         "runs out, hands memory back while idle, and records every run as a signed "
-        "receipt. OpenAI- and Anthropic-compatible APIs.\n\n"
+        "receipt. OpenAI- and Anthropic-compatible APIs. Xyntetik Dojo is a free macOS "
+        "app that puts several coding agents in one window with a bus between them.\n\n"
         f"Current release: {version} ({release_date}).\n\n"
         "## Runner\n\n"
         f"- [What Runner does]({ORIGIN}/runner/): serve, fit, quantize, train, the 1.x promises\n"
@@ -702,6 +740,9 @@ def main(argv: list[str] | None = None) -> int:
         f"- [Measurements behind every claim]({ORIGIN}/evidence/): benchmarks, truncation, fidelity, losing rows included\n"
         f"- [Model files and research records]({HF}): GGUF releases and preregistered evidence datasets\n"
         f"- [Xyntetik on Hugging Face]({HFORG}): the program's organization page\n\n"
+        "## Dojo\n\n"
+        f"- [What Dojo does]({ORIGIN}/dojo/): one macOS window for Claude Code, Codex and pi on a local Runner model, with a bus so they can message each other\n"
+        f"- [Source and install]({DOJO}): Apache-2.0, SwiftPM, three commands\n\n"
         "## Program\n\n"
         f"- [About Xyntetik and Zenova AB]({ORIGIN}/about/)\n"
         f"- [Suite]({ORIGIN}/suite/): the testing and evidence layer, in private development\n"

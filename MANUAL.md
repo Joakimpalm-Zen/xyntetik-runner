@@ -1535,7 +1535,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.7.0
+./runner --version   # -> runner 1.7.1
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -1648,7 +1648,7 @@ The independently built container has a separate Debian build baseline.
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
 nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v1.7.0`) and `:latest`. Build it yourself with `docker build -t runner .`.
+tag carries the `v`, e.g. `:v1.7.1`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which
@@ -1999,6 +1999,15 @@ refusal into a bounded queue.
 to force a model larger than available RAM to stay resident. Sparse MoE load
 logs distinguish total file size from the smaller per-token hot set.
 
+On a Gemma 4 E-series model `--mlock` wires everything except
+`per_layer_token_embd.weight`. The forward reads that table one row per token,
+so locking it would pin gigabytes a run never touches (2.99 of 6.18 GB on an
+E4B Q4_K_M file). The page it shares with a neighbouring tensor stays locked,
+and the load log prints both sizes. With `--parallel` the slots share one lock,
+taken by the first slot that asks and released when the last slot holding the
+weights is freed. A refused lock is undone in full and the load continues
+unlocked, as on any other model.
+
 On high-core-count hosts, sparse MoE decode can be memory-bandwidth bound well
 before the 64-thread cap. Measure `-t 12` to `-t 16` as well as the default;
 the project recorded 17.0 tok/s at 12-16 threads versus 7.8 tok/s at 64 on one
@@ -2331,7 +2340,7 @@ instance instead.
 | `--yield-on-request [on\|off]` | In `--serve`, release the resident model at the next idle point when another process has asked it to (`vram_request_yield`). A request, never preemption. `on` by default when serving (bare `--yield-on-request` is `on`); `off` keeps the model. See the same section. |
 | `--reserve P` or `--reserve vram=P,ram=P,cpu=P` | One percentage caps this process at `P` percent of total RAM and VRAM; the named form sets each budget on its own: `vram` (the CUDA layer-fit budget, [details](#cli-reserve-vram)), `ram`, and `cpu` (size the default thread count as a percentage of cores). Without `-c` the context is auto-fit to what the reservation leaves after the weights. |
 | `--kv f16\|q8\|k8v4\|fp4` | Choose KV cache storage; precision, memory use and backend support differ by format. [Details](#cli-kv). |
-| `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. |
+| `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. A Gemma 4 E-series per-layer token table stays pageable. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
 | `--draft SOURCE` | Speculative decoding from one source per run, named by its spelling. `PATH`: a same-vocabulary draft GGUF ([details](#cli-draft)). `mtp`: the model's own NextN/MTP predictor block ([details](#cli-mtp)). `mtp:FILE`: that block from a companion GGUF when the model file was exported without one ([details](#cli-mtp)). `lookup`: n-gram matches in the context itself, no weights and no draft forward ([details](#cli-draft-lookup)). A second source on the line is refused, not ignored. A server given a swap registry (`-m a=...,b=...`) refuses to start with a draft, which needs a single served model. |
 | `--draft-k N` | Draft tokens per speculative round, default `4`, for every draft source. All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
@@ -2947,6 +2956,14 @@ note says the figure is the flat cache, which `RUNNER_KV_RING` shrinks.
 
 The verdict is `FITS`, `FITS WITH --kv q8` (or `k8v4`, or `fp4`), or `PAGES`, always with the
 arithmetic that produced it.
+
+For Gemma 4 E-series, `weights` remains the whole file size, while `hot set`
+excludes `per_layer_token_embd.weight`. That table is reported as `row-gathered`:
+the CPU reads only the selected token rows, and Metal leaves it outside its
+weight buffers. The verdict uses the hot set, including the tied output head
+and per-layer model projection. It is an estimate, so allow extra RAM for
+touched embedding rows, runtime scratch and other processes. The same exclusion
+applies to the host memory estimate for a discrete GPU split.
 
 On a discrete CUDA GPU the leading layers go to the card, so RAM only has to
 hold the rest. `--info fit` then reads the same offload budget the loader splits

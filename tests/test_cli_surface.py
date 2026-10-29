@@ -13,6 +13,7 @@ proves it ran BEFORE the load; a run that reaches "cannot open" proves the
 line was accepted.
 """
 import json
+import re
 import pathlib
 import subprocess
 import sys
@@ -217,13 +218,23 @@ def test_info_caps_needs_no_model(runner_bin):
     json.loads(p.stdout)
 
 
+def _without_live_ram(report):
+    """The fit report quotes the machine's free RAM at the moment it ran
+    ("available RAM 3.03 GiB right now", "3.03 GiB to spare"); two runs a
+    moment apart straddle other processes' allocations, which the parallel
+    suite (pytest-xdist) made routine. The verdict and every size that comes
+    from the file stay in the comparison."""
+    return re.sub(rb"\d+\.\d+ GiB (right now|to spare)", rb"<live> GiB \1", report)
+
+
 def test_info_fit_reads_the_header_of_m(runner_bin):
     if not FIXTURE.exists():
         pytest.skip("fixture test.gguf not built")
     p = run(runner_bin, "-m", str(FIXTURE), "--info", "fit", "--gpu", "off")
     assert p.returncode == 0, p.stderr.decode(errors="replace")[-400:]
     old = run(runner_bin, "--fit", str(FIXTURE), "--gpu", "off")
-    assert old.stdout == p.stdout
+    assert _without_live_ram(old.stdout) == _without_live_ram(p.stdout)
+    assert b"available RAM" in p.stdout and b"verdict" in p.stdout
 
 
 def test_info_refuses_an_unknown_kind(runner_bin):

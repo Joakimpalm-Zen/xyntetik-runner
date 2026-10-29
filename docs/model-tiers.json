@@ -410,10 +410,10 @@
         "metal": {
           "kind": "gate",
           "runner_version": "1.7.0",
-          "date": "2026-10-28",
+          "date": "2026-10-29",
           "device_class": "macos-arm64-metal",
           "result": "pass",
-          "commit": "6ec949e196245a5173ead275ffe80dd445e1b41f",
+          "commit": "0800f47350d545685f74dc92ce1a05642bf5a974",
           "caps": {
             "version": "1.7.0",
             "os": "macos",
@@ -446,6 +446,9 @@
           "reason": "Admitted 2026-10-28 at Tier 2 on the owner's request (policy decision 2026-10-27: Tier 1 follows pull; this is the publisher's file and its downloads are the publisher's). Maintained on report, with the admitting run recorded.",
           "last_validated_release": null
         }
+      ],
+      "measurements": [
+        "**8 GB laptop fit (Metal, 2026-10-29, runner 1.7.0 at commit `0800f47350d5`):** one resident server at `-c 4096 -b 32 --kv q8 --mlock` on an 8 GB Apple Silicon laptop wires 3.19 GB of weights while the 2.99 GB row-gathered table stays pageable; a 262-token prompt answers in 4.0-5.1 s to the first token and decodes 128 tokens at 8.5-9.0 tok/s; the first response after 8 minutes idle took 4.7 s with `--mlock` and 24.9 s without it (the weights were evicted while idle); the laptop swaps other applications to hold the weights, and the sliding-window KV ring (`RUNNER_KV_RING=1`) saved 77 MB of cache without changing these figures while losing the prefix cache."
       ]
     },
     {

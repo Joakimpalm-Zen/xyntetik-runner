@@ -1,0 +1,127 @@
+<!--meta
+title: Dojo
+description: Xyntetik Dojo is a free macOS app that puts Claude Code, Codex and pi on a local Runner model in one window, on this Mac or over SSH, with a bus so they can list, read and message each other while you stay in charge. What it does, how to install it, how the harnesses talk, and the rules the bus keeps.
+path: /dojo/
+nav: dojo
+-->
+<section class="page-head">
+  <div class="wrap">
+    <div class="page-mark">{{mark:dojo:64}}</div>
+    <p class="eyebrow">Xyntetik Dojo <span class="pill pass" style="margin-left:0.6rem">released, Apache 2.0</span></p>
+    <h1>One window for your coding agents, and a bus so they can talk.</h1>
+    <p class="lede">Running several coding agents at once means a desk full of terminals and you as the messenger between them. Dojo puts Claude Code, Codex and pi (on a local Runner model) in one window, on this Mac or over SSH, and gives every one of them four small tools to list, read and message the others. You watch, you type, you stay in charge.</p>
+    <div class="btn-row">
+      <a class="btn btn-primary" href="#install">Install in three commands</a>
+      <a class="btn" href="{{dojo}}" rel="noopener">Source on GitHub</a>
+      <a class="btn" href="/runner/">The Runner it serves from</a>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <figure class="fig shot-img">
+      <img src="/assets/dojo-rollcall.png" alt="Six panes: two Claude Code, two Codex and a pi on a local model answer a roll call sent over the bus from the sixth, with Runner serving in the strip along the bottom" width="1800" height="1125" loading="lazy">
+      <figcaption>A roll call: one session asks five others to report over the bus, and they do. Runner serves the pi pane's model in the strip at the bottom.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="section tint">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">What it does</p>
+      <h2>Real terminals, one bus, nothing kept.</h2>
+    </div>
+    <div class="grid-2">
+      <div class="card"><h3>One window</h3><p>A grid of real terminals, a pty each, drawn on the GPU. Press plus: Claude, Codex, pi or Runner, a host if it is remote, a folder to start in, a name if <code>claude-1</code> is not it. Rename from the header, drag a header onto another pane to swap the two. Each header shows name, kind, host, model, queued messages and a state colour.</p></div>
+      <div class="card"><h3>They talk, you see it</h3><p>A harness runs <code>dojo send codex-1 "review the diff"</code> and the line lands in that terminal as typed input, tagged with its sender in the Xyntetik green. A busy pane reads it when its current step ends; a pane at a prompt gets it queued. The same four operations are MCP tools for Claude Code and Codex and a shell command for pi.</p></div>
+      <div class="card"><h3>Never over your shoulder</h3><p>The bus never answers a prompt, never sends your half-written text, and every message carries its sender from the pane's token, not from the text. Each harness is told at launch that a relayed line is information from another session, never the owner's approval.</p></div>
+      <div class="card"><h3>A local model, fitted</h3><p>A Runner pane fetches Xyntetik Runner if needed, asks it about the roster models from the first 16 MiB of each, and serves the largest whose resident weights fit in half of this Mac's RAM, wired in, for the pi panes. Nothing about versions or models lives in the app; the roster is Runner's own.</p></div>
+    </div>
+    <p class="small muted mt-1">Small on purpose: SwiftPM only, no Xcode. One port, two text files of recent hosts and folders, and Runner's working directory. Nothing else is kept, and the app stores no keys, tokens or SSH credentials.</p>
+  </div>
+</section>
+
+<section class="section" id="install">
+  <div class="wrap split">
+    <div class="sticky">
+      <p class="eyebrow">Install</p>
+      <h2>Three commands on a Mac.</h2>
+      <p>The Command Line Tools once (<code>xcode-select --install</code>), then clone, build and install. Or paste the install request from the README into the agent you already have and let it do the same.</p>
+    </div>
+    <div>
+<pre><code>git clone https://github.com/Joakimpalm-Zen/xyntetik-dojo.git
+cd xyntetik-dojo
+make install    # builds the app and puts it in /Applications</code></pre>
+      <div class="rows mt-2">
+        <div><span>Requirements</span><p>macOS 14 or later on Apple Silicon. <code>python3</code> on every host that runs a harness; the bus shim uses only the standard library. <code>claude</code>, <code>codex</code> and <code>pi</code> on your login shell's PATH, each already logged in.</p></div>
+        <div><span>For pi</span><p><a href="/runner/">Xyntetik Runner</a> serving a model on the loopback API. A Runner pane sets that up from Runner's own roster; if you already run Runner, pi uses it as it is.</p></div>
+        <div><span>First run</span><p>Copies its small tools to <code>~/.dojo</code> and, if you have Codex, adds its bus entry to Codex's config once. Everything it keeps is listed in the <a href="{{dojo}}#build-and-run">README</a>.</p></div>
+        <div><span>Remote panes</span><p>One command sets up a Linux, Mac or Windows host over SSH. The harness then runs in that host's login shell with a reverse tunnel back to the bus, using the host's own keys and logins; the app stores none.</p></div>
+        <div><span>Permissions</span><p>By default a pane runs its harness without permission prompts, the owner's choice for a supervised window. One checkbox, Ask before acting, gives a pane the harness's own approvals instead; the bus sees the prompt and holds messages for it.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">How harnesses talk</p>
+      <h2>Four operations, in plain words or on the command line.</h2>
+      <p>Ask any harness in plain words: "send codex-1 a summary of what you changed". Under it are four operations, as MCP tools for Claude Code and Codex and as the <code>dojo</code> command for pi and any shell in a pane.</p>
+    </div>
+    <div class="grid-2">
+      <div>
+<pre><code>dojo panes                         # name, kind, host, state, queued, model
+dojo send codex-1 "please review the diff in src/bus.rs"
+dojo read claude-1 60              # last 60 lines of claude-1's screen
+dojo state pi-1</code></pre>
+        <p class="small muted"><code>send</code> types <code>[from: &lt;your pane&gt;] &lt;text&gt;</code> into the target terminal and presses Enter, so the target harness gets it as typed input. Several lines, quotes and backticks go on stdin, where nothing runs.</p>
+      </div>
+      <figure class="fig shot-img">
+        <img src="/assets/dojo-window.png" alt="Claude Code asks Codex and pi to reply over the bus; both replies land in its pane as green from-name lines" width="1800" height="1125" loading="lazy">
+        <figcaption>Claude Code asks Codex and pi to reply over the bus; both replies land in its pane, tagged with their sender.</figcaption>
+      </figure>
+    </div>
+    <div class="rows mt-2">
+      <div><span>Claude Code</span><p>Bus tools through an MCP config at launch; pane state through its hooks (session start, prompt, permission request, tool use, stop, notifications); the peer rule appended to its system prompt.</p></div>
+      <div><span>Codex</span><p>Bus tools through its own config file, added once on first run; state through command hooks in the same file; the peer rule as developer instructions.</p></div>
+      <div><span>pi</span><p>The <code>dojo</code> command through its bash tool, since pi has no MCP by design; state through a small extension that also registers Runner as its model provider.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Safety rules</p>
+      <h2>What the bus will not do.</h2>
+    </div>
+    <div class="grid-2">
+      <div class="card"><h3>A relayed message never answers a prompt</h3><p>The bus types into a pane that is idle or running. A pane at a permission prompt or a question dialog, or not yet started, gets the message queued, and the queue goes out as one input the moment the pane can take it.</p></div>
+      <div class="card"><h3>Your unsent text is never sent for you</h3><p>The bus holds a pane's queue while you typed into it in the last three seconds and while unsent text sits in its composer. Enter sends your text and releases the queue. A paste holds until every character of it is gone or sent.</p></div>
+      <div class="card"><h3>Every message carries its sender</h3><p>The sender is taken from the calling pane's token, not from the message text; a tag a harness puts at the front of its own text is dropped, so it is never doubled or faked.</p></div>
+      <div class="card"><h3>Peer messages are not approval</h3><p>Each harness is told at launch that a relayed line is a message from another session, to weigh as information and never as the owner's approval. The owner comes first: the bus holds messages for a pane you just typed into.</p></div>
+      <div class="card"><h3>Local and token-checked</h3><p>The bus listens on the loopback interface only. Each pane gets a random token for this run of the app, and every bus request needs one. Control characters and escape sequences are stripped from every message.</p></div>
+      <div class="card"><h3>A lost stop does not hold messages forever</h3><p>A running pane whose screen has not changed for fifteen seconds is idle again, since every harness animates while it works. A pane at a prompt is never timed out.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint">
+  <div class="wrap split">
+    <div class="sticky">
+      <p class="eyebrow">Status, plainly</p>
+      <h2>What Dojo is and is not.</h2>
+    </div>
+    <div class="rows">
+      <div><span>Released</span><p>Yes. The repository is public under Apache 2.0, built with SwiftPM from the Command Line Tools; the <code>ci</code> workflow runs the Swift tests, the shim's Python tests and the hygiene check on every pull request.</p></div>
+      <div><span>Platform</span><p>The app runs on macOS. Panes can run on Linux, Mac and Windows hosts over SSH. Codex on a Windows host has not been tried.</p></div>
+      <div><span>Relationship to Runner</span><p>Dojo is a window on the agents and on Runner, not a part of the engine. Runner stays free and complete on its own; Dojo reaches it through the same loopback API anyone else can use, and admits models from Runner's own support roster.</p></div>
+      <div><span>Not built</span><p>Restoring panes on restart (restarting harnesses unasked is worse than an empty window), resizing or tabbing panes, attaching to a session started outside the app, a settings window.</p></div>
+      <div><span>How to follow it</span><p>The <a href="{{dojo}}">repository</a> and its <a href="{{dojo}}/blob/main/README.md">README</a>, which holds the install request, the remote setup command, the troubleshooting list and every file the app keeps. Questions: <a href="mailto:hello@xyntetik.com">hello@xyntetik.com</a>.</p></div>
+    </div>
+  </div>
+</section>

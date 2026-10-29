@@ -180,7 +180,27 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
   </div>
 </section>
 
-<section class="section" id="lab">
+<section class="section" id="dojo">
+  <div class="wrap split">
+    <div class="sticky reveal">
+      <p class="eyebrow">Xyntetik Dojo, new and free</p>
+      <h2>One window for your coding agents, and a bus so they can talk.</h2>
+      <p>Running several coding agents at once means a desk full of terminals and you as the messenger between them. Dojo puts Claude Code, Codex and pi (on a local Runner model) in one macOS window, here or over SSH, and gives each of them four small tools to list, read and message the others. You watch, you type, you stay in charge.</p>
+      <p>The bus never answers a prompt, never sends your half-written text, and every message carries its sender from the pane's token. A Runner pane serves the largest roster model whose resident weights fit in half of this Mac's RAM, for the pi panes.</p>
+      <div class="btn-row">
+        <a class="btn btn-primary" href="/dojo/">What Dojo does</a>
+        <a class="btn" href="{{dojo}}" rel="noopener">Install from GitHub</a>
+      </div>
+      <p class="small muted">Apache 2.0, SwiftPM only, three commands to install. macOS 14 or later.</p>
+    </div>
+    <figure class="fig shot-img reveal">
+      <img src="/assets/dojo-rollcall.png" alt="Six panes: two Claude Code, two Codex and a pi on a local model answer a roll call sent over the bus from the sixth, with Runner serving in the strip along the bottom" width="1800" height="1125" loading="lazy">
+      <figcaption>A roll call: one session asks five others to report over the bus, and they do. Runner serves the pi pane's model in the strip at the bottom.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="section tint" id="lab">
   <div class="wrap">
     <div class="section-head reveal">
       <p class="eyebrow">The Xyntetik-Lab on Hugging Face</p>
@@ -217,9 +237,9 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
   </div>
 </section>
 
-<section class="section tint" id="about-teaser">
+<section class="section" id="about-teaser">
   <div class="wrap rows reveal">
-    <div><span>Who builds it</span><p>Zenova AB, in Sweden. Runner is the released engine, Suite the testing and evidence layer around it, Shade the research lab that feeds both. The engine is free forever under Apache 2.0, and your prompts never leave your machine. <a href="/about/">About Xyntetik</a>.</p></div>
+    <div><span>Who builds it</span><p>Zenova AB, in Sweden. Runner is the released engine, Dojo the released window for coding agents on it, Suite the testing and evidence layer around it, Shade the research lab that feeds both. The engine is free forever under Apache 2.0, and your prompts never leave your machine. <a href="/about/">About Xyntetik</a>.</p></div>
     <div><span>Funded in the open</span><p>Contributions pay for measurement time on real hardware, the thing every number on this page cost. <a href="https://buy.stripe.com/9B69AUddpdx9auHgP27N600" rel="noopener">Support this work</a> or read <a href="/support/">what contributions enable</a>.</p></div>
   </div>
 </section>

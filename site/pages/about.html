@@ -1,6 +1,6 @@
 <!--meta
 title: About
-description: Xyntetik is a Zenova AB program for running capable models on hardware you own. Runner is the released engine; Suite is the testing and evidence layer; Shade is the research lab. What each is, how they relate, and what is and is not released.
+description: Xyntetik is a Zenova AB program for running capable models on hardware you own. Runner is the released engine; Dojo is the released window for coding agents; Suite is the testing and evidence layer; Shade is the research lab. What each is, how they relate, and what is and is not released.
 path: /about/
 nav: about
 -->
@@ -8,7 +8,7 @@ nav: about
   <div class="wrap">
     <p class="eyebrow">About</p>
     <h1>Local models on hardware you own, with the evidence attached.</h1>
-    <p class="lede">Xyntetik is the program under which Zenova AB builds tooling for running capable language models on ordinary laptops, desktops and workstations, and for proving what those models did. Runner is its released product. Two more parts exist and are described here as what they are: one in private development, one a research lab.</p>
+    <p class="lede">Xyntetik is the program under which Zenova AB builds tooling for running capable language models on ordinary laptops, desktops and workstations, and for proving what those models did. Runner is its released engine and Dojo its released desktop app. Two more parts exist and are described here as what they are: one in private development, one a research lab.</p>
   </div>
 </section>
 
@@ -32,9 +32,9 @@ nav: about
     <div class="section-head">
       <p class="eyebrow">Why Xyntetik exists</p>
       <h2>The engine is the easy half.</h2>
-      <p>Serving tokens from a GGUF file is a solved problem. What is not solved is everything between a running model and work you would actually trust: choosing a model that fits the machine instead of one that swaps, giving an agent tools without opening a hole per tool, keeping a human in the loop without making them a bottleneck, proving a change works rather than reporting that it was written, and keeping a record of where every claim came from. Xyntetik is a program for that whole distance, built in the order the evidence allows.</p>
+      <p>Serving tokens from a GGUF file is a solved problem. What is not solved is everything between a running model and work you would actually trust: choosing a model that fits the machine instead of one that swaps, giving an agent tools without opening a hole per tool, keeping a human in the loop without making them a bottleneck, proving a change works rather than reporting that it was written, and keeping a record of where every claim came from. Xyntetik is a program for that whole distance, built in the order the evidence allows. Dojo is the first piece of that distance to ship beside the engine: the window the agents and the local model are worked from.</p>
     </div>
-    <div class="triad">
+    <div class="triad quad">
       <div class="card accent">
         <div class="icon mark-icon">{{mark:runner:44}}</div>
         <h3>Runner</h3>
@@ -42,6 +42,14 @@ nav: about
         <p class="status"><span class="pill pass">released, Apache 2.0</span></p>
         <p>{{version}}, {{release_date}}. Public repository, releases with checksums, every claim measured. The one part of Xyntetik whose job is to be understood by a stranger in sixty seconds.</p>
         <a class="more" href="/runner/">Runner &rarr;</a>
+      </div>
+      <div class="card accent">
+        <div class="icon mark-icon">{{mark:dojo:44}}</div>
+        <h3>Dojo</h3>
+        <p><strong>One window for your coding agents.</strong> A macOS app that runs Claude Code, Codex and pi on a local Runner model as terminal panes, here or over SSH, with a bus so they can list, read and message each other while you watch.</p>
+        <p class="status"><span class="pill pass">released, Apache 2.0</span></p>
+        <p>Public repository, SwiftPM only, three commands to install. The bus never answers a prompt and never sends your half-written text; every message carries its sender from the pane's token.</p>
+        <a class="more" href="/dojo/">Dojo &rarr;</a>
       </div>
       <div class="card">
         <div class="icon mark-icon">{{mark:suite:44}}</div>
