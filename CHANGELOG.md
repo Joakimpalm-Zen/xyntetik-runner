@@ -3,7 +3,7 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.7.1 - 2026-10-29
 
 - **Load notices state the engine's own evidence.** The architecture lines a
   load prints for the Gemma 4 variants, `granitehybrid` and `nemotron_h` now say

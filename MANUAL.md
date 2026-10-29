@@ -1534,7 +1534,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.7.0
+./runner --version   # -> runner 1.7.1
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -1647,7 +1647,7 @@ The independently built container has a separate Debian build baseline.
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
 nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v1.7.0`) and `:latest`. Build it yourself with `docker build -t runner .`.
+tag carries the `v`, e.g. `:v1.7.1`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which
