@@ -388,9 +388,17 @@ def main():
     if args.endpoint_b and not args.model_name_b:
         ap.error("--endpoint-b needs --model-name-b")
 
+    import time
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
     torch.set_num_threads(args.threads)
+    t0 = time.time()
+
+    def stage(what):
+        # one line per stage with the elapsed time, flushed: a run that
+        # stalls shows WHERE (the 2026-10-29 MiMo run went silent at the
+        # weight load for 40 minutes with nothing to say so)
+        print(f"stage {time.time() - t0:7.0f}s: {what}", file=sys.stderr, flush=True)
     tok = AutoTokenizer.from_pretrained(args.hf, trust_remote_code=args.trust_remote_code)
     # A publisher whose top-level class is multimodal (Qwen3.5, Gemma 4,
     # Muse Glimmer) still answers text through the same language model;
@@ -398,12 +406,14 @@ def main():
     # image-text class and drive it with text only. The config name is
     # printed so the report says which class produced the gold.
     kw = dict(dtype=torch.float32, trust_remote_code=args.trust_remote_code)
+    stage(f"loading {args.hf} in float32")
     try:
         model = AutoModelForCausalLM.from_pretrained(args.hf, **kw)
     except (ValueError, KeyError, OSError):
         from transformers import AutoModelForImageTextToText
         model = AutoModelForImageTextToText.from_pretrained(args.hf, **kw)
     print("reference class:", type(model).__name__, file=sys.stderr)
+    stage("weights loaded")
     model.eval()
 
     text = open(args.corpus, encoding="utf-8").read()
@@ -433,8 +443,10 @@ def main():
     span = list(special) + list(body)
     scored = [len(special) + args.min_prefix + n * args.stride - 1
               for n in range(args.max_positions)]
+    stage(f"forward over {len(span)} tokens")
     logp, logp_row, logits_path = reference_logp(model, span, scored)
     print("reference logits:", logits_path, file=sys.stderr)
+    stage("forward done; scoring the sides")
 
     spell = token_speller(tok)
     # the reference's special tokens: what a server spells "" or not at all

@@ -5,8 +5,11 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
-- **MiMo-V2.6-Distill-Qwen-9B Q4_K_M admitted at Tier 2, its fidelity not yet
-  measured.** bartowski's Q4_K_M of XiaomiMiMo's Qwen3.5-9B distill loads,
+- **MiMo-V2.6-Distill-Qwen-9B Q4_K_M admitted at Tier 2; it fails the quant bar
+  and its fidelity is not yet measured.** Against bartowski's Q8_0 it reads
+  0.064 mean KLD over 300 positions, against a 0.05 bar, two positions
+  carrying most of it (`docs/compat-reports/mimo-v2.6-distill-qwen-9b-2026-10-29/README.md`).
+  bartowski's Q4_K_M of XiaomiMiMo's Qwen3.5-9B distill loads,
   tokenizes as the publisher's tokenizer.json does (0 of 721), renders the
   publisher's template token for token (23 of 23) and answers through it on
   the CPU of the Metal laptop. The float32 reference against the BF16
