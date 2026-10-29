@@ -1198,7 +1198,7 @@ const char *const *model_supported_archs(size_t *count) {
         "llama", "qwen2", "qwen3", "qwen35", "qwen4exp", "qwen3moe", "mistral",
         "smollm", "stablelm", "gemma3", "gemma4", "phi3", "gpt-oss",
         "apertus", "afmoe", "muse-glimmer", "granite", "granitehybrid",
-        "nemotron_h", "nemotron_h_moe", "clef",
+        "nemotron_h", "nemotron_h_moe", "clef", "mellum",
     };
     if (count) *count = sizeof(arches) / sizeof(arches[0]);
     return arches;
@@ -4155,7 +4155,12 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     if (strcmp(arch, "gemma3") == 0 && !bind_meta_gemma3(m, g, arch)) return false;
     if (strcmp(arch, "gpt-oss") == 0 && !bind_meta_gptoss(m, g, arch)) return false;
     if (strcmp(arch, "afmoe") == 0 && !bind_meta_afmoe(m, g, arch)) return false;
-    if ((strcmp(arch, "qwen3") == 0 || strcmp(arch, "qwen3moe") == 0) &&
+    // mellum (JetBrains Mellum2.x) is qwen3moe's attention and router with a
+    // 3:1 sliding/full layout: bind_swa_default reads its boolean pattern, the
+    // local table ropes at rope.freq_base_swa unscaled, and YaRN with its
+    // magnitude factor applies to the full layers only (model_rope_mscale).
+    if ((strcmp(arch, "qwen3") == 0 || strcmp(arch, "qwen3moe") == 0 ||
+         strcmp(arch, "mellum") == 0) &&
         !bind_meta_qwen3(m, g, arch))
         return false;
     if (!bind_mtp_layers(m, g, arch, p)) return false;
