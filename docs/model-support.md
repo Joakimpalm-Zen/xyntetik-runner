@@ -436,7 +436,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#qwen3-4b-runner-tooluse-merged-q8_0"><code>merged-Q8_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
+<tr><td><a href="#qwen3-4b-runner-tooluse-merged-q8_0"><code>merged-Q8_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
 <tr><td><a href="#qwen3-4b-runner-tooluse-lora"><code>Qwen3-4B-ToolUse-LoRA.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
 </tbody>
 </table>
@@ -1274,9 +1274,9 @@ Qwen3-4B with the tool-use LoRA merged and written at Q8_0, text path: a qwen3 c
 - **Context tested:** not recorded.
 - **Still missing:** Pinned output.
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/adaptation-engine.md](adaptation-engine.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.7.1 on 2026-10-29.
 - **CPU:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `aa1a1647a3e4b534`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-merged-q8_0.windows-x86_64-cuda.cpu.txt)
-- **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `aa1a1647a3e4b534`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-merged-q8_0.linux-x86_64-cuda.cuda.txt)
+- **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `aa1a1647a3e4b534`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-merged-q8_0.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
 - **LoRA training:** supported (runner 1.7.1, 2026-10-29).
 - **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
