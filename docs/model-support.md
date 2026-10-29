@@ -1520,7 +1520,7 @@ Text path, the publisher's Q4_K_M, which fails the fidelity bar: against the pub
 - **Still missing:** The Windows CUDA host's CPU and CUDA cells and the CPU-vs-CUDA check; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only).
 - **Evidence:** [docs/compat-reports/1.7.1-2026-10-29-macos-arm64-minicpm5-2b-q4_k_m.json](compat-reports/1.7.1-2026-10-29-macos-arm64-minicpm5-2b-q4_k_m.json), [docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md](compat-reports/minicpm5-2b-reference-2026-10-29/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.1 on 2026-10-29.
-- **CPU:** ✅ v1.7.1 2026-10-29 on macos-arm64-metal at commit `a83670a85fdc`, output sha256 `16ee8166ecb8972e`, [pin](../tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.macos-arm64-metal.cpu.txt)
+- **CPU:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `771924318c51`, output sha256 `4ed9b06a2b3a14c9`, [pin](../tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ✅ v1.7.1 2026-10-29 on macos-arm64-metal at commit `a83670a85fdc`, output sha256 `16ee8166ecb8972e`, [pin](../tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.macos-arm64-metal.metal.txt)
 - **LoRA training:** supported (runner 1.7.1, 2026-10-29).
