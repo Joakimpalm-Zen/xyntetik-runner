@@ -410,10 +410,10 @@
         "metal": {
           "kind": "gate",
           "runner_version": "1.7.0",
-          "date": "2026-10-28",
+          "date": "2026-10-29",
           "device_class": "macos-arm64-metal",
           "result": "pass",
-          "commit": "6ec949e196245a5173ead275ffe80dd445e1b41f",
+          "commit": "0800f47350d545685f74dc92ce1a05642bf5a974",
           "caps": {
             "version": "1.7.0",
             "os": "macos",
