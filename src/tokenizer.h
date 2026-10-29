@@ -12,7 +12,11 @@ enum { TOK_SPM, TOK_BPE, TOK_BPE_SPM }; // BPE_SPM: gemma4 (spaces to U+2581, ra
 // changes where pre-token boundaries fall. An unrecognised value keeps GPT2
 // and is reported (pre_unknown below): the split may not be the publisher's.
 enum { TOK_PRE_GPT2, TOK_PRE_LLAMA3, TOK_PRE_QWEN2, TOK_PRE_SMOLLM, TOK_PRE_AFMOE,
-       TOK_PRE_TEKKEN, TOK_PRE_LLAMA4, TOK_PRE_QWEN35 };
+       TOK_PRE_TEKKEN, TOK_PRE_LLAMA4, TOK_PRE_QWEN35,
+       // openbmb MiniCPM5: the Llama 3 rule applied AFTER a split that
+       // isolates every digit group, so a whitespace run that ends at a
+       // digit stays one pre-token (see pre_split_next's digit_ends)
+       TOK_PRE_MINICPM5 };
 
 typedef struct { const char *key; uint32_t klen; int32_t val; } hmap_ent;
 typedef struct { hmap_ent *e; size_t cap; } hmap;

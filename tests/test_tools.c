@@ -2866,6 +2866,102 @@ static void test_coder_native_calls(void) {
     tool_envelope_free(&e);jv_free(tools);
 }
 
+// MiniCPM5's XML protocol: bare <function name="N"><param name="K">V</param>
+// </function> blocks in the content, parse-only (never constrained), typed by
+// the declaration. The three failure classes that bit the other XML family
+// are pinned: a truncated call never becomes a call on either surface, a
+// CDATA payload keeps an inner `]]>` that is not followed by `</param>`, and
+// a bare '<' or '&' in an unwrapped value is text.
+static void test_minicpm5_native_calls(void) {
+    jv *tools = parse("[{\"type\":\"function\",\"function\":{\"name\":\"save\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"},\"n\":{\"type\":\"integer\"}},\"required\":[\"text\"]}}}]");
+    tool_envelope e; char err[192]; bool skip = false;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    tool_decl_native(TMPL_MINICPM5, true, true, tools, &e, &skip);
+    assert(e.proto == TP_MINICPM_XML && e.parse_only && skip);
+    assert(!strcmp(tool_envelope_protocol_name(&e), "minicpm5_xml"));
+
+    // prose, then one call with a string and an integer member
+    const char *doc = "Checking.\n<function name=\"save\"><param name=\"text\">001</param><param name=\"n\">2</param></function>";
+    sbuf out = {0}, tc = {0};
+    assert(tool_envelope_map(&e, doc, strlen(doc), &out, &tc) == 1);
+    assert(!strcmp(out.s, "Checking.\n"));
+    sbuf wrapped = {0}; sb_lit(&wrapped,"[");sb_put(&wrapped,tc.s,tc.n);sb_lit(&wrapped,"]");
+    jv *calls = parse(wrapped.s);
+    assert(calls && calls->n == 1);
+    assert(!strcmp(jv_str(jv_get(jv_get(calls->items[0],"function"),"name"),""), "save"));
+    assert(!strcmp(jv_str(jv_get(jv_get(calls->items[0],"function"),"arguments"),""), "{\"text\":\"001\",\"n\":2}"));
+    jv_free(calls);free(wrapped.s);free(out.s);free(tc.s);
+    // streamed at every chunk size: the same one call, the prose before it
+    for (size_t step=1;step<=strlen(doc);step++) {
+        demux_log log;demux_step(&e,doc,step,&log);
+        assert(log.begins==1 && log.ends==1);
+        assert(!strcmp(log.content.s,"Checking.\n"));
+        assert(!strcmp(log.args.s,"{\"text\":\"001\",\"n\":2}"));
+        log_free(&log);
+    }
+
+    // two calls in one turn, the model's newline between them is framing
+    const char *two = "<function name=\"save\"><param name=\"text\">a</param></function>\n"
+                      "<function name=\"save\"><param name=\"text\">b</param></function><|im_end|>";
+    demux_log log2; demux(&e, two, &log2);
+    assert(log2.begins == 2 && log2.ends == 2 && !strcmp(log2.names.s, "save save"));
+    assert(!log2.content.s || !log2.content.n);
+    log_free(&log2);
+
+    // CDATA: an inner `]]>` not followed by </param> stays in the value, and
+    // so does a '<'; an unwrapped value keeps a bare '<' and '&' as text
+    const char *cd = "<function name=\"save\"><param name=\"text\"><![CDATA[x ]]> y <z]]></param></function>";
+    sbuf o2 = {0}, t2 = {0};
+    assert(tool_envelope_map(&e, cd, strlen(cd), &o2, &t2) == 1);
+    assert(strstr(t2.s, "\\\"text\\\":\\\"x ]]> y <z\\\"") != NULL);
+    free(o2.s); free(t2.s);
+    demux_log log3; demux(&e, cd, &log3);
+    assert(log3.begins == 1 && !strcmp(log3.args.s, "{\"text\":\"x ]]> y <z\"}"));
+    log_free(&log3);
+    const char *bare = "<function name=\"save\"><param name=\"text\">a < b & c</param></function>";
+    demux_log log4; demux(&e, bare, &log4);
+    assert(log4.begins == 1 && !strcmp(log4.args.s, "{\"text\":\"a < b & c\"}"));
+    log_free(&log4);
+    // a CDATA value may even spell the closing tags
+    const char *tags = "<function name=\"save\"><param name=\"text\"><![CDATA[</param></function>]]></param></function>";
+    demux_log log5; demux(&e, tags, &log5);
+    assert(log5.begins == 1 && !strcmp(log5.args.s, "{\"text\":\"</param></function>\"}"));
+    log_free(&log5);
+
+    // truncated: half a call is not a call, buffered or streamed
+    const char *cut = "Saving.\n<function name=\"save\"><param name=\"text\">001";
+    sbuf o3 = {0}, t3 = {0};
+    assert(tool_envelope_map(&e, cut, strlen(cut), &o3, &t3) < 0);
+    assert(!t3.n);
+    free(o3.s); free(t3.s);
+    for (int truncated = 0; truncated < 2; truncated++) {
+        demux_log l; memset(&l, 0, sizeof l);
+        tool_stream_sink sink = { &l, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream s; tool_stream_init(&s, &e, &sink);
+        for (size_t i = 0; i < strlen(cut); i++) assert(tool_stream_feed(&s, cut + i, 1) == 0);
+        // a budget cut keeps "length" (0); the model's own end is a fault (-1)
+        assert(tool_stream_finish_ex(&s, truncated == 1) == (truncated ? 0 : -1));
+        assert(l.begins == 0 && l.ends == 0 && !tool_stream_called(&s));
+        assert(!strcmp(l.content.s, "Saving.\n"));
+        tool_stream_free(&s); log_free(&l);
+    }
+    // an undeclared member or a value that does not fit its type is refused
+    const char *bad = "<function name=\"save\"><param name=\"text\">x</param><param name=\"n\">two</param></function>";
+    sbuf o4 = {0}, t4 = {0};
+    assert(tool_envelope_map(&e, bad, strlen(bad), &o4, &t4) < 0);
+    free(o4.s); free(t4.s);
+    {   // streamed: the block is dropped and the fault reaches the finish
+        demux_log l; memset(&l, 0, sizeof l);
+        tool_stream_sink sink = { &l, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream s; tool_stream_init(&s, &e, &sink);
+        assert(tool_stream_feed(&s, bad, (int)strlen(bad)) == 0);
+        assert(tool_stream_finish(&s) == -1);
+        assert(l.begins == 0 && !tool_stream_called(&s));
+        tool_stream_free(&s); log_free(&l);
+    }
+    tool_envelope_free(&e); jv_free(tools);
+}
+
 // The parser does not depend on the grammar's member order: parameters
 // arrive in any order and the arguments object is assembled in the declared
 // one, which is the order the schema validator accepts. Unknown parameters
@@ -3246,6 +3342,7 @@ int main(void) {
     test_coder_raw_string_closes_on_the_tag();
     test_qwen_prose_still_constrains_calls();
     test_coder_native_calls();
+    test_minicpm5_native_calls();
     test_coder_parameters_in_any_order();
     test_gemma4_prose_then_call();
     test_xml_families_share_the_parse_only_contract();

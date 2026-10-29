@@ -85,6 +85,9 @@ static const struct {
     // TMPL_LLAMA2_FALLBACK: what detection returns when nothing matched
     { "llama2-fallback",  0,   0, 0, 0, 0, "generic",       0 },
     { "mellum",           0,  24, 1, 0, 1, "qwen_json",     1 },
+    // MiniCPM5: ON pre-seeds '<think>\n', OFF closes an empty block, so both
+    // change a one-turn prompt; its XML tool protocol is its own
+    { "minicpm5",         0,  24, 1, 1, 1, "minicpm5_xml",  1 },
 };
 #define N_FAMILY ((int)(sizeof FAMILY / sizeof *FAMILY))
 
@@ -230,7 +233,7 @@ static const char *opener(int t) {
     switch (t) {
     case TMPL_GRANITE42: case TMPL_NEMOTRON35: case TMPL_QWEN38:
     case TMPL_ORNITH: case TMPL_QWEN35: case TMPL_QWEN35_NOTHINK:
-    case TMPL_NEMOTRON:
+    case TMPL_NEMOTRON: case TMPL_MINICPM5:
         return "<think>\n";
     case TMPL_HARMONY: return "<|start|>assistant<|channel|>analysis<|message|>";
     case TMPL_MUSE: return "<|start|>assistant to=self<|message|>";
@@ -298,12 +301,12 @@ static void state_matches_the_prompt(int t, const jv *tools) {
 }
 
 int main(void) {
-    CHECK(N_FAMILY == TMPL_MELLUM + 1,
-          "the table has %d rows for %d template ids", N_FAMILY, TMPL_MELLUM + 1);
+    CHECK(N_FAMILY == TMPL_MINICPM5 + 1,
+          "the table has %d rows for %d template ids", N_FAMILY, TMPL_MINICPM5 + 1);
     jv *tools = json_parse(TOOL_SRC, strlen(TOOL_SRC));
     CHECK(tools != NULL, "tool fixture parses");
     chat_msg user[1] = { { .role = "user", .content = "Hello" } };
-    for (int t = 0; t < N_FAMILY && t <= TMPL_MELLUM; t++) {
+    for (int t = 0; t < N_FAMILY && t <= TMPL_MINICPM5; t++) {
         const char *name = FAMILY[t].name;
 
         size_t e0 = render(t, NULL, 0, false, THINK_DEFAULT, NULL, A, sizeof A);

@@ -166,7 +166,21 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // block (Qwen3's template writes one there). Detected by the
        // normalize_content macro its template opens with. Appended last so
        // no other family's value moves.
-       TMPL_MELLUM };
+       TMPL_MELLUM,
+       // openbmb MiniCPM5 (openbmb/MiniCPM5-2B chat_template.jinja): Qwen3's
+       // ChatML and think shape with three rules of its own. A thought block
+       // is written on EVERY historical assistant turn (empty when the turn
+       // carries no reasoning and no <think> tags of its own, Qwen3 writes
+       // it only on the trailing one); enable_thinking true pre-seeds the
+       // generation prompt with '<think>\n' (Qwen3 emits nothing and lets
+       // the model open its own); and its tool protocol is XML, not the
+       // Hermes JSON block: declarations in the system turn under its own
+       // guideline text, calls as <function name="N"><param name="K">V
+       // </param></function> with a CDATA wrapper where a string value holds
+       // '<', '&' or a newline, results as Qwen3's <tool_response> user turn.
+       // Detected by the example call its guideline text spells. Its tokenizer
+       // pre is `minicpm5` (tokenizer.c). Appended last.
+       TMPL_MINICPM5 };
 
 // The reasoning tags a TEMPLATE family writes, for the families whose
 // protocol (not their architecture) defines them: the `<think>` block of
@@ -312,6 +326,9 @@ bool template_roles_valid(int tmpl, const char *const *roles, int n,
 //
 //   TMPL_CHATML_THINK  Qwen/Qwen3-* tokenizer_config.json
 //   TMPL_MELLUM        JetBrains/Mellum2.1-12B-A2.5B-Thinking chat_template.jinja
+//   TMPL_MINICPM5      openbmb/MiniCPM5-2B chat_template.jinja (think pre-seed
+//     on ON, closed block on OFF, nothing on DEFAULT: `enable_thinking is
+//     defined` gates both branches)
 //     enable_thinking defaults TRUE; the false branch appends
 //     '<think>\n\n</think>\n\n' after the assistant header. So DEFAULT and ON
 //     emit nothing extra and OFF appends the closed block.
@@ -492,6 +509,7 @@ enum tool_proto {
     TP_MUSE_PLAIN,    // Muse: stream a schema payload after a to=user header
     TP_NEMOTRON,      // Nemotron Nano native <TOOLCALL>[{JSON}, ...]</TOOLCALL>
     TP_MISTRAL,       // Mistral v0.3 / Nemo native [TOOL_CALLS][{JSON}, ...]
+    TP_MINICPM_XML,   // MiniCPM5 <function name="N"><param name="K">V</param></function>
 };
 
 typedef struct {

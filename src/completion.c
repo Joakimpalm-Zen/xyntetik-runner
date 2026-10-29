@@ -1164,6 +1164,9 @@ static const struct {
     { "<function=", ">", "<parameter=", ">", "</parameter>", true },
     { "<atem:invoke name=\"", "\"", "<atem:parameter name=\"", "\">",
       "</atem:parameter>", false },
+    // MiniCPM5 (never constrained today, so the closer does not run on it;
+    // the row keeps the table complete for the day it is)
+    { "<function name=\"", "\">", "<param name=\"", "\">", "</param>", false },
 };
 
 static bool cl_xml(clscan *c) {

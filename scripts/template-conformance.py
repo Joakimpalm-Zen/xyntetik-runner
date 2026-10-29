@@ -177,6 +177,17 @@ FAMILIES = {
              "publisher's Q4_K_M",
         tool_family=True, thinking_var="enable_thinking",
         tokenizer=("Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf",)),
+    # MiniCPM5 (openbmb): ChatML with Qwen3's think shape, read by the
+    # chatml-think renderer (template_detect finds <|im_start|> and <think>
+    # and none of the phrases that name a more specific family). Its own
+    # template is the oracle: the tool rows tell whether its XML function
+    # calls (<function name=...><param name=...>) are what the renderer
+    # writes, which Qwen3's oracle cannot say.
+    "minicpm5": Family(
+        "minicpm5", ("hf", "openbmb/MiniCPM5-2B"),
+        note="openbmb/MiniCPM5-2B chat_template.jinja at f9740005",
+        tool_family=True, thinking_var="enable_thinking",
+        tokenizer=("MiniCPM5-2B-Q8_0.gguf", "MiniCPM5-2B-Q4_K_M.gguf")),
     "llama2": Family(
         "llama2", ("hf", "unsloth/llama-2-7b-chat"),
         note="meta-llama/Llama-2-7b-chat-hf is gated (HTTP 401); this mirror "

@@ -182,7 +182,8 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
         if ((tmpl == TMPL_ORNITH || tmpl == TMPL_QWEN38 ||
              ((tmpl == TMPL_CHATML_THINK || tmpl_qwen35(tmpl)) &&
               replay_reason) ||
-             (tmpl == TMPL_MELLUM && replay_reason && reason && *reason)) &&
+             (tmpl == TMPL_MELLUM && replay_reason && reason && *reason) ||
+             (tmpl == TMPL_MINICPM5 && replay_reason)) &&
             !strcmp(role, "assistant")) {
             prompt_lit(&b, "<think>\n");
             if (reason) sb_put(&b, reason, strlen(reason));
@@ -728,7 +729,9 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         bool replay_reason = (s->tmpl == TMPL_CHATML_THINK &&
                               i == msgs->n - 1 && i > last_user) ||
                              ((tmpl_qwen35(s->tmpl) || s->tmpl == TMPL_MELLUM) &&
-                              i > last_user);
+                              i > last_user) ||
+                             // MiniCPM5 writes the block on every assistant turn
+                             s->tmpl == TMPL_MINICPM5;
         char *content = message_text(msgs->items[i], s->tmpl, replay_reason,
                                      &oom);
         if (oom) break;
