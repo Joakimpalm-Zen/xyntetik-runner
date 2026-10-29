@@ -785,13 +785,13 @@
         },
         "cuda": {
           "kind": "gate",
-          "runner_version": "1.5.1",
-          "date": "2026-10-23",
+          "runner_version": "1.7.0",
+          "date": "2026-10-29",
           "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "349af6e651856365a098f4e284e7f5293a504576",
+          "commit": "047e8e3463122b6b06afbd2321c9036d917eab82",
           "caps": {
-            "version": "1.5.1",
+            "version": "1.7.0",
             "os": "windows",
             "arch": "x86_64",
             "cpu_cores": 8,
