@@ -269,6 +269,13 @@ static void append_stop_token(sbuf *r, slot_t *s, engine *e) {
         if (j) sb_lit(r, ",");
         sb_fmt(r, "%d", a->id);
     }
+    sb_lit(r, "],\"top_token_logprobs\":[");
+    for (int j = 0; j < e->lp_n; j++) {
+        const lp_alt *a = &e->lp_top[(size_t)e->stop_lp_at * e->lp_n + j];
+        if (a->id < 0) break;
+        if (j) sb_lit(r, ",");
+        sb_fmt(r, "%.9g", a->lp);
+    }
     sb_lit(r, "]}");
 }
 
@@ -352,6 +359,25 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e,
             if (a->id < 0) break;
             if (j) sb_lit(r, ",");
             sb_fmt(r, "%d", a->id);
+        }
+        sb_lit(r, "]");
+    }
+    // Each id's own logprob, aligned with top_token_ids. top_logprobs merges
+    // candidates that share a spelling (append_top_map), so this is the only
+    // place an id-keyed comparison finds every candidate's number.
+    sb_lit(r, "],\"top_token_logprobs\":[");
+    for (int i = 0; i < np + e->lp_count; i++) {
+        if (i) sb_lit(r, ",");
+        if (i == 0 && np) { sb_lit(r, "null"); continue; }
+        const lp_alt *row = i < np ? &pg->ps.top[(size_t)i * pg->ps.top_n]
+                                   : &e->lp_top[(size_t)(i - np) * e->lp_n];
+        int cnt = i < np ? pa : e->lp_n;
+        sb_lit(r, "[");
+        for (int j = 0; j < cnt; j++) {
+            const lp_alt *a = &row[j];
+            if (a->id < 0) break;
+            if (j) sb_lit(r, ",");
+            sb_fmt(r, "%.9g", a->lp);
         }
         sb_lit(r, "]");
     }

@@ -66,15 +66,21 @@ def test_top_logprobs_never_repeats_a_key(runner_bin, model):
         assert repeated == [], f"repeated keys: {repeated!r}"
         lp = body["choices"][0]["logprobs"]
         merged_somewhere = False
-        for top, ids in zip(lp["top_logprobs"], lp["top_token_ids"]):
+        for top, ids, lps in zip(lp["top_logprobs"], lp["top_token_ids"],
+                                 lp["top_token_logprobs"]):
             if top is None:
+                assert ids is None and lps is None
                 continue
             assert len(ids) == 20, "top_token_ids keeps every id"
             assert len(set(ids)) == 20
+            assert len(lps) == len(ids), "one logprob per id"
+            assert lps == sorted(lps, reverse=True)
             assert 1 <= len(top) <= len(ids)
             merged_somewhere |= len(top) < len(ids)
-            # the merged map is still a distribution's top slice
-            assert sum(math.exp(v) for v in top.values()) <= 1.0 + 1e-6
+            # merging moves mass between keys, never adds or drops it
+            assert sum(math.exp(v) for v in top.values()) == pytest.approx(
+                sum(math.exp(v) for v in lps), rel=1e-6)
+            assert sum(math.exp(v) for v in lps) <= 1.0 + 1e-6
         assert merged_somewhere, "the fixture produced no shared spelling"
 
 
