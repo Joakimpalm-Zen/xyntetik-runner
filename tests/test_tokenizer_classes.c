@@ -62,8 +62,10 @@ static void test_classes_match_unicode(void) {
 
 typedef int (*split_fn)(const uint32_t *cp, int i, int ncp);
 
-static int split_llama3(const uint32_t *cp, int i, int ncp) { return pre_split_next(cp, i, ncp, 3, false); }
-static int split_qwen2(const uint32_t *cp, int i, int ncp)  { return pre_split_next(cp, i, ncp, 1, false); }
+static int split_llama3(const uint32_t *cp, int i, int ncp) { return pre_split_next(cp, i, ncp, 3, false, false); }
+static int split_qwen2(const uint32_t *cp, int i, int ncp)  { return pre_split_next(cp, i, ncp, 1, false, false); }
+// MiniCPM5: the digit groups are split off before the Llama 3 regex runs
+static int split_minicpm5(const uint32_t *cp, int i, int ncp) { return pre_split_next(cp, i, ncp, 3, false, true); }
 
 // "a|b|c" is the expected pre-token sequence for text "abc"
 static void expect_split(const char *family, split_fn fn, const char *spec) {
@@ -131,6 +133,15 @@ static void test_boundaries_match_the_references(void) {
     expect_split("llama3", split_llama3, " \"\xEF\xBF\xBD.|txt|\"");
     // a guillemet leads its word where the regex allows a leading non-letter
     expect_split("llama3", split_llama3, "«word|»");
+    // a whitespace run that ends at a digit group: llama-bpe's single pass
+    // leaves the last space to the digit, MiniCPM5's digits were cut out
+    // first, so the run stays whole (openbmb/MiniCPM5-2B tokenizer.json:
+    // "  1" is ["  ", "1"]); elsewhere the two rules agree
+    expect_split("llama3", split_llama3, " | |1");
+    expect_split("minicpm5", split_minicpm5, "  |1");
+    expect_split("minicpm5", split_minicpm5, " \t |1");
+    expect_split("minicpm5", split_minicpm5, "123|456|7");
+    expect_split("minicpm5", split_minicpm5, " | x");
     expect_split("o200k", llama4_split_next, "«word|»");
     expect_split("smollm", smollm_split_next, "«|word|»");
 }
