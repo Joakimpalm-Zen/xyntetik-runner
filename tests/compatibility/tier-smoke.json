@@ -971,6 +971,68 @@
           }
         }
       }
+    },
+    "mellum2.1-12b-a2.5b-thinking-q4_k_m": {
+      "backend_args": {
+        "cuda": [
+          "--gpu",
+          "25"
+        ]
+      },
+      "pins": {
+        "windows-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q4_k_m.windows-x86_64-cuda.cpu.txt",
+          "sha256": "d419bee5d375409ebe7f8b2dbab37ffc9b3f848d5886be65301d42eb647f1f6c",
+          "bytes": 158,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-29",
+            "runner_version": "1.7.0",
+            "commit": "502805d33ecc892da726e82d7afdaec80ad3b56d"
+          }
+        },
+        "windows-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q4_k_m.windows-x86_64-cuda.cuda.txt",
+          "sha256": "d419bee5d375409ebe7f8b2dbab37ffc9b3f848d5886be65301d42eb647f1f6c",
+          "bytes": 158,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            },
+            "backend_args": [
+              "--gpu",
+              "25"
+            ]
+          },
+          "pinned": {
+            "date": "2026-10-29",
+            "runner_version": "1.7.0",
+            "commit": "502805d33ecc892da726e82d7afdaec80ad3b56d"
+          }
+        }
+      }
     }
   }
 }

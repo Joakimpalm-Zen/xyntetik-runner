@@ -3386,7 +3386,9 @@
         "context": null,
         "limitations": "No fidelity claim for Q4_K_M: it fails the 0.05 bar against the BF16 parent on both engines, and the gap is the file, not the engine. The publisher's MXFP4_MOE file is the untested alternative. CUDA MoE on the scalar route; tensor-core and grouped routes not measured for this family. The 8.07 GB file does not load resident on an 8 GB machine, and on an 8 GB card it runs as a layer split.",
         "evidence": [
-          "tests/compatibility/coverage.json"
+          "tests/compatibility/coverage.json",
+          "docs/compat-reports/1.7.0-2026-10-29-windows-x86_64-mellum2.1-12b-a2.5b-thinking-q4_k_m.json",
+          "docs/compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json"
         ],
         "missing": "The Metal row; the Q8_0 cells (12.9 GB is not servable on the Windows CUDA host's 16 GB beside its other work)."
       },
@@ -3395,11 +3397,58 @@
         "backend": "cuda"
       },
       "backends": {
-        "cpu": null,
-        "cuda": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.0",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "502805d33ecc892da726e82d7afdaec80ad3b56d",
+          "caps": {
+            "version": "1.7.0",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "d419bee5d375409ebe7f8b2dbab37ffc9b3f848d5886be65301d42eb647f1f6c",
+          "ran": "runner -m Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q4_k_m.windows-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.0",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "502805d33ecc892da726e82d7afdaec80ad3b56d",
+          "caps": {
+            "version": "1.7.0",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "d419bee5d375409ebe7f8b2dbab37ffc9b3f848d5886be65301d42eb647f1f6c",
+          "ran": "runner -m Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf --serve -c 512 -b 64 --gpu 25; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q4_k_m.windows-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.0",
+        "date": "2026-10-29"
+      },
       "transitions": [
         {
           "tier": "upcoming",

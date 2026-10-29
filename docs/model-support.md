@@ -556,12 +556,12 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Mellum2.1</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<summary><b>Mellum2.1</b>, 1 model: CPU ✅ · CUDA ✅ · Metal - · Train ✅</summary>
 <p><b>Mellum2.1-12B-A2.5B-Thinking (JetBrains)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#mellum2.1-12b-a2.5b-thinking-q4_k_m"><code>Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="#mellum2.1-12b-a2.5b-thinking-q4_k_m"><code>Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td nowrap>✅ 1.7.0<br>2026-10-29</td><td></td><td nowrap>✅ 1.7.0<br>2026-10-29</td></tr>
 </tbody>
 </table>
 </details>
@@ -1451,11 +1451,13 @@ Text path, JetBrains' own Q4_K_M. Publisher Q4_K_M against the publisher's BF16 
 - **Context tested:** not recorded.
 - **Known limitations:** No fidelity claim for Q4_K_M: it fails the 0.05 bar against the BF16 parent on both engines, and the gap is the file, not the engine. The publisher's MXFP4_MOE file is the untested alternative. CUDA MoE on the scalar route; tensor-core and grouped routes not measured for this family. The 8.07 GB file does not load resident on an 8 GB machine, and on an 8 GB card it runs as a layer split.
 - **Still missing:** The Metal row; the Q8_0 cells (12.9 GB is not servable on the Windows CUDA host's 16 GB beside its other work).
-- **Evidence:** [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Validation run:** on windows-x86_64-cuda, cuda backend; no run recorded yet.
-- **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **Evidence:** [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [docs/compat-reports/1.7.0-2026-10-29-windows-x86_64-mellum2.1-12b-a2.5b-thinking-q4_k_m.json](compat-reports/1.7.0-2026-10-29-windows-x86_64-mellum2.1-12b-a2.5b-thinking-q4_k_m.json), [docs/compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json](compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json).
+- **Validation run:** on windows-x86_64-cuda, cuda backend; last run 1.7.0 on 2026-10-29.
+- **CPU:** ✅ v1.7.0 2026-10-29 on windows-x86_64-cuda at commit `502805d33ecc`, output sha256 `d419bee5d375409e`, [pin](../tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q4_k_m.windows-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.7.0 2026-10-29 on windows-x86_64-cuda at commit `502805d33ecc`, output sha256 `d419bee5d375409e`, [pin](../tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q4_k_m.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.7.0, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.0, 2026-10-29).
 - **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-10-29 ([log](#transition-log)).
 
 <a id="tier3"></a>

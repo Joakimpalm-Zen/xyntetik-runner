@@ -1,0 +1,11 @@
+Mercury
+Venus
+Earth
+Mars
+Jupiter
+Saturn
+Uranus
+Neptune
+
+Mercury: The smallest planet, closest to the Sun, with a rocky surface.  
+Venus: Earth's twin in size,
