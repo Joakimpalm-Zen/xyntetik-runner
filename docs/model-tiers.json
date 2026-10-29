@@ -755,25 +755,45 @@
         "evidence": [
           "docs/granite-42-qwen38-cert-2026-09-06.md",
           "docs/golden-pass-2026-10-22.md",
-          "tests/compatibility/coverage.json"
+          "tests/compatibility/coverage.json",
+          "docs/compat-reports/1.7.0-2026-10-29-windows-x86_64-granite-4.2-8b-q4_k_m.json",
+          "docs/compat-reports/cpu_cuda/granite-4.2-8b-q4_k_m.json"
         ],
-        "missing": "Metal and CPU rows; pinned output."
+        "missing": "The Metal row."
       },
       "smoke": {
         "device_class": "windows-x86_64-cuda",
         "backend": "cuda"
       },
       "backends": {
-        "cpu": null,
-        "cuda": {
+        "cpu": {
           "kind": "gate",
-          "runner_version": "1.5.1",
-          "date": "2026-10-23",
+          "runner_version": "1.7.0",
+          "date": "2026-10-29",
           "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "349af6e651856365a098f4e284e7f5293a504576",
+          "commit": "d397f67af886af31f28d1e90c8a39f063cf7a44d",
           "caps": {
-            "version": "1.5.1",
+            "version": "1.7.0",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "ff1cd210d7a92cd2f0bf5c91eea629c0774479852b1c523dd916d47e05a75942",
+          "ran": "runner -m granite-4.2-8b-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/granite-4.2-8b-q4_k_m.windows-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.0",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "047e8e3463122b6b06afbd2321c9036d917eab82",
+          "caps": {
+            "version": "1.7.0",
             "os": "windows",
             "arch": "x86_64",
             "cpu_cores": 8,
@@ -795,8 +815,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.5.1",
-        "date": "2026-10-23"
+        "runner_version": "1.7.0",
+        "date": "2026-10-29"
       },
       "transitions": [
         {
