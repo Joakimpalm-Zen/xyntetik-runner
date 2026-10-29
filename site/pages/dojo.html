@@ -118,7 +118,7 @@ dojo state pi-1</code></pre>
     </div>
     <div class="rows">
       <div><span>Released</span><p>Yes. The repository is public under Apache 2.0, built with SwiftPM from the Command Line Tools; the <code>ci</code> workflow runs the Swift tests, the shim's Python tests and the hygiene check on every pull request.</p></div>
-      <div><span>Platform</span><p>The app runs on macOS. Panes can run on Linux, Mac and Windows hosts over SSH. Codex on a Windows host has not been tried.</p></div>
+      <div><span>Platform</span><p>The app runs on macOS. Panes can run on Linux, Mac and Windows hosts over SSH; Claude Code and Codex both run on a Windows host.</p></div>
       <div><span>Relationship to Runner</span><p>Dojo is a window on the agents and on Runner, not a part of the engine. Runner stays free and complete on its own; Dojo reaches it through the same loopback API anyone else can use, and admits models from Runner's own support roster.</p></div>
       <div><span>Not built</span><p>Restoring panes on restart (restarting harnesses unasked is worse than an empty window), resizing or tabbing panes, attaching to a session started outside the app, a settings window.</p></div>
       <div><span>How to follow it</span><p>The <a href="{{dojo}}">repository</a> and its <a href="{{dojo}}/blob/main/README.md">README</a>, which holds the install request, the remote setup command, the troubleshooting list and every file the app keeps. Questions: <a href="mailto:hello@xyntetik.com">hello@xyntetik.com</a>.</p></div>
