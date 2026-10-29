@@ -11,9 +11,14 @@ Current release and unreleased changes. Compatibility follows the
   Metal laptop: pulled and verified through `--pull`, loaded on Metal,
   tokenized as the publisher's tokenizer.json does (0 of 721 corpus strings
   differ) and answered through its chat template; the validation smoke is
-  pinned and recorded on `macos-arm64-metal`. No fidelity measurement
-  against the BF16 parent yet, and the repository's DFlash drafter file is
-  not a Runner artifact. `scripts/tier-smoke.py --row` and
+  pinned and recorded on `macos-arm64-metal`, and on the Windows CUDA host
+  as CUDA and CPU cells (`windows-x86_64-cuda`) with a byte-identical reply
+  across the three cells, a CPU-vs-CUDA agreement of 9 of 9 prompts, and a
+  20-step `runner train --train-gpu` smoke whose adapter changes the answer.
+  No fidelity measurement against the BF16 parent yet, and the repository's
+  DFlash drafter file is not a Runner artifact. `scripts/compat_matrix.py`
+  now decodes every child's pipes as UTF-8 on every platform; the Windows
+  report had stored runner's em dashes and an emoji as cp1252 mojibake. `scripts/tier-smoke.py --row` and
   `scripts/model-tiers.py --record` now accept a Tier 2 row, so an
   admission below Tier 1 records the pass that admitted it as dated
   evidence; the release gate still reads only Tier 1 rows.

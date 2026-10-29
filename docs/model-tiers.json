@@ -353,14 +353,16 @@
           "text"
         ],
         "fp32_reference": "owed",
-        "anchor": "Family: gemma-4-E2B bf16 against Google's float32 reference (1.5.0 golden pass). This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ) and a chat answer at temperature 0 on the Metal laptop; no fidelity or cross-engine number.",
+        "anchor": "Family: gemma-4-E2B bf16 against Google's float32 reference (1.5.0 golden pass). This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ) and a chat answer at temperature 0 on the Metal laptop and on the Windows CUDA host (CUDA, and CPU with the GPU off); the smoke reply is byte-identical across the Metal, CUDA and CPU cells (one output sha256), and the CPU-vs-CUDA check agreed on 9 of 9 prompts. A 20-step LoRA smoke with --train-gpu wrote an adapter that changes the answer. No fidelity or cross-engine number.",
         "context": 4096,
         "limitations": "No vision: the publisher's mmproj is not part of this repository and would not be loaded. 6.18 GB of weights page from disk on an 8 GB machine with other applications open; the validation run recorded that state.",
         "evidence": [
           "docs/compat-reports/1.7.0-2026-10-28-macos-arm64-nemotron-3.5-bolt-e4b-q4_k_m.json",
+          "docs/compat-reports/1.7.0-2026-10-29-windows-x86_64-nemotron-3.5-bolt-e4b-q4_k_m.json",
+          "docs/compat-reports/train-smoke-1.7.0-2026-10-29-windows-x86_64-nemotron-3.5-bolt-e4b.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "Fidelity against the BF16 parent (nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16); CPU and CUDA cells; the repository's DFlash drafter file (Nemotron-3.5-Bolt-E4B-DFlash-BF16.gguf), which Runner has no path for."
+        "missing": "Fidelity against the BF16 parent (nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16); the repository's DFlash drafter file (Nemotron-3.5-Bolt-E4B-DFlash-BF16.gguf), which Runner has no path for."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",

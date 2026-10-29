@@ -1,90 +1,90 @@
 {
- "model": "~/bolt/hf/nvidia--NVIDIA-Nemotron-3.5-Bolt-E4B-4GB/Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf",
- "tokens": 128,
- "context": 2048,
- "routing": "eager",
- "moe": false,
- "dense_rule": "margin_qualified",
- "extra_args": [],
- "gpu_split": {
-  "layers_on_gpu": 42,
-  "layers_total": 42,
-  "output_weight_on_gpu": true,
-  "whole_graph": true
- },
- "cpu_cuda_identity": {
-  "result": "pass",
-  "exact": "9/9",
-  "gpu_arm_on_cpu": false,
-  "near_tie_tolerated": 0,
-  "tie_band_nats": 0.5,
-  "over_cap": false
- },
- "identical": 9,
- "total": 9,
- "rows": [
-  {
-   "prompt": "The capital of France is",
-   "kind": "exact",
-   "detail": null,
-   "cpu": " Paris.",
-   "gpu": null
+  "model": "~/bolt/hf/nvidia--NVIDIA-Nemotron-3.5-Bolt-E4B-4GB/Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf",
+  "tokens": 128,
+  "context": 2048,
+  "routing": "eager",
+  "moe": false,
+  "dense_rule": "margin_qualified",
+  "extra_args": [],
+  "gpu_split": {
+    "layers_on_gpu": 42,
+    "layers_total": 42,
+    "output_weight_on_gpu": true,
+    "whole_graph": true
   },
-  {
-   "prompt": "def fibonacci(n):",
-   "kind": "exact",
-   "detail": null,
-   "cpu": "\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)\n\n# Test cases\nprint(f\"fib(0) = {fibonacci(0)}\")\nprint(f\"fib(1) = {fibonacci(1)}\")\nprint(f\"fib(2) = {fibonacci(2)}\")\nprint(f\"fib(6) = {fibonacci(6)}\")\nprint(f\"fib(10) = {fibonacci(10)}\")\n```\n\n### Analysis\n\nThe provided code implements the Fibonacci",
-   "gpu": null
+  "cpu_cuda_identity": {
+    "result": "pass",
+    "exact": "9/9",
+    "gpu_arm_on_cpu": false,
+    "near_tie_tolerated": 0,
+    "tie_band_nats": 0.5,
+    "over_cap": false
   },
-  {
-   "prompt": "1 2 3 4 5 6 7 8",
-   "kind": "exact",
-   "detail": null,
-   "cpu": "\n\n1 . . . . . . .\n2 . . . . . . .\n3 . . . . . . .\n4 . . . . . . .\n5 . . . . . . .\n6 . . . . . . .\n7 . . . . . . .\n8 . . . . . . .\n\nThis appears to be a blank 8x8 grid, likely for a game like Tic-Tac-Toe (though 8x8 is usually for Connect Four/Gomoku variants) or a puzzle.\n\n**What would you like to do with this grid?",
-   "gpu": null
-  },
-  {
-   "prompt": "Once upon a time, in a land far away,",
-   "kind": "exact",
-   "detail": null,
-   "cpu": " lived a young woman named Elara. She possessed a gentle spirit and a heart full of compassion. Elara lived in a small, cozy cottage nestled beside a whispering forest. Her days were filled with tending to her small garden and observing the natural rhythms of the woods.\n\nOne day, while gathering herbs near the edge of the forest, Elara discovered something unusual beneath the moss—a small, intricately carved wooden box. Curiosity prompted her to brush away the moss, revealing the box. It was smooth to the touch, and the carvings depicted ancient, forgotten symbols.\n\nIntrigued, she carried the box back to her cottage.",
-   "gpu": null
-  },
-  {
-   "prompt": "Q: What is 17 * 23?\nA:",
-   "kind": "exact",
-   "detail": null,
-   "cpu": " 391",
-   "gpu": null
-  },
-  {
-   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
-   "kind": "exact",
-   "detail": null,
-   "cpu": "\n\nThe keeper noted:\n1. Wind direction was North when cloud cover was 70% and fog lifted at 3 AM.\n2. Wind direction was South when cloud cover was 40% and fog lifted at 10 AM.\n3. Wind direction was East when cloud cover was 90% and fog lifted at 5 AM.\n4. Wind direction was West when cloud cover was 60% and fog lifted at 11 AM.\n\nWe need to determine the wind direction for a day when cloud cover was 70% and fog lifted at 3 AM.\n\n**",
-   "gpu": null
-  },
-  {
-   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
-   "kind": "exact",
-   "detail": null,
-   "cpu": " reduced the number of unique objects by about 470.\n\n**Question:** How many unique objects were listed in the revised catalogue in 1929?\n\n**Calculation:**\nTotal objects listed = 4218\nFraction of duplicates = 1/9\nNumber of duplicates = 4218 * (1/9) = 468.66...\nReduction in unique objects = 470 (given)\n\n**Answer:**\nUnique objects = Total objects listed - Reduction in unique objects\nUnique objects = 4218 - 470 = 3",
-   "gpu": null
-  },
-  {
-   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
-   "kind": "exact",
-   "detail": null,
-   "cpu": " is good.\n# However, the parsing logic assumes the header is exactly 8 bytes.\n# The GGUF format specifies the header is 8 bytes.\n# The provided code seems correct based on the GGUF specification.\n# Let's assume GGUF_MAGIC and GGUF_VERSION are defined elsewhere.\n\n# --- Test Cases ---\n# Mock definitions for testing\nGGUF_MAGIC = 0x12345678\nGGUF_VERSION = 1\n# Helper to create valid/invalid buffers\ndef create_buffer(magic, version,",
-   "gpu": null
-  },
-  {
-   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
-   "kind": "exact",
-   "detail": null,
-   "cpu": " expects medieval chaos.\n\nA modern Lisbon, however, has layered on modern life, adding modern infrastructure, commercial buildings, and tourist amenities over this historic foundation. This layering means the \"old\" and the \"new\" are not strictly separated; the modern is integrated into the historic fabric.\n\n---\n\n**Questions:**\n\n1. How does the description of Lisbon's historical development contrast with the description of its modern state?\n2. What does the text imply about the relationship between the \"old\" and the \"new\" in Lisbon?\n3. What is the primary reason given for the regularity of the older district's",
-   "gpu": null
-  }
- ]
+  "identical": 9,
+  "total": 9,
+  "rows": [
+    {
+      "prompt": "The capital of France is",
+      "kind": "exact",
+      "detail": null,
+      "cpu": " Paris.",
+      "gpu": null
+    },
+    {
+      "prompt": "def fibonacci(n):",
+      "kind": "exact",
+      "detail": null,
+      "cpu": "\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)\n\n# Test cases\nprint(f\"fib(0) = {fibonacci(0)}\")\nprint(f\"fib(1) = {fibonacci(1)}\")\nprint(f\"fib(2) = {fibonacci(2)}\")\nprint(f\"fib(6) = {fibonacci(6)}\")\nprint(f\"fib(10) = {fibonacci(10)}\")\n```\n\n### Analysis\n\nThe provided code implements the Fibonacci",
+      "gpu": null
+    },
+    {
+      "prompt": "1 2 3 4 5 6 7 8",
+      "kind": "exact",
+      "detail": null,
+      "cpu": "\n\n1 . . . . . . .\n2 . . . . . . .\n3 . . . . . . .\n4 . . . . . . .\n5 . . . . . . .\n6 . . . . . . .\n7 . . . . . . .\n8 . . . . . . .\n\nThis appears to be a blank 8x8 grid, likely for a game like Tic-Tac-Toe (though 8x8 is usually for Connect Four/Gomoku variants) or a puzzle.\n\n**What would you like to do with this grid?",
+      "gpu": null
+    },
+    {
+      "prompt": "Once upon a time, in a land far away,",
+      "kind": "exact",
+      "detail": null,
+      "cpu": " lived a young woman named Elara. She possessed a gentle spirit and a heart full of compassion. Elara lived in a small, cozy cottage nestled beside a whispering forest. Her days were filled with tending to her small garden and observing the natural rhythms of the woods.\n\nOne day, while gathering herbs near the edge of the forest, Elara discovered something unusual beneath the moss\u2014a small, intricately carved wooden box. Curiosity prompted her to brush away the moss, revealing the box. It was smooth to the touch, and the carvings depicted ancient, forgotten symbols.\n\nIntrigued, she carried the box back to her cottage.",
+      "gpu": null
+    },
+    {
+      "prompt": "Q: What is 17 * 23?\nA:",
+      "kind": "exact",
+      "detail": null,
+      "cpu": " 391",
+      "gpu": null
+    },
+    {
+      "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+      "kind": "exact",
+      "detail": null,
+      "cpu": "\n\nThe keeper noted:\n1. Wind direction was North when cloud cover was 70% and fog lifted at 3 AM.\n2. Wind direction was South when cloud cover was 40% and fog lifted at 10 AM.\n3. Wind direction was East when cloud cover was 90% and fog lifted at 5 AM.\n4. Wind direction was West when cloud cover was 60% and fog lifted at 11 AM.\n\nWe need to determine the wind direction for a day when cloud cover was 70% and fog lifted at 3 AM.\n\n**",
+      "gpu": null
+    },
+    {
+      "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+      "kind": "exact",
+      "detail": null,
+      "cpu": " reduced the number of unique objects by about 470.\n\n**Question:** How many unique objects were listed in the revised catalogue in 1929?\n\n**Calculation:**\nTotal objects listed = 4218\nFraction of duplicates = 1/9\nNumber of duplicates = 4218 * (1/9) = 468.66...\nReduction in unique objects = 470 (given)\n\n**Answer:**\nUnique objects = Total objects listed - Reduction in unique objects\nUnique objects = 4218 - 470 = 3",
+      "gpu": null
+    },
+    {
+      "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+      "kind": "exact",
+      "detail": null,
+      "cpu": " is good.\n# However, the parsing logic assumes the header is exactly 8 bytes.\n# The GGUF format specifies the header is 8 bytes.\n# The provided code seems correct based on the GGUF specification.\n# Let's assume GGUF_MAGIC and GGUF_VERSION are defined elsewhere.\n\n# --- Test Cases ---\n# Mock definitions for testing\nGGUF_MAGIC = 0x12345678\nGGUF_VERSION = 1\n# Helper to create valid/invalid buffers\ndef create_buffer(magic, version,",
+      "gpu": null
+    },
+    {
+      "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+      "kind": "exact",
+      "detail": null,
+      "cpu": " expects medieval chaos.\n\nA modern Lisbon, however, has layered on modern life, adding modern infrastructure, commercial buildings, and tourist amenities over this historic foundation. This layering means the \"old\" and the \"new\" are not strictly separated; the modern is integrated into the historic fabric.\n\n---\n\n**Questions:**\n\n1. How does the description of Lisbon's historical development contrast with the description of its modern state?\n2. What does the text imply about the relationship between the \"old\" and the \"new\" in Lisbon?\n3. What is the primary reason given for the regularity of the older district's",
+      "gpu": null
+    }
+  ]
 }
