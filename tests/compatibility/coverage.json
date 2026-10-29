@@ -644,7 +644,8 @@
     "chatml-think"
    ],
    "artifacts": [
-    "qwen3-4b-q4_k_m"
+    "qwen3-4b-q4_k_m",
+    "qwen3-4b-q4_k_m-bartowski"
    ],
    "tool_protocol": {
     "status": "NOT RUN",

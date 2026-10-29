@@ -2388,14 +2388,15 @@
           "adapters"
         ],
         "fp32_reference": "measured",
-        "anchor": "The base model's anchor: Qwen3-4B bf16 against Qwen's float32 reference (1.5.0 golden pass). The adapter itself has no float32 reference.",
-        "context": null,
+        "anchor": "The base model's anchor: Qwen3-4B bf16 against Qwen's float32 reference (1.5.0 golden pass). The adapter itself has no float32 reference. The composed run's pinned reply on the Metal laptop (1.7.0, 2026-10-28) is byte-identical to the CPU reply recorded on another host with 1.5.1.",
+        "context": 512,
         "limitations": null,
         "evidence": [
           "docs/adaptation-engine.md",
-          "docs/lora.md"
+          "docs/lora.md",
+          "tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.macos-arm64-metal.metal.txt"
         ],
-        "missing": "Pinned output of the composed run (the base named on the card plus this adapter)."
+        "missing": null
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
@@ -2422,7 +2423,25 @@
           "evidence": "tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.linux-x86_64-cuda.cpu.txt"
         },
         "cuda": null,
-        "metal": null
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.7.0",
+          "date": "2026-10-28",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "b31730a9dc4527b36c746d2e35f285912ec8dc22",
+          "caps": {
+            "version": "1.7.0",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "9a878ce06241ebaa98c9b52ec373e5ccdb72ceb80ffdd73cad2e8e736610c1b3",
+          "ran": "runner -m Qwen_Qwen3-4B-Q4_K_M.gguf --lora Qwen3-4B-ToolUse-LoRA.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.macos-arm64-metal.metal.txt"
+        }
       },
       "lora": {
         "training": {
@@ -2433,8 +2452,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.5.1",
-        "date": "2026-10-24"
+        "runner_version": "1.7.0",
+        "date": "2026-10-28"
       },
       "transitions": [
         {
@@ -2693,6 +2712,10 @@
       "tier": "tier2",
       "claim": "The base the published tool-use adapter was trained through and runs on, named by sha256 on the adapter's card: maintained on report, and run on every release only as the adapter's base in its composed smoke.",
       "architecture": "qwen3",
+      "upstream": {
+        "checkpoint": "Qwen/Qwen3-4B",
+        "revision": "1cfa9a7208912126459214e8b04321603b3df60c"
+      },
       "files": [
         {
           "name": "Qwen_Qwen3-4B-Q4_K_M.gguf",
@@ -2702,7 +2725,79 @@
           "bytes": 2497280960
         }
       ],
+      "quantization": "Q4_K_M (bartowski)",
       "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Family: Qwen3-4B bf16 against Qwen's float32 reference (1.5.0 golden pass). This file: load, publisher tokenizer agreement and a chat answer at temperature 0 on the Metal laptop; no fidelity number of its own.",
+        "context": 4096,
+        "limitations": "2.33 GiB of weights page from disk on an 8 GB machine with other applications open; the validation run recorded that state.",
+        "evidence": [
+          "docs/compat-reports/1.7.0-2026-10-28-macos-arm64-qwen3-4b-q4_k_m-bartowski.json",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "CUDA cell; a fidelity measurement of this file against the BF16 parent."
+      },
+      "smoke": {
+        "device_class": "macos-arm64-metal",
+        "backend": "metal"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.0",
+          "date": "2026-10-28",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "b31730a9dc4527b36c746d2e35f285912ec8dc22",
+          "caps": {
+            "version": "1.7.0",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "95be9f33ca7dbafb77f5441dc7d8be7951e7782f0fc0f78c53da1d218d29b71b",
+          "ran": "runner -m Qwen_Qwen3-4B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.macos-arm64-metal.cpu.txt"
+        },
+        "cuda": null,
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.7.0",
+          "date": "2026-10-28",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "b31730a9dc4527b36c746d2e35f285912ec8dc22",
+          "caps": {
+            "version": "1.7.0",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "95be9f33ca7dbafb77f5441dc7d8be7951e7782f0fc0f78c53da1d218d29b71b",
+          "ran": "runner -m Qwen_Qwen3-4B-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.macos-arm64-metal.metal.txt"
+        }
+      },
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.0",
+        "date": "2026-10-28"
+      },
       "transitions": [
         {
           "tier": "tier2",

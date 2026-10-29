@@ -22,6 +22,15 @@ Current release and unreleased changes. Compatibility follows the
   `scripts/model-tiers.py --record` now accept a Tier 2 row, so an
   admission below Tier 1 records the pass that admitted it as dated
   evidence; the release gate still reads only Tier 1 rows.
+- **Qwen3-4B base and tool-use adapter recorded on the Metal laptop.** The
+  bartowski Q4_K_M the published adapter runs on had no envelope, no smoke
+  class and no recorded cell; it now has a compat row of its own (load,
+  tokenizer against Qwen's tokenizer.json with 0 of 721 corpus strings
+  differing, chat), Metal and CPU smoke cells with byte-identical replies,
+  and `macos-arm64-metal` as its smoke class. The adapter's composed run
+  (base plus `--lora`) is pinned and recorded on Metal, which closes its
+  missing line; its reply is byte-identical to the CPU reply another host
+  recorded with 1.5.1. Both rows stay Tier 2.
 
 ## v1.7.0 - 2026-10-28
 

@@ -402,7 +402,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Qwen3</b>, 4 models: CPU 🟨 1 of 5 · CUDA 🟨 3 of 5 · Metal - · Train 🟨 4 of 5</summary>
+<summary><b>Qwen3</b>, 4 models: CPU 🟨 2 of 5 · CUDA 🟨 3 of 5 · Metal 🟨 2 of 5 · Train ✅</summary>
 <p><b>Qwen3-30B-A3B selective precision</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
@@ -414,7 +414,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#qwen3-4b-q4_k_m-bartowski"><code>Qwen_Qwen3-4B-Q4_K_M.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="#qwen3-4b-q4_k_m-bartowski"><code>Qwen_Qwen3-4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td></td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.0<br>2026-10-28</td></tr>
 </tbody>
 </table>
 <p><b>Qwen3-4B Runner ToolUse</b></p>
@@ -422,7 +422,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="#qwen3-4b-runner-tooluse-merged-q8_0"><code>merged-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
-<tr><td><a href="#qwen3-4b-runner-tooluse-lora"><code>Qwen3-4B-ToolUse-LoRA.gguf</code></a></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="#qwen3-4b-runner-tooluse-lora"><code>Qwen3-4B-ToolUse-LoRA.gguf</code></a></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td></td><td nowrap>✅ 1.7.0<br>2026-10-28</td><td nowrap>✅ 1.7.0<br>2026-10-28</td></tr>
 </tbody>
 </table>
 <p><b>Qwen3-Coder-30B-A3B keep-120</b></p>
@@ -1198,6 +1198,20 @@ Qwen3-30B-A3B with attention Q8_0 and experts Q4_0, text path: it passes the fid
 The base the published tool-use adapter was trained through and runs on, named by sha256 on the adapter's card: maintained on report, and run on every release only as the adapter's base in its composed smoke.
 
 - **File:** `Qwen_Qwen3-4B-Q4_K_M.gguf` (sha256 `fbe1d5edd4ce802ae3ae7c7e4ab7d09789d697fdac1fc7929f8df4ca3c41bae3`, 2,497,280,960 bytes, from [bartowski/Qwen_Qwen3-4B-GGUF](https://huggingface.co/bartowski/Qwen_Qwen3-4B-GGUF) at revision `cb76885dc66d`).
+- **Upstream checkpoint:** Qwen/Qwen3-4B at revision `1cfa9a720891`.
+- **Quantization:** Q4_K_M (bartowski).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Family: Qwen3-4B bf16 against Qwen's float32 reference (1.5.0 golden pass). This file: load, publisher tokenizer agreement and a chat answer at temperature 0 on the Metal laptop; no fidelity number of its own.
+- **Context tested:** 4096.
+- **Known limitations:** 2.33 GiB of weights page from disk on an 8 GB machine with other applications open; the validation run recorded that state.
+- **Still missing:** CUDA cell; a fidelity measurement of this file against the BF16 parent.
+- **Evidence:** [docs/compat-reports/1.7.0-2026-10-28-macos-arm64-qwen3-4b-q4_k_m-bartowski.json](compat-reports/1.7.0-2026-10-28-macos-arm64-qwen3-4b-q4_k_m-bartowski.json), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.0 on 2026-10-28.
+- **CPU:** ✅ v1.7.0 2026-10-28 on macos-arm64-metal at commit `b31730a9dc45`, output sha256 `95be9f33ca7dbafb`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.macos-arm64-metal.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ✅ v1.7.0 2026-10-28 on macos-arm64-metal at commit `b31730a9dc45`, output sha256 `95be9f33ca7dbafb`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-q4_k_m-bartowski.macos-arm64-metal.metal.txt)
+- **LoRA training:** supported (runner 1.7.0, 2026-10-28).
+- **LoRA adapter serving:** supported (runner 1.7.0, 2026-10-28).
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
 #### Qwen3-4B Runner ToolUse
@@ -1235,16 +1249,16 @@ The tool-use LoRA adapter for Qwen3-4B, served with --lora on the base its card 
 - **Runs with:** [Qwen3-4B](#qwen3-4b-q4_k_m-bartowski), loaded beside it with `--lora`; the smoke and its pin are of that composed run.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 639 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** adapters. A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison exists):** The base model's anchor: Qwen3-4B bf16 against Qwen's float32 reference (1.5.0 golden pass). The adapter itself has no float32 reference.
-- **Context tested:** not recorded.
-- **Still missing:** Pinned output of the composed run (the base named on the card plus this adapter).
-- **Evidence:** [docs/adaptation-engine.md](adaptation-engine.md), [docs/lora.md](lora.md).
+- **Numerical anchor (a publisher float32 comparison exists):** The base model's anchor: Qwen3-4B bf16 against Qwen's float32 reference (1.5.0 golden pass). The adapter itself has no float32 reference. The composed run's pinned reply on the Metal laptop (1.7.0, 2026-10-28) is byte-identical to the CPU reply recorded on another host with 1.5.1.
+- **Context tested:** 512.
+- **Still missing:** nothing the audit named
+- **Evidence:** [docs/adaptation-engine.md](adaptation-engine.md), [docs/lora.md](lora.md), [tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.macos-arm64-metal.metal.txt](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.macos-arm64-metal.metal.txt).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `3b2c21c82306`, output sha256 `9a878ce06241ebaa`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
-- **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.5.1, 2026-10-24).
-- **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
+- **Metal:** ✅ v1.7.0 2026-10-28 on macos-arm64-metal at commit `b31730a9dc45`, output sha256 `9a878ce06241ebaa`, [pin](../tests/compatibility/tier-smoke/qwen3-4b-runner-tooluse-lora.macos-arm64-metal.metal.txt)
+- **LoRA training:** supported (runner 1.7.0, 2026-10-28).
+- **LoRA adapter serving:** supported (runner 1.7.0, 2026-10-28).
 - **Tier history:** Tier 1, actively validated from 2026-10-22; Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
 
 #### Qwen3-Coder-30B-A3B keep-120

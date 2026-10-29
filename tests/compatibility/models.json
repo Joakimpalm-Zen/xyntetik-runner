@@ -193,6 +193,36 @@
       }
     },
     {
+      "id": "qwen3-4b-q4_k_m-bartowski",
+      "architecture": "qwen3",
+      "family": "Qwen 3",
+      "file": "models/Qwen_Qwen3-4B-Q4_K_M.gguf",
+      "sha256": "fbe1d5edd4ce802ae3ae7c7e4ab7d09789d697fdac1fc7929f8df4ca3c41bae3",
+      "upstream": "bartowski/Qwen_Qwen3-4B-GGUF",
+      "tokenizer_reference": "Qwen/Qwen3-4B",
+      "tokenizer_reference_revision": "1cfa9a7208912126459214e8b04321603b3df60c",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/qwen3-4b-bartowski.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "bartowski's Q4_K_M of Qwen3-4B (2,497,280,960 bytes, revision cb76885d), the base the published tool-use adapter was trained through and is served on, named by sha256 on the adapter's card. DISTINCT from qwen3-4b-q4_k_m (another conversion of the same model, sha 7485fe6f). Added 2026-10-28 so the roster row has a report of its own on the Metal laptop (Tier 2, maintained on report). Tokenizer: the publisher's tokenizer.json (Qwen/Qwen3-4B at 1cfa9a72), captured 2026-10-28. No llama.cpp reference is declared, so greedy_reference is not claimed; no CUDA host ran it, so cpu_cuda is not declared.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
+    },
+    {
       "id": "ornith-1.0-9b-q4_k_m",
       "architecture": "qwen35",
       "family": "Qwen 3.5 / Ornith",
