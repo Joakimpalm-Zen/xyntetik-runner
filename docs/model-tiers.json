@@ -922,22 +922,22 @@
         },
         "cuda": {
           "kind": "gate",
-          "runner_version": "1.5.1",
-          "date": "2026-10-24",
-          "device_class": "linux-x86_64-cuda",
+          "runner_version": "1.7.1",
+          "date": "2026-10-29",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "a3a741236eb0208e9e6e2101d883bcc8d203b525",
+          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
           "caps": {
-            "version": "1.5.1",
-            "os": "linux",
+            "version": "1.7.1",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 26,
+            "cpu_cores": 8,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "9e4082576850d0a87f71654360ded1ebc6fc5ae2141de754d8fefeca412d7bef",
-          "ran": "runner -m granite-4.2-8b-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/granite-4.2-8b-q8_0.linux-x86_64-cuda.cuda.txt"
+          "ran": "runner -m granite-4.2-8b-Q8_0.gguf --serve -c 512 -b 64 --gpu 32; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/granite-4.2-8b-q8_0.windows-x86_64-cuda.cuda.txt"
         },
         "metal": null
       },
