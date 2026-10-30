@@ -54,7 +54,7 @@ typedef struct {
     tokenizer *tok;
     sampler   *smp;
     int  pos;              // next free KV slot
-    int  stop_ids[20];
+    int  stop_ids[TOK_STOP_MAX];
     int  n_stop;
     // Stop ids the REQUEST added: a stop string that spells a control token
     // exactly, or stop_token_ids. Live for one request; completion_cleanup

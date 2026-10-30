@@ -14,8 +14,9 @@ typedef struct {
     int n_recent, recent_head;
     // Ids exempt from the repeat penalty. A chat template puts its own turn
     // terminator in the prompt, and the prompt seeds the penalty window, so
-    // penalising terminators can stop a model ever ending its turn.
-    int32_t no_penalty[12];
+    // penalising terminators can stop a model ever ending its turn. Holds the
+    // whole stop set (engine.c asserts it against TOK_STOP_MAX).
+    int32_t no_penalty[48];
     int n_no_penalty;
     // Scripted reply, a test hook. While `script` is set, sample_pick returns
     // the scripted ids in order instead of sampling, then -1 (a clean stop)

@@ -547,8 +547,13 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     gguf_kv *eog = gguf_get(g, "tokenizer.ggml.eog_token_ids");
     if (eog && eog->type == GGUF_T_ARR &&
         (eog->arr_type == GGUF_T_I32 || eog->arr_type == GGUF_T_U32)) {
-        int cap = (int)(sizeof(t->eog_ids) / sizeof(*t->eog_ids));
-        for (uint64_t i = 0; i < eog->arr_n && t->n_eog < cap; i++) {
+        if (eog->arr_n > TOK_EOG_MAX) {
+            fprintf(stderr, "error: tokenizer.ggml.eog_token_ids lists %llu ids; "
+                    "at most %d are supported\n",
+                    (unsigned long long)eog->arr_n, TOK_EOG_MAX);
+            return false;
+        }
+        for (uint64_t i = 0; i < eog->arr_n; i++) {
             int32_t id;
             memcpy(&id, (const char *)eog->arr_raw + i * 4, 4);
             if (id < 0 || id >= t->n_vocab) {
@@ -1754,6 +1759,8 @@ int tok_stop_ids(tokenizer *t, const char *arch, int *out, int cap) {
                                    // turn with <SPECIAL_12>; its declared
                                    // eos is a different token
                                    "<SPECIAL_12>" };
+    _Static_assert(sizeof(stops) / sizeof(*stops) == TOK_STOP_SPELLINGS,
+                   "TOK_STOP_SPELLINGS counts the spelling list");
     // gpt-oss / Harmony inverts one of these. <|end|> terminates a NON-final
     // Harmony message — the assistant writes its analysis, closes it with
     // <|end|>, then opens the final channel — so treating <|end|> as a stop
@@ -1776,6 +1783,8 @@ int tok_stop_ids(tokenizer *t, const char *arch, int *out, int cap) {
     }
     if (harmony) {
         static const char *hstops[] = { "<|return|>", "<|call|>" };
+        _Static_assert(sizeof(hstops) / sizeof(*hstops) <= TOK_STOP_ARCH_MAX,
+                       "TOK_STOP_ARCH_MAX bounds every per-architecture list");
         for (size_t i = 0; i < sizeof(hstops) / sizeof(*hstops); i++)
             stop_add(t, out, &n, cap, hstops[i]);
     }

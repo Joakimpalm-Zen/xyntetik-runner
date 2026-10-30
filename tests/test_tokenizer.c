@@ -696,8 +696,8 @@ static int stop_mask(const char *arch, bool types, const int *eog, int n_eog) {
     tokenizer t;
     int mask = -1;
     if (tokenizer_init(&t, &g)) {
-        int ids[20];
-        int n = tok_stop_ids(&t, arch, ids, 20);
+        int ids[TOK_STOP_MAX];
+        int n = tok_stop_ids(&t, arch, ids, TOK_STOP_MAX);
         mask = 0;
         for (int i = 0; i < n; i++) mask |= 1 << ids[i];
         tokenizer_free(&t);
@@ -726,6 +726,12 @@ static void test_stops_follow_type_and_declaration(void) {
     // an eog id outside the vocabulary refuses the file
     int bad[] = { 5, N_STOP_VOCAB };
     assert(stop_mask("llama", true, bad, 2) == -1);
+    // so does a list longer than TOK_EOG_MAX; one at the cap is read whole
+    int many[TOK_EOG_MAX + 1];
+    for (int i = 0; i <= TOK_EOG_MAX; i++) many[i] = 5;
+    many[TOK_EOG_MAX - 1] = 2;
+    assert(stop_mask("llama", true, many, TOK_EOG_MAX) == (base | B << 5 | B << 2));
+    assert(stop_mask("llama", true, many, TOK_EOG_MAX + 1) == -1);
 }
 
 int main(void) {

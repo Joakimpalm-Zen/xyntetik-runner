@@ -33,6 +33,9 @@ static void constraint_reset(engine *e) {
     e->constraint_close_match = 0;
 }
 
+_Static_assert(sizeof(((sampler *)0)->no_penalty) / sizeof(int32_t) >= TOK_STOP_MAX,
+               "the repeat-penalty exemption holds the whole stop set");
+
 bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
     free(e->hist); // slot engines are re-inited on model swap; e must be zeroed
     free(e->cdoc);

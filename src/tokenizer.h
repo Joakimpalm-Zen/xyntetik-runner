@@ -4,6 +4,13 @@
 
 #include "gguf.h"
 
+// The stop set's parts, so every array that holds it is sized from them and
+// none can fill: eos, the file's declared eog ids, the turn ends Runner knows
+// by spelling, and the longest per-architecture list (Harmony's two).
+// tok_stop_ids asserts the two lists' lengths against these.
+enum { TOK_EOG_MAX = 32, TOK_STOP_SPELLINGS = 11, TOK_STOP_ARCH_MAX = 2,
+       TOK_STOP_MAX = 1 + TOK_EOG_MAX + TOK_STOP_SPELLINGS + TOK_STOP_ARCH_MAX };
+
 enum { TOK_SPM, TOK_BPE, TOK_BPE_SPM }; // BPE_SPM: gemma4 (spaces to U+2581, raw-UTF-8 BPE)
 
 // BPE pre-tokenizer split rules, from tokenizer.ggml.pre. GPT2 is the original
@@ -30,8 +37,9 @@ typedef struct {
     int32_t *ttype;         // token type per id (may be NULL)
     int      bos_id, eos_id, unk_id;
     // tokenizer.ggml.eog_token_ids: the ids the file itself declares as
-    // ending generation (the first 8 of them). engine_init makes each a stop.
-    int      eog_ids[8];
+    // ending generation (a file that declares more than TOK_EOG_MAX is
+    // refused). tok_stop_ids makes each a stop.
+    int      eog_ids[TOK_EOG_MAX];
     int      n_eog;
     bool     add_bos, add_space_prefix;
     // tokenizer.ggml.add_eos_token: the checkpoint's own tokenizer appends
