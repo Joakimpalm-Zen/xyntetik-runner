@@ -1558,7 +1558,7 @@ Text path, LiquidAI's own Q8_0 of LFM2.5-1.2B-Instruct, the fidelity file of the
 - **Still missing:** The Windows CUDA host's CPU cell; a GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the parser is pinned on fixtures only).
 - **Evidence:** [docs/compat-reports/1.7.1-2026-10-30-macos-arm64-lfm2.5-1.2b-instruct-q8_0.json](compat-reports/1.7.1-2026-10-30-macos-arm64-lfm2.5-1.2b-instruct-q8_0.json), [docs/compat-reports/lfm2.5-reference-2026-10-30/README.md](compat-reports/lfm2.5-reference-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on macos-arm64-metal, cpu backend; last run 1.7.1 on 2026-10-30.
-- **CPU:** ✅ v1.7.1 2026-10-30 on macos-arm64-metal at commit `864a4a6dd6cc`, output sha256 `587d226ab6e1654f`, [pin](../tests/compatibility/tier-smoke/lfm2.5-1.2b-instruct-q8_0.macos-arm64-metal.cpu.txt)
+- **CPU:** ✅ v1.7.1 2026-10-30 on macos-arm64-metal at commit `f57320215317`, output sha256 `587d226ab6e1654f`, [pin](../tests/compatibility/tier-smoke/lfm2.5-1.2b-instruct-q8_0.macos-arm64-metal.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
 - **LoRA training:** no: recurrent architecture (short convolution) (runner 1.7.1, 2026-10-30).
@@ -1580,7 +1580,7 @@ Text path, LiquidAI's own Q4_K_M of LFM2.5-1.2B-Instruct, which fails the fideli
 - **Still missing:** The Windows CUDA host's CPU cell; a GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's QAD-Q4_0 fails the bar too (0.128) and is not a row.
 - **Evidence:** [docs/compat-reports/1.7.1-2026-10-30-macos-arm64-lfm2.5-1.2b-instruct-q4_k_m.json](compat-reports/1.7.1-2026-10-30-macos-arm64-lfm2.5-1.2b-instruct-q4_k_m.json), [docs/compat-reports/lfm2.5-reference-2026-10-30/README.md](compat-reports/lfm2.5-reference-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on macos-arm64-metal, cpu backend; last run 1.7.1 on 2026-10-30.
-- **CPU:** ✅ v1.7.1 2026-10-30 on macos-arm64-metal at commit `864a4a6dd6cc`, output sha256 `3bb0f080e0b57ed8`, [pin](../tests/compatibility/tier-smoke/lfm2.5-1.2b-instruct-q4_k_m.macos-arm64-metal.cpu.txt)
+- **CPU:** ✅ v1.7.1 2026-10-30 on macos-arm64-metal at commit `f57320215317`, output sha256 `3bb0f080e0b57ed8`, [pin](../tests/compatibility/tier-smoke/lfm2.5-1.2b-instruct-q4_k_m.macos-arm64-metal.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
 - **LoRA training:** no: recurrent architecture (short convolution) (runner 1.7.1, 2026-10-30).

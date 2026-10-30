@@ -3925,7 +3925,7 @@
           "date": "2026-10-30",
           "device_class": "macos-arm64-metal",
           "result": "pass",
-          "commit": "864a4a6dd6cc42f03edcfc89cd181ad0079cc4ba",
+          "commit": "f57320215317b0f17c73ea702cc75a2dd3f3861c",
           "caps": {
             "version": "1.7.1",
             "os": "macos",
@@ -4016,7 +4016,7 @@
           "date": "2026-10-30",
           "device_class": "macos-arm64-metal",
           "result": "pass",
-          "commit": "864a4a6dd6cc42f03edcfc89cd181ad0079cc4ba",
+          "commit": "f57320215317b0f17c73ea702cc75a2dd3f3861c",
           "caps": {
             "version": "1.7.1",
             "os": "macos",
