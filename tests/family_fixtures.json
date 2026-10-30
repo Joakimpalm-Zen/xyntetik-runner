@@ -185,6 +185,10 @@
     "flint": {
       "fixture": "plain",
       "reasoning": "tags"
+    },
+    "lfm2-8b": {
+      "fixture": "plain",
+      "reasoning": "tags"
     }
   }
 }

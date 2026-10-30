@@ -2321,7 +2321,7 @@ flag and ignore it rather than approximate one.
 Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
 `mistral-nemo`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
 `ornith`, `qwen35`, `qwen35-nothink`, `nemotron`, `nemotron35`, `hermes4`, `granite`, `granite4`, `granite42`,
-`qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `mimo`, `spark`, `spark25`,
+`qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `lfm2-8b`, `mimo`, `spark`, `spark25`,
 `k2-horizon`, `flint`, `muse`, `harmony`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
 is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
 template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ
@@ -3965,6 +3965,25 @@ closing marker inside a string are part of the string. A block cut by a
 budget is dropped and the turn keeps `length`; one the model abandoned is a
 protocol fault. A `required` or named choice takes the generic JSON envelope
 for that request. `--info tools` reports `lfm2_python`.
+
+LFM2.5-8B-A1B's GGUF carries an earlier revision of that template, served as
+`lfm2-8b` and detected by the line that writes a string argument raw. The
+framing is LFM2's. A string argument is written between single quotes as it
+is, with no escaping, and a list or scalar as Python's `str()` of it (a
+mapping stays JSON). The thought is read from `thinking` alone, written
+whenever the turn defines it (an empty one too), and kept on every assistant
+turn after the last user turn; `CONTINUE_FINAL_MESSAGE_TAG` moves only on a
+turn with `tool_calls`. Because the template writes strings raw, the model
+does too, and its replies are read raw (`--info tools` reports
+`lfm2_python_raw`): a single-quoted value is taken byte for byte, quotes,
+backslashes and line breaks included, up to the first quote that a valid
+continuation follows (`, KEY =`, or `)` and then the next call or `]` and the
+closing marker). That is also its one limit: a value whose own text spells
+such a continuation, `x', n='y` for instance, reads as two arguments, as it
+would to any reader of what the template writes. Strings inside a list or
+mapping keep Python's and JSON's escapes. The model thinks on every turn
+whatever `enable_thinking` says (the template has no switch), and the reply's
+`<think>` block is split out as reasoning.
 `[TOOL_CALLS]` is a control token that decodes to nothing unless a grammar
 admits it by its spelling, so every choice is constrained, `auto` included:
 prose that ends at the model's stop or hands off to the list at the marker.

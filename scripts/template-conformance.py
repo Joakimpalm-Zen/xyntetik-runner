@@ -111,7 +111,8 @@ class Family:
     def __init__(self, runner, source, note="", tool_family=False,
                  thinking_var=None, skip=None, tokenizer=(), cannot=None,
                  oracle_tool_shape=None, call_ids=None, content_parts=False,
-                 reasoning_history=False, reasoning_keys=(), developer_role=False):
+                 reasoning_history=False, reasoning_keys=(), hostile_args=False,
+                 developer_role=False):
         self.runner = runner            # --chat-template name
         self.source = source            # ("hf", repo) | ("gguf", path)
         self.note = note
@@ -137,6 +138,11 @@ class Family:
         # message.reasoning or message.reasoning_content`): each spelling,
         # their precedence and a non-string winner get a case of their own.
         self.reasoning_keys = reasoning_keys
+        # The template spells a call's argument values itself (LFM2's
+        # format_arg_value), so the matrix carries a call whose values hold
+        # quotes, a backslash, a line break, a list with a quoted string, a
+        # nested mapping and the three constants.
+        self.hostile_args = hostile_args
         # Fixture call ids THIS reference accepts, as {fixture_id: id}: the
         # Mistral templates raise unless a tool call id is 9 alphanumeric
         # characters, so their tool rows use ids of that shape (both sides:
@@ -215,8 +221,19 @@ FAMILIES = {
         "lfm2", ("hf", "LiquidAI/LFM2.5-1.2B-Instruct"),
         note="LiquidAI/LFM2.5-1.2B-Instruct chat_template.jinja at 0f604ada",
         tool_family=True, content_parts=True, reasoning_history=True,
-        reasoning_keys=("thinking", "reasoning", "reasoning_content"),
+        reasoning_keys=("thinking", "reasoning", "reasoning_content"), hostile_args=True,
         tokenizer=("LFM2.5-1.2B-Instruct-Q8_0.gguf", "LFM2.5-350M-Q8_0.gguf")),
+    # LFM2.5-8B-A1B: the earlier LFM2.5 template its GGUF carries, with string
+    # arguments raw, lists as Python's str(), and the thought read from
+    # `thinking` alone and kept on every assistant turn after the last user
+    # turn. The GGUF's own template is the oracle (the repository's
+    # chat_template.jinja is a later revision the file does not carry).
+    "lfm2-8b": Family(
+        "lfm2-8b", ("gguf", "models/LFM2.5-8B-A1B-Q4_K_M.gguf"),
+        note="the template embedded in LiquidAI/LFM2.5-8B-A1B-GGUF at 49c14831",
+        tool_family=True, content_parts=True, reasoning_history=True,
+        reasoning_keys=("thinking",), hostile_args=True,
+        tokenizer=("LFM2.5-8B-A1B-Q4_K_M.gguf",)),
     # XiaomiMiMo MiMo-V2.6-Distill-Qwen-9B: ChatML joined with no newlines,
     # a thought block on every assistant turn, a kept `tool` role and
     # Qwen3-Coder's XML written compact. Its own template (byte-identical in
@@ -761,6 +778,33 @@ def matrix(family):
             {"role": "assistant", "content": "Yes.", key: f"kept under {key}"},
         ], False, "default"))
     if family.reasoning_keys:
+        # an empty thought: falsy to `a or b or c`, but defined
+        key = family.reasoning_keys[0]
+        cases.append((f"reasoning-field-empty-{key}", [
+            {"role": "user", "content": U1},
+            {"role": "assistant", "content": "Yes.", key: ""},
+        ], False, "default"))
+    if family.reasoning_history:
+        # two assistant turns after the last user turn, a call between them:
+        # which of the two keeps its thought is the template's rule
+        key = family.reasoning_keys[0] if family.reasoning_keys else "reasoning_content"
+        cases.append(("reasoning-tool-loop", [
+            {"role": "user", "content": "Weather in Oslo?"},
+            {"role": "assistant", "content": "", "tool_calls": [CALL], key: "first thought"},
+            {"role": "tool", "name": "get_weather", "tool_call_id": "call_1",
+             "content": '{"temp_c": -3}'},
+            {"role": "assistant", "content": "It is -3 C.", key: "second thought"},
+        ], False, "default"))
+    if family.hostile_args:
+        hostile = {"id": "call_1", "type": "function", "function": {"name": "save", "arguments": json.dumps({
+            "text": "it's \"quoted\" \\ C:\\new\nline", "items": ["a", "it's", 1, 2.5, True, None],
+            "meta": {"k": "v's", "n": [1]}, "n": 3, "f": 0.5, "ok": False, "none": None})}}
+        cases.append(("tool-call-args-hostile", [
+            {"role": "user", "content": "Save it."},
+            {"role": "assistant", "content": "", "tool_calls": [hostile]},
+            {"role": "tool", "name": "save", "tool_call_id": "call_1", "content": "saved"},
+        ], True, "default"))
+    if len(family.reasoning_keys) >= 2:
         first, second = family.reasoning_keys[0], family.reasoning_keys[1]
         last = family.reasoning_keys[-1]
         # the first truthy field wins; an empty one is passed over

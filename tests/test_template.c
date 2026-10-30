@@ -2250,6 +2250,31 @@ static void test_spark_shape(void) {
     jv_free(tools);
 }
 
+// LFM2.5-8B-A1B's GGUF template against the 1.2B's: one framing, told apart
+// by the line that writes a string argument (raw against escaped), each name
+// round-tripping, and the same think tags.
+static void test_lfm2_8b_shape(void) {
+    char a[256], b[256];
+    const char *head = "{{- bos_token -}}<|im_start|>List of tools: [<|tool_call_start|>";
+    snprintf(a, sizeof a, "%s{{- \"'\" + arg_value + \"'\" -}}", head);
+    snprintf(b, sizeof b, "%s{{- \"'\" + (arg_value | replace(\"\\\\\", \"\\\\\\\\\")) + \"'\" -}}", head);
+    assert(template_detect(a, NULL) == TMPL_LFM2_8B);
+    assert(template_detect(b, NULL) == TMPL_LFM2);
+    assert(template_from_name("lfm2-8b") == TMPL_LFM2_8B);
+    assert(!strcmp(template_name(TMPL_LFM2_8B), "lfm2-8b"));
+    const char *o = NULL, *c = NULL;
+    assert(template_think_tags(TMPL_LFM2_8B, &o, &c) && !strcmp(o, "<think>") && !strcmp(c, "</think>"));
+    char x[1024], y[1024];
+    const chat_msg conv[] = { CHAT_MSG("system", "Sys."), CHAT_MSG("user", "HI"),
+                              CHAT_MSG("assistant", "Yo."), CHAT_MSG("tool", "{}") };
+    render_messages(TMPL_LFM2_8B, conv, 4, true, THINK_DEFAULT, x, sizeof x);
+    render_messages(TMPL_LFM2, conv, 4, true, THINK_DEFAULT, y, sizeof y);
+    assert(!strcmp(x, y));
+    assert(!strcmp(x, "<|im_start|>system\nSys.<|im_end|>\n<|im_start|>user\nHI<|im_end|>\n"
+                      "<|im_start|>assistant\nYo.<|im_end|>\n<|im_start|>tool\n{}<|im_end|>\n"
+                      "<|im_start|>assistant\n"));
+}
+
 // Qwen3 strips absent reasoning from the last historical assistant turn but
 // still emits the empty thought wrapper. That framing is part of the training
 // prompt whether or not another generation prompt follows it.
@@ -3339,6 +3364,7 @@ int main(void) {
     test_k2h_shape();
     test_k2h_tool_schema_fixture();
     test_flint_shape();
+    test_lfm2_8b_shape();
     test_chatml_think_trailing_history_keeps_empty_thought();
     test_chatml_tool_result_renders_as_a_user_tool_response();
     test_muse_tools_and_result_golden();

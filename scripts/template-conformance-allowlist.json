@@ -363,6 +363,24 @@
       "patch": {
         "op": "strip-bos"
       }
+    },
+    {
+      "id": "lfm2-8b/bos",
+      "family": "lfm2-8b",
+      "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time. LFM2.5-8B-A1B's GGUF carries no add_bos_token key, and a file of pre lfm2 without one gets BOS (tokenizer.c's bos_default), so the chat prompt opens with the one <|startoftext|> the template's `{{- bos_token -}}` writes. (Its tokenizer.json, unlike the 1.2B's, adds no BOS on encode: the template is where the model's BOS comes from, and runner's chat prompt carries it the same.)",
+      "cite": {
+        "file": "src/template.c",
+        "lines": "2421",
+        "anchor": "BOS is the tokenizer's, as on every family."
+      },
+      "corroborating_cite": {
+        "file": "src/tokenizer.c",
+        "lines": "597-600",
+        "anchor": "strcmp(pre, \"lfm2\") == 0));"
+      },
+      "patch": {
+        "op": "strip-bos"
+      }
     }
   ]
 }
