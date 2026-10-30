@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **LFM2.5-8B-A1B Q4_K_M admitted at Tier 2, fidelity not yet measured.**
+  LiquidAI's own Q4_K_M loads, tokenizes as the publisher's tokenizer.json
+  does (0 of 721, a 128,000-token vocabulary of its own) and answers on the
+  CPU of the Metal laptop. Its GGUF carries an earlier revision of the LFM2.5
+  template, which Runner rendered with the 1.2B's rules; it is now its own
+  family, `lfm2-8b`: string arguments written raw, lists as Python's `str()`,
+  the thought from `thinking` alone and kept on every assistant turn after
+  the last user turn. Its model writes string arguments raw too, and they are
+  read raw (`lfm2_python_raw`), up to the first quote a valid continuation
+  follows. Template conformance against the GGUF's own template is clean in
+  text and tokens. The float32 reference against the BF16 checkpoint is owed.
 - **The BPE splits read the Unicode classes their publishers' regexes name,
   and four split rules now match the publishers' exactly.** The splits are
   regexes over letters by case, marks, numbers, punctuation, symbols and
