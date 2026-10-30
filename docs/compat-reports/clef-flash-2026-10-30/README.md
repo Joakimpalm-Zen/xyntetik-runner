@@ -98,17 +98,34 @@ decimal. The model card's two examples decide as the card describes:
 
 That shows the head binds and decides on this checkpoint. It is not a fidelity measurement.
 
+## Compat report (Q4_K_M)
+
+`scripts/compat_matrix.py --execute-checks --verify-files` wrote
+1.7.1-2026-10-30-windows-x86_64-clef-flash-q4_k_m.json, which is complete:
+
+| Check | Result |
+|---|---|
+| file | pass, sha256 matches the pin |
+| load | pass, resident (32 of 32 layers and the head) |
+| tokenizer | pass, 0 of 721 strings differ |
+| cpu_cuda | pass, 9 of 9 prompts exact at 128 tokens, 0 near ties tolerated |
+| chat | pass ("What is 2+2?" answers "4" and stops) |
+
+The first run of the report recorded the tokenizer check as `fail` without comparing anything. Its
+`difftok.py` could not start `make`, because `make` was not on the matrix process's PATH. Windows reported the
+missing program in the host's language, so the matrix's `no such file or directory` marker did not match, and
+the check landed as `fail` instead of `not_executed`. That report was not committed. The report above is the
+second run, with msys `make` on the PATH (difftok.exe was already up to date, so nothing was rebuilt).
+
 ## Owed
 
 1. **The float32 gold run**, on the lab CPU lane after MiMo and Spark:
    - `scripts/clef-gold.py reference` with Cloudflare's `joint_schema_model.py` at f0b7d3cd, in float32;
    - compared against ggml-org's BF16 GGUF of the same revision (`Clef-Flash-BF16.gguf`, sha256
      `34635743...`), and against these two files.
-2. **The Q4_K_M compat report**, from `compat_matrix.py --execute-checks --verify-files`. The run was stopped
-   for low memory on the host, before any check finished.
-3. **The Q8_0:**
+2. **The Q8_0:**
    - the CUDA cell, as a layer split with `--gpu N`;
    - the CPU cell, or its skip reason if the file does not fit free RAM with headroom;
    - the decisions, CPU against CUDA;
    - the compat report.
-4. **Metal** (a declared limit: the qwen35 backbone has no Metal path) and **a llama.cpp column**.
+3. **Metal** (a declared limit: the qwen35 backbone has no Metal path) and **a llama.cpp column**.
