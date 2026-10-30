@@ -4579,7 +4579,7 @@
       "model": "LFM2.5-8B-A1B (LiquidAI)",
       "family": "LFM2.5",
       "tier": "tier2",
-      "claim": "Text path, LiquidAI's own Q4_K_M of LFM2.5-8B-A1B: it loads, tokenizes as the publisher's tokenizer.json does, renders the template its GGUF carries token for token and answers through it on the CPU; no fidelity measurement against the BF16 checkpoint is recorded yet.",
+      "claim": "Text path, LiquidAI's own Q4_K_M of LFM2.5-8B-A1B, which fails the fidelity bar by far: against the BF16 parent computed in float32 it reads 0.237 mean KLD against 0.05 (75.3% top-1, 85.4% margin-qualified against 97%). The publisher's Q8_0 is the fidelity file, narrowly (0.0443, 97.6% margin-qualified); its gap is the file's quantization: Runner on the publisher's BF16 GGUF reads 0.0078, and llama.cpp on the same Q8_0 0.0572 (96.7%, outside the bar).",
       "architecture": "lfm2moe",
       "upstream": {
         "checkpoint": "LiquidAI/LFM2.5-8B-A1B",
@@ -4600,16 +4600,17 @@
         "features": [
           "text"
         ],
-        "fp32_reference": "owed",
-        "anchor": "This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json at 5dd22602), template conformance in text and tokens against the template the GGUF carries (an earlier LFM2.5 revision than the repository's chat_template.jinja), and a chat answer at temperature 0 on the Metal laptop's CPU. The lfm2moe arithmetic is checked against transformers' float32 on a converted random model. Record: docs/compat-reports/lfm2.5-reference-2026-10-30/README.md.",
+        "fp32_reference": "measured",
+        "anchor": "This file: load, publisher tokenizer agreement (0 of 721 corpus strings, 0 of the gold corpus's 107 passages and 0 of its vocabulary entries differ from tokenizer.json at 5dd22602 with runner #479 and #482), template conformance in text and tokens against the template the GGUF carries, and a chat answer at temperature 0 on the Metal laptop's CPU. Both publisher quantizations against LiquidAI's BF16 parent computed in float32 on the lab CPU lane (transformers 5.16.1, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files at bee195dd): Q8_0 0.0443 mean KLD / 93.7% top-1 / 97.6% margin-qualified, Q4_K_M 0.237 / 75.3% / 85.4%. File or engine, against the same gold: Runner on the publisher's BF16 GGUF 0.0078 / 97.3% / 100%, llama.cpp (36a0e2f) on the same Q8_0 0.0572 / 90.0% / 96.7%. The lfm2moe arithmetic is also checked against transformers' float32 on a converted random model (docs/compat-reports/lfm2.5-reference-2026-10-30/README.md). Record: docs/compat-reports/lfm2.5-8b-a1b-reference-2026-10-30/README.md.",
         "context": 4096,
         "limitations": "CPU only: the GPU backends refuse lfm2moe by name and serve it on the CPU (its short-convolution layers are not checked there yet). A required or named tool choice takes the generic JSON envelope on this family. Licence: LFM Open License v1.0, which limits commercial use to entities with under US$10M annual revenue; the limit binds whoever runs the model.",
         "evidence": [
           "docs/compat-reports/1.7.1-2026-10-30-macos-arm64-lfm2.5-8b-a1b-q4_k_m.json",
+          "docs/compat-reports/lfm2.5-8b-a1b-reference-2026-10-30/README.md",
           "docs/compat-reports/lfm2.5-reference-2026-10-30/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The float32 reference against the BF16 checkpoint (booked on the lab CPU lane), and with it whether this Q4_K_M or the publisher's Q8_0 is the fidelity file; a GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the raw-string parser is pinned on fixtures only)."
+        "missing": "A GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the raw-string parser is pinned on fixtures only). The Q8_0 and the BF16 GGUF are not rows."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",

@@ -5,20 +5,26 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
-- **LFM2.5-8B-A1B Q4_K_M admitted at Tier 2, fidelity not yet measured.**
-  LiquidAI's own Q4_K_M loads, tokenizes as the publisher's tokenizer.json
-  does (a 128,000-token vocabulary of its own: 0 of 721, and with the
-  whole-word rule 0 of the gold corpus's 107 passages; 108 of its 123,331
-  vocabulary entries, declared, differ by the split's character classes) and
-  answers on the
-  CPU of the Metal laptop. Its GGUF carries an earlier revision of the LFM2.5
-  template, which Runner rendered with the 1.2B's rules; it is now its own
-  family, `lfm2-8b`: string arguments written raw, lists as Python's `str()`,
-  the thought from `thinking` alone and kept on every assistant turn after
-  the last user turn. Its model writes string arguments raw too, and they are
-  read raw (`lfm2_python_raw`), up to the first quote a valid continuation
-  follows. Template conformance against the GGUF's own template is clean in
-  text and tokens. The float32 reference against the BF16 checkpoint is owed.
+- **LFM2.5-8B-A1B Q4_K_M admitted at Tier 2; it fails the fidelity bar, and
+  the publisher's Q8_0 is the fidelity file, narrowly.** Against LiquidAI's
+  BF16 parent computed in float32 (300 positions on the lab CPU lane), the
+  Q4_K_M reads 0.237 mean KLD and 85.4% margin-qualified top-1 against bars
+  of 0.05 and 97%; the Q8_0 reads 0.0443 and 97.6%. That gap is the file's
+  quantization: Runner on the publisher's BF16 GGUF reads 0.0078 (100%
+  margin-qualified), and llama.cpp on the same Q8_0 reads 0.0572 and 96.7%,
+  outside the bar (`docs/compat-reports/lfm2.5-8b-a1b-reference-2026-10-30/README.md`).
+  The file loads, tokenizes as the publisher's tokenizer.json does (a
+  128,000-token vocabulary of its own: 0 of 721 corpus strings, 0 of the gold
+  corpus's 107 passages and 0 vocabulary entries with the whole-word rule and
+  the Unicode class tables) and answers on the CPU of the Metal laptop. Its
+  GGUF carries an earlier revision of the LFM2.5 template, which Runner
+  rendered with the 1.2B's rules; it is now its own family, `lfm2-8b`: string
+  arguments written raw, lists as Python's `str()`, the thought from
+  `thinking` alone and kept on every assistant turn after the last user turn.
+  Its model writes string arguments raw too, and they are read raw
+  (`lfm2_python_raw`), up to the first quote a valid continuation follows.
+  Template conformance against the GGUF's own template is clean in text and
+  tokens.
 - **The BPE splits read the Unicode classes their publishers' regexes name,
   and four split rules now match the publishers' exactly.** The splits are
   regexes over letters by case, marks, numbers, punctuation, symbols and
