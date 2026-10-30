@@ -1890,6 +1890,9 @@
             "<|tool_call_start|>",
             "<think>"
           ]
+        },
+        "tokenizer": {
+          "expect_vocab_divergences": 11
         }
       }
     },
@@ -1921,6 +1924,9 @@
             "<|tool_call_start|>",
             "<think>"
           ]
+        },
+        "tokenizer": {
+          "expect_vocab_divergences": 11
         }
       }
     },
@@ -1952,6 +1958,9 @@
             "<|tool_call_start|>",
             "<think>"
           ]
+        },
+        "tokenizer": {
+          "expect_vocab_divergences": 11
         }
       }
     },
@@ -1983,6 +1992,9 @@
             "<|tool_call_start|>",
             "<think>"
           ]
+        },
+        "tokenizer": {
+          "expect_vocab_divergences": 11
         }
       }
     },

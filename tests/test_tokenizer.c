@@ -734,11 +734,88 @@ static void test_stops_follow_type_and_declaration(void) {
     assert(stop_mask("llama", true, many, TOK_EOG_MAX + 1) == -1);
 }
 
+// Whether a BPE family takes a pre-token that is itself a vocabulary entry
+// whole, before any merge: the publishers' tokenizer.json "ignore_merges".
+// The fixture holds "hop" but only the merge "h o", so the merges build
+// "ho" + "p" and the whole-word rule reads "hop" (LFM2.5-8B-A1B's " läsa"
+// was " l" + "äs" + "a"). A control token's text is never taken whole.
+static void write_merge_fixture(const char *path, const char *pre) {
+    static const char *const toks[] = { "<s>", "h", "o", "p", "ho", "hop", "hp" };
+    const int nt = (int)(sizeof(toks) / sizeof(*toks));
+    gbuf kv = {0};
+    uint64_t nkv = 0;
+    gkey(&kv, "general.architecture", GGUF_T_STR); gstr(&kv, "llama"); nkv++;
+    gkey(&kv, "tokenizer.ggml.model", GGUF_T_STR); gstr(&kv, "gpt2"); nkv++;
+    gkey(&kv, "tokenizer.ggml.pre", GGUF_T_STR); gstr(&kv, pre); nkv++;
+    gkey(&kv, "tokenizer.ggml.tokens", GGUF_T_ARR);
+    gu32(&kv, GGUF_T_STR); gu64(&kv, (uint64_t)nt);
+    for (int i = 0; i < nt; i++) gstr(&kv, toks[i]);
+    nkv++;
+    gkey(&kv, "tokenizer.ggml.token_type", GGUF_T_ARR);
+    gu32(&kv, GGUF_T_I32); gu64(&kv, (uint64_t)nt);
+    for (int i = 0; i < nt; i++) gu32(&kv, i == 0 || i == 6 ? 3 : 1);   // <s> and "hp" control
+    nkv++;
+    gkey(&kv, "tokenizer.ggml.merges", GGUF_T_ARR);
+    gu32(&kv, GGUF_T_STR); gu64(&kv, 1); gstr(&kv, "h o");
+    nkv++;
+    gkey(&kv, "tokenizer.ggml.bos_token_id", GGUF_T_U32); gu32(&kv, 0); nkv++;
+    gkey(&kv, "tokenizer.ggml.eos_token_id", GGUF_T_U32); gu32(&kv, 0); nkv++;
+    gbuf w = {0};
+    gu32(&w, 0x46554747); gu32(&w, 3); gu64(&w, 0); gu64(&w, nkv);
+    gput(&w, kv.b, kv.n);
+    while (w.n % 32) { unsigned char z = 0; gput(&w, &z, 1); }
+    FILE *f = fopen(path, "wb");
+    assert(f);
+    assert(fwrite(w.b, 1, w.n, f) == w.n);
+    fclose(f);
+    free(kv.b); free(w.b);
+}
+
+static void test_ignore_merges_follows_the_family(void) {
+    static const struct { const char *pre; bool whole; } cases[] = {
+        { "llama-bpe", true },
+        { "llama4",    true },
+        { "gpt-4o",    true },
+        { "tekken",    true },
+        { "pixtral",   true },
+        { "lfm2",      true },
+        { "dbrx",      false },
+        { "qwen2",     false },
+        { "smollm",    false },
+        { "flint",     false },
+    };
+    const char *path = "tok-merges.gguf";
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        write_merge_fixture(path, cases[i].pre);
+        current = path;
+        gguf_file g;
+        assert(gguf_open(&g, path));
+        tokenizer t;
+        assert(tokenizer_init(&t, &g));
+        int32_t got[8];
+        int n = tok_encode(&t, "hop", got, 8, false, true);
+        bool whole = n == 1 && got[0] == 5;
+        bool merged = n == 2 && got[0] == 4 && got[1] == 3;
+        int m = tok_encode(&t, "hp", got + 2, 6, false, false);
+        if (whole != cases[i].whole || (!whole && !merged) || t.ignore_merges != cases[i].whole ||
+            m != 2 || got[2] != 1 || got[3] != 3) {
+            fprintf(stderr, "ignore_merges: pre %s: \"hop\" gave %d ids, "
+                            "\"hp\" %d, want %s\n", cases[i].pre, n, m,
+                    cases[i].whole ? "the whole word" : "the merges");
+            abort();
+        }
+        tokenizer_free(&t);
+        gguf_close(&g);
+    }
+    remove(path);
+}
+
 int main(void) {
     test_special_matching_across_first_bytes();
     test_stops_follow_type_and_declaration();
     test_bos_default_follows_the_family();
     test_pre_names_choose_the_split();
+    test_ignore_merges_follows_the_family();
 
     for (size_t i = 0; i < sizeof(fixtures) / sizeof(*fixtures); i++) {
         current = fixtures[i];

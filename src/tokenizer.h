@@ -58,6 +58,9 @@ typedef struct {
     bool     add_eos;
     // the publisher's tokenizer composes its input to NFC before splitting
     bool     nfc;
+    // the publisher's BPE takes a pre-token that is a vocabulary entry whole,
+    // before any merge (tokenizer.json "ignore_merges")
+    bool     ignore_merges;
     // A BPE file's tokenizer.ggml.pre value that names no split rule here, so
     // GPT2 is assumed; "" when the name is known or absent, or when the
     // vocabulary is not plain BPE (no other model reads the split). Characters outside

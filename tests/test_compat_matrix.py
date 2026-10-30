@@ -865,3 +865,27 @@ def test_reports_carry_no_machine_paths(tmp_path):
     assert out["note"] == "cache in ~/.cache/x"
     assert out["winsep"] == "cpu_cuda/m.json"
     assert out["plain"] == "no paths here"
+
+
+def test_the_vocabulary_comparison_gates_only_where_a_row_declares_its_count(monkeypatch, tmp_path):
+    """difftok --vocab compares over the publisher's whole vocabulary. A row
+    that declares expect_vocab_divergences gates on it; any other row reports
+    the count. Without the tokenizer.json (no network) it was not run."""
+    module = load_module()
+    calls = []
+
+    def fake(command, timeout):
+        calls.append(command)
+        rc = 0 if "--report-only" in command or command[-1] == "86" else 1
+        return {"status": "pass" if rc == 0 else "fail", "returncode": rc,
+                "stdout_tail": "vocabulary: 126638 entries compared\n86/126638 strings differ\n"}
+    monkeypatch.setattr(module, "run_command", fake)
+    reported = module.run_tokenizer_vocab(tmp_path / "m.gguf", "org/m", "a" * 40, 60)
+    assert reported == {"gated": False, "expect": None, "differ": 86, "of": 126638, "status": "pass"}
+    assert "--report-only" in calls[-1] and calls[-1][calls[-1].index("--ref-revision") + 1] == "a" * 40
+    assert module.run_tokenizer_vocab(tmp_path / "m.gguf", "org/m", None, 60, 86)["status"] == "pass"
+    assert module.run_tokenizer_vocab(tmp_path / "m.gguf", "org/m", None, 60, 0)["status"] == "fail"
+    monkeypatch.setattr(module, "run_command", lambda c, t: {
+        "status": "fail", "returncode": 1, "stdout_tail": "", "stderr_tail": "Repository Not Found"})
+    gone = module.run_tokenizer_vocab(tmp_path / "m.gguf", "org/m", None, 60, 0)
+    assert gone["status"] == "not_executed" and gone["reason"] == "tokenizer_reference_unavailable"
