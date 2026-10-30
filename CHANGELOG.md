@@ -7,7 +7,10 @@ Current release and unreleased changes. Compatibility follows the
 
 - **LFM2.5-8B-A1B Q4_K_M admitted at Tier 2, fidelity not yet measured.**
   LiquidAI's own Q4_K_M loads, tokenizes as the publisher's tokenizer.json
-  does (0 of 721, a 128,000-token vocabulary of its own) and answers on the
+  does (a 128,000-token vocabulary of its own: 0 of 721, and with the
+  whole-word rule 0 of the gold corpus's 107 passages; 108 of its 123,331
+  vocabulary entries, declared, differ by the split's character classes) and
+  answers on the
   CPU of the Metal laptop. Its GGUF carries an earlier revision of the LFM2.5
   template, which Runner rendered with the 1.2B's rules; it is now its own
   family, `lfm2-8b`: string arguments written raw, lists as Python's `str()`,

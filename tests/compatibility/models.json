@@ -2026,6 +2026,9 @@
             "<|tool_call_start|>",
             "<think>"
           ]
+        },
+        "tokenizer": {
+          "expect_vocab_divergences": 108
         }
       }
     },
