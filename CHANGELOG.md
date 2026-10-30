@@ -3,6 +3,14 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **The CUDA gate's reports are written with LF on every host.**
+  `scripts/cuda-smoke.py` and `scripts/cuda-act-probe.py` opened their JSON
+  reports with the platform's line ending, so the 1.8.0 gate on the Windows
+  CUDA host wrote CRLF and the files were converted by hand before commit.
+  Both now write `\n`, as `release-cuda-gate.py`'s redaction already did.
+
 ## v1.8.0 - 2026-10-30
 
 - **A sigmoid or SiLU below -88 no longer turns into NaN on x86-64 CPU (a

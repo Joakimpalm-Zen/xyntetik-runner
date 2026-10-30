@@ -146,7 +146,7 @@ def main():
         print(f"  {kernel:16s} {len(XS) - len(wrong)}/{len(XS)} finite and within float rounding"
               + "".join(f"\n      x={x:g}: got {g!r}, want {w:.6g}" for x, g, w in wrong))
     if a.out:
-        with open(a.out, "w", encoding="utf-8") as f:
+        with open(a.out, "w", encoding="utf-8", newline="\n") as f:
             json.dump(report, f, indent=1)
             f.write("\n")
     print("cuda-act-probe: " + ("every value finite and exact" if not bad else f"{bad} wrong values"))
