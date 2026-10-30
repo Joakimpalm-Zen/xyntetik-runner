@@ -5,6 +5,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "tests" / "compatibility" / "models.json"
@@ -281,20 +283,60 @@ def test_unavailable_tokenizer_reference_is_skip_not_failure(tmp_path):
 
 def test_tokenizer_tool_that_cannot_build_is_skip_not_failure(tmp_path):
     """A matrix process without a compiler on PATH produced 16 tokenizer
-    "fail" rows on 2026-09-02 that had compared nothing: difftok's helper
-    build died with `make: cc: No such file or directory`."""
+    "fail" rows on 2026-09-02 that had compared nothing. difftok says "not
+    run" by its exit status; the words beside it are the operating system's
+    and are not read (here make's message in Swedish)."""
     module = load_module()
     script = tmp_path / "difftok.py"
     script.write_text(
-        "import sys\nprint('make: cc: No such file or directory\\n"
-        "make: *** [Makefile:214: .build/quants.o] Error 127', file=sys.stderr)\n"
-        "raise SystemExit(1)\n")
+        "import sys\nprint('make: cc: Det går inte att hitta filen', file=sys.stderr)\n"
+        f"raise SystemExit({module.DIFFTOK_EXIT_TOOL_UNAVAILABLE})\n")
     module.TOKENIZER_SCRIPT = script
     result = module.run_tokenizer(
         tmp_path / "model.gguf", "org/model",
         ROOT / "tests/fixtures/tokenizer-corpus.txt", 10)
     assert result["status"] == "not_executed"
     assert result["reason"] == "tokenizer_tool_unavailable"
+
+
+def test_a_missing_make_is_not_run_whatever_the_message_says(tmp_path, monkeypatch):
+    """The Windows CUDA host's first matrix run had no make on PATH and its
+    tokenizer check came back "fail": the OS reported the missing file in
+    Swedish, which the old "no such file or directory" match missed. The real
+    difftok, given a make that does not exist, reports not run."""
+    module = load_module()
+    monkeypatch.setenv("MAKE", str(tmp_path / "no-such-make"))
+    result = module.run_tokenizer(
+        tmp_path / "model.gguf", "org/model",
+        ROOT / "tests/fixtures/tokenizer-corpus.txt", 60)
+    assert result["status"] == "not_executed", result
+    assert result["reason"] == "tokenizer_tool_unavailable"
+    assert result["returncode"] == module.DIFFTOK_EXIT_TOOL_UNAVAILABLE
+
+
+def test_difftok_reads_the_exception_type_not_its_text(monkeypatch):
+    """An OSError worded in another language (winerror 2 on a Swedish
+    Windows) is still a tool that could not start."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("difftok", ROOT / "scripts/difftok.py")
+    difftok = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(difftok)
+    def missing(*a, **k):
+        raise OSError(2, "Det går inte att hitta filen")
+    monkeypatch.setattr(difftok.subprocess, "run", missing)
+    with pytest.raises(SystemExit) as e:
+        difftok.build(str(ROOT), "difftok")
+    assert e.value.code == difftok.EXIT_TOOL_UNAVAILABLE
+
+
+def test_the_exit_statuses_agree_with_difftok():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("difftok", ROOT / "scripts/difftok.py")
+    difftok = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(difftok)
+    module = load_module()
+    assert module.DIFFTOK_EXIT_TOOL_UNAVAILABLE == difftok.EXIT_TOOL_UNAVAILABLE
+    assert module.DIFFTOK_EXIT_HARNESS_FAILED == difftok.EXIT_HARNESS_FAILED
 
 
 def test_tokenizer_capture_is_replayed_without_network_reference(tmp_path):

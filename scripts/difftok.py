@@ -25,13 +25,36 @@ import subprocess
 import sys
 
 
+# Exit statuses for a comparison that never ran, so a caller (compat_matrix.py)
+# can tell "not run" from "the tokenizers differ" by the status alone. The
+# messages are the operating system's and arrive in its language ("Det går
+# inte att hitta filen" for a missing make on a Swedish Windows), so nothing
+# downstream may classify on their text.
+EXIT_TOOL_UNAVAILABLE = 3   # a tool the comparison needs could not start or build
+EXIT_HARNESS_FAILED = 4     # the harness ran on the file and failed
+
+
+def unavailable(what, exc=None):
+    detail = f" ({type(exc).__name__}: {exc})" if exc is not None else ""
+    sys.stderr.write(f"difftok: not run: {what}{detail}\n")
+    raise SystemExit(EXIT_TOOL_UNAVAILABLE)
+
+
 def build(root, exe):
     make = os.environ.get("MAKE", "make")
     cc = os.environ.get("CC")
     cmd = [make, "-C", root, exe]
     if cc:
         cmd.append(f"CC={cc}")
-    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
+    try:
+        r = subprocess.run(cmd, stdout=subprocess.DEVNULL)
+    except OSError as exc:
+        # FileNotFoundError, or winerror 2 on Windows: no make on PATH
+        unavailable(f"{make} could not be started", exc)
+    if r.returncode != 0:
+        # make ran and the harness did not build (no compiler on PATH, say):
+        # the instrument is missing, not the tokenizer wrong
+        unavailable(f"the harness did not build ({make} exit {r.returncode})")
 
 
 def load_corpus(path):
@@ -46,10 +69,14 @@ def load_corpus(path):
 
 
 def runner_ids(exe, gguf, corpus_path, n):
-    r = subprocess.run([exe, gguf, corpus_path], capture_output=True, text=True)
+    try:
+        r = subprocess.run([exe, gguf, corpus_path], capture_output=True, text=True)
+    except OSError as exc:
+        unavailable(f"the harness {exe} could not be started", exc)
     if r.returncode != 0:
         sys.stderr.write(r.stderr)
-        raise SystemExit(f"difftok harness failed ({r.returncode})")
+        sys.stderr.write(f"difftok harness failed ({r.returncode})\n")
+        raise SystemExit(EXIT_HARNESS_FAILED)
     lines = r.stdout.split("\n")
     while lines and lines[-1] == "":
         lines.pop()
@@ -68,7 +95,10 @@ def corpus_digest(corpus):
 
 
 def reference_tokenizer(ref, revision=None):
-    from tokenizers import Tokenizer
+    try:
+        from tokenizers import Tokenizer
+    except ImportError as exc:
+        unavailable("the tokenizers library is not installed", exc)
 
     if os.path.isdir(ref):
         return Tokenizer.from_file(os.path.join(ref, "tokenizer.json"))
@@ -90,7 +120,10 @@ def spm_capture(model_file, corpus, added_tokens_json=None):
     template needs, reads it as the special token; those rows are listed by
     the reference's own vocabulary, not by comparing with the runner, and are
     reported apart from the gated count."""
-    import sentencepiece as spm
+    try:
+        import sentencepiece as spm
+    except ImportError as exc:
+        unavailable("the sentencepiece library is not installed", exc)
 
     sp = spm.SentencePieceProcessor(model_file=model_file)
     marks = {sp.id_to_piece(i) for i in range(sp.get_piece_size())
