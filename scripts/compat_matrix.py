@@ -25,6 +25,10 @@ from file_digest import sha256_file  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "tests" / "compatibility" / "models.json"
 TOKENIZER_SCRIPT = ROOT / "scripts" / "difftok.py"
+# difftok.py's exit statuses for a comparison that never ran (its EXIT_*;
+# tests/test_compat_matrix.py holds the two in step)
+DIFFTOK_EXIT_TOOL_UNAVAILABLE = 3
+DIFFTOK_EXIT_HARNESS_FAILED = 4
 GREEDY_SCRIPT = ROOT / "scripts" / "reference_compare.py"
 
 
@@ -444,26 +448,32 @@ def run_tokenizer(model, reference, corpus, timeout, reference_ids=None, expect=
     # otherwise.
     command += ["--corpus", str(corpus), "--expect", str(int(expect))]
     result = run_command(command, timeout)
-    if result["status"] == "fail" and "strings differ" not in result.get("stdout_tail", ""):
+    # A tokenizer that was never compared is not a tokenizer that differs. The
+    # instrument says so by its exit status (difftok.py EXIT_*), never by its
+    # message text: the operating system words a missing make in its own
+    # language ("Det går inte att hitta filen" on the Windows CUDA host,
+    # 2026-10-30), which a text match on "no such file or directory" missed,
+    # and so did the earlier rows with no compiler on PATH (2026-09-02) and no
+    # `tokenizers` in the matrix's python (2026-09-22).
+    rc = result.get("returncode")
+    if result.get("reason") == "process_start_failed":
+        result["status"] = "not_executed"
+        result["reason"] = "tokenizer_tool_unavailable"
+    elif rc == DIFFTOK_EXIT_TOOL_UNAVAILABLE:
+        result["status"] = "not_executed"
+        result["reason"] = "tokenizer_tool_unavailable"
+    elif rc == DIFFTOK_EXIT_HARNESS_FAILED:
+        result["status"] = "not_executed"
+        result["reason"] = "tokenizer_harness_failed"
+    elif result["status"] == "fail" and "strings differ" not in result.get("stdout_tail", ""):
+        # the reference is the Hugging Face Hub's, whose refusals are its own
+        # English text, not the operating system's
         detail = (result.get("stdout_tail", "") + result.get("stderr_tail", "")).lower()
         if any(marker in detail for marker in (
                 "access to model", "restricted", "entry not found",
                 "tokenizer.json", "repository not found")):
             result["status"] = "not_executed"
             result["reason"] = "tokenizer_reference_unavailable"
-        elif any(marker in detail for marker in (
-                "calledprocesserror", "difftok harness failed",
-                "no such file or directory", "error 127",
-                # the reference tokenizer library is missing from the python
-                # that ran the matrix (2026-09-22: `tokenizers` absent from the
-                # system python turned a never-run comparison into "fail")
-                "modulenotfounderror")):
-            # The instrument itself did not build or run (no compiler on the
-            # matrix process's PATH, 2026-09-02: 16 rows came back "fail"
-            # having compared nothing). A tokenizer that was never compared
-            # is not a tokenizer that differs.
-            result["status"] = "not_executed"
-            result["reason"] = "tokenizer_tool_unavailable"
     return result
 
 
