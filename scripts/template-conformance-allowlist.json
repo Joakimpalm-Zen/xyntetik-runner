@@ -41,7 +41,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1730-1735",
+        "lines": "1792-1797",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -59,7 +59,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1730-1735",
+        "lines": "1792-1797",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -77,7 +77,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1730-1735",
+        "lines": "1792-1797",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -90,12 +90,12 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time (LFM2's tokenizer.json post-processor and the file's add_bos_token both say it; LFM2's template opens with `{{- bos_token -}}`), so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2450",
+        "lines": "2454",
         "anchor": "BOS is the tokenizer's, as on every family."
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1730-1732",
+        "lines": "1792-1794",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -142,7 +142,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1730-1735",
+        "lines": "1792-1797",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -160,7 +160,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1730-1735",
+        "lines": "1792-1797",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -178,7 +178,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1730-1735",
+        "lines": "1792-1797",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -196,7 +196,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1730-1735",
+        "lines": "1792-1797",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -214,7 +214,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1730-1735",
+        "lines": "1792-1797",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -232,7 +232,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1730-1735",
+        "lines": "1792-1797",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -265,7 +265,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1730-1735",
+        "lines": "1792-1797",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -311,7 +311,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1730-1735",
+        "lines": "1792-1797",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -352,12 +352,12 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time (tokenizer.c sets add_bos for the k2-horizon pre, as IFM's tokenizer.json does; K2-Horizon's template opens with `{{- bos_token }}`), so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "4253-4254",
+        "lines": "4257-4258",
         "anchor": "The template opens with `{{- bos_token }}`; that token comes from the"
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1730",
+        "lines": "1792",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
