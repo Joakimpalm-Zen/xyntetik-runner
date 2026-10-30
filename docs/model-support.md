@@ -298,7 +298,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 **Tier 2, maintained on report** (dated evidence, not gated):
 
 <details>
-<summary><b>Cloudflare Clef</b>, 3 models: CPU - · CUDA 🟨 1 of 7 · Metal - · Train 🟨 1 of 7</summary>
+<summary><b>Cloudflare Clef</b>, 3 models: CPU 🟨 1 of 7 · CUDA 🟨 1 of 7 · Metal - · Train 🟨 2 of 7</summary>
 <p><b>Cloudflare Clef (clef, on Qwen3.8-27B)</b>, text path only</p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
@@ -310,7 +310,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#cloudflare-clef-flash"><code>Clef-Flash-Q4_K_M.gguf</code></a></td><td></td><td></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
+<tr><td><a href="#cloudflare-clef-flash"><code>Clef-Flash-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td></tr>
 <tr><td><a href="#cloudflare-clef-flash-q8_0"><code>Clef-Flash-Q8_0.gguf</code></a></td><td></td><td></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
 </tbody>
 </table>
@@ -956,9 +956,11 @@ Text path only; float32 reference owed: no fidelity measurement of this file or 
 - **Still missing:** The float32 gold run: Cloudflare's joint_schema_model.py in float32 on clef-flash at f0b7d3cd against this conversion's BF16 GGUF (the lab CPU lane, after MiMo and Spark); the Metal cell (a declared limit today); a llama.cpp column against the same reference.
 - **Evidence:** [docs/clef-admission-2026-10-16.md](clef-admission-2026-10-16.md).
 - **Validation run:** on windows-x86_64-cuda, cuda backend; no run recorded yet.
-- **CPU:** ☐ not run
+- **CPU:** ✅ v1.7.1 2026-10-30 on windows-x86_64-cuda at commit `b9ad4e9dc9a6`, output sha256 `0b9c736613433a3c`, [pin](../tests/compatibility/tier-smoke/cloudflare-clef-flash.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** [n/a](../MANUAL.md#support-matrix): Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.
+- **LoRA training:** supported (runner 1.7.1, 2026-10-30).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
 <a id="cloudflare-clef-flash-q8_0"></a>
