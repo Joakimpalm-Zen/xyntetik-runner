@@ -1624,6 +1624,7 @@ static bool quantize_job_remove_sublayers(quantize_job *J) {
     const char *why = NULL;
     if (!strcmp(rarch, "nemotron_h") || !strcmp(rarch, "nemotron_h_moe") ||
         !strcmp(rarch, "granitehybrid") || !strcmp(rarch, "qwen35") ||
+        !strcmp(rarch, "lfm2") || !strcmp(rarch, "lfm2moe") ||
         (snprintf(key, sizeof key, "%s.ssm.conv_kernel", rarch),
          gguf_get(&J->g, key) != NULL))
         why = "hybrid or recurrent block typing";

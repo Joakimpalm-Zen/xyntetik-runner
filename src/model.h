@@ -166,6 +166,9 @@ typedef struct {
     gguf_tensor *ssm_in;        // in_proj [n_embd, 2*d_inner + 2*n_group*d_state + n_head]
     float       *ssm_conv1d_b;  // conv1d bias [conv_dim = d_inner + 2*n_group*d_state]
     float       *ssm_d;         // D skip, per head [n_ssm_head]
+    // lfm2's short convolution reuses ssm_in (in_proj, [n_embd, 3*n_embd]),
+    // ssm_conv / ssm_conv_w (the depthwise kernel, [n_embd][conv_kernel],
+    // no bias) and ssm_out (out_proj, [n_embd, n_embd]).
 } layer_t;
 
 // Return expert `e`'s weight for one MoE FFN projection (which: 0=gate, 1=up,
@@ -335,6 +338,10 @@ typedef struct {
     bool      nemotron_h;    // nemotron_h (Nemotron-Nano-9B-v2): Mamba-2 / attn /
                              // MLP hybrid, NON-MoE, grouped scan (n_group=8),
                              // NoPE attention, gate-less squared-ReLU MLP
+    bool      lfm2;          // lfm2 / lfm2moe (Liquid LFM2, LFM2.5): short-
+                             // convolution layers interleaved with GQA
+                             // attention, per-layer typed off the
+                             // attention.head_count_kv array (0 => conv)
     bool      ffn_relu2;     // gate-less MLP: down(relu(up(x))^2) (nemotron_h)
     bool      moe_gemma;     // gemma-4 dual-branch MoE (CPU-only; no GPU dual-branch kernel yet)
     bool      moe_prefetch;  // hand routed experts to the OS as whole blocks
