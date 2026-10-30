@@ -3427,7 +3427,7 @@
       "model": "Cloudflare Clef Flash (clef, on Qwen3.5-9B)",
       "family": "Cloudflare Clef",
       "tier": "tier2",
-      "claim": "Text path only; float32 reference owed: no fidelity measurement of this file or of any clef-flash file exists yet. A decision model served at /v1/systemone, in ggml-org's conversion of Cloudflare/clef-flash at f0b7d3cd (converter ggml-org/convert, the revision its .src_sha names; ggml-org/Clef-Flash-GGUF at 6e2a164d), as Cloudflare publishes no GGUF; requests with images or videos are refused. The chat smoke runs the qwen35 backbone, and the fixture decisions agree between the CPU and CUDA; neither is a fidelity measurement.",
+      "claim": "Text path only; ggml-org's Q4_K_M changes 3 of 29 decisions against Cloudflare's float32 reference (26 of 29 agree, max |dprob| 0.199), each where the reference's top two are within 0.066 of each other; the Q8_0 agrees on 29 of 29 and is the file for decisions that must match. A decision model served at /v1/systemone, in ggml-org's conversion of Cloudflare/clef-flash at f0b7d3cd (converter ggml-org/convert, the revision its .src_sha names; ggml-org/Clef-Flash-GGUF at 6e2a164d), as Cloudflare publishes no GGUF; requests with images or videos are refused.",
       "vision_upstream": true,
       "architecture": "clef",
       "upstream": {
@@ -3449,16 +3449,17 @@
         "features": [
           "decisions"
         ],
-        "fp32_reference": "owed",
-        "anchor": "Owed: Cloudflare's joint_schema_model.py in float32 on clef-flash at f0b7d3cd against this conversion's BF16 GGUF (the lab CPU lane, after MiMo and Spark). Until it runs, the only float32 anchor for the family is the small Clef of docs/clef-admission-2026-10-16.md (the Qwen3.5-0.8B backbone with a joint head), not this checkpoint.",
+        "fp32_reference": "measured",
+        "anchor": "Both ggml-org files against Cloudflare's own joint_schema_model.py at f0b7d3cd in float32 on the lab CPU lane (15 records, 29 questions; input ids and spans equal on every record; Runner --systemone at 686a31da, the GPU off): Q8_0 29 of 29 decisions, max |dprob| 0.012, mean 0.0027; Q4_K_M 26 of 29, max 0.199, mean 0.025, its three flips where the reference's top two are 0.020 to 0.066 apart. Record: docs/compat-reports/clef-flash-reference-2026-10-30/README.md.",
         "context": 4096,
         "limitations": "Float32 reference owed, so no fidelity claim: ggml-org's Q4_K_M keeps attention, the SSM projections, the output matrix and the decision head at Q8_0 and puts the feed-forward and the token embedding at Q4_K; it is not bartowski's mix of the same name. Text only: a request with images or videos is refused. No llama.cpp column.",
         "evidence": [
+          "docs/compat-reports/clef-flash-reference-2026-10-30/README.md",
           "docs/compat-reports/clef-flash-2026-10-30/README.md",
           "tests/compatibility/coverage.json",
           "docs/compat-reports/1.7.1-2026-10-30-windows-x86_64-clef-flash-q4_k_m.json"
         ],
-        "missing": "The float32 gold run: Cloudflare's joint_schema_model.py in float32 on clef-flash at f0b7d3cd against this conversion's BF16 GGUF (the lab CPU lane, after MiMo and Spark); the Metal cell (a declared limit today); a llama.cpp column against the same reference."
+        "missing": "The Metal cell (a declared limit today); a llama.cpp column against the same reference."
       },
       "smoke": {
         "device_class": "windows-x86_64-cuda",
@@ -3541,7 +3542,7 @@
       "model": "Cloudflare Clef Flash (clef, on Qwen3.5-9B)",
       "family": "Cloudflare Clef",
       "tier": "tier2",
-      "claim": "Text path only; float32 reference owed: no fidelity measurement of this file or of any clef-flash file exists yet. A decision model served at /v1/systemone, in ggml-org's conversion of Cloudflare/clef-flash at f0b7d3cd (converter ggml-org/convert, the revision its .src_sha names; ggml-org/Clef-Flash-GGUF at 6e2a164d), as Cloudflare publishes no GGUF; requests with images or videos are refused. Its CUDA cell passes as a layer split on the Windows CUDA host; its CPU cell, compat report and fixture decisions are not run yet.",
+      "claim": "Text path only; the fidelity file of ggml-org's two: against Cloudflare's float32 reference it picks the reference's option on 29 of 29 questions (max |dprob| 0.012). A decision model served at /v1/systemone, in ggml-org's conversion of Cloudflare/clef-flash at f0b7d3cd (converter ggml-org/convert, the revision its .src_sha names; ggml-org/Clef-Flash-GGUF at 6e2a164d), as Cloudflare publishes no GGUF; requests with images or videos are refused.",
       "vision_upstream": true,
       "architecture": "clef",
       "upstream": {
@@ -3563,15 +3564,17 @@
         "features": [
           "decisions"
         ],
-        "fp32_reference": "owed",
-        "anchor": "Owed: Cloudflare's joint_schema_model.py in float32 on clef-flash at f0b7d3cd against this conversion's BF16 GGUF (the lab CPU lane, after MiMo and Spark). Until it runs, the only float32 anchor for the family is the small Clef of docs/clef-admission-2026-10-16.md (the Qwen3.5-0.8B backbone with a joint head), not this checkpoint.",
+        "fp32_reference": "measured",
+        "anchor": "Both ggml-org files against Cloudflare's own joint_schema_model.py at f0b7d3cd in float32 on the lab CPU lane (15 records, 29 questions; input ids and spans equal on every record; Runner --systemone at 686a31da, the GPU off): Q8_0 29 of 29 decisions, max |dprob| 0.012, mean 0.0027; Q4_K_M 26 of 29, max 0.199, mean 0.025, its three flips where the reference's top two are 0.020 to 0.066 apart. Record: docs/compat-reports/clef-flash-reference-2026-10-30/README.md.",
         "context": 4096,
         "limitations": "Float32 reference owed, so no fidelity claim: nothing is measured against the parent for either clef-flash file yet. Text only: a request with images or videos is refused. No llama.cpp column.",
         "evidence": [
+          "docs/compat-reports/clef-flash-reference-2026-10-30/README.md",
           "docs/compat-reports/clef-flash-2026-10-30/README.md",
-          "tests/compatibility/coverage.json"
+          "tests/compatibility/coverage.json",
+          "docs/compat-reports/1.7.1-2026-10-30-linux-x86_64-clef-flash-q8_0.json"
         ],
-        "missing": "The CPU cell and the compat report (the lab CPU lane), and the fixture decisions. The float32 gold run: Cloudflare's joint_schema_model.py in float32 on clef-flash at f0b7d3cd against this conversion's BF16 GGUF (the lab CPU lane, after MiMo and Spark); the Metal cell (a declared limit today); a llama.cpp column against the same reference."
+        "missing": "The Metal cell (a declared limit today); its compat report's CPU-against-CUDA check (the lab CPU lane has no CUDA device); a llama.cpp column against the same reference."
       },
       "smoke": {
         "device_class": "windows-x86_64-cuda",
