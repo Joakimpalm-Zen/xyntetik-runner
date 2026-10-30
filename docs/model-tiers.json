@@ -4102,7 +4102,7 @@
           "docs/compat-reports/mimo-v2.6-distill-qwen-9b-2026-10-29/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The Windows CUDA host's CPU and CUDA cells; a Q8_0 row (the fidelity file, measured here, with no device record yet)."
+        "missing": "A Q8_0 row (the fidelity file, measured here, with no device record yet)."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
