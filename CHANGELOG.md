@@ -15,7 +15,10 @@ Current release and unreleased changes. Compatibility follows the
   split from the opener the prompt wrote. Template conformance against the
   24B's own chat_template.jinja is 32 of 32 in text and tokens; 21 of the
   cases fail when it is rendered with the 1.2B's rules. Its tokenizer.json is
-  byte-identical to the 8B-A1B's (0 of 721). The file's cells and its float32
+  byte-identical to the 8B-A1B's, and the Q4_K_M reads as the publisher's
+  does on 721 of 721 corpus strings and all 107 gold passages, with the 108
+  vocabulary entries the 8B declares (the split's character classes)
+  declared. The file's cells and its float32
   reference are owed, and the row is upcoming.
 
 ## v1.9.0 - 2026-10-30
