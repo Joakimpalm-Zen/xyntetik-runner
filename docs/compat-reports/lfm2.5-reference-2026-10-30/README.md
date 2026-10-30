@@ -36,6 +36,13 @@ By depth (mean KLD, top-1 and margin-qualified top-1, 100 positions each):
 | 1,508 to 2,993 | 0.0042, 98%, 100% | 0.115, 88%, 97.4% | 0.0096, 95%, 100% | 1.010, 52%, 59.2% |
 | 3,008 to 4,493 | 0.0043, 100%, 100% | 0.093, 89%, 98.6% | 0.0072, 95%, 100% | 0.893, 52%, 60.3% |
 
+### A fact, asked directly
+
+The gap shows in an answer as well as in the KLD. Asked "In three sentences, describe the planet closest to the Sun."
+through its own template (temperature 0, the CPU), the 350M's Q4_K_M answers "The planet closest to the Sun is Earth".
+The Q8_0 answers "The planet closest to the Sun is Mercury". The 350M rows' smoke asks for the planets in order instead,
+which both files get right.
+
 ### The QAD files
 
 LiquidAI ships each QAD-Q4_0 beside the float32 weights it was quantized from (`qad/model.safetensors`, after
