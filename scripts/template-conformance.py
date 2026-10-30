@@ -234,6 +234,18 @@ FAMILIES = {
         tool_family=True, content_parts=True, reasoning_history=True,
         reasoning_keys=("thinking",), hostile_args=True,
         tokenizer=("LFM2.5-8B-A1B-Q4_K_M.gguf",)),
+    # LFM2.5-24B-A2B: the 1.2B's template with the thought kept on every
+    # assistant turn after the last user turn and the generation prompt
+    # opening it. Its own template (the same bytes in its GGUF) is the
+    # oracle. Its GGUF's tokenizer metadata (tokens, merges, types, pre, BOS
+    # and EOS) is byte-identical to the 8B-A1B's, so either file answers the
+    # token question.
+    "lfm2-24b": Family(
+        "lfm2-24b", ("hf", "LiquidAI/LFM2.5-24B-A2B"),
+        note="LiquidAI/LFM2.5-24B-A2B chat_template.jinja at 3fcfdbfa",
+        tool_family=True, content_parts=True, reasoning_history=True,
+        reasoning_keys=("thinking", "reasoning", "reasoning_content"), hostile_args=True,
+        tokenizer=("LFM2.5-24B-A2B-Q4_K_M.gguf", "LFM2.5-8B-A1B-Q4_K_M.gguf")),
     # XiaomiMiMo MiMo-V2.6-Distill-Qwen-9B: ChatML joined with no newlines,
     # a thought block on every assistant turn, a kept `tool` role and
     # Qwen3-Coder's XML written compact. Its own template (byte-identical in

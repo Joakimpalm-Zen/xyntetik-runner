@@ -265,7 +265,14 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // last user turn, and CONTINUE_FINAL_MESSAGE_TAG moved only on a turn
        // that carries tool_calls. Detected by that raw-string line beside
        // the LFM2 markers. Appended last.
-       TMPL_LFM2_8B };
+       TMPL_LFM2_8B,
+       // LFM2.5-24B-A2B (LiquidAI/LFM2.5-24B-A2B chat_template.jinja, the same
+       // bytes in its GGUF): TMPL_LFM2 with the thought kept on every assistant
+       // turn after the last user turn instead of the last assistant turn
+       // only, and the generation prompt opening the thought,
+       // `<|im_start|>assistant\n<think>`. Detected by that generation prompt
+       // beside the LFM2 markers. Appended last.
+       TMPL_LFM2_24B };
 
 // The reasoning tags a TEMPLATE family writes, for the families whose
 // protocol (not their architecture) defines them: the `<think>` block of
@@ -368,7 +375,7 @@ static inline bool tmpl_argkv(int t) {
 }
 // LFM2's template revisions: one framing, their own argument and thought rules
 static inline bool tmpl_lfm2(int t) {
-    return t == TMPL_LFM2 || t == TMPL_LFM2_8B;
+    return t == TMPL_LFM2 || t == TMPL_LFM2_8B || t == TMPL_LFM2_24B;
 }
 static inline bool tmpl_qwen35(int t) {
     return t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK;

@@ -109,6 +109,9 @@ static const struct {
     { "flint",            0,  15, 1, 0, 0, "argkv_xml",     1 },
     // LFM2.5-8B's revision: LFM2's framing; its strings read back raw
     { "lfm2-8b",          0,  24, 1, 0, 0, "lfm2_python_raw", 1 },
+    // LFM2.5-24B's revision: LFM2's framing; the generation prompt opens the
+    // thought whatever thinking says
+    { "lfm2-24b",         0,  33, 1, 0, 0, "lfm2_python",   1 },
 };
 #define N_FAMILY ((int)(sizeof FAMILY / sizeof *FAMILY))
 
@@ -256,7 +259,7 @@ static const char *opener(int t) {
     case TMPL_ORNITH: case TMPL_QWEN35: case TMPL_QWEN35_NOTHINK:
     case TMPL_NEMOTRON: case TMPL_MINICPM5:
         return "<think>\n";
-    case TMPL_SPARK: case TMPL_SPARK25: return "<think>";
+    case TMPL_SPARK: case TMPL_SPARK25: case TMPL_LFM2_24B: return "<think>";
     case TMPL_K2H: return "<ifm|think>\n";
     case TMPL_HARMONY: return "<|start|>assistant<|channel|>analysis<|message|>";
     case TMPL_MUSE: return "<|start|>assistant to=self<|message|>";
@@ -324,12 +327,12 @@ static void state_matches_the_prompt(int t, const jv *tools) {
 }
 
 int main(void) {
-    CHECK(N_FAMILY == TMPL_LFM2_8B + 1,
-          "the table has %d rows for %d template ids", N_FAMILY, TMPL_LFM2_8B + 1);
+    CHECK(N_FAMILY == TMPL_LFM2_24B + 1,
+          "the table has %d rows for %d template ids", N_FAMILY, TMPL_LFM2_24B + 1);
     jv *tools = json_parse(TOOL_SRC, strlen(TOOL_SRC));
     CHECK(tools != NULL, "tool fixture parses");
     chat_msg user[1] = { { .role = "user", .content = "Hello" } };
-    for (int t = 0; t < N_FAMILY && t <= TMPL_LFM2_8B; t++) {
+    for (int t = 0; t < N_FAMILY && t <= TMPL_LFM2_24B; t++) {
         const char *name = FAMILY[t].name;
 
         size_t e0 = render(t, NULL, 0, false, THINK_DEFAULT, NULL, A, sizeof A);

@@ -189,6 +189,10 @@
     "lfm2-8b": {
       "fixture": "plain",
       "reasoning": "tags"
+    },
+    "lfm2-24b": {
+      "fixture": "plain",
+      "reasoning": "tags"
     }
   }
 }

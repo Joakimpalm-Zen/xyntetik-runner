@@ -2321,7 +2321,7 @@ flag and ignore it rather than approximate one.
 Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
 `mistral-nemo`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
 `ornith`, `qwen35`, `qwen35-nothink`, `nemotron`, `nemotron35`, `hermes4`, `granite`, `granite4`, `granite42`,
-`qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `lfm2-8b`, `mimo`, `spark`, `spark25`,
+`qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `lfm2-8b`, `lfm2-24b`, `mimo`, `spark`, `spark25`,
 `k2-horizon`, `flint`, `muse`, `harmony`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
 is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
 template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ
@@ -3984,6 +3984,16 @@ would to any reader of what the template writes. Strings inside a list or
 mapping keep Python's and JSON's escapes. The model thinks on every turn
 whatever `enable_thinking` says (the template has no switch), and the reply's
 `<think>` block is split out as reasoning.
+
+LFM2.5-24B-A2B's template, the same bytes in its repository and its GGUF, is
+a third revision, served as `lfm2-24b` and detected by its generation prompt,
+which opens the thought: `<|im_start|>assistant` and a newline, then
+`<think>`, whatever `enable_thinking` says. The reply therefore begins inside
+the thought; the reasoning split starts there, so the reply's reasoning and
+its answer come back apart with no tag in the content. Otherwise it is the
+1.2B's template, its escaped string arguments and its `lfm2_python` calls
+included, except that a history turn's thought is kept on every assistant
+turn after the last user turn rather than on the last assistant turn only.
 `[TOOL_CALLS]` is a control token that decodes to nothing unless a grammar
 admits it by its spelling, so every choice is constrained, `auto` included:
 prose that ends at the model's stop or hands off to the list at the marker.

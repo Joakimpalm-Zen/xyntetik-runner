@@ -81,12 +81,14 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         if (strstr(meta_tmpl, "<|assistant_start|>")) return TMPL_APERTUS;
         // Liquid LFM2 / LFM2.5: ChatML whose tools are one `List of tools: [`
         // line and whose calls are a Python list after a marker token; the
-        // revision LFM2.5-8B-A1B's GGUF carries writes a string argument raw
+        // revision LFM2.5-8B-A1B's GGUF carries writes a string argument raw,
+        // and LFM2.5-24B-A2B's opens the thought in the generation prompt
         if (strstr(meta_tmpl, "<|im_start|>") &&
             strstr(meta_tmpl, "List of tools: [") &&
             strstr(meta_tmpl, "<|tool_call_start|>"))
             return strstr(meta_tmpl, "{{- \"'\" + arg_value + \"'\" -}}") ? TMPL_LFM2_8B
-                                                                        : TMPL_LFM2;
+                 : strstr(meta_tmpl, "\"<|im_start|>assistant\\n<think>\"") ? TMPL_LFM2_24B
+                 : TMPL_LFM2;
         // K2-Horizon: the <|ifm|im_start|> turn token is IFM's own; no other
         // family's template writes it (ChatML's <|im_start|> is not a
         // substring of it)
@@ -243,6 +245,7 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "minicpm5")) return TMPL_MINICPM5;
     if (!strcmp(name, "lfm2")) return TMPL_LFM2;
     if (!strcmp(name, "lfm2-8b")) return TMPL_LFM2_8B;
+    if (!strcmp(name, "lfm2-24b")) return TMPL_LFM2_24B;
     if (!strcmp(name, "mimo")) return TMPL_MIMO;
     if (!strcmp(name, "spark")) return TMPL_SPARK;
     if (!strcmp(name, "spark25")) return TMPL_SPARK25;
@@ -323,6 +326,7 @@ const char *template_name(int t) {
         case TMPL_MINICPM5: return "minicpm5";
         case TMPL_LFM2: return "lfm2";
         case TMPL_LFM2_8B: return "lfm2-8b";
+        case TMPL_LFM2_24B: return "lfm2-24b";
         case TMPL_MIMO: return "mimo";
         case TMPL_SPARK: return "spark";
         case TMPL_SPARK25: return "spark25";
@@ -2449,7 +2453,8 @@ static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
 }
 
 // TMPL_LFM2 (LiquidAI/LFM2.5-1.2B-Instruct chat_template.jinja) and
-// TMPL_LFM2_8B (LiquidAI/LFM2.5-8B-A1B-GGUF's), the same framing. A leading
+// TMPL_LFM2_8B (LiquidAI/LFM2.5-8B-A1B-GGUF's) and TMPL_LFM2_24B
+// (LiquidAI/LFM2.5-24B-A2B's), the same framing. A leading
 // system message is the system turn's text (omitted when empty); declared
 // tools follow it on a line of their own, `List of tools: [` and each
 // declaration's tojson joined by `, `, then `]`; the turn is written only
@@ -2481,9 +2486,18 @@ static size_t render_lfm2(int tmpl, const chat_msg *msgs, int n_msgs,
     for (int i = first; i < n_msgs; i++)
         off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
                    msgs[i].role, msgs[i].content);
-    if (add_assistant)
+    if (add_assistant) {
         off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
-    (void)thinking; (void)st;
+        // the 24B's generation prompt opens the thought itself, whatever
+        // enable_thinking says (its template has no switch); the reply begins
+        // inside it, as on MiniCPM5's pre-seed
+        if (tmpl == TMPL_LFM2_24B) {
+            off = emit(out, cap, off, "<think>", NULL, NULL);
+            st->reasoning_open = true;
+            st->opener = "<think>";
+        }
+    }
+    (void)thinking;
     return off;
 }
 
@@ -4429,6 +4443,7 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
         return render_chatml(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_LFM2:
     case TMPL_LFM2_8B:
+    case TMPL_LFM2_24B:
         return render_lfm2(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_LLAMA3:
         for (int i = 0; i < n_msgs; i++)
