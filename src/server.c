@@ -245,11 +245,11 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
             prompt_lit(&b, "<think>\n");
             if (reason) sb_put(&b, reason, strlen(reason));
             prompt_lit(&b, "\n</think>\n\n");
-        } else if ((tmpl == TMPL_MIMO || tmpl_spark(tmpl)) &&
+        } else if ((tmpl == TMPL_MIMO || tmpl_argkv(tmpl)) &&
                    !strcmp(role, "assistant") && reason && *reason) {
-            // MiMo and Spark write `<think>` reasoning `</think>` on an
-            // assistant turn, unframed; with no reasoning the renderer writes
-            // MiMo's empty pair or Spark's bare `</think>` itself
+            // MiMo, Spark and flint write `<think>` reasoning `</think>` on
+            // an assistant turn, unframed; with no reasoning the renderer
+            // writes MiMo's empty pair, Spark's bare `</think>` or nothing
             prompt_lit(&b, "<think>");
             sb_put(&b, reason, strlen(reason));
             prompt_lit(&b, "</think>");
@@ -832,10 +832,10 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                               i == msgs->n - 1 && i > last_user) ||
                              ((tmpl_qwen35(s->tmpl) || s->tmpl == TMPL_MELLUM) &&
                               i > last_user) ||
-                             // MiniCPM5, MiMo and Spark write the block on
-                             // every assistant turn; LFM2 on the last one only
+                             // MiniCPM5, MiMo, Spark and flint write the block
+                             // on every assistant turn; LFM2 on the last one
                              s->tmpl == TMPL_MINICPM5 || s->tmpl == TMPL_MIMO ||
-                             tmpl_spark(s->tmpl) ||
+                             tmpl_argkv(s->tmpl) ||
                              (s->tmpl == TMPL_LFM2 && i == last_assistant);
         char *content = message_text(msgs->items[i], s->tmpl, replay_reason,
                                      &oom);

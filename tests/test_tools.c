@@ -2991,6 +2991,12 @@ static void test_spark_argkv_calls(void) {
     tool_decl_native(TMPL_SPARK25, true, true, tools, &r, &skip2);
     assert(r.proto == TP_GENERIC && !skip2);
     tool_envelope_free(&r); jv_free(choice);
+    // flint writes the same calls: the same protocol, auto and required alike
+    tool_envelope fl; bool skip3 = false;
+    assert(tool_envelope_build(tools, NULL, NULL, &fl, err, sizeof err) == 1);
+    tool_decl_native(TMPL_FLINT, true, true, tools, &fl, &skip3);
+    assert(fl.proto == TP_ARGKV && fl.parse_only && skip3);
+    tool_envelope_free(&fl);
     tool_envelope_free(&e); jv_free(tools);
 }
 

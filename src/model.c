@@ -1242,7 +1242,7 @@ const char *const *model_supported_archs(size_t *count) {
         "smollm", "stablelm", "gemma3", "gemma4", "phi3", "gpt-oss",
         "apertus", "afmoe", "muse-glimmer", "granite", "granitehybrid",
         "nemotron_h", "nemotron_h_moe", "clef", "mellum", "lfm2", "lfm2moe",
-        "spark2_5", "k2-horizon",
+        "spark2_5", "k2-horizon", "flint",
     };
     if (count) *count = sizeof(arches) / sizeof(arches[0]);
     return arches;
@@ -2366,6 +2366,59 @@ static bool bind_meta_afmoe(model_t *m, gguf_file *g, const char *arch) {
     m->expert_gating  = gating == 1 ? EXPERT_GATE_SOFTMAX : EXPERT_GATE_SIGMOID;
     m->expert_w_scale = gguf_get_f32(g, AK("expert_weights_scale"), 0.0f);
     m->expert_norm_w  = gguf_get_bool(g, AK("expert_weights_norm"), false);
+    return true;
+}
+
+// RecursiveSI flint (FlintForCausalLM; transformers' models/flint and
+// llama.cpp's src/models/flint.cpp, which agree):
+//   * GQA with qwen3-style per-head QK RMSNorms before rope, and gpt-oss's
+//     learned attention sinks (blk.N.attn_sinks, one logit per head that
+//     joins the softmax denominator);
+//   * a sliding window (513) on the layers the boolean pattern marks; rope
+//     (NeoX, 10k) on exactly those layers, the full-attention layers NoPE.
+//     The file carries the two patterns as separate arrays, and they agree
+//     on every flint checkpoint; a file where they differ is refused rather
+//     than roped by one of them;
+//   * leading_dense_block_count dense SiLU blocks, then 256 routed experts,
+//     top-6 by sigmoid score (an optional selection bias), renormalised,
+//     plus an always-on shared expert -- bind_meta_moe's keys drive all of it;
+//   * untied output, no embedding scale.
+static bool bind_meta_flint(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    m->flint        = true;
+    m->rope_neox    = true;
+    m->nope_on_full = true;
+    m->swa_rope_global = true;   // one 10k table; the full layers skip rope
+    m->n_dense_lead = (int)gguf_get_u32(g, AK("leading_dense_block_count"), 0);
+    m->swa_window   = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
+    if (m->swa_window <= 0 || m->n_dense_lead < 0 || m->n_dense_lead > m->n_layer) {
+        fprintf(stderr, "error: flint requires %s and a leading dense count "
+                        "within the block count\n", AK("attention.sliding_window"));
+        return false;
+    }
+    free(m->l_is_swa);
+    m->l_is_swa = calloc(m->n_layer, sizeof(bool));
+    bool *ropes = calloc(m->n_layer, sizeof(bool));
+    if (!m->l_is_swa || !ropes) { free(ropes); return false; }
+    bool ok = swa_pattern_array(g, AK("attention.sliding_window_pattern"),
+                                m->l_is_swa, m->n_layer) &&
+              swa_pattern_array(g, AK("attention.rope_pattern"), ropes, m->n_layer);
+    if (!ok) {
+        free(ropes);
+        fprintf(stderr, "error: flint requires the boolean %s.attention."
+                        "sliding_window_pattern and rope_pattern arrays\n", arch);
+        return false;
+    }
+    for (int i = 0; i < m->n_layer; i++)
+        if (ropes[i] != m->l_is_swa[i]) {
+            fprintf(stderr, "error: flint layer %d %s but is a %s layer; only "
+                            "files that rope exactly their sliding layers are "
+                            "supported\n", i, ropes[i] ? "ropes" : "does not rope",
+                    m->l_is_swa[i] ? "sliding" : "full-attention");
+            free(ropes);
+            return false;
+        }
+    free(ropes);
     return true;
 }
 
@@ -4390,7 +4443,7 @@ static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
         ? need_tensor(g, "blk.%d.post_attention_norm.weight", i, &ok)
         : need_tensor(g, "blk.%d.ffn_norm.weight", i, &ok);
     if (m->hyper_conn && !bind_hc_block(m, g, l, i)) return false;
-    if (m->gptoss && !no_attn)
+    if ((m->gptoss || m->flint) && !no_attn)
         l->attn_sinks = tensor_to_f32(
             need_tensor(g, "blk.%d.attn_sinks.weight", i, &ok),
             m->n_head, &ok);
@@ -4561,6 +4614,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     if (strcmp(arch, "afmoe") == 0 && !bind_meta_afmoe(m, g, arch)) return false;
     if (strcmp(arch, "spark2_5") == 0 && !bind_meta_spark25(m, g, arch)) return false;
     if (strcmp(arch, "k2-horizon") == 0 && !bind_meta_k2h(m, g, arch)) return false;
+    if (strcmp(arch, "flint") == 0 && !bind_meta_flint(m, g, arch)) return false;
     // mellum (JetBrains Mellum2.x) is qwen3moe's attention and router with a
     // 3:1 sliding/full layout: bind_swa_default reads its boolean pattern, the
     // local table ropes at rope.freq_base_swa unscaled, and YaRN with its
@@ -5330,6 +5384,10 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_bytes
         else if (m->norm_groups > 1)
             cpu_why = "this model normalises in groups (k2-horizon) and the "
                       "GPU backends implement full-width RMSNorm only";
+        else if (m->flint)
+            cpu_why = "flint is validated on the CPU only; its GPU path "
+                      "(sinks with a sliding window, NoPE full layers, "
+                      "sigmoid routing with shared experts) is not checked yet";
     }
     if (cpu_why) {
         fprintf(stderr, "gpu: %s — using CPU\n", cpu_why);

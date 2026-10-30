@@ -6,9 +6,9 @@
 
 // The stop set's parts, so every array that holds it is sized from them and
 // none can fill: eos, the file's declared eog ids, the turn ends Runner knows
-// by spelling, and the longest per-architecture list (Harmony's two).
+// by spelling, and the longest per-architecture list (flint's three).
 // tok_stop_ids asserts the two lists' lengths against these.
-enum { TOK_EOG_MAX = 32, TOK_STOP_SPELLINGS = 12, TOK_STOP_ARCH_MAX = 2,
+enum { TOK_EOG_MAX = 32, TOK_STOP_SPELLINGS = 12, TOK_STOP_ARCH_MAX = 3,
        TOK_STOP_MAX = 1 + TOK_EOG_MAX + TOK_STOP_SPELLINGS + TOK_STOP_ARCH_MAX };
 
 enum { TOK_SPM, TOK_BPE, TOK_BPE_SPM }; // BPE_SPM: gemma4 (spaces to U+2581, raw-UTF-8 BPE)
@@ -29,7 +29,11 @@ enum { TOK_PRE_GPT2, TOK_PRE_LLAMA3, TOK_PRE_QWEN2, TOK_PRE_SMOLLM, TOK_PRE_AFMO
        TOK_PRE_SPARK25,
        // IFM K2-Horizon (k2-horizon): the Llama 3 regex with combining marks
        // and ZWNJ/ZWJ inside letter runs; NFC
-       TOK_PRE_K2H };
+       TOK_PRE_K2H,
+       // RecursiveSI flint: three Split passes in sequence, digits (1 to 3,
+       // from the left), then runs of three CJK blocks, then an o200k-style
+       // case-aware rule (flint_split_next)
+       TOK_PRE_FLINT };
 
 typedef struct { const char *key; uint32_t klen; int32_t val; } hmap_ent;
 typedef struct { hmap_ent *e; size_t cap; } hmap;

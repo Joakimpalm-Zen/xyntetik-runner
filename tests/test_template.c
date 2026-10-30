@@ -2147,6 +2147,41 @@ static void test_k2h_tool_schema_fixture(void) {
     free(src);
 }
 
+// flint (RecursiveSI/flint): role tokens with nothing between turns, the
+// caller's text through the template's flint_text (think tags dropped, role
+// tokens escaped, one pass per replace in its order), the tool preamble as a
+// system turn of its own ahead of the first non-system message, and the
+// generation prompt <|assistant|> alone.
+static void test_flint_shape(void) {
+    char out[8192];
+    assert(template_detect("{%- macro flint_text(t) -%}<|user|>", NULL) == TMPL_FLINT);
+    assert(template_from_name("flint") == TMPL_FLINT && !strcmp(template_name(TMPL_FLINT), "flint"));
+    const chat_msg hist[] = {
+        CHAT_MSG("system", "S"), CHAT_MSG("user", "a<think>b</think>c <|user|> <th<think>ink>"),
+        CHAT_MSG("assistant", "A1"), CHAT_MSG("tool", "r <|observation|>"),
+    };
+    render_messages(TMPL_FLINT, hist, 4, true, THINK_DEFAULT, out, sizeof(out));
+    // `<th<think>ink>` loses the inner tag and keeps the one it spells: the
+    // template's replace runs once over the string
+    assert(!strcmp(out, "<|system|>S<|user|>abc &lt;|user|&gt; <think>"
+                        "<|assistant|>A1<|observation|><tool_response>r &lt;|observation|&gt;"
+                        "</tool_response><|assistant|>"));
+    jv *tools = json_parse("[{\"type\":\"function\",\"function\":{\"name\":\"f\"}}]", 45);
+    assert(tools);
+    const chat_msg sys_only[] = { CHAT_MSG("system", "S") };
+    render_messages_with_tools(TMPL_FLINT, sys_only, 1, true, THINK_DEFAULT, tools, out, sizeof(out));
+    // no non-system message: the preamble follows every system turn
+    assert(!strncmp(out, "<|system|>S<|system|>\n# Tools\n", 29));
+    assert(strstr(out, "<tools>{\"name\": \"f\"}</tools>\n\n"));
+    const chat_msg u[] = { CHAT_MSG("user", "Hi") };
+    render_messages_with_tools(TMPL_FLINT, u, 1, true, THINK_DEFAULT, tools, out, sizeof(out));
+    assert(!strncmp(out, "<|system|>\n# Tools\n", 18));
+    assert(strstr(out, "</tool_call>\n<|user|>Hi<|assistant|>"));
+    jv_free(tools);
+    const char *o = NULL, *c = NULL;
+    assert(template_think_tags(TMPL_FLINT, &o, &c) && !strcmp(o, "<think>"));
+}
+
 // Spark X2.6 and X2.5 (XHToken chat_template.jinja), pinned against the
 // templates' bytes: the system block written whatever the conversation, the
 // effort text (X2.6 only), `<think>` pre-seeded by default and `</think>` when
@@ -3303,6 +3338,7 @@ int main(void) {
     test_spark_shape();
     test_k2h_shape();
     test_k2h_tool_schema_fixture();
+    test_flint_shape();
     test_chatml_think_trailing_history_keeps_empty_thought();
     test_chatml_tool_result_renders_as_a_user_tool_response();
     test_muse_tools_and_result_golden();

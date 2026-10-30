@@ -247,6 +247,14 @@ FAMILIES = {
              "IFM/K2-Horizon-7B-GGUF",
         tool_family=True, thinking_var="enable_thinking",
         tokenizer=("K2-Horizon-1B-Q8_0.gguf",)),
+    # RecursiveSI flint: GLM-style role tokens with no end-of-turn token,
+    # caller text through the template's flint_text filter, tools as a
+    # <|system|> turn of their own, Spark's <arg_key> calls.
+    "flint": Family(
+        "flint", ("hf", "RecursiveSI/flint"),
+        note="RecursiveSI/flint chat_template.jinja at 2a247be0",
+        tool_family=True,
+        tokenizer=("flint-int4-q4_1.gguf",)),
     "llama2": Family(
         "llama2", ("hf", "unsloth/llama-2-7b-chat"),
         note="meta-llama/Llama-2-7b-chat-hf is gated (HTTP 401); this mirror "
