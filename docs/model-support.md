@@ -1880,17 +1880,17 @@ Text path, IFM's own Q4_K_M of K2-Horizon 7B, which fails the fidelity bar: agai
 <a id="flint-int4-q4_1"></a>
 ##### `flint-int4-q4_1.gguf`
 
-Text path, RecursiveSI's own Q4_1 of flint (39.8B, mixture of experts): it loads, tokenizes as the publisher's tokenizer.json does, renders the publisher's own template token for token and answers through it on the CPU. No float32 reference is feasible (about 160 GB); its agreement check against llama.cpp on this file is owed on the lab CPU lane.
+Text path, RecursiveSI's own Q4_1 of flint (39.8B, mixture of experts): it loads, tokenizes as the publisher's tokenizer.json does, renders the publisher's own template token for token and answers through it on the CPU, and agrees with another engine on this file (0.028 mean KLD, 99.0% margin-qualified top-1, 200 positions). No float32 reference is feasible (about 160 GB), so that is agreement, not fidelity.
 
 - **File:** `flint-int4-q4_1.gguf` (sha256 `43c07baccdba42eb7528a9630ee15699b1942c297291dc1b39a061f508ee1a4b`, 25,992,966,976 bytes, from [RecursiveSI/flint-int4-gguf](https://huggingface.co/RecursiveSI/flint-int4-gguf) at revision `9c47151036bc`).
 - **Upstream checkpoint:** RecursiveSI/flint at revision `2a247be0c0ae`.
 - **Quantization:** Q4_1 (publisher).
 - **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine on the publisher's file, not fidelity. A float32 reference (about 160 GB) is not feasible on any machine this project runs; the architecture's arithmetic is checked against transformers' own flint in float32 on a converted random model. Tokenizer 0/721 against the publisher's tokenizer.json at 2a247be0, template conformance 23 of 23 in text and tokens against its chat_template.jinja. Record: docs/compat-reports/flint-2026-10-30/README.md.
+- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine on the publisher's file, not fidelity: Runner against mainline llama.cpp 36a0e2f on this Q4_1, both on the CPU of the lab CPU lane, 0.028 mean KLD, 90.0% top-1, 99.0% margin-qualified, 0.924 top-8 overlap over 200 raw-completion positions. A float32 reference (about 160 GB) is not feasible on any machine this project runs; the architecture's arithmetic is checked against transformers' own flint in float32 on a converted random model. Tokenizer 0/721 against the publisher's tokenizer.json at 2a247be0, template conformance 23 of 23 in text and tokens against its chat_template.jinja. Record: docs/compat-reports/flint-2026-10-30/README.md.
 - **Context tested:** 4096.
 - **Known limitations:** CPU only: attention sinks with a sliding window, NoPE full layers and sigmoid routing with a shared expert have no CUDA or Metal path yet, so the GPU backends serve it on the CPU. LoRA training is refused (sigmoid router). 26 GB of weights: the lab CPU lane is the only machine here that holds the file in memory. A required or named tool choice takes the generic JSON envelope on this family.
-- **Still missing:** The admitting CPU cell and the agreement check against llama.cpp on this file (lab CPU lane, next); the CUDA path; task quality and the native tool protocol on the real checkpoint.
-- **Evidence:** [docs/compat-reports/flint-2026-10-30/README.md](compat-reports/flint-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Still missing:** The admitting CPU cell (the lab CPU lane; its first attempt waited on the lab volume's reads); the CUDA path; task quality and the native tool protocol on the real checkpoint.
+- **Evidence:** [docs/compat-reports/1.7.1-2026-10-30-linux-x86_64-flint-int4-q4_1.json](compat-reports/1.7.1-2026-10-30-linux-x86_64-flint-int4-q4_1.json), [docs/compat-reports/flint-2026-10-30/README.md](compat-reports/flint-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
 - **CPU:** ☐ not run
 - **CUDA:** ☐ not run
