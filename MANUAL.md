@@ -3890,13 +3890,15 @@ LFM2 and LFM2.5 (`lfm2`, detected by `List of tools: [` beside the
 `<|tool_call_start|>` marker) are ChatML with three rules of their own. The
 declared tools are one `List of tools: [...]` line in the system turn, each
 declaration's JSON joined by `, `. A thought is written as
-`<think>...</think>` on the last assistant turn only; an earlier turn keeps
-what follows its last `</think>`, trimmed. A tool result is a `tool` turn of
+`<think>...</think>` on the last assistant turn only, read as the template
+reads it: the first of `thinking`, `reasoning` and `reasoning_content` that is
+set and not empty, and nothing when that one is not a string. An earlier turn
+keeps what follows its last `</think>`, trimmed. A tool result is a `tool` turn of
 its own. A turn's calls are one Python list,
 `<|tool_call_start|>[name(key=value, ...)]<|tool_call_end|>`, each value as
 the template spells it (a single-quoted string with its backslashes, quotes
 and line breaks escaped, a list or object as JSON, `True`, `False`, `None`,
-a number). Template conformance: 23 of 23 cases, text and tokens, against
+a number). Template conformance: 29 of 29 cases, text and tokens, against
 `LiquidAI/LFM2.5-1.2B-Instruct`. The two markers are control tokens, which
 decode to nothing; while this family's protocol is in force they are spelled,
 and the reply is parsed on the way out, buffered and streamed, by a strict

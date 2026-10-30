@@ -111,7 +111,7 @@ class Family:
     def __init__(self, runner, source, note="", tool_family=False,
                  thinking_var=None, skip=None, tokenizer=(), cannot=None,
                  oracle_tool_shape=None, call_ids=None, content_parts=False,
-                 reasoning_history=False):
+                 reasoning_history=False, reasoning_keys=()):
         self.runner = runner            # --chat-template name
         self.source = source            # ("hf", repo) | ("gguf", path)
         self.note = note
@@ -132,6 +132,11 @@ class Family:
         # (LFM2: on the last assistant turn only), so the matrix carries
         # assistant turns with reasoning in history.
         self.reasoning_history = reasoning_history
+        # The fields the template reads that thought from, in its order, when
+        # it reads more than reasoning_content (LFM2.5: `message.thinking or
+        # message.reasoning or message.reasoning_content`): each spelling,
+        # their precedence and a non-string winner get a case of their own.
+        self.reasoning_keys = reasoning_keys
         # Fixture call ids THIS reference accepts, as {fixture_id: id}: the
         # Mistral templates raise unless a tool call id is 9 alphanumeric
         # characters, so their tool rows use ids of that shape (both sides:
@@ -205,6 +210,7 @@ FAMILIES = {
         "lfm2", ("hf", "LiquidAI/LFM2.5-1.2B-Instruct"),
         note="LiquidAI/LFM2.5-1.2B-Instruct chat_template.jinja at 0f604ada",
         tool_family=True, content_parts=True, reasoning_history=True,
+        reasoning_keys=("thinking", "reasoning", "reasoning_content"),
         tokenizer=("LFM2.5-1.2B-Instruct-Q8_0.gguf", "LFM2.5-350M-Q8_0.gguf")),
     # XiaomiMiMo MiMo-V2.6-Distill-Qwen-9B: ChatML joined with no newlines,
     # a thought block on every assistant turn, a kept `tool` role and
@@ -714,6 +720,32 @@ def matrix(family):
             {"role": "assistant", "content": "Blue.", "reasoning_content": "the sky scatters blue"},
             {"role": "user", "content": U2},
         ], True, "default"))
+    for key in family.reasoning_keys:
+        # the kept turn's thought under each spelling the template reads
+        cases.append((f"reasoning-field-{key}", [
+            {"role": "user", "content": U1},
+            {"role": "assistant", "content": "Yes.", key: f"kept under {key}"},
+        ], False, "default"))
+    if family.reasoning_keys:
+        first, second = family.reasoning_keys[0], family.reasoning_keys[1]
+        last = family.reasoning_keys[-1]
+        # the first truthy field wins; an empty one is passed over
+        cases.append(("reasoning-field-order", [
+            {"role": "user", "content": U1},
+            {"role": "assistant", "content": "Yes.", first: "the first field",
+             last: "the last field"},
+        ], False, "default"))
+        cases.append(("reasoning-field-empty-skipped", [
+            {"role": "user", "content": U1},
+            {"role": "assistant", "content": "Yes.", first: "", second: "the second field"},
+        ], False, "default"))
+        # a truthy winner that is not a string keeps no thought at all; the
+        # later string field is not reached
+        cases.append(("reasoning-field-nonstring", [
+            {"role": "user", "content": U1},
+            {"role": "assistant", "content": "Yes.", first: ["not", "text"],
+             last: "the last field"},
+        ], False, "default"))
     if family.call_ids:
         def remap(v):
             if isinstance(v, dict):

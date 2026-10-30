@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **LFM2 reads a history turn's thought from the fields its template reads.**
+  LFM2.5's chat template takes the thought from `thinking`, then
+  `reasoning`, then `reasoning_content`, the first one set and not empty, and
+  keeps nothing when that one is not a string. Runner read
+  `reasoning_content` only, so a client that sends `thinking` or `reasoning`
+  had the last assistant turn's thought dropped from the prompt. Template
+  conformance for `lfm2` is 29 of 29 in text and tokens, with a case for each
+  spelling, their order, an empty field passed over and a non-string winner.
 - **Spark-X2.6-4B and Spark-X2.5-4B Q4_K_M admitted at Tier 2; both fail the
   fidelity bar.** Against XHToken's BF16 checkpoints computed in float32 the
   publisher's Q4_K_M files read 0.113 (X2.6) and 0.1136 (X2.5) mean KLD over
