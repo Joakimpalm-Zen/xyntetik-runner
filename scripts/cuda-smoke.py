@@ -189,7 +189,7 @@ def main(argv=None):
         "passed": not c.failed(),
     }
     if args.out:
-        with open(args.out, "w", encoding="utf-8") as f:
+        with open(args.out, "w", encoding="utf-8", newline="\n") as f:
             json.dump(report, f, indent=2, sort_keys=True)
 
     for r in c.results:
