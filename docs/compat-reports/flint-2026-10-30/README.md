@@ -1,6 +1,6 @@
 # flint: the architecture against transformers in float32, on a converted random model (2026-10-30)
 
-**What this shows and what it does not.** RecursiveSI's flint is 39.8B parameters, so a float32 reference on the
+**This validates the arithmetic, not the file.** RecursiveSI's flint is 39.8B parameters, so a float32 reference on the
 publisher's checkpoint (about 160 GB) is not feasible here. This record checks the architecture's arithmetic another
 way: a small flint with random weights, built in transformers' own `FlintForCausalLM` (transformers 5.22, which ships
 the model natively), converted with llama.cpp's converter (36a0e2f) to an F32 GGUF, and scored by Runner on the CPU at

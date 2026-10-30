@@ -447,6 +447,13 @@ static bool validate_chat_messages(const jv *msgs, char *err, size_t err_cap) {
     return true;
 }
 
+// chat_role for the family the request renders into: `developer` stays a
+// role of its own where the family's template writes one
+// (tmpl_renders_developer), and is the system slot everywhere else.
+static const char *chat_role_for(int tmpl, jv *msg) {
+    const char *role = jv_str(jv_get(msg, "role"), "user");
+    return !strcmp(role, "developer") && !tmpl_renders_developer(tmpl) ? "system" : role;
+}
 static const char *chat_role(jv *msg) {
     const char *role = jv_str(jv_get(msg, "role"), "user");
     return !strcmp(role, "developer") ? "system" : role;
@@ -575,7 +582,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         send_error(fd, 500, "out of memory validating chat history");
         return;
     }
-    for (int i = 0; i < msgs->n; i++) roles[i] = chat_role(msgs->items[i]);
+    for (int i = 0; i < msgs->n; i++) roles[i] = chat_role_for(s->tmpl, msgs->items[i]);
     bool roles_ok = template_roles_valid(s->tmpl, roles, msgs->n, false, merr,
                                          sizeof(merr));
     free(roles);
@@ -751,7 +758,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
             if (!strcmp(chat_role(msgs->items[i]), "assistant")) last_assistant = i;
     for (int i = 0; i < msgs->n; i++) {
         if (i == 0 && ornith_merged_system) continue;
-        const char *role = chat_role(msgs->items[i]);
+        const char *role = chat_role_for(s->tmpl, msgs->items[i]);
         const char *turn_name = NULL;
         if (!strcmp(role, "tool")) {
             turn_name = chat_result_name(msgs, i, owned, &n_own);

@@ -4948,7 +4948,7 @@
       "tier": "upcoming",
       "claim": "Not admitted yet: the architecture, tokenizer and template are implemented and checked; the file's own cell and its agreement check are owed.",
       "architecture": "flint",
-      "missing": "A CPU cell on the publisher's Q4_1 (26.0 GB, the lab CPU lane) and the agreement check against llama.cpp on the same file; the CUDA path (the next change). Tokenizer agreement (0 of 721), template conformance (21 of 21) and the architecture against transformers' own flint in float32 on a converted random model are recorded.",
+      "missing": "A CPU cell on the publisher's Q4_1 (26.0 GB, the lab CPU lane) and the agreement check against llama.cpp on the same file; the CUDA path (the next change). Tokenizer agreement (0 of 721), template conformance (23 of 23) and the architecture against transformers' own flint in float32 on a converted random model are recorded.",
       "transitions": [
         {
           "tier": "upcoming",

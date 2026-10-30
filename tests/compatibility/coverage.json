@@ -747,7 +747,7 @@
    "artifact": "flint-int4-q4_1",
    "tool_protocol": {
     "status": "NOT RUN",
-    "note": "the template renders the file's own tool preamble and Spark's <arg_key> calls (template-conformance flint, 21/21 text and tokens, 2026-10-30) and the argkv_xml parser is pinned on fixtures (test_spark_argkv_calls, shared); the live tool gate has not been run on this artifact"
+    "note": "the template renders the file's own tool preamble and Spark's <arg_key> calls (template-conformance flint, 23/23 text and tokens, 2026-10-30) and the argkv_xml parser is pinned on fixtures (test_spark_argkv_calls, shared); the live tool gate has not been run on this artifact"
    },
    "client_loop": {
     "status": "NOT RUN"

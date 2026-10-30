@@ -1580,7 +1580,7 @@
         "tokenizer",
         "chat"
       ],
-      "notes": "RecursiveSI's own Q4_1 of flint (39.8B total, 49 blocks, hidden 2048, GQA 32/4, head_dim 128, QK norms and attention sinks on every block, a 513 window with NeoX rope on the sliding blocks and NoPE full attention, 2 leading dense blocks then 256 experts top 6 by sigmoid with a 1,024-wide shared expert, untied head). Tokenizer pre flint, 0 of 721 corpus strings differ from the publisher's tokenizer.json (read from the file's metadata); template family flint, conformance 21/21 in text and tokens. CPU only for now, so chat runs with the GPU off. No float32 reference is feasible (about 160 GB); the architecture is checked against transformers' own flint in float32 on a converted random model.",
+      "notes": "RecursiveSI's own Q4_1 of flint (39.8B total, 49 blocks, hidden 2048, GQA 32/4, head_dim 128, QK norms and attention sinks on every block, a 513 window with NeoX rope on the sliding blocks and NoPE full attention, 2 leading dense blocks then 256 experts top 6 by sigmoid with a 1,024-wide shared expert, untied head). Tokenizer pre flint, 0 of 721 corpus strings differ from the publisher's tokenizer.json (read from the file's metadata); template family flint, conformance 23/23 in text and tokens. CPU only for now, so chat runs with the GPU off. No float32 reference is feasible (about 160 GB); the architecture is checked against transformers' own flint in float32 on a converted random model.",
       "check_params": {
         "chat": {
           "prompt": "What is 2+2?",

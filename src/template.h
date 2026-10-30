@@ -346,6 +346,13 @@ static inline bool tmpl_hermes_json(int t) {
 static inline bool tmpl_spark(int t) {
     return t == TMPL_SPARK || t == TMPL_SPARK25;
 }
+// The families whose own template writes a `developer` message as a turn of
+// its own (flint's <|developer|>). Every other family folds it into the
+// system slot -- gemma-4 by name, the rest by having no such role -- which is
+// what the serving layers' developer-to-system mapping does for them.
+static inline bool tmpl_renders_developer(int t) {
+    return t == TMPL_FLINT;
+}
 // The families whose calls are Spark's GLM-style <arg_key> blocks
 static inline bool tmpl_argkv(int t) {
     return tmpl_spark(t) || t == TMPL_FLINT;

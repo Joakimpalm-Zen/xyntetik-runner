@@ -3909,9 +3909,12 @@ reasoning. Calls are Spark's `<tool_call>NAME<arg_key>K</arg_key><arg_value>V
 </arg_value></tool_call>`, parsed by the same parser (`--info tools` reports
 `argkv_xml`); results are `<|observation|><tool_response>`...`</tool_response>`.
 Generation stops at `<|user|>`, `<|observation|>` and `<|developer|>` as well
-as `<|end_of_text|>`, as the file lists them. A `developer` message is served
-as a system turn, as on every family. Template conformance: 21 of 21 cases,
-text and tokens, against `RecursiveSI/flint` at `2a247be0`.
+as `<|end_of_text|>`, as the file lists them. A `developer` message keeps its
+own `<|developer|>` turn on the chat and Responses surfaces: flint is the one
+family whose template writes one, and every other family serves `developer` as
+its system turn. Template conformance: 23 of 23 cases, text and tokens, against
+`RecursiveSI/flint` at `2a247be0`, a developer turn at the start and in
+mid-history among them.
 
 MiniCPM5 (`minicpm5`, detected from the example call its template's own
 guideline text spells) is Qwen3's ChatML and think shape with its own rules:

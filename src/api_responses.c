@@ -249,8 +249,9 @@ static char *responses_item_text(jv *item, int tmpl, const char **role,
     }
     *role = jv_str(jv_get(item, "role"), "user");
     // "developer" is the Responses spelling of a system turn; chat templates
-    // know the latter
-    if (!strcmp(*role, "developer")) *role = "system";
+    // know the latter, except the families that write a developer turn of
+    // their own (tmpl_renders_developer)
+    if (!strcmp(*role, "developer") && !tmpl_renders_developer(tmpl)) *role = "system";
     jv *content = jv_get(item, "content");
     if (content && content->type == J_STR) {
         sb_put(&b, content->str, strlen(content->str));
@@ -654,7 +655,8 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
             else if (!strcmp(type, "reasoning")) roles[i] = "reasoning";
             else {
                 const char *role = jv_str(jv_get(item, "role"), "user");
-                roles[i] = !strcmp(role, "developer") ? "system" : role;
+                roles[i] = !strcmp(role, "developer") && !tmpl_renders_developer(s->tmpl)
+                               ? "system" : role;
             }
         }
     }
