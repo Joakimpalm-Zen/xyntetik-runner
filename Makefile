@@ -3013,6 +3013,15 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# multi-token batch stays nil for such a run, and the text gates above are
 	@# blind to what that does at fixture scale.
 	./$(TEST_GPU_ID) test.gguf 0 1
+	@# spark2_5 on the device (2026-10-30): Q, K and V as row slices of one
+	@# fused tensor, the per-head output gate, the exact-erf GELU and two rope
+	@# widths and bases, against the CPU at logit precision, batched and one
+	@# token at a time, and with every layer sliding
+	$(PYTHON) scripts/make-test-model.py --spark2-5 test-spark.gguf > /dev/null
+	$(PYTHON) scripts/make-test-model.py --spark2-5 --spark-all-swa test-spark-swa.gguf > /dev/null
+	./$(TEST_GPU_ID) test-spark.gguf
+	./$(TEST_GPU_ID) test-spark.gguf 0 1
+	./$(TEST_GPU_ID) test-spark-swa.gguf
 	./$(TEST_QUANTIZE)
 	./$(TEST_VRAM_ROLLBACK)
 	./$(TEST_GGUF_GETTERS)
@@ -3358,6 +3367,7 @@ clean:
 	rm -f metal-gptoss-moe-cpu.out metal-gptoss-moe-gpu.out metal-gptoss-moe-gpu.err
 	rm -f metal-gemma4-moe-cpu.out metal-gemma4-moe-gpu.out metal-gemma4-moe-gpu.err
 	rm -f metal-swa-cpu.out metal-swa-gpu.out metal-swa-gpu.err test-swa.gguf
+	rm -f test-spark.gguf test-spark-swa.gguf test-spark-q8.gguf test-spark-q40.gguf
 	rm -f metal-es-cpu.out metal-es-gpu.out metal-es-gpu.err test-es.gguf test-es-cfg.gguf
 	rm -f $(addprefix fuzz-,$(FUZZ_TARGETS))
 	rm -rf fuzz-corpus

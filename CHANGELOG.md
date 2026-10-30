@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Spark X2.5 and X2.6 run on Metal and CUDA.** The GPU backends refused
+  `spark2_5` by name for two pieces, and both are now device kernels: the
+  per-head attention output gate (one sigmoid per head over its outputs)
+  and the gated exact-erf GELU. Metal's standard library has no erf, so its
+  kernel uses an approximation whose error stays below float rounding
+  inside the GELU; CUDA uses its own erff. The rest of the architecture (Q,
+  K and V fused in one tensor, two rope widths and bases, the sliding
+  window) already ran there. On Metal the GPU agrees with the CPU at logit
+  precision on the fixture (2.1e-06 mean |dlogit|, limit 0.002 of the
+  range), one token at a time, with every layer sliding, and quantized to
+  Q8_0 and Q4_0, and on XHToken's Spark-X2.6-4B Q4_K_M (1.9e-05 of its
+  range). An expert FFN with the exact GELU still runs on the CPU (no such
+  model exists).
 - **LFM2.5-24B-A2B Q4_K_M admitted at Tier 2; it fails the fidelity bar,
   and the publisher's Q8_0 is the fidelity file.** Against LiquidAI's BF16
   parent with float32 arithmetic cast at use per decoder block (300
