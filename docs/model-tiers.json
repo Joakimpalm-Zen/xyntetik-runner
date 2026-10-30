@@ -4803,7 +4803,25 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "809257d7e57c88625691fe5fc65c53ee315f6aae",
+          "caps": {
+            "version": "1.7.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": null,
+            "gpu_name": null
+          },
+          "output_sha256": "e9b3df046270dbf72909ee397bf99e7e1269069cb5cf8f3e80e2cfb6dd2562c1",
+          "ran": "runner -m K2-Horizon-7B-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-7b-q8_0.linux-x86_64-cuda.cpu.txt"
+        },
         "cuda": null,
         "metal": null
       },
@@ -4820,7 +4838,19 @@
           "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane and a float32 reference measurement (policy 2026-10-27). Maintained on report.",
           "last_validated_release": null
         }
-      ]
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "grouped RMSNorm (k2-horizon) not in the backward"
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-30"
+      }
     },
     {
       "id": "k2-horizon-7b-q4_k_m",
@@ -4863,7 +4893,25 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "809257d7e57c88625691fe5fc65c53ee315f6aae",
+          "caps": {
+            "version": "1.7.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": null,
+            "gpu_name": null
+          },
+          "output_sha256": "537c65d7aee2a58da20a924ad7b9de06a830e23806c99d0364ca623a4a6e825f",
+          "ran": "runner -m K2-Horizon-7B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-7b-q4_k_m.linux-x86_64-cuda.cpu.txt"
+        },
         "cuda": null,
         "metal": null
       },
@@ -4880,7 +4928,19 @@
           "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane and a float32 reference measurement (policy 2026-10-27). Maintained on report.",
           "last_validated_release": null
         }
-      ]
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "grouped RMSNorm (k2-horizon) not in the backward"
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-30"
+      }
     }
   ]
 }
