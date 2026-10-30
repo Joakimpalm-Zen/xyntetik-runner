@@ -145,6 +145,113 @@ def parse_top(d):
     return None
 
 
+def upcast_at_use(model):
+    """Compute in float32 on weights kept at the dtype they are stored in.
+
+    The unit is a decoder block: its whole subtree's parameters, and any of
+    its floating buffers narrower than float32, are cast to float32 just
+    before the block's forward and put back just after, so a module that
+    reads a child's weight directly (LFM2's short convolution hands
+    `self.conv.weight` to a functional conv; a MoE block reads its stacked
+    expert banks) still sees float32. Modules outside the blocks (the
+    embedding, the final norm, the head) are cast the same way one by one.
+    BF16 or F16 to float32 is exact, and back to the stored dtype of a value
+    that came from it is exact, so the arithmetic is a full float32 load's
+    while the resident weights stay at the stored footprint plus one block's
+    float32 copy. Trusted only where a full float32 load of a smaller member
+    agrees with it bit for bit (tests/test_gold_logits.py, and the record that
+    uses it).
+
+    The blocks are the decoder stack, found by name (model.layers, or the
+    language model's for a multimodal class) or else as the outermost
+    ModuleList, never the longest: a MoE whose experts are a ModuleList (128
+    of them against 48 layers in Qwen3-MoE) would otherwise put one layer's
+    experts in the blocks' place and leave the real blocks to per-module
+    casting. The count must equal the config's num_hidden_layers, or this
+    refuses, naming both. Returns (blocks hooked, layers declared, units
+    hooked)."""
+    import torch
+    narrow = (torch.bfloat16, torch.float16)
+    saved = {}
+
+    def cast(unit, recurse):
+        held = []
+        for mod in (unit.modules() if recurse else (unit,)):
+            for _, p in mod.named_parameters(recurse=False):
+                if p.dtype in narrow:
+                    held.append((p, None, p.data))
+                    p.data = p.data.float()
+            for name, b in mod.named_buffers(recurse=False):
+                if b is not None and b.dtype in narrow:
+                    held.append((mod, name, b))
+                    setattr(mod, name, b.float())
+        return held
+
+    def hooks(recurse):
+        def pre(mod, args):
+            saved[id(mod)] = cast(mod, recurse)
+
+        def post(mod, args, out):
+            for what, name, old in saved.pop(id(mod), []):
+                if name is None:
+                    what.data = old
+                else:
+                    setattr(what, name, old)
+        return pre, post
+
+    def has_narrow(mod, recurse):
+        return any(p.dtype in narrow for p in mod.parameters(recurse=recurse)) or \
+            any(b is not None and b.dtype in narrow for b in mod.buffers(recurse=recurse))
+
+    blocks = decoder_blocks(model)
+    cfg = getattr(model, "config", None)
+    declared = getattr(cfg, "num_hidden_layers", None)
+    if declared is None:
+        declared = getattr(getattr(cfg, "text_config", None), "num_hidden_layers", None)
+    if declared is None or len(blocks) != declared:
+        raise SystemExit(f"upcast_at_use: found {len(blocks)} decoder blocks but the config "
+                         f"declares num_hidden_layers {declared}; refusing a cast whose unit "
+                         "is not the decoder block")
+    covered = set()
+    n = 0
+    for block in blocks:
+        covered.update(id(m) for m in block.modules())
+        pre, post = hooks(True)
+        block.register_forward_pre_hook(pre)
+        block.register_forward_hook(post)
+        n += 1
+    for mod in model.modules():
+        if id(mod) in covered or not has_narrow(mod, False):
+            continue
+        pre, post = hooks(False)
+        mod.register_forward_pre_hook(pre)
+        mod.register_forward_hook(post)
+        n += 1
+    return len(blocks), declared, n
+
+
+def decoder_blocks(model):
+    """The decoder stack: by its usual names first, else the outermost
+    ModuleList (one not inside another ModuleList's element)."""
+    import torch
+    for path in ("model.layers", "model.language_model.layers", "language_model.model.layers",
+                 "language_model.layers", "layers"):
+        obj = model
+        for part in path.split("."):
+            obj = getattr(obj, part, None)
+            if obj is None:
+                break
+        if isinstance(obj, torch.nn.ModuleList) and len(obj):
+            return obj
+    lists = [m for m in model.modules() if isinstance(m, torch.nn.ModuleList)]
+    inner = set()
+    for lst in lists:
+        for el in lst:
+            inner.update(id(m) for m in el.modules() if m is not el)
+    outer = [lst for lst in lists if id(lst) not in inner]
+    return outer[0] if outer else []
+
+
 def reference_logp(model, span, rows):
     """The reference's log-probabilities at the scored rows only.
 
@@ -369,6 +476,11 @@ def main():
     ap.add_argument("--out")
     ap.add_argument("--trust-remote-code", action="store_true",
                     help="the publisher ships its own modeling code")
+    ap.add_argument("--upcast-at-use", action="store_true",
+                    help="keep the weights at their stored dtype (BF16) and cast each "
+                         "module's to float32 for its own forward: float32 arithmetic "
+                         "at the stored footprint, for a parent too large to load in "
+                         "float32 (upcast_at_use)")
     ap.add_argument("--force-bos", action="store_true",
                     help="prepend the tokenizer's BOS to the reference even "
                          "when the HF tokenizer does not add one. Needed "
@@ -405,15 +517,25 @@ def main():
     # the causal-LM auto class refuses those configs, so fall back to the
     # image-text class and drive it with text only. The config name is
     # printed so the report says which class produced the gold.
-    kw = dict(dtype=torch.float32, trust_remote_code=args.trust_remote_code)
-    stage(f"loading {args.hf} in float32")
+    kw = dict(dtype="auto" if args.upcast_at_use else torch.float32,
+              trust_remote_code=args.trust_remote_code)
+    stage(f"loading {args.hf} " + ("at its stored dtype, float32 at use"
+                                   if args.upcast_at_use else "in float32"))
     try:
         model = AutoModelForCausalLM.from_pretrained(args.hf, **kw)
     except (ValueError, KeyError, OSError):
         from transformers import AutoModelForImageTextToText
         model = AutoModelForImageTextToText.from_pretrained(args.hf, **kw)
     print("reference class:", type(model).__name__, file=sys.stderr)
-    stage("weights loaded")
+    upcast = None
+    if args.upcast_at_use:
+        n_blocks, declared, n_units = upcast_at_use(model)
+        upcast = (f"float32 arithmetic on weights stored at {next(model.parameters()).dtype}, "
+                  f"cast at use per decoder block ({n_blocks} blocks, config num_hidden_layers "
+                  f"{declared}; {n_units} units hooked)")
+        stage(f"weights loaded; {upcast}")
+    else:
+        stage("weights loaded")
     model.eval()
 
     text = open(args.corpus, encoding="utf-8").read()
@@ -507,7 +629,8 @@ def main():
                               "spelling with unlisted special tokens dropped",
                "positions_skipped_no_logprobs": skipped,
                "fresh_prompt": bool(args.fresh_prompt),
-               "reference_dtype": "float32", "reference_device": "cpu",
+               "reference_dtype": upcast or "float32",
+               "reference_device": "cpu",
                "sides": {}}
     for name, ep, mn in sides:
         ks = [r[name]["kld"] for r in rows]

@@ -218,3 +218,110 @@ def test_an_id_spelled_differently_is_counted():
     top.spelled[16] = "one"            # numbered differently at the endpoint
     top.spelled[20] = "�"         # a partial character says nothing
     assert gold.id_spelling_mismatches(top, SPELL.get) == 1
+
+
+def _tiny_lfm2(torch, transformers, moe):
+    """A random LFM2 (dense) or LFM2 MoE small enough to build in a test."""
+    common = dict(vocab_size=97, hidden_size=32, num_attention_heads=4, num_key_value_heads=2,
+                  num_hidden_layers=4, layer_types=["conv", "full_attention", "conv", "full_attention"],
+                  max_position_embeddings=128, initializer_range=0.3)
+    torch.manual_seed(0)
+    if moe:
+        cfg = transformers.Lfm2MoeConfig(intermediate_size=48, moe_intermediate_size=16, num_experts=4,
+                                         num_experts_per_tok=2, num_dense_layers=1, **common)
+        model = transformers.Lfm2MoeForCausalLM(cfg)
+        with torch.no_grad():   # the selection bias away from zero, so it matters
+            for name, b in model.named_buffers():
+                if name.endswith("expert_bias"):
+                    b.copy_(torch.randn_like(b))
+    else:
+        cfg = transformers.Lfm2Config(intermediate_size=48, **common)
+        model = transformers.Lfm2ForCausalLM(cfg)
+    return cfg, model
+
+
+def test_upcast_at_use_is_float32_bit_for_bit(tmp_path):
+    """Weights kept in BF16 and cast to float32 block by block give exactly the
+    logits a float32 copy of the same BF16 weights gives, on a dense LFM2 (its
+    short convolution hands a child's weight to a functional conv, which a
+    per-module cast missed) and on an LFM2 MoE (stacked expert banks and a
+    selection-bias buffer). Both sides load the same saved BF16 checkpoint
+    the way the reference does (from_pretrained), which keeps the computed
+    buffers, rope's inverse frequencies among them, in float32."""
+    pytest = __import__("pytest")
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    if not hasattr(transformers, "Lfm2MoeConfig"):
+        pytest.skip("this transformers has no LFM2 MoE")
+    ids = torch.randint(0, 97, (1, 40), generator=torch.Generator().manual_seed(1))
+    for moe in (False, True):
+        cfg, model = _tiny_lfm2(torch, transformers, moe)
+        ckpt = tmp_path / ("moe" if moe else "dense")
+        model.to(torch.bfloat16).save_pretrained(ckpt)
+        cls = type(model)
+        full = cls.from_pretrained(ckpt, dtype=torch.float32).eval()
+        stored = cls.from_pretrained(ckpt, dtype="auto").eval()
+        assert next(stored.parameters()).dtype == torch.bfloat16
+        with torch.no_grad():
+            want = full(ids).logits.float()
+        blocks, declared, units = gold.upcast_at_use(stored)
+        assert blocks == declared == 4 and units >= 5
+        with torch.no_grad():
+            got = stored(ids).logits.float()
+        assert torch.equal(got, want), (moe, (got - want).abs().max().item())
+        assert next(stored.parameters()).dtype == torch.bfloat16   # put back after the forward
+
+
+def test_upcast_at_use_takes_the_decoder_stack_not_the_longest_list():
+    """A MoE whose experts are a ModuleList longer than its layer list: the
+    blocks are still the layers (picking the longest list would hook one
+    layer's experts and leave the blocks' own parent-reads-child weight in
+    BF16), and a count that disagrees with the config is refused."""
+    pytest = __import__("pytest")
+    torch = pytest.importorskip("torch")
+    from types import SimpleNamespace
+    nn, F = torch.nn, torch.nn.functional
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.mix = nn.Linear(8, 8, bias=False)
+            self.experts = nn.ModuleList(nn.Linear(8, 8, bias=False) for _ in range(6))
+
+        def forward(self, x):
+            # a parent reading a child's weight, cast to it the way
+            # causal_conv1d does
+            h = F.linear(x.to(self.mix.weight.dtype), self.mix.weight).to(x.dtype)
+            return h + sum(e(h) for e in self.experts)
+
+    class Inner(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = nn.Embedding(11, 8)
+            self.layers = nn.ModuleList(Block() for _ in range(2))
+
+    class Model(nn.Module):
+        def __init__(self, layers=2):
+            super().__init__()
+            self.config = SimpleNamespace(num_hidden_layers=layers)
+            self.model = Inner()
+            self.head = nn.Linear(8, 11, bias=False)
+
+        def forward(self, ids):
+            x = self.model.embed(ids)
+            for b in self.model.layers:
+                x = b(x)
+            return self.head(x)
+
+    torch.manual_seed(0)
+    stored = Model().to(torch.bfloat16)
+    full = Model()
+    full.load_state_dict({k: v.float() for k, v in stored.state_dict().items()})
+    ids = torch.arange(11).view(1, 11)
+    with torch.no_grad():
+        want = full(ids)
+        assert gold.upcast_at_use(stored)[:2] == (2, 2)
+        got = stored(ids).float()
+    assert torch.equal(got, want), (got - want).abs().max().item()
+    with pytest.raises(SystemExit):
+        gold.upcast_at_use(Model(layers=3).to(torch.bfloat16))
