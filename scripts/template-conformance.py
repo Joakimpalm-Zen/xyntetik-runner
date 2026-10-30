@@ -216,6 +216,20 @@ FAMILIES = {
         tool_family=True, thinking_var="enable_thinking",
         tokenizer=("MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf",
                    "MiMo-V2.6-Distill-Qwen-9B-Q8_0.gguf")),
+    # XHToken Spark X2.6 and X2.5: DeepSeek-style turn tokens with ASCII role
+    # tags, an always-written system block and GLM-style <arg_key> calls.
+    # The three Spark tokenizer.json files (X2.5-4B, X2.6-4B, X2.6-1.7B) are
+    # byte-identical, so either GGUF answers the token question for both.
+    "spark": Family(
+        "spark", ("hf", "XHToken/Spark-X2.6-4B"),
+        note="XHToken/Spark-X2.6-4B chat_template.jinja at d1b5f260",
+        tool_family=True, thinking_var="enable_thinking",
+        tokenizer=("Spark-X2.6-4B-Q4_K_M.gguf", "Spark-X2.6-1.7B-Q8_0.gguf")),
+    "spark25": Family(
+        "spark25", ("hf", "XHToken/Spark-X2.5-4B"),
+        note="XHToken/Spark-X2.5-4B chat_template.jinja at 0bcb3567",
+        tool_family=True, thinking_var="enable_thinking",
+        tokenizer=("Spark-X2.5-4B-Q4_K_M.gguf", "Spark-X2.6-1.7B-Q8_0.gguf")),
     "llama2": Family(
         "llama2", ("hf", "unsloth/llama-2-7b-chat"),
         note="meta-llama/Llama-2-7b-chat-hf is gated (HTTP 401); this mirror "

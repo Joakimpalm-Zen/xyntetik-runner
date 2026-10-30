@@ -2318,8 +2318,8 @@ flag and ignore it rather than approximate one.
 Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
 `mistral-nemo`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
 `ornith`, `qwen35`, `qwen35-nothink`, `nemotron`, `nemotron35`, `hermes4`, `granite`, `granite4`, `granite42`,
-`qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `mimo`, `muse`, `harmony`, or
-`raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
+`qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `mimo`, `spark`, `spark25`, `muse`,
+`harmony`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
 is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
 template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ
 by a space beside each `[INST]`/`[/INST]` marker and by which user turn carries the
@@ -3841,6 +3841,25 @@ reports `qwen3_xml`. Its tokenizer.json splits with the qwen2 rule, letters
 without their combining marks, though the GGUF says `qwen35`; a file carrying
 MiMo's template is read with the qwen2 split, as Clef is (0 of 721 corpus
 strings differ, 3 under the declared rule).
+
+Spark (`spark` for XHToken's X2.6 files, `spark25` for X2.5) opens every turn
+with `<｜start▁of▁sentence｜>` and a role tag (`<|System|>`, `<|User|>`,
+`<|Bot|>`, `<|Tool|>`) and always writes a system block: a default sentence,
+on X2.6 the thinking-effort text, the declared tools as JSON, then the
+caller's first system message. Thinking is on unless `enable_thinking` is
+false: the reply opens with `<think>`, or with `</think>` when it is off. X2.6
+takes `reasoning_effort` `high` (the default; `xhigh` reads as high) or `low`
+and refuses anything else, as its template does. Calls are
+`<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>`; the
+template escapes nothing, so a value ends at the first `</arg_value>` that a
+valid continuation follows. A `tool_choice: auto` turn is parsed on the way
+out, buffered and streamed, and a truncated call is never completed; a
+`required` or named choice takes the generic JSON envelope. `--info tools`
+reports `argkv_xml`. Template conformance: 23 of 23 cases each, text and
+tokens, against `XHToken/Spark-X2.6-4B` and `XHToken/Spark-X2.5-4B`. The
+tokenizer pre `spark2_5` splits every digit alone, CJK runs apart, and
+newlines one at a time (0 of 721 corpus strings differ from the publisher's
+tokenizer.json).
 
 MiniCPM5 (`minicpm5`, detected from the example call its template's own
 guideline text spells) is Qwen3's ChatML and think shape with its own rules:

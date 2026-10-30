@@ -5,6 +5,20 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Spark's tokenizer rule, chat templates and tool calls.** XHToken's Spark
+  X2.5 and X2.6 files name the pre-tokenizer `spark2_5`, which Runner did not
+  know; it is now its own rule (every digit alone, CJK runs apart, newlines
+  one at a time) and 0 of 721 corpus strings differ from the publisher's
+  tokenizer.json. Their two chat templates are families of their own
+  (`spark`, `spark25`): turns framed by `<｜start▁of▁sentence｜>` and role
+  tags, a system block always written, thinking on by default, X2.6's
+  thinking-effort text, and GLM-style calls
+  (`<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>`)
+  parsed on the way out, buffered and streamed, with a value that spells the
+  closing tags kept whole and a truncated call never completed. Template
+  conformance is 23 of 23 cases for each in text and tokens. The MiniCPM5
+  parser now shares its buffered mapper and streaming demultiplexer with this
+  one. The architecture itself comes in the next change.
 - **Validation runs on the Windows CUDA host: 4 rows** (RTX 3070, 2026-10-30,
   built at 64cdc0dc, MiMo at 80c30df3). `trinity-nano-preview-q8_0` re-runs
   its CPU cell after the template's blank lines (#464), and its reply is

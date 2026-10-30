@@ -23,7 +23,10 @@ enum { TOK_PRE_GPT2, TOK_PRE_LLAMA3, TOK_PRE_QWEN2, TOK_PRE_SMOLLM, TOK_PRE_AFMO
        // openbmb MiniCPM5: the Llama 3 rule applied AFTER a split that
        // isolates every digit group, so a whitespace run that ends at a
        // digit stays one pre-token (see pre_split_next's digit_ends)
-       TOK_PRE_MINICPM5 };
+       TOK_PRE_MINICPM5,
+       // XHToken Spark 2.5 (spark2_5): afmoe's main regex with digits split
+       // one by one, a narrower CJK set, and newlines taken one at a time
+       TOK_PRE_SPARK25 };
 
 typedef struct { const char *key; uint32_t klen; int32_t val; } hmap_ent;
 typedef struct { hmap_ent *e; size_t cap; } hmap;

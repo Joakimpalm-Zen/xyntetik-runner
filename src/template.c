@@ -85,6 +85,10 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
             strstr(meta_tmpl, "List of tools: [") &&
             strstr(meta_tmpl, "<|tool_call_start|>"))
             return TMPL_LFM2;
+        // Spark: DeepSeek-style turn tokens with its own ASCII role tags
+        if (strstr(meta_tmpl, "<|Bot|>") && strstr(meta_tmpl, "<|System|>"))
+            return strstr(meta_tmpl, "thinking_effort") ? TMPL_SPARK
+                                                        : TMPL_SPARK25;
         // Qwen 3.8 and granite 4.2 both share ornith's function-XML
         // declaration text, so each is told apart FIRST by a phrase only
         // its own template writes: Qwen 3.8's reasoning-effort preamble,
@@ -231,6 +235,8 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "minicpm5")) return TMPL_MINICPM5;
     if (!strcmp(name, "lfm2")) return TMPL_LFM2;
     if (!strcmp(name, "mimo")) return TMPL_MIMO;
+    if (!strcmp(name, "spark")) return TMPL_SPARK;
+    if (!strcmp(name, "spark25")) return TMPL_SPARK25;
     if (!strcmp(name, "hermes4")) return TMPL_HERMES4;
     if (!strcmp(name, "llama2")) return TMPL_LLAMA2;
     if (!strcmp(name, "llama3")) return TMPL_LLAMA3;
@@ -306,6 +312,8 @@ const char *template_name(int t) {
         case TMPL_MINICPM5: return "minicpm5";
         case TMPL_LFM2: return "lfm2";
         case TMPL_MIMO: return "mimo";
+        case TMPL_SPARK: return "spark";
+        case TMPL_SPARK25: return "spark25";
         case TMPL_HERMES4: return "hermes4";
         case TMPL_LLAMA3: return "llama3";  case TMPL_ZEPHYR: return "zephyr";
         case TMPL_GEMMA:  return "gemma";
@@ -632,6 +640,20 @@ int req_reasoning_effort(struct jv *req) {
     return -1;
 }
 
+int req_spark_effort(struct jv *req) {
+    if (!req) return THINK_EFFORT_XHIGH;
+    jv *kw = jv_get((jv *)req, "chat_template_kwargs");
+    jv *v  = kw ? jv_get(kw, "reasoning_effort") : NULL;
+    if (!v || v->type == J_NULL)
+        v = jv_get((jv *)req, "reasoning_effort");
+    if (!v || v->type == J_NULL) return THINK_EFFORT_XHIGH;
+    const char *s = jv_str(v, NULL);
+    if (!s) return -1;
+    if (!strcmp(s, "high") || !strcmp(s, "xhigh")) return THINK_EFFORT_XHIGH;
+    if (!strcmp(s, "low")) return THINK_EFFORT_LOW;
+    return -1;
+}
+
 int req_template_effort(int tmpl, struct jv *req, const char **why) {
     *why = NULL;
     if (tmpl == TMPL_QWEN38) {
@@ -639,6 +661,14 @@ int req_template_effort(int tmpl, struct jv *req, const char **why) {
         int e = req_reasoning_effort(req);
         if (e < 0) *why = "reasoning_effort must be one of xhigh, medium, low "
                           "for this model's template";
+        return e;
+    }
+    if (tmpl == TMPL_SPARK) {
+        // high (default) or low; the template raises on anything else,
+        // medium included
+        int e = req_spark_effort(req);
+        if (e < 0) *why = "reasoning_effort must be one of high, low for "
+                          "this model's template";
         return e;
     }
     if (tmpl == TMPL_MUSE) {
@@ -694,6 +724,7 @@ bool template_think_tags(int tmpl, const char **open, const char **close) {
         tmpl == TMPL_NEMOTRON || tmpl == TMPL_HERMES4 || tmpl == TMPL_MINICPM5 ||
         tmpl == TMPL_LFM2 ||
         tmpl == TMPL_MIMO ||
+        tmpl_spark(tmpl) ||
         tmpl_granite42_like(tmpl) || tmpl_ornith_like(tmpl)) {
         *open = "<think>";
         *close = "</think>";
@@ -1845,6 +1876,72 @@ static size_t render_mimo(int tmpl, const chat_msg *msgs, int n_msgs,
         // leave the header bare and the model opens its own block
         if ((thinking & THINK_MODE_MASK) == THINK_OFF)
             off = emit(out, cap, off, "<think></think>", NULL, NULL);
+    }
+    return off;
+}
+
+// TMPL_SPARK (XHToken/Spark-X2.6-4B chat_template.jinja, identical in X2.5).
+#define SPARK_SOS "<｜start▁of▁sentence｜>"
+#define SPARK_EOS "<｜end▁of▁sentence｜>"
+static size_t render_spark(int tmpl, const chat_msg *msgs, int n_msgs,
+                           bool add_assistant, int thinking, const jv *tools,
+                           char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    int mode = thinking & THINK_MODE_MASK;
+    bool think = mode != THINK_OFF;   // `enable_thinking | default(true)`
+    const char *instr = !think || tmpl != TMPL_SPARK ? "" :
+        (thinking & THINK_EFFORT_MASK) == THINK_EFFORT_LOW
+        ? "\n`thinking_effort` guides on how much to think in your thinking "
+          "channel (not including the response channel), supported values "
+          "include `low` and `high`.\nNow the system is invoked with "
+          "`thinking_effort=low`."
+        : "\n`thinking_effort` guides on how much to think in your thinking "
+          "channel (not including the response channel), supported values "
+          "include `low` and `high`.\nNow the system is invoked with "
+          "`thinking_effort=high`.";
+    // the system block is written whatever the conversation holds
+    off = emit(out, cap, off, SPARK_SOS "<|System|>\nyou are a helpful assistant.%s",
+               instr, NULL);
+    if (tools && tools->type == J_ARR && tools->n > 0) {
+        sbuf decl = {0};
+        tools_render_for(tmpl, tools, &decl);
+        if (decl.failed) { free(decl.s); return SIZE_MAX; }
+        off = emit(out, cap, off, "%s", decl.s ? decl.s : "", NULL);
+        free(decl.s);
+    }
+    int first = n_msgs > 0 && !strcmp(msgs[0].role, "system") ? 1 : 0;
+    if (first && msgs[0].content[0])
+        off = emit(out, cap, off, "\n\n%s", msgs[0].content, NULL);
+    off = emit(out, cap, off, SPARK_EOS, NULL, NULL);
+    for (int i = first; i < n_msgs; i++) {
+        const char *role = msgs[i].role;
+        if (!strcmp(role, "system")) {
+            off = emit(out, cap, off, SPARK_SOS "<|System|>\n%s" SPARK_EOS,
+                       msgs[i].content, NULL);
+        } else if (!strcmp(role, "user")) {
+            off = emit(out, cap, off, SPARK_SOS "<|User|>%s" SPARK_EOS,
+                       msgs[i].content, NULL);
+        } else if (!strcmp(role, "assistant")) {
+            off = emit(out, cap, off, SPARK_SOS "<|Bot|>", NULL, NULL);
+            // `<think>R</think>` arrives in the content from the serving
+            // layer when the turn carries reasoning; a bare `</think>` else
+            if (!content_starts(msgs[i].content, "<think>"))
+                off = emit(out, cap, off, "</think>", NULL, NULL);
+            off = emit(out, cap, off, "%s" SPARK_EOS, msgs[i].content, NULL);
+        } else if (!strcmp(role, "tool")) {
+            bool prev_tool = i > first && !strcmp(msgs[i - 1].role, "tool");
+            bool next_tool = i + 1 < n_msgs && !strcmp(msgs[i + 1].role, "tool");
+            if (!prev_tool) off = emit(out, cap, off, SPARK_SOS "<|Tool|>", NULL, NULL);
+            off = emit(out, cap, off, "<tool_response>%s</tool_response>",
+                       msgs[i].content, NULL);
+            if (!next_tool) off = emit(out, cap, off, SPARK_EOS, NULL, NULL);
+        }
+    }
+    if (add_assistant) {
+        off = emit(out, cap, off, SPARK_SOS "<|Bot|>", NULL, NULL);
+        off = emit(out, cap, off, think ? "<think>" : "</think>", NULL, NULL);
+        st->reasoning_open = think;
+        st->opener = think ? "<think>" : NULL;
     }
     return off;
 }
@@ -3220,6 +3317,9 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
         return render_qwen3_coder(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_MIMO:
         return render_mimo(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+    case TMPL_SPARK:
+    case TMPL_SPARK25:
+        return render_spark(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_QWEN38:
         return render_qwen38(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_GRANITE42:
@@ -3565,6 +3665,25 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
                     "<TOOL_RESPONSE>[{{\"tool_response1\"}}, {{\"tool_response2\"}}]</TOOL_RESPONSE>\n\n"
                     "Based on the tool responses, you can call additional tools if needed, correct "
                     "tool calls if any errors are found, or just respond to the user.");
+        return;
+    }
+    if (tmpl_spark(tmpl)) {
+        // Spark's system block: each declaration's FUNCTION object, one per
+        // line inside <tools>; X2.6 writes it as `tojson(separators=(',',
+        // ':'))` after a blank line, X2.5 as plain `tojson` with no blank
+        // line before the heading
+        if (!tools || tools->type != J_ARR || tools->n == 0) return;
+        pl_lit(out, tmpl == TMPL_SPARK
+                    ? "\n\n## Tools\nYou have access to the following functions:\n<tools>"
+                    : "## Tools\nYou have access to the following functions:\n<tools>");
+        for (int i = 0; i < tools->n; i++) {
+            const jv *fn = jv_get(tools->items[i], "function");
+            if (!fn) fn = tools->items[i];
+            pl_lit(out, "\n");
+            if (tmpl == TMPL_SPARK) jv_dump(fn, out);
+            else jv_dump_tojson(fn, out);
+        }
+        pl_lit(out, "\n</tools>");
         return;
     }
     if (tmpl == TMPL_LFM2) {
@@ -3931,6 +4050,26 @@ void tool_history_render_for(int tmpl, const jv *calls,
         const char *name = jv_str(jv_get(fn, "name"), NULL);
         const char *args = jv_str(jv_get(fn, "arguments"), "{}");
         if (!name) continue;
+        if (tmpl_spark(tmpl)) {
+            // <tool_call>NAME then <arg_key>K</arg_key><arg_value>V</arg_value>
+            // per member (a string raw, anything else tojson with Python's
+            // default separators), no separator around or between calls
+            pl_fmt(out, "<tool_call>%s", name);
+            jv *obj = json_parse(args, strlen(args));
+            if (obj && obj->type == J_OBJ) {
+                for (int k = 0; k < obj->n; k++) {
+                    pl_fmt(out, "<arg_key>%s</arg_key><arg_value>", obj->keys[k]);
+                    if (obj->items[k]->type == J_STR)
+                        sb_put(out, obj->items[k]->str, strlen(obj->items[k]->str));
+                    else
+                        jv_dump_tojson(obj->items[k], out);
+                    pl_lit(out, "</arg_value>");
+                }
+            }
+            pl_lit(out, "</tool_call>");
+            jv_free(obj);
+            continue;
+        }
         if (tmpl == TMPL_MIMO) {
             // MiMo's render_tool_calls: no separator before or between calls,
             // a mapping's members as <parameter=K>V</parameter> with a string
@@ -4610,6 +4749,13 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
         env->tools = tools;
         env->parse_only = true;
         env->max_calls = TOOL_STREAM_MAX_CALLS;
+    } else if (strict && tmpl_spark(tmpl) && env->kind == TCH_AUTO) {
+        // Spark's own GLM-style calls, parsed on the way out and never
+        // constrained; a required or named choice takes the generic envelope
+        env->proto = TP_ARGKV;
+        env->tools = tools;
+        env->parse_only = true;
+        env->max_calls = TOOL_STREAM_MAX_CALLS;
     } else if (strict && tmpl == TMPL_MIMO && env->kind == TCH_AUTO) {
         // MiMo's calls are Qwen3-Coder's XML written compact, which the XML
         // parser reads (it skips the framing whitespace the compact form
@@ -4746,7 +4892,9 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
                     // LFM2 the same way: its declarations are its template's
                     (tmpl == TMPL_LFM2 && (!strict || env->proto == TP_LFM2)) ||
                     (tmpl == TMPL_MIMO &&
-                     (!strict || env->proto == TP_QWEN_XML));
+                     (!strict || env->proto == TP_QWEN_XML)) ||
+                    (tmpl_spark(tmpl) &&
+                     (!strict || env->proto == TP_ARGKV));
     *skip_generic = qwen || g4_native || nemo_native || tmpl == TMPL_APERTUS ||
                     mcp_decl ||
                     (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
@@ -4768,6 +4916,7 @@ const char *tool_envelope_protocol_name(const tool_envelope *e) {
         case TP_QWEN_XML:   return "qwen3_xml";
         case TP_MINICPM_XML: return "minicpm5_xml";
         case TP_LFM2:       return "lfm2_python";
+        case TP_ARGKV:      return "argkv_xml";
         case TP_NEMOTRON:   return "nemotron_json";
         case TP_MISTRAL:    return "mistral_json";
         default: break;
@@ -4789,6 +4938,7 @@ const char *tool_protocol_name(int tmpl, bool *native) {
         case TP_QWEN_XML: return "qwen3_xml";
         case TP_MINICPM_XML: return "minicpm5_xml";
         case TP_LFM2:     return "lfm2_python";
+        case TP_ARGKV: return "argkv_xml";
         case TP_NEMOTRON: return "nemotron_json";
         case TP_MISTRAL:  return "mistral_json";
         default: break;
@@ -5632,19 +5782,187 @@ bad:
     free(args.s);return false;
 }
 
-// The buffered MiniCPM5 turn: prose up to the first call is content, each
-// call maps through mcp_one_call, the turn ends at <|im_end|>. The same
-// verdicts as qwen_map: a call that does not parse against its declaration
-// refuses the document, a call past max_calls too.
-static int mcp_map(const tool_envelope *e, const char *doc, size_t n,
-                   sbuf *content, sbuf *tc) {
+// Spark's GLM-style call, bare in the content:
+//   <tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value>...</tool_call>
+// The template escapes nothing, so a value may itself spell </arg_value> or
+// </tool_call>. A value therefore ends at the first </arg_value> that a valid
+// continuation follows (<arg_key> or </tool_call>, optional whitespace
+// between), and the block at the </tool_call> that closes the call so read.
+// Values are typed by the declaration as the other XML parsers type them.
+#define ARGKV_OPEN "<tool_call>"
+
+typedef struct { const char *k, *ke, *v, *ve; } argkv_member;
+
+// Structure of one block at p: 1 complete (*end past its </tool_call>, the
+// name and members filled), 0 still open, -1 not this shape at all.
+static int argkv_scan(const char *p, size_t n, size_t *end,
+                      const char **name, const char **name_e,
+                      argkv_member *mem, int cap, int *n_mem) {
+    const char *z = p + n;
+    size_t ol = strlen(ARGKV_OPEN);
+    if (n < ol) return memcmp(p, ARGKV_OPEN, n) ? -1 : 0;
+    if (memcmp(p, ARGKV_OPEN, ol)) return -1;
+    const char *q = p + ol;
+    const char *ak = atem_find(q, z, "<arg_key>");
+    const char *tc = atem_find(q, z, "</tool_call>");
+    const char *ne = ak && (!tc || ak < tc) ? ak : tc;
+    if (!ne) return 0;
+    *name = trim_left(q, ne); *name_e = trim_right(*name, ne);
+    if (*name_e == *name) return -1;
+    q = ne; *n_mem = 0;
+    for (;;) {
+        q = trim_left(q, z);
+        if ((size_t)(z - q) >= 12 && !memcmp(q, "</tool_call>", 12)) {
+            *end = (size_t)(q + 12 - p);
+            return 1;
+        }
+        if ((size_t)(z - q) < 9) return memcmp(q, "<arg_key>", (size_t)(z - q)) &&
+                                        memcmp(q, "</tool_call>", (size_t)(z - q)) ? -1 : 0;
+        if (memcmp(q, "<arg_key>", 9)) return -1;
+        const char *k = q + 9, *ke = atem_find(k, z, "</arg_key>");
+        if (!ke) return 0;
+        const char *v = ke + 10;
+        if ((size_t)(z - v) < 11) return memcmp(v, "<arg_value>", (size_t)(z - v)) ? -1 : 0;
+        if (memcmp(v, "<arg_value>", 11)) return -1;
+        v += 11;
+        const char *ve = NULL, *after = NULL, *from = v;
+        for (;;) {
+            const char *c = atem_find(from, z, "</arg_value>");
+            if (!c) return 0;
+            const char *t = trim_left(c + 12, z);
+            size_t left = (size_t)(z - t);
+            bool cont = (left >= 9 && !memcmp(t, "<arg_key>", 9)) ||
+                        (left >= 12 && !memcmp(t, "</tool_call>", 12));
+            bool maybe = (left < 9 && !memcmp(t, "<arg_key>", left)) ||
+                         (left < 12 && !memcmp(t, "</tool_call>", left));
+            if (cont) { ve = c; after = c + 12; break; }
+            if (maybe) return 0;          // wait for the bytes that decide
+            from = c + 1;                 // a spelled closing tag inside V
+        }
+        if (*n_mem == cap) return -1;
+        mem[(*n_mem)++] = (argkv_member){ k, ke, v, ve };
+        q = after;
+    }
+}
+
+static size_t argkv_block_end(const char *p, size_t n) {
+    const char *name, *ne; argkv_member mem[64]; int nm; size_t end = 0;
+    int r = argkv_scan(p, n, &end, &name, &ne, mem, 64, &nm);
+    if (r == 1) return end;
+    if (r == 0) return 0;
+    // not this shape: the block ends at its first close and is dropped there
+    const char *c = atem_find(p, p + n, "</tool_call>");
+    return c ? (size_t)(c + 12 - p) : 0;
+}
+
+static bool argkv_one_call(const tool_envelope *env, const char **pp,
+                           const char *end, int index, sbuf *tc) {
+    const char *p = *pp, *name, *ne;
+    argkv_member raw[64]; int nraw = 0; size_t blk = 0;
+    if (argkv_scan(p, (size_t)(end - p), &blk, &name, &ne, raw, 64, &nraw) != 1)
+        return false;
+    jv *fn = NULL;
+    for (int i=0; env->tools && i<env->tools->n; i++) {
+        jv *f = jv_get(env->tools->items[i],"function");
+        if (!f) f = env->tools->items[i];
+        const char *nm = jv_str(jv_get(f,"name"),"");
+        if (strlen(nm)==(size_t)(ne-name) && !memcmp(nm,name,(size_t)(ne-name))) { fn=f; break; }
+    }
+    if (!fn) return false;
+    jv *props = jv_get(jv_get(fn,"parameters"),"properties");
+    struct { const char *key; size_t key_n; sbuf json; int declared; } mem[64];
+    int n_mem = 0;
+    sbuf args = {0};
+    for (int m = 0; m < nraw; m++) {
+        const char *key = trim_left(raw[m].k, raw[m].ke), *ke = trim_right(key, raw[m].ke);
+        if (ke == key) goto bad;
+        jv *spec=NULL; int declared = INT_MAX;
+        for (int i=0; props && props->type==J_OBJ && i<props->n; i++)
+            if (strlen(props->keys[i])==(size_t)(ke-key) && !memcmp(props->keys[i],key,(size_t)(ke-key))) { spec=props->items[i]; declared = i; }
+        const char *type=jv_str(jv_get(spec,"type"),"");
+        mem[n_mem].key = key; mem[n_mem].key_n = (size_t)(ke-key);
+        mem[n_mem].declared = declared;
+        sbuf *val = &mem[n_mem].json; memset(val, 0, sizeof *val);
+        n_mem++;
+        const char *v = raw[m].v, *e = raw[m].ve;
+        if (!strcmp(type,"string")) {
+            sb_lit(val,"\""); sb_esc(val,v,(int)(e-v)); sb_lit(val,"\"");
+        } else {
+            const char *b=trim_left(v,e), *z=trim_right(b,e);
+            jv *value=json_parse(b,(size_t)(z-b));
+            if (!value && z-b==4 && !memcmp(b,"True",4)) value=json_parse("true",4);
+            if (!value && z-b==5 && !memcmp(b,"False",5)) value=json_parse("false",5);
+            if (!value && z-b==4 && !memcmp(b,"None",4)) value=json_parse("null",4);
+            if (value) { jv_dump(value,val); jv_free(value); }
+            else if (!type[0]) { sb_lit(val,"\""); sb_esc(val,v,(int)(e-v)); sb_lit(val,"\""); }
+            else goto bad;
+        }
+        if (val->failed) goto bad;
+    }
+    sb_lit(&args,"{");
+    bool used[64] = {0};
+    for (int k = 0; k < n_mem; k++) {
+        int pick = -1;
+        for (int i = 0; i < n_mem; i++)
+            if (!used[i] && (pick < 0 || mem[i].declared < mem[pick].declared)) pick = i;
+        used[pick] = true;
+        if (k) sb_lit(&args,",");
+        sb_lit(&args,"\""); sb_esc(&args,mem[pick].key,(int)mem[pick].key_n); sb_lit(&args,"\":");
+        sb_put(&args, mem[pick].json.s ? mem[pick].json.s : "", mem[pick].json.n);
+    }
+    sb_lit(&args,"}");
+    for (int i = 0; i < n_mem; i++) free(mem[i].json.s);
+    n_mem = 0;
+    if (args.failed) goto bad;
+    jv *params = jv_get(fn,"parameters");
+    if (params) {
+        char err[192]; snode *schema=schema_compile(params,err,sizeof err);
+        if (!schema) goto bad;
+        sval state; sval_init(&state,schema);
+        bool ok=sval_feed(&state,args.s,(int)args.n) && state.done;
+        schema_free(schema);
+        if (!ok) goto bad;
+    }
+    if (env->kind==TCH_NAMED && (!env->named || strlen(env->named)!=(size_t)(ne-name) || memcmp(env->named,name,(size_t)(ne-name)))) goto bad;
+    sb_fmt(tc,"{\"id\":\"call_%d\",\"type\":\"function\",\"function\":{\"name\":\"",index);
+    sb_esc(tc,name,(int)(ne-name));sb_lit(tc,"\",\"arguments\":\"");
+    sb_esc(tc,args.s,(int)args.n);sb_lit(tc,"\"}}");
+    *pp=p+blk;free(args.s);return !tc->failed;
+bad:
+    for (int i = 0; i < n_mem; i++) free(mem[i].json.s);
+    free(args.s);return false;
+}
+
+// The bare-block XML families (MiniCPM5, Spark): one buffered mapper and one
+// streaming demultiplexer, told apart by what opens a call, where a block
+// ends, how one call is read and what ends the turn.
+typedef struct {
+    const char *open, *turn_end, *name;
+    size_t (*block_end)(const char *p, size_t n);
+    bool (*one_call)(const tool_envelope *, const char **, const char *, int, sbuf *);
+} xml_proto;
+static const xml_proto MCP_XP   = { MCP_CALL_OPEN, "<|im_end|>", "minicpm5",
+                                    mcp_block_end, mcp_one_call };
+static const xml_proto ARGKV_XP = { ARGKV_OPEN, "<｜end▁of▁sentence｜>", "spark",
+                                    argkv_block_end, argkv_one_call };
+static const xml_proto *xml_proto_of(const tool_envelope *e) {
+    return e && e->proto == TP_ARGKV ? &ARGKV_XP : &MCP_XP;
+}
+
+// The buffered turn: prose up to the first call is content, each call maps
+// through the family's reader, the turn ends at its end marker. A call that
+// does not parse against its declaration refuses the document, a call past
+// max_calls too.
+static int bare_xml_map(const tool_envelope *e, const char *doc, size_t n,
+                        sbuf *content, sbuf *tc) {
+    const xml_proto *xp = xml_proto_of(e);
     const char *p=doc, *end=doc+n;
     int calls=0;
     if (tool_trace_on())
-        fprintf(stderr, "tool-trace: minicpm5 document (%zu bytes):\n%.*s\n", n, (int)n, doc);
+        fprintf(stderr, "tool-trace: %s document (%zu bytes):\n%.*s\n", xp->name, n, (int)n, doc);
     while (p<end) {
-        const char *open=atem_find(p,end,MCP_CALL_OPEN);
-        const char *stop=atem_find(p,end,"<|im_end|>");
+        const char *open=atem_find(p,end,xp->open);
+        const char *stop=atem_find(p,end,xp->turn_end);
         if (!open || (stop && stop<open)) {
             if (!calls) sb_put(content,p,(size_t)((stop?stop:end)-p));
             break;
@@ -5656,7 +5974,7 @@ static int mcp_map(const tool_envelope *e, const char *doc, size_t n,
         }
         const char *at=open;
         if (calls) sb_lit(tc,",");
-        if (!mcp_one_call(e,&at,end,calls,tc)) {
+        if (!xp->one_call(e,&at,end,calls,tc)) {
             if (tool_trace_on()) fprintf(stderr, "tool-trace: refused, call %d does not parse against its declaration\n", calls + 1);
             return -1;
         }
@@ -6074,7 +6392,8 @@ int tool_envelope_map_channels(const tool_envelope *e, const char *doc,
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, reasoning, content, tc);
     if (e->proto == TP_GEMMA4) return gemma4_map(e, doc, n, reasoning, content, tc);
     if (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) return qwen_map(e, doc, n, content, tc);
-    if (e->proto == TP_MINICPM_XML) return mcp_map(e, doc, n, content, tc);
+    if (e->proto == TP_MINICPM_XML || e->proto == TP_ARGKV)
+        return bare_xml_map(e, doc, n, content, tc);
     return tool_envelope_map(e, doc, n, content, tc);
 }
 
@@ -6088,7 +6407,8 @@ int tool_envelope_map(const tool_envelope *e, const char *doc, size_t n,
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, NULL, content, tc);
     if (e->proto == TP_GEMMA4) return gemma4_map(e, doc, n, NULL, content, tc);
     if (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) return qwen_map(e, doc, n, content, tc);
-    if (e->proto == TP_MINICPM_XML) return mcp_map(e, doc, n, content, tc);
+    if (e->proto == TP_MINICPM_XML || e->proto == TP_ARGKV)
+        return bare_xml_map(e, doc, n, content, tc);
     if (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL)
         return nemotron_map(e, doc, n, content, tc);
     if (e->proto == TP_ATEM) return atem_map(e, doc, n, content, tc);
@@ -6463,7 +6783,7 @@ void tool_stream_init(tool_stream *s, const tool_envelope *e,
     s->state = e && e->proto == TP_HARMONY ? TS_HARMONY
              : e && e->proto == TP_GEMMA4 ? TS_G4_START
              : e && (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) ? TS_QWEN_START
-             : e && e->proto == TP_MINICPM_XML ? TS_MCP_START
+             : e && (e->proto == TP_MINICPM_XML || e->proto == TP_ARGKV) ? TS_MCP_START
              : e && (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL) ? TS_NEMO_START
              : e && e->proto == TP_LFM2 ? TS_LFM_TEXT
              : e && e->proto == TP_ATEM ? TS_ATEM
@@ -6716,21 +7036,22 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
 // dropped as a fault (tool_stream_finish_ex): the opener is the family's own
 // call syntax, not a tag prose has a reason to spell.
 static int ts_mcp(tool_stream *s, const char *bytes, int n) {
+    const xml_proto *xp = xml_proto_of(s->env);
     head_put(s,bytes,(size_t)n);
     for (;;) {
         if (s->state==TS_DONE || !s->head_n) return 0;
         if (s->state==TS_MCP_CALLS) {
-            size_t close=mcp_block_end(s->head,s->head_n);
+            size_t close=xp->block_end(s->head,s->head_n);
             if (!close) return 0;
             const char *at=s->head;
             sbuf tc={0}, wrapped={0};
             bool past_bound = s->env && s->n_calls >= s->env->max_calls;
-            if (past_bound || !mcp_one_call(s->env,&at,s->head+s->head_n,0,&tc)) {
+            if (past_bound || !xp->one_call(s->env,&at,s->head+s->head_n,0,&tc)) {
                 free(tc.s);
                 s->fault=true;
                 if (tool_trace_on())
-                    fprintf(stderr, "tool-trace: minicpm5 block %s, dropped (%zu bytes):\n%.*s\n",
-                            past_bound ? "past max_calls" : "not a valid call",
+                    fprintf(stderr, "tool-trace: %s block %s, dropped (%zu bytes):\n%.*s\n",
+                            xp->name, past_bound ? "past max_calls" : "not a valid call",
                             close, (int)close, s->head);
                 head_drop(s,close);
                 s->state=TS_MCP_TEXT;s->skip_ws=true;
@@ -6763,8 +7084,8 @@ static int ts_mcp(tool_stream *s, const char *bytes, int n) {
             if (!s->head_n) return 0;
             s->skip_ws=false;
         }
-        const char *open=strstr(s->head,MCP_CALL_OPEN);
-        const char *stop=strstr(s->head,QWEN_TURN_END);
+        const char *open=strstr(s->head,xp->open);
+        const char *stop=strstr(s->head,xp->turn_end);
         if (stop && (!open || stop<open)) {
             int rc=stop>s->head && s->sink.content
                 ? s->sink.content(s->sink.ud,s->head,(int)(stop-s->head)) : 0;
@@ -6782,7 +7103,7 @@ static int ts_mcp(tool_stream *s, const char *bytes, int n) {
             continue;
         }
         size_t keep=0;
-        const char *markers[]={MCP_CALL_OPEN,QWEN_TURN_END};
+        const char *markers[]={xp->open,xp->turn_end};
         for (int m=0;m<2;m++) {
             size_t k=strlen(markers[m])-1;
             if (k>s->head_n) k=s->head_n;
@@ -7194,7 +7515,8 @@ int tool_stream_finish_ex(tool_stream *s, bool truncated) {
         // deadline cut the turn. A partial opener at the tail is framing.
         int rc = 0;
         bool framing = s->state == TS_MCP_CALLS ||
-                       (s->state == TS_MCP_START && ts_partial(s, MCP_CALL_OPEN));
+                       (s->state == TS_MCP_START &&
+                        ts_partial(s, xml_proto_of(s->env)->open));
         if (s->state == TS_MCP_CALLS && !truncated) s->fault = true;
         if (s->head_n && !framing && s->sink.content)
             rc = s->sink.content(s->sink.ud, s->head, (int)s->head_n);

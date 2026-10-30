@@ -2909,6 +2909,91 @@ static void test_mimo_compact_xml_calls(void) {
     tool_envelope_free(&e); jv_free(tools);
 }
 
+// Spark's GLM-style calls: <tool_call>NAME<arg_key>K</arg_key><arg_value>V
+// </arg_value></tool_call>, bare in the content, parse-only, typed by the
+// declaration. The template escapes nothing, so the hostile cases are a value
+// that spells the closing tags and a call cut short; both surfaces, every
+// chunk size.
+static void test_spark_argkv_calls(void) {
+    jv *tools = parse("[{\"type\":\"function\",\"function\":{\"name\":\"save\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"},\"n\":{\"type\":\"integer\"}},\"required\":[\"text\"]}}}]");
+    tool_envelope e; char err[192]; bool skip = false;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    tool_decl_native(TMPL_SPARK, true, true, tools, &e, &skip);
+    assert(e.proto == TP_ARGKV && e.parse_only && skip);
+    assert(!strcmp(tool_envelope_protocol_name(&e), "argkv_xml"));
+    const char *doc = "Checking.<tool_call>save<arg_key>text</arg_key><arg_value>001</arg_value><arg_key>n</arg_key><arg_value>2</arg_value></tool_call>";
+    sbuf out = {0}, tc = {0};
+    assert(tool_envelope_map(&e, doc, strlen(doc), &out, &tc) == 1);
+    assert(!strcmp(out.s, "Checking."));
+    sbuf wrapped = {0}; sb_lit(&wrapped,"[");sb_put(&wrapped,tc.s,tc.n);sb_lit(&wrapped,"]");
+    jv *calls = parse(wrapped.s);
+    assert(!strcmp(jv_str(jv_get(jv_get(calls->items[0],"function"),"arguments"),""), "{\"text\":\"001\",\"n\":2}"));
+    jv_free(calls);free(wrapped.s);free(out.s);free(tc.s);
+    for (size_t step=1;step<=strlen(doc);step++) {
+        demux_log log;demux_step(&e,doc,step,&log);
+        assert(log.begins==1 && log.ends==1);
+        assert(!strcmp(log.content.s,"Checking."));
+        assert(!strcmp(log.args.s,"{\"text\":\"001\",\"n\":2}"));
+        log_free(&log);
+    }
+    // two calls, then the turn end
+    const char *two = "<tool_call>save<arg_key>text</arg_key><arg_value>a</arg_value></tool_call>"
+                      "<tool_call>save<arg_key>text</arg_key><arg_value>b</arg_value></tool_call><｜end▁of▁sentence｜>";
+    demux_log l2; demux(&e, two, &l2);
+    assert(l2.begins == 2 && !strcmp(l2.names.s, "save save") && (!l2.content.s || !l2.content.n));
+    log_free(&l2);
+    // a value that spells both closing tags: the value ends at the
+    // </arg_value> a valid continuation follows, at every chunk size
+    const char *spelled = "<tool_call>save<arg_key>text</arg_key><arg_value>a</arg_value> b</tool_call> c</arg_value></tool_call>";
+    for (size_t step=1;step<=strlen(spelled);step++) {
+        demux_log log;demux_step(&e,spelled,step,&log);
+        assert(log.begins==1);
+        assert(!strcmp(log.args.s,"{\"text\":\"a</arg_value> b</tool_call> c\"}"));
+        log_free(&log);
+    }
+    sbuf o2 = {0}, t2 = {0};
+    assert(tool_envelope_map(&e, spelled, strlen(spelled), &o2, &t2) == 1);
+    free(o2.s); free(t2.s);
+    // truncated: never a call; a budget cut keeps "length", the model's own
+    // end is a fault
+    const char *cut = "Saving.<tool_call>save<arg_key>text</arg_key><arg_value>00";
+    sbuf o3 = {0}, t3 = {0};
+    assert(tool_envelope_map(&e, cut, strlen(cut), &o3, &t3) < 0 && !t3.n);
+    free(o3.s); free(t3.s);
+    for (int truncated = 0; truncated < 2; truncated++) {
+        demux_log l; memset(&l, 0, sizeof l);
+        tool_stream_sink sink = { &l, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream s; tool_stream_init(&s, &e, &sink);
+        for (size_t i = 0; i < strlen(cut); i++) assert(tool_stream_feed(&s, cut + i, 1) == 0);
+        assert(tool_stream_finish_ex(&s, truncated == 1) == (truncated ? 0 : -1));
+        assert(l.begins == 0 && !tool_stream_called(&s));
+        assert(!strcmp(l.content.s, "Saving."));
+        tool_stream_free(&s); log_free(&l);
+    }
+    // a value that does not fit its type is refused, buffered and streamed
+    const char *bad = "<tool_call>save<arg_key>text</arg_key><arg_value>x</arg_value><arg_key>n</arg_key><arg_value>two</arg_value></tool_call>";
+    sbuf o4 = {0}, t4 = {0};
+    assert(tool_envelope_map(&e, bad, strlen(bad), &o4, &t4) < 0);
+    free(o4.s); free(t4.s);
+    {
+        demux_log l; memset(&l, 0, sizeof l);
+        tool_stream_sink sink = { &l, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream s; tool_stream_init(&s, &e, &sink);
+        assert(tool_stream_feed(&s, bad, (int)strlen(bad)) == 0);
+        assert(tool_stream_finish(&s) == -1);
+        assert(l.begins == 0);
+        tool_stream_free(&s); log_free(&l);
+    }
+    // required: no grammar for this syntax, the generic envelope
+    tool_envelope r; bool skip2 = false;
+    jv *choice = parse("\"required\"");
+    assert(tool_envelope_build(tools, choice, NULL, &r, err, sizeof err) == 1);
+    tool_decl_native(TMPL_SPARK25, true, true, tools, &r, &skip2);
+    assert(r.proto == TP_GENERIC && !skip2);
+    tool_envelope_free(&r); jv_free(choice);
+    tool_envelope_free(&e); jv_free(tools);
+}
+
 // MiniCPM5's XML protocol: bare <function name="N"><param name="K">V</param>
 // </function> blocks in the content, parse-only (never constrained), typed by
 // the declaration. The three failure classes that bit the other XML family
@@ -3544,6 +3629,7 @@ int main(void) {
     test_minicpm5_native_calls();
     test_lfm2_native_calls();
     test_mimo_compact_xml_calls();
+    test_spark_argkv_calls();
     test_coder_parameters_in_any_order();
     test_gemma4_prose_then_call();
     test_xml_families_share_the_parse_only_contract();

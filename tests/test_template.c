@@ -2008,6 +2008,74 @@ static void test_mimo_shape(void) {
     jv_free(tools);
 }
 
+// Spark X2.6 and X2.5 (XHToken chat_template.jinja), pinned against the
+// templates' bytes: the system block written whatever the conversation, the
+// effort text (X2.6 only), `<think>` pre-seeded by default and `</think>` when
+// off, a bare `</think>` on a history turn without reasoning, consecutive tool
+// results under one <|Tool|> turn, the GLM-style call replay, and the two
+// declaration spellings.
+static void test_spark_shape(void) {
+    char out[8192];
+    assert(template_detect("<|System|> <|Bot|> thinking_effort", NULL) == TMPL_SPARK);
+    assert(template_detect("<|System|> <|Bot|>", NULL) == TMPL_SPARK25);
+    assert(template_from_name("spark") == TMPL_SPARK && template_from_name("spark25") == TMPL_SPARK25);
+    const char *sys26 = "<｜start▁of▁sentence｜><|System|>\nyou are a helpful assistant.\n`thinking_effort` guides on how much to think in your thinking channel (not including the response channel), supported values include `low` and `high`.\nNow the system is invoked with `thinking_effort=high`.<｜end▁of▁sentence｜>";
+    const chat_msg one[] = { CHAT_MSG("user", "HI") };
+    char want[8192];
+    render_messages(TMPL_SPARK, one, 1, true, THINK_DEFAULT, out, sizeof(out));
+    snprintf(want, sizeof want, "%s""<｜start▁of▁sentence｜><|User|>HI" "<｜end▁of▁sentence｜><｜start▁of▁sentence｜><|Bot|><think>", sys26);
+    assert(strcmp(out, want) == 0);
+    render_messages(TMPL_SPARK, one, 1, true, THINK_ON, out, sizeof(out));
+    assert(strcmp(out, want) == 0);
+    render_messages(TMPL_SPARK, one, 1, true, THINK_OFF, out, sizeof(out));
+    assert(strcmp(out, "<｜start▁of▁sentence｜><|System|>\nyou are a helpful assistant." "<｜end▁of▁sentence｜><｜start▁of▁sentence｜><|User|>HI" "<｜end▁of▁sentence｜><｜start▁of▁sentence｜><|Bot|></think>") == 0);
+    render_messages(TMPL_SPARK, one, 1, true, THINK_ON | THINK_EFFORT_LOW, out, sizeof(out));
+    assert(strstr(out, "Now the system is invoked with `thinking_effort=low`.<｜end▁of▁sentence｜>"));
+    render_messages(TMPL_SPARK25, one, 1, true, THINK_ON | THINK_EFFORT_LOW, out, sizeof(out));
+    assert(strcmp(out, "<｜start▁of▁sentence｜><|System|>\nyou are a helpful assistant." "<｜end▁of▁sentence｜><｜start▁of▁sentence｜><|User|>HI" "<｜end▁of▁sentence｜><｜start▁of▁sentence｜><|Bot|><think>") == 0);
+
+    const chat_msg hist[] = {
+        CHAT_MSG("system", "Sys."),
+        CHAT_MSG("user", "HI"),
+        CHAT_MSG("assistant", "A."),
+        CHAT_MSG("tool", "1"),
+        CHAT_MSG("tool", "2"),
+        CHAT_MSG("assistant", "<think>why</think>B."),
+        CHAT_MSG("system", "Later."),
+    };
+    render_messages(TMPL_SPARK25, hist, 7, false, THINK_DEFAULT, out, sizeof(out));
+    assert(strcmp(out, "<｜start▁of▁sentence｜><|System|>\nyou are a helpful assistant.\n\nSys.<｜end▁of▁sentence｜>"
+                       "<｜start▁of▁sentence｜><|User|>HI" "<｜end▁of▁sentence｜><｜start▁of▁sentence｜><|Bot|></think>A.<｜end▁of▁sentence｜>"
+                       "<｜start▁of▁sentence｜><|Tool|><tool_response>1</tool_response><tool_response>2</tool_response><｜end▁of▁sentence｜>"
+                       "<｜start▁of▁sentence｜><|Bot|><think>why</think>B.<｜end▁of▁sentence｜>"
+                       "<｜start▁of▁sentence｜><|System|>\nLater.<｜end▁of▁sentence｜>") == 0);
+
+    const char *calls_src =
+        "[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\","
+        "\"arguments\":\"{\\\"city\\\":\\\"Oslo\\\",\\\"days\\\":[1,2]}\"}},"
+        "{\"id\":\"c2\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\","
+        "\"arguments\":\"{\\\"city\\\":\\\"Bergen\\\"}\"}}]";
+    jv *calls = json_parse(calls_src, strlen(calls_src));
+    sbuf b = {0};
+    tool_history_render_for(TMPL_SPARK, calls, true, &b);
+    assert(!strcmp(b.s, "<tool_call>get_weather<arg_key>city</arg_key><arg_value>Oslo</arg_value>"
+                        "<arg_key>days</arg_key><arg_value>[1, 2]</arg_value></tool_call>"
+                        "<tool_call>get_weather<arg_key>city</arg_key><arg_value>Bergen</arg_value></tool_call>"));
+    free(b.s); jv_free(calls);
+
+    const char *tools_src =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}}}}}]";
+    jv *tools = json_parse(tools_src, strlen(tools_src));
+    render_messages_with_tools(TMPL_SPARK, one, 1, true, THINK_OFF, tools, out, sizeof(out));
+    assert(strstr(out, "you are a helpful assistant.\n\n## Tools\nYou have access to the following functions:\n<tools>\n"
+                       "{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}}}}\n</tools><｜end▁of▁sentence｜>"));
+    render_messages_with_tools(TMPL_SPARK25, one, 1, true, THINK_OFF, tools, out, sizeof(out));
+    assert(strstr(out, "you are a helpful assistant.## Tools\nYou have access to the following functions:\n<tools>\n"
+                       "{\"name\": \"get_weather\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}}}\n</tools><｜end▁of▁sentence｜>"));
+    jv_free(tools);
+}
+
 // Qwen3 strips absent reasoning from the last historical assistant turn but
 // still emits the empty thought wrapper. That framing is part of the training
 // prompt whether or not another generation prompt follows it.
@@ -3093,6 +3161,7 @@ int main(void) {
     test_chatml_think_shape();
     test_minicpm5_shape();
     test_mimo_shape();
+    test_spark_shape();
     test_chatml_think_trailing_history_keeps_empty_thought();
     test_chatml_tool_result_renders_as_a_user_tool_response();
     test_muse_tools_and_result_golden();

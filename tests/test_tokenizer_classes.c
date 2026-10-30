@@ -66,6 +66,7 @@ static int split_llama3(const uint32_t *cp, int i, int ncp) { return pre_split_n
 static int split_qwen2(const uint32_t *cp, int i, int ncp)  { return pre_split_next(cp, i, ncp, 1, false, false); }
 // MiniCPM5: the digit groups are split off before the Llama 3 regex runs
 static int split_minicpm5(const uint32_t *cp, int i, int ncp) { return pre_split_next(cp, i, ncp, 3, false, true); }
+static int split_spark25(const uint32_t *cp, int i, int ncp) { return spark25_split_next(cp, i, ncp); }
 
 // "a|b|c" is the expected pre-token sequence for text "abc"
 static void expect_split(const char *family, split_fn fn, const char *spec) {
@@ -142,6 +143,15 @@ static void test_boundaries_match_the_references(void) {
     expect_split("minicpm5", split_minicpm5, " \t |1");
     expect_split("minicpm5", split_minicpm5, "123|456|7");
     expect_split("minicpm5", split_minicpm5, " | x");
+    // spark2_5 (XHToken tokenizer.json): every digit alone, a newline on its
+    // own where afmoe joins the run, a punctuation run without trailing
+    // newlines, ASCII punctuation leading ASCII letters, CJK runs apart
+    expect_split("spark25", split_spark25, "1|2|3|4");
+    expect_split("spark25", split_spark25, "a|\n|\n|b");
+    expect_split("spark25", split_spark25, "!|\n");
+    expect_split("spark25", split_spark25, "byte|-level");
+    expect_split("spark25", split_spark25, "  |1");
+    expect_split("spark25", split_spark25, "x|\xe4\xb8\xad\xe6\x96\x87|y");
     expect_split("o200k", llama4_split_next, "«word|»");
     expect_split("smollm", smollm_split_next, "«|word|»");
 }
