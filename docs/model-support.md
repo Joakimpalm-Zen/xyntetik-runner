@@ -632,7 +632,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>K2-Horizon</b>, 1 model: CPU ✅ · CUDA - · Metal ✅ · Train ✅</summary>
+<summary><b>K2-Horizon</b>, 2 models: CPU 🟨 2 of 4 · CUDA - · Metal 🟨 2 of 4 · Train 🟨 2 of 4</summary>
 <p><b>K2-Horizon-0.9B (IFM)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
@@ -641,9 +641,17 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <tr><td><a href="#k2-horizon-0.9b-q4_k_m"><code>K2-Horizon-1B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td nowrap>✅ 1.7.1<br>2026-10-30</td></tr>
 </tbody>
 </table>
+<p><b>K2-Horizon-7B (IFM)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#k2-horizon-7b-q8_0"><code>K2-Horizon-7B-Q8_0.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="#k2-horizon-7b-q4_k_m"><code>K2-Horizon-7B-Q4_K_M.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
 </details>
 
-**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B), K2-Horizon-7B (IFM).
+**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated
@@ -1806,6 +1814,48 @@ Text path, IFM's own Q4_K_M of K2-Horizon 0.9B, which fails the fidelity bar: ag
 - **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
+#### K2-Horizon-7B (IFM)
+
+<a id="k2-horizon-7b-q8_0"></a>
+##### `K2-Horizon-7B-Q8_0.gguf`
+
+Text path, IFM's own Q8_0 of K2-Horizon 7B, the fidelity file of the publisher's two: against the BF16 parent computed in float32 it reads 0.0159 mean KLD and 95.0% top-1 (300 positions, CPU).
+
+- **File:** `K2-Horizon-7B-Q8_0.gguf` (sha256 `5a98a289aba5c8c99ef05c9261287f19e8f586fd679bab45b632eb86b47809bf`, 9,573,964,160 bytes, from [IFM/K2-Horizon-7B-GGUF](https://huggingface.co/IFM/K2-Horizon-7B-GGUF) at revision `7a75dbda05e3`).
+- **Upstream checkpoint:** IFM/K2-Horizon-7B at revision `4622f94a6632`.
+- **Quantization:** Q8_0 (publisher).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against IFM's BF16 parent computed in float32 on the lab CPU lane (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, BOS native, the Runner sides from CPU score files at 5cc154e2): Q8_0 0.0159 mean KLD / 95.0% top-1 / 100% margin-qualified, Q4_K_M 0.1225 / 84.3% / 95.8%. Tokenizer 0/721 against the publisher's tokenizer.json at 4622f94a, template conformance as the 0.9B's (the same template). Record: docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU only: the grouped RMSNorm (four groups) has no GPU kernel yet, so the GPU backends serve it on the CPU. reasoning_effort medium and low are refused (their think blocks are not split from the answer yet); high, the default, and thinking off are served. A tool without a parameters object is refused, as the template refuses it. A required or named tool choice takes the generic JSON envelope on this family.
+- **Still missing:** The Windows CUDA host's CPU cell; a GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint.
+- **Evidence:** [docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md](compat-reports/k2-horizon-7b-reference-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
+- **CPU:** ☐ not run
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
+
+<a id="k2-horizon-7b-q4_k_m"></a>
+##### `K2-Horizon-7B-Q4_K_M.gguf`
+
+Text path, IFM's own Q4_K_M of K2-Horizon 7B, which fails the fidelity bar: against the BF16 parent computed in float32 it reads 0.1225 mean KLD against 0.05 (84.3% top-1, 95.8% margin-qualified against 97%). The Q8_0 is the fidelity file.
+
+- **File:** `K2-Horizon-7B-Q4_K_M.gguf` (sha256 `eb89c15a0ae9712be2ee462bf43802de14200f20f93b73da6eb68c2ebdd28e4e`, 5,592,217,984 bytes, from [IFM/K2-Horizon-7B-GGUF](https://huggingface.co/IFM/K2-Horizon-7B-GGUF) at revision `7a75dbda05e3`).
+- **Upstream checkpoint:** IFM/K2-Horizon-7B at revision `4622f94a6632`.
+- **Quantization:** Q4_K_M (publisher).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against IFM's BF16 parent computed in float32 on the lab CPU lane (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, BOS native, the Runner sides from CPU score files at 5cc154e2): Q8_0 0.0159 mean KLD / 95.0% top-1 / 100% margin-qualified, Q4_K_M 0.1225 / 84.3% / 95.8%. Tokenizer 0/721 against the publisher's tokenizer.json at 4622f94a, template conformance as the 0.9B's (the same template). Record: docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU only: the grouped RMSNorm (four groups) has no GPU kernel yet, so the GPU backends serve it on the CPU. reasoning_effort medium and low are refused (their think blocks are not split from the answer yet); high, the default, and thinking off are served. A tool without a parameters object is refused, as the template refuses it. A required or named tool choice takes the generic JSON envelope on this family.
+- **Still missing:** The Windows CUDA host's CPU cell; a GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint.
+- **Evidence:** [docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md](compat-reports/k2-horizon-7b-reference-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
+- **CPU:** ☐ not run
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
+
 <a id="tier3"></a>
 ## Tier 3, unmaintained
 
@@ -1935,26 +1985,6 @@ Not admitted: a new architecture.
 - **Missing for Tier 1:** Read the model code first, then an admission; 78B at Q4 is about 45 GB, the lab CPU box only.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
-### K2-Horizon-7B (IFM)
-
-<a id="k2-horizon-7b-q8_0"></a>
-#### K2-Horizon-7B (IFM)
-
-Not admitted yet: the file's own cells are owed. Measured: the fidelity file of the publisher's two, against IFM's BF16 parent computed in float32 0.0159 mean KLD, 95.0% top-1, 100% margin-qualified.
-
-- **Numerical anchor:** anchor: the float32 reference against its own BF16 parent, on the lab CPU lane: 0.0159 mean KLD.
-- **Missing for Tier 1:** A device cell on the CPU (the grouped RMSNorm has no GPU kernel yet), owed on the lab CPU lane; the row then becomes Tier 2. Tokenizer agreement (0 of 721), template conformance and the float32 reference (docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md) are recorded.
-- **Tier history:** Upcoming, planned admission from 2026-10-30 ([log](#transition-log)).
-
-<a id="k2-horizon-7b-q4_k_m"></a>
-#### K2-Horizon-7B (IFM)
-
-Not admitted yet: the file's own cells are owed. Measured: it fails the fidelity bar, against IFM's BF16 parent computed in float32 0.1225 mean KLD against 0.05 (84.3% top-1, 95.8% margin-qualified against 97%); the Q8_0 reads 0.0159 and is the fidelity file.
-
-- **Numerical anchor:** anchor: the float32 reference against its own BF16 parent, on the lab CPU lane: 0.1225 mean KLD, FAIL.
-- **Missing for Tier 1:** A device cell on the CPU (the grouped RMSNorm has no GPU kernel yet), owed on the lab CPU lane; the row then becomes Tier 2 with this failure first. Tokenizer agreement (0 of 721), template conformance and the float32 reference (docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md) are recorded.
-- **Tier history:** Upcoming, planned admission from 2026-10-30 ([log](#transition-log)).
-
 <a id="exempt"></a>
 ## Published, not a Runner model file
 
@@ -2071,7 +2101,9 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-30 | [K2-Horizon-0.9B (IFM), `K2-Horizon-1B-Q8_0.gguf`](#k2-horizon-0.9b-q8_0) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting cells from the Metal laptop (policy 2026-10-27). Maintained on report. | none recorded |
 | 2026-10-30 | [K2-Horizon-0.9B (IFM), `K2-Horizon-1B-Q4_K_M.gguf`](#k2-horizon-0.9b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the fourth item: a new architecture (k2-horizon), its tokenizer rule and its chat template, implemented before validation. | none recorded |
 | 2026-10-30 | [K2-Horizon-0.9B (IFM), `K2-Horizon-1B-Q4_K_M.gguf`](#k2-horizon-0.9b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting cells from the Metal laptop (policy 2026-10-27). Maintained on report. | none recorded |
-| 2026-10-30 | [K2-Horizon-7B (IFM)](#k2-horizon-7b-q8_0) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the fourth item: the 7B member, which carries the grouped RMSNorm the 0.9B does not. | none recorded |
-| 2026-10-30 | [K2-Horizon-7B (IFM)](#k2-horizon-7b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the fourth item: the 7B member, which carries the grouped RMSNorm the 0.9B does not. | none recorded |
+| 2026-10-30 | [K2-Horizon-7B (IFM), `K2-Horizon-7B-Q8_0.gguf`](#k2-horizon-7b-q8_0) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the fourth item: the 7B member, which carries the grouped RMSNorm the 0.9B does not. | none recorded |
+| 2026-10-30 | [K2-Horizon-7B (IFM), `K2-Horizon-7B-Q8_0.gguf`](#k2-horizon-7b-q8_0) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane and a float32 reference measurement (policy 2026-10-27). Maintained on report. | none recorded |
+| 2026-10-30 | [K2-Horizon-7B (IFM), `K2-Horizon-7B-Q4_K_M.gguf`](#k2-horizon-7b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the fourth item: the 7B member, which carries the grouped RMSNorm the 0.9B does not. | none recorded |
+| 2026-10-30 | [K2-Horizon-7B (IFM), `K2-Horizon-7B-Q4_K_M.gguf`](#k2-horizon-7b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane and a float32 reference measurement (policy 2026-10-27). Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->

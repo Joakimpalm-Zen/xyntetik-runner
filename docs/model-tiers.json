@@ -4766,37 +4766,121 @@
       "id": "k2-horizon-7b-q8_0",
       "model": "K2-Horizon-7B (IFM)",
       "family": "K2-Horizon",
-      "tier": "upcoming",
-      "claim": "Not admitted yet: the file's own cells are owed. Measured: the fidelity file of the publisher's two, against IFM's BF16 parent computed in float32 0.0159 mean KLD, 95.0% top-1, 100% margin-qualified.",
+      "tier": "tier2",
+      "claim": "Text path, IFM's own Q8_0 of K2-Horizon 7B, the fidelity file of the publisher's two: against the BF16 parent computed in float32 it reads 0.0159 mean KLD and 95.0% top-1 (300 positions, CPU).",
       "architecture": "k2-horizon",
-      "missing": "A device cell on the CPU (the grouped RMSNorm has no GPU kernel yet), owed on the lab CPU lane; the row then becomes Tier 2. Tokenizer agreement (0 of 721), template conformance and the float32 reference (docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md) are recorded.",
+      "upstream": {
+        "checkpoint": "IFM/K2-Horizon-7B",
+        "revision": "4622f94a6632384784471fd674d5b78f8d527798"
+      },
+      "files": [
+        {
+          "name": "K2-Horizon-7B-Q8_0.gguf",
+          "repo": "IFM/K2-Horizon-7B-GGUF",
+          "revision": "7a75dbda05e3d440351543131ff3f7fa5687e879",
+          "sha256": "5a98a289aba5c8c99ef05c9261287f19e8f586fd679bab45b632eb86b47809bf",
+          "bytes": 9573964160
+        }
+      ],
+      "quantization": "Q8_0 (publisher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both publisher files against IFM's BF16 parent computed in float32 on the lab CPU lane (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, BOS native, the Runner sides from CPU score files at 5cc154e2): Q8_0 0.0159 mean KLD / 95.0% top-1 / 100% margin-qualified, Q4_K_M 0.1225 / 84.3% / 95.8%. Tokenizer 0/721 against the publisher's tokenizer.json at 4622f94a, template conformance as the 0.9B's (the same template). Record: docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "CPU only: the grouped RMSNorm (four groups) has no GPU kernel yet, so the GPU backends serve it on the CPU. reasoning_effort medium and low are refused (their think blocks are not split from the answer yet); high, the default, and thinking off are served. A tool without a parameters object is refused, as the template refuses it. A required or named tool choice takes the generic JSON envelope on this family.",
+        "evidence": [
+          "docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "The Windows CUDA host's CPU cell; a GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": null,
+        "metal": null
+      },
       "transitions": [
         {
           "tier": "upcoming",
           "effective": "2026-10-30",
           "reason": "Owner's Hub-search validation queue of 2026-10-29, the fourth item: the 7B member, which carries the grouped RMSNorm the 0.9B does not.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane and a float32 reference measurement (policy 2026-10-27). Maintained on report.",
+          "last_validated_release": null
         }
-      ],
-      "anchor": "anchor: the float32 reference against its own BF16 parent, on the lab CPU lane: 0.0159 mean KLD."
+      ]
     },
     {
       "id": "k2-horizon-7b-q4_k_m",
       "model": "K2-Horizon-7B (IFM)",
       "family": "K2-Horizon",
-      "tier": "upcoming",
-      "claim": "Not admitted yet: the file's own cells are owed. Measured: it fails the fidelity bar, against IFM's BF16 parent computed in float32 0.1225 mean KLD against 0.05 (84.3% top-1, 95.8% margin-qualified against 97%); the Q8_0 reads 0.0159 and is the fidelity file.",
+      "tier": "tier2",
+      "claim": "Text path, IFM's own Q4_K_M of K2-Horizon 7B, which fails the fidelity bar: against the BF16 parent computed in float32 it reads 0.1225 mean KLD against 0.05 (84.3% top-1, 95.8% margin-qualified against 97%). The Q8_0 is the fidelity file.",
       "architecture": "k2-horizon",
-      "missing": "A device cell on the CPU (the grouped RMSNorm has no GPU kernel yet), owed on the lab CPU lane; the row then becomes Tier 2 with this failure first. Tokenizer agreement (0 of 721), template conformance and the float32 reference (docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md) are recorded.",
+      "upstream": {
+        "checkpoint": "IFM/K2-Horizon-7B",
+        "revision": "4622f94a6632384784471fd674d5b78f8d527798"
+      },
+      "files": [
+        {
+          "name": "K2-Horizon-7B-Q4_K_M.gguf",
+          "repo": "IFM/K2-Horizon-7B-GGUF",
+          "revision": "7a75dbda05e3d440351543131ff3f7fa5687e879",
+          "sha256": "eb89c15a0ae9712be2ee462bf43802de14200f20f93b73da6eb68c2ebdd28e4e",
+          "bytes": 5592217984
+        }
+      ],
+      "quantization": "Q4_K_M (publisher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both publisher files against IFM's BF16 parent computed in float32 on the lab CPU lane (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, BOS native, the Runner sides from CPU score files at 5cc154e2): Q8_0 0.0159 mean KLD / 95.0% top-1 / 100% margin-qualified, Q4_K_M 0.1225 / 84.3% / 95.8%. Tokenizer 0/721 against the publisher's tokenizer.json at 4622f94a, template conformance as the 0.9B's (the same template). Record: docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "CPU only: the grouped RMSNorm (four groups) has no GPU kernel yet, so the GPU backends serve it on the CPU. reasoning_effort medium and low are refused (their think blocks are not split from the answer yet); high, the default, and thinking off are served. A tool without a parameters object is refused, as the template refuses it. A required or named tool choice takes the generic JSON envelope on this family.",
+        "evidence": [
+          "docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "The Windows CUDA host's CPU cell; a GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": null,
+        "metal": null
+      },
       "transitions": [
         {
           "tier": "upcoming",
           "effective": "2026-10-30",
           "reason": "Owner's Hub-search validation queue of 2026-10-29, the fourth item: the 7B member, which carries the grouped RMSNorm the 0.9B does not.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane and a float32 reference measurement (policy 2026-10-27). Maintained on report.",
+          "last_validated_release": null
         }
-      ],
-      "anchor": "anchor: the float32 reference against its own BF16 parent, on the lab CPU lane: 0.1225 mean KLD, FAIL."
+      ]
     }
   ]
 }
