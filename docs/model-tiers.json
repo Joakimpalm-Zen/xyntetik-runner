@@ -4923,22 +4923,22 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.7.1",
+          "runner_version": "1.8.0",
           "date": "2026-10-30",
-          "device_class": "macos-arm64-metal",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "5cc154e261a72e8929febf46cbbf50f81ca06b1d",
+          "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85",
           "caps": {
-            "version": "1.7.1",
-            "os": "macos",
-            "arch": "arm64",
+            "version": "1.8.0",
+            "os": "windows",
+            "arch": "x86_64",
             "cpu_cores": 8,
-            "gpu_backend": "metal",
-            "gpu_name": "Apple M1"
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "128cdfebbb63b10f2d4074e91d4181bef3735d93c46bb5a31e84ccfa656b9601",
           "ran": "runner -m K2-Horizon-1B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q4_k_m.macos-arm64-metal.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q4_k_m.windows-x86_64-cuda.cpu.txt"
         },
         "cuda": null,
         "metal": {
@@ -4984,7 +4984,7 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.7.1",
+        "runner_version": "1.8.0",
         "date": "2026-10-30"
       }
     },
