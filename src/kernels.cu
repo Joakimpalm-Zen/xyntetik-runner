@@ -5188,6 +5188,17 @@ extern "C" __global__ void k_gelu_mul(float *g, const float *u, int n) {
     }
 }
 
+// The exact GELU, transformers' ACT2FN["gelu"] (spark2_5): 1:1 with
+// gated_act(ACT_GELU_ERF) on the host, 0.5 * g * (1 + erf(g / sqrt 2)) * u.
+// erff here is CUDA's own (the PTX is built without fast math).
+extern "C" __global__ void k_gelu_erf_mul(float *g, const float *u, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        float x = g[i];
+        g[i] = 0.5f * x * (1.0f + erff(x * 0.70710678118654752f)) * u[i];
+    }
+}
+
 // gpt-oss clamped alpha-sigmoid GLU, 1:1 with gated_act(ACT_SWIGLU_OAI) in
 // model.c (itself transcribed from llama.cpp's swiglu_oai): gate clamped
 // above only, up clamped both sides, up carries a +1 shift. The x <= -50
@@ -5958,6 +5969,19 @@ extern "C" __global__ void k_q35_attn_gate(float *x, const float *gate,
     if (i < n) {
         ulong64 xo = (ulong64)blockIdx.y * xs + i;
         ulong64 go = (ulong64)blockIdx.y * gs + i;
+        x[xo] *= 1.0f / (1.0f + expf(-gate[go]));
+    }
+}
+
+// spark2_5's per-HEAD output gate: one sigmoid per head scales every one of
+// its hd outputs, x[h*hd + d] *= sigmoid(gate[h]); the host's per-head loop
+// in the attention stage, with k_q35_attn_gate's arithmetic.
+extern "C" __global__ void k_head_attn_gate(float *x, const float *gate,
+                                            int n, int hd, int xs, int gs) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        ulong64 xo = (ulong64)blockIdx.y * xs + i;
+        ulong64 go = (ulong64)blockIdx.y * gs + i / hd;
         x[xo] *= 1.0f / (1.0f + expf(-gate[go]));
     }
 }
