@@ -4419,7 +4419,7 @@
           "docs/compat-reports/lfm2.5-reference-2026-10-30/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The Windows CUDA host's CPU cell; a GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
+        "missing": "A GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -4445,7 +4445,11 @@
           "ran": "runner -m LFM2.5-350M-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=80 stream=false enable_thinking=false",
           "evidence": "tests/compatibility/tier-smoke/lfm2.5-350m-q8_0.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "limit",
+          "reason": "lfm2 (short-convolution layers interleaved with GQA attention) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
         "metal": null
       },
       "transitions": [
@@ -4510,7 +4514,7 @@
           "docs/compat-reports/lfm2.5-reference-2026-10-30/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The Windows CUDA host's CPU cell; a GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's QAD-Q4_0 fails the bar too (0.483) and is not a row."
+        "missing": "A GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's QAD-Q4_0 fails the bar too (0.483) and is not a row."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -4536,7 +4540,11 @@
           "ran": "runner -m LFM2.5-350M-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=80 stream=false enable_thinking=false",
           "evidence": "tests/compatibility/tier-smoke/lfm2.5-350m-q4_k_m.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "limit",
+          "reason": "lfm2 (short-convolution layers interleaved with GQA attention) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
         "metal": null
       },
       "transitions": [
@@ -4602,7 +4610,7 @@
           "docs/compat-reports/spark-2026-10-30/gold-logits-cpu-x2.6-q8-q4.json",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The CUDA and Metal paths (the next change); the Windows CUDA host's CPU cell; a Q8_0 row (the fidelity file, measured here, with no device record yet)."
+        "missing": "The CUDA and Metal paths (the next change); a Q8_0 row (the fidelity file, measured here, with no device record yet)."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -4628,7 +4636,11 @@
           "ran": "runner -m Spark-X2.6-4B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
           "evidence": "tests/compatibility/tier-smoke/spark-x2.6-4b-q4_k_m.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "limit",
+          "reason": "spark2_5's per-head sigmoid output gate and exact-erf GELU have no CUDA kernels yet; a CUDA run falls back to the CPU by name.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
         "metal": null
       },
       "lora": {
@@ -4694,7 +4706,7 @@
           "docs/compat-reports/spark-2026-10-30/gold-logits-cpu-x2.5-q8-q4.json",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The CUDA and Metal paths (the next change); the Windows CUDA host's CPU cell; a Q8_0 row (the fidelity file, measured here, with no device record yet)."
+        "missing": "The CUDA and Metal paths (the next change); a Q8_0 row (the fidelity file, measured here, with no device record yet)."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -4720,7 +4732,11 @@
           "ran": "runner -m Spark-X2.5-4B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
           "evidence": "tests/compatibility/tier-smoke/spark-x2.5-4b-q4_k_m.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "limit",
+          "reason": "spark2_5's per-head sigmoid output gate and exact-erf GELU have no CUDA kernels yet; a CUDA run falls back to the CPU by name.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
         "metal": null
       },
       "lora": {
@@ -4786,7 +4802,7 @@
           "tests/compatibility/coverage.json",
           "tests/fixtures/k2-horizon-tool-schemas.json"
         ],
-        "missing": "The Windows CUDA host's CPU and CUDA cells; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's Q4_K_M fails the fidelity bar (0.108); it is its own row, with that failure first."
+        "missing": "A llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's Q4_K_M fails the fidelity bar (0.108); it is its own row, with that failure first."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -4914,7 +4930,7 @@
           "tests/compatibility/coverage.json",
           "tests/fixtures/k2-horizon-tool-schemas.json"
         ],
-        "missing": "The Windows CUDA host's CPU and CUDA cells; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
+        "missing": "A llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -5040,7 +5056,7 @@
           "docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The Windows CUDA host's CPU cell; a GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint."
+        "missing": "A GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
@@ -5066,7 +5082,11 @@
           "ran": "runner -m K2-Horizon-7B-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
           "evidence": "tests/compatibility/tier-smoke/k2-horizon-7b-q8_0.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "limit",
+          "reason": "The 7B's grouped RMSNorm (4 groups) has no GPU form (the GPU backends implement full-width RMSNorm only); the file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
         "metal": null
       },
       "transitions": [
@@ -5130,7 +5150,7 @@
           "docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The Windows CUDA host's CPU cell; a GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint."
+        "missing": "A GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
@@ -5156,7 +5176,11 @@
           "ran": "runner -m K2-Horizon-7B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
           "evidence": "tests/compatibility/tier-smoke/k2-horizon-7b-q4_k_m.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "limit",
+          "reason": "The 7B's grouped RMSNorm (4 groups) has no GPU form (the GPU backends implement full-width RMSNorm only); the file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
         "metal": null
       },
       "transitions": [
