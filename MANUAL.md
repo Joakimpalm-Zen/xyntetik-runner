@@ -3527,6 +3527,15 @@ semantic one: a stop match cannot corrupt the document - under a plain
 under [structured output](#structured-output) - but a rule the caller wrote about visible text
 cannot be honoured against protocol the caller never sees.
 
+A model's own terminators are its eos token, the ids its file lists in
+`tokenizer.ggml.eog_token_ids` (a key some publishers' converters write), and
+the turn ends Runner knows by spelling (`<|im_end|>`, `<|eot_id|>`,
+`<end_of_turn>`, `<turn|>` and others). A spelling counts only when the
+vocabulary marks that token control or user-defined: Qwen3's and Gemma 4's
+vocabularies also hold `</s>` as an ordinary token, which their tokenizers
+never produce from text, and a model that samples it gets `</s>` printed
+rather than its turn ended.
+
 Two runner extensions on the OpenAI shape, both for harnesses that score the
 wire format rather than the rendered answer. When a turn ends on a stop token
 (the model's own terminator, a `stop` string that spells one, or an id from

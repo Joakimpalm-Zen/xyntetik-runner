@@ -4,6 +4,13 @@
 
 #include "gguf.h"
 
+// The stop set's parts, so every array that holds it is sized from them and
+// none can fill: eos, the file's declared eog ids, the turn ends Runner knows
+// by spelling, and the longest per-architecture list (Harmony's two).
+// tok_stop_ids asserts the two lists' lengths against these.
+enum { TOK_EOG_MAX = 32, TOK_STOP_SPELLINGS = 11, TOK_STOP_ARCH_MAX = 2,
+       TOK_STOP_MAX = 1 + TOK_EOG_MAX + TOK_STOP_SPELLINGS + TOK_STOP_ARCH_MAX };
+
 enum { TOK_SPM, TOK_BPE, TOK_BPE_SPM }; // BPE_SPM: gemma4 (spaces to U+2581, raw-UTF-8 BPE)
 
 // BPE pre-tokenizer split rules, from tokenizer.ggml.pre. GPT2 is the original
@@ -29,6 +36,11 @@ typedef struct {
     float   *scores;        // SPM (may be NULL)
     int32_t *ttype;         // token type per id (may be NULL)
     int      bos_id, eos_id, unk_id;
+    // tokenizer.ggml.eog_token_ids: the ids the file itself declares as
+    // ending generation (a file that declares more than TOK_EOG_MAX is
+    // refused). tok_stop_ids makes each a stop.
+    int      eog_ids[TOK_EOG_MAX];
+    int      n_eog;
     bool     add_bos, add_space_prefix;
     // tokenizer.ggml.add_eos_token: the checkpoint's own tokenizer appends
     // the end token (embedding models such as Qwen3-Embedding pool on it).
@@ -101,6 +113,12 @@ int  tok_decode(tokenizer *t, int id, char *buf, int cap);
 // decoded text of token id even if control (for stop-token matching); NULL if oob
 const char *tok_raw(tokenizer *t, int id);
 bool tok_is_control(tokenizer *t, int id);
+// control or user-defined: a token the tokenizer emits only as itself
+bool tok_is_special(tokenizer *t, int id);
+// The ids that end a generated turn for this vocabulary on architecture
+// `arch`: eos, the file's eog_token_ids, then the turn terminators Runner
+// knows by spelling. Writes at most cap ids to out and returns the count.
+int tok_stop_ids(tokenizer *t, const char *arch, int *out, int cap);
 int  tok_find(tokenizer *t, const char *s); // exact vocab lookup, -1 if absent
 // Test hook for the merge gate: force the linear rescan (0) or the candidate
 // queue (1) regardless of segment length; -1 returns to the length rule. The

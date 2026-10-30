@@ -41,7 +41,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1562-1567",
+        "lines": "1581-1586",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -59,7 +59,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1562-1567",
+        "lines": "1581-1586",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -77,7 +77,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1562-1567",
+        "lines": "1581-1586",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -124,7 +124,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1562-1567",
+        "lines": "1581-1586",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -142,7 +142,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1562-1567",
+        "lines": "1581-1586",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -160,7 +160,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1562-1567",
+        "lines": "1581-1586",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -178,7 +178,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1562-1567",
+        "lines": "1581-1586",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -196,7 +196,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1562-1567",
+        "lines": "1581-1586",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -214,7 +214,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1562-1567",
+        "lines": "1581-1586",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -247,7 +247,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1562-1567",
+        "lines": "1581-1586",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -293,7 +293,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1562-1567",
+        "lines": "1581-1586",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
