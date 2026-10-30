@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A U+0000 in text is encoded as the publisher's tokenizer does, or
+  refused, never cut there unseen.** The tokenizer gains `tok_encode_n`, which
+  reads its text by length: "a\u0000b" was "a" alone and is now the three
+  tokens the publishers' tokenizers give, on every vocabulary checked (Llama
+  3.2, LFM2.5, SmolLM2, granite, MiniCPM5, Spark, K2-Horizon, Mistral-Nemo,
+  gpt-oss, TinyLlama's SentencePiece and gemma-4's). Where the text goes on
+  as a NUL-terminated string, a NUL is refused by name: a `-f` prompt file
+  and a `--detect-watermark` text, as training text already was and as the
+  server's JSON refuses `\u0000`. A chat line piped with a NUL in it was cut
+  at the NUL and its rest sent as the next turn; the line is now refused whole
+  and the next one is read. `difftok --vocab` compares each vocabulary's
+  U+0000 entry too.
 - **Llama 3's and LFM2.5-8B-A1B's tokenizers take a whole vocabulary word
   before merging, as their publishers' do.** The tokenizer.json files of
   Llama 3, Llama 4, gpt-oss, the Tekken vocabularies (Mistral-Nemo, Apertus,

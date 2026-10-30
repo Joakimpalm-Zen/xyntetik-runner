@@ -135,12 +135,14 @@ int main(int argc, char **argv) {
             line[--len] = '\0';
         if (len == 0) continue;
 
-        if (unjson(line, text, sizeof(text)) < 0) {
+        long tn = unjson(line, text, sizeof(text));
+        if (tn < 0) {
             fprintf(stderr, "difftok: bad corpus line: %s\n", line);
             return 1;
         }
-        int n = tok_encode(&t, text, ids, (int)(sizeof(ids) / sizeof(*ids)),
-                           false, true);
+        // by length: a corpus string may hold U+0000
+        int n = tok_encode_n(&t, text, (size_t)tn, ids, (int)(sizeof(ids) / sizeof(*ids)),
+                             false, true);
         for (int i = 0; i < n; i++) printf("%s%d", i ? " " : "", ids[i]);
         printf("\n");
     }

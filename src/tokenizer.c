@@ -1871,6 +1871,11 @@ int tok_encode(tokenizer *t, const char *text, int32_t *out, int cap,
     return encode_core(t, text, strlen(text), NULL, out, cap, add_bos, parse_special);
 }
 
+int tok_encode_n(tokenizer *t, const char *text, size_t n, int32_t *out, int cap,
+                 bool add_bos, bool parse_special) {
+    return encode_core(t, text, n, NULL, out, cap, add_bos, parse_special);
+}
+
 size_t tok_strip_marks(char *s) {
     size_t w = 0;
     for (size_t r = 0; s[r]; r++)

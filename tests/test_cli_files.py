@@ -63,6 +63,18 @@ def test_readable_prompt_file_loads(runner_bin, model, tmp_path):
     assert proc.returncode == 0, proc.stderr.decode(errors="replace")
 
 
+def test_a_prompt_file_holding_a_nul_byte_is_refused(runner_bin, model, tmp_path):
+    """The prompt is text up to its first NUL wherever it goes (the tokenizer
+    call, a run record's JSON, --verify), so a file holding one used to be
+    cut there unseen; it is refused, as training text and the server's
+    \\u0000 are."""
+    pf = tmp_path / "prompt.txt"
+    pf.write_bytes(b"Hello\0 from a file")
+    proc = _run(runner_bin, model, "-f", str(pf), "-n", "1", "--temp", "0")
+    assert proc.returncode == 1
+    assert b"contains a NUL byte" in proc.stderr, proc.stderr[-400:]
+
+
 def _score_tokens(runner_bin, model, *args):
     proc = _run(runner_bin, model, "--score", *args)
     assert proc.returncode == 0, proc.stderr.decode(errors="replace")
@@ -183,6 +195,17 @@ def test_a_pasted_line_longer_than_the_read_buffer_is_one_turn(runner_bin, model
     proc = _chat(runner_bin, model, None, 30000,
                  stdin=b"x" * 10000 + b"\n/exit\n")
     assert proc.returncode == 0, proc.stderr[-400:]
+    assert proc.stderr.count(b"tok/s]") == 1, proc.stderr[-400:]
+
+
+def test_a_chat_line_holding_a_nul_byte_is_refused_and_the_next_one_sent(runner_bin, model):
+    """fgets read a piped line with a NUL in it as text up to the NUL, and
+    the rest came back as the next line: half a question asked, the other
+    half asked again. The line is refused whole; the next line is a turn."""
+    proc = _chat(runner_bin, model, None, 2048,
+                 stdin=b"hel\0lo there\nhello\n/exit\n")
+    assert proc.returncode == 0, proc.stderr[-400:]
+    assert proc.stderr.count(b"holds a NUL byte") == 1, proc.stderr[-400:]
     assert proc.stderr.count(b"tok/s]") == 1, proc.stderr[-400:]
 
 

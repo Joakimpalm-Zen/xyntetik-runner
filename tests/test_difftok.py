@@ -105,8 +105,8 @@ def test_marker_rows_are_reported_and_not_gated(tmp_path):
 
 def test_the_vocabulary_corpus_is_every_whole_model_entry():
     """--vocab's strings: each model-vocabulary entry decoded to text, leaving
-    out added tokens, a lone byte of a longer character and U+0000 (which
-    Runner's encode reads as the end of the text)."""
+    out added tokens and a lone byte of a longer character; U+0000 is
+    compared, the harness reading each string by its length."""
     tokenizers = pytest.importorskip("tokenizers")
     import importlib.util
     spec = importlib.util.spec_from_file_location("difftok", ROOT / "scripts/difftok.py")
@@ -120,5 +120,5 @@ def test_the_vocabulary_corpus_is_every_whole_model_entry():
     tok.decoder = tokenizers.decoders.ByteLevel()
     tok.add_special_tokens(["<|x|>"])
     strings, skipped = difftok.vocab_corpus(tok)
-    assert strings == ["h", "o", "ho", " ", " ho"]
-    assert skipped == {"added": 1, "partial_utf8": 1, "nul": 1, "empty": 0}
+    assert strings == ["h", "o", "ho", "\0", " ", " ho"]
+    assert skipped == {"added": 1, "partial_utf8": 1, "empty": 0}

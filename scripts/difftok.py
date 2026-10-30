@@ -116,18 +116,17 @@ def vocab_corpus(tok):
     " läsa" in LFM2.5-8B's (2026-10-30); over the vocabulary, 654 and 2,557
     entries differed. Added tokens are left out (their text is matched as a
     special before any split), and so is a piece that is not whole UTF-8 on
-    its own (a byte of a longer character decodes to U+FFFD) or holds U+0000,
-    which Runner's encode reads as the end of the text. Returns the strings
-    and a count of each kind left out."""
+    its own (a byte of a longer character decodes to U+FFFD). The harness
+    reads each string by its length, so the entry for U+0000 is compared
+    too. Returns the strings and a count of each kind left out."""
     added = set(tok.get_added_tokens_decoder())
-    out, skipped = [], {"added": 0, "partial_utf8": 0, "nul": 0, "empty": 0}
+    out, skipped = [], {"added": 0, "partial_utf8": 0, "empty": 0}
     for i in sorted(tok.get_vocab(with_added_tokens=False).values()):
         if i in added:
             skipped["added"] += 1
             continue
         s = tok.decode([i], skip_special_tokens=False)
-        kind = ("empty" if not s else "partial_utf8" if "\ufffd" in s
-                else "nul" if "\0" in s else None)
+        kind = "empty" if not s else "partial_utf8" if "\ufffd" in s else None
         if kind:
             skipped[kind] += 1
         else:

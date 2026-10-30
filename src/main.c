@@ -985,25 +985,37 @@ static char *read_line(FILE *f, bool *oom) {
     // console's input code page rather than UTF-8 (compat.h)
     if (f == stdin && plat_is_terminal(0)) return plat_console_read_line(oom);
 #endif
+    // Byte by byte, not fgets: a NUL in piped input ended fgets' strlen
+    // there, so the line was cut and its tail came back as the next line. A
+    // line is text up to its first NUL wherever it goes next (the template,
+    // the tokenizer call), so one that holds a NUL is refused and skipped.
     size_t cap = 1024, n = 0;
     char *buf = malloc(cap);
     if (!buf) { *oom = true; return NULL; }
+    bool nul = false;
     for (;;) {
-        if (!fgets(buf + n, (int)(cap - n), f)) {
-            if (n == 0) { free(buf); return NULL; }
-            return buf;                      // EOF after a newline-less tail
+        int c = getc(f);
+        if (c == EOF || c == '\n') {
+            if (nul) {
+                fprintf(stderr, "error: the input line holds a NUL byte; it was not sent\n");
+                n = 0;
+                nul = false;
+                if (c == '\n') continue;
+            }
+            if (c == EOF && n == 0) { free(buf); return NULL; }
+            buf[n] = 0;
+            return buf;                      // EOF after a newline-less tail too
         }
-        n += strlen(buf + n);
-        if (n && buf[n - 1] == '\n') { buf[n - 1] = 0; return buf; }
-        if (n + 1 < cap) return buf;         // short read: EOF, no newline
-        // fgets filled the buffer, so the line continues past it. The cap
-        // keeps cap - n inside the int fgets takes; a gigabyte-long single
-        // chat line fails loudly rather than overflowing that conversion.
-        if (cap > (size_t)INT_MAX / 2) { free(buf); *oom = true; return NULL; }
-        char *bigger = realloc(buf, cap * 2);
-        if (!bigger) { free(buf); *oom = true; return NULL; }
-        buf = bigger;
-        cap *= 2;
+        if (c == 0) nul = true;
+        if (n + 1 >= cap) {
+            // a gigabyte-long single chat line fails loudly
+            if (cap > (size_t)INT_MAX / 2) { free(buf); *oom = true; return NULL; }
+            char *bigger = realloc(buf, cap * 2);
+            if (!bigger) { free(buf); *oom = true; return NULL; }
+            buf = bigger;
+            cap *= 2;
+        }
+        buf[n++] = (char)c;
     }
 }
 
@@ -3088,6 +3100,13 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
             *rc = 1;
             return true;
         }
+        if (memchr(dbuf, '\0', dn)) {   // the text would end there unseen
+            free(dbuf);
+            fprintf(stderr, "error: --detect-watermark: %s contains a NUL byte\n",
+                    o->detect_path);
+            *rc = 1;
+            return true;
+        }
         *detect_text = dbuf;   // tokenized once the model is loaded
     }
     return false;
@@ -3221,6 +3240,15 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         size_t flen = 0;
         char *fdata = plat_read_file(o->prompt_file, MAX_INPUT_FILE, &flen);
         if (!fdata) { fprintf(stderr, "error: cannot read %s\n", o->prompt_file); *rc = 1; return true; }
+        // The prompt is text up to its first NUL wherever it goes next (the
+        // tokenizer call, the run record's JSON, --verify), so a file holding
+        // one is refused rather than cut there unseen, as training text is.
+        if (memchr(fdata, '\0', flen)) {
+            fprintf(stderr, "error: prompt file %s contains a NUL byte\n", o->prompt_file);
+            free(fdata);
+            *rc = 1;
+            return true;
+        }
         size_t plen = o->prompt ? strlen(o->prompt) : 0;
         if (flen > SIZE_MAX - plen - 1) {   // checked concat length
             fprintf(stderr, "error: prompt is too large\n");

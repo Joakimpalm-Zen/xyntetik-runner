@@ -89,6 +89,11 @@ void tokenizer_free(tokenizer *t);
 // returns number of tokens written to out (capacity cap); add_bos per call
 int  tok_encode(tokenizer *t, const char *text, int32_t *out, int cap,
                 bool add_bos, bool parse_special);
+// The same over n bytes of text, which may hold U+0000: the publishers'
+// tokenizers encode it as the byte it is, where tok_encode's NUL-terminated
+// text ends at it.
+int  tok_encode_n(tokenizer *t, const char *text, size_t n, int32_t *out, int cap,
+                  bool add_bos, bool parse_special);
 
 // Prompt marks. A rendered chat prompt is template scaffolding around caller
 // text, and the two are not the same kind of bytes: `<|im_end|>` typed into a

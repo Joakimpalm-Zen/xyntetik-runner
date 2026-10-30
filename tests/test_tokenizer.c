@@ -299,6 +299,22 @@ static void test_nfc_canonical_order(tokenizer *t) {
     }
 }
 
+// tok_encode_n reads n bytes, an interior U+0000 among them: a byte-level
+// BPE writes byte 0x00 as U+0100 ("\xC4\x80"), as every publisher's
+// ByteLevel does, where tok_encode's NUL-terminated text stops at it.
+static void test_bpe_interior_nul(tokenizer *t) {
+    int32_t got[8];
+    int n = tok_encode_n(t, "a\0b", 3, got, 8, false, true);
+    int32_t want[3] = { tok_find(t, "a"), tok_find(t, "\xC4\x80"), tok_find(t, "b") };
+    assert(want[0] >= 0 && want[1] >= 0 && want[2] >= 0);
+    if (n != 3 || memcmp(got, want, sizeof want) != 0) {
+        fprintf(stderr, "%s: encode_n(\"a\\0b\"): %d ids, want [%d, %d, %d]\n",
+                current, n, want[0], want[1], want[2]);
+        abort();
+    }
+    assert(tok_encode(t, "a\0b", got, 8, false, true) == 1);
+}
+
 static void run_bpe_fixture(const char *path, int pre, void (*digits)(tokenizer *)) {
     current = path;
     gguf_file g;
@@ -313,6 +329,7 @@ static void run_bpe_fixture(const char *path, int pre, void (*digits)(tokenizer 
     }
     assert(t.model == TOK_BPE);
     assert(t.pre == pre);
+    test_bpe_interior_nul(&t);
 
     if (pre == TOK_PRE_SMOLLM || pre == TOK_PRE_GPT2) {
         // smollm and granite-docling keep the original GPT-2 rules; the others
