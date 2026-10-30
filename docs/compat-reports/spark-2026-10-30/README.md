@@ -1,4 +1,4 @@
-# Spark X2.5 and X2.6: the architecture checked against llama.cpp, float32 reference owed (2026-10-30)
+# Spark X2.5 and X2.6: float32 reference owed, architecture agreement check (2026-10-30)
 
 **Unflattering first: no fidelity number exists yet for any Spark file.** The float32 references against XHToken's
 BF16 checkpoints, X2.6-4B and X2.5-4B, are booked on the lab CPU lane. What this record holds is an agreement check

@@ -37,7 +37,7 @@ Current release and unreleased changes. Compatibility follows the
   closing tags kept whole and a truncated call never completed. Template
   conformance is 23 of 23 cases for each in text and tokens. The MiniCPM5
   parser now shares its buffered mapper and streaming demultiplexer with this
-  one. The architecture itself comes in the next change.
+  one.
 - **Validation runs on the Windows CUDA host: 4 rows** (RTX 3070, 2026-10-30,
   built at 64cdc0dc, MiMo at 80c30df3). `trinity-nano-preview-q8_0` re-runs
   its CPU cell after the template's blank lines (#464), and its reply is
