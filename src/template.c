@@ -85,6 +85,10 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
             strstr(meta_tmpl, "List of tools: [") &&
             strstr(meta_tmpl, "<|tool_call_start|>"))
             return TMPL_LFM2;
+        // K2-Horizon: the <|ifm|im_start|> turn token is IFM's own; no other
+        // family's template writes it (ChatML's <|im_start|> is not a
+        // substring of it)
+        if (strstr(meta_tmpl, "<|ifm|im_start|>")) return TMPL_K2H;
         // Spark: DeepSeek-style turn tokens with its own ASCII role tags
         if (strstr(meta_tmpl, "<|Bot|>") && strstr(meta_tmpl, "<|System|>"))
             return strstr(meta_tmpl, "thinking_effort") ? TMPL_SPARK
@@ -237,6 +241,7 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "mimo")) return TMPL_MIMO;
     if (!strcmp(name, "spark")) return TMPL_SPARK;
     if (!strcmp(name, "spark25")) return TMPL_SPARK25;
+    if (!strcmp(name, "k2-horizon")) return TMPL_K2H;
     if (!strcmp(name, "hermes4")) return TMPL_HERMES4;
     if (!strcmp(name, "llama2")) return TMPL_LLAMA2;
     if (!strcmp(name, "llama3")) return TMPL_LLAMA3;
@@ -314,6 +319,7 @@ const char *template_name(int t) {
         case TMPL_MIMO: return "mimo";
         case TMPL_SPARK: return "spark";
         case TMPL_SPARK25: return "spark25";
+        case TMPL_K2H: return "k2-horizon";
         case TMPL_HERMES4: return "hermes4";
         case TMPL_LLAMA3: return "llama3";  case TMPL_ZEPHYR: return "zephyr";
         case TMPL_GEMMA:  return "gemma";
@@ -654,6 +660,28 @@ int req_spark_effort(struct jv *req) {
     return -1;
 }
 
+int req_k2h_effort(struct jv *req, const char **why) {
+    *why = NULL;
+    if (!req) return 0;
+    jv *kw = jv_get((jv *)req, "chat_template_kwargs");
+    jv *v  = kw ? jv_get(kw, "reasoning_effort") : NULL;
+    if (!v || v->type == J_NULL)
+        v = jv_get((jv *)req, "reasoning_effort");
+    if (!v || v->type == J_NULL) return 0;
+    const char *s = jv_str(v, NULL);
+    if (s && !strcmp(s, "high")) return 0;
+    if (s && (!strcmp(s, "medium") || !strcmp(s, "low"))) {
+        *why = "reasoning_effort medium and low open <ifm|think_fast> and "
+               "<ifm|think_faster> blocks, which this build does not split "
+               "from the answer yet; use high (the default) or "
+               "enable_thinking false";
+        return -1;
+    }
+    *why = "reasoning_effort must be one of high, medium, low for this "
+           "model's template";
+    return -1;
+}
+
 int req_template_effort(int tmpl, struct jv *req, const char **why) {
     *why = NULL;
     if (tmpl == TMPL_QWEN38) {
@@ -671,6 +699,7 @@ int req_template_effort(int tmpl, struct jv *req, const char **why) {
                           "this model's template";
         return e;
     }
+    if (tmpl == TMPL_K2H) return req_k2h_effort(req, why);
     if (tmpl == TMPL_MUSE) {
         // the reference's `reasoning_strength` kwarg (low, medium, high;
         // absent renders "high"); `reasoning_effort` is accepted as the
@@ -728,6 +757,11 @@ bool template_think_tags(int tmpl, const char **open, const char **close) {
         tmpl_granite42_like(tmpl) || tmpl_ornith_like(tmpl)) {
         *open = "<think>";
         *close = "</think>";
+        return true;
+    }
+    if (tmpl == TMPL_K2H) {
+        *open = "<ifm|think>";
+        *close = "</ifm|think>";
         return true;
     }
     return false;
@@ -3296,6 +3330,976 @@ static size_t render_mistral(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// ------------------------------------------------------------- K2-Horizon
+//
+// IFM's K2-Horizon template, the one embedded in its K2-Horizon-0.9B-GGUF and
+// K2-Horizon-7B-GGUF files (43,040 bytes, the same in both; the repositories'
+// own chat_template.jinja is a later revision those files do not carry). Its
+// macros are ported here one by one under their own names, for its DEFAULT
+// path: markdown tool presentation and xml calls. The json and xml
+// presentations and the json and xml_typed call formats are kwargs this build
+// does not take.
+//
+// The macros read values with jinja's rules, and so does this port: a key is
+// "defined" when present (null included), "truthy" is a non-empty string or
+// container, a non-zero number or true.
+
+static bool k2_truthy(const jv *v) {
+    if (!v) return false;
+    switch (v->type) {
+    case J_NULL: return false;
+    case J_BOOL: return v->b;
+    case J_NUM:  return v->num != 0;
+    case J_STR:  return v->str[0] != 0;
+    case J_ARR: case J_OBJ: return v->n > 0;
+    }
+    return false;
+}
+static const jv *k2_at(const jv *o, const char *k) {
+    return o && o->type == J_OBJ ? jv_get((jv *)o, k) : NULL;
+}
+static void k2_sp(sbuf *o, int n) {
+    static const char sp[] = "                                ";
+    while (n > 0) { int k = n > 32 ? 32 : n; sb_put(o, sp, (size_t)k); n -= k; }
+}
+static void k2_s(sbuf *o, const char *s) { sb_put(o, s, strlen(s)); }
+
+// One code point (UTF-8; a stray byte reads as itself) and its length.
+static uint32_t k2_cp(const unsigned char *p, int *len) {
+    uint32_t c = p[0];
+    int n = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 1;
+    for (int i = 1; i < n; i++) if ((p[i] & 0xC0) != 0x80) { n = 1; break; }
+    if (n == 1) { *len = 1; return c; }
+    c &= 0x7F >> n;
+    for (int i = 1; i < n; i++) c = (c << 6) | (p[i] & 0x3F);
+    *len = n;
+    return c;
+}
+// python's str.isspace, the set `str.split()` splits on
+static bool k2_py_space(uint32_t c) {
+    return (c >= 9 && c <= 13) || (c >= 0x1c && c <= 0x20) || c == 0x85 ||
+           c == 0xa0 || c == 0x1680 || (c >= 0x2000 && c <= 0x200a) ||
+           c == 0x2028 || c == 0x2029 || c == 0x202f || c == 0x205f ||
+           c == 0x3000;
+}
+// `value.split() | join(" ")`: each whitespace run one space, none at the ends
+static void k2_collapse(const char *s, sbuf *o) {
+    const unsigned char *p = (const unsigned char *)s;
+    bool pending = false, any = false;
+    while (*p) {
+        int n;
+        uint32_t c = k2_cp(p, &n);
+        if (k2_py_space(c)) { pending = any; p += n; continue; }
+        if (pending) { sb_lit(o, " "); pending = false; }
+        sb_put(o, (const char *)p, (size_t)n);
+        any = true;
+        p += n;
+    }
+}
+
+// A JSON number as python prints what json.loads made of it: an int for a
+// literal with no fraction or exponent, otherwise the float's repr (the
+// shortest digits that read back, fixed notation for decimal exponents -4
+// through 15, d.ddde+XX beyond).
+static void k2_py_num(const jv *v, sbuf *o) {
+    char b[48];
+    if (v->num_int) {
+        if (v->num_text) { k2_s(o, v->num_text); return; }
+        snprintf(b, sizeof b, "%.0f", v->num == 0 ? 0.0 : v->num);
+        k2_s(o, b);
+        return;
+    }
+    double d = v->num;
+    char e[48];
+    for (int prec = 1; prec <= 17; prec++) {
+        snprintf(e, sizeof e, "%.*e", prec - 1, d);
+        if (strtod(e, NULL) == d) break;
+    }
+    const char *q = e;
+    if (*q == '-') { sb_lit(o, "-"); q++; }
+    char dig[24];
+    int nd = 0;
+    for (; *q && *q != 'e' && nd < 23; q++) if (*q != '.') dig[nd++] = *q;
+    int ex = *q == 'e' ? atoi(q + 1) : 0;
+    while (nd > 1 && dig[nd - 1] == '0') nd--;
+    if (ex >= -4 && ex < 16) {
+        int decpt = ex + 1;
+        if (decpt <= 0) {
+            sb_lit(o, "0.");
+            for (int k = 0; k < -decpt; k++) sb_lit(o, "0");
+            sb_put(o, dig, (size_t)nd);
+        } else if (decpt >= nd) {
+            sb_put(o, dig, (size_t)nd);
+            for (int k = 0; k < decpt - nd; k++) sb_lit(o, "0");
+            sb_lit(o, ".0");
+        } else {
+            sb_put(o, dig, (size_t)decpt);
+            sb_lit(o, ".");
+            sb_put(o, dig + decpt, (size_t)(nd - decpt));
+        }
+    } else {
+        sb_put(o, dig, 1);
+        if (nd > 1) { sb_lit(o, "."); sb_put(o, dig + 1, (size_t)(nd - 1)); }
+        snprintf(b, sizeof b, "e%c%02d", ex < 0 ? '-' : '+', ex < 0 ? -ex : ex);
+        k2_s(o, b);
+    }
+}
+
+// render_python_repr: strings single-quoted with their whitespace collapsed
+// and `\` and `'` escaped, True/False/None, dicts and lists with ", " and
+// ": ", numbers as python prints them
+static void k2_py_repr(const jv *v, sbuf *o) {
+    switch (v ? v->type : J_NULL) {
+    case J_STR: {
+        sbuf c = {0};
+        k2_collapse(v->str, &c);
+        sb_lit(o, "'");
+        for (size_t i = 0; i < c.n; i++) {
+            if (c.s[i] == '\\')      sb_lit(o, "\\\\");
+            else if (c.s[i] == '\'') sb_lit(o, "\\'");
+            else                     sb_put(o, c.s + i, 1);
+        }
+        sb_lit(o, "'");
+        if (c.failed) o->failed = true;
+        free(c.s);
+        break;
+    }
+    case J_BOOL: k2_s(o, v->b ? "True" : "False"); break;
+    case J_NULL: sb_lit(o, "None"); break;
+    case J_NUM:  k2_py_num(v, o); break;
+    case J_OBJ:
+        sb_lit(o, "{");
+        for (int i = 0; i < v->n; i++) {
+            if (i) sb_lit(o, ", ");
+            jv key = { .type = J_STR, .str = v->keys[i] };
+            k2_py_repr(&key, o);
+            sb_lit(o, ": ");
+            k2_py_repr(v->items[i], o);
+        }
+        sb_lit(o, "}");
+        break;
+    case J_ARR:
+        sb_lit(o, "[");
+        for (int i = 0; i < v->n; i++) {
+            if (i) sb_lit(o, ", ");
+            k2_py_repr(v->items[i], o);
+        }
+        sb_lit(o, "]");
+        break;
+    }
+}
+
+// python's own str() of a value, which `{{ x }}` and `x | replace(...)`
+// print: a string as is, anything else as python's repr. Its strings quote
+// with ' unless the text holds a ' and no ", escaping \, the quote, \n, \r,
+// \t and the other C0 bytes; python also escapes non-printable non-ASCII
+// code points, which this does not (a residual only a non-string schema
+// description containing one would meet).
+static void k2_py_str(const jv *v, sbuf *o);
+static void k2_py_true_repr(const jv *v, sbuf *o) {
+    if (v && v->type == J_STR) {
+        char q = strchr(v->str, '\'') && !strchr(v->str, '"') ? '"' : '\'';
+        sb_put(o, &q, 1);
+        for (const unsigned char *p = (const unsigned char *)v->str; *p; p++) {
+            char b[8];
+            if (*p == '\\')      sb_lit(o, "\\\\");
+            else if (*p == q)    { sb_lit(o, "\\"); sb_put(o, &q, 1); }
+            else if (*p == '\n') sb_lit(o, "\\n");
+            else if (*p == '\r') sb_lit(o, "\\r");
+            else if (*p == '\t') sb_lit(o, "\\t");
+            else if (*p < 0x20 || *p == 0x7f) { snprintf(b, sizeof b, "\\x%02x", *p); k2_s(o, b); }
+            else sb_put(o, (const char *)p, 1);
+        }
+        sb_put(o, &q, 1);
+        return;
+    }
+    if (v && v->type == J_OBJ) {
+        sb_lit(o, "{");
+        for (int i = 0; i < v->n; i++) {
+            if (i) sb_lit(o, ", ");
+            jv key = { .type = J_STR, .str = v->keys[i] };
+            k2_py_true_repr(&key, o);
+            sb_lit(o, ": ");
+            k2_py_true_repr(v->items[i], o);
+        }
+        sb_lit(o, "}");
+        return;
+    }
+    if (v && v->type == J_ARR) {
+        sb_lit(o, "[");
+        for (int i = 0; i < v->n; i++) {
+            if (i) sb_lit(o, ", ");
+            k2_py_true_repr(v->items[i], o);
+        }
+        sb_lit(o, "]");
+        return;
+    }
+    k2_py_repr(v, o);   // True/False/None and numbers print the same
+}
+static void k2_py_str(const jv *v, sbuf *o) {
+    if (v && v->type == J_STR) k2_s(o, v->str);
+    else k2_py_true_repr(v, o);
+}
+// `x | replace("\n", "\n" + pad)` over str(x), pad being `pad` spaces
+static void k2_replaced(const jv *v, int pad, sbuf *o) {
+    sbuf s = {0};
+    k2_py_str(v, &s);
+    for (size_t i = 0; i < s.n; i++) {
+        sb_put(o, s.s + i, 1);
+        if (s.s[i] == '\n') k2_sp(o, pad);
+    }
+    if (s.failed) o->failed = true;
+    free(s.s);
+}
+
+// render_markdown_literal / render_markdown_value / render_allowed_values
+static void k2_md_literal(const jv *v, sbuf *o) {
+    if (v && v->type == J_STR && !v->str[0]) { sb_lit(o, "\"\""); return; }
+    sb_lit(o, "`");
+    if (v && v->type == J_STR) {
+        for (const char *p = v->str; *p; p++)
+            if (*p == '\n') sb_lit(o, "\\n"); else sb_put(o, p, 1);
+    } else {
+        k2_py_repr(v, o);
+    }
+    sb_lit(o, "`");
+}
+static void k2_md_value(const jv *v, sbuf *o) {
+    if (v && v->type == J_STR) { if (v->str[0]) k2_s(o, v->str); else sb_lit(o, "\"\""); }
+    else k2_py_repr(v, o);
+}
+// render_markdown_value of a string assembled here (a replaced description)
+static void k2_md_value_text(const sbuf *t, sbuf *o) {
+    if (t->n) sb_put(o, t->s, t->n); else sb_lit(o, "\"\"");
+}
+static void k2_md_allowed(const jv *vals, sbuf *o) {
+    for (int i = 0; vals && vals->type == J_ARR && i < vals->n; i++) {
+        if (i) sb_lit(o, ", ");
+        k2_md_literal(vals->items[i], o);
+    }
+}
+
+// render_markdown_type / render_markdown_type_name
+static void k2_md_type(const jv *spec, sbuf *o);
+static void k2_md_type_name(const jv *name, const jv *spec, sbuf *o) {
+    if (name && name->type == J_STR && !strcmp(name->str, "array")) {
+        sb_lit(o, "array of ");
+        const jv *it = k2_at(spec, "items");
+        if (it) k2_md_type(it, o); else sb_lit(o, "any");
+    } else if (k2_truthy(name)) {
+        k2_py_str(name, o);
+    } else {
+        sb_lit(o, "any");
+    }
+}
+static void k2_md_type(const jv *spec, sbuf *o) {
+    if (spec && spec->type == J_BOOL) { k2_s(o, spec->b ? "True" : "False"); return; }
+    if (!spec || spec->type != J_OBJ) { sb_lit(o, "any"); return; }
+    const jv *t = k2_at(spec, "type"), *ref = k2_at(spec, "$ref");
+    const jv *one = k2_at(spec, "oneOf"), *any = k2_at(spec, "anyOf");
+    if (t && (t->type == J_ARR || t->type == J_OBJ)) {
+        if (!t->n) { sb_lit(o, "any"); return; }
+        for (int i = 0; i < t->n; i++) {
+            if (i) sb_lit(o, " or ");
+            if (t->type == J_ARR) { k2_md_type_name(t->items[i], spec, o); continue; }
+            jv key = { .type = J_STR, .str = t->keys[i] };   // a dict iterates its keys
+            k2_md_type_name(&key, spec, o);
+        }
+    } else if (k2_truthy(t)) {
+        k2_md_type_name(t, spec, o);
+    } else if (ref && ref->type == J_STR) {
+        const char *sl = strrchr(ref->str, '/');
+        k2_s(o, sl ? sl + 1 : ref->str);
+    } else if (k2_truthy(one) || k2_truthy(any)) {
+        const jv *vs = k2_truthy(one) ? one : any;
+        k2_s(o, vs == one ? "oneOf[" : "anyOf[");
+        for (int i = 0; vs->type == J_ARR && i < vs->n; i++) {
+            if (i) sb_lit(o, " or ");
+            k2_md_type(vs->items[i], o);
+        }
+        sb_lit(o, "]");
+    } else if (k2_truthy(k2_at(spec, "properties"))) {
+        sb_lit(o, "object");
+    } else if (k2_at(spec, "items")) {
+        sb_lit(o, "array of ");
+        k2_md_type(k2_at(spec, "items"), o);
+    } else {
+        sb_lit(o, "any");
+    }
+}
+
+// the keys render_markdown_schema_extras leaves out
+static bool k2_rendered_key(const char *k) {
+    static const char *keys[] = { "type", "description", "enum", "default",
+        "properties", "required", "items", "oneOf", "anyOf",
+        "additionalProperties", "patternProperties", "returns" };
+    for (size_t i = 0; i < sizeof keys / sizeof *keys; i++)
+        if (!strcmp(k, keys[i])) return true;
+    return false;
+}
+
+// `name in (required or [])`: list or dict membership, a substring of a
+// string; a truthy number or boolean raises there, which
+// template_tools_check refuses before any render
+static bool k2_required_has(const jv *req, const char *name) {
+    if (!k2_truthy(req)) return false;
+    if (req->type == J_STR) return strstr(req->str, name) != NULL;
+    for (int i = 0; i < req->n; i++) {
+        if (req->type == J_OBJ) { if (!strcmp(req->keys[i], name)) return true; }
+        else if (req->items[i]->type == J_STR && !strcmp(req->items[i]->str, name))
+            return true;
+    }
+    return false;
+}
+
+static void k2_md_details(const jv *spec, int ind, bool ivd, sbuf *o);
+static void k2_md_param(const char *name, const jv *spec, const jv *req,
+                        int ind, sbuf *o);
+
+// render_markdown_detail: "\n" + indent + "  - " + label + ": " + value
+static void k2_md_detail(sbuf *o, int ind, const char *label, const jv *v) {
+    sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "  - "); k2_s(o, label); sb_lit(o, ": ");
+    k2_md_value(v, o);
+}
+
+// render_markdown_schema_annotations
+static void k2_md_annotations(const jv *spec, int ind, bool ivd, sbuf *o) {
+    const jv *d = k2_at(spec, "description"), *e = k2_at(spec, "enum");
+    const jv *df = k2_at(spec, "default"), *ap = k2_at(spec, "additionalProperties");
+    if (ivd && d) {
+        sbuf t = {0};
+        k2_replaced(d, ind + 4, &t);
+        sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "  - Description: ");
+        k2_md_value_text(&t, o);
+        if (t.failed) o->failed = true;
+        free(t.s);
+    }
+    if (ivd && e) {
+        sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "  - Allowed values: ");
+        k2_md_allowed(e, o);
+    }
+    if (ivd && df) {
+        sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "  - Default: ");
+        k2_md_literal(df, o);
+    }
+    if (ap) {
+        if (ap->type == J_OBJ) {
+            sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "  - Additional properties *(");
+            k2_md_type(ap, o);
+            sb_lit(o, ")*");
+            k2_md_details(ap, ind + 2, true, o);
+        } else {
+            k2_md_detail(o, ind, "Additional properties", ap);
+        }
+    }
+}
+
+// one "- Variant N *(type)*" list (oneOf / anyOf) at `ind` + 2
+static void k2_md_variants(const jv *vs, const char *label, int ind, sbuf *o) {
+    sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "  - "); k2_s(o, label); sb_lit(o, ":");
+    for (int i = 0; vs->type == J_ARR && i < vs->n; i++) {
+        char b[24];
+        snprintf(b, sizeof b, "%d", i + 1);
+        sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "    - Variant "); k2_s(o, b);
+        sb_lit(o, " *("); k2_md_type(vs->items[i], o); sb_lit(o, ")*");
+        k2_md_details(vs->items[i], ind + 4, true, o);
+    }
+}
+
+// render_markdown_schema_structure (include_properties is always true here)
+static void k2_md_structure(const jv *spec, int ind, sbuf *o) {
+    const jv *props = k2_at(spec, "properties");
+    if (k2_truthy(props) && props->type == J_OBJ)
+        for (int i = 0; i < props->n; i++)
+            k2_md_param(props->keys[i], props->items[i], k2_at(spec, "required"),
+                        ind + 2, o);
+    const jv *it = k2_at(spec, "items");
+    if (it && it->type == J_OBJ) {
+        sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "  - Items *(");
+        k2_md_type(it, o);
+        sb_lit(o, ")*");
+        k2_md_details(it, ind + 2, true, o);
+    } else if (it) {
+        k2_md_detail(o, ind, "Items", it);
+    }
+    const jv *one = k2_at(spec, "oneOf"), *any = k2_at(spec, "anyOf");
+    if (k2_truthy(one)) k2_md_variants(one, "oneOf", ind, o);
+    if (k2_truthy(any)) k2_md_variants(any, "anyOf", ind, o);
+    const jv *pp = k2_at(spec, "patternProperties");
+    if (pp && pp->type == J_OBJ) {
+        sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "  - Pattern properties:");
+        for (int i = 0; i < pp->n; i++) {
+            sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "    - `"); k2_s(o, pp->keys[i]);
+            if (pp->items[i]->type == J_OBJ) {
+                sb_lit(o, "` *("); k2_md_type(pp->items[i], o); sb_lit(o, ")*");
+                k2_md_details(pp->items[i], ind + 4, true, o);
+            } else {
+                sb_lit(o, "`: ");
+                k2_md_value(pp->items[i], o);
+            }
+        }
+    } else if (pp) {
+        k2_md_detail(o, ind, "Pattern properties", pp);
+    }
+    const jv *ret = k2_at(spec, "returns");
+    if (ret && ret->type == J_OBJ) {
+        sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "  - Returns *(");
+        k2_md_type(ret, o);
+        sb_lit(o, ")*");
+        k2_md_details(ret, ind + 2, true, o);
+    } else if (ret) {
+        k2_md_detail(o, ind, "Returns", ret);
+    }
+}
+
+// render_markdown_schema_details
+static void k2_md_details(const jv *spec, int ind, bool ivd, sbuf *o) {
+    if (spec && spec->type == J_OBJ) {
+        k2_md_annotations(spec, ind, ivd, o);
+        k2_md_structure(spec, ind, o);
+        for (int i = 0; i < spec->n; i++) {   // render_markdown_schema_extras
+            if (k2_rendered_key(spec->keys[i])) continue;
+            sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "  - "); k2_s(o, spec->keys[i]);
+            sb_lit(o, ": ");
+            k2_md_value(spec->items[i], o);
+        }
+    } else if (!spec || spec->type != J_BOOL) {
+        sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "  - Value: ");
+        k2_md_literal(spec, o);
+    }
+}
+
+// render_markdown_param
+static void k2_md_param(const char *name, const jv *spec, const jv *req,
+                        int ind, sbuf *o) {
+    sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "- `"); k2_s(o, name); sb_lit(o, "` *(");
+    k2_md_type(spec, o);
+    if (k2_required_has(req, name)) sb_lit(o, ", required");
+    sb_lit(o, ")*");
+    const jv *d = k2_at(spec, "description");
+    if (k2_truthy(d)) { sb_lit(o, " - "); k2_replaced(d, ind + 2, o); }
+    const jv *e = k2_at(spec, "enum");
+    if (k2_truthy(e)) {
+        sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "  - Allowed values: ");
+        k2_md_allowed(e, o);
+    }
+    const jv *df = k2_at(spec, "default");
+    if (df) {
+        sb_lit(o, "\n"); k2_sp(o, ind); sb_lit(o, "  - Default: ");
+        k2_md_literal(df, o);
+    }
+    k2_md_details(spec, ind, false, o);
+}
+
+// render_markdown_parameter_schema: a parameters root with no properties
+// but a oneOf, an anyOf or items, at the left margin
+static void k2_md_param_schema(const jv *spec, sbuf *o) {
+    const jv *d = k2_at(spec, "description"), *e = k2_at(spec, "enum");
+    const jv *df = k2_at(spec, "default"), *ap = k2_at(spec, "additionalProperties");
+    if (d) {
+        sbuf t = {0};
+        k2_replaced(d, 4, &t);
+        sb_lit(o, "\n- Description: ");
+        k2_md_value_text(&t, o);
+        if (t.failed) o->failed = true;
+        free(t.s);
+    }
+    if (e)  { sb_lit(o, "\n- Allowed values: "); k2_md_allowed(e, o); }
+    if (df) { sb_lit(o, "\n- Default: "); k2_md_literal(df, o); }
+    if (ap) {
+        if (ap->type == J_OBJ) {
+            sb_lit(o, "\n- Additional properties *("); k2_md_type(ap, o); sb_lit(o, ")*");
+            k2_md_details(ap, 0, true, o);
+        } else {
+            sb_lit(o, "\n- Additional properties: "); k2_md_value(ap, o);
+        }
+    }
+    const jv *it = k2_at(spec, "items");
+    if (it && it->type == J_OBJ) {
+        sb_lit(o, "\n- Items *("); k2_md_type(it, o); sb_lit(o, ")*");
+        k2_md_details(it, 0, true, o);
+    } else if (it) {
+        sb_lit(o, "\n- Items: "); k2_md_value(it, o);
+    }
+    for (int k = 0; k < 2; k++) {
+        const jv *vs = k2_at(spec, k ? "anyOf" : "oneOf");
+        if (!k2_truthy(vs)) continue;
+        sb_lit(o, k ? "\n- anyOf:" : "\n- oneOf:");
+        for (int i = 0; vs->type == J_ARR && i < vs->n; i++) {
+            char b[24];
+            snprintf(b, sizeof b, "%d", i + 1);
+            sb_lit(o, "\n  - Variant "); k2_s(o, b);
+            sb_lit(o, " *("); k2_md_type(vs->items[i], o); sb_lit(o, ")*");
+            k2_md_details(vs->items[i], 2, true, o);
+        }
+    }
+    const jv *pp = k2_at(spec, "patternProperties");
+    if (pp && pp->type == J_OBJ) {
+        sb_lit(o, "\n- Pattern properties:");
+        for (int i = 0; i < pp->n; i++) {
+            sb_lit(o, "\n  - `"); k2_s(o, pp->keys[i]);
+            if (pp->items[i]->type == J_OBJ) {
+                sb_lit(o, "` *("); k2_md_type(pp->items[i], o); sb_lit(o, ")*");
+                k2_md_details(pp->items[i], 2, true, o);
+            } else {
+                sb_lit(o, "`: "); k2_md_value(pp->items[i], o);
+            }
+        }
+    } else if (pp) {
+        sb_lit(o, "\n- Pattern properties: "); k2_md_value(pp, o);
+    }
+    const jv *ret = k2_at(spec, "returns");
+    if (ret && ret->type == J_OBJ) {
+        sb_lit(o, "\n- Returns *("); k2_md_type(ret, o); sb_lit(o, ")*");
+        k2_md_details(ret, 0, true, o);
+    } else if (ret) {
+        sb_lit(o, "\n- Returns: "); k2_md_value(ret, o);
+    }
+    for (int i = 0; i < spec->n; i++) {   // render_markdown_metadata_extras
+        if (k2_rendered_key(spec->keys[i])) continue;
+        sb_lit(o, "\n- "); k2_s(o, spec->keys[i]); sb_lit(o, ": ");
+        k2_md_value(spec->items[i], o);
+    }
+}
+
+// `tool.function if tool.function is defined else tool`
+static const jv *k2_fn(const jv *tool) {
+    const jv *f = k2_at(tool, "function");
+    return f ? f : tool;
+}
+// `fn.returns if fn.returns is defined else fn.response`
+static const jv *k2_fn_ret(const jv *fn) {
+    const jv *r = k2_at(fn, "returns");
+    return r ? r : k2_at(fn, "response");
+}
+
+// render_tools_markdown
+static void k2_tools_markdown(const jv *tools, sbuf *o) {
+    pl_lit(o, "<ifm|tools>");
+    for (int i = 0; i < tools->n; i++) {
+        const jv *fn = k2_fn(tools->items[i]);
+        const jv *p = k2_at(fn, "parameters"), *d = k2_at(fn, "description");
+        sb_lit(o, "\n## ");
+        k2_s(o, jv_str((jv *)k2_at(fn, "name"), ""));
+        if (k2_truthy(d) && d->type == J_STR) { sb_lit(o, "\n"); k2_s(o, d->str); }
+        sb_lit(o, "\n\n**Parameters**");
+        const jv *props = k2_at(p, "properties");
+        if (k2_truthy(p) && k2_truthy(props) && props->type == J_OBJ) {
+            for (int k = 0; k < props->n; k++)
+                k2_md_param(props->keys[k], props->items[k], k2_at(p, "required"), 0, o);
+        } else if (p && p->type == J_OBJ &&
+                   (k2_truthy(k2_at(p, "oneOf")) || k2_truthy(k2_at(p, "anyOf")) ||
+                    k2_at(p, "items"))) {
+            k2_md_param_schema(p, o);
+        } else {
+            sb_lit(o, "\n- None");
+        }
+        const jv *ret = k2_fn_ret(fn);
+        if (ret && ret->type == J_OBJ) {
+            sb_lit(o, "\n\n**Returns**\n- Return *(");
+            k2_md_type(ret, o);
+            sb_lit(o, ")*");
+            k2_md_details(ret, 0, true, o);
+        } else if (ret) {
+            sb_lit(o, "\n\n**Returns**\n- ");
+            k2_md_value(ret, o);
+        }
+        if (i + 1 < tools->n) sb_lit(o, "\n");
+    }
+    pl_lit(o, "\n</ifm|tools>");
+}
+
+// ---- validate_tools / validate_schema: the raises and the classification
+//
+// One walk, as the template's: a fault it raises on fails the walk with the
+// template's own message (Runner answers 400 with it), and a construct its
+// markdown renderer does not handle clears `ok`, which sends the WHOLE
+// toolset to the JSON presentation (render_tool_presentation's RB.bad).
+// Raises the template reaches only by a type error (a properties that is not
+// a mapping, a oneOf that cannot be iterated, a membership test against a
+// number) are refused too, named for what they are.
+typedef struct {
+    bool ok;
+    char *err;
+    size_t err_cap;
+    char path[512];
+    size_t pn;
+} k2_walk;
+
+static size_t k2_path_push(k2_walk *w, const char *a, const char *b, const char *c) {
+    size_t old = w->pn;
+    const char *parts[3] = { a, b, c };
+    for (int i = 0; i < 3; i++)
+        for (const char *p = parts[i]; p && *p && w->pn + 1 < sizeof w->path; p++)
+            w->path[w->pn++] = *p;
+    w->path[w->pn] = 0;
+    return old;
+}
+static void k2_path_pop(k2_walk *w, size_t old) { w->pn = old; w->path[old] = 0; }
+
+static bool k2_raise(k2_walk *w, const char *fmt, const char *arg) {
+    if (w->err && w->err_cap)
+        snprintf(w->err, w->err_cap, fmt, w->path, arg ? arg : "");
+    return false;
+}
+
+static bool k2_contains_mapping(const jv *v) {
+    if (!v) return false;
+    if (v->type == J_OBJ) return true;
+    if (v->type == J_ARR)
+        for (int i = 0; i < v->n; i++)
+            if (k2_contains_mapping(v->items[i])) return true;
+    return false;
+}
+
+// validate_schema(spec, path, lenient, classify=true, in_variant). `rendered`
+// is false under $defs, whose members the markdown renderer never reaches
+// as parameters (a membership test there cannot raise).
+static bool k2_schema(const jv *spec, k2_walk *w, bool lenient, bool in_variant,
+                      bool rendered) {
+    if (!spec || spec->type != J_OBJ) return true;
+    const jv *req = k2_at(spec, "required"), *props = k2_at(spec, "properties");
+    if (k2_truthy(props) && props->type != J_OBJ)
+        return k2_raise(w, "Schema '%s' has 'properties' but it is not an object.", NULL);
+    if (!lenient && req) {
+        if (req->type != J_ARR && req->type != J_OBJ)
+            return k2_raise(w, "Schema '%s' has 'required' but it is not a list.", NULL);
+        if (req->n > 0 && !k2_truthy(props) && !in_variant)
+            return k2_raise(w, "Schema '%s' has required fields but no properties "
+                               "object to define them.", NULL);
+        if (k2_truthy(props))
+            for (int i = 0; i < req->n; i++) {
+                const char *r = req->type == J_OBJ ? req->keys[i]
+                              : req->items[i]->type == J_STR ? req->items[i]->str : NULL;
+                if (!r)
+                    return k2_raise(w, "Schema '%s' lists a required entry that is "
+                                       "not a string.", NULL);
+                if (!jv_get((jv *)props, r))
+                    return k2_raise(w, "Schema '%s' marks '%s' as required, but that "
+                                       "property is not defined in properties.", r);
+            }
+    }
+    if (lenient && rendered && k2_truthy(props) && k2_truthy(req) &&
+        (req->type == J_NUM || req->type == J_BOOL))
+        return k2_raise(w, "Schema '%s' has 'required' but it is not a list.", NULL);
+    for (int i = 0; i < spec->n; i++) {
+        const char *k = spec->keys[i];
+        const jv *v = spec->items[i];
+        char probe[600];
+        snprintf(probe, sizeof probe, "|%s|", k);
+        if (!strcmp(k, "$ref")) {
+            // llama.cpp's jinja has no dict constructor, so the template
+            // keeps $ref schemas verbatim in the JSON presentation
+            w->ok = false;
+        } else if (!strcmp(k, "$defs") || !strcmp(k, "definitions")) {
+            if (v->type != J_OBJ) { w->ok = false; continue; }
+            for (int d = 0; d < v->n; d++) {
+                size_t old = k2_path_push(w, ".$defs.", v->keys[d], NULL);
+                bool fine = k2_schema(v->items[d], w, true, false, false);
+                k2_path_pop(w, old);
+                if (!fine) return false;
+            }
+        } else if (!strcmp(k, "type")) {
+            if (v->type == J_OBJ) w->ok = false;
+        } else if (!strcmp(k, "enum")) {
+            if (v->type != J_ARR) w->ok = false;
+        } else if (!strcmp(k, "items")) {
+            // any items shape renders
+        } else if (!strcmp(k, "oneOf") || !strcmp(k, "anyOf")) {
+            if (v->type != J_ARR) w->ok = false;
+        } else if (!strcmp(k, "required")) {
+            if (k2_truthy(v) && !k2_truthy(props)) w->ok = false;
+        } else if (strstr("|description|default|title|examples|properties|"
+                          "patternProperties|additionalProperties|returns|", probe)) {
+            // rendered, or carried as an extra the renderer prints
+        } else if (v->type == J_OBJ) {
+            for (int u = 0; u < v->n; u++)
+                if (k2_contains_mapping(v->items[u])) w->ok = false;
+        } else if (v->type == J_ARR) {
+            if (k2_contains_mapping(v)) w->ok = false;
+        }
+    }
+    if (k2_truthy(props))
+        for (int i = 0; i < props->n; i++) {
+            size_t old = k2_path_push(w, ".", props->keys[i], NULL);
+            bool fine = k2_schema(props->items[i], w, lenient, false, rendered);
+            k2_path_pop(w, old);
+            if (!fine) return false;
+        }
+    const jv *it = k2_at(spec, "items");
+    if (it) {
+        size_t old = k2_path_push(w, "[]", NULL, NULL);
+        bool fine = k2_schema(it, w, lenient, false, rendered);
+        k2_path_pop(w, old);
+        if (!fine) return false;
+    }
+    for (int k = 0; k < 2; k++) {
+        const char *name = k ? "anyOf" : "oneOf";
+        const jv *vs = k2_at(spec, name);
+        if (!k2_truthy(vs)) continue;
+        if (vs->type == J_NUM || vs->type == J_BOOL)
+            return k2_raise(w, "Schema '%s' has '%s' but it is not a list.", name);
+        for (int i = 0; vs->type == J_ARR && i < vs->n; i++) {
+            char idx[48];
+            snprintf(idx, sizeof idx, ".%s[%d]", name, i);
+            size_t old = k2_path_push(w, idx, NULL, NULL);
+            bool fine = k2_schema(vs->items[i], w, lenient, true, rendered);
+            k2_path_pop(w, old);
+            if (!fine) return false;
+        }
+    }
+    const jv *ap = k2_at(spec, "additionalProperties");
+    if (ap && ap->type == J_OBJ) {
+        size_t old = k2_path_push(w, ".additionalProperties", NULL, NULL);
+        bool fine = k2_schema(ap, w, lenient, false, rendered);
+        k2_path_pop(w, old);
+        if (!fine) return false;
+    }
+    const jv *pp = k2_at(spec, "patternProperties");
+    if (pp && pp->type == J_OBJ)
+        for (int i = 0; i < pp->n; i++) {
+            size_t old = k2_path_push(w, ".patternProperties[", pp->keys[i], "]");
+            bool fine = k2_schema(pp->items[i], w, lenient, false, rendered);
+            k2_path_pop(w, old);
+            if (!fine) return false;
+        }
+    const jv *ret = k2_at(spec, "returns");
+    if (ret && ret->type == J_OBJ) {
+        size_t old = k2_path_push(w, ".returns", NULL, NULL);
+        bool fine = k2_schema(ret, w, lenient, false, rendered);
+        k2_path_pop(w, old);
+        if (!fine) return false;
+    }
+    return true;
+}
+
+// validate_tools: false with `err` set on a raise; *bad (when non-NULL) is
+// set when any tool must render as JSON
+static bool k2_validate_tools(const jv *tools, bool *bad, char *err, size_t cap) {
+    if (bad) *bad = false;
+    if (!tools || tools->type != J_ARR) return true;
+    static const char *root_ok[] = { "type", "description", "enum", "default",
+        "properties", "required", "optional", "title", "items", "oneOf", "anyOf",
+        "additionalProperties", "patternProperties", "returns", "examples",
+        "$defs", "definitions", "$ref" };
+    static const char *fn_ok[] = { "name", "description", "parameters", "returns",
+        "response", "type", "function" };
+    for (int i = 0; i < tools->n; i++) {
+        const jv *fn = k2_fn(tools->items[i]);
+        const char *name = jv_str((jv *)k2_at(fn, "name"), "");
+        k2_walk w = { .ok = true, .err = err, .err_cap = cap };
+        const jv *p = k2_at(fn, "parameters"), *d = k2_at(fn, "description");
+        if (p && p->type == J_STR) {
+            snprintf(err, cap, "tool.function.parameters must be a dict, not a JSON "
+                               "string. Parse it before passing to the template.");
+            return false;
+        }
+        if (!p || p->type == J_NULL) {
+            if (k2_at(fn, "arguments"))
+                snprintf(err, cap, "Tool '%.60s' has 'arguments' instead of "
+                                   "'parameters'. Rename 'arguments' to 'parameters'.", name);
+            else
+                snprintf(err, cap, "Tool '%.60s' is missing required 'parameters' field. "
+                                   "Each tool must have a 'parameters' dict with 'type', "
+                                   "'properties', and 'required' keys.", name);
+            return false;
+        }
+        if (k2_truthy(d) && d->type != J_STR) {
+            snprintf(err, cap, "Tool '%.60s' has a description that is not a string.", name);
+            return false;
+        }
+        k2_path_push(&w, "tool.", name, ".parameters");
+        if (!k2_schema(p, &w, false, false, true)) return false;
+        if (p->type == J_OBJ) {
+            for (int k = 0; k < p->n; k++) {
+                bool known = false;
+                for (size_t r = 0; r < sizeof root_ok / sizeof *root_ok; r++)
+                    if (!strcmp(p->keys[k], root_ok[r])) known = true;
+                if (!known && (p->items[k]->type == J_OBJ || p->items[k]->type == J_ARR))
+                    w.ok = false;
+            }
+        } else {
+            w.ok = false;
+        }
+        const jv *ret = k2_at(fn, "returns"), *resp = k2_at(fn, "response");
+        if (ret && ret->type == J_OBJ) {
+            k2_path_pop(&w, 0);
+            k2_path_push(&w, "tool.", name, ".returns");
+            if (!k2_schema(ret, &w, false, false, true)) return false;
+        }
+        if (!ret && resp && resp->type == J_OBJ) {
+            k2_path_pop(&w, 0);
+            k2_path_push(&w, "tool.", name, ".response");
+            if (!k2_schema(resp, &w, true, false, true)) return false;
+        }
+        for (int k = 0; fn && fn->type == J_OBJ && k < fn->n; k++) {
+            bool known = false;
+            for (size_t r = 0; r < sizeof fn_ok / sizeof *fn_ok; r++)
+                if (!strcmp(fn->keys[k], fn_ok[r])) known = true;
+            if (!known && (fn->items[k]->type == J_OBJ || fn->items[k]->type == J_ARR))
+                w.ok = false;
+        }
+        if (!w.ok && bad) *bad = true;
+    }
+    return true;
+}
+
+bool template_tools_check(int tmpl, const jv *tools, char *err, size_t err_cap) {
+    if (tmpl != TMPL_K2H || !tools || tools->type != J_ARR || !tools->n) return true;
+    char why[400] = "";
+    if (k2_validate_tools(tools, NULL, why, sizeof why)) return true;
+    snprintf(err, err_cap, "this model's template refuses the tool declarations: %s", why);
+    return false;
+}
+
+// The system turn's tool section between `<|ifm|im_start|>system\n` and the
+// caller's text: render_system_with_tools with markdown presentation and
+// xml calls.
+static void k2_tools_section(const jv *tools, sbuf *out) {
+    pl_lit(out, "# Tools\nYou may call one or more tools to assist with the user "
+                "query.\n\nAvailable tools are:\n\n");
+    bool bad = false;
+    char err[400];
+    k2_validate_tools(tools, &bad, err, sizeof err);
+    if (bad) {
+        // render_tools_json: the WHOLE toolset, each tool as tojson
+        pl_lit(out, "<ifm|tools>");
+        for (int i = 0; i < tools->n; i++) {
+            pl_lit(out, "\n");
+            jv_dump_tojson(tools->items[i], out);
+        }
+        pl_lit(out, "\n</ifm|tools>");
+    } else {
+        k2_tools_markdown(tools, out);
+    }
+    pl_lit(out, "\n\nWhen calling tools, you MUST follow the tool-call format "
+                "below:\n\n"
+                "Wrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> "
+                "block. For each call, write the function name at the start of "
+                "<ifm|tool_call>, followed by paired <ifm|arg_key> and "
+                "<ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n"
+                "<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME"
+                "</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n"
+                "...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar "
+                "parameters should be written as plain text. Array and object "
+                "parameters should be written as JSON literals.");
+}
+
+// The assistant turn's body after `<|ifm|im_start|>assistant\n`, as the
+// template's assistant branch writes it: a think block always (the
+// reasoning, or an empty block), the content with its leading newlines
+// stripped, then the calls behind a newline when there was content.
+// `reason` is the turn's reasoning field and `tag` the block it names
+// (ifm|think, ifm|think_fast, ifm|think_faster); with reason NULL the
+// content is searched for a closed block the way the template splits one
+// out of it. Every framing byte is Runner's (marked), the text the caller's.
+void k2h_assistant_body(const char *reason, const char *tag, const char *text,
+                        const jv *calls, sbuf *out) {
+    const char *c = text ? text : "";
+    const char *th = "", *th_e = th;
+    bool has_content = c[0] != 0;
+    if (!tag) tag = "ifm|think";
+    if (reason) {
+        th = reason;
+        th_e = reason + strlen(reason);
+    } else {
+        static const char *tags[] = { "ifm|think", "ifm|think_fast", "ifm|think_faster" };
+        for (size_t k = 0; k < 3; k++) {
+            char open[32], close[32];
+            snprintf(open, sizeof open, "<%s>", tags[k]);
+            snprintf(close, sizeof close, "</%s>", tags[k]);
+            const char *first = strstr(c, close);
+            if (!first) continue;
+            // content.split(close)[0].rstrip('\n').split(open)[-1].lstrip('\n')
+            const char *a = c, *b = first;
+            while (b > a && b[-1] == '\n') b--;
+            size_t ol = strlen(open);
+            for (const char *q = a; q + ol <= b; q++)
+                if (!memcmp(q, open, ol)) a = q + ol;
+            while (a < b && *a == '\n') a++;
+            th = a; th_e = b;
+            // content.split(close)[-1].lstrip('\n')
+            const char *last = first;
+            for (const char *q = strstr(first + 1, close); q; q = strstr(q + 1, close))
+                last = q;
+            c = last + strlen(close);
+            while (*c == '\n') c++;
+            has_content = c[0] != 0;
+            tag = tags[k];
+            break;
+        }
+    }
+    char fr[48];
+    snprintf(fr, sizeof fr, "<%s>\n", tag);
+    pl_lit(out, fr);
+    if (th_e > th) {
+        sb_put(out, th, (size_t)(th_e - th));
+        snprintf(fr, sizeof fr, "\n</%s>\n", tag);
+    } else {
+        snprintf(fr, sizeof fr, "</%s>\n", tag);
+    }
+    pl_lit(out, fr);
+    while (*c == '\n') c++;
+    sb_put(out, c, strlen(c));
+    if (calls && calls->type == J_ARR && calls->n > 0) {
+        if (has_content) pl_lit(out, "\n");
+        tool_history_render_for(TMPL_K2H, calls, has_content, out);
+    }
+}
+
+static size_t render_k2h(const chat_msg *msgs, int n_msgs, bool add_assistant,
+                         int thinking, const jv *tools, char *out, size_t cap,
+                         render_state *st) {
+    // The template opens with `{{- bos_token }}`; that token comes from the
+    // tokenizer (tokenizer.c prepends it for k2-horizon), never from here
+    size_t off = 0;
+    int first = n_msgs > 0 && !strcmp(msgs[0].role, "system") ? 1 : 0;
+    if (tools && tools->type == J_ARR && tools->n > 0) {
+        sbuf decl = {0};
+        tools_render_for(TMPL_K2H, tools, &decl);
+        if (decl.failed) { free(decl.s); return SIZE_MAX; }
+        off = emit_raw(out, cap, off, "<|ifm|im_start|>system\n", NULL, NULL);
+        off = emit(out, cap, off, "%s", decl.s ? decl.s : "", NULL);
+        free(decl.s);
+        if (first && msgs[0].content[0])
+            off = emit(out, cap, off, "\n\n%s", msgs[0].content, NULL);
+        off = emit_raw(out, cap, off, "<|ifm|im_end|>", NULL, NULL);
+    } else if (first) {
+        off = emit(out, cap, off, "<|ifm|im_start|>system\n%s<|ifm|im_end|>",
+                   msgs[0].content, NULL);
+    }
+    for (int i = first; i < n_msgs; i++) {
+        const char *role = msgs[i].role, *c = msgs[i].content;
+        if (!strcmp(role, "user") || !strcmp(role, "system") || !strcmp(role, "tool")) {
+            off = emit_raw(out, cap, off, "<|ifm|im_start|>%s\n", role, NULL);
+            off = emit(out, cap, off, "%s<|ifm|im_end|>", c, NULL);
+        } else if (!strcmp(role, "assistant")) {
+            off = emit_raw(out, cap, off, "<|ifm|im_start|>assistant\n", NULL, NULL);
+            if (builder_starts(c, "<ifm|think")) {
+                // assembled by the serving layer (k2h_assistant_body)
+                off = emit(out, cap, off, "%s", c, NULL);
+            } else {
+                sbuf b = {0};
+                k2h_assistant_body(NULL, NULL, c, NULL, &b);
+                if (b.failed) { free(b.s); return SIZE_MAX; }
+                off = emit(out, cap, off, "%s", b.s ? b.s : "", NULL);
+                free(b.s);
+            }
+            off = emit_raw(out, cap, off, "<|ifm|im_end|>", NULL, NULL);
+        }
+    }
+    if (add_assistant) {
+        bool closed = (thinking & THINK_MODE_MASK) == THINK_OFF;
+        off = emit_raw(out, cap, off,
+                       closed ? "<|ifm|im_start|>assistant\n<ifm|think>\n</ifm|think>\n"
+                              : "<|ifm|im_start|>assistant\n<ifm|think>\n",
+                       NULL, NULL);
+        st->reasoning_open = !closed;
+        st->opener = closed ? NULL : "<ifm|think>\n";
+    }
+    return off;
+}
+
 size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
                              bool add_assistant, int thinking,
                              const jv *tools,
@@ -3320,6 +4324,8 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_SPARK:
     case TMPL_SPARK25:
         return render_spark(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+    case TMPL_K2H:
+        return render_k2h(msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_QWEN38:
         return render_qwen38(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_GRANITE42:
@@ -3667,6 +4673,13 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
                     "tool calls if any errors are found, or just respond to the user.");
         return;
     }
+    if (tmpl == TMPL_K2H) {
+        // K2-Horizon's tool section of the system turn (render_system_with_
+        // tools, markdown presentation and xml calls); render_k2h frames it
+        if (!tools || tools->type != J_ARR || tools->n == 0) return;
+        k2_tools_section(tools, out);
+        return;
+    }
     if (tmpl_spark(tmpl)) {
         // Spark's system block: each declaration's FUNCTION object, one per
         // line inside <tools>; X2.6 writes it as `tojson(separators=(',',
@@ -3936,6 +4949,41 @@ static void lfm2_arg_value(const jv *v, sbuf *out) {
 void tool_history_render_for(int tmpl, const jv *calls,
                              bool turn_has_text, sbuf *out) {
     if (!calls || calls->type != J_ARR) return;
+    // K2-Horizon (render_tool_calls_block, xml): one <ifm|tool_calls> block,
+    // each call `\n<ifm|tool_call>NAME\n` then `<ifm|arg_key>K</ifm|arg_key>
+    // \n<ifm|arg_value>V</ifm|arg_value>\n` per member (a string raw,
+    // anything else tojson) and `</ifm|tool_call>`, the block closed by
+    // `\n</ifm|tool_calls>`. The newline in front of the block, when the turn
+    // had content, is k2h_assistant_body's.
+    if (tmpl == TMPL_K2H) {
+        int k2_calls = 0;
+        for (int i = 0; i < calls->n; i++) {
+            jv *fn = jv_get(calls->items[i], "function");
+            const char *name = jv_str(jv_get(fn, "name"), NULL);
+            const char *args = jv_str(jv_get(fn, "arguments"), "{}");
+            if (!name) continue;
+            if (!k2_calls++) pl_lit(out, "<ifm|tool_calls>");
+            pl_lit(out, "\n<ifm|tool_call>");
+            sb_put(out, name, strlen(name));
+            pl_lit(out, "\n");
+            jv *obj = json_parse(args, strlen(args));
+            for (int k = 0; obj && obj->type == J_OBJ && k < obj->n; k++) {
+                pl_lit(out, "<ifm|arg_key>");
+                sb_put(out, obj->keys[k], strlen(obj->keys[k]));
+                pl_lit(out, "</ifm|arg_key>\n<ifm|arg_value>");
+                if (obj->items[k]->type == J_STR)
+                    sb_put(out, obj->items[k]->str, strlen(obj->items[k]->str));
+                else
+                    jv_dump_tojson(obj->items[k], out);
+                pl_lit(out, "</ifm|arg_value>\n");
+            }
+            jv_free(obj);
+            pl_lit(out, "</ifm|tool_call>");
+        }
+        if (k2_calls) pl_lit(out, "\n</ifm|tool_calls>");
+        (void)turn_has_text;
+        return;
+    }
     // LFM2 writes a turn's calls as ONE Python list straight after the text:
     // `<|tool_call_start|>[name(key=value, ...), ...]<|tool_call_end|>`, the
     // keys in the order the arguments object carries them. OpenAI's JSON
@@ -4299,6 +5347,11 @@ jv *tool_call_synth(const char *name, const char *args_json, const char *id) {
 void assistant_calls_render(int tmpl, const char *text, const jv *calls,
                             sbuf *out, const char **turn_name) {
     if (turn_name) *turn_name = NULL;
+    if (tmpl == TMPL_K2H && calls && calls->type == J_ARR && calls->n > 0) {
+        // the whole assistant body: think block, content, calls
+        k2h_assistant_body(NULL, NULL, text, calls, out);
+        return;
+    }
     bool has_text = history_text_visible(text);
     bool muse_calls = (tmpl == TMPL_MUSE || tmpl_mistral_tools(tmpl)) &&
                       calls && calls->type == J_ARR && calls->n > 0;
@@ -4749,6 +5802,14 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
         env->tools = tools;
         env->parse_only = true;
         env->max_calls = TOOL_STREAM_MAX_CALLS;
+    } else if (strict && tmpl == TMPL_K2H && env->kind == TCH_AUTO) {
+        // K2-Horizon's <ifm|tool_calls> blocks, parsed on the way out and
+        // never constrained; a required or named choice takes the generic
+        // envelope, as Spark's does
+        env->proto = TP_IFM_ARGKV;
+        env->tools = tools;
+        env->parse_only = true;
+        env->max_calls = TOOL_STREAM_MAX_CALLS;
     } else if (strict && tmpl_spark(tmpl) && env->kind == TCH_AUTO) {
         // Spark's own GLM-style calls, parsed on the way out and never
         // constrained; a required or named choice takes the generic envelope
@@ -4894,7 +5955,9 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
                     (tmpl == TMPL_MIMO &&
                      (!strict || env->proto == TP_QWEN_XML)) ||
                     (tmpl_spark(tmpl) &&
-                     (!strict || env->proto == TP_ARGKV));
+                     (!strict || env->proto == TP_ARGKV)) ||
+                    (tmpl == TMPL_K2H &&
+                     (!strict || env->proto == TP_IFM_ARGKV));
     *skip_generic = qwen || g4_native || nemo_native || tmpl == TMPL_APERTUS ||
                     mcp_decl ||
                     (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
@@ -4917,6 +5980,7 @@ const char *tool_envelope_protocol_name(const tool_envelope *e) {
         case TP_MINICPM_XML: return "minicpm5_xml";
         case TP_LFM2:       return "lfm2_python";
         case TP_ARGKV:      return "argkv_xml";
+        case TP_IFM_ARGKV:  return "ifm_argkv_xml";
         case TP_NEMOTRON:   return "nemotron_json";
         case TP_MISTRAL:    return "mistral_json";
         default: break;
@@ -4939,6 +6003,7 @@ const char *tool_protocol_name(int tmpl, bool *native) {
         case TP_MINICPM_XML: return "minicpm5_xml";
         case TP_LFM2:     return "lfm2_python";
         case TP_ARGKV: return "argkv_xml";
+        case TP_IFM_ARGKV: return "ifm_argkv_xml";
         case TP_NEMOTRON: return "nemotron_json";
         case TP_MISTRAL:  return "mistral_json";
         default: break;
@@ -5789,22 +6854,38 @@ bad:
 // continuation follows (<arg_key> or </tool_call>, optional whitespace
 // between), and the block at the </tool_call> that closes the call so read.
 // Values are typed by the declaration as the other XML parsers type them.
+// K2-Horizon writes the same pairs in its own tags, one call per
+// <ifm|tool_call> inside a <ifm|tool_calls> block (IFM_TAGS).
+typedef struct { const char *open, *close, *key, *key_end, *val, *val_end; } argkv_tags;
+static const argkv_tags SPARK_TAGS = { "<tool_call>", "</tool_call>", "<arg_key>",
+                                       "</arg_key>", "<arg_value>", "</arg_value>" };
+static const argkv_tags IFM_TAGS = { "<ifm|tool_call>", "</ifm|tool_call>",
+                                     "<ifm|arg_key>", "</ifm|arg_key>",
+                                     "<ifm|arg_value>", "</ifm|arg_value>" };
 #define ARGKV_OPEN "<tool_call>"
 
 typedef struct { const char *k, *ke, *v, *ve; } argkv_member;
 
-// Structure of one block at p: 1 complete (*end past its </tool_call>, the
-// name and members filled), 0 still open, -1 not this shape at all.
-static int argkv_scan(const char *p, size_t n, size_t *end,
+// Do the n bytes at p begin `tag` (1), not (-1), or is it still open (0)?
+static int argkv_at(const char *p, size_t n, const char *tag) {
+    size_t tl = strlen(tag);
+    if (n < tl) return memcmp(p, tag, n) ? -1 : 0;
+    return memcmp(p, tag, tl) ? -1 : 1;
+}
+
+// Structure of one block at p: 1 complete (*end past its close, the name and
+// members filled), 0 still open, -1 not this shape at all.
+static int argkv_scan(const argkv_tags *t, const char *p, size_t n, size_t *end,
                       const char **name, const char **name_e,
                       argkv_member *mem, int cap, int *n_mem) {
     const char *z = p + n;
-    size_t ol = strlen(ARGKV_OPEN);
-    if (n < ol) return memcmp(p, ARGKV_OPEN, n) ? -1 : 0;
-    if (memcmp(p, ARGKV_OPEN, ol)) return -1;
-    const char *q = p + ol;
-    const char *ak = atem_find(q, z, "<arg_key>");
-    const char *tc = atem_find(q, z, "</tool_call>");
+    size_t cl = strlen(t->close), kl = strlen(t->key), kel = strlen(t->key_end);
+    size_t vl = strlen(t->val), vel = strlen(t->val_end);
+    int r = argkv_at(p, n, t->open);
+    if (r <= 0) return r;
+    const char *q = p + strlen(t->open);
+    const char *ak = atem_find(q, z, t->key);
+    const char *tc = atem_find(q, z, t->close);
     const char *ne = ak && (!tc || ak < tc) ? ak : tc;
     if (!ne) return 0;
     *name = trim_left(q, ne); *name_e = trim_right(*name, ne);
@@ -5812,32 +6893,32 @@ static int argkv_scan(const char *p, size_t n, size_t *end,
     q = ne; *n_mem = 0;
     for (;;) {
         q = trim_left(q, z);
-        if ((size_t)(z - q) >= 12 && !memcmp(q, "</tool_call>", 12)) {
-            *end = (size_t)(q + 12 - p);
+        size_t left = (size_t)(z - q);
+        if (left >= cl && !memcmp(q, t->close, cl)) {
+            *end = (size_t)(q + cl - p);
             return 1;
         }
-        if ((size_t)(z - q) < 9) return memcmp(q, "<arg_key>", (size_t)(z - q)) &&
-                                        memcmp(q, "</tool_call>", (size_t)(z - q)) ? -1 : 0;
-        if (memcmp(q, "<arg_key>", 9)) return -1;
-        const char *k = q + 9, *ke = atem_find(k, z, "</arg_key>");
+        if (left < kl) return argkv_at(q, left, t->key) < 0 &&
+                              argkv_at(q, left, t->close) < 0 ? -1 : 0;
+        if (memcmp(q, t->key, kl)) return -1;
+        const char *k = q + kl, *ke = atem_find(k, z, t->key_end);
         if (!ke) return 0;
-        const char *v = ke + 10;
-        if ((size_t)(z - v) < 11) return memcmp(v, "<arg_value>", (size_t)(z - v)) ? -1 : 0;
-        if (memcmp(v, "<arg_value>", 11)) return -1;
-        v += 11;
+        // Spark writes the value tag straight after the key's close, K2-
+        // Horizon after a newline
+        const char *v = trim_left(ke + kel, z);
+        r = argkv_at(v, (size_t)(z - v), t->val);
+        if (r <= 0) return r;
+        v += vl;
         const char *ve = NULL, *after = NULL, *from = v;
         for (;;) {
-            const char *c = atem_find(from, z, "</arg_value>");
+            const char *c = atem_find(from, z, t->val_end);
             if (!c) return 0;
-            const char *t = trim_left(c + 12, z);
-            size_t left = (size_t)(z - t);
-            bool cont = (left >= 9 && !memcmp(t, "<arg_key>", 9)) ||
-                        (left >= 12 && !memcmp(t, "</tool_call>", 12));
-            bool maybe = (left < 9 && !memcmp(t, "<arg_key>", left)) ||
-                         (left < 12 && !memcmp(t, "</tool_call>", left));
-            if (cont) { ve = c; after = c + 12; break; }
-            if (maybe) return 0;          // wait for the bytes that decide
-            from = c + 1;                 // a spelled closing tag inside V
+            const char *u = trim_left(c + vel, z);
+            size_t rest = (size_t)(z - u);
+            int ck = argkv_at(u, rest, t->key), cc = argkv_at(u, rest, t->close);
+            if (ck == 1 || cc == 1) { ve = c; after = c + vel; break; }
+            if (ck == 0 || cc == 0) return 0;  // wait for the bytes that decide
+            from = c + 1;                      // a spelled closing tag inside V
         }
         if (*n_mem == cap) return -1;
         mem[(*n_mem)++] = (argkv_member){ k, ke, v, ve };
@@ -5845,21 +6926,28 @@ static int argkv_scan(const char *p, size_t n, size_t *end,
     }
 }
 
-static size_t argkv_block_end(const char *p, size_t n) {
+static size_t argkv_block_end_t(const argkv_tags *t, const char *p, size_t n) {
     const char *name, *ne; argkv_member mem[64]; int nm; size_t end = 0;
-    int r = argkv_scan(p, n, &end, &name, &ne, mem, 64, &nm);
+    int r = argkv_scan(t, p, n, &end, &name, &ne, mem, 64, &nm);
     if (r == 1) return end;
     if (r == 0) return 0;
     // not this shape: the block ends at its first close and is dropped there
-    const char *c = atem_find(p, p + n, "</tool_call>");
-    return c ? (size_t)(c + 12 - p) : 0;
+    const char *c = atem_find(p, p + n, t->close);
+    return c ? (size_t)(c + strlen(t->close) - p) : 0;
+}
+static size_t argkv_block_end(const char *p, size_t n) {
+    return argkv_block_end_t(&SPARK_TAGS, p, n);
+}
+static size_t ifm_block_end(const char *p, size_t n) {
+    return argkv_block_end_t(&IFM_TAGS, p, n);
 }
 
-static bool argkv_one_call(const tool_envelope *env, const char **pp,
-                           const char *end, int index, sbuf *tc) {
+static bool argkv_one_call_t(const argkv_tags *t, const tool_envelope *env,
+                             const char **pp, const char *end, int index,
+                             sbuf *tc) {
     const char *p = *pp, *name, *ne;
     argkv_member raw[64]; int nraw = 0; size_t blk = 0;
-    if (argkv_scan(p, (size_t)(end - p), &blk, &name, &ne, raw, 64, &nraw) != 1)
+    if (argkv_scan(t, p, (size_t)(end - p), &blk, &name, &ne, raw, 64, &nraw) != 1)
         return false;
     jv *fn = NULL;
     for (int i=0; env->tools && i<env->tools->n; i++) {
@@ -5932,21 +7020,41 @@ bad:
     for (int i = 0; i < n_mem; i++) free(mem[i].json.s);
     free(args.s);return false;
 }
+static bool argkv_one_call(const tool_envelope *env, const char **pp,
+                           const char *end, int index, sbuf *tc) {
+    return argkv_one_call_t(&SPARK_TAGS, env, pp, end, index, tc);
+}
+static bool ifm_one_call(const tool_envelope *env, const char **pp,
+                         const char *end, int index, sbuf *tc) {
+    return argkv_one_call_t(&IFM_TAGS, env, pp, end, index, tc);
+}
 
-// The bare-block XML families (MiniCPM5, Spark): one buffered mapper and one
+// The bare-block XML families (MiniCPM5, Spark, K2-Horizon): one buffered mapper and one
 // streaming demultiplexer, told apart by what opens a call, where a block
 // ends, how one call is read and what ends the turn.
+// `frame_open` / `frame_close` (K2-Horizon's <ifm|tool_calls> block around
+// its calls) are framing, never content: the text in front of the frame is
+// the turn's content less the one newline the template writes before it,
+// and the frame tokens themselves are dropped wherever they stand.
 typedef struct {
     const char *open, *turn_end, *name;
     size_t (*block_end)(const char *p, size_t n);
     bool (*one_call)(const tool_envelope *, const char **, const char *, int, sbuf *);
+    const char *frame_open, *frame_close;
 } xml_proto;
 static const xml_proto MCP_XP   = { MCP_CALL_OPEN, "<|im_end|>", "minicpm5",
-                                    mcp_block_end, mcp_one_call };
+                                    mcp_block_end, mcp_one_call, NULL, NULL };
 static const xml_proto ARGKV_XP = { ARGKV_OPEN, "<｜end▁of▁sentence｜>", "spark",
-                                    argkv_block_end, argkv_one_call };
+                                    argkv_block_end, argkv_one_call, NULL, NULL };
+static const xml_proto IFM_XP   = { "<ifm|tool_call>", "<|ifm|im_end|>", "k2-horizon",
+                                    ifm_block_end, ifm_one_call,
+                                    "<ifm|tool_calls>", "</ifm|tool_calls>" };
 static const xml_proto *xml_proto_of(const tool_envelope *e) {
-    return e && e->proto == TP_ARGKV ? &ARGKV_XP : &MCP_XP;
+    return e && e->proto == TP_ARGKV ? &ARGKV_XP
+         : e && e->proto == TP_IFM_ARGKV ? &IFM_XP : &MCP_XP;
+}
+static bool proto_bare_xml(int p) {
+    return p == TP_MINICPM_XML || p == TP_ARGKV || p == TP_IFM_ARGKV;
 }
 
 // The buffered turn: prose up to the first call is content, each call maps
@@ -5967,7 +7075,13 @@ static int bare_xml_map(const tool_envelope *e, const char *doc, size_t n,
             if (!calls) sb_put(content,p,(size_t)((stop?stop:end)-p));
             break;
         }
-        if (!calls && trim_left(p,open)<open) sb_put(content,p,(size_t)(open-p));
+        if (!calls) {
+            // the content runs to the call, or to the frame opening it
+            const char *cend = open;
+            const char *fo = xp->frame_open ? atem_find(p, open, xp->frame_open) : NULL;
+            if (fo) { cend = fo; if (cend > p && cend[-1] == '\n') cend--; }
+            if (trim_left(p,cend)<cend) sb_put(content,p,(size_t)(cend-p));
+        }
         if (calls >= e->max_calls) {
             if (tool_trace_on()) fprintf(stderr, "tool-trace: refused, call %d past max_calls %d\n", calls + 1, e->max_calls);
             return -1;
@@ -6392,7 +7506,7 @@ int tool_envelope_map_channels(const tool_envelope *e, const char *doc,
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, reasoning, content, tc);
     if (e->proto == TP_GEMMA4) return gemma4_map(e, doc, n, reasoning, content, tc);
     if (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) return qwen_map(e, doc, n, content, tc);
-    if (e->proto == TP_MINICPM_XML || e->proto == TP_ARGKV)
+    if (proto_bare_xml(e->proto))
         return bare_xml_map(e, doc, n, content, tc);
     return tool_envelope_map(e, doc, n, content, tc);
 }
@@ -6407,7 +7521,7 @@ int tool_envelope_map(const tool_envelope *e, const char *doc, size_t n,
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, NULL, content, tc);
     if (e->proto == TP_GEMMA4) return gemma4_map(e, doc, n, NULL, content, tc);
     if (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) return qwen_map(e, doc, n, content, tc);
-    if (e->proto == TP_MINICPM_XML || e->proto == TP_ARGKV)
+    if (proto_bare_xml(e->proto))
         return bare_xml_map(e, doc, n, content, tc);
     if (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL)
         return nemotron_map(e, doc, n, content, tc);
@@ -6783,7 +7897,7 @@ void tool_stream_init(tool_stream *s, const tool_envelope *e,
     s->state = e && e->proto == TP_HARMONY ? TS_HARMONY
              : e && e->proto == TP_GEMMA4 ? TS_G4_START
              : e && (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) ? TS_QWEN_START
-             : e && (e->proto == TP_MINICPM_XML || e->proto == TP_ARGKV) ? TS_MCP_START
+             : e && proto_bare_xml(e->proto) ? TS_MCP_START
              : e && (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL) ? TS_NEMO_START
              : e && e->proto == TP_LFM2 ? TS_LFM_TEXT
              : e && e->proto == TP_ATEM ? TS_ATEM
@@ -7086,6 +8200,27 @@ static int ts_mcp(tool_stream *s, const char *bytes, int n) {
         }
         const char *open=strstr(s->head,xp->open);
         const char *stop=strstr(s->head,xp->turn_end);
+        // K2-Horizon's frame around its calls: the prose in front of it is
+        // content less the newline the template writes there, the frame
+        // token itself is dropped
+        const char *fo=xp->frame_open ? strstr(s->head,xp->frame_open) : NULL;
+        const char *fc=xp->frame_close ? strstr(s->head,xp->frame_close) : NULL;
+        const char *frame=fo && (!fc || fo<fc) ? fo : fc;
+        if (frame && (!open || frame<open) && (!stop || frame<stop)) {
+            size_t prefix=(size_t)(frame-s->head), emitn=prefix;
+            if (emitn && s->head[emitn-1]=='\n') emitn--;
+            bool white=true;
+            for (size_t i=0;i<emitn;i++) if (!ts_ws(s->head[i])) white=false;
+            int rc=0;
+            if (emitn && !(s->state==TS_MCP_START && white)) {
+                if (s->sink.content) rc=s->sink.content(s->sink.ud,s->head,(int)emitn);
+                s->state=TS_MCP_TEXT;
+            }
+            head_drop(s,prefix+strlen(frame==fo ? xp->frame_open : xp->frame_close));
+            s->skip_ws=true;
+            if (rc) return rc;
+            continue;
+        }
         if (stop && (!open || stop<open)) {
             int rc=stop>s->head && s->sink.content
                 ? s->sink.content(s->sink.ud,s->head,(int)(stop-s->head)) : 0;
@@ -7103,8 +8238,14 @@ static int ts_mcp(tool_stream *s, const char *bytes, int n) {
             continue;
         }
         size_t keep=0;
-        const char *markers[]={xp->open,xp->turn_end};
-        for (int m=0;m<2;m++) {
+        // a newline that may stand before the frame is held with it
+        char nl_frame[40]="";
+        if (xp->frame_open) snprintf(nl_frame,sizeof nl_frame,"\n%s",xp->frame_open);
+        const char *markers[]={xp->open,xp->turn_end,
+                               xp->frame_open ? xp->frame_open : xp->open,
+                               xp->frame_close ? xp->frame_close : xp->open,
+                               xp->frame_open ? nl_frame : xp->open};
+        for (int m=0;m<5;m++) {
             size_t k=strlen(markers[m])-1;
             if (k>s->head_n) k=s->head_n;
             while (k && memcmp(s->head+s->head_n-k,markers[m],k)) k--;
@@ -7514,9 +8655,11 @@ int tool_stream_finish_ex(tool_stream *s, bool truncated) {
         // dropped, never completed, and a protocol fault unless a budget or
         // deadline cut the turn. A partial opener at the tail is framing.
         int rc = 0;
+        const xml_proto *xp = xml_proto_of(s->env);
         bool framing = s->state == TS_MCP_CALLS ||
-                       (s->state == TS_MCP_START &&
-                        ts_partial(s, xml_proto_of(s->env)->open));
+                       (s->state == TS_MCP_START && ts_partial(s, xp->open)) ||
+                       (xp->frame_open && (ts_partial(s, xp->frame_open) ||
+                                           ts_partial(s, xp->frame_close)));
         if (s->state == TS_MCP_CALLS && !truncated) s->fault = true;
         if (s->head_n && !framing && s->sink.content)
             rc = s->sink.content(s->sink.ud, s->head, (int)s->head_n);

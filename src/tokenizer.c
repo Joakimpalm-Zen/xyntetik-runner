@@ -615,6 +615,11 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     // tokenizer as every family does (template-conformance allowlist
     // minicpm5/bos).
     if (strcmp(pre, "minicpm5") == 0) t->add_bos = true;
+    // k2-horizon: the same case. IFM's tokenizer.json prepends
+    // <|ifm|begin_of_text|> (a TemplateProcessing of `BOS $A`) and the GGUF
+    // template opens with `{{- bos_token }}`, while the GGUF carries no
+    // add_bos_token key, which the BPE default reads as no BOS.
+    if (strcmp(pre, "k2-horizon") == 0) t->add_bos = true;
     t->add_space_prefix = gguf_get_bool(g, "tokenizer.ggml.add_space_prefix", true);
     t->add_eos = gguf_get_bool(g, "tokenizer.ggml.add_eos_token", false);
 
@@ -1897,7 +1902,12 @@ int tok_stop_ids(tokenizer *t, const char *arch, int *out, int cap) {
                                    // Nemotron Nano closes every assistant
                                    // turn with <SPECIAL_12>; its declared
                                    // eos is a different token
-                                   "<SPECIAL_12>" };
+                                   "<SPECIAL_12>",
+                                   // K2-Horizon ends its turns with
+                                   // <|ifm|im_end|>; its declared eos is
+                                   // <|ifm|endoftext|> (the publisher's
+                                   // generation_config lists both)
+                                   "<|ifm|im_end|>" };
     _Static_assert(sizeof(stops) / sizeof(*stops) == TOK_STOP_SPELLINGS,
                    "TOK_STOP_SPELLINGS counts the spelling list");
     // gpt-oss / Harmony inverts one of these. <|end|> terminates a NON-final

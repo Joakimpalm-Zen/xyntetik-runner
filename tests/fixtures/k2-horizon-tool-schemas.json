@@ -1,0 +1,1396 @@
+{
+ "_README": "K2-Horizon's own renders of a tool-schema torture set, recorded by scripts/k2h-tool-schema-fixture.py from the template IFM embeds in K2-Horizon-0.9B-GGUF and K2-Horizon-7B-GGUF; checked against Runner by tests/test_template.c. Each render is [user \"Hi\"] with the tools and the generation prompt, BOS stripped.",
+ "template_sha256": "f6e3cd6dbf0f95016fff531f41f921dee541025733c14580a881cf5a5f9fa750",
+ "template_bytes": 43040,
+ "cases": [
+  {
+   "id": "scalars",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "q": {
+         "type": "string",
+         "description": "What to look up.\nOne line per term."
+        },
+        "limit": {
+         "type": "integer",
+         "default": 10,
+         "minimum": 1,
+         "maximum": 50
+        },
+        "ratio": {
+         "type": "number",
+         "default": 0.5
+        },
+        "tiny": {
+         "type": "number",
+         "default": 1e-07
+        },
+        "big": {
+         "type": "number",
+         "default": 1.5e+16
+        },
+        "whole": {
+         "type": "number",
+         "default": 100.0
+        },
+        "flag": {
+         "type": "boolean",
+         "default": false
+        },
+        "empty": {
+         "type": "string",
+         "default": ""
+        },
+        "none": {
+         "type": "string",
+         "default": null
+        }
+       },
+       "required": [
+        "q"
+       ]
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## lookup\nLook something up.\n\n**Parameters**\n- `q` *(string, required)* - What to look up.\n  One line per term.\n- `limit` *(integer)*\n  - Default: `10`\n  - minimum: 1\n  - maximum: 50\n- `ratio` *(number)*\n  - Default: `0.5`\n- `tiny` *(number)*\n  - Default: `1e-07`\n- `big` *(number)*\n  - Default: `1.5e+16`\n- `whole` *(number)*\n  - Default: `100.0`\n- `flag` *(boolean)*\n  - Default: `False`\n- `empty` *(string)*\n  - Default: \"\"\n- `none` *(string)*\n  - Default: `None`\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "enums",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "pick",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "unit": {
+         "type": "string",
+         "enum": [
+          "c",
+          "f",
+          "it's",
+          "a\\b",
+          "two\nlines",
+          ""
+         ]
+        },
+        "level": {
+         "enum": [
+          1,
+          2.5,
+          true,
+          null,
+          "x"
+         ]
+        },
+        "nothing": {
+         "type": "string",
+         "enum": []
+        }
+       },
+       "required": [
+        "unit"
+       ]
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## pick\nLook something up.\n\n**Parameters**\n- `unit` *(string, required)*\n  - Allowed values: `c`, `f`, `it's`, `a\\b`, `two\\nlines`, \"\"\n- `level` *(any)*\n  - Allowed values: `1`, `2.5`, `True`, `None`, `x`\n- `nothing` *(string)*\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "nested-object",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "create",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "user": {
+         "type": "object",
+         "properties": {
+          "name": {
+           "type": "string",
+           "description": "Full name.\nAs on the passport."
+          },
+          "address": {
+           "type": "object",
+           "properties": {
+            "city": {
+             "type": "string"
+            },
+            "zip": {
+             "type": "string",
+             "pattern": "^[0-9]{5}$"
+            }
+           },
+           "required": [
+            "city"
+           ],
+           "description": "Where they live."
+          }
+         },
+         "required": [
+          "name"
+         ],
+         "description": "The new user."
+        }
+       },
+       "required": [
+        "user"
+       ]
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## create\nLook something up.\n\n**Parameters**\n- `user` *(object, required)* - The new user.\n  - `name` *(string, required)* - Full name.\n    As on the passport.\n  - `address` *(object)* - Where they live.\n    - `city` *(string, required)*\n    - `zip` *(string)*\n      - pattern: ^[0-9]{5}$\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "arrays",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "batch",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "ids": {
+         "type": "array",
+         "items": {
+          "type": "integer"
+         },
+         "minItems": 1
+        },
+        "pairs": {
+         "type": "array",
+         "items": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          }
+         }
+        },
+        "rows": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "properties": {
+           "k": {
+            "type": "string"
+           },
+           "v": {
+            "type": "number"
+           }
+          },
+          "required": [
+           "k"
+          ]
+         }
+        },
+        "anything": {
+         "type": "array"
+        },
+        "bare_items": {
+         "items": {
+          "type": "string"
+         }
+        },
+        "true_items": {
+         "type": "array",
+         "items": true
+        },
+        "false_items": {
+         "type": "array",
+         "items": false
+        }
+       }
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## batch\nLook something up.\n\n**Parameters**\n- `ids` *(array of integer)*\n  - Items *(integer)*\n  - minItems: 1\n- `pairs` *(array of array of string)*\n  - Items *(array of string)*\n    - Items *(string)*\n- `rows` *(array of object)*\n  - Items *(object)*\n    - `k` *(string, required)*\n    - `v` *(number)*\n- `anything` *(array of any)*\n- `bare_items` *(array of string)*\n  - Items *(string)*\n- `true_items` *(array of True)*\n  - Items: True\n- `false_items` *(array of False)*\n  - Items: False\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "type-unions",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "maybe",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "b": {
+         "type": [
+          "array",
+          "null"
+         ],
+         "items": {
+          "type": "integer"
+         }
+        },
+        "c": {
+         "type": []
+        },
+        "d": {
+         "type": "string",
+         "format": "date-time",
+         "title": "When"
+        },
+        "e": {},
+        "f": true,
+        "n": false
+       },
+       "required": [
+        "a"
+       ]
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## maybe\nLook something up.\n\n**Parameters**\n- `a` *(string or null, required)*\n- `b` *(array of integer or null)*\n  - Items *(integer)*\n- `c` *(any)*\n- `d` *(string)*\n  - format: date-time\n  - title: When\n- `e` *(any)*\n- `f` *(True)*\n- `n` *(False)*\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "combinators",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "route",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "target": {
+         "oneOf": [
+          {
+           "type": "string",
+           "description": "A host name."
+          },
+          {
+           "type": "object",
+           "properties": {
+            "ip": {
+             "type": "string"
+            }
+           },
+           "required": [
+            "ip"
+           ]
+          }
+         ],
+         "description": "Where to send it."
+        },
+        "mode": {
+         "anyOf": [
+          {
+           "type": "integer"
+          },
+          {
+           "type": "string",
+           "enum": [
+            "auto"
+           ]
+          }
+         ]
+        },
+        "label": {
+         "type": "string",
+         "description": "Plain, beside them."
+        }
+       },
+       "required": [
+        "target"
+       ]
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## route\nLook something up.\n\n**Parameters**\n- `target` *(oneOf[string or object], required)* - Where to send it.\n  - oneOf:\n    - Variant 1 *(string)*\n      - Description: A host name.\n    - Variant 2 *(object)*\n      - `ip` *(string, required)*\n- `mode` *(anyOf[integer or string])*\n  - anyOf:\n    - Variant 1 *(integer)*\n    - Variant 2 *(string)*\n      - Allowed values: `auto`\n- `label` *(string)* - Plain, beside them.\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "root-oneof",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "either",
+      "description": "Look something up.",
+      "parameters": {
+       "oneOf": [
+        {
+         "type": "object",
+         "properties": {
+          "a": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "a"
+         ]
+        },
+        {
+         "type": "object",
+         "properties": {
+          "b": {
+           "type": "integer"
+          }
+         },
+         "required": [
+          "b"
+         ]
+        }
+       ],
+       "description": "One of two shapes."
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## either\nLook something up.\n\n**Parameters**\n- Description: One of two shapes.\n- oneOf:\n  - Variant 1 *(object)*\n    - `a` *(string, required)*\n  - Variant 2 *(object)*\n    - `b` *(integer, required)*\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "root-items",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "listy",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "A list root."
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## listy\nLook something up.\n\n**Parameters**\n- Description: A list root.\n- Items *(string)*\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "additional-properties",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "meta",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "tags": {
+         "type": "object",
+         "additionalProperties": {
+          "type": "string"
+         }
+        },
+        "closed": {
+         "type": "object",
+         "additionalProperties": false
+        },
+        "open": {
+         "type": "object",
+         "additionalProperties": true
+        }
+       },
+       "additionalProperties": false
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## meta\nLook something up.\n\n**Parameters**\n- `tags` *(object)*\n  - Additional properties *(string)*\n- `closed` *(object)*\n  - Additional properties: False\n- `open` *(object)*\n  - Additional properties: True\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "pattern-properties",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "headers",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "h": {
+         "type": "object",
+         "patternProperties": {
+          "^x-": {
+           "type": "string",
+           "description": "Custom header."
+          },
+          "^n-": 5
+         }
+        },
+        "flat": {
+         "type": "object",
+         "patternProperties": "anything"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## headers\nLook something up.\n\n**Parameters**\n- `h` *(object)*\n  - Pattern properties:\n    - `^x-` *(string)*\n      - Description: Custom header.\n    - `^n-`: 5\n- `flat` *(object)*\n  - Pattern properties: anything\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "returns",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "weather",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      },
+      "returns": {
+       "type": "object",
+       "properties": {
+        "temp": {
+         "type": "number"
+        },
+        "sky": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "temp"
+       ],
+       "description": "Current conditions."
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "ping",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {}
+      },
+      "returns": "pong"
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "status",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {}
+      },
+      "response": {
+       "type": "object",
+       "properties": {
+        "ok": {
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "ok"
+       ]
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## weather\nLook something up.\n\n**Parameters**\n- `city` *(string, required)*\n\n**Returns**\n- Return *(object)*\n  - Description: Current conditions.\n  - `temp` *(number, required)*\n  - `sky` *(string)*\n\n## ping\nLook something up.\n\n**Parameters**\n- None\n\n**Returns**\n- pong\n\n## status\nLook something up.\n\n**Parameters**\n- None\n\n**Returns**\n- Return *(object)*\n  - `ok` *(boolean, required)*\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "no-parameters-shape",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "now",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {}
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "bare",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object"
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "described",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "description": "Nothing to pass."
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## now\nLook something up.\n\n**Parameters**\n- None\n\n## bare\nLook something up.\n\n**Parameters**\n- None\n\n## described\nLook something up.\n\n**Parameters**\n- None\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "defaults-repr",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "cfg",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "opts": {
+         "type": "object",
+         "default": {
+          "a": 1,
+          "b": [
+           1,
+           2
+          ],
+          "c": "x  y\tz",
+          "d": null
+         }
+        },
+        "list": {
+         "type": "array",
+         "default": [
+          "it's",
+          "q\"uote",
+          "back\\slash"
+         ]
+        },
+        "ws": {
+         "type": "string",
+         "default": "  spaced  out  "
+        }
+       }
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## cfg\nLook something up.\n\n**Parameters**\n- `opts` *(object)*\n  - Default: `{'a': 1, 'b': [1, 2], 'c': 'x y z', 'd': None}`\n- `list` *(array of any)*\n  - Default: `['it\\'s', 'q\"uote', 'back\\\\slash']`\n- `ws` *(string)*\n  - Default: `  spaced  out  `\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "unicode",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "translate",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "text": {
+         "type": "string",
+         "description": "Text, any script: 日本語, Ελληνικά, emoji 🌍."
+        },
+        "to": {
+         "type": "string",
+         "enum": [
+          "ja",
+          "el",
+          "sv"
+         ],
+         "default": "sv"
+        },
+        "pad": {
+         "type": "string",
+         "default": "a b　c"
+        }
+       },
+       "required": [
+        "text"
+       ]
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## translate\nLook something up.\n\n**Parameters**\n- `text` *(string, required)* - Text, any script: 日本語, Ελληνικά, emoji 🌍.\n- `to` *(string)*\n  - Allowed values: `ja`, `el`, `sv`\n  - Default: `sv`\n- `pad` *(string)*\n  - Default: `a b　c`\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "defs-without-ref",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "withdefs",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "x": {
+         "type": "string"
+        }
+       },
+       "$defs": {
+        "Thing": {
+         "type": "object",
+         "properties": {
+          "id": {
+           "type": "integer"
+          }
+         },
+         "required": [
+          "id"
+         ]
+        }
+       }
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## withdefs\nLook something up.\n\n**Parameters**\n- `x` *(string)*\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "variant-required",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "variants",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "v": {
+         "oneOf": [
+          {
+           "required": [
+            "a"
+           ]
+          },
+          {
+           "type": "string"
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n{\"type\": \"function\", \"function\": {\"name\": \"variants\", \"description\": \"Look something up.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"v\": {\"oneOf\": [{\"required\": [\"a\"]}, {\"type\": \"string\"}]}}}}}\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "multi-tool-order",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "first",
+      "description": "First tool.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "a"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "second",
+      "description": "Second tool.\nTwo lines.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "b": {
+         "type": "integer"
+        }
+       }
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "third",
+      "description": "",
+      "parameters": {
+       "type": "object",
+       "properties": {}
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## first\nFirst tool.\n\n**Parameters**\n- `a` *(string, required)*\n\n## second\nSecond tool.\nTwo lines.\n\n**Parameters**\n- `b` *(integer)*\n\n## third\n\n**Parameters**\n- None\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "fallback-ref",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "plain",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "refd",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "t": {
+         "$ref": "#/$defs/T"
+        }
+       },
+       "$defs": {
+        "T": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n{\"type\": \"function\", \"function\": {\"name\": \"plain\", \"description\": \"Look something up.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"a\": {\"type\": \"string\"}}}}}\n{\"type\": \"function\", \"function\": {\"name\": \"refd\", \"description\": \"Look something up.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"t\": {\"$ref\": \"#/$defs/T\"}}, \"$defs\": {\"T\": {\"type\": \"string\"}}}}}\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "fallback-oneof-mapping",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "odd",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "oneOf": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n{\"type\": \"function\", \"function\": {\"name\": \"odd\", \"description\": \"Look something up.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"a\": {\"oneOf\": {\"type\": \"string\"}}}}}}\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "fallback-root-container",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "odd",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "type": "string"
+        }
+       },
+       "x-meta": {
+        "owner": "ops"
+       }
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n{\"type\": \"function\", \"function\": {\"name\": \"odd\", \"description\": \"Look something up.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"a\": {\"type\": \"string\"}}, \"x-meta\": {\"owner\": \"ops\"}}}}\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "fallback-function-container",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "odd",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "type": "string"
+        }
+       }
+      },
+      "metadata": {
+       "team": "ops"
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n{\"type\": \"function\", \"function\": {\"name\": \"odd\", \"description\": \"Look something up.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"a\": {\"type\": \"string\"}}}, \"metadata\": {\"team\": \"ops\"}}}\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "fallback-nested-mapping-extra",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "odd",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "type": "string",
+         "x-ui": {
+          "widget": {
+           "kind": "text"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n{\"type\": \"function\", \"function\": {\"name\": \"odd\", \"description\": \"Look something up.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"a\": {\"type\": \"string\", \"x-ui\": {\"widget\": {\"kind\": \"text\"}}}}}}}\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "fallback-required-without-properties-in-variant",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "odd",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "anyOf": [
+          {
+           "type": "object",
+           "required": [
+            "k"
+           ]
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n{\"type\": \"function\", \"function\": {\"name\": \"odd\", \"description\": \"Look something up.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"a\": {\"anyOf\": [{\"type\": \"object\", \"required\": [\"k\"]}]}}}}}\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "fallback-numbers-tojson",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "ref2",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "n": {
+         "$ref": "#/x"
+        },
+        "f": {
+         "type": "number",
+         "default": 0.1
+        },
+        "i": {
+         "type": "integer",
+         "default": 3
+        },
+        "u": {
+         "type": "string",
+         "default": "é"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n{\"type\": \"function\", \"function\": {\"name\": \"ref2\", \"description\": \"Look something up.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"n\": {\"$ref\": \"#/x\"}, \"f\": {\"type\": \"number\", \"default\": 0.1}, \"i\": {\"type\": \"integer\", \"default\": 3}, \"u\": {\"type\": \"string\", \"default\": \"é\"}}}}}\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "raise-required-not-list",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "bad",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "type": "string"
+        }
+       },
+       "required": "a"
+      }
+     }
+    }
+   ],
+   "raises": "TemplateError: Schema 'tool.bad.parameters' has 'required' but it is not a list."
+  },
+  {
+   "id": "raise-required-null",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "bad",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "type": "string"
+        }
+       },
+       "required": null
+      }
+     }
+    }
+   ],
+   "raises": "TemplateError: Schema 'tool.bad.parameters' has 'required' but it is not a list."
+  },
+  {
+   "id": "raise-required-unknown",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "bad",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "a",
+        "b"
+       ]
+      }
+     }
+    }
+   ],
+   "raises": "TemplateError: Schema 'tool.bad.parameters' marks 'b' as required, but that property is not defined in properties."
+  },
+  {
+   "id": "raise-required-no-properties",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "bad",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "required": [
+        "a"
+       ]
+      }
+     }
+    }
+   ],
+   "raises": "TemplateError: Schema 'tool.bad.parameters' has required fields but no properties object to define them."
+  },
+  {
+   "id": "raise-nested-required",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "bad",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "type": "object",
+         "properties": {
+          "x": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "y"
+         ]
+        }
+       }
+      }
+     }
+    }
+   ],
+   "raises": "TemplateError: Schema 'tool.bad.parameters.a' marks 'y' as required, but that property is not defined in properties."
+  },
+  {
+   "id": "raise-items-required",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "bad",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "properties": {
+           "x": {
+            "type": "string"
+           }
+          },
+          "required": [
+           "z"
+          ]
+         }
+        }
+       }
+      }
+     }
+    }
+   ],
+   "raises": "TemplateError: Schema 'tool.bad.parameters.a[]' marks 'z' as required, but that property is not defined in properties."
+  },
+  {
+   "id": "raise-returns-required",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "bad",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {}
+      },
+      "returns": {
+       "type": "object",
+       "properties": {
+        "x": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "q"
+       ]
+      }
+     }
+    }
+   ],
+   "raises": "TemplateError: Schema 'tool.bad.returns' marks 'q' as required, but that property is not defined in properties."
+  },
+  {
+   "id": "raise-missing-parameters",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "bad",
+      "description": "Look something up."
+     }
+    }
+   ],
+   "raises": "TemplateError: Tool 'bad' is missing required 'parameters' field. Each tool must have a 'parameters' dict with 'type', 'properties', and 'required' keys."
+  },
+  {
+   "id": "raise-parameters-null",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "bad",
+      "description": "Look something up.",
+      "parameters": null
+     }
+    }
+   ],
+   "raises": "TemplateError: Tool 'bad' is missing required 'parameters' field. Each tool must have a 'parameters' dict with 'type', 'properties', and 'required' keys."
+  },
+  {
+   "id": "raise-arguments-not-parameters",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "bad",
+      "description": "Look something up.",
+      "arguments": {
+       "type": "object"
+      }
+     }
+    }
+   ],
+   "raises": "TemplateError: Tool 'bad' has 'arguments' instead of 'parameters'. Rename 'arguments' to 'parameters'."
+  },
+  {
+   "id": "raise-properties-not-object",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "bad",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": [
+        "a"
+       ]
+      }
+     }
+    }
+   ],
+   "raises": "TypeError: Can only get item pairs from a mapping."
+  },
+  {
+   "id": "raise-oneof-number",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "bad",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "oneOf": 3
+        }
+       }
+      }
+     }
+    }
+   ],
+   "raises": "TypeError: 'int' object is not iterable"
+  },
+  {
+   "id": "raise-description-number",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "bad",
+      "description": 42,
+      "parameters": {
+       "type": "object",
+       "properties": {}
+      }
+     }
+    }
+   ],
+   "raises": "TypeError: can only concatenate str (not \"int\") to str"
+  },
+  {
+   "id": "response-lenient",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "ok",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {}
+      },
+      "response": {
+       "type": "object",
+       "properties": {
+        "x": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "nope"
+       ]
+      }
+     }
+    }
+   ],
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## ok\nLook something up.\n\n**Parameters**\n- None\n\n**Returns**\n- Return *(object)*\n  - `x` *(string)*\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "invalid-items-string",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "odd",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "type": "array",
+         "items": "string"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "runner_refuses": "a schema must be an object",
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## odd\nLook something up.\n\n**Parameters**\n- `a` *(array of any)*\n  - Items: string\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "invalid-property-string",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "odd",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "g": "just a string"
+       }
+      }
+     }
+    }
+   ],
+   "runner_refuses": "a schema must be an object",
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## odd\nLook something up.\n\n**Parameters**\n- `g` *(any)*\n  - Value: `just a string`\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "invalid-property-null",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "odd",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "h": null
+       }
+      }
+     }
+    }
+   ],
+   "runner_refuses": "a schema must be an object",
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n## odd\nLook something up.\n\n**Parameters**\n- `h` *(any)*\n  - Value: `None`\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "invalid-type-mapping",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "odd",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "type": {
+          "kind": "string"
+         }
+        }
+       }
+      }
+     }
+    }
+   ],
+   "runner_refuses": "\"type\" is not a JSON Schema type",
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n{\"type\": \"function\", \"function\": {\"name\": \"odd\", \"description\": \"Look something up.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"a\": {\"type\": {\"kind\": \"string\"}}}}}}\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "invalid-enum-string",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "odd",
+      "description": "Look something up.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "a": {
+         "type": "string",
+         "enum": "abc"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "runner_refuses": "\"enum\" must be an array",
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n{\"type\": \"function\", \"function\": {\"name\": \"odd\", \"description\": \"Look something up.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"a\": {\"type\": \"string\", \"enum\": \"abc\"}}}}}\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  },
+  {
+   "id": "invalid-parameters-list",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "odd",
+      "description": "Look something up.",
+      "parameters": [
+       "not",
+       "an",
+       "object"
+      ]
+     }
+    }
+   ],
+   "runner_refuses": "a schema must be an object",
+   "render": "<|ifm|im_start|>system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n{\"type\": \"function\", \"function\": {\"name\": \"odd\", \"description\": \"Look something up.\", \"parameters\": [\"not\", \"an\", \"object\"]}}\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.<|ifm|im_end|><|ifm|im_start|>user\nHi<|ifm|im_end|><|ifm|im_start|>assistant\n<ifm|think>\n"
+  }
+ ]
+}

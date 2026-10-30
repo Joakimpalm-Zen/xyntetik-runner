@@ -253,6 +253,25 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
             prompt_lit(&b, "<think>");
             sb_put(&b, reason, strlen(reason));
             prompt_lit(&b, "</think>");
+        } else if (tmpl == TMPL_K2H && !strcmp(role, "assistant")) {
+            // K2-Horizon writes a think block on every assistant turn, from
+            // the first of these fields that is a string, in its template's
+            // order; with none, an empty block (or the one the content
+            // carries). The whole body is assembled here, calls included.
+            static const struct { const char *field, *tag; } F[] = {
+                { "think", "ifm|think" }, { "think_fast", "ifm|think_fast" },
+                { "think_faster", "ifm|think_faster" },
+                { "reasoning_content", "ifm|think" }, { "reasoning", "ifm|think" } };
+            const char *r = NULL, *tag = NULL;
+            for (size_t k = 0; k < sizeof F / sizeof *F && !r; k++) {
+                jv *v = jv_get(msg, F[k].field);
+                if (v && v->type == J_STR) { r = v->str; tag = F[k].tag; }
+            }
+            k2h_assistant_body(r, tag, txt.s, calls, &b);
+            bool failed = b.failed || txt.failed;
+            free(txt.s);
+            if (failed) { free(b.s); *oom = true; return NULL; }
+            return b.s;
         } else if (tmpl_granite42_like(tmpl) && !strcmp(role, "assistant") &&
                    reason && reason[strspn(reason, " \t\n\r\f\v")]) {
             // granite 4.2 folds a non-blank reasoning_content in as
@@ -620,6 +639,16 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     // now gives them the XML protocol on the envelope, parse-only (no
     // grammar), so the same parser serves them buffered and streamed.
     bool strict = rc == 1;
+    // A template that refuses some declarations itself (K2-Horizon's
+    // validate_tools) is answered with its reason, not rendered around
+    {
+        char why[480];
+        if (!template_tools_check(s->tmpl, tools, why, sizeof why)) {
+            tool_envelope_free(&env);
+            send_error(fd, 400, why);
+            return;
+        }
+    }
     // When the strict envelope does not apply -- no tools declared, or
     // tool_choice none -- the flag is vacuous and stays TOLERATED, exactly as
     // before: ordinary OpenAI-shaped traffic sends parallel_tool_calls

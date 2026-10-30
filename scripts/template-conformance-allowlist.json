@@ -345,6 +345,24 @@
         "op": "builtin",
         "name": "mistral-system-on-last-user"
       }
+    },
+    {
+      "id": "k2-horizon/bos",
+      "family": "k2-horizon",
+      "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time (tokenizer.c sets add_bos for the k2-horizon pre, as IFM's tokenizer.json does; K2-Horizon's template opens with `{{- bos_token }}`), so a template that also emitted it would double it.",
+      "cite": {
+        "file": "src/template.c",
+        "lines": "4111-4112",
+        "anchor": "The template opens with `{{- bos_token }}`; that token comes from the"
+      },
+      "corroborating_cite": {
+        "file": "src/tokenizer.c",
+        "lines": "1688-1688",
+        "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
+      },
+      "patch": {
+        "op": "strip-bos"
+      }
     }
   ]
 }

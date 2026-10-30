@@ -804,6 +804,14 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
         send_error(fd, oom ? 500 : 400, terr);
         return NULL;
     }
+    {
+        char why[480];
+        if (!template_tools_check(s->tmpl, tools, why, sizeof why)) {
+            jv_free(tools);
+            send_error(fd, 400, why);
+            return NULL;
+        }
+    }
     jv *choice = anth_tool_choice(jv_get(req, "tool_choice"), terr,
                                   sizeof(terr), &oom);
     jv *raw_choice = jv_get(req, "tool_choice");

@@ -8,7 +8,7 @@
 // none can fill: eos, the file's declared eog ids, the turn ends Runner knows
 // by spelling, and the longest per-architecture list (Harmony's two).
 // tok_stop_ids asserts the two lists' lengths against these.
-enum { TOK_EOG_MAX = 32, TOK_STOP_SPELLINGS = 11, TOK_STOP_ARCH_MAX = 2,
+enum { TOK_EOG_MAX = 32, TOK_STOP_SPELLINGS = 12, TOK_STOP_ARCH_MAX = 2,
        TOK_STOP_MAX = 1 + TOK_EOG_MAX + TOK_STOP_SPELLINGS + TOK_STOP_ARCH_MAX };
 
 enum { TOK_SPM, TOK_BPE, TOK_BPE_SPM }; // BPE_SPM: gemma4 (spaces to U+2581, raw-UTF-8 BPE)
