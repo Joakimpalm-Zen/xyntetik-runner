@@ -5,6 +5,21 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A file's own end-of-generation ids are stops.** Runner now reads
+  `tokenizer.ggml.eog_token_ids` when a file carries it and ends the turn on
+  each id it lists (Harmony's `<|end|>` stays out, as before). No llama.cpp
+  converter writes the key; flint's publisher does. Of the roster files
+  scanned, only flint's carries it, so no admitted model's stops change by
+  this half.
+- **An ordinary `</s>` no longer ends a turn.** The turn ends Runner knows by
+  spelling now count only when the token is control or user-defined. Qwen3's
+  vocabulary (id 128247, on the Qwen3 and Qwen3 MoE rows) and Gemma 4's
+  (id 212, on every Gemma 4 row and Nemotron 3.5 Bolt) hold `</s>` as an
+  ordinary token, which their tokenizers never produce from text (`</s>`
+  encodes as `</`, `s`, `>`); a model that samples one now gets `</s>`
+  printed instead of its turn ended. Every other roster file's stop set is
+  unchanged.
+
 - **Trinity Nano's prompt now has the blank lines its template writes.** Its
   chat template wraps the assistant span in `{% generation %}` tags that do
   not trim the whitespace around them; read as transformers reads them,

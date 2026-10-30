@@ -33,17 +33,6 @@ static void constraint_reset(engine *e) {
     e->constraint_close_match = 0;
 }
 
-// Admit one stop token by its vocabulary spelling. Silent on a token this
-// model does not have, on a duplicate, and on a full list — each is a reason
-// this spelling contributes nothing, not a reason to fail an engine.
-static void stop_add(engine *e, tokenizer *tok, const char *spelling) {
-    int id = tok_find(tok, spelling);
-    int cap = (int)(sizeof(e->stop_ids) / sizeof(*e->stop_ids));
-    if (id < 0 || e->n_stop >= cap) return;
-    for (int j = 0; j < e->n_stop; j++) if (e->stop_ids[j] == id) return;
-    e->stop_ids[e->n_stop++] = id;
-}
-
 bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
     free(e->hist); // slot engines are re-inited on model swap; e must be zeroed
     free(e->cdoc);
@@ -54,46 +43,8 @@ bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
     e->smp = smp;
     e->think_end_id = -1;
     e->pending_pos = -1;
-    e->stop_ids[e->n_stop++] = tok->eos_id;
-    static const char *stops[] = { "<|im_end|>", "<|eot_id|>", "<|end_of_text|>",
-                                   "<|endoftext|>", "</s>",
-                                   // gemma turn terminators (gemma1-3 / gemma4)
-                                   "<end_of_turn>", "<turn|>",
-                                   // gemma4 ends a turn of tool calls with
-                                   // <|tool_response>: google/gemma-4-*'s
-                                   // generation_config lists it (id 50) as
-                                   // eos beside <turn|> (106) and <eos> (1)
-                                   "<|tool_response>",
-                                   // phi3 ends assistant turns with <|end|>,
-                                   // which is not its declared eos_token_id
-                                   "<|end|>",
-                                   // muse-glimmer ends turns with <|eot|>,
-                                   // also not its declared eos (<|eom|> is
-                                   // NOT a stop: it separates a reasoning
-                                   // turn from the answer that follows it)
-                                   "<|eot|>",
-                                   // Nemotron Nano closes every assistant
-                                   // turn with <SPECIAL_12>; its declared
-                                   // eos is a different token
-                                   "<SPECIAL_12>" };
-    // gpt-oss / Harmony inverts one of these. <|end|> terminates a NON-final
-    // Harmony message — the assistant writes its analysis, closes it with
-    // <|end|>, then opens the final channel — so treating <|end|> as a stop
-    // ends generation on the reasoning and never reaches the answer. It is in
-    // the list above for phi3, whose assistant turns really do end there.
-    // <|return|> is Harmony's own end-of-generation marker and takes its place;
-    // <|call|> joins it so an unrendered tool attempt stops instead of running
-    // away (Harmony tool calling is deliberately not rendered — see template.c).
-    bool harmony = strcmp(m->arch, "gpt-oss") == 0;
-    for (size_t i = 0; i < sizeof(stops) / sizeof(*stops); i++) {
-        if (harmony && !strcmp(stops[i], "<|end|>")) continue;
-        stop_add(e, tok, stops[i]);
-    }
-    if (harmony) {
-        static const char *hstops[] = { "<|return|>", "<|call|>" };
-        for (size_t i = 0; i < sizeof(hstops) / sizeof(*hstops); i++)
-            stop_add(e, tok, hstops[i]);
-    }
+    e->n_stop = tok_stop_ids(tok, m->arch, e->stop_ids,
+                             (int)(sizeof(e->stop_ids) / sizeof(*e->stop_ids)));
     if (!strcmp(m->arch, "muse-glimmer"))
         e->think_end_id = tok_find(tok, "<|eom|>");
     // A stop token is not repetition: penalising one the model generated can

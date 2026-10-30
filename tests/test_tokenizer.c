@@ -638,8 +638,99 @@ static void test_pre_names_choose_the_split(void) {
     remove(path);
 }
 
+// The ids that end a turn (tok_stop_ids). A spelling Runner knows counts only
+// when the token is control or user-defined: Qwen3's and Gemma 4's
+// vocabularies hold "</s>" as an ordinary token that their tokenizers never
+// produce from text, and a model that samples it is writing text. The file's
+// own tokenizer.ggml.eog_token_ids count whatever their type, except
+// Harmony's <|end|>, and an id outside the vocabulary refuses the file.
+static const char *STOP_VOCAB[] = { "<unk>", "<s>", "</s>", "<|im_end|>",
+                                    "<|tool_response>", "<|user|>", "<|end|>",
+                                    "<|eos|>", "a", "<|return|>" };
+static const int STOP_TYPES[] = { 2, 3, 1, 3, 4, 3, 3, 3, 1, 3 };
+enum { N_STOP_VOCAB = 10, STOP_EOS = 7 };
+
+static void write_stop_fixture(const char *path, const char *arch, bool types,
+                               const int *eog, int n_eog) {
+    gbuf kv = {0};
+    uint64_t nkv = 0;
+    gkey(&kv, "general.architecture", GGUF_T_STR); gstr(&kv, arch); nkv++;
+    gkey(&kv, "tokenizer.ggml.model", GGUF_T_STR); gstr(&kv, "llama"); nkv++;
+    gkey(&kv, "tokenizer.ggml.tokens", GGUF_T_ARR);
+    gu32(&kv, GGUF_T_STR); gu64(&kv, N_STOP_VOCAB);
+    for (int i = 0; i < N_STOP_VOCAB; i++) gstr(&kv, STOP_VOCAB[i]);
+    nkv++;
+    if (types) {
+        gkey(&kv, "tokenizer.ggml.token_type", GGUF_T_ARR);
+        gu32(&kv, GGUF_T_I32); gu64(&kv, N_STOP_VOCAB);
+        for (int i = 0; i < N_STOP_VOCAB; i++) gu32(&kv, (uint32_t)STOP_TYPES[i]);
+        nkv++;
+    }
+    if (eog) {
+        gkey(&kv, "tokenizer.ggml.eog_token_ids", GGUF_T_ARR);
+        gu32(&kv, GGUF_T_I32); gu64(&kv, (uint64_t)n_eog);
+        for (int i = 0; i < n_eog; i++) gu32(&kv, (uint32_t)eog[i]);
+        nkv++;
+    }
+    gkey(&kv, "tokenizer.ggml.unknown_token_id", GGUF_T_U32); gu32(&kv, 0); nkv++;
+    gkey(&kv, "tokenizer.ggml.bos_token_id", GGUF_T_U32); gu32(&kv, 1); nkv++;
+    gkey(&kv, "tokenizer.ggml.eos_token_id", GGUF_T_U32); gu32(&kv, STOP_EOS); nkv++;
+    gbuf w = {0};
+    gu32(&w, 0x46554747); gu32(&w, 3); gu64(&w, 0); gu64(&w, nkv);
+    gput(&w, kv.b, kv.n);
+    while (w.n % 32) { unsigned char z = 0; gput(&w, &z, 1); }
+    FILE *f = fopen(path, "wb");
+    assert(f);
+    assert(fwrite(w.b, 1, w.n, f) == w.n);
+    fclose(f);
+    free(kv.b); free(w.b);
+}
+
+// The stop set of a fixture as a bitmask over its ten ids; -1 when the
+// tokenizer refuses the file.
+static int stop_mask(const char *arch, bool types, const int *eog, int n_eog) {
+    const char *path = "tok-stops.gguf";
+    write_stop_fixture(path, arch, types, eog, n_eog);
+    gguf_file g;
+    assert(gguf_open(&g, path));
+    tokenizer t;
+    int mask = -1;
+    if (tokenizer_init(&t, &g)) {
+        int ids[20];
+        int n = tok_stop_ids(&t, arch, ids, 20);
+        mask = 0;
+        for (int i = 0; i < n; i++) mask |= 1 << ids[i];
+        tokenizer_free(&t);
+    }
+    gguf_close(&g);
+    remove(path);
+    return mask;
+}
+
+static void test_stops_follow_type_and_declaration(void) {
+    const int B = 1;
+    // known spellings: eos, <|im_end|>, <|tool_response>, <|end|>; not the
+    // ordinary "</s>" (id 2), not <|user|> (no spelling rule names it)
+    int base = B << STOP_EOS | B << 3 | B << 4 | B << 6;
+    int got = stop_mask("llama", true, NULL, 0);
+    if (got != base) { fprintf(stderr, "stops %#x, want %#x\n", got, base); abort(); }
+    // a file without token types cannot tell "</s>" apart, so it stays a stop
+    assert(stop_mask("llama", false, NULL, 0) == (base | B << 2));
+    // the file's eog ids count whatever their type, the ordinary one too
+    int eog[] = { 5, 2 };
+    assert(stop_mask("llama", true, eog, 2) == (base | B << 5 | B << 2));
+    // gpt-oss: <|end|> stays out even when the file declares it; <|return|> in
+    int heog[] = { 6, 9 };
+    assert(stop_mask("gpt-oss", true, heog, 2) ==
+           (B << STOP_EOS | B << 3 | B << 4 | B << 9));
+    // an eog id outside the vocabulary refuses the file
+    int bad[] = { 5, N_STOP_VOCAB };
+    assert(stop_mask("llama", true, bad, 2) == -1);
+}
+
 int main(void) {
     test_special_matching_across_first_bytes();
+    test_stops_follow_type_and_declaration();
     test_bos_default_follows_the_family();
     test_pre_names_choose_the_split();
 

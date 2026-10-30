@@ -29,6 +29,10 @@ typedef struct {
     float   *scores;        // SPM (may be NULL)
     int32_t *ttype;         // token type per id (may be NULL)
     int      bos_id, eos_id, unk_id;
+    // tokenizer.ggml.eog_token_ids: the ids the file itself declares as
+    // ending generation (the first 8 of them). engine_init makes each a stop.
+    int      eog_ids[8];
+    int      n_eog;
     bool     add_bos, add_space_prefix;
     // tokenizer.ggml.add_eos_token: the checkpoint's own tokenizer appends
     // the end token (embedding models such as Qwen3-Embedding pool on it).
@@ -101,6 +105,12 @@ int  tok_decode(tokenizer *t, int id, char *buf, int cap);
 // decoded text of token id even if control (for stop-token matching); NULL if oob
 const char *tok_raw(tokenizer *t, int id);
 bool tok_is_control(tokenizer *t, int id);
+// control or user-defined: a token the tokenizer emits only as itself
+bool tok_is_special(tokenizer *t, int id);
+// The ids that end a generated turn for this vocabulary on architecture
+// `arch`: eos, the file's eog_token_ids, then the turn terminators Runner
+// knows by spelling. Writes at most cap ids to out and returns the count.
+int tok_stop_ids(tokenizer *t, const char *arch, int *out, int cap);
 int  tok_find(tokenizer *t, const char *s); // exact vocab lookup, -1 if absent
 // Test hook for the merge gate: force the linear rescan (0) or the candidate
 // queue (1) regardless of segment length; -1 returns to the length rule. The

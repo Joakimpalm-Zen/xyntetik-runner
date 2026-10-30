@@ -540,6 +540,25 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
         !special_id_ok(t, "tokenizer.ggml.eos_token_id", t->eos_id) ||
         !special_id_ok(t, "tokenizer.ggml.unknown_token_id", t->unk_id))
         return false;
+    // No llama.cpp converter writes this key; some publishers' converters do
+    // (flint's lists <|user|>, <|observation|> and <|developer|> beside
+    // <|end_of_text|>). An id outside the vocabulary refuses the file, as a
+    // bad eos id does.
+    gguf_kv *eog = gguf_get(g, "tokenizer.ggml.eog_token_ids");
+    if (eog && eog->type == GGUF_T_ARR &&
+        (eog->arr_type == GGUF_T_I32 || eog->arr_type == GGUF_T_U32)) {
+        int cap = (int)(sizeof(t->eog_ids) / sizeof(*t->eog_ids));
+        for (uint64_t i = 0; i < eog->arr_n && t->n_eog < cap; i++) {
+            int32_t id;
+            memcpy(&id, (const char *)eog->arr_raw + i * 4, 4);
+            if (id < 0 || id >= t->n_vocab) {
+                fprintf(stderr, "error: tokenizer.ggml.eog_token_ids holds %d, "
+                        "outside the %d-token vocabulary\n", id, t->n_vocab);
+                return false;
+            }
+            t->eog_ids[t->n_eog++] = id;
+        }
+    }
     // A file that does not say whether to prepend BOS gets what its family's
     // own tokenizer does: SentencePiece vocabularies, and the two BPE families
     // whose publishers' tokenizers prepend it, Llama 3 (<|begin_of_text|>,
@@ -1680,9 +1699,87 @@ bool tok_is_control(tokenizer *t, int id) {
     return tt == TT_CONTROL;
 }
 
+bool tok_is_special(tokenizer *t, int id) {
+    if (id < 0 || id >= t->n_vocab) return false;
+    int tt = t->ttype ? t->ttype[id] : TT_NORMAL;
+    return tt == TT_CONTROL || tt == TT_USER_DEFINED;
+}
+
 const char *tok_raw(tokenizer *t, int id) {
     if (id < 0 || id >= t->n_vocab) return NULL;
     return t->tokens[id].s;
+}
+
+static void stop_add_id(int *out, int *n, int cap, int id) {
+    if (id < 0 || *n >= cap) return;
+    for (int j = 0; j < *n; j++) if (out[j] == id) return;
+    out[(*n)++] = id;
+}
+
+// Admit one stop token by its vocabulary spelling. Silent on a token this
+// model does not have, on a duplicate, and on a full list — each is a reason
+// this spelling contributes nothing, not a reason to fail an engine. A match
+// counts only when it is a control or user-defined token: Qwen3's and Gemma
+// 4's vocabularies also hold "</s>" as an ordinary token (ids 128247 and
+// 212), which their tokenizers never produce from text ("</s>" encodes as
+// "</" "s" ">"); a model that samples one is writing text, not ending its
+// turn. A file without token types cannot tell, so its matches stay stops.
+static void stop_add(tokenizer *t, int *out, int *n, int cap, const char *spelling) {
+    int id = tok_find(t, spelling);
+    if (id < 0 || (t->ttype && !tok_is_special(t, id))) return;
+    stop_add_id(out, n, cap, id);
+}
+
+int tok_stop_ids(tokenizer *t, const char *arch, int *out, int cap) {
+    int n = 0;
+    stop_add_id(out, &n, cap, t->eos_id);
+    static const char *stops[] = { "<|im_end|>", "<|eot_id|>", "<|end_of_text|>",
+                                   "<|endoftext|>", "</s>",
+                                   // gemma turn terminators (gemma1-3 / gemma4)
+                                   "<end_of_turn>", "<turn|>",
+                                   // gemma4 ends a turn of tool calls with
+                                   // <|tool_response>: google/gemma-4-*'s
+                                   // generation_config lists it (id 50) as
+                                   // eos beside <turn|> (106) and <eos> (1)
+                                   "<|tool_response>",
+                                   // phi3 ends assistant turns with <|end|>,
+                                   // which is not its declared eos_token_id
+                                   "<|end|>",
+                                   // muse-glimmer ends turns with <|eot|>,
+                                   // also not its declared eos (<|eom|> is
+                                   // NOT a stop: it separates a reasoning
+                                   // turn from the answer that follows it)
+                                   "<|eot|>",
+                                   // Nemotron Nano closes every assistant
+                                   // turn with <SPECIAL_12>; its declared
+                                   // eos is a different token
+                                   "<SPECIAL_12>" };
+    // gpt-oss / Harmony inverts one of these. <|end|> terminates a NON-final
+    // Harmony message — the assistant writes its analysis, closes it with
+    // <|end|>, then opens the final channel — so treating <|end|> as a stop
+    // ends generation on the reasoning and never reaches the answer. It is in
+    // the list above for phi3, whose assistant turns really do end there.
+    // <|return|> is Harmony's own end-of-generation marker and takes its place;
+    // <|call|> joins it so an unrendered tool attempt stops instead of running
+    // away (Harmony tool calling is deliberately not rendered — see template.c).
+    bool harmony = strcmp(arch, "gpt-oss") == 0;
+    // The file's own end-of-generation ids, whatever their type: a declared
+    // id is the publisher's statement. Harmony's <|end|> stays out here too.
+    for (int i = 0; i < t->n_eog; i++) {
+        const char *s = tok_raw(t, t->eog_ids[i]);
+        if (harmony && s && !strcmp(s, "<|end|>")) continue;
+        stop_add_id(out, &n, cap, t->eog_ids[i]);
+    }
+    for (size_t i = 0; i < sizeof(stops) / sizeof(*stops); i++) {
+        if (harmony && !strcmp(stops[i], "<|end|>")) continue;
+        stop_add(t, out, &n, cap, stops[i]);
+    }
+    if (harmony) {
+        static const char *hstops[] = { "<|return|>", "<|call|>" };
+        for (size_t i = 0; i < sizeof(hstops) / sizeof(*hstops); i++)
+            stop_add(t, out, &n, cap, hstops[i]);
+    }
+    return n;
 }
 
 int tok_find(tokenizer *t, const char *s) {
