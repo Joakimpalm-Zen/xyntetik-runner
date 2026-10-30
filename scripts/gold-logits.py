@@ -145,6 +145,75 @@ def parse_top(d):
     return None
 
 
+def upcast_at_use(model):
+    """Compute in float32 on weights kept at the dtype they are stored in.
+
+    The unit is a decoder block: its whole subtree's parameters, and any of
+    its floating buffers narrower than float32, are cast to float32 just
+    before the block's forward and put back just after, so a module that
+    reads a child's weight directly (LFM2's short convolution hands
+    `self.conv.weight` to a functional conv; a MoE block reads its stacked
+    expert banks) still sees float32. Modules outside the blocks (the
+    embedding, the final norm, the head) are cast the same way one by one.
+    BF16 or F16 to float32 is exact, and back to the stored dtype of a value
+    that came from it is exact, so the arithmetic is a full float32 load's
+    while the resident weights stay at the stored footprint plus one block's
+    float32 copy. Trusted only where a full float32 load of a smaller member
+    agrees with it bit for bit (tests/test_gold_logits.py, and the record that
+    uses it). Returns the number of units hooked."""
+    import torch
+    narrow = (torch.bfloat16, torch.float16)
+    saved = {}
+
+    def cast(unit, recurse):
+        held = []
+        for mod in (unit.modules() if recurse else (unit,)):
+            for _, p in mod.named_parameters(recurse=False):
+                if p.dtype in narrow:
+                    held.append((p, None, p.data))
+                    p.data = p.data.float()
+            for name, b in mod.named_buffers(recurse=False):
+                if b is not None and b.dtype in narrow:
+                    held.append((mod, name, b))
+                    setattr(mod, name, b.float())
+        return held
+
+    def hooks(recurse):
+        def pre(mod, args):
+            saved[id(mod)] = cast(mod, recurse)
+
+        def post(mod, args, out):
+            for what, name, old in saved.pop(id(mod), []):
+                if name is None:
+                    what.data = old
+                else:
+                    setattr(what, name, old)
+        return pre, post
+
+    def has_narrow(mod, recurse):
+        return any(p.dtype in narrow for p in mod.parameters(recurse=recurse)) or \
+            any(b is not None and b.dtype in narrow for b in mod.buffers(recurse=recurse))
+
+    lists = [m for m in model.modules() if isinstance(m, torch.nn.ModuleList)]
+    blocks = max(lists, key=len) if lists else []
+    covered = set()
+    n = 0
+    for block in blocks:
+        covered.update(id(m) for m in block.modules())
+        pre, post = hooks(True)
+        block.register_forward_pre_hook(pre)
+        block.register_forward_hook(post)
+        n += 1
+    for mod in model.modules():
+        if id(mod) in covered or not has_narrow(mod, False):
+            continue
+        pre, post = hooks(False)
+        mod.register_forward_pre_hook(pre)
+        mod.register_forward_hook(post)
+        n += 1
+    return n
+
+
 def reference_logp(model, span, rows):
     """The reference's log-probabilities at the scored rows only.
 
@@ -369,6 +438,11 @@ def main():
     ap.add_argument("--out")
     ap.add_argument("--trust-remote-code", action="store_true",
                     help="the publisher ships its own modeling code")
+    ap.add_argument("--upcast-at-use", action="store_true",
+                    help="keep the weights at their stored dtype (BF16) and cast each "
+                         "module's to float32 for its own forward: float32 arithmetic "
+                         "at the stored footprint, for a parent too large to load in "
+                         "float32 (upcast_at_use)")
     ap.add_argument("--force-bos", action="store_true",
                     help="prepend the tokenizer's BOS to the reference even "
                          "when the HF tokenizer does not add one. Needed "
@@ -405,15 +479,21 @@ def main():
     # the causal-LM auto class refuses those configs, so fall back to the
     # image-text class and drive it with text only. The config name is
     # printed so the report says which class produced the gold.
-    kw = dict(dtype=torch.float32, trust_remote_code=args.trust_remote_code)
-    stage(f"loading {args.hf} in float32")
+    kw = dict(dtype="auto" if args.upcast_at_use else torch.float32,
+              trust_remote_code=args.trust_remote_code)
+    stage(f"loading {args.hf} " + ("at its stored dtype, float32 at use"
+                                   if args.upcast_at_use else "in float32"))
     try:
         model = AutoModelForCausalLM.from_pretrained(args.hf, **kw)
     except (ValueError, KeyError, OSError):
         from transformers import AutoModelForImageTextToText
         model = AutoModelForImageTextToText.from_pretrained(args.hf, **kw)
     print("reference class:", type(model).__name__, file=sys.stderr)
-    stage("weights loaded")
+    if args.upcast_at_use:
+        stage(f"weights loaded at {next(model.parameters()).dtype}; "
+              f"{upcast_at_use(model)} modules cast to float32 at use")
+    else:
+        stage("weights loaded")
     model.eval()
 
     text = open(args.corpus, encoding="utf-8").read()
@@ -507,7 +587,9 @@ def main():
                               "spelling with unlisted special tokens dropped",
                "positions_skipped_no_logprobs": skipped,
                "fresh_prompt": bool(args.fresh_prompt),
-               "reference_dtype": "float32", "reference_device": "cpu",
+               "reference_dtype": ("float32 arithmetic on weights stored at their own dtype, "
+                                   "cast at use" if args.upcast_at_use else "float32"),
+               "reference_device": "cpu",
                "sides": {}}
     for name, ep, mn in sides:
         ks = [r[name]["kld"] for r in rows]

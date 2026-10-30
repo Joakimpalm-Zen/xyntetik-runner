@@ -218,3 +218,55 @@ def test_an_id_spelled_differently_is_counted():
     top.spelled[16] = "one"            # numbered differently at the endpoint
     top.spelled[20] = "�"         # a partial character says nothing
     assert gold.id_spelling_mismatches(top, SPELL.get) == 1
+
+
+def _tiny_lfm2(torch, transformers, moe):
+    """A random LFM2 (dense) or LFM2 MoE small enough to build in a test."""
+    common = dict(vocab_size=97, hidden_size=32, num_attention_heads=4, num_key_value_heads=2,
+                  num_hidden_layers=4, layer_types=["conv", "full_attention", "conv", "full_attention"],
+                  max_position_embeddings=128, initializer_range=0.3)
+    torch.manual_seed(0)
+    if moe:
+        cfg = transformers.Lfm2MoeConfig(intermediate_size=48, moe_intermediate_size=16, num_experts=4,
+                                         num_experts_per_tok=2, num_dense_layers=1, **common)
+        model = transformers.Lfm2MoeForCausalLM(cfg)
+        with torch.no_grad():   # the selection bias away from zero, so it matters
+            for name, b in model.named_buffers():
+                if name.endswith("expert_bias"):
+                    b.copy_(torch.randn_like(b))
+    else:
+        cfg = transformers.Lfm2Config(intermediate_size=48, **common)
+        model = transformers.Lfm2ForCausalLM(cfg)
+    return cfg, model
+
+
+def test_upcast_at_use_is_float32_bit_for_bit(tmp_path):
+    """Weights kept in BF16 and cast to float32 block by block give exactly the
+    logits a float32 copy of the same BF16 weights gives, on a dense LFM2 (its
+    short convolution hands a child's weight to a functional conv, which a
+    per-module cast missed) and on an LFM2 MoE (stacked expert banks and a
+    selection-bias buffer). Both sides load the same saved BF16 checkpoint
+    the way the reference does (from_pretrained), which keeps the computed
+    buffers, rope's inverse frequencies among them, in float32."""
+    pytest = __import__("pytest")
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    if not hasattr(transformers, "Lfm2MoeConfig"):
+        pytest.skip("this transformers has no LFM2 MoE")
+    ids = torch.randint(0, 97, (1, 40), generator=torch.Generator().manual_seed(1))
+    for moe in (False, True):
+        cfg, model = _tiny_lfm2(torch, transformers, moe)
+        ckpt = tmp_path / ("moe" if moe else "dense")
+        model.to(torch.bfloat16).save_pretrained(ckpt)
+        cls = type(model)
+        full = cls.from_pretrained(ckpt, dtype=torch.float32).eval()
+        stored = cls.from_pretrained(ckpt, dtype="auto").eval()
+        assert next(stored.parameters()).dtype == torch.bfloat16
+        with torch.no_grad():
+            want = full(ids).logits.float()
+        hooked = gold.upcast_at_use(stored)
+        assert hooked >= 4
+        with torch.no_grad():
+            got = stored(ids).logits.float()
+        assert torch.equal(got, want), (moe, (got - want).abs().max().item())
+        assert next(stored.parameters()).dtype == torch.bfloat16   # put back after the forward
