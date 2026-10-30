@@ -4674,19 +4674,65 @@
       "id": "lfm2.5-24b-a2b-q4_k_m",
       "model": "LFM2.5-24B-A2B (LiquidAI)",
       "family": "LFM2.5",
-      "tier": "upcoming",
-      "claim": "Not admitted yet: the template revision its GGUF carries and its tokenizer are checked; the file's cells and its float32 reference are owed.",
+      "tier": "tier2",
+      "claim": "Text path, LiquidAI's own Q4_K_M of LFM2.5-24B-A2B: it tokenizes as the publisher's tokenizer.json does and renders the publisher's own template token for token; its admitting CPU cell and its fidelity against the BF16 checkpoint are being recorded on the lab CPU lane.",
       "architecture": "lfm2moe",
-      "missing": "A CPU cell on the publisher's Q4_K_M (14.5 GB, the lab CPU lane) and the float32 reference against the BF16 checkpoint (48 GB stored; float32 arithmetic cast at use per decoder block, gold-logits.py --upcast-at-use). Tokenizer agreement (0 of 721, against the 24B's own tokenizer.json, byte-identical to the 8B-A1B's) and template conformance (32 of 32 in text and tokens against the 24B's own chat_template.jinja) are recorded.",
+      "upstream": {
+        "checkpoint": "LiquidAI/LFM2.5-24B-A2B",
+        "revision": "3fcfdbfa1a1b6d8166846a6323e69f1e1254440d"
+      },
+      "files": [
+        {
+          "name": "LFM2.5-24B-A2B-Q4_K_M.gguf",
+          "repo": "LiquidAI/LFM2.5-24B-A2B-GGUF",
+          "revision": "0912d33141f77e10705345a6732bfd83f0252fdc",
+          "sha256": "d3334405b96228eb9908cdebb5c6194908f2da64282bda852afc3a3910c64e7d",
+          "bytes": 14526258464
+        }
+      ],
+      "quantization": "Q4_K_M (publisher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "owed",
+        "anchor": "This file: publisher tokenizer agreement (0 of 721 corpus strings differ from the 24B's tokenizer.json at 3fcfdbfa, byte-identical to the 8B-A1B's) and template conformance 32 of 32 in text and tokens against its chat_template.jinja. The lfm2moe arithmetic is checked against transformers' float32 on a converted random model. Record: docs/compat-reports/lfm2.5-reference-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "CPU only: the GPU backends refuse lfm2moe by name and serve it on the CPU. The model thinks on every turn: its generation prompt opens the thought whatever enable_thinking says. A required or named tool choice takes the generic JSON envelope on this family. Licence: LFM Open License v1.0, which limits commercial use to entities with under US$10M annual revenue; the limit binds whoever runs the model.",
+        "evidence": [
+          "docs/compat-reports/lfm2.5-reference-2026-10-30/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "The admitting CPU cell and the float32 reference against the BF16 checkpoint (48 GB stored, cast to float32 per decoder block), both on the lab CPU lane; a GPU path."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": {
+          "kind": "limit",
+          "reason": "lfm2moe (short-convolution layers interleaved with GQA attention, routed experts) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
+        "metal": null
+      },
       "transitions": [
         {
           "tier": "upcoming",
           "effective": "2026-10-30",
           "reason": "Owner's Hub-search validation queue of 2026-10-29, the LFM2.5-24B-A2B item: the lfm2moe architecture is admitted with the 8B-A1B; its GGUF carries a third LFM2.5 template revision, implemented first.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane (policy 2026-10-27). Maintained on report.",
+          "last_validated_release": null
         }
-      ],
-      "anchor": "anchor: the BF16 parent computed in float32, cast at use per decoder block (owed)."
+      ]
     },
     {
       "id": "spark-x2.6-4b-q4_k_m",

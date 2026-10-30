@@ -2621,6 +2621,11 @@
           }
         }
       }
+    },
+    "lfm2.5-24b-a2b-q4_k_m": {
+      "prompt": "Which planet is closest to the Sun? Answer in two sentences.",
+      "n_predict": 600,
+      "ctx": 1024
     }
   }
 }
