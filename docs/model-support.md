@@ -1764,17 +1764,17 @@ Text path, XHToken's own Q4_K_M of Spark X2.6 4B, which fails the fidelity bar: 
 <a id="k2-horizon-0.9b-q8_0"></a>
 ##### `K2-Horizon-1B-Q8_0.gguf`
 
-Text path, IFM's own Q8_0 of K2-Horizon 0.9B: it loads, tokenizes as the publisher's tokenizer.json does, renders the template its GGUF carries token for token and answers through it; no fidelity measurement against the BF16 checkpoint is recorded yet.
+Text path, IFM's own Q8_0 of K2-Horizon 0.9B, the fidelity file of the publisher's two: against the BF16 parent computed in float32 it reads 0.0037 mean KLD and 97.3% top-1 (300 positions, Metal).
 
 - **File:** `K2-Horizon-1B-Q8_0.gguf` (sha256 `741fb9ad263956c003883cb7caddeb14b4dfb9b4b67b5414ad12967e965dd547`, 1,148,614,016 bytes, from [IFM/K2-Horizon-0.9B-GGUF](https://huggingface.co/IFM/K2-Horizon-0.9B-GGUF) at revision `118965081cf1`).
 - **Upstream checkpoint:** IFM/K2-Horizon-0.9B at revision `d50881f4f8dc`.
 - **Quantization:** Q8_0 (publisher).
 - **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison is feasible and owed):** This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json), template conformance 23 of 23 in text and tokens against the template the GGUF carries, its 44-case tool-schema torture set (tests/fixtures/k2-horizon-tool-schemas.json) byte for byte, and a chat answer at temperature 0 on the Metal laptop.
+- **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against IFM's BF16 parent computed in float32 on the CPU (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0037 mean KLD / 97.3% top-1 / 100% margin-qualified, Q4_K_M 0.108 / 81.7% / 97.1%; Q4_K_M against Q8_0 from the same score files 0.098 / 83.3%. Tokenizer 0/721 against the publisher's tokenizer.json at d50881f4, template conformance 23/23 in text and tokens against the template the GGUF carries, its 44-case tool-schema torture set byte for byte. Record: docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md.
 - **Context tested:** 4096.
 - **Known limitations:** reasoning_effort medium and low are refused (their think blocks are not split from the answer yet); high, the default, and thinking off are served. A tool without a parameters object is refused, as the template refuses it. A required or named tool choice takes the generic JSON envelope on this family.
-- **Still missing:** The float32 reference against the BF16 checkpoint (on the Metal laptop) and the quant bar; the Windows CUDA host's cells.
-- **Evidence:** [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [tests/fixtures/k2-horizon-tool-schemas.json](../tests/fixtures/k2-horizon-tool-schemas.json).
+- **Still missing:** The Windows CUDA host's CPU and CUDA cells; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's Q4_K_M fails the fidelity bar (0.108) and is not admitted.
+- **Evidence:** [docs/compat-reports/1.7.1-2026-10-30-macos-arm64-k2-horizon-0.9b-q8_0.json](compat-reports/1.7.1-2026-10-30-macos-arm64-k2-horizon-0.9b-q8_0.json), [docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md](compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [tests/fixtures/k2-horizon-tool-schemas.json](../tests/fixtures/k2-horizon-tool-schemas.json).
 - **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.1 on 2026-10-30.
 - **CPU:** ✅ v1.7.1 2026-10-30 on macos-arm64-metal at commit `c159098d0998`, output sha256 `b9af23d3578b00d9`, [pin](../tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.macos-arm64-metal.cpu.txt)
 - **CUDA:** ☐ not run
