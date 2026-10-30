@@ -608,7 +608,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#mimo-v2.6-distill-qwen-9b-q4_k_m"><code>MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td></td><td></td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
+<tr><td><a href="#mimo-v2.6-distill-qwen-9b-q4_k_m"><code>MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td></td><td></td><td nowrap>✅ 1.7.1<br>2026-10-30</td></tr>
 </tbody>
 </table>
 </details>
@@ -1670,12 +1670,12 @@ Text path, bartowski's Q4_K_M of XiaomiMiMo's Qwen3.5-9B distill, which fails th
 - **Known limitations:** No Metal cell: Runner's qwen35 hybrid path runs on the CPU and CUDA only. 5.84 GB of weights page from disk on an 8 GB machine (the CPU smoke took 13 minutes there). No vision: the mmproj file is not loaded. A required or named tool choice takes the generic JSON envelope on this family.
 - **Still missing:** The Windows CUDA host's CPU and CUDA cells; a Q8_0 row (the fidelity file, measured here, with no device record yet).
 - **Evidence:** [docs/compat-reports/1.7.1-2026-10-29-macos-arm64-mimo-v2.6-distill-qwen-9b-q4_k_m.json](compat-reports/1.7.1-2026-10-29-macos-arm64-mimo-v2.6-distill-qwen-9b-q4_k_m.json), [docs/compat-reports/mimo-v2.6-distill-qwen-9b-2026-10-29/README.md](compat-reports/mimo-v2.6-distill-qwen-9b-2026-10-29/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Validation run:** on macos-arm64-metal, cpu backend; last run 1.7.1 on 2026-10-29.
-- **CPU:** ✅ v1.7.1 2026-10-29 on macos-arm64-metal at commit `f5b25f0ab89a`, output sha256 `eea4d971ebfaa42d`, [pin](../tests/compatibility/tier-smoke/mimo-v2.6-distill-qwen-9b-q4_k_m.macos-arm64-metal.cpu.txt)
+- **Validation run:** on macos-arm64-metal, cpu backend; last run 1.7.1 on 2026-10-30.
+- **CPU:** ✅ v1.7.1 2026-10-30 on windows-x86_64-cuda at commit `80c30df3d188`, output sha256 `eea4d971ebfaa42d`, [pin](../tests/compatibility/tier-smoke/mimo-v2.6-distill-qwen-9b-q4_k_m.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
-- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
-- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA training:** supported (runner 1.7.1, 2026-10-30).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-29; Tier 2, maintained on report from 2026-10-29 ([log](#transition-log)).
 
 <a id="tier3"></a>
