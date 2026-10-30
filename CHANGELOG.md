@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The spark2_5 architecture loads, on the CPU.** XHToken's Spark 2.5 and 2.6
+  are a dense transformer with three things Runner did not have together: Q,
+  K and V fused in one `attn_qkv` tensor with the FFN left separate, a
+  per-head sigmoid output gate (one value per head, where afmoe's gate has one
+  per element), and a gated GELU in its exact erf form rather than the tanh
+  approximation. The sliding layers rope over all 256 dims at base 10,000 and
+  the full layers over 64 at 5,000,000. The per-head gate and the exact GELU
+  have no CUDA or Metal kernels yet, so a GPU run falls back to the CPU and
+  says so; LoRA training is refused by name. Pinned by fixture tests (loads,
+  decodes deterministically, the gate and the window pattern participate,
+  training refused).
 - **Spark's tokenizer rule, chat templates and tool calls.** XHToken's Spark
   X2.5 and X2.6 files name the pre-tokenizer `spark2_5`, which Runner did not
   know; it is now its own rule (every digit alone, CJK runs apart, newlines

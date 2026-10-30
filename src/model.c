@@ -1215,6 +1215,7 @@ const char *const *model_supported_archs(size_t *count) {
         "smollm", "stablelm", "gemma3", "gemma4", "phi3", "gpt-oss",
         "apertus", "afmoe", "muse-glimmer", "granite", "granitehybrid",
         "nemotron_h", "nemotron_h_moe", "clef", "mellum", "lfm2", "lfm2moe",
+        "spark2_5",
     };
     if (count) *count = sizeof(arches) / sizeof(arches[0]);
     return arches;
@@ -2342,6 +2343,61 @@ static bool bind_meta_afmoe(model_t *m, gguf_file *g, const char *arch) {
 }
 
 // Qwen3, dense and sparse: the think tags its responses wrap reasoning in.
+// XHToken Spark 2.5 / 2.6 (spark2_5). From the publisher's modeling_spark.py
+// (identical in X2.5-4B and X2.6-4B) and llama.cpp's src/models/spark2-5.cpp:
+//   * a dense pre-norm transformer: RMSNorm, GQA, no QK norm, no biases;
+//   * a sliding window on the layers the boolean pattern marks (3 of 4), full
+//     attention on the rest;
+//   * NeoX rope (rotate_half on the first rotated dims) per layer TYPE: the
+//     full layers rotate rope.dimension_count dims at rope.freq_base, the
+//     sliding ones rope.dimension_count_swa at rope.freq_base_swa;
+//   * a per-HEAD output gate: blk.N.attn_gate (n_embd x n_head) from the
+//     normed input, sigmoid, multiplying every output of its head before
+//     attn_output;
+//   * a gated MLP with the EXACT erf GELU (ACT2FN["gelu"]), not the tanh one;
+//   * tied embeddings (no output.weight).
+static bool bind_meta_spark25(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    m->ffn_act        = ACT_GELU_ERF;
+    m->rope_neox      = true;
+    m->attn_out_gate  = true;
+    m->attn_gate_heads = true;
+    m->attn_qkv_split = true;    // the publisher's GGUFs fuse Q, K and V
+    m->swa_window     = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
+    m->rope_dim       = (int)gguf_get_u32(g, AK("rope.dimension_count"), m->head_dim);
+    m->rope_dim_local = (int)gguf_get_u32(g, AK("rope.dimension_count_swa"), m->rope_dim);
+    if (m->swa_window <= 0) {
+        fprintf(stderr, "error: spark2_5 requires %s\n", AK("attention.sliding_window"));
+        return false;
+    }
+    free(m->l_is_swa);
+    free(m->l_rope_dim);
+    m->l_is_swa   = calloc(m->n_layer, sizeof(bool));
+    m->l_rope_dim = calloc(m->n_layer, sizeof(int));
+    if (!m->l_is_swa || !m->l_rope_dim) return false;
+    if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
+                           m->l_is_swa, m->n_layer)) {
+        // the layer types are the architecture, not a default to guess
+        fprintf(stderr, "error: spark2_5 requires the boolean %s array\n",
+                AK("attention.sliding_window_pattern"));
+        return false;
+    }
+    for (int i = 0; i < m->n_layer; i++) {
+        m->l_rope_dim[i] = m->l_is_swa[i] ? m->rope_dim_local : m->rope_dim;
+        if (m->l_rope_dim[i] <= 0 || m->l_rope_dim[i] > m->head_dim ||
+            m->l_rope_dim[i] % 2) {
+            fprintf(stderr, "error: spark2_5 layer %d rotates %d of %d dims\n",
+                    i, m->l_rope_dim[i], m->head_dim);
+            return false;
+        }
+    }
+    // the sliding layers rope at their own base (10k against 5M) AND over
+    // their own width, so they always get their own table: even a file whose
+    // two bases matched would still rotate a different number of dims
+    m->swa_rope_global = false;
+    return true;
+}
+
 static bool bind_meta_qwen3(model_t *m, gguf_file *g, const char *arch) {
     // Thinking-tuned Qwen3 (dense and sparse-MoE) responses wrap hidden
     // reasoning before the visible answer; shared CLI/server output
@@ -3264,7 +3320,8 @@ static bool bind_resolve_defaults(model_t *m, gguf_file *g, const char *arch) {
     // SWA period (4) for this arch, so the global layers are the NoPE layers.
     // muse-glimmer also gates its attention but derives NoPE from the pattern
     // array (nope_on_full) — the afmoe default must not stack onto it.
-    if (m->attn_out_gate && !m->nope_on_full && m->no_rope_layer_step == 0)
+    if (m->attn_out_gate && !m->attn_gate_heads && !m->nope_on_full &&
+        m->no_rope_layer_step == 0)
         m->no_rope_layer_step = 4;
     m->attn_temp_floor_scale = (int)gguf_get_u32(g, AK("attention.attn_temp_floor_scale"), 0);
     m->attn_temp_scale       = gguf_get_f32(g, AK("attention.attn_temp_scale"), 0.0f);
@@ -3909,6 +3966,25 @@ static bool bind_attention(model_t *m, gguf_file *g, layer_t *l, int i,
         // Optional here, required on every KV-OWNING layer: a file missing
         // the K a layer must compute is broken, not compact.
         bool shares_kv = i >= m->kv_from_start;
+        // spark2_5: [Q rows | K rows | V rows] in attn_qkv with the FFN
+        // left separate (phi3's branch above also fuses gate and up)
+        gguf_tensor *qkv = m->attn_qkv_split && !opt_tensor(g, "blk.%d.attn_q.weight", i)
+                           ? need_tensor(g, "blk.%d.attn_qkv.weight", i, &ok) : NULL;
+        if (qkv) {
+            int64_t q_rows = (int64_t)m->n_head * m->head_dim;
+            int64_t kv_rows = (int64_t)m->n_head_kv * m->head_dim;
+            if ((int64_t)qkv->ne[0] != m->n_embd ||
+                (int64_t)qkv->ne[1] != q_rows + 2 * kv_rows) {
+                fprintf(stderr, "error: unexpected fused attn_qkv shape in blk.%d\n", i);
+                return false;
+            }
+            gguf_tensor *sl = &m->fused_splits[i * 5];
+            l->wq = slice_rows(qkv, &sl[0], 0, q_rows);
+            l->wk = slice_rows(qkv, &sl[1], q_rows, kv_rows);
+            l->wv = slice_rows(qkv, &sl[2], q_rows + kv_rows, kv_rows);
+            l->wo = need_tensor(g, "blk.%d.attn_output.weight", i, &ok);
+            goto gate;
+        }
         l->wq     = need_tensor(g, "blk.%d.attn_q.weight", i, &ok);
         l->wk     = shares_kv
                     ? opt_tensor(g, "blk.%d.attn_k.weight", i)
@@ -3918,13 +3994,16 @@ static bool bind_attention(model_t *m, gguf_file *g, layer_t *l, int i,
                     : need_tensor(g, "blk.%d.attn_v.weight", i, &ok);
     }
     l->wo     = need_tensor(g, "blk.%d.attn_output.weight", i, &ok);
+gate:
     if (m->attn_out_gate) {
         l->wq_gate = need_tensor(g, "blk.%d.attn_gate.weight", i, &ok);
-        // same shape as the plain Q projection; a mismatch means a
-        // conversion this code has never seen — refuse, not garble
+        // same shape as the plain Q projection (per-head: one row per
+        // head); a mismatch means a conversion this code has never seen —
+        // refuse, not garble
         if (l->wq_gate && l->wq &&
             (l->wq_gate->ne[0] != l->wq->ne[0] ||
-             l->wq_gate->ne[1] != l->wq->ne[1])) {
+             l->wq_gate->ne[1] != (m->attn_gate_heads ? (uint64_t)m->n_head
+                                                     : l->wq->ne[1]))) {
             fprintf(stderr, "error: attn_gate shape differs from attn_q "
                     "in layer %d\n", i);
             ok = false;
@@ -4422,6 +4501,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     if (strcmp(arch, "gemma3") == 0 && !bind_meta_gemma3(m, g, arch)) return false;
     if (strcmp(arch, "gpt-oss") == 0 && !bind_meta_gptoss(m, g, arch)) return false;
     if (strcmp(arch, "afmoe") == 0 && !bind_meta_afmoe(m, g, arch)) return false;
+    if (strcmp(arch, "spark2_5") == 0 && !bind_meta_spark25(m, g, arch)) return false;
     // mellum (JetBrains Mellum2.x) is qwen3moe's attention and router with a
     // 3:1 sliding/full layout: bind_swa_default reads its boolean pattern, the
     // local table ropes at rope.freq_base_swa unscaled, and YaRN with its
@@ -4463,7 +4543,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     // phi3 fuses Q/K/V into attn_qkv and gate/up into ffn_up: five slice
     // descriptors per layer, pointing into the mmapped weights
     bool fused_qkv = strcmp(arch, "phi3") == 0;
-    if (fused_qkv) {
+    if (fused_qkv || m->attn_qkv_split) {
         m->fused_splits = calloc((size_t)m->n_layer * 5, sizeof(gguf_tensor));
         if (!m->fused_splits) return false;
     }
@@ -7523,6 +7603,8 @@ static inline float gated_act(int act, float g, float u) {
         float t = tanhf(0.7978845608f * (g + 0.044715f * g * g * g));
         return 0.5f * g * (1.0f + t) * u;
     }
+    if (act == ACT_GELU_ERF)
+        return 0.5f * g * (1.0f + erff(g * 0.70710678118654752f)) * u;
     // silu(g) = g / (1 + e^{-g}). fp32 expf overflows past ~x=88, and this
     // build compiles with -ffast-math, under which that overflow is UB: the
     // auto-vectorized libmvec expf returns garbage rather than +inf, and the
@@ -9165,6 +9247,8 @@ static float act_f(int act, float g) {
         float t = tanhf(0.7978845608f * (g + 0.044715f * g * g * g));
         return 0.5f * g * (1.0f + t);
     }
+    if (act == ACT_GELU_ERF)
+        return 0.5f * g * (1.0f + erff(g * 0.70710678118654752f));
     return silu_f(g);
 }
 // d/dg act(g): SiLU's derivative above for ACT_SILU, the exact derivative
@@ -9178,6 +9262,10 @@ static float act_d(int act, float g) {
         return 0.5f * (1.0f + t) +
                0.5f * g * (1.0f - t * t) * k * (1.0f + 3.0f * 0.044715f * g * g);
     }
+    // exact GELU: Phi(g) + g * phi(g)
+    if (act == ACT_GELU_ERF)
+        return 0.5f * (1.0f + erff(g * 0.70710678118654752f)) +
+               g * 0.39894228040143268f * expf(-0.5f * g * g);
     return silu_d(g);
 }
 
@@ -9214,6 +9302,8 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     else if (m->kv_q8) r = "q8 KV cache (use --kv f16)";
     else if (m->ffn_act == ACT_SWIGLU_OAI || m->ffn_act == ACT_XIELU)
         r = "FFN activation not in the backward (gpt-oss/apertus)";
+    else if (m->attn_gate_heads)
+        r = "per-head attention output gate (spark2_5) not in the backward";
     // R8.9.4 (2026-09-08): head transforms (logit scale, softcap, suppress),
     // muP scalars and the embedding norm, the attention output gate, the
     // sandwich norms, the per-layer output scale and sliding-window
@@ -12328,7 +12418,8 @@ NUM_STAGE void attn_project(model_t *m, const fwd_layer *c) {
         int np = 0;
         qkv[np++] = (mv_part){ m->q, q_dim, ly->wq, q_dim, ly->bq };
         if (m->attn_out_gate && ly->wq_gate)
-            qkv[np++] = (mv_part){ m->q_gate, q_dim, ly->wq_gate, q_dim, NULL };
+            qkv[np++] = (mv_part){ m->q_gate, q_dim, ly->wq_gate,
+                                   m->attn_gate_heads ? m->n_head : q_dim, NULL };
         if (owns_kv) {
             qkv[np++] = (mv_part){ m->k_tmp, kv_dim, ly->wk, kv_dim, ly->bk };
             if (ly->wv)
@@ -12446,7 +12537,15 @@ NUM_STAGE void attn_rows(model_t *m, const fwd_layer *c) {
                         model_kv_kind_k(m), model_kv_kind_v(m), scale, ly->attn_sinks,
                         model_layer_tied_v(m, l), ly->knorm_w, l };
         attn_run(m, &aj, m->n_head);
-        if (m->qwen35 || (m->attn_out_gate && ly->wq_gate))
+        if (m->attn_gate_heads && ly->wq_gate) {
+            // one gate per head over its head_dim outputs (spark2_5)
+            for (int h = 0; h < m->n_head; h++) {
+                float g = m->q_gate[(size_t)b * q_dim + h];
+                float sg = 1.0f / (1.0f + expf(-g));
+                float *o = m->xb2 + (size_t)b * xdim + (size_t)h * hd;
+                for (int d = 0; d < hd; d++) o[d] *= sg;
+            }
+        } else if (m->qwen35 || (m->attn_out_gate && ly->wq_gate))
             for (int i = 0; i < q_dim; i++) {
                 float g = m->q_gate[(size_t)b * q_dim + i];
                 m->xb2[(size_t)b * xdim + i] *= 1.0f / (1.0f + expf(-g));

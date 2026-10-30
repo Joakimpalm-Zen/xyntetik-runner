@@ -3148,6 +3148,14 @@ static bool cuda_admit(model_t *m) {
     // PLUS sparse MoE (afmoe) stays on the host: that combination has never
     // been run against the identity gates, and enabling it as a side effect
     // of the dense port would be an unmeasured support claim.
+    // spark2_5's per-head gate and exact GELU have no device kernels yet;
+    // ffn_act is handed to the kernels as their selector, so an id they do
+    // not know must never reach them
+    if (m->attn_gate_heads || m->ffn_act == ACT_GELU_ERF) {
+        fprintf(stderr, "gpu: spark2_5 (per-head output gate, exact GELU) is "
+                "not on the CUDA backend yet — using CPU\n");
+        return false;
+    }
     if (m->attn_out_gate && m->n_expert > 0) {
         // afmoe: per-element attention output gate + sparse MoE has no
         // certified device path; running it would be unverified, so the
