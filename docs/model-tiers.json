@@ -4794,14 +4794,14 @@
         "fp32_reference": "measured",
         "anchor": "This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json, identical across X2.5 and X2.6), template conformance 23 of 23 in text and tokens against the publisher's chat_template.jinja, and a chat answer at temperature 0 on the Metal laptop's CPU. The architecture is checked against llama.cpp on the X2.6 1.7B Q8_0 (the family's smallest member): 0.0065 mean KLD, 96.0% top-1, 100% margin-qualified over 200 raw-completion positions on the CPU; agreement with another engine, not fidelity. Both XHToken files (the GGUF repository at 0e8aa39a) against XHToken's BF16 checkpoint at d1b5f260 computed in float32 on the lab CPU lane (the publisher's modeling code, transformers 4.57.1, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files): Q4_K_M 0.113 mean KLD / 87.0% top-1 / 93.6% margin-qualified, FAIL; Q8_0 0.0132 / 98.7% / 100%. Record: docs/compat-reports/spark-2026-10-30/README.md.",
         "context": 4096,
-        "limitations": "CPU only: the per-head attention gate and the exact GELU have no CUDA or Metal kernels yet, so a GPU run falls back to the CPU by name. LoRA training is refused (the per-head gate is not in the backward). A required or named tool choice takes the generic JSON envelope on this family.",
+        "limitations": "LoRA training is refused (the per-head gate is not in the backward). A required or named tool choice takes the generic JSON envelope on this family.",
         "evidence": [
           "docs/compat-reports/1.7.1-2026-10-30-macos-arm64-spark-x2.6-4b-q4_k_m.json",
           "docs/compat-reports/spark-2026-10-30/README.md",
           "docs/compat-reports/spark-2026-10-30/gold-logits-cpu-x2.6-q8-q4.json",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The CUDA and Metal paths (the next change); a Q8_0 row (the fidelity file, measured here, with no device record yet)."
+        "missing": "A Q8_0 row (the fidelity file, measured here, with no device record yet)."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -4828,9 +4828,23 @@
           "evidence": "tests/compatibility/tier-smoke/spark-x2.6-4b-q4_k_m.windows-x86_64-cuda.cpu.txt"
         },
         "cuda": {
-          "kind": "limit",
-          "reason": "spark2_5's per-head sigmoid output gate and exact-erf GELU have no CUDA kernels yet; a CUDA run falls back to the CPU by name.",
-          "matrix": "MANUAL.md#support-matrix"
+          "kind": "gate",
+          "runner_version": "1.9.0",
+          "date": "2026-10-30",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "3caf191f69a2cbbe7cd413558d7153b11cf7fd10",
+          "caps": {
+            "version": "1.9.0",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "42a4c173422d4070acc050b39a5c1baa3b5a9168d54b0a988a1287ec2df42298",
+          "ran": "runner -m Spark-X2.6-4B-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/spark-x2.6-4b-q4_k_m.windows-x86_64-cuda.cuda.txt"
         },
         "metal": {
           "kind": "gate",
@@ -4908,14 +4922,14 @@
         "fp32_reference": "measured",
         "anchor": "This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json, identical across X2.5 and X2.6), template conformance 23 of 23 in text and tokens against the publisher's chat_template.jinja, and a chat answer at temperature 0 on the Metal laptop's CPU. The architecture is checked against llama.cpp on the X2.6 1.7B Q8_0 (the family's smallest member): 0.0065 mean KLD, 96.0% top-1, 100% margin-qualified over 200 raw-completion positions on the CPU; agreement with another engine, not fidelity. Both XHToken files (the GGUF repository at 9826e0be) against XHToken's BF16 checkpoint at 0bcb3567 computed in float32 on the lab CPU lane (the publisher's modeling code, transformers 4.57.1, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files): Q4_K_M 0.1136 mean KLD / 87.0% top-1 / 95.6% margin-qualified, FAIL; Q8_0 0.0044 / 98.7% / 100%. Record: docs/compat-reports/spark-2026-10-30/README.md.",
         "context": 4096,
-        "limitations": "CPU only: the per-head attention gate and the exact GELU have no CUDA or Metal kernels yet, so a GPU run falls back to the CPU by name. LoRA training is refused (the per-head gate is not in the backward). A required or named tool choice takes the generic JSON envelope on this family.",
+        "limitations": "LoRA training is refused (the per-head gate is not in the backward). A required or named tool choice takes the generic JSON envelope on this family.",
         "evidence": [
           "docs/compat-reports/1.7.1-2026-10-30-macos-arm64-spark-x2.5-4b-q4_k_m.json",
           "docs/compat-reports/spark-2026-10-30/README.md",
           "docs/compat-reports/spark-2026-10-30/gold-logits-cpu-x2.5-q8-q4.json",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The CUDA and Metal paths (the next change); a Q8_0 row (the fidelity file, measured here, with no device record yet)."
+        "missing": "A Q8_0 row (the fidelity file, measured here, with no device record yet)."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -4942,9 +4956,23 @@
           "evidence": "tests/compatibility/tier-smoke/spark-x2.5-4b-q4_k_m.windows-x86_64-cuda.cpu.txt"
         },
         "cuda": {
-          "kind": "limit",
-          "reason": "spark2_5's per-head sigmoid output gate and exact-erf GELU have no CUDA kernels yet; a CUDA run falls back to the CPU by name.",
-          "matrix": "MANUAL.md#support-matrix"
+          "kind": "gate",
+          "runner_version": "1.9.0",
+          "date": "2026-10-30",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "3caf191f69a2cbbe7cd413558d7153b11cf7fd10",
+          "caps": {
+            "version": "1.9.0",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "b872096a90ef40b7d4d2c0fe4444adde1b7e4065897362fb6271e1b0af4336c3",
+          "ran": "runner -m Spark-X2.5-4B-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/spark-x2.5-4b-q4_k_m.windows-x86_64-cuda.cuda.txt"
         },
         "metal": {
           "kind": "gate",

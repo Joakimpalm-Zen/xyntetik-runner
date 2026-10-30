@@ -636,19 +636,19 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Spark</b>, 2 models: CPU ✅ · CUDA n/a · Metal ✅ · Train n/a</summary>
+<summary><b>Spark</b>, 2 models: CPU ✅ · CUDA ✅ · Metal ✅ · Train n/a</summary>
 <p><b>Spark-X2.5-4B (XHToken)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#spark-x2.5-4b-q4_k_m"><code>Spark-X2.5-4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.9.0<br>2026-10-30</td><td>no: per-head attention output gate (spark2_5) not in the backward</td></tr>
+<tr><td><a href="#spark-x2.5-4b-q4_k_m"><code>Spark-X2.5-4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td nowrap>✅ 1.9.0<br>2026-10-30</td><td nowrap>✅ 1.9.0<br>2026-10-30</td><td>no: per-head attention output gate (spark2_5) not in the backward</td></tr>
 </tbody>
 </table>
 <p><b>Spark-X2.6-4B (XHToken)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#spark-x2.6-4b-q4_k_m"><code>Spark-X2.6-4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.9.0<br>2026-10-30</td><td>no: per-head attention output gate (spark2_5) not in the backward</td></tr>
+<tr><td><a href="#spark-x2.6-4b-q4_k_m"><code>Spark-X2.6-4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td nowrap>✅ 1.9.0<br>2026-10-30</td><td nowrap>✅ 1.9.0<br>2026-10-30</td><td>no: per-head attention output gate (spark2_5) not in the backward</td></tr>
 </tbody>
 </table>
 </details>
@@ -1858,12 +1858,12 @@ Text path, XHToken's own Q4_K_M of Spark X2.5 4B, which fails the fidelity bar: 
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json, identical across X2.5 and X2.6), template conformance 23 of 23 in text and tokens against the publisher's chat_template.jinja, and a chat answer at temperature 0 on the Metal laptop's CPU. The architecture is checked against llama.cpp on the X2.6 1.7B Q8_0 (the family's smallest member): 0.0065 mean KLD, 96.0% top-1, 100% margin-qualified over 200 raw-completion positions on the CPU; agreement with another engine, not fidelity. Both XHToken files (the GGUF repository at 9826e0be) against XHToken's BF16 checkpoint at 0bcb3567 computed in float32 on the lab CPU lane (the publisher's modeling code, transformers 4.57.1, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files): Q4_K_M 0.1136 mean KLD / 87.0% top-1 / 95.6% margin-qualified, FAIL; Q8_0 0.0044 / 98.7% / 100%. Record: docs/compat-reports/spark-2026-10-30/README.md.
 - **Context tested:** 4096.
-- **Known limitations:** CPU only: the per-head attention gate and the exact GELU have no CUDA or Metal kernels yet, so a GPU run falls back to the CPU by name. LoRA training is refused (the per-head gate is not in the backward). A required or named tool choice takes the generic JSON envelope on this family.
-- **Still missing:** The CUDA and Metal paths (the next change); a Q8_0 row (the fidelity file, measured here, with no device record yet).
+- **Known limitations:** LoRA training is refused (the per-head gate is not in the backward). A required or named tool choice takes the generic JSON envelope on this family.
+- **Still missing:** A Q8_0 row (the fidelity file, measured here, with no device record yet).
 - **Evidence:** [docs/compat-reports/1.7.1-2026-10-30-macos-arm64-spark-x2.5-4b-q4_k_m.json](compat-reports/1.7.1-2026-10-30-macos-arm64-spark-x2.5-4b-q4_k_m.json), [docs/compat-reports/spark-2026-10-30/README.md](compat-reports/spark-2026-10-30/README.md), [docs/compat-reports/spark-2026-10-30/gold-logits-cpu-x2.5-q8-q4.json](compat-reports/spark-2026-10-30/gold-logits-cpu-x2.5-q8-q4.json), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on macos-arm64-metal, cpu backend; last run 1.8.0 on 2026-10-30.
 - **CPU:** ✅ v1.8.0 2026-10-30 on windows-x86_64-cuda at commit `9bb83e7e80b4`, output sha256 `b872096a90ef40b7`, [pin](../tests/compatibility/tier-smoke/spark-x2.5-4b-q4_k_m.windows-x86_64-cuda.cpu.txt)
-- **CUDA:** [n/a](../MANUAL.md#support-matrix): spark2_5's per-head sigmoid output gate and exact-erf GELU have no CUDA kernels yet; a CUDA run falls back to the CPU by name.
+- **CUDA:** ✅ v1.9.0 2026-10-30 on windows-x86_64-cuda at commit `3caf191f69a2`, output sha256 `b872096a90ef40b7`, [pin](../tests/compatibility/tier-smoke/spark-x2.5-4b-q4_k_m.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ✅ v1.9.0 2026-10-30 on macos-arm64-metal at commit `7aad06d0bfc0`, output sha256 `b872096a90ef40b7`, [pin](../tests/compatibility/tier-smoke/spark-x2.5-4b-q4_k_m.macos-arm64-metal.metal.txt)
 - **LoRA training:** no: per-head attention output gate (spark2_5) not in the backward (runner 1.9.0, 2026-10-30).
 - **LoRA adapter serving:** supported (runner 1.9.0, 2026-10-30).
@@ -1882,12 +1882,12 @@ Text path, XHToken's own Q4_K_M of Spark X2.6 4B, which fails the fidelity bar: 
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json, identical across X2.5 and X2.6), template conformance 23 of 23 in text and tokens against the publisher's chat_template.jinja, and a chat answer at temperature 0 on the Metal laptop's CPU. The architecture is checked against llama.cpp on the X2.6 1.7B Q8_0 (the family's smallest member): 0.0065 mean KLD, 96.0% top-1, 100% margin-qualified over 200 raw-completion positions on the CPU; agreement with another engine, not fidelity. Both XHToken files (the GGUF repository at 0e8aa39a) against XHToken's BF16 checkpoint at d1b5f260 computed in float32 on the lab CPU lane (the publisher's modeling code, transformers 4.57.1, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files): Q4_K_M 0.113 mean KLD / 87.0% top-1 / 93.6% margin-qualified, FAIL; Q8_0 0.0132 / 98.7% / 100%. Record: docs/compat-reports/spark-2026-10-30/README.md.
 - **Context tested:** 4096.
-- **Known limitations:** CPU only: the per-head attention gate and the exact GELU have no CUDA or Metal kernels yet, so a GPU run falls back to the CPU by name. LoRA training is refused (the per-head gate is not in the backward). A required or named tool choice takes the generic JSON envelope on this family.
-- **Still missing:** The CUDA and Metal paths (the next change); a Q8_0 row (the fidelity file, measured here, with no device record yet).
+- **Known limitations:** LoRA training is refused (the per-head gate is not in the backward). A required or named tool choice takes the generic JSON envelope on this family.
+- **Still missing:** A Q8_0 row (the fidelity file, measured here, with no device record yet).
 - **Evidence:** [docs/compat-reports/1.7.1-2026-10-30-macos-arm64-spark-x2.6-4b-q4_k_m.json](compat-reports/1.7.1-2026-10-30-macos-arm64-spark-x2.6-4b-q4_k_m.json), [docs/compat-reports/spark-2026-10-30/README.md](compat-reports/spark-2026-10-30/README.md), [docs/compat-reports/spark-2026-10-30/gold-logits-cpu-x2.6-q8-q4.json](compat-reports/spark-2026-10-30/gold-logits-cpu-x2.6-q8-q4.json), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on macos-arm64-metal, cpu backend; last run 1.8.0 on 2026-10-30.
 - **CPU:** ✅ v1.8.0 2026-10-30 on windows-x86_64-cuda at commit `9bb83e7e80b4`, output sha256 `42a4c173422d4070`, [pin](../tests/compatibility/tier-smoke/spark-x2.6-4b-q4_k_m.windows-x86_64-cuda.cpu.txt)
-- **CUDA:** [n/a](../MANUAL.md#support-matrix): spark2_5's per-head sigmoid output gate and exact-erf GELU have no CUDA kernels yet; a CUDA run falls back to the CPU by name.
+- **CUDA:** ✅ v1.9.0 2026-10-30 on windows-x86_64-cuda at commit `3caf191f69a2`, output sha256 `42a4c173422d4070`, [pin](../tests/compatibility/tier-smoke/spark-x2.6-4b-q4_k_m.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ✅ v1.9.0 2026-10-30 on macos-arm64-metal at commit `7aad06d0bfc0`, output sha256 `42a4c173422d4070`, [pin](../tests/compatibility/tier-smoke/spark-x2.6-4b-q4_k_m.macos-arm64-metal.metal.txt)
 - **LoRA training:** no: per-head attention output gate (spark2_5) not in the backward (runner 1.9.0, 2026-10-30).
 - **LoRA adapter serving:** supported (runner 1.9.0, 2026-10-30).
