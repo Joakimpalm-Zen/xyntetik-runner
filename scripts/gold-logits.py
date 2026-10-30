@@ -160,7 +160,16 @@ def upcast_at_use(model):
     while the resident weights stay at the stored footprint plus one block's
     float32 copy. Trusted only where a full float32 load of a smaller member
     agrees with it bit for bit (tests/test_gold_logits.py, and the record that
-    uses it). Returns the number of units hooked."""
+    uses it).
+
+    The blocks are the decoder stack, found by name (model.layers, or the
+    language model's for a multimodal class) or else as the outermost
+    ModuleList, never the longest: a MoE whose experts are a ModuleList (128
+    of them against 48 layers in Qwen3-MoE) would otherwise put one layer's
+    experts in the blocks' place and leave the real blocks to per-module
+    casting. The count must equal the config's num_hidden_layers, or this
+    refuses, naming both. Returns (blocks hooked, layers declared, units
+    hooked)."""
     import torch
     narrow = (torch.bfloat16, torch.float16)
     saved = {}
@@ -194,8 +203,15 @@ def upcast_at_use(model):
         return any(p.dtype in narrow for p in mod.parameters(recurse=recurse)) or \
             any(b is not None and b.dtype in narrow for b in mod.buffers(recurse=recurse))
 
-    lists = [m for m in model.modules() if isinstance(m, torch.nn.ModuleList)]
-    blocks = max(lists, key=len) if lists else []
+    blocks = decoder_blocks(model)
+    cfg = getattr(model, "config", None)
+    declared = getattr(cfg, "num_hidden_layers", None)
+    if declared is None:
+        declared = getattr(getattr(cfg, "text_config", None), "num_hidden_layers", None)
+    if declared is None or len(blocks) != declared:
+        raise SystemExit(f"upcast_at_use: found {len(blocks)} decoder blocks but the config "
+                         f"declares num_hidden_layers {declared}; refusing a cast whose unit "
+                         "is not the decoder block")
     covered = set()
     n = 0
     for block in blocks:
@@ -211,7 +227,29 @@ def upcast_at_use(model):
         mod.register_forward_pre_hook(pre)
         mod.register_forward_hook(post)
         n += 1
-    return n
+    return len(blocks), declared, n
+
+
+def decoder_blocks(model):
+    """The decoder stack: by its usual names first, else the outermost
+    ModuleList (one not inside another ModuleList's element)."""
+    import torch
+    for path in ("model.layers", "model.language_model.layers", "language_model.model.layers",
+                 "language_model.layers", "layers"):
+        obj = model
+        for part in path.split("."):
+            obj = getattr(obj, part, None)
+            if obj is None:
+                break
+        if isinstance(obj, torch.nn.ModuleList) and len(obj):
+            return obj
+    lists = [m for m in model.modules() if isinstance(m, torch.nn.ModuleList)]
+    inner = set()
+    for lst in lists:
+        for el in lst:
+            inner.update(id(m) for m in el.modules() if m is not el)
+    outer = [lst for lst in lists if id(lst) not in inner]
+    return outer[0] if outer else []
 
 
 def reference_logp(model, span, rows):
@@ -489,9 +527,13 @@ def main():
         from transformers import AutoModelForImageTextToText
         model = AutoModelForImageTextToText.from_pretrained(args.hf, **kw)
     print("reference class:", type(model).__name__, file=sys.stderr)
+    upcast = None
     if args.upcast_at_use:
-        stage(f"weights loaded at {next(model.parameters()).dtype}; "
-              f"{upcast_at_use(model)} modules cast to float32 at use")
+        n_blocks, declared, n_units = upcast_at_use(model)
+        upcast = (f"float32 arithmetic on weights stored at {next(model.parameters()).dtype}, "
+                  f"cast at use per decoder block ({n_blocks} blocks, config num_hidden_layers "
+                  f"{declared}; {n_units} units hooked)")
+        stage(f"weights loaded; {upcast}")
     else:
         stage("weights loaded")
     model.eval()
@@ -587,8 +629,7 @@ def main():
                               "spelling with unlisted special tokens dropped",
                "positions_skipped_no_logprobs": skipped,
                "fresh_prompt": bool(args.fresh_prompt),
-               "reference_dtype": ("float32 arithmetic on weights stored at their own dtype, "
-                                   "cast at use" if args.upcast_at_use else "float32"),
+               "reference_dtype": upcast or "float32",
                "reference_device": "cpu",
                "sides": {}}
     for name, ep, mn in sides:

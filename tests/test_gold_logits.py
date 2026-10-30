@@ -264,9 +264,64 @@ def test_upcast_at_use_is_float32_bit_for_bit(tmp_path):
         assert next(stored.parameters()).dtype == torch.bfloat16
         with torch.no_grad():
             want = full(ids).logits.float()
-        hooked = gold.upcast_at_use(stored)
-        assert hooked >= 4
+        blocks, declared, units = gold.upcast_at_use(stored)
+        assert blocks == declared == 4 and units >= 5
         with torch.no_grad():
             got = stored(ids).logits.float()
         assert torch.equal(got, want), (moe, (got - want).abs().max().item())
         assert next(stored.parameters()).dtype == torch.bfloat16   # put back after the forward
+
+
+def test_upcast_at_use_takes_the_decoder_stack_not_the_longest_list():
+    """A MoE whose experts are a ModuleList longer than its layer list: the
+    blocks are still the layers (picking the longest list would hook one
+    layer's experts and leave the blocks' own parent-reads-child weight in
+    BF16), and a count that disagrees with the config is refused."""
+    pytest = __import__("pytest")
+    torch = pytest.importorskip("torch")
+    from types import SimpleNamespace
+    nn, F = torch.nn, torch.nn.functional
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.mix = nn.Linear(8, 8, bias=False)
+            self.experts = nn.ModuleList(nn.Linear(8, 8, bias=False) for _ in range(6))
+
+        def forward(self, x):
+            # a parent reading a child's weight, cast to it the way
+            # causal_conv1d does
+            h = F.linear(x.to(self.mix.weight.dtype), self.mix.weight).to(x.dtype)
+            return h + sum(e(h) for e in self.experts)
+
+    class Inner(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = nn.Embedding(11, 8)
+            self.layers = nn.ModuleList(Block() for _ in range(2))
+
+    class Model(nn.Module):
+        def __init__(self, layers=2):
+            super().__init__()
+            self.config = SimpleNamespace(num_hidden_layers=layers)
+            self.model = Inner()
+            self.head = nn.Linear(8, 11, bias=False)
+
+        def forward(self, ids):
+            x = self.model.embed(ids)
+            for b in self.model.layers:
+                x = b(x)
+            return self.head(x)
+
+    torch.manual_seed(0)
+    stored = Model().to(torch.bfloat16)
+    full = Model()
+    full.load_state_dict({k: v.float() for k, v in stored.state_dict().items()})
+    ids = torch.arange(11).view(1, 11)
+    with torch.no_grad():
+        want = full(ids)
+        assert gold.upcast_at_use(stored)[:2] == (2, 2)
+        got = stored(ids).float()
+    assert torch.equal(got, want), (got - want).abs().max().item()
+    with pytest.raises(SystemExit):
+        gold.upcast_at_use(Model(layers=3).to(torch.bfloat16))
