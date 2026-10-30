@@ -647,7 +647,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#k2-horizon-0.9b-q8_0"><code>K2-Horizon-1B-Q8_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td nowrap>✅ 1.7.1<br>2026-10-30</td></tr>
+<tr><td><a href="#k2-horizon-0.9b-q8_0"><code>K2-Horizon-1B-Q8_0.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td nowrap>✅ 1.8.0<br>2026-10-30</td></tr>
 <tr><td><a href="#k2-horizon-0.9b-q4_k_m"><code>K2-Horizon-1B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td nowrap>✅ 1.7.1<br>2026-10-30</td></tr>
 </tbody>
 </table>
@@ -1852,11 +1852,11 @@ Text path, IFM's own Q8_0 of K2-Horizon 0.9B, the fidelity file of the publisher
 - **Still missing:** The Windows CUDA host's CPU and CUDA cells; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's Q4_K_M fails the fidelity bar (0.108); it is its own row, with that failure first.
 - **Evidence:** [docs/compat-reports/1.7.1-2026-10-30-macos-arm64-k2-horizon-0.9b-q8_0.json](compat-reports/1.7.1-2026-10-30-macos-arm64-k2-horizon-0.9b-q8_0.json), [docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md](compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [tests/fixtures/k2-horizon-tool-schemas.json](../tests/fixtures/k2-horizon-tool-schemas.json).
 - **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.1 on 2026-10-30.
-- **CPU:** ✅ v1.7.1 2026-10-30 on macos-arm64-metal at commit `c159098d0998`, output sha256 `b9af23d3578b00d9`, [pin](../tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.macos-arm64-metal.cpu.txt)
+- **CPU:** ✅ v1.8.0 2026-10-30 on windows-x86_64-cuda at commit `9bb83e7e80b4`, output sha256 `b9af23d3578b00d9`, [pin](../tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ✅ v1.7.1 2026-10-30 on macos-arm64-metal at commit `c159098d0998`, output sha256 `b9af23d3578b00d9`, [pin](../tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.macos-arm64-metal.metal.txt)
-- **LoRA training:** supported (runner 1.7.1, 2026-10-30).
-- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-30).
+- **LoRA training:** supported (runner 1.8.0, 2026-10-30).
+- **LoRA adapter serving:** supported (runner 1.8.0, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
 <a id="k2-horizon-0.9b-q4_k_m"></a>
