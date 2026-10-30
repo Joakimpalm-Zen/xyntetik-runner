@@ -1,0 +1,70 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-10-30T10:18:59Z",
+  "host": {
+    "os": "Darwin",
+    "machine": "arm64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 1.7.1"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "lfm2.5-8b-a1b-q4_k_m",
+      "architecture": "lfm2moe",
+      "file": "models/LFM2.5-8B-A1B-Q4_K_M.gguf",
+      "expected_sha256": "4923ec14f06b968b74d663e5949867d2d9c3bf13a20b8be1a9f9af39989b2bb0",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 7870.8,
+          "stderr_tail": "lfm2moe: short-convolution hybrid (18 convolution + 6 attention layers)\ngpu: lfm2 is validated on the CPU only; its GPU path (the short-convolution layers and their state) is not checked yet \u2014 using CPU\nwarning: weights are 5.2 GB but only 2.0 GB of RAM is available. This is a sparse MoE and touches about 1.1 GB per token, which does fit \u2014 expect a slow start and disk reads whenever routing reaches a cold expert, not a stall on every token.\nmoe: prefetching routed experts as whole blocks (--moe-prefetch off disables)\nloaded LFM2.5-8B-A1B-Q4_K_M.gguf | lfm2moe | 24 layers | ctx 4096 | 4 threads | 1.23s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 5 tok, 0.90 tok/s | gen: 1 tok, 0.94 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 273.5,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": ""
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 114107.09,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "sibly add a brief explanation. There's no special constraints. So final answer: 2+2 = 4. Provide answer.\n\nWe must ensure we follow style: no extra formatting unless requested. So just plain text: 2+2 = 4. Or \"The sum of 2 and 2 is 4.\" That's fine.\n\nThus final.\n\n[/thinking]\n\nThe sum of 2 and 2 is 4.\n"
+        }
+      },
+      "resolved_file": "models/LFM2.5-8B-A1B-Q4_K_M.gguf",
+      "actual_sha256": "4923ec14f06b968b74d663e5949867d2d9c3bf13a20b8be1a9f9af39989b2bb0",
+      "file_status": "pass",
+      "complete": true
+    }
+  ],
+  "complete": true,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "pass": 1
+      },
+      "chat": {
+        "pass": 1
+      }
+    }
+  }
+}

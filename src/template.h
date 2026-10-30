@@ -256,7 +256,16 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // </tool_call>; tool results are <|observation|><tool_response>R
        // </tool_response>. The generation prompt is <|assistant|> alone.
        // Detected by its flint_text macro. Appended last.
-       TMPL_FLINT };
+       TMPL_FLINT,
+       // LFM2.5-8B-A1B (the template LiquidAI/LFM2.5-8B-A1B-GGUF carries, an
+       // earlier revision of the LFM2.5 template): TMPL_LFM2's framing, with
+       // a string argument written raw between single quotes (no escaping), a
+       // list or scalar argument as Python's str() of it, the thought read
+       // from `thinking` alone and kept on every assistant turn after the
+       // last user turn, and CONTINUE_FINAL_MESSAGE_TAG moved only on a turn
+       // that carries tool_calls. Detected by that raw-string line beside
+       // the LFM2 markers. Appended last.
+       TMPL_LFM2_8B };
 
 // The reasoning tags a TEMPLATE family writes, for the families whose
 // protocol (not their architecture) defines them: the `<think>` block of
@@ -356,6 +365,10 @@ static inline bool tmpl_renders_developer(int t) {
 // The families whose calls are Spark's GLM-style <arg_key> blocks
 static inline bool tmpl_argkv(int t) {
     return tmpl_spark(t) || t == TMPL_FLINT;
+}
+// LFM2's template revisions: one framing, their own argument and thought rules
+static inline bool tmpl_lfm2(int t) {
+    return t == TMPL_LFM2 || t == TMPL_LFM2_8B;
 }
 static inline bool tmpl_qwen35(int t) {
     return t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK;
@@ -649,7 +662,11 @@ enum tool_proto {
     TP_LFM2,          // LFM2 <|tool_call_start|>[name(key=value, ...)]<|tool_call_end|>
     TP_ARGKV,         // Spark <tool_call>N<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>
     TP_IFM_ARGKV,     // K2-Horizon: the same pairs in <ifm|...> tags, inside <ifm|tool_calls>
+    TP_LFM2_RAW,      // LFM2.5-8B: TP_LFM2 with its string values written raw
 };
+static inline bool proto_lfm2(int p) {
+    return p == TP_LFM2 || p == TP_LFM2_RAW;
+}
 
 typedef struct {
     int   kind;           // TCH_*

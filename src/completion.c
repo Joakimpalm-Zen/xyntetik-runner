@@ -3937,7 +3937,7 @@ static void completion_apply(slot_t *s, const completion_req *q, const char *pro
     // parse-only demux reads them by spelling, so those two are spelled
     // while its protocol is in force (the special_tokens rule, for two ids)
     e->n_spell = 0;
-    if (env && env->proto == TP_LFM2) {
+    if (env && proto_lfm2(env->proto)) {
         int a = tok_find(e->tok, "<|tool_call_start|>");
         int b = tok_find(e->tok, "<|tool_call_end|>");
         if (a >= 0) e->spell_ids[e->n_spell++] = a;

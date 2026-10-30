@@ -80,11 +80,13 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         // tokens, so the [INST] branch below would otherwise claim it
         if (strstr(meta_tmpl, "<|assistant_start|>")) return TMPL_APERTUS;
         // Liquid LFM2 / LFM2.5: ChatML whose tools are one `List of tools: [`
-        // line and whose calls are a Python list after a marker token
+        // line and whose calls are a Python list after a marker token; the
+        // revision LFM2.5-8B-A1B's GGUF carries writes a string argument raw
         if (strstr(meta_tmpl, "<|im_start|>") &&
             strstr(meta_tmpl, "List of tools: [") &&
             strstr(meta_tmpl, "<|tool_call_start|>"))
-            return TMPL_LFM2;
+            return strstr(meta_tmpl, "{{- \"'\" + arg_value + \"'\" -}}") ? TMPL_LFM2_8B
+                                                                        : TMPL_LFM2;
         // K2-Horizon: the <|ifm|im_start|> turn token is IFM's own; no other
         // family's template writes it (ChatML's <|im_start|> is not a
         // substring of it)
@@ -240,6 +242,7 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "mellum")) return TMPL_MELLUM;
     if (!strcmp(name, "minicpm5")) return TMPL_MINICPM5;
     if (!strcmp(name, "lfm2")) return TMPL_LFM2;
+    if (!strcmp(name, "lfm2-8b")) return TMPL_LFM2_8B;
     if (!strcmp(name, "mimo")) return TMPL_MIMO;
     if (!strcmp(name, "spark")) return TMPL_SPARK;
     if (!strcmp(name, "spark25")) return TMPL_SPARK25;
@@ -319,6 +322,7 @@ const char *template_name(int t) {
         case TMPL_MELLUM: return "mellum";
         case TMPL_MINICPM5: return "minicpm5";
         case TMPL_LFM2: return "lfm2";
+        case TMPL_LFM2_8B: return "lfm2-8b";
         case TMPL_MIMO: return "mimo";
         case TMPL_SPARK: return "spark";
         case TMPL_SPARK25: return "spark25";
@@ -755,7 +759,7 @@ int req_bare_recipients(struct jv *req) {
 bool template_think_tags(int tmpl, const char **open, const char **close) {
     if (tmpl_chatml_think(tmpl) || tmpl == TMPL_QWEN38 ||
         tmpl == TMPL_NEMOTRON || tmpl == TMPL_HERMES4 || tmpl == TMPL_MINICPM5 ||
-        tmpl == TMPL_LFM2 ||
+        tmpl_lfm2(tmpl) ||
         tmpl == TMPL_MIMO ||
         tmpl_argkv(tmpl) ||
         tmpl_granite42_like(tmpl) || tmpl_ornith_like(tmpl)) {
@@ -2444,7 +2448,8 @@ static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
-// TMPL_LFM2 (LiquidAI/LFM2.5-1.2B-Instruct chat_template.jinja). A leading
+// TMPL_LFM2 (LiquidAI/LFM2.5-1.2B-Instruct chat_template.jinja) and
+// TMPL_LFM2_8B (LiquidAI/LFM2.5-8B-A1B-GGUF's), the same framing. A leading
 // system message is the system turn's text (omitted when empty); declared
 // tools follow it on a line of their own, `List of tools: [` and each
 // declaration's tojson joined by `, `, then `]`; the turn is written only
@@ -4423,6 +4428,7 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_MINICPM5:
         return render_chatml(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_LFM2:
+    case TMPL_LFM2_8B:
         return render_lfm2(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_LLAMA3:
         for (int i = 0; i < n_msgs; i++)
@@ -4804,7 +4810,7 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
         pl_lit(out, "\n</tools>");
         return;
     }
-    if (tmpl == TMPL_LFM2) {
+    if (tmpl_lfm2(tmpl)) {
         // chat_template.jinja: `List of tools: [`, each declaration's tojson
         // joined by `, `, then `]`
         if (!tools || tools->type != J_ARR || tools->n == 0) return;
@@ -5034,6 +5040,57 @@ void mistral_call_id(const char *id, char out[10]) {
 // escaped (the template's four replaces, in its order), a list or mapping as
 // its tojson, anything else as Jinja's `string` filter (True/False/None, a
 // number as Python prints it).
+// Python's repr() of a JSON value, which its str() is for anything but a
+// string: a string quoted with ' unless it holds a ' and no ", escaping the
+// backslash, that quote, \n, \r, \t and the other C0 bytes; True, False and
+// None; a number as Jinja's string filter prints it; lists and dicts with
+// ", " and ": " between.
+static void lfm2_py_repr(const jv *v, sbuf *out) {
+    if (v->type == J_STR) {
+        char q = strchr(v->str, '\'') && !strchr(v->str, '"') ? '"' : '\'';
+        sb_put(out, &q, 1);
+        for (const unsigned char *p = (const unsigned char *)v->str; *p; p++) {
+            if (*p == '\\')      sb_lit(out, "\\\\");
+            else if (*p == q)    { sb_lit(out, "\\"); sb_put(out, &q, 1); }
+            else if (*p == '\n') sb_lit(out, "\\n");
+            else if (*p == '\r') sb_lit(out, "\\r");
+            else if (*p == '\t') sb_lit(out, "\\t");
+            else if (*p < 0x20 || *p == 0x7f) sb_fmt(out, "\\x%02x", *p);
+            else sb_put(out, (const char *)p, 1);
+        }
+        sb_put(out, &q, 1);
+    } else if (v->type == J_ARR || v->type == J_OBJ) {
+        sb_lit(out, v->type == J_ARR ? "[" : "{");
+        for (int i = 0; i < v->n; i++) {
+            if (i) sb_lit(out, ", ");
+            if (v->type == J_OBJ) {
+                jv key = { .type = J_STR, .str = v->keys[i] };
+                lfm2_py_repr(&key, out);
+                sb_lit(out, ": ");
+            }
+            lfm2_py_repr(v->items[i], out);
+        }
+        sb_lit(out, v->type == J_ARR ? "]" : "}");
+    } else {
+        coder_value(v, out);
+    }
+}
+
+// LFM2.5-8B's format_arg_value (TMPL_LFM2_8B): a string between single
+// quotes exactly as it is, a mapping as its tojson, anything else (a list
+// included) as Python's str().
+static void lfm2_8b_arg_value(const jv *v, sbuf *out) {
+    if (v->type == J_STR) {
+        sb_lit(out, "'");
+        sb_put(out, v->str, strlen(v->str));
+        sb_lit(out, "'");
+    } else if (v->type == J_OBJ) {
+        jv_dump_tojson(v, out);
+    } else {
+        lfm2_py_repr(v, out);
+    }
+}
+
 static void lfm2_arg_value(const jv *v, sbuf *out) {
     if (v->type != J_STR) {
         if (v->type == J_ARR || v->type == J_OBJ) jv_dump_tojson(v, out);
@@ -5094,8 +5151,9 @@ void tool_history_render_for(int tmpl, const jv *calls,
     // keys in the order the arguments object carries them. OpenAI's JSON
     // string is parsed first, as the template's error message asks a caller
     // to; arguments that are not an object write an empty argument list
-    // (the template refuses them).
-    if (tmpl == TMPL_LFM2) {
+    // (the template refuses them). TMPL_LFM2_8B spells the values its own
+    // way (lfm2_8b_arg_value).
+    if (tmpl_lfm2(tmpl)) {
         if (!calls->n) return;
         pl_lit(out, "<|tool_call_start|>[");
         for (int i = 0; i < calls->n; i++) {
@@ -5114,7 +5172,8 @@ void tool_history_render_for(int tmpl, const jv *calls,
                     if (k) sb_lit(out, ", ");
                     sb_put(out, obj->keys[k], strlen(obj->keys[k]));
                     sb_lit(out, "=");
-                    lfm2_arg_value(obj->items[k], out);
+                    if (tmpl == TMPL_LFM2_8B) lfm2_8b_arg_value(obj->items[k], out);
+                    else lfm2_arg_value(obj->items[k], out);
                 }
             sb_lit(out, ")");
             jv_free(parsed);
@@ -5899,11 +5958,12 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
             xml_fellback = true;
         }
     }
-    if (strict && tmpl == TMPL_LFM2 && env->kind == TCH_AUTO) {
+    if (strict && tmpl_lfm2(tmpl) && env->kind == TCH_AUTO) {
         // LFM2's own Python call list, parsed on the way out and never
         // constrained, as MiniCPM5's XML is: a required or named choice takes
-        // the generic envelope for that one request.
-        env->proto = TP_LFM2;
+        // the generic envelope for that one request. The 8B's revision writes
+        // its strings raw, so its model does too (TP_LFM2_RAW).
+        env->proto = tmpl == TMPL_LFM2_8B ? TP_LFM2_RAW : TP_LFM2;
         env->tools = tools;
         env->parse_only = true;
         env->max_calls = TOOL_STREAM_MAX_CALLS;
@@ -6056,7 +6116,7 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
     bool mcp_decl = (tmpl == TMPL_MINICPM5 &&
                      (!strict || env->proto == TP_MINICPM_XML)) ||
                     // LFM2 the same way: its declarations are its template's
-                    (tmpl == TMPL_LFM2 && (!strict || env->proto == TP_LFM2)) ||
+                    (tmpl_lfm2(tmpl) && (!strict || proto_lfm2(env->proto))) ||
                     (tmpl == TMPL_MIMO &&
                      (!strict || env->proto == TP_QWEN_XML)) ||
                     (tmpl_argkv(tmpl) &&
@@ -6084,6 +6144,7 @@ const char *tool_envelope_protocol_name(const tool_envelope *e) {
         case TP_QWEN_XML:   return "qwen3_xml";
         case TP_MINICPM_XML: return "minicpm5_xml";
         case TP_LFM2:       return "lfm2_python";
+        case TP_LFM2_RAW:   return "lfm2_python_raw";
         case TP_ARGKV:      return "argkv_xml";
         case TP_IFM_ARGKV:  return "ifm_argkv_xml";
         case TP_NEMOTRON:   return "nemotron_json";
@@ -6107,6 +6168,7 @@ const char *tool_protocol_name(int tmpl, bool *native) {
         case TP_QWEN_XML: return "qwen3_xml";
         case TP_MINICPM_XML: return "minicpm5_xml";
         case TP_LFM2:     return "lfm2_python";
+        case TP_LFM2_RAW: return "lfm2_python_raw";
         case TP_ARGKV: return "argkv_xml";
         case TP_IFM_ARGKV: return "ifm_argkv_xml";
         case TP_NEMOTRON: return "nemotron_json";
@@ -7523,11 +7585,84 @@ static int py_value(pyrd *r, sbuf *o, int depth) {
     return py_keyword(r, o);
 }
 
+// LFM2.5-8B's template writes a string argument raw between single quotes
+// ("'" + arg_value + "'"), so a quote inside one is not escaped and a
+// backslash is itself. Whether the quote at `p - 1` ends the value is then a
+// question of what follows it, read here: `, KEY =` (the next argument), or
+// `)` then `, NAME (` (the next call) or `]` and the closing marker (the end
+// of the list); trailing commas as the strict grammar allows them. PY_MORE
+// when the text runs out before that is decided.
+static int py_raw_end(const char *p, const char *end) {
+    pyrd r = { p, end };
+    py_ws(&r);
+    if (r.p >= end) return PY_MORE;
+    if (*r.p == ',') {
+        r.p++;
+        py_ws(&r);
+        if (r.p >= end) return PY_MORE;
+        if (*r.p != ')') {
+            if (!py_idch(*r.p, true)) return PY_BAD;
+            while (r.p < end && py_idch(*r.p, false)) r.p++;
+            py_ws(&r);
+            if (r.p >= end) return PY_MORE;
+            if (*r.p != '=') return PY_BAD;
+            if (r.p + 1 >= end) return PY_MORE;
+            return r.p[1] == '=' ? PY_BAD : PY_OK;
+        }
+    }
+    if (*r.p != ')') return PY_BAD;
+    r.p++;
+    py_ws(&r);
+    if (r.p >= end) return PY_MORE;
+    if (*r.p == ',') {
+        r.p++;
+        py_ws(&r);
+        if (r.p >= end) return PY_MORE;
+        if (*r.p != ']') {
+            if (!py_idch(*r.p, true)) return PY_BAD;
+            while (r.p < end && (py_idch(*r.p, false) || *r.p == '-' || *r.p == '.')) r.p++;
+            py_ws(&r);
+            if (r.p >= end) return PY_MORE;
+            return *r.p == '(' ? PY_OK : PY_BAD;
+        }
+    }
+    if (*r.p != ']') return PY_BAD;
+    r.p++;
+    py_ws(&r);
+    size_t left = (size_t)(end - r.p), cl = strlen(LFM_CALL_CLOSE);
+    if (left < cl) return memcmp(r.p, LFM_CALL_CLOSE, left) ? PY_BAD : PY_MORE;
+    return memcmp(r.p, LFM_CALL_CLOSE, cl) ? PY_BAD : PY_OK;
+}
+
+// A raw single-quoted value at r->p (TP_LFM2_RAW): its bytes as they are, up
+// to the first quote a valid continuation follows (py_raw_end), line breaks
+// and backslashes included. What the text cannot say, it does not guess: a
+// value that itself spells such a continuation (`x', n='y`) reads as where
+// that continuation says it ends, as it would to any reader of what the
+// template writes.
+static int py_raw_string(pyrd *r, sbuf *o) {
+    const char *s = ++r->p;
+    for (const char *q = s; q < r->end; q++) {
+        if (*q != '\'') continue;
+        int rc = py_raw_end(q + 1, r->end);
+        if (rc == PY_BAD) continue;
+        if (rc == PY_MORE) return PY_MORE;
+        sb_lit(o, "\"");
+        sb_esc(o, s, (size_t)(q - s));
+        sb_lit(o, "\"");
+        r->p = q + 1;
+        return PY_OK;
+    }
+    return PY_MORE;
+}
+
 // The call list at r->p: `[` call (`,` call)* `,`? `]`, a call being NAME
 // `(` (KEY `=` value (`,` KEY `=` value)* `,`?)? `)` with no key repeated.
 // Each call is appended to `calls` as an OpenAI tool_calls item, ids from
-// `index`. *n_calls counts them; more than `max` is not a call list.
-static int py_call_list(pyrd *r, int index, int max, sbuf *calls, int *n_calls) {
+// `index`. *n_calls counts them; more than `max` is not a call list. `raw`
+// reads a single-quoted argument value as TP_LFM2_RAW writes it; strings
+// inside a list or mapping keep Python's escapes, as their repr and tojson do.
+static int py_call_list(pyrd *r, int index, int max, bool raw, sbuf *calls, int *n_calls) {
     py_ws(r);
     if (r->p >= r->end) return PY_MORE;
     if (*r->p != '[') return PY_BAD;
@@ -7584,7 +7719,9 @@ static int py_call_list(pyrd *r, int index, int max, sbuf *calls, int *n_calls) 
             sb_lit(&args, "\"");
             sb_esc(&args, k, kl);
             sb_lit(&args, "\":");
-            rc = py_value(r, &args, 1);
+            py_ws(r);
+            if (raw && r->p < r->end && *r->p == '\'') rc = py_raw_string(r, &args);
+            else rc = py_value(r, &args, 1);
             if (rc != PY_OK) break;
         }
         if (rc != PY_OK) { free(args.s); return rc; }
@@ -7604,7 +7741,7 @@ int tool_envelope_map_channels(const tool_envelope *e, const char *doc,
                                size_t n, sbuf *reasoning, sbuf *content,
                                sbuf *tc) {
     if (!e || !doc || !content || !tc) return -1;
-    if (e->proto == TP_LFM2) {   // parse-only: the demultiplexer is the parser
+    if (proto_lfm2(e->proto)) {   // parse-only: the demultiplexer is the parser
         int got = 0;
         return tool_stream_map(e, doc, n, false, content, tc, &got) < 0 ? -1 : got;
     }
@@ -7619,7 +7756,7 @@ int tool_envelope_map_channels(const tool_envelope *e, const char *doc,
 int tool_envelope_map(const tool_envelope *e, const char *doc, size_t n,
                       sbuf *content, sbuf *tc) {
     if (!e || !doc || !content || !tc) return -1;
-    if (e->proto == TP_LFM2) {   // parse-only: the demultiplexer is the parser
+    if (proto_lfm2(e->proto)) {   // parse-only: the demultiplexer is the parser
         int got = 0;
         return tool_stream_map(e, doc, n, false, content, tc, &got) < 0 ? -1 : got;
     }
@@ -8004,7 +8141,7 @@ void tool_stream_init(tool_stream *s, const tool_envelope *e,
              : e && (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) ? TS_QWEN_START
              : e && proto_bare_xml(e->proto) ? TS_MCP_START
              : e && (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL) ? TS_NEMO_START
-             : e && e->proto == TP_LFM2 ? TS_LFM_TEXT
+             : e && proto_lfm2(e->proto) ? TS_LFM_TEXT
              : e && e->proto == TP_ATEM ? TS_ATEM
              : e && e->proto == TP_MUSE_PLAIN ? TS_MUSE_HEADER : TS_TOOL;
 }
@@ -8391,7 +8528,8 @@ static int ts_lfm2(tool_stream *s, const char *bytes, int n) {
             sbuf tc = {0};
             int got = 0;
             int max = s->env ? s->env->max_calls - s->n_calls : 1;
-            int prc = py_call_list(&r, 0, max > 0 ? max : 0, &tc, &got);
+            int prc = py_call_list(&r, 0, max > 0 ? max : 0,
+                                   s->env && s->env->proto == TP_LFM2_RAW, &tc, &got);
             if (prc == PY_OK) {
                 py_ws(&r);
                 size_t left = (size_t)(s->head + s->head_n - r.p);

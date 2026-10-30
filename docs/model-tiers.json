@@ -4575,6 +4575,102 @@
       }
     },
     {
+      "id": "lfm2.5-8b-a1b-q4_k_m",
+      "model": "LFM2.5-8B-A1B (LiquidAI)",
+      "family": "LFM2.5",
+      "tier": "tier2",
+      "claim": "Text path, LiquidAI's own Q4_K_M of LFM2.5-8B-A1B, which fails the fidelity bar by far: against the BF16 parent computed in float32 it reads 0.237 mean KLD against 0.05 (75.3% top-1, 85.4% margin-qualified against 97%). The publisher's Q8_0 is the fidelity file, narrowly (0.0443, 97.6% margin-qualified); its gap is the file's quantization: Runner on the publisher's BF16 GGUF reads 0.0078, and llama.cpp on the same Q8_0 0.0572 (96.7%, outside the bar).",
+      "architecture": "lfm2moe",
+      "upstream": {
+        "checkpoint": "LiquidAI/LFM2.5-8B-A1B",
+        "revision": "5dd22602c2e9f6a097b1de4c4efe0658b605015c"
+      },
+      "files": [
+        {
+          "name": "LFM2.5-8B-A1B-Q4_K_M.gguf",
+          "repo": "LiquidAI/LFM2.5-8B-A1B-GGUF",
+          "revision": "49c14831707011e64d70b2ebd8462ba08d608434",
+          "sha256": "4923ec14f06b968b74d663e5949867d2d9c3bf13a20b8be1a9f9af39989b2bb0",
+          "bytes": 5155564768
+        }
+      ],
+      "quantization": "Q4_K_M (publisher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "This file: load, publisher tokenizer agreement (0 of 721 corpus strings, 0 of the gold corpus's 107 passages and 0 of its vocabulary entries differ from tokenizer.json at 5dd22602 with runner #479 and #482), template conformance in text and tokens against the template the GGUF carries, and a chat answer at temperature 0 on the Metal laptop's CPU. Both publisher quantizations against LiquidAI's BF16 parent computed in float32 on the lab CPU lane (transformers 5.16.1, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files at bee195dd): Q8_0 0.0443 mean KLD / 93.7% top-1 / 97.6% margin-qualified, Q4_K_M 0.237 / 75.3% / 85.4%. File or engine, against the same gold: Runner on the publisher's BF16 GGUF 0.0078 / 97.3% / 100%, llama.cpp (36a0e2f) on the same Q8_0 0.0572 / 90.0% / 96.7%. The lfm2moe arithmetic is also checked against transformers' float32 on a converted random model (docs/compat-reports/lfm2.5-reference-2026-10-30/README.md). Record: docs/compat-reports/lfm2.5-8b-a1b-reference-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "CPU only: the GPU backends refuse lfm2moe by name and serve it on the CPU (its short-convolution layers are not checked there yet). A required or named tool choice takes the generic JSON envelope on this family. Licence: LFM Open License v1.0, which limits commercial use to entities with under US$10M annual revenue; the limit binds whoever runs the model.",
+        "evidence": [
+          "docs/compat-reports/1.7.1-2026-10-30-macos-arm64-lfm2.5-8b-a1b-q4_k_m.json",
+          "docs/compat-reports/lfm2.5-8b-a1b-reference-2026-10-30/README.md",
+          "docs/compat-reports/lfm2.5-reference-2026-10-30/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the raw-string parser is pinned on fixtures only). The Q8_0 and the BF16 GGUF are not rows."
+      },
+      "smoke": {
+        "device_class": "macos-arm64-metal",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "bd7c060c4ccf75fa34c7142ed916f37fc9aff131",
+          "caps": {
+            "version": "1.7.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "ccd198d40f5a19d5067d75ddc99e038b9eb387efdaafea654b8238b1bcec6157",
+          "ran": "runner -m LFM2.5-8B-A1B-Q4_K_M.gguf --serve -c 1024 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=400 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/lfm2.5-8b-a1b-q4_k_m.macos-arm64-metal.cpu.txt"
+        },
+        "cuda": {
+          "kind": "limit",
+          "reason": "lfm2moe (short-convolution layers interleaved with GQA attention, routed experts) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
+        "metal": null
+      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-30",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29 (the LFM2.5 family, after the dense 1.2B and 350M): the file loaded once lfm2moe was in, but rendered with the 1.2B's template rules, which its own earlier template revision does not follow.",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the Metal laptop (policy 2026-10-27). Maintained on report.",
+          "last_validated_release": null
+        }
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "recurrent architecture (short convolution)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover the short-convolution hybrid yet (lfm2moe)"
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-30"
+      }
+    },
+    {
       "id": "spark-x2.6-4b-q4_k_m",
       "model": "Spark-X2.6-4B (XHToken)",
       "family": "Spark",

@@ -3264,6 +3264,132 @@ static void test_lfm2_native_calls(void) {
     tool_envelope_free(&e); jv_free(tools);
 }
 
+// LFM2.5-8B's revision (TMPL_LFM2_8B) writes a string argument raw between
+// single quotes, so its model writes them raw (TP_LFM2_RAW): a quote inside a
+// value is not escaped, a backslash is itself, a line break is a line break.
+// A value ends at the first quote a valid continuation follows. Pinned at
+// every chunk size: the hostile raw forms, the one thing the text cannot say
+// (a value that spells `', KEY=` splits there), that TMPL_LFM2's escapes do
+// not reach the raw reader and the raw reading does not reach the escaped
+// one, both writers, and each revision's replay reading back to its own
+// arguments.
+static void lfm2_doc_case(const tool_envelope *e, const char *doc, const char *names,
+                          const char *args, const char *content, const char *what) {
+    for (size_t step = 1; step <= strlen(doc); step++) {
+        demux_log log; demux_step(e, doc, step, &log);
+        if (strcmp(log.names.s ? log.names.s : "", names) ||
+            strcmp(log.args.s ? log.args.s : "", args) ||
+            strcmp(log.content.s ? log.content.s : "", content))
+            fprintf(stderr, "%s step %zu: names '%s' args '%s' content '%s'\n",
+                    what, step, log.names.s, log.args.s, log.content.s);
+        assert(!strcmp(log.names.s ? log.names.s : "", names));
+        assert(!strcmp(log.args.s ? log.args.s : "", args));
+        assert(!strcmp(log.content.s ? log.content.s : "", content));
+        log_free(&log);
+    }
+}
+
+static void test_lfm2_8b_raw_calls(void) {
+    jv *tools = parse("[{\"type\":\"function\",\"function\":{\"name\":\"save\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"},\"n\":{\"type\":\"integer\"}},\"required\":[\"text\"]}}}]");
+    tool_envelope e, x; char err[192]; bool skip = false, skip2 = false;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    tool_decl_native(TMPL_LFM2_8B, true, true, tools, &e, &skip);
+    assert(e.proto == TP_LFM2_RAW && e.parse_only && skip);
+    assert(!strcmp(tool_envelope_protocol_name(&e), "lfm2_python_raw"));
+    assert(tool_envelope_build(tools, NULL, NULL, &x, err, sizeof err) == 1);
+    tool_decl_native(TMPL_LFM2, true, true, tools, &x, &skip2);
+    assert(x.proto == TP_LFM2);
+
+    static const struct { const char *doc, *names, *args; } ok[] = {
+        { "<|tool_call_start|>[save(text='001', n=2)]<|tool_call_end|>",
+          "save", "{\"text\":\"001\",\"n\":2}" },
+        // a quote inside, and a quote then text that is no continuation
+        { "<|tool_call_start|>[save(text='it's here')]<|tool_call_end|>",
+          "save", "{\"text\":\"it's here\"}" },
+        { "<|tool_call_start|>[save(text='a', b')]<|tool_call_end|>",
+          "save", "{\"text\":\"a', b\"}" },
+        // backslashes and a line break as they are
+        { "<|tool_call_start|>[save(text='C:\\new\\\\x \"q\"\nline')]<|tool_call_end|>",
+          "save", "{\"text\":\"C:\\\\new\\\\\\\\x \\\"q\\\"\\nline\"}" },
+        // the end of a call spelled inside, and the closing marker
+        { "<|tool_call_start|>[save(text='x')] y')]<|tool_call_end|>",
+          "save", "{\"text\":\"x')] y\"}" },
+        { "<|tool_call_start|>[save(text=']<|tool_call_end|>')]<|tool_call_end|>",
+          "save", "{\"text\":\"]<|tool_call_end|>\"}" },
+        // two calls, a quote in the first value
+        { "<|tool_call_start|>[save(text='a'b'), save(n=1)]<|tool_call_end|>",
+          "save save", "{\"text\":\"a'b\"}{\"n\":1}" },
+        // a list is Python's str() of it, a mapping its tojson: their strings
+        // keep the escapes repr and tojson write; a double-quoted value too
+        { "<|tool_call_start|>[save(items=['a', \"it's\", 'b\\'c', 1, True, None], "
+          "m={\"k\": \"v\\\"w\"}, q=\"d\\\"q\")]<|tool_call_end|>",
+          "save", "{\"items\":[\"a\",\"it's\",\"b'c\",1,true,null],\"m\":{\"k\":\"v\\\"w\"},"
+          "\"q\":\"d\\\"q\"}" },
+        // the limit: a value that spells `', KEY='` reads as two arguments,
+        // as it does to any reader of what the template writes
+        { "<|tool_call_start|>[save(text='x', n='y')]<|tool_call_end|>",
+          "save", "{\"text\":\"x\",\"n\":\"y\"}" },
+    };
+    for (size_t c = 0; c < sizeof ok / sizeof *ok; c++)
+        lfm2_doc_case(&e, ok[c].doc, ok[c].names, ok[c].args, "", "lfm2-8b raw case");
+
+    // the two readers on the same text: the raw one keeps a backslash, the
+    // escaped one decodes it; the escaped spelling of a quote is two bytes to
+    // the raw reader, and a raw quote is no call to the escaped one
+    lfm2_doc_case(&e, "<|tool_call_start|>[save(text='C:\\new')]<|tool_call_end|>",
+                  "save", "{\"text\":\"C:\\\\new\"}", "", "raw reads \\n raw");
+    lfm2_doc_case(&x, "<|tool_call_start|>[save(text='C:\\new')]<|tool_call_end|>",
+                  "save", "{\"text\":\"C:\\new\"}", "", "escaped decodes \\n");
+    lfm2_doc_case(&e, "<|tool_call_start|>[save(text='it\\'s')]<|tool_call_end|>",
+                  "save", "{\"text\":\"it\\\\'s\"}", "", "raw keeps the backslash");
+    lfm2_doc_case(&x, "<|tool_call_start|>[save(text='it's')]<|tool_call_end|>",
+                  "", "", "<|tool_call_start|>[save(text='it's')]<|tool_call_end|>",
+                  "a raw quote is no call to the escaped reader");
+
+    // truncated, streamed and buffered: an open raw value is never a call
+    const char *cut = "Saving.<|tool_call_start|>[save(text='it's 00";
+    for (int truncated = 0; truncated < 2; truncated++) {
+        sbuf o = {0}, t = {0};
+        int n_calls = -1;
+        int rc = tool_stream_map(&e, cut, strlen(cut), truncated == 1, &o, &t, &n_calls);
+        assert(rc == (truncated ? 0 : -1) && n_calls == 0 && !t.n);
+        assert(!strcmp(o.s, "Saving."));
+        free(o.s); free(t.s);
+    }
+
+    // the writers: one call, each revision's spelling of the same values, and
+    // each reads back through its own reader to the arguments it was given
+    jv *calls = parse("[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"save\","
+                      "\"arguments\":\"{\\\"text\\\":\\\"it's \\\\\\\\ C:\\\\\\\\new\\\\nline\\\","
+                      "\\\"l\\\":[\\\"a\\\",\\\"it's\\\",1,2.5,true,null],"
+                      "\\\"m\\\":{\\\"k\\\":\\\"v\\\"},\\\"n\\\":3,\\\"ok\\\":false,\\\"no\\\":null}\"}}]");
+    const char *want_args = "{\"text\":\"it's \\\\ C:\\\\new\\nline\",\"l\":[\"a\",\"it's\",1,2.5,true,null],"
+                            "\"m\":{\"k\":\"v\"},\"n\":3,\"ok\":false,\"no\":null}";
+    static const struct { int tmpl; const char *want; } W[] = {
+        { TMPL_LFM2_8B, "<|tool_call_start|>[save(text='it's \\ C:\\new\nline', "
+                        "l=['a', \"it's\", 1, 2.5, True, None], m={\"k\": \"v\"}, n=3, ok=False, "
+                        "no=None)]<|tool_call_end|>" },
+        { TMPL_LFM2,    "<|tool_call_start|>[save(text='it\\'s \\\\ C:\\\\new\\nline', "
+                        "l=[\"a\", \"it's\", 1, 2.5, true, null], m={\"k\": \"v\"}, n=3, ok=False, "
+                        "no=None)]<|tool_call_end|>" },
+    };
+    for (size_t w = 0; w < 2; w++) {
+        sbuf r = {0};
+        tool_history_render_for(W[w].tmpl, calls, false, &r);
+        sb_put(&r, "", 0);
+        r.n = tok_strip_marks(r.s);
+        if (strcmp(r.s, W[w].want)) fprintf(stderr, "lfm2 writer %zu: %s\n", w, r.s);
+        assert(!strcmp(r.s, W[w].want));
+        demux_log l; demux(w == 0 ? &e : &x, r.s, &l);
+        if (l.begins != 1 || strcmp(l.args.s, want_args)) fprintf(stderr, "lfm2 read-back %zu: %s\n", w, l.args.s);
+        assert(l.begins == 1 && !strcmp(l.args.s, want_args));
+        log_free(&l);
+        free(r.s);
+    }
+    jv_free(calls);
+    tool_envelope_free(&e); tool_envelope_free(&x); jv_free(tools);
+}
+
 static void test_minicpm5_native_calls(void) {
     jv *tools = parse("[{\"type\":\"function\",\"function\":{\"name\":\"save\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"},\"n\":{\"type\":\"integer\"}},\"required\":[\"text\"]}}}]");
     tool_envelope e; char err[192]; bool skip = false;
@@ -3736,6 +3862,7 @@ int main(void) {
     test_coder_native_calls();
     test_minicpm5_native_calls();
     test_lfm2_native_calls();
+    test_lfm2_8b_raw_calls();
     test_mimo_compact_xml_calls();
     test_spark_argkv_calls();
     test_k2h_ifm_calls();
