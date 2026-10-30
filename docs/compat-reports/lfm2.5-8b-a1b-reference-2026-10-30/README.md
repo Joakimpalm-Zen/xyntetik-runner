@@ -46,9 +46,15 @@ One run against the same float32 gold, 300 positions:
 - **Runner's BF16 tail.** Its mean is held up by a few positions: the top 20 carry 66% of the total, 52 read above
   0.01. They are positions where both Q8_0 sides diverge too (Spearman 0.47 and 0.52 with them), mostly below the
   median gold margin (1.05). That is consistent with near-tied expert choices (32 sigmoid-routed experts, four per
-  token) turning the f16 KV cache's and the accumulation order's rounding into a different choice; it is not yet
-  measured. Pending: a dense baseline, Runner on LFM2.5-1.2B-Instruct's BF16 GGUF against its float32 gold, which gives
-  Runner's floor where no routing exists.
+  token) turning the f16 KV cache's and the accumulation order's rounding into a different choice.
+- **Runner's floor where no routing exists.** The dense LFM2.5-1.2B-Instruct, on the publisher's BF16 GGUF
+  (`LiquidAI/LFM2.5-1.2B-Instruct-GGUF` at `8ed28802`) against its own float32 gold (`0f604ada`), on the same lab CPU
+  lane and the same corpus and positions, reads a mean KLD of **0.00005** (median 0.0, max 0.0115, top-1 100%, one
+  position above 0.01), with the same f16 KV cache and short convolutions. Its Q8_0, scored again there, reads 0.00416
+  (the [1.2B record](../lfm2.5-reference-2026-10-30/README.md)'s 0.0042, taken on the Metal laptop). So the 8B-A1B's
+  0.0078 on its BF16 GGUF is about 150 times what Runner's arithmetic costs without routing, and it sits at positions
+  every file finds fragile: the cost of the expert choice, not of the dense arithmetic. Data:
+  `gold-logits-1.2b-bf16-dense-baseline.json`.
 
 ## Setup
 
