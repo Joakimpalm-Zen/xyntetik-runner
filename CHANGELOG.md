@@ -3,6 +3,21 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **LFM2.5-24B-A2B renders with its own template revision.** Its template,
+  the same bytes in the repository and the GGUF, is the 1.2B's with two
+  differences, and Runner rendered it as the 1.2B's: a history turn's thought
+  is kept on every assistant turn after the last user turn, not on the last
+  assistant turn only, and the generation prompt opens the thought
+  (`<|im_start|>assistant` and a newline, then `<think>`), whatever
+  `enable_thinking` says. It is now `lfm2-24b`, and its reply's reasoning is
+  split from the opener the prompt wrote. Template conformance against the
+  24B's own chat_template.jinja is 32 of 32 in text and tokens; 21 of the
+  cases fail when it is rendered with the 1.2B's rules. Its tokenizer.json is
+  byte-identical to the 8B-A1B's (0 of 721). The file's cells and its float32
+  reference are owed, and the row is upcoming.
+
 ## v1.9.0 - 2026-10-30
 
 - **LFM2.5-8B-A1B Q4_K_M admitted at Tier 2; it fails the fidelity bar, and

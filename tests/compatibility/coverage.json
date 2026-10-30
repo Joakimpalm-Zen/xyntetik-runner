@@ -782,6 +782,26 @@
     "metal": "UNSUPPORTED"
    },
    "note": "the LFM2.5 template revision LFM2.5-8B-A1B's GGUF carries: LFM2's framing, a string argument written raw between single quotes, a list as Python's str(), the thought read from `thinking` alone and kept on every assistant turn after the last user turn"
+  },
+  "lfm2-24b": {
+   "artifact": "lfm2.5-24b-a2b-q4_k_m",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "the template renders the file's own declarations and Python call lists (template-conformance lfm2-24b, 32/32 text and tokens, 2026-10-30), read by the lfm2_python parser pinned on fixtures (test_lfm2_native_calls); the live tool gate has not been run on this artifact"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "not read yet for this artifact; no family preset"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "UNSUPPORTED",
+    "metal": "UNSUPPORTED"
+   },
+   "note": "the LFM2.5-24B-A2B template revision: the 1.2B's rules, with the thought kept on every assistant turn after the last user turn and opened by the generation prompt"
   }
  },
  "architectures": {
@@ -1292,10 +1312,12 @@
   "lfm2moe": {
    "templates": [
     "lfm2",
-    "lfm2-8b"
+    "lfm2-8b",
+    "lfm2-24b"
    ],
    "artifacts": [
-    "lfm2.5-8b-a1b-q4_k_m"
+    "lfm2.5-8b-a1b-q4_k_m",
+    "lfm2.5-24b-a2b-q4_k_m"
    ],
    "tool_protocol": {
     "status": "NOT RUN"

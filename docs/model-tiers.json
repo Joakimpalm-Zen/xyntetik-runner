@@ -4671,6 +4671,24 @@
       }
     },
     {
+      "id": "lfm2.5-24b-a2b-q4_k_m",
+      "model": "LFM2.5-24B-A2B (LiquidAI)",
+      "family": "LFM2.5",
+      "tier": "upcoming",
+      "claim": "Not admitted yet: the template revision its GGUF carries and its tokenizer are checked; the file's cells and its float32 reference are owed.",
+      "architecture": "lfm2moe",
+      "missing": "A CPU cell on the publisher's Q4_K_M (14.5 GB, the lab CPU lane) and the float32 reference against the BF16 checkpoint (48 GB stored; float32 arithmetic cast at use per decoder block, gold-logits.py --upcast-at-use). Tokenizer agreement (0 of 721, against the 24B's own tokenizer.json, byte-identical to the 8B-A1B's) and template conformance (32 of 32 in text and tokens against the 24B's own chat_template.jinja) are recorded.",
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-30",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29, the LFM2.5-24B-A2B item: the lfm2moe architecture is admitted with the 8B-A1B; its GGUF carries a third LFM2.5 template revision, implemented first.",
+          "last_validated_release": null
+        }
+      ],
+      "anchor": "anchor: the BF16 parent computed in float32, cast at use per decoder block (owed)."
+    },
+    {
       "id": "spark-x2.6-4b-q4_k_m",
       "model": "Spark-X2.6-4B (XHToken)",
       "family": "Spark",

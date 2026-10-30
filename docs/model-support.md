@@ -1,5 +1,3 @@
-<<<<<<< HEAD
-=======
 # Model support tiers
 
 A tier is a maintenance and validation commitment: it says which model files
@@ -679,7 +677,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
-**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
+**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B), LFM2.5-24B-A2B (LiquidAI).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated
@@ -2101,6 +2099,17 @@ Not admitted: a new architecture.
 - **Missing for Tier 1:** Read the model code first, then an admission; 78B at Q4 is about 45 GB, the lab CPU box only.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
+### LFM2.5-24B-A2B (LiquidAI)
+
+<a id="lfm2.5-24b-a2b-q4_k_m"></a>
+#### LFM2.5-24B-A2B (LiquidAI)
+
+Not admitted yet: the template revision its GGUF carries and its tokenizer are checked; the file's cells and its float32 reference are owed.
+
+- **Numerical anchor:** anchor: the BF16 parent computed in float32, cast at use per decoder block (owed).
+- **Missing for Tier 1:** A CPU cell on the publisher's Q4_K_M (14.5 GB, the lab CPU lane) and the float32 reference against the BF16 checkpoint (48 GB stored; float32 arithmetic cast at use per decoder block, gold-logits.py --upcast-at-use). Tokenizer agreement (0 of 721, against the 24B's own tokenizer.json, byte-identical to the 8B-A1B's) and template conformance (32 of 32 in text and tokens against the 24B's own chat_template.jinja) are recorded.
+- **Tier history:** Upcoming, planned admission from 2026-10-30 ([log](#transition-log)).
+
 <a id="exempt"></a>
 ## Published, not a Runner model file
 
@@ -2213,6 +2222,7 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-30 | [LFM2.5-350M (LiquidAI), `LFM2.5-350M-Q4_K_M.gguf`](#lfm2.5-350m-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell and a float32 reference measurement (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report. | none recorded |
 | 2026-10-30 | [LFM2.5-8B-A1B (LiquidAI), `LFM2.5-8B-A1B-Q4_K_M.gguf`](#lfm2.5-8b-a1b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29 (the LFM2.5 family, after the dense 1.2B and 350M): the file loaded once lfm2moe was in, but rendered with the 1.2B's template rules, which its own earlier template revision does not follow. | none recorded |
 | 2026-10-30 | [LFM2.5-8B-A1B (LiquidAI), `LFM2.5-8B-A1B-Q4_K_M.gguf`](#lfm2.5-8b-a1b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the Metal laptop (policy 2026-10-27). Maintained on report. | none recorded |
+| 2026-10-30 | [LFM2.5-24B-A2B (LiquidAI)](#lfm2.5-24b-a2b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the LFM2.5-24B-A2B item: the lfm2moe architecture is admitted with the 8B-A1B; its GGUF carries a third LFM2.5 template revision, implemented first. | none recorded |
 | 2026-10-30 | [Spark-X2.6-4B (XHToken), `Spark-X2.6-4B-Q4_K_M.gguf`](#spark-x2.6-4b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the third item: a new architecture (spark2_5), its tokenizer rule and its chat templates, implemented before validation. | none recorded |
 | 2026-10-30 | [Spark-X2.6-4B (XHToken), `Spark-X2.6-4B-Q4_K_M.gguf`](#spark-x2.6-4b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the Metal laptop (policy 2026-10-27). Maintained on report. | none recorded |
 | 2026-10-30 | [Spark-X2.5-4B (XHToken), `Spark-X2.5-4B-Q4_K_M.gguf`](#spark-x2.5-4b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the third item: a new architecture (spark2_5), its tokenizer rule and its chat templates, implemented before validation. | none recorded |
@@ -2229,4 +2239,3 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-30 | [flint (RecursiveSI), `flint-int4-q4_1.gguf`](#flint-int4-q4_1) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane (policy 2026-10-27); no float32 reference is feasible, so the anchor is agreement with another engine. Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->
->>>>>>> 50ad0859 (flint: developer turns keep their own role)
