@@ -2011,6 +2011,30 @@
             "runner_version": "1.7.1",
             "commit": "eea8c2507b6a8828dc255a0d8b81d60e8fd27ab7"
           }
+        },
+        "windows-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/lfm2.5-350m-q4_k_m.windows-x86_64-cuda.cpu.txt",
+          "sha256": "a3dd7b514a3e7cb8885a12451aa38a87e9bf3c662773efb2fba4f846b4e6bba0",
+          "bytes": 138,
+          "finish_reason": "stop",
+          "completion_tokens": 34,
+          "spec": {
+            "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
+            "n_predict": 80,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-30",
+            "runner_version": "1.8.0",
+            "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85"
+          }
         }
       }
     },
