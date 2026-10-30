@@ -2317,8 +2317,8 @@ flag and ignore it rather than approximate one.
 Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
 `mistral-nemo`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
 `ornith`, `qwen35`, `qwen35-nothink`, `nemotron`, `nemotron35`, `hermes4`, `granite`, `granite4`, `granite42`,
-`qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `muse`, `harmony`, or `raw`;
-default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
+`qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `muse`, `harmony`, or
+`raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
 is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
 template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ
 by a space beside each `[INST]`/`[/INST]` marker and by which user turn carries the
@@ -3802,6 +3802,17 @@ naming its call, all in the publisher templates' bytes (template conformance:
 both families clean in text and tokens). The templates require 9-character
 alphanumeric call ids; any other id (OpenAI's `call_...`) is mapped to one
 from its hash, the same for a call and its result, on all three surfaces.
+
+Trinity Nano (`trinity`) is Qwen2.5's ChatML and Hermes tool calls with one
+difference its template makes by accident of whitespace: the assistant span
+sits in `{% generation %}` tags that do not trim around them, and read as
+transformers reads them they leave a blank line after each assistant header
+and after each assistant turn (`<|im_start|>assistant` + two newlines +
+content + `<|im_end|>` + two newlines). Runner writes the same; the
+generation prompt keeps the single newline, as the template does. Detected
+by an untrimmed `{% generation %}` in a ChatML template. Template
+conformance: 21 of 21 cases, text and tokens, against
+`arcee-ai/Trinity-Nano-Preview`.
 
 MiniCPM5 (`minicpm5`, detected from the example call its template's own
 guideline text spells) is Qwen3's ChatML and think shape with its own rules:

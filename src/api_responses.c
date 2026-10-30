@@ -989,16 +989,17 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         return;
     }
     thinking |= recipients;
-    if (s->tmpl == TMPL_QWEN38) {
-        int effort = req_reasoning_effort(req);
+    {
+        // the same reading the chat surface takes (req_template_effort)
+        const char *why = NULL;
+        int effort = req_template_effort(s->tmpl, req, &why);
         if (effort < 0) {
             for (int i = 0; i < n_own; i++) free(owned[i]);
             free(owned); free(cm); free(ts.s);
             tool_envelope_free(&env);
             jv_free(tools);
             jv_free(choice_owned);
-            send_error(fd, 400, "reasoning_effort must be one of xhigh, "
-                                "medium, low for this model's template");
+            send_error(fd, 400, why);
             return;
         }
         thinking |= effort;

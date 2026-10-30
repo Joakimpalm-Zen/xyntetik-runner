@@ -180,7 +180,17 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // '<', '&' or a newline, results as Qwen3's <tool_response> user turn.
        // Detected by the example call its guideline text spells. Its tokenizer
        // pre is `minicpm5` (tokenizer.c). Appended last.
-       TMPL_MINICPM5 };
+       TMPL_MINICPM5,
+       // Arcee Trinity Nano (arcee-ai/Trinity-Nano-Preview): Qwen2.5's ChatML
+       // and Hermes tool protocol, with the assistant span wrapped in
+       // {% generation %} ... {% endgeneration %} tags that do not trim the
+       // whitespace around them. Read as transformers reads them (block tags,
+       // trim_blocks and lstrip_blocks on), they leave a blank line after
+       // each assistant header and after each assistant turn's <|im_end|>:
+       // `<|im_start|>assistant\n\n` CONTENT `<|im_end|>\n\n`. The generation
+       // prompt keeps the single newline. Detected by the untrimmed
+       // `{% generation %}` in a ChatML template. Appended last.
+       TMPL_TRINITY };
 
 // The reasoning tags a TEMPLATE family writes, for the families whose
 // protocol (not their architecture) defines them: the `<think>` block of
@@ -258,8 +268,13 @@ static inline bool tmpl_granite42_like(int t) {
 static inline bool tmpl_chatml_think(int t) {
     return t == TMPL_CHATML_THINK || t == TMPL_MELLUM;
 }
+// Plain ChatML: the generic family and Trinity, which differs from it only
+// in the blank lines around its assistant turns (render_chatml).
+static inline bool tmpl_chatml_plain(int t) {
+    return t == TMPL_CHATML || t == TMPL_TRINITY;
+}
 static inline bool tmpl_hermes_json(int t) {
-    return t == TMPL_CHATML || tmpl_chatml_think(t) || t == TMPL_HERMES4 ||
+    return tmpl_chatml_plain(t) || tmpl_chatml_think(t) || t == TMPL_HERMES4 ||
            t == TMPL_GRANITE4;
 }
 static inline bool tmpl_qwen35(int t) {
@@ -412,6 +427,11 @@ int req_reasoning_effort(struct jv *req);
 // the Muse reference's kwarg: THINK_EFFORT_XHIGH for high (also absent),
 // MEDIUM, LOW; -1 for any other value.
 int req_reasoning_strength(struct jv *req);
+// The effort bits a request asks of the families whose template renders one
+// (Qwen 3.8, Muse), OR'd into `thinking`; 0 for every other family and for
+// an absent value; -1 with *why set for a value the family's template
+// refuses. One reading for the chat and Responses surfaces.
+int req_template_effort(int tmpl, struct jv *req, const char **why);
 // `bare_recipients` from the request (top level or chat_template_kwargs):
 // THINK_BARE_RECIPIENTS for true, THINK_NS_RECIPIENTS for false, 0 when
 // absent (the server default applies), -1 for a value that is not a boolean.
