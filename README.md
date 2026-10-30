@@ -75,9 +75,9 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
-> **Published release: 1.7.1.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) is the maintenance release on 1.7.0: `--mlock` keeps the E-series token table pageable, `--info fit` reports that table apart from the hot set, load notices cite the engine's own records, and the CI that guards a merge runs in a quarter of the time ([changelog](CHANGELOG.md)). Its Linux asset keeps the GLIBC 2.38 ceiling and starts on Ubuntu 24.04 ([how that is held](docs/linux-1.6.1-candidate.md)).
+> **Published release: 1.8.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) adds four architectures (`lfm2`, `lfm2moe`, `spark2_5`, `k2-horizon`) and seven chat-template families, admits their publishers' files at Tier 2 with each file's result against its float32 reference recorded, failures first, and fixes a wrong output in 1.7.1 on x86-64 CPU, where a sigmoid or SiLU below -88 became NaN ([changelog](CHANGELOG.md)). Its Linux asset keeps the GLIBC 2.38 ceiling and starts on Ubuntu 24.04 ([how that is held](docs/linux-1.6.1-candidate.md)).
 
-> **Version `1.7.1`.** The command line, the HTTP API, the record formats and
+> **Version `1.8.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x
 > ([versioning policy](docs/versioning.md)). This page is the short version;
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
@@ -468,7 +468,7 @@ passing evaluation made for those exact bytes.
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.7.1
+./runner --version   # -> runner 1.8.0
 ```
 
 Linux, macOS and Windows. NVIDIA GPUs need a driver with CUDA 13.0 support

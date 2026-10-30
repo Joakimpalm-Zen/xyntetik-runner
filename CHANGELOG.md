@@ -3,7 +3,7 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.8.0 - 2026-10-30
 
 - **A sigmoid or SiLU below -88 no longer turns into NaN on x86-64 CPU (a
   wrong-output fix in 1.7.1).** The build's fast math made the plain
