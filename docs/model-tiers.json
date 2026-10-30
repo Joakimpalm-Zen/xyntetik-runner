@@ -4763,13 +4763,13 @@
       }
     },
     {
-      "id": "k2-horizon-7b-q4_k_m",
+      "id": "k2-horizon-7b-q8_0",
       "model": "K2-Horizon-7B (IFM)",
       "family": "K2-Horizon",
       "tier": "upcoming",
-      "claim": "Not admitted yet: the architecture, tokenizer and template are implemented and checked; the file's own cells and its float32 reference are owed.",
+      "claim": "Not admitted yet: the file's own cells are owed. Measured: the fidelity file of the publisher's two, against IFM's BF16 parent computed in float32 0.0159 mean KLD, 95.0% top-1, 100% margin-qualified.",
       "architecture": "k2-horizon",
-      "missing": "A device cell on the CPU (the grouped RMSNorm has no GPU kernel yet), the float32 reference against IFM/K2-Horizon-7B at 4622f94a (BF16, about 18 GB; about 36 GB in float32) and the quant bar. Tokenizer agreement (0 of 721) and template conformance are recorded.",
+      "missing": "A device cell on the CPU (the grouped RMSNorm has no GPU kernel yet), owed on the lab CPU lane; the row then becomes Tier 2. Tokenizer agreement (0 of 721), template conformance and the float32 reference (docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md) are recorded.",
       "transitions": [
         {
           "tier": "upcoming",
@@ -4778,7 +4778,25 @@
           "last_validated_release": null
         }
       ],
-      "anchor": "anchor: the float32 reference against its own BF16 parent, on the lab CPU lane."
+      "anchor": "anchor: the float32 reference against its own BF16 parent, on the lab CPU lane: 0.0159 mean KLD."
+    },
+    {
+      "id": "k2-horizon-7b-q4_k_m",
+      "model": "K2-Horizon-7B (IFM)",
+      "family": "K2-Horizon",
+      "tier": "upcoming",
+      "claim": "Not admitted yet: the file's own cells are owed. Measured: it fails the fidelity bar, against IFM's BF16 parent computed in float32 0.1225 mean KLD against 0.05 (84.3% top-1, 95.8% margin-qualified against 97%); the Q8_0 reads 0.0159 and is the fidelity file.",
+      "architecture": "k2-horizon",
+      "missing": "A device cell on the CPU (the grouped RMSNorm has no GPU kernel yet), owed on the lab CPU lane; the row then becomes Tier 2 with this failure first. Tokenizer agreement (0 of 721), template conformance and the float32 reference (docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md) are recorded.",
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-30",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29, the fourth item: the 7B member, which carries the grouped RMSNorm the 0.9B does not.",
+          "last_validated_release": null
+        }
+      ],
+      "anchor": "anchor: the float32 reference against its own BF16 parent, on the lab CPU lane: 0.1225 mean KLD, FAIL."
     }
   ]
 }

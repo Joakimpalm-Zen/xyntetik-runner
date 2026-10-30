@@ -1937,13 +1937,22 @@ Not admitted: a new architecture.
 
 ### K2-Horizon-7B (IFM)
 
+<a id="k2-horizon-7b-q8_0"></a>
+#### K2-Horizon-7B (IFM)
+
+Not admitted yet: the file's own cells are owed. Measured: the fidelity file of the publisher's two, against IFM's BF16 parent computed in float32 0.0159 mean KLD, 95.0% top-1, 100% margin-qualified.
+
+- **Numerical anchor:** anchor: the float32 reference against its own BF16 parent, on the lab CPU lane: 0.0159 mean KLD.
+- **Missing for Tier 1:** A device cell on the CPU (the grouped RMSNorm has no GPU kernel yet), owed on the lab CPU lane; the row then becomes Tier 2. Tokenizer agreement (0 of 721), template conformance and the float32 reference (docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md) are recorded.
+- **Tier history:** Upcoming, planned admission from 2026-10-30 ([log](#transition-log)).
+
 <a id="k2-horizon-7b-q4_k_m"></a>
 #### K2-Horizon-7B (IFM)
 
-Not admitted yet: the architecture, tokenizer and template are implemented and checked; the file's own cells and its float32 reference are owed.
+Not admitted yet: the file's own cells are owed. Measured: it fails the fidelity bar, against IFM's BF16 parent computed in float32 0.1225 mean KLD against 0.05 (84.3% top-1, 95.8% margin-qualified against 97%); the Q8_0 reads 0.0159 and is the fidelity file.
 
-- **Numerical anchor:** anchor: the float32 reference against its own BF16 parent, on the lab CPU lane.
-- **Missing for Tier 1:** A device cell on the CPU (the grouped RMSNorm has no GPU kernel yet), the float32 reference against IFM/K2-Horizon-7B at 4622f94a (BF16, about 18 GB; about 36 GB in float32) and the quant bar. Tokenizer agreement (0 of 721) and template conformance are recorded.
+- **Numerical anchor:** anchor: the float32 reference against its own BF16 parent, on the lab CPU lane: 0.1225 mean KLD, FAIL.
+- **Missing for Tier 1:** A device cell on the CPU (the grouped RMSNorm has no GPU kernel yet), owed on the lab CPU lane; the row then becomes Tier 2 with this failure first. Tokenizer agreement (0 of 721), template conformance and the float32 reference (docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md) are recorded.
 - **Tier history:** Upcoming, planned admission from 2026-10-30 ([log](#transition-log)).
 
 <a id="exempt"></a>
@@ -2062,6 +2071,7 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-30 | [K2-Horizon-0.9B (IFM), `K2-Horizon-1B-Q8_0.gguf`](#k2-horizon-0.9b-q8_0) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting cells from the Metal laptop (policy 2026-10-27). Maintained on report. | none recorded |
 | 2026-10-30 | [K2-Horizon-0.9B (IFM), `K2-Horizon-1B-Q4_K_M.gguf`](#k2-horizon-0.9b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the fourth item: a new architecture (k2-horizon), its tokenizer rule and its chat template, implemented before validation. | none recorded |
 | 2026-10-30 | [K2-Horizon-0.9B (IFM), `K2-Horizon-1B-Q4_K_M.gguf`](#k2-horizon-0.9b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting cells from the Metal laptop (policy 2026-10-27). Maintained on report. | none recorded |
+| 2026-10-30 | [K2-Horizon-7B (IFM)](#k2-horizon-7b-q8_0) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the fourth item: the 7B member, which carries the grouped RMSNorm the 0.9B does not. | none recorded |
 | 2026-10-30 | [K2-Horizon-7B (IFM)](#k2-horizon-7b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the fourth item: the 7B member, which carries the grouped RMSNorm the 0.9B does not. | none recorded |
 
 <!-- model-tiers:rows:end -->

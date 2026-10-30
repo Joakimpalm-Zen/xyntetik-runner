@@ -30,8 +30,11 @@ Current release and unreleased changes. Compatibility follows the
   the file's quantization; it is a Tier 2 row of its own with that failure
   first, as MiniCPM5's Q4_K_M is
   (`docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md`). The
-  7B is listed as upcoming: its tokenizer (0 of 721) and template are checked,
-  its cells and its reference are owed.
+  7B's two files are listed as upcoming: their tokenizer (0 of 721) and
+  template are checked, and against the BF16 parent in float32 the Q8_0 reads
+  0.0159 while the Q4_K_M reads 0.1225 and fails the bar
+  (`docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md`); their
+  CPU cells are owed.
 - **YaRN's attention factor follows the factor in use.** A file's
   `rope.scaling.yarn_attn_factor` is the magnitude for its own factor; under
   `--yarn-factor` or an automatic context extension Runner now takes the
