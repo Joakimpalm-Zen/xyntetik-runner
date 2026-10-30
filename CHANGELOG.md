@@ -5,6 +5,21 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **YaRN reads the ramp and the attention factor the file declares.** A YaRN
+  model's `beta_fast`, `beta_slow` and `attention_factor` (written as
+  `rope.scaling.yarn_beta_fast`, `_slow` and `rope.scaling.yarn_attn_factor`)
+  were ignored for 32, 1 and Runner's own `1 + 0.1 ln(factor)`, so a model
+  trained with other ends roped with the ramp in the wrong place; IFM's
+  K2-Horizon-0.9B declares 128 and 4. A file without the keys is unchanged.
+- **The k2-horizon architecture and its tokenizer rule.** IFM's dense
+  K2-Horizon models are llama-shaped except for their RMSNorms, which
+  normalise the hidden vector in equal groups before one full-width weight
+  (four on the 7B, one on the 0.9B). The grouped norm runs on the CPU, so a
+  grouped file falls back from the GPU by name and refuses LoRA training by
+  name; the family's MoE, value-expert and gated members are refused by name.
+  The tokenizer pre `k2-horizon` (the Llama 3 split with combining marks and
+  zero-width joiners inside letter runs, under NFC) reads 0 of 721 corpus
+  strings differently from the publisher's tokenizer.json on the 0.9B.
 - **LFM2 reads a history turn's thought from the fields its template reads.**
   LFM2.5's chat template takes the thought from `thinking`, then
   `reasoning`, then `reasoning_content`, the first one set and not empty, and

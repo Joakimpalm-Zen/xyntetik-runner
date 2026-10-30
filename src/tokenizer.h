@@ -26,7 +26,10 @@ enum { TOK_PRE_GPT2, TOK_PRE_LLAMA3, TOK_PRE_QWEN2, TOK_PRE_SMOLLM, TOK_PRE_AFMO
        TOK_PRE_MINICPM5,
        // XHToken Spark 2.5 (spark2_5): afmoe's main regex with digits split
        // one by one, a narrower CJK set, and newlines taken one at a time
-       TOK_PRE_SPARK25 };
+       TOK_PRE_SPARK25,
+       // IFM K2-Horizon (k2-horizon): the Llama 3 regex with combining marks
+       // and ZWNJ/ZWJ inside letter runs; NFC
+       TOK_PRE_K2H };
 
 typedef struct { const char *key; uint32_t klen; int32_t val; } hmap_ent;
 typedef struct { hmap_ent *e; size_t cap; } hmap;

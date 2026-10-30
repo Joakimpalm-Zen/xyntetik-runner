@@ -449,6 +449,11 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     // newline clauses narrowed, then Digits(individual). llama.cpp's
     // SPARK2_5 table carries the same expressions (spark25_split_next).
     else if (strcmp(pre, "spark2_5") == 0) t->pre = TOK_PRE_SPARK25;
+    // k2-horizon (IFM/K2-Horizon tokenizer.json): one Split,
+    //   (?i:'s|'t|'re|'ve|'m|'ll|'d) | [^\r\n\p{L}\p{N}]?(?:\p{L}|\p{M}|\u200C|\u200D)+
+    //   | \p{N}{1,3} |  ?[^\s\p{L}\p{N}]+[\r\n]* | \s*[\r\n]+ | \s+(?!\S) | \s+
+    // under NFC. llama.cpp's K2_HORIZON table carries the same expression.
+    else if (strcmp(pre, "k2-horizon") == 0) t->pre = TOK_PRE_K2H;
     else if (strcmp(pre, "qwen2") == 0)  t->pre = TOK_PRE_QWEN2;
     // stablelm2: llama.cpp puts LLAMA_VOCAB_PRE_TYPE_STABLELM2 in the same
     // case as QWEN2, so it is the qwen2 regex, whose \p{N} matches ONE digit.
@@ -520,7 +525,8 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
         t->pre = TOK_PRE_QWEN2;
     // Qwen's tokenizer.json normalizes with NFC (Qwen2 through Qwen3.8, and
     // so Clef); stablelm2 shares the qwen2 split but not that normalizer
-    t->nfc = strcmp(pre, "qwen2") == 0 || strcmp(pre, "qwen35") == 0;
+    t->nfc = strcmp(pre, "qwen2") == 0 || strcmp(pre, "qwen35") == 0 ||
+             strcmp(pre, "k2-horizon") == 0;
 
     gguf_kv *toks = gguf_get(g, "tokenizer.ggml.tokens");
     if (!toks || toks->type != GGUF_T_ARR || toks->arr_type != GGUF_T_STR) {
@@ -1441,6 +1447,52 @@ static int spark25_split_next(const uint32_t *cp, int i, int ncp) {
     }
 }
 
+// k2-horizon: the Llama 3 regex whose letter run is (\p{L}|\p{M}|ZWNJ|ZWJ)+.
+// The symbol run stays [^\s\p{L}\p{N}]: unlike qwen35's it does NOT exclude
+// marks, so a mark after a symbol extends the symbol run.
+static bool k2h_letterish(uint32_t c) {
+    return cp_letter(c) || cp_mark(c) || c == 0x200C || c == 0x200D;
+}
+static int k2h_split_next(const uint32_t *cp, int i, int ncp) {
+    int adv = contraction_len(cp, i, ncp);
+    if (adv) return i + adv;
+    // [^\r\n\p{L}\p{N}]? then the letter run
+    if (!cp_letter(cp[i]) && !cp_digit(cp[i]) && cp[i] != '\r' && cp[i] != '\n' &&
+        i + 1 < ncp && k2h_letterish(cp[i + 1])) {
+        int j = i + 1;
+        while (j < ncp && k2h_letterish(cp[j])) j++;
+        return j;
+    }
+    if (k2h_letterish(cp[i])) {
+        int j = i;
+        while (j < ncp && k2h_letterish(cp[j])) j++;
+        return j;
+    }
+    if (cp_digit(cp[i])) {
+        int j = i;
+        while (j < ncp && cp_digit(cp[j]) && j - i < 3) j++;
+        return j;
+    }
+    {   //  ?[^\s\p{L}\p{N}]+[\r\n]*
+        int j = (cp[i] == ' ' && i + 1 < ncp && cp_other(cp[i + 1])) ? i + 1 : i;
+        if (j < ncp && cp_other(cp[j])) {
+            while (j < ncp && cp_other(cp[j])) j++;
+            while (j < ncp && (cp[j] == '\r' || cp[j] == '\n')) j++;
+            return j;
+        }
+    }
+    {   // \s*[\r\n]+ | \s+(?!\S) | \s+
+        int j = i;
+        while (j < ncp && cp_space(cp[j])) j++;
+        int last_nl = -1;
+        for (int k = i; k < j; k++)
+            if (cp[k] == '\r' || cp[k] == '\n') last_nl = k;
+        if (last_nl >= 0) return last_nl + 1;
+        if (j < ncp && j - i > 1) j--;
+        return j > i ? j : i + 1;
+    }
+}
+
 // smollm runs a Digits(individual_digits) pass before the GPT-2 regex, so every
 // digit stands alone and never takes a leading space. Splitting first also
 // bounds the regex: in "  12" the space run ends at the digit and stays whole,
@@ -1603,6 +1655,7 @@ static int bpe_encode_split(tokenizer *t, const char *text, size_t n,
                 : t->pre == TOK_PRE_SMOLLM    ? smollm_split_next(cp, i, ncp)
                 : t->pre == TOK_PRE_AFMOE     ? afmoe_split_next(cp, i, ncp)
                 : t->pre == TOK_PRE_SPARK25   ? spark25_split_next(cp, i, ncp)
+                : t->pre == TOK_PRE_K2H       ? k2h_split_next(cp, i, ncp)
                                               : gpt2_split_next(cp, i, ncp);
         if (end <= i) end = i + 1; // never stall
         // map the original bytes of this pre-token through byte->unicode

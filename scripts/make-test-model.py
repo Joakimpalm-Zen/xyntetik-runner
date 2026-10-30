@@ -63,6 +63,8 @@ MUSE = False       # muse-glimmer: gated attention + QK/sandwich norms + NoPE
 MUSE_GATE_FLAT = False  # zero the attn_gate weights (sigmoid -> flat 0.5)
 DECLARE_REMOVED = []    # --declare-removed: (part, block) pairs, see below
 MUSE_ALL_SWA = False    # pattern array all-sliding (every layer ropes)
+K2H_GROUPS = 0          # k2-horizon: the hidden-state norm groups (0: not k2h)
+K2H_DECLARE = None      # the group count the file declares (default K2H_GROUPS)
 SPARK = False           # spark2_5: fused attn_qkv, per-head gate, SWA pattern,
                         # per-type rope widths, exact-GELU FFN
 SPARK_GATE_FLAT = False # zero the per-head gate weights (sigmoid -> 0.5)
@@ -72,6 +74,8 @@ GRANITE_RESID = 0.5  # residual_scale for the fixture (CLI-overridable)
 QUANT = None       # --quant q8_0/bf16: store the 2-D matmul weights converted
 YARN_FACTOR = None # optional native YaRN metadata for CLI/rope tests
 YARN_ORIG_CTX = 0
+YARN_BETAS = None  # (fast, slow) declared as rope.scaling.yarn_beta_fast/_slow
+YARN_ATTN = None   # declared rope.scaling.yarn_attn_factor
 QK_NORM = False    # --qk-norm: per-head attn_q_norm/attn_k_norm (qwen3-style)
 WIDE = False       # 256-wide rows, large enough for an i-quant test block
 # --quant for the codebook i-quants: GGML type id and bytes per 256-value block
@@ -197,6 +201,19 @@ while i < len(args):
         for ent in args[i].split(","):
             part, n = ent.split(":")
             DECLARE_REMOVED.append((part, int(n)))
+    elif a == "--k2-horizon":
+        # IFM K2-Horizon's dense shape: llama-like with RMSNorms over
+        # GROUPS equal slices of the hidden vector. The embedding table's
+        # slices are scaled 1x, 8x, 64x, ... so a full-width norm (one RMS
+        # for all of them) differs from the grouped one by construction.
+        i += 1
+        K2H_GROUPS = int(args[i])
+        ARCH = "k2-horizon"
+    elif a == "--k2-declare-groups":
+        # the file DECLARES this many groups over the same weights, so a
+        # test can compare the grouped norm against the full-width one
+        i += 1
+        K2H_DECLARE = int(args[i])
     elif a == "--spark2-5":
         # XHToken Spark 2.5 scaled down, shape-preserving: head_dim decoupled
         # from n_embd/n_head, Q/K/V fused in attn_qkv, a per-HEAD attn_gate
@@ -268,6 +285,12 @@ while i < len(args):
         if YARN_FACTOR <= 1 or YARN_ORIG_CTX < 1 or not YARN_ORIG_CTX.is_integer():
             sys.exit("--yarn expects FACTOR>1,ORIGINAL_CONTEXT")
         YARN_ORIG_CTX = int(YARN_ORIG_CTX)
+    elif a == "--yarn-betas":
+        i += 1
+        YARN_BETAS = tuple(map(float, args[i].split(",")))
+    elif a == "--yarn-attn-factor":
+        i += 1
+        YARN_ATTN = float(args[i])
     elif a == "--n-ff":
         # the FFN width: an odd count gives ffn_gate/ffn_up an odd number of
         # output rows, the tail of the two-rows-per-warp and exact-width GEMV
@@ -466,7 +489,13 @@ def tensor_data(n, scale=1.0):
     return struct.pack(f"<{n}f", *(rnd() * scale for _ in range(n)))
 
 
-tensors = [("token_embd.weight", [N_EMBD, N_VOCAB], tensor_data(N_EMBD * N_VOCAB)),
+def _k2h_embd():
+    raw = struct.unpack(f"<{N_EMBD * N_VOCAB}f", tensor_data(N_EMBD * N_VOCAB))
+    gs = N_EMBD // K2H_GROUPS
+    return struct.pack(f"<{N_EMBD * N_VOCAB}f",
+                       *[v * (8.0 ** ((j % N_EMBD) // gs)) for j, v in enumerate(raw)])
+tensors = [("token_embd.weight", [N_EMBD, N_VOCAB],
+            _k2h_embd() if K2H_GROUPS > 1 else tensor_data(N_EMBD * N_VOCAB)),
            ("output_norm.weight", [N_EMBD], ones(N_EMBD))]
 # MTP predictor heads are counted inside block_count by the exports that carry
 # them, exactly like the Qwen3.5 NextN blocks; the runner must strip them back
@@ -591,7 +620,7 @@ for i in range(N_LAYER + MTP_LAYERS):
             (f"blk.{i}.post_norm.weight", [N_EMBD], ones(N_EMBD)),
         ]
 
-if MUSE or GRANITE or SPARK:
+if MUSE or GRANITE or SPARK or K2H_GROUPS:
     # muse: the real model's lm head is untied from the embeddings.
     # granite: the real models ARE tied, but a tied byte-vocab fixture locks
     # greedy argmax onto the input's last token (embedding self-similarity
@@ -701,6 +730,11 @@ if YARN_FACTOR is not None:
         kf(f"{ARCH}.rope.scaling.factor", YARN_FACTOR),
         ku(f"{ARCH}.rope.scaling.original_context_length", YARN_ORIG_CTX),
     ]
+    if YARN_BETAS is not None:
+        meta_kvs += [kf(f"{ARCH}.rope.scaling.yarn_beta_fast", YARN_BETAS[0]),
+                     kf(f"{ARCH}.rope.scaling.yarn_beta_slow", YARN_BETAS[1])]
+    if YARN_ATTN is not None:
+        meta_kvs.append(kf(f"{ARCH}.rope.scaling.yarn_attn_factor", YARN_ATTN))
 if ESERIES_SHARED_KV or ESERIES_PLE:
     # every third layer is a full-attention layer, the rest slide
     pattern = [(i % 3) != 2 for i in range(N_LAYER)]
@@ -762,6 +796,9 @@ if GRANITE:
         kf(f"{ARCH}.residual_scale", GRANITE_RESID),
         kf(f"{ARCH}.logit_scale", 16.0),
     ]
+if K2H_GROUPS:
+    meta_kvs.append(ku(f"{ARCH}.attention.group_norm_groups",
+                       K2H_DECLARE if K2H_DECLARE is not None else K2H_GROUPS))
 if SPARK:
     meta_kvs += [
         ku(f"{ARCH}.attention.key_length", SPARK_HD),
