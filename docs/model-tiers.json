@@ -3919,7 +3919,25 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "864a4a6dd6cc42f03edcfc89cd181ad0079cc4ba",
+          "caps": {
+            "version": "1.7.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "587d226ab6e1654f32203fe0deba7656fb2ee547cbbbbf335be62d919c0112f5",
+          "ran": "runner -m LFM2.5-1.2B-Instruct-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/lfm2.5-1.2b-instruct-q8_0.macos-arm64-metal.cpu.txt"
+        },
         "cuda": null,
         "metal": null
       },
@@ -3936,7 +3954,19 @@
           "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell and a float32 reference measurement (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report.",
           "last_validated_release": null
         }
-      ]
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "recurrent architecture (short convolution)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover the short-convolution hybrid yet (lfm2)"
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-30"
+      }
     },
     {
       "id": "lfm2.5-1.2b-instruct-q4_k_m",
@@ -3980,7 +4010,25 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "864a4a6dd6cc42f03edcfc89cd181ad0079cc4ba",
+          "caps": {
+            "version": "1.7.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "3bb0f080e0b57ed843c39e49de9d3c749fc75140afe68d73176767342bcafc56",
+          "ran": "runner -m LFM2.5-1.2B-Instruct-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/lfm2.5-1.2b-instruct-q4_k_m.macos-arm64-metal.cpu.txt"
+        },
         "cuda": null,
         "metal": null
       },
@@ -3997,7 +4045,19 @@
           "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell and a float32 reference measurement (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report.",
           "last_validated_release": null
         }
-      ]
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "recurrent architecture (short convolution)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover the short-convolution hybrid yet (lfm2)"
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-30"
+      }
     }
   ]
 }
