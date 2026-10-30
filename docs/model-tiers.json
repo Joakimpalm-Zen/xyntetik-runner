@@ -4945,19 +4945,62 @@
     {
       "id": "flint-int4-q4_1",
       "model": "flint (RecursiveSI)",
-      "tier": "upcoming",
-      "claim": "Not admitted yet: the architecture, tokenizer and template are implemented and checked; the file's own cell and its agreement check are owed.",
+      "family": "flint",
+      "tier": "tier2",
+      "claim": "Text path, RecursiveSI's own Q4_1 of flint (39.8B, mixture of experts): it loads, tokenizes as the publisher's tokenizer.json does, renders the publisher's own template token for token and answers through it on the CPU. No float32 reference is feasible (about 160 GB); its agreement check against llama.cpp on this file is owed on the lab CPU lane.",
       "architecture": "flint",
-      "missing": "A CPU cell on the publisher's Q4_1 (26.0 GB, the lab CPU lane) and the agreement check against llama.cpp on the same file; the CUDA path (the next change). Tokenizer agreement (0 of 721), template conformance (23 of 23) and the architecture against transformers' own flint in float32 on a converted random model are recorded.",
+      "upstream": {
+        "checkpoint": "RecursiveSI/flint",
+        "revision": "2a247be0c0aec895ccb0ac7ca92229ec6df37288"
+      },
+      "files": [
+        {
+          "name": "flint-int4-q4_1.gguf",
+          "repo": "RecursiveSI/flint-int4-gguf",
+          "revision": "9c47151036bc2c34331142dda04488bceab2bc9f",
+          "sha256": "43c07baccdba42eb7528a9630ee15699b1942c297291dc1b39a061f508ee1a4b",
+          "bytes": 25992966976
+        }
+      ],
+      "quantization": "Q4_1 (publisher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "infeasible",
+        "anchor": "anchor: agreement with another engine on the publisher's file, not fidelity. A float32 reference (about 160 GB) is not feasible on any machine this project runs; the architecture's arithmetic is checked against transformers' own flint in float32 on a converted random model. Tokenizer 0/721 against the publisher's tokenizer.json at 2a247be0, template conformance 23 of 23 in text and tokens against its chat_template.jinja. Record: docs/compat-reports/flint-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "CPU only: attention sinks with a sliding window, NoPE full layers and sigmoid routing with a shared expert have no CUDA or Metal path yet, so the GPU backends serve it on the CPU. LoRA training is refused (sigmoid router). 26 GB of weights: the lab CPU lane is the only machine here that holds the file in memory. A required or named tool choice takes the generic JSON envelope on this family.",
+        "evidence": [
+          "docs/compat-reports/flint-2026-10-30/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "The admitting CPU cell and the agreement check against llama.cpp on this file (lab CPU lane, next); the CUDA path; task quality and the native tool protocol on the real checkpoint."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": null,
+        "metal": null
+      },
       "transitions": [
         {
           "tier": "upcoming",
           "effective": "2026-10-30",
           "reason": "Owner's Hub-search validation queue of 2026-10-29, the fifth item: a new architecture (flint), its tokenizer rule and its chat template, implemented before validation.",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane (policy 2026-10-27); no float32 reference is feasible, so the anchor is agreement with another engine. Maintained on report.",
+          "last_validated_release": null
         }
-      ],
-      "anchor": "anchor: agreement with another engine on the publisher's file, not fidelity. A float32 reference (about 160 GB) is not feasible; the architecture's math is checked against transformers' own flint on a converted random model."
+      ]
     }
   ]
 }

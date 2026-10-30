@@ -653,7 +653,18 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
-**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B), flint (RecursiveSI).
+<details>
+<summary><b>flint</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<p><b>flint (RecursiveSI)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#flint-int4-q4_1"><code>flint-int4-q4_1.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
+**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated
@@ -1862,6 +1873,30 @@ Text path, IFM's own Q4_K_M of K2-Horizon 7B, which fails the fidelity bar: agai
 - **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
+### flint
+
+#### flint (RecursiveSI)
+
+<a id="flint-int4-q4_1"></a>
+##### `flint-int4-q4_1.gguf`
+
+Text path, RecursiveSI's own Q4_1 of flint (39.8B, mixture of experts): it loads, tokenizes as the publisher's tokenizer.json does, renders the publisher's own template token for token and answers through it on the CPU. No float32 reference is feasible (about 160 GB); its agreement check against llama.cpp on this file is owed on the lab CPU lane.
+
+- **File:** `flint-int4-q4_1.gguf` (sha256 `43c07baccdba42eb7528a9630ee15699b1942c297291dc1b39a061f508ee1a4b`, 25,992,966,976 bytes, from [RecursiveSI/flint-int4-gguf](https://huggingface.co/RecursiveSI/flint-int4-gguf) at revision `9c47151036bc`).
+- **Upstream checkpoint:** RecursiveSI/flint at revision `2a247be0c0ae`.
+- **Quantization:** Q4_1 (publisher).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine on the publisher's file, not fidelity. A float32 reference (about 160 GB) is not feasible on any machine this project runs; the architecture's arithmetic is checked against transformers' own flint in float32 on a converted random model. Tokenizer 0/721 against the publisher's tokenizer.json at 2a247be0, template conformance 23 of 23 in text and tokens against its chat_template.jinja. Record: docs/compat-reports/flint-2026-10-30/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU only: attention sinks with a sliding window, NoPE full layers and sigmoid routing with a shared expert have no CUDA or Metal path yet, so the GPU backends serve it on the CPU. LoRA training is refused (sigmoid router). 26 GB of weights: the lab CPU lane is the only machine here that holds the file in memory. A required or named tool choice takes the generic JSON envelope on this family.
+- **Still missing:** The admitting CPU cell and the agreement check against llama.cpp on this file (lab CPU lane, next); the CUDA path; task quality and the native tool protocol on the real checkpoint.
+- **Evidence:** [docs/compat-reports/flint-2026-10-30/README.md](compat-reports/flint-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
+- **CPU:** ☐ not run
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
+
 <a id="tier3"></a>
 ## Tier 3, unmaintained
 
@@ -1991,17 +2026,6 @@ Not admitted: a new architecture.
 - **Missing for Tier 1:** Read the model code first, then an admission; 78B at Q4 is about 45 GB, the lab CPU box only.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
-### flint (RecursiveSI)
-
-<a id="flint-int4-q4_1"></a>
-#### flint (RecursiveSI)
-
-Not admitted yet: the architecture, tokenizer and template are implemented and checked; the file's own cell and its agreement check are owed.
-
-- **Numerical anchor:** anchor: agreement with another engine on the publisher's file, not fidelity. A float32 reference (about 160 GB) is not feasible; the architecture's math is checked against transformers' own flint on a converted random model.
-- **Missing for Tier 1:** A CPU cell on the publisher's Q4_1 (26.0 GB, the lab CPU lane) and the agreement check against llama.cpp on the same file; the CUDA path (the next change). Tokenizer agreement (0 of 721), template conformance (23 of 23) and the architecture against transformers' own flint in float32 on a converted random model are recorded.
-- **Tier history:** Upcoming, planned admission from 2026-10-30 ([log](#transition-log)).
-
 <a id="exempt"></a>
 ## Published, not a Runner model file
 
@@ -2122,7 +2146,8 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-30 | [K2-Horizon-7B (IFM), `K2-Horizon-7B-Q8_0.gguf`](#k2-horizon-7b-q8_0) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane and a float32 reference measurement (policy 2026-10-27). Maintained on report. | none recorded |
 | 2026-10-30 | [K2-Horizon-7B (IFM), `K2-Horizon-7B-Q4_K_M.gguf`](#k2-horizon-7b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the fourth item: the 7B member, which carries the grouped RMSNorm the 0.9B does not. | none recorded |
 | 2026-10-30 | [K2-Horizon-7B (IFM), `K2-Horizon-7B-Q4_K_M.gguf`](#k2-horizon-7b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane and a float32 reference measurement (policy 2026-10-27). Maintained on report. | none recorded |
-| 2026-10-30 | [flint (RecursiveSI)](#flint-int4-q4_1) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the fifth item: a new architecture (flint), its tokenizer rule and its chat template, implemented before validation. | none recorded |
+| 2026-10-30 | [flint (RecursiveSI), `flint-int4-q4_1.gguf`](#flint-int4-q4_1) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the fifth item: a new architecture (flint), its tokenizer rule and its chat template, implemented before validation. | none recorded |
+| 2026-10-30 | [flint (RecursiveSI), `flint-int4-q4_1.gguf`](#flint-int4-q4_1) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane (policy 2026-10-27); no float32 reference is feasible, so the anchor is agreement with another engine. Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->
 >>>>>>> 50ad0859 (flint: developer turns keep their own role)
