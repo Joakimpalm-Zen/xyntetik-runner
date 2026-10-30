@@ -642,6 +642,26 @@
     "metal": "UNSUPPORTED"
    },
    "note": "Qwen2.5's ChatML and Hermes calls with a blank line after each assistant header and turn (the template's untrimmed generation tags); split from chatml 2026-10-30"
+  },
+  "lfm2": {
+   "artifact": "lfm2.5-1.2b-instruct-q8_0",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "the template renders the file's own declarations and Python call lists (template-conformance lfm2, 23/23 text and tokens, 2026-10-30) and the lfm2_python parser is pinned on fixtures (test_lfm2_native_calls); the live tool gate has not been run on this artifact"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "the publisher's generation_config.json (0f604ada) sets no sampling values; no family preset"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "UNSUPPORTED",
+    "metal": "UNSUPPORTED"
+   },
+   "note": "ChatML with the declarations as one `List of tools: [...]` system line, the thought kept on the last assistant turn only, results as their own tool turn, and calls as a Python list between two control-token markers"
   }
  },
  "architectures": {
@@ -1120,6 +1140,44 @@
     "cuda": "NOT RUN",
     "metal": "NOT RUN"
    }
+  },
+  "lfm2": {
+   "templates": [
+    "lfm2"
+   ],
+   "artifacts": [
+    "lfm2.5-1.2b-instruct-q8_0",
+    "lfm2.5-1.2b-instruct-q4_k_m"
+   ],
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "UNSUPPORTED",
+    "metal": "UNSUPPORTED"
+   }
+  },
+  "lfm2moe": {
+   "templates": [
+    "lfm2"
+   ],
+   "artifacts": [],
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "UNSUPPORTED",
+    "metal": "UNSUPPORTED"
+   },
+   "note": "fixture-gated (tests/test_lfm2.py, the recurrent-state gates on test-lfm2-moe.gguf) and a converted random lfm2moe against transformers' float32 (docs/compat-reports/lfm2.5-reference-2026-10-30); the LFM2.5-8B-A1B and 24B-A2B rows follow"
   }
  }
 }

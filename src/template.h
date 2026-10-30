@@ -190,7 +190,17 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // `<|im_start|>assistant\n\n` CONTENT `<|im_end|>\n\n`. The generation
        // prompt keeps the single newline. Detected by the untrimmed
        // `{% generation %}` in a ChatML template. Appended last.
-       TMPL_TRINITY };
+       TMPL_TRINITY,
+       // Liquid LFM2 / LFM2.5 (LiquidAI/LFM2.5-*-Instruct chat_template.jinja):
+       // ChatML with BOS first, the declared tools as one `List of tools:
+       // [JSON, JSON]` line in the system turn, a thought written as
+       // `<think>...</think>` on the LAST assistant turn only (earlier turns
+       // keep what follows their last `</think>`, trimmed), tool results as
+       // their own `tool` turn, and a turn's calls as one Python list,
+       // `<|tool_call_start|>[name(key=value, ...)]<|tool_call_end|>`, the two
+       // markers control tokens. Detected by `List of tools: [` beside the
+       // opening marker. Appended last.
+       TMPL_LFM2 };
 
 // The reasoning tags a TEMPLATE family writes, for the families whose
 // protocol (not their architecture) defines them: the `<think>` block of
@@ -530,6 +540,7 @@ enum tool_proto {
     TP_NEMOTRON,      // Nemotron Nano native <TOOLCALL>[{JSON}, ...]</TOOLCALL>
     TP_MISTRAL,       // Mistral v0.3 / Nemo native [TOOL_CALLS][{JSON}, ...]
     TP_MINICPM_XML,   // MiniCPM5 <function name="N"><param name="K">V</param></function>
+    TP_LFM2,          // LFM2 <|tool_call_start|>[name(key=value, ...)]<|tool_call_end|>
 };
 
 typedef struct {

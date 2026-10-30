@@ -402,6 +402,7 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
     e->emit_think_prelude = false;
     e->constraint_includes_prelude = false;
     e->render_special = false;
+    e->n_spell = 0;
     schema_free(schema);
     if (g) {
         tool_stream_free(&g->tsx);
@@ -3932,6 +3933,16 @@ static void completion_apply(slot_t *s, const completion_req *q, const char *pro
         e->wm_ud = NULL;
     }
     e->schema = q->schema;
+    // LFM2's call markers are control tokens, which decode to nothing; its
+    // parse-only demux reads them by spelling, so those two are spelled
+    // while its protocol is in force (the special_tokens rule, for two ids)
+    e->n_spell = 0;
+    if (env && env->proto == TP_LFM2) {
+        int a = tok_find(e->tok, "<|tool_call_start|>");
+        int b = tok_find(e->tok, "<|tool_call_end|>");
+        if (a >= 0) e->spell_ids[e->n_spell++] = a;
+        if (b >= 0) e->spell_ids[e->n_spell++] = b;
+    }
     e->constraint_includes_prelude = q->constrain && env->proto == TP_HARMONY;
     // chat responses split a thinking prelude into the reasoning channel;
     // constrained generation forwards it only when asked (raw completions

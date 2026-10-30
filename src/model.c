@@ -1214,7 +1214,7 @@ const char *const *model_supported_archs(size_t *count) {
         "llama", "qwen2", "qwen3", "qwen35", "qwen4exp", "qwen3moe", "mistral",
         "smollm", "stablelm", "gemma3", "gemma4", "phi3", "gpt-oss",
         "apertus", "afmoe", "muse-glimmer", "granite", "granitehybrid",
-        "nemotron_h", "nemotron_h_moe", "clef", "mellum",
+        "nemotron_h", "nemotron_h_moe", "clef", "mellum", "lfm2", "lfm2moe",
     };
     if (count) *count = sizeof(arches) / sizeof(arches[0]);
     return arches;
@@ -2920,6 +2920,112 @@ static bool bind_meta_granitehybrid(model_t *m, gguf_file *g, const char *arch) 
     return true;
 }
 
+// Liquid LFM2 / LFM2.5 (lfm2) and their MoE siblings (lfm2moe): short-
+// convolution layers interleaved with GQA attention, typed per layer off the
+// attention.head_count_kv ARRAY (0 => short convolution). Attention layers
+// carry per-head QK RMS norms and NeoX rope; every layer has the same gated
+// SiLU FFN (or, in lfm2moe past the leading dense blocks, sigmoid-routed
+// experts with a selection bias, configured by the generic MoE block). The
+// final norm is stored as token_embd_norm and the output is tied. The
+// recurrent state is the convolution ring alone: shortconv.l_cache - 1
+// values of B*x per channel, kept in ssm_conv_state like the Mamba-2 ring
+// with no SSD state beside it. Reference: transformers modeling_lfm2.py
+// (Lfm2ShortConv) and llama.cpp src/models/lfm2.cpp.
+static bool bind_meta_lfm2(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    m->lfm2 = true;
+    m->rope_neox = true;
+    m->ssm.conv_kernel = (int)gguf_get_u32(g, AK("shortconv.l_cache"), 0);
+    m->ssm.inner = m->n_embd;     // the ring is one value per hidden channel
+    m->ssm.state = m->ssm.groups = m->ssm.v_heads = 0;
+    if (m->ssm.conv_kernel < 2 || m->ssm.conv_kernel > 8) {
+        fprintf(stderr, "error: %s shortconv.l_cache %d outside [2, 8]\n",
+                arch, m->ssm.conv_kernel);
+        return false;
+    }
+    size_t nl = (size_t)(unsigned)m->n_layer;
+    m->l_head_kv  = calloc(nl, sizeof(int));
+    m->l_head_dim = calloc(nl, sizeof(int));
+    m->l_rope_dim = calloc(nl, sizeof(int));
+    if (!m->l_head_kv || !m->l_head_dim || !m->l_rope_dim) return false;
+    int attn_kv = 0, n_attn = 0;
+    for (int i = 0; i < m->n_layer; i++) {
+        int kv = (int)gguf_get_u32_idx(g, AK("attention.head_count_kv"),
+                                       (uint64_t)i, 0);
+        m->l_head_kv[i]  = kv;
+        m->l_head_dim[i] = m->head_dim;
+        m->l_rope_dim[i] = m->rope_dim;
+        if (kv == 0) continue;
+        n_attn++;
+        if (kv > m->n_head || m->n_head % kv != 0) {
+            fprintf(stderr, "error: %s blk.%d head_count_kv %d does not "
+                    "divide n_head %d\n", arch, i, kv, m->n_head);
+            return false;
+        }
+        if (attn_kv == 0) attn_kv = kv;
+        else if (kv != attn_kv) {
+            fprintf(stderr, "error: %s attention layers disagree on "
+                    "head_count_kv (%d vs %d)\n", arch, attn_kv, kv);
+            return false;
+        }
+    }
+    if (n_attn == 0 || n_attn == m->n_layer) {
+        fprintf(stderr, "error: %s needs both attention and short-convolution "
+                "layers (head_count_kv lists %d attention of %d)\n",
+                arch, n_attn, m->n_layer);
+        return false;
+    }
+    m->n_head_kv = attn_kv;
+    // lfm2moe: the leading blocks keep a dense FFN (LFM2.5-24B-A2B and
+    // 8B-A1B: two), the rest route over the experts
+    m->n_dense_lead = (int)gguf_get_u32(g, AK("leading_dense_block_count"), 0);
+    if (m->n_dense_lead < 0 || m->n_dense_lead > m->n_layer) {
+        fprintf(stderr, "error: %s leading_dense_block_count %d outside [0, %d]\n",
+                arch, m->n_dense_lead, m->n_layer);
+        return false;
+    }
+    fprintf(stderr, "%s: short-convolution hybrid (%d convolution + %d "
+            "attention layers)\n", arch, m->n_layer - n_attn, n_attn);
+    return true;
+}
+
+// LFM2's short-convolution mixer. attn_norm (an) is the operator norm and
+// ffn_norm (fn) the FFN input norm, both converted in the shared norm tail;
+// this binds the three convolution tensors and, as the Mamba-2 binder does,
+// the dense FFN a recurrent layer carries (the shared dense binding below
+// reaches attention layers only).
+static bool bind_lfm2_mixer(model_t *m, gguf_file *g, layer_t *l, int i, bool *okp) {
+    bool ok = *okp;
+    int E = m->n_embd, K = m->ssm.conv_kernel;
+    l->ssm_in   = need_tensor(g, "blk.%d.shortconv.in_proj.weight", i, &ok);
+    l->ssm_conv = need_tensor(g, "blk.%d.shortconv.conv.weight", i, &ok);
+    l->ssm_out  = need_tensor(g, "blk.%d.shortconv.out_proj.weight", i, &ok);
+    if (!ok) return false;
+    if (opt_tensor(g, "blk.%d.shortconv.conv.bias", i) ||
+        opt_tensor(g, "blk.%d.shortconv.in_proj.bias", i) ||
+        opt_tensor(g, "blk.%d.shortconv.out_proj.bias", i)) {
+        fprintf(stderr, "error: lfm2 blk.%d carries a short-convolution bias; "
+                "only conv_bias=false files are supported\n", i);
+        return false;
+    }
+    if (!check_shape(l->ssm_in, E, 3 * E, "shortconv.in_proj", i) ||
+        !check_shape(l->ssm_conv, K, E, "shortconv.conv", i) ||
+        !check_shape(l->ssm_out, E, E, "shortconv.out_proj", i))
+        return false;
+    l->ssm_conv_w = tensor_to_f32(l->ssm_conv, (size_t)K * E, &ok);
+    if (!ok) return false;
+    if (m->n_expert == 0 || i < m->n_dense_lead) {
+        l->w_gate = need_tensor(g, "blk.%d.ffn_gate.weight", i, &ok);
+        l->w_up   = need_tensor(g, "blk.%d.ffn_up.weight", i, &ok);
+        if (!ok) return false;
+        if (!check_shape(l->w_gate, E, l->n_ff, "ffn_gate", i) ||
+            !check_shape(l->w_up,   E, l->n_ff, "ffn_up",   i))
+            return false;
+    }
+    *okp = ok;
+    return true;
+}
+
 // Nemotron-H, dense and MoE: the Mamba-2 geometry, the block types and the
 // expert routing.
 static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
@@ -3460,8 +3566,11 @@ static bool bind_global_tensors(model_t *m, gguf_file *g) {
 
     // qwen4exp carries no output_norm: the final hyper-connection mixer is
     // the output norm (llama.cpp: "there is no output_norm")
+    // lfm2 stores its final norm as token_embd_norm (transformers'
+    // embedding_norm, which runs after the last block)
     gguf_tensor *out_norm = m->hyper_conn ? gguf_find_tensor(g, "output_norm.weight")
-                                          : need_tensor(g, "output_norm.weight", 0, &ok);
+                          : m->lfm2 ? need_tensor(g, "token_embd_norm.weight", 0, &ok)
+                                    : need_tensor(g, "output_norm.weight", 0, &ok);
     if (!ok) return false;
     m->out_norm_w = tensor_to_f32(out_norm, m->n_embd, &ok);
     m->out_norm_b = tensor_to_f32(gguf_find_tensor(g, "output_norm.bias"),
@@ -4150,7 +4259,8 @@ static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
             m->n_head, &ok);
     l->recurrent = m->qwen35 ? (i < m->n_layer &&
                                 (i + 1) % m->full_attn_interval != 0)
-                 : m->granite_hybrid ? (m->l_head_kv && m->l_head_kv[i] == 0)
+                 : (m->granite_hybrid || m->lfm2) ? (m->l_head_kv && i < m->n_layer &&
+                                                     m->l_head_kv[i] == 0)
                  : false;
     if (l->recurrent && m->qwen35) {
         if (!bind_deltanet_mixer(m, g, l, i, an, fn, &ok)) return false;
@@ -4162,6 +4272,7 @@ static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
         // !l->recurrent already
     }
     if (l->recurrent && m->granite_hybrid && !bind_mamba2_mixer(m, g, l, i, &ok)) return false;
+    if (l->recurrent && m->lfm2 && !bind_lfm2_mixer(m, g, l, i, &ok)) return false;
     if (!l->recurrent && !no_attn && !bind_attention(m, g, l, i, fused_qkv, &ok))
         return false;
     if (no_attn && !bind_removed_mixer(m, g, i)) return false;
@@ -4303,7 +4414,9 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     // applies to every other architecture.
     const bool hybrid_typed = strcmp(arch, "nemotron_h") == 0 ||
                               strcmp(arch, "nemotron_h_moe") == 0 ||
-                              strcmp(arch, "granitehybrid") == 0;
+                              strcmp(arch, "granitehybrid") == 0 ||
+                              strcmp(arch, "lfm2") == 0 ||
+                              strcmp(arch, "lfm2moe") == 0;
 
     if (!bind_hparams(m, g, arch, hybrid_typed)) return false;
     if (strcmp(arch, "gemma3") == 0 && !bind_meta_gemma3(m, g, arch)) return false;
@@ -4335,6 +4448,9 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         !bind_meta_nemotron_h(m, g, arch))
         return false;
     if (strcmp(arch, "muse-glimmer") == 0 && !bind_meta_muse(m, g, arch)) return false;
+    if ((strcmp(arch, "lfm2") == 0 || strcmp(arch, "lfm2moe") == 0) &&
+        !bind_meta_lfm2(m, g, arch))
+        return false;
     if (!bind_resolve_defaults(m, g, arch)) return false;
     if (!bind_meta_moe(m, g, arch)) return false;
     if (!bind_validate_geometry(m, g, arch, hybrid_typed)) return false;
@@ -4904,6 +5020,24 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
             !m->ssm_conv_snap || !m->ssm_state_snap)
             return false;
     }
+    if (m->lfm2) {
+        // Short-convolution scratch: per token the in_proj output B|C|x
+        // (ssm_qkv, 3*n_embd) and the gated conv output (ssm_z, n_embd).
+        // Per layer, the conv ring (conv_kernel - 1 rows of n_embd); the SSD
+        // state is the one-float stand-in recurrent_state_bytes names.
+        int E = m->n_embd, histn = m->ssm.conv_kernel - 1;
+        m->ssm_qkv = malloc(sizeof(float) * (size_t)B * 3 * E);
+        m->ssm_z   = malloc(sizeof(float) * (size_t)B * E);
+        m->ssm_conv_state = calloc((size_t)m->n_layer * histn * E, sizeof(float));
+        m->ssm_conv_snap  = calloc((size_t)m->n_layer * histn * E, sizeof(float));
+        m->ssm_state_mem  = calloc(1, sizeof(float));
+        m->ssm_state_snap = calloc(1, sizeof(float));
+        m->ssm_snap_pos = -1;
+        m->ssm_mark_pos = -1;
+        if (!m->ssm_qkv || !m->ssm_z || !m->ssm_conv_state ||
+            !m->ssm_conv_snap || !m->ssm_state_mem || !m->ssm_state_snap)
+            return false;
+    }
     // hb/hb2 hold the dense FFN's n_ff-wide output for B token columns; gemma-4
     // MoE also reuses hb to hold one token's fused gate_up of width 2*n_ff_exp,
     // so the buffer must cover both — otherwise --batch 1 with 2*n_ff_exp > n_ff
@@ -5050,6 +5184,10 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_bytes
         else if (m->norm_layernorm)
             cpu_why = "this model normalises with LayerNorm and the GPU "
                       "backends implement RMSNorm only";
+        else if (m->lfm2)
+            cpu_why = "lfm2 is validated on the CPU only; its GPU path (the "
+                      "short-convolution layers and their state) is not "
+                      "checked yet";
     }
     if (cpu_why) {
         fprintf(stderr, "gpu: %s — using CPU\n", cpu_why);
@@ -6904,6 +7042,36 @@ static void mamba2_ssd_step(model_t *m, layer_t *ly, int layer, int n, int xdim)
              inner, m->n_embd, NULL, n);
 }
 
+// One LFM2 short-convolution layer (transformers Lfm2ShortConv): in_proj
+// splits the normed input into B, C and x; B*x runs through a causal
+// depthwise convolution over conv_kernel taps (no bias, no activation); C
+// gates the result and out_proj maps it back. The ring holds the last
+// conv_kernel - 1 values of B*x per channel, oldest first, and each output
+// sums its taps oldest to newest as ggml_ssm_conv does.
+static void lfm2_shortconv(model_t *m, layer_t *ly, int layer, int n, int xdim) {
+    const int E = m->n_embd, K = m->ssm.conv_kernel, histn = K - 1;
+    matvec_b(m->tp, m->ssm_qkv, 3 * E, ly->ssm_in, m->xb, xdim, E, 3 * E, NULL, n);
+    float *ring = m->ssm_conv_state + (size_t)layer * histn * E;
+    const float *w = ly->ssm_conv_w;          // [E][K]
+    for (int b = 0; b < n; b++) {
+        const float *Bv = m->ssm_qkv + (size_t)b * 3 * E;
+        const float *Cv = Bv + E, *xv = Bv + 2 * E;
+        float *y = m->ssm_z + (size_t)b * E;
+        for (int c = 0; c < E; c++) {
+            const float *wc = w + (size_t)c * K;
+            float bx = Bv[c] * xv[c];
+            float sum = 0.0f;
+            for (int k = 0; k < histn; k++) sum += wc[k] * ring[(size_t)k * E + c];
+            sum += wc[histn] * bx;
+            for (int k = 0; k + 1 < histn; k++)
+                ring[(size_t)k * E + c] = ring[(size_t)(k + 1) * E + c];
+            ring[(size_t)(histn - 1) * E + c] = bx;
+            y[c] = Cv[c] * sum;
+        }
+    }
+    matvec_b(m->tp, m->xb, xdim, ly->ssm_out, m->ssm_z, E, E, E, NULL, n);
+}
+
 // One CPU Gated DeltaNet layer for Qwen3.5. State is stored transposed
 // ([value_column][key_row]), matching the reference operator: decay, delta
 // correction, outer-product update, then query readout.
@@ -7870,6 +8038,9 @@ static size_t recurrent_ple_bytes(const model_t *m) {
            (size_t)m->hc_count * (size_t)m->n_embd;
 }
 static size_t recurrent_state_bytes(const model_t *m) {
+    // lfm2 has no SSD state: its whole recurrent state is the conv ring. A
+    // one-float stand-in keeps every reset/snapshot/mark/keep path uniform.
+    if (m->lfm2) return sizeof(float);
     int hv = m->ssm.inner / m->ssm.v_heads;
     size_t per_head = m->qwen35 ? (size_t)hv * (size_t)hv
                                 : (size_t)hv * (size_t)m->ssm.state;
@@ -7878,7 +8049,7 @@ static size_t recurrent_state_bytes(const model_t *m) {
 }
 
 bool model_has_recurrent(const model_t *m) {
-    return m && (m->qwen35 || m->granite_hybrid || m->nemotron_h) &&
+    return m && (m->qwen35 || m->granite_hybrid || m->nemotron_h || m->lfm2) &&
            m->ssm_conv_state && m->ssm_state_mem;
 }
 
@@ -8263,6 +8434,11 @@ bool model_lora_serve_supported(const model_t *m, char *why, size_t cap) {
     if (m->granite_hybrid || m->nemotron_h) {
         snprintf(why, cap, "--lora does not cover Mamba-2 hybrid "
                  "architectures yet (%s)", m->arch);
+        return false;
+    }
+    if (m->lfm2) {
+        snprintf(why, cap, "--lora does not cover the short-convolution "
+                 "hybrid yet (%s)", m->arch);
         return false;
     }
     if (m->n_removed > 0) {
@@ -9021,6 +9197,7 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     // Mamba-2 hybrids and qwen4exp's hyper-connections do not yet.
     else if (m->granite_hybrid || m->nemotron_h)
         r = "recurrent architecture (Mamba-2)";
+    else if (m->lfm2) r = "recurrent architecture (short convolution)";
     else if (m->hyper_conn) r = "hyper-connections (qwen4exp)";
     else if (m->qwen35 && m->n_expert > 0) r = "MoE on a Gated DeltaNet model";
     // R17.3 (2026-10-08): an adapter on the ATTENTION of a sparse-MoE model
@@ -12113,6 +12290,7 @@ NUM_STAGE void layer_recurrent(model_t *m, fwd_layer *c) {
     const int l = c->l, n = c->n, xdim = c->xdim;
     if (m->granite_hybrid || m->nemotron_h)
                            mamba2_ssd_step(m, ly, l, n, xdim);
+    else if (m->lfm2)      lfm2_shortconv(m, ly, l, n, xdim);
     else                   qwen35_linear(m, ly, l, n, xdim);
     DT_MARK_AT(c->dt_t0, DT_RECUR);
 }

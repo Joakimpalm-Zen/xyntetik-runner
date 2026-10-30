@@ -428,6 +428,10 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     const char *pre = gguf_get_str(g, "tokenizer.ggml.pre", "");
     if (strcmp(pre, "llama-bpe") == 0)   t->pre = TOK_PRE_LLAMA3;
     else if (strcmp(pre, "dbrx") == 0)   t->pre = TOK_PRE_LLAMA3; // llama.cpp: "same as llama3" (granite 4.1 ships this)
+    // Liquid LFM2 / LFM2.5: the publisher's tokenizer.json splits with the
+    // Llama 3 regex (and, unlike Llama 3, does not ignore merges, which this
+    // BPE never does)
+    else if (strcmp(pre, "lfm2") == 0)   t->pre = TOK_PRE_LLAMA3;
     else if (strcmp(pre, "granite-docling") == 0) t->pre = TOK_PRE_GPT2; // llama.cpp: the plain GPT-2 regex (granite 4.2 ships this)
     // minicpm5 (openbmb/MiniCPM5-2B tokenizer.json at f9740005): a Split on
     // \p{N}{1,3} FOLLOWED BY the Llama 3 regex, applied in that order
@@ -572,9 +576,13 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     // "no BOS" ran their chat and raw prompts without the token the model
     // always saw first (the chat template leaves BOS to the tokenizer);
     // llama.cpp reads a missing key the same way. An explicit key wins.
+    // LFM2's tokenizer.json prepends <|startoftext|> too (its post-processor
+    // is a TemplateProcessing of `<|startoftext|> $A`), and LFM2.5-24B-A2B's
+    // GGUF carries no add_bos_token key.
     bool bos_default = t->model == TOK_SPM ||
                        (t->model == TOK_BPE && (strcmp(pre, "llama-bpe") == 0 ||
-                                                strcmp(pre, "tekken") == 0));
+                                                strcmp(pre, "tekken") == 0 ||
+                                                strcmp(pre, "lfm2") == 0));
     t->add_bos = gguf_get_bool(g, "tokenizer.ggml.add_bos_token", bos_default);
     // minicpm5: the publisher's tokenizer.json prepends <s> to every encode
     // (its post_processor is a TemplateProcessing of `<s> $A`), and the chat

@@ -75,6 +75,11 @@ typedef struct {
     // logprob tables instead of decoding to nothing. Never under a
     // constraint; the validator's byte stream stays the decoded one.
     bool render_special;
+    // Control ids a parse-only tool protocol reads by spelling: decoded to
+    // their vocabulary text although control (LFM2's two call markers).
+    // Live for one request; engine_request_defaults clears them.
+    int  spell_ids[2];
+    int  n_spell;
     bool oom;              // generation aborted on an allocation failure — the
                            // finish reason is "error", never a silent "stop"
     bool json_mode;        // constrain output to a single JSON object

@@ -161,6 +161,10 @@
     "trinity": {
       "fixture": "plain",
       "reasoning": "none"
+    },
+    "lfm2": {
+      "fixture": "plain",
+      "reasoning": "tags"
     }
   }
 }

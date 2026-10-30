@@ -79,6 +79,12 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         // apertus first: its vocabulary inherits Mistral's [INST]/[/INST]
         // tokens, so the [INST] branch below would otherwise claim it
         if (strstr(meta_tmpl, "<|assistant_start|>")) return TMPL_APERTUS;
+        // Liquid LFM2 / LFM2.5: ChatML whose tools are one `List of tools: [`
+        // line and whose calls are a Python list after a marker token
+        if (strstr(meta_tmpl, "<|im_start|>") &&
+            strstr(meta_tmpl, "List of tools: [") &&
+            strstr(meta_tmpl, "<|tool_call_start|>"))
+            return TMPL_LFM2;
         // Qwen 3.8 and granite 4.2 both share ornith's function-XML
         // declaration text, so each is told apart FIRST by a phrase only
         // its own template writes: Qwen 3.8's reasoning-effort preamble,
@@ -217,6 +223,7 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "chatml-think")) return TMPL_CHATML_THINK;
     if (!strcmp(name, "mellum")) return TMPL_MELLUM;
     if (!strcmp(name, "minicpm5")) return TMPL_MINICPM5;
+    if (!strcmp(name, "lfm2")) return TMPL_LFM2;
     if (!strcmp(name, "hermes4")) return TMPL_HERMES4;
     if (!strcmp(name, "llama2")) return TMPL_LLAMA2;
     if (!strcmp(name, "llama3")) return TMPL_LLAMA3;
@@ -290,6 +297,7 @@ const char *template_name(int t) {
         case TMPL_CHATML_THINK: return "chatml-think";
         case TMPL_MELLUM: return "mellum";
         case TMPL_MINICPM5: return "minicpm5";
+        case TMPL_LFM2: return "lfm2";
         case TMPL_HERMES4: return "hermes4";
         case TMPL_LLAMA3: return "llama3";  case TMPL_ZEPHYR: return "zephyr";
         case TMPL_GEMMA:  return "gemma";
@@ -676,6 +684,7 @@ int req_bare_recipients(struct jv *req) {
 bool template_think_tags(int tmpl, const char **open, const char **close) {
     if (tmpl_chatml_think(tmpl) || tmpl == TMPL_QWEN38 ||
         tmpl == TMPL_NEMOTRON || tmpl == TMPL_HERMES4 || tmpl == TMPL_MINICPM5 ||
+        tmpl == TMPL_LFM2 ||
         tmpl_granite42_like(tmpl) || tmpl_ornith_like(tmpl)) {
         *open = "<think>";
         *close = "</think>";
@@ -2252,6 +2261,44 @@ static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_LFM2 (LiquidAI/LFM2.5-1.2B-Instruct chat_template.jinja). A leading
+// system message is the system turn's text (omitted when empty); declared
+// tools follow it on a line of their own, `List of tools: [` and each
+// declaration's tojson joined by `, `, then `]`; the turn is written only
+// when it has text. Every other message, a tool result included, is
+// `<|im_start|>ROLE\nCONTENT<|im_end|>\n` (an empty content writes nothing
+// between); the assistant turns arrive already carrying their thought and
+// calls (message_text). BOS is the tokenizer's, as on every family.
+static size_t render_lfm2(int tmpl, const chat_msg *msgs, int n_msgs,
+                          bool add_assistant, int thinking, const jv *tools,
+                          char *out, size_t cap, render_state *st) {
+    size_t off = 0;
+    int first = 0;
+    sbuf sys = {0};
+    if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
+        sb_put(&sys, msgs[0].content, strlen(msgs[0].content));
+        first = 1;
+    }
+    if (tools && tools->type == J_ARR && tools->n > 0) {
+        if (sys.n) sb_lit(&sys, "\n");
+        tools_render_for(tmpl, tools, &sys);
+    }
+    if (sys.n) {
+        sb_put(&sys, "", 0);
+        off = emit(out, cap, off, "<|im_start|>system\n%s<|im_end|>\n",
+                   sys.failed ? "" : sys.s, NULL);
+    }
+    if (sys.failed) off = SIZE_MAX;
+    free(sys.s);
+    for (int i = first; i < n_msgs; i++)
+        off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
+                   msgs[i].role, msgs[i].content);
+    if (add_assistant)
+        off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+    (void)thinking; (void)st;
+    return off;
+}
+
 // TMPL_APERTUS.
 static size_t render_apertus(int tmpl, const chat_msg *msgs, int n_msgs,
                              bool add_assistant, int thinking, const jv *tools,
@@ -3136,6 +3183,8 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_MELLUM:
     case TMPL_MINICPM5:
         return render_chatml(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+    case TMPL_LFM2:
+        return render_lfm2(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_LLAMA3:
         for (int i = 0; i < n_msgs; i++)
             off = emit(out, cap, off,
@@ -3468,6 +3517,18 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
                     "tool calls if any errors are found, or just respond to the user.");
         return;
     }
+    if (tmpl == TMPL_LFM2) {
+        // chat_template.jinja: `List of tools: [`, each declaration's tojson
+        // joined by `, `, then `]`
+        if (!tools || tools->type != J_ARR || tools->n == 0) return;
+        pl_lit(out, "List of tools: [");
+        for (int i = 0; i < tools->n; i++) {
+            if (i) pl_lit(out, ", ");
+            jv_dump_tojson(tools->items[i], out);
+        }
+        pl_lit(out, "]");
+        return;
+    }
     if (tmpl == TMPL_MINICPM5) {
         // openbmb/MiniCPM5-2B chat_template.jinja, the tool_definitions
         // block verbatim: the declarations as tojson, then the guideline
@@ -3671,9 +3732,64 @@ void mistral_call_id(const char *id, char out[10]) {
     out[9] = 0;
 }
 
+// LFM2's format_arg_value: a string single-quoted with \\, ', \n and \r
+// escaped (the template's four replaces, in its order), a list or mapping as
+// its tojson, anything else as Jinja's `string` filter (True/False/None, a
+// number as Python prints it).
+static void lfm2_arg_value(const jv *v, sbuf *out) {
+    if (v->type != J_STR) {
+        if (v->type == J_ARR || v->type == J_OBJ) jv_dump_tojson(v, out);
+        else coder_value(v, out);
+        return;
+    }
+    sb_lit(out, "'");
+    for (const char *c = v->str; *c; c++) {
+        if (*c == '\\') sb_lit(out, "\\\\");
+        else if (*c == '\'') sb_lit(out, "\\'");
+        else if (*c == '\n') sb_lit(out, "\\n");
+        else if (*c == '\r') sb_lit(out, "\\r");
+        else sb_put(out, c, 1);
+    }
+    sb_lit(out, "'");
+}
+
 void tool_history_render_for(int tmpl, const jv *calls,
                              bool turn_has_text, sbuf *out) {
     if (!calls || calls->type != J_ARR) return;
+    // LFM2 writes a turn's calls as ONE Python list straight after the text:
+    // `<|tool_call_start|>[name(key=value, ...), ...]<|tool_call_end|>`, the
+    // keys in the order the arguments object carries them. OpenAI's JSON
+    // string is parsed first, as the template's error message asks a caller
+    // to; arguments that are not an object write an empty argument list
+    // (the template refuses them).
+    if (tmpl == TMPL_LFM2) {
+        if (!calls->n) return;
+        pl_lit(out, "<|tool_call_start|>[");
+        for (int i = 0; i < calls->n; i++) {
+            jv *fn = jv_get(calls->items[i], "function");
+            if (!fn) fn = calls->items[i];
+            const char *name = jv_str(jv_get(fn, "name"), "");
+            jv *args = jv_get(fn, "arguments");
+            jv *parsed = args && args->type == J_STR
+                             ? json_parse(args->str, strlen(args->str)) : NULL;
+            const jv *obj = parsed ? parsed : args;
+            if (i) sb_lit(out, ", ");
+            sb_put(out, name, strlen(name));
+            sb_lit(out, "(");
+            if (obj && obj->type == J_OBJ)
+                for (int k = 0; k < obj->n; k++) {
+                    if (k) sb_lit(out, ", ");
+                    sb_put(out, obj->keys[k], strlen(obj->keys[k]));
+                    sb_lit(out, "=");
+                    lfm2_arg_value(obj->items[k], out);
+                }
+            sb_lit(out, ")");
+            jv_free(parsed);
+        }
+        pl_lit(out, "]<|tool_call_end|>");
+        (void)turn_has_text;
+        return;
+    }
     // Mistral v0.3 and Nemo: the turn is the calls alone (the reference's
     // tool_calls branch writes no content), `[TOOL_CALLS] [` (Nemo: no
     // space), then each call as its function object's tojson with the id
@@ -4402,7 +4518,15 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
             xml_fellback = true;
         }
     }
-    if (strict && tmpl == TMPL_MINICPM5 && env->kind == TCH_AUTO) {
+    if (strict && tmpl == TMPL_LFM2 && env->kind == TCH_AUTO) {
+        // LFM2's own Python call list, parsed on the way out and never
+        // constrained, as MiniCPM5's XML is: a required or named choice takes
+        // the generic envelope for that one request.
+        env->proto = TP_LFM2;
+        env->tools = tools;
+        env->parse_only = true;
+        env->max_calls = TOOL_STREAM_MAX_CALLS;
+    } else if (strict && tmpl == TMPL_MINICPM5 && env->kind == TCH_AUTO) {
         // MiniCPM5's own XML, parsed on the way out and never constrained:
         // an auto turn is the model's free turn in the syntax its template
         // taught it. A required or named choice has no grammar here yet and
@@ -4523,8 +4647,10 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
     // none) too, since its template has no notion of tool_choice. A strict
     // required or named choice fell back to the generic envelope above, and
     // that envelope then renders its own teaching turn.
-    bool mcp_decl = tmpl == TMPL_MINICPM5 &&
-                    (!strict || env->proto == TP_MINICPM_XML);
+    bool mcp_decl = (tmpl == TMPL_MINICPM5 &&
+                     (!strict || env->proto == TP_MINICPM_XML)) ||
+                    // LFM2 the same way: its declarations are its template's
+                    (tmpl == TMPL_LFM2 && (!strict || env->proto == TP_LFM2));
     *skip_generic = qwen || g4_native || nemo_native || tmpl == TMPL_APERTUS ||
                     mcp_decl ||
                     (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
@@ -4545,6 +4671,7 @@ const char *tool_envelope_protocol_name(const tool_envelope *e) {
         case TP_QWEN:       return "qwen_json";
         case TP_QWEN_XML:   return "qwen3_xml";
         case TP_MINICPM_XML: return "minicpm5_xml";
+        case TP_LFM2:       return "lfm2_python";
         case TP_NEMOTRON:   return "nemotron_json";
         case TP_MISTRAL:    return "mistral_json";
         default: break;
@@ -4565,6 +4692,7 @@ const char *tool_protocol_name(int tmpl, bool *native) {
         case TP_QWEN:     return "qwen_json";
         case TP_QWEN_XML: return "qwen3_xml";
         case TP_MINICPM_XML: return "minicpm5_xml";
+        case TP_LFM2:     return "lfm2_python";
         case TP_NEMOTRON: return "nemotron_json";
         case TP_MISTRAL:  return "mistral_json";
         default: break;
@@ -5546,10 +5674,307 @@ static int nemotron_map(const tool_envelope *e, const char *doc, size_t n,
     return tc->failed || content->failed ? -1 : calls;
 }
 
+// ---- LFM2's pythonic call lists
+//
+// LFM2's template writes a turn's calls as one Python list between two
+// control tokens, `<|tool_call_start|>[name(key=value, ...), ...]
+// <|tool_call_end|>`, each value as format_arg_value spells it: a string
+// single-quoted with its backslashes, quotes and line breaks escaped, a list
+// or mapping as tojson, anything else as Jinja's `string` filter (True,
+// False, None, a number). This reads that back with a strict literal grammar
+// and evaluates nothing: strings in either quote style with Python's
+// escapes, numbers, True/False/None (and the true/false/null of the tojson'd
+// containers), lists and dicts nested. A name, a call, an operator, a tuple,
+// a positional argument or any other expression where a value belongs makes
+// the block not a call list.
+#define LFM_CALL_OPEN  "<|tool_call_start|>"
+#define LFM_CALL_CLOSE "<|tool_call_end|>"
+
+// PY_MORE: the text ran out where more could still make it parse.
+enum { PY_BAD = -1, PY_MORE = 0, PY_OK = 1 };
+
+typedef struct { const char *p, *end; } pyrd;
+
+static void py_ws(pyrd *r) {
+    while (r->p < r->end && (*r->p == ' ' || *r->p == '\t' ||
+                             *r->p == '\n' || *r->p == '\r')) r->p++;
+}
+
+static bool py_idch(char c, bool first) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' ||
+           (!first && c >= '0' && c <= '9') || (unsigned char)c >= 0x80;
+}
+
+static void py_utf8(sbuf *o, uint32_t cp) {
+    char b[4];
+    int n;
+    if (cp < 0x80) { b[0] = (char)cp; n = 1; }
+    else if (cp < 0x800) { b[0] = (char)(0xC0 | cp >> 6); b[1] = (char)(0x80 | (cp & 0x3F)); n = 2; }
+    else if (cp < 0x10000) {
+        b[0] = (char)(0xE0 | cp >> 12); b[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        b[2] = (char)(0x80 | (cp & 0x3F)); n = 3;
+    } else {
+        b[0] = (char)(0xF0 | cp >> 18); b[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        b[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); b[3] = (char)(0x80 | (cp & 0x3F)); n = 4;
+    }
+    sb_put(o, b, (size_t)n);
+}
+
+static int py_hex(pyrd *r, int digits, uint32_t *cp) {
+    uint32_t v = 0;
+    for (int i = 0; i < digits; i++) {
+        if (r->p >= r->end) return PY_MORE;
+        char c = *r->p++;
+        int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+              : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+        if (d < 0) return PY_BAD;
+        v = v * 16 + (uint32_t)d;
+    }
+    *cp = v;
+    return PY_OK;
+}
+
+// A quoted string at r->p, its decoded bytes into `o`. Python's escapes; an
+// unknown one keeps its backslash as Python's does; a raw line break inside
+// the quotes is refused, as Python refuses it in a single-quoted string.
+static int py_string(pyrd *r, sbuf *o) {
+    char q = *r->p++;
+    while (r->p < r->end) {
+        char c = *r->p++;
+        if (c == q) return PY_OK;
+        if (c == '\n' || c == '\r') return PY_BAD;
+        if (c != '\\') { sb_put(o, &c, 1); continue; }
+        if (r->p >= r->end) return PY_MORE;
+        char e = *r->p++;
+        uint32_t cp;
+        int rc;
+        switch (e) {
+        case '\n': break;                              // a line continuation
+        case '\\': case '\'': case '"': sb_put(o, &e, 1); break;
+        case 'n': sb_lit(o, "\n"); break;
+        case 'r': sb_lit(o, "\r"); break;
+        case 't': sb_lit(o, "\t"); break;
+        case 'b': sb_lit(o, "\b"); break;
+        case 'f': sb_lit(o, "\f"); break;
+        case 'v': sb_lit(o, "\v"); break;
+        case 'a': sb_lit(o, "\a"); break;
+        case 'x': case 'u': case 'U':
+            rc = py_hex(r, e == 'x' ? 2 : e == 'u' ? 4 : 8, &cp);
+            if (rc != PY_OK) return rc;
+            if (cp > 0x10FFFF || (cp >= 0xD800 && cp < 0xE000)) return PY_BAD;
+            py_utf8(o, cp);
+            break;
+        case 'N': return PY_BAD;                       // \N{NAME} is not read
+        default:
+            if (e >= '0' && e <= '7') {
+                cp = (uint32_t)(e - '0');
+                for (int k = 0; k < 2 && r->p < r->end && *r->p >= '0' && *r->p <= '7'; k++)
+                    cp = cp * 8 + (uint32_t)(*r->p++ - '0');
+                py_utf8(o, cp);
+            } else {
+                sb_lit(o, "\\");
+                sb_put(o, &e, 1);
+            }
+        }
+    }
+    return PY_MORE;
+}
+
+// A number at r->p into `o` as JSON: an optional minus, digits with an
+// optional fraction and exponent. Python's `.5` and `5.` are written 0.5 and
+// 5.0; a leading zero before another digit, an underscore, a suffix or a
+// second point is refused.
+static int py_number(pyrd *r, sbuf *o) {
+    const char *s = r->p;
+    if (*r->p == '-') r->p++;
+    const char *d0 = r->p;
+    while (r->p < r->end && *r->p >= '0' && *r->p <= '9') r->p++;
+    const char *d1 = r->p;
+    const char *f0 = NULL, *f1 = NULL;
+    if (r->p < r->end && *r->p == '.') {
+        f0 = ++r->p;
+        while (r->p < r->end && *r->p >= '0' && *r->p <= '9') r->p++;
+        f1 = r->p;
+    }
+    if (d1 == d0 && (!f0 || f1 == f0)) return r->p >= r->end ? PY_MORE : PY_BAD;
+    if (d1 - d0 > 1 && *d0 == '0') return PY_BAD;
+    const char *e0 = NULL;
+    if (r->p < r->end && (*r->p == 'e' || *r->p == 'E')) {
+        e0 = r->p++;
+        if (r->p < r->end && (*r->p == '+' || *r->p == '-')) r->p++;
+        const char *x0 = r->p;
+        while (r->p < r->end && *r->p >= '0' && *r->p <= '9') r->p++;
+        if (r->p == x0) return r->p >= r->end ? PY_MORE : PY_BAD;
+    }
+    if (r->p >= r->end) return PY_MORE;                // it could still grow
+    if (py_idch(*r->p, false) || *r->p == '.') return PY_BAD;
+    if (*s == '-') sb_lit(o, "-");
+    if (d1 == d0) sb_lit(o, "0"); else sb_put(o, d0, (size_t)(d1 - d0));
+    if (f0) {
+        sb_lit(o, ".");
+        if (f1 == f0) sb_lit(o, "0"); else sb_put(o, f0, (size_t)(f1 - f0));
+    }
+    if (e0) sb_put(o, e0, (size_t)(r->p - e0));
+    return PY_OK;
+}
+
+static int py_keyword(pyrd *r, sbuf *o) {
+    static const char *const word[] = { "True", "False", "None", "true", "false", "null" };
+    static const char *const json[] = { "true", "false", "null", "true", "false", "null" };
+    size_t avail = (size_t)(r->end - r->p);
+    bool prefix = false;
+    for (int i = 0; i < 6; i++) {
+        size_t wl = strlen(word[i]);
+        if (avail < wl) { if (!memcmp(r->p, word[i], avail)) prefix = true; continue; }
+        if (memcmp(r->p, word[i], wl)) continue;
+        if (avail == wl) return PY_MORE;                // `Truex` is a name
+        if (py_idch(r->p[wl], false)) return PY_BAD;
+        r->p += wl;
+        sb_lit(o, json[i]);
+        return PY_OK;
+    }
+    return prefix ? PY_MORE : PY_BAD;
+}
+
+static int py_value(pyrd *r, sbuf *o, int depth);
+
+// `[v, ...]` or `{"k": v, ...}` (string keys only), a trailing comma allowed
+static int py_container(pyrd *r, sbuf *o, int depth) {
+    bool dict = *r->p == '{';
+    char close = dict ? '}' : ']';
+    r->p++;
+    sb_lit(o, dict ? "{" : "[");
+    for (int n = 0;; n++) {
+        py_ws(r);
+        if (r->p >= r->end) return PY_MORE;
+        if (*r->p == close) { r->p++; sb_put(o, &close, 1); return PY_OK; }
+        if (n) {
+            if (*r->p != ',') return PY_BAD;
+            r->p++;
+            py_ws(r);
+            if (r->p >= r->end) return PY_MORE;
+            if (*r->p == close) { r->p++; sb_put(o, &close, 1); return PY_OK; }
+            sb_lit(o, ",");
+        }
+        if (dict) {
+            if (*r->p != '\'' && *r->p != '"') return PY_BAD;
+            sbuf k = {0};
+            int rc = py_string(r, &k);
+            if (rc == PY_OK) { sb_lit(o, "\""); sb_esc(o, k.s ? k.s : "", k.n); sb_lit(o, "\":"); }
+            free(k.s);
+            if (rc != PY_OK) return rc;
+            py_ws(r);
+            if (r->p >= r->end) return PY_MORE;
+            if (*r->p != ':') return PY_BAD;
+            r->p++;
+        }
+        int rc = py_value(r, o, depth + 1);
+        if (rc != PY_OK) return rc;
+    }
+}
+
+static int py_value(pyrd *r, sbuf *o, int depth) {
+    if (depth > 32) return PY_BAD;
+    py_ws(r);
+    if (r->p >= r->end) return PY_MORE;
+    char c = *r->p;
+    if (c == '\'' || c == '"') {
+        sbuf s = {0};
+        int rc = py_string(r, &s);
+        if (rc == PY_OK) { sb_lit(o, "\""); sb_esc(o, s.s ? s.s : "", s.n); sb_lit(o, "\""); }
+        free(s.s);
+        return rc;
+    }
+    if (c == '[' || c == '{') return py_container(r, o, depth);
+    if (c == '-' || c == '.' || (c >= '0' && c <= '9')) return py_number(r, o);
+    return py_keyword(r, o);
+}
+
+// The call list at r->p: `[` call (`,` call)* `,`? `]`, a call being NAME
+// `(` (KEY `=` value (`,` KEY `=` value)* `,`?)? `)` with no key repeated.
+// Each call is appended to `calls` as an OpenAI tool_calls item, ids from
+// `index`. *n_calls counts them; more than `max` is not a call list.
+static int py_call_list(pyrd *r, int index, int max, sbuf *calls, int *n_calls) {
+    py_ws(r);
+    if (r->p >= r->end) return PY_MORE;
+    if (*r->p != '[') return PY_BAD;
+    r->p++;
+    for (int n = 0;; n++) {
+        py_ws(r);
+        if (r->p >= r->end) return PY_MORE;
+        if (n) {
+            if (*r->p == ']') { r->p++; *n_calls = n; return PY_OK; }
+            if (*r->p != ',') return PY_BAD;
+            r->p++;
+            py_ws(r);
+            if (r->p >= r->end) return PY_MORE;
+            if (*r->p == ']') { r->p++; *n_calls = n; return PY_OK; }
+        }
+        if (n >= max || !py_idch(*r->p, true)) return PY_BAD;
+        const char *nm = r->p;
+        while (r->p < r->end && (py_idch(*r->p, false) || *r->p == '-' || *r->p == '.')) r->p++;
+        size_t nl = (size_t)(r->p - nm);
+        py_ws(r);
+        if (r->p >= r->end) return PY_MORE;
+        if (*r->p != '(') return PY_BAD;
+        r->p++;
+        sbuf args = {0};
+        const char *keys[64];
+        size_t kls[64];
+        int nk = 0, rc = PY_OK;
+        sb_lit(&args, "{");
+        for (;;) {
+            py_ws(r);
+            if (r->p >= r->end) { rc = PY_MORE; break; }
+            if (*r->p == ')') { r->p++; break; }
+            if (nk) {
+                if (*r->p != ',') { rc = PY_BAD; break; }
+                r->p++;
+                py_ws(r);
+                if (r->p >= r->end) { rc = PY_MORE; break; }
+                if (*r->p == ')') { r->p++; break; }
+            }
+            if (nk == 64 || !py_idch(*r->p, true)) { rc = PY_BAD; break; }
+            const char *k = r->p;
+            while (r->p < r->end && py_idch(*r->p, false)) r->p++;
+            size_t kl = (size_t)(r->p - k);
+            py_ws(r);
+            if (r->p >= r->end) { rc = PY_MORE; break; }
+            if (*r->p != '=' || (r->p + 1 < r->end && r->p[1] == '=')) { rc = PY_BAD; break; }
+            if (r->p + 1 >= r->end) { rc = PY_MORE; break; }
+            r->p++;
+            for (int j = 0; j < nk; j++)
+                if (kls[j] == kl && !memcmp(keys[j], k, kl)) rc = PY_BAD;
+            if (rc != PY_OK) break;
+            keys[nk] = k; kls[nk] = kl;
+            if (nk++) sb_lit(&args, ",");
+            sb_lit(&args, "\"");
+            sb_esc(&args, k, kl);
+            sb_lit(&args, "\":");
+            rc = py_value(r, &args, 1);
+            if (rc != PY_OK) break;
+        }
+        if (rc != PY_OK) { free(args.s); return rc; }
+        sb_lit(&args, "}");
+        if (index + n) sb_lit(calls, ",");
+        sb_fmt(calls, "{\"id\":\"call_%d\",\"type\":\"function\","
+                      "\"function\":{\"name\":\"", index + n);
+        sb_esc(calls, nm, nl);
+        sb_lit(calls, "\",\"arguments\":\"");
+        sb_esc(calls, args.s ? args.s : "{}", args.s ? args.n : 2);
+        sb_lit(calls, "\"}}");
+        free(args.s);
+    }
+}
+
 int tool_envelope_map_channels(const tool_envelope *e, const char *doc,
                                size_t n, sbuf *reasoning, sbuf *content,
                                sbuf *tc) {
     if (!e || !doc || !content || !tc) return -1;
+    if (e->proto == TP_LFM2) {   // parse-only: the demultiplexer is the parser
+        int got = 0;
+        return tool_stream_map(e, doc, n, false, content, tc, &got) < 0 ? -1 : got;
+    }
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, reasoning, content, tc);
     if (e->proto == TP_GEMMA4) return gemma4_map(e, doc, n, reasoning, content, tc);
     if (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) return qwen_map(e, doc, n, content, tc);
@@ -5560,6 +5985,10 @@ int tool_envelope_map_channels(const tool_envelope *e, const char *doc,
 int tool_envelope_map(const tool_envelope *e, const char *doc, size_t n,
                       sbuf *content, sbuf *tc) {
     if (!e || !doc || !content || !tc) return -1;
+    if (e->proto == TP_LFM2) {   // parse-only: the demultiplexer is the parser
+        int got = 0;
+        return tool_stream_map(e, doc, n, false, content, tc, &got) < 0 ? -1 : got;
+    }
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, NULL, content, tc);
     if (e->proto == TP_GEMMA4) return gemma4_map(e, doc, n, NULL, content, tc);
     if (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) return qwen_map(e, doc, n, content, tc);
@@ -5649,6 +6078,9 @@ enum { TS_TOOL, TS_ARGS, TS_FINAL_KEY, TS_FINAL_STR, TS_VALUE, TS_ATEM,
        // (no <tool_call> framing), each held until its </function> closes
        TS_MCP_START, TS_MCP_CALLS, TS_MCP_TEXT,
        TS_NEMO_START, TS_NEMO_TEXT, TS_NEMO_BLOCK,
+       // LFM2's native turn: prose, then one Python call list between its
+       // markers, held until the parser decides it
+       TS_LFM_TEXT, TS_LFM_BLOCK,
        TS_MUSE_HEADER, TS_MUSE_CONTENT,
        // parallel_tool_calls: between two entries of {"calls":[...]}. A
        // value ending inside TS_VALUE/TS_FINAL_STR leaves the entry's own
@@ -5937,6 +6369,7 @@ void tool_stream_init(tool_stream *s, const tool_envelope *e,
              : e && (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) ? TS_QWEN_START
              : e && e->proto == TP_MINICPM_XML ? TS_MCP_START
              : e && (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL) ? TS_NEMO_START
+             : e && e->proto == TP_LFM2 ? TS_LFM_TEXT
              : e && e->proto == TP_ATEM ? TS_ATEM
              : e && e->proto == TP_MUSE_PLAIN ? TS_MUSE_HEADER : TS_TOOL;
 }
@@ -6278,6 +6711,98 @@ static int ts_mcp(tool_stream *s, const char *bytes, int n) {
 // turn end stops the stream. A block that does not parse is a fault on a
 // constrained turn (the grammar wrote it) and, parse-only, is dropped with
 // the fault recorded so a later block still arrives.
+// LFM2's native turn (TP_LFM2, parse-only). Text streams as it comes, a tail
+// that could still become the opener held back. From the opener on, the
+// block is held until the parser decides it: a call list followed by the
+// closing marker is the turn's calls; a list refused anywhere -- a name, an
+// operator or any other expression where a value belongs, more calls than
+// the turn may carry, a close that is not the marker -- was never a call,
+// and the opener goes out as text with the scan resuming after it.
+static int ts_lfm2(tool_stream *s, const char *bytes, int n) {
+    head_put(s, bytes, (size_t)n);
+    const size_t ol = strlen(LFM_CALL_OPEN), cl = strlen(LFM_CALL_CLOSE);
+    for (;;) {
+        if (s->state == TS_DONE || !s->head_n) return 0;
+        if (s->state == TS_LFM_BLOCK) {
+            pyrd r = { s->head + ol, s->head + s->head_n };
+            sbuf tc = {0};
+            int got = 0;
+            int max = s->env ? s->env->max_calls - s->n_calls : 1;
+            int prc = py_call_list(&r, 0, max > 0 ? max : 0, &tc, &got);
+            if (prc == PY_OK) {
+                py_ws(&r);
+                size_t left = (size_t)(s->head + s->head_n - r.p);
+                if (left < cl && !memcmp(r.p, LFM_CALL_CLOSE, left)) {
+                    free(tc.s);
+                    return 0;                          // wait for the close
+                }
+                if (left >= cl && !memcmp(r.p, LFM_CALL_CLOSE, cl)) {
+                    sbuf wrapped = {0};
+                    sb_lit(&wrapped, "["); sb_put(&wrapped, tc.s, tc.n); sb_lit(&wrapped, "]");
+                    jv *arr = wrapped.failed ? NULL : json_parse(wrapped.s, wrapped.n);
+                    int rc = arr ? 0 : -1;
+                    for (int i = 0; !rc && i < arr->n; i++) {
+                        jv *fn = jv_get(arr->items[i], "function");
+                        const char *name = jv_str(jv_get(fn, "name"), NULL);
+                        const char *args = jv_str(jv_get(fn, "arguments"), NULL);
+                        if (!name || !args) { rc = -1; break; }
+                        s->called = s->any_called = true;
+                        s->n_calls++;
+                        if (s->sink.call_begin) rc = s->sink.call_begin(s->sink.ud, name);
+                        if (!rc && s->sink.call_args) rc = s->sink.call_args(s->sink.ud, args, (int)strlen(args));
+                        if (!rc && s->sink.call_end) rc = s->sink.call_end(s->sink.ud);
+                    }
+                    jv_free(arr); free(tc.s); free(wrapped.s);
+                    head_drop(s, (size_t)(r.p + cl - s->head));
+                    s->state = TS_LFM_TEXT;
+                    if (rc) return rc;
+                    continue;
+                }
+                prc = PY_BAD;                          // a list, but not closed
+            }
+            free(tc.s);
+            if (prc == PY_MORE) return 0;
+            if (tool_trace_on())
+                fprintf(stderr, "tool-trace: lfm2 block is not a call list; kept as text\n");
+            int rc = s->sink.content ? s->sink.content(s->sink.ud, s->head, (int)ol) : 0;
+            head_drop(s, ol);
+            s->state = TS_LFM_TEXT;
+            if (rc) return rc;
+            continue;
+        }
+        const char *open = strstr(s->head, LFM_CALL_OPEN);
+        if (open) {
+            size_t pre = (size_t)(open - s->head);
+            int rc = pre && s->sink.content ? s->sink.content(s->sink.ud, s->head, (int)pre) : 0;
+            head_drop(s, pre);
+            s->state = TS_LFM_BLOCK;
+            if (rc) return rc;
+            continue;
+        }
+        size_t keep = ol - 1;
+        if (keep > s->head_n) keep = s->head_n;
+        while (keep && memcmp(s->head + s->head_n - keep, LFM_CALL_OPEN, keep)) keep--;
+        size_t emit = s->head_n - keep;
+        int rc = emit && s->sink.content ? s->sink.content(s->sink.ud, s->head, (int)emit) : 0;
+        head_drop(s, emit);
+        return rc;
+    }
+}
+
+// Whether a held LFM2 block has begun a call: the opener, `[` and a name
+// followed by `(`. One that has not was prose that spelled the marker.
+static bool ts_lfm2_block_began_call(const tool_stream *s) {
+    pyrd r = { s->head + strlen(LFM_CALL_OPEN), s->head + s->head_n };
+    py_ws(&r);
+    if (r.p >= r.end || *r.p != '[') return false;
+    r.p++;
+    py_ws(&r);
+    if (r.p >= r.end || !py_idch(*r.p, true)) return false;
+    while (r.p < r.end && (py_idch(*r.p, false) || *r.p == '-' || *r.p == '.')) r.p++;
+    py_ws(&r);
+    return r.p < r.end && *r.p == '(';
+}
+
 static int ts_nemotron(tool_stream *s, const char *bytes, int n) {
     head_put(s, bytes, (size_t)n);
     const list_proto *lp = list_proto_of(s->env);
@@ -6518,6 +7043,8 @@ int tool_stream_feed(tool_stream *s, const char *bytes, int n) {
     case TS_NEMO_START:
     case TS_NEMO_TEXT:
     case TS_NEMO_BLOCK: return ts_nemotron(s, bytes, n);
+    case TS_LFM_TEXT:
+    case TS_LFM_BLOCK: return ts_lfm2(s, bytes, n);
     case TS_MUSE_HEADER:return ts_muse_header(s, bytes, n);
     case TS_MUSE_CONTENT:
         return s->sink.content ? s->sink.content(s->sink.ud, bytes, n) : 0;
@@ -6574,6 +7101,25 @@ int tool_stream_finish_ex(tool_stream *s, bool truncated) {
                        (s->state == TS_MCP_START && ts_partial(s, MCP_CALL_OPEN));
         if (s->state == TS_MCP_CALLS && !truncated) s->fault = true;
         if (s->head_n && !framing && s->sink.content)
+            rc = s->sink.content(s->sink.ud, s->head, (int)s->head_n);
+        s->head_n = 0;
+        s->state = TS_DONE;
+        if (s->fault) rc = -1;
+        return rc;
+    }
+    if (s->state == TS_LFM_TEXT || s->state == TS_LFM_BLOCK) {
+        // Held text (a tail that never became the opener) is text. A block
+        // the parser never decided: a budget or deadline cut drops it, half
+        // a call, and the caller keeps "length"; the model's own end with a
+        // call begun is an abandoned call, a protocol fault; a block that
+        // never began one was prose that spelled the marker, and is text.
+        int rc = 0;
+        bool drop = false;
+        if (s->state == TS_LFM_BLOCK) {
+            if (truncated) drop = true;
+            else if (ts_lfm2_block_began_call(s)) { drop = true; s->fault = true; }
+        }
+        if (s->head_n && !drop && s->sink.content)
             rc = s->sink.content(s->sink.ud, s->head, (int)s->head_n);
         s->head_n = 0;
         s->state = TS_DONE;

@@ -121,6 +121,13 @@ ARCH_GATE_EXEMPTIONS = {
     # holds the gold run against the publisher's code; this entry goes when
     # a release file is pinned with its own float32 gold run.
     "clef": "fixture-gated (tests/test_clef.py) plus the publisher-code gold run",
+    # Liquid LFM2's MoE siblings share lfm2's short-convolution layers, which
+    # the LFM2.5-1.2B-Instruct rows gate; their routed experts are gated by
+    # tests/test_lfm2.py and the recurrent-state gates on test-lfm2-moe.gguf,
+    # and by a converted random lfm2moe against transformers' float32
+    # (docs/compat-reports/lfm2.5-reference-2026-10-30). This entry goes with
+    # the first lfm2moe row (LFM2.5-8B-A1B or 24B-A2B).
+    "lfm2moe": "fixture-gated plus a converted toy against transformers; rows follow",
 }
 
 

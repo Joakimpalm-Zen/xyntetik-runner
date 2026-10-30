@@ -134,6 +134,43 @@ char *render_prompt_state_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
 // dropped a turn out of the conversation and the request still answered 200.
 // The model then answers a different question than the one it was asked, and
 // nothing in the response says so.
+// An LFM2 assistant turn (chat_template.jinja): the thought as
+// `<think>...</think>` when this is the turn that keeps it (the last
+// assistant turn) and it is non-empty; on the others a `</think>` in the
+// content cuts it to what follows the last one, trimmed. Then the content and
+// the call list, with a trailing `CONTINUE_FINAL_MESSAGE_TAG ` moved after
+// the calls, as the template moves it.
+static void lfm2_assistant_text(sbuf *b, sbuf *txt, const char *reason,
+                                jv *calls, bool keep_thinking) {
+    if (keep_thinking && reason && *reason) {
+        prompt_lit(b, "<think>");
+        sb_put(b, reason, strlen(reason));
+        prompt_lit(b, "</think>");
+    }
+    const char *c = txt->s ? txt->s : "";
+    size_t n = txt->n;
+    if (!keep_thinking) {
+        const char *cut = NULL;
+        for (const char *p = c; (p = strstr(p, "</think>")); p += 8) cut = p + 8;
+        if (cut) {
+            n -= (size_t)(cut - c);
+            c = cut;
+            while (n && isspace((unsigned char)*c)) { c++; n--; }
+            while (n && isspace((unsigned char)c[n - 1])) n--;
+        }
+    }
+    static const char cfm[] = "CONTINUE_FINAL_MESSAGE_TAG ";
+    bool has_cfm = n >= sizeof(cfm) - 1 && !memcmp(c + n - (sizeof(cfm) - 1), cfm, sizeof(cfm) - 1);
+    if (has_cfm) n -= sizeof(cfm) - 1;
+    sbuf body = {0};
+    sb_put(&body, c, n);
+    sb_put(&body, "", 0);
+    if (body.failed) b->failed = true;
+    else assistant_calls_render(TMPL_LFM2, body.s, calls, b, NULL);
+    free(body.s);
+    if (has_cfm) sb_put(b, cfm, sizeof(cfm) - 1);
+}
+
 static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
     jv *content = jv_get(msg, "content");
     const char *role = jv_str(jv_get(msg, "role"), "user");
@@ -153,7 +190,8 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
             const char *type = jv_str(jv_get(content->items[i], "type"), "");
             const char *text = jv_str(jv_get(content->items[i], "text"), NULL);
             if (strcmp(type, "text") != 0 || !text) continue; // images etc.
-            if (parts++) sb_lit(&txt, "\n");
+            // LFM2's parse_content joins the parts with nothing between
+            if (parts++ && tmpl != TMPL_LFM2) sb_lit(&txt, "\n");
             sb_put(&txt, text, strlen(text));
         }
     }
@@ -199,7 +237,10 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
             sb_put(&b, reason, strlen(reason));
             prompt_lit(&b, tmpl == TMPL_NEMOTRON35 ? "</think>" : "\n</think>\n");
         }
-        assistant_calls_render(tmpl, txt.s, calls, &b, NULL);
+        if (tmpl == TMPL_LFM2 && !strcmp(role, "assistant"))
+            lfm2_assistant_text(&b, &txt, reason, calls, replay_reason);
+        else
+            assistant_calls_render(tmpl, txt.s, calls, &b, NULL);
     }
     bool failed = b.failed || txt.failed;
     free(txt.s);
@@ -647,6 +688,11 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     if (tmpl_chatml_think(s->tmpl) || tmpl_qwen35(s->tmpl))
         for (int i = 0; i < msgs->n; i++)
             if (!strcmp(chat_role(msgs->items[i]), "user")) last_user = i;
+    // LFM2 keeps the thought of the last assistant turn only
+    int last_assistant = -1;
+    if (s->tmpl == TMPL_LFM2)
+        for (int i = 0; i < msgs->n; i++)
+            if (!strcmp(chat_role(msgs->items[i]), "assistant")) last_assistant = i;
     for (int i = 0; i < msgs->n; i++) {
         if (i == 0 && ornith_merged_system) continue;
         const char *role = chat_role(msgs->items[i]);
@@ -731,7 +777,8 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                              ((tmpl_qwen35(s->tmpl) || s->tmpl == TMPL_MELLUM) &&
                               i > last_user) ||
                              // MiniCPM5 writes the block on every assistant turn
-                             s->tmpl == TMPL_MINICPM5;
+                             s->tmpl == TMPL_MINICPM5 ||
+                             (s->tmpl == TMPL_LFM2 && i == last_assistant);
         char *content = message_text(msgs->items[i], s->tmpl, replay_reason,
                                      &oom);
         if (oom) break;
