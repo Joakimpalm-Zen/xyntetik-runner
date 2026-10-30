@@ -1672,6 +1672,68 @@
           ]
         }
       }
+    },
+    {
+      "id": "lfm2.5-1.2b-instruct-q8_0",
+      "architecture": "lfm2",
+      "family": "LFM2.5",
+      "file": "models/LFM2.5-1.2B-Instruct-Q8_0.gguf",
+      "sha256": "f6b981dcb86917fa463f78a362320bd5e2dc45445df147287eedb85e5a30d26a",
+      "upstream": "LiquidAI/LFM2.5-1.2B-Instruct-GGUF",
+      "tokenizer_reference": "LiquidAI/LFM2.5-1.2B-Instruct",
+      "tokenizer_reference_revision": "0f604ada3f766f9f257460c4c9f0b5d6f69d431b",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/lfm2.5-1.2b-instruct.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "LiquidAI's own Q8_0 (1,246,253,888 bytes, revision 8ed28802 of LiquidAI/LFM2.5-1.2B-Instruct-GGUF), architecture lfm2: 16 blocks (10 short-convolution, 6 GQA attention 32/8 with QK norms), hidden 2048, vocabulary 65,536, tied output. Tokenizer pre lfm2 is the Llama 3 split, BOS prepended as the publisher's tokenizer.json does; 0 of 721 corpus strings differ from that tokenizer.json at 0f604ada. Template family lfm2, conformance 23/23. Fidelity: against the BF16 parent computed in float32, 0.0042 mean KLD / 99.0% top-1 / 100% margin-qualified (300 positions); the fidelity file of the publisher's two. Record docs/compat-reports/lfm2.5-reference-2026-10-30. Checks run on the Metal laptop's CPU (lfm2 has no GPU path yet). No llama.cpp greedy reference is declared, so greedy_reference is not claimed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "<|im_start|>",
+            "<|tool_call_start|>",
+            "<think>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "lfm2.5-1.2b-instruct-q4_k_m",
+      "architecture": "lfm2",
+      "family": "LFM2.5",
+      "file": "models/LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
+      "sha256": "b1b3de114215d9507409a662a501a631095a479a419584e8a2ded6304b19b4f5",
+      "upstream": "LiquidAI/LFM2.5-1.2B-Instruct-GGUF",
+      "tokenizer_reference": "LiquidAI/LFM2.5-1.2B-Instruct",
+      "tokenizer_reference_revision": "0f604ada3f766f9f257460c4c9f0b5d6f69d431b",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/lfm2.5-1.2b-instruct.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "LiquidAI's own Q4_K_M (730,895,168 bytes, revision 8ed28802 of LiquidAI/LFM2.5-1.2B-Instruct-GGUF), architecture lfm2: 16 blocks (10 short-convolution, 6 GQA attention 32/8 with QK norms), hidden 2048, vocabulary 65,536, tied output. Tokenizer pre lfm2 is the Llama 3 split, BOS prepended as the publisher's tokenizer.json does; 0 of 721 corpus strings differ from that tokenizer.json at 0f604ada. Template family lfm2, conformance 23/23. Fidelity: against the BF16 parent computed in float32, 0.115 mean KLD / 85.7% top-1 / 94.7% margin-qualified (300 positions), failing the 0.05 bar; llama.cpp on the same file against the same reference reads 0.119, so the gap is the file's. The Q8_0 is the fidelity file. Record docs/compat-reports/lfm2.5-reference-2026-10-30. Checks run on the Metal laptop's CPU (lfm2 has no GPU path yet). No llama.cpp greedy reference is declared, so greedy_reference is not claimed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "<|im_start|>",
+            "<|tool_call_start|>",
+            "<think>"
+          ]
+        }
+      }
     }
   ]
 }

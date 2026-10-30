@@ -5,6 +5,38 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **LFM2.5-1.2B-Instruct Q8_0 and Q4_K_M admitted at Tier 2; the Q4_K_M fails
+  the fidelity bar.** Against LiquidAI's BF16 parent computed in float32 the
+  publisher's Q4_K_M reads 0.115 mean KLD over 300 positions, against a 0.05
+  bar, and llama.cpp reads the same file at 0.119, so the gap is the file's
+  quantization; the Q8_0 reads 0.0042 and 99.0% top-1 and is the fidelity
+  file. The publisher's QAD-Q4_0 fails as well (0.128) and is not a row
+  (`docs/compat-reports/lfm2.5-reference-2026-10-30/README.md`). Both files
+  load, tokenize as the publisher's tokenizer.json does (0 of 721), render
+  its template token for token (23 of 23) and answer through it on the CPU.
+  The LFM Open License v1.0 limits commercial use to entities under US$10M
+  annual revenue.
+- **The `lfm2` and `lfm2moe` architectures, on the CPU.** Liquid's
+  short-convolution layers interleaved with GQA attention: `in_proj` into B,
+  C and x, B·x through a causal depthwise convolution, C gating it,
+  `out_proj`. The convolution ring is the whole recurrent state, so snapshot,
+  rewind, the prefix cache and the speculative round checkpoint use the
+  Mamba-2 hybrids' seam, each pinned bit-identical to a cold decode on a dense
+  and an MoE fixture. `lfm2moe`'s sigmoid-routed experts with a selection
+  bias match transformers on a converted random model (max |Δlog p| 5.2e-4
+  with the f16 KV cache). The GPU backends refuse both by name; LoRA serving,
+  training and sublayer removal refuse them too. The tokenizer pre `lfm2` is
+  the Llama 3 split with BOS on, as the publisher's tokenizer.json does.
+- **The `lfm2` template family and its Python call list.** ChatML with the
+  declarations as one `List of tools: [...]` line, the thought kept on the
+  last assistant turn only, results as their own `tool` turn, and calls as
+  `<|tool_call_start|>[name(key=value)]<|tool_call_end|>`, read back by a
+  strict literal parser that evaluates nothing. Anything that is not a call
+  list is served as text. Its two markers are control tokens; while the
+  protocol is in force the engine spells them for the parser, as
+  `special_tokens` does for completions. Template conformance gains two kinds
+  of case: a part-array content handed to a template that reads the array
+  itself, and a thought in history.
 - **A file's own end-of-generation ids are stops.** Runner now reads
   `tokenizer.ggml.eog_token_ids` when a file carries it and ends the turn on
   each id it lists (Harmony's `<|end|>` stays out, as before). No llama.cpp

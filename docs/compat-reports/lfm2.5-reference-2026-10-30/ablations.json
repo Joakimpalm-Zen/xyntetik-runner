@@ -1,0 +1,20 @@
+{
+ "no selection bias": {
+  "mean_kl": 0.1231531873345375,
+  "top1_pct": 62.00000047683716,
+  "margin_qualified_top1_pct": 85.26315689086914,
+  "margin_qualified_positions": 95
+ },
+ "routing weights not renormalised": {
+  "mean_kl": 0.5502989292144775,
+  "top1_pct": 36.500000953674316,
+  "margin_qualified_top1_pct": 48.42105209827423,
+  "margin_qualified_positions": 95
+ },
+ "convolution without history": {
+  "mean_kl": 6.705288887023926,
+  "top1_pct": 0.4999999888241291,
+  "margin_qualified_top1_pct": 0.0,
+  "margin_qualified_positions": 95
+ }
+}
