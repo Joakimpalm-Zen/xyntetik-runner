@@ -20,13 +20,15 @@ Current release and unreleased changes. Compatibility follows the
   The tokenizer pre `k2-horizon` (the Llama 3 split with combining marks and
   zero-width joiners inside letter runs, under NFC) reads 0 of 721 corpus
   strings differently from the publisher's tokenizer.json on the 0.9B.
-- **K2-Horizon-0.9B Q8_0 admitted at Tier 2: 0.0037 mean KLD against its
-  parent in float32.** IFM's own Q8_0 loads, tokenizes as the publisher's
+- **K2-Horizon-0.9B Q8_0 and Q4_K_M admitted at Tier 2; the Q4_K_M fails
+  the fidelity bar.** IFM's own Q8_0 loads, tokenizes as the publisher's
   tokenizer.json does (0 of 721), renders the template its GGUF carries token
   for token (23 of 23) and answers through it on the Metal laptop, on the GPU
   and on the CPU; against the BF16 checkpoint computed in float32 it reads
-  0.0037 and 97.3% top-1 (100% margin-qualified). The publisher's Q4_K_M reads
-  0.108 and fails the bar, so it is not admitted
+  0.0037 and 97.3% top-1 (100% margin-qualified), the fidelity file. The
+  publisher's Q4_K_M reads 0.108 against a 0.05 bar (97.1% margin-qualified),
+  the file's quantization; it is a Tier 2 row of its own with that failure
+  first, as MiniCPM5's Q4_K_M is
   (`docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md`). The
   7B is listed as upcoming: its tokenizer (0 of 721) and template are checked,
   its cells and its reference are owed.

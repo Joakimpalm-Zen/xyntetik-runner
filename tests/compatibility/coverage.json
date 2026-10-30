@@ -1290,6 +1290,7 @@
    ],
    "artifacts": [
     "k2-horizon-0.9b-q8_0",
+    "k2-horizon-0.9b-q4_k_m",
     "k2-horizon-7b-q4_k_m"
    ],
    "tool_protocol": {

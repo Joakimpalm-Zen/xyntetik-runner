@@ -4,7 +4,8 @@
 `K2-Horizon-1B-Q4_K_M.gguf` reads a mean KLD of **0.108** and a top-1 of **81.7%**, against a bar of 0.05 and 97%
 margin-qualified top-1 (it reaches 97.1% there, so the mean fails, not the qualified top-1). The Q8_0 of the same parent
 on the same build reads **0.0037** and 97.3%, with 100% margin-qualified, so the gap is the Q4_K_M file's quantization,
-not the arithmetic. The Q8_0 is the fidelity file and the admitted row; the Q4_K_M is not admitted. No llama.cpp
+not the arithmetic. The Q8_0 is the fidelity file. The Q4_K_M is admitted as a Tier 2 row of its own with this
+failure first in its claim, as MiniCPM5's Q4_K_M is: Runner runs the file people download, correctly. No llama.cpp
 column was run.
 
 ## Setup

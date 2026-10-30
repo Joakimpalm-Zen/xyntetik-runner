@@ -1,0 +1,70 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-10-30T06:28:02Z",
+  "host": {
+    "os": "Darwin",
+    "machine": "arm64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 1.7.1"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "k2-horizon-0.9b-q4_k_m",
+      "architecture": "k2-horizon",
+      "file": "models/K2-Horizon-1B-Q4_K_M.gguf",
+      "expected_sha256": "78bff592aeba235c767c93a0bda5870d5a4a8dca21c2a2d502930dd3078c79f2",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 550.2,
+          "stderr_tail": "rope: YaRN scaling x16.00 (model metadata)\ngpu: Metal backend on Apple M1 (zero-copy weights)\nloaded K2-Horizon-1B-Q4_K_M.gguf | k2-horizon | 28 layers | ctx 4096 | 4 threads | 0.12s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\ngpu: decode fusion on (byte-identical; RUNNER_METAL_FUSE=0 disables)\n\nprompt: 6 tok, 16.06 tok/s | gen: 1 tok, 34.55 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 192.4,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": ""
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 777.01,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "2 + 2 = 4\n"
+        }
+      },
+      "resolved_file": "models/K2-Horizon-1B-Q4_K_M.gguf",
+      "actual_sha256": "78bff592aeba235c767c93a0bda5870d5a4a8dca21c2a2d502930dd3078c79f2",
+      "file_status": "pass",
+      "complete": true
+    }
+  ],
+  "complete": true,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "pass": 1
+      },
+      "chat": {
+        "pass": 1
+      }
+    }
+  }
+}
