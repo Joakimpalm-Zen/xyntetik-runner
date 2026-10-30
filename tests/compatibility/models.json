@@ -1999,6 +1999,37 @@
       }
     },
     {
+      "id": "lfm2.5-8b-a1b-q4_k_m",
+      "architecture": "lfm2moe",
+      "family": "LFM2.5",
+      "file": "models/LFM2.5-8B-A1B-Q4_K_M.gguf",
+      "sha256": "4923ec14f06b968b74d663e5949867d2d9c3bf13a20b8be1a9f9af39989b2bb0",
+      "upstream": "LiquidAI/LFM2.5-8B-A1B-GGUF",
+      "tokenizer_reference": "LiquidAI/LFM2.5-8B-A1B",
+      "tokenizer_reference_revision": "5dd22602c2e9f6a097b1de4c4efe0658b605015c",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/lfm2.5-8b-a1b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "LiquidAI's own Q4_K_M (5,155,564,768 bytes, revision 49c14831 of LiquidAI/LFM2.5-8B-A1B-GGUF), architecture lfm2moe: 24 blocks (18 short-convolution, 6 GQA attention 32/8), hidden 2048, 2 leading dense blocks then 32 experts top 4 with an expert bias, vocabulary 128,000 of its own, tied output. Tokenizer pre lfm2, 0 of 721 corpus strings differ from the publisher's tokenizer.json at 5dd22602; the file carries no add_bos_token key and gets BOS, as its template writes it. Template family lfm2-8b (the earlier LFM2.5 template its GGUF carries: string arguments raw, the thought from `thinking`, kept after the last user turn). Checks run on the Metal laptop's CPU (lfm2moe has no GPU path yet). The float32 reference is owed. No llama.cpp greedy reference is declared, so greedy_reference is not claimed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "<|im_start|>",
+            "<|tool_call_start|>",
+            "<think>"
+          ]
+        }
+      }
+    },
+    {
       "id": "spark-x2.6-4b-q4_k_m",
       "architecture": "spark2_5",
       "family": "Spark",

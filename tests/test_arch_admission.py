@@ -115,13 +115,6 @@ ARCH_GATE_EXEMPTIONS = {
     # real file (83 GB, two parts) is admitted to the manifest with the
     # anchor runs in R4.26.3, and this entry goes with it.
     "qwen4exp": "experimental; fixture-gated only until the R4.26.3 anchor",
-    # Liquid LFM2's MoE siblings share lfm2's short-convolution layers, which
-    # the LFM2.5-1.2B-Instruct rows gate; their routed experts are gated by
-    # tests/test_lfm2.py and the recurrent-state gates on test-lfm2-moe.gguf,
-    # and by a converted random lfm2moe against transformers' float32
-    # (docs/compat-reports/lfm2.5-reference-2026-10-30). This entry goes with
-    # the first lfm2moe row (LFM2.5-8B-A1B or 24B-A2B).
-    "lfm2moe": "fixture-gated plus a converted toy against transformers; rows follow",
 }
 
 

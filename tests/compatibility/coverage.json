@@ -762,6 +762,26 @@
     "metal": "UNSUPPORTED"
    },
    "note": "GLM-style role tokens with no end-of-turn token, caller text through the template's flint_text filter, tools as a system turn of their own, Spark's <arg_key> calls"
+  },
+  "lfm2-8b": {
+   "artifact": "lfm2.5-8b-a1b-q4_k_m",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "the template renders the file's own declarations and Python call lists with raw string values (template-conformance lfm2-8b, text and tokens, 2026-10-30) and the lfm2_python_raw parser is pinned on fixtures (test_lfm2_8b_raw_calls); the live tool gate has not been run on this artifact"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "the publisher's generation_config.json (5dd22602) sets temperature 0.2, top_k 80 and repetition_penalty 1.05; no family preset applies them"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "UNSUPPORTED",
+    "metal": "UNSUPPORTED"
+   },
+   "note": "the LFM2.5 template revision LFM2.5-8B-A1B's GGUF carries: LFM2's framing, a string argument written raw between single quotes, a list as Python's str(), the thought read from `thinking` alone and kept on every assistant turn after the last user turn"
   }
  },
  "architectures": {
@@ -1271,9 +1291,12 @@
   },
   "lfm2moe": {
    "templates": [
-    "lfm2"
+    "lfm2",
+    "lfm2-8b"
    ],
-   "artifacts": [],
+   "artifacts": [
+    "lfm2.5-8b-a1b-q4_k_m"
+   ],
    "tool_protocol": {
     "status": "NOT RUN"
    },
@@ -1285,7 +1308,7 @@
     "cuda": "UNSUPPORTED",
     "metal": "UNSUPPORTED"
    },
-   "note": "fixture-gated (tests/test_lfm2.py, the recurrent-state gates on test-lfm2-moe.gguf) and a converted random lfm2moe against transformers' float32 (docs/compat-reports/lfm2.5-reference-2026-10-30); the LFM2.5-8B-A1B and 24B-A2B rows follow"
+   "note": "fixture-gated (tests/test_lfm2.py, the recurrent-state gates on test-lfm2-moe.gguf) and a converted random lfm2moe against transformers' float32 (docs/compat-reports/lfm2.5-reference-2026-10-30); LiquidAI's LFM2.5-8B-A1B Q4_K_M is its first file row, and the 24B-A2B follows"
   },
   "spark2_5": {
    "templates": [
