@@ -298,12 +298,20 @@ instead of carrying a copy, so none can drift and nothing watches them:
 **Tier 2, maintained on report** (dated evidence, not gated):
 
 <details>
-<summary><b>Cloudflare Clef</b>, 2 models: CPU - · CUDA 🟨 1 of 5 · Metal - · Train 🟨 1 of 5</summary>
+<summary><b>Cloudflare Clef</b>, 3 models: CPU - · CUDA 🟨 1 of 7 · Metal - · Train 🟨 1 of 7</summary>
 <p><b>Cloudflare Clef (clef, on Qwen3.8-27B)</b>, text path only</p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="#cloudflare-clef-iq3_m"><code>Cloudflare_clef-IQ3_M.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+</tbody>
+</table>
+<p><b>Cloudflare Clef Flash (clef, on Qwen3.5-9B)</b>, text path only</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#cloudflare-clef-flash"><code>Clef-Flash-Q4_K_M.gguf</code></a></td><td></td><td></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
+<tr><td><a href="#cloudflare-clef-flash-q8_0"><code>Clef-Flash-Q8_0.gguf</code></a></td><td></td><td></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
 </tbody>
 </table>
 <p><b>Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B)</b>, text path only</p>
@@ -664,7 +672,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
-**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
+**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated
@@ -930,6 +938,48 @@ Text path only: a decision model served at /v1/systemone; requests with images o
 - **LoRA training:** supported (runner 1.5.1, 2026-10-24).
 - **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22; Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
+
+#### Text path only: Cloudflare Clef Flash (clef, on Qwen3.5-9B)
+
+<a id="cloudflare-clef-flash"></a>
+##### `Clef-Flash-Q4_K_M.gguf`
+
+Text path only; float32 reference owed: no fidelity measurement of this file or of any clef-flash file exists yet. A decision model served at /v1/systemone, in ggml-org's conversion of Cloudflare's checkpoint (Cloudflare publishes no GGUF); requests with images or videos are refused. The chat smoke runs the qwen35 backbone, and the fixture decisions agree between the CPU and CUDA; neither is a fidelity measurement.
+
+- **File:** `Clef-Flash-Q4_K_M.gguf` (sha256 `eef2968c238a80d49d340430f22410ea3db9934ad1c6fdb233a503cbf9a9b54e`, 6,732,781,824 bytes, from [ggml-org/Clef-Flash-GGUF](https://huggingface.co/ggml-org/Clef-Flash-GGUF) at revision `6e2a164d70aa`).
+- **Upstream checkpoint:** Cloudflare/clef-flash at revision `f0b7d3cd6529`.
+- **Quantization:** Q4_K_M (ggml-org).
+- **Features claimed:** decisions. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison is feasible and owed):** Owed: Cloudflare's joint_schema_model.py in float32 on clef-flash at f0b7d3cd against this conversion's BF16 GGUF (the lab CPU lane, after MiMo and Spark). Until it runs, the only float32 anchor for the family is the small Clef of docs/clef-admission-2026-10-16.md (the Qwen3.5-0.8B backbone with a joint head), not this checkpoint.
+- **Context tested:** 4096.
+- **Known limitations:** Float32 reference owed, so no fidelity claim: ggml-org's Q4_K_M keeps attention, the SSM projections, the output matrix and the decision head at Q8_0 and puts the feed-forward and the token embedding at Q4_K; it is not bartowski's mix of the same name. Text only: a request with images or videos is refused. No llama.cpp column.
+- **Still missing:** The float32 gold run: Cloudflare's joint_schema_model.py in float32 on clef-flash at f0b7d3cd against this conversion's BF16 GGUF (the lab CPU lane, after MiMo and Spark); the Metal cell (a declared limit today); a llama.cpp column against the same reference.
+- **Evidence:** [docs/clef-admission-2026-10-16.md](clef-admission-2026-10-16.md).
+- **Validation run:** on windows-x86_64-cuda, cuda backend; no run recorded yet.
+- **CPU:** ☐ not run
+- **CUDA:** ☐ not run
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.
+- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
+
+<a id="cloudflare-clef-flash-q8_0"></a>
+##### `Clef-Flash-Q8_0.gguf`
+
+Text path only; float32 reference owed: no fidelity measurement of this file or of any clef-flash file exists yet. A decision model served at /v1/systemone, in ggml-org's conversion of Cloudflare's checkpoint (Cloudflare publishes no GGUF); requests with images or videos are refused. The chat smoke runs the qwen35 backbone, and the fixture decisions agree between the CPU and CUDA; neither is a fidelity measurement.
+
+- **File:** `Clef-Flash-Q8_0.gguf` (sha256 `25f801e2a27610b0ccc0cb1558d7eda3d7a304e34e2c4a04e3079357ff7d906e`, 9,657,260,288 bytes, from [ggml-org/Clef-Flash-GGUF](https://huggingface.co/ggml-org/Clef-Flash-GGUF) at revision `6e2a164d70aa`).
+- **Upstream checkpoint:** Cloudflare/clef-flash at revision `f0b7d3cd6529`.
+- **Quantization:** Q8_0 (ggml-org).
+- **Features claimed:** decisions. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison is feasible and owed):** Owed: Cloudflare's joint_schema_model.py in float32 on clef-flash at f0b7d3cd against this conversion's BF16 GGUF (the lab CPU lane, after MiMo and Spark). Until it runs, the only float32 anchor for the family is the small Clef of docs/clef-admission-2026-10-16.md (the Qwen3.5-0.8B backbone with a joint head), not this checkpoint.
+- **Context tested:** 4096.
+- **Known limitations:** Float32 reference owed, so no fidelity claim: nothing is measured against the parent for either clef-flash file yet. Text only: a request with images or videos is refused. No llama.cpp column.
+- **Still missing:** The float32 gold run: Cloudflare's joint_schema_model.py in float32 on clef-flash at f0b7d3cd against this conversion's BF16 GGUF (the lab CPU lane, after MiMo and Spark); the Metal cell (a declared limit today); a llama.cpp column against the same reference.
+- **Evidence:** [docs/clef-admission-2026-10-16.md](clef-admission-2026-10-16.md).
+- **Validation run:** on windows-x86_64-cuda, cuda backend; no run recorded yet.
+- **CPU:** ☐ not run
+- **CUDA:** ☐ not run
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.
+- **Tier history:** Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
 #### Text path only: Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B)
 
@@ -1972,16 +2022,6 @@ Not validated: the qwen35 family loads, but no gate has run on a Qwen3.6-27B fil
 - **Missing for Tier 1:** One gate run: tokenizer, template, quant bar, pinned output, device record; a file pinned by sha256.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
-### Cloudflare Clef Flash (clef, on Qwen3.5-9B)
-
-<a id="cloudflare-clef-flash"></a>
-#### Cloudflare Clef Flash (clef, on Qwen3.5-9B)
-
-Not validated: the clef architecture is admitted, but no clef-flash file is pinned or gated.
-
-- **Missing for Tier 1:** Pin one clef-flash file by sha256 with its own evidence (the audit names clef and clef-flash as separate checkpoints); a float32 gold run on a released checkpoint.
-- **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
-
 ### Nemotron 3 Nano (30B-A3B)
 
 <a id="nemotron-3-nano-30b-a3b"></a>
@@ -2087,7 +2127,7 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-22 | [Granite-4.2-30B](#granite-4.2-30b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Nemotron 3.5 Lightning-30B-A3B, `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf`](#nemotron-3.5-lightning-30b-a3b-q4_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Qwen3.6-27B](#qwen3.6-27b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
-| 2026-10-22 | [Cloudflare Clef Flash (clef, on Qwen3.5-9B)](#cloudflare-clef-flash) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
+| 2026-10-22 | [Cloudflare Clef Flash (clef, on Qwen3.5-9B), `Clef-Flash-Q4_K_M.gguf`](#cloudflare-clef-flash) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Nemotron 3 Nano (30B-A3B)](#nemotron-3-nano-30b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Nemotron 3.5 Bolt-74B-A9B](#nemotron-3.5-bolt-74b-a9b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Nemotron 3.5 Super VL-120B-A12B](#nemotron-3.5-super-vl-120b-a12b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
@@ -2126,6 +2166,8 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-29 | [MiniCPM5-2B (openbmb), `MiniCPM5-2B-Q4_K_M.gguf`](#minicpm5-2b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-29 at Tier 2 with the admitting Metal and CPU cells and a float32 reference measurement (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report. | none recorded |
 | 2026-10-29 | [MiMo-V2.6-Distill-Qwen-9B (XiaomiMiMo), `MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf`](#mimo-v2.6-distill-qwen-9b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the second of nine; the file rendered as Qwen3-Coder's template and tokenized combining marks differently from the publisher's tokenizer until the mimo template family and the qwen2 split landed. | none recorded |
 | 2026-10-29 | [MiMo-V2.6-Distill-Qwen-9B (XiaomiMiMo), `MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf`](#mimo-v2.6-distill-qwen-9b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-29 at Tier 2 with the admitting CPU cell from the Metal laptop and a float32 reference measurement (policy 2026-10-27). Maintained on report. | none recorded |
+| 2026-10-30 | [Cloudflare Clef Flash (clef, on Qwen3.5-9B), `Clef-Flash-Q4_K_M.gguf`](#cloudflare-clef-flash) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the Windows CUDA host's CPU and CUDA cells, the tokenizer and template checks; the float32 reference is owed (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report. | none recorded |
+| 2026-10-30 | [Cloudflare Clef Flash (clef, on Qwen3.5-9B), `Clef-Flash-Q8_0.gguf`](#cloudflare-clef-flash-q8_0) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the Windows CUDA host's CPU and CUDA cells, the tokenizer and template checks; the float32 reference is owed (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report. | none recorded |
 | 2026-10-30 | [LFM2.5-1.2B-Instruct (LiquidAI), `LFM2.5-1.2B-Instruct-Q8_0.gguf`](#lfm2.5-1.2b-instruct-q8_0) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29 (LFM2.5-24B-A2B); scope decided 2026-10-30 to admit the shared architecture through the dense 1.2B-Instruct first. The files did not load until the lfm2 architecture, its tokenizer rule and the lfm2 template family landed. | none recorded |
 | 2026-10-30 | [LFM2.5-1.2B-Instruct (LiquidAI), `LFM2.5-1.2B-Instruct-Q8_0.gguf`](#lfm2.5-1.2b-instruct-q8_0) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell and a float32 reference measurement (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report. | none recorded |
 | 2026-10-30 | [LFM2.5-1.2B-Instruct (LiquidAI), `LFM2.5-1.2B-Instruct-Q4_K_M.gguf`](#lfm2.5-1.2b-instruct-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29 (LFM2.5-24B-A2B); scope decided 2026-10-30 to admit the shared architecture through the dense 1.2B-Instruct first. The files did not load until the lfm2 architecture, its tokenizer rule and the lfm2 template family landed. | none recorded |

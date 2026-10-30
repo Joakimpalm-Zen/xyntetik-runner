@@ -3425,15 +3425,123 @@
     {
       "id": "cloudflare-clef-flash",
       "model": "Cloudflare Clef Flash (clef, on Qwen3.5-9B)",
-      "tier": "upcoming",
-      "claim": "Not validated: the clef architecture is admitted, but no clef-flash file is pinned or gated.",
+      "family": "Cloudflare Clef",
+      "tier": "tier2",
+      "claim": "Text path only; float32 reference owed: no fidelity measurement of this file or of any clef-flash file exists yet. A decision model served at /v1/systemone, in ggml-org's conversion of Cloudflare's checkpoint (Cloudflare publishes no GGUF); requests with images or videos are refused. The chat smoke runs the qwen35 backbone, and the fixture decisions agree between the CPU and CUDA; neither is a fidelity measurement.",
+      "vision_upstream": true,
       "architecture": "clef",
-      "missing": "Pin one clef-flash file by sha256 with its own evidence (the audit names clef and clef-flash as separate checkpoints); a float32 gold run on a released checkpoint.",
+      "upstream": {
+        "checkpoint": "Cloudflare/clef-flash",
+        "revision": "f0b7d3cd65296abfe459e6c228b618f5d8b26d2f"
+      },
+      "files": [
+        {
+          "name": "Clef-Flash-Q4_K_M.gguf",
+          "repo": "ggml-org/Clef-Flash-GGUF",
+          "revision": "6e2a164d70aae2af7fce86005da3f91805565b1d",
+          "sha256": "eef2968c238a80d49d340430f22410ea3db9934ad1c6fdb233a503cbf9a9b54e",
+          "bytes": 6732781824
+        }
+      ],
+      "quantization": "Q4_K_M (ggml-org)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "decisions"
+        ],
+        "fp32_reference": "owed",
+        "anchor": "Owed: Cloudflare's joint_schema_model.py in float32 on clef-flash at f0b7d3cd against this conversion's BF16 GGUF (the lab CPU lane, after MiMo and Spark). Until it runs, the only float32 anchor for the family is the small Clef of docs/clef-admission-2026-10-16.md (the Qwen3.5-0.8B backbone with a joint head), not this checkpoint.",
+        "context": 4096,
+        "limitations": "Float32 reference owed, so no fidelity claim: ggml-org's Q4_K_M keeps attention, the SSM projections, the output matrix and the decision head at Q8_0 and puts the feed-forward and the token embedding at Q4_K; it is not bartowski's mix of the same name. Text only: a request with images or videos is refused. No llama.cpp column.",
+        "evidence": [
+          "docs/clef-admission-2026-10-16.md"
+        ],
+        "missing": "The float32 gold run: Cloudflare's joint_schema_model.py in float32 on clef-flash at f0b7d3cd against this conversion's BF16 GGUF (the lab CPU lane, after MiMo and Spark); the Metal cell (a declared limit today); a llama.cpp column against the same reference."
+      },
+      "smoke": {
+        "device_class": "windows-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": null,
+        "metal": {
+          "kind": "limit",
+          "reason": "Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        }
+      },
+      "lora": null,
       "transitions": [
         {
           "tier": "upcoming",
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the Windows CUDA host's CPU and CUDA cells, the tokenizer and template checks; the float32 reference is owed (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
+      "id": "cloudflare-clef-flash-q8_0",
+      "model": "Cloudflare Clef Flash (clef, on Qwen3.5-9B)",
+      "family": "Cloudflare Clef",
+      "tier": "tier2",
+      "claim": "Text path only; float32 reference owed: no fidelity measurement of this file or of any clef-flash file exists yet. A decision model served at /v1/systemone, in ggml-org's conversion of Cloudflare's checkpoint (Cloudflare publishes no GGUF); requests with images or videos are refused. The chat smoke runs the qwen35 backbone, and the fixture decisions agree between the CPU and CUDA; neither is a fidelity measurement.",
+      "vision_upstream": true,
+      "architecture": "clef",
+      "upstream": {
+        "checkpoint": "Cloudflare/clef-flash",
+        "revision": "f0b7d3cd65296abfe459e6c228b618f5d8b26d2f"
+      },
+      "files": [
+        {
+          "name": "Clef-Flash-Q8_0.gguf",
+          "repo": "ggml-org/Clef-Flash-GGUF",
+          "revision": "6e2a164d70aae2af7fce86005da3f91805565b1d",
+          "sha256": "25f801e2a27610b0ccc0cb1558d7eda3d7a304e34e2c4a04e3079357ff7d906e",
+          "bytes": 9657260288
+        }
+      ],
+      "quantization": "Q8_0 (ggml-org)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "decisions"
+        ],
+        "fp32_reference": "owed",
+        "anchor": "Owed: Cloudflare's joint_schema_model.py in float32 on clef-flash at f0b7d3cd against this conversion's BF16 GGUF (the lab CPU lane, after MiMo and Spark). Until it runs, the only float32 anchor for the family is the small Clef of docs/clef-admission-2026-10-16.md (the Qwen3.5-0.8B backbone with a joint head), not this checkpoint.",
+        "context": 4096,
+        "limitations": "Float32 reference owed, so no fidelity claim: nothing is measured against the parent for either clef-flash file yet. Text only: a request with images or videos is refused. No llama.cpp column.",
+        "evidence": [
+          "docs/clef-admission-2026-10-16.md"
+        ],
+        "missing": "The float32 gold run: Cloudflare's joint_schema_model.py in float32 on clef-flash at f0b7d3cd against this conversion's BF16 GGUF (the lab CPU lane, after MiMo and Spark); the Metal cell (a declared limit today); a llama.cpp column against the same reference."
+      },
+      "smoke": {
+        "device_class": "windows-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": null,
+        "metal": {
+          "kind": "limit",
+          "reason": "Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        }
+      },
+      "lora": null,
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the Windows CUDA host's CPU and CUDA cells, the tokenizer and template checks; the float32 reference is owed (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report.",
           "last_validated_release": null
         }
       ]
