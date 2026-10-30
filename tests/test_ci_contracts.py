@@ -109,6 +109,33 @@ class CommandGate(unittest.TestCase):
             self.assertEqual(run("// isnan(x) folds\nconst char *s = \"isfinite(\";\n"), 0)
             self.assertEqual(run("int f(double x) { return isnan(x); }\n", "quants.c"), 0)
 
+    def test_fpclass_check_refuses_an_unguarded_sigmoid(self):
+        """1/(1+expf(-x)) and x/(1+expf(-x)) return NaN below about -88 on
+        x86-64 under -ffast-math (src/act.h), so an unguarded one is refused;
+        the helper, a cutoff guard on the line or the two above, the sign
+        split, comments and strings are not."""
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            (root / "scripts").mkdir()
+            (root / "src").mkdir()
+            script = root / "scripts/check-fpclass.py"
+            script.write_bytes((ROOT / "scripts/check-fpclass.py").read_bytes())
+            def run(body, name="a.c"):
+                for p in (root / "src").iterdir():
+                    p.unlink()
+                (root / "src" / name).write_text(body)
+                return subprocess.run([sys.executable, str(script)], capture_output=True).returncode
+            self.assertNotEqual(run("float f(float x) { return 1.0f / (1.0f + expf(-x)); }\n"), 0)
+            self.assertNotEqual(run("float f(float x) { return x / (1.0f + expf(-x)); }\n"), 0)
+            self.assertEqual(run("float f(float x) { return x < -80.0f ? 0.0f : x / (1.0f + expf(-x)); }\n"), 0)
+            self.assertEqual(run("float f(float g) {\n    if (g < -80.0f) return 0.0f;\n"
+                                 "    return 1.0f / (1.0f + expf(-g));\n}\n"), 0)
+            self.assertEqual(run("double f(double x) {\n    return x >= 0 ? 1.0 / (1.0 + exp(-x))\n"
+                                 "                  : exp(x) / (1.0 + exp(x));\n}\n"), 0)
+            self.assertEqual(run("// 1/(1+expf(-x))\nconst char *s = \"x / (1.0f + expf(-x))\";\n"), 0)
+            self.assertEqual(run("static inline float s(float x) { return 1.0f / (1.0f + expf(-x)); }\n",
+                                 "act.h"), 0)
+
     def test_failed_command_keeps_its_status_and_timing(self):
         with tempfile.TemporaryDirectory() as td:
             p = subprocess.run([sys.executable, str(ROOT / "scripts/ci-run.py"),

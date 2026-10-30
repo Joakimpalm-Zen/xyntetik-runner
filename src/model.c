@@ -12,6 +12,7 @@
 #include "kernel_args.h" // DN_L2_EPS, the DeltaNet q/k L2 norm's epsilon
 
 #include <math.h>
+#include "act.h"     // sigmoid_f, silu_f: safe under fast math
 #include "pmath.h"
 #include <float.h>
 #include <pthread.h>
@@ -6874,7 +6875,7 @@ static void mamba2_ssd_core_serial(model_t *m, layer_t *ly, int layer, int n) {
             float sum = ly->ssm_conv1d_b[c] + cw[histn] * xBC0[c];
             for (int k = 0; k < histn; k++)
                 sum += cw[k] * convstate[(size_t)k * conv_dim + c];
-            xBC[c] = sum / (1.0f + expf(-sum));    // silu
+            xBC[c] = silu_f(sum);
         }
         // advance the ring: drop the oldest column, append the PRE-conv input
         if (histn) {
@@ -6911,7 +6912,7 @@ static void mamba2_ssd_core_serial(model_t *m, layer_t *ly, int layer, int n) {
         // matching Mamba-2's RMSNormGated: normalize the GATED activations.
         for (int i = 0; i < inner; i++) {
             float zz = z[i];
-            y[i] *= zz / (1.0f + expf(-zz));
+            y[i] *= silu_f(zz);
         }
         int per_g = inner / ng;
         for (int g = 0; g < ng; g++) {
@@ -6962,7 +6963,7 @@ static void ssm_conv1d_worker(void *vp, int c0, int c1) {
                     : J->convstate[(size_t)(b + k) * conv_dim + c];
                 sum += cw[k] * v;
             }
-            m->ssm_aux[(size_t)b * conv_dim + c] = sum / (1.0f + expf(-sum));
+            m->ssm_aux[(size_t)b * conv_dim + c] = silu_f(sum);
         }
     }
 }
@@ -7027,7 +7028,7 @@ static void ssm_gate_norm_worker(void *vp, int b0, int b1) {
         float *y = m->ssm_z + (size_t)b * inner;
         for (int i = 0; i < inner; i++) {
             float zz = z[i];
-            y[i] *= zz / (1.0f + expf(-zz));
+            y[i] *= silu_f(zz);
         }
         for (int g = 0; g < ng; g++) {
             float *yg = y + (size_t)g * per_g;
@@ -7155,7 +7156,6 @@ static void lfm2_shortconv(model_t *m, layer_t *ly, int layer, int n, int xdim) 
 // One CPU Gated DeltaNet layer for Qwen3.5. State is stored transposed
 // ([value_column][key_row]), matching the reference operator: decay, delta
 // correction, outer-product update, then query readout.
-static float sigmoid_f(float g);   // defined with silu_f below
 
 typedef struct {
     model_t *m; const layer_t *ly;
@@ -7177,7 +7177,7 @@ static void q35_heads_worker(void *vp, int h0, int h1) {
         const float *k = cv + J->keydim + group * sk;
         const float *v = vv + h * hv;
         float *st = states + (size_t)h * hv * hv;
-        float beta = 1.0f / (1.0f + expf(-m->q_gate[(size_t)b * nh + h]));
+        float beta = sigmoid_f(m->q_gate[(size_t)b * nh + h]);
         float a = alphas[(size_t)b * nh + h] + ly->ssm_dt[h];
         float softplus = a > 20.0f ? a : log1pf(expf(a));
         float decay = expf(ly->ssm_a[h] * softplus);
@@ -7203,7 +7203,7 @@ static void q35_heads_worker(void *vp, int h0, int h1) {
         // only component that closed a 5e-2 logprob gap.
         for (int j = 0; j < hv; j++) {
             float z = m->ssm_z[(size_t)b * J->inner + h * hv + j];
-            out[h * hv + j] *= m->hyper_conn ? sigmoid_f(z) : z / (1.0f + expf(-z));
+            out[h * hv + j] *= m->hyper_conn ? sigmoid_f(z) : silu_f(z);
         }
     }
 }
@@ -7220,7 +7220,7 @@ static __attribute__((noinline)) void dn_gates(const layer_t *ly,
                                                int nh, float *beta,
                                                float *decay) {
     for (int h = 0; h < nh; h++) {
-        beta[h] = 1.0f / (1.0f + expf(-bt[h]));
+        beta[h] = sigmoid_f(bt[h]);
         float a = at[h] + ly->ssm_dt[h];
         float softplus = a > 20.0f ? a : log1pf(expf(a));
         decay[h] = expf(ly->ssm_a[h] * softplus);
@@ -7233,7 +7233,7 @@ static __attribute__((noinline)) void dn_gate_out(const model_t *m,
                                                   const float *z, float *o,
                                                   int hv) {
     rmsnorm(o, y, ly->ssm_norm_w, hv, m->rms_eps);
-    for (int j = 0; j < hv; j++) o[j] *= z[j] / (1.0f + expf(-z[j]));
+    for (int j = 0; j < hv; j++) o[j] *= silu_f(z[j]);
 }
 
 // dn_gate_out over n rows of every head on the pool, a head an item (each
@@ -7338,8 +7338,7 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
             float sum = cw[histn] * mix[c];
             for (int k = 0; k < histn; k++)
                 sum += cw[k] * hist[(size_t)k * convdim + c];
-            m->ssm_aux[(size_t)b * convdim + c] =
-                sum / (1.0f + expf(-sum));
+            m->ssm_aux[(size_t)b * convdim + c] = silu_f(sum);
         }
         if (histn) {
             memmove(hist, hist + convdim,
@@ -7453,7 +7452,7 @@ static void moe_route(model_t *m, const layer_t *ly, const float *xin,
     // the logits alone here; its softmax runs over the SELECTED weights below.
     switch (m->expert_gating) {
     case EXPERT_GATE_SIGMOID:
-        for (int e = 0; e < ne; e++) probs[e] = 1.0f / (1.0f + expf(-probs[e]));
+        for (int e = 0; e < ne; e++) probs[e] = sigmoid_f(probs[e]);
         break;
     case EXPERT_GATE_SQRT_SOFTPLUS:
         for (int e = 0; e < ne; e++) {
@@ -7649,7 +7648,7 @@ static void shexp_add(model_t *m, const layer_t *ly, const float *in,
             float logit = 0.0f;
             matvec_b(m->tp, &logit, 1, ly->ffn_gate_inp_shexp,
                      in + (size_t)b * ne, ne, ne, 1, NULL, 1);
-            gate = 1.0f / (1.0f + expf(-logit));
+            gate = sigmoid_f(logit);
         }
         float *out = m->xb + (size_t)b * xdim;
         const float *sh = m->shexp_o + (size_t)b * ne;
@@ -9219,18 +9218,8 @@ static void rope_unapply(model_t *m, float *v, int n_heads, int pos,
     }
 }
 
-// the exact SiLU the forward's gated_act computes (same -80 cutoff), and its
-// derivative (zero in the cutoff region, matching the piecewise definition)
-static float silu_f(float g) {
-    return g < -80.0f ? 0.0f : g / (1.0f + expf(-g));
-}
-// sigmoid with the same cutoff: under -ffast-math (finite-math-only) the
-// compiler may not keep 1/(1+inf) == 0, and the qwen4exp hyper-connection
-// gate reaches -95 on the release file (layer 42, the Linux CUDA host, 2026-10-06),
-// where the unguarded form turned the whole block into NaN.
-static float sigmoid_f(float g) {
-    return g < -80.0f ? 0.0f : g > 80.0f ? 1.0f : 1.0f / (1.0f + expf(-g));
-}
+// the SiLU's derivative, zero in silu_f's cutoff region (src/act.h), matching
+// the piecewise definition
 static float silu_d(float g) {
     if (g < -80.0f) return 0.0f;
     float sg = 1.0f / (1.0f + expf(-g));
@@ -10041,7 +10030,7 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
             float *aot = ao + (size_t)t * q_dim;
             memcpy(aopre + (size_t)t * q_dim, aot, sizeof(float) * (size_t)q_dim);
             for (int i = 0; i < q_dim; i++)
-                aot[i] *= 1.0f / (1.0f + expf(-gt[i]));
+                aot[i] *= sigmoid_f(gt[i]);
         }
     }
     t_mv_exact = true;
@@ -10360,7 +10349,7 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
         for (int t = 0; t < T; t++)
             for (int i = 0; i < q_dim; i++) {
                 size_t k = (size_t)t * q_dim + i;
-                float sg = 1.0f / (1.0f + expf(-gpre[k]));
+                float sg = sigmoid_f(gpre[k]);
                 dg[k] = dao[k] * aopre[k] * sg * (1.0f - sg);
                 dao[k] *= sg;
             }
@@ -10764,7 +10753,7 @@ static void dn_fw_worker(void *vp, int h0, int h1) {
             rmsnorm(o, d->y + (size_t)t * d->inner + h * hv, J->ly->ssm_norm_w, hv,
                     J->m->rms_eps);
             const float *z = d->z + (size_t)t * d->inner + h * hv;
-            for (int j = 0; j < hv; j++) o[j] *= z[j] / (1.0f + expf(-z[j]));
+            for (int j = 0; j < hv; j++) o[j] *= silu_f(z[j]);
         }
     }
     free(S);
@@ -10898,7 +10887,7 @@ NUM_STAGE void lbw_recompute_deltanet(model_t *m, int l, int T, lbw_state *s,
                 if (src >= 0) sum += cw[k] * d->mix[(size_t)src * cd + c];
             }
             cp[c] = sum;
-            cv[c] = sum / (1.0f + expf(-sum));
+            cv[c] = silu_f(sum);
         }
         // Q and K L2-normed per key group; the pre-norm values and the
         // inverse norms kept for the adjoint
@@ -10914,7 +10903,7 @@ NUM_STAGE void lbw_recompute_deltanet(model_t *m, int l, int T, lbw_state *s,
             for (int j = 0; j < sk; j++) { q[j] *= qs; k[j] *= ks; }
         }
         for (int h = 0; h < nh; h++) {
-            float beta = 1.0f / (1.0f + expf(-bt[h]));
+            float beta = sigmoid_f(bt[h]);
             float a = at[h] + ly->ssm_dt[h];
             float softplus = a > 20.0f ? a : log1pf(expf(a));
             d->beta[(size_t)t * nh + h] = beta;
@@ -11018,7 +11007,7 @@ NUM_STAGE void lbw_deltanet_bw(model_t *m, int l, int T, lbw_state *s, lbw_dn *d
             rmsnorm(rn, d->y + off, ly->ssm_norm_w, hv, m->rms_eps);
             for (int j = 0; j < hv; j++) {
                 float z = d->z[off + j], dov = d->dout[off + j];
-                float gz = z / (1.0f + expf(-z));
+                float gz = silu_f(z);
                 d->dz[off + j] = dov * rn[j] * silu_d(z);
                 drn[j] = dov * gz;
             }
@@ -11082,7 +11071,7 @@ NUM_STAGE void lbw_deltanet_bw(model_t *m, int l, int T, lbw_state *s, lbw_dn *d
             float b = d->beta[k];
             d->dbb[k] = d->dbeta[k] * b * (1.0f - b);
             float a = d->aa[k] + ly->ssm_dt[h];
-            float dsp = a > 20.0f ? 1.0f : 1.0f / (1.0f + expf(-a));
+            float dsp = a > 20.0f ? 1.0f : sigmoid_f(a);
             d->daa[k] = d->ddecay[k] * d->decay[k] * ly->ssm_a[h] * dsp;
         }
     }
@@ -12541,14 +12530,14 @@ NUM_STAGE void attn_rows(model_t *m, const fwd_layer *c) {
             // one gate per head over its head_dim outputs (spark2_5)
             for (int h = 0; h < m->n_head; h++) {
                 float g = m->q_gate[(size_t)b * q_dim + h];
-                float sg = 1.0f / (1.0f + expf(-g));
+                float sg = sigmoid_f(g);
                 float *o = m->xb2 + (size_t)b * xdim + (size_t)h * hd;
                 for (int d = 0; d < hd; d++) o[d] *= sg;
             }
         } else if (m->qwen35 || (m->attn_out_gate && ly->wq_gate))
             for (int i = 0; i < q_dim; i++) {
                 float g = m->q_gate[(size_t)b * q_dim + i];
-                m->xb2[(size_t)b * xdim + i] *= 1.0f / (1.0f + expf(-g));
+                m->xb2[(size_t)b * xdim + i] *= sigmoid_f(g);
             }
     }
     if (dbg) dbg_stat("attn-out", l, m->xb2 + (size_t)(n - 1) * xdim, q_dim);
