@@ -624,6 +624,24 @@
     "metal": "NOT RUN"
    },
    "note": "Qwen3's ChatML and think shape with a thought block on every historical assistant turn, an open <think> pre-seeded when enable_thinking is true, and XML tool calls (<function name=...><param name=...>, CDATA for a value holding <, & or a newline)"
+  },
+  "trinity": {
+   "artifact": "trinity-nano-preview-q8_0",
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "UNSUPPORTED",
+    "metal": "UNSUPPORTED"
+   },
+   "note": "Qwen2.5's ChatML and Hermes calls with a blank line after each assistant header and turn (the template's untrimmed generation tags); split from chatml 2026-10-30"
   }
  },
  "architectures": {
@@ -920,7 +938,7 @@
   },
   "afmoe": {
    "templates": [
-    "chatml"
+    "trinity"
    ],
    "artifacts": [
     "trinity-nano-preview-q8_0"

@@ -772,36 +772,20 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         return;
     }
     thinking |= recipients;
-    if (s->tmpl == TMPL_QWEN38) {
-        // the template's own contract: xhigh (default), medium or low,
-        // anything else is refused by the reference and so here
-        int effort = req_reasoning_effort(req);
+    {
+        // the families whose template renders an effort, read once for every
+        // surface (req_template_effort); a value the template refuses is
+        // refused here
+        const char *why = NULL;
+        int effort = req_template_effort(s->tmpl, req, &why);
         if (effort < 0) {
             for (int i = 0; i < n_own; i++) free(owned[i]);
             free(owned); free(cm); free(ts.s);
             tool_envelope_free(&env);
-            send_error(fd, 400, "reasoning_effort must be one of xhigh, "
-                                "medium, low for this model's template");
+            send_error(fd, 400, why);
             return;
         }
         thinking |= effort;
-    } else if (s->tmpl == TMPL_MUSE) {
-        // the reference's `reasoning_strength` kwarg (low, medium, high;
-        // absent renders "high"); `reasoning_effort` is accepted as the
-        // cross-family spelling, its xhigh reading as high. A value the
-        // reference would print verbatim into the system turn is refused
-        // here unless it is one of the three words.
-        int strength = req_reasoning_strength(req);
-        int effort = req_reasoning_effort(req);
-        if (strength < 0 || effort < 0) {
-            for (int i = 0; i < n_own; i++) free(owned[i]);
-            free(owned); free(cm); free(ts.s);
-            tool_envelope_free(&env);
-            send_error(fd, 400, "reasoning_strength must be one of low, "
-                                "medium, high for this model's template");
-            return;
-        }
-        thinking |= strength ? strength : effort;
     }
     render_state rs;
     char *prompt = render_prompt_state_alloc(s->tmpl, cm, n_cm, add_assistant,

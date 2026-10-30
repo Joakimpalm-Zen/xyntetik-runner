@@ -254,6 +254,29 @@ static void test_render_mistral_keeps_system_on_a_prefill(void) {
 
 // phi3 uses zephyr's <|role|> framing but terminates turns with <|end|>
 // rather than </s>, so the terminator is what tells them apart.
+// Trinity Nano's ChatML wraps the assistant span in UNTRIMMED generation
+// tags, which leave a blank line after the header and after the turn (read
+// as transformers reads them); a trimmed tag is plain ChatML. The generation
+// prompt and every other turn are chatml's.
+static void test_trinity_blank_lines(void) {
+    assert(template_detect("<|im_start|>{{ x }}\n    {% generation %}\n", NULL) == TMPL_TRINITY);
+    assert(template_detect("<|im_start|>{%- generation %}", NULL) == TMPL_CHATML);
+    assert(template_from_name("trinity") == TMPL_TRINITY);
+    assert(!strcmp(template_name(TMPL_TRINITY), "trinity"));
+    const chat_msg hist[] = {
+        CHAT_MSG("system", "S"), CHAT_MSG("user", "Q1"),
+        CHAT_MSG("assistant", "A1"), CHAT_MSG("user", "Q2"),
+    };
+    char out[2048];
+    render_messages(TMPL_TRINITY, hist, 4, true, THINK_DEFAULT, out, sizeof out);
+    assert(!strcmp(out, "<|im_start|>system\nS<|im_end|>\n<|im_start|>user\nQ1<|im_end|>\n"
+                        "<|im_start|>assistant\n\nA1<|im_end|>\n\n"
+                        "<|im_start|>user\nQ2<|im_end|>\n<|im_start|>assistant\n"));
+    char plain[2048];
+    render_messages(TMPL_CHATML, hist, 4, true, THINK_DEFAULT, plain, sizeof plain);
+    assert(!strstr(plain, "assistant\n\n"));
+}
+
 static void test_detect_zephyr_vs_phi3(tokenizer *t) {
     const char *zephyr = "{{'<|user|>\n' + message['content'] + '</s>\n'}}";
     const char *phi3   = "{{'<|user|>\n' + message['content'] + '<|end|>\n'}}";
@@ -2969,6 +2992,7 @@ int main(void) {
     test_render_mistral_nemo();
     test_render_mistral_keeps_system_on_a_prefill();
     test_detect_zephyr_vs_phi3(&t);
+    test_trinity_blank_lines();
     test_phi3_without_generation_prompt_ends_with_eos();
     test_detect_by_marker(&t);
     test_detect_and_render_ornith(&t);

@@ -5,6 +5,24 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Trinity Nano's prompt now has the blank lines its template writes.** Its
+  chat template wraps the assistant span in `{% generation %}` tags that do
+  not trim the whitespace around them; read as transformers reads them,
+  every assistant turn in the history is followed by a blank line after its
+  header and after its `<|im_end|>`. Runner served Trinity through the
+  generic ChatML renderer, which wrote neither, so every multi-turn
+  conversation reached the model two newlines short per assistant turn. The
+  new `trinity` template (detected by the untrimmed tag) writes them; a
+  single-turn prompt is unchanged.
+- **The template-conformance harness parses `{% generation %}` as a block.**
+  It deleted the tag from the template source, which joined the whitespace on
+  both sides of it and hid the Trinity difference above. A template's own
+  raise message also reaches the report now (it surfaced as a NameError).
+- **`reasoning_effort` reads the same on the Responses surface as on chat.**
+  `/v1/responses` honoured it only for Qwen 3.8, so Muse's
+  `reasoning_strength` was dropped there and a value its template refuses was
+  served. One reading now serves both surfaces.
+
 - **Validation runs at 1.7.1 on the Windows CUDA host: 2 rows** (MiniCPM5-2B,
   RTX 3070, 2026-10-29, built at 77192431). `minicpm5-2b-q8_0` and
   `minicpm5-2b-q4_k_m` pass on the CPU and on CUDA, both files resident on

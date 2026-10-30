@@ -157,6 +157,10 @@
     "minicpm5": {
       "fixture": "plain",
       "reasoning": "tags"
+    },
+    "trinity": {
+      "fixture": "plain",
+      "reasoning": "none"
     }
   }
 }

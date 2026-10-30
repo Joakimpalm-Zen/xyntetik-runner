@@ -319,8 +319,9 @@ FAMILIES = {
     # picks for that file (`--tool-info` names it), so a drifting row here
     # is the renderer the model is actually served with.
     "trinity": Family(
-        "chatml", ("hf", "arcee-ai/Trinity-Nano-Preview"),
-        note="afmoe; ChatML with its own tools section and no default system",
+        "trinity", ("hf", "arcee-ai/Trinity-Nano-Preview"),
+        note="afmoe; ChatML with its own tools section, no default system, "
+             "and a blank line after each assistant header and turn",
         tool_family=True, tokenizer=("Trinity-Nano-Preview-Q8_0.gguf",)),
     "smollm2": Family(
         "chatml", ("hf", "HuggingFaceTB/SmolLM2-135M-Instruct"),
@@ -948,6 +949,9 @@ def write_harmony_fixture():
 # reference templates expect them: `_jinja_raise_exception`, `_jinja_tojson` with json.dumps'
 # defaults, and `_jinja_strftime_now`.
 def _jinja_raise_exception(message):
+    # imported here: jinja_env's import is local to it, and a bare
+    # TemplateError raised NameError, which lost the template's message
+    from jinja2.exceptions import TemplateError
     raise TemplateError(message)
 
 
@@ -960,8 +964,25 @@ def _jinja_strftime_now(fmt):
     return datetime.datetime.now().strftime(fmt)
 
 
+def _generation_block_class():
+    import jinja2.ext
+
+    class GenerationBlock(jinja2.ext.Extension):
+        """transformers' AssistantTracker without the tracking: the body
+        of a {% generation %} block renders as written."""
+        tags = {"generation"}
+
+        def parse(self, parser):
+            next(parser.stream)
+            return parser.parse_statements(("name:endgeneration",),
+                                           drop_needle=True)
+
+    return GenerationBlock
+
+
 def jinja_env():
     import jinja2.ext
+    generation_block = _generation_block_class()
     from jinja2.exceptions import TemplateError
     from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -970,12 +991,15 @@ def jinja_env():
     # whitespace drift in every template that indents its {% %} tags.
     # `{% generation %}` / `{% endgeneration %}` are HuggingFace's
     # assistant-masking markers (they tell a trainer which span is the
-    # assistant's, and transformers installs an extension for them). They
-    # emit nothing, so stripping them leaves the rendered bytes unchanged
-    # and lets plain jinja2 parse templates that use them. Without this,
-    # Trinity Nano's 21 cases are NOT CHECKED rather than compared.
+    # assistant's), parsed by transformers' AssistantTracker extension as a
+    # BLOCK tag whose body renders unchanged. Being block tags, trim_blocks
+    # and lstrip_blocks apply to them, so they are parsed the same way here
+    # (generation_block) rather than deleted from the source: deleting them
+    # joined the whitespace on both sides, which hid the blank lines Trinity
+    # Nano's template writes around each assistant turn (TMPL_TRINITY).
     env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True,
-                                        extensions=[jinja2.ext.loopcontrols])
+                                        extensions=[jinja2.ext.loopcontrols,
+                                                    generation_block])
     env.filters["tojson"] = _jinja_tojson
     env.globals["raise_exception"] = _jinja_raise_exception
     env.globals["strftime_now"] = _jinja_strftime_now
@@ -991,7 +1015,6 @@ def render_reference(env, tmpl_src, meta, msgs, add_gen, thinking,
         kwargs["tools"] = tools
     if thinking_var and thinking != "default":
         kwargs[thinking_var] = (thinking == "on")
-    tmpl_src = re.sub(r"\{%-?\s*(end)?generation\s*-?%\}", "", tmpl_src)
     return env.from_string(tmpl_src).render(**kwargs)
 
 

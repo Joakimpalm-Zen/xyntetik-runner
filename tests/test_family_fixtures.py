@@ -93,3 +93,41 @@ def test_a_channel_family_is_reached_on_its_fixture_and_not_on_the_plain_one(mad
     assert _messages_thinking(exe, own, family) == 200, family
     # the blind spot the table exists for
     assert _messages_thinking(exe, made("plain"), family) == 400, family
+
+
+def _status(srv, path, body):
+    req = urllib.request.Request(srv.base_url + path, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return r.status, r.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()
+
+
+@pytest.mark.parametrize("family,field,value", [("muse", "reasoning_strength", "bogus"),
+                                                ("qwen38", "reasoning_effort", "bogus")])
+def test_an_effort_is_read_the_same_on_chat_and_responses(made, family, field, value):
+    """/v1/responses read the effort only for Qwen 3.8 until 2026-10-30, so
+    Muse's reasoning_strength was dropped there and a value its template
+    refuses was served. Both surfaces now take the one reading
+    (req_template_effort): the same refusal, the same reason."""
+    exe = find_runner(ROOT)
+    if not pathlib.Path(exe).exists():
+        pytest.skip("runner not built")
+    model = made(TABLE["families"][family]["fixture"])
+    with RunnerServer(exe, model, ctx=1024, parallel=1,
+                      extra_args=["--gpu", "off", "-t", "2", "--chat-template", family]) as srv:
+        chat = _status(srv, "/v1/chat/completions",
+                       {"max_tokens": 2, "temperature": 0, field: value,
+                        "messages": [{"role": "user", "content": "Hello"}]})
+        resp = _status(srv, "/v1/responses",
+                       {"max_output_tokens": 2, "temperature": 0, field: value,
+                        "input": "Hello"})
+        good = _status(srv, "/v1/responses",
+                       {"max_output_tokens": 2, "temperature": 0, field: "low",
+                        "input": "Hello"})
+    assert chat[0] == 400 and resp[0] == 400, (chat, resp)
+    want = "reasoning_strength must be one of" if family == "muse" else "reasoning_effort must be one of"
+    assert want in chat[1] and want in resp[1]
+    assert good[0] == 200, good

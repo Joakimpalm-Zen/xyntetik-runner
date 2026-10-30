@@ -139,6 +139,12 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         if (strstr(meta_tmpl, "<|im_start|>") && strstr(meta_tmpl, "<think>") &&
             strstr(meta_tmpl, "macro normalize_content("))
             return TMPL_MELLUM;
+        // Trinity Nano: ChatML whose assistant span sits in UNTRIMMED
+        // generation tags, which leave blank lines around the turn (see
+        // TMPL_TRINITY); a trimmed `{%- generation %}` does not match
+        if (strstr(meta_tmpl, "<|im_start|>") && !strstr(meta_tmpl, "<think>") &&
+            strstr(meta_tmpl, "{% generation %}"))
+            return TMPL_TRINITY;
         if (strstr(meta_tmpl, "<|im_start|>"))
             return strstr(meta_tmpl, "<think>") ? TMPL_CHATML_THINK
                                                 : TMPL_CHATML;
@@ -207,6 +213,7 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
 
 int template_from_name(const char *name) {
     if (!strcmp(name, "chatml")) return TMPL_CHATML;
+    if (!strcmp(name, "trinity")) return TMPL_TRINITY;
     if (!strcmp(name, "chatml-think")) return TMPL_CHATML_THINK;
     if (!strcmp(name, "mellum")) return TMPL_MELLUM;
     if (!strcmp(name, "minicpm5")) return TMPL_MINICPM5;
@@ -279,6 +286,7 @@ const char *template_default_system(int tmpl, const char *meta_tmpl,
 const char *template_name(int t) {
     switch (t) {
         case TMPL_CHATML: return "chatml";  case TMPL_LLAMA2: return "llama2";
+        case TMPL_TRINITY: return "trinity";
         case TMPL_CHATML_THINK: return "chatml-think";
         case TMPL_MELLUM: return "mellum";
         case TMPL_MINICPM5: return "minicpm5";
@@ -606,6 +614,32 @@ int req_reasoning_effort(struct jv *req) {
     if (!strcmp(s, "medium")) return THINK_EFFORT_MEDIUM;
     if (!strcmp(s, "low"))    return THINK_EFFORT_LOW;
     return -1;
+}
+
+int req_template_effort(int tmpl, struct jv *req, const char **why) {
+    *why = NULL;
+    if (tmpl == TMPL_QWEN38) {
+        // the template's own contract: xhigh (default), medium or low
+        int e = req_reasoning_effort(req);
+        if (e < 0) *why = "reasoning_effort must be one of xhigh, medium, low "
+                          "for this model's template";
+        return e;
+    }
+    if (tmpl == TMPL_MUSE) {
+        // the reference's `reasoning_strength` kwarg (low, medium, high;
+        // absent renders "high"); `reasoning_effort` is accepted as the
+        // cross-family spelling, its xhigh reading as high. A value the
+        // reference would print verbatim into the system turn is refused
+        // unless it is one of the three words.
+        int st = req_reasoning_strength(req), e = req_reasoning_effort(req);
+        if (st < 0 || e < 0) {
+            *why = "reasoning_strength must be one of low, medium, high for "
+                   "this model's template";
+            return -1;
+        }
+        return st ? st : e;
+    }
+    return 0;
 }
 
 int req_reasoning_strength(struct jv *req) {
@@ -2104,7 +2138,7 @@ static size_t render_hermes4(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
-// TMPL_CHATML and TMPL_CHATML_THINK.
+// TMPL_CHATML, TMPL_TRINITY and TMPL_CHATML_THINK.
 static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
                             bool add_assistant, int thinking, const jv *tools,
                             char *out, size_t cap, render_state *st) {
@@ -2179,12 +2213,16 @@ static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
             !strstr(msgs[i].content, "</think>");
         const char *content = msgs[i].content;
         if (mcp_empty_think) while (*content == '\n') content++;
-        off = emit(out, cap, off, "<|im_start|>%s\n", msgs[i].role,
-                   NULL);
+        // Trinity's untrimmed generation tags: a blank line after the
+        // assistant header and after the turn
+        bool trinity_turn = tmpl == TMPL_TRINITY && !strcmp(msgs[i].role, "assistant");
+        off = emit(out, cap, off, trinity_turn ? "<|im_start|>%s\n\n" : "<|im_start|>%s\n",
+                   msgs[i].role, NULL);
         if (qwen3_empty_think || mcp_empty_think)
             off = emit(out, cap, off, "<think>\n\n</think>\n\n",
                        NULL, NULL);
-        off = emit(out, cap, off, "%s<|im_end|>\n", content, NULL);
+        off = emit(out, cap, off, trinity_turn ? "%s<|im_end|>\n\n" : "%s<|im_end|>\n",
+                   content, NULL);
     }
     if (add_assistant) {
         off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
@@ -3093,6 +3131,7 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_HERMES4:
         return render_hermes4(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_CHATML:
+    case TMPL_TRINITY:
     case TMPL_CHATML_THINK:
     case TMPL_MELLUM:
     case TMPL_MINICPM5:
@@ -3454,7 +3493,7 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
                     "</param>");
         return;
     }
-    bool qwen = tmpl == TMPL_CHATML || tmpl_chatml_think(tmpl);
+    bool qwen = tmpl_chatml_plain(tmpl) || tmpl_chatml_think(tmpl);
     if (tmpl == TMPL_GRANITE4) {
         // ibm-granite/granite-4.0-h-* and granite-4.1-* chat_template,
         // verbatim (tools_system_message_prefix / _suffix)
