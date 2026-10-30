@@ -636,7 +636,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#spark-x2.6-4b-q4_k_m"><code>Spark-X2.6-4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td></td><td></td><td>no: per-head attention output gate (spark2_5) not in the backward</td></tr>
+<tr><td><a href="#spark-x2.6-4b-q4_k_m"><code>Spark-X2.6-4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td></td><td></td><td>no: per-head attention output gate (spark2_5) not in the backward</td></tr>
 </tbody>
 </table>
 </details>
@@ -1825,12 +1825,12 @@ Text path, XHToken's own Q4_K_M of Spark X2.6 4B, which fails the fidelity bar: 
 - **Known limitations:** CPU only: the per-head attention gate and the exact GELU have no CUDA or Metal kernels yet, so a GPU run falls back to the CPU by name. LoRA training is refused (the per-head gate is not in the backward). A required or named tool choice takes the generic JSON envelope on this family.
 - **Still missing:** The CUDA and Metal paths (the next change); the Windows CUDA host's CPU cell; a Q8_0 row (the fidelity file, measured here, with no device record yet).
 - **Evidence:** [docs/compat-reports/1.7.1-2026-10-30-macos-arm64-spark-x2.6-4b-q4_k_m.json](compat-reports/1.7.1-2026-10-30-macos-arm64-spark-x2.6-4b-q4_k_m.json), [docs/compat-reports/spark-2026-10-30/README.md](compat-reports/spark-2026-10-30/README.md), [docs/compat-reports/spark-2026-10-30/gold-logits-cpu-x2.6-q8-q4.json](compat-reports/spark-2026-10-30/gold-logits-cpu-x2.6-q8-q4.json), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Validation run:** on macos-arm64-metal, cpu backend; last run 1.7.1 on 2026-10-30.
-- **CPU:** ✅ v1.7.1 2026-10-30 on macos-arm64-metal at commit `8dbb23a7e85c`, output sha256 `42a4c173422d4070`, [pin](../tests/compatibility/tier-smoke/spark-x2.6-4b-q4_k_m.macos-arm64-metal.cpu.txt)
+- **Validation run:** on macos-arm64-metal, cpu backend; last run 1.8.0 on 2026-10-30.
+- **CPU:** ✅ v1.8.0 2026-10-30 on windows-x86_64-cuda at commit `9bb83e7e80b4`, output sha256 `42a4c173422d4070`, [pin](../tests/compatibility/tier-smoke/spark-x2.6-4b-q4_k_m.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
-- **LoRA training:** no: per-head attention output gate (spark2_5) not in the backward (runner 1.7.1, 2026-10-30).
-- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-30).
+- **LoRA training:** no: per-head attention output gate (spark2_5) not in the backward (runner 1.8.0, 2026-10-30).
+- **LoRA adapter serving:** supported (runner 1.8.0, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
 ### K2-Horizon
