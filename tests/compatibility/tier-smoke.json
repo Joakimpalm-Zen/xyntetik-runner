@@ -2205,6 +2205,11 @@
           }
         }
       }
+    },
+    "flint-int4-q4_1": {
+      "prompt": "Which planet is closest to the Sun? Answer in two sentences.",
+      "n_predict": 600,
+      "ctx": 1024
     }
   }
 }
