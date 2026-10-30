@@ -3923,20 +3923,20 @@
           "kind": "gate",
           "runner_version": "1.7.1",
           "date": "2026-10-30",
-          "device_class": "macos-arm64-metal",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "f57320215317b0f17c73ea702cc75a2dd3f3861c",
+          "commit": "64cdc0dc6bab6a100ae955b7c04107d3aa302259",
           "caps": {
             "version": "1.7.1",
-            "os": "macos",
-            "arch": "arm64",
+            "os": "windows",
+            "arch": "x86_64",
             "cpu_cores": 8,
-            "gpu_backend": "metal",
-            "gpu_name": "Apple M1"
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "587d226ab6e1654f32203fe0deba7656fb2ee547cbbbbf335be62d919c0112f5",
           "ran": "runner -m LFM2.5-1.2B-Instruct-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/lfm2.5-1.2b-instruct-q8_0.macos-arm64-metal.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/lfm2.5-1.2b-instruct-q8_0.windows-x86_64-cuda.cpu.txt"
         },
         "cuda": null,
         "metal": null
