@@ -310,6 +310,8 @@ test-pmath
 test-pmath.exe
 test-fpclass
 test-fpclass.exe
+test-act
+test-act.exe
 
 # Native control-token regression gate
 test-prompt-marks
