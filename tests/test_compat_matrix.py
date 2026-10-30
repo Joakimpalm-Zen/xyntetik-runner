@@ -43,7 +43,8 @@ def test_model_manifest_covers_every_claimed_architecture():
         "qwen3moe", "gemma4-moe", "gpt-oss", "apertus", "afmoe",
         "muse-glimmer", "granite", "stablelm", "granitehybrid",
         "nemotron_h", "nemotron_h_moe", "mellum", "lfm2", "spark2_5", "k2-horizon",
-        "flint",
+        "nemotron_h", "nemotron_h_moe", "mellum", "lfm2", "spark2_5", "k2-horizon",
+        "flint", "clef",
     }
     assert len({m["id"] for m in models}) == len(models)
     for model in models:

@@ -1207,9 +1207,13 @@
   },
   "clef": {
    "templates": [
-    "qwen38"
+    "qwen38",
+    "qwen35"
    ],
-   "artifacts": [],
+   "artifacts": [
+    "clef-flash-q4_k_m",
+    "clef-flash-q8_0"
+   ],
    "tool_protocol": {
     "status": "NOT RUN",
     "note": "A decision model: its surface is /v1/systemone, not tool calling. The chat routes run the qwen35 backbone; no tool-protocol anchor is recorded for it."
@@ -1222,7 +1226,7 @@
     "cuda": "PASS",
     "metal": "UNSUPPORTED"
    },
-   "note": "Decisions gold-checked against the publisher's joint_schema_model.py in float32 on a small Clef (15/15 records token-identical, max |dlogit| 1.4e-4 CPU, 1.5e-4 full CUDA offload) in docs/clef-admission-2026-10-16.md. No pinned release file yet; a float32 gold run on Clef-Flash or Clef is owed before one. Metal has no qwen35-family path. Text input only."
+   "note": "Decisions gold-checked against the publisher's joint_schema_model.py in float32 on a small Clef (15/15 records token-identical, max |dlogit| 1.4e-4 CPU, 1.5e-4 full CUDA offload) in docs/clef-admission-2026-10-16.md. Clef-Flash is pinned in ggml-org's Q4_K_M and Q8_0 (docs/compat-reports/clef-flash-2026-10-30/README.md); the float32 gold run on a released checkpoint is still owed. Metal has no qwen35-family path. Text input only."
   },
   "mellum": {
    "templates": [
