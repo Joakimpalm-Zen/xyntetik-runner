@@ -684,6 +684,17 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
+<details>
+<summary><b>Qwen 3.6</b>, 1 model: CPU - · CUDA n/a · Metal n/a · Train -</summary>
+<p><b>Qwen3.6-35B-A3B (Qwen)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#qwen3.6-35b-a3b-q4_k_m"><code>Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf</code></a></td><td></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
 **Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
 
 <a id="tier1"></a>
@@ -2011,6 +2022,30 @@ Text path, RecursiveSI's own Q4_1 of flint (39.8B, mixture of experts): it loads
 - **Metal:** ☐ not run
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
+### Qwen 3.6
+
+#### Qwen3.6-35B-A3B (Qwen)
+
+<a id="qwen3.6-35b-a3b-q4_k_m"></a>
+##### `Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf`
+
+Text path, bartowski's standard Q4_K_M of Qwen's Qwen3.6-35B-A3B: it tokenizes as the publisher's tokenizer.json does and renders the publisher's own template token for token; its admitting CPU cell and its fidelity against Qwen's BF16 parent are being recorded on the lab CPU lane.
+
+- **File:** `Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf` (sha256 `b46fedd33e0bfb0cae308aa3c158d0a4b2c4a1d2185a1ed6f093cdaf39064772`, 22,285,080,192 bytes, from [bartowski/Qwen_Qwen3.6-35B-A3B-GGUF](https://huggingface.co/bartowski/Qwen_Qwen3.6-35B-A3B-GGUF) at revision `5c2410d71524`).
+- **Upstream checkpoint:** Qwen/Qwen3.6-35B-A3B at revision `995ad96eacd9`.
+- **Quantization:** Q4_K_M (bartowski).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison is feasible and owed):** This file: publisher tokenizer agreement (0 of 721 corpus strings and 0 of 247,091 vocabulary entries differ from Qwen's tokenizer.json at 995ad96e) and template conformance 23 of 23 in text and tokens against its chat_template.jinja, the same bytes in the GGUF. The qwen35moe arithmetic is checked against transformers' float32 on a converted random model. Record: docs/compat-reports/qwen35moe-toy-2026-10-30/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU only: the GPU backends refuse qwen35moe by name and serve it on the CPU. Text only: the vision tower Qwen ships beside it is not loaded. Licence: Apache-2.0.
+- **Still missing:** The admitting CPU cell and the float32 reference against the BF16 parent (72 GB stored, cast to float32 per decoder block), both on the lab CPU lane; a GPU path.
+- **Evidence:** [docs/compat-reports/qwen35moe-toy-2026-10-30/README.md](compat-reports/qwen35moe-toy-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
+- **CPU:** ☐ not run
+- **CUDA:** [n/a](../MANUAL.md#support-matrix): qwen35moe (Gated DeltaNet with routed experts) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.
+- **Metal:** [n/a](../MANUAL.md#support-matrix): The Qwen 3.5 hybrid (Gated DeltaNet) has no Metal path; Metal refuses it and the file runs on the CPU.
+- **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
+
 <a id="tier3"></a>
 ## Tier 3, unmaintained
 
@@ -2258,5 +2293,7 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-30 | [K2-Horizon-7B (IFM), `K2-Horizon-7B-Q4_K_M.gguf`](#k2-horizon-7b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane and a float32 reference measurement (policy 2026-10-27). Maintained on report. | none recorded |
 | 2026-10-30 | [flint (RecursiveSI), `flint-int4-q4_1.gguf`](#flint-int4-q4_1) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the fifth item: a new architecture (flint), its tokenizer rule and its chat template, implemented before validation. | none recorded |
 | 2026-10-30 | [flint (RecursiveSI), `flint-int4-q4_1.gguf`](#flint-int4-q4_1) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane (policy 2026-10-27); no float32 reference is feasible, so the anchor is agreement with another engine. Maintained on report. | none recorded |
+| 2026-10-30 | [Qwen3.6-35B-A3B (Qwen), `Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf`](#qwen3.6-35b-a3b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the qwen35moe items (Qwen3.6-35B-A3B first, by downloads): the files did not load until the qwen35moe architecture and Qwen 3.6's template landed. | none recorded |
+| 2026-10-30 | [Qwen3.6-35B-A3B (Qwen), `Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf`](#qwen3.6-35b-a3b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane (policy 2026-10-27). Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->

@@ -5545,6 +5545,74 @@
           "last_validated_release": null
         }
       ]
+    },
+    {
+      "id": "qwen3.6-35b-a3b-q4_k_m",
+      "model": "Qwen3.6-35B-A3B (Qwen)",
+      "family": "Qwen 3.6",
+      "tier": "tier2",
+      "claim": "Text path, bartowski's standard Q4_K_M of Qwen's Qwen3.6-35B-A3B: it tokenizes as the publisher's tokenizer.json does and renders the publisher's own template token for token; its admitting CPU cell and its fidelity against Qwen's BF16 parent are being recorded on the lab CPU lane.",
+      "architecture": "qwen35moe",
+      "upstream": {
+        "checkpoint": "Qwen/Qwen3.6-35B-A3B",
+        "revision": "995ad96eacd98c81ed38be0c5b274b04031597b0"
+      },
+      "files": [
+        {
+          "name": "Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf",
+          "repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF",
+          "revision": "5c2410d71524f4f72b023ce8daf7a80528226d5f",
+          "sha256": "b46fedd33e0bfb0cae308aa3c158d0a4b2c4a1d2185a1ed6f093cdaf39064772",
+          "bytes": 22285080192
+        }
+      ],
+      "quantization": "Q4_K_M (bartowski)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "owed",
+        "anchor": "This file: publisher tokenizer agreement (0 of 721 corpus strings and 0 of 247,091 vocabulary entries differ from Qwen's tokenizer.json at 995ad96e) and template conformance 23 of 23 in text and tokens against its chat_template.jinja, the same bytes in the GGUF. The qwen35moe arithmetic is checked against transformers' float32 on a converted random model. Record: docs/compat-reports/qwen35moe-toy-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "CPU only: the GPU backends refuse qwen35moe by name and serve it on the CPU. Text only: the vision tower Qwen ships beside it is not loaded. Licence: Apache-2.0.",
+        "evidence": [
+          "docs/compat-reports/qwen35moe-toy-2026-10-30/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "The admitting CPU cell and the float32 reference against the BF16 parent (72 GB stored, cast to float32 per decoder block), both on the lab CPU lane; a GPU path."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": {
+          "kind": "limit",
+          "reason": "qwen35moe (Gated DeltaNet with routed experts) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
+        "metal": {
+          "kind": "limit",
+          "reason": "The Qwen 3.5 hybrid (Gated DeltaNet) has no Metal path; Metal refuses it and the file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        }
+      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-30",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29, the qwen35moe items (Qwen3.6-35B-A3B first, by downloads): the files did not load until the qwen35moe architecture and Qwen 3.6's template landed.",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane (policy 2026-10-27). Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
     }
   ]
 }
