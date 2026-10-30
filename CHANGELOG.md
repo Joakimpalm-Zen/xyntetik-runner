@@ -5,14 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
-- **Spark-X2.6-4B and Spark-X2.5-4B Q4_K_M admitted at Tier 2, fidelity not yet
-  measured.** XHToken's own Q4_K_M files load, tokenize as the publisher's
-  tokenizer.json does (0 of 721), render the publisher's templates token for
-  token (23 of 23 each) and answer through them on the CPU of the Metal laptop.
-  The architecture agrees with llama.cpp on the X2.6 1.7B Q8_0 (0.0065 mean
-  KLD over 200 positions), which is agreement with another engine, not
-  fidelity; the float32 references against the BF16 checkpoints are owed
-  (`docs/compat-reports/spark-2026-10-30/README.md`).
+- **Spark-X2.6-4B and Spark-X2.5-4B Q4_K_M admitted at Tier 2; both fail the
+  fidelity bar.** Against XHToken's BF16 checkpoints computed in float32 the
+  publisher's Q4_K_M files read 0.113 (X2.6) and 0.1136 (X2.5) mean KLD over
+  300 positions, against a 0.05 bar, each with 87.0% top-1. XHToken's Q8_0
+  files read 0.0132 and 0.0044 on the same build, so the gap is the files'
+  quantization and the Q8_0 files are the fidelity files
+  (`docs/compat-reports/spark-2026-10-30/README.md`). The Q4_K_M files load,
+  tokenize as the publisher's tokenizer.json does (0 of 721), render the
+  publisher's templates token for token (23 of 23 each) and answer through
+  them on the CPU of the Metal laptop. The architecture also agrees with
+  llama.cpp on the X2.6 1.7B Q8_0 (0.0065 mean KLD over 200 positions).
 - **The spark2_5 architecture loads, on the CPU.** XHToken's Spark 2.5 and 2.6
   are a dense transformer with three things Runner did not have together: Q,
   K and V fused in one `attn_qkv` tensor with the FFN left separate, a

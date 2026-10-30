@@ -1843,7 +1843,7 @@
         "tokenizer",
         "chat"
       ],
-      "notes": "XHToken's own Q4_K_M of Spark X2.6 4B, architecture spark2_5 (36 layers, hidden 2560, GQA 16/4, head_dim 256, Q/K/V fused, a 512-token window on three of four layers, a per-head output gate, exact GELU). Tokenizer pre spark2_5, 0 of 721 corpus strings differ from the publisher's tokenizer.json; template family spark, conformance 23/23. CPU only (no GPU path for this architecture yet), so chat runs with the GPU off. No llama.cpp reference is declared, so greedy_reference is not claimed; the float32 reference is owed.",
+      "notes": "XHToken's own Q4_K_M of Spark X2.6 4B, architecture spark2_5 (36 layers, hidden 2560, GQA 16/4, head_dim 256, Q/K/V fused, a 512-token window on three of four layers, a per-head output gate, exact GELU). Tokenizer pre spark2_5, 0 of 721 corpus strings differ from the publisher's tokenizer.json; template family spark, conformance 23/23. CPU only (no GPU path for this architecture yet), so chat runs with the GPU off. Fidelity: against the BF16 checkpoint computed in float32, 0.113 mean KLD / 87.0% top-1 / 93.6% margin-qualified (300 positions), failing the 0.05 bar on the mean; XHToken's Q8_0 reads 0.0132 / 98.7% and is the fidelity file. Record docs/compat-reports/spark-2026-10-30. No llama.cpp reference is declared, so greedy_reference is not claimed.",
       "check_params": {
         "chat": {
           "prompt": "What is 2+2?",
@@ -1875,7 +1875,7 @@
         "tokenizer",
         "chat"
       ],
-      "notes": "XHToken's own Q4_K_M of Spark X2.5 4B, architecture spark2_5 (36 layers, hidden 2560, GQA 16/4, head_dim 256, Q/K/V fused, a 512-token window on three of four layers, a per-head output gate, exact GELU). Tokenizer pre spark2_5, 0 of 721 corpus strings differ from the publisher's tokenizer.json; template family spark25, conformance 23/23. CPU only (no GPU path for this architecture yet), so chat runs with the GPU off. No llama.cpp reference is declared, so greedy_reference is not claimed; the float32 reference is owed.",
+      "notes": "XHToken's own Q4_K_M of Spark X2.5 4B, architecture spark2_5 (36 layers, hidden 2560, GQA 16/4, head_dim 256, Q/K/V fused, a 512-token window on three of four layers, a per-head output gate, exact GELU). Tokenizer pre spark2_5, 0 of 721 corpus strings differ from the publisher's tokenizer.json; template family spark25, conformance 23/23. CPU only (no GPU path for this architecture yet), so chat runs with the GPU off. Fidelity: against the BF16 checkpoint computed in float32, 0.1136 mean KLD / 87.0% top-1 / 95.6% margin-qualified (300 positions), failing the 0.05 bar on the mean; XHToken's Q8_0 reads 0.0044 / 98.7% and is the fidelity file. Record docs/compat-reports/spark-2026-10-30. No llama.cpp reference is declared, so greedy_reference is not claimed.",
       "check_params": {
         "chat": {
           "prompt": "What is 2+2?",
