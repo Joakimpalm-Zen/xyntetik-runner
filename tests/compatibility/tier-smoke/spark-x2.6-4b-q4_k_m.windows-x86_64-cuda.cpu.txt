@@ -1,0 +1,10 @@
+Mercury
+Venus
+Earth
+Mars
+Jupiter
+Saturn
+Uranus
+Neptune
+
+Mercury is the smallest and innermost planet, composed primarily of rock and metal, with

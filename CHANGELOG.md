@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Validation runs at 1.8.0 on the Windows CUDA host: 8 rows** (RTX 3070,
+  2026-10-30, built at the v1.8.0 tag, 9bb83e7e). `k2-horizon-0.9b-q8_0` and
+  `k2-horizon-0.9b-q4_k_m` pass on the CPU and on CUDA with the whole file on
+  the card. `lfm2.5-350m-q8_0`, `lfm2.5-350m-q4_k_m`, `spark-x2.6-4b-q4_k_m`,
+  `spark-x2.5-4b-q4_k_m`, `k2-horizon-7b-q4_k_m` and `k2-horizon-7b-q8_0` pass
+  on the CPU; their CUDA cells are declared limits (CUDA refuses lfm2 and
+  spark2_5 by name, and the 7B's grouped norm has no GPU form). Every reply
+  that has a pin on another device class is byte-identical to it.
 - **A U+0000 in text is encoded as the publisher's tokenizer does, or
   refused, never cut there unseen.** The tokenizer gains `tok_encode_n`, which
   reads its text by length: "a\u0000b" was "a" alone and is now the three

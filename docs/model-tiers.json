@@ -4419,7 +4419,7 @@
           "docs/compat-reports/lfm2.5-reference-2026-10-30/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The Windows CUDA host's CPU cell; a GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
+        "missing": "A GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -4428,24 +4428,28 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.7.1",
+          "runner_version": "1.8.0",
           "date": "2026-10-30",
-          "device_class": "macos-arm64-metal",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "eea8c2507b6a8828dc255a0d8b81d60e8fd27ab7",
+          "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85",
           "caps": {
-            "version": "1.7.1",
-            "os": "macos",
-            "arch": "arm64",
+            "version": "1.8.0",
+            "os": "windows",
+            "arch": "x86_64",
             "cpu_cores": 8,
-            "gpu_backend": "metal",
-            "gpu_name": "Apple M1"
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "a3dd7b514a3e7cb8885a12451aa38a87e9bf3c662773efb2fba4f846b4e6bba0",
           "ran": "runner -m LFM2.5-350M-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=80 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/lfm2.5-350m-q8_0.macos-arm64-metal.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/lfm2.5-350m-q8_0.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "limit",
+          "reason": "lfm2 (short-convolution layers interleaved with GQA attention) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
         "metal": null
       },
       "transitions": [
@@ -4471,7 +4475,7 @@
           "supported": false,
           "reason": "--lora does not cover the short-convolution hybrid yet (lfm2)"
         },
-        "runner_version": "1.7.1",
+        "runner_version": "1.8.0",
         "date": "2026-10-30"
       }
     },
@@ -4510,7 +4514,7 @@
           "docs/compat-reports/lfm2.5-reference-2026-10-30/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The Windows CUDA host's CPU cell; a GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's QAD-Q4_0 fails the bar too (0.483) and is not a row."
+        "missing": "A GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's QAD-Q4_0 fails the bar too (0.483) and is not a row."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -4519,24 +4523,28 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.7.1",
+          "runner_version": "1.8.0",
           "date": "2026-10-30",
-          "device_class": "macos-arm64-metal",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "eea8c2507b6a8828dc255a0d8b81d60e8fd27ab7",
+          "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85",
           "caps": {
-            "version": "1.7.1",
-            "os": "macos",
-            "arch": "arm64",
+            "version": "1.8.0",
+            "os": "windows",
+            "arch": "x86_64",
             "cpu_cores": 8,
-            "gpu_backend": "metal",
-            "gpu_name": "Apple M1"
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "a3dd7b514a3e7cb8885a12451aa38a87e9bf3c662773efb2fba4f846b4e6bba0",
           "ran": "runner -m LFM2.5-350M-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=80 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/lfm2.5-350m-q4_k_m.macos-arm64-metal.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/lfm2.5-350m-q4_k_m.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "limit",
+          "reason": "lfm2 (short-convolution layers interleaved with GQA attention) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
         "metal": null
       },
       "transitions": [
@@ -4562,7 +4570,7 @@
           "supported": false,
           "reason": "--lora does not cover the short-convolution hybrid yet (lfm2)"
         },
-        "runner_version": "1.7.1",
+        "runner_version": "1.8.0",
         "date": "2026-10-30"
       }
     },
@@ -4602,7 +4610,7 @@
           "docs/compat-reports/spark-2026-10-30/gold-logits-cpu-x2.6-q8-q4.json",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The CUDA and Metal paths (the next change); the Windows CUDA host's CPU cell; a Q8_0 row (the fidelity file, measured here, with no device record yet)."
+        "missing": "The CUDA and Metal paths (the next change); a Q8_0 row (the fidelity file, measured here, with no device record yet)."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -4611,24 +4619,28 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.7.1",
+          "runner_version": "1.8.0",
           "date": "2026-10-30",
-          "device_class": "macos-arm64-metal",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "8dbb23a7e85c65d0c56f1b19b3ef02347147a942",
+          "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85",
           "caps": {
-            "version": "1.7.1",
-            "os": "macos",
-            "arch": "arm64",
+            "version": "1.8.0",
+            "os": "windows",
+            "arch": "x86_64",
             "cpu_cores": 8,
-            "gpu_backend": "metal",
-            "gpu_name": "Apple M1"
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "42a4c173422d4070acc050b39a5c1baa3b5a9168d54b0a988a1287ec2df42298",
           "ran": "runner -m Spark-X2.6-4B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/spark-x2.6-4b-q4_k_m.macos-arm64-metal.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/spark-x2.6-4b-q4_k_m.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "limit",
+          "reason": "spark2_5's per-head sigmoid output gate and exact-erf GELU have no CUDA kernels yet; a CUDA run falls back to the CPU by name.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
         "metal": null
       },
       "lora": {
@@ -4640,7 +4652,7 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.7.1",
+        "runner_version": "1.8.0",
         "date": "2026-10-30"
       },
       "transitions": [
@@ -4694,7 +4706,7 @@
           "docs/compat-reports/spark-2026-10-30/gold-logits-cpu-x2.5-q8-q4.json",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The CUDA and Metal paths (the next change); the Windows CUDA host's CPU cell; a Q8_0 row (the fidelity file, measured here, with no device record yet)."
+        "missing": "The CUDA and Metal paths (the next change); a Q8_0 row (the fidelity file, measured here, with no device record yet)."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -4703,24 +4715,28 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.7.1",
+          "runner_version": "1.8.0",
           "date": "2026-10-30",
-          "device_class": "macos-arm64-metal",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "8dbb23a7e85c65d0c56f1b19b3ef02347147a942",
+          "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85",
           "caps": {
-            "version": "1.7.1",
-            "os": "macos",
-            "arch": "arm64",
+            "version": "1.8.0",
+            "os": "windows",
+            "arch": "x86_64",
             "cpu_cores": 8,
-            "gpu_backend": "metal",
-            "gpu_name": "Apple M1"
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "b872096a90ef40b7d4d2c0fe4444adde1b7e4065897362fb6271e1b0af4336c3",
           "ran": "runner -m Spark-X2.5-4B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/spark-x2.5-4b-q4_k_m.macos-arm64-metal.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/spark-x2.5-4b-q4_k_m.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "limit",
+          "reason": "spark2_5's per-head sigmoid output gate and exact-erf GELU have no CUDA kernels yet; a CUDA run falls back to the CPU by name.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
         "metal": null
       },
       "lora": {
@@ -4732,7 +4748,7 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.7.1",
+        "runner_version": "1.8.0",
         "date": "2026-10-30"
       },
       "transitions": [
@@ -4786,7 +4802,7 @@
           "tests/compatibility/coverage.json",
           "tests/fixtures/k2-horizon-tool-schemas.json"
         ],
-        "missing": "The Windows CUDA host's CPU and CUDA cells; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's Q4_K_M fails the fidelity bar (0.108); it is its own row, with that failure first."
+        "missing": "A llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's Q4_K_M fails the fidelity bar (0.108); it is its own row, with that failure first."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -4795,24 +4811,42 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.7.1",
+          "runner_version": "1.8.0",
           "date": "2026-10-30",
-          "device_class": "macos-arm64-metal",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "c159098d09983ad9fa1b717968297a84023c8342",
+          "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85",
           "caps": {
-            "version": "1.7.1",
-            "os": "macos",
-            "arch": "arm64",
+            "version": "1.8.0",
+            "os": "windows",
+            "arch": "x86_64",
             "cpu_cores": 8,
-            "gpu_backend": "metal",
-            "gpu_name": "Apple M1"
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "b9af23d3578b00d9544b798aa58e0b34d7f068861d52823edb44e798a1c9c6a7",
           "ran": "runner -m K2-Horizon-1B-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.macos-arm64-metal.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.8.0",
+          "date": "2026-10-30",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85",
+          "caps": {
+            "version": "1.8.0",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "b9af23d3578b00d9544b798aa58e0b34d7f068861d52823edb44e798a1c9c6a7",
+          "ran": "runner -m K2-Horizon-1B-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.windows-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "gate",
           "runner_version": "1.7.1",
@@ -4842,7 +4876,7 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.7.1",
+        "runner_version": "1.8.0",
         "date": "2026-10-30"
       },
       "transitions": [
@@ -4896,7 +4930,7 @@
           "tests/compatibility/coverage.json",
           "tests/fixtures/k2-horizon-tool-schemas.json"
         ],
-        "missing": "The Windows CUDA host's CPU and CUDA cells; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
+        "missing": "A llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -4905,24 +4939,42 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.7.1",
+          "runner_version": "1.8.0",
           "date": "2026-10-30",
-          "device_class": "macos-arm64-metal",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "5cc154e261a72e8929febf46cbbf50f81ca06b1d",
+          "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85",
           "caps": {
-            "version": "1.7.1",
-            "os": "macos",
-            "arch": "arm64",
+            "version": "1.8.0",
+            "os": "windows",
+            "arch": "x86_64",
             "cpu_cores": 8,
-            "gpu_backend": "metal",
-            "gpu_name": "Apple M1"
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "128cdfebbb63b10f2d4074e91d4181bef3735d93c46bb5a31e84ccfa656b9601",
           "ran": "runner -m K2-Horizon-1B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q4_k_m.macos-arm64-metal.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q4_k_m.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.8.0",
+          "date": "2026-10-30",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85",
+          "caps": {
+            "version": "1.8.0",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "128cdfebbb63b10f2d4074e91d4181bef3735d93c46bb5a31e84ccfa656b9601",
+          "ran": "runner -m K2-Horizon-1B-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q4_k_m.windows-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "gate",
           "runner_version": "1.7.1",
@@ -4966,7 +5018,7 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.7.1",
+        "runner_version": "1.8.0",
         "date": "2026-10-30"
       }
     },
@@ -5004,7 +5056,7 @@
           "docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The Windows CUDA host's CPU cell; a GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint."
+        "missing": "A GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
@@ -5013,24 +5065,28 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.7.1",
+          "runner_version": "1.8.0",
           "date": "2026-10-30",
-          "device_class": "linux-x86_64-cuda",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "809257d7e57c88625691fe5fc65c53ee315f6aae",
+          "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85",
           "caps": {
-            "version": "1.7.1",
-            "os": "linux",
+            "version": "1.8.0",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 16,
-            "gpu_backend": null,
-            "gpu_name": null
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "e9b3df046270dbf72909ee397bf99e7e1269069cb5cf8f3e80e2cfb6dd2562c1",
           "ran": "runner -m K2-Horizon-7B-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/k2-horizon-7b-q8_0.linux-x86_64-cuda.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-7b-q8_0.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "limit",
+          "reason": "The 7B's grouped RMSNorm (4 groups) has no GPU form (the GPU backends implement full-width RMSNorm only); the file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
         "metal": null
       },
       "transitions": [
@@ -5056,7 +5112,7 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.7.1",
+        "runner_version": "1.8.0",
         "date": "2026-10-30"
       }
     },
@@ -5094,7 +5150,7 @@
           "docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The Windows CUDA host's CPU cell; a GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint."
+        "missing": "A GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
@@ -5103,24 +5159,28 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.7.1",
+          "runner_version": "1.8.0",
           "date": "2026-10-30",
-          "device_class": "linux-x86_64-cuda",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "809257d7e57c88625691fe5fc65c53ee315f6aae",
+          "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85",
           "caps": {
-            "version": "1.7.1",
-            "os": "linux",
+            "version": "1.8.0",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 16,
-            "gpu_backend": null,
-            "gpu_name": null
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "537c65d7aee2a58da20a924ad7b9de06a830e23806c99d0364ca623a4a6e825f",
           "ran": "runner -m K2-Horizon-7B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/k2-horizon-7b-q4_k_m.linux-x86_64-cuda.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-7b-q4_k_m.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "limit",
+          "reason": "The 7B's grouped RMSNorm (4 groups) has no GPU form (the GPU backends implement full-width RMSNorm only); the file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
         "metal": null
       },
       "transitions": [
@@ -5146,7 +5206,7 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.7.1",
+        "runner_version": "1.8.0",
         "date": "2026-10-30"
       }
     },
