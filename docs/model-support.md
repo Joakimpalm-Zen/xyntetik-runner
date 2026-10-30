@@ -636,19 +636,19 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Spark</b>, 2 models: CPU ✅ · CUDA n/a · Metal - · Train n/a</summary>
+<summary><b>Spark</b>, 2 models: CPU ✅ · CUDA n/a · Metal ✅ · Train n/a</summary>
 <p><b>Spark-X2.5-4B (XHToken)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#spark-x2.5-4b-q4_k_m"><code>Spark-X2.5-4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td><td>no: per-head attention output gate (spark2_5) not in the backward</td></tr>
+<tr><td><a href="#spark-x2.5-4b-q4_k_m"><code>Spark-X2.5-4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.9.0<br>2026-10-30</td><td>no: per-head attention output gate (spark2_5) not in the backward</td></tr>
 </tbody>
 </table>
 <p><b>Spark-X2.6-4B (XHToken)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#spark-x2.6-4b-q4_k_m"><code>Spark-X2.6-4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td><td>no: per-head attention output gate (spark2_5) not in the backward</td></tr>
+<tr><td><a href="#spark-x2.6-4b-q4_k_m"><code>Spark-X2.6-4B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.9.0<br>2026-10-30</td><td>no: per-head attention output gate (spark2_5) not in the backward</td></tr>
 </tbody>
 </table>
 </details>
@@ -1864,9 +1864,9 @@ Text path, XHToken's own Q4_K_M of Spark X2.5 4B, which fails the fidelity bar: 
 - **Validation run:** on macos-arm64-metal, cpu backend; last run 1.8.0 on 2026-10-30.
 - **CPU:** ✅ v1.8.0 2026-10-30 on windows-x86_64-cuda at commit `9bb83e7e80b4`, output sha256 `b872096a90ef40b7`, [pin](../tests/compatibility/tier-smoke/spark-x2.5-4b-q4_k_m.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** [n/a](../MANUAL.md#support-matrix): spark2_5's per-head sigmoid output gate and exact-erf GELU have no CUDA kernels yet; a CUDA run falls back to the CPU by name.
-- **Metal:** ☐ not run
-- **LoRA training:** no: per-head attention output gate (spark2_5) not in the backward (runner 1.8.0, 2026-10-30).
-- **LoRA adapter serving:** supported (runner 1.8.0, 2026-10-30).
+- **Metal:** ✅ v1.9.0 2026-10-30 on macos-arm64-metal at commit `7aad06d0bfc0`, output sha256 `b872096a90ef40b7`, [pin](../tests/compatibility/tier-smoke/spark-x2.5-4b-q4_k_m.macos-arm64-metal.metal.txt)
+- **LoRA training:** no: per-head attention output gate (spark2_5) not in the backward (runner 1.9.0, 2026-10-30).
+- **LoRA adapter serving:** supported (runner 1.9.0, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
 #### Spark-X2.6-4B (XHToken)
@@ -1888,9 +1888,9 @@ Text path, XHToken's own Q4_K_M of Spark X2.6 4B, which fails the fidelity bar: 
 - **Validation run:** on macos-arm64-metal, cpu backend; last run 1.8.0 on 2026-10-30.
 - **CPU:** ✅ v1.8.0 2026-10-30 on windows-x86_64-cuda at commit `9bb83e7e80b4`, output sha256 `42a4c173422d4070`, [pin](../tests/compatibility/tier-smoke/spark-x2.6-4b-q4_k_m.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** [n/a](../MANUAL.md#support-matrix): spark2_5's per-head sigmoid output gate and exact-erf GELU have no CUDA kernels yet; a CUDA run falls back to the CPU by name.
-- **Metal:** ☐ not run
-- **LoRA training:** no: per-head attention output gate (spark2_5) not in the backward (runner 1.8.0, 2026-10-30).
-- **LoRA adapter serving:** supported (runner 1.8.0, 2026-10-30).
+- **Metal:** ✅ v1.9.0 2026-10-30 on macos-arm64-metal at commit `7aad06d0bfc0`, output sha256 `42a4c173422d4070`, [pin](../tests/compatibility/tier-smoke/spark-x2.6-4b-q4_k_m.macos-arm64-metal.metal.txt)
+- **LoRA training:** no: per-head attention output gate (spark2_5) not in the backward (runner 1.9.0, 2026-10-30).
+- **LoRA adapter serving:** supported (runner 1.9.0, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
 ### K2-Horizon

@@ -4832,7 +4832,25 @@
           "reason": "spark2_5's per-head sigmoid output gate and exact-erf GELU have no CUDA kernels yet; a CUDA run falls back to the CPU by name.",
           "matrix": "MANUAL.md#support-matrix"
         },
-        "metal": null
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.9.0",
+          "date": "2026-10-30",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "7aad06d0bfc0515f59353437c3e081fa9a81854d",
+          "caps": {
+            "version": "1.9.0",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "42a4c173422d4070acc050b39a5c1baa3b5a9168d54b0a988a1287ec2df42298",
+          "ran": "runner -m Spark-X2.6-4B-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/spark-x2.6-4b-q4_k_m.macos-arm64-metal.metal.txt"
+        }
       },
       "lora": {
         "training": {
@@ -4843,7 +4861,7 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.8.0",
+        "runner_version": "1.9.0",
         "date": "2026-10-30"
       },
       "transitions": [
@@ -4928,7 +4946,25 @@
           "reason": "spark2_5's per-head sigmoid output gate and exact-erf GELU have no CUDA kernels yet; a CUDA run falls back to the CPU by name.",
           "matrix": "MANUAL.md#support-matrix"
         },
-        "metal": null
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.9.0",
+          "date": "2026-10-30",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "7aad06d0bfc0515f59353437c3e081fa9a81854d",
+          "caps": {
+            "version": "1.9.0",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "b872096a90ef40b7d4d2c0fe4444adde1b7e4065897362fb6271e1b0af4336c3",
+          "ran": "runner -m Spark-X2.5-4B-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/spark-x2.5-4b-q4_k_m.macos-arm64-metal.metal.txt"
+        }
       },
       "lora": {
         "training": {
@@ -4939,7 +4975,7 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.8.0",
+        "runner_version": "1.9.0",
         "date": "2026-10-30"
       },
       "transitions": [

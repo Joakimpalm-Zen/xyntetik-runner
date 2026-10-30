@@ -2087,6 +2087,30 @@
             "runner_version": "1.8.0",
             "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85"
           }
+        },
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/spark-x2.6-4b-q4_k_m.macos-arm64-metal.metal.txt",
+          "sha256": "42a4c173422d4070acc050b39a5c1baa3b5a9168d54b0a988a1287ec2df42298",
+          "bytes": 144,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-30",
+            "runner_version": "1.9.0",
+            "commit": "7aad06d0bfc0515f59353437c3e081fa9a81854d"
+          }
         }
       }
     },
@@ -2138,6 +2162,30 @@
             "date": "2026-10-30",
             "runner_version": "1.8.0",
             "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85"
+          }
+        },
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/spark-x2.5-4b-q4_k_m.macos-arm64-metal.metal.txt",
+          "sha256": "b872096a90ef40b7d4d2c0fe4444adde1b7e4065897362fb6271e1b0af4336c3",
+          "bytes": 206,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-30",
+            "runner_version": "1.9.0",
+            "commit": "7aad06d0bfc0515f59353437c3e081fa9a81854d"
           }
         }
       }
