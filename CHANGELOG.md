@@ -3,8 +3,23 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.8.0 - 2026-10-30
 
+- **A sigmoid or SiLU below -88 no longer turns into NaN on x86-64 CPU (a
+  wrong-output fix in 1.7.1).** The build's fast math made the plain
+  1/(1+exp(-x)) and x/(1+exp(-x)) return NaN on x86-64 for every input below
+  about -88; arm64 builds returned 0, so no Apple Silicon run met it. On an
+  x86-64 CPU, 1.7.1 wrote NaN wherever a router logit, a gate or a
+  convolution output went that negative, and one NaN poisons the whole
+  block: RecursiveSI flint's layer-46 router reaches -270 and every reply was
+  "!". Whether an input goes that negative depends on the model; the admitted
+  rows' x86-64 CPU cells matched their arm64 pins, so none is known to have
+  reached it. Every CPU sigmoid and SiLU now goes through one guarded form
+  (src/act.h); scripts/check-fpclass.py refuses the plain form and
+  tests/test_act.c checks both under the build's own flags. The GPU kernels
+  keep IEEE results there: Metal measured on an M1 GPU (exact 0 below -88),
+  CUDA by its IEEE division (no fast-math flag), checked on the device by
+  scripts/cuda-act-probe.py in the release's CUDA gate (#473).
 - **YaRN reads the ramp and the attention factor the file declares.** A YaRN
   model's `beta_fast`, `beta_slow` and `attention_factor` (written as
   `rope.scaling.yarn_beta_fast`, `_slow` and `rope.scaling.yarn_attn_factor`)
@@ -20,8 +35,8 @@ Current release and unreleased changes. Compatibility follows the
   The tokenizer pre `k2-horizon` (the Llama 3 split with combining marks and
   zero-width joiners inside letter runs, under NFC) reads 0 of 721 corpus
   strings differently from the publisher's tokenizer.json on the 0.9B.
-- **K2-Horizon-0.9B Q8_0 and Q4_K_M admitted at Tier 2; the Q4_K_M fails
-  the fidelity bar.** IFM's own Q8_0 loads, tokenizes as the publisher's
+- **K2-Horizon-0.9B and 7B, Q8_0 and Q4_K_M, admitted at Tier 2; both Q4_K_M
+  files fail the fidelity bar.** IFM's own Q8_0 loads, tokenizes as the publisher's
   tokenizer.json does (0 of 721), renders the template its GGUF carries token
   for token (23 of 23) and answers through it on the Metal laptop, on the GPU
   and on the CPU; against the BF16 checkpoint computed in float32 it reads
@@ -30,11 +45,12 @@ Current release and unreleased changes. Compatibility follows the
   the file's quantization; it is a Tier 2 row of its own with that failure
   first, as MiniCPM5's Q4_K_M is
   (`docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md`). The
-  7B's two files are listed as upcoming: their tokenizer (0 of 721) and
-  template are checked, and against the BF16 parent in float32 the Q8_0 reads
-  0.0159 while the Q4_K_M reads 0.1225 and fails the bar
-  (`docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md`); their
-  CPU cells are owed.
+  7B's two files are Tier 2 as well: their tokenizer reads 0 of 721, the
+  template is the 0.9B's, and against the BF16 parent in float32 the Q8_0
+  reads 0.0159, the fidelity file, while the Q4_K_M reads 0.1225 and fails the
+  bar (`docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md`).
+  Both answer on the CPU of an x86-64 host with the GPU hidden; the 7B's
+  grouped norm has no GPU kernel yet.
 - **YaRN's attention factor follows the factor in use.** A file's
   `rope.scaling.yarn_attn_factor` is the magnitude for its own factor; under
   `--yarn-factor` or an automatic context extension Runner now takes the
@@ -122,8 +138,8 @@ Current release and unreleased changes. Compatibility follows the
   bartowski's Q4_K_M of XiaomiMiMo's Qwen3.5-9B distill loads, tokenizes as
   the publisher's tokenizer.json does (0 of 721), renders the publisher's
   template token for token (23 of 23) and answers through it on the CPU of
-  the Metal laptop. The Windows CUDA host's cells are owed; Runner's `qwen35`
-  path has no Metal backend, so the row has no Metal cell.
+  the Metal laptop; the Windows CUDA host's CPU and CUDA cells follow below.
+  Runner's `qwen35` path has no Metal backend, so the row has no Metal cell.
 - **MiMo-V2.6-Distill-Qwen-9B renders with its own template and tokenizes as
   its publisher does.** Its chat template was detected as Qwen3-Coder's, so
   every turn was framed with newlines the template never writes and no
