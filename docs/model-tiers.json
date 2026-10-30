@@ -4812,7 +4812,25 @@
           "ran": "runner -m K2-Horizon-1B-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
           "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.8.0",
+          "date": "2026-10-30",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85",
+          "caps": {
+            "version": "1.8.0",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "b9af23d3578b00d9544b798aa58e0b34d7f068861d52823edb44e798a1c9c6a7",
+          "ran": "runner -m K2-Horizon-1B-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.windows-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "gate",
           "runner_version": "1.7.1",
