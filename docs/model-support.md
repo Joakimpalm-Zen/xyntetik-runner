@@ -607,7 +607,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="#lfm2.5-350m-q8_0"><code>LFM2.5-350M-Q8_0.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td></td><td></td><td>no: recurrent architecture (short convolution)</td></tr>
-<tr><td><a href="#lfm2.5-350m-q4_k_m"><code>LFM2.5-350M-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td></td><td></td><td>no: recurrent architecture (short convolution)</td></tr>
+<tr><td><a href="#lfm2.5-350m-q4_k_m"><code>LFM2.5-350M-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td></td><td></td><td>no: recurrent architecture (short convolution)</td></tr>
 </tbody>
 </table>
 </details>
@@ -1749,12 +1749,12 @@ Text path, LiquidAI's own Q4_K_M of LFM2.5-350M, which fails the fidelity bar: a
 - **Known limitations:** Asked for the planet closest to the Sun it answers Earth, where the Q8_0 answers Mercury: the quantization's error reaches facts. CPU only: the GPU backends refuse lfm2 by name and serve it on the CPU (its short-convolution layers are not checked there yet). A required or named tool choice takes the generic JSON envelope on this family. Licence: LFM Open License v1.0, which limits commercial use to entities with under US$10M annual revenue; the limit binds whoever runs the model.
 - **Still missing:** The Windows CUDA host's CPU cell; a GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's QAD-Q4_0 fails the bar too (0.483) and is not a row.
 - **Evidence:** [docs/compat-reports/1.7.1-2026-10-30-macos-arm64-lfm2.5-350m-q4_k_m.json](compat-reports/1.7.1-2026-10-30-macos-arm64-lfm2.5-350m-q4_k_m.json), [docs/compat-reports/lfm2.5-reference-2026-10-30/README.md](compat-reports/lfm2.5-reference-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Validation run:** on macos-arm64-metal, cpu backend; last run 1.7.1 on 2026-10-30.
-- **CPU:** ✅ v1.7.1 2026-10-30 on macos-arm64-metal at commit `eea8c2507b6a`, output sha256 `a3dd7b514a3e7cb8`, [pin](../tests/compatibility/tier-smoke/lfm2.5-350m-q4_k_m.macos-arm64-metal.cpu.txt)
+- **Validation run:** on macos-arm64-metal, cpu backend; last run 1.8.0 on 2026-10-30.
+- **CPU:** ✅ v1.8.0 2026-10-30 on windows-x86_64-cuda at commit `9bb83e7e80b4`, output sha256 `a3dd7b514a3e7cb8`, [pin](../tests/compatibility/tier-smoke/lfm2.5-350m-q4_k_m.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
-- **LoRA training:** no: recurrent architecture (short convolution) (runner 1.7.1, 2026-10-30).
-- **LoRA adapter serving:** no: --lora does not cover the short-convolution hybrid yet (lfm2) (runner 1.7.1, 2026-10-30).
+- **LoRA training:** no: recurrent architecture (short convolution) (runner 1.8.0, 2026-10-30).
+- **LoRA adapter serving:** no: --lora does not cover the short-convolution hybrid yet (lfm2) (runner 1.8.0, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
 ### MiMo
