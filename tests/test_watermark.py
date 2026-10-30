@@ -226,6 +226,11 @@ def test_text_detection(runner_bin, fx):
     # a text needs the model's tokenizer
     p = _run(runner_bin, "--detect-watermark", txt, "--watermark", fx["key"])
     assert p.returncode != 0 and b"-m" in p.stderr
+    # and a text holding a NUL is refused, not scored up to it
+    nul = d / "t-nul.txt"
+    nul.write_bytes(b"some text\0and more")
+    p = _run(runner_bin, "--detect-watermark", nul, "--watermark", fx["key"], "-m", fx["model"])
+    assert p.returncode == 1 and b"contains a NUL byte" in p.stderr, p.stderr[-400:]
 
 
 def test_served_generation_is_marked(runner_bin, fx, tmp_path):
