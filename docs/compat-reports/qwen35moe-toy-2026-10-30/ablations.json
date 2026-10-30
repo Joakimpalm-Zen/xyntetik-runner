@@ -1,0 +1,39 @@
+{
+ "_this transformers against the saved reference, max |dlogp| over the top 20": 0.00037097930908203125,
+ "no shared expert": {
+  "mean_kl": 6.9569268226623535,
+  "top1_pct": 0.0,
+  "margin_qualified_top1_pct": 0.0,
+  "margin_qualified_positions": 87
+ },
+ "shared expert gate fixed at sigmoid(0) = 0.5": {
+  "mean_kl": 4.898672103881836,
+  "top1_pct": 2.500000037252903,
+  "margin_qualified_top1_pct": 1.149425283074379,
+  "margin_qualified_positions": 87
+ },
+ "routing weights not renormalised": {
+  "mean_kl": 0.447641521692276,
+  "top1_pct": 50.0,
+  "margin_qualified_top1_pct": 66.66666865348816,
+  "margin_qualified_positions": 87
+ },
+ "gated norm with sigmoid(z) instead of silu(z) (6 norms)": {
+  "mean_kl": 7.85654354095459,
+  "top1_pct": 0.0,
+  "margin_qualified_top1_pct": 0.0,
+  "margin_qualified_positions": 87
+ },
+ "rope over all head dims": {
+  "mean_kl": 0.16382147371768951,
+  "top1_pct": 63.499999046325684,
+  "margin_qualified_top1_pct": 81.60919547080994,
+  "margin_qualified_positions": 87
+ },
+ "convolution without history": {
+  "mean_kl": 8.66628646850586,
+  "top1_pct": 0.9999999776482582,
+  "margin_qualified_top1_pct": 0.0,
+  "margin_qualified_positions": 87
+ }
+}

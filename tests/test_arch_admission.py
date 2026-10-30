@@ -114,6 +114,12 @@ ARCH_GATE_EXEMPTIONS = {
     # exercises the loader and the CPU forward in `make test`; the pinned
     # real file (83 GB, two parts) is admitted to the manifest with the
     # anchor runs in R4.26.3, and this entry goes with it.
+    # Qwen 3.5 MoE (Qwen3.5/3.6-35B-A3B): the qwen35 mixer with routed experts
+    # and a gated shared expert, gated by tests/test_qwen35moe.py and
+    # test_mtp_consume.py on a fixture and by a converted random model against
+    # transformers' float32 (docs/compat-reports/qwen35moe-toy-2026-10-30).
+    # This entry goes with the first qwen35moe row.
+    "qwen35moe": "fixture-gated plus a converted toy against transformers; rows follow",
     "qwen4exp": "experimental; fixture-gated only until the R4.26.3 anchor",
 }
 

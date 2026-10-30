@@ -22,6 +22,22 @@ Current release and unreleased changes. Compatibility follows the
   (`docs/compat-reports/spark2_5-gpu-2026-10-30/README.md`). An expert FFN
   with the exact GELU still runs on the CPU (no such model exists).
 
+- **The qwen35moe architecture on the CPU: Qwen3.5 and Qwen3.6-35B-A3B
+  and the models built on them.** Qwen 3.5's Gated DeltaNet and gated
+  attention with routed experts (softmax, top-k, renormalized) and a
+  sigmoid-gated shared expert on every block. Runner's qwen35 path already
+  carried that combination for qwen4exp; qwen35moe takes it without
+  qwen4exp's hyper-connections, PLE and indexer. Against transformers' own
+  float32 Qwen3_5MoeForCausalLM on a converted random model, Runner reads
+  2.9e-08 mean KLD with top-1 on all 199 positions, where taking away any
+  one feature (the shared expert or its gate, the renormalization, the
+  DeltaNet's SiLU gate, the partial rope, the convolution's history) moves
+  the reference by 0.16 to 8.7
+  (`docs/compat-reports/qwen35moe-toy-2026-10-30/README.md`). `--mtp` now
+  drafts from the files' NextN head, an attention block with the trunk's
+  MoE FFN, where it refused every MoE backbone without hyper-connections;
+  greedy output is unchanged by it. The GPU backends and the files' rows
+  follow.
 - **LFM2.5-24B-A2B Q4_K_M admitted at Tier 2; it fails the fidelity bar,
   and the publisher's Q8_0 is the fidelity file.** Against LiquidAI's BF16
   parent with float32 arithmetic cast at use per decoder block (300

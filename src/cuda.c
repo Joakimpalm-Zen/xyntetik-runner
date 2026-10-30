@@ -3104,6 +3104,15 @@ typedef struct {
 // --cpu-moe and --cpu-moe auto keep the banks home and anything that would
 // put one on the device trips the shared-expert guard below.
 static bool cuda_admit(model_t *m) {
+    // qwen35moe: the Gated DeltaNet trunk with routed experts and no
+    // hyper-connections has run on the device only as qwen4exp's (with
+    // them); until its own identity gates and cells run, it stays on the
+    // host by name rather than as an unmeasured support claim
+    if (m->qwen35 && m->n_expert > 0 && !m->hyper_conn) {
+        fprintf(stderr, "gpu: qwen35moe (Gated DeltaNet with routed experts) is "
+                "not on the CUDA backend yet — using CPU\n");
+        return false;
+    }
     if (m->n_expert > 0 && !model_moe_router_is_plain(m)) {
         fprintf(stderr, "gpu: this model's MoE router (gating=%d groups=%d "
                 "norm_w=%d scale=%g) has no device kernel — running on CPU\n",

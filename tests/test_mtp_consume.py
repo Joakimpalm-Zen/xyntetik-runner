@@ -11,6 +11,7 @@ protects consumption behavior; it does not measure real-model draft quality:
     (none declared, or more than one block) and on a GPU-resident target.
 """
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -34,10 +35,20 @@ def models(tmp_path_factory):
                         *flags, str(out)], check=True, cwd=ROOT,
                        stdout=subprocess.DEVNULL)
         return out
+    def gen_q35moe(name):
+        out = d / name
+        env = dict(os.environ, ORNITH_TEST_MOE="1", ORNITH_TEST_MTP="1")
+        subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", str(out)],
+                       check=True, cwd=ROOT, env=env, stdout=subprocess.DEVNULL)
+        return out
     return {
         "plain": gen("plain.gguf"),
         "mtp": gen("mtp.gguf", "--mtp-layers", "1"),
         "mtp2": gen("mtp2.gguf", "--mtp-layers", "2"),
+        # qwen35moe (Qwen3.5/3.6-35B-A3B): Gated DeltaNet trunk with routed
+        # experts and a gated shared expert, its NextN block an attention
+        # block with the same MoE FFN
+        "q35moe": gen_q35moe("q35moe-mtp.gguf"),
     }
 
 
@@ -72,6 +83,21 @@ def test_mtp_drafts_never_change_greedy_output(runner_bin, models, k):
     assert rounds > 0 and drafted > 0, "the head was never driven"
     assert drafted <= rounds * int(k)
     assert accepted <= drafted
+
+
+@pytest.mark.parametrize("k", ["1", "4"])
+def test_qwen35moe_mtp_drafts_never_change_greedy_output(runner_bin, models, k):
+    """The MoE-without-hyper-connections refusal does not cover qwen35moe,
+    whose head is a plain attention block with the trunk's MoE FFN."""
+    plain = _run(runner_bin, models["q35moe"])
+    assert plain.returncode == 0, plain.stderr.decode(errors="replace")
+    got = _run(runner_bin, models["q35moe"], "--mtp", "--draft-k", k)
+    assert got.returncode == 0, got.stderr.decode(errors="replace")
+    assert got.stdout == plain.stdout
+    err = got.stderr.decode(errors="replace")
+    assert "mtp: drafting from the model's NextN head" in err
+    rounds, drafted, accepted = _stats(got.stderr)
+    assert rounds > 0 and drafted > 0 and accepted <= drafted
 
 
 def test_mtp_head_is_inert_without_the_flag(runner_bin, models):

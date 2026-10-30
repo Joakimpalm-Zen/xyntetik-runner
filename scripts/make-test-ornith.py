@@ -17,6 +17,13 @@ LEGACY_DT = os.environ.get("ORNITH_LEGACY_DT") == "1"
 # ORNITH_TEST_MTP=1: emit the declared NextN/MTP block (an attention block at
 # index LAYERS plus its nextn.* head tensors), so the head can be bound and run
 MTP = os.environ.get("ORNITH_TEST_MTP") == "1"
+# ORNITH_TEST_MOE=1: the qwen35moe shape (Qwen3.5/3.6-35B-A3B): every block's
+# FFN is routed experts plus a sigmoid-gated shared expert, as in the
+# publishers' GGUFs (ffn_*_exps, ffn_gate_inp, ffn_*_shexp,
+# ffn_gate_inp_shexp), under the arch name qwen35moe
+MOE = os.environ.get("ORNITH_TEST_MOE") == "1"
+ARCH = "qwen35moe" if MOE else "qwen35"
+NEXP, NUSED, FFE, FFS = 8, 3, 16, 24
 STATE, GROUPS, VHEADS, CONV = 8, 2, 4, 4
 VOCAB = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
 TTYPE = [2, 3, 3] + [6] * 256
@@ -60,9 +67,19 @@ for i in range(LAYERS + (1 if MTP else 0)):
         add(t, f"blk.{i}.attn_output.weight", [E, E])
         add(t, f"blk.{i}.attn_q_norm.weight", [hd], ones(hd))
         add(t, f"blk.{i}.attn_k_norm.weight", [hd], ones(hd))
-    add(t, f"blk.{i}.ffn_gate.weight", [E, FF])
-    add(t, f"blk.{i}.ffn_up.weight", [E, FF])
-    add(t, f"blk.{i}.ffn_down.weight", [FF, E])
+    if MOE:
+        add(t, f"blk.{i}.ffn_gate_inp.weight", [E, NEXP])
+        add(t, f"blk.{i}.ffn_gate_exps.weight", [E, FFE, NEXP])
+        add(t, f"blk.{i}.ffn_up_exps.weight", [E, FFE, NEXP])
+        add(t, f"blk.{i}.ffn_down_exps.weight", [FFE, E, NEXP])
+        add(t, f"blk.{i}.ffn_gate_inp_shexp.weight", [E])
+        add(t, f"blk.{i}.ffn_gate_shexp.weight", [E, FFS])
+        add(t, f"blk.{i}.ffn_up_shexp.weight", [E, FFS])
+        add(t, f"blk.{i}.ffn_down_shexp.weight", [FFS, E])
+    else:
+        add(t, f"blk.{i}.ffn_gate.weight", [E, FF])
+        add(t, f"blk.{i}.ffn_up.weight", [E, FF])
+        add(t, f"blk.{i}.ffn_down.weight", [FF, E])
     if i == LAYERS:
         add(t, f"blk.{i}.nextn.eh_proj.weight", [2 * E, E])
         add(t, f"blk.{i}.nextn.enorm.weight", [E], ones(E))
@@ -73,21 +90,25 @@ kvs = [
     # Current Qwen3.5 GGUFs include the auxiliary NextN/MTP predictor in
     # block_count.  It is not part of the autoregressive backbone and has a
     # different tensor layout, so the loader must subtract the declared count.
-    ks("general.architecture", "qwen35"), ku("qwen35.block_count", LAYERS + 1),
-    ku("qwen35.nextn_predict_layers", 1),
-    ku("qwen35.context_length", 256), ku("qwen35.embedding_length", E),
-    ku("qwen35.feed_forward_length", FF), ku("qwen35.attention.head_count", HEADS),
-    ku("qwen35.attention.head_count_kv", KV), ku("qwen35.attention.key_length", E // HEADS),
-    ku("qwen35.rope.dimension_count", E // HEADS), kf("qwen35.attention.layer_norm_rms_epsilon", 1e-5),
-    kf("qwen35.rope.freq_base", 10000.), ku("qwen35.full_attention_interval", 4),
-    kau("qwen35.rope.dimension_sections", [2, 2, 0, 0]),
-    ku("qwen35.ssm.conv_kernel", CONV), ku("qwen35.ssm.inner_size", E),
-    ku("qwen35.ssm.state_size", STATE), ku("qwen35.ssm.time_step_rank", VHEADS),
-    ku("qwen35.ssm.group_count", GROUPS), ks("tokenizer.ggml.model", "llama"),
+    ks("general.architecture", ARCH), ku(f"{ARCH}.block_count", LAYERS + 1),
+    ku(f"{ARCH}.nextn_predict_layers", 1),
+    ku(f"{ARCH}.context_length", 256), ku(f"{ARCH}.embedding_length", E),
+    ku(f"{ARCH}.feed_forward_length", FF), ku(f"{ARCH}.attention.head_count", HEADS),
+    ku(f"{ARCH}.attention.head_count_kv", KV), ku(f"{ARCH}.attention.key_length", E // HEADS),
+    ku(f"{ARCH}.rope.dimension_count", E // HEADS), kf(f"{ARCH}.attention.layer_norm_rms_epsilon", 1e-5),
+    kf(f"{ARCH}.rope.freq_base", 10000.), ku(f"{ARCH}.full_attention_interval", 4),
+    kau(f"{ARCH}.rope.dimension_sections", [2, 2, 0, 0]),
+    ku(f"{ARCH}.ssm.conv_kernel", CONV), ku(f"{ARCH}.ssm.inner_size", E),
+    ku(f"{ARCH}.ssm.state_size", STATE), ku(f"{ARCH}.ssm.time_step_rank", VHEADS),
+    ku(f"{ARCH}.ssm.group_count", GROUPS), ks("tokenizer.ggml.model", "llama"),
     kas("tokenizer.ggml.tokens", VOCAB), kaf("tokenizer.ggml.scores", [0.] * len(VOCAB)),
     kai("tokenizer.ggml.token_type", TTYPE), ku("tokenizer.ggml.bos_token_id", 1),
     ku("tokenizer.ggml.eos_token_id", 2), kb("tokenizer.ggml.add_bos_token", True),
 ]
+if MOE:
+    kvs += [ku(f"{ARCH}.expert_count", NEXP), ku(f"{ARCH}.expert_used_count", NUSED),
+            ku(f"{ARCH}.expert_feed_forward_length", FFE),
+            ku(f"{ARCH}.expert_shared_feed_forward_length", FFS)]
 meta = b"".join(kvs)
 info, off = b"", 0
 for name, dims, payload in t:

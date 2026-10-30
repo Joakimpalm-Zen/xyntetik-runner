@@ -911,6 +911,24 @@
    },
    "note": "Metal has no qwen35 path (by design; the hybrid runs on the CPU on Apple silicon)"
   },
+  "qwen35moe": {
+   "templates": [
+    "qwen35"
+   ],
+   "artifacts": [],
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "UNSUPPORTED",
+    "metal": "UNSUPPORTED"
+   },
+   "note": "fixture-gated (tests/test_qwen35moe.py, the NextN head in tests/test_mtp_consume.py) and a converted random qwen3_5_moe against transformers' float32 (docs/compat-reports/qwen35moe-toy-2026-10-30); Qwen3.6-35B-A3B is its first file row, its derivatives follow"
+  },
   "qwen3moe": {
    "templates": [
     "chatml-think",
