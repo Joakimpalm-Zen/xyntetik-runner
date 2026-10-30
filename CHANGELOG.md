@@ -5,6 +5,21 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A sigmoid or SiLU below -88 no longer turns into NaN on x86-64 CPU (a
+  wrong-output fix in 1.7.1).** The build's fast math made the plain
+  1/(1+exp(-x)) and x/(1+exp(-x)) return NaN on x86-64 for every input below
+  about -88; arm64 builds returned 0, so no Apple Silicon run met it. On an
+  x86-64 CPU, 1.7.1 wrote NaN wherever a router logit, a gate or a
+  convolution output went that negative, and one NaN poisons the whole
+  block: RecursiveSI flint's layer-46 router reaches -270 and every reply was
+  "!". Whether an input goes that negative depends on the model; the admitted
+  rows' x86-64 CPU cells matched their arm64 pins, so none is known to have
+  reached it. Every CPU sigmoid and SiLU now goes through one guarded form
+  (src/act.h); scripts/check-fpclass.py refuses the plain form and
+  tests/test_act.c checks both under the build's own flags. The GPU kernels
+  keep IEEE results there: Metal measured on an M1 GPU (exact 0 below -88),
+  CUDA by its IEEE division (no fast-math flag), checked on the device by
+  scripts/cuda-act-probe.py in the release's CUDA gate (#473).
 - **YaRN reads the ramp and the attention factor the file declares.** A YaRN
   model's `beta_fast`, `beta_slow` and `attention_factor` (written as
   `rope.scaling.yarn_beta_fast`, `_slow` and `rope.scaling.yarn_attn_factor`)
