@@ -430,6 +430,7 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
     if (orig <= 0) orig = m->n_ctx_train;
 
     enum { RS_NONE, RS_LINEAR, RS_YARN } mode = RS_NONE;
+    bool yarn_meta = false;   // the factor in use is the file's own
     if (yarn_ovr > 0 && strcmp(sct, "yarn") != 0) {
         fprintf(stderr, "error: --yarn-factor requires model YaRN metadata "
                         "(%s.rope.scaling.type=yarn)\n", arch);
@@ -446,6 +447,7 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
         fprintf(stderr, "rope: linear scaling x%.2f (model metadata)\n", factor);
     } else if (strcmp(sct, "yarn") == 0 && factor > 1.0f) {
         mode = RS_YARN;
+        yarn_meta = true;
         fprintf(stderr, "rope: YaRN scaling x%.2f (model metadata)\n", factor);
     } else if (m->n_ctx > m->n_ctx_train) {
         // automatic context extension for models trained on short contexts
@@ -509,9 +511,18 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
             m->rope_inv_freq[j] *= s;
         }
         // transformers' attention_factor when the file carries it (written
-        // as rope.scaling.yarn_attn_factor), else its own default
-        m->rope_mscale = gguf_get_f32(g, RK("rope.scaling.yarn_attn_factor"),
-                                      1.0f + 0.1f * logf(factor));
+        // as rope.scaling.yarn_attn_factor), else its own default. The key
+        // REPLACES the default there (modeling_rope_utils), unlike ggml's
+        // attn_factor, which multiplies it; llama.cpp recomputes the default
+        // and cancels its own multiplier (llama-context.cpp), so a file's
+        // value and the default are the same number on every roster file
+        // that carries the key (2026-10-30 header scan). The value belongs
+        // to the file's own factor: a forced --yarn-factor or an automatic
+        // extension takes the default for the factor in use.
+        m->rope_mscale = yarn_meta
+            ? gguf_get_f32(g, RK("rope.scaling.yarn_attn_factor"),
+                           1.0f + 0.1f * logf(factor))
+            : 1.0f + 0.1f * logf(factor);
     }
     // The local table above was built from the raw base, BEFORE the block that
     // scales the global frequencies. For an arch whose sliding layers share
