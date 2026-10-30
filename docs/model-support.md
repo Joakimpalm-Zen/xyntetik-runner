@@ -631,7 +631,18 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
-**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
+<details>
+<summary><b>K2-Horizon</b>, 1 model: CPU ✅ · CUDA - · Metal ✅ · Train ✅</summary>
+<p><b>K2-Horizon-0.9B (IFM)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#k2-horizon-0.9b-q8_0"><code>K2-Horizon-1B-Q8_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td nowrap>✅ 1.7.1<br>2026-10-30</td></tr>
+</tbody>
+</table>
+</details>
+
+**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Cloudflare Clef Flash (clef, on Qwen3.5-9B), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B), K2-Horizon-7B (IFM).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated
@@ -1746,6 +1757,32 @@ Text path, XHToken's own Q4_K_M of Spark X2.6 4B, which fails the fidelity bar: 
 - **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
+### K2-Horizon
+
+#### K2-Horizon-0.9B (IFM)
+
+<a id="k2-horizon-0.9b-q8_0"></a>
+##### `K2-Horizon-1B-Q8_0.gguf`
+
+Text path, IFM's own Q8_0 of K2-Horizon 0.9B: it loads, tokenizes as the publisher's tokenizer.json does, renders the template its GGUF carries token for token and answers through it; no fidelity measurement against the BF16 checkpoint is recorded yet.
+
+- **File:** `K2-Horizon-1B-Q8_0.gguf` (sha256 `741fb9ad263956c003883cb7caddeb14b4dfb9b4b67b5414ad12967e965dd547`, 1,148,614,016 bytes, from [IFM/K2-Horizon-0.9B-GGUF](https://huggingface.co/IFM/K2-Horizon-0.9B-GGUF) at revision `118965081cf1`).
+- **Upstream checkpoint:** IFM/K2-Horizon-0.9B at revision `d50881f4f8dc`.
+- **Quantization:** Q8_0 (publisher).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison is feasible and owed):** This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json), template conformance 23 of 23 in text and tokens against the template the GGUF carries, its 44-case tool-schema torture set (tests/fixtures/k2-horizon-tool-schemas.json) byte for byte, and a chat answer at temperature 0 on the Metal laptop.
+- **Context tested:** 4096.
+- **Known limitations:** reasoning_effort medium and low are refused (their think blocks are not split from the answer yet); high, the default, and thinking off are served. A tool without a parameters object is refused, as the template refuses it. A required or named tool choice takes the generic JSON envelope on this family.
+- **Still missing:** The float32 reference against the BF16 checkpoint (on the Metal laptop) and the quant bar; the Windows CUDA host's cells.
+- **Evidence:** [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [tests/fixtures/k2-horizon-tool-schemas.json](../tests/fixtures/k2-horizon-tool-schemas.json).
+- **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.1 on 2026-10-30.
+- **CPU:** ✅ v1.7.1 2026-10-30 on macos-arm64-metal at commit `c159098d0998`, output sha256 `b9af23d3578b00d9`, [pin](../tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.macos-arm64-metal.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ✅ v1.7.1 2026-10-30 on macos-arm64-metal at commit `c159098d0998`, output sha256 `b9af23d3578b00d9`, [pin](../tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.macos-arm64-metal.metal.txt)
+- **LoRA training:** supported (runner 1.7.1, 2026-10-30).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-30).
+- **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
+
 <a id="tier3"></a>
 ## Tier 3, unmaintained
 
@@ -1875,6 +1912,17 @@ Not admitted: a new architecture.
 - **Missing for Tier 1:** Read the model code first, then an admission; 78B at Q4 is about 45 GB, the lab CPU box only.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
+### K2-Horizon-7B (IFM)
+
+<a id="k2-horizon-7b-q4_k_m"></a>
+#### K2-Horizon-7B (IFM)
+
+Not admitted yet: the architecture, tokenizer and template are implemented and checked; the file's own cells and its float32 reference are owed.
+
+- **Numerical anchor:** anchor: the float32 reference against its own BF16 parent, on the lab CPU lane.
+- **Missing for Tier 1:** A device cell on the CPU (the grouped RMSNorm has no GPU kernel yet), the float32 reference against IFM/K2-Horizon-7B at 4622f94a (BF16, about 18 GB; about 36 GB in float32) and the quant bar. Tokenizer agreement (0 of 721) and template conformance are recorded.
+- **Tier history:** Upcoming, planned admission from 2026-10-30 ([log](#transition-log)).
+
 <a id="exempt"></a>
 ## Published, not a Runner model file
 
@@ -1987,5 +2035,8 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-30 | [Spark-X2.6-4B (XHToken), `Spark-X2.6-4B-Q4_K_M.gguf`](#spark-x2.6-4b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the Metal laptop (policy 2026-10-27). Maintained on report. | none recorded |
 | 2026-10-30 | [Spark-X2.5-4B (XHToken), `Spark-X2.5-4B-Q4_K_M.gguf`](#spark-x2.5-4b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the third item: a new architecture (spark2_5), its tokenizer rule and its chat templates, implemented before validation. | none recorded |
 | 2026-10-30 | [Spark-X2.5-4B (XHToken), `Spark-X2.5-4B-Q4_K_M.gguf`](#spark-x2.5-4b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the Metal laptop (policy 2026-10-27). Maintained on report. | none recorded |
+| 2026-10-30 | [K2-Horizon-0.9B (IFM), `K2-Horizon-1B-Q8_0.gguf`](#k2-horizon-0.9b-q8_0) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the fourth item: a new architecture (k2-horizon), its tokenizer rule and its chat template, implemented before validation. | none recorded |
+| 2026-10-30 | [K2-Horizon-0.9B (IFM), `K2-Horizon-1B-Q8_0.gguf`](#k2-horizon-0.9b-q8_0) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting cells from the Metal laptop (policy 2026-10-27). Maintained on report. | none recorded |
+| 2026-10-30 | [K2-Horizon-7B (IFM)](#k2-horizon-7b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the fourth item: the 7B member, which carries the grouped RMSNorm the 0.9B does not. | none recorded |
 
 <!-- model-tiers:rows:end -->

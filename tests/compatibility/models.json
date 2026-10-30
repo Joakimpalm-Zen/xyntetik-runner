@@ -1440,6 +1440,69 @@
       }
     },
     {
+      "id": "k2-horizon-0.9b-q8_0",
+      "architecture": "k2-horizon",
+      "family": "K2-Horizon",
+      "file": "models/K2-Horizon-1B-Q8_0.gguf",
+      "sha256": "741fb9ad263956c003883cb7caddeb14b4dfb9b4b67b5414ad12967e965dd547",
+      "upstream": "IFM/K2-Horizon-0.9B-GGUF",
+      "tokenizer_reference": "IFM/K2-Horizon-0.9B",
+      "tokenizer_reference_revision": "d50881f4f8dc6923fb8f301e1c2313fe3a2b6c1d",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/k2-horizon-0.9b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "IFM's own Q8_0 of K2-Horizon 0.9B (the file is named 1B), architecture k2-horizon (28 layers, hidden 1536, GQA 32/8, head_dim 64, YaRN x16 over 8192 with beta_fast 128 and beta_slow 4, untied head, group_norm_groups 1, so the plain RMSNorm path). Tokenizer pre k2-horizon, 0 of 721 corpus strings differ from the publisher's tokenizer.json; template family k2-horizon, conformance 23/23 in text and tokens against the template the GGUF carries. No llama.cpp reference is declared, so greedy_reference is not claimed; the float32 reference is owed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>",
+            "<|ifm|im_start|>",
+            "<ifm|tool_calls>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "k2-horizon-7b-q4_k_m",
+      "architecture": "k2-horizon",
+      "family": "K2-Horizon",
+      "file": "models/K2-Horizon-7B-Q4_K_M.gguf",
+      "sha256": "eb89c15a0ae9712be2ee462bf43802de14200f20f93b73da6eb68c2ebdd28e4e",
+      "upstream": "IFM/K2-Horizon-7B-GGUF",
+      "tokenizer_reference": "IFM/K2-Horizon-7B",
+      "tokenizer_reference_revision": "4622f94a6632384784471fd674d5b78f8d527798",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/k2-horizon-7b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "IFM's own Q4_K_M of K2-Horizon 7B, architecture k2-horizon with group_norm_groups 4 (RMSNorm over four slices of the hidden vector, one full-width weight), rope base 1e7, head_dim 128, a 250,624-token vocabulary of its own. Tokenizer pre k2-horizon, 0 of 721 corpus strings differ from the publisher's tokenizer.json (read from the file's metadata); template family k2-horizon (the same template as the 0.9B file). The grouped norm has no GPU kernel yet, so chat runs with the GPU off. No llama.cpp reference is declared; the float32 reference is owed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "off",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>",
+            "<|ifm|im_start|>",
+            "<ifm|tool_calls>"
+          ]
+        }
+      }
+    },
+    {
       "id": "qwen3.8-27b-ud-q4_k_m",
       "architecture": "qwen35",
       "family": "Qwen 3.8",

@@ -4541,6 +4541,132 @@
           "last_validated_release": null
         }
       ]
+    },
+    {
+      "id": "k2-horizon-0.9b-q8_0",
+      "model": "K2-Horizon-0.9B (IFM)",
+      "family": "K2-Horizon",
+      "tier": "tier2",
+      "claim": "Text path, IFM's own Q8_0 of K2-Horizon 0.9B: it loads, tokenizes as the publisher's tokenizer.json does, renders the template its GGUF carries token for token and answers through it; no fidelity measurement against the BF16 checkpoint is recorded yet.",
+      "architecture": "k2-horizon",
+      "upstream": {
+        "checkpoint": "IFM/K2-Horizon-0.9B",
+        "revision": "d50881f4f8dc6923fb8f301e1c2313fe3a2b6c1d"
+      },
+      "files": [
+        {
+          "name": "K2-Horizon-1B-Q8_0.gguf",
+          "repo": "IFM/K2-Horizon-0.9B-GGUF",
+          "revision": "118965081cf1d876990219a1856a93a97b2668fa",
+          "sha256": "741fb9ad263956c003883cb7caddeb14b4dfb9b4b67b5414ad12967e965dd547",
+          "bytes": 1148614016
+        }
+      ],
+      "quantization": "Q8_0 (publisher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "owed",
+        "anchor": "This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json), template conformance 23 of 23 in text and tokens against the template the GGUF carries, its 44-case tool-schema torture set (tests/fixtures/k2-horizon-tool-schemas.json) byte for byte, and a chat answer at temperature 0 on the Metal laptop.",
+        "context": 4096,
+        "limitations": "reasoning_effort medium and low are refused (their think blocks are not split from the answer yet); high, the default, and thinking off are served. A tool without a parameters object is refused, as the template refuses it. A required or named tool choice takes the generic JSON envelope on this family.",
+        "evidence": [
+          "tests/compatibility/coverage.json",
+          "tests/fixtures/k2-horizon-tool-schemas.json"
+        ],
+        "missing": "The float32 reference against the BF16 checkpoint (on the Metal laptop) and the quant bar; the Windows CUDA host's cells."
+      },
+      "smoke": {
+        "device_class": "macos-arm64-metal",
+        "backend": "metal"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "c159098d09983ad9fa1b717968297a84023c8342",
+          "caps": {
+            "version": "1.7.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "b9af23d3578b00d9544b798aa58e0b34d7f068861d52823edb44e798a1c9c6a7",
+          "ran": "runner -m K2-Horizon-1B-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.macos-arm64-metal.cpu.txt"
+        },
+        "cuda": null,
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "c159098d09983ad9fa1b717968297a84023c8342",
+          "caps": {
+            "version": "1.7.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "b9af23d3578b00d9544b798aa58e0b34d7f068861d52823edb44e798a1c9c6a7",
+          "ran": "runner -m K2-Horizon-1B-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.macos-arm64-metal.metal.txt"
+        }
+      },
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-30"
+      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-30",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29, the fourth item: a new architecture (k2-horizon), its tokenizer rule and its chat template, implemented before validation.",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the admitting cells from the Metal laptop (policy 2026-10-27). Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
+      "id": "k2-horizon-7b-q4_k_m",
+      "model": "K2-Horizon-7B (IFM)",
+      "family": "K2-Horizon",
+      "tier": "upcoming",
+      "claim": "Not admitted yet: the architecture, tokenizer and template are implemented and checked; the file's own cells and its float32 reference are owed.",
+      "architecture": "k2-horizon",
+      "missing": "A device cell on the CPU (the grouped RMSNorm has no GPU kernel yet), the float32 reference against IFM/K2-Horizon-7B at 4622f94a (BF16, about 18 GB; about 36 GB in float32) and the quant bar. Tokenizer agreement (0 of 721) and template conformance are recorded.",
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-30",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29, the fourth item: the 7B member, which carries the grouped RMSNorm the 0.9B does not.",
+          "last_validated_release": null
+        }
+      ],
+      "anchor": "anchor: the float32 reference against its own BF16 parent, on the lab CPU lane."
     }
   ]
 }

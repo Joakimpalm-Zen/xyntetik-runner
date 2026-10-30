@@ -2320,8 +2320,8 @@ flag and ignore it rather than approximate one.
 Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
 `mistral-nemo`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
 `ornith`, `qwen35`, `qwen35-nothink`, `nemotron`, `nemotron35`, `hermes4`, `granite`, `granite4`, `granite42`,
-`qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `mimo`, `spark`, `spark25`, `muse`,
-`harmony`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
+`qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `mimo`, `spark`, `spark25`,
+`k2-horizon`, `muse`, `harmony`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
 is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
 template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ
 by a space beside each `[INST]`/`[/INST]` marker and by which user turn carries the
@@ -3862,6 +3862,40 @@ tokens, against `XHToken/Spark-X2.6-4B` and `XHToken/Spark-X2.5-4B`. The
 tokenizer pre `spark2_5` splits every digit alone, CJK runs apart, and
 newlines one at a time (0 of 721 corpus strings differ from the publisher's
 tokenizer.json).
+
+K2-Horizon (`k2-horizon`, detected by its `<|ifm|im_start|>` turn token)
+follows the template IFM embeds in its K2-Horizon GGUFs, which is a revision
+older than the repositories' own chat_template.jinja. Turns are
+`<|ifm|im_start|>ROLE` + newline + content + `<|ifm|im_end|>` with nothing
+between them. Declared tools become the system turn: a fixed preamble, the
+tools as markdown (each schema branch as the template writes it), the
+call-format text, then the caller's system message. When one schema uses a
+construct the markdown renderer does not handle (`$ref`, a `type` that is an
+object, a container-valued key it does not know), the whole set is written as
+one JSON line per tool, as the template does. A schema the template refuses
+(a `required` that is not a list or names an undefined property, a tool
+without `parameters`) is refused with a 400 that quotes the template's
+reason, on all three surfaces. Every assistant turn carries a think block:
+the turn's reasoning field (`reasoning_content`, `reasoning`, or IFM's own
+`think`, `think_fast`, `think_faster`), else the block the content holds, else
+an empty `<ifm|think>` block, which is what this template writes for a turn
+without reasoning, so a client that never sends reasoning back is served the
+template's own render. Thinking is on unless `enable_thinking` is false: the
+reply opens with `<ifm|think>`, or with a closed empty block when it is off.
+`reasoning_effort` `high` is the default and the only effort served: the
+template opens `medium` and `low` as `<ifm|think_fast>` and
+`<ifm|think_faster>`, which this build does not split from the answer yet,
+so those two are refused with a 400 that says so. Calls are
+`<ifm|tool_calls>` blocks holding `<ifm|tool_call>NAME` and
+`<ifm|arg_key>K</ifm|arg_key>` `<ifm|arg_value>V</ifm|arg_value>` pairs; a
+`tool_choice: auto` turn is parsed on the way out, buffered and streamed, and
+a `required` or named choice takes the generic JSON envelope. `--info tools`
+reports `ifm_argkv_xml`. Template conformance: 23 of 23 cases, text and
+tokens, against the GGUF's template, and a 44-case tool-schema set byte for
+byte against the same template's renders
+(`tests/fixtures/k2-horizon-tool-schemas.json`). The template's json and xml
+presentations and its json and xml_typed call formats are template options
+this build does not take.
 
 MiniCPM5 (`minicpm5`, detected from the example call its template's own
 guideline text spells) is Qwen3's ChatML and think shape with its own rules:

@@ -20,6 +20,23 @@ Current release and unreleased changes. Compatibility follows the
   The tokenizer pre `k2-horizon` (the Llama 3 split with combining marks and
   zero-width joiners inside letter runs, under NFC) reads 0 of 721 corpus
   strings differently from the publisher's tokenizer.json on the 0.9B.
+- **K2-Horizon-0.9B Q8_0 admitted at Tier 2, fidelity not yet measured.**
+  IFM's own Q8_0 loads, tokenizes as the publisher's tokenizer.json does (0 of
+  721), renders the template its GGUF carries token for token (23 of 23) and
+  answers through it on the Metal laptop, on the GPU and on the CPU. The
+  float32 reference against the BF16 checkpoint is owed. The 7B is listed as
+  upcoming: its tokenizer (0 of 721) and template are checked, its cells and
+  its reference are owed.
+- **The k2-horizon chat template.** Turns framed by `<|ifm|im_start|>` and
+  `<|ifm|im_end|>`; declared tools written as the template's markdown, or as
+  one JSON line per tool when a schema uses a construct its markdown renderer
+  does not handle; a think block on every assistant turn, empty when the turn
+  carries no reasoning, as the template writes it; calls as `<ifm|tool_calls>`
+  blocks, parsed on the way out, buffered and streamed (`ifm_argkv_xml`).
+  Schemas the template refuses are answered 400 with its reason on all three
+  surfaces, and a 44-case tool-schema set is checked byte for byte against the
+  template's own renders. `reasoning_effort` medium and low are refused: their
+  think blocks are not split from the answer yet.
 - **LFM2 reads a history turn's thought from the fields its template reads.**
   LFM2.5's chat template takes the thought from `thinking`, then
   `reasoning`, then `reasoning_content`, the first one set and not empty, and
