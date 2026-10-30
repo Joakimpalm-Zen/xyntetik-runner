@@ -642,13 +642,13 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>K2-Horizon</b>, 2 models: CPU ✅ · CUDA 🟨 1 of 4 · Metal 🟨 2 of 4 · Train 🟨 2 of 4</summary>
+<summary><b>K2-Horizon</b>, 2 models: CPU ✅ · CUDA 🟨 2 of 4 · Metal 🟨 2 of 4 · Train 🟨 2 of 4</summary>
 <p><b>K2-Horizon-0.9B (IFM)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="#k2-horizon-0.9b-q8_0"><code>K2-Horizon-1B-Q8_0.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td nowrap>✅ 1.8.0<br>2026-10-30</td></tr>
-<tr><td><a href="#k2-horizon-0.9b-q4_k_m"><code>K2-Horizon-1B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td nowrap>✅ 1.8.0<br>2026-10-30</td></tr>
+<tr><td><a href="#k2-horizon-0.9b-q4_k_m"><code>K2-Horizon-1B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td nowrap>✅ 1.8.0<br>2026-10-30</td></tr>
 </tbody>
 </table>
 <p><b>K2-Horizon-7B (IFM)</b></p>
@@ -1875,7 +1875,7 @@ Text path, IFM's own Q4_K_M of K2-Horizon 0.9B, which fails the fidelity bar: ag
 - **Evidence:** [docs/compat-reports/1.7.1-2026-10-30-macos-arm64-k2-horizon-0.9b-q4_k_m.json](compat-reports/1.7.1-2026-10-30-macos-arm64-k2-horizon-0.9b-q4_k_m.json), [docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md](compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [tests/fixtures/k2-horizon-tool-schemas.json](../tests/fixtures/k2-horizon-tool-schemas.json).
 - **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.1 on 2026-10-30.
 - **CPU:** ✅ v1.8.0 2026-10-30 on windows-x86_64-cuda at commit `9bb83e7e80b4`, output sha256 `128cdfebbb63b10f`, [pin](../tests/compatibility/tier-smoke/k2-horizon-0.9b-q4_k_m.windows-x86_64-cuda.cpu.txt)
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.8.0 2026-10-30 on windows-x86_64-cuda at commit `9bb83e7e80b4`, output sha256 `128cdfebbb63b10f`, [pin](../tests/compatibility/tier-smoke/k2-horizon-0.9b-q4_k_m.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ✅ v1.7.1 2026-10-30 on macos-arm64-metal at commit `5cc154e261a7`, output sha256 `128cdfebbb63b10f`, [pin](../tests/compatibility/tier-smoke/k2-horizon-0.9b-q4_k_m.macos-arm64-metal.metal.txt)
 - **LoRA training:** supported (runner 1.8.0, 2026-10-30).
 - **LoRA adapter serving:** supported (runner 1.8.0, 2026-10-30).
