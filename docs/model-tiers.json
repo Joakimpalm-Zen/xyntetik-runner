@@ -4711,7 +4711,25 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.8.0",
+          "date": "2026-10-30",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "025fd5ce6efc85dbf9081fae96aa211e7b5bc778",
+          "caps": {
+            "version": "1.8.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": null,
+            "gpu_name": null
+          },
+          "output_sha256": "4d889e0320a92128a06af70d4a4ea4ad6545b910860b72151b26ddb405b7b8c5",
+          "ran": "runner -m LFM2.5-24B-A2B-Q4_K_M.gguf --serve -c 1024 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=600 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/lfm2.5-24b-a2b-q4_k_m.linux-x86_64-cuda.cpu.txt"
+        },
         "cuda": {
           "kind": "limit",
           "reason": "lfm2moe (short-convolution layers interleaved with GQA attention, routed experts) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.",
@@ -4732,7 +4750,19 @@
           "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane (policy 2026-10-27). Maintained on report.",
           "last_validated_release": null
         }
-      ]
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "recurrent architecture (short convolution)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover the short-convolution hybrid yet (lfm2moe)"
+        },
+        "runner_version": "1.8.0",
+        "date": "2026-10-30"
+      }
     },
     {
       "id": "spark-x2.6-4b-q4_k_m",

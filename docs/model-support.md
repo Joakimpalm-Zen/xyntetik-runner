@@ -591,7 +591,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>LFM2.5</b>, 4 models: CPU 🟨 5 of 6 · CUDA n/a · Metal - · Train -</summary>
+<summary><b>LFM2.5</b>, 4 models: CPU ✅ · CUDA n/a · Metal - · Train n/a</summary>
 <p><b>LFM2.5-1.2B-Instruct (LiquidAI)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
@@ -604,7 +604,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#lfm2.5-24b-a2b-q4_k_m"><code>LFM2.5-24B-A2B-Q4_K_M.gguf</code></a></td><td></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td><td></td></tr>
+<tr><td><a href="#lfm2.5-24b-a2b-q4_k_m"><code>LFM2.5-24B-A2B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<sup>b</sup><br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td><td>no: recurrent architecture (short convolution)</td></tr>
 </tbody>
 </table>
 <p><b>LFM2.5-350M (LiquidAI)</b></p>
@@ -1739,10 +1739,12 @@ Text path, LiquidAI's own Q4_K_M of LFM2.5-24B-A2B: it tokenizes as the publishe
 - **Known limitations:** CPU only: the GPU backends refuse lfm2moe by name and serve it on the CPU. The model thinks on every turn: its generation prompt opens the thought whatever enable_thinking says. A required or named tool choice takes the generic JSON envelope on this family. Licence: LFM Open License v1.0, which limits commercial use to entities with under US$10M annual revenue; the limit binds whoever runs the model.
 - **Still missing:** The admitting CPU cell and the float32 reference against the BF16 checkpoint (48 GB stored, cast to float32 per decoder block), both on the lab CPU lane; a GPU path.
 - **Evidence:** [docs/compat-reports/lfm2.5-reference-2026-10-30/README.md](compat-reports/lfm2.5-reference-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
-- **CPU:** ☐ not run
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.8.0 on 2026-10-30.
+- **CPU:** ✅ v1.8.0 2026-10-30 on linux-x86_64-cuda (borrowed hardware) at commit `025fd5ce6efc`, output sha256 `4d889e0320a92128`, [pin](../tests/compatibility/tier-smoke/lfm2.5-24b-a2b-q4_k_m.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** [n/a](../MANUAL.md#support-matrix): lfm2moe (short-convolution layers interleaved with GQA attention, routed experts) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.
 - **Metal:** ☐ not run
+- **LoRA training:** no: recurrent architecture (short convolution) (runner 1.8.0, 2026-10-30).
+- **LoRA adapter serving:** no: --lora does not cover the short-convolution hybrid yet (lfm2moe) (runner 1.8.0, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
 #### LFM2.5-350M (LiquidAI)
