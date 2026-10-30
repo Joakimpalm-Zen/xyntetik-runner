@@ -393,7 +393,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "628-631",
+        "lines": "633-636",
         "anchor": "strcmp(pre, \"lfm2\") == 0));"
       },
       "patch": {
