@@ -101,3 +101,24 @@ def test_marker_rows_are_reported_and_not_gated(tmp_path):
     assert bad.returncode == 1 and "1/" in bad.stdout, bad.stdout
     info = _difftok(write([], [4, 5]), tmp_path, "--report-only")
     assert info.returncode == 0 and "2/" in info.stdout, info.stdout
+
+
+def test_the_vocabulary_corpus_is_every_whole_model_entry():
+    """--vocab's strings: each model-vocabulary entry decoded to text, leaving
+    out added tokens, a lone byte of a longer character and U+0000 (which
+    Runner's encode reads as the end of the text)."""
+    tokenizers = pytest.importorskip("tokenizers")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("difftok", ROOT / "scripts/difftok.py")
+    difftok = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(difftok)
+    # byte-level alphabet: U+00C3 is the lone byte 0xC3, U+0100 is byte 0x00
+    vocab = {"h": 0, "o": 1, "ho": 2, "\u00c3": 3, "\u0100": 4, "\u0120": 5, "\u0120ho": 6,
+             "<|x|>": 7}
+    tok = tokenizers.Tokenizer(tokenizers.models.BPE(vocab, [("h", "o"), ("\u0120", "ho")]))
+    tok.pre_tokenizer = tokenizers.pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tok.decoder = tokenizers.decoders.ByteLevel()
+    tok.add_special_tokens(["<|x|>"])
+    strings, skipped = difftok.vocab_corpus(tok)
+    assert strings == ["h", "o", "ho", " ", " ho"]
+    assert skipped == {"added": 1, "partial_utf8": 1, "nul": 1, "empty": 0}

@@ -52,6 +52,15 @@ A reference-ID capture can be replayed offline and refuses a different
 corpus. The four pinned captures under
 `tests/compatibility/tokenizer-references/` are intentional regression inputs.
 
+An admission also compares over the publisher's whole vocabulary:
+`scripts/difftok.py --vocab` encodes every model-vocabulary entry, decoded to
+text, on both sides. The 721 strings never reached the whole-word cases a
+BPE's merge rule decides (Llama 3.2 differed on 1 of them and on 674
+vocabulary entries; [the whole-word rule](compat-reports/bpe-ignore-merges-2026-10-30/README.md)).
+The compatibility matrix runs it for every row with a `tokenizer_reference`,
+gates where the row declares `check_params.tokenizer.expect_vocab_divergences`
+and reports the count otherwise; a new admission declares its count.
+
 Mistral v0.3, Phi-3.5, and Salamandra gate against their published
 SentencePiece models; tokenizer.json comparisons are a separate
 informational column. Lucie's custom-normalizer difference remains a

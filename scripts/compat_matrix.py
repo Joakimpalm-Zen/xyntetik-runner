@@ -496,6 +496,33 @@ def run_tokenizer_informational(model, reference_ids, corpus, timeout):
             "of": int(m.group(2)) if m else None}
 
 
+def run_tokenizer_vocab(model, reference, revision, timeout, expect=None):
+    """The whole-vocabulary comparison: every entry of the publisher's own
+    tokenizer.json vocabulary, decoded to text, encoded by both sides. The
+    721-string corpus never reached the whole-word cases a BPE's merge rule
+    decides (Llama 3 read 1 of 721 differently and 674 of its vocabulary
+    entries, 2026-10-30), so an admission measures this too. It gates where
+    the row declares `expect_vocab_divergences` (the explained count) and is
+    reported otherwise; it needs the tokenizer.json itself, so a row with
+    only a pinned capture reports it as not executed."""
+    command = [sys.executable, str(TOKENIZER_SCRIPT), "--gguf", str(model),
+               "--ref", reference, "--vocab", "--show", "0"]
+    if revision:
+        command += ["--ref-revision", revision]
+    command += ["--expect", str(int(expect))] if expect is not None else ["--report-only"]
+    result = run_command(command, timeout)
+    import re as _re
+    m = _re.search(r"(\d+)/(\d+) strings differ", result.get("stdout_tail", ""))
+    out = {"gated": expect is not None, "expect": expect,
+           "differ": int(m.group(1)) if m else None, "of": int(m.group(2)) if m else None,
+           "status": result["status"] if m else "not_executed"}
+    if not m:
+        out["reason"] = ("tokenizer_tool_unavailable"
+                         if result.get("returncode") in (None, DIFFTOK_EXIT_TOOL_UNAVAILABLE)
+                         else "tokenizer_reference_unavailable")
+    return out
+
+
 def run_greedy(runner, reference, model, timeout):
     return run_command([
         sys.executable, str(GREEDY_SCRIPT), "--runner", str(runner),
@@ -609,6 +636,13 @@ def main(argv=None):
                             path, tok_ref, corpus, args.timeout,
                             reference_ids=tok_ids, expect=(entry.get("check_params", {}).get("tokenizer") or {}).get("expect_divergences", 0))
                         failed |= item["checks"]["tokenizer"]["status"] != "pass"
+                        if tok_ref:
+                            tok_params = entry.get("check_params", {}).get("tokenizer") or {}
+                            vocab = run_tokenizer_vocab(
+                                path, tok_ref, entry.get("tokenizer_reference_revision"),
+                                args.timeout, tok_params.get("expect_vocab_divergences"))
+                            item["checks"]["tokenizer"]["vocab"] = vocab
+                            failed |= vocab["gated"] and vocab["status"] != "pass"
                         # R6.2.2: where the gate's reference is the publisher's
                         # SentencePiece model, its tokenizer.json is compared
                         # too and reported, never gated (the two artifacts

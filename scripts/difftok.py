@@ -23,6 +23,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 
 # Exit statuses for a comparison that never ran, so a caller (compat_matrix.py)
@@ -108,6 +109,32 @@ def reference_tokenizer(ref, revision=None):
         ref, revision=revision or "main", token=os.environ.get("HF_TOKEN"))
 
 
+def vocab_corpus(tok):
+    """Every entry of the reference's own model vocabulary, decoded to text:
+    the strings whose whole-word reading a BPE's merge rule decides. The
+    721-string corpus never reached " Việt" in Llama 3's vocabulary or
+    " läsa" in LFM2.5-8B's (2026-10-30); over the vocabulary, 654 and 2,557
+    entries differed. Added tokens are left out (their text is matched as a
+    special before any split), and so is a piece that is not whole UTF-8 on
+    its own (a byte of a longer character decodes to U+FFFD) or holds U+0000,
+    which Runner's encode reads as the end of the text. Returns the strings
+    and a count of each kind left out."""
+    added = set(tok.get_added_tokens_decoder())
+    out, skipped = [], {"added": 0, "partial_utf8": 0, "nul": 0, "empty": 0}
+    for i in sorted(tok.get_vocab(with_added_tokens=False).values()):
+        if i in added:
+            skipped["added"] += 1
+            continue
+        s = tok.decode([i], skip_special_tokens=False)
+        kind = ("empty" if not s else "partial_utf8" if "\ufffd" in s
+                else "nul" if "\0" in s else None)
+        if kind:
+            skipped[kind] += 1
+        else:
+            out.append(s)
+    return out, skipped
+
+
 def spm_capture(model_file, corpus, added_tokens_json=None):
     """Reference ids from the publisher's SentencePiece model, and the rows
     whose text spells one of that model's control or user-defined pieces.
@@ -175,6 +202,10 @@ def main():
                     help="print the comparison and exit 0 (an informational "
                          "second reference)")
     ap.add_argument("--corpus", default="tests/fixtures/tokenizer-corpus.txt")
+    ap.add_argument("--vocab", action="store_true",
+                    help="compare over every entry of the reference's own "
+                         "vocabulary, decoded to text, instead of --corpus "
+                         "(needs --ref)")
     ap.add_argument("--expect", type=int, default=0,
                     help="expected number of diverging strings")
     ap.add_argument("--show", type=int, default=20,
@@ -187,8 +218,25 @@ def main():
     if not args.no_build:
         build(root, os.path.basename(exe))
 
-    corpus = load_corpus(args.corpus)
-    mine = runner_ids(exe, args.gguf, args.corpus, len(corpus))
+    vocab_file = None
+    if args.vocab:
+        if not args.ref or args.ref_ids or args.spm_model or args.capture:
+            raise SystemExit("--vocab needs --ref, and takes no --ref-ids, "
+                             "--spm-model or --capture")
+        strings, skipped = vocab_corpus(reference_tokenizer(args.ref, args.ref_revision))
+        fd, vocab_file = tempfile.mkstemp(suffix=".jsonl", prefix="difftok-vocab-")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for s in strings:
+                f.write(json.dumps(s, ensure_ascii=False) + "\n")
+        args.corpus = vocab_file
+        print("vocabulary: %d entries compared; left out: %s" % (
+            len(strings), ", ".join(f"{v} {k}" for k, v in skipped.items() if v) or "none"))
+    try:
+        corpus = load_corpus(args.corpus)
+        mine = runner_ids(exe, args.gguf, args.corpus, len(corpus))
+    finally:
+        if vocab_file:
+            os.remove(vocab_file)
 
     if args.ref_ids:
         with open(args.ref_ids, encoding="utf-8") as f:

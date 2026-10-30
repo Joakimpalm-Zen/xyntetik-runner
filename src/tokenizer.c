@@ -429,8 +429,8 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     if (strcmp(pre, "llama-bpe") == 0)   t->pre = TOK_PRE_LLAMA3;
     else if (strcmp(pre, "dbrx") == 0)   t->pre = TOK_PRE_LLAMA3; // llama.cpp: "same as llama3" (granite 4.1 ships this)
     // Liquid LFM2 / LFM2.5: the publisher's tokenizer.json splits with the
-    // Llama 3 regex (and, unlike Llama 3, does not ignore merges, which this
-    // BPE never does)
+    // Llama 3 regex; lfm2 ignores merges (below), which on the 1.2B's and
+    // 350M's vocabulary changes nothing
     else if (strcmp(pre, "lfm2") == 0)   t->pre = TOK_PRE_LLAMA3;
     else if (strcmp(pre, "granite-docling") == 0) t->pre = TOK_PRE_GPT2; // llama.cpp: the plain GPT-2 regex (granite 4.2 ships this)
     // minicpm5 (openbmb/MiniCPM5-2B tokenizer.json at f9740005): a Split on
@@ -543,6 +543,27 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     }
     t->n_vocab = (int)toks->arr_n;
     t->tokens = toks->arr_str;
+    // The BPE families whose publishers' tokenizer.json sets "ignore_merges"
+    // (tiktoken's rule: a pre-token that is itself a vocabulary entry is that
+    // token, merges or not). The GGUF carries no key for it, so the split's
+    // name decides, each read from the publisher's file: Llama 3
+    // (Llama-3.2-3B-Instruct), Llama 4 and its gpt-4o-style relatives
+    // (Llama-4-Scout, Muse-Glimmer-30B, gpt-oss-20b), Tekken (Mistral-Nemo,
+    // Apertus, and Nemotron 3.5 Lightning as "pixtral") and LFM2.5-8B-A1B's
+    // and 24B-A2B's 128,000-token vocabulary under "lfm2". The same name
+    // covers LFM2.5-1.2B's and 350M's 65,536 tokens, whose tokenizer.json
+    // leaves the flag off; there the rule changes nothing, because the only
+    // entries its merges do not build whole are its 507 special and reserved
+    // tokens, which no split yields as a pre-token. Every other family here
+    // leaves the flag off (granite, Qwen, MiniCPM5, Spark, K2-Horizon,
+    // Mellum, Trinity, flint). Without it the merges built " l" + "äs" + "a"
+    // where LFM2.5-8B's tokenizer reads " läsa" (7 of the gold corpus's 107
+    // passages) and " Vi" + "ệ" + "t" for Llama 3's " Việt" (1 of the 721
+    // corpus strings).
+    t->ignore_merges = t->model == TOK_BPE &&
+        (strcmp(pre, "llama-bpe") == 0 || strcmp(pre, "llama4") == 0 ||
+         strcmp(pre, "gpt-4o") == 0 || strcmp(pre, "tekken") == 0 ||
+         strcmp(pre, "pixtral") == 0 || strcmp(pre, "lfm2") == 0);
 
     gguf_kv *scores = gguf_get(g, "tokenizer.ggml.scores");
     if (scores && scores->type == GGUF_T_ARR && scores->arr_type == GGUF_T_F32 &&
@@ -1591,6 +1612,15 @@ static bool bpe_push_pair(tokenizer *t, const char *w, const int *st,
 
 static int bpe_word(tokenizer *t, const char *w, int n, int32_t *out, int cap, int n_out) {
     if (n <= 0) return n_out;
+    if (t->ignore_merges) {
+        // the publisher's model vocabulary only: a control or added token's
+        // text is matched before the split, never as a pre-token
+        int id = hmap_get(&t->vocab, w, (size_t)n);
+        if (id >= 0 && (!t->ttype || t->ttype[id] == TT_NORMAL)) {
+            if (n_out < cap) out[n_out++] = id;
+            return n_out;
+        }
+    }
     size_t max_sym = (size_t)n + 1;
     // one block, four slices: the linked list needs two arrays the compacting
     // version did not, and four separate mallocs per pre-token showed up

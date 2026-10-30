@@ -5,6 +5,32 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Llama 3's and LFM2.5-8B-A1B's tokenizers take a whole vocabulary word
+  before merging, as their publishers' do.** The tokenizer.json files of
+  Llama 3, Llama 4, gpt-oss, the Tekken vocabularies (Mistral-Nemo, Apertus,
+  Nemotron 3.5 Lightning) and LFM2.5-8B-A1B and 24B-A2B set
+  `ignore_merges`: a pre-token that is itself a vocabulary entry is that
+  token. Runner's BPE always merged, and the merges do not always reach the
+  word. LFM2.5-8B-A1B read " läsa" as " l" + "äs" + "a", so 7 of the gold
+  corpus's 107 passages tokenized differently from the publisher's tokenizer,
+  and Llama-3.2-3B read " Việt" as three tokens (1 of the 721 corpus
+  strings); both now match on every one. The GGUF carries no key for the
+  flag, so the split's name decides, each family read from its publisher's
+  file. "lfm2" also names LFM2.5-1.2B's and 350M's vocabulary, whose
+  tokenizer.json leaves the flag off; there the rule changes nothing, since
+  the only entries its merges do not build whole are its 507 special
+  tokens, which no split yields as a pre-token. `scripts/difftok.py --vocab`
+  compares over every entry of the publisher's vocabulary decoded to text:
+  Llama-3.2-3B goes from 674 differing entries to 86 and LFM2.5-8B-A1B from
+  2,567 to 108, every changed entry now the publisher's; the Tekken, Llama 4,
+  gpt-oss and LFM2.5-1.2B vocabularies and the families that keep their
+  merges change on none. The entries still differing are a separate cause,
+  the split's character classes. The compatibility matrix runs the
+  vocabulary comparison for every row with a tokenizer reference and gates
+  where a row declares its count (the four LFM2.5-1.2B and 350M rows: 11);
+  a new admission declares one
+  (`docs/compat-reports/bpe-ignore-merges-2026-10-30/README.md`). The rows'
+  smoke prompts tokenize as before.
 - **Clef-Flash pinned at Tier 2; its Q4_K_M changes 3 of 29 decisions.**
   Cloudflare publishes no GGUF, so `cloudflare-clef-flash` pins ggml-org's
   Q4_K_M (`ggml-org/Clef-Flash-GGUF` at 6e2a164d, converted by
