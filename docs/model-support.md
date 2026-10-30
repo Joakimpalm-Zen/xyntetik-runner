@@ -654,12 +654,12 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>flint</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<summary><b>flint</b>, 1 model: CPU ✅ · CUDA - · Metal - · Train -</summary>
 <p><b>flint (RecursiveSI)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#flint-int4-q4_1"><code>flint-int4-q4_1.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="#flint-int4-q4_1"><code>flint-int4-q4_1.gguf</code></a></td><td nowrap>✅ 1.7.1<sup>b</sup><br>2026-10-30</td><td></td><td></td><td></td></tr>
 </tbody>
 </table>
 </details>
@@ -1889,10 +1889,10 @@ Text path, RecursiveSI's own Q4_1 of flint (39.8B, mixture of experts): it loads
 - **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine on the publisher's file, not fidelity: Runner against mainline llama.cpp 36a0e2f on this Q4_1, both on the CPU of the lab CPU lane, 0.028 mean KLD, 90.0% top-1, 99.0% margin-qualified, 0.924 top-8 overlap over 200 raw-completion positions. A float32 reference (about 160 GB) is not feasible on any machine this project runs; the architecture's arithmetic is checked against transformers' own flint in float32 on a converted random model. Tokenizer 0/721 against the publisher's tokenizer.json at 2a247be0, template conformance 23 of 23 in text and tokens against its chat_template.jinja. Record: docs/compat-reports/flint-2026-10-30/README.md.
 - **Context tested:** 4096.
 - **Known limitations:** CPU only: attention sinks with a sliding window, NoPE full layers and sigmoid routing with a shared expert have no CUDA or Metal path yet, so the GPU backends serve it on the CPU. LoRA training is refused (sigmoid router). 26 GB of weights: the lab CPU lane is the only machine here that holds the file in memory. A required or named tool choice takes the generic JSON envelope on this family.
-- **Still missing:** The admitting CPU cell (the lab CPU lane; its first attempt waited on the lab volume's reads); the CUDA path; task quality and the native tool protocol on the real checkpoint.
+- **Still missing:** The CUDA path; task quality and the native tool protocol on the real checkpoint.
 - **Evidence:** [docs/compat-reports/1.7.1-2026-10-30-linux-x86_64-flint-int4-q4_1.json](compat-reports/1.7.1-2026-10-30-linux-x86_64-flint-int4-q4_1.json), [docs/compat-reports/flint-2026-10-30/README.md](compat-reports/flint-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
-- **CPU:** ☐ not run
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.7.1 on 2026-10-30.
+- **CPU:** ✅ v1.7.1 2026-10-30 on linux-x86_64-cuda (borrowed hardware) at commit `f5f61a2e8d25`, output sha256 `8ce1eee2a9e1f4fc`, [pin](../tests/compatibility/tier-smoke/flint-int4-q4_1.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).

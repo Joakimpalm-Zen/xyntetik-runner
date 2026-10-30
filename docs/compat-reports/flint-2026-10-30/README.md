@@ -24,6 +24,11 @@ llama.cpp, on the same file and the same positions. Second, the architecture's a
   top two are 0.0065 nats apart.
 - **Compat report** on the same lane at the same commit: load, tokenizer (0 of 721) and chat pass, the report complete
   (`docs/compat-reports/1.7.1-2026-10-30-linux-x86_64-flint-int4-q4_1.json`).
+- **CPU cell:** tier-smoke at `f5f61a2e` on the same lane (class `linux-x86_64-cuda`, the GPU hidden), pinned with the fact
+  found in 29.6 s and recorded as a pass. The row asks its own two-sentence question with a 600-token budget, because
+  flint reasons before it answers and the 48-token default ended inside the thought. The cell's first attempt, from
+  12:30 to 13:30Z, waited on the lab volume under host load from other accounts on the shared host: the server read
+  about 0.65 MB/s against the volume's usual 8 MB/s uncached, and the attempt timed out.
 
 The two engines read the same Q4_1 weights differently in one place: llama.cpp's CPU dot products quantize the
 activations to 8 bits for Q4_1, and Runner dequantizes the weights to float32. Which of the two sits nearer the trained
