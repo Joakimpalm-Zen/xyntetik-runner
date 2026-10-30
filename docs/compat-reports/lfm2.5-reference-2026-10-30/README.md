@@ -54,7 +54,7 @@ files are measured against, as the table does.
   prepends `<|startoftext|>`, as Runner does, and the reference and every side see the same token ids at all 300
   positions, with no dropped mass.
 - **Runner sides:** score files from `runner --score --score-top 20 -c 9216 --gpu off` at `d66f0f7a`, the architecture
-  commit on this branch.
+  commit before the branch was rebased onto main (it is `67e75e8e` there, the same source).
 - **llama.cpp sides:** `llama-server` at `3bb63cb`, `-ngl 0`, the same files, read by the same script.
 - **Files:** from `LiquidAI/LFM2.5-1.2B-Instruct-GGUF` at `8ed288026e23` (Q8_0 sha256 `f6b981dc...5a30d26a`, Q4_K_M
   `b1b3de11...6b19b4f5`, QAD-Q4_0) and `LiquidAI/LFM2.5-350M-GGUF` at `657e078c9408` (QAD-Q4_0 sha256
