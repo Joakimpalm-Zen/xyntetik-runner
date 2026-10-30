@@ -3,7 +3,7 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.9.0 - 2026-10-30
 
 - **LFM2.5-8B-A1B Q4_K_M admitted at Tier 2; it fails the fidelity bar, and
   the publisher's Q8_0 is the fidelity file, narrowly.** Against LiquidAI's
@@ -88,11 +88,11 @@ Current release and unreleased changes. Compatibility follows the
   Llama-3.2-3B goes from 674 differing entries to 86 and LFM2.5-8B-A1B from
   2,567 to 108, every changed entry now the publisher's; the Tekken, Llama 4,
   gpt-oss and LFM2.5-1.2B vocabularies and the families that keep their
-  merges change on none. The entries still differing are a separate cause,
-  the split's character classes. The compatibility matrix runs the
+  merges change on none. The entries still differing had a separate cause,
+  the split's character classes, which this release also fixes (above): with
+  both, the declared rows read 0. The compatibility matrix runs the
   vocabulary comparison for every row with a tokenizer reference and gates
-  where a row declares its count (the four LFM2.5-1.2B and 350M rows: 11);
-  a new admission declares one
+  where a row declares its count; a new admission declares one
   (`docs/compat-reports/bpe-ignore-merges-2026-10-30/README.md`). The rows'
   smoke prompts tokenize as before.
 - **Clef-Flash pinned at Tier 2; its Q4_K_M changes 3 of 29 decisions.**

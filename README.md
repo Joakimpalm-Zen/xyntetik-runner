@@ -75,9 +75,9 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
-> **Published release: 1.8.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) adds five architectures (`mellum`, `lfm2`, `lfm2moe`, `spark2_5`, `k2-horizon`) and eight chat-template families, admits their publishers' files at Tier 2 with each file's result against its float32 reference recorded, failures first, and fixes a wrong output in 1.7.1 on x86-64 CPU, where a sigmoid or SiLU below -88 became NaN ([changelog](CHANGELOG.md)). Its Linux asset keeps the GLIBC 2.38 ceiling and starts on Ubuntu 24.04 ([how that is held](docs/linux-1.6.1-candidate.md)).
+> **Published release: 1.9.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) makes the BPE tokenizers read text as the publishers' own tokenizers do, on every vocabulary entry of 23 of the 24 files checked, adds RecursiveSI's `flint` architecture on the CPU, and admits LiquidAI's LFM2.5-8B-A1B and Cloudflare's Clef-Flash files at Tier 2, failures first ([changelog](CHANGELOG.md)). Its Linux asset keeps the GLIBC 2.38 ceiling and starts on Ubuntu 24.04 ([how that is held](docs/linux-1.6.1-candidate.md)).
 
-> **Version `1.8.0`.** The command line, the HTTP API, the record formats and
+> **Version `1.9.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x
 > ([versioning policy](docs/versioning.md)). This page is the short version;
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
@@ -468,7 +468,7 @@ passing evaluation made for those exact bytes.
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.8.0
+./runner --version   # -> runner 1.9.0
 ```
 
 Linux, macOS and Windows. NVIDIA GPUs need a driver with CUDA 13.0 support
