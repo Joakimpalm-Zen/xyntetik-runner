@@ -3425,15 +3425,223 @@
     {
       "id": "cloudflare-clef-flash",
       "model": "Cloudflare Clef Flash (clef, on Qwen3.5-9B)",
-      "tier": "upcoming",
-      "claim": "Not validated: the clef architecture is admitted, but no clef-flash file is pinned or gated.",
+      "family": "Cloudflare Clef",
+      "tier": "tier2",
+      "claim": "Text path only; ggml-org's Q4_K_M changes 3 of 29 decisions against Cloudflare's float32 reference (26 of 29 agree, max |dprob| 0.199), each where the reference's top two are within 0.066 of each other; the Q8_0 agrees on 29 of 29 and is the file for decisions that must match. A decision model served at /v1/systemone, in ggml-org's conversion of Cloudflare/clef-flash at f0b7d3cd (converter ggml-org/convert, the revision its .src_sha names; ggml-org/Clef-Flash-GGUF at 6e2a164d), as Cloudflare publishes no GGUF; requests with images or videos are refused.",
+      "vision_upstream": true,
       "architecture": "clef",
-      "missing": "Pin one clef-flash file by sha256 with its own evidence (the audit names clef and clef-flash as separate checkpoints); a float32 gold run on a released checkpoint.",
+      "upstream": {
+        "checkpoint": "Cloudflare/clef-flash",
+        "revision": "f0b7d3cd65296abfe459e6c228b618f5d8b26d2f"
+      },
+      "files": [
+        {
+          "name": "Clef-Flash-Q4_K_M.gguf",
+          "repo": "ggml-org/Clef-Flash-GGUF",
+          "revision": "6e2a164d70aae2af7fce86005da3f91805565b1d",
+          "sha256": "eef2968c238a80d49d340430f22410ea3db9934ad1c6fdb233a503cbf9a9b54e",
+          "bytes": 6732781824
+        }
+      ],
+      "quantization": "Q4_K_M (ggml-org)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "decisions"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both ggml-org files against Cloudflare's own joint_schema_model.py at f0b7d3cd in float32 on the lab CPU lane (15 records, 29 questions; input ids and spans equal on every record; Runner --systemone at 686a31da, the GPU off): Q8_0 29 of 29 decisions, max |dprob| 0.012, mean 0.0027; Q4_K_M 26 of 29, max 0.199, mean 0.025, its three flips where the reference's top two are 0.020 to 0.066 apart. Record: docs/compat-reports/clef-flash-reference-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "Float32 reference owed, so no fidelity claim: ggml-org's Q4_K_M keeps attention, the SSM projections, the output matrix and the decision head at Q8_0 and puts the feed-forward and the token embedding at Q4_K; it is not bartowski's mix of the same name. Text only: a request with images or videos is refused. No llama.cpp column.",
+        "evidence": [
+          "docs/compat-reports/clef-flash-reference-2026-10-30/README.md",
+          "docs/compat-reports/clef-flash-2026-10-30/README.md",
+          "tests/compatibility/coverage.json",
+          "docs/compat-reports/1.7.1-2026-10-30-windows-x86_64-clef-flash-q4_k_m.json"
+        ],
+        "missing": "The Metal cell (a declared limit today); a llama.cpp column against the same reference."
+      },
+      "smoke": {
+        "device_class": "windows-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "b9ad4e9dc9a643188d288919f89a0d6ff86a632f",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "0b9c736613433a3c11132f58dfae9036318c3da3a920032448e08bf61ecc3435",
+          "ran": "runner -m Clef-Flash-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/cloudflare-clef-flash.windows-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "b9ad4e9dc9a643188d288919f89a0d6ff86a632f",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "0b9c736613433a3c11132f58dfae9036318c3da3a920032448e08bf61ecc3435",
+          "ran": "runner -m Clef-Flash-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/cloudflare-clef-flash.windows-x86_64-cuda.cuda.txt"
+        },
+        "metal": {
+          "kind": "limit",
+          "reason": "Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        }
+      },
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-30"
+      },
       "transitions": [
         {
           "tier": "upcoming",
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the Windows CUDA host's CPU and CUDA cells, the tokenizer and template checks; the float32 reference is owed (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
+      "id": "cloudflare-clef-flash-q8_0",
+      "model": "Cloudflare Clef Flash (clef, on Qwen3.5-9B)",
+      "family": "Cloudflare Clef",
+      "tier": "tier2",
+      "claim": "Text path only; the fidelity file of ggml-org's two: against Cloudflare's float32 reference it picks the reference's option on 29 of 29 questions (max |dprob| 0.012). A decision model served at /v1/systemone, in ggml-org's conversion of Cloudflare/clef-flash at f0b7d3cd (converter ggml-org/convert, the revision its .src_sha names; ggml-org/Clef-Flash-GGUF at 6e2a164d), as Cloudflare publishes no GGUF; requests with images or videos are refused.",
+      "vision_upstream": true,
+      "architecture": "clef",
+      "upstream": {
+        "checkpoint": "Cloudflare/clef-flash",
+        "revision": "f0b7d3cd65296abfe459e6c228b618f5d8b26d2f"
+      },
+      "files": [
+        {
+          "name": "Clef-Flash-Q8_0.gguf",
+          "repo": "ggml-org/Clef-Flash-GGUF",
+          "revision": "6e2a164d70aae2af7fce86005da3f91805565b1d",
+          "sha256": "25f801e2a27610b0ccc0cb1558d7eda3d7a304e34e2c4a04e3079357ff7d906e",
+          "bytes": 9657260288
+        }
+      ],
+      "quantization": "Q8_0 (ggml-org)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "decisions"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both ggml-org files against Cloudflare's own joint_schema_model.py at f0b7d3cd in float32 on the lab CPU lane (15 records, 29 questions; input ids and spans equal on every record; Runner --systemone at 686a31da, the GPU off): Q8_0 29 of 29 decisions, max |dprob| 0.012, mean 0.0027; Q4_K_M 26 of 29, max 0.199, mean 0.025, its three flips where the reference's top two are 0.020 to 0.066 apart. Record: docs/compat-reports/clef-flash-reference-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "Float32 reference owed, so no fidelity claim: nothing is measured against the parent for either clef-flash file yet. Text only: a request with images or videos is refused. No llama.cpp column.",
+        "evidence": [
+          "docs/compat-reports/clef-flash-reference-2026-10-30/README.md",
+          "docs/compat-reports/clef-flash-2026-10-30/README.md",
+          "tests/compatibility/coverage.json",
+          "docs/compat-reports/1.7.1-2026-10-30-linux-x86_64-clef-flash-q8_0.json"
+        ],
+        "missing": "The Metal cell (a declared limit today); its compat report's CPU-against-CUDA check (the lab CPU lane has no CUDA device); a llama.cpp column against the same reference."
+      },
+      "smoke": {
+        "device_class": "windows-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "686a31da93e8d682af907123037f6e87373a0e0c",
+          "caps": {
+            "version": "1.7.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": null,
+            "gpu_name": null
+          },
+          "output_sha256": "1b3a370279fc586b0e426262201a4158399993fa6787261da3248e41ff5b39a2",
+          "ran": "runner -m Clef-Flash-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/cloudflare-clef-flash-q8_0.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "b9ad4e9dc9a643188d288919f89a0d6ff86a632f",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "1b3a370279fc586b0e426262201a4158399993fa6787261da3248e41ff5b39a2",
+          "ran": "runner -m Clef-Flash-Q8_0.gguf --serve -c 512 -b 64 --gpu 28; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/cloudflare-clef-flash-q8_0.windows-x86_64-cuda.cuda.txt"
+        },
+        "metal": {
+          "kind": "limit",
+          "reason": "Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        }
+      },
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-30"
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the Windows CUDA host's CUDA cell (a layer split, --gpu 28 of 32), and the tokenizer and template checks of the Q4_K_M, which shares its vocabulary and template; the float32 reference is owed (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report.",
           "last_validated_release": null
         }
       ]

@@ -1,0 +1,77 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-10-30T12:01:52Z",
+  "host": {
+    "os": "Linux",
+    "machine": "x86_64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 1.7.1"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "clef-flash-q8_0",
+      "architecture": "clef",
+      "file": "models/Clef-Flash-Q8_0.gguf",
+      "expected_sha256": "25f801e2a27610b0ccc0cb1558d7eda3d7a304e34e2c4a04e3079357ff7d906e",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 507.6,
+          "stderr_tail": "gpu: CUDA initialization failed: no CUDA-capable device is detected \u2014 using CPU\nloaded Clef-Flash-Q8_0.gguf | clef | 32 layers | ctx 4096 | 8 threads | 0.11s\nsampling: qwen35 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 16.66 tok/s | gen: 1 tok, 6.36 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1841.0,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": ""
+        },
+        "cpu_cuda": {
+          "status": "not_executed",
+          "reason": "cpu_cuda_timeout"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 902.97,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "4\n"
+        }
+      },
+      "resolved_file": "models/Clef-Flash-Q8_0.gguf",
+      "actual_sha256": "25f801e2a27610b0ccc0cb1558d7eda3d7a304e34e2c4a04e3079357ff7d906e",
+      "file_status": "pass",
+      "complete": false
+    }
+  ],
+  "complete": false,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "pass": 1
+      },
+      "cpu_cuda": {
+        "not_executed": 1
+      },
+      "chat": {
+        "pass": 1
+      }
+    }
+  }
+}

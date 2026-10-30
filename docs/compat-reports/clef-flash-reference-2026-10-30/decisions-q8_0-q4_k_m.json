@@ -1,0 +1,613 @@
+{
+ "reference": {
+  "reference": "joint_schema_model.py",
+  "code_sha256": "0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3",
+  "transformers": "5.16.1",
+  "torch": "2.14.0+cpu",
+  "dtype": "float32",
+  "device": "cpu",
+  "attn_implementation": "sdpa",
+  "head_bf16": false
+ },
+ "records": 15,
+ "files": {
+  "Clef-Flash-Q8_0.gguf": {
+   "decisions_agree": 29,
+   "questions": 29,
+   "max_abs_dprob": 0.011903,
+   "mean_abs_dprob": 0.002699,
+   "max_abs_dlogit": 0.049002,
+   "questions_detail": [
+    {
+     "record": "card-invoice",
+     "question": "status",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.955481,
+     "max_abs_dprob": 0.000241,
+     "max_abs_dlogit": 0.010932
+    },
+    {
+     "record": "card-invoice",
+     "question": "large",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.94582,
+     "max_abs_dprob": 0.000199,
+     "max_abs_dlogit": 0.00663
+    },
+    {
+     "record": "card-systemone",
+     "question": "department",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.921545,
+     "max_abs_dprob": 0.000663,
+     "max_abs_dlogit": 0.018396
+    },
+    {
+     "record": "card-systemone",
+     "question": "urgency",
+     "reference_choice": 2,
+     "runner_choice": 2,
+     "agree": true,
+     "reference_margin": 0.786881,
+     "max_abs_dprob": 0.001147,
+     "max_abs_dlogit": 0.008359
+    },
+    {
+     "record": "card-systemone",
+     "question": "outage",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.672524,
+     "max_abs_dprob": 0.005468,
+     "max_abs_dlogit": 0.029845
+    },
+    {
+     "record": "noul-criteria",
+     "question": "urgent",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.807947,
+     "max_abs_dprob": 0.001774,
+     "max_abs_dlogit": 0.012133
+    },
+    {
+     "record": "noul-criteria",
+     "question": "plain",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.711454,
+     "max_abs_dprob": 0.00135,
+     "max_abs_dlogit": 0.014714
+    },
+    {
+     "record": "choice-keys",
+     "question": "route",
+     "reference_choice": 4,
+     "runner_choice": 4,
+     "agree": true,
+     "reference_margin": 0.050061,
+     "max_abs_dprob": 0.01082,
+     "max_abs_dlogit": 0.044081
+    },
+    {
+     "record": "python-spellings",
+     "question": "level",
+     "reference_choice": 3,
+     "runner_choice": 3,
+     "agree": true,
+     "reference_margin": 0.208562,
+     "max_abs_dprob": 0.004962,
+     "max_abs_dlogit": 0.04149
+    },
+    {
+     "record": "instructions-types",
+     "question": "obj",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.760583,
+     "max_abs_dprob": 0.008213,
+     "max_abs_dlogit": 0.041177
+    },
+    {
+     "record": "instructions-types",
+     "question": "zero",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.410881,
+     "max_abs_dprob": 0.007964,
+     "max_abs_dlogit": 0.026411
+    },
+    {
+     "record": "instructions-types",
+     "question": "false",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.17591,
+     "max_abs_dprob": 0.002007,
+     "max_abs_dlogit": 0.005652
+    },
+    {
+     "record": "instructions-types",
+     "question": "empty",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.066094,
+     "max_abs_dprob": 0.003587,
+     "max_abs_dlogit": 0.013769
+    },
+    {
+     "record": "special-text",
+     "question": "injected",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.960871,
+     "max_abs_dprob": 0.000402,
+     "max_abs_dlogit": 0.024201
+    },
+    {
+     "record": "many-questions",
+     "question": "paid",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.947154,
+     "max_abs_dprob": 0.000105,
+     "max_abs_dlogit": 0.006598
+    },
+    {
+     "record": "many-questions",
+     "question": "country",
+     "reference_choice": 3,
+     "runner_choice": 3,
+     "agree": true,
+     "reference_margin": 0.974659,
+     "max_abs_dprob": 3.8e-05,
+     "max_abs_dlogit": 0.009337
+    },
+    {
+     "record": "many-questions",
+     "question": "size",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.370451,
+     "max_abs_dprob": 0.003232,
+     "max_abs_dlogit": 0.013027
+    },
+    {
+     "record": "many-questions",
+     "question": "fraud",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.847226,
+     "max_abs_dprob": 0.000391,
+     "max_abs_dlogit": 0.00962
+    },
+    {
+     "record": "many-questions",
+     "question": "channel",
+     "reference_choice": 2,
+     "runner_choice": 2,
+     "agree": true,
+     "reference_margin": 0.21853,
+     "max_abs_dprob": 0.001094,
+     "max_abs_dlogit": 0.006317
+    },
+    {
+     "record": "many-questions",
+     "question": "value",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.953538,
+     "max_abs_dprob": 0.000368,
+     "max_abs_dlogit": 0.024649
+    },
+    {
+     "record": "long-state",
+     "question": "degraded",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.955803,
+     "max_abs_dprob": 8.6e-05,
+     "max_abs_dlogit": 0.003468
+    },
+    {
+     "record": "long-state",
+     "question": "worst",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.019832,
+     "max_abs_dprob": 0.005595,
+     "max_abs_dlogit": 0.01622
+    },
+    {
+     "record": "whitespace-state",
+     "question": "empty",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.859844,
+     "max_abs_dprob": 0.000929,
+     "max_abs_dlogit": 0.008309
+    },
+    {
+     "record": "empty-state",
+     "question": "empty",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.687799,
+     "max_abs_dprob": 0.001212,
+     "max_abs_dlogit": 0.009116
+    },
+    {
+     "record": "odd-ids",
+     "question": "Wie geht's? \ud83d\ude00",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.082494,
+     "max_abs_dprob": 0.011903,
+     "max_abs_dlogit": 0.049002
+    },
+    {
+     "record": "odd-ids",
+     "question": "only one",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 1.0,
+     "max_abs_dprob": 0.0,
+     "max_abs_dlogit": 0.016697
+    },
+    {
+     "record": "number-state",
+     "question": "pi",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.847536,
+     "max_abs_dprob": 0.00149,
+     "max_abs_dlogit": 0.034838
+    },
+    {
+     "record": "null-state",
+     "question": "null",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.973892,
+     "max_abs_dprob": 9.9e-05,
+     "max_abs_dlogit": 0.012797
+    },
+    {
+     "record": "combining-marks",
+     "question": "script",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.751411,
+     "max_abs_dprob": 0.002922,
+     "max_abs_dlogit": 0.028655
+    }
+   ]
+  },
+  "Clef-Flash-Q4_K_M.gguf": {
+   "decisions_agree": 26,
+   "questions": 29,
+   "max_abs_dprob": 0.198779,
+   "mean_abs_dprob": 0.025403,
+   "max_abs_dlogit": 2.102459,
+   "questions_detail": [
+    {
+     "record": "card-invoice",
+     "question": "status",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.955481,
+     "max_abs_dprob": 0.001332,
+     "max_abs_dlogit": 0.042779
+    },
+    {
+     "record": "card-invoice",
+     "question": "large",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.94582,
+     "max_abs_dprob": 0.000638,
+     "max_abs_dlogit": 0.036358
+    },
+    {
+     "record": "card-systemone",
+     "question": "department",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.921545,
+     "max_abs_dprob": 0.000211,
+     "max_abs_dlogit": 0.101398
+    },
+    {
+     "record": "card-systemone",
+     "question": "urgency",
+     "reference_choice": 2,
+     "runner_choice": 2,
+     "agree": true,
+     "reference_margin": 0.786881,
+     "max_abs_dprob": 0.008199,
+     "max_abs_dlogit": 0.108362
+    },
+    {
+     "record": "card-systemone",
+     "question": "outage",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.672524,
+     "max_abs_dprob": 0.010206,
+     "max_abs_dlogit": 0.047483
+    },
+    {
+     "record": "noul-criteria",
+     "question": "urgent",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.807947,
+     "max_abs_dprob": 0.026034,
+     "max_abs_dlogit": 0.241408
+    },
+    {
+     "record": "noul-criteria",
+     "question": "plain",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.711454,
+     "max_abs_dprob": 0.033592,
+     "max_abs_dlogit": 0.305723
+    },
+    {
+     "record": "choice-keys",
+     "question": "route",
+     "reference_choice": 4,
+     "runner_choice": 2,
+     "agree": false,
+     "reference_margin": 0.050061,
+     "max_abs_dprob": 0.060614,
+     "max_abs_dlogit": 0.216728
+    },
+    {
+     "record": "python-spellings",
+     "question": "level",
+     "reference_choice": 3,
+     "runner_choice": 3,
+     "agree": true,
+     "reference_margin": 0.208562,
+     "max_abs_dprob": 0.054955,
+     "max_abs_dlogit": 0.245975
+    },
+    {
+     "record": "instructions-types",
+     "question": "obj",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.760583,
+     "max_abs_dprob": 0.028857,
+     "max_abs_dlogit": 0.190947
+    },
+    {
+     "record": "instructions-types",
+     "question": "zero",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.410881,
+     "max_abs_dprob": 0.021052,
+     "max_abs_dlogit": 0.061881
+    },
+    {
+     "record": "instructions-types",
+     "question": "false",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.17591,
+     "max_abs_dprob": 0.015311,
+     "max_abs_dlogit": 0.112602
+    },
+    {
+     "record": "instructions-types",
+     "question": "empty",
+     "reference_choice": 0,
+     "runner_choice": 1,
+     "agree": false,
+     "reference_margin": 0.066094,
+     "max_abs_dprob": 0.038728,
+     "max_abs_dlogit": 0.135527
+    },
+    {
+     "record": "special-text",
+     "question": "injected",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.960871,
+     "max_abs_dprob": 0.001605,
+     "max_abs_dlogit": 0.062903
+    },
+    {
+     "record": "many-questions",
+     "question": "paid",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.947154,
+     "max_abs_dprob": 0.000716,
+     "max_abs_dlogit": 0.041949
+    },
+    {
+     "record": "many-questions",
+     "question": "country",
+     "reference_choice": 3,
+     "runner_choice": 3,
+     "agree": true,
+     "reference_margin": 0.974659,
+     "max_abs_dprob": 0.000477,
+     "max_abs_dlogit": 0.033268
+    },
+    {
+     "record": "many-questions",
+     "question": "size",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.370451,
+     "max_abs_dprob": 0.018864,
+     "max_abs_dlogit": 0.135775
+    },
+    {
+     "record": "many-questions",
+     "question": "fraud",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.847226,
+     "max_abs_dprob": 0.000994,
+     "max_abs_dlogit": 0.007386
+    },
+    {
+     "record": "many-questions",
+     "question": "channel",
+     "reference_choice": 2,
+     "runner_choice": 2,
+     "agree": true,
+     "reference_margin": 0.21853,
+     "max_abs_dprob": 0.013174,
+     "max_abs_dlogit": 0.058176
+    },
+    {
+     "record": "many-questions",
+     "question": "value",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.953538,
+     "max_abs_dprob": 0.002171,
+     "max_abs_dlogit": 0.195885
+    },
+    {
+     "record": "long-state",
+     "question": "degraded",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.955803,
+     "max_abs_dprob": 0.001904,
+     "max_abs_dlogit": 0.104625
+    },
+    {
+     "record": "long-state",
+     "question": "worst",
+     "reference_choice": 1,
+     "runner_choice": 0,
+     "agree": false,
+     "reference_margin": 0.019832,
+     "max_abs_dprob": 0.069281,
+     "max_abs_dlogit": 0.257549
+    },
+    {
+     "record": "whitespace-state",
+     "question": "empty",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.859844,
+     "max_abs_dprob": 0.003505,
+     "max_abs_dlogit": 0.044726
+    },
+    {
+     "record": "empty-state",
+     "question": "empty",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.687799,
+     "max_abs_dprob": 0.198779,
+     "max_abs_dlogit": 2.102459
+    },
+    {
+     "record": "odd-ids",
+     "question": "Wie geht's? \ud83d\ude00",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.082494,
+     "max_abs_dprob": 0.099944,
+     "max_abs_dlogit": 0.357547
+    },
+    {
+     "record": "odd-ids",
+     "question": "only one",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 1.0,
+     "max_abs_dprob": 0.0,
+     "max_abs_dlogit": 0.177563
+    },
+    {
+     "record": "number-state",
+     "question": "pi",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.847536,
+     "max_abs_dprob": 0.005171,
+     "max_abs_dlogit": 0.14527
+    },
+    {
+     "record": "null-state",
+     "question": "null",
+     "reference_choice": 1,
+     "runner_choice": 1,
+     "agree": true,
+     "reference_margin": 0.973892,
+     "max_abs_dprob": 0.001066,
+     "max_abs_dlogit": 0.082805
+    },
+    {
+     "record": "combining-marks",
+     "question": "script",
+     "reference_choice": 0,
+     "runner_choice": 0,
+     "agree": true,
+     "reference_margin": 0.751411,
+     "max_abs_dprob": 0.019293,
+     "max_abs_dlogit": 0.30197
+    }
+   ]
+  }
+ }
+}

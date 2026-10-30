@@ -1,0 +1,90 @@
+{
+ "model": "~/val171/models/Clef-Flash-Q4_K_M.gguf",
+ "tokens": 128,
+ "context": 2048,
+ "routing": "eager",
+ "moe": false,
+ "dense_rule": "margin_qualified",
+ "extra_args": [],
+ "gpu_split": {
+  "layers_on_gpu": 32,
+  "layers_total": 32,
+  "output_weight_on_gpu": true,
+  "whole_graph": true
+ },
+ "cpu_cuda_identity": {
+  "result": "pass",
+  "exact": "9/9",
+  "gpu_arm_on_cpu": false,
+  "near_tie_tolerated": 0,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 9,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris. The capital of the United States is Washington, D.C. The capital of Japan is Tokyo. The capital of India is New Delhi. The capital of Brazil is Bras\u00edlia. The capital of China is Beijing. The capital of Germany is Berlin. The capital of Italy is Rome. The capital of Spain is Madrid. The capital of Russia is Moscow. The capital of South Africa is Pretoria (administrative), Bloemfontein (judicial), and Cape Town (legislative). The capital of Australia is Canberra. The capital of Argentina is Buenos Aires. The capital of Mexico is Mexico City. The capital of Turkey is Ankara",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n\nprint(fibonacci(10))\n\n# 55 (102330400 / 18382720)\n\n# 55 (55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 67",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51",
+   "gpu": null
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there was a magical forest. In this forest, there lived a group of little animals. One day, they decided to go on an adventure to find the hidden treasure.\n\nAs they walked deeper into the forest, they came across a big river. The river was wide and fast, and it was very hard to cross. The little animals were very worried. Just then, a wise old owl appeared. He said, \"Don't worry, I have a solution. We can build a bridge!\"\n\nThe little animals were very excited. They started to work together. Some collected wood, some carried stones, and some designed the structure.",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 391 (400 - 9).\n\nQ: 17 * 23 = ?\nA: 391 (400 - 9).\n\nQ: 17 * 23 = ?\nA: 391 (400 - 9).\n\nQ: 17 * 23 = ?\nA: 391 (400 - 9).\n\nQ: 17 * 23 = ?\nA: 391 (400 - 9).",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Over time, he noticed a pattern: fog always lifted by 9 AM when the wind came from the northeast. He began to predict fog lift times based on wind direction alone. One day, the wind came from the northeast, but the fog didn\u2019t lift by 9 AM. What happened?\n\nA. There was an exception, showing that the pattern wasn\u2019t a law (Correct)  \nB. The pattern was a law? No, it was a correlation (Correct)  \nC. Both! (Correct)\n\n<think>\nThe question asks what happened when the fog didn't lift as predicted, given a previously observed pattern.",
+   "gpu": null
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " of these duplicates and the addition of 1100 new objects resulted in a catalogue of 4800 objects. The 1930 catalogue was published in 1933.\n\nThe 1933 catalogue was the first to be published in a form that was suitable for computer processing. It was reprinted in 1953 and 1978. The 1978 edition was the last to be published in hard copy.\n\nThe 1978 catalogue contained 10,300 objects, of which 8,900 were stars",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " is good.\n# But it doesn't reject a truncated body.\n# The unpack_gguf function should check the size of the body before unpacking it.\n# The unpack_gguf function should also check the size of the key before unpacking it.\n# The unpack_gguf function should also check the size of the value before unpacking it.\n# The unpack_gguf function should also check the size_of_type before unpacking it.\n# The unpack_gguf function should also check the size_of_type_size before unpacking it.\n# The unpack_gguf function should also check",
+   "gpu": null
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " knows nothing of its history.\n\nThe 1755 earthquake was a turning point for the city, but it was not the first disaster to strike Lisbon. In 1705, a fire destroyed a large part of the city, and in 1755, the earthquake and tsunami killed an estimated 10,000 to 30,000 people. The earthquake also had a profound impact on European philosophy and science, leading to a rethinking of the Enlightenment.\n\nLisbon's history is marked by a series of disasters, but the city has always risen again. The ",
+   "gpu": null
+  }
+ ]
+}

@@ -115,12 +115,6 @@ ARCH_GATE_EXEMPTIONS = {
     # real file (83 GB, two parts) is admitted to the manifest with the
     # anchor runs in R4.26.3, and this entry goes with it.
     "qwen4exp": "experimental; fixture-gated only until the R4.26.3 anchor",
-    # Cloudflare's Clef decision models: the qwen35 backbone (gated through
-    # its own rows) plus the joint head. tests/test_clef.py gates the head
-    # and /v1/systemone on a fixture, and docs/clef-admission-2026-10-16.md
-    # holds the gold run against the publisher's code; this entry goes when
-    # a release file is pinned with its own float32 gold run.
-    "clef": "fixture-gated (tests/test_clef.py) plus the publisher-code gold run",
     # Liquid LFM2's MoE siblings share lfm2's short-convolution layers, which
     # the LFM2.5-1.2B-Instruct rows gate; their routed experts are gated by
     # tests/test_lfm2.py and the recurrent-state gates on test-lfm2-moe.gguf,

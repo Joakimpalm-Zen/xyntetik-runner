@@ -2049,6 +2049,86 @@
           ]
         }
       }
+    },
+    {
+      "id": "clef-flash-q4_k_m",
+      "architecture": "clef",
+      "family": "Cloudflare Clef",
+      "file": "models/Clef-Flash-Q4_K_M.gguf",
+      "sha256": "eef2968c238a80d49d340430f22410ea3db9934ad1c6fdb233a503cbf9a9b54e",
+      "upstream": "ggml-org/Clef-Flash-GGUF",
+      "tokenizer_reference": "Cloudflare/clef-flash",
+      "tokenizer_reference_revision": "f0b7d3cd65296abfe459e6c228b618f5d8b26d2f",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/clef-flash.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "ggml-org's Q4_K_M of Cloudflare/clef-flash (6,732,781,824 bytes, revision 6e2a164d of ggml-org/Clef-Flash-GGUF, converted by ggml-org/convert from f0b7d3cd). Attention, the SSM projections, the output matrix and the decision head are Q8_0, the feed-forward and the token embedding Q4_K. Architecture clef: the Qwen3.5-9B hybrid backbone (32 layers, Gated DeltaNet with full attention every fourth layer) and Cloudflare's joint schema decision head (2 routing and 4 decoder blocks, 16 heads), served at /v1/systemone; text only. Tokenizer pre qwen35, read as the qwen2 split on a clef file: 0 of 721 corpus strings differ from Cloudflare's tokenizer.json at f0b7d3cd (0 of 13,264 on the NFC corpus). Template qwen35, the file's own (byte-identical to Cloudflare's chat_template.jinja), conformance 22/22 in text and tokens. Float32 reference owed: no fidelity measurement of the file exists. No llama.cpp reference is declared, so greedy_reference is not claimed. The whole file is resident on an 8 GB card.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "clef-flash-q8_0",
+      "architecture": "clef",
+      "family": "Cloudflare Clef",
+      "file": "models/Clef-Flash-Q8_0.gguf",
+      "sha256": "25f801e2a27610b0ccc0cb1558d7eda3d7a304e34e2c4a04e3079357ff7d906e",
+      "upstream": "ggml-org/Clef-Flash-GGUF",
+      "tokenizer_reference": "Cloudflare/clef-flash",
+      "tokenizer_reference_revision": "f0b7d3cd65296abfe459e6c228b618f5d8b26d2f",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/clef-flash.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "ggml-org's Q8_0 of Cloudflare/clef-flash (9,657,260,288 bytes, revision 6e2a164d of ggml-org/Clef-Flash-GGUF, converted by ggml-org/convert from f0b7d3cd). Architecture clef: the Qwen3.5-9B hybrid backbone (32 layers, Gated DeltaNet with full attention every fourth layer) and Cloudflare's joint schema decision head (2 routing and 4 decoder blocks, 16 heads), served at /v1/systemone; text only. Tokenizer pre qwen35, read as the qwen2 split on a clef file: 0 of 721 corpus strings differ from Cloudflare's tokenizer.json at f0b7d3cd (0 of 13,264 on the NFC corpus). Template qwen35, the file's own (byte-identical to Cloudflare's chat_template.jinja), conformance 22/22 in text and tokens. Float32 reference owed: no fidelity measurement of the file exists. No llama.cpp reference is declared, so greedy_reference is not claimed. An 8 GB card holds part of the file, so cpu_cuda compares the CPU with a layer split.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
     }
   ]
 }

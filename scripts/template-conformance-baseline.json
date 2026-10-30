@@ -52,6 +52,10 @@
       "source": "hf:Qwen/Qwen3-4B",
       "sha256": "a55ee1b1660128b7"
     },
+    "clef-flash": {
+      "source": "gguf:models/Clef-Flash-Q4_K_M.gguf",
+      "sha256": "a4aee8afcf2e0711"
+    },
     "eurollm": {
       "source": "gguf:models/EuroLLM-9B-Instruct-Q4_K_M.gguf",
       "sha256": "9850c24e4c4adc21"
