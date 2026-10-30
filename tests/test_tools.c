@@ -2866,6 +2866,49 @@ static void test_coder_native_calls(void) {
     tool_envelope_free(&e);jv_free(tools);
 }
 
+// MiMo writes Qwen3-Coder's XML compact, with no framing newlines. The
+// same parser reads it, parse-only on an auto turn, buffered and streamed.
+static void test_mimo_compact_xml_calls(void) {
+    jv *tools = parse("[{\"type\":\"function\",\"function\":{\"name\":\"save\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"},\"n\":{\"type\":\"integer\"}},\"required\":[\"text\"]}}}]");
+    tool_envelope e; char err[192]; bool skip = false;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    tool_decl_native(TMPL_MIMO, true, true, tools, &e, &skip);
+    assert(e.proto == TP_QWEN_XML && e.parse_only && skip);
+    const char *doc = "Saving.<tool_call><function=save><parameter=text>001</parameter><parameter=n>2</parameter></function></tool_call>";
+    sbuf out = {0}, tc = {0};
+    assert(tool_envelope_map(&e, doc, strlen(doc), &out, &tc) == 1);
+    assert(!strcmp(out.s, "Saving."));
+    sbuf wrapped = {0}; sb_lit(&wrapped,"[");sb_put(&wrapped,tc.s,tc.n);sb_lit(&wrapped,"]");
+    jv *calls = parse(wrapped.s);
+    assert(!strcmp(jv_str(jv_get(jv_get(calls->items[0],"function"),"arguments"),""), "{\"text\":\"001\",\"n\":2}"));
+    jv_free(calls);free(wrapped.s);free(out.s);free(tc.s);
+    for (size_t step=1;step<=strlen(doc);step++) {
+        demux_log log;demux_step(&e,doc,step,&log);
+        assert(log.begins==1 && log.ends==1);
+        assert(!strcmp(log.content.s,"Saving."));
+        assert(!strcmp(log.args.s,"{\"text\":\"001\",\"n\":2}"));
+        log_free(&log);
+    }
+    // a compact call cut short is never completed: dropped, a budget cut
+    // keeps the turn's length verdict
+    const char *cut = "<tool_call><function=save><parameter=text>00";
+    demux_log l; memset(&l, 0, sizeof l);
+    tool_stream_sink sink = { &l, log_reasoning, log_content, log_begin, log_args, log_end };
+    tool_stream s; tool_stream_init(&s, &e, &sink);
+    assert(tool_stream_feed(&s, cut, (int)strlen(cut)) == 0);
+    assert(tool_stream_finish_ex(&s, true) == 0);
+    assert(l.begins == 0 && !tool_stream_called(&s));
+    tool_stream_free(&s); log_free(&l);
+    // a required choice has no compact grammar: the generic envelope
+    tool_envelope r; bool skip2 = false;
+    jv *choice = parse("\"required\"");
+    assert(tool_envelope_build(tools, choice, NULL, &r, err, sizeof err) == 1);
+    tool_decl_native(TMPL_MIMO, true, true, tools, &r, &skip2);
+    assert(r.proto == TP_GENERIC && !skip2);
+    tool_envelope_free(&r); jv_free(choice);
+    tool_envelope_free(&e); jv_free(tools);
+}
+
 // MiniCPM5's XML protocol: bare <function name="N"><param name="K">V</param>
 // </function> blocks in the content, parse-only (never constrained), typed by
 // the declaration. The three failure classes that bit the other XML family
@@ -3500,6 +3543,7 @@ int main(void) {
     test_coder_native_calls();
     test_minicpm5_native_calls();
     test_lfm2_native_calls();
+    test_mimo_compact_xml_calls();
     test_coder_parameters_in_any_order();
     test_gemma4_prose_then_call();
     test_xml_families_share_the_parse_only_contract();

@@ -165,6 +165,10 @@
     "lfm2": {
       "fixture": "plain",
       "reasoning": "tags"
+    },
+    "mimo": {
+      "fixture": "plain",
+      "reasoning": "tags"
     }
   }
 }

@@ -1940,6 +1940,74 @@ static void test_minicpm5_shape(void) {
     jv_free(tools);
 }
 
+// MiMo (XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B chat_template.jinja), pinned
+// against the template's bytes: no newline after <|im_end|>, `<think></think>`
+// opening every assistant turn that carries no block of its own, a `tool`
+// role kept, tools as a system turn of their own ahead of the caller's, the
+// compact XML call replay, and only OFF touching the generation prompt.
+static void test_mimo_shape(void) {
+    char out[4096];
+    assert(template_detect("<|im_start|>{{- '<tool_call><function=' ~ tool_call.name ~ '>' -}}"
+                           "<parameter=", NULL) == TMPL_MIMO);
+    // Qwen3-Coder's newline-framed opener still detects as Qwen3-Coder
+    assert(template_detect("<|im_start|><tool_call>\n<function=x>\n<parameter=y>", NULL)
+           == TMPL_QWEN3_CODER);
+    assert(template_from_name("mimo") == TMPL_MIMO);
+    assert(!strcmp(template_name(TMPL_MIMO), "mimo"));
+    const char *to = NULL, *tc = NULL;
+    assert(template_think_tags(TMPL_MIMO, &to, &tc) && !strcmp(tc, "</think>"));
+
+    const chat_msg one[] = { CHAT_MSG("user", "HI") };
+    render_messages(TMPL_MIMO, one, 1, true, THINK_DEFAULT, out, sizeof(out));
+    assert(strcmp(out, "<|im_start|>user\nHI<|im_end|><|im_start|>assistant\n") == 0);
+    render_messages(TMPL_MIMO, one, 1, true, THINK_ON, out, sizeof(out));
+    assert(strcmp(out, "<|im_start|>user\nHI<|im_end|><|im_start|>assistant\n") == 0);
+    render_messages(TMPL_MIMO, one, 1, true, THINK_OFF, out, sizeof(out));
+    assert(strcmp(out, "<|im_start|>user\nHI<|im_end|><|im_start|>assistant\n<think></think>") == 0);
+
+    const chat_msg hist[] = {
+        CHAT_MSG("system", "Sys."),
+        CHAT_MSG("user", "HI"),
+        CHAT_MSG("assistant", "A."),
+        CHAT_MSG("tool", "{\"t\": 1}"),
+        CHAT_MSG("assistant", "<think>why</think>B."),
+    };
+    render_messages(TMPL_MIMO, hist, 5, false, THINK_DEFAULT, out, sizeof(out));
+    assert(strcmp(out, "<|im_start|>system\nSys.<|im_end|>"
+                       "<|im_start|>user\nHI<|im_end|>"
+                       "<|im_start|>assistant\n<think></think>A.<|im_end|>"
+                       "<|im_start|>tool\n{\"t\": 1}<|im_end|>"
+                       "<|im_start|>assistant\n<think>why</think>B.<|im_end|>") == 0);
+
+    const char *calls_src =
+        "[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\","
+        "\"arguments\":\"{\\\"city\\\":\\\"Oslo\\\",\\\"days\\\":2}\"}},"
+        "{\"id\":\"c2\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\","
+        "\"arguments\":\"{\\\"city\\\":\\\"Bergen\\\"}\"}}]";
+    jv *calls = json_parse(calls_src, strlen(calls_src));
+    assert(calls && calls->n == 2);
+    sbuf b = {0};
+    tool_history_render_for(TMPL_MIMO, calls, true, &b);
+    assert(!strcmp(b.s, "<tool_call><function=get_weather><parameter=city>Oslo</parameter>"
+                        "<parameter=days>2</parameter></function></tool_call>"
+                        "<tool_call><function=get_weather><parameter=city>Bergen</parameter>"
+                        "</function></tool_call>"));
+    free(b.s);
+    jv_free(calls);
+
+    const char *tools_src =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}}}}}]";
+    jv *tools = json_parse(tools_src, strlen(tools_src));
+    const chat_msg sys[] = { CHAT_MSG("system", "Sys."), CHAT_MSG("user", "Q") };
+    render_messages_with_tools(TMPL_MIMO, sys, 2, true, THINK_DEFAULT, tools, out, sizeof(out));
+    assert(!strncmp(out, "<|im_start|>system\nYou are provided with the following tools:\n\n<tools>\n"
+                         "{\"type\": \"function\"", 90));
+    assert(strstr(out, "\n</tools><|im_end|><|im_start|>system\nSys.<|im_end|>"
+                       "<|im_start|>user\nQ<|im_end|><|im_start|>assistant\n"));
+    jv_free(tools);
+}
+
 // Qwen3 strips absent reasoning from the last historical assistant turn but
 // still emits the empty thought wrapper. That framing is part of the training
 // prompt whether or not another generation prompt follows it.
@@ -3024,6 +3092,7 @@ int main(void) {
     test_gemma4_tool_turns();
     test_chatml_think_shape();
     test_minicpm5_shape();
+    test_mimo_shape();
     test_chatml_think_trailing_history_keeps_empty_thought();
     test_chatml_tool_result_renders_as_a_user_tool_response();
     test_muse_tools_and_result_golden();

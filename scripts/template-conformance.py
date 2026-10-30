@@ -206,6 +206,16 @@ FAMILIES = {
         note="LiquidAI/LFM2.5-1.2B-Instruct chat_template.jinja at 0f604ada",
         tool_family=True, content_parts=True, reasoning_history=True,
         tokenizer=("LFM2.5-1.2B-Instruct-Q8_0.gguf", "LFM2.5-350M-Q8_0.gguf")),
+    # XiaomiMiMo MiMo-V2.6-Distill-Qwen-9B: ChatML joined with no newlines,
+    # a thought block on every assistant turn, a kept `tool` role and
+    # Qwen3-Coder's XML written compact. Its own template (byte-identical in
+    # the bartowski GGUF) is the oracle.
+    "mimo": Family(
+        "mimo", ("hf", "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B"),
+        note="XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B chat_template.jinja at 1f09ddcc",
+        tool_family=True, thinking_var="enable_thinking",
+        tokenizer=("MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf",
+                   "MiMo-V2.6-Distill-Qwen-9B-Q8_0.gguf")),
     "llama2": Family(
         "llama2", ("hf", "unsloth/llama-2-7b-chat"),
         note="meta-llama/Llama-2-7b-chat-hf is gated (HTTP 401); this mirror "

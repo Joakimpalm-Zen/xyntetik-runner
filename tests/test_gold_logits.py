@@ -43,6 +43,42 @@ SPM = _Tok(["▁a", "▁new", ",", "▁", "▁model"], strip_first=True)
 BPE = _Tok(["a", " new", ",", " ", " model"], strip_first=False)
 
 
+def test_the_reference_projects_only_the_scored_rows():
+    """reference_logp asks the model for the scored rows' logits only, and
+    falls back to the full tensor for a forward that refuses the argument or
+    ignores it, with the same values at every scored row either way."""
+    torch = __import__("pytest").importorskip("torch")
+    vocab, n = 7, 12
+    full = torch.randn(1, n, vocab)
+
+    class Out:
+        def __init__(self, logits): self.logits = logits
+
+    class Keeps:
+        def __call__(self, ids, logits_to_keep=None):
+            assert ids.shape == (1, n)
+            return Out(full if logits_to_keep is None else full[:, logits_to_keep, :])
+
+    class Refuses:
+        def __call__(self, ids):
+            return Out(full)
+
+    class Ignores:
+        def __call__(self, ids, logits_to_keep=None):
+            return Out(full)
+
+    rows = [9, 2, 5, 2]
+    want = torch.log_softmax(full[0], dim=-1)
+    for model, path in ((Keeps(), "scored rows only"), (Refuses(), "full tensor"),
+                        (Ignores(), "full tensor")):
+        logp, index, got_path = gold.reference_logp(model, list(range(n)), rows)
+        assert got_path == path
+        if path == "scored rows only":
+            assert logp.shape == (3, vocab)
+        for r in rows:
+            assert torch.allclose(logp[index[r]], want[r])
+
+
 def test_a_space_prefixed_token_keeps_its_space():
     spell = gold.token_speller(SPM)
     assert spell(1) == " new"

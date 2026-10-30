@@ -500,8 +500,18 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     // every mark). llama.cpp's converter still writes "qwen35" into every
     // Clef GGUF, so the declared name is read as the trained-with split here;
     // text with combining marks tokenizes differently from llama.cpp by design.
+    // XiaomiMiMo's Qwen3.5 distill (MiMo-V2.6-Distill-Qwen-9B) is the same
+    // case on an ordinary qwen35 file: its tokenizer.json at 1f09ddcc carries
+    // the qwen2 regex (\p{L}+, marks never join a letter run) over Qwen3.5's
+    // vocabulary, and the converter wrote "qwen35". Its architecture names
+    // nothing, so the file is told by its own chat template: the compact
+    // `<tool_call><function=` opener only MiMo's writes (template.c,
+    // TMPL_MIMO). Measured on the bartowski Q4_K_M: 3 of 721 corpus strings,
+    // all Devanagari or Thai, differed under the qwen35 split, 0 under qwen2.
+    const char *chat_tmpl = gguf_get_str(g, "tokenizer.chat_template", "");
     if (t->pre == TOK_PRE_QWEN35 &&
-        strcmp(gguf_get_str(g, "general.architecture", ""), "clef") == 0)
+        (strcmp(gguf_get_str(g, "general.architecture", ""), "clef") == 0 ||
+         strstr(chat_tmpl, "<tool_call><function=")))
         t->pre = TOK_PRE_QWEN2;
     // Qwen's tokenizer.json normalizes with NFC (Qwen2 through Qwen3.8, and
     // so Clef); stablelm2 shares the qwen2 split but not that normalizer

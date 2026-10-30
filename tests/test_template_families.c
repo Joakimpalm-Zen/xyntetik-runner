@@ -93,6 +93,9 @@ static const struct {
     // LFM2: tools are a line of its system turn; thinking is not read (the
     // Instruct template has no switch); its Python call list is its own
     { "lfm2",             0,  24, 1, 0, 0, "lfm2_python",   1 },
+    // MiMo: only OFF changes the prompt (an empty closed block); its calls
+    // are Qwen3-Coder's XML written compact, parsed by the same parser
+    { "mimo",             0,  24, 1, 0, 1, "qwen3_xml",     1 },
 };
 #define N_FAMILY ((int)(sizeof FAMILY / sizeof *FAMILY))
 
@@ -306,12 +309,12 @@ static void state_matches_the_prompt(int t, const jv *tools) {
 }
 
 int main(void) {
-    CHECK(N_FAMILY == TMPL_LFM2 + 1,
-          "the table has %d rows for %d template ids", N_FAMILY, TMPL_LFM2 + 1);
+    CHECK(N_FAMILY == TMPL_MIMO + 1,
+          "the table has %d rows for %d template ids", N_FAMILY, TMPL_MIMO + 1);
     jv *tools = json_parse(TOOL_SRC, strlen(TOOL_SRC));
     CHECK(tools != NULL, "tool fixture parses");
     chat_msg user[1] = { { .role = "user", .content = "Hello" } };
-    for (int t = 0; t < N_FAMILY && t <= TMPL_LFM2; t++) {
+    for (int t = 0; t < N_FAMILY && t <= TMPL_MIMO; t++) {
         const char *name = FAMILY[t].name;
 
         size_t e0 = render(t, NULL, 0, false, THINK_DEFAULT, NULL, A, sizeof A);

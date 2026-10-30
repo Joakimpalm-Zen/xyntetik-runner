@@ -5,6 +5,31 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **MiMo-V2.6-Distill-Qwen-9B Q4_K_M admitted at Tier 2; it fails the
+  fidelity bar.** Against XiaomiMiMo's BF16 checkpoint computed in float32 it
+  reads 0.0717 mean KLD over 300 positions, against a 0.05 bar (91.7% top-1,
+  98.2% margin-qualified), and 0.064 against bartowski's own Q8_0. The Q8_0
+  reads 0.0075 and 99.0% on the same build, so the gap is the file's
+  quantization and the Q8_0 is the fidelity file
+  (`docs/compat-reports/mimo-v2.6-distill-qwen-9b-2026-10-29/README.md`).
+  bartowski's Q4_K_M of XiaomiMiMo's Qwen3.5-9B distill loads, tokenizes as
+  the publisher's tokenizer.json does (0 of 721), renders the publisher's
+  template token for token (23 of 23) and answers through it on the CPU of
+  the Metal laptop. The Windows CUDA host's cells are owed; Runner's `qwen35`
+  path has no Metal backend, so the row has no Metal cell.
+- **MiMo-V2.6-Distill-Qwen-9B renders with its own template and tokenizes as
+  its publisher does.** Its chat template was detected as Qwen3-Coder's, so
+  every turn was framed with newlines the template never writes and no
+  assistant turn carried its thought block. It is a family of its own
+  (`mimo`): turns joined with no newline, `<think>`reasoning`</think>` on every
+  assistant turn, a kept `tool` role, tools as a system turn of their own and
+  Qwen3-Coder's XML calls written compact, parsed by the Qwen3-Coder parser.
+  Template conformance against XiaomiMiMo's template is 23 of 23 in text and
+  tokens. Its tokenizer.json splits with the qwen2 rule while the GGUF
+  declares `qwen35`; a file carrying MiMo's template now reads with the qwen2
+  split, as Clef does, and 0 of 721 corpus strings differ (3 did, all
+  Devanagari or Thai). A `required` or named tool choice takes the generic
+  envelope on this family.
 - **LFM2.5-1.2B-Instruct Q8_0 and Q4_K_M admitted at Tier 2; the Q4_K_M fails
   the fidelity bar.** Against LiquidAI's BF16 parent computed in float32 the
   publisher's Q4_K_M reads 0.115 mean KLD over 300 positions, against a 0.05
