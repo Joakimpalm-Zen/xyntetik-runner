@@ -1423,7 +1423,7 @@
         "tokenizer",
         "chat"
       ],
-      "notes": "bartowski's Q4_K_M (5,841,049,120 bytes, revision 4371da10 of bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF) of XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B, architecture qwen35 (32 layers, hidden 4096). The GGUF declares tokenizer pre qwen35 but the publisher's tokenizer.json at 1f09ddcc carries the qwen2 split; Runner reads a file carrying MiMo's template with the qwen2 split, and 0 of 721 corpus strings differ (3 did under the declared rule). Template family mimo, conformance 23/23. Checks run on the Metal laptop's CPU (qwen35 has no Metal path), so chat runs with the GPU off. No llama.cpp reference is declared, so greedy_reference is not claimed; the float32 reference is owed.",
+      "notes": "bartowski's Q4_K_M (5,841,049,120 bytes, revision 4371da10 of bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF) of XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B, architecture qwen35 (32 layers, hidden 4096). The GGUF declares tokenizer pre qwen35 but the publisher's tokenizer.json at 1f09ddcc carries the qwen2 split; Runner reads a file carrying MiMo's template with the qwen2 split, and 0 of 721 corpus strings differ (3 did under the declared rule). Template family mimo, conformance 23/23. Checks run on the Metal laptop's CPU (qwen35 has no Metal path), so chat runs with the GPU off. Fidelity: against the BF16 checkpoint computed in float32, 0.0717 mean KLD / 91.7% top-1 / 98.2% margin-qualified (300 positions), failing the 0.05 bar on the mean; the Q8_0 reads 0.0075 / 99.0% and is the fidelity file. Record docs/compat-reports/mimo-v2.6-distill-qwen-9b-2026-10-29. No llama.cpp reference is declared, so greedy_reference is not claimed.",
       "check_params": {
         "chat": {
           "prompt": "What is 2+2?",

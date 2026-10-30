@@ -5,16 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
-- **MiMo-V2.6-Distill-Qwen-9B Q4_K_M admitted at Tier 2; it fails the quant bar
-  and its fidelity is not yet measured.** Against bartowski's Q8_0 it reads
-  0.064 mean KLD over 300 positions, against a 0.05 bar, two positions
-  carrying most of it (`docs/compat-reports/mimo-v2.6-distill-qwen-9b-2026-10-29/README.md`).
-  bartowski's Q4_K_M of XiaomiMiMo's Qwen3.5-9B distill loads,
-  tokenizes as the publisher's tokenizer.json does (0 of 721), renders the
-  publisher's template token for token (23 of 23) and answers through it on
-  the CPU of the Metal laptop. The float32 reference against the BF16
-  checkpoint is owed, and so are the Windows CUDA host's cells; Runner's
-  `qwen35` path has no Metal backend, so the row has no Metal cell.
+- **MiMo-V2.6-Distill-Qwen-9B Q4_K_M admitted at Tier 2; it fails the
+  fidelity bar.** Against XiaomiMiMo's BF16 checkpoint computed in float32 it
+  reads 0.0717 mean KLD over 300 positions, against a 0.05 bar (91.7% top-1,
+  98.2% margin-qualified), and 0.064 against bartowski's own Q8_0. The Q8_0
+  reads 0.0075 and 99.0% on the same build, so the gap is the file's
+  quantization and the Q8_0 is the fidelity file
+  (`docs/compat-reports/mimo-v2.6-distill-qwen-9b-2026-10-29/README.md`).
+  bartowski's Q4_K_M of XiaomiMiMo's Qwen3.5-9B distill loads, tokenizes as
+  the publisher's tokenizer.json does (0 of 721), renders the publisher's
+  template token for token (23 of 23) and answers through it on the CPU of
+  the Metal laptop. The Windows CUDA host's cells are owed; Runner's `qwen35`
+  path has no Metal backend, so the row has no Metal cell.
 - **MiMo-V2.6-Distill-Qwen-9B renders with its own template and tokenizes as
   its publisher does.** Its chat template was detected as Qwen3-Coder's, so
   every turn was framed with newlines the template never writes and no

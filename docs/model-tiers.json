@@ -4064,7 +4064,7 @@
       "model": "MiMo-V2.6-Distill-Qwen-9B (XiaomiMiMo)",
       "family": "MiMo",
       "tier": "tier2",
-      "claim": "Text path, bartowski's Q4_K_M of XiaomiMiMo's Qwen3.5-9B distill, which fails the quant bar against its own Q8_0 (0.064 mean KLD, 300 positions, against 0.05); it loads, tokenizes as the publisher's tokenizer.json does, renders the publisher's own template token for token and answers through it on the CPU. No fidelity measurement against the BF16 checkpoint is recorded yet.",
+      "claim": "Text path, bartowski's Q4_K_M of XiaomiMiMo's Qwen3.5-9B distill, which fails the fidelity bar: against the BF16 checkpoint computed in float32 it reads 0.0717 mean KLD against 0.05 (91.7% top-1, 98.2% margin-qualified, inside its 97%), and 0.064 against its own Q8_0. The same build reads the Q8_0 at 0.0075, the fidelity file. It loads, tokenizes as the publisher's tokenizer.json does, renders the publisher's own template token for token and answers through it on the CPU.",
       "architecture": "qwen35",
       "upstream": {
         "checkpoint": "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B",
@@ -4085,8 +4085,8 @@
         "features": [
           "text"
         ],
-        "fp32_reference": "owed",
-        "anchor": "This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json at 1f09ddcc, read with the qwen2 split the publisher's tokenizer uses), template conformance 23 of 23 in text and tokens against the publisher's chat_template.jinja (the GGUF carries it byte for byte), and a chat answer at temperature 0 on the Metal laptop's CPU. No fidelity or cross-engine number. Quant bar against bartowski's Q8_0 from two CPU score files: 0.064 mean KLD (median 0.022), 92.0% top-1, 97.7% margin-qualified, FAIL on the mean. Record: docs/compat-reports/mimo-v2.6-distill-qwen-9b-2026-10-29/README.md.",
+        "fp32_reference": "measured",
+        "anchor": "This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json at 1f09ddcc, read with the qwen2 split the publisher's tokenizer uses), template conformance 23 of 23 in text and tokens against the publisher's chat_template.jinja (the GGUF carries it byte for byte), and a chat answer at temperature 0 on the Metal laptop's CPU. Both bartowski files against XiaomiMiMo's BF16 checkpoint computed in float32 on the lab CPU lane (transformers 5.16.1, gold-logits.py at fcd461ef, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files at f5b25f0a): Q4_K_M 0.0717 mean KLD / 91.7% top-1 / 98.2% margin-qualified, FAIL on the mean; Q8_0 0.0075 / 99.0% / 100%. Quant bar against the Q8_0 from the same score files: 0.064 mean KLD (median 0.022), 92.0% top-1, 97.7% margin-qualified, FAIL on the mean. No cross-engine number. Record: docs/compat-reports/mimo-v2.6-distill-qwen-9b-2026-10-29/README.md.",
         "context": 4096,
         "limitations": "No Metal cell: Runner's qwen35 hybrid path runs on the CPU and CUDA only. 5.84 GB of weights page from disk on an 8 GB machine (the CPU smoke took 13 minutes there). No vision: the mmproj file is not loaded. A required or named tool choice takes the generic JSON envelope on this family.",
         "evidence": [
@@ -4094,7 +4094,7 @@
           "docs/compat-reports/mimo-v2.6-distill-qwen-9b-2026-10-29/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The float32 reference against XiaomiMiMo's BF16 checkpoint (the first run stalled loading the weights on the lab CPU lane and was ended; the rerun is scheduled), which decides the two positions that carry the quant bar's mean; the Windows CUDA host's CPU and CUDA cells; a Q8_0 row."
+        "missing": "The Windows CUDA host's CPU and CUDA cells; a Q8_0 row (the fidelity file, measured here, with no device record yet)."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
