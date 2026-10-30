@@ -3579,14 +3579,43 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "b9ad4e9dc9a643188d288919f89a0d6ff86a632f",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "1b3a370279fc586b0e426262201a4158399993fa6787261da3248e41ff5b39a2",
+          "ran": "runner -m Clef-Flash-Q8_0.gguf --serve -c 512 -b 64 --gpu 28; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/cloudflare-clef-flash-q8_0.windows-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "limit",
           "reason": "Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-30"
+      },
       "transitions": [
         {
           "tier": "tier2",
