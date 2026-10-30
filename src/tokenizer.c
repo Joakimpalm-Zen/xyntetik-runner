@@ -117,6 +117,7 @@ static int u8_encode(uint32_t cp, char *out) {
 // canonical composition; the tables are generated (scripts/gen-unicode-nfc.py).
 
 #include "unicode_nfc.h"
+#include "unicode_classes.h"
 
 static uint32_t nfc_class(uint32_t cp) {
     size_t lo = 0, hi = sizeof nfc_ccc / sizeof *nfc_ccc;
@@ -378,18 +379,22 @@ static bool spm_scores_from_merges(tokenizer *t, gguf_file *g) {
     }
     for (int i = 0; i < t->n_vocab; i++) t->scores[i] = -FLT_MAX;
 
-    char buf[512];
+    char stack[512];
     for (uint64_t r = 0; r < mg->arr_n; r++) {
         const char *m = mg->arr_str[r].s;
         size_t n = mg->arr_str[r].n;
         // "left right": split on the first space, the pieces themselves use
-        // U+2581 rather than a literal space
+        // U+2581 rather than a literal space. A merge too long for the stack
+        // buffer is joined on the heap rather than left without a score.
         const char *sep = memchr(m, ' ', n);
-        if (!sep || n - 1 >= sizeof(buf)) continue;
+        if (!sep) continue;
+        char *buf = n - 1 <= sizeof stack ? stack : malloc(n - 1);
+        if (!buf) return false;
         size_t left = (size_t)(sep - m);
         memcpy(buf, m, left);
         memcpy(buf + left, sep + 1, n - left - 1);
         int id = hmap_get(&t->vocab, buf, n - 1);
+        if (buf != stack) free(buf);
         if (id >= 0) t->scores[id] = -(float)r;
     }
     return true;
@@ -937,78 +942,59 @@ static int spm_encode_text(tokenizer *t, const char *text, size_t n,
 
 // ---------------------------------------------------------------- BPE encode
 
-// Latin-1 Supplement and Superscripts/Subscripts/Currency, class by class from
-// the Unicode Character Database (16.0): L letter, N number (\p{N}, so the
-// superscript digits and the vulgar fractions are numbers to every regex here),
-// Z whitespace, o anything else (controls, punctuation, symbols, unassigned).
-// Combining marks for symbols (U+20D0..U+20F0) are cp_mark's, and read o here.
-// These two blocks sit right beside letters in ordinary text: as letters, "°)"
-// was two pre-tokens where every \p{L} regex keeps it one (the reference emits
-// Kvist-14B's single "°)" token), and "€5", "x²" and "«word»" moved the same
-// way. tests/test_tokenizer_classes.c checks every code point of both blocks.
-static const char LATIN1_CLASS[129] =     // U+0080 .. U+00FF
-    "oooooZoooooooooooooooooooooooooo"    // 0080 C1 controls; 0085 NEL is White_Space
-    "ZoooooooooLoooooooNNoLoooNLoNNNo"    // 00A0 NBSP, ¡..¿ (ª µ º letters, ² ³ ¹ ¼ ½ ¾ numbers)
-    "LLLLLLLLLLLLLLLLLLLLLLLoLLLLLLLL"    // 00C0 À..ß, × is a symbol
-    "LLLLLLLLLLLLLLLLLLLLLLLoLLLLLLLL";   // 00E0 à..ÿ, ÷ is a symbol
-static const char SUPER_CURRENCY_CLASS[145] =   // U+2070 .. U+20FF
-    "NLooNNNNNNoooooLNNNNNNNNNNooooooLLLLLLLLLLLLLooo"    // 2070 ⁰ ⁱ ⁴..⁹ ⁺..⁾ ⁿ, ₀..₉ ₊..₎, ₐ..ₜ
-    "oooooooooooooooooooooooooooooooooooooooooooooooo"    // 20A0 currency symbols (€ ₹ ...)
-    "oooooooooooooooooooooooooooooooooooooooooooooooo";   // 20D0 combining marks for symbols (cp_mark)
+// The code-point classes every split's regex is written in: \p{L} by its
+// subcategories, \p{M}, \p{N} and \s. ASCII is decided here; from U+0080
+// up, src/unicode_classes.h (scripts/gen-unicode-classes.py) holds the
+// Unicode database's answer, checked code point by code point against the
+// reference tokenizer's own regex engine. Until 2026-10-30 these were ranges
+// written by hand, with every code point above U+007F a letter unless a
+// listed block said otherwise: full-width punctuation ("："), U+FEFF, the
+// Arabic-Indic digits and most combining marks read as letters, and
+// "：“", "）\n" and "\uFEFF//" split where the publishers' tokenizers keep
+// one pre-token (docs/compat-reports/unicode-classes-2026-10-30/README.md).
+static int uc_class(uint32_t c) {
+    size_t lo = 0, hi = sizeof uc_ranges / sizeof *uc_ranges;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (c < uc_ranges[mid][0]) hi = mid;
+        else if (c > uc_ranges[mid][1]) lo = mid + 1;
+        else return (int)uc_ranges[mid][2];
+    }
+    return UC_OTHER;
+}
 
-static int cp_class_table(char k) {
-    return k == 'L' ? 0 : k == 'N' ? 1 : k == 'Z' ? 3 : 2;
+static bool uc_is_letter(int k) {
+    return k == UC_LU || k == UC_LL || k == UC_LT || k == UC_LM || k == UC_LO;
 }
 
 static int cp_class(uint32_t c) {
-    // 0 = letter, 1 = digit (\p{N}), 2 = other(punct/symbol), 3 = whitespace
-    if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0x0B || c == 0x0C ||
-        (c >= 0x2000 && c <= 0x200A) || c == 0x2028 || c == 0x2029 ||
-        c == 0x202F || c == 0x205F || c == 0x3000)
-        return 3;
-    if (c >= '0' && c <= '9') return 1;
-    if (c >= 0x80 && c <= 0xFF) return cp_class_table(LATIN1_CLASS[c - 0x80]);
-    if (c >= 0x2070 && c <= 0x20FF) return cp_class_table(SUPER_CURRENCY_CLASS[c - 0x2070]);
-    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80) return 0;
-    return 2;
+    // 0 = letter (\p{L}), 1 = number (\p{N}), 2 = other (marks, punctuation,
+    // symbols, controls, unassigned), 3 = whitespace (\s)
+    if (c < 0x80) {
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0x0B || c == 0x0C)
+            return 3;
+        if (c >= '0' && c <= '9') return 1;
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) return 0;
+        return 2;
+    }
+    int k = uc_class(c);
+    return uc_is_letter(k) ? 0 : (k == UC_ND || k == UC_N) ? 1 : k == UC_Z ? 3 : 2;
 }
 
-// Codepoints >= 0x80 outside the two tabulated blocks are treated as letters,
-// which is right for scripts but wrong for symbols. These ranges are excluded
-// to match \p{L} on real text: emoji and dingbats otherwise glue onto adjacent
-// words and shift every pre-token boundary after them, and U+FFFD, which a
-// lossy decode leaves in ordinary text, split the reference's `"\uFFFD.`
-// punctuation run so that `.txt` after it became one token instead of two.
-static bool cp_symbol(uint32_t c) {
-    return (c >= 0x2000 && c <= 0x206F) || (c >= 0x2100 && c <= 0x2BFF) ||
-           (c >= 0x2E00 && c <= 0x2E7F) || (c >= 0x3000 && c <= 0x303F) ||
-           (c >= 0xFE00 && c <= 0xFE0F) || (c >= 0xFFF0 && c <= 0xFFFF) ||
-           (c >= 0x1F000 && c <= 0x1FAFF);   // FFF0: Specials, U+FFFD among them
+static bool cp_mark(uint32_t c)   { return c >= 0x80 && uc_class(c) == UC_M; }
+// \p{Nd}, the decimal digits (afmoe groups only these by three)
+static bool cp_decimal(uint32_t c) {
+    return c < 0x80 ? (c >= '0' && c <= '9') : uc_class(c) == UC_ND;
 }
-
-// Combining marks are Unicode category M, not L. Treating every non-symbol
-// codepoint above ASCII as a letter incorrectly glued Indic/Thai vowel signs
-// and viramas into \p{L}+ runs. These are the mark blocks exercised by the
-// supported tokenizer corpus; expand alongside differential fixtures when a
-// new script is admitted.
-static bool cp_mark(uint32_t c) {
-    return (c >= 0x0300 && c <= 0x036F) || // Combining Diacritical Marks
-           (c >= 0x0900 && c <= 0x0903) || // Devanagari signs
-           (c >= 0x093A && c <= 0x094F) ||
-           (c >= 0x0951 && c <= 0x0957) ||
-           (c >= 0x0962 && c <= 0x0963) ||
-           c == 0x0E31 ||                  // Thai combining vowels/tones
-           (c >= 0x0E34 && c <= 0x0E3A) ||
-           (c >= 0x0E47 && c <= 0x0E4E) ||
-           (c >= 0x20D0 && c <= 0x20F0);   // Combining Diacritical Marks for Symbols
+// [\p{P}\p{S}]: every printable ASCII character that is not a letter or a
+// digit is one or the other
+static bool cp_punct_sym(uint32_t c) {
+    if (c < 0x80) return c > 0x20 && c < 0x7F && !((c >= '0' && c <= '9') ||
+                                                    (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'));
+    int k = uc_class(c);
+    return k == UC_P || k == UC_S;
 }
-
-static bool cp_letter(uint32_t c) {
-    if (cp_class(c) != 0) return false;
-    return c < 0x80 || (!cp_symbol(c) && !cp_mark(c));
-}
-
-// \p{N}: the ASCII digits and the tabulated numbers (superscripts, fractions)
+static bool cp_letter(uint32_t c) { return cp_class(c) == 0; }
 static bool cp_digit(uint32_t c)  { return cp_class(c) == 1; }
 static bool cp_space(uint32_t c)  { return cp_class(c) == 3; }
 // \p{L} and \p{N} both excluded, i.e. the regex's [^\s\p{L}\p{N}] class
@@ -1126,70 +1112,26 @@ static int gpt2_split_next(const uint32_t *cp, int i, int end) {
 
 // ---------------------------------------------------------------- tekken
 //
-// Cased-letter classification. The tekken regex is the only split rule here
-// that distinguishes upper from lower case, so this is the only place a case
-// table is needed. Everything outside these ranges is treated as caseless
-// (\p{Lo}/\p{Lm}/\p{M}), which matches BOTH halves of the regex's letter
-// classes and so behaves exactly like the plain \p{L}+ the other families use.
-// That is the correct default: CJK, Thai, Arabic, Hebrew, Devanagari and the
-// rest of the caseless scripts are the majority of what >= 0x80 contains.
-// Latin Extended-A is laid out in capital/small pairs, but the parity of those
-// pairs flips twice inside the block, so a plain (c & 1) test is wrong for
-// exactly the ranges Polish, Czech and Slovak live in -- it reads "ź" (U+017A)
-// as a capital and splits "łódź" into łód|ź. Returns 1 upper, -1 lower, 0 for
-// the caseless/unpaired characters.
-static int latin_ext_a_case(uint32_t c) {
-    if (c == 0x138 || c == 0x149 || c == 0x17F) return -1; // ĸ, ŉ, ſ: no capital
-    if (c == 0x178) return 1;                              // Ÿ, paired down at 0x00FF
-    if (c <= 0x137) return (c & 1) == 0 ? 1 : -1;
-    if (c <= 0x148) return (c & 1) == 1 ? 1 : -1;          // parity flips at Ĺ
-    if (c <= 0x177) return (c & 1) == 0 ? 1 : -1;          // and back at Ŋ
-    return (c & 1) == 1 ? 1 : -1;                          // and again at Ź
-}
-
-static bool cp_upper(uint32_t c) {
-    if (c >= 'A' && c <= 'Z') return true;
-    if (c < 0x80) return false;
-    if (c >= 0xC0 && c <= 0xDE) return c != 0xD7;          // Latin-1, minus MULTIPLICATION SIGN
-    if (c >= 0x100 && c <= 0x17F) return latin_ext_a_case(c) > 0;
-    if (c >= 0x1E00 && c <= 0x1E95) return (c & 1) == 0;   // Latin Extended Additional
-    if (c >= 0x1EA0 && c <= 0x1EFF) return (c & 1) == 0;   // (0x1E96..0x1E9F have no capital)
-    if (c >= 0x386 && c <= 0x3AB) return true;             // Greek capitals
-    if (c >= 0x400 && c <= 0x42F) return true;             // Cyrillic capitals
-    return false;
-}
-
-static bool cp_lower(uint32_t c) {
-    if (c >= 'a' && c <= 'z') return true;
-    if (c < 0x80) return false;
-    if (c == 0xB5) return true;                            // MICRO SIGN is Ll
-    if (c >= 0xDF && c <= 0xFF) return c != 0xF7;          // Latin-1, minus DIVISION SIGN
-    if (c >= 0x100 && c <= 0x17F) return latin_ext_a_case(c) < 0;
-    if (c >= 0x1E00 && c <= 0x1E9F) return (c & 1) == 1 || c >= 0x1E96;
-    if (c >= 0x1EA0 && c <= 0x1EFF) return (c & 1) == 1;
-    if (c >= 0x3AC && c <= 0x3CE) return true;             // Greek smalls
-    if (c >= 0x430 && c <= 0x45F) return true;             // Cyrillic smalls
-    return false;
-}
-
-// [\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}] -- a letter that is not lowercase
-// Used only by tekken, and \p{M} is the reason they exist separately. The
-// comments here have always spelled the class with \p{M} in it, but cp_letter
-// deliberately excludes combining marks -- correct for llama3, qwen2 and
-// smollm, whose regexes all say a plain \p{L}+, and wrong for tekken, which
-// carries \p{M} in both its letter classes:
+// The tekken regex is the split rule here that distinguishes upper from
+// lower case, so it reads the letter subcategories:
 //
 //   [^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+
 //
-// so a Devanagari virama or a Thai vowel sign must stay INSIDE the run rather
-// than ending it. Excluding them split three of the 721 differential strings
-// away from the reference: नमस्ते, हिन्दी and สวัสดี.
-static bool cp_letter_upperish(uint32_t c) {
-    return (cp_letter(c) || cp_mark(c)) && !cp_lower(c);
+// \p{M} is in both classes, so a Devanagari virama or a Thai vowel sign stays
+// INSIDE the run (नमस्ते, हिन्दी and สวัสดี). A caseless letter (\p{Lo},
+// \p{Lm}) is in both too, and behaves like the plain \p{L}+ of the other
+// families. Before the generated table the case was read from hand-written
+// ranges for Latin, Greek and Cyrillic, every other cased script (Armenian,
+// Georgian, Cherokee, Latin Extended-B, Coptic) reading as caseless.
+static bool cp_letter_upperish(uint32_t c) {   // [\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]
+    if (c < 0x80) return c >= 'A' && c <= 'Z';
+    int k = uc_class(c);
+    return k == UC_LU || k == UC_LT || k == UC_LM || k == UC_LO || k == UC_M;
 }
-// [\p{Ll}\p{Lm}\p{Lo}\p{M}] -- a letter that is not uppercase
-static bool cp_letter_lowerish(uint32_t c) {
-    return (cp_letter(c) || cp_mark(c)) && !cp_upper(c);
+static bool cp_letter_lowerish(uint32_t c) {   // [\p{Ll}\p{Lm}\p{Lo}\p{M}]
+    if (c < 0x80) return c >= 'a' && c <= 'z';
+    int k = uc_class(c);
+    return k == UC_LL || k == UC_LM || k == UC_LO || k == UC_M;
 }
 
 // The two letter alternatives of the tekken regex, tried in order at i:
@@ -1201,29 +1143,41 @@ static bool cp_letter_lowerish(uint32_t c) {
 // "XMLHttpRequest" is XMLHttp|Request, where every other family in the lineup
 // takes the whole run as one pre-token. Caseless scripts are unaffected,
 // because a caseless letter satisfies both classes.
-static int tekken_letters(const uint32_t *cp, int i, int ncp) {
-    // the optional leading character: anything that is not CR/LF, letter or digit
-    int s = i;
-    if (!cp_letter(cp[i]) && !cp_digit(cp[i]) && cp[i] != '\r' && cp[i] != '\n')
-        s = i + 1;
-    // a mark can open the run under tekken's classes, so the fast bail has to
-    // admit one too or the loops below never get to see it
-    if (s >= ncp || !(cp_letter(cp[s]) || cp_mark(cp[s]))) return i;
-
-    // upperish* is greedy, but must leave at least one lowerish for alt 1.
-    // Backtracking is unnecessary: a lowerish that is also upperish (caseless)
-    // is consumed by the greedy run and still satisfies the tail, and a
-    // strictly-lowercase character stops the run on its own.
+// [U]*[L]+ from s: the greedy U* gives characters back until an L can
+// follow, so " 亚洲AV" (two caseless letters, two capitals) is " 亚洲" then
+// "AV", as the publishers' regex engines read it. Returns s if no L is
+// reachable.
+static int case_run_alt1(const uint32_t *cp, int s, int ncp) {
     int u = s;
     while (u < ncp && cp_letter_upperish(cp[u])) u++;
-
-    int j = u;
-    while (j < ncp && cp_letter_lowerish(cp[j])) j++;
-
-    // alt 1 requires lowerish+; alt 2 requires upperish+. If the greedy
-    // upperish run swallowed everything (all-caps, or caseless script), that is
-    // alt 2 with an empty lowerish tail.
-    if (j > u || u > s) return j;
+    for (int p = u; p >= s; p--) {
+        if (p < ncp && cp_letter_lowerish(cp[p])) {
+            int q = p;
+            while (q < ncp && cp_letter_lowerish(cp[q])) q++;
+            return q;
+        }
+    }
+    return s;
+}
+// [U]+[L]* from s, or s
+static int case_run_alt2(const uint32_t *cp, int s, int ncp) {
+    int u = s;
+    while (u < ncp && cp_letter_upperish(cp[u])) u++;
+    if (u == s) return s;
+    while (u < ncp && cp_letter_lowerish(cp[u])) u++;
+    return u;
+}
+static int tekken_letters(const uint32_t *cp, int i, int ncp) {
+    // In the regex's order: each alternative with the optional leading
+    // character, then without it. A mark can be both that character and a
+    // letter-class one, so the order decides "҃AV" ("҃" alone, then "AV").
+    bool lead = !cp_letter(cp[i]) && !cp_digit(cp[i]) && cp[i] != '\r' &&
+                cp[i] != '\n' && i + 1 < ncp;
+    int e;
+    if (lead && (e = case_run_alt1(cp, i + 1, ncp)) > i + 1) return e;
+    if ((e = case_run_alt1(cp, i, ncp)) > i) return e;
+    if (lead && (e = case_run_alt2(cp, i + 1, ncp)) > i + 1) return e;
+    if ((e = case_run_alt2(cp, i, ncp)) > i) return e;
     return i;
 }
 
@@ -1314,49 +1268,60 @@ static int llama4_split_next(const uint32_t *cp, int i, int ncp) {
 // main regex cannot re-merge:
 //   1. every maximal digit run splits into groups of three FROM THE RIGHT
 //      (1234567 -> 1|234|567): first group len%3 (if nonzero), then threes;
-//   2. CJK/Asian-script runs are isolated, so a leading space or Latin
-//      letter can never glue onto them;
+//   2. script runs are isolated, each of one group (the tokenizer.json's
+//      alternation: CJK with kana, Thai, Lao, Khmer, Myanmar, Hangul), so a
+//      leading space or Latin letter never glues onto them, and a Thai run
+//      ends where a CJK one starts;
 //   3. main regex:  [ascii-punct][A-Za-z]+
 //                 | [^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+
 //                 |  ?[\p{P}\p{S}]+[\r\n]*
 //                 | \s*[\r\n]+ | \s+(?!\S) | \s+
-// \p{P}\p{S} is approximated as cp_other minus marks, matching how this
-// file approximates the classes everywhere else; the differential fixture
-// set is the gate for the approximation.
-static bool cp_afmoe_cjk(uint32_t c) {
-    return (c >= 0x4E00 && c <= 0x9FFF) ||   // CJK Unified
-           (c >= 0x3400 && c <= 0x4DBF) ||   // CJK Ext A
-           (c >= 0xF900 && c <= 0xFAFF) ||   // CJK Compat Ideographs
-           (c >= 0x3040 && c <= 0x309F) ||   // Hiragana
-           (c >= 0x30A0 && c <= 0x30FF) ||   // Katakana
-           (c >= 0xFF65 && c <= 0xFF9F) ||   // Halfwidth Katakana
-           (c >= 0x2F00 && c <= 0x2FDF) ||   // Kangxi Radicals
-           (c >= 0x0E40 && c <= 0x0E7F) ||   // Thai (trailing block)
-           (c >= 0x0E80 && c <= 0x0EFF) ||   // Lao
-           (c >= 0x1780 && c <= 0x17FF) ||   // Khmer
-           (c >= 0x1000 && c <= 0x109F) ||   // Myanmar
-           (c >= 0xAA60 && c <= 0xAA7F) ||   // Myanmar Ext A
-           (c >= 0xA9E0 && c <= 0xA9FF) ||   // Myanmar Ext B
-           (c >= 0xAC00 && c <= 0xD7AF) ||   // Hangul Syllables
-           (c >= 0x1100 && c <= 0x11FF);     // Hangul Jamo
+// \p{P}\p{S} is read from the generated table, so a format character
+// (U+FEFF, U+00AD, ZWNJ), which is neither, may lead a letter run. Text no
+// alternative matches (a run of U+200B, of control characters) is one piece,
+// as tokenizers' Isolated split keeps each gap between matches whole. The
+// script groups are the publisher's (arcee-ai/Trinity-Nano-Preview
+// tokenizer.json), Thai as the whole block U+0E00..U+0E7F.
+// The script group a code point's run belongs to, or 0
+static int afmoe_script(uint32_t c) {
+    if ((c >= 0x4E00 && c <= 0x9FFF) || (c >= 0x3040 && c <= 0x309F) ||
+        (c >= 0x30A0 && c <= 0x30FF) || (c >= 0x3400 && c <= 0x4DBF) ||
+        (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xFF65 && c <= 0xFF9F) ||
+        (c >= 0x2F00 && c <= 0x2FDF)) return 1;          // CJK, kana, Kangxi
+    if (c >= 0x0E00 && c <= 0x0E7F) return 2;            // Thai
+    if (c >= 0x0E80 && c <= 0x0EFF) return 3;            // Lao
+    if (c >= 0x1780 && c <= 0x17FF) return 4;            // Khmer
+    if ((c >= 0x1000 && c <= 0x109F) || (c >= 0xAA60 && c <= 0xAA7F) ||
+        (c >= 0xA9E0 && c <= 0xA9FF)) return 5;          // Myanmar
+    if ((c >= 0xAC00 && c <= 0xD7AF) || (c >= 0x1100 && c <= 0x11FF)) return 6;   // Hangul
+    return 0;
 }
+static bool cp_afmoe_cjk(uint32_t c) { return afmoe_script(c) != 0; }
 static bool cp_ascii_punct(uint32_t c) {
     return (c >= '!' && c <= '/') || (c >= ':' && c <= '@') ||
            (c >= '[' && c <= '`') || (c >= '{' && c <= '~');
 }
-static bool cp_punct_sym(uint32_t c) {       // ~ [\p{P}\p{S}]
-    return cp_other(c) && !cp_mark(c);
-}
-static int afmoe_split_next(const uint32_t *cp, int i, int ncp) {
-    if (cp_digit(cp[i])) {
+// One alternative of the passes at i: the end of its match, or i
+static int afmoe_match(const uint32_t *cp, int i, int ncp) {
+    // Digits(individual_digits=false) isolates a run of \p{N}; the three
+    // \p{Nd} splits after it group its decimal digits by three from the
+    // right, and the numbers between them (superscripts, fractions) are a
+    // piece of their own that no later pass can split: "1²" is 1|².
+    if (cp_decimal(cp[i])) {
         int L = 0;
-        while (i + L < ncp && cp_digit(cp[i + L])) L++;
+        while (i + L < ncp && cp_decimal(cp[i + L])) L++;
         int first = L % 3;
         return i + (first ? first : 3);
     }
-    if (cp_afmoe_cjk(cp[i])) {
+    if (cp_digit(cp[i])) {
         int j = i;
-        while (j < ncp && cp_afmoe_cjk(cp[j])) j++;
+        while (j < ncp && cp_digit(cp[j]) && !cp_decimal(cp[j])) j++;
+        return j;
+    }
+    int g = afmoe_script(cp[i]);
+    if (g) {
+        int j = i;
+        while (j < ncp && afmoe_script(cp[j]) == g) j++;
         return j;
     }
     // [ascii-punct][A-Za-z]+  (leads the alternation, so "'s" stays whole)
@@ -1368,20 +1333,14 @@ static int afmoe_split_next(const uint32_t *cp, int i, int ncp) {
                            (cp[j] >= 'A' && cp[j] <= 'Z'))) j++;
         return j;
     }
-    // [^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+ — one optional "other" char
-    // (space, mark; digits cannot reach here) then a letter/mark run that
-    // stops at CJK, which pass 2 has already made its own fragment
+    // [^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+, stopping at a script fragment:
+    // with the leading character first, then without it (a mark is both)
     {
-        int s = i;
         uint32_t c = cp[i];
-        if (c != '\r' && c != '\n' && !cp_letter(c) && !cp_punct_sym(c) &&
-            i + 1 < ncp)
-            s = i + 1;
-        if (s < ncp && (cp_letter(cp[s]) || cp_mark(cp[s])) &&
-            !cp_afmoe_cjk(cp[s])) {
+        bool lead = c != '\r' && c != '\n' && !cp_letter(c) && !cp_punct_sym(c);
+        for (int s = lead ? i + 1 : i; s >= i; s--) {
             int j = s;
-            while (j < ncp && (cp_letter(cp[j]) || cp_mark(cp[j])) &&
-                   !cp_afmoe_cjk(cp[j])) j++;
+            while (j < ncp && (cp_letter(cp[j]) || cp_mark(cp[j])) && !cp_afmoe_cjk(cp[j])) j++;
             if (j > s) return j;
         }
     }
@@ -1403,13 +1362,20 @@ static int afmoe_split_next(const uint32_t *cp, int i, int ncp) {
         for (int k = i; k < j; k++)
             if (cp[k] == '\r' || cp[k] == '\n') last_nl = k;
         if (last_nl >= 0) return last_nl + 1;
-        // the digit and CJK passes run BEFORE the main regex in the
-        // reference, so a following digit/CJK char is a fragment boundary
+        // the digit and script passes run BEFORE the main regex in the
+        // reference, so a following digit/script char is a fragment boundary
         // there: \s+(?!\S) sees end-of-fragment and keeps every space
         if (j < ncp && j - i > 1 &&
             !cp_digit(cp[j]) && !cp_afmoe_cjk(cp[j])) j--;
         return j;
     }
+}
+static int afmoe_split_next(const uint32_t *cp, int i, int ncp) {
+    int e = afmoe_match(cp, i, ncp);
+    if (e > i) return e;
+    int j = i + 1;                 // a gap between matches is one piece
+    while (j < ncp && afmoe_match(cp, j, ncp) == j) j++;
+    return j;
 }
 
 // spark2_5, the publisher's tokenizer.json pre_tokenizer in order:
@@ -1426,7 +1392,7 @@ static bool cp_spark25_cjk(uint32_t c) {
            (c >= 0x3040 && c <= 0x309F) ||   // Hiragana
            (c >= 0x30A0 && c <= 0x30FF);     // Katakana
 }
-static int spark25_split_next(const uint32_t *cp, int i, int ncp) {
+static int spark25_match(const uint32_t *cp, int i, int ncp) {
     if (cp_digit(cp[i])) return i + 1;
     if (cp_spark25_cjk(cp[i])) {
         int j = i;
@@ -1441,17 +1407,13 @@ static int spark25_split_next(const uint32_t *cp, int i, int ncp) {
                            (cp[j] >= 'A' && cp[j] <= 'Z'))) j++;
         return j;
     }
-    {   // [^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+, stopping at a CJK fragment
-        int s = i;
+    {   // [^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+, stopping at a CJK fragment:
+        // with the leading character first, then without it (a mark is both)
         uint32_t c = cp[i];
-        if (c != '\r' && c != '\n' && !cp_letter(c) && !cp_punct_sym(c) &&
-            i + 1 < ncp)
-            s = i + 1;
-        if (s < ncp && (cp_letter(cp[s]) || cp_mark(cp[s])) &&
-            !cp_spark25_cjk(cp[s])) {
+        bool lead = c != '\r' && c != '\n' && !cp_letter(c) && !cp_punct_sym(c);
+        for (int s = lead ? i + 1 : i; s >= i; s--) {
             int j = s;
-            while (j < ncp && (cp_letter(cp[j]) || cp_mark(cp[j])) &&
-                   !cp_spark25_cjk(cp[j])) j++;
+            while (j < ncp && (cp_letter(cp[j]) || cp_mark(cp[j])) && !cp_spark25_cjk(cp[j])) j++;
             if (j > s) return j;
         }
     }
@@ -1467,11 +1429,17 @@ static int spark25_split_next(const uint32_t *cp, int i, int ncp) {
     {   // \s+(?!\S) | \s+, the lookahead ending at a fragment boundary
         int j = i;
         while (j < ncp && cp_space(cp[j])) j++;
-        if (j == i) return i + 1;   // nothing matched: the char is its own gap
         if (j < ncp && j - i > 1 &&
             !cp_digit(cp[j]) && !cp_spark25_cjk(cp[j])) j--;
         return j;
     }
+}
+static int spark25_split_next(const uint32_t *cp, int i, int ncp) {
+    int e = spark25_match(cp, i, ncp);
+    if (e > i) return e;
+    int j = i + 1;                 // a gap between matches is one piece
+    while (j < ncp && spark25_match(cp, j, ncp) == j) j++;
+    return j;
 }
 
 // k2-horizon: the Llama 3 regex whose letter run is (\p{L}|\p{M}|ZWNJ|ZWJ)+.
@@ -1591,6 +1559,23 @@ static int smollm_split_next(const uint32_t *cp, int i, int ncp) {
     return gpt2_split_next(cp, i, seg);
 }
 
+// The rank of the merge "left right", or -1. A key past the stack buffer
+// is built on the heap: until 2026-10-30 such keys were skipped, so no
+// token longer than about 255 bytes in byte-level form was ever built
+// (MiniCPM5's run of 160 spaces came out as two 128-space tokens).
+static int bpe_merge_rank(tokenizer *t, const char *w, int a, int al, int b, int bl) {
+    char stack[512];
+    size_t kl = (size_t)al + 1 + (size_t)bl;
+    char *key = kl <= sizeof stack ? stack : malloc(kl);
+    if (!key) { tls_encode_oom = true; return -1; }
+    memcpy(key, w + a, (size_t)al);
+    key[al] = ' ';
+    memcpy(key + al + 1, w + b, (size_t)bl);
+    int rank = hmap_get(&t->merges, key, kl);
+    if (key != stack) free(key);
+    return rank;
+}
+
 // BPE merge within one pre-token (already byte->unicode mapped, utf8 string)
 // Same candidate rule as the SentencePiece side, keyed on merge rank.
 static bool bpe_push_pair(tokenizer *t, const char *w, const int *st,
@@ -1598,13 +1583,7 @@ static bool bpe_push_pair(tokenizer *t, const char *w, const int *st,
     if (l < 0) return true;
     int r = next[l];
     if (r < 0) return true;
-    int kl = ln[l] + 1 + ln[r];
-    if (kl >= 512) return true;      // the old scan skipped over-long keys too
-    char key[512];
-    memcpy(key, w + st[l], (size_t)ln[l]);
-    key[ln[l]] = ' ';
-    memcpy(key + ln[l] + 1, w + st[r], (size_t)ln[r]);
-    int rank = hmap_get(&t->merges, key, (size_t)kl);
+    int rank = bpe_merge_rank(t, w, st[l], ln[l], st[r], ln[r]);
     if (rank < 0) return true;
     mcand c = { (float)rank, l, r, ln[l], ln[r] };
     return mh_push(h, c);
@@ -1642,17 +1621,11 @@ static int bpe_word(tokenizer *t, const char *w, int n, int32_t *out, int cap, i
     // they have to stay put. Order along the list is still left to right, which
     // is what makes "smaller index" the same tie-break the old scan had.
     if (!use_merge_queue(ns)) {
-        char key[512];
         while (ns > 1) {
             int best_rank = INT_MAX, best = -1;
             for (int i = 0; i != -1 && next[i] != -1; i = next[i]) {
                 int j = next[i];
-                int kl = ln[i] + 1 + ln[j];
-                if (kl >= (int)sizeof(key)) continue;
-                memcpy(key, w + st[i], (size_t)ln[i]);
-                key[ln[i]] = ' ';
-                memcpy(key + ln[i] + 1, w + st[j], (size_t)ln[j]);
-                int r = hmap_get(&t->merges, key, (size_t)kl);
+                int r = bpe_merge_rank(t, w, st[i], ln[i], st[j], ln[j]);
                 if (r >= 0 && r < best_rank) { best_rank = r; best = i; }
             }
             if (best < 0) break;

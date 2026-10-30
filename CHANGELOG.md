@@ -5,6 +5,30 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The BPE splits read the Unicode classes their publishers' regexes name,
+  and four split rules now match the publishers' exactly.** The splits are
+  regexes over letters by case, marks, numbers, punctuation, symbols and
+  white space, and Runner read them from ranges written by hand that took
+  every code point above U+007F for a letter unless a listed block said
+  otherwise: full-width punctuation, U+FEFF, the Arabic-Indic digits and most
+  combining marks were letters, and case was known for Latin, Greek and
+  Cyrillic only, so "：“" and "）\n" split where the publishers keep one
+  piece. The classes are now a table generated from the Unicode 16.0
+  database (`scripts/gen-unicode-classes.py`), checked on every code point
+  against the reference tokenizer's own regex engine. With it: Tekken, Llama 4
+  and gpt-oss try their case alternatives in the regex's order (" 亚洲AV" is
+  " 亚洲" then "AV"); Trinity groups only decimal digits by three ("1²" is "1"
+  then "²"), keeps Thai as the whole block and each script group apart;
+  Trinity and Spark let a format character lead a letter run and keep text no
+  alternative matches as one piece; and a merge whose key passes 512 bytes is
+  built instead of skipped (MiniCPM5's 160 spaces were two tokens). Over
+  every vocabulary entry decoded to text, 23 of 24 files checked now match
+  their publishers on every entry (Llama 3.2 was 86, LFM2.5-8B-A1B 108,
+  Qwen3 128, MiMo 1,176, the Tekken files 202), and two of granite 4.2's gold
+  passages and two NFC strings each on LFM2.5, Mellum and MiniCPM5 now match;
+  Ornith's file differs only where its tokenizer.json's older split does, as
+  its row declares. The LFM2.5-1.2B and 350M rows declare 0
+  (`docs/compat-reports/unicode-classes-2026-10-30/README.md`).
 - **Validation runs at 1.8.0 on the Windows CUDA host: 8 rows** (RTX 3070,
   2026-10-30, built at the v1.8.0 tag, 9bb83e7e). `k2-horizon-0.9b-q8_0` and
   `k2-horizon-0.9b-q4_k_m` pass on the CPU and on CUDA with the whole file on

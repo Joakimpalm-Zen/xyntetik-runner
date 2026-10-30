@@ -4,8 +4,8 @@
 // Absolute anchors. The class expectations are transcribed from the Unicode
 // 16.0 charts for Latin-1 Supplement (U+0080..U+00FF) and for Superscripts and
 // Subscripts, Currency Symbols and Combining Diacritical Marks for Symbols
-// (U+2070..U+20FF), written as ranges here independently of the tables in
-// src/tokenizer.c. The boundary cases are the publishers' reference
+// (U+2070..U+20FF), written as ranges here independently of the generated
+// table (src/unicode_classes.h). The boundary cases are the publishers' reference
 // tokenizers' own pre-tokens (Hugging Face tokenizers over each family's
 // tokenizer.json): "°)" is one pre-token, and one o200k token (Kvist-14B,
 // gpt-oss), where the runner used to split it because it read every code
@@ -55,7 +55,20 @@ static void test_classes_match_unicode(void) {
     }
     assert(checked == 128 + 144);
     // the one cased letter in the A0 row, for the case-splitting families
-    assert(cp_lower(0xB5) && !cp_upper(0xB5));
+    assert(cp_letter_lowerish(0xB5) && !cp_letter_upperish(0xB5));
+    // beyond the two blocks, where the hand-written ranges read every code
+    // point above U+007F as a letter unless a listed block said otherwise
+    assert(cp_class(0xFF1A) == K_OTHER && cp_class(0xFF09) == K_OTHER);   // full-width : and )
+    assert(cp_class(0xFEFF) == K_OTHER);                                  // ZERO WIDTH NO-BREAK SPACE
+    assert(cp_class(0x0663) == K_NUMBER);                                 // ARABIC-INDIC DIGIT THREE
+    assert(cp_mark(0x0483) && cp_class(0x0483) == K_OTHER);              // COMBINING CYRILLIC TITLO
+    assert(cp_class(0x1680) == K_SPACE);                                  // OGHAM SPACE MARK
+    assert(cp_class(0xE000) == K_OTHER);                                  // private use
+    // case beyond Latin, Greek and Cyrillic
+    assert(cp_letter_upperish(0x0531) && !cp_letter_lowerish(0x0531));    // ARMENIAN CAPITAL AYB
+    assert(cp_letter_lowerish(0x0562) && !cp_letter_upperish(0x0562));    // ARMENIAN SMALL BEN
+    assert(cp_letter_upperish(0x01C5) && !cp_letter_lowerish(0x01C5));    // titlecase DŽ
+    assert(cp_letter_upperish(0x4E00) && cp_letter_lowerish(0x4E00));     // a caseless letter
     // the Specials block: nothing in it is a letter (U+FFFD REPLACEMENT CHARACTER)
     for (uint32_t c = 0xFFF0; c <= 0xFFFF; c++) assert(!cp_letter(c) && !cp_digit(c) && !cp_space(c));
 }
@@ -154,6 +167,76 @@ static void test_boundaries_match_the_references(void) {
     expect_split("spark25", split_spark25, "x|\xe4\xb8\xad\xe6\x96\x87|y");
     expect_split("o200k", llama4_split_next, "«word|»");
     expect_split("smollm", smollm_split_next, "«|word|»");
+    // the classes beyond the two blocks (meta-llama/Llama-3.2, mistralai's
+    // Mistral-Nemo and openai/gpt-oss tokenizer.json files)
+    static const struct { const char *name; split_fn fn; } wide[] = {
+        { "llama3", split_llama3 }, { "tekken", tekken_split_next }, { "o200k", llama4_split_next },
+    };
+    for (size_t f = 0; f < sizeof wide / sizeof *wide; f++) {
+        expect_split(wide[f].name, wide[f].fn, "\xEF\xBC\x9A\xE2\x80\x9C");  // full-width colon, opening quote
+        expect_split(wide[f].name, wide[f].fn, "\xEF\xBC\x89\n");             // full-width ) and a newline
+        expect_split(wide[f].name, wide[f].fn, "\xEF\xBB\xBF//");              // U+FEFF before a comment
+        expect_split(wide[f].name, wide[f].fn, "x|\xD9\xA3");                   // an Arabic-Indic digit is \p{N}
+        expect_split(wide[f].name, wide[f].fn, "\xD4\xB1\xD5\xA2");           // Armenian capital, small
+        expect_split(wide[f].name, wide[f].fn, "\xE6\x97\xA5\xE6\x9C\xAC|\xEF\xBC\x9A\xE2\x80\x9C");
+    }
+    expect_split("llama3", split_llama3, "a|\xD2\x83");                     // \p{L}+ ends at a mark
+    expect_split("tekken", tekken_split_next, "a\xD2\x83");                 // tekken's classes hold \p{M}
+    expect_split("tekken", tekken_split_next, "\xD5\xA1|\xD4\xB2");         // Armenian small, capital
+    expect_split("o200k", llama4_split_next, "\xD5\xA1|\xD4\xB2");
+    expect_split("llama3", split_llama3, "\xD5\xA1\xD4\xB2");
+    expect_split("llama3", split_llama3, "x|\xD9\xA0\xD9\xA1\xD9\xA2|\xD9\xA3");
+    expect_split("tekken", tekken_split_next, "x|\xD9\xA0|\xD9\xA1|\xD9\xA2|\xD9\xA3");
+    // the case alternatives in the regex's order: U* gives back a caseless
+    // letter so an L can follow (" 亚洲AV"), and a mark tries the run with
+    // and without being the leading character (mistralai's Mistral-Nemo and
+    // openai/gpt-oss tokenizer.json files)
+    expect_split("o200k", llama4_split_next, " \xE4\xBA\x9A\xE6\xB4\xB2|AV");
+    expect_split("o200k", llama4_split_next, "\xE4\xBA\x9A\xE6\xB4\xB2|AV");
+    expect_split("o200k", llama4_split_next, "\xD2\x83|AV");
+    expect_split("o200k", llama4_split_next, "\xD2\x83|!!");
+    expect_split("o200k", llama4_split_next, "x\xD2\x83|AV");
+    expect_split("o200k", llama4_split_next, "a|Bc");
+    expect_split("o200k", llama4_split_next, "ABc|D");
+    expect_split("tekken", tekken_split_next, " \xE4\xBA\x9A\xE6\xB4\xB2|AV");
+    expect_split("tekken", tekken_split_next, "\xE4\xBA\x9A\xE6\xB4\xB2|AV");
+    expect_split("tekken", tekken_split_next, "\xD2\x83|AV");
+    expect_split("tekken", tekken_split_next, "\xD2\x83|!!");
+    expect_split("tekken", tekken_split_next, "x\xD2\x83|AV");
+    expect_split("tekken", tekken_split_next, "a|Bc");
+    expect_split("tekken", tekken_split_next, "ABc|D");
+    // afmoe (arcee-ai/Trinity-Nano-Preview): \p{Nd} groups by three, other
+    // numbers are a piece of their own; a format character leads a letter run
+    expect_split("afmoe", afmoe_split_next, "1|\xC2\xB2");
+    expect_split("afmoe", afmoe_split_next, "12|\xC2\xB2|3");
+    expect_split("afmoe", afmoe_split_next, "\xC2\xB2\xC2\xB3");
+    expect_split("afmoe", afmoe_split_next, "1|234|567");
+    expect_split("afmoe", afmoe_split_next, "\xEF\xBB\xBFusing");
+    expect_split("afmoe", afmoe_split_next, "\xC2\xADt");
+    expect_split("afmoe", afmoe_split_next, "a|\xE2\x80\x8C" "b");
+    expect_split("afmoe", afmoe_split_next, "x| |\xC2\xBD|y");
+    // spark2_5 (XHToken/Spark-X2.6-4B): the same lead rule
+    expect_split("spark25", split_spark25, "\xE2\x80\x8C\xD9\x87\xD8\xA7\xDB\x8C");
+    expect_split("spark25", split_spark25, "\xE1\xA0\x8E\xE1\xA0\xA0");
+    expect_split("spark25", split_spark25, "1|\xC2\xB2");
+    expect_split("spark25", split_spark25, "\xEF\xBB\xBFusing");
+    expect_split("spark25", split_spark25, "a|,b");
+    // a gap no alternative matches is one piece, as tokenizers' Isolated
+    // split keeps it; a Thai run is its own group, ending where CJK starts
+    expect_split("afmoe", afmoe_split_next, "\xE2\x80\x8B\xE2\x80\x8B");
+    expect_split("afmoe", afmoe_split_next, "\b\b");
+    expect_split("afmoe", afmoe_split_next, "\xE0\xB8\x97\xE0\xB8\xB5\xE0\xB9\x88");
+    expect_split("afmoe", afmoe_split_next, "\xE0\xB8\x81\xE0\xB8\x82|\xE4\xB8\xAD");
+    expect_split("afmoe", afmoe_split_next, "x|\xE2\x80\x8B\xE2\x80\x8B|!");
+    expect_split("afmoe", afmoe_split_next, "\xD2\x83|!");
+    expect_split("afmoe", afmoe_split_next, "\xD2\x83\xD2\x83|!");
+    expect_split("spark25", split_spark25, "\xE2\x80\x8B\xE2\x80\x8B");
+    expect_split("spark25", split_spark25, "\b\b");
+    expect_split("spark25", split_spark25, "\xE0\xB8\x97\xE0\xB8\xB5\xE0\xB9\x88");
+    expect_split("spark25", split_spark25, "\xE0\xB8\x81\xE0\xB8\x82|\xE4\xB8\xAD");
+    expect_split("spark25", split_spark25, "x|\xE2\x80\x8B\xE2\x80\x8B|!");
+    expect_split("spark25", split_spark25, "\xD2\x83|!");
+    expect_split("spark25", split_spark25, "\xD2\x83\xD2\x83|!");
 }
 
 int main(void) {

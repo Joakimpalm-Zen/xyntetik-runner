@@ -788,6 +788,78 @@ static void write_merge_fixture(const char *path, const char *pre) {
     free(kv.b); free(w.b);
 }
 
+// A merge whose key passes 512 bytes: 256 spaces are 256 "Ġ" (two bytes
+// each), built by doubling merges whose last key is 513 bytes. Until
+// 2026-10-30 a key that long was skipped, and the run came out as two
+// 128-space tokens (MiniCPM5's vocabulary has the 256-space one).
+static void test_bpe_long_merge_key(void) {
+    enum { LEVELS = 9 };                    // runs of 1, 2, 4, ... 256
+    char *toks[LEVELS];
+    for (int k = 0; k < LEVELS; k++) {
+        int n = 1 << k;
+        toks[k] = malloc((size_t)n * 2 + 1);
+        for (int i = 0; i < n; i++) memcpy(toks[k] + 2 * i, "\xC4\xA0", 2);
+        toks[k][n * 2] = 0;
+    }
+    gbuf kv = {0};
+    uint64_t nkv = 0;
+    gkey(&kv, "general.architecture", GGUF_T_STR); gstr(&kv, "llama"); nkv++;
+    gkey(&kv, "tokenizer.ggml.model", GGUF_T_STR); gstr(&kv, "gpt2"); nkv++;
+    gkey(&kv, "tokenizer.ggml.pre", GGUF_T_STR); gstr(&kv, "qwen2"); nkv++;
+    gkey(&kv, "tokenizer.ggml.tokens", GGUF_T_ARR);
+    gu32(&kv, GGUF_T_STR); gu64(&kv, LEVELS + 1);
+    gstr(&kv, "<s>");
+    for (int k = 0; k < LEVELS; k++) gstr(&kv, toks[k]);
+    nkv++;
+    gkey(&kv, "tokenizer.ggml.token_type", GGUF_T_ARR);
+    gu32(&kv, GGUF_T_I32); gu64(&kv, LEVELS + 1);
+    gu32(&kv, 3);
+    for (int k = 0; k < LEVELS; k++) gu32(&kv, 1);
+    nkv++;
+    gkey(&kv, "tokenizer.ggml.merges", GGUF_T_ARR);
+    gu32(&kv, GGUF_T_STR); gu64(&kv, LEVELS - 1);
+    for (int k = 0; k + 1 < LEVELS; k++) {
+        size_t n = strlen(toks[k]);
+        char *m = malloc(2 * n + 2);
+        memcpy(m, toks[k], n); m[n] = ' '; memcpy(m + n + 1, toks[k], n); m[2 * n + 1] = 0;
+        gstr(&kv, m);
+        free(m);
+    }
+    nkv++;
+    gkey(&kv, "tokenizer.ggml.bos_token_id", GGUF_T_U32); gu32(&kv, 0); nkv++;
+    gkey(&kv, "tokenizer.ggml.eos_token_id", GGUF_T_U32); gu32(&kv, 0); nkv++;
+    gbuf w = {0};
+    gu32(&w, 0x46554747); gu32(&w, 3); gu64(&w, 0); gu64(&w, nkv);
+    gput(&w, kv.b, kv.n);
+    while (w.n % 32) { unsigned char z = 0; gput(&w, &z, 1); }
+    const char *path = "tok-long-merge.gguf";
+    FILE *f = fopen(path, "wb");
+    assert(f);
+    assert(fwrite(w.b, 1, w.n, f) == w.n);
+    fclose(f);
+    free(kv.b); free(w.b);
+    for (int k = 0; k < LEVELS; k++) free(toks[k]);
+
+    current = path;
+    gguf_file g;
+    assert(gguf_open(&g, path));
+    tokenizer t;
+    assert(tokenizer_init(&t, &g));
+    char text[257];
+    memset(text, ' ', 256);
+    text[256] = 0;
+    int32_t got[8];
+    int n = tok_encode(&t, text, got, 8, false, true);
+    if (n != 1 || got[0] != LEVELS) {
+        fprintf(stderr, "long merge: 256 spaces gave %d tokens (first %d), want [%d]\n",
+                n, n > 0 ? got[0] : -1, LEVELS);
+        abort();
+    }
+    tokenizer_free(&t);
+    gguf_close(&g);
+    remove(path);
+}
+
 static void test_ignore_merges_follows_the_family(void) {
     static const struct { const char *pre; bool whole; } cases[] = {
         { "llama-bpe", true },
@@ -833,6 +905,7 @@ int main(void) {
     test_bos_default_follows_the_family();
     test_pre_names_choose_the_split();
     test_ignore_merges_follows_the_family();
+    test_bpe_long_merge_key();
 
     for (size_t i = 0; i < sizeof(fixtures) / sizeof(*fixtures); i++) {
         current = fixtures[i];
