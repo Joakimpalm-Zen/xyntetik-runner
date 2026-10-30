@@ -603,12 +603,12 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>MiMo</b>, 1 model: CPU ✅ · CUDA - · Metal - · Train ✅</summary>
+<summary><b>MiMo</b>, 1 model: CPU ✅ · CUDA ✅ · Metal - · Train ✅</summary>
 <p><b>MiMo-V2.6-Distill-Qwen-9B (XiaomiMiMo)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#mimo-v2.6-distill-qwen-9b-q4_k_m"><code>MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td></td><td></td><td nowrap>✅ 1.7.1<br>2026-10-30</td></tr>
+<tr><td><a href="#mimo-v2.6-distill-qwen-9b-q4_k_m"><code>MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td></td><td nowrap>✅ 1.7.1<br>2026-10-30</td></tr>
 </tbody>
 </table>
 </details>
@@ -1672,7 +1672,7 @@ Text path, bartowski's Q4_K_M of XiaomiMiMo's Qwen3.5-9B distill, which fails th
 - **Evidence:** [docs/compat-reports/1.7.1-2026-10-29-macos-arm64-mimo-v2.6-distill-qwen-9b-q4_k_m.json](compat-reports/1.7.1-2026-10-29-macos-arm64-mimo-v2.6-distill-qwen-9b-q4_k_m.json), [docs/compat-reports/mimo-v2.6-distill-qwen-9b-2026-10-29/README.md](compat-reports/mimo-v2.6-distill-qwen-9b-2026-10-29/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on macos-arm64-metal, cpu backend; last run 1.7.1 on 2026-10-30.
 - **CPU:** ✅ v1.7.1 2026-10-30 on windows-x86_64-cuda at commit `80c30df3d188`, output sha256 `eea4d971ebfaa42d`, [pin](../tests/compatibility/tier-smoke/mimo-v2.6-distill-qwen-9b-q4_k_m.windows-x86_64-cuda.cpu.txt)
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.7.1 2026-10-30 on windows-x86_64-cuda at commit `80c30df3d188`, output sha256 `eea4d971ebfaa42d`, [pin](../tests/compatibility/tier-smoke/mimo-v2.6-distill-qwen-9b-q4_k_m.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
 - **LoRA training:** supported (runner 1.7.1, 2026-10-30).
 - **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-30).
