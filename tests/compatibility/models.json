@@ -1892,7 +1892,7 @@
           ]
         },
         "tokenizer": {
-          "expect_vocab_divergences": 11
+          "expect_vocab_divergences": 0
         }
       }
     },
@@ -1926,7 +1926,7 @@
           ]
         },
         "tokenizer": {
-          "expect_vocab_divergences": 11
+          "expect_vocab_divergences": 0
         }
       }
     },
@@ -1960,7 +1960,7 @@
           ]
         },
         "tokenizer": {
-          "expect_vocab_divergences": 11
+          "expect_vocab_divergences": 0
         }
       }
     },
@@ -1994,7 +1994,7 @@
           ]
         },
         "tokenizer": {
-          "expect_vocab_divergences": 11
+          "expect_vocab_divergences": 0
         }
       }
     },
