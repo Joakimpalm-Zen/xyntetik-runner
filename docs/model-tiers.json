@@ -1012,10 +1012,10 @@
         "cpu": {
           "kind": "gate",
           "runner_version": "1.7.1",
-          "date": "2026-10-29",
+          "date": "2026-10-30",
           "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
+          "commit": "64cdc0dc6bab6a100ae955b7c04107d3aa302259",
           "caps": {
             "version": "1.7.1",
             "os": "windows",
@@ -1049,7 +1049,7 @@
           "reason": null
         },
         "runner_version": "1.7.1",
-        "date": "2026-10-29"
+        "date": "2026-10-30"
       },
       "transitions": [
         {
