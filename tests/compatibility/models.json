@@ -2028,7 +2028,7 @@
           ]
         },
         "tokenizer": {
-          "expect_vocab_divergences": 108
+          "expect_vocab_divergences": 0
         }
       }
     },
