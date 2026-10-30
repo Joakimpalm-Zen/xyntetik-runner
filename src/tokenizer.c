@@ -429,8 +429,8 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     if (strcmp(pre, "llama-bpe") == 0)   t->pre = TOK_PRE_LLAMA3;
     else if (strcmp(pre, "dbrx") == 0)   t->pre = TOK_PRE_LLAMA3; // llama.cpp: "same as llama3" (granite 4.1 ships this)
     // Liquid LFM2 / LFM2.5: the publisher's tokenizer.json splits with the
-    // Llama 3 regex (whether it also ignores merges depends on the
-    // vocabulary; see ignore_merges below)
+    // Llama 3 regex; lfm2 ignores merges (below), which on the 1.2B's and
+    // 350M's vocabulary changes nothing
     else if (strcmp(pre, "lfm2") == 0)   t->pre = TOK_PRE_LLAMA3;
     else if (strcmp(pre, "granite-docling") == 0) t->pre = TOK_PRE_GPT2; // llama.cpp: the plain GPT-2 regex (granite 4.2 ships this)
     // minicpm5 (openbmb/MiniCPM5-2B tokenizer.json at f9740005): a Split on
