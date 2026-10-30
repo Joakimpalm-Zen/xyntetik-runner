@@ -2260,6 +2260,18 @@ static void test_lfm2_8b_shape(void) {
     snprintf(b, sizeof b, "%s{{- \"'\" + (arg_value | replace(\"\\\\\", \"\\\\\\\\\")) + \"'\" -}}", head);
     assert(template_detect(a, NULL) == TMPL_LFM2_8B);
     assert(template_detect(b, NULL) == TMPL_LFM2);
+    // the 24B's revision: the 1.2B's escaped line, and a generation prompt
+    // that opens the thought
+    char c24[384];
+    snprintf(c24, sizeof c24, "%s{%%- if add_generation_prompt -%%}{{- \"<|im_start|>assistant\\n<think>\" -}}", b);
+    assert(template_detect(c24, NULL) == TMPL_LFM2_24B);
+    assert(template_from_name("lfm2-24b") == TMPL_LFM2_24B);
+    assert(!strcmp(template_name(TMPL_LFM2_24B), "lfm2-24b"));
+    const chat_msg hi[] = { CHAT_MSG("user", "HI") };
+    char g[256];
+    render_state st24 = {0};
+    render_messages_state(TMPL_LFM2_24B, hi, 1, true, THINK_DEFAULT, NULL, g, sizeof g, &st24);
+    assert(st24.reasoning_open && !strcmp(st24.opener, "<think>"));
     assert(template_from_name("lfm2-8b") == TMPL_LFM2_8B);
     assert(!strcmp(template_name(TMPL_LFM2_8B), "lfm2-8b"));
     const char *o = NULL, *c = NULL;

@@ -2033,6 +2033,40 @@
       }
     },
     {
+      "id": "lfm2.5-24b-a2b-q4_k_m",
+      "architecture": "lfm2moe",
+      "family": "LFM2.5",
+      "file": "models/LFM2.5-24B-A2B-Q4_K_M.gguf",
+      "sha256": "d3334405b96228eb9908cdebb5c6194908f2da64282bda852afc3a3910c64e7d",
+      "upstream": "LiquidAI/LFM2.5-24B-A2B-GGUF",
+      "tokenizer_reference": "LiquidAI/LFM2.5-24B-A2B",
+      "tokenizer_reference_revision": "3fcfdbfa1a1b6d8166846a6323e69f1e1254440d",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/lfm2.5-24b-a2b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "LiquidAI's own Q4_K_M (14,526,258,464 bytes, revision 0912d331 of LiquidAI/LFM2.5-24B-A2B-GGUF), architecture lfm2moe: 40 blocks (30 short-convolution, 10 GQA attention 32/8), hidden 2048, 2 leading dense blocks then 64 experts top 4 by sigmoid with an expert bias, vocabulary 128,000, tied output. Its tokenizer.json and its GGUF's tokenizer metadata are byte-identical to LFM2.5-8B-A1B's; 0 of 721 corpus strings differ from the publisher's tokenizer.json at 3fcfdbfa. Template family lfm2-24b (the 1.2B's rules with the thought kept after the last user turn and opened by the generation prompt). Not yet run here: its cells and the float32 reference are owed on the lab CPU lane. No llama.cpp greedy reference is declared, so greedy_reference is not claimed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 400,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "<|im_start|>",
+            "<|tool_call_start|>",
+            "<think>"
+          ]
+        },
+        "tokenizer": {
+          "expect_vocab_divergences": 0
+        }
+      }
+    },
+    {
       "id": "spark-x2.6-4b-q4_k_m",
       "architecture": "spark2_5",
       "family": "Spark",

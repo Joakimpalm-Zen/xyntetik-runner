@@ -2621,6 +2621,37 @@
           }
         }
       }
+    },
+    "lfm2.5-24b-a2b-q4_k_m": {
+      "prompt": "Which planet is closest to the Sun? Answer in two sentences.",
+      "n_predict": 600,
+      "ctx": 1024,
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/lfm2.5-24b-a2b-q4_k_m.linux-x86_64-cuda.cpu.txt",
+          "sha256": "4d889e0320a92128a06af70d4a4ea4ad6545b910860b72151b26ddb405b7b8c5",
+          "bytes": 130,
+          "finish_reason": "stop",
+          "completion_tokens": 127,
+          "spec": {
+            "prompt": "Which planet is closest to the Sun? Answer in two sentences.",
+            "n_predict": 600,
+            "ctx": 1024,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-30",
+            "runner_version": "1.8.0",
+            "commit": "025fd5ce6efc85dbf9081fae96aa211e7b5bc778"
+          }
+        }
+      }
     }
   }
 }

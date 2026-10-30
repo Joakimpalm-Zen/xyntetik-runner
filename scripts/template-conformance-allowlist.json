@@ -36,7 +36,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time from tokenizer.ggml.add_bos_token, so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2508-2514",
+        "lines": "2522-2528",
         "anchor": "BOS is added by the tokenizer,"
       },
       "corroborating_cite": {
@@ -54,7 +54,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time from tokenizer.ggml.add_bos_token (a Llama 3 file without the key gets it by default, as its own tokenizer does), so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2508-2514",
+        "lines": "2522-2528",
         "anchor": "BOS is added by the tokenizer,"
       },
       "corroborating_cite": {
@@ -72,7 +72,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time from tokenizer.ggml.add_bos_token (MiniCPM5's template opens with `{{- bos_token }}`), so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2508-2514",
+        "lines": "2522-2528",
         "anchor": "BOS is added by the tokenizer,"
       },
       "corroborating_cite": {
@@ -90,7 +90,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time (LFM2's tokenizer.json post-processor and the file's add_bos_token both say it; LFM2's template opens with `{{- bos_token -}}`), so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2459",
+        "lines": "2464",
         "anchor": "BOS is the tokenizer's, as on every family."
       },
       "corroborating_cite": {
@@ -108,7 +108,7 @@
       "why": "Llama-3.2's reference system turn carries 'Cutting Knowledge Date' plus a strftime_now() 'Today Date'. Runner does not embed a live date in a prompt: it is not model behaviour, it is wall-clock leakage, and it defeats the prefix cache by changing the prompt prefix every midnight.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2507-2513",
+        "lines": "2521-2527",
         "anchor": "runner does not embed a live date in a prompt"
       },
       "patch": {
@@ -122,7 +122,7 @@
       "why": "Consequence of llama3/cutting-knowledge-header: with the date header gone and no caller system message, the reference's system turn has no content left. Runner emits no turn at all rather than an empty one. This entry exists only to keep the residue of another deviation from reading as drift; it is not an independent decision.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2507-2513",
+        "lines": "2521-2527",
         "anchor": "runner does not embed a live date in a prompt"
       },
       "depends_on": "llama3/cutting-knowledge-header",
@@ -137,7 +137,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time from tokenizer.ggml.add_bos_token, so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2508-2514",
+        "lines": "2522-2528",
         "anchor": "BOS is added by the tokenizer,"
       },
       "corroborating_cite": {
@@ -155,7 +155,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time from tokenizer.ggml.add_bos_token, so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2508-2514",
+        "lines": "2522-2528",
         "anchor": "BOS is added by the tokenizer,"
       },
       "corroborating_cite": {
@@ -173,7 +173,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time from tokenizer.ggml.add_bos_token, so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2508-2514",
+        "lines": "2522-2528",
         "anchor": "BOS is added by the tokenizer,"
       },
       "corroborating_cite": {
@@ -191,7 +191,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time from tokenizer.ggml.add_bos_token, so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2508-2514",
+        "lines": "2522-2528",
         "anchor": "BOS is added by the tokenizer,"
       },
       "corroborating_cite": {
@@ -209,7 +209,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time from tokenizer.ggml.add_bos_token, so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2508-2514",
+        "lines": "2522-2528",
         "anchor": "BOS is added by the tokenizer,"
       },
       "corroborating_cite": {
@@ -227,7 +227,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time from tokenizer.ggml.add_bos_token, so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2508-2514",
+        "lines": "2522-2528",
         "anchor": "BOS is added by the tokenizer,"
       },
       "corroborating_cite": {
@@ -245,7 +245,7 @@
       "why": "With no caller system message the Apertus reference substitutes a default one built around strftime_now('%Y-%m-%d'); runner omits it for the same reason as llama3's date header. NOTE the omission is WIDER than the date: the whole default system turn goes, including the 'You are Apertus...' identity line and the knowledge-cutoff line. That is a deliberate scope choice (runner does not invent a persona the caller did not ask for), but it is a bigger deviation than the cited comment's wording suggests on its own.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2505-2511",
+        "lines": "2519-2525",
         "anchor": "when there is no system message the reference"
       },
       "patch": {
@@ -260,7 +260,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time from tokenizer.ggml.add_bos_token, so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2508-2514",
+        "lines": "2522-2528",
         "anchor": "BOS is added by the tokenizer,"
       },
       "corroborating_cite": {
@@ -278,7 +278,7 @@
       "why": "muse-glimmer's default system block carries a 'Current date:' line; runner omits it, same live-date-in-a-prompt reasoning as llama3 and apertus. CAVEAT, recorded on purpose: the cited comment says the line 'is conditional in the template (current_date is defined)'. Under transformers it is NOT conditional -- the template falls back to strftime_now -- so the STATED reason is inaccurate even though the omission is deliberate and consistent with the other families. The comment should be corrected in src/template.c; this entry stays valid on the live-date policy alone.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2763-2771",
+        "lines": "2777-2785",
         "anchor": "current_date is defined"
       },
       "patch": {
@@ -292,7 +292,7 @@
       "why": "The reference generation prompt is the bare '<|start|>assistant'. Runner primes '<|channel|>analysis<|message|>' instead, because the decoded open marker is the bare word 'analysis' -- far too common to hunt for in a free stream -- and priming lets the channel splitter start already inside reasoning. Only WITHOUT tools: with tools runner leaves the header bare so the constrained recipient stays reachable, which the builtin mirrors.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2723-2732",
+        "lines": "2742-2751",
         "anchor": "Priming lets the splitter start already inside"
       },
       "patch": {
@@ -306,7 +306,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time from tokenizer.ggml.add_bos_token, so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2508-2514",
+        "lines": "2522-2528",
         "anchor": "BOS is added by the tokenizer,"
       },
       "corroborating_cite": {
@@ -324,7 +324,7 @@
       "why": "The reference folds the system text into the user turn on `loop.last`, so a conversation that ends in a tool result (or a prefill) renders with the caller's system prompt dropped. Runner folds it into the last USER turn, which is where mistral-common, Mistral's own encoder, puts it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "3263-3272",
+        "lines": "3282-3291",
         "anchor": "as mistral-common's own encoder does."
       },
       "patch": {
@@ -338,7 +338,7 @@
       "why": "The reference folds the system text into the user turn on `loop.last`, so a conversation that ends in a tool result (or a prefill) renders with the caller's system prompt dropped. Runner folds it into the last USER turn, which is where mistral-common, Mistral's own encoder, puts it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "3263-3272",
+        "lines": "3282-3291",
         "anchor": "as mistral-common's own encoder does."
       },
       "patch": {
@@ -352,7 +352,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time (tokenizer.c sets add_bos for the k2-horizon pre, as IFM's tokenizer.json does; K2-Horizon's template opens with `{{- bos_token }}`), so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "4262-4263",
+        "lines": "4276-4277",
         "anchor": "The template opens with `{{- bos_token }}`; that token comes from the"
       },
       "corroborating_cite": {
@@ -370,7 +370,25 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time. LFM2.5-8B-A1B's GGUF carries no add_bos_token key, and a file of pre lfm2 without one gets BOS (tokenizer.c's bos_default), so the chat prompt opens with the one <|startoftext|> the template's `{{- bos_token -}}` writes. (Its tokenizer.json, unlike the 1.2B's, adds no BOS on encode: the template is where the model's BOS comes from, and runner's chat prompt carries it the same.)",
       "cite": {
         "file": "src/template.c",
-        "lines": "2459",
+        "lines": "2464",
+        "anchor": "BOS is the tokenizer's, as on every family."
+      },
+      "corroborating_cite": {
+        "file": "src/tokenizer.c",
+        "lines": "633-636",
+        "anchor": "strcmp(pre, \"lfm2\") == 0));"
+      },
+      "patch": {
+        "op": "strip-bos"
+      }
+    },
+    {
+      "id": "lfm2-24b/bos",
+      "family": "lfm2-24b",
+      "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time. LFM2.5-24B-A2B's GGUF carries no add_bos_token key, and a file of pre lfm2 without one gets BOS (tokenizer.c's bos_default), so the chat prompt opens with the one <|startoftext|> the template's `{{- bos_token -}}` writes. (Its tokenizer.json, unlike the 1.2B's, adds no BOS on encode: the template is where the model's BOS comes from, and runner's chat prompt carries it the same.)",
+      "cite": {
+        "file": "src/template.c",
+        "lines": "2464",
         "anchor": "BOS is the tokenizer's, as on every family."
       },
       "corroborating_cite": {

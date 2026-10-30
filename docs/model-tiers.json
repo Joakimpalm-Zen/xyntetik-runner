@@ -4671,6 +4671,101 @@
       }
     },
     {
+      "id": "lfm2.5-24b-a2b-q4_k_m",
+      "model": "LFM2.5-24B-A2B (LiquidAI)",
+      "family": "LFM2.5",
+      "tier": "tier2",
+      "claim": "Text path, LiquidAI's own Q4_K_M of LFM2.5-24B-A2B, which fails the fidelity bar: against the BF16 parent with float32 arithmetic it reads 0.144 mean KLD against 0.05 (84.0% top-1, 90.5% margin-qualified against 97%). The publisher's Q8_0 is the fidelity file (0.0297, 99.1% margin-qualified).",
+      "architecture": "lfm2moe",
+      "upstream": {
+        "checkpoint": "LiquidAI/LFM2.5-24B-A2B",
+        "revision": "3fcfdbfa1a1b6d8166846a6323e69f1e1254440d"
+      },
+      "files": [
+        {
+          "name": "LFM2.5-24B-A2B-Q4_K_M.gguf",
+          "repo": "LiquidAI/LFM2.5-24B-A2B-GGUF",
+          "revision": "0912d33141f77e10705345a6732bfd83f0252fdc",
+          "sha256": "d3334405b96228eb9908cdebb5c6194908f2da64282bda852afc3a3910c64e7d",
+          "bytes": 14526258464
+        }
+      ],
+      "quantization": "Q4_K_M (publisher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "This file: publisher tokenizer agreement (0 of 721 corpus strings, 0 of the gold corpus's 107 passages and 0 vocabulary entries differ from the 24B's tokenizer.json at 3fcfdbfa, byte-identical to the 8B-A1B's), template conformance 32 of 32 in text and tokens against its chat_template.jinja, and a chat answer at temperature 0 on the lab CPU lane with the GPU hidden. Both publisher quantizations against LiquidAI's BF16 parent with float32 arithmetic cast at use per decoder block on the lab CPU lane (transformers 5.16.1, gold-logits.py --upcast-at-use, 40 blocks, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files at 025fd5ce): Q8_0 0.0297 mean KLD / 91.3% top-1 / 99.1% margin-qualified, Q4_K_M 0.144 / 84.0% / 90.5%. The shared lfm2moe path was cleared on the 8B-A1B (Runner on its BF16 GGUF 0.0078), so no file-or-engine check is repeated here. The lfm2moe arithmetic is also checked against transformers' float32 on a converted random model (docs/compat-reports/lfm2.5-reference-2026-10-30/README.md). Record: docs/compat-reports/lfm2.5-24b-a2b-reference-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "CPU only: the GPU backends refuse lfm2moe by name and serve it on the CPU. The model thinks on every turn: its generation prompt opens the thought whatever enable_thinking says. A required or named tool choice takes the generic JSON envelope on this family. Licence: LFM Open License v1.0, which limits commercial use to entities with under US$10M annual revenue; the limit binds whoever runs the model.",
+        "evidence": [
+          "docs/compat-reports/lfm2.5-24b-a2b-reference-2026-10-30/README.md",
+          "docs/compat-reports/lfm2.5-reference-2026-10-30/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A GPU path (the GPU backends refuse lfm2moe by name and serve it on the CPU); task quality and the native Python-call tool protocol on the real checkpoint. The Q8_0 and the BF16 GGUF are not rows."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.8.0",
+          "date": "2026-10-30",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "025fd5ce6efc85dbf9081fae96aa211e7b5bc778",
+          "caps": {
+            "version": "1.8.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": null,
+            "gpu_name": null
+          },
+          "output_sha256": "4d889e0320a92128a06af70d4a4ea4ad6545b910860b72151b26ddb405b7b8c5",
+          "ran": "runner -m LFM2.5-24B-A2B-Q4_K_M.gguf --serve -c 1024 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=600 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/lfm2.5-24b-a2b-q4_k_m.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "limit",
+          "reason": "lfm2moe (short-convolution layers interleaved with GQA attention, routed experts) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
+        "metal": null
+      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-30",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29, the LFM2.5-24B-A2B item: the lfm2moe architecture is admitted with the 8B-A1B; its GGUF carries a third LFM2.5 template revision, implemented first.",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane (policy 2026-10-27). Maintained on report.",
+          "last_validated_release": null
+        }
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "recurrent architecture (short convolution)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover the short-convolution hybrid yet (lfm2moe)"
+        },
+        "runner_version": "1.8.0",
+        "date": "2026-10-30"
+      }
+    },
+    {
       "id": "spark-x2.6-4b-q4_k_m",
       "model": "Spark-X2.6-4B (XHToken)",
       "family": "Spark",

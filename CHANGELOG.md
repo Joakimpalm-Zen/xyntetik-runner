@@ -3,6 +3,28 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **LFM2.5-24B-A2B Q4_K_M admitted at Tier 2; it fails the fidelity bar,
+  and the publisher's Q8_0 is the fidelity file.** Against LiquidAI's BF16
+  parent with float32 arithmetic cast at use per decoder block (300
+  positions on the lab CPU lane), the Q4_K_M reads 0.144 mean KLD and 90.5%
+  margin-qualified top-1 against bars of 0.05 and 97%; the Q8_0 reads 0.0297
+  and 99.1% (`docs/compat-reports/lfm2.5-24b-a2b-reference-2026-10-30/README.md`).
+  Its CPU cell passes on an x86-64 host with the GPU hidden. Its template,
+  the same bytes in the repository and the GGUF, is the 1.2B's with two
+  differences, and Runner rendered it as the 1.2B's: a history turn's thought
+  is kept on every assistant turn after the last user turn, not on the last
+  assistant turn only, and the generation prompt opens the thought
+  (`<|im_start|>assistant` and a newline, then `<think>`), whatever
+  `enable_thinking` says. It is now `lfm2-24b`, and its reply's reasoning is
+  split from the opener the prompt wrote. Template conformance against the
+  24B's own chat_template.jinja is 32 of 32 in text and tokens; 21 of the
+  cases fail when it is rendered with the 1.2B's rules. Its tokenizer.json is
+  byte-identical to the 8B-A1B's, and the Q4_K_M reads as the publisher's
+  does on all 721 corpus strings, all 107 gold passages and every
+  vocabulary entry.
+
 ## v1.9.0 - 2026-10-30
 
 - **LFM2.5-8B-A1B Q4_K_M admitted at Tier 2; it fails the fidelity bar, and

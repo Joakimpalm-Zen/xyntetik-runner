@@ -136,7 +136,8 @@ char *render_prompt_state_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
 // nothing in the response says so.
 // An LFM2 assistant turn (chat_template.jinja): the thought as
 // `<think>...</think>` when this is a turn that keeps it (TMPL_LFM2: the last
-// assistant turn, and only a non-empty thought; TMPL_LFM2_8B: every turn
+// assistant turn, and only a non-empty thought; TMPL_LFM2_24B: every turn
+// after the last user turn, a non-empty thought; TMPL_LFM2_8B: every turn
 // after the last user turn, and any `thinking` the turn defines, an empty one
 // too); on the others a `</think>` in the content cuts it to what follows the
 // last one, trimmed. Then the content and the call list, with a trailing
@@ -753,11 +754,12 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         }
     }
     int last_user = -1;
-    if (tmpl_chatml_think(s->tmpl) || tmpl_qwen35(s->tmpl) || s->tmpl == TMPL_LFM2_8B)
+    if (tmpl_chatml_think(s->tmpl) || tmpl_qwen35(s->tmpl) || s->tmpl == TMPL_LFM2_8B ||
+        s->tmpl == TMPL_LFM2_24B)
         for (int i = 0; i < msgs->n; i++)
             if (!strcmp(chat_role(msgs->items[i]), "user")) last_user = i;
-    // LFM2 keeps the thought of the last assistant turn only (the 8B's
-    // revision: of every turn after the last user turn)
+    // LFM2 keeps the thought of the last assistant turn only (the 8B's and
+    // the 24B's revisions: of every turn after the last user turn)
     int last_assistant = -1;
     if (s->tmpl == TMPL_LFM2)
         for (int i = 0; i < msgs->n; i++)
@@ -847,12 +849,13 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                               i > last_user) ||
                               // MiniCPM5, MiMo, Spark and flint write the block
                               // on every assistant turn; LFM2 on the last one
-                              // only, the 8B's revision on those after the last
-                              // user
+                              // only, the 8B's and 24B's revisions on those
+                              // after the last user
                               s->tmpl == TMPL_MINICPM5 || s->tmpl == TMPL_MIMO ||
                               tmpl_argkv(s->tmpl) ||
                               (s->tmpl == TMPL_LFM2 && i == last_assistant) ||
-                              (s->tmpl == TMPL_LFM2_8B && i > last_user);
+                              ((s->tmpl == TMPL_LFM2_8B || s->tmpl == TMPL_LFM2_24B) &&
+                               i > last_user);
         char *content = message_text(msgs->items[i], s->tmpl, replay_reason,
                                      &oom);
         if (oom) break;
