@@ -1,0 +1,70 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-10-30T02:29:48Z",
+  "host": {
+    "os": "Darwin",
+    "machine": "arm64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 1.7.1"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "k2-horizon-0.9b-q8_0",
+      "architecture": "k2-horizon",
+      "file": "models/K2-Horizon-1B-Q8_0.gguf",
+      "expected_sha256": "741fb9ad263956c003883cb7caddeb14b4dfb9b4b67b5414ad12967e965dd547",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 479.9,
+          "stderr_tail": "rope: YaRN scaling x16.00 (model metadata)\ngpu: Metal backend on Apple M1 (zero-copy weights)\nloaded K2-Horizon-1B-Q8_0.gguf | k2-horizon | 28 layers | ctx 4096 | 4 threads | 0.08s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\ngpu: decode fusion on (byte-identical; RUNNER_METAL_FUSE=0 disables)\n\nprompt: 6 tok, 16.92 tok/s | gen: 1 tok, 47.09 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 142.1,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": ""
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 495.07,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "2 + 2 = 4.\n"
+        }
+      },
+      "resolved_file": "models/K2-Horizon-1B-Q8_0.gguf",
+      "actual_sha256": "741fb9ad263956c003883cb7caddeb14b4dfb9b4b67b5414ad12967e965dd547",
+      "file_status": "pass",
+      "complete": true
+    }
+  ],
+  "complete": true,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "pass": 1
+      },
+      "chat": {
+        "pass": 1
+      }
+    }
+  }
+}

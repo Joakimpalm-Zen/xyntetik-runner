@@ -702,6 +702,14 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         send_error(fd, oom ? 500 : 400, terr);
         return;
     }
+    {
+        char why[480];
+        if (!template_tools_check(s->tmpl, tools, why, sizeof why)) {
+            jv_free(tools);
+            send_error(fd, 400, why);
+            return;
+        }
+    }
     jv *choice_raw = jv_get(req, "tool_choice");
     jv *choice_owned = NULL;
     if (choice_raw && choice_raw->type == J_OBJ) {

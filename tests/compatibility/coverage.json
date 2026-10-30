@@ -722,6 +722,26 @@
     "metal": "UNSUPPORTED"
    },
    "note": "DeepSeek-style turn tokens with ASCII role tags, an always-written system block, thinking on by default, GLM-style <arg_key> calls"
+  },
+  "k2-horizon": {
+   "artifact": "k2-horizon-0.9b-q8_0",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "the template renders the GGUF's own markdown tool declarations and <ifm|tool_calls> blocks (template-conformance k2-horizon, 23/23 text and tokens, 2026-10-30; the 44-case schema torture set byte for byte, test_k2h_tool_schema_fixture) and the ifm_argkv_xml parser is pinned on fixtures (test_k2h_ifm_calls); the live tool gate has not been run on this artifact"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "the file carries no general.sampling.*; no family preset"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   },
+   "note": "<|ifm|im_start|> turns, markdown tool declarations, a think block on every assistant turn, thinking on by default, reasoning_effort high only"
   }
  },
  "architectures": {
@@ -1262,6 +1282,28 @@
     "cpu": "NOT RUN",
     "cuda": "UNSUPPORTED",
     "metal": "UNSUPPORTED"
+   }
+  },
+  "k2-horizon": {
+   "templates": [
+    "k2-horizon"
+   ],
+   "artifacts": [
+    "k2-horizon-0.9b-q8_0",
+    "k2-horizon-0.9b-q4_k_m",
+    "k2-horizon-7b-q8_0",
+    "k2-horizon-7b-q4_k_m"
+   ],
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
    }
   }
  }

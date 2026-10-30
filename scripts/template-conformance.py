@@ -236,6 +236,17 @@ FAMILIES = {
         note="XHToken/Spark-X2.5-4B chat_template.jinja at 0bcb3567",
         tool_family=True, thinking_var="enable_thinking",
         tokenizer=("Spark-X2.5-4B-Q4_K_M.gguf", "Spark-X2.6-1.7B-Q8_0.gguf")),
+    # IFM K2-Horizon: <|ifm|im_start|> turns, a think block on every
+    # assistant turn, markdown tool declarations and <ifm|tool_calls> blocks.
+    # The oracle is the template the GGUFs carry (the same 43,040 bytes in
+    # the 0.9B and the 7B files), which is what Runner serves; the
+    # repositories' chat_template.jinja is a later revision.
+    "k2-horizon": Family(
+        "k2-horizon", ("gguf", "models/K2-Horizon-1B-Q8_0.gguf"),
+        note="the template embedded in IFM/K2-Horizon-0.9B-GGUF and "
+             "IFM/K2-Horizon-7B-GGUF",
+        tool_family=True, thinking_var="enable_thinking",
+        tokenizer=("K2-Horizon-1B-Q8_0.gguf",)),
     "llama2": Family(
         "llama2", ("hf", "unsloth/llama-2-7b-chat"),
         note="meta-llama/Llama-2-7b-chat-hf is gated (HTTP 401); this mirror "
@@ -1088,7 +1099,8 @@ def jinja_env():
     # and lstrip_blocks apply to them, so they are parsed the same way here
     # (generation_block) rather than deleted from the source: deleting them
     # joined the whitespace on both sides, which hid the blank lines Trinity
-    # Nano's template writes around each assistant turn (TMPL_TRINITY).
+    # Nano's template writes around each assistant turn (TMPL_TRINITY) and
+    # the newline after K2-Horizon's assistant header.
     env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True,
                                         extensions=[jinja2.ext.loopcontrols,
                                                     generation_block])

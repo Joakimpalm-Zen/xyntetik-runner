@@ -177,6 +177,10 @@
     "spark25": {
       "fixture": "plain",
       "reasoning": "tags"
+    },
+    "k2-horizon": {
+      "fixture": "plain",
+      "reasoning": "tags"
     }
   }
 }

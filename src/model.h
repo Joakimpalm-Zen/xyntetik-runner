@@ -383,6 +383,9 @@ typedef struct {
     // until 2026-09-07: RMSNorm neither centres nor adds the bias, and the
     // GGUF's norm bias tensors were being loaded by nobody.
     bool         norm_layernorm;
+    int          norm_groups;     // k2-horizon: the hidden-state RMSNorms
+                                  // normalise this many equal slices (0 or
+                                  // 1: full width)
     layer_t     *layers;
     // phi3 fuses Q/K/V and the FFN gate/up into single tensors; these are the
     // sliced descriptors the layers point at, owned here so they outlive init

@@ -5,6 +5,50 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **YaRN reads the ramp and the attention factor the file declares.** A YaRN
+  model's `beta_fast`, `beta_slow` and `attention_factor` (written as
+  `rope.scaling.yarn_beta_fast`, `_slow` and `rope.scaling.yarn_attn_factor`)
+  were ignored for 32, 1 and Runner's own `1 + 0.1 ln(factor)`, so a model
+  trained with other ends roped with the ramp in the wrong place; IFM's
+  K2-Horizon-0.9B declares 128 and 4. A file without the keys is unchanged.
+- **The k2-horizon architecture and its tokenizer rule.** IFM's dense
+  K2-Horizon models are llama-shaped except for their RMSNorms, which
+  normalise the hidden vector in equal groups before one full-width weight
+  (four on the 7B, one on the 0.9B). The grouped norm runs on the CPU, so a
+  grouped file falls back from the GPU by name and refuses LoRA training by
+  name; the family's MoE, value-expert and gated members are refused by name.
+  The tokenizer pre `k2-horizon` (the Llama 3 split with combining marks and
+  zero-width joiners inside letter runs, under NFC) reads 0 of 721 corpus
+  strings differently from the publisher's tokenizer.json on the 0.9B.
+- **K2-Horizon-0.9B Q8_0 and Q4_K_M admitted at Tier 2; the Q4_K_M fails
+  the fidelity bar.** IFM's own Q8_0 loads, tokenizes as the publisher's
+  tokenizer.json does (0 of 721), renders the template its GGUF carries token
+  for token (23 of 23) and answers through it on the Metal laptop, on the GPU
+  and on the CPU; against the BF16 checkpoint computed in float32 it reads
+  0.0037 and 97.3% top-1 (100% margin-qualified), the fidelity file. The
+  publisher's Q4_K_M reads 0.108 against a 0.05 bar (97.1% margin-qualified),
+  the file's quantization; it is a Tier 2 row of its own with that failure
+  first, as MiniCPM5's Q4_K_M is
+  (`docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md`). The
+  7B's two files are listed as upcoming: their tokenizer (0 of 721) and
+  template are checked, and against the BF16 parent in float32 the Q8_0 reads
+  0.0159 while the Q4_K_M reads 0.1225 and fails the bar
+  (`docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md`); their
+  CPU cells are owed.
+- **YaRN's attention factor follows the factor in use.** A file's
+  `rope.scaling.yarn_attn_factor` is the magnitude for its own factor; under
+  `--yarn-factor` or an automatic context extension Runner now takes the
+  default for the factor it applies.
+- **The k2-horizon chat template.** Turns framed by `<|ifm|im_start|>` and
+  `<|ifm|im_end|>`; declared tools written as the template's markdown, or as
+  one JSON line per tool when a schema uses a construct its markdown renderer
+  does not handle; a think block on every assistant turn, empty when the turn
+  carries no reasoning, as the template writes it; calls as `<ifm|tool_calls>`
+  blocks, parsed on the way out, buffered and streamed (`ifm_argkv_xml`).
+  Schemas the template refuses are answered 400 with its reason on all three
+  surfaces, and a 44-case tool-schema set is checked byte for byte against the
+  template's own renders. `reasoning_effort` medium and low are refused: their
+  think blocks are not split from the answer yet.
 - **LFM2 reads a history turn's thought from the fields its template reads.**
   LFM2.5's chat template takes the thought from `thinking`, then
   `reasoning`, then `reasoning_content`, the first one set and not empty, and

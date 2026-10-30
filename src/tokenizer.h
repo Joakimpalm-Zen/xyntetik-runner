@@ -8,7 +8,7 @@
 // none can fill: eos, the file's declared eog ids, the turn ends Runner knows
 // by spelling, and the longest per-architecture list (Harmony's two).
 // tok_stop_ids asserts the two lists' lengths against these.
-enum { TOK_EOG_MAX = 32, TOK_STOP_SPELLINGS = 11, TOK_STOP_ARCH_MAX = 2,
+enum { TOK_EOG_MAX = 32, TOK_STOP_SPELLINGS = 12, TOK_STOP_ARCH_MAX = 2,
        TOK_STOP_MAX = 1 + TOK_EOG_MAX + TOK_STOP_SPELLINGS + TOK_STOP_ARCH_MAX };
 
 enum { TOK_SPM, TOK_BPE, TOK_BPE_SPM }; // BPE_SPM: gemma4 (spaces to U+2581, raw-UTF-8 BPE)
@@ -26,7 +26,10 @@ enum { TOK_PRE_GPT2, TOK_PRE_LLAMA3, TOK_PRE_QWEN2, TOK_PRE_SMOLLM, TOK_PRE_AFMO
        TOK_PRE_MINICPM5,
        // XHToken Spark 2.5 (spark2_5): afmoe's main regex with digits split
        // one by one, a narrower CJK set, and newlines taken one at a time
-       TOK_PRE_SPARK25 };
+       TOK_PRE_SPARK25,
+       // IFM K2-Horizon (k2-horizon): the Llama 3 regex with combining marks
+       // and ZWNJ/ZWJ inside letter runs; NFC
+       TOK_PRE_K2H };
 
 typedef struct { const char *key; uint32_t klen; int32_t val; } hmap_ent;
 typedef struct { hmap_ent *e; size_t cap; } hmap;

@@ -4541,6 +4541,406 @@
           "last_validated_release": null
         }
       ]
+    },
+    {
+      "id": "k2-horizon-0.9b-q8_0",
+      "model": "K2-Horizon-0.9B (IFM)",
+      "family": "K2-Horizon",
+      "tier": "tier2",
+      "claim": "Text path, IFM's own Q8_0 of K2-Horizon 0.9B, the fidelity file of the publisher's two: against the BF16 parent computed in float32 it reads 0.0037 mean KLD and 97.3% top-1 (300 positions, Metal).",
+      "architecture": "k2-horizon",
+      "upstream": {
+        "checkpoint": "IFM/K2-Horizon-0.9B",
+        "revision": "d50881f4f8dc6923fb8f301e1c2313fe3a2b6c1d"
+      },
+      "files": [
+        {
+          "name": "K2-Horizon-1B-Q8_0.gguf",
+          "repo": "IFM/K2-Horizon-0.9B-GGUF",
+          "revision": "118965081cf1d876990219a1856a93a97b2668fa",
+          "sha256": "741fb9ad263956c003883cb7caddeb14b4dfb9b4b67b5414ad12967e965dd547",
+          "bytes": 1148614016
+        }
+      ],
+      "quantization": "Q8_0 (publisher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both publisher files against IFM's BF16 parent computed in float32 on the CPU (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0037 mean KLD / 97.3% top-1 / 100% margin-qualified, Q4_K_M 0.108 / 81.7% / 97.1%; Q4_K_M against Q8_0 from the same score files 0.098 / 83.3%. Tokenizer 0/721 against the publisher's tokenizer.json at d50881f4, template conformance 23/23 in text and tokens against the template the GGUF carries, its 44-case tool-schema torture set byte for byte. Record: docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "reasoning_effort medium and low are refused (their think blocks are not split from the answer yet); high, the default, and thinking off are served. A tool without a parameters object is refused, as the template refuses it. A required or named tool choice takes the generic JSON envelope on this family.",
+        "evidence": [
+          "docs/compat-reports/1.7.1-2026-10-30-macos-arm64-k2-horizon-0.9b-q8_0.json",
+          "docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md",
+          "tests/compatibility/coverage.json",
+          "tests/fixtures/k2-horizon-tool-schemas.json"
+        ],
+        "missing": "The Windows CUDA host's CPU and CUDA cells; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's Q4_K_M fails the fidelity bar (0.108); it is its own row, with that failure first."
+      },
+      "smoke": {
+        "device_class": "macos-arm64-metal",
+        "backend": "metal"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "c159098d09983ad9fa1b717968297a84023c8342",
+          "caps": {
+            "version": "1.7.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "b9af23d3578b00d9544b798aa58e0b34d7f068861d52823edb44e798a1c9c6a7",
+          "ran": "runner -m K2-Horizon-1B-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.macos-arm64-metal.cpu.txt"
+        },
+        "cuda": null,
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "c159098d09983ad9fa1b717968297a84023c8342",
+          "caps": {
+            "version": "1.7.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "b9af23d3578b00d9544b798aa58e0b34d7f068861d52823edb44e798a1c9c6a7",
+          "ran": "runner -m K2-Horizon-1B-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.macos-arm64-metal.metal.txt"
+        }
+      },
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-30"
+      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-30",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29, the fourth item: a new architecture (k2-horizon), its tokenizer rule and its chat template, implemented before validation.",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the admitting cells from the Metal laptop (policy 2026-10-27). Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
+      "id": "k2-horizon-0.9b-q4_k_m",
+      "model": "K2-Horizon-0.9B (IFM)",
+      "family": "K2-Horizon",
+      "tier": "tier2",
+      "claim": "Text path, IFM's own Q4_K_M of K2-Horizon 0.9B, which fails the fidelity bar: against the BF16 parent computed in float32 it reads 0.108 mean KLD against 0.05 (81.7% top-1, 97.1% margin-qualified, inside its 97%), and 0.098 against its own Q8_0. The Q8_0 is the fidelity file.",
+      "architecture": "k2-horizon",
+      "upstream": {
+        "checkpoint": "IFM/K2-Horizon-0.9B",
+        "revision": "d50881f4f8dc6923fb8f301e1c2313fe3a2b6c1d"
+      },
+      "files": [
+        {
+          "name": "K2-Horizon-1B-Q4_K_M.gguf",
+          "repo": "IFM/K2-Horizon-0.9B-GGUF",
+          "revision": "118965081cf1d876990219a1856a93a97b2668fa",
+          "sha256": "78bff592aeba235c767c93a0bda5870d5a4a8dca21c2a2d502930dd3078c79f2",
+          "bytes": 666184064
+        }
+      ],
+      "quantization": "Q4_K_M (publisher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both publisher files against IFM's BF16 parent computed in float32 on the CPU (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0037 mean KLD / 97.3% top-1 / 100% margin-qualified, Q4_K_M 0.108 / 81.7% / 97.1%; Q4_K_M against Q8_0 from the same score files 0.098 / 83.3%. Tokenizer 0/721 against the publisher's tokenizer.json at d50881f4, template conformance 23/23 in text and tokens against the template the GGUF carries, its 44-case tool-schema torture set byte for byte. Record: docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "reasoning_effort medium and low are refused (their think blocks are not split from the answer yet); high, the default, and thinking off are served. A tool without a parameters object is refused, as the template refuses it. A required or named tool choice takes the generic JSON envelope on this family.",
+        "evidence": [
+          "docs/compat-reports/1.7.1-2026-10-30-macos-arm64-k2-horizon-0.9b-q4_k_m.json",
+          "docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md",
+          "tests/compatibility/coverage.json",
+          "tests/fixtures/k2-horizon-tool-schemas.json"
+        ],
+        "missing": "The Windows CUDA host's CPU and CUDA cells; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
+      },
+      "smoke": {
+        "device_class": "macos-arm64-metal",
+        "backend": "metal"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "5cc154e261a72e8929febf46cbbf50f81ca06b1d",
+          "caps": {
+            "version": "1.7.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "128cdfebbb63b10f2d4074e91d4181bef3735d93c46bb5a31e84ccfa656b9601",
+          "ran": "runner -m K2-Horizon-1B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q4_k_m.macos-arm64-metal.cpu.txt"
+        },
+        "cuda": null,
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "5cc154e261a72e8929febf46cbbf50f81ca06b1d",
+          "caps": {
+            "version": "1.7.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "128cdfebbb63b10f2d4074e91d4181bef3735d93c46bb5a31e84ccfa656b9601",
+          "ran": "runner -m K2-Horizon-1B-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q4_k_m.macos-arm64-metal.metal.txt"
+        }
+      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-30",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29, the fourth item: a new architecture (k2-horizon), its tokenizer rule and its chat template, implemented before validation.",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the admitting cells from the Metal laptop (policy 2026-10-27). Maintained on report.",
+          "last_validated_release": null
+        }
+      ],
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-30"
+      }
+    },
+    {
+      "id": "k2-horizon-7b-q8_0",
+      "model": "K2-Horizon-7B (IFM)",
+      "family": "K2-Horizon",
+      "tier": "tier2",
+      "claim": "Text path, IFM's own Q8_0 of K2-Horizon 7B, the fidelity file of the publisher's two: against the BF16 parent computed in float32 it reads 0.0159 mean KLD and 95.0% top-1 (300 positions, CPU).",
+      "architecture": "k2-horizon",
+      "upstream": {
+        "checkpoint": "IFM/K2-Horizon-7B",
+        "revision": "4622f94a6632384784471fd674d5b78f8d527798"
+      },
+      "files": [
+        {
+          "name": "K2-Horizon-7B-Q8_0.gguf",
+          "repo": "IFM/K2-Horizon-7B-GGUF",
+          "revision": "7a75dbda05e3d440351543131ff3f7fa5687e879",
+          "sha256": "5a98a289aba5c8c99ef05c9261287f19e8f586fd679bab45b632eb86b47809bf",
+          "bytes": 9573964160
+        }
+      ],
+      "quantization": "Q8_0 (publisher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both publisher files against IFM's BF16 parent computed in float32 on the lab CPU lane (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, BOS native, the Runner sides from CPU score files at 5cc154e2): Q8_0 0.0159 mean KLD / 95.0% top-1 / 100% margin-qualified, Q4_K_M 0.1225 / 84.3% / 95.8%. Tokenizer 0/721 against the publisher's tokenizer.json at 4622f94a, template conformance as the 0.9B's (the same template). Record: docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "CPU only: the grouped RMSNorm (four groups) has no GPU kernel yet, so the GPU backends serve it on the CPU. reasoning_effort medium and low are refused (their think blocks are not split from the answer yet); high, the default, and thinking off are served. A tool without a parameters object is refused, as the template refuses it. A required or named tool choice takes the generic JSON envelope on this family.",
+        "evidence": [
+          "docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "The Windows CUDA host's CPU cell; a GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "809257d7e57c88625691fe5fc65c53ee315f6aae",
+          "caps": {
+            "version": "1.7.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": null,
+            "gpu_name": null
+          },
+          "output_sha256": "e9b3df046270dbf72909ee397bf99e7e1269069cb5cf8f3e80e2cfb6dd2562c1",
+          "ran": "runner -m K2-Horizon-7B-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-7b-q8_0.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": null,
+        "metal": null
+      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-30",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29, the fourth item: the 7B member, which carries the grouped RMSNorm the 0.9B does not.",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane and a float32 reference measurement (policy 2026-10-27). Maintained on report.",
+          "last_validated_release": null
+        }
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "grouped RMSNorm (k2-horizon) not in the backward"
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-30"
+      }
+    },
+    {
+      "id": "k2-horizon-7b-q4_k_m",
+      "model": "K2-Horizon-7B (IFM)",
+      "family": "K2-Horizon",
+      "tier": "tier2",
+      "claim": "Text path, IFM's own Q4_K_M of K2-Horizon 7B, which fails the fidelity bar: against the BF16 parent computed in float32 it reads 0.1225 mean KLD against 0.05 (84.3% top-1, 95.8% margin-qualified against 97%). The Q8_0 is the fidelity file.",
+      "architecture": "k2-horizon",
+      "upstream": {
+        "checkpoint": "IFM/K2-Horizon-7B",
+        "revision": "4622f94a6632384784471fd674d5b78f8d527798"
+      },
+      "files": [
+        {
+          "name": "K2-Horizon-7B-Q4_K_M.gguf",
+          "repo": "IFM/K2-Horizon-7B-GGUF",
+          "revision": "7a75dbda05e3d440351543131ff3f7fa5687e879",
+          "sha256": "eb89c15a0ae9712be2ee462bf43802de14200f20f93b73da6eb68c2ebdd28e4e",
+          "bytes": 5592217984
+        }
+      ],
+      "quantization": "Q4_K_M (publisher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both publisher files against IFM's BF16 parent computed in float32 on the lab CPU lane (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, BOS native, the Runner sides from CPU score files at 5cc154e2): Q8_0 0.0159 mean KLD / 95.0% top-1 / 100% margin-qualified, Q4_K_M 0.1225 / 84.3% / 95.8%. Tokenizer 0/721 against the publisher's tokenizer.json at 4622f94a, template conformance as the 0.9B's (the same template). Record: docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "CPU only: the grouped RMSNorm (four groups) has no GPU kernel yet, so the GPU backends serve it on the CPU. reasoning_effort medium and low are refused (their think blocks are not split from the answer yet); high, the default, and thinking off are served. A tool without a parameters object is refused, as the template refuses it. A required or named tool choice takes the generic JSON envelope on this family.",
+        "evidence": [
+          "docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "The Windows CUDA host's CPU cell; a GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "809257d7e57c88625691fe5fc65c53ee315f6aae",
+          "caps": {
+            "version": "1.7.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": null,
+            "gpu_name": null
+          },
+          "output_sha256": "537c65d7aee2a58da20a924ad7b9de06a830e23806c99d0364ca623a4a6e825f",
+          "ran": "runner -m K2-Horizon-7B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-7b-q4_k_m.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": null,
+        "metal": null
+      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-30",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29, the fourth item: the 7B member, which carries the grouped RMSNorm the 0.9B does not.",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane and a float32 reference measurement (policy 2026-10-27). Maintained on report.",
+          "last_validated_release": null
+        }
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "grouped RMSNorm (k2-horizon) not in the backward"
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-30"
+      }
     }
   ]
 }

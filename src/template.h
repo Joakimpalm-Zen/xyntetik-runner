@@ -229,7 +229,22 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // straight after the default sentence and the declarations as tojson
        // with Python's default separators. Detected by the same tags without
        // thinking_effort. Appended last.
-       TMPL_SPARK25 };
+       TMPL_SPARK25,
+       // IFM K2-Horizon (the template embedded in IFM's K2-Horizon-0.9B and
+       // -7B GGUFs, 43,040 bytes, the same in both): turns are
+       // <|ifm|im_start|>ROLE\nCONTENT<|ifm|im_end|> with nothing between
+       // them; tools become the system turn (a fixed preamble, the
+       // declarations rendered as markdown, or as one JSON line each when a
+       // schema uses a construct the markdown renderer does not handle, the
+       // call-format instructions, then the caller's system text); every
+       // assistant turn writes a think block, `<ifm|think>\nR\n</ifm|think>\n`
+       // or an empty `<ifm|think>\n</ifm|think>\n`; calls are
+       // <ifm|tool_calls> blocks of <ifm|tool_call>NAME then
+       // <ifm|arg_key>K</ifm|arg_key> <ifm|arg_value>V</ifm|arg_value> pairs.
+       // Thinking defaults on and pre-seeds `<ifm|think>\n`; off writes the
+       // closed empty block. Detected by its <|ifm|im_start|> turn token.
+       // Appended last.
+       TMPL_K2H };
 
 // The reasoning tags a TEMPLATE family writes, for the families whose
 // protocol (not their architecture) defines them: the `<think>` block of
@@ -389,6 +404,9 @@ bool template_roles_valid(int tmpl, const char *const *roles, int n,
 //     defaults TRUE (`| default(true)`), so DEFAULT and ON pre-seed '<think>' and
 //     OFF writes '</think>'; THINK_EFFORT_LOW selects the low-effort system text,
 //     everything else the high one
+//   TMPL_K2H           IFM K2-Horizon GGUF template: enable_thinking false
+//     closes an empty block ('<ifm|think>\n</ifm|think>\n'); DEFAULT and ON
+//     open '<ifm|think>\n' (reasoning_effort high, the template's default)
 //   TMPL_MINICPM5      openbmb/MiniCPM5-2B chat_template.jinja (think pre-seed
 //     on ON, closed block on OFF, nothing on DEFAULT: `enable_thinking is
 //     defined` gates both branches)
@@ -478,9 +496,24 @@ int req_reasoning_strength(struct jv *req);
 // Spark's `reasoning_effort`: high (the default, xhigh read as high) or low;
 // -1 for anything its template refuses (medium included)
 int req_spark_effort(struct jv *req);
+// K2-Horizon's `reasoning_effort`: 0 for high (also absent), the only effort
+// this build serves; -1 with *why set for anything else. Its template opens
+// medium as <ifm|think_fast> and low as <ifm|think_faster>, blocks the
+// reasoning splitter here does not follow yet (it reads one tag pair per
+// model), so those two are refused by name rather than served with the
+// reasoning leaking into the content; any other value the template itself
+// refuses.
+int req_k2h_effort(struct jv *req, const char **why);
+// The declarations' faults that the family's own template refuses to render
+// (K2-Horizon's validate_tools / validate_schema raise on them): true when
+// the template would render `tools`; false with `err` naming the fault,
+// which the caller answers 400. Every other family renders any schema the
+// envelope builder admitted and gets true.
+bool template_tools_check(int tmpl, const struct jv *tools, char *err,
+                          size_t err_cap);
 // The effort bits a request asks of the families whose template renders one
-// (Qwen 3.8, Spark X2.6, Muse), OR'd into `thinking`; 0 for every other family and for
-// an absent value; -1 with *why set for a value the family's template
+// (Qwen 3.8, Spark X2.6, Muse, K2-Horizon), OR'd into `thinking`; 0 for
+// every other family and for an absent value; -1 with *why set for a value the family's template
 // refuses. One reading for the chat and Responses surfaces.
 int req_template_effort(int tmpl, struct jv *req, const char **why);
 // `bare_recipients` from the request (top level or chat_template_kwargs):
@@ -531,6 +564,15 @@ struct jv *tool_call_synth(const char *name, const char *args_json, const char *
 // *turn_name to the name the assistant chat_msg must carry (muse) or NULL.
 void assistant_calls_render(int tmpl, const char *text, const struct jv *calls,
                             struct sbuf *out, const char **turn_name);
+// K2-Horizon's assistant turn body (after `<|ifm|im_start|>assistant\n`), as
+// its template writes it: a think block always, `<TAG>\nR\n</TAG>\n` or the
+// empty `<TAG>\n</TAG>\n`, then the content without leading newlines, then
+// the calls behind a newline when there was content. `reason` is the turn's
+// reasoning field (NULL when it carries none: the content is then searched
+// for a closed block, as the template does) and `tag` the block it names
+// (NULL for ifm|think).
+void k2h_assistant_body(const char *reason, const char *tag, const char *text,
+                        const struct jv *calls, struct sbuf *out);
 // Wrap a replayed tool RESULT in the family's native protocol; returns the role
 // ("user" for ornith's <tool_response> user turn, "tool" otherwise) and writes
 // the wrapped content to `out`.
@@ -583,6 +625,7 @@ enum tool_proto {
     TP_MINICPM_XML,   // MiniCPM5 <function name="N"><param name="K">V</param></function>
     TP_LFM2,          // LFM2 <|tool_call_start|>[name(key=value, ...)]<|tool_call_end|>
     TP_ARGKV,         // Spark <tool_call>N<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>
+    TP_IFM_ARGKV,     // K2-Horizon: the same pairs in <ifm|...> tags, inside <ifm|tool_calls>
 };
 
 typedef struct {

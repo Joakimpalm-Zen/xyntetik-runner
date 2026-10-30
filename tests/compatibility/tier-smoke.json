@@ -2045,6 +2045,166 @@
           }
         }
       }
+    },
+    "k2-horizon-0.9b-q8_0": {
+      "pins": {
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.macos-arm64-metal.metal.txt",
+          "sha256": "b9af23d3578b00d9544b798aa58e0b34d7f068861d52823edb44e798a1c9c6a7",
+          "bytes": 166,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-30",
+            "runner_version": "1.7.1",
+            "commit": "c159098d09983ad9fa1b717968297a84023c8342"
+          }
+        },
+        "macos-arm64-metal/cpu": {
+          "path": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q8_0.macos-arm64-metal.cpu.txt",
+          "sha256": "b9af23d3578b00d9544b798aa58e0b34d7f068861d52823edb44e798a1c9c6a7",
+          "bytes": 166,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-30",
+            "runner_version": "1.7.1",
+            "commit": "c159098d09983ad9fa1b717968297a84023c8342"
+          }
+        }
+      }
+    },
+    "k2-horizon-0.9b-q4_k_m": {
+      "pins": {
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q4_k_m.macos-arm64-metal.metal.txt",
+          "sha256": "128cdfebbb63b10f2d4074e91d4181bef3735d93c46bb5a31e84ccfa656b9601",
+          "bytes": 128,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-30",
+            "runner_version": "1.7.1",
+            "commit": "5cc154e261a72e8929febf46cbbf50f81ca06b1d"
+          }
+        },
+        "macos-arm64-metal/cpu": {
+          "path": "tests/compatibility/tier-smoke/k2-horizon-0.9b-q4_k_m.macos-arm64-metal.cpu.txt",
+          "sha256": "128cdfebbb63b10f2d4074e91d4181bef3735d93c46bb5a31e84ccfa656b9601",
+          "bytes": 128,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-30",
+            "runner_version": "1.7.1",
+            "commit": "5cc154e261a72e8929febf46cbbf50f81ca06b1d"
+          }
+        }
+      }
+    },
+    "k2-horizon-7b-q8_0": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/k2-horizon-7b-q8_0.linux-x86_64-cuda.cpu.txt",
+          "sha256": "e9b3df046270dbf72909ee397bf99e7e1269069cb5cf8f3e80e2cfb6dd2562c1",
+          "bytes": 217,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-30",
+            "runner_version": "1.7.1",
+            "commit": "809257d7e57c88625691fe5fc65c53ee315f6aae"
+          }
+        }
+      }
+    },
+    "k2-horizon-7b-q4_k_m": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/k2-horizon-7b-q4_k_m.linux-x86_64-cuda.cpu.txt",
+          "sha256": "537c65d7aee2a58da20a924ad7b9de06a830e23806c99d0364ca623a4a6e825f",
+          "bytes": 231,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-30",
+            "runner_version": "1.7.1",
+            "commit": "809257d7e57c88625691fe5fc65c53ee315f6aae"
+          }
+        }
+      }
     }
   }
 }

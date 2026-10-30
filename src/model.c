@@ -430,6 +430,7 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
     if (orig <= 0) orig = m->n_ctx_train;
 
     enum { RS_NONE, RS_LINEAR, RS_YARN } mode = RS_NONE;
+    bool yarn_meta = false;   // the factor in use is the file's own
     if (yarn_ovr > 0 && strcmp(sct, "yarn") != 0) {
         fprintf(stderr, "error: --yarn-factor requires model YaRN metadata "
                         "(%s.rope.scaling.type=yarn)\n", arch);
@@ -446,6 +447,7 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
         fprintf(stderr, "rope: linear scaling x%.2f (model metadata)\n", factor);
     } else if (strcmp(sct, "yarn") == 0 && factor > 1.0f) {
         mode = RS_YARN;
+        yarn_meta = true;
         fprintf(stderr, "rope: YaRN scaling x%.2f (model metadata)\n", factor);
     } else if (m->n_ctx > m->n_ctx_train) {
         // automatic context extension for models trained on short contexts
@@ -485,8 +487,20 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
         // its config.json says `"truncate": false`. Rounding there moved every
         // frequency inside the ramp at every position (1.75x at dimension 17
         // of the real heads) -- invisible against llama.cpp, which rounds too.
-        float lo = yarn_corr_dim(m->rope_dim, orig, 32.0f, m->rope_base);
-        float hi = yarn_corr_dim(m->rope_dim, orig, 1.0f, m->rope_base);
+        // The ramp's ends are the file's beta_fast / beta_slow when it
+        // declares them (transformers' rope_parameters, which llama.cpp's
+        // converter writes as rope.scaling.yarn_beta_fast/_slow), 32 and 1
+        // otherwise. A hardcoded 32/1 put the ramp in the wrong place for a
+        // file that declares others: K2-Horizon-0.9B carries 128 and 4.
+        float beta_fast = gguf_get_f32(g, RK("rope.scaling.yarn_beta_fast"), 32.0f);
+        float beta_slow = gguf_get_f32(g, RK("rope.scaling.yarn_beta_slow"), 1.0f);
+        if (!(beta_fast > 0.0f) || !(beta_slow > 0.0f) || beta_slow > beta_fast) {
+            fprintf(stderr, "error: YaRN betas fast %g / slow %g are not a ramp\n",
+                    (double)beta_fast, (double)beta_slow);
+            return false;
+        }
+        float lo = yarn_corr_dim(m->rope_dim, orig, beta_fast, m->rope_base);
+        float hi = yarn_corr_dim(m->rope_dim, orig, beta_slow, m->rope_base);
         if (!m->gptoss) { lo = floorf(lo); hi = ceilf(hi); }
         if (lo < 0) lo = 0;
         if (hi > m->rope_dim - 1) hi = m->rope_dim - 1;
@@ -496,7 +510,19 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
             float s = keep + (1.0f - keep) / factor;
             m->rope_inv_freq[j] *= s;
         }
-        m->rope_mscale = 1.0f + 0.1f * logf(factor);
+        // transformers' attention_factor when the file carries it (written
+        // as rope.scaling.yarn_attn_factor), else its own default. The key
+        // REPLACES the default there (modeling_rope_utils), unlike ggml's
+        // attn_factor, which multiplies it; llama.cpp recomputes the default
+        // and cancels its own multiplier (llama-context.cpp), so a file's
+        // value and the default are the same number on every roster file
+        // that carries the key (2026-10-30 header scan). The value belongs
+        // to the file's own factor: a forced --yarn-factor or an automatic
+        // extension takes the default for the factor in use.
+        m->rope_mscale = yarn_meta
+            ? gguf_get_f32(g, RK("rope.scaling.yarn_attn_factor"),
+                           1.0f + 0.1f * logf(factor))
+            : 1.0f + 0.1f * logf(factor);
     }
     // The local table above was built from the raw base, BEFORE the block that
     // scales the global frequencies. For an arch whose sliding layers share
@@ -1216,7 +1242,7 @@ const char *const *model_supported_archs(size_t *count) {
         "smollm", "stablelm", "gemma3", "gemma4", "phi3", "gpt-oss",
         "apertus", "afmoe", "muse-glimmer", "granite", "granitehybrid",
         "nemotron_h", "nemotron_h_moe", "clef", "mellum", "lfm2", "lfm2moe",
-        "spark2_5",
+        "spark2_5", "k2-horizon",
     };
     if (count) *count = sizeof(arches) / sizeof(arches[0]);
     return arches;
@@ -2396,6 +2422,37 @@ static bool bind_meta_spark25(model_t *m, gguf_file *g, const char *arch) {
     // their own width, so they always get their own table: even a file whose
     // two bases matched would still rotate a different number of dims
     m->swa_rope_global = false;
+    return true;
+}
+
+// IFM K2-Horizon (k2-horizon), the dense members (0.9B, 3.7B, 7B). From the
+// publisher's modeling_k2_horizon.py and llama.cpp's src/models/k2-horizon.cpp:
+// a llama-shaped decoder (GQA, SiLU MLP, NeoX rope, untied head) whose
+// RMSNorms normalise the hidden vector in attention.group_norm_groups equal
+// slices before one full-width weight (7B: 4 groups, 0.9B: 1). The family's
+// larger members add per-head QK norms, an attention output gate, routed
+// experts and value experts (MoVA); none is implemented here, and a file
+// carrying one is refused by name rather than run without it.
+static bool bind_meta_k2h(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    int groups = (int)gguf_get_u32(g, AK("attention.group_norm_groups"), 1);
+    if (groups < 1 || m->n_embd % groups != 0) {
+        fprintf(stderr, "error: k2-horizon: %d norm groups do not divide "
+                "n_embd %d\n", groups, m->n_embd);
+        return false;
+    }
+    m->norm_groups = groups;
+    const char *missing = NULL;
+    if (gguf_get_u32(g, AK("expert_count"), 0) > 0) missing = "routed experts";
+    else if (gguf_get_u32(g, AK("attention.value_expert_count"), 0) > 0)
+        missing = "value experts (MoVA)";
+    else if (gguf_find_tensor(g, "blk.0.attn_q_norm.weight")) missing = "per-head QK norms";
+    else if (gguf_find_tensor(g, "blk.0.attn_gate.weight")) missing = "an attention output gate";
+    if (missing) {
+        fprintf(stderr, "error: this k2-horizon file uses %s, which Runner "
+                "implements for the dense 0.9B, 3.7B and 7B shape only\n", missing);
+        return false;
+    }
     return true;
 }
 
@@ -4503,6 +4560,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     if (strcmp(arch, "gpt-oss") == 0 && !bind_meta_gptoss(m, g, arch)) return false;
     if (strcmp(arch, "afmoe") == 0 && !bind_meta_afmoe(m, g, arch)) return false;
     if (strcmp(arch, "spark2_5") == 0 && !bind_meta_spark25(m, g, arch)) return false;
+    if (strcmp(arch, "k2-horizon") == 0 && !bind_meta_k2h(m, g, arch)) return false;
     // mellum (JetBrains Mellum2.x) is qwen3moe's attention and router with a
     // 3:1 sliding/full layout: bind_swa_default reads its boolean pattern, the
     // local table ropes at rope.freq_base_swa unscaled, and YaRN with its
@@ -5269,6 +5327,9 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_bytes
             cpu_why = "lfm2 is validated on the CPU only; its GPU path (the "
                       "short-convolution layers and their state) is not "
                       "checked yet";
+        else if (m->norm_groups > 1)
+            cpu_why = "this model normalises in groups (k2-horizon) and the "
+                      "GPU backends implement full-width RMSNorm only";
     }
     if (cpu_why) {
         fprintf(stderr, "gpu: %s — using CPU\n", cpu_why);
@@ -5528,8 +5589,19 @@ static void layernorm(float *o, const float *x, const float *w,
 // site goes through here so a family cannot silently get the wrong one.
 static inline void xnorm(const model_t *m, float *o, const float *x,
                          const float *w, const float *b, int n, float eps) {
-    if (m->norm_layernorm) layernorm(o, x, w, b, n, eps);
-    else                   rmsnorm(o, x, w, n, eps);
+    if (m->norm_layernorm) { layernorm(o, x, w, b, n, eps); return; }
+    if (m->norm_groups > 1 && n == m->n_embd) {
+        // k2-horizon: each of the equal slices gets its own RMS, then the
+        // full-width weight (a NULL w is the weightless form, as rmsnorm's)
+        int gs = n / m->norm_groups;
+        for (int k = 0; k < m->norm_groups; k++) {
+            const float *xs = x + (size_t)k * gs;
+            float *os = o + (size_t)k * gs;
+            rmsnorm(os, xs, w ? w + (size_t)k * gs : NULL, gs, eps);
+        }
+        return;
+    }
+    rmsnorm(o, x, w, n, eps);
 }
 
 // Attention softmax with a learned sink logit (gpt-oss). Transcribed from
@@ -9293,6 +9365,8 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
         r = "FFN activation not in the backward (gpt-oss/apertus)";
     else if (m->attn_gate_heads)
         r = "per-head attention output gate (spark2_5) not in the backward";
+    else if (m->norm_groups > 1)
+        r = "grouped RMSNorm (k2-horizon) not in the backward";
     // R8.9.4 (2026-09-08): head transforms (logit scale, softcap, suppress),
     // muP scalars and the embedding norm, the attention output gate, the
     // sandwich norms, the per-layer output scale and sliding-window

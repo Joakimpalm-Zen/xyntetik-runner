@@ -2008,6 +2008,145 @@ static void test_mimo_shape(void) {
     jv_free(tools);
 }
 
+// K2-Horizon (the template in IFM's K2-Horizon GGUFs): detection, the
+// generation prompt's two shapes, the effort the build serves, and the
+// assistant body the template writes when the history carries no reasoning
+// field (an empty think block, or the block the content holds, split out).
+static void test_k2h_shape(void) {
+    char out[8192];
+    assert(template_detect("{{- bos_token }}<|ifm|im_start|>", NULL) == TMPL_K2H);
+    assert(template_from_name("k2-horizon") == TMPL_K2H);
+    assert(!strcmp(template_name(TMPL_K2H), "k2-horizon"));
+    const char *o = NULL, *c = NULL;
+    assert(template_think_tags(TMPL_K2H, &o, &c) && !strcmp(o, "<ifm|think>") &&
+           !strcmp(c, "</ifm|think>"));
+    const chat_msg one[] = { CHAT_MSG("user", "HI") };
+    render_messages(TMPL_K2H, one, 1, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|ifm|im_start|>user\nHI<|ifm|im_end|>"
+                        "<|ifm|im_start|>assistant\n<ifm|think>\n"));
+    render_messages(TMPL_K2H, one, 1, true, THINK_OFF, out, sizeof(out));
+    assert(!strcmp(out, "<|ifm|im_start|>user\nHI<|ifm|im_end|>"
+                        "<|ifm|im_start|>assistant\n<ifm|think>\n</ifm|think>\n"));
+    // history: a plain answer gets the empty block; a block in the content
+    // is split out of it (the template's own `</ifm|think>` split); system
+    // turns after the first and tool turns are turns of their own
+    const chat_msg hist[] = {
+        CHAT_MSG("system", "S"), CHAT_MSG("user", "Q1"),
+        CHAT_MSG("assistant", "\nA1"),
+        CHAT_MSG("user", "Q2"),
+        CHAT_MSG("assistant", "<ifm|think_fast>\nshort\n\n</ifm|think_fast>\n\nA2"),
+        CHAT_MSG("system", "S2"), CHAT_MSG("tool", "r1"), CHAT_MSG("tool", "r2"),
+    };
+    render_messages(TMPL_K2H, hist, 8, false, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out,
+        "<|ifm|im_start|>system\nS<|ifm|im_end|>"
+        "<|ifm|im_start|>user\nQ1<|ifm|im_end|>"
+        "<|ifm|im_start|>assistant\n<ifm|think>\n</ifm|think>\nA1<|ifm|im_end|>"
+        "<|ifm|im_start|>user\nQ2<|ifm|im_end|>"
+        "<|ifm|im_start|>assistant\n<ifm|think_fast>\nshort\n</ifm|think_fast>\nA2<|ifm|im_end|>"
+        "<|ifm|im_start|>system\nS2<|ifm|im_end|>"
+        "<|ifm|im_start|>tool\nr1<|ifm|im_end|><|ifm|im_start|>tool\nr2<|ifm|im_end|>"));
+    // a reasoning field wins over a block in the content, which then stays
+    sbuf b = {0};
+    k2h_assistant_body("R", NULL, "x</ifm|think>y", NULL, &b);
+    tok_strip_marks(b.s);
+    assert(!strcmp(b.s, "<ifm|think>\nR\n</ifm|think>\nx</ifm|think>y"));
+    free(b.s);
+    // effort: high (and absent) served; medium and low refused by name;
+    // anything else is the template's own refusal
+    const char *why = NULL;
+    jv *r = json_parse("{}", 2);
+    assert(req_k2h_effort(r, &why) == 0 && !why);
+    jv_free(r);
+    r = json_parse("{\"reasoning_effort\":\"high\"}", 27);
+    assert(req_k2h_effort(r, &why) == 0);
+    jv_free(r);
+    const char *med = "{\"chat_template_kwargs\":{\"reasoning_effort\":\"medium\"}}";
+    r = json_parse(med, strlen(med));
+    assert(req_k2h_effort(r, &why) < 0 && strstr(why, "<ifm|think_fast>"));
+    jv_free(r);
+    r = json_parse("{\"reasoning_effort\":\"xhigh\"}", 28);
+    assert(req_k2h_effort(r, &why) < 0 && strstr(why, "must be one of high, medium, low"));
+    jv_free(r);
+}
+
+// K2-Horizon's tool-schema torture set (tests/fixtures/k2-horizon-tool-
+// schemas.json, the publisher template's own renders, recorded by
+// scripts/k2h-tool-schema-fixture.py): each case renders byte for byte
+// what the template renders, or is refused where the template raises, or
+// (`runner_refuses`) is refused by the envelope's JSON Schema check, as for
+// every family, before any template sees it. The server runs the same two
+// checks in the same order.
+static void test_k2h_tool_schema_fixture(void) {
+    const char *path = "tests/fixtures/k2-horizon-tool-schemas.json";
+    FILE *f = fopen(path, "rb");
+    assert(f);
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *src = malloc((size_t)n + 1);
+    assert(src && fread(src, 1, (size_t)n, f) == (size_t)n);
+    src[n] = 0;
+    fclose(f);
+    jv *doc = json_parse(src, (size_t)n);
+    assert(doc);
+    jv *cases = jv_get(doc, "cases");
+    assert(cases && cases->type == J_ARR && cases->n >= 40);
+    static char out[1 << 17];
+    const chat_msg user[] = { CHAT_MSG("user", "Hi") };
+    int renders = 0, raises = 0, refused = 0;
+    for (int i = 0; i < cases->n; i++) {
+        jv *c = cases->items[i];
+        const char *id = jv_str(jv_get(c, "id"), "?");
+        jv *tools = jv_get(c, "tools");
+        const char *want = jv_str(jv_get(c, "render"), NULL);
+        const char *raise = jv_str(jv_get(c, "raises"), NULL);
+        const char *ref = jv_str(jv_get(c, "runner_refuses"), NULL);
+        char err[512] = "";
+        tool_envelope env;
+        int rc = tool_envelope_build_ex(tools, NULL, NULL, true, &env, err, sizeof err);
+        tool_envelope_free(&env);
+        bool env_refused = rc < 0;
+        bool tmpl_refused = !env_refused &&
+                            !template_tools_check(TMPL_K2H, tools, err, sizeof err);
+        if (ref) {
+            if (!env_refused || !strstr(err, ref))
+                fprintf(stderr, "k2h fixture %s: expected the schema check to refuse (%s), got: %s\n",
+                        id, ref, err[0] ? err : "a render");
+            assert(env_refused && strstr(err, ref));
+            refused++;
+        } else if (raise) {
+            const char *msg = strstr(raise, ": ");
+            bool named = !strncmp(raise, "TypeError", 9) || env_refused ||
+                         (msg && strstr(err, msg + 2));
+            if (!(env_refused || tmpl_refused) || !named)
+                fprintf(stderr, "k2h fixture %s: the template raises (%s), Runner: %s\n",
+                        id, raise, err[0] ? err : "rendered");
+            assert((env_refused || tmpl_refused) && named);
+            raises++;
+        } else {
+            assert(want);
+            if (env_refused || tmpl_refused)
+                fprintf(stderr, "k2h fixture %s: refused (%s), the template renders it\n", id, err);
+            assert(!env_refused && !tmpl_refused);
+            size_t k = render_messages_with_tools(TMPL_K2H, user, 1, true, THINK_DEFAULT,
+                                                  tools, out, sizeof out);
+            assert(k < sizeof out);
+            if (strcmp(out, want)) {
+                size_t d = 0;
+                while (out[d] && out[d] == want[d]) d++;
+                fprintf(stderr, "k2h fixture %s differs at byte %zu:\n runner: %.120s\n oracle: %.120s\n",
+                        id, d, out + (d > 40 ? d - 40 : 0), want + (d > 40 ? d - 40 : 0));
+            }
+            assert(!strcmp(out, want));
+            renders++;
+        }
+    }
+    assert(renders >= 25 && raises >= 12 && refused >= 6);
+    jv_free(doc);
+    free(src);
+}
+
 // Spark X2.6 and X2.5 (XHToken chat_template.jinja), pinned against the
 // templates' bytes: the system block written whatever the conversation, the
 // effort text (X2.6 only), `<think>` pre-seeded by default and `</think>` when
@@ -3162,6 +3301,8 @@ int main(void) {
     test_minicpm5_shape();
     test_mimo_shape();
     test_spark_shape();
+    test_k2h_shape();
+    test_k2h_tool_schema_fixture();
     test_chatml_think_trailing_history_keeps_empty_thought();
     test_chatml_tool_result_renders_as_a_user_tool_response();
     test_muse_tools_and_result_golden();

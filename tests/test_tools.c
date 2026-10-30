@@ -2994,6 +2994,108 @@ static void test_spark_argkv_calls(void) {
     tool_envelope_free(&e); jv_free(tools);
 }
 
+// K2-Horizon's calls: the Spark pairs in <ifm|...> tags, one
+// <ifm|tool_call>NAME per call inside a <ifm|tool_calls> block, newlines
+// between the parts. Parse-only, typed by the declaration; the frame is
+// framing on both surfaces (the content stops before the newline the
+// template writes in front of it), and a parsed call replays as the bytes
+// the model wrote.
+static void test_k2h_ifm_calls(void) {
+    jv *tools = parse("[{\"type\":\"function\",\"function\":{\"name\":\"save\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"},\"n\":{\"type\":\"integer\"}},\"required\":[\"text\"]}}}]");
+    tool_envelope e; char err[192]; bool skip = false;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    tool_decl_native(TMPL_K2H, true, true, tools, &e, &skip);
+    assert(e.proto == TP_IFM_ARGKV && e.parse_only && skip);
+    assert(!strcmp(tool_envelope_protocol_name(&e), "ifm_argkv_xml"));
+    const char *block = "<ifm|tool_calls>\n<ifm|tool_call>save\n"
+                        "<ifm|arg_key>text</ifm|arg_key>\n<ifm|arg_value>001</ifm|arg_value>\n"
+                        "<ifm|arg_key>n</ifm|arg_key>\n<ifm|arg_value>2</ifm|arg_value>\n"
+                        "</ifm|tool_call>\n</ifm|tool_calls>";
+    char doc[512];
+    snprintf(doc, sizeof doc, "Checking.\n%s<|ifm|im_end|>", block);
+    sbuf out = {0}, tc = {0};
+    assert(tool_envelope_map(&e, doc, strlen(doc), &out, &tc) == 1);
+    assert(!strcmp(out.s, "Checking."));
+    sbuf wrapped = {0}; sb_lit(&wrapped,"[");sb_put(&wrapped,tc.s,tc.n);sb_lit(&wrapped,"]");
+    jv *calls = parse(wrapped.s);
+    assert(!strcmp(jv_str(jv_get(jv_get(calls->items[0],"function"),"arguments"),""), "{\"text\":\"001\",\"n\":2}"));
+    // replayed, the call is the model's own block, and the turn its body
+    sbuf replay = {0};
+    tool_history_render_for(TMPL_K2H, calls, true, &replay);
+    assert(!strcmp(replay.s, block));
+    sbuf body = {0};
+    k2h_assistant_body(NULL, NULL, out.s, calls, &body);
+    tok_strip_marks(body.s);
+    char want[640];
+    snprintf(want, sizeof want, "<ifm|think>\n</ifm|think>\nChecking.\n%s", block);
+    assert(!strcmp(body.s, want));
+    free(replay.s); free(body.s);
+    jv_free(calls);free(wrapped.s);free(out.s);free(tc.s);
+    for (size_t step=1;step<=strlen(doc);step++) {
+        demux_log log;demux_step(&e,doc,step,&log);
+        assert(log.begins==1 && log.ends==1);
+        assert(!strcmp(log.content.s,"Checking."));
+        assert(!strcmp(log.args.s,"{\"text\":\"001\",\"n\":2}"));
+        log_free(&log);
+    }
+    // two calls in one block and no prose: no content on either surface,
+    // the frame never leaks
+    const char *two = "<ifm|tool_calls>\n<ifm|tool_call>save\n<ifm|arg_key>text</ifm|arg_key>\n"
+                      "<ifm|arg_value>a</ifm|arg_value>\n</ifm|tool_call>\n<ifm|tool_call>save\n"
+                      "<ifm|arg_key>text</ifm|arg_key>\n<ifm|arg_value>b</ifm|arg_value>\n"
+                      "</ifm|tool_call>\n</ifm|tool_calls><|ifm|im_end|>";
+    for (size_t step=1;step<=strlen(two);step++) {
+        demux_log l2; demux_step(&e, two, step, &l2);
+        assert(l2.begins == 2 && !strcmp(l2.names.s, "save save") && (!l2.content.s || !l2.content.n));
+        log_free(&l2);
+    }
+    sbuf o1 = {0}, t1 = {0};
+    assert(tool_envelope_map(&e, two, strlen(two), &o1, &t1) == 2 && (!o1.s || !o1.n));
+    free(o1.s); free(t1.s);
+    // prose that ends in a newline and no call keeps its newline
+    const char *prose = "Line one.\nLine two.\n<|ifm|im_end|>";
+    for (size_t step=1;step<=strlen(prose);step++) {
+        demux_log l3; demux_step(&e, prose, step, &l3);
+        assert(l3.begins == 0 && !strcmp(l3.content.s, "Line one.\nLine two.\n"));
+        log_free(&l3);
+    }
+    // a value that spells the closing tags: it ends at the </ifm|arg_value>
+    // a valid continuation follows, at every chunk size
+    const char *spelled = "<ifm|tool_calls>\n<ifm|tool_call>save\n<ifm|arg_key>text</ifm|arg_key>\n"
+                          "<ifm|arg_value>a</ifm|arg_value> b</ifm|tool_call> c</ifm|arg_value>\n"
+                          "</ifm|tool_call>\n</ifm|tool_calls>";
+    for (size_t step=1;step<=strlen(spelled);step++) {
+        demux_log log;demux_step(&e,spelled,step,&log);
+        assert(log.begins==1);
+        assert(!strcmp(log.args.s,"{\"text\":\"a</ifm|arg_value> b</ifm|tool_call> c\"}"));
+        log_free(&log);
+    }
+    // truncated: never a call; a budget cut keeps "length", the model's own
+    // end is a fault
+    const char *cut = "Saving.\n<ifm|tool_calls>\n<ifm|tool_call>save\n<ifm|arg_key>text</ifm|arg_key>\n<ifm|arg_value>00";
+    sbuf o3 = {0}, t3 = {0};
+    assert(tool_envelope_map(&e, cut, strlen(cut), &o3, &t3) < 0 && !t3.n);
+    free(o3.s); free(t3.s);
+    for (int truncated = 0; truncated < 2; truncated++) {
+        demux_log l; memset(&l, 0, sizeof l);
+        tool_stream_sink sink = { &l, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream s; tool_stream_init(&s, &e, &sink);
+        for (size_t i = 0; i < strlen(cut); i++) assert(tool_stream_feed(&s, cut + i, 1) == 0);
+        assert(tool_stream_finish_ex(&s, truncated == 1) == (truncated ? 0 : -1));
+        assert(l.begins == 0 && !tool_stream_called(&s));
+        assert(!strcmp(l.content.s, "Saving."));
+        tool_stream_free(&s); log_free(&l);
+    }
+    // required: no grammar for this syntax, the generic envelope
+    tool_envelope r; bool skip2 = false;
+    jv *choice = parse("\"required\"");
+    assert(tool_envelope_build(tools, choice, NULL, &r, err, sizeof err) == 1);
+    tool_decl_native(TMPL_K2H, true, true, tools, &r, &skip2);
+    assert(r.proto == TP_GENERIC && !skip2);
+    tool_envelope_free(&r); jv_free(choice);
+    tool_envelope_free(&e); jv_free(tools);
+}
+
 // MiniCPM5's XML protocol: bare <function name="N"><param name="K">V</param>
 // </function> blocks in the content, parse-only (never constrained), typed by
 // the declaration. The three failure classes that bit the other XML family
@@ -3630,6 +3732,7 @@ int main(void) {
     test_lfm2_native_calls();
     test_mimo_compact_xml_calls();
     test_spark_argkv_calls();
+    test_k2h_ifm_calls();
     test_coder_parameters_in_any_order();
     test_gemma4_prose_then_call();
     test_xml_families_share_the_parse_only_contract();
