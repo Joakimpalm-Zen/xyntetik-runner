@@ -47,6 +47,7 @@ typedef struct {
     size_t         lora_t_cols;
     id<MTLComputePipelineState> p_silu, p_gelu, p_add, p_scale;
     id<MTLComputePipelineState> p_sigmul;   // attention output gate (x *= sigmoid(g))
+    id<MTLComputePipelineState> p_head_sigmul, p_gelu_erf;   // spark2_5
     id<MTLComputePipelineState> p_moe_route, p_moe_actmul, p_moe_sum, p_trace_copy;
     id<MTLComputePipelineState> p_mv[METAL_TYPE_SLOTS];       // indexed by ggml type
     id<MTLComputePipelineState> p_mm[METAL_TYPE_SLOTS];       // tiled prefill GEMM
@@ -276,7 +277,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     [g->p_rope release]; [g->p_store release]; [g->p_attn release];
     [g->p_attn_chunk release]; [g->p_attn_comb release];
     [g->p_silu release]; [g->p_gelu release]; [g->p_add release];
-    [g->p_sigmul release];
+    [g->p_sigmul release]; [g->p_head_sigmul release]; [g->p_gelu_erf release];
     [g->p_scale release];
     [g->p_moe_route release]; [g->p_moe_actmul release];
     [g->p_moe_sum release]; [g->p_trace_copy release];
@@ -1628,11 +1629,10 @@ static bool metal_admit(model_t *m) {
         fprintf(stderr, "gpu: qwen35 hybrid path is not on the metal backend yet — using CPU\n");
         return false;
     }
-    if (m->attn_gate_heads || m->ffn_act == ACT_GELU_ERF) {
-        fprintf(stderr, "gpu: spark2_5 (per-head output gate, exact GELU) is "
-                "not on the metal backend yet — using CPU\n");
-        return false;
-    }
+    // spark2_5's per-head gate (k_head_sigmoid_mul) and exact GELU
+    // (k_gelu_erf_mul) run on the device for the dense FFN; the MoE kernels
+    // know SiLU, tanh-GELU and swiglu_oai only, and the activation check
+    // below keeps an expert FFN with the exact GELU on the CPU.
     if (m->attn_out_gate && m->n_expert > 0) {
         // the dense output gate (muse-glimmer) is implemented below; gate +
         // sparse MoE (afmoe) has never been run against the identity gates,
@@ -1643,6 +1643,7 @@ static bool metal_admit(model_t *m) {
     if (!metal_moe_supported(m))
         return false;
     if (m->ffn_act != ACT_SILU && m->ffn_act != ACT_GELU &&
+        !(m->n_expert == 0 && m->ffn_act == ACT_GELU_ERF) &&
         !(m->n_expert > 0 && m->gptoss && m->ffn_act == ACT_SWIGLU_OAI)) {
         fprintf(stderr, "gpu: '%s' FFN activation is not on the metal backend yet — using CPU\n",
                 m->arch);
@@ -1735,6 +1736,8 @@ static void metal_make_pipelines(gpu_t *g, id<MTLDevice> dev, id<MTLLibrary> lib
     g->p_gelu         = mk_pipeline(dev, lib, @"k_gelu_mul");
     g->p_add          = mk_pipeline(dev, lib, @"k_add");
     g->p_sigmul       = mk_pipeline(dev, lib, @"k_sigmoid_mul");
+    g->p_head_sigmul  = mk_pipeline(dev, lib, @"k_head_sigmoid_mul");
+    g->p_gelu_erf     = mk_pipeline(dev, lib, @"k_gelu_erf_mul");
     g->p_scale        = mk_pipeline(dev, lib, @"k_scale");
     g->p_moe_route    = mk_pipeline(dev, lib, @"k_moe_route");
     g->p_moe_actmul   = mk_pipeline(dev, lib, @"k_moe_actmul");
@@ -1884,6 +1887,7 @@ static bool metal_check_pipelines(model_t *m, gpu_t *g) {
     if (!g->p_rmsnorm || !g->p_rope || !g->p_store || !g->p_attn ||
         !g->p_attn_chunk || !g->p_attn_comb ||
         !g->p_silu || !g->p_gelu || !g->p_add || !g->p_scale || !g->p_sigmul ||
+        !g->p_head_sigmul || !g->p_gelu_erf ||
         !g->queue || !g->p_qknorm || !g->p_headnorm ||
         !g->p_moe_route || !g->p_moe_actmul || !g->p_moe_sum ||
         !g->p_trace_copy)
@@ -2612,6 +2616,30 @@ static void enc_elem_n(gpu_t *g, id<MTLComputeCommandEncoder> e,
     g_disp.elem++;
     [e dispatchThreads:MTLSizeMake(n, n_col, 1)
       threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+}
+
+// spark2_5's per-head output gate over n columns: x[h*hd + d] *= sigmoid(g[h])
+static void enc_head_sigmul_n(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                              id<MTLBuffer> x, id<MTLBuffer> gate, int n, int hd,
+                              int n_col, int x_stride, int g_stride) {
+    [e setComputePipelineState:g->p_head_sigmul];
+    [e setBuffer:x offset:0 atIndex:0];
+    [e setBuffer:gate offset:0 atIndex:1];
+    [e setBytes:&n length:4 atIndex:2];
+    [e setBytes:&x_stride length:4 atIndex:3];
+    [e setBytes:&g_stride length:4 atIndex:4];
+    [e setBytes:&hd length:4 atIndex:5];
+    g_disp.elem++;
+    [e dispatchThreads:MTLSizeMake(n, n_col, 1)
+      threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+}
+
+// The dense FFN's gated activation for the model's ffn_act (admission keeps
+// every other activation off the device).
+static id<MTLComputePipelineState> metal_act_pipeline(gpu_t *g, const model_t *m) {
+    return m->ffn_act == ACT_GELU     ? g->p_gelu
+         : m->ffn_act == ACT_GELU_ERF ? g->p_gelu_erf
+                                      : g->p_silu;
 }
 
 // Single column. Still used by the MoE FFN, which stays per-token because
@@ -3648,9 +3676,10 @@ static void metal_enc_attn_in(metal_fwd *F, int l, const metal_layer_plan *P) {
     enc_lora(g, F->e, l, LW_Q, g->xb, g->q, n_embd, q_dim_l, n, xdim, q_dim);
     // the output gate projects the same normed input as Q; xb is
     // overwritten by the wo matvec below, so project it here
+    // spark2_5's gate projects to one value per head, not per output
     if (m->attn_out_gate && ly->wq_gate)
         enc_mv_n(g, F->e, m, ly->wq_gate, g->xb, 0, g->agate, 0,
-                 n_embd, q_dim_l, nil, n, xdim, q_dim);
+                 n_embd, m->attn_gate_heads ? m->n_head : q_dim_l, nil, n, xdim, q_dim);
     if (owns_kv) {
         enc_mv_n(g, F->e, m, ly->wk, g->xb, 0, g->kt, 0,
                  n_embd, kv_dim_l, g->bk[l], n, xdim, kv_dim);
@@ -3946,7 +3975,10 @@ static bool metal_enc_attn_out(metal_fwd *F, int l, const metal_layer_plan *P) {
     int q_dim_l = P->q_dim_l;
     bool f2a = P->f2a;
     if (!metal_nan_probe(F, g->xb2, (size_t)n * xdim, "attn-out", l)) return false;
-    if (m->attn_out_gate && ly->wq_gate)
+    if (m->attn_gate_heads && ly->wq_gate)
+        enc_head_sigmul_n(g, F->e, g->xb2, g->agate, q_dim_l, model_head_dim(m, l),
+                          n, xdim, q_dim);
+    else if (m->attn_out_gate && ly->wq_gate)
         enc_elem_n(g, F->e, g->p_sigmul, g->xb2, 0, g->agate, 0,
                    q_dim_l, n, xdim, q_dim);
     enc_mv_n(g, F->e, m, ly->wo, g->xb2, 0, g->xb, 0,
@@ -4008,8 +4040,7 @@ static bool metal_enc_ffn(metal_fwd *F, int l, const metal_layer_plan *P) {
         enc_lora(g, F->e, l, LW_UP, g->xb, g->hb2, n_embd, nff_l, n, xdim, nff_l);
         // hb/hb2 are contiguous across the batch, so the activation is one
         // dispatch over the whole batch rather than n
-        enc_elem(g, F->e, m->ffn_act == ACT_GELU ? g->p_gelu : g->p_silu,
-                 g->hb, 0, g->hb2, 0, n * nff_l);
+        enc_elem(g, F->e, metal_act_pipeline(g, m), g->hb, 0, g->hb2, 0, n * nff_l);
         enc_mv_n(g, F->e, m, ly->w_down, g->hb, 0, g->xb, 0,
                  nff_l, n_embd, nil, n, nff_l, xdim);
         enc_lora(g, F->e, l, LW_DOWN, g->hb, g->xb, nff_l, n_embd, n, nff_l, xdim);
@@ -4524,8 +4555,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                     n_embd, nff_l, nil, n, xdim, nff_l, true);
         enc_mv_cols(g, e, ly->w_up, g->xb, 0, g->hb2, 0,
                     n_embd, nff_l, nil, n, xdim, nff_l, true);
-        enc_elem(g, e, m0->ffn_act == ACT_GELU ? g->p_gelu : g->p_silu,
-                 g->hb, 0, g->hb2, 0, n * nff_l);
+        enc_elem(g, e, metal_act_pipeline(g, m0), g->hb, 0, g->hb2, 0, n * nff_l);
         enc_mv_cols(g, e, ly->w_down, g->hb, 0, g->xb, 0,
                     nff_l, n_embd, nil, n, nff_l, xdim, true);
         if (g->pfn[l])

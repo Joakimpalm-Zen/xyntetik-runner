@@ -4012,6 +4012,23 @@ kernel void k_silu_mul(device float       *g [[buffer(0)]],
     }
 }
 
+// spark2_5's per-HEAD output gate: one sigmoid per head scales every one of
+// its hd outputs, x[h*hd + d] *= sigmoid(g[h]); the CPU's per-head loop in
+// the attention stage with k_sigmoid_mul's arithmetic.
+kernel void k_head_sigmoid_mul(device float       *x [[buffer(0)]],
+                               device const float *g [[buffer(1)]],
+                               constant int       &n [[buffer(2)]],
+                               constant int       &xs [[buffer(3)]],
+                               constant int       &gs [[buffer(4)]],
+                               constant int       &hd [[buffer(5)]],
+                               uint2 gid [[thread_position_in_grid]]) {
+    if ((int)gid.x < n) {
+        device float *xp = x + (ulong)gid.y * xs;
+        device const float *gp = g + (ulong)gid.y * gs;
+        xp[gid.x] *= 1.0f / (1.0f + exp(-gp[(int)gid.x / hd]));
+    }
+}
+
 // attention output gate (afmoe / muse-glimmer): x *= sigmoid(gate), the
 // same arithmetic as the CPU's 1/(1+expf(-g)) and CUDA's k_q35_attn_gate.
 // exp() overflow on a large negative gate saturates to 0 exactly as libm's
@@ -4050,6 +4067,35 @@ kernel void k_gelu_mul(device float       *g [[buffer(0)]],
         float a = 0.7978845608f * (x + 0.044715f * x * x * x);
         float t = tanh(clamp(a, -16.0f, 16.0f));
         gp[gid.x] = 0.5f * x * (1.0f + t) * up[gid.x];
+    }
+}
+
+// erf, which the Metal standard library does not provide: Abramowitz and
+// Stegun 7.1.26, absolute error at most 1.5e-7. Inside the GELU,
+// 0.5 * x * (1 + erf(x / sqrt 2)), that is below float rounding relative to
+// the result for every x, so the CPU's libm erff and this agree at the
+// identity gates' precision.
+static inline float erf_as(float x) {
+    float a = fabs(x);
+    float t = 1.0f / (1.0f + 0.3275911f * a);
+    float y = 1.0f - (((((1.061405429f * t - 1.453152027f) * t + 1.421413741f) * t
+                        - 0.284496736f) * t + 0.254829592f) * t) * exp(-a * a);
+    return copysign(y, x);
+}
+
+// The exact GELU, transformers' ACT2FN["gelu"] (spark2_5): 1:1 with
+// gated_act(ACT_GELU_ERF) on the CPU, 0.5 * g * (1 + erf(g / sqrt 2)) * u.
+kernel void k_gelu_erf_mul(device float       *g [[buffer(0)]],
+                           device const float *u [[buffer(1)]],
+                           constant int       &n [[buffer(2)]],
+                           constant int       &gs [[buffer(3)]],
+                           constant int       &us [[buffer(4)]],
+                           uint2 gid [[thread_position_in_grid]]) {
+    if ((int)gid.x < n) {
+        device float *gp = g + (ulong)gid.y * gs;
+        device const float *up = u + (ulong)gid.y * us;
+        float x = gp[gid.x];
+        gp[gid.x] = 0.5f * x * (1.0f + erf_as(x * 0.70710678118654752f)) * up[gid.x];
     }
 }
 

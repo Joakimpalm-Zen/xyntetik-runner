@@ -451,6 +451,7 @@ typedef struct gpu_weights {
     CUmodule    mod;
     CUfunction  f_rmsnorm, f_qknorm, f_rope, f_store, f_attn, f_silu, f_gelu,
                 f_swiglu, f_xielu, f_add, f_scale;
+    CUfunction  f_gelu_erf, f_head_gate;   // spark2_5: exact GELU, per-head gate
     CUfunction  f_q35_split, f_q35_gate, f_q35_conv, f_q35_delta;
     CUfunction  f_mamba_conv, f_mamba_ssd, f_mamba_gate_norm, f_relu2;
     // whole-tile twins of the per-token recurrent kernels (C2.3, RUNNER_CUDA_RECUR_SEQ)
@@ -2288,6 +2289,8 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_attn,       "k_attn" },      { &w->f_silu,   "k_silu_mul" },
         { &w->f_attn_dec,   "k_attn_dec" },  { &w->f_attn_merge, "k_attn_merge" },
         { &w->f_gelu,       "k_gelu_mul" },  { &w->f_add,    "k_add" },
+        { &w->f_gelu_erf,   "k_gelu_erf_mul" },
+        { &w->f_head_gate,  "k_head_attn_gate" },
         { &w->f_swiglu,     "k_swiglu_oai_mul" },
         { &w->f_xielu,      "k_xielu" },
         { &w->f_scale,      "k_scale" },
@@ -3148,12 +3151,14 @@ static bool cuda_admit(model_t *m) {
     // PLUS sparse MoE (afmoe) stays on the host: that combination has never
     // been run against the identity gates, and enabling it as a side effect
     // of the dense port would be an unmeasured support claim.
-    // spark2_5's per-head gate and exact GELU have no device kernels yet;
-    // ffn_act is handed to the kernels as their selector, so an id they do
-    // not know must never reach them
-    if (m->attn_gate_heads || m->ffn_act == ACT_GELU_ERF) {
-        fprintf(stderr, "gpu: spark2_5 (per-head output gate, exact GELU) is "
-                "not on the CUDA backend yet — using CPU\n");
+    // spark2_5's per-head gate (k_head_attn_gate) and exact GELU
+    // (k_gelu_erf_mul, through enc_actmul) run on the device for the dense
+    // FFN. The MoE kernels take ffn_act as a selector that knows SiLU,
+    // tanh-GELU and swiglu_oai only, so an expert FFN with the exact GELU
+    // must never reach them: no such model exists, and it stays on the host.
+    if (m->ffn_act == ACT_GELU_ERF && m->n_expert > 0) {
+        fprintf(stderr, "gpu: experts with the exact GELU are not on the CUDA "
+                "backend yet — using CPU\n");
         return false;
     }
     if (m->attn_out_gate && m->n_expert > 0) {
@@ -4775,6 +4780,7 @@ static bool enc_actmul(gpu_t *g, model_t *m, CUdeviceptr a, CUdeviceptr b, int n
     void *p[] = { &a, &b, &n };
     CUfunction f = m->ffn_act == ACT_SWIGLU_OAI ? g->sw->f_swiglu
                  : m->ffn_act == ACT_GELU       ? g->sw->f_gelu
+                 : m->ffn_act == ACT_GELU_ERF   ? g->sw->f_gelu_erf
                                                 : g->sw->f_silu;
     return launch(g, f, (n + 255) / 256, 1, 1, 256, p);
 }
@@ -6635,9 +6641,11 @@ static bool tile_q(gpu_t *g, model_t *m, layer_t *ly, int l, int tn,
                             tn, xdim, q_dim);
         // the output gate projects the same normed input as Q, and xb is
         // overwritten by wo below, so this must run before attention
+        // spark2_5's gate projects to one value per head, not per output
         if (m->attn_out_gate && ly->wq_gate)
             ok = ok && enc_mv_same_x(g, m, ly->wq_gate, g->xb, g->q35_gate,
-                                     n_embd, q_dim, 0, tn, xdim, q_dim);
+                                     n_embd, m->attn_gate_heads ? m->n_head : q_dim,
+                                     0, tn, xdim, q_dim);
     }
     return ok;
 }
@@ -7022,7 +7030,13 @@ static bool tile_attn(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
 static bool tile_attn_out(gpu_t *g, model_t *m, layer_t *ly, int l, int tn,
                           int n_embd, int q_dim, int xdim) {
     bool ok = true;
-    if (m->qwen35 || (m->attn_out_gate && ly->wq_gate)) {
+    if (m->attn_gate_heads && ly->wq_gate) {
+        // one sigmoid per head over its head_dim outputs (spark2_5)
+        int gate_stride = q_dim, hd = model_head_dim(m, l);
+        void *pg[] = { &g->xb2, &g->q35_gate, &q_dim, &hd, &xdim, &gate_stride };
+        ok = ok && launch(g, g->sw->f_head_gate, (q_dim + 255) / 256,
+                          tn, 1, 256, pg);
+    } else if (m->qwen35 || (m->attn_out_gate && ly->wq_gate)) {
         int gate_stride = q_dim;
         void *pg[] = { &g->xb2, &g->q35_gate, &q_dim, &xdim, &gate_stride };
         ok = ok && launch(g, g->sw->f_q35_gate, (q_dim + 255) / 256,
