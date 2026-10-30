@@ -85,6 +85,24 @@
       }
     },
     {
+      "id": "lfm2/bos",
+      "family": "lfm2",
+      "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time (LFM2's tokenizer.json post-processor and the file's add_bos_token both say it; LFM2's template opens with `{{- bos_token -}}`), so a template that also emitted it would double it.",
+      "cite": {
+        "file": "src/template.c",
+        "lines": "2271-2271",
+        "anchor": "BOS is the tokenizer's, as on every family."
+      },
+      "corroborating_cite": {
+        "file": "src/tokenizer.c",
+        "lines": "1594-1596",
+        "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
+      },
+      "patch": {
+        "op": "strip-bos"
+      }
+    },
+    {
       "id": "llama3/cutting-knowledge-header",
       "family": "llama3",
       "why": "Llama-3.2's reference system turn carries 'Cutting Knowledge Date' plus a strftime_now() 'Today Date'. Runner does not embed a live date in a prompt: it is not model behaviour, it is wall-clock leakage, and it defeats the prefix cache by changing the prompt prefix every midnight.",

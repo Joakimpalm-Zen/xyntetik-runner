@@ -2872,6 +2872,162 @@ static void test_coder_native_calls(void) {
 // are pinned: a truncated call never becomes a call on either surface, a
 // CDATA payload keeps an inner `]]>` that is not followed by `</param>`, and
 // a bare '<' or '&' in an unwrapped value is text.
+// LFM2's Python call list: one block `<|tool_call_start|>[name(k=v), ...]
+// <|tool_call_end|>` (the two markers reach the demultiplexer spelled, see
+// engine.c decode_piece), parse-only, read by a strict literal grammar that
+// evaluates nothing. Pinned: the literal forms the template writes and the
+// JSON spellings its tojson'd containers carry; brackets, quotes and the
+// closing marker inside strings; every expression that is not a literal
+// leaves the block as text; a truncated call is never a call on either
+// surface; every chunk size.
+static void test_lfm2_native_calls(void) {
+    jv *tools = parse("[{\"type\":\"function\",\"function\":{\"name\":\"save\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"},\"n\":{\"type\":\"integer\"}},\"required\":[\"text\"]}}}]");
+    tool_envelope e; char err[192]; bool skip = false;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    tool_decl_native(TMPL_LFM2, true, true, tools, &e, &skip);
+    assert(e.proto == TP_LFM2 && e.parse_only && skip);
+    assert(!strcmp(tool_envelope_protocol_name(&e), "lfm2_python"));
+
+    static const struct { const char *doc, *content, *names, *args; } ok[] = {
+        { "Checking.<|tool_call_start|>[save(text='001', n=2)]<|tool_call_end|>",
+          "Checking.", "save", "{\"text\":\"001\",\"n\":2}" },
+        { "<|tool_call_start|>[save(text='a'), save(text=\"b\")]<|tool_call_end|>",
+          "", "save save", "{\"text\":\"a\"}{\"text\":\"b\"}" },
+        // the template's own escapes, both quote styles, every literal form
+        { "<|tool_call_start|>[save(text='it\\'s \\\\ a\\nb', q=\"dq \\\"x\\\"\", "
+          "l=[1, \"x\", true, None], d={'k': [False, null]}, f=1.5, e=-2e3, z=.5, "
+          "w=5., b=True, u='\\u00e9\\x41')]<|tool_call_end|>",
+          "", "save",
+          "{\"text\":\"it's \\\\ a\\nb\",\"q\":\"dq \\\"x\\\"\",\"l\":[1,\"x\",true,null],"
+          "\"d\":{\"k\":[false,null]},\"f\":1.5,\"e\":-2e3,\"z\":0.5,\"w\":5.0,"
+          "\"b\":true,\"u\":\"\xc3\xa9" "A\"}" },
+        // brackets, parentheses, quotes and the closing marker inside strings
+        { "<|tool_call_start|>[save(text='a]b)c[(', n=\"q'q\")]<|tool_call_end|>",
+          "", "save", "{\"text\":\"a]b)c[(\",\"n\":\"q'q\"}" },
+        { "<|tool_call_start|>[save(text=']<|tool_call_end|>')]<|tool_call_end|>",
+          "", "save", "{\"text\":\"]<|tool_call_end|>\"}" },
+        // whitespace the grammar allows, and trailing commas
+        { "<|tool_call_start|>[ save( text = 'x' , ) , ]<|tool_call_end|>", "", "save",
+          "{\"text\":\"x\"}" },
+    };
+    for (size_t c = 0; c < sizeof(ok) / sizeof(*ok); c++)
+        for (size_t step = 1; step <= strlen(ok[c].doc); step++) {
+            demux_log log; demux_step(&e, ok[c].doc, step, &log);
+            if (strcmp(log.names.s ? log.names.s : "", ok[c].names) ||
+                strcmp(log.args.s ? log.args.s : "", ok[c].args) ||
+                strcmp(log.content.s ? log.content.s : "", ok[c].content))
+                fprintf(stderr, "lfm2 case %zu step %zu: names '%s' args '%s' content '%s'\n",
+                        c, step, log.names.s, log.args.s, log.content.s);
+            assert(!strcmp(log.names.s ? log.names.s : "", ok[c].names));
+            assert(!strcmp(log.args.s ? log.args.s : "", ok[c].args));
+            assert(!strcmp(log.content.s ? log.content.s : "", ok[c].content));
+            log_free(&log);
+        }
+
+    // not a call: a name, an operator, a call, a positional argument, an
+    // empty list, a repeated key, a tuple, a raw newline in a quoted string,
+    // a list not followed by the closing marker. Each turn is text, verbatim.
+    static const char *const text[] = {
+        "<|tool_call_start|>[save(text=x)]<|tool_call_end|>",
+        "<|tool_call_start|>[save(n=1+2)]<|tool_call_end|>",
+        "<|tool_call_start|>[save(text=str(1))]<|tool_call_end|>",
+        "<|tool_call_start|>[save('pos')]<|tool_call_end|>",
+        "<|tool_call_start|>[]<|tool_call_end|>",
+        "<|tool_call_start|>[save(n=1, n=2)]<|tool_call_end|>",
+        "<|tool_call_start|>[save(n=(1, 2))]<|tool_call_end|>",
+        "<|tool_call_start|>[save(text='a\nb')]<|tool_call_end|>",
+        "<|tool_call_start|>[save(n=1)] and then<|tool_call_end|>",
+        "<|tool_call_start|>save(n=1)<|tool_call_end|>",
+        "Use <|tool_call_start|> to call a tool.",
+        "<|tool_call_start|>[save(n=Truex)]<|tool_call_end|>",
+        "<|tool_call_start|>[save(n=01)]<|tool_call_end|>",
+    };
+    for (size_t c = 0; c < sizeof(text) / sizeof(*text); c++)
+        for (size_t step = 1; step <= strlen(text[c]); step++) {
+            demux_log log; demux_step(&e, text[c], step, &log);
+            if (log.begins || strcmp(log.content.s ? log.content.s : "", text[c]))
+                fprintf(stderr, "lfm2 text case %zu step %zu: begins %d content '%s'\n",
+                        c, step, log.begins, log.content.s);
+            assert(log.begins == 0 && !log.called);
+            assert(!strcmp(log.content.s ? log.content.s : "", text[c]));
+            log_free(&log);
+        }
+
+    // a turn may carry at most TOOL_STREAM_MAX_CALLS calls; one more is text
+    sbuf many = {0};
+    sb_lit(&many, "<|tool_call_start|>[");
+    for (int i = 0; i <= TOOL_STREAM_MAX_CALLS; i++) sb_lit(&many, i ? ", save(n=1)" : "save(n=1)");
+    sb_lit(&many, "]<|tool_call_end|>");
+    demux_log lm; demux(&e, many.s, &lm);
+    assert(lm.begins == 0 && !strcmp(lm.content.s, many.s));
+    log_free(&lm); free(many.s);
+
+    // truncated, streamed and buffered: half a call is never a call. A budget
+    // cut keeps "length" (0); the model's own end with a call begun is a
+    // fault (-1); the prose before the block is kept either way.
+    const char *cut = "Saving.<|tool_call_start|>[save(text='00";
+    for (int truncated = 0; truncated < 2; truncated++) {
+        for (size_t step = 1; step <= strlen(cut); step++) {
+            demux_log l; memset(&l, 0, sizeof l);
+            tool_stream_sink sink = { &l, log_reasoning, log_content, log_begin, log_args, log_end };
+            tool_stream s; tool_stream_init(&s, &e, &sink);
+            for (size_t i = 0; i < strlen(cut); i += step) {
+                size_t k = strlen(cut) - i < step ? strlen(cut) - i : step;
+                assert(tool_stream_feed(&s, cut + i, (int)k) == 0);
+            }
+            assert(tool_stream_finish_ex(&s, truncated == 1) == (truncated ? 0 : -1));
+            assert(l.begins == 0 && !tool_stream_called(&s));
+            assert(!strcmp(l.content.s, "Saving."));
+            tool_stream_free(&s); log_free(&l);
+        }
+        sbuf o = {0}, t = {0};
+        int n_calls = -1;
+        int rc = tool_stream_map(&e, cut, strlen(cut), truncated == 1, &o, &t, &n_calls);
+        assert(rc == (truncated ? 0 : -1) && n_calls == 0 && !t.n);
+        assert(!strcmp(o.s, "Saving."));
+        free(o.s); free(t.s);
+    }
+    // a block cut before any call began was prose: text on the model's end
+    demux_log lp; memset(&lp, 0, sizeof lp);
+    {
+        tool_stream_sink sink = { &lp, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream s; tool_stream_init(&s, &e, &sink);
+        assert(tool_stream_feed(&s, "Note <|tool_call_start|>[", 25) == 0);
+        assert(tool_stream_finish_ex(&s, false) == 0);
+        assert(!strcmp(lp.content.s, "Note <|tool_call_start|>["));
+        tool_stream_free(&s);
+    }
+    log_free(&lp);
+
+    // the buffered mapper reads exactly what the stream reads
+    sbuf o = {0}, t = {0};
+    assert(tool_envelope_map(&e, ok[0].doc, strlen(ok[0].doc), &o, &t) == 1);
+    assert(!strcmp(o.s, "Checking."));
+    assert(strstr(t.s, "\"name\":\"save\"") && strstr(t.s, "{\\\"text\\\":\\\"001\\\",\\\"n\\\":2}"));
+    free(o.s); free(t.s);
+
+    // replay: a history call is written as the template's format_arg_value
+    // spells it, and reads back to the same arguments
+    jv *calls = parse("[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"save\","
+                      "\"arguments\":\"{\\\"text\\\":\\\"it's\\\\\\\\\\\\nx\\\",\\\"n\\\":2,"
+                      "\\\"ok\\\":true,\\\"no\\\":null,\\\"l\\\":[1,\\\"a\\\"],\\\"f\\\":1.5}\"}}]");
+    sbuf r = {0};
+    tool_history_render_for(TMPL_LFM2, calls, false, &r);
+    sb_put(&r, "", 0);
+    r.n = tok_strip_marks(r.s);
+    const char *want = "<|tool_call_start|>[save(text='it\\'s\\\\\\nx', n=2, ok=True, "
+                       "no=None, l=[1, \"a\"], f=1.5)]<|tool_call_end|>";
+    const char *flat = r.s;
+    if (strcmp(flat, want)) fprintf(stderr, "lfm2 replay: %s\n", flat);
+    assert(!strcmp(flat, want));
+    demux_log lr; demux(&e, flat, &lr);
+    assert(lr.begins == 1 && !strcmp(lr.args.s,
+           "{\"text\":\"it's\\\\\\nx\",\"n\":2,\"ok\":true,\"no\":null,\"l\":[1,\"a\"],\"f\":1.5}"));
+    log_free(&lr);
+    free(r.s); jv_free(calls);
+    tool_envelope_free(&e); jv_free(tools);
+}
+
 static void test_minicpm5_native_calls(void) {
     jv *tools = parse("[{\"type\":\"function\",\"function\":{\"name\":\"save\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"},\"n\":{\"type\":\"integer\"}},\"required\":[\"text\"]}}}]");
     tool_envelope e; char err[192]; bool skip = false;
@@ -3343,6 +3499,7 @@ int main(void) {
     test_qwen_prose_still_constrains_calls();
     test_coder_native_calls();
     test_minicpm5_native_calls();
+    test_lfm2_native_calls();
     test_coder_parameters_in_any_order();
     test_gemma4_prose_then_call();
     test_xml_families_share_the_parse_only_contract();

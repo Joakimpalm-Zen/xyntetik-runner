@@ -519,6 +519,11 @@ static void test_turn_mark_resumes_at_the_prompt_boundary(void) {
 }
 
 int main(void) {
+    // the same gates on another recurrent family's fixture (lfm2: the
+    // short-convolution ring is its whole state)
+    const char *fixture = getenv("RECURRENT_FIXTURE");
+    if (fixture && *fixture) g_path = fixture;
+    fprintf(stderr, "recurrent gates on %s\n", g_path);
     test_snapshot_restore_roundtrip();
     test_rewind_divergence_matches_cold();
     test_prefix_cache_fold_restore_matches_cold();

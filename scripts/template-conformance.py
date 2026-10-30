@@ -110,7 +110,8 @@ MISTRAL_CALL_IDS = {"call_1": "callid001", "call_2": "callid002"}
 class Family:
     def __init__(self, runner, source, note="", tool_family=False,
                  thinking_var=None, skip=None, tokenizer=(), cannot=None,
-                 oracle_tool_shape=None, call_ids=None):
+                 oracle_tool_shape=None, call_ids=None, content_parts=False,
+                 reasoning_history=False):
         self.runner = runner            # --chat-template name
         self.source = source            # ("hf", repo) | ("gguf", path)
         self.note = note
@@ -123,6 +124,14 @@ class Family:
         # manufacture agreement (or disagreement) out of an unrelated vocab.
         # Several names because a shelf may hold any quant of the checkpoint.
         self.tokenizer = tokenizer
+        # The reference template reads a content part-array itself (LFM2's
+        # parse_content joins the text parts with nothing between), so the
+        # content-array case hands it the array, not runner's joined string.
+        self.content_parts = content_parts
+        # The template replays a thought from the turn's reasoning_content
+        # (LFM2: on the last assistant turn only), so the matrix carries
+        # assistant turns with reasoning in history.
+        self.reasoning_history = reasoning_history
         # Fixture call ids THIS reference accepts, as {fixture_id: id}: the
         # Mistral templates raise unless a tool call id is 9 alphanumeric
         # characters, so their tool rows use ids of that shape (both sides:
@@ -188,6 +197,15 @@ FAMILIES = {
         note="openbmb/MiniCPM5-2B chat_template.jinja at f9740005",
         tool_family=True, thinking_var="enable_thinking",
         tokenizer=("MiniCPM5-2B-Q8_0.gguf", "MiniCPM5-2B-Q4_K_M.gguf")),
+    # Liquid LFM2 / LFM2.5: ChatML with the declarations as one `List of
+    # tools: [...]` line in the system turn, the thought kept on the last
+    # assistant turn only, results as their own `tool` turn, and calls as a
+    # Python list between two marker tokens. Its own template is the oracle.
+    "lfm2": Family(
+        "lfm2", ("hf", "LiquidAI/LFM2.5-1.2B-Instruct"),
+        note="LiquidAI/LFM2.5-1.2B-Instruct chat_template.jinja at 0f604ada",
+        tool_family=True, content_parts=True, reasoning_history=True,
+        tokenizer=("LFM2.5-1.2B-Instruct-Q8_0.gguf", "LFM2.5-350M-Q8_0.gguf")),
     "llama2": Family(
         "llama2", ("hf", "unsloth/llama-2-7b-chat"),
         note="meta-llama/Llama-2-7b-chat-hf is gated (HTTP 401); this mirror "
@@ -570,6 +588,7 @@ def matrix(family):
               {"type": "text", "text": "What color is the sky?"},
               {"type": "text", "text": "Answer briefly."}]}],
          True, "default",
+         None if family.content_parts else
          [{"role": "system", "content": SYS},
           {"role": "user", "content":
            "What color is the sky?\nAnswer briefly."}]),
@@ -653,6 +672,23 @@ def matrix(family):
              "content": '{"temp_c": -3}'},
             {"role": "assistant", "content": "It is -3 C in Oslo."},
             {"role": "user", "content": "Should I bring a coat?"},
+        ], True, "default"))
+    if family.reasoning_history:
+        # A thought in history. LFM2 writes the LAST assistant turn's own
+        # (reasoning_content) as <think>...</think> whatever follows it, and
+        # cuts every earlier turn's content to what follows its last
+        # </think>, trimmed, dropping that turn's reasoning.
+        cases.append(("reasoning-history", [
+            {"role": "user", "content": U1},
+            {"role": "assistant", "content": "<think>old thought</think>\n  Blue.  ",
+             "reasoning_content": "dropped"},
+            {"role": "user", "content": U2},
+            {"role": "assistant", "content": "Yes.", "reasoning_content": "kept thought"},
+        ], False, "default"))
+        cases.append(("reasoning-history+gen", [
+            {"role": "user", "content": U1},
+            {"role": "assistant", "content": "Blue.", "reasoning_content": "the sky scatters blue"},
+            {"role": "user", "content": U2},
         ], True, "default"))
     if family.call_ids:
         def remap(v):

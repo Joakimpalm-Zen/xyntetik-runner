@@ -2976,6 +2976,14 @@ static bool bind_meta_lfm2(model_t *m, gguf_file *g, const char *arch) {
         return false;
     }
     m->n_head_kv = attn_kv;
+    // lfm2moe: the leading blocks keep a dense FFN (LFM2.5-24B-A2B and
+    // 8B-A1B: two), the rest route over the experts
+    m->n_dense_lead = (int)gguf_get_u32(g, AK("leading_dense_block_count"), 0);
+    if (m->n_dense_lead < 0 || m->n_dense_lead > m->n_layer) {
+        fprintf(stderr, "error: %s leading_dense_block_count %d outside [0, %d]\n",
+                arch, m->n_dense_lead, m->n_layer);
+        return false;
+    }
     fprintf(stderr, "%s: short-convolution hybrid (%d convolution + %d "
             "attention layers)\n", arch, m->n_layer - n_attn, n_attn);
     return true;

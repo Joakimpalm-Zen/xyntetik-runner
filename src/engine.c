@@ -90,6 +90,7 @@ void engine_request_defaults(engine *e) {
     e->json_mode = false;
     e->ignore_eos = false;
     e->render_special = false;
+    e->n_spell = 0;
     e->emit_think_prelude = false;
     e->constraint_includes_prelude = false;
     e->think_budget = 0;
@@ -2385,7 +2386,9 @@ static void constraint_close(engine *e, gen_cb cb, void *ud) {
 // under a constraint: the validator's byte stream stays the decoded one.
 static int decode_piece(engine *e, int tok, char *buf, int cap) {
     int n = tok_decode(e->tok, tok, buf, cap);
-    if (n == 0 && e->render_special && !e->schema && !e->json_mode &&
+    bool spell = e->render_special;
+    for (int i = 0; i < e->n_spell && !spell; i++) spell = e->spell_ids[i] == tok;
+    if (n == 0 && spell && !e->schema && !e->json_mode &&
         tok_is_control(e->tok, tok)) {
         const char *sp = tok_raw(e->tok, tok);
         n = sp ? (int)strlen(sp) : 0;
