@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **LFM2.5-350M Q8_0 and Q4_K_M admitted at Tier 2; the Q4_K_M fails the
+  fidelity bar by far.** Against LiquidAI's BF16 parent computed in float32
+  the publisher's Q4_K_M reads 0.874 mean KLD over 300 positions (54.3%
+  top-1), and llama.cpp reads the same file at 0.924; asked for the planet
+  closest to the Sun it answers Earth. The Q8_0 reads 0.0081 and 95.3% top-1
+  and is the fidelity file
+  (`docs/compat-reports/lfm2.5-reference-2026-10-30/README.md`). Both files
+  share the 1.2B-Instruct's tokenizer and template byte for byte and answer
+  through them on the CPU. The LFM Open License v1.0 limits commercial use to
+  entities under US$10M annual revenue.
 - **MiMo-V2.6-Distill-Qwen-9B Q4_K_M admitted at Tier 2; it fails the
   fidelity bar.** Against XiaomiMiMo's BF16 checkpoint computed in float32 it
   reads 0.0717 mean KLD over 300 positions, against a 0.05 bar (91.7% top-1,

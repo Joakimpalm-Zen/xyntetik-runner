@@ -583,13 +583,21 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>LFM2.5</b>, 1 model: CPU ✅ · CUDA - · Metal - · Train n/a</summary>
+<summary><b>LFM2.5</b>, 2 models: CPU ✅ · CUDA - · Metal - · Train n/a</summary>
 <p><b>LFM2.5-1.2B-Instruct (LiquidAI)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="#lfm2.5-1.2b-instruct-q8_0"><code>LFM2.5-1.2B-Instruct-Q8_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td></td><td></td><td>no: recurrent architecture (short convolution)</td></tr>
 <tr><td><a href="#lfm2.5-1.2b-instruct-q4_k_m"><code>LFM2.5-1.2B-Instruct-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td></td><td></td><td>no: recurrent architecture (short convolution)</td></tr>
+</tbody>
+</table>
+<p><b>LFM2.5-350M (LiquidAI)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#lfm2.5-350m-q8_0"><code>LFM2.5-350M-Q8_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td></td><td></td><td>no: recurrent architecture (short convolution)</td></tr>
+<tr><td><a href="#lfm2.5-350m-q4_k_m"><code>LFM2.5-350M-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td></td><td></td><td>no: recurrent architecture (short convolution)</td></tr>
 </tbody>
 </table>
 </details>
@@ -1598,6 +1606,52 @@ Text path, LiquidAI's own Q4_K_M of LFM2.5-1.2B-Instruct, which fails the fideli
 - **LoRA adapter serving:** no: --lora does not cover the short-convolution hybrid yet (lfm2) (runner 1.7.1, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
+#### LFM2.5-350M (LiquidAI)
+
+<a id="lfm2.5-350m-q8_0"></a>
+##### `LFM2.5-350M-Q8_0.gguf`
+
+Text path, LiquidAI's own Q8_0 of LFM2.5-350M, the fidelity file of the publisher's two: against the BF16 parent computed in float32 it reads 0.0081 mean KLD and 95.3% top-1 (300 positions, CPU).
+
+- **File:** `LFM2.5-350M-Q8_0.gguf` (sha256 `be036a757295e550098b85e13f6af2735d0fa73b41e1156a40c7d8e8e32a5766`, 379,217,632 bytes, from [LiquidAI/LFM2.5-350M-GGUF](https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF) at revision `657e078c9408`).
+- **Upstream checkpoint:** LiquidAI/LFM2.5-350M at revision `9e6c6ccf47cd`.
+- **Quantization:** Q8_0 (publisher).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against LiquidAI's BF16 parent computed in float32 on the CPU (transformers 5.22, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files at d66f0f7a, the pre-rebase form of 67e75e8e): Q8_0 0.0081 mean KLD / 95.3% top-1 / 100% margin-qualified, Q4_K_M 0.874 / 54.3% / 61.9%; llama.cpp (3bb63cb) on the same Q4_K_M against the same reference 0.924 / 53.0%. Tokenizer 0/721 against the publisher's tokenizer.json, template conformance 23/23 in text and tokens against the publisher's chat_template.jinja (the 350M's is byte-identical to the 1.2B-Instruct's). Record: docs/compat-reports/lfm2.5-reference-2026-10-30/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU only: the GPU backends refuse lfm2 by name and serve it on the CPU (its short-convolution layers are not checked there yet). A required or named tool choice takes the generic JSON envelope on this family. Licence: LFM Open License v1.0, which limits commercial use to entities with under US$10M annual revenue; the limit binds whoever runs the model.
+- **Still missing:** The Windows CUDA host's CPU cell; a GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the parser is pinned on fixtures only).
+- **Evidence:** [docs/compat-reports/1.7.1-2026-10-30-macos-arm64-lfm2.5-350m-q8_0.json](compat-reports/1.7.1-2026-10-30-macos-arm64-lfm2.5-350m-q8_0.json), [docs/compat-reports/lfm2.5-reference-2026-10-30/README.md](compat-reports/lfm2.5-reference-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on macos-arm64-metal, cpu backend; last run 1.7.1 on 2026-10-30.
+- **CPU:** ✅ v1.7.1 2026-10-30 on macos-arm64-metal at commit `eea8c2507b6a`, output sha256 `a3dd7b514a3e7cb8`, [pin](../tests/compatibility/tier-smoke/lfm2.5-350m-q8_0.macos-arm64-metal.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** no: recurrent architecture (short convolution) (runner 1.7.1, 2026-10-30).
+- **LoRA adapter serving:** no: --lora does not cover the short-convolution hybrid yet (lfm2) (runner 1.7.1, 2026-10-30).
+- **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
+
+<a id="lfm2.5-350m-q4_k_m"></a>
+##### `LFM2.5-350M-Q4_K_M.gguf`
+
+Text path, LiquidAI's own Q4_K_M of LFM2.5-350M, which fails the fidelity bar: against the BF16 parent computed in float32 it reads 0.874 mean KLD against 0.05 (54.3% top-1, 61.9% margin-qualified against 97%), and llama.cpp on the same file reads 0.924, so the gap is the file's quantization. The Q8_0 is the fidelity file.
+
+- **File:** `LFM2.5-350M-Q4_K_M.gguf` (sha256 `7e6f72643caafc9a68256686638c4d7916f2cec76d1df478d4c3ddcd95a6aed4`, 229,312,224 bytes, from [LiquidAI/LFM2.5-350M-GGUF](https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF) at revision `657e078c9408`).
+- **Upstream checkpoint:** LiquidAI/LFM2.5-350M at revision `9e6c6ccf47cd`.
+- **Quantization:** Q4_K_M (publisher).
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against LiquidAI's BF16 parent computed in float32 on the CPU (transformers 5.22, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files at d66f0f7a, the pre-rebase form of 67e75e8e): Q8_0 0.0081 mean KLD / 95.3% top-1 / 100% margin-qualified, Q4_K_M 0.874 / 54.3% / 61.9%; llama.cpp (3bb63cb) on the same Q4_K_M against the same reference 0.924 / 53.0%. Tokenizer 0/721 against the publisher's tokenizer.json, template conformance 23/23 in text and tokens against the publisher's chat_template.jinja (the 350M's is byte-identical to the 1.2B-Instruct's). Record: docs/compat-reports/lfm2.5-reference-2026-10-30/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** Asked for the planet closest to the Sun it answers Earth, where the Q8_0 answers Mercury: the quantization's error reaches facts. CPU only: the GPU backends refuse lfm2 by name and serve it on the CPU (its short-convolution layers are not checked there yet). A required or named tool choice takes the generic JSON envelope on this family. Licence: LFM Open License v1.0, which limits commercial use to entities with under US$10M annual revenue; the limit binds whoever runs the model.
+- **Still missing:** The Windows CUDA host's CPU cell; a GPU path; task quality and the native Python-call tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's QAD-Q4_0 fails the bar too (0.483) and is not a row.
+- **Evidence:** [docs/compat-reports/1.7.1-2026-10-30-macos-arm64-lfm2.5-350m-q4_k_m.json](compat-reports/1.7.1-2026-10-30-macos-arm64-lfm2.5-350m-q4_k_m.json), [docs/compat-reports/lfm2.5-reference-2026-10-30/README.md](compat-reports/lfm2.5-reference-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on macos-arm64-metal, cpu backend; last run 1.7.1 on 2026-10-30.
+- **CPU:** ✅ v1.7.1 2026-10-30 on macos-arm64-metal at commit `eea8c2507b6a`, output sha256 `a3dd7b514a3e7cb8`, [pin](../tests/compatibility/tier-smoke/lfm2.5-350m-q4_k_m.macos-arm64-metal.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** no: recurrent architecture (short convolution) (runner 1.7.1, 2026-10-30).
+- **LoRA adapter serving:** no: --lora does not cover the short-convolution hybrid yet (lfm2) (runner 1.7.1, 2026-10-30).
+- **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
+
 ### MiMo
 
 #### MiMo-V2.6-Distill-Qwen-9B (XiaomiMiMo)
@@ -1857,5 +1911,9 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-30 | [LFM2.5-1.2B-Instruct (LiquidAI), `LFM2.5-1.2B-Instruct-Q8_0.gguf`](#lfm2.5-1.2b-instruct-q8_0) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell and a float32 reference measurement (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report. | none recorded |
 | 2026-10-30 | [LFM2.5-1.2B-Instruct (LiquidAI), `LFM2.5-1.2B-Instruct-Q4_K_M.gguf`](#lfm2.5-1.2b-instruct-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29 (LFM2.5-24B-A2B); scope decided 2026-10-30 to admit the shared architecture through the dense 1.2B-Instruct first. The files did not load until the lfm2 architecture, its tokenizer rule and the lfm2 template family landed. | none recorded |
 | 2026-10-30 | [LFM2.5-1.2B-Instruct (LiquidAI), `LFM2.5-1.2B-Instruct-Q4_K_M.gguf`](#lfm2.5-1.2b-instruct-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell and a float32 reference measurement (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report. | none recorded |
+| 2026-10-30 | [LFM2.5-350M (LiquidAI), `LFM2.5-350M-Q8_0.gguf`](#lfm2.5-350m-q8_0) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29 (LFM2.5-24B-A2B); scope decided 2026-10-30 to admit the shared architecture through the dense 1.2B-Instruct first; the 350M follows as its own row. The files did not load until the lfm2 architecture, its tokenizer rule and the lfm2 template family landed. | none recorded |
+| 2026-10-30 | [LFM2.5-350M (LiquidAI), `LFM2.5-350M-Q8_0.gguf`](#lfm2.5-350m-q8_0) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell and a float32 reference measurement (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report. | none recorded |
+| 2026-10-30 | [LFM2.5-350M (LiquidAI), `LFM2.5-350M-Q4_K_M.gguf`](#lfm2.5-350m-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29 (LFM2.5-24B-A2B); scope decided 2026-10-30 to admit the shared architecture through the dense 1.2B-Instruct first; the 350M follows as its own row. The files did not load until the lfm2 architecture, its tokenizer rule and the lfm2 template family landed. | none recorded |
+| 2026-10-30 | [LFM2.5-350M (LiquidAI), `LFM2.5-350M-Q4_K_M.gguf`](#lfm2.5-350m-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell and a float32 reference measurement (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->

@@ -1169,7 +1169,9 @@
    ],
    "artifacts": [
     "lfm2.5-1.2b-instruct-q8_0",
-    "lfm2.5-1.2b-instruct-q4_k_m"
+    "lfm2.5-1.2b-instruct-q4_k_m",
+    "lfm2.5-350m-q8_0",
+    "lfm2.5-350m-q4_k_m"
    ],
    "tool_protocol": {
     "status": "NOT RUN"
