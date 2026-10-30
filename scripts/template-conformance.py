@@ -432,6 +432,16 @@ FAMILIES = {
         tool_family=True, thinking_var="enable_thinking",
         tokenizer=("Qwen3.5-0.8B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
+    # Cloudflare Clef-Flash (clef, on Qwen3.5-9B): the template embedded in
+    # the pinned ggml-org Q4_K_M, byte-identical to chat_template.jinja in
+    # Cloudflare/clef-flash at f0b7d3cd and to Qwen3.5-9B's (7756 bytes).
+    "clef-flash": Family(
+        "qwen35", ("gguf", "models/Clef-Flash-Q4_K_M.gguf"),
+        note="Clef-Flash's own template, read from the pinned Q4_K_M; the "
+             "chat path of a decision model, served on its qwen35 backbone",
+        tool_family=True, thinking_var="enable_thinking",
+        tokenizer=("Clef-Flash-Q4_K_M.gguf", "Clef-Flash-Q8_0.gguf"),
+        cannot={"system-mid-history": NO_MID_SYSTEM}),
     "lucie": Family(
         "llama3", ("hf", "OpenLLM-France/Lucie-7B-Instruct-v1.1"),
         note="llama3 framing with a leading bos and trimmed content",
