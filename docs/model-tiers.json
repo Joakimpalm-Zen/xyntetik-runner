@@ -3541,7 +3541,7 @@
       "model": "Cloudflare Clef Flash (clef, on Qwen3.5-9B)",
       "family": "Cloudflare Clef",
       "tier": "tier2",
-      "claim": "Text path only; float32 reference owed: no fidelity measurement of this file or of any clef-flash file exists yet. A decision model served at /v1/systemone, in ggml-org's conversion of Cloudflare/clef-flash at f0b7d3cd (converter ggml-org/convert, the revision its .src_sha names; ggml-org/Clef-Flash-GGUF at 6e2a164d), as Cloudflare publishes no GGUF; requests with images or videos are refused. Its backend cells and fixture decisions are not run yet.",
+      "claim": "Text path only; float32 reference owed: no fidelity measurement of this file or of any clef-flash file exists yet. A decision model served at /v1/systemone, in ggml-org's conversion of Cloudflare/clef-flash at f0b7d3cd (converter ggml-org/convert, the revision its .src_sha names; ggml-org/Clef-Flash-GGUF at 6e2a164d), as Cloudflare publishes no GGUF; requests with images or videos are refused. Its CUDA cell passes as a layer split on the Windows CUDA host; its CPU cell, compat report and fixture decisions are not run yet.",
       "vision_upstream": true,
       "architecture": "clef",
       "upstream": {
@@ -3571,7 +3571,7 @@
           "docs/compat-reports/clef-flash-2026-10-30/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The Windows CUDA host's CUDA cell (a layer split) and CPU cell, the fixture decisions and the compat report (the jobs were stopped for low memory and wait for a restart). The float32 gold run: Cloudflare's joint_schema_model.py in float32 on clef-flash at f0b7d3cd against this conversion's BF16 GGUF (the lab CPU lane, after MiMo and Spark); the Metal cell (a declared limit today); a llama.cpp column against the same reference."
+        "missing": "The CPU cell and the compat report (the lab CPU lane), and the fixture decisions. The float32 gold run: Cloudflare's joint_schema_model.py in float32 on clef-flash at f0b7d3cd against this conversion's BF16 GGUF (the lab CPU lane, after MiMo and Spark); the Metal cell (a declared limit today); a llama.cpp column against the same reference."
       },
       "smoke": {
         "device_class": "windows-x86_64-cuda",
@@ -3620,7 +3620,7 @@
         {
           "tier": "tier2",
           "effective": "2026-10-30",
-          "reason": "Admitted 2026-10-30 at Tier 2 with the tokenizer and template checks of the Q4_K_M, which shares its vocabulary and template; the float32 reference is owed (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report.",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the Windows CUDA host's CUDA cell (a layer split, --gpu 28 of 32), and the tokenizer and template checks of the Q4_K_M, which shares its vocabulary and template; the float32 reference is owed (policy 2026-10-27: Tier 1 follows pull or the owner's call). Maintained on report.",
           "last_validated_release": null
         }
       ]

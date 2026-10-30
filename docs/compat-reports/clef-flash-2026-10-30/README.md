@@ -36,8 +36,8 @@ publisher's `encode_record` is part of the owed float32 run.
 - Q4_K: the feed-forward and the token embedding.
 
 **The two files' headers.** All 38 `tokenizer.*` and `clef.*` metadata values of the Q8_0 are byte-identical
-to the Q4_K_M's, including the vocabulary, the merges and both templates. The Q8_0 was read by an anonymous
-range request; it has not been downloaded.
+to the Q4_K_M's, including the vocabulary, the merges and both templates (read by an anonymous range request,
+before the Q8_0 was downloaded for its CUDA cell).
 
 ## Tokenizer
 
@@ -71,10 +71,12 @@ the file:
 |---|---|---|---|---|
 | cloudflare-clef-flash | cpu | pass, 16.1 s | `--gpu off` | sha256 `0b9c7366...` |
 | cloudflare-clef-flash | cuda | pass, 4.7 s | resident, 32 of 32 layers and the head | sha256 `0b9c7366...`, byte-identical to the CPU |
-| cloudflare-clef-flash-q8_0 | cpu, cuda | not run yet | | |
+| cloudflare-clef-flash-q8_0 | cuda | pass, 9.4 s | layer split, `--gpu 28` (28 of 32 layers on the GPU, the runner's own auto-fit at `-c 512 -b 64`) | sha256 `1b3a3702...` |
+| cloudflare-clef-flash-q8_0 | cpu | not run here; the lab CPU lane runs it | | |
 
 The cells were run by `tier-smoke.py --row ... --pin`, then `--record`, never typed. The pins are in
-tests/compatibility/tier-smoke/.
+tests/compatibility/tier-smoke/. The Q8_0's reply agrees with the Q4_K_M's for the first two planets and then
+differs, as two quantizations may; neither reply is checked against the parent.
 
 ## Decisions, CPU against CUDA (Q4_K_M)
 
@@ -123,9 +125,5 @@ second run, with msys `make` on the PATH (difftok.exe was already up to date, so
    - `scripts/clef-gold.py reference` with Cloudflare's `joint_schema_model.py` at f0b7d3cd, in float32;
    - compared against ggml-org's BF16 GGUF of the same revision (`Clef-Flash-BF16.gguf`, sha256
      `34635743...`), and against these two files.
-2. **The Q8_0:**
-   - the CUDA cell, as a layer split with `--gpu N`;
-   - the CPU cell, or its skip reason if the file does not fit free RAM with headroom;
-   - the decisions, CPU against CUDA;
-   - the compat report.
+2. **The Q8_0:** the CPU cell and the compat report (the lab CPU lane), and the decisions.
 3. **Metal** (a declared limit: the qwen35 backbone has no Metal path) and **a llama.cpp column**.
