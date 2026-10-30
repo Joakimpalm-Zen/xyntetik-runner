@@ -5,6 +5,12 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Validation runs on the Windows CUDA host: 3 rows** (RTX 3070, 2026-10-30,
+  built at 64cdc0dc). `trinity-nano-preview-q8_0` re-runs its CPU cell after
+  the template's blank lines (#464), and its reply is byte-identical to the
+  pin. `lfm2.5-1.2b-instruct-q8_0` and `lfm2.5-1.2b-instruct-q4_k_m` pass on
+  the CPU, both replies byte-identical to the Mac pins; their CUDA cells are
+  declared limits, since CUDA refuses lfm2 by name.
 - **LFM2.5-350M Q8_0 and Q4_K_M admitted at Tier 2; the Q4_K_M fails the
   fidelity bar by far.** Against LiquidAI's BF16 parent computed in float32
   the publisher's Q4_K_M reads 0.874 mean KLD over 300 positions (54.3%
