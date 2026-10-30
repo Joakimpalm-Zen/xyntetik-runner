@@ -171,10 +171,29 @@ static void lfm2_assistant_text(sbuf *b, sbuf *txt, const char *reason,
     if (has_cfm) sb_put(b, cfm, sizeof(cfm) - 1);
 }
 
+// LFM2.5's thought field (chat_template.jinja: `message.thinking or
+// message.reasoning or message.reasoning_content`, kept only when the value
+// that wins is a string): the first of the three that Python calls truthy,
+// or none when that one is not a string.
+static const char *lfm2_reasoning(jv *msg) {
+    static const char *const key[] = { "thinking", "reasoning", "reasoning_content" };
+    for (size_t k = 0; k < sizeof key / sizeof *key; k++) {
+        jv *v = jv_get(msg, key[k]);
+        bool truthy = v && (v->type == J_BOOL ? v->b
+                          : v->type == J_NUM  ? v->num != 0
+                          : v->type == J_STR  ? v->str[0] != 0
+                          : v->type == J_ARR || v->type == J_OBJ ? v->n > 0
+                          : false);
+        if (truthy) return v->type == J_STR ? v->str : NULL;
+    }
+    return NULL;
+}
+
 static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
     jv *content = jv_get(msg, "content");
     const char *role = jv_str(jv_get(msg, "role"), "user");
-    const char *reason = jv_str(jv_get(msg, "reasoning_content"), NULL);
+    const char *reason = tmpl == TMPL_LFM2 ? lfm2_reasoning(msg)
+                                           : jv_str(jv_get(msg, "reasoning_content"), NULL);
     jv *calls = jv_get(msg, "tool_calls");
 
     // Flatten the visible content into one string first: the shared assembler
