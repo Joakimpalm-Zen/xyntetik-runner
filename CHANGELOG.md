@@ -5,6 +5,22 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Clef-Flash pinned at Tier 2; its Q4_K_M changes 3 of 29 decisions.**
+  Cloudflare publishes no GGUF, so `cloudflare-clef-flash` pins ggml-org's
+  Q4_K_M (`ggml-org/Clef-Flash-GGUF` at 6e2a164d, converted by
+  ggml-org/convert from `Cloudflare/clef-flash` at f0b7d3cd), and
+  `cloudflare-clef-flash-q8_0` its Q8_0. Against Cloudflare's own
+  joint_schema_model.py in float32 (15 records, 29 questions), the Q4_K_M
+  picks the reference's option on 26 of 29, every flip where the reference's
+  top two are within 0.066 of each other, and the Q8_0 on 29 of 29 (max
+  |dprob| 0.012): the file for decisions that must match
+  (docs/compat-reports/clef-flash-reference-2026-10-30/README.md). The
+  tokenizer matches Cloudflare's tokenizer.json (0 of 721, 0 of 13,264 on the
+  NFC corpus). The file's own template, which is Qwen3.5's, conforms in 22
+  of 22 cases in text and tokens. The Q4_K_M passes on the CPU and on CUDA
+  with byte-identical replies, its 15 fixture decisions agreeing between the
+  two (max |dlogit| 1.8e-4); the Q8_0 passes on CUDA as a layer split and on
+  an x86-64 CPU.
 - **The flint architecture, its tokenizer rule and its template.**
   RecursiveSI's flint loads on the CPU: QK norms and learned attention sinks
   on every block, a sliding window with rope on the blocks the file's pattern
