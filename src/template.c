@@ -117,11 +117,14 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
             strstr(meta_tmpl, "<think>")) {
             // Qwen 3.5 is ornith's template with a thought block only on the
             // assistant turns after the last user query; the 0.8B also
-            // inverts the thinking default. Told apart by the two tests only
-            // their templates write (see the enum comments).
+            // inverts the thinking default, and 3.6 adds preserve_thinking.
+            // Told apart by the tests only their templates write (see the
+            // enum comments).
             if (strstr(meta_tmpl, "loop.index0 > ns.last_query_index"))
                 return strstr(meta_tmpl, "enable_thinking is true")
-                           ? TMPL_QWEN35_NOTHINK : TMPL_QWEN35;
+                           ? TMPL_QWEN35_NOTHINK
+                           : strstr(meta_tmpl, "preserve_thinking is true")
+                           ? TMPL_QWEN36 : TMPL_QWEN35;
             return TMPL_ORNITH;
         }
         // MiMo writes Qwen3-Coder's XML compact, with no newline between
@@ -276,6 +279,7 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "ornith")) return TMPL_ORNITH;
     if (!strcmp(name, "qwen35")) return TMPL_QWEN35;
     if (!strcmp(name, "qwen35-nothink")) return TMPL_QWEN35_NOTHINK;
+    if (!strcmp(name, "qwen36")) return TMPL_QWEN36;
     if (!strcmp(name, "granite42")) return TMPL_GRANITE42;
     if (!strcmp(name, "nemotron35")) return TMPL_NEMOTRON35;
     if (!strcmp(name, "qwen3-coder")) return TMPL_QWEN3_CODER;
@@ -347,6 +351,7 @@ const char *template_name(int t) {
         case TMPL_ORNITH: return "ornith";
         case TMPL_QWEN35: return "qwen35";
         case TMPL_QWEN35_NOTHINK: return "qwen35-nothink";
+        case TMPL_QWEN36: return "qwen36";
         case TMPL_GRANITE42: return "granite42";
         case TMPL_NEMOTRON35: return "nemotron35";
         case TMPL_QWEN38: return "qwen38";
@@ -641,6 +646,20 @@ bool req_thinking_mode_valid(struct jv *req) {
     if (nested && nested->type != J_NULL && nested->type != J_BOOL) return false;
     if (top && top->type != J_NULL && top->type != J_BOOL) return false;
     return true;
+}
+
+// Qwen 3.6's `preserve_thinking` (chat_template_kwargs, or the top level as
+// enable_thinking is taken): true keeps the thought of every assistant turn,
+// where the template's default keeps those after the last user query only.
+// 1 for true, 0 for false, null or absent, -1 for any other type.
+int req_preserve_thinking(struct jv *req) {
+    if (!req) return 0;
+    jv *kw = jv_get((jv *)req, "chat_template_kwargs");
+    jv *v = kw && kw->type == J_OBJ ? jv_get(kw, "preserve_thinking") : NULL;
+    if (!v || v->type == J_NULL) v = jv_get((jv *)req, "preserve_thinking");
+    if (!v || v->type == J_NULL) return 0;
+    if (v->type != J_BOOL) return -1;
+    return v->b ? 1 : 0;
 }
 
 int req_reasoning_effort(struct jv *req) {
@@ -1838,7 +1857,7 @@ static size_t render_nemotron_nano(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
-// TMPL_ORNITH, TMPL_QWEN35 and TMPL_QWEN35_NOTHINK.
+// TMPL_ORNITH, TMPL_QWEN35, TMPL_QWEN35_NOTHINK and TMPL_QWEN36.
 static size_t render_qwen35(int tmpl, const chat_msg *msgs, int n_msgs,
                             bool add_assistant, int thinking, const jv *tools,
                             char *out, size_t cap, render_state *st) {
@@ -4416,6 +4435,7 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_ORNITH:
     case TMPL_QWEN35:
     case TMPL_QWEN35_NOTHINK:
+    case TMPL_QWEN36:
         return render_qwen35(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_QWEN3_CODER:
         return render_qwen3_coder(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
@@ -5436,12 +5456,20 @@ void tool_history_render_for(int tmpl, const jv *calls,
         if (obj && obj->type == J_OBJ) {
             for (int k = 0; k < obj->n; k++) {
                 pl_fmt(out, "<parameter=%s>\n", obj->keys[k]);
+                // A string goes in raw. Qwen 3.8 and 3.6 write every other
+                // value through tojson (`args_value | string if args_value
+                // is string else args_value | tojson`); Qwen3-Coder, ornith,
+                // Qwen 3.5, granite 4.2 and Nemotron 3.5 write a mapping or
+                // a list through tojson and any other value through
+                // Python's str() (`True`, `None`). Both with tojson's spaced
+                // separators: the compact JSON written here until
+                // 2026-10-30 was a shape none of the six references writes.
                 if (obj->items[k]->type == J_STR)
                     sb_put(out, obj->items[k]->str, strlen(obj->items[k]->str));
-                else if (tmpl == TMPL_QWEN3_CODER)
-                    coder_value(obj->items[k], out);
+                else if (tmpl == TMPL_QWEN38 || tmpl == TMPL_QWEN36)
+                    jv_dump_tojson(obj->items[k], out);
                 else
-                    jv_dump(obj->items[k], out);
+                    coder_value(obj->items[k], out);
                 pl_lit(out, "\n</parameter>\n");
             }
         }

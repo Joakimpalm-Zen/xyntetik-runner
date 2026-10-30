@@ -2209,6 +2209,40 @@
           ]
         }
       }
+    },
+    {
+      "id": "qwen3.6-35b-a3b-q4_k_m",
+      "architecture": "qwen35moe",
+      "family": "Qwen 3.6",
+      "file": "models/Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf",
+      "sha256": "b46fedd33e0bfb0cae308aa3c158d0a4b2c4a1d2185a1ed6f093cdaf39064772",
+      "upstream": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF",
+      "tokenizer_reference": "Qwen/Qwen3.6-35B-A3B",
+      "tokenizer_reference_revision": "995ad96eacd98c81ed38be0c5b274b04031597b0",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/qwen3.6-35b-a3b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "bartowski's standard Q4_K_M (22,285,080,192 bytes, revision 5c2410d7 of bartowski/Qwen_Qwen3.6-35B-A3B-GGUF; the most-downloaded standard Q4_K_M, the other large publisher shipping only a dynamic one), architecture qwen35moe: 40 blocks (30 Gated DeltaNet, 10 gated attention), hidden 2048, 256 experts top 8 plus a gated shared expert on every block, vocabulary 248,320, and the NextN block. Its tokenizer and chat template are Qwen's at 995ad96e: 0 of 721 corpus strings and 0 of 247,091 vocabulary entries differ from the publisher's tokenizer.json, and the template in the GGUF is byte-identical to chat_template.jinja (template family qwen36). No llama.cpp greedy reference is declared, so greedy_reference is not claimed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 400,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "<|im_start|>",
+            "<tool_call>",
+            "<think>"
+          ]
+        },
+        "tokenizer": {
+          "expect_vocab_divergences": 0
+        }
+      }
     }
   ]
 }

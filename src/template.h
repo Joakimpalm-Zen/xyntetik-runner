@@ -272,7 +272,17 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // only, and the generation prompt opening the thought,
        // `<|im_start|>assistant\n<think>`. Detected by that generation prompt
        // beside the LFM2 markers. Appended last.
-       TMPL_LFM2_24B };
+       TMPL_LFM2_24B,
+       // Qwen 3.6 (Qwen/Qwen3.6-35B-A3B chat_template.jinja, the same bytes
+       // in bartowski's GGUF): TMPL_QWEN35 with two rules changed. A
+       // `preserve_thinking` switch keeps the thought on every assistant
+       // turn (undefined by default, which keeps it after the last user
+       // query only, as 3.5 does), and a tool-call argument that is not a
+       // string is written as JSON (`false`, `null`) where 3.5 writes
+       // Python's str() of it (`False`, `None`). Detected by the
+       // `preserve_thinking` test beside 3.5's last-query test. Appended
+       // last.
+       TMPL_QWEN36 };
 
 // The reasoning tags a TEMPLATE family writes, for the families whose
 // protocol (not their architecture) defines them: the `<think>` block of
@@ -336,7 +346,8 @@ static inline bool is_gemma4(int tmpl) {
 // only in which assistant turns carry a thought block and in the thinking
 // default, both handled where the block is written.
 static inline bool tmpl_ornith_like(int t) {
-    return t == TMPL_ORNITH || t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK;
+    return t == TMPL_ORNITH || t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK ||
+           t == TMPL_QWEN36;
 }
 // Granite 4.2 and the template derived from it (Nemotron 3.5): the same
 // framing, think seeding, call syntax and system fold; they differ in the
@@ -378,7 +389,7 @@ static inline bool tmpl_lfm2(int t) {
     return t == TMPL_LFM2 || t == TMPL_LFM2_8B || t == TMPL_LFM2_24B;
 }
 static inline bool tmpl_qwen35(int t) {
-    return t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK;
+    return t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK || t == TMPL_QWEN36;
 }
 
 // How the generation prompt should treat a thinking model.
@@ -527,6 +538,7 @@ struct jv;
 // THINK_DEFAULT when absent, so a silent request renders what the model's own
 // reference template would render
 bool req_thinking_mode_valid(struct jv *req);
+int req_preserve_thinking(struct jv *req);
 int req_thinking_mode(struct jv *req);
 // `reasoning_effort` from the request (top level or chat_template_kwargs):
 // THINK_EFFORT_* for xhigh (also absent), medium and low; -1 for any other

@@ -112,6 +112,8 @@ static const struct {
     // LFM2.5-24B's revision: LFM2's framing; the generation prompt opens the
     // thought whatever thinking says
     { "lfm2-24b",         0,  33, 1, 0, 0, "lfm2_python",   1 },
+    // Qwen 3.6: Qwen 3.5's framing and calls
+    { "qwen36",           0,  34, 0, 0, 1, "qwen3_xml",     1 },
 };
 #define N_FAMILY ((int)(sizeof FAMILY / sizeof *FAMILY))
 
@@ -256,7 +258,7 @@ static void mode_bits_are_ignored(int t, const jv *tools) {
 static const char *opener(int t) {
     switch (t) {
     case TMPL_GRANITE42: case TMPL_NEMOTRON35: case TMPL_QWEN38:
-    case TMPL_ORNITH: case TMPL_QWEN35: case TMPL_QWEN35_NOTHINK:
+    case TMPL_ORNITH: case TMPL_QWEN35: case TMPL_QWEN35_NOTHINK: case TMPL_QWEN36:
     case TMPL_NEMOTRON: case TMPL_MINICPM5:
         return "<think>\n";
     case TMPL_SPARK: case TMPL_SPARK25: case TMPL_LFM2_24B: return "<think>";
@@ -327,12 +329,12 @@ static void state_matches_the_prompt(int t, const jv *tools) {
 }
 
 int main(void) {
-    CHECK(N_FAMILY == TMPL_LFM2_24B + 1,
-          "the table has %d rows for %d template ids", N_FAMILY, TMPL_LFM2_24B + 1);
+    CHECK(N_FAMILY == TMPL_QWEN36 + 1,
+          "the table has %d rows for %d template ids", N_FAMILY, TMPL_QWEN36 + 1);
     jv *tools = json_parse(TOOL_SRC, strlen(TOOL_SRC));
     CHECK(tools != NULL, "tool fixture parses");
     chat_msg user[1] = { { .role = "user", .content = "Hello" } };
-    for (int t = 0; t < N_FAMILY && t <= TMPL_LFM2_24B; t++) {
+    for (int t = 0; t < N_FAMILY && t <= TMPL_QWEN36; t++) {
         const char *name = FAMILY[t].name;
 
         size_t e0 = render(t, NULL, 0, false, THINK_DEFAULT, NULL, A, sizeof A);

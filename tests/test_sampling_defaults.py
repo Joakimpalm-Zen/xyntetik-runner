@@ -39,12 +39,13 @@ PUBLISHED = {
     # (docs/serving-guidance.json)
     "qwen35":    {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0},
     "qwen35-nothink": {"temperature": 1.0, "top_p": 1.0, "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0},
+    "qwen36":    {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0},
     "nemotron":  {"temperature": 0.6, "top_p": 0.95, "top_k": 0,  "min_p": 0.0, "repeat_penalty": 1.0},
     "apertus":   {"temperature": 0.8, "top_p": 0.9,  "top_k": 0,  "min_p": 0.0, "repeat_penalty": 1.0},
 }
 TEMPLATE_FOR = {"gemma4": "gemma4-mainline", "qwen38": "qwen38",
                 "granite42": "granite42", "qwen3-coder": "qwen3-coder",
-                "qwen35": "qwen35", "qwen35-nothink": "qwen35-nothink",
+                "qwen35": "qwen35", "qwen35-nothink": "qwen35-nothink", "qwen36": "qwen36",
                 "nemotron": "nemotron", "apertus": "apertus"}
 # families whose tool calls ride the generic envelope (Nemotron Nano speaks
 # its own <TOOLCALL> protocol since 2026-10-09, suite R2.4.4)

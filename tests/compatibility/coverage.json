@@ -513,6 +513,26 @@
     "metal": "NOT RUN"
    }
   },
+  "qwen36": {
+   "artifact": "qwen3.6-35b-a3b-q4_k_m",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "Qwen 3.5's function-XML protocol with JSON for every argument that is not a string; the template renders the file's own bytes (template-conformance qwen36-35b-a3b, 23/23 text and tokens with the hostile-arguments case, 2026-10-30); the live tool gate has not been run on this artifact"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "the qwen36 preset follows the model card's thinking-mode setting; not read against a live run yet"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "UNSUPPORTED",
+    "metal": "UNSUPPORTED"
+   },
+   "note": "the Qwen3.6 template revision: Qwen 3.5's rules with a preserve_thinking switch (read from chat_template_kwargs or the top level) and JSON scalars in tool-call arguments"
+  },
   "phi4": {
    "tool_protocol": {
     "status": "NOT RUN",
@@ -913,9 +933,12 @@
   },
   "qwen35moe": {
    "templates": [
-    "qwen35"
+    "qwen35",
+    "qwen36"
    ],
-   "artifacts": [],
+   "artifacts": [
+    "qwen3.6-35b-a3b-q4_k_m"
+   ],
    "tool_protocol": {
     "status": "NOT RUN"
    },

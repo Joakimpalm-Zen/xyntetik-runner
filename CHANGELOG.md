@@ -22,6 +22,20 @@ Current release and unreleased changes. Compatibility follows the
   (`docs/compat-reports/spark2_5-gpu-2026-10-30/README.md`). An expert FFN
   with the exact GELU still runs on the CPU (no such model exists).
 
+- **Tool-call arguments that are not strings replay as the publishers'
+  templates write them, on six families.** A list or object argument in an
+  assistant turn's history was written as compact JSON; Qwen3-Coder's
+  template family (Ornith, Qwen 3.5, Qwen 3.6, Qwen 3.8, Granite 4.2,
+  Nemotron 3.5) writes it through `tojson`, whose separators are `, ` and
+  `: `, and Ornith, Qwen 3.5, Granite 4.2 and Nemotron 3.5 write a boolean or
+  null through Python's `str()` (`False`, `None`). The template conformance
+  gate now runs a case with such arguments on each of these families, and all
+  conform in text (Qwen 3.6 in tokens too).
+- **Qwen 3.6's own template (`qwen36`).** Qwen 3.5's rules with tool-call
+  scalars written as JSON and the `preserve_thinking` switch, read at the top
+  level or inside `chat_template_kwargs` as `enable_thinking` is: `true`
+  replays the thought of every assistant turn. Detected from the file's
+  template, so a Qwen3.6 GGUF needs no flag.
 - **The qwen35moe architecture on the CPU: Qwen3.5 and Qwen3.6-35B-A3B
   and the models built on them.** Qwen 3.5's Gated DeltaNet and gated
   attention with routed experts (softmax, top-k, renormalized) and a

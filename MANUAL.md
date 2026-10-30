@@ -2321,7 +2321,7 @@ flag and ignore it rather than approximate one.
 
 Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
 `mistral-nemo`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
-`ornith`, `qwen35`, `qwen35-nothink`, `nemotron`, `nemotron35`, `hermes4`, `granite`, `granite4`, `granite42`,
+`ornith`, `qwen35`, `qwen35-nothink`, `qwen36`, `nemotron`, `nemotron35`, `hermes4`, `granite`, `granite4`, `granite42`,
 `qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `lfm2-8b`, `lfm2-24b`, `mimo`, `spark`, `spark25`,
 `k2-horizon`, `flint`, `muse`, `harmony`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
 is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
@@ -4097,6 +4097,11 @@ template writes a thought block on an assistant turn after the last user
 query only when that turn's reasoning is non-empty, so a trailing historical
 answer is replayed with no empty block, and a non-empty `reasoning_content`
 is replayed on every assistant turn after the last user query.
+Qwen 3.6 (`qwen36`) takes `preserve_thinking` the same way, at the top level
+or inside `chat_template_kwargs`: `true` replays the `reasoning_content` of
+every assistant turn, where the default keeps only those after the last user
+query as Qwen 3.5 does. A value that is not a boolean or null is refused
+with a 400.
 A turn that ends on a stop TOKEN also reports that token's own decision as
 `stop_logprobs` (its logprob, the top alternatives and their ids) whenever
 `logprobs` was requested. It rides beside `stop_token` rather than inside
