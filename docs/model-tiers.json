@@ -4941,6 +4941,23 @@
         "runner_version": "1.7.1",
         "date": "2026-10-30"
       }
+    },
+    {
+      "id": "flint-int4-q4_1",
+      "model": "flint (RecursiveSI)",
+      "tier": "upcoming",
+      "claim": "Not admitted yet: the architecture, tokenizer and template are implemented and checked; the file's own cell and its agreement check are owed.",
+      "architecture": "flint",
+      "missing": "A CPU cell on the publisher's Q4_1 (26.0 GB, the lab CPU lane) and the agreement check against llama.cpp on the same file; the CUDA path (the next change). Tokenizer agreement (0 of 721), template conformance (21 of 21) and the architecture against transformers' own flint in float32 on a converted random model are recorded.",
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-30",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29, the fifth item: a new architecture (flint), its tokenizer rule and its chat template, implemented before validation.",
+          "last_validated_release": null
+        }
+      ],
+      "anchor": "anchor: agreement with another engine on the publisher's file, not fidelity. A float32 reference (about 160 GB) is not feasible; the architecture's math is checked against transformers' own flint on a converted random model."
     }
   ]
 }

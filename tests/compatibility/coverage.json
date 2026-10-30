@@ -742,6 +742,26 @@
     "metal": "NOT RUN"
    },
    "note": "<|ifm|im_start|> turns, markdown tool declarations, a think block on every assistant turn, thinking on by default, reasoning_effort high only"
+  },
+  "flint": {
+   "artifact": "flint-int4-q4_1",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "the template renders the file's own tool preamble and Spark's <arg_key> calls (template-conformance flint, 21/21 text and tokens, 2026-10-30) and the argkv_xml parser is pinned on fixtures (test_spark_argkv_calls, shared); the live tool gate has not been run on this artifact"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "the file carries the publisher's general.sampling.* (temperature 1.0, top_p 0.95, top_k 20); no family preset"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "UNSUPPORTED",
+    "metal": "UNSUPPORTED"
+   },
+   "note": "GLM-style role tokens with no end-of-turn token, caller text through the template's flint_text filter, tools as a system turn of their own, Spark's <arg_key> calls"
   }
  },
  "architectures": {
@@ -1304,6 +1324,25 @@
     "cpu": "NOT RUN",
     "cuda": "NOT RUN",
     "metal": "NOT RUN"
+   }
+  },
+  "flint": {
+   "templates": [
+    "flint"
+   ],
+   "artifacts": [
+    "flint-int4-q4_1"
+   ],
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "UNSUPPORTED",
+    "metal": "UNSUPPORTED"
    }
   }
  }

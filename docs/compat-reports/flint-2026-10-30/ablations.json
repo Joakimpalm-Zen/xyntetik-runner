@@ -1,0 +1,26 @@
+{
+ "sinks off": {
+  "mean_kl": 0.6547311544418335,
+  "top1_pct": 44.999998807907104,
+  "margin_qualified_top1_pct": 56.04395866394043,
+  "margin_qualified_positions": 91
+ },
+ "rope on every layer": {
+  "mean_kl": 5.382522106170654,
+  "top1_pct": 2.9999999329447746,
+  "margin_qualified_top1_pct": 4.395604506134987,
+  "margin_qualified_positions": 91
+ },
+ "no sliding window": {
+  "mean_kl": 0.37720444798469543,
+  "top1_pct": 47.999998927116394,
+  "margin_qualified_top1_pct": 59.3406617641449,
+  "margin_qualified_positions": 91
+ },
+ "routing weights not renormalised": {
+  "mean_kl": 1.3662811517715454,
+  "top1_pct": 15.999999642372131,
+  "margin_qualified_top1_pct": 20.879121124744415,
+  "margin_qualified_positions": 91
+ }
+}
