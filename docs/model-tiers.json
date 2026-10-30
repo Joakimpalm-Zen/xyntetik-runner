@@ -5049,22 +5049,22 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.7.1",
+          "runner_version": "1.8.0",
           "date": "2026-10-30",
-          "device_class": "linux-x86_64-cuda",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "809257d7e57c88625691fe5fc65c53ee315f6aae",
+          "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85",
           "caps": {
-            "version": "1.7.1",
-            "os": "linux",
+            "version": "1.8.0",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 16,
-            "gpu_backend": null,
-            "gpu_name": null
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "e9b3df046270dbf72909ee397bf99e7e1269069cb5cf8f3e80e2cfb6dd2562c1",
           "ran": "runner -m K2-Horizon-7B-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/k2-horizon-7b-q8_0.linux-x86_64-cuda.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/k2-horizon-7b-q8_0.windows-x86_64-cuda.cpu.txt"
         },
         "cuda": null,
         "metal": null
@@ -5092,7 +5092,7 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.7.1",
+        "runner_version": "1.8.0",
         "date": "2026-10-30"
       }
     },
