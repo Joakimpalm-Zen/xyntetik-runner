@@ -3482,7 +3482,25 @@
           "ran": "runner -m Clef-Flash-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
           "evidence": "tests/compatibility/tier-smoke/cloudflare-clef-flash.windows-x86_64-cuda.cpu.txt"
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "b9ad4e9dc9a643188d288919f89a0d6ff86a632f",
+          "caps": {
+            "version": "1.7.1",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 8,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
+          },
+          "output_sha256": "0b9c736613433a3c11132f58dfae9036318c3da3a920032448e08bf61ecc3435",
+          "ran": "runner -m Clef-Flash-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/cloudflare-clef-flash.windows-x86_64-cuda.cuda.txt"
+        },
         "metal": {
           "kind": "limit",
           "reason": "Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.",
