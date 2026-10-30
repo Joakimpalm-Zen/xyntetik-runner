@@ -472,6 +472,7 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     // byte-level regex, smollm's pre-tokenizer exactly
     else if (strcmp(pre, "mellum2") == 0) t->pre = TOK_PRE_SMOLLM;
     else if (strcmp(pre, "afmoe") == 0)  t->pre = TOK_PRE_AFMOE;
+    else if (strcmp(pre, "flint") == 0)  t->pre = TOK_PRE_FLINT;
     else if (strcmp(pre, "tekken") == 0) t->pre = TOK_PRE_TEKKEN;
     // pixtral: llama.cpp's name for the Tekken regex with its Unicode letter
     // classes, the one TOK_PRE_TEKKEN implements; NVIDIA's Nemotron 3.5
@@ -1502,6 +1503,66 @@ static int k2h_split_next(const uint32_t *cp, int i, int ncp) {
 // digit stands alone and never takes a leading space. Splitting first also
 // bounds the regex: in "  12" the space run ends at the digit and stays whole,
 // where "  leading" gives a space back to the word.
+// flint (RecursiveSI/flint tokenizer.json, llama.cpp pre "flint"): a
+// Sequence of three Isolated Splits, folded into one scanner the way afmoe's
+// is, because each pass only cuts the fragments the one before it left:
+//   1. \p{N}{1,3}, from the left;
+//   2. [一-龥぀-ゟ゠-ヿ]+ (CJK unified ideographs to
+//      U+9FA5, hiragana, katakana);
+//   3. within what is left, the o200k letter alternatives (tekken_letters)
+//      with a contraction suffix, then ` ?[\p{P}\p{S}]+[\r\n]*` (no '/' in
+//      the tail, unlike o200k), then the three whitespace alternatives.
+//      The pass has no digit alternative, and a character none of them
+//      matches is a piece of its own up to the next match (Isolated keeps
+//      the gaps).
+static bool cp_flint_cjk(uint32_t c) {
+    return (c >= 0x4E00 && c <= 0x9FA5) || (c >= 0x3040 && c <= 0x309F) ||
+           (c >= 0x30A0 && c <= 0x30FF);
+}
+// one match of pass 3 at i within [i, end), or i when nothing matches there
+static int flint_pass3(const uint32_t *cp, int i, int end) {
+    int adv = tekken_letters(cp, i, end);
+    if (adv > i) return adv + contraction_len(cp, adv, end);
+    {   // ` ?[\p{P}\p{S}]+[\r\n]*`
+        int j = (cp[i] == ' ' && i + 1 < end && cp_punct_sym(cp[i + 1])) ? i + 1 : i;
+        if (j < end && cp_punct_sym(cp[j])) {
+            while (j < end && cp_punct_sym(cp[j])) j++;
+            while (j < end && (cp[j] == '\r' || cp[j] == '\n')) j++;
+            return j;
+        }
+    }
+    if (cp_space(cp[i])) {   // \s*[\r\n]+ | \s+(?!\S) | \s+
+        int j = i;
+        while (j < end && cp_space(cp[j])) j++;
+        int last_nl = -1;
+        for (int k = i; k < j; k++)
+            if (cp[k] == '\r' || cp[k] == '\n') last_nl = k;
+        if (last_nl >= 0) return last_nl + 1;
+        if (j < end && j - i > 1) j--;
+        return j;
+    }
+    return i;
+}
+static int flint_split_next(const uint32_t *cp, int i, int ncp) {
+    if (cp_digit(cp[i])) {
+        int j = i;
+        while (j < ncp && cp_digit(cp[j]) && j - i < 3) j++;
+        return j;
+    }
+    if (cp_flint_cjk(cp[i])) {
+        int j = i;
+        while (j < ncp && cp_flint_cjk(cp[j])) j++;
+        return j;
+    }
+    int end = i;   // the fragment passes 1 and 2 left
+    while (end < ncp && !cp_digit(cp[end]) && !cp_flint_cjk(cp[end])) end++;
+    int m = flint_pass3(cp, i, end);
+    if (m > i) return m;
+    int j = i + 1;   // an unmatched run up to the next match
+    while (j < end && flint_pass3(cp, j, end) == j) j++;
+    return j;
+}
+
 static int smollm_split_next(const uint32_t *cp, int i, int ncp) {
     if (cp_digit(cp[i])) return i + 1;
     int seg = i;
@@ -1661,6 +1722,7 @@ static int bpe_encode_split(tokenizer *t, const char *text, size_t n,
                 : t->pre == TOK_PRE_AFMOE     ? afmoe_split_next(cp, i, ncp)
                 : t->pre == TOK_PRE_SPARK25   ? spark25_split_next(cp, i, ncp)
                 : t->pre == TOK_PRE_K2H       ? k2h_split_next(cp, i, ncp)
+                : t->pre == TOK_PRE_FLINT     ? flint_split_next(cp, i, ncp)
                                               : gpt2_split_next(cp, i, ncp);
         if (end <= i) end = i + 1; // never stall
         // map the original bytes of this pre-token through byte->unicode
@@ -1936,6 +1998,18 @@ int tok_stop_ids(tokenizer *t, const char *arch, int *out, int cap) {
                        "TOK_STOP_ARCH_MAX bounds every per-architecture list");
         for (size_t i = 0; i < sizeof(hstops) / sizeof(*hstops); i++)
             stop_add(t, out, &n, cap, hstops[i]);
+    }
+    // flint ends a turn by starting the next one: its file lists <|user|>,
+    // <|observation|> and <|developer|> beside <|end_of_text|> as
+    // end-of-generation tokens (tokenizer.ggml.eog_token_ids, read above;
+    // llama.cpp's vocab adds the first two by name for this pre). Named here
+    // too, so a flint file without that key still stops there.
+    if (!strcmp(arch, "flint")) {
+        static const char *fstops[] = { "<|user|>", "<|observation|>", "<|developer|>" };
+        _Static_assert(sizeof(fstops) / sizeof(*fstops) <= TOK_STOP_ARCH_MAX,
+                       "TOK_STOP_ARCH_MAX bounds every per-architecture list");
+        for (size_t i = 0; i < sizeof(fstops) / sizeof(*fstops); i++)
+            stop_add(t, out, &n, cap, fstops[i]);
     }
     return n;
 }

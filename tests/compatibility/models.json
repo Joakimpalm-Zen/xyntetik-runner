@@ -1566,6 +1566,38 @@
       }
     },
     {
+      "id": "flint-int4-q4_1",
+      "architecture": "flint",
+      "family": "flint",
+      "file": "models/flint-int4-q4_1.gguf",
+      "sha256": "43c07baccdba42eb7528a9630ee15699b1942c297291dc1b39a061f508ee1a4b",
+      "upstream": "RecursiveSI/flint-int4-gguf",
+      "tokenizer_reference": "RecursiveSI/flint",
+      "tokenizer_reference_revision": "2a247be0c0aec895ccb0ac7ca92229ec6df37288",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/flint.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "RecursiveSI's own Q4_1 of flint (39.8B total, 49 blocks, hidden 2048, GQA 32/4, head_dim 128, QK norms and attention sinks on every block, a 513 window with NeoX rope on the sliding blocks and NoPE full attention, 2 leading dense blocks then 256 experts top 6 by sigmoid with a 1,024-wide shared expert, untied head). Tokenizer pre flint, 0 of 721 corpus strings differ from the publisher's tokenizer.json (read from the file's metadata); template family flint, conformance 23/23 in text and tokens. CPU only for now, so chat runs with the GPU off. No float32 reference is feasible (about 160 GB); the architecture is checked against transformers' own flint in float32 on a converted random model.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "off",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>",
+            "<|user|>",
+            "<|assistant|>"
+          ]
+        }
+      }
+    },
+    {
       "id": "qwen3.8-27b-ud-q4_k_m",
       "architecture": "qwen35",
       "family": "Qwen 3.8",

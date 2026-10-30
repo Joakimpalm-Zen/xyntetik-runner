@@ -181,6 +181,10 @@
     "k2-horizon": {
       "fixture": "plain",
       "reasoning": "tags"
+    },
+    "flint": {
+      "fixture": "plain",
+      "reasoning": "tags"
     }
   }
 }

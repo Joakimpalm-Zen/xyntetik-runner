@@ -586,6 +586,7 @@ typedef struct {
     float  attn_temp_offset;
     bool   swa_rope_global;
     bool   gptoss;           // gpt-oss: attention sinks + swiglu_oai + MoE
+    bool   flint;            // flint: sinks + QK norms + NoPE full layers + MoE
                              // biases; no GPU kernels for those yet
     bool   attn_qkv_split;   // spark2_5: Q, K and V fused in blk.N.attn_qkv
                              // (FFN separate), sliced at bind time

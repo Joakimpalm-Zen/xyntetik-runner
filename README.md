@@ -411,7 +411,7 @@ recorded failure.
   a [Python client](python/README.md) and a
   [TypeScript client](clients/typescript/README.md).
   [Container](MANUAL.md#container-image)
-- **What loads.** 26 admitted architecture labels and 24 weight formats, verified on
+- **What loads.** 27 admitted architecture labels and 24 weight formats, verified on
   download with `-hf`. Experimental layouts and backend limits are listed
   in the [support matrix](MANUAL.md#support-matrix).
 - **How Runner compares.** Closer to the publisher's reference than

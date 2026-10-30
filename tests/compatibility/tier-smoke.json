@@ -2205,6 +2205,37 @@
           }
         }
       }
+    },
+    "flint-int4-q4_1": {
+      "prompt": "Which planet is closest to the Sun? Answer in two sentences.",
+      "n_predict": 600,
+      "ctx": 1024,
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/flint-int4-q4_1.linux-x86_64-cuda.cpu.txt",
+          "sha256": "8ce1eee2a9e1f4fc20497c717146513fd94a7dd8a88ff37ed18028f516dd64ed",
+          "bytes": 160,
+          "finish_reason": "stop",
+          "completion_tokens": 152,
+          "spec": {
+            "prompt": "Which planet is closest to the Sun? Answer in two sentences.",
+            "n_predict": 600,
+            "ctx": 1024,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-10-30",
+            "runner_version": "1.7.1",
+            "commit": "f5f61a2e8d25689b6e9d3c68ae35395f78fe9627"
+          }
+        }
+      }
     }
   }
 }

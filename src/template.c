@@ -89,6 +89,8 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         // family's template writes it (ChatML's <|im_start|> is not a
         // substring of it)
         if (strstr(meta_tmpl, "<|ifm|im_start|>")) return TMPL_K2H;
+        // flint: its own sanitising macro, ahead of zephyr's <|user|> test
+        if (strstr(meta_tmpl, "macro flint_text(")) return TMPL_FLINT;
         // Spark: DeepSeek-style turn tokens with its own ASCII role tags
         if (strstr(meta_tmpl, "<|Bot|>") && strstr(meta_tmpl, "<|System|>"))
             return strstr(meta_tmpl, "thinking_effort") ? TMPL_SPARK
@@ -242,6 +244,7 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "spark")) return TMPL_SPARK;
     if (!strcmp(name, "spark25")) return TMPL_SPARK25;
     if (!strcmp(name, "k2-horizon")) return TMPL_K2H;
+    if (!strcmp(name, "flint")) return TMPL_FLINT;
     if (!strcmp(name, "hermes4")) return TMPL_HERMES4;
     if (!strcmp(name, "llama2")) return TMPL_LLAMA2;
     if (!strcmp(name, "llama3")) return TMPL_LLAMA3;
@@ -320,6 +323,7 @@ const char *template_name(int t) {
         case TMPL_SPARK: return "spark";
         case TMPL_SPARK25: return "spark25";
         case TMPL_K2H: return "k2-horizon";
+        case TMPL_FLINT: return "flint";
         case TMPL_HERMES4: return "hermes4";
         case TMPL_LLAMA3: return "llama3";  case TMPL_ZEPHYR: return "zephyr";
         case TMPL_GEMMA:  return "gemma";
@@ -753,7 +757,7 @@ bool template_think_tags(int tmpl, const char **open, const char **close) {
         tmpl == TMPL_NEMOTRON || tmpl == TMPL_HERMES4 || tmpl == TMPL_MINICPM5 ||
         tmpl == TMPL_LFM2 ||
         tmpl == TMPL_MIMO ||
-        tmpl_spark(tmpl) ||
+        tmpl_argkv(tmpl) ||
         tmpl_granite42_like(tmpl) || tmpl_ornith_like(tmpl)) {
         *open = "<think>";
         *close = "</think>";
@@ -4300,6 +4304,83 @@ static size_t render_k2h(const chat_msg *msgs, int n_msgs, bool add_assistant,
     return off;
 }
 
+// TMPL_FLINT (RecursiveSI/flint chat_template.jinja at 2a247be0).
+// flint_text(): the template's filter over caller text, its replaces applied
+// in its order, each over the whole string (so a spelling the first pass
+// leaves behind is not re-examined by it): NUL, <think> and </think> are
+// dropped, and the seven role and boundary tokens are HTML-escaped.
+static char *flint_text(const char *s) {
+    static const char *const from[] = { "<think>", "</think>",
+        "<|begin_of_text|>", "<|end_of_text|>", "<|system|>", "<|developer|>",
+        "<|user|>", "<|assistant|>", "<|observation|>" };
+    static const char *const to[] = { "", "",
+        "&lt;|begin_of_text|&gt;", "&lt;|end_of_text|&gt;", "&lt;|system|&gt;",
+        "&lt;|developer|&gt;", "&lt;|user|&gt;", "&lt;|assistant|&gt;",
+        "&lt;|observation|&gt;" };
+    size_t n = strlen(s);
+    char *cur = malloc(n + 1);
+    if (!cur) return NULL;
+    memcpy(cur, s, n + 1);   // a C string holds no NUL to drop
+    for (size_t k = 0; k < sizeof from / sizeof *from; k++) {
+        if (!strstr(cur, from[k])) continue;
+        sbuf b = {0};
+        size_t fl = strlen(from[k]);
+        for (const char *p = cur, *q; ; p = q + fl) {
+            q = strstr(p, from[k]);
+            if (!q) { sb_put(&b, p, strlen(p)); break; }
+            sb_put(&b, p, (size_t)(q - p));
+            sb_put(&b, to[k], strlen(to[k]));
+        }
+        sb_put(&b, "", 0);
+        free(cur);
+        if (b.failed || !b.s) { free(b.s); return NULL; }
+        cur = b.s;
+    }
+    return cur;
+}
+
+static size_t render_flint(const chat_msg *msgs, int n_msgs, bool add_assistant,
+                           const jv *tools, char *out, size_t cap) {
+    size_t off = 0;
+    sbuf pre = {0};
+    if (tools && tools->type == J_ARR && tools->n > 0) {
+        tools_render_for(TMPL_FLINT, tools, &pre);
+        if (pre.failed) { free(pre.s); return SIZE_MAX; }
+    }
+    bool pending = true;   // the template's ns.tools_pending
+    for (int i = 0; i < n_msgs; i++) {
+        const char *role = msgs[i].role;
+        if (pending && strcmp(role, "system")) {
+            if (pre.s) off = emit(out, cap, off, "%s", pre.s, NULL);
+            pending = false;
+        }
+        const char *tag = !strcmp(role, "system") ? "<|system|>"
+                        : !strcmp(role, "developer") ? "<|developer|>"
+                        : !strcmp(role, "user") ? "<|user|>" : NULL;
+        if (tag || !strcmp(role, "tool")) {
+            char *t = flint_text(msgs[i].content);
+            if (!t) { free(pre.s); return SIZE_MAX; }
+            if (tag) {
+                off = emit_raw(out, cap, off, "%s", tag, NULL);
+                off = emit(out, cap, off, "%s", t, NULL);
+            } else {
+                off = emit(out, cap, off, "<|observation|><tool_response>%s"
+                                          "</tool_response>", t, NULL);
+            }
+            free(t);
+        } else if (!strcmp(role, "assistant")) {
+            // the serving layer wrote <think>R</think> (when the turn had
+            // reasoning) and the calls into the content; the template writes
+            // the assistant's text unfiltered
+            off = emit(out, cap, off, "<|assistant|>%s", msgs[i].content, NULL);
+        }
+    }
+    if (pending && pre.s) off = emit(out, cap, off, "%s", pre.s, NULL);
+    free(pre.s);
+    if (add_assistant) off = emit_raw(out, cap, off, "<|assistant|>", NULL, NULL);
+    return off;
+}
+
 size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
                              bool add_assistant, int thinking,
                              const jv *tools,
@@ -4326,6 +4407,8 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
         return render_spark(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_K2H:
         return render_k2h(msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+    case TMPL_FLINT:
+        return render_flint(msgs, n_msgs, add_assistant, tools, out, cap);
     case TMPL_QWEN38:
         return render_qwen38(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_GRANITE42:
@@ -4671,6 +4754,28 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
                     "<TOOL_RESPONSE>[{{\"tool_response1\"}}, {{\"tool_response2\"}}]</TOOL_RESPONSE>\n\n"
                     "Based on the tool responses, you can call additional tools if needed, correct "
                     "tool calls if any errors are found, or just respond to the user.");
+        return;
+    }
+    if (tmpl == TMPL_FLINT) {
+        // flint's tool_preamble: a <|system|> turn of its own, each
+        // declaration's FUNCTION object as tojson(ensure_ascii=False), then
+        // the call-format line; render_flint places it. The template's
+        // source puts each object on a line of its own, but trim_blocks eats
+        // the newline after every `{%- set fn ... %}` and `{%- endfor %}`, so
+        // as rendered the objects run together and `</tools>` follows the last
+        if (!tools || tools->type != J_ARR || tools->n == 0) return;
+        pl_lit(out, "<|system|>\n# Tools\n\nYou may call one or more functions to "
+                    "assist with the user query.\n\nYou are provided with function "
+                    "signatures within <tools></tools> XML tags:\n<tools>");
+        for (int i = 0; i < tools->n; i++) {
+            const jv *fn = jv_get(tools->items[i], "function");
+            if (!fn) fn = tools->items[i];
+            jv_dump_tojson(fn, out);
+        }
+        pl_lit(out, "</tools>\n\nFor each function call, output the function name "
+                    "and arguments within the following XML format:\n<tool_call>"
+                    "{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>"
+                    "{arg-value-1}</arg_value>...</tool_call>\n");
         return;
     }
     if (tmpl == TMPL_K2H) {
@@ -5098,7 +5203,7 @@ void tool_history_render_for(int tmpl, const jv *calls,
         const char *name = jv_str(jv_get(fn, "name"), NULL);
         const char *args = jv_str(jv_get(fn, "arguments"), "{}");
         if (!name) continue;
-        if (tmpl_spark(tmpl)) {
+        if (tmpl_argkv(tmpl)) {
             // <tool_call>NAME then <arg_key>K</arg_key><arg_value>V</arg_value>
             // per member (a string raw, anything else tojson with Python's
             // default separators), no separator around or between calls
@@ -5810,7 +5915,7 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
         env->tools = tools;
         env->parse_only = true;
         env->max_calls = TOOL_STREAM_MAX_CALLS;
-    } else if (strict && tmpl_spark(tmpl) && env->kind == TCH_AUTO) {
+    } else if (strict && tmpl_argkv(tmpl) && env->kind == TCH_AUTO) {
         // Spark's own GLM-style calls, parsed on the way out and never
         // constrained; a required or named choice takes the generic envelope
         env->proto = TP_ARGKV;
@@ -5954,7 +6059,7 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
                     (tmpl == TMPL_LFM2 && (!strict || env->proto == TP_LFM2)) ||
                     (tmpl == TMPL_MIMO &&
                      (!strict || env->proto == TP_QWEN_XML)) ||
-                    (tmpl_spark(tmpl) &&
+                    (tmpl_argkv(tmpl) &&
                      (!strict || env->proto == TP_ARGKV)) ||
                     (tmpl == TMPL_K2H &&
                      (!strict || env->proto == TP_IFM_ARGKV));

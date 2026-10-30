@@ -5,6 +5,24 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The flint architecture, its tokenizer rule and its template.**
+  RecursiveSI's flint loads on the CPU: QK norms and learned attention sinks
+  on every block, a sliding window with rope on the blocks the file's pattern
+  marks and no rope on the full-attention blocks, two dense blocks, then
+  sigmoid-routed experts with an always-on shared expert. Checked against
+  transformers' own flint in float32 on a converted random model: top-1 on
+  all 199 positions, log-probabilities within the f16 KV cache's rounding
+  (`docs/compat-reports/flint-2026-10-30/README.md`). The tokenizer pre `flint`
+  reads 0 of 721 corpus strings differently from the publisher's
+  tokenizer.json, and the `flint` template renders its own template token for
+  token (23 of 23), with Spark's tool calls and its own `<|developer|>` turn
+  (every other family still serves `developer` as its system turn).
+  Generation stops at the role tokens the file lists as end-of-generation. On
+  the publisher's Q4_1, Runner agrees with another engine at 0.028 mean KLD
+  and 99.0% margin-qualified top-1 over 200 positions, both on the CPU; that
+  is agreement, not fidelity, since a float32 reference of the 39.8B model
+  (about 160 GB) is not feasible here. The file's admitting CPU cell passes on
+  an x86-64 host with the GPU hidden; the GPU path is the next change.
 - **The CUDA gate's reports are written with LF on every host.**
   `scripts/cuda-smoke.py` and `scripts/cuda-act-probe.py` opened their JSON
   reports with the platform's line ending, so the 1.8.0 gate on the Windows

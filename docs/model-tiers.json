@@ -4941,6 +4941,85 @@
         "runner_version": "1.7.1",
         "date": "2026-10-30"
       }
+    },
+    {
+      "id": "flint-int4-q4_1",
+      "model": "flint (RecursiveSI)",
+      "family": "flint",
+      "tier": "tier2",
+      "claim": "Text path, RecursiveSI's own Q4_1 of flint (39.8B, mixture of experts): it loads, tokenizes as the publisher's tokenizer.json does, renders the publisher's own template token for token and answers through it on the CPU, and agrees with another engine on this file (0.028 mean KLD, 99.0% margin-qualified top-1, 200 positions). No float32 reference is feasible (about 160 GB), so that is agreement, not fidelity.",
+      "architecture": "flint",
+      "upstream": {
+        "checkpoint": "RecursiveSI/flint",
+        "revision": "2a247be0c0aec895ccb0ac7ca92229ec6df37288"
+      },
+      "files": [
+        {
+          "name": "flint-int4-q4_1.gguf",
+          "repo": "RecursiveSI/flint-int4-gguf",
+          "revision": "9c47151036bc2c34331142dda04488bceab2bc9f",
+          "sha256": "43c07baccdba42eb7528a9630ee15699b1942c297291dc1b39a061f508ee1a4b",
+          "bytes": 25992966976
+        }
+      ],
+      "quantization": "Q4_1 (publisher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "infeasible",
+        "anchor": "anchor: agreement with another engine on the publisher's file, not fidelity: Runner against mainline llama.cpp 36a0e2f on this Q4_1, both on the CPU of the lab CPU lane, 0.028 mean KLD, 90.0% top-1, 99.0% margin-qualified, 0.924 top-8 overlap over 200 raw-completion positions. A float32 reference (about 160 GB) is not feasible on any machine this project runs; the architecture's arithmetic is checked against transformers' own flint in float32 on a converted random model. Tokenizer 0/721 against the publisher's tokenizer.json at 2a247be0, template conformance 23 of 23 in text and tokens against its chat_template.jinja. Record: docs/compat-reports/flint-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "CPU only: attention sinks with a sliding window, NoPE full layers and sigmoid routing with a shared expert have no CUDA or Metal path yet, so the GPU backends serve it on the CPU. LoRA training is refused (sigmoid router). 26 GB of weights: the lab CPU lane is the only machine here that holds the file in memory. A required or named tool choice takes the generic JSON envelope on this family.",
+        "evidence": [
+          "docs/compat-reports/1.7.1-2026-10-30-linux-x86_64-flint-int4-q4_1.json",
+          "docs/compat-reports/flint-2026-10-30/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "The CUDA path; task quality and the native tool protocol on the real checkpoint."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "f5f61a2e8d25689b6e9d3c68ae35395f78fe9627",
+          "caps": {
+            "version": "1.7.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": null,
+            "gpu_name": null
+          },
+          "output_sha256": "8ce1eee2a9e1f4fc20497c717146513fd94a7dd8a88ff37ed18028f516dd64ed",
+          "ran": "runner -m flint-int4-q4_1.gguf --serve -c 1024 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=600 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/flint-int4-q4_1.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": null,
+        "metal": null
+      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-30",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29, the fifth item: a new architecture (flint), its tokenizer rule and its chat template, implemented before validation.",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane (policy 2026-10-27); no float32 reference is feasible, so the anchor is agreement with another engine. Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
     }
   ]
 }

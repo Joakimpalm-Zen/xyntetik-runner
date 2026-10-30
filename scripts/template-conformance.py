@@ -111,7 +111,7 @@ class Family:
     def __init__(self, runner, source, note="", tool_family=False,
                  thinking_var=None, skip=None, tokenizer=(), cannot=None,
                  oracle_tool_shape=None, call_ids=None, content_parts=False,
-                 reasoning_history=False, reasoning_keys=()):
+                 reasoning_history=False, reasoning_keys=(), developer_role=False):
         self.runner = runner            # --chat-template name
         self.source = source            # ("hf", repo) | ("gguf", path)
         self.note = note
@@ -160,6 +160,11 @@ class Family:
         # every run: a declared skip that stops refusing is reported as rot,
         # so this cannot quietly become a place to hide a case.
         self.cannot = cannot or {}
+        # The template writes a `developer` message as a turn of its own
+        # (template.h tmpl_renders_developer). Only those families get the
+        # developer cases: everywhere else Runner folds developer into the
+        # system slot, which their templates may spell or reject differently.
+        self.developer_role = developer_role
 
 
 FAMILIES = {
@@ -247,6 +252,14 @@ FAMILIES = {
              "IFM/K2-Horizon-7B-GGUF",
         tool_family=True, thinking_var="enable_thinking",
         tokenizer=("K2-Horizon-1B-Q8_0.gguf",)),
+    # RecursiveSI flint: GLM-style role tokens with no end-of-turn token,
+    # caller text through the template's flint_text filter, tools as a
+    # <|system|> turn of their own, Spark's <arg_key> calls.
+    "flint": Family(
+        "flint", ("hf", "RecursiveSI/flint"),
+        note="RecursiveSI/flint chat_template.jinja at 2a247be0",
+        tool_family=True, developer_role=True,
+        tokenizer=("flint-int4-q4_1.gguf",)),
     "llama2": Family(
         "llama2", ("hf", "unsloth/llama-2-7b-chat"),
         note="meta-llama/Llama-2-7b-chat-hf is gated (HTTP 401); this mirror "
@@ -766,6 +779,18 @@ def matrix(family):
                 return [remap(x) for x in v]
             return v
         cases = [(c[0], remap(c[1]), *c[2:]) for c in cases]
+    if family.developer_role:
+        # A developer message opening the conversation, and one in the middle
+        # of it: both keep their own turn on both sides
+        cases.append(("developer-turn", [
+            {"role": "developer", "content": "Answer in one word."},
+            {"role": "user", "content": U1}], True, "default"))
+        cases.append(("developer-mid-history", [
+            {"role": "system", "content": SYS},
+            {"role": "user", "content": U1},
+            {"role": "assistant", "content": A1},
+            {"role": "developer", "content": "From now on, answer in Swedish."},
+            {"role": "user", "content": U2}], True, "default"))
     return [c if len(c) == 5 else (c + (None,)) for c in cases]
 
 

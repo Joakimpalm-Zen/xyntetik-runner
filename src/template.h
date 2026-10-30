@@ -244,7 +244,19 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // Thinking defaults on and pre-seeds `<ifm|think>\n`; off writes the
        // closed empty block. Detected by its <|ifm|im_start|> turn token.
        // Appended last.
-       TMPL_K2H };
+       TMPL_K2H,
+       // RecursiveSI flint (chat_template.jinja at 2a247be0): GLM-style role
+       // tokens (<|system|>, <|developer|>, <|user|>, <|assistant|>,
+       // <|observation|>) with no end-of-turn token between turns; caller text
+       // passes through the template's flint_text (NUL and think tags
+       // dropped, role tokens HTML-escaped); tools are a <|system|> turn of
+       // their own ahead of the first non-system message; an assistant turn
+       // writes <think>R</think> only when it carries reasoning; calls are
+       // Spark's <tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value>
+       // </tool_call>; tool results are <|observation|><tool_response>R
+       // </tool_response>. The generation prompt is <|assistant|> alone.
+       // Detected by its flint_text macro. Appended last.
+       TMPL_FLINT };
 
 // The reasoning tags a TEMPLATE family writes, for the families whose
 // protocol (not their architecture) defines them: the `<think>` block of
@@ -333,6 +345,17 @@ static inline bool tmpl_hermes_json(int t) {
 }
 static inline bool tmpl_spark(int t) {
     return t == TMPL_SPARK || t == TMPL_SPARK25;
+}
+// The families whose own template writes a `developer` message as a turn of
+// its own (flint's <|developer|>). Every other family folds it into the
+// system slot -- gemma-4 by name, the rest by having no such role -- which is
+// what the serving layers' developer-to-system mapping does for them.
+static inline bool tmpl_renders_developer(int t) {
+    return t == TMPL_FLINT;
+}
+// The families whose calls are Spark's GLM-style <arg_key> blocks
+static inline bool tmpl_argkv(int t) {
+    return tmpl_spark(t) || t == TMPL_FLINT;
 }
 static inline bool tmpl_qwen35(int t) {
     return t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK;

@@ -1,0 +1,70 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-10-30T11:30:32Z",
+  "host": {
+    "os": "Linux",
+    "machine": "x86_64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 1.7.1"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "flint-int4-q4_1",
+      "architecture": "flint",
+      "file": "models/flint-int4-q4_1.gguf",
+      "expected_sha256": "43c07baccdba42eb7528a9630ee15699b1942c297291dc1b39a061f508ee1a4b",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 797.8,
+          "stderr_tail": "gpu: this model's MoE router (gating=2 groups=1 norm_w=1 scale=1) has no device kernel \u2014 running on CPU\nloaded flint-int4-q4_1.gguf | flint | 49 layers | ctx 4096 | 8 threads | 0.08s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\nsampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 20\n\nprompt: 3 tok, 5.65 tok/s | gen: 1 tok, 5.53 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 142.9,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": ""
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 17988.62,
+          "prompt": "What is 2+2?",
+          "gpu": "off",
+          "failure_reasons": [],
+          "output_tail": "rithmetic question: \"What is 2+2?\"\n2.  **Determine the Answer**: The mathematical answer is 4.\n3.  **Formulate the Response**: Keep it concise, clear, and directly answer the question. No need for over-explanation for such a basic query, but a friendly tone is good.\n[/thinking]\nThe answer is **4**.\n"
+        }
+      },
+      "resolved_file": "models/flint-int4-q4_1.gguf",
+      "actual_sha256": "43c07baccdba42eb7528a9630ee15699b1942c297291dc1b39a061f508ee1a4b",
+      "file_status": "pass",
+      "complete": true
+    }
+  ],
+  "complete": true,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "pass": 1
+      },
+      "chat": {
+        "pass": 1
+      }
+    }
+  }
+}
