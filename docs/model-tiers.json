@@ -4428,22 +4428,22 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.7.1",
+          "runner_version": "1.8.0",
           "date": "2026-10-30",
-          "device_class": "macos-arm64-metal",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "eea8c2507b6a8828dc255a0d8b81d60e8fd27ab7",
+          "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85",
           "caps": {
-            "version": "1.7.1",
-            "os": "macos",
-            "arch": "arm64",
+            "version": "1.8.0",
+            "os": "windows",
+            "arch": "x86_64",
             "cpu_cores": 8,
-            "gpu_backend": "metal",
-            "gpu_name": "Apple M1"
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 3070"
           },
           "output_sha256": "a3dd7b514a3e7cb8885a12451aa38a87e9bf3c662773efb2fba4f846b4e6bba0",
           "ran": "runner -m LFM2.5-350M-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=80 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/lfm2.5-350m-q8_0.macos-arm64-metal.cpu.txt"
+          "evidence": "tests/compatibility/tier-smoke/lfm2.5-350m-q8_0.windows-x86_64-cuda.cpu.txt"
         },
         "cuda": null,
         "metal": null
@@ -4471,7 +4471,7 @@
           "supported": false,
           "reason": "--lora does not cover the short-convolution hybrid yet (lfm2)"
         },
-        "runner_version": "1.7.1",
+        "runner_version": "1.8.0",
         "date": "2026-10-30"
       }
     },
