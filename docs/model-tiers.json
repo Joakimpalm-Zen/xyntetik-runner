@@ -3578,7 +3578,25 @@
         "backend": "cuda"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "686a31da93e8d682af907123037f6e87373a0e0c",
+          "caps": {
+            "version": "1.7.1",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": null,
+            "gpu_name": null
+          },
+          "output_sha256": "1b3a370279fc586b0e426262201a4158399993fa6787261da3248e41ff5b39a2",
+          "ran": "runner -m Clef-Flash-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/cloudflare-clef-flash-q8_0.linux-x86_64-cuda.cpu.txt"
+        },
         "cuda": {
           "kind": "gate",
           "runner_version": "1.7.1",

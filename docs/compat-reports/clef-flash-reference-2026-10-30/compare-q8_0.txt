@@ -1,0 +1,32 @@
+reference: joint_schema_model.py sha256 0e304cf7c650, float32 cpu, attn sdpa, head_bf16 False
+records 15: input ids equal 15/15, spans equal 15/15
+max |dlogit| 0.049, max |dprob| 0.0119, answers byte-equal after rounding 1/29
+  card-invoice/status: max |dlogit| 0.0109 > 0.001
+  card-invoice/large: max |dlogit| 0.00663 > 0.001
+  card-systemone/department: max |dlogit| 0.0184 > 0.001
+  card-systemone/urgency: max |dlogit| 0.00836 > 0.001
+  card-systemone/outage: max |dlogit| 0.0298 > 0.001
+  noul-criteria/urgent: max |dlogit| 0.0121 > 0.001
+  noul-criteria/plain: max |dlogit| 0.0147 > 0.001
+  choice-keys/route: max |dlogit| 0.0441 > 0.001
+  python-spellings/level: max |dlogit| 0.0415 > 0.001
+  instructions-types/obj: max |dlogit| 0.0412 > 0.001
+  instructions-types/zero: max |dlogit| 0.0264 > 0.001
+  instructions-types/false: max |dlogit| 0.00565 > 0.001
+  instructions-types/empty: max |dlogit| 0.0138 > 0.001
+  special-text/injected: max |dlogit| 0.0242 > 0.001
+  many-questions/paid: max |dlogit| 0.0066 > 0.001
+  many-questions/country: max |dlogit| 0.00934 > 0.001
+  many-questions/size: max |dlogit| 0.013 > 0.001
+  many-questions/fraud: max |dlogit| 0.00962 > 0.001
+  many-questions/channel: max |dlogit| 0.00632 > 0.001
+  many-questions/value: max |dlogit| 0.0246 > 0.001
+  long-state/degraded: max |dlogit| 0.00347 > 0.001
+  long-state/worst: max |dlogit| 0.0162 > 0.001
+  whitespace-state/empty: max |dlogit| 0.00831 > 0.001
+  empty-state/empty: max |dlogit| 0.00912 > 0.001
+  odd-ids/Wie geht's? 😀: max |dlogit| 0.049 > 0.001
+  odd-ids/only one: max |dlogit| 0.0167 > 0.001
+  number-state/pi: max |dlogit| 0.0348 > 0.001
+  null-state/null: max |dlogit| 0.0128 > 0.001
+  combining-marks/script: max |dlogit| 0.0287 > 0.001
