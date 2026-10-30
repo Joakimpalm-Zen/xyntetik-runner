@@ -15,6 +15,8 @@ import pathlib
 import subprocess
 import sys
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
@@ -60,10 +62,16 @@ def test_a_convolution_bias_and_an_all_attention_file_are_refused(runner_bin, tm
 
 
 def test_the_gpu_is_not_used_for_it_yet(runner_bin, tmp_path):
+    # Only a host with a usable device reaches the routing that refuses lfm2
+    # by name; a CUDA build without a driver stops at the probe with its own
+    # line, as tests/test_remove_sublayer.py's GPU checks skip there.
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, timeout=60).stdout)
+    if (caps.get("gpu") or {}).get("backend") not in ("cuda", "metal"):
+        pytest.skip("no CUDA or Metal GPU device in this build or host")
     p = _run(runner_bin, _make(tmp_path, "auto"))
     assert p.returncode == 0, p.stderr.decode(errors="replace")
-    if b"gpu:" in p.stderr and b"using CPU" in p.stderr:
-        assert b"lfm2 is validated on the CPU only" in p.stderr
+    assert b"lfm2 is validated on the CPU only" in p.stderr
 
 
 def test_lora_and_training_are_refused_by_name(runner_bin, tmp_path):
