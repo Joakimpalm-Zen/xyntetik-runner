@@ -1,12 +1,13 @@
 # LFM2.5-8B-A1B: the publisher's files against the float32 reference (2026-10-30)
 
-**Unflattering first: LiquidAI's Q4_K_M fails the fidelity bar by far, and the Q8_0 passes it narrowly, with an open
-question about why.** Against the BF16 parent computed in float32, the Q4_K_M reads a mean KLD of **0.237** against a
-bar of 0.05, with 85.4% margin-qualified top-1 against a bar of 97%. The Q8_0 reads **0.0443** and 97.6%, inside the
-bar. That is about ten times the dense LFM2.5 Q8_0 files (1.2B-Instruct 0.0042, 350M 0.0081;
-[their record](../lfm2.5-reference-2026-10-30/README.md)) and above Mellum2.1's MoE Q8_0 (0.0187), and its median is
-0.0124 where the 1.2B's is 0.0007. Until the two checks below say whether the gap is the file's quantization or
-Runner's `lfm2moe` arithmetic, the Q8_0 is not named the fidelity file.
+**Unflattering first: LiquidAI's Q4_K_M fails the fidelity bar by far, and the Q8_0 passes it narrowly; the Q8_0's
+gap is the file's quantization, not Runner's arithmetic.** Against the BF16 parent computed in float32, the Q4_K_M reads
+a mean KLD of **0.237** against a bar of 0.05, with 85.4% margin-qualified top-1 against a bar of 97%. The Q8_0 reads
+**0.0443** and 97.6%, inside the bar but about ten times the dense LFM2.5 Q8_0 files (1.2B-Instruct 0.0042, 350M
+0.0081; [their record](../lfm2.5-reference-2026-10-30/README.md)). Two checks place that gap in the file. Runner on the
+publisher's BF16 GGUF reads **0.0078** (median 0.00034, 100% margin-qualified). llama.cpp reads the same Q8_0 at
+**0.0572** with 96.7% margin-qualified top-1, which fails the bar, further off than Runner. The Q8_0 is the fidelity
+file of the two the publisher quantized.
 
 ## Against the reference
 
@@ -27,16 +28,27 @@ By depth (mean KLD and top-1, 100 positions each):
 | 3,008 to 4,493 | 0.0249, 97% | 0.158, 79% |
 
 The Q8_0's error is spread rather than concentrated: 166 of the 300 positions read above 0.01, 30 above 0.1, and the
-ten largest carry 40% of the total. Router flips on near-tied expert scores (32 sigmoid-routed experts, four used per
-token) would concentrate the error at a few positions; a spread this wide, and falling with depth, is not yet
-explained.
+ten largest carry 40% of the total.
 
-## Pending: file or engine
+## File or engine
 
-- **Runner on the publisher's BF16 GGUF** (`LFM2.5-8B-A1B-BF16.gguf` in the same repository revision) against the same
-  float32 gold. About 0.001 places the 0.0443 in the Q8_0 file; near 0.04 places it in Runner's `lfm2moe` path, which is
-  then root-caused before any LFM2.5 MoE row merges.
-- **Another engine on the same Q8_0**, scored on the same corpus as a second side against the same gold.
+One run against the same float32 gold, 300 positions:
+
+| Side | Mean KLD | Median | Max KLD | Top-1 | Margin-qualified top-1 |
+|---|---|---|---|---|---|
+| Runner, the publisher's BF16 GGUF | **0.0078** | 0.00034 | 0.183 | 97.3% | 100% (212 positions) |
+| llama.cpp (`36a0e2f`, `-ngl 0`), the same Q8_0 | **0.0572** (bar 0.05) | 0.0169 | 0.902 | 90.0% | 96.7% (bar 97%) |
+| Runner, the same Q8_0 (above) | 0.0443 | 0.0124 | 0.959 | 93.7% | 97.6% |
+
+- **The gap is the file's.** On the exact weights Runner is near-exact at the median, and the other engine reads the
+  Q8_0 further from the reference than Runner does, outside the bar. Position by position the two engines' Q8_0
+  errors go together (Spearman 0.82): the file's quantization, read the same way by both.
+- **Runner's BF16 tail.** Its mean is held up by a few positions: the top 20 carry 66% of the total, 52 read above
+  0.01. They are positions where both Q8_0 sides diverge too (Spearman 0.47 and 0.52 with them), mostly below the
+  median gold margin (1.05). That is consistent with near-tied expert choices (32 sigmoid-routed experts, four per
+  token) turning the f16 KV cache's and the accumulation order's rounding into a different choice; it is not yet
+  measured. Pending: a dense baseline, Runner on LFM2.5-1.2B-Instruct's BF16 GGUF against its float32 gold, which gives
+  Runner's floor where no routing exists.
 
 ## Setup
 
@@ -50,4 +62,8 @@ explained.
 - **Files:** `LiquidAI/LFM2.5-8B-A1B-GGUF` at `49c14831`: Q8_0 (8.4 GiB), Q4_K_M (4.8 GiB, sha256 4923ec14...).
   Runner at `bee195dd` (`model/lfm2.5-8b-a1b`), `--score --score-top 20 -c 9216 -t 16 --gpu off`, each file read from
   a local-disk copy.
-- **Data:** `gold-logits-8b-a1b-q8-q4.json` (summary and the 300 positions).
+- **Checks:** `LFM2.5-8B-A1B-BF16.gguf` from the same repository revision, scored by Runner at `b846a2bf` (the same code
+  as `bee195dd`); llama.cpp's `llama-server` at `36a0e2f`, `-ngl 0 -c 8192 -t 16`, on the same Q8_0, queried by the same
+  script. Each file was fetched from the Hub to local disk and read there.
+- **Data:** `gold-logits-8b-a1b-q8-q4.json` (the two publisher quantizations) and
+  `gold-logits-8b-a1b-bf16-vs-other-engine-q8.json` (the two checks), each the summary and its 300 positions.
