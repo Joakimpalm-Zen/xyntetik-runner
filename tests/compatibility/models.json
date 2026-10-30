@@ -1827,6 +1827,70 @@
           ]
         }
       }
+    },
+    {
+      "id": "spark-x2.6-4b-q4_k_m",
+      "architecture": "spark2_5",
+      "family": "Spark",
+      "file": "models/Spark-X2.6-4B-Q4_K_M.gguf",
+      "sha256": "91cb2811aebb47ac916aa619d27d4cdd7f4143106b7917accb8ead4cd7f5cbd9",
+      "upstream": "XHToken/Spark-X2.6-4B-GGUF",
+      "tokenizer_reference": "XHToken/Spark-X2.6-4B",
+      "tokenizer_reference_revision": "d1b5f26071101c27fcd07728e7a7770e428281f4",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/spark-x2.6-4b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "XHToken's own Q4_K_M of Spark X2.6 4B, architecture spark2_5 (36 layers, hidden 2560, GQA 16/4, head_dim 256, Q/K/V fused, a 512-token window on three of four layers, a per-head output gate, exact GELU). Tokenizer pre spark2_5, 0 of 721 corpus strings differ from the publisher's tokenizer.json; template family spark, conformance 23/23. CPU only (no GPU path for this architecture yet), so chat runs with the GPU off. Fidelity: against the BF16 checkpoint computed in float32, 0.113 mean KLD / 87.0% top-1 / 93.6% margin-qualified (300 positions), failing the 0.05 bar on the mean; XHToken's Q8_0 reads 0.0132 / 98.7% and is the fidelity file. Record docs/compat-reports/spark-2026-10-30. No llama.cpp reference is declared, so greedy_reference is not claimed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "off",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>",
+            "<tool_call>",
+            "<|Bot|>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "spark-x2.5-4b-q4_k_m",
+      "architecture": "spark2_5",
+      "family": "Spark",
+      "file": "models/Spark-X2.5-4B-Q4_K_M.gguf",
+      "sha256": "adfcfa19a4ed6a5985da8bf565fe15f8e1a7e131d79bae2d19d48d1c40109428",
+      "upstream": "XHToken/Spark-X2.5-4B-GGUF",
+      "tokenizer_reference": "XHToken/Spark-X2.5-4B",
+      "tokenizer_reference_revision": "0bcb35678590218655dff3765b9e61c83b35e9c4",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/spark-x2.5-4b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "XHToken's own Q4_K_M of Spark X2.5 4B, architecture spark2_5 (36 layers, hidden 2560, GQA 16/4, head_dim 256, Q/K/V fused, a 512-token window on three of four layers, a per-head output gate, exact GELU). Tokenizer pre spark2_5, 0 of 721 corpus strings differ from the publisher's tokenizer.json; template family spark25, conformance 23/23. CPU only (no GPU path for this architecture yet), so chat runs with the GPU off. Fidelity: against the BF16 checkpoint computed in float32, 0.1136 mean KLD / 87.0% top-1 / 95.6% margin-qualified (300 positions), failing the 0.05 bar on the mean; XHToken's Q8_0 reads 0.0044 / 98.7% and is the fidelity file. Record docs/compat-reports/spark-2026-10-30. No llama.cpp reference is declared, so greedy_reference is not claimed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "off",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>",
+            "<tool_call>",
+            "<|Bot|>"
+          ]
+        }
+      }
     }
   ]
 }

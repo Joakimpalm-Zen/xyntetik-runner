@@ -211,7 +211,25 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // with no newlines. enable_thinking false closes an empty block on the
        // generation prompt; true and absent leave it bare. Detected by that
        // compact opener, which no other template writes. Appended last.
-       TMPL_MIMO };
+       TMPL_MIMO,
+       // XHToken Spark 2.5 / 2.6 (Spark-X2.6-4B chat_template.jinja): every
+       // turn opens with <｜start▁of▁sentence｜> and a role tag (<|System|>,
+       // <|User|>, <|Bot|>, <|Tool|>) and closes with <｜end▁of▁sentence｜>; a
+       // system block is ALWAYS written (a default sentence, the thinking-
+       // effort instructions, the tools as compact JSON, then the caller's
+       // first system message); thinking defaults on and pre-seeds `<think>`,
+       // `</think>` when off; effort is high (default) or low; a history
+       // assistant turn writes `<think>R</think>` or a bare `</think>`; calls
+       // are GLM-style <tool_call>NAME<arg_key>K</arg_key><arg_value>V
+       // </arg_value></tool_call>. Detected by its <|Bot|> tag beside the
+       // thinking_effort instructions. Appended last.
+       TMPL_SPARK,
+       // Spark X2.5 (XHToken/Spark-X2.5-4B chat_template.jinja): the X2.6
+       // template without the thinking-effort text, with `## Tools` written
+       // straight after the default sentence and the declarations as tojson
+       // with Python's default separators. Detected by the same tags without
+       // thinking_effort. Appended last.
+       TMPL_SPARK25 };
 
 // The reasoning tags a TEMPLATE family writes, for the families whose
 // protocol (not their architecture) defines them: the `<think>` block of
@@ -298,6 +316,9 @@ static inline bool tmpl_hermes_json(int t) {
     return tmpl_chatml_plain(t) || tmpl_chatml_think(t) || t == TMPL_HERMES4 ||
            t == TMPL_GRANITE4;
 }
+static inline bool tmpl_spark(int t) {
+    return t == TMPL_SPARK || t == TMPL_SPARK25;
+}
 static inline bool tmpl_qwen35(int t) {
     return t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK;
 }
@@ -364,6 +385,10 @@ bool template_roles_valid(int tmpl, const char *const *roles, int n,
 //   TMPL_MELLUM        JetBrains/Mellum2.1-12B-A2.5B-Thinking chat_template.jinja
 //   TMPL_MIMO          XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B chat_template.jinja
 //     (OFF appends '<think></think>', DEFAULT and ON nothing)
+//   TMPL_SPARK         XHToken/Spark-X2.6-4B chat_template.jinja: enable_thinking
+//     defaults TRUE (`| default(true)`), so DEFAULT and ON pre-seed '<think>' and
+//     OFF writes '</think>'; THINK_EFFORT_LOW selects the low-effort system text,
+//     everything else the high one
 //   TMPL_MINICPM5      openbmb/MiniCPM5-2B chat_template.jinja (think pre-seed
 //     on ON, closed block on OFF, nothing on DEFAULT: `enable_thinking is
 //     defined` gates both branches)
@@ -450,8 +475,11 @@ int req_reasoning_effort(struct jv *req);
 // the Muse reference's kwarg: THINK_EFFORT_XHIGH for high (also absent),
 // MEDIUM, LOW; -1 for any other value.
 int req_reasoning_strength(struct jv *req);
+// Spark's `reasoning_effort`: high (the default, xhigh read as high) or low;
+// -1 for anything its template refuses (medium included)
+int req_spark_effort(struct jv *req);
 // The effort bits a request asks of the families whose template renders one
-// (Qwen 3.8, Muse), OR'd into `thinking`; 0 for every other family and for
+// (Qwen 3.8, Spark X2.6, Muse), OR'd into `thinking`; 0 for every other family and for
 // an absent value; -1 with *why set for a value the family's template
 // refuses. One reading for the chat and Responses surfaces.
 int req_template_effort(int tmpl, struct jv *req, const char **why);
@@ -554,6 +582,7 @@ enum tool_proto {
     TP_MISTRAL,       // Mistral v0.3 / Nemo native [TOOL_CALLS][{JSON}, ...]
     TP_MINICPM_XML,   // MiniCPM5 <function name="N"><param name="K">V</param></function>
     TP_LFM2,          // LFM2 <|tool_call_start|>[name(key=value, ...)]<|tool_call_end|>
+    TP_ARGKV,         // Spark <tool_call>N<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>
 };
 
 typedef struct {

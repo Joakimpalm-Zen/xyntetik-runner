@@ -4357,6 +4357,190 @@
         "runner_version": "1.7.1",
         "date": "2026-10-30"
       }
+    },
+    {
+      "id": "spark-x2.6-4b-q4_k_m",
+      "model": "Spark-X2.6-4B (XHToken)",
+      "family": "Spark",
+      "tier": "tier2",
+      "claim": "Text path, XHToken's own Q4_K_M of Spark X2.6 4B, which fails the fidelity bar: against the BF16 checkpoint computed in float32 it reads 0.113 mean KLD against 0.05 (87.0% top-1, 93.6% margin-qualified, under its 97%). The same build reads XHToken's Q8_0 at 0.0132, the fidelity file. It loads, tokenizes as the publisher's tokenizer.json does, renders the publisher's own template token for token and answers through it on the CPU.",
+      "architecture": "spark2_5",
+      "upstream": {
+        "checkpoint": "XHToken/Spark-X2.6-4B",
+        "revision": "d1b5f26071101c27fcd07728e7a7770e428281f4"
+      },
+      "files": [
+        {
+          "name": "Spark-X2.6-4B-Q4_K_M.gguf",
+          "repo": "XHToken/Spark-X2.6-4B-GGUF",
+          "revision": "0e8aa39a34063946ce07bbaaff392093b11b6829",
+          "sha256": "91cb2811aebb47ac916aa619d27d4cdd7f4143106b7917accb8ead4cd7f5cbd9",
+          "bytes": 3543441312
+        }
+      ],
+      "quantization": "Q4_K_M (publisher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json, identical across X2.5 and X2.6), template conformance 23 of 23 in text and tokens against the publisher's chat_template.jinja, and a chat answer at temperature 0 on the Metal laptop's CPU. The architecture is checked against llama.cpp on the X2.6 1.7B Q8_0 (the family's smallest member): 0.0065 mean KLD, 96.0% top-1, 100% margin-qualified over 200 raw-completion positions on the CPU; agreement with another engine, not fidelity. Both XHToken files (the GGUF repository at 0e8aa39a) against XHToken's BF16 checkpoint at d1b5f260 computed in float32 on the lab CPU lane (the publisher's modeling code, transformers 4.57.1, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files): Q4_K_M 0.113 mean KLD / 87.0% top-1 / 93.6% margin-qualified, FAIL; Q8_0 0.0132 / 98.7% / 100%. Record: docs/compat-reports/spark-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "CPU only: the per-head attention gate and the exact GELU have no CUDA or Metal kernels yet, so a GPU run falls back to the CPU by name. LoRA training is refused (the per-head gate is not in the backward). A required or named tool choice takes the generic JSON envelope on this family.",
+        "evidence": [
+          "docs/compat-reports/1.7.1-2026-10-30-macos-arm64-spark-x2.6-4b-q4_k_m.json",
+          "docs/compat-reports/spark-2026-10-30/README.md",
+          "docs/compat-reports/spark-2026-10-30/gold-logits-cpu-x2.6-q8-q4.json",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "The CUDA and Metal paths (the next change); the Windows CUDA host's CPU cell; a Q8_0 row (the fidelity file, measured here, with no device record yet)."
+      },
+      "smoke": {
+        "device_class": "macos-arm64-metal",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "8dbb23a7e85c65d0c56f1b19b3ef02347147a942",
+          "caps": {
+            "version": "1.7.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "42a4c173422d4070acc050b39a5c1baa3b5a9168d54b0a988a1287ec2df42298",
+          "ran": "runner -m Spark-X2.6-4B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/spark-x2.6-4b-q4_k_m.macos-arm64-metal.cpu.txt"
+        },
+        "cuda": null,
+        "metal": null
+      },
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "per-head attention output gate (spark2_5) not in the backward"
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-30"
+      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-30",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29, the third item: a new architecture (spark2_5), its tokenizer rule and its chat templates, implemented before validation.",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the Metal laptop (policy 2026-10-27). Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
+      "id": "spark-x2.5-4b-q4_k_m",
+      "model": "Spark-X2.5-4B (XHToken)",
+      "family": "Spark",
+      "tier": "tier2",
+      "claim": "Text path, XHToken's own Q4_K_M of Spark X2.5 4B, which fails the fidelity bar: against the BF16 checkpoint computed in float32 it reads 0.1136 mean KLD against 0.05 (87.0% top-1, 95.6% margin-qualified, under its 97%). The same build reads XHToken's Q8_0 at 0.0044, the fidelity file. It loads, tokenizes as the publisher's tokenizer.json does, renders the publisher's own template token for token and answers through it on the CPU.",
+      "architecture": "spark2_5",
+      "upstream": {
+        "checkpoint": "XHToken/Spark-X2.5-4B",
+        "revision": "0bcb35678590218655dff3765b9e61c83b35e9c4"
+      },
+      "files": [
+        {
+          "name": "Spark-X2.5-4B-Q4_K_M.gguf",
+          "repo": "XHToken/Spark-X2.5-4B-GGUF",
+          "revision": "9826e0be84e6e6e8b9668abc91421109a1df1e2d",
+          "sha256": "adfcfa19a4ed6a5985da8bf565fe15f8e1a7e131d79bae2d19d48d1c40109428",
+          "bytes": 2600224352
+        }
+      ],
+      "quantization": "Q4_K_M (publisher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json, identical across X2.5 and X2.6), template conformance 23 of 23 in text and tokens against the publisher's chat_template.jinja, and a chat answer at temperature 0 on the Metal laptop's CPU. The architecture is checked against llama.cpp on the X2.6 1.7B Q8_0 (the family's smallest member): 0.0065 mean KLD, 96.0% top-1, 100% margin-qualified over 200 raw-completion positions on the CPU; agreement with another engine, not fidelity. Both XHToken files (the GGUF repository at 9826e0be) against XHToken's BF16 checkpoint at 0bcb3567 computed in float32 on the lab CPU lane (the publisher's modeling code, transformers 4.57.1, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files): Q4_K_M 0.1136 mean KLD / 87.0% top-1 / 95.6% margin-qualified, FAIL; Q8_0 0.0044 / 98.7% / 100%. Record: docs/compat-reports/spark-2026-10-30/README.md.",
+        "context": 4096,
+        "limitations": "CPU only: the per-head attention gate and the exact GELU have no CUDA or Metal kernels yet, so a GPU run falls back to the CPU by name. LoRA training is refused (the per-head gate is not in the backward). A required or named tool choice takes the generic JSON envelope on this family.",
+        "evidence": [
+          "docs/compat-reports/1.7.1-2026-10-30-macos-arm64-spark-x2.5-4b-q4_k_m.json",
+          "docs/compat-reports/spark-2026-10-30/README.md",
+          "docs/compat-reports/spark-2026-10-30/gold-logits-cpu-x2.5-q8-q4.json",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "The CUDA and Metal paths (the next change); the Windows CUDA host's CPU cell; a Q8_0 row (the fidelity file, measured here, with no device record yet)."
+      },
+      "smoke": {
+        "device_class": "macos-arm64-metal",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.7.1",
+          "date": "2026-10-30",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "8dbb23a7e85c65d0c56f1b19b3ef02347147a942",
+          "caps": {
+            "version": "1.7.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "b872096a90ef40b7d4d2c0fe4444adde1b7e4065897362fb6271e1b0af4336c3",
+          "ran": "runner -m Spark-X2.5-4B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/spark-x2.5-4b-q4_k_m.macos-arm64-metal.cpu.txt"
+        },
+        "cuda": null,
+        "metal": null
+      },
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "per-head attention output gate (spark2_5) not in the backward"
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.7.1",
+        "date": "2026-10-30"
+      },
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-30",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29, the third item: a new architecture (spark2_5), its tokenizer rule and its chat templates, implemented before validation.",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-10-30",
+          "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the Metal laptop (policy 2026-10-27). Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
     }
   ]
 }

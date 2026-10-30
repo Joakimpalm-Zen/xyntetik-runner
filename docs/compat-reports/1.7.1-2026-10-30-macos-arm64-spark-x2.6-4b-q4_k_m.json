@@ -1,0 +1,70 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-10-30T01:03:06Z",
+  "host": {
+    "os": "Darwin",
+    "machine": "arm64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 1.7.1"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "spark-x2.6-4b-q4_k_m",
+      "architecture": "spark2_5",
+      "file": "models/Spark-X2.6-4B-Q4_K_M.gguf",
+      "expected_sha256": "91cb2811aebb47ac916aa619d27d4cdd7f4143106b7917accb8ead4cd7f5cbd9",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 982.0,
+          "stderr_tail": "warning: weights are 3.5 GB but only 2.8 GB of RAM is available \u2014 expect the model to be evicted and every token to page from disk. --mlock pins them; a smaller model is the other fix.\nloaded Spark-X2.6-4B-Q4_K_M.gguf | spark2_5 | 36 layers | ctx 4096 | 4 threads | 0.04s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\nsampling: from the file (general.sampling.*): temp 1.00, top_p 0.95\n\nprompt: 4 tok, 5.49 tok/s | gen: 1 tok, 5.96 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 154.6,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": ""
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 2170.59,
+          "prompt": "What is 2+2?",
+          "gpu": "off",
+          "failure_reasons": [],
+          "output_tail": "2 + 2 = 4\n"
+        }
+      },
+      "resolved_file": "models/Spark-X2.6-4B-Q4_K_M.gguf",
+      "actual_sha256": "91cb2811aebb47ac916aa619d27d4cdd7f4143106b7917accb8ead4cd7f5cbd9",
+      "file_status": "pass",
+      "complete": true
+    }
+  ],
+  "complete": true,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "pass": 1
+      },
+      "chat": {
+        "pass": 1
+      }
+    }
+  }
+}

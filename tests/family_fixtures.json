@@ -169,6 +169,14 @@
     "mimo": {
       "fixture": "plain",
       "reasoning": "tags"
+    },
+    "spark": {
+      "fixture": "plain",
+      "reasoning": "tags"
+    },
+    "spark25": {
+      "fixture": "plain",
+      "reasoning": "tags"
     }
   }
 }

@@ -236,7 +236,7 @@ A map of what the binary does, with the section that documents each part.
 - **Training and adapters.** LoRA training through quantized GGUF weights on
   CPU and CUDA, `--lora` serving on CPU, CUDA and Metal, `--merge-lora`,
   `--info adapter`. [Adaptation](#adaptation)
-- **Models and formats.** 24 admitted architectures, refused by name when
+- **Models and formats.** 25 admitted architectures, refused by name when
   unknown; 24 weight formats including the K-quants, all seven codebook
   i-quants, MXFP4 and NVFP4; KV caches in f16, q8, fp4 and split k8v4, with a
   ring for sliding-window layers; speculative decoding from a draft model, the
@@ -1476,6 +1476,7 @@ merely dense matvec/matmul support.
 | `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU and CUDA. Qwen3.8-27B (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--draft mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore (its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike); a CUDA-resident recurrent layer runs speculative decode (per-row recurrent checkpoints restore a partially accepted round) and declines grammar fast-forward. |
 | `clef` | Cloudflare's Clef decision models (Cloudflare/clef on Qwen3.8-27B, Cloudflare/clef-flash on Qwen3.5-9B): the `qwen35` backbone plus the joint schema head, served at `POST /v1/systemone` and `--systemone FILE` ([Clef decisions](#clef-decisions-v1systemone)). Text input only; a request with images or videos is refused. Gold against the publisher's `joint_schema_model.py` in `docs/clef-admission-2026-10-16.md`. |
 | `qwen3moe` | Fused and legacy split sparse-MoE layouts on CPU/CUDA; supported fused layouts on Metal. |
+| `spark2_5` | XHToken Spark 2.5 and 2.6 (X2.5 and X2.6, 1.7B and 4B): a dense transformer with Q, K and V fused in `attn_qkv`, a 512-token sliding window on three of every four layers, NeoX rope at different widths and bases on the two layer types, a per-head sigmoid output gate and a gated exact-erf GELU; tokenizer pre `spark2_5`; its own `spark` and `spark25` chat templates. CPU only for now: the per-head gate and the exact GELU have no CUDA or Metal kernels yet, so a GPU run falls back to the CPU by name. LoRA training is refused (the per-head gate is not in the backward); serving an adapter works. |
 | `mellum` | JetBrains Mellum2.x: `qwen3moe` attention and router (64 experts, top-8, no shared expert) with a 1,024-token sliding window on three of every four layers and YaRN on the full layers only; tokenizer pre `mellum2` is the SmolLM split; its own `mellum` chat template. CPU and CUDA; CUDA runs its MoE on the scalar route (the tensor-core and grouped routes are not measured for this family). Admitted 2026-10-29; the publisher Q4_K_M fails the 0.05 bar against its BF16 parent on both Runner and llama.cpp (the file, not the engine), and the record is in `docs/model-support.md`. |
 | `gemma3` | Regular and QAT layouts, sliding-window attention, sandwich norms. The 27B (62 blocks) scales attention by its config's `query_pre_attn_scalar`, which is n_embd / n_head (168), not its 128-wide heads; every other size uses the head width (`tests/test_attn_scale.c`). |
 | `gemma4` | Heterogeneous attention, thinking channels, E-series, supported dense/MoE layouts, and the family's native tool protocol. Both E-series export shapes load. A layer at or past `block_count - attention.shared_kv_layers` computes no K and no V (it attends over the cache an earlier layer filled), so the current quantized exports - the ggml-org Q4_0, Google's own QAT Q4_0 and the community QAT F16 - omit `attn_k.weight`, `attn_v.weight` and `attn_k_norm.weight` on exactly those layers: 666 tensors on E4B where the BF16 export has 720. Those three are optional on the shared-KV tail and still required on every KV-owning layer, where a missing one is refused by name. |
@@ -2318,8 +2319,8 @@ flag and ignore it rather than approximate one.
 Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
 `mistral-nemo`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
 `ornith`, `qwen35`, `qwen35-nothink`, `nemotron`, `nemotron35`, `hermes4`, `granite`, `granite4`, `granite42`,
-`qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `mimo`, `muse`, `harmony`, or
-`raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
+`qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `mimo`, `spark`, `spark25`, `muse`,
+`harmony`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
 is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
 template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ
 by a space beside each `[INST]`/`[/INST]` marker and by which user turn carries the
@@ -3841,6 +3842,25 @@ reports `qwen3_xml`. Its tokenizer.json splits with the qwen2 rule, letters
 without their combining marks, though the GGUF says `qwen35`; a file carrying
 MiMo's template is read with the qwen2 split, as Clef is (0 of 721 corpus
 strings differ, 3 under the declared rule).
+
+Spark (`spark` for XHToken's X2.6 files, `spark25` for X2.5) opens every turn
+with `<｜start▁of▁sentence｜>` and a role tag (`<|System|>`, `<|User|>`,
+`<|Bot|>`, `<|Tool|>`) and always writes a system block: a default sentence,
+on X2.6 the thinking-effort text, the declared tools as JSON, then the
+caller's first system message. Thinking is on unless `enable_thinking` is
+false: the reply opens with `<think>`, or with `</think>` when it is off. X2.6
+takes `reasoning_effort` `high` (the default; `xhigh` reads as high) or `low`
+and refuses anything else, as its template does. Calls are
+`<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>`; the
+template escapes nothing, so a value ends at the first `</arg_value>` that a
+valid continuation follows. A `tool_choice: auto` turn is parsed on the way
+out, buffered and streamed, and a truncated call is never completed; a
+`required` or named choice takes the generic JSON envelope. `--info tools`
+reports `argkv_xml`. Template conformance: 23 of 23 cases each, text and
+tokens, against `XHToken/Spark-X2.6-4B` and `XHToken/Spark-X2.5-4B`. The
+tokenizer pre `spark2_5` splits every digit alone, CJK runs apart, and
+newlines one at a time (0 of 721 corpus strings differ from the publisher's
+tokenizer.json).
 
 MiniCPM5 (`minicpm5`, detected from the example call its template's own
 guideline text spells) is Qwen3's ChatML and think shape with its own rules:

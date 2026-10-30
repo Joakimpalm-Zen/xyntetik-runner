@@ -23,7 +23,10 @@ typedef enum {
 //   x = min(gate, limit); y = clamp(up, -limit, limit)
 //   out = (x / (1 + exp(-alpha*x))) * (y + 1)
 // Plain SwiGLU here is silently-wrong output, which is why it is its own op.
-enum { ACT_SILU = 0, ACT_GELU = 1, ACT_SWIGLU_OAI = 2, ACT_XIELU = 3 };
+// ACT_GELU is the tanh approximation (gemma); ACT_GELU_ERF is the exact
+// erf form, transformers' ACT2FN["gelu"] (spark2_5)
+enum { ACT_SILU = 0, ACT_GELU = 1, ACT_SWIGLU_OAI = 2, ACT_XIELU = 3,
+       ACT_GELU_ERF = 4 };
 
 // softplus, in ggml's exact form including the linear cutover at 20 — above
 // it log1p(exp(x)) is the identity to float precision and expf overflows.
@@ -581,6 +584,11 @@ typedef struct {
     bool   swa_rope_global;
     bool   gptoss;           // gpt-oss: attention sinks + swiglu_oai + MoE
                              // biases; no GPU kernels for those yet
+    bool   attn_qkv_split;   // spark2_5: Q, K and V fused in blk.N.attn_qkv
+                             // (FFN separate), sliced at bind time
+    bool   attn_gate_heads;  // spark2_5: the output gate is one sigmoid per
+                             // HEAD (blk.N.attn_gate is n_embd x n_head),
+                             // scaling all head_dim outputs of that head
     bool   attn_out_gate;    // afmoe: per-element sigmoid output gate from a
                              // separate blk.N.attn_gate projection of the
                              // normed block input (Qwen "G1"), applied to the

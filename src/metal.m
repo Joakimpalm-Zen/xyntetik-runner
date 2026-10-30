@@ -1628,6 +1628,11 @@ static bool metal_admit(model_t *m) {
         fprintf(stderr, "gpu: qwen35 hybrid path is not on the metal backend yet — using CPU\n");
         return false;
     }
+    if (m->attn_gate_heads || m->ffn_act == ACT_GELU_ERF) {
+        fprintf(stderr, "gpu: spark2_5 (per-head output gate, exact GELU) is "
+                "not on the metal backend yet — using CPU\n");
+        return false;
+    }
     if (m->attn_out_gate && m->n_expert > 0) {
         // the dense output gate (muse-glimmer) is implemented below; gate +
         // sparse MoE (afmoe) has never been run against the identity gates,

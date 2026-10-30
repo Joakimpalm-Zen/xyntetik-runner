@@ -96,6 +96,11 @@ static const struct {
     // MiMo: only OFF changes the prompt (an empty closed block); its calls
     // are Qwen3-Coder's XML written compact, parsed by the same parser
     { "mimo",             0,  24, 1, 0, 1, "qwen3_xml",     1 },
+    // Spark writes its system block even for an empty conversation; ON is
+    // its default, so only OFF changes a one-turn prompt
+    { "spark",          306, 353, 1, 0, 1, "argkv_xml",     1 },
+    // X2.5: the same frame without the effort text
+    { "spark25",         99, 146, 1, 0, 1, "argkv_xml",     1 },
 };
 #define N_FAMILY ((int)(sizeof FAMILY / sizeof *FAMILY))
 
@@ -208,7 +213,7 @@ static void capacity_sweep(int t, const jv *tools) {
 // that reads neither must render exactly what the mode alone renders.
 static void mode_bits_are_ignored(int t, const jv *tools) {
     const char *name = FAMILY[t].name;
-    bool reads_effort = t == TMPL_QWEN38 || t == TMPL_MUSE;
+    bool reads_effort = t == TMPL_QWEN38 || t == TMPL_MUSE || t == TMPL_SPARK;
     bool reads_recipients = t == TMPL_MUSE;
     static const int MODES[] = { THINK_DEFAULT, THINK_ON, THINK_OFF };
     static const int BITS[] = { THINK_EFFORT_MEDIUM, THINK_EFFORT_LOW,
@@ -243,6 +248,7 @@ static const char *opener(int t) {
     case TMPL_ORNITH: case TMPL_QWEN35: case TMPL_QWEN35_NOTHINK:
     case TMPL_NEMOTRON: case TMPL_MINICPM5:
         return "<think>\n";
+    case TMPL_SPARK: case TMPL_SPARK25: return "<think>";
     case TMPL_HARMONY: return "<|start|>assistant<|channel|>analysis<|message|>";
     case TMPL_MUSE: return "<|start|>assistant to=self<|message|>";
     case TMPL_GEMMA4: case TMPL_GEMMA4_MAINLINE: return "<|channel>thought\n";
@@ -309,12 +315,12 @@ static void state_matches_the_prompt(int t, const jv *tools) {
 }
 
 int main(void) {
-    CHECK(N_FAMILY == TMPL_MIMO + 1,
-          "the table has %d rows for %d template ids", N_FAMILY, TMPL_MIMO + 1);
+    CHECK(N_FAMILY == TMPL_SPARK25 + 1,
+          "the table has %d rows for %d template ids", N_FAMILY, TMPL_SPARK25 + 1);
     jv *tools = json_parse(TOOL_SRC, strlen(TOOL_SRC));
     CHECK(tools != NULL, "tool fixture parses");
     chat_msg user[1] = { { .role = "user", .content = "Hello" } };
-    for (int t = 0; t < N_FAMILY && t <= TMPL_MIMO; t++) {
+    for (int t = 0; t < N_FAMILY && t <= TMPL_SPARK25; t++) {
         const char *name = FAMILY[t].name;
 
         size_t e0 = render(t, NULL, 0, false, THINK_DEFAULT, NULL, A, sizeof A);

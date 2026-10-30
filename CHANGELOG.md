@@ -5,6 +5,42 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Spark-X2.6-4B and Spark-X2.5-4B Q4_K_M admitted at Tier 2; both fail the
+  fidelity bar.** Against XHToken's BF16 checkpoints computed in float32 the
+  publisher's Q4_K_M files read 0.113 (X2.6) and 0.1136 (X2.5) mean KLD over
+  300 positions, against a 0.05 bar, each with 87.0% top-1. XHToken's Q8_0
+  files read 0.0132 and 0.0044 on the same build, so the gap is the files'
+  quantization and the Q8_0 files are the fidelity files
+  (`docs/compat-reports/spark-2026-10-30/README.md`). The Q4_K_M files load,
+  tokenize as the publisher's tokenizer.json does (0 of 721), render the
+  publisher's templates token for token (23 of 23 each) and answer through
+  them on the CPU of the Metal laptop. The architecture also agrees with
+  llama.cpp on the X2.6 1.7B Q8_0 (0.0065 mean KLD over 200 positions).
+- **The spark2_5 architecture loads, on the CPU.** XHToken's Spark 2.5 and 2.6
+  are a dense transformer with three things Runner did not have together: Q,
+  K and V fused in one `attn_qkv` tensor with the FFN left separate, a
+  per-head sigmoid output gate (one value per head, where afmoe's gate has one
+  per element), and a gated GELU in its exact erf form rather than the tanh
+  approximation. The sliding layers rope over all 256 dims at base 10,000 and
+  the full layers over 64 at 5,000,000. The per-head gate and the exact GELU
+  have no CUDA or Metal kernels yet, so a GPU run falls back to the CPU and
+  says so; LoRA training is refused by name. Pinned by fixture tests (loads,
+  decodes deterministically, the gate and the window pattern participate,
+  training refused).
+- **Spark's tokenizer rule, chat templates and tool calls.** XHToken's Spark
+  X2.5 and X2.6 files name the pre-tokenizer `spark2_5`, which Runner did not
+  know; it is now its own rule (every digit alone, CJK runs apart, newlines
+  one at a time) and 0 of 721 corpus strings differ from the publisher's
+  tokenizer.json. Their two chat templates are families of their own
+  (`spark`, `spark25`): turns framed by `<｜start▁of▁sentence｜>` and role
+  tags, a system block always written, thinking on by default, X2.6's
+  thinking-effort text, and GLM-style calls
+  (`<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>`)
+  parsed on the way out, buffered and streamed, with a value that spells the
+  closing tags kept whole and a truncated call never completed. Template
+  conformance is 23 of 23 cases for each in text and tokens. The MiniCPM5
+  parser now shares its buffered mapper and streaming demultiplexer with this
+  one.
 - **Validation runs on the Windows CUDA host: 4 rows** (RTX 3070, 2026-10-30,
   built at 64cdc0dc, MiMo at 80c30df3). `trinity-nano-preview-q8_0` re-runs
   its CPU cell after the template's blank lines (#464), and its reply is

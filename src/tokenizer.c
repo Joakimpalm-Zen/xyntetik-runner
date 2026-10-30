@@ -444,6 +444,11 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     // run entire ("  1" is "  ", "1"), where llama-bpe's single pass splits
     // off the last space. Three of the 721 strings turn on that.
     else if (strcmp(pre, "minicpm5") == 0) t->pre = TOK_PRE_MINICPM5;
+    // spark2_5 (XHToken/Spark-X2.6-4B tokenizer.json at d1b5f260, identical in
+    // X2.5): \p{N}{1,3}, then CJK runs, then afmoe's main regex with its
+    // newline clauses narrowed, then Digits(individual). llama.cpp's
+    // SPARK2_5 table carries the same expressions (spark25_split_next).
+    else if (strcmp(pre, "spark2_5") == 0) t->pre = TOK_PRE_SPARK25;
     else if (strcmp(pre, "qwen2") == 0)  t->pre = TOK_PRE_QWEN2;
     // stablelm2: llama.cpp puts LLAMA_VOCAB_PRE_TYPE_STABLELM2 in the same
     // case as QWEN2, so it is the qwen2 regex, whose \p{N} matches ONE digit.
@@ -1374,6 +1379,68 @@ static int afmoe_split_next(const uint32_t *cp, int i, int ncp) {
     }
 }
 
+// spark2_5, the publisher's tokenizer.json pre_tokenizer in order:
+//   Split \p{N}{1,3}; Split [\u4e00-\u9fa5\u3040-\u309f\u30a0-\u30ff]+;
+//   Split [ascii-punct][A-Za-z]+ | [^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+
+//         |  ?[\p{P}\p{S}]+ | [\r\n] | \s+(?!\S) | \s+;
+//   Digits(individual_digits).
+// afmoe's main regex except two clauses: a punctuation run takes no trailing
+// newlines, and a newline is one character on its own (no \s*[\r\n]+). The
+// two digit passes leave every digit alone, and each digit and CJK run is a
+// fragment boundary for the whitespace lookahead, as in afmoe.
+static bool cp_spark25_cjk(uint32_t c) {
+    return (c >= 0x4E00 && c <= 0x9FA5) ||   // CJK Unified, to U+9FA5
+           (c >= 0x3040 && c <= 0x309F) ||   // Hiragana
+           (c >= 0x30A0 && c <= 0x30FF);     // Katakana
+}
+static int spark25_split_next(const uint32_t *cp, int i, int ncp) {
+    if (cp_digit(cp[i])) return i + 1;
+    if (cp_spark25_cjk(cp[i])) {
+        int j = i;
+        while (j < ncp && cp_spark25_cjk(cp[j])) j++;
+        return j;
+    }
+    if (cp_ascii_punct(cp[i]) && i + 1 < ncp &&
+        ((cp[i + 1] >= 'a' && cp[i + 1] <= 'z') ||
+         (cp[i + 1] >= 'A' && cp[i + 1] <= 'Z'))) {
+        int j = i + 1;
+        while (j < ncp && ((cp[j] >= 'a' && cp[j] <= 'z') ||
+                           (cp[j] >= 'A' && cp[j] <= 'Z'))) j++;
+        return j;
+    }
+    {   // [^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+, stopping at a CJK fragment
+        int s = i;
+        uint32_t c = cp[i];
+        if (c != '\r' && c != '\n' && !cp_letter(c) && !cp_punct_sym(c) &&
+            i + 1 < ncp)
+            s = i + 1;
+        if (s < ncp && (cp_letter(cp[s]) || cp_mark(cp[s])) &&
+            !cp_spark25_cjk(cp[s])) {
+            int j = s;
+            while (j < ncp && (cp_letter(cp[j]) || cp_mark(cp[j])) &&
+                   !cp_spark25_cjk(cp[j])) j++;
+            if (j > s) return j;
+        }
+    }
+    {   //  ?[\p{P}\p{S}]+ (no trailing newlines)
+        int j = (cp[i] == ' ' && i + 1 < ncp && cp_punct_sym(cp[i + 1]))
+                ? i + 1 : i;
+        if (j < ncp && cp_punct_sym(cp[j])) {
+            while (j < ncp && cp_punct_sym(cp[j]) && !cp_spark25_cjk(cp[j])) j++;
+            return j;
+        }
+    }
+    if (cp[i] == '\r' || cp[i] == '\n') return i + 1;   // [\r\n]
+    {   // \s+(?!\S) | \s+, the lookahead ending at a fragment boundary
+        int j = i;
+        while (j < ncp && cp_space(cp[j])) j++;
+        if (j == i) return i + 1;   // nothing matched: the char is its own gap
+        if (j < ncp && j - i > 1 &&
+            !cp_digit(cp[j]) && !cp_spark25_cjk(cp[j])) j--;
+        return j;
+    }
+}
+
 // smollm runs a Digits(individual_digits) pass before the GPT-2 regex, so every
 // digit stands alone and never takes a leading space. Splitting first also
 // bounds the regex: in "  12" the space run ends at the digit and stays whole,
@@ -1535,6 +1602,7 @@ static int bpe_encode_split(tokenizer *t, const char *text, size_t n,
                 : max_digits                  ? pre_split_next(cp, i, ncp, max_digits, marks_join, digit_ends)
                 : t->pre == TOK_PRE_SMOLLM    ? smollm_split_next(cp, i, ncp)
                 : t->pre == TOK_PRE_AFMOE     ? afmoe_split_next(cp, i, ncp)
+                : t->pre == TOK_PRE_SPARK25   ? spark25_split_next(cp, i, ncp)
                                               : gpt2_split_next(cp, i, ncp);
         if (end <= i) end = i + 1; // never stall
         // map the original bytes of this pre-token through byte->unicode

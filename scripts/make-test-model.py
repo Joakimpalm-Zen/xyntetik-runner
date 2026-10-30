@@ -63,6 +63,10 @@ MUSE = False       # muse-glimmer: gated attention + QK/sandwich norms + NoPE
 MUSE_GATE_FLAT = False  # zero the attn_gate weights (sigmoid -> flat 0.5)
 DECLARE_REMOVED = []    # --declare-removed: (part, block) pairs, see below
 MUSE_ALL_SWA = False    # pattern array all-sliding (every layer ropes)
+SPARK = False           # spark2_5: fused attn_qkv, per-head gate, SWA pattern,
+                        # per-type rope widths, exact-GELU FFN
+SPARK_GATE_FLAT = False # zero the per-head gate weights (sigmoid -> 0.5)
+SPARK_ALL_SWA = False   # pattern array all-sliding
 GRANITE = False    # granite: four muP scalars, tied embeddings
 GRANITE_RESID = 0.5  # residual_scale for the fixture (CLI-overridable)
 QUANT = None       # --quant q8_0/bf16: store the 2-D matmul weights converted
@@ -193,6 +197,19 @@ while i < len(args):
         for ent in args[i].split(","):
             part, n = ent.split(":")
             DECLARE_REMOVED.append((part, int(n)))
+    elif a == "--spark2-5":
+        # XHToken Spark 2.5 scaled down, shape-preserving: head_dim decoupled
+        # from n_embd/n_head, Q/K/V fused in attn_qkv, a per-HEAD attn_gate
+        # (n_embd x n_head), the 3-sliding:1-full bool pattern with full
+        # layers rotating fewer dims at a different base, and an untied head
+        # so the logits are direction-sensitive (the real files are tied; that
+        # layout is gated on the real model)
+        SPARK = True
+        ARCH = "spark2_5"
+    elif a == "--spark-gate-flat":
+        SPARK_GATE_FLAT = True
+    elif a == "--spark-all-swa":
+        SPARK_ALL_SWA = True
     elif a == "--muse-gate-flat":
         MUSE_GATE_FLAT = True
     elif a == "--muse-all-swa":
@@ -374,6 +391,10 @@ MUSE_HD = 24         # decoupled head_dim: N_HEAD*24 = 96, not N_EMBD (64)
 if MUSE:
     N_LAYER = 8      # two full periods of the 3-sliding:1-full pattern
 def muse_swa(i):  return True if MUSE_ALL_SWA else (i % 4) != 3
+SPARK_HD = 24
+if SPARK:
+    N_LAYER = 8
+def spark_swa(i): return True if SPARK_ALL_SWA else (i % 4) != 3
 if LAYERS is not None:
     N_LAYER = LAYERS
 
@@ -461,6 +482,9 @@ for i in range(N_LAYER + MTP_LAYERS):
     elif MUSE:
         q_dim  = N_HEAD * MUSE_HD
         kv_dim = N_KV * MUSE_HD
+    elif SPARK:
+        q_dim  = N_HEAD * SPARK_HD
+        kv_dim = N_KV * SPARK_HD
     elif HEAD_DIM:
         q_dim  = N_HEAD * HEAD_DIM
         kv_dim = N_KV * HEAD_DIM
@@ -535,6 +559,19 @@ for i in range(N_LAYER + MTP_LAYERS):
             (f"blk.{i}.post_attention_norm.weight", [N_EMBD], pw),
             (f"blk.{i}.post_ffw_norm.weight", [N_EMBD], pw),
         ]
+    if SPARK:
+        # Q/K/V fused, rows in that order: drop the three separate tensors
+        # appended above and emit one attn_qkv of their concatenated rows
+        names = {f"blk.{i}.attn_q.weight", f"blk.{i}.attn_k.weight",
+                 f"blk.{i}.attn_v.weight"}
+        tensors = [t for t in tensors if t[0] not in names]
+        tensors += [
+            (f"blk.{i}.attn_qkv.weight", [N_EMBD, q_dim + 2 * kv_dim],
+             q_data + k_data + v_data),
+            (f"blk.{i}.attn_gate.weight", [N_EMBD, N_HEAD],
+             struct.pack(f"<{N_EMBD * N_HEAD}f", *([0.0] * (N_EMBD * N_HEAD)))
+             if SPARK_GATE_FLAT else tensor_data(N_EMBD * N_HEAD, 8.0)),
+        ]
     if MUSE:
         tensors += [
             (f"blk.{i}.attn_q_norm.weight", [MUSE_HD], ones(MUSE_HD)),
@@ -554,7 +591,7 @@ for i in range(N_LAYER + MTP_LAYERS):
             (f"blk.{i}.post_norm.weight", [N_EMBD], ones(N_EMBD)),
         ]
 
-if MUSE or GRANITE:
+if MUSE or GRANITE or SPARK:
     # muse: the real model's lm head is untied from the embeddings.
     # granite: the real models ARE tied, but a tied byte-vocab fixture locks
     # greedy argmax onto the input's last token (embedding self-similarity
@@ -724,6 +761,19 @@ if GRANITE:
         kf(f"{ARCH}.attention.scale", 0.25),
         kf(f"{ARCH}.residual_scale", GRANITE_RESID),
         kf(f"{ARCH}.logit_scale", 16.0),
+    ]
+if SPARK:
+    meta_kvs += [
+        ku(f"{ARCH}.attention.key_length", SPARK_HD),
+        ku(f"{ARCH}.attention.value_length", SPARK_HD),
+        ku(f"{ARCH}.rope.dimension_count", 8),
+        ku(f"{ARCH}.rope.dimension_count_swa", SPARK_HD),
+        kf(f"{ARCH}.rope.freq_base_swa", 10000.0),
+        # short enough that a test prompt crosses it, so the pattern decides
+        # which layers see the whole context
+        ku(f"{ARCH}.attention.sliding_window", 4),
+        kab(f"{ARCH}.attention.sliding_window_pattern",
+            [spark_swa(i) for i in range(N_LAYER)]),
     ]
 if MUSE:
     meta_kvs += [
