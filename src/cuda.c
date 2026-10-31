@@ -1905,7 +1905,7 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
     const bool mtp_dev = m->mtp_ready;
     if (mtp_dev) {
         const layer_t *ml = &m->layers[m->n_layer];
-        fixed += layer_weight_bytes(ml, m->n_expert, moe_on_host(m, m->n_layer), m->cpu_moe);
+        fixed += layer_weight_bytes(ml, ml->n_expert, moe_on_host(m, m->n_layer), m->cpu_moe);
         if (m->mtp_eh_proj) fixed += m->mtp_eh_proj->nbytes;
         if (m->mtp_head && m->mtp_head != m->output) fixed += m->mtp_head->nbytes;
         if (m->mtp_hc_head_down) fixed += m->mtp_hc_head_down->nbytes;
@@ -1965,7 +1965,7 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
     }
     for (int l = 0; l < m->n_layer; l++) {
         layer_t *ly = &m->layers[l];
-        size_t wb = layer_weight_bytes(ly, m->n_expert, moe_on_host(m, l), m->cpu_moe);
+        size_t wb = layer_weight_bytes(ly, ly->n_expert, moe_on_host(m, l), m->cpu_moe);
         // KV bytes mirror the allocation: model_kv_boundary_bytes is the
         // same cumulative account MemAlloc sizes the device cache from,
         // so a ringed sliding layer costs its ring rows rather than
@@ -1978,7 +1978,7 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
         cost[l] = wb + kv * P->instances;
         // a bank the device cannot run is no candidate for the auto fit
         is_moe[l] = ly->is_moe && moe_bank_device_ok(m, l);
-        bank[l] = ly->is_moe ? expert_plan_bytes(ly, m->n_expert, true) : 0;
+        bank[l] = ly->is_moe ? expert_plan_bytes(ly, ly->n_expert, true) : 0;
     }
     uint64_t used = fixed;
     int G = gpu_plan_prefix(cost, m->n_layer, 0, vram_budget, &used);
@@ -2075,7 +2075,7 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
             if (!m->layers[l].is_moe) continue;
             moe_layers++;
             if (!moe_bank_device_ok(m, l)) continue;
-            size_t eb = model_layer_expert_bytes(&m->layers[l], m->n_expert);
+            size_t eb = model_layer_expert_bytes(&m->layers[l], m->layers[l].n_expert);
             if (would_use + eb > vram_budget) continue;
             would_use += eb;
             would_place++;
@@ -2134,7 +2134,7 @@ static bool device_tensors_each(model_t *m, int G, bool full, bool mtp_dev,
         // resident bank, upload as ordinary bindings, so the same
         // offset-resolved matvec path serves them; a host bank stays home.
         if (!(ly->is_moe && moe_on_host(m, l)) &&
-            !layer_ffn_tensors_each(ly, m->n_expert, fn, ctx))
+            !layer_ffn_tensors_each(ly, ly->n_expert, fn, ctx))
             return false;
     }
     if (!full) return true;
@@ -2875,16 +2875,16 @@ static bool shared_upload_layer_tables(gpu_weights *w, model_t *m) {
         w->sinks[l] = f32_dbuf(ly->attn_sinks, m->n_head,
                                 "attention sinks", l);
         if (ly->is_moe && !moe_on_host(m, l)) {
-            w->gib[l] = f32_dbuf(ly->ffn_gate_inp_b, m->n_expert,
+            w->gib[l] = f32_dbuf(ly->ffn_gate_inp_b, ly->n_expert,
                                  "MoE router bias", l);
             w->geb[l] = f32_dbuf(ly->ffn_gate_exps_b,
-                                 (size_t)m->n_expert * m->n_ff_exp,
+                                 (size_t)ly->n_expert * m->n_ff_exp,
                                  "MoE gate bias", l);
             w->ueb[l] = f32_dbuf(ly->ffn_up_exps_b,
-                                 (size_t)m->n_expert * m->n_ff_exp,
+                                 (size_t)ly->n_expert * m->n_ff_exp,
                                  "MoE up bias", l);
             w->deb[l] = f32_dbuf(ly->ffn_down_exps_b,
-                                 (size_t)m->n_expert * m->n_embd,
+                                 (size_t)ly->n_expert * m->n_embd,
                                  "MoE down bias", l);
         }
         if (ly->moe_gemma) {
@@ -2915,7 +2915,7 @@ static bool shared_upload_layer_tables(gpu_weights *w, model_t *m) {
             free(gs);
             // per-expert down scale for the indirect expert path (ones
             // when the GGUF has none — same 1.0 fold the CPU applies)
-            w->g_dsc[l] = f32_dbuf_ones(ly->down_exps_scale, m->n_expert,
+            w->g_dsc[l] = f32_dbuf_ones(ly->down_exps_scale, ly->n_expert,
                                         "Gemma expert down scale", l);
         }
         bool moe_dev = ly->is_moe && !moe_on_host(m, l);
@@ -3140,20 +3140,11 @@ static bool cuda_admit(model_t *m) {
                     "device kernel — running on CPU\n");
             return false;
         }
-    // Every device MoE path (weight upload sizing, k_moe_route's expert
-    // count, the gather/scatter kernels) assumes one uniform n_expert for
-    // the whole model. --prune-experts can write a SMALLER expert count for
-    // individual layers (model.c reads it per layer into layer_t.n_expert);
-    // a model with any such layer would upload the wrong slice or route
-    // against the wrong count on-device — refuse rather than risk that.
-    for (int l = 0; l < m->n_layer; l++)
-        if (m->layers[l].is_moe && m->layers[l].n_expert != m->n_expert) {
-            fprintf(stderr, "gpu: blk.%d has %d experts, model declares %d "
-                    "(pruned model) — no device kernel assumes non-uniform "
-                    "per-layer expert counts, running on CPU\n",
-                    l, m->layers[l].n_expert, m->n_expert);
-            return false;
-        }
+    // A pruned model (--prune-experts) gives a layer fewer experts than the
+    // model declares; model.c holds every layer's count inside
+    // [n_expert_used, expert_count]. Each layer's router, routing and expert
+    // tables take that layer's count (R4.7.4); scratch sized by the declared
+    // count covers every layer.
     // The shared always-on expert has no device path: the routed MoE
     // kernels write the FFN output and nothing adds a second dense branch.
     if (m->n_ff_shexp > 0 && moe_any_on_device(m)) {
@@ -3229,7 +3220,7 @@ static bool cuda_admit(model_t *m) {
             continue;
         if (!gpu_tensor_type_ok(ly->ffn_gate_inp)) return false;
         if (ly->moe_split) {
-            for (int e = 0; e < m->n_expert; e++)
+            for (int e = 0; e < ly->n_expert; e++)
                 if (!gpu_tensor_type_ok(ly->moe_g[e]) ||
                     !gpu_tensor_type_ok(ly->moe_u[e]) ||
                     !gpu_tensor_type_ok(ly->moe_d[e])) return false;
@@ -3764,7 +3755,7 @@ static void cuda_release_host_weights(model_t *m) {
         int nmix = layer_mixer_tensors(ly, mix);
         for (int i = 0; i < nmix; i++) release_host_pages(mix[i], NULL);
         if (!(ly->is_moe && moe_on_host(m, l)))
-            layer_ffn_tensors_each(ly, m->n_expert, release_host_pages, NULL);
+            layer_ffn_tensors_each(ly, ly->n_expert, release_host_pages, NULL);
     }
     if (m->gpu_layers >= m->n_layer) release_host_pages(m->output, NULL);
     release_host_pages(m->tok_embd, NULL);
@@ -5596,7 +5587,7 @@ static bool enc_router(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x, int 
 
 static bool gpu_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
                               int tn, int xdim) {
-    int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used;
+    int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp;
     int l = (int)(ly - m->layers);
     enum { MOE_MAX_USED = 256 };
@@ -5769,7 +5760,7 @@ static bool enc_moe_scatter(gpu_t *g, CUdeviceptr out, CUdeviceptr src,
 // gpu_moe_ffn_* variants.
 static bool gpu_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
                                 int tn, int xdim) {
-    int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used;
+    int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp;
     int l = (int)(ly - m->layers);
     enum { MOE_MAX_USED = 256 };
@@ -5822,7 +5813,7 @@ static bool gpu_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
 // same contract as the other gemma variants.
 static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
                                       int l, int tn, int xdim) {
-    int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used;
+    int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
@@ -5900,7 +5891,7 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
 // enc_mv at each expert's slice. Host-dependent routing is why this path
 // forces the eager (graph_bad) decode.
 static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, int xdim) {
-    int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used, nff = m->n_ff_exp;
+    int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used, nff = m->n_ff_exp;
     int l = (int)(ly - m->layers);
     // belt-and-suspenders: sel[]/selw[] below are fixed MOE_MAX_USED wide and
     // the router logits MOE_ROUTE_MAX wide. The expert COUNT bounds the router,
@@ -6109,7 +6100,7 @@ static bool moe_twin_gemm(gpu_t *g, model_t *m, gguf_tensor *w, bool expert,
 
 static bool gpu_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly, int tn,
                              int xdim) {
-    int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used;
+    int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp;
     int l = (int)(ly - m->layers);
     enum { MOE_MAX_USED = 256 };
@@ -6187,7 +6178,7 @@ static bool gpu_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int tn,
         // fused path's own bits either way (the int8 activation route has no
         // twins, so it keeps the fused path)
         if (tn > 8 && g->moe_twin_ok && moe_twin_on(m) && !gpu_q8x_on() &&
-            (long)tn * m->n_expert_used >= 4L * m->n_expert)
+            (long)tn * m->n_expert_used >= 4L * ly->n_expert)
             return gpu_moe_ffn_twin(g, m, ly, tn, xdim);
         return gpu_moe_ffn_fused(g, m, ly, tn, xdim);
     }
@@ -6205,7 +6196,7 @@ static bool gpu_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int tn,
 // stream sync — capture-clean, like gpu_moe_ffn_fused.
 static bool gpu_gemma_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
                                     int l, int tn, int xdim) {
-    int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used;
+    int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;  // dff = dense shared-FFN size
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
@@ -6263,7 +6254,7 @@ static bool gpu_gemma_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
 
 static bool gpu_gemma_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int l,
                               int tn, int xdim) {
-    int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used;
+    int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;  // dff = dense shared-FFN size
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
@@ -6352,7 +6343,7 @@ static bool gpu_gemma_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int
 // order before post_ffw_norm_2.
 static bool gpu_gemma_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly,
                                    int l, int tn, int xdim) {
-    int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used;
+    int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
@@ -6443,7 +6434,7 @@ static bool gpu_gemma_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int l,
         if (tn > 1 && g->moe_grouped_ok && !g->exact_rows)
             return gpu_gemma_moe_ffn_grouped(g, m, ly, l, tn, xdim);
         if (tn > 8 && g->moe_twin_ok && moe_twin_on(m) && !gpu_q8x_on() &&
-            (long)tn * m->n_expert_used >= 4L * m->n_expert)
+            (long)tn * m->n_expert_used >= 4L * ly->n_expert)
             return gpu_gemma_moe_ffn_twin(g, m, ly, l, tn, xdim);
         return gpu_gemma_moe_ffn_fused(g, m, ly, l, tn, xdim);
     }

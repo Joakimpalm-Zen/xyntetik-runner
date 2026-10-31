@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Pruned MoE models run on CUDA.** `--prune-experts` can leave a layer
+  fewer experts than the model declares (keep-N), and CUDA refused every
+  such file because its MoE paths sized uploads, the router and the routing
+  kernel by the model-wide expert count. Each layer's router, routing and
+  bias and scale tables now take that layer's count, and the planner sizes
+  each layer's bank by it. `make test-cuda-keepn` (a step of the CUDA gate)
+  holds pruned fixtures in F32, Q8_0 and Q4_0 to the CPU at logit precision
+  on prefill and one-token decode, and on the by-expert and grouped prefills
+  (R4.7.4).
+
 - **`--quant-error` and `scripts/type-plan-by-sensitivity.py` write a type
   plan by measurement.** `runner -m MODEL --quant-error OUT.jsonl --quant
   q4_0,q3_k [--imatrix F]` writes no model: per tensor a rewrite would
