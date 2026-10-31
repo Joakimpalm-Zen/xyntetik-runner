@@ -845,7 +845,7 @@ static bool imatrix_load_gguf(const char *path) {
 }
 
 static bool imatrix_load_dat(const char *path) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) return false;
     int32_t n = 0;
     bool ok = fread(&n, 4, 1, f) == 1 && n > 0 && n < 1000000;
@@ -870,7 +870,7 @@ static bool imatrix_load_dat(const char *path) {
 bool quantize_set_imatrix(const char *path) {
     imatrix_free();
     if (!path) return true;
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "error: cannot open imatrix %s\n", path);
         return false;
