@@ -159,7 +159,10 @@ def _unverified_still_fresh(record: dict[str, Any]) -> bool:
         return False  # cannot even read the clock: do not honour blindly
     ttl = float(os.environ.get("RUNNER_UNVERIFIED_LEASE_TTL",
                                UNVERIFIED_LEASE_TTL_SECONDS))
-    return age < ttl
+    # an mtime ahead of the clock is age 0, not negative (a file can be
+    # stamped finer than the clock reads; a negative age stayed under a TTL
+    # of 0)
+    return max(age, 0.0) < ttl
 
 
 def _still_owned(record: dict[str, Any]) -> bool:

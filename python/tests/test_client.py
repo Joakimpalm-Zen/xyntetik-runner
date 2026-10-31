@@ -204,6 +204,31 @@ class StartupLeaseTests(unittest.TestCase):
             self.assertTrue(lease.acquire())                  # aged out
             lease.release()
 
+    def test_a_record_dated_ahead_of_the_clock_is_no_fresher_than_now(self):
+        # An mtime ahead of the clock is age 0, not negative: a file can be
+        # stamped finer than the clock reads, so a record written this
+        # instant can read ahead of it, and a negative age stayed under a
+        # TTL of 0 (the C lease's CI flake, 2026-10-31).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "runner.lease"
+            path.write_text(
+                json.dumps({"owner_pid": os.getpid(), "token": "legacy"}),
+                encoding="utf-8",
+            )
+            ahead = time.time() + 1
+            os.utime(path, (ahead, ahead))
+            saved = os.environ.get("RUNNER_UNVERIFIED_LEASE_TTL")
+            os.environ["RUNNER_UNVERIFIED_LEASE_TTL"] = "0"
+            try:
+                lease = StartupLease(path)
+                self.assertTrue(lease.acquire())
+                lease.release()
+            finally:
+                if saved is None:
+                    os.environ.pop("RUNNER_UNVERIFIED_LEASE_TTL", None)
+                else:
+                    os.environ["RUNNER_UNVERIFIED_LEASE_TTL"] = saved
+
     def test_refresh_keeps_an_unverifiable_lease_alive(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "runner.lease"

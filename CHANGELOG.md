@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A startup lease record dated ahead of the clock ages out like one
+  written now.** With `RUNNER_UNVERIFIED_LEASE_TTL` at 0, a record whose
+  ownership cannot be checked could still be honoured when its file time
+  read a second ahead of the clock (Linux can stamp a file finer than the
+  clock `time()` reads), so a takeover meant to succeed was refused. Its age
+  now counts from 0, in the C lease and the Python client's alike.
+
 - **Speculative decoding on Granite-4 h-series and Nemotron-H hybrids
   restores the state after the last kept draft instead of re-folding.** On
   the host, only qwen35 filed a per-row recurrent state during a verify
