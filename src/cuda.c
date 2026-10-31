@@ -4017,6 +4017,7 @@ static bool moe_grouped_family(const model_t *m) {
     return m && strcmp(m->arch, "qwen3moe") == 0;
 }
 
+static int tc_nvfp4_env(void);
 static bool tc_promoted(const model_t *m, int type) {
     // Q6_K joined 2026-08-08: the profile showed it was 26% of prefill running
     // on the SCALAR path, because attn_v/ffn_down are Q6_K in every Q4_K_M.
@@ -4108,7 +4109,16 @@ static bool tc_promoted(const model_t *m, int type) {
     // rows across every arch of the list and both device families, 1e-5 to
     // 6e-5 of range, at most one near-tie flip, free-running identical,
     // and the scaling costs under 2% of prefill on the RTX 3070.
-    if (!tc_type_promotable(type))
+    // NVFP4 PROMOTED 2026-10-31 (R4.9.5, #508): the float32-reference row on
+    // Qwen3.5-4B NVFP4 (2,000 positions against the publisher's model, chunked
+    // so the GEMMs ran) put the dequantizing tensor-core route at 0.9997x the
+    // scalar route's mean KL, Wilcoxon with TC closer (p 0.040), no McNemar
+    // discordance. RUNNER_CUDA_TC_NVFP4=0 holds it off; =1 forces it on any
+    // architecture, the trusted list below deciding otherwise.
+    if (type == T_NVFP4) {
+        if (tc_nvfp4_env() == 0)
+            return false;
+    } else if (!tc_type_promotable(type))
         return false;
     // The tc_kq_type six joined 2026-10-21 on float32-reference rows (owner
     // rule D1: 2,000 positions against the publisher's model, mean KL within
@@ -4219,17 +4229,19 @@ static bool tc_promoted(const model_t *m, int type) {
     return false;
 }
 
-// NVFP4's tensor-core route (R4.9.5), opt-in until its float32-reference row
-// is in: RUNNER_CUDA_TC_NVFP4=1 turns it on for NVFP4 tensors alone, every
-// other type keeping its route. RUNNER_CUDA_TC, when set, decides for every
-// type, NVFP4 included.
-static bool tc_nvfp4_on(void) {
-    static _Atomic int on = -1;
-    if (on < 0) {
+// NVFP4's tensor-core route (R4.9.5): promoted on the trusted architectures
+// (tc_promoted) since its float32-reference row (#508). RUNNER_CUDA_TC_NVFP4
+// decides for NVFP4 tensors alone: 0 (or off) holds the route off, any other
+// value forces it on whatever the architecture; unset (-1) leaves it to
+// tc_promoted. RUNNER_CUDA_TC, when set, decides for every type, NVFP4
+// included.
+static int tc_nvfp4_env(void) {
+    static _Atomic int on = -2;
+    if (on == -2) {
         const char *e = getenv("RUNNER_CUDA_TC_NVFP4");
-        on = e && *e && strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+        on = !e || !*e ? -1 : strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
     }
-    return on > 0;
+    return on;
 }
 
 static bool tc_on(const model_t *m, int type) {
@@ -4241,7 +4253,7 @@ static bool tc_on(const model_t *m, int type) {
         // only from unread: a forced value set meanwhile stands
         st = atomic_compare_exchange_strong(&g_tc_state, &(int){ TC_ENV_UNSET }, v) ? v : g_tc_state;
     }
-    if (type == T_NVFP4 && st < 0 && tc_nvfp4_on()) return true;
+    if (type == T_NVFP4 && st < 0 && tc_nvfp4_env() == 1) return true;
     if (moe_tc_family(m)) {
         // a route pin decides, then RUNNER_CUDA_TC, then the default (on)
         int p = route_pinned(GR_MOE_TC);
@@ -8574,14 +8586,15 @@ const char *gpu_route_detail(const model_t *m) {
     // (model_gpu_window); tc_cols: the column tile each tensor-core GEMM
     // launch covers inside it, so a window of 512 is 8 such launches
     // tc: the promoted, forced or off state, then "+nvfp4" where
-    // RUNNER_CUDA_TC_NVFP4 adds NVFP4's opt-in route to it
+    // RUNNER_CUDA_TC_NVFP4=1 forces NVFP4's route and "-nvfp4" where =0 holds
+    // it off
     snprintf(buf, sizeof buf, "graph=%s tc=%s%s tc2=%s q8x=%s small_batch=%s attn_tile=%s "
              "window=%d tc_cols=%d%s%s%s",
              g->graph_bad ? "off" : g->gexec[0] || g->gexec[1] ? "replay" : "none",
              g_tc_state < 0 || moe_tc_family(m)
                  ? (moe_tc_family(m) ? (tc_on(m, T_Q4_K) ? "moe-tc" : "off") : "promoted")
                  : g_tc_state ? "forced" : "off",
-             g_tc_state < 0 && tc_nvfp4_on() ? "+nvfp4" : "",
+             g_tc_state >= 0 || tc_nvfp4_env() < 0 ? "" : tc_nvfp4_env() ? "+nvfp4" : "-nvfp4",
              !g->xh ? "off" : g->sw->mod80 ? "on-sm80" : "on",
              gpu_q8x_on() ? "on" : "off", gpu_small_batch_on() ? "on" : "off",
              attn_tc_on(m) ? (attn_dec_on() ? "tc+dec" : "tc")
