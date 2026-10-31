@@ -12,8 +12,12 @@ Current release and unreleased changes. Compatibility follows the
   model now runs it on the device, where it used to run on the CPU. Its
   logits stay within reduction-order rounding of the CPU's, and Qwen3.5-0.8B
   Q8_0's greedy text is identical, decoding at 50.5 against 38.7 tokens a
-  second on the Metal test host. `--draft lookup` runs there too. A model that does not
-  fit whole, carries an adapter, drafts with `--mtp` or is a `clef` file
+  second on the Metal test host. `--draft lookup` runs on the device too,
+  its text identical to plain decoding. Until now `--draft lookup` and
+  `--mtp` worked on a qwen35 model on a Metal build only because the model
+  ran on the CPU there; lookup drafting now runs on the device, and `--mtp`
+  keeps the model on the CPU, so neither stops working. A model that does
+  not fit whole, carries an adapter, drafts with `--mtp` or is a `clef` file
   still runs on the CPU on Metal, as do `qwen35moe` and `qwen4exp`.
   `make test-metal-qwen35` gates head widths 8, 40, 72 and 128 (R4.10).
 
