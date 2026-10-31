@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The KV gather covers short forwards and the decode microbatch.** With
+  full offload the host KV cache stays authoritative, so every forward's new
+  K and V rows go back to it. A decoded token's came back in one copy since
+  the gather landed; a verify round, a short prompt and each member of a
+  decode microbatch still took two synchronous copies per layer. A forward of
+  up to 16 rows now gathers each row on the device and comes back in one
+  copy, and a microbatch's members are gathered together behind one wait.
+  On the RTX 3070, Qwen2.5-3B Q4_K_M at eight concurrent requests decodes at
+  about 173 tok/s against 160 (two rounds each), and the copy time of a
+  drafted Qwen2.5-Coder-7B run's verify rounds falls from 31 ms to 7. The
+  bytes and host slots are the per-layer copies'; `RUNNER_CUDA_KV_GATHER=0`
+  restores those (R3.4.1).
+
 - **Codebook i-quant decode on CUDA: IQ2_XXS twice as fast, IQ3 6 to 14%
   faster.** The batch-1 IQ2 GEMVs converted each grid byte to float while it
   was a 64-bit integer, which the GPU runs as I2F.U64 on a slow pipe:

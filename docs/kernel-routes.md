@@ -115,7 +115,9 @@ Around the matvec:
   MIG slice: +21% to +121%, and +1.5% to +31% at about 700 (4 rounds).
 - **Byte movers, on by default.** The one-copy KV gather (decode with full
   offload: every layer's new K and V rows gathered on the device, one copy
-  back, `RUNNER_CUDA_KV_GATHER=0` restores the per-layer copies) and the
+  back; since 2026-10-31 also a forward of up to 16 rows, such as a verify
+  round, and each member of a decode microbatch;
+  `RUNNER_CUDA_KV_GATHER=0` restores the per-layer copies) and the
   whole-tile recurrent prefill (Gated DeltaNet and Mamba-2 tiles in one
   launch per kernel; since 2026-10-21 a qwen35 decode step and each
   checkpointed verify row run the conv over one token and the per-token step

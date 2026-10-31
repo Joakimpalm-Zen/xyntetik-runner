@@ -413,6 +413,7 @@ static const char *cu_err(CUresult r) {
 enum { BW_4 = 0, BW_8 = 1, BW_16 = 2, BW_N = 3 };
 static inline int batch_width_class(int n) { return n <= 4 ? BW_4 : n <= 8 ? BW_8 : BW_16; }
 enum { GPU_SMALL_BATCH = 8 };   // the widest f_gemvb class (BW_8): small-batch routing in enc_mv
+enum { KVG_ROWS = 16 };         // rows a forward brings back through the KV gather (R3.4.1)
 // The widest microbatch those kernels actually COMPUTE. Every width class
 // stops at its own column count (`t < a.batch && t < NC`), so a call wider
 // than the widest class does not fail — it leaves columns NC.. holding
@@ -685,7 +686,7 @@ typedef struct {
     // offloaded layer gathered on the device (kvg_dev) and brought back in
     // one copy (kvg_host, page-locked when the driver gives it), then
     // scattered into the host cache by the table's host copy
-    CUdeviceptr  kvg_tab, kvg_dev;
+    CUdeviceptr  kvg_tab, kvg_dev, kvg_pos;   // kvg_pos: a forward's row positions (KVG_ROWS)
     void        *kvg_host;
     bool         kvg_pinned;
     size_t       kvg_bytes;
@@ -4870,7 +4871,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            // the shared context (tests/test_cuda_teardown.c)
                            g->x_hc, g->hc_xn, g->hc_gate, g->hc_lo, g->hc_inject,
                            g->splitk, g->shexp_in, g->shexp_g, g->shexp_u,
-                           g->shexp_o, g->shexp_gate, g->kvg_tab, g->kvg_dev,
+                           g->shexp_o, g->shexp_gate, g->kvg_tab, g->kvg_dev, g->kvg_pos,
                            g->vcol_pos, g->vcol_kcp, g->vcol_vcp };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++)
         if (bufs[i]) cu.MemFree(bufs[i]);
@@ -5278,12 +5279,16 @@ static bool kv_gather_init(gpu_t *g, model_t *m) {
     }
     g->h_kvg_tab = t;
     g->kvg_bytes = at;
+    // KVG_ROWS rows of staging: a forward of up to that many rows (a verify
+    // round, a short prompt) gathers each row's slice into its own row
+    size_t st = at * KVG_ROWS;
     if (cu.MemAlloc(&g->kvg_tab, sizeof(kvg_entry) * (size_t)n) != 0 ||
         cu.MemcpyHtoD(g->kvg_tab, t, sizeof(kvg_entry) * (size_t)n) != 0 ||
-        cu.MemAlloc(&g->kvg_dev, at ? at : 1) != 0)
+        cu.MemAlloc(&g->kvg_dev, st ? st : 1) != 0 ||
+        cu.MemAlloc(&g->kvg_pos, sizeof(int) * KVG_ROWS) != 0)
         return false;
-    if (cu.MemAllocHost && cu.MemAllocHost(&g->kvg_host, at ? at : 1) == 0) g->kvg_pinned = true;
-    else g->kvg_host = malloc(at ? at : 1);
+    if (cu.MemAllocHost && cu.MemAllocHost(&g->kvg_host, st ? st : 1) == 0) g->kvg_pinned = true;
+    else g->kvg_host = malloc(st ? st : 1);
     return g->kvg_host != NULL;
 }
 
@@ -5292,18 +5297,47 @@ static bool kv_gather_launch(gpu_t *g, model_t *m) {
     return launch(g, g->sw->f_kv_gather, (unsigned)m->gpu_layers, 2, 1, 256, p);
 }
 
-// after the forward synchronized: the token's rows, one copy, then into the
-// host cache at their slots (the host cache stays authoritative)
-static bool kv_gather_finish(gpu_t *g, model_t *m, int pos) {
-    if (cu.MemcpyDtoH(g->kvg_host, g->kvg_dev, g->kvg_bytes) != 0) return false;
-    const kvg_entry *t = g->h_kvg_tab;
-    for (int l = 0; l < m->gpu_layers; l++) {
-        size_t slot = (size_t)(t[l].ring > 0 ? pos % t[l].ring : pos);
-        const uint8_t *src = (const uint8_t *)g->kvg_host + t[l].stage;
-        memcpy((uint8_t *)m->kcache + t[l].koff + slot * t[l].krow, src, t[l].krow);
-        memcpy((uint8_t *)m->vcache + t[l].voff + slot * t[l].vrow, src + t[l].krow, t[l].vrow);
+// Whether an n-row forward's KV rows come back through the gather: up to
+// KVG_ROWS rows of one tile. Longer forwards move each layer's rows as
+// spans large enough that the per-layer copies cost little per row.
+static bool kv_gather_rows_ok(const gpu_t *g, int n, bool partial) {
+    return g->kvg_dev && !partial && n >= 1 && n <= KVG_ROWS && n <= g->win;
+}
+
+// R3.4.1: an n-row forward's rows, each into its own staging row, from the
+// row positions in kvg_pos. It replaces two synchronous copies per layer
+// (and span) with one position upload, n launches of the decode gather and
+// one copy back; the bytes and the host slots are the per-layer copies'.
+static bool kv_gather_rows_launch(gpu_t *g, model_t *m, int pos, int n) {
+    int hp[KVG_ROWS];
+    for (int r = 0; r < n; r++) hp[r] = pos + r;
+    if (cu.MemcpyHtoD(g->kvg_pos, hp, sizeof(int) * (size_t)n) != 0) return false;
+    for (int r = 0; r < n; r++) {
+        CUdeviceptr pp = g->kvg_pos + (size_t)r * sizeof(int);
+        CUdeviceptr out = g->kvg_dev + (size_t)r * g->kvg_bytes;
+        void *p[] = { &g->kc, &g->vc, &g->kvg_tab, &pp, &out };
+        if (!launch(g, g->sw->f_kv_gather, (unsigned)m->gpu_layers, 2, 1, 256, p)) return false;
     }
-    g_kvg_tokens++;
+    return true;
+}
+
+// after the forward synchronized: the rows of positions [pos, pos + n), one
+// copy, then into the host cache at their slots (the host cache stays
+// authoritative)
+static bool kv_gather_finish(gpu_t *g, model_t *m, int pos, int n) {
+    if (cu.MemcpyDtoH(g->kvg_host, g->kvg_dev, g->kvg_bytes * (size_t)n) != 0) return false;
+    const kvg_entry *t = g->h_kvg_tab;
+    for (int r = 0; r < n; r++) {
+        const uint8_t *row = (const uint8_t *)g->kvg_host + (size_t)r * g->kvg_bytes;
+        for (int l = 0; l < m->gpu_layers; l++) {
+            size_t slot = (size_t)(t[l].ring > 0 ? (pos + r) % t[l].ring : pos + r);
+            const uint8_t *src = row + t[l].stage;
+            memcpy((uint8_t *)m->kcache + t[l].koff + slot * t[l].krow, src, t[l].krow);
+            memcpy((uint8_t *)m->vcache + t[l].voff + slot * t[l].vrow, src + t[l].krow,
+                   t[l].vrow);
+        }
+    }
+    g_kvg_tokens += (unsigned long)n;
     return true;
 }
 
@@ -8912,11 +8946,24 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
 
     // Each sequence's newly written KV row goes back to its own host cache, so
     // any member can leave the batch and continue on the CPU or in a solo
-    // forward without noticing it was ever batched.
+    // forward without noticing it was ever batched. Through each member's
+    // gather (R3.4.1): its row gathered on the device, one wait for all of
+    // them, one copy back each, instead of two copies per layer per member.
+    bool gathered = false;
+    for (int i = 0; i < n; i++) {
+        model_t *m = b->seqs[idx[i]];
+        if (kv_gather_rows_ok(m->gpu, 1, false)) {
+            if (!kv_gather_rows_launch(m->gpu, m, pos[i], 1)) return false;
+            gathered = true;
+        }
+    }
+    if (gathered && cu.CtxSynchronize() != 0) return false;
     for (int i = 0; i < n; i++) {
         model_t *m = b->seqs[idx[i]];
         gpu_t   *gi = m->gpu;
-        if (!kv_copyback(gi, m, pos[i], pos[i] + 1)) return false;
+        if (kv_gather_rows_ok(gi, 1, false) ? !kv_gather_finish(gi, m, pos[i], 1)
+                                            : !kv_copyback(gi, m, pos[i], pos[i] + 1))
+            return false;
         gi->kv_rows = pos[i] + 1;
     }
     if (cu.MemcpyDtoH(b->h_logits, b->logits_n,
@@ -9123,7 +9170,7 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
         if (gl) {
             if (!mtp_save_rows(g, m, 0, 1)) return -1;
             double tc0 = prof.on ? prof_now() : 0;
-            if (g->kvg_dev ? !kv_gather_finish(g, m, pos) : !kv_copyback(g, m, pos, pos + 1))
+            if (g->kvg_dev ? !kv_gather_finish(g, m, pos, 1) : !kv_copyback(g, m, pos, pos + 1))
                 return -1;
             if (prof.on) prof.t_copyback[m_] += prof_now() - tc0;
             g->kv_rows = pos + 1;
@@ -9211,7 +9258,10 @@ static bool cuda_fwd_tiles_run(gpu_t *g, model_t *m, const int32_t *tokens, int 
         }
         g->rec_tile0 = false;
         if (!mtp_save_rows(g, m, i, tn)) return false;
-        if (n == 1 && !partial && g->kvg_dev && !kv_gather_launch(g, m)) return false;
+        // one tile when the gather takes the rows (n <= KVG_ROWS <= win)
+        if (kv_gather_rows_ok(g, n, partial) &&
+            !(n == 1 ? kv_gather_launch(g, m) : kv_gather_rows_launch(g, m, p, n)))
+            return false;
         int inj = inject_fail_ordinal();
         if (inj) {
             // Deterministic ownership/state-machine hook: fail after recurrent
@@ -9264,7 +9314,7 @@ static bool cuda_fwd_finish(gpu_t *g, model_t *m, int n, int pos, bool want_logi
     // keep the host KV cache authoritative: copy the offloaded layers' rows
     // back so the CPU path can take over at any point
     double tc0 = prof.on ? prof_now() : 0;
-    if (n == 1 && !partial && g->kvg_dev ? !kv_gather_finish(g, m, pos)
+    if (kv_gather_rows_ok(g, n, partial) ? !kv_gather_finish(g, m, pos, n)
                                          : !kv_copyback(g, m, pos, pos + n))
         return false;
     if (prof.on) prof.t_copyback[m_] += prof_now() - tc0;

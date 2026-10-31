@@ -181,8 +181,8 @@ def test_cuda_attention_routes_have_their_own_kernel_counters(runner_bin, model)
     says which ran: cuda_attn_tile counts every tiled prefill tile and
     cuda_attn_tc the tensor-core ones among them (attn-tc falls back to the
     tiled kernel where it does not apply), cuda_attn_dec_gqa the grouped
-    decode launches, cuda_kv_gather the decoded tokens whose K and V came
-    back in one copy. A run without CUDA reports them as 0; on a CUDA device
+    decode launches, cuda_kv_gather the rows (decoded tokens, forwards of up
+    to 16 rows) whose K and V came back in one copy. A run without CUDA reports them as 0; on a CUDA device
     the grouped decode (on by default) is counted, and not under
     RUNNER_CUDA_ATTN_DEC=0. The three were counted and never reported until
     a compiler flagged them as set and never read."""
