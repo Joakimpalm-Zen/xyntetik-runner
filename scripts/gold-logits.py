@@ -422,6 +422,33 @@ def mcnemar_exact(b, c):
     return min(1.0, 2.0 * tail / 2.0 ** n)
 
 
+def sign_test_one_sided(k, n):
+    """P(X >= k) for X ~ Binomial(n, 1/2): the chance that one side is the
+    worse one at k or more of n positions if neither side were."""
+    if n == 0:
+        return 1.0
+    return min(1.0, sum(math.comb(n, j) for j in range(k, n + 1)) / 2.0 ** n)
+
+
+# Large disagreement (performance follow-up 6.c, the D1 guard of R3.21.2):
+# a position where the two sides' KL against the reference differs by more
+# than this many nats. On an MoE family these are mostly routing flips, and
+# they decide the mean (on gemma-4-26B-A4B the top 1% of positions carried
+# 100-115% of every arm's mean-KL difference), so they are counted apart.
+LARGE_DISAGREEMENT_NATS = 1.0
+
+
+def large_disagreement(rows):
+    d = [r["b"]["kld"] - r["a"]["kld"] for r in rows]
+    a_worse = sum(1 for x in d if x < -LARGE_DISAGREEMENT_NATS)
+    b_worse = sum(1 for x in d if x > LARGE_DISAGREEMENT_NATS)
+    n = a_worse + b_worse
+    return {"threshold_nats": LARGE_DISAGREEMENT_NATS,
+            "positions": n, "a_worse": a_worse, "b_worse": b_worse,
+            "p_a_worse": sign_test_one_sided(a_worse, n),
+            "p_b_worse": sign_test_one_sided(b_worse, n)}
+
+
 def wilcoxon_signed_rank(diffs):
     """Two-sided normal-approximation Wilcoxon on paired per-position KL.
 
@@ -683,6 +710,10 @@ def main():
             "kld_wilcoxon_z": None if w is None else w[0],
             "kld_wilcoxon_p": None if w is None else w[1],
             "kld_wilcoxon_n": None if w is None else w[2],
+            # the guard: at the large-disagreement positions, which side is
+            # the worse one, and a one-sided sign test for each direction.
+            # A candidate (side b) fails it when p_b_worse < 0.05.
+            "large_disagreement": large_disagreement(rows),
             "verdict": (
                 "not distinguishable" if w is None or w[1] >= 0.05
                 else ("a closer" if w[0] > 0 else "b closer")),
