@@ -2166,8 +2166,8 @@ test-cuda-batch-identity: runner $(TEST_BATCH_ID) test.gguf test-q8.gguf test-bf
 # A speculative verify round's rows on CUDA, byte for byte against solo
 # decode steps (tests/test_spec_identity.c, rounds 2 to 16 rows with the
 # walk's rollback): the dense fixtures (F32, Q8_0, BF16), a 256-wide model at
-# Q4_K, Q6_K and Q3_K, the codebook i-quants IQ2_XXS and IQ3_S (and IQ4_XS
-# where RUNNER_LLAMA_CPP_BIN has llama-quantize), the MoE ones (Q8_0, Q4_0, gpt-oss MXFP4, gemma-4's dual
+# Q4_K, Q6_K and Q3_K, the codebook i-quants IQ2_XXS and IQ3_S (and Q5_K_S and
+# IQ4_XS where RUNNER_LLAMA_CPP_BIN has llama-quantize), the MoE ones (Q8_0, Q4_0, gpt-oss MXFP4, gemma-4's dual
 # branch), the Gated DeltaNet tracer and a dense Mamba-2 hybrid, with the
 # default routes, then the grouped MoE prefill and the grouped decode
 # attention forced each way. Until 2026-10-21 a CUDA verify row ran the
@@ -2195,9 +2195,11 @@ test-cuda-spec-identity: runner $(TEST_SPEC_ID) test.gguf test-q8.gguf test-bf16
 	       test-spec-moe-q8.gguf test-spec-moe-q40.gguf test-spec-moe.gptoss-mxfp4.gguf test-spec-moe-g4.gguf \
 	       test-ornith-draft.gguf test-spec-hybrid.gguf"; \
 	if lq=$$($(LLAMA_QUANTIZE)); then \
-	  "$$lq" test-spec-wide.gguf test-spec-wide-IQ4_XS.gguf IQ4_XS > /dev/null 2>&1 && files="$$files test-spec-wide-IQ4_XS.gguf" || \
-	    echo "test-cuda-spec-identity: $$lq IQ4_XS failed, IQ4_XS not exercised"; \
-	else echo "test-cuda-spec-identity: no llama-quantize in RUNNER_LLAMA_CPP_BIN, the IQ4_XS twins not exercised"; fi; \
+	  for q in Q5_K_S IQ4_XS; do \
+	    "$$lq" test-spec-wide.gguf test-spec-wide-$$q.gguf $$q > /dev/null 2>&1 && files="$$files test-spec-wide-$$q.gguf" || \
+	      echo "test-cuda-spec-identity: $$lq $$q failed, $$q not exercised"; \
+	  done; \
+	else echo "test-cuda-spec-identity: no llama-quantize in RUNNER_LLAMA_CPP_BIN, the Q5_K and IQ4_XS twins not exercised"; fi; \
 	env=default; for f in $$files; do $(SPEC_ID_RUN); done; \
 	env=RUNNER_MOE_GROUPED=1; f=test-spec-moe-q8.gguf; export RUNNER_MOE_GROUPED=1; $(SPEC_ID_RUN); unset RUNNER_MOE_GROUPED; \
 	export RUNNER_CUDA_ATTN_DEC=0; env=RUNNER_CUDA_ATTN_DEC=0; \

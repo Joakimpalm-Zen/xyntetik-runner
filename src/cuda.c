@@ -2412,6 +2412,15 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_gemvb[BW_8][T_IQ3_S], "k_gemvb_iq3_s_x8" },
         { &w->f_gemvb[BW_4][T_IQ4_XS], "k_gemvb_iq4_xs_x4" },
         { &w->f_gemvb[BW_8][T_IQ4_XS], "k_gemvb_iq4_xs_x8" },
+        { &w->f_gemvx[5][T_Q4_K], "k_gemvx_q4_K_x5" },
+        { &w->f_gemvx[6][T_Q4_K], "k_gemvx_q4_K_x6" },
+        { &w->f_gemvx[7][T_Q4_K], "k_gemvx_q4_K_x7" },
+        { &w->f_gemvx[5][T_Q5_K], "k_gemvx_q5_K_x5" },
+        { &w->f_gemvx[6][T_Q5_K], "k_gemvx_q5_K_x6" },
+        { &w->f_gemvx[7][T_Q5_K], "k_gemvx_q5_K_x7" },
+        { &w->f_gemvx[5][T_Q6_K], "k_gemvx_q6_K_x5" },
+        { &w->f_gemvx[6][T_Q6_K], "k_gemvx_q6_K_x6" },
+        { &w->f_gemvx[7][T_Q6_K], "k_gemvx_q6_K_x7" },
         { &w->f_gemvx[2][T_IQ2_XXS], "k_gemvx_iq2_xxs_x2" },
         { &w->f_gemvx[3][T_IQ2_XXS], "k_gemvx_iq2_xxs_x3" },
         { &w->f_gemvx[4][T_IQ2_XXS], "k_gemvb_iq2_xxs_x4" },
@@ -8635,20 +8644,24 @@ static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                  ? g->sw->f_gemvx[batch][w->type]
                  : g->sw->f_gemvb[batch_width_class(batch)][w->type];
     // rows a warp: the codebook i-quant twins take IQ_TWR (2) (kernels.cu),
-    // the K-quant, IQ4_XS, Q8_0, Q4_0 and BF16 ones KQ_TWR / Q6_TWR / DQ_TWR
-    // of their class width (kernel_args.h)
+    // the Q3_K, IQ4_XS, Q8_0, Q4_0 and BF16 ones KQ_TWR / DQ_TWR of their
+    // class width (kernel_args.h)
     bool iq2r = w->type == T_IQ2_XXS || w->type == T_IQ2_XS || w->type == T_IQ2_S ||
                 w->type == T_IQ3_XXS || w->type == T_IQ3_S;
     int cls_nc = 4 << batch_width_class(batch);
+    // Q4_K, Q5_K and Q6_K take rows a warp and warps a block (KQ_DBR, KQ_DBW)
+    // by the width the kernel was built for: the exact 5 to 7, or the class
+    bool kq = w->type == T_Q4_K || w->type == T_Q5_K || w->type == T_Q6_K;
+    bool exact = batch >= 2 && batch <= 8 && f && f == g->sw->f_gemvx[batch][w->type];
+    int kq_nc = exact ? batch : cls_nc;
     unsigned rpw = iq2r ? 2
-                 : w->type == T_Q4_K || w->type == T_Q5_K || w->type == T_Q3_K ||
-                   w->type == T_IQ4_XS ? KQ_TWR(cls_nc)
-                 : w->type == T_Q6_K ? Q6_TWR(cls_nc)
+                 : kq ? KQ_DBR(kq_nc)
+                 : w->type == T_Q3_K || w->type == T_IQ4_XS ? KQ_TWR(cls_nc)
                  : w->type == T_Q8_0 || w->type == T_Q4_0 || w->type == T_BF16
                    ? DQ_TWR(cls_nc) : 1;
-    unsigned rpb = GEMM_WARPS * rpw;
-    if (f) return launch(g, f, (n_out + rpb - 1) / rpb, 1, 1,
-                         GEMM_WARPS * 32, p);
+    unsigned wpb = kq ? KQ_DBW(kq_nc) : GEMM_WARPS;
+    unsigned rpb = wpb * rpw;
+    if (f) return launch(g, f, (n_out + rpb - 1) / rpb, 1, 1, wpb * 32, p);
     // No width-classed twin. f_mvb is the right answer only where it really is
     // f_mv's twin (see mvb_is_mv_twin) — for a quantized type it is a different
     // association and therefore different bits, which is exactly what this path

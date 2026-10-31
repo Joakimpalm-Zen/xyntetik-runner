@@ -74,13 +74,19 @@ typedef struct {
     unsigned stage;        // byte offset of the layer's K row in the staging buffer (V follows)
 } kvg_entry;
 
-// Rows a warp takes in the width-classed decode twins (k_gemvb_q4_K / q5_K /
-// q3_K / q6_K / iq4_xs / q8_0 / q4_0 / bf16 _x4, _x8, _x16): every row of a warp
-// reuses the staged x it reads. Kernels and launches (cuda.c enc_mv_batch) both
-// read these, so the grid always covers what the kernels compute.
-#define KQ_TWR(nc) ((nc) <= 8 ? 4 : 2)   // Q4_K, Q5_K, Q3_K, IQ4_XS
-#define Q6_TWR(nc) ((nc) <= 4 ? 4 : 2)   // Q6_K
+// Rows a warp takes in the width-classed decode twins (k_gemvb_q3_K / iq4_xs /
+// q8_0 / q4_0 / bf16 _x4, _x8, _x16): every row of a warp reuses the staged x
+// it reads. Kernels and launches (cuda.c enc_mv_batch) both read these, so the
+// grid always covers what the kernels compute.
+#define KQ_TWR(nc) ((nc) <= 8 ? 4 : 2)   // Q3_K, IQ4_XS
 #define DQ_TWR(nc) ((nc) <= 8 ? 4 : 2)   // Q8_0, Q4_0, BF16
+// Q4_K, Q5_K and Q6_K (GEMVB_KQ, GEMVB_Q6_DB; R3.3.4): rows a warp and warps
+// a block, by the kernel's column count (the exact widths 5 to 7 included).
+// Measured on the RTX 3070 against the Qwen2.5-7B shapes; the counts that keep
+// the register budget at three blocks an SM for four columns and two for five
+// to eight.
+#define KQ_DBR(nc) ((nc) <= 4 ? 2 : (nc) <= 8 ? 4 : 2)
+#define KQ_DBW(nc) ((nc) <= 4 ? 8 : (nc) <= 8 ? 4 : 8)
 
 // k_q35_delta (the one-token Gated DeltaNet step): threads a block, one value
 // column each per pass, and the key rows its shared tile stages at a time.

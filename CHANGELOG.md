@@ -5,6 +5,20 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Speculative decoding pays on CUDA at full offload.** A drafted run on a
+  fully offloaded target was slower than plain decoding: on the RTX 3070,
+  Qwen2.5-Coder-7B Q4_K_M with its 1.5B draft decoded at 61.0 tok/s at
+  `--draft-k 4` against 70.9 plain, because a verify round's five rows cost
+  3.2 one-token steps. The exact-row GEMV twins (each column the batch-1
+  kernel's bits) waited on their loads at low occupancy. The Q4_K, Q5_K and
+  Q6_K twins now stage x double-buffered with the next block prefetched,
+  load each row's next weights while the current block computes, take their
+  rows a warp and warps a block by width, and gain exact widths 5 to 7. A
+  five-column Q4_K pass costs about 1.8 batch-1 passes, from about 4. The
+  same run reaches 86.0 tok/s at k 4 (1.21x plain), 84.3 at k 6 and 74.5 at
+  k 8, every output byte-identical to the plain one. The decode microbatch
+  and the MoE expert matmuls use the same kernels
+  (`docs/compat-reports/cuda-spec-verify-2026-10-31/README.md`).
 - **A guide to measuring a quantized file against its publisher's
   reference** (`docs/measure-a-quantized-file.md`), for anyone who publishes
   GGUF quantizations: the publisher's checkpoint in float32 as the
