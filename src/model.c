@@ -5562,7 +5562,8 @@ static void runtime_free(model_t *m) {
     free(m->k_tmp); free(m->v_tmp);
     free(m->q_gate); free(m->ssm_qkv); free(m->ssm_z); free(m->ssm_aux);
     free(m->ssm_cw);
-    free(m->ssm_conv_state); free(m->ssm_state_mem);
+    if (!m->ssm_state_backend) { free(m->ssm_conv_state); free(m->ssm_state_mem); }
+    m->ssm_state_backend = false;
     free(m->ssm_conv_snap); free(m->ssm_state_snap);
     free(m->ssm_conv_mark); free(m->ssm_state_mark);
     free(m->hb); free(m->hb2); free(m->att); free(m->logits); free(m->all_logits);

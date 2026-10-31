@@ -5233,3 +5233,180 @@ kernel void k_moe_sum(device float       *out    [[buffer(0)]],
     device float *o = out + (ulong)token * out_stride + i;
     *o = fuse_add ? *o + s : s;
 }
+
+// ---- qwen35 Gated DeltaNet (R4.10) ------------------------------------------
+// The recurrent mixer of a Qwen3.5 linear-attention layer, the ops of
+// model.c's qwen35_linear between its projections and ssm_out: the causal
+// depthwise conv over the persistent window and its silu (k_dn_conv), the
+// window's slide (k_dn_ring), the q/k L2 norms (k_dn_l2norm), the recurrence
+// (k_dn_recur) and the gated output norm (k_dn_gnorm). The state lives in a
+// buffer the host also reads (unified memory), laid out as the CPU's:
+// [layer][head][value row j][key column i]. The recurrence's lane layout (one
+// simdgroup per value row, the row's key columns across the lanes, simd_sum
+// for both dot products) is ported from ggml-metal's kernel_gated_delta_net
+// (llama.cpp 0ec4027, MIT, NOTICE). Every reduction here sums in another order
+// than the CPU's sequential loops, so the gate is test-gpu-identity's
+// tolerance, not byte identity.
+struct dn_args {
+    int n;            // columns (tokens) in this forward
+    int convdim;      // conv channels: q, k (keydim each) and v (inner)
+    int histn;        // window rows (conv_kernel - 1)
+    int K;            // conv taps
+    int in_stride;    // floats between columns of the projection buffer
+    int sk, ng, nh, hv, keydim, inner;
+    float l2_eps, rms_eps;
+};
+
+// thread (c, b): channel c of column b, its taps over the window rows then
+// the columns before it (an extended sequence [window, column 0 .. n-1]),
+// the current input's tap first and the window's oldest to newest after, as
+// the CPU sums them
+kernel void k_dn_conv(device const float *in   [[buffer(0)]],
+                      device const float *ring [[buffer(1)]],
+                      device const float *w    [[buffer(2)]],
+                      device float       *out  [[buffer(3)]],
+                      constant dn_args   &a    [[buffer(4)]],
+                      uint2 gid [[thread_position_in_grid]]) {
+    int c = (int)gid.x, b = (int)gid.y;
+    if (c >= a.convdim || b >= a.n) return;
+    device const float *wc = w + (ulong)c * a.K;
+    float sum = wc[a.histn] * in[(ulong)b * a.in_stride + c];
+    for (int k = 0; k < a.histn; k++) {
+        int e = b + k;
+        float v = e < a.histn ? ring[(ulong)e * a.convdim + c]
+                              : in[(ulong)(e - a.histn) * a.in_stride + c];
+        sum += wc[k] * v;
+    }
+    out[(ulong)b * a.convdim + c] = sum < -80.0f ? 0.0f : sum / (1.0f + exp(-sum));
+}
+
+// thread c: the window after the n columns, the last histn rows of the
+// extended sequence; read whole before any row is written
+kernel void k_dn_ring(device const float *in   [[buffer(0)]],
+                      device float       *ring [[buffer(1)]],
+                      constant dn_args   &a    [[buffer(2)]],
+                      uint gid [[thread_position_in_grid]]) {
+    int c = (int)gid;
+    if (c >= a.convdim) return;
+    float keep[8];
+    for (int k = 0; k < a.histn; k++) {
+        int e = a.n + k;
+        keep[k] = e < a.histn ? ring[(ulong)e * a.convdim + c]
+                              : in[(ulong)(e - a.histn) * a.in_stride + c];
+    }
+    for (int k = 0; k < a.histn; k++) ring[(ulong)k * a.convdim + c] = keep[k];
+}
+
+// one simdgroup per (vector, column): vectors 0..ng-1 are the q groups,
+// ng..2ng-1 the k groups, each sk long, normed in place as x / sqrt(eps + |x|^2)
+kernel void k_dn_l2norm(device float     *x [[buffer(0)]],
+                        constant dn_args &a [[buffer(1)]],
+                        uint2 tg [[threadgroup_position_in_grid]],
+                        uint lane [[thread_index_in_simdgroup]]) {
+    device float *v = x + (ulong)tg.y * a.convdim + (ulong)tg.x * a.sk;
+    float s = 0.0f;
+    for (int j = lane; j < a.sk; j += 32) s += v[j] * v[j];
+    s = simd_sum(s);
+    float r = 1.0f / sqrt(a.l2_eps + s);
+    for (int j = lane; j < a.sk; j += 32) v[j] *= r;
+}
+
+// log(1 + e^a) without losing the small end, as the CPU's log1pf keeps it
+static inline float dn_softplus(float x) {
+    if (x > 20.0f) return x;
+    float e = exp(x);
+    return e < 1e-4f ? e - 0.5f * e * e : log(1.0f + e);
+}
+
+// one simdgroup per (value row j, head h): the row's key columns across the
+// lanes (up to 8 a lane, so hv <= 256). Per column in order: beta and the
+// decay from the raw projections, decay the row, predict, correct by the
+// delta, read out against q. y gets the raw readout scaled by 1/sqrt(sk).
+kernel void k_dn_recur(device const float *cv    [[buffer(0)]],
+                       device const float *braw  [[buffer(1)]],
+                       device const float *araw  [[buffer(2)]],
+                       device const float *dt    [[buffer(3)]],
+                       device const float *A     [[buffer(4)]],
+                       device float       *state [[buffer(5)]],
+                       device float       *y     [[buffer(6)]],
+                       constant dn_args   &a     [[buffer(7)]],
+                       uint2 tg [[threadgroup_position_in_grid]],
+                       uint lane [[thread_index_in_simdgroup]]) {
+    int j = (int)tg.x, h = (int)tg.y, hv = a.hv;
+    if (j >= hv || h >= a.nh) return;
+    device float *st = state + ((ulong)h * hv + j) * hv;
+    float ls[8];
+    for (int t = 0; t < 8; t++) {
+        int i = lane + 32 * t;
+        ls[t] = i < hv ? st[i] : 0.0f;
+    }
+    int group = h % a.ng;
+    float qscale = sqrt((float)a.sk);
+    for (int b = 0; b < a.n; b++) {
+        device const float *c = cv + (ulong)b * a.convdim;
+        device const float *q = c + group * a.sk;
+        device const float *k = c + a.keydim + group * a.sk;
+        float v = c[2 * a.keydim + h * hv + j];
+        float bt = braw[(ulong)b * a.nh + h];
+        float beta = bt < -80.0f ? 0.0f : bt > 80.0f ? 1.0f : 1.0f / (1.0f + exp(-bt));
+        float decay = exp(A[h] * dn_softplus(araw[(ulong)b * a.nh + h] + dt[h]));
+        float pred = 0.0f;
+        for (int t = 0; t < 8; t++) {
+            int i = lane + 32 * t;
+            if (i < hv) { ls[t] *= decay; pred += ls[t] * k[i]; }
+        }
+        pred = simd_sum(pred);
+        float delta = (v - pred) * beta;
+        float out = 0.0f;
+        for (int t = 0; t < 8; t++) {
+            int i = lane + 32 * t;
+            if (i < hv) { ls[t] += delta * k[i]; out += ls[t] * q[i]; }
+        }
+        out = simd_sum(out);
+        if (lane == 0) y[(ulong)b * a.inner + h * hv + j] = out / qscale;
+    }
+    for (int t = 0; t < 8; t++) {
+        int i = lane + 32 * t;
+        if (i < hv) st[i] = ls[t];
+    }
+}
+
+// one simdgroup per (head, column): y's head slice RMS-normed by the shared
+// hv-wide weight, then gated by silu(z), in place
+kernel void k_dn_gnorm(device float       *y [[buffer(0)]],
+                       device const float *z [[buffer(1)]],
+                       device const float *w [[buffer(2)]],
+                       constant dn_args   &a [[buffer(3)]],
+                       uint2 tg [[threadgroup_position_in_grid]],
+                       uint lane [[thread_index_in_simdgroup]]) {
+    ulong base = (ulong)tg.y * a.inner + (ulong)tg.x * a.hv;
+    device float *yh = y + base;
+    device const float *zh = z + base;
+    float s = 0.0f;
+    for (int j = lane; j < a.hv; j += 32) s += yh[j] * yh[j];
+    s = simd_sum(s);
+    float r = 1.0f / sqrt(s / a.hv + a.rms_eps);
+    for (int j = lane; j < a.hv; j += 32) {
+        float zz = zh[j];
+        float g = zz < -80.0f ? 0.0f : zz / (1.0f + exp(-zz));
+        yh[j] = yh[j] * r * w[j] * g;
+    }
+}
+
+// qwen35 attention: Q and the output gate share one projection, interleaved
+// per head ([q head 0 | gate head 0 | q head 1 | ...]); thread (i, b) moves
+// element i of column b's Q and of its gate to their own buffers
+kernel void k_q35_split(device const float *src  [[buffer(0)]],
+                        device float       *q    [[buffer(1)]],
+                        device float       *gate [[buffer(2)]],
+                        constant int       &q_dim [[buffer(3)]],
+                        constant int       &hd    [[buffer(4)]],
+                        constant int       &q_stride [[buffer(5)]],
+                        uint2 gid [[thread_position_in_grid]]) {
+    int i = (int)gid.x, b = (int)gid.y;
+    if (i >= q_dim) return;
+    int h = i / hd, d = i - h * hd;
+    device const float *s = src + (ulong)b * 2 * q_dim + (ulong)h * 2 * hd + d;
+    q[(ulong)b * q_stride + i] = s[0];
+    gate[(ulong)b * q_stride + i] = s[hd];
+}
