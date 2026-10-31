@@ -8,6 +8,7 @@
 #include "json.h"
 #include "model.h"   // model_lora_arch_ok (static inline)
 
+#include <ctype.h>
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
@@ -2989,5 +2990,111 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     rc = quantize_job_finish(J, in_path, out_path, target, type_plan_path, ms);
 done:
     quantize_job_release(J);
+    return rc;
+}
+
+// ---------------------------------------------------------------- error report
+// R4.7.3: what each candidate type would cost each tensor, measured with the
+// writers a rewrite uses (the importance-weighted ones when an imatrix is
+// set). Per tensor that a rewrite would quantize and per type in `types`,
+// one JSON line carries the type's bytes and the weighted squared round-trip
+// error, sum over rows of sum_i w_i (x_i - deq(quant(x))_i)^2, with w_i the
+// imatrix's column weight (1 without one) and the tensor's scale companion
+// applied. With w the mean squared activation of each input column, that is
+// the expected squared output perturbation the type adds to the matrix: the
+// proxy scripts/type-plan-by-sensitivity.py ranks tensors by. Nothing is
+// written but the report.
+int quantize_error_report(const char *in_path, const int *types, int n_types,
+                          const char *out_path) {
+    gguf_file g;
+    if (!gguf_open(&g, in_path)) return 1;
+    FILE *out = plat_fopen(out_path, "w");
+    if (!out) {
+        fprintf(stderr, "error: cannot write %s\n", out_path);
+        gguf_close(&g);
+        return 1;
+    }
+    size_t max_row = 0;
+    for (uint64_t i = 0; i < g.n_tensors; i++)
+        if (g.tensors[i].ne[0] > max_row) max_row = g.tensors[i].ne[0];
+    float *rowf = malloc(sizeof(float) * (max_row ? max_row : 1));
+    float *deq = malloc(sizeof(float) * (max_row ? max_row : 1));
+    uint8_t *rowq = malloc(ggml_row_size(T_F32, max_row) + 64);
+    double *err = calloc((size_t)n_types, sizeof(double));
+    int rc = rowf && deq && rowq && err ? 0 : 1;
+    fp_denormal_state fps = fp_denormals_disable();
+    uint64_t reported = 0;
+    for (uint64_t i = 0; rc == 0 && i < g.n_tensors; i++) {
+        gguf_tensor *t = &g.tensors[i];
+        if (!should_quantize(t) || keep_source_type(t)) continue;
+        if (!ggml_type_supported(t->type)) {
+            fprintf(stderr, "error: tensor %s has unsupported type %s\n",
+                    t->name, ggml_type_name(t->type));
+            rc = 1;
+            break;
+        }
+        int n0 = (int)t->ne[0];
+        uint64_t rows = t->ne[1] * t->ne[2] * t->ne[3];
+        uint64_t mats = t->n_dims > 2 && t->ne[2] > 1 ? t->ne[2] : 1;
+        uint64_t per = mats > 1 ? t->ne[1] : rows;
+        size_t in_rs = ggml_row_size(t->type, t->ne[0]);
+        const imatrix_entry *ie = g_imx.n ? imatrix_find(t->name) : NULL;
+        bool weighted = false;
+        memset(err, 0, sizeof(double) * (size_t)n_types);
+        for (uint64_t r = 0; rc == 0 && r < rows; r++) {
+            dequant_row(t->type, (const uint8_t *)t->data + r * in_rs, rowf, n0);
+            bool bad = false;
+            const float *w = ie ? imatrix_row(ie, n0, r, per, mats, &bad) : NULL;
+            if (bad) {
+                fprintf(stderr, "error: the imatrix entry for %s does not fit the tensor\n",
+                        t->name);
+                rc = 1;
+                break;
+            }
+            weighted |= w != NULL;
+            for (int k = 0; k < n_types; k++) {
+                if (!type_fits_row(types[k], n0)) continue;
+                quantize_row_any_w(types[k], rowf, rowq, n0,
+                                   imatrix_weighted_type(types[k]) ? w : NULL);
+                dequant_row(types[k], rowq, deq, n0);
+                double s = 0;
+                for (int j = 0; j < n0; j++) {
+                    double d = (double)rowf[j] - deq[j];
+                    s += (w ? (double)w[j] : 1.0) * d * d;
+                }
+                err[k] += s;
+            }
+        }
+        if (rc) break;
+        double sc2 = (double)t->scale * t->scale;
+        fprintf(out, "{\"tensor\":\"%s\",\"source_type\":\"%s\",\"rows\":%llu,\"cols\":%d,"
+                "\"weighted\":%s,\"types\":{", t->name, ggml_type_name(t->type),
+                (unsigned long long)rows, n0, weighted ? "true" : "false");
+        for (int k = 0; k < n_types; k++) {
+            bool fits = type_fits_row(types[k], n0);
+            // the --type-plan spelling (lower case), so a planner can write
+            // the report's keys straight into a plan
+            char tn[16];
+            snprintf(tn, sizeof tn, "%s", ggml_type_name(types[k]));
+            for (char *c = tn; *c; c++) *c = (char)tolower((unsigned char)*c);
+            fprintf(out, "%s\"%s\":", k ? "," : "", tn);
+            if (fits)
+                fprintf(out, "{\"bytes\":%llu,\"error\":%.9g}",
+                        (unsigned long long)(ggml_row_size(types[k], t->ne[0]) * rows),
+                        err[k] * sc2);
+            else
+                fprintf(out, "null");
+        }
+        fprintf(out, "}}\n");
+        reported++;
+    }
+    fp_denormals_restore(fps);
+    if (fclose(out) != 0) rc = 1;
+    free(rowf); free(deq); free(rowq); free(err);
+    gguf_close(&g);
+    if (rc == 0)
+        fprintf(stderr, "quantize: error report of %llu tensors -> %s%s\n",
+                (unsigned long long)reported, out_path,
+                g_imx.n ? " (imatrix-weighted)" : "");
     return rc;
 }

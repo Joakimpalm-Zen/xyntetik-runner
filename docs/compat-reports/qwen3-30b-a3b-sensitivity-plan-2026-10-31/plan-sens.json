@@ -1,0 +1,141 @@
+{
+ "default": "keep",
+ "rules": [
+  {
+   "match": "blk.0.ffn_down_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.0.ffn_gate_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.0.ffn_up_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.1.ffn_down_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.1.ffn_gate_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.1.ffn_up_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.2.ffn_down_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.2.ffn_gate_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.2.ffn_up_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.3.ffn_down_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.3.ffn_gate_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.3.ffn_up_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.4.ffn_down_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.4.ffn_gate_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.4.ffn_up_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.5.ffn_down_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.5.ffn_gate_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.5.ffn_up_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.6.ffn_down_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.6.ffn_gate_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.6.ffn_up_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.8.ffn_down_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.8.ffn_gate_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.8.ffn_up_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.10.ffn_down_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.10.ffn_gate_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.10.ffn_up_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.7.ffn_down_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.7.ffn_gate_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.7.ffn_up_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.9.ffn_down_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.9.ffn_gate_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "blk.9.ffn_up_exps.weight",
+   "type": "q3_k"
+  },
+  {
+   "match": "_exps",
+   "type": "q4_0"
+  }
+ ]
+}
