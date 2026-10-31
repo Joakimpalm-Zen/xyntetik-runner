@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **NVFP4 prefill on CUDA takes the tensor cores by default.** The
+  dequantizing tensor-core route for NVFP4 (opt-in since R4.9.5) passed its
+  float32-reference row (#508): 0.9997x the scalar route's mean KL over
+  2,000 positions of Qwen3.5-4B NVFP4, Wilcoxon with the tensor cores closer
+  (p 0.040), no McNemar discordance. It is now the default on the promoted
+  architectures (qwen3.5-4b NVFP4 on an RTX 3070: 1,170 tok/s prefill
+  against 22); `RUNNER_CUDA_TC_NVFP4=0` holds NVFP4 on the scalar kernel.
 - **Dense Mamba-2 hybrids run on Metal.** A dense `granitehybrid` model
   (Granite-4 h-micro) or a `nemotron_h` model (Nemotron-Nano-9B-v2) that fits
   whole now runs on the device on a Metal build, where it used to run on the

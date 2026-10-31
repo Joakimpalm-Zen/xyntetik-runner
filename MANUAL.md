@@ -1842,14 +1842,16 @@ test-tc-overflow` holds that. Per-type dispatch counts and every row in
 `docs/cuda-iq-tensorcore-2026-09-14.md`. Their single-token decode stays
 on the generic matvec. NVFP4 has a tensor-core kernel too (since 2026-10-31;
 Ampere has no FP4 tensor cores, so it dequantizes each block to fp16, by a
-decoder equal to the CPU's bit for bit), but it is **opt-in** until its
-float32-reference row is in: `RUNNER_CUDA_TC_NVFP4=1` turns it on for
-NVFP4 tensors alone and leaves every other type on its route, and the route
-line reads `tc=promoted+nvfp4`. `RUNNER_CUDA_TC=1` forces the tensor-core
-route for every type that has a kernel, NVFP4 among them, including the
-types not promoted by default. Without either, NVFP4 prefill runs on the
-scalar batched kernel (qwen3.5-4b NVFP4 on an RTX 3070: 22 tok/s, against
-1,170 with the switch).
+decoder equal to the CPU's bit for bit), and it is the **default** on the
+promoted architectures since its float32-reference row (#508: 0.9997x the
+scalar route's mean KL over 2,000 positions of Qwen3.5-4B NVFP4, Wilcoxon
+with the tensor cores closer, no McNemar discordance). qwen3.5-4b NVFP4
+prefills at 1,170 tok/s on an RTX 3070 against 22 on the scalar batched
+kernel. `RUNNER_CUDA_TC_NVFP4=0` holds NVFP4 alone on the scalar kernel
+(the route line reads `tc=promoted-nvfp4`), and `=1` forces its route on an
+architecture outside the promoted list (`tc=promoted+nvfp4`).
+`RUNNER_CUDA_TC=1` forces the tensor-core route for every type that has a
+kernel, NVFP4 among them, including the types not promoted by default.
 
 On Metal that now covers **decode as well as prefill**: the cooperative KV
 attention read was promoted on 2026-08-17 after clearing zero teacher-forced
