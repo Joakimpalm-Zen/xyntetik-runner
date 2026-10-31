@@ -149,6 +149,10 @@ jobs:
         # whichever form it downloaded
         run: |
           cat ./*.sha256 > SHA256SUMS
+          # the third-party notice published beside the raw binaries, under
+          # the names the release page shows (LICENSES/ is flattened there)
+          cp LICENSES/ggml-MIT.txt ggml-MIT.txt
+          sha256sum NOTICE ggml-MIT.txt >> SHA256SUMS
           cat SHA256SUMS
       - name: release notes from CHANGELOG
         # The release body is the CHANGELOG section for this version, not the
@@ -181,6 +185,8 @@ jobs:
             runner-linux-x86_64.tar.gz
             runner-macos-arm64.tar.gz
             runner-windows-x86_64.exe.zip
+            NOTICE
+            ggml-MIT.txt
             SHA256SUMS
 
   # CPU container image: the same binary on a distroless glibc base (Dockerfile

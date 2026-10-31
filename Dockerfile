@@ -54,6 +54,9 @@ LABEL org.opencontainers.image.title="Xyntetik Runner" \
       org.opencontainers.image.vendor="Zenova AB" \
       org.opencontainers.image.licenses="Apache-2.0"
 COPY --from=build /src/runner /usr/local/bin/runner
+# the licence and the third-party notice for the code ported from ggml
+COPY --from=build /src/LICENSE /src/NOTICE /usr/share/doc/runner/
+COPY --from=build /src/LICENSES/ /usr/share/doc/runner/LICENSES/
 EXPOSE 8080
 ENTRYPOINT ["runner"]
 CMD ["--help"]
