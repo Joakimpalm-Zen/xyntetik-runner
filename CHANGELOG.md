@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--imatrix FILE` weights the rounding of q3_k and q4_0 rows.** A rewrite
+  can now take an importance matrix (llama.cpp's GGUF or legacy `.dat`
+  imatrix, so a published one serves as it is) and round each q3_k and q4_0
+  row with ggml's weighted quantizers: a column the calibration text drives
+  hard keeps its precision at the expense of one it barely uses. Other types
+  are written as before; a matrix with no calibration data is written
+  unweighted; a misfit entry fails the rewrite. The `.quant.json` record
+  names the imatrix by sha256. Without the flag every byte is what it was.
+
 - **`--quant mxfp4` and `"type":"mxfp4"` write OCP microscaling FP4.** The
   rewriter read MXFP4 (gpt-oss ships its experts in it) but could not write
   it, so a gpt-oss artifact that went through a merge or a requantization

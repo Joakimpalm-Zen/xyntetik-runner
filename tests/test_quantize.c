@@ -392,6 +392,59 @@ static void check_q3_plan_exact(const char *path, const float *want,
     gguf_close(&g);
 }
 
+// ---- R4.7.2: importance-weighted q3_k / q4_0 -------------------------------
+static void write_imatrix_dat(const char *path, const char *name, const float *v,
+                              int32_t nval, float scale) {
+    FILE *f = fopen(path, "wb");
+    assert(f);
+    int32_t one = 1, len = (int32_t)strlen(name), ncall = 10;
+    fwrite(&one, 4, 1, f);
+    fwrite(&len, 4, 1, f);
+    fwrite(name, 1, (size_t)len, f);
+    fwrite(&ncall, 4, 1, f);
+    fwrite(&nval, 4, 1, f);
+    for (int32_t i = 0; i < nval; i++) {
+        float x = v[i] * scale;
+        fwrite(&x, 4, 1, f);
+    }
+    fclose(f);
+}
+
+static unsigned char *slurp_tensor(const char *path, const char *name, size_t *n) {
+    gguf_file g;
+    assert(gguf_open(&g, path));
+    gguf_tensor *t = gguf_find_tensor(&g, name);
+    assert(t);
+    unsigned char *b = malloc(t->nbytes);
+    assert(b);
+    memcpy(b, t->data, t->nbytes);
+    *n = t->nbytes;
+    gguf_close(&g);
+    return b;
+}
+
+// sum over the tensor of imx[col] * (x - dequant(x))^2
+static double weighted_err(const char *path, const char *name, const float *x,
+                           const float *imx, int ncol, int nrow) {
+    gguf_file g;
+    assert(gguf_open(&g, path));
+    gguf_tensor *t = gguf_find_tensor(&g, name);
+    assert(t);
+    size_t rs = t->nbytes / (size_t)nrow;
+    float *row = malloc(sizeof(float) * (size_t)ncol);
+    double e = 0;
+    for (int r = 0; r < nrow; r++) {
+        dequant_row(t->type, (const uint8_t *)t->data + (size_t)r * rs, row, ncol);
+        for (int c = 0; c < ncol; c++) {
+            double d = (double)x[r * ncol + c] - row[c];
+            e += imx[c] * d * d;
+        }
+    }
+    free(row);
+    gguf_close(&g);
+    return e;
+}
+
 int main(void) {
     f16_init();   // dequant_row's scale lookup table (unused by the quantizer
                   // itself, but the round-trip check below dequantizes)
@@ -522,6 +575,76 @@ int main(void) {
         }
         remove(in); remove(out);
         printf("ok: mxfp4 writer: grid values round-trip exactly, others take the nearest level\n");
+    }
+
+    // R4.7.2: --imatrix. A skewed importance matrix moves the rounding
+    // toward the heavy columns (lower weighted error than the reference
+    // writer), the GGUF and legacy .dat formats and any rescaling of one
+    // matrix give the same bytes (only the ratios inside a matrix matter),
+    // a matrix with no calibration data writes the reference bytes, and an
+    // entry that does not fit its tensor fails the rewrite.
+    {
+        enum { NC = 256, NR = 8 };
+        static float x[NC * NR], imx[NC], zero[NC], s2[NC], cnt[1];
+        uint32_t st = 12345u;
+        for (int i = 0; i < NC * NR; i++) {
+            st = st * 1664525u + 1013904223u;
+            x[i] = ((float)(st >> 8) / 16777216.0f - 0.5f) * (i % 7 == 0 ? 3.0f : 1.0f);
+        }
+        for (int c = 0; c < NC; c++) imx[c] = c % 16 < 3 ? 50.0f : 1.0f;
+        const char *in = "q_imx_in.gguf", *ref = "q_imx_ref.gguf", *w1 = "q_imx_w1.gguf",
+                   *w2 = "q_imx_w2.gguf", *w3 = "q_imx_w3.gguf", *z = "q_imx_z.gguf",
+                   *dat = "q_imx.dat", *dat7 = "q_imx7.dat", *gg = "q_imx.gguf",
+                   *zdat = "q_imx_zero.dat", *bad = "q_imx_bad.dat", *bo = "q_imx_bo.gguf";
+        const char *tn = "blk.0.attn_q.weight";
+        tdesc ts[1] = { { tn, {NC, NR}, 2, x, NC * NR, T_F32 } };
+        write_gguf(in, ts, 1, 0);
+        for (int q = 0; q < 2; q++) {
+            int type = q ? T_Q4_0 : T_Q3_K;
+            assert(quantize_set_imatrix(NULL));
+            assert(quantize_gguf(in, ref, type, NULL) == 0);
+            write_imatrix_dat(dat, tn, imx, NC, 1.0f);
+            assert(quantize_set_imatrix(dat));
+            assert(quantize_gguf(in, w1, type, NULL) == 0);
+            double er = weighted_err(ref, tn, x, imx, NC, NR);
+            double ew = weighted_err(w1, tn, x, imx, NC, NR);
+            assert(ew < er);
+            size_t n1, n2, n3, nr;
+            unsigned char *b1 = slurp_tensor(w1, tn, &n1), *br = slurp_tensor(ref, tn, &nr);
+            assert(n1 == nr && memcmp(b1, br, n1) != 0);
+            // a rescaled .dat and a GGUF imatrix (in_sum2 / counts) agree
+            write_imatrix_dat(dat7, tn, imx, NC, 7.0f);
+            assert(quantize_set_imatrix(dat7));
+            assert(quantize_gguf(in, w2, type, NULL) == 0);
+            for (int c = 0; c < NC; c++) s2[c] = 3.0f * imx[c];
+            cnt[0] = 3.0f;
+            tdesc its[2] = {
+                { "blk.0.attn_q.weight.in_sum2", {NC, 1}, 2, s2, NC, T_F32 },
+                { "blk.0.attn_q.weight.counts", {1, 1}, 2, cnt, 1, T_F32 },
+            };
+            write_gguf(gg, its, 2, 0);
+            assert(quantize_set_imatrix(gg));
+            assert(quantize_gguf(in, w3, type, NULL) == 0);
+            unsigned char *b2 = slurp_tensor(w2, tn, &n2), *b3 = slurp_tensor(w3, tn, &n3);
+            assert(n2 == n1 && n3 == n1 && !memcmp(b1, b2, n1) && !memcmp(b1, b3, n1));
+            // no calibration data: the reference bytes
+            write_imatrix_dat(zdat, tn, zero, NC, 1.0f);
+            assert(quantize_set_imatrix(zdat));
+            assert(quantize_gguf(in, z, type, NULL) == 0);
+            unsigned char *bz = slurp_tensor(z, tn, &n3);
+            assert(n3 == nr && !memcmp(bz, br, nr));
+            // an entry that does not fit the tensor
+            write_imatrix_dat(bad, tn, imx, NC / 2, 1.0f);
+            assert(quantize_set_imatrix(bad));
+            assert(quantize_gguf(in, bo, type, NULL) != 0);
+            free(b1); free(b2); free(b3); free(br); free(bz);
+            printf("ok: --imatrix %s: weighted error %.4g -> %.4g, formats and scale "
+                   "agree, no-data rows unweighted, misfit refused\n",
+                   q ? "q4_0" : "q3_k", er, ew);
+        }
+        assert(quantize_set_imatrix(NULL));
+        const char *rm[] = { in, ref, w1, w2, w3, z, dat, dat7, gg, zdat, bad, bo };
+        for (size_t i = 0; i < sizeof(rm) / sizeof(rm[0]); i++) remove(rm[i]);
     }
 
     // A type plan naming a K-quant for a row the K-quant cannot describe.
