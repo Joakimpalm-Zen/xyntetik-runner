@@ -1,0 +1,35 @@
+name: example deterministic CI
+
+# examples/deterministic-ci as it is meant to be copied: a snapshot test of a
+# model's output that replays a committed record with a pinned Runner release
+# and a pinned model file. The record in this repository was written on macOS
+# arm64, so this Linux x86_64 job replays it with another build: tier T2, the
+# token ids must match. It runs when the example changes and once a week, so
+# the example cannot rot.
+on:
+  pull_request:
+    paths:
+      - "examples/deterministic-ci/**"
+      - ".github/workflows/example-deterministic-ci.yml"
+  schedule:
+    - cron: "41 6 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v4
+        with:
+          path: .cache/deterministic-ci
+          key: deterministic-ci-${{ runner.os }}-${{ hashFiles('examples/deterministic-ci/check.sh') }}
+      - name: Replay the snapshot
+        run: examples/deterministic-ci/check.sh
