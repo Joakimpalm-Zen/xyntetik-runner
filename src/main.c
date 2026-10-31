@@ -2050,6 +2050,7 @@ typedef struct {
     bool fit_info;                 // --info fit: fit-check -m without loading it
     const char *record_path;       // --record PATH: receipts dir under --serve, else transcript
     const char *rewrite_out;       // --rewrite OUT: the one tensor-rewrite verb
+    const char *quant_error_out;   // R4.7.3: --quant-error OUT.jsonl, per-tensor type costs
     bool rewrite_merge, rewrite_context;   // its --merge-lora / --context-surgery triggers
     bool vram_wait_given, yield_given, port_given, ttl_given;
     // serving
@@ -2313,6 +2314,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         // the output themselves: a trigger followed by a non-flag token is
         // that older form.
         else if (!strcmp(a, "--rewrite")) o->rewrite_out = NEXT;
+        else if (!strcmp(a, "--quant-error")) o->quant_error_out = NEXT;
         else if (!strcmp(a, "--quantize")) o->quant_out = NEXT;
         else if (!strcmp(a, "--context-surgery")) {
             const char *v = opt_operand(argc, argv, &i);
@@ -2671,6 +2673,7 @@ static int cli_verbs(const cli_opts *o, const char **names, int cap) {
     VERB(o->rewrite_out || o->quant_out || o->merge_out || o->context_out,
          o->rewrite_out ? "--rewrite" : o->quant_out ? "--quantize"
          : o->merge_out ? "--merge-lora" : "--context-surgery");
+    VERB(o->quant_error_out, "--quant-error");
     VERB(o->train_path, "--train");
     VERB(o->dpo_path, "--train-dpo");
     VERB(o->verify_path, "--verify");
@@ -3274,7 +3277,7 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         o->prompt = *owned_prompt = fbuf;
     }
     if (!o->prompt && !o->interactive && !o->serve && !o->quant_out && !o->merge_out &&
-        !o->context_out &&
+        !o->context_out && !o->quant_error_out &&
         !o->bench_json && !o->doctor && !o->tool_info && !o->adapt_info && !o->train_path && !o->dpo_path && !o->verify_path &&
         !o->decide_path && !o->systemone_path && !have_detect_text && !o->resume_path) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
@@ -4037,6 +4040,39 @@ static bool cli_configure_serving(const cli_opts *o) {
         return false;
     }
     return true;
+}
+
+// --quant-error OUT.jsonl (R4.7.3): what each --quant type would cost each
+// tensor a rewrite quantizes, measured with the rewrite's own writers (and
+// --imatrix's weights when given); scripts/type-plan-by-sensitivity.py turns
+// the report into a --type-plan. Writes no model.
+static int run_quant_error(const cli_opts *o) {
+    if (o->prune_experts || o->type_plan || o->remove_sublayer || o->lora_path) {
+        fprintf(stderr, "error: --quant-error measures the file as it is; it does "
+                "not combine with --prune-experts, --type-plan, --remove-sublayer "
+                "or --lora\n");
+        return 1;
+    }
+    if (!o->quant_type) {
+        fprintf(stderr, "error: --quant-error needs --quant T1,T2,... (the types "
+                "to cost, e.g. q4_0,q3_k)\n");
+        return 1;
+    }
+    int types[16], n = 0;
+    char buf[256];
+    snprintf(buf, sizeof buf, "%s", o->quant_type);
+    for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
+        int t = quantize_type_from_name(tok);
+        if (t < 0 || n == 16) {
+            fprintf(stderr, "error: --quant-error: '%s' is not a writable type\n", tok);
+            return 1;
+        }
+        types[n++] = t;
+    }
+    if (!quantize_set_imatrix(o->imatrix)) return 1;
+    int rc = quantize_error_report(o->model_path, types, n, o->quant_error_out);
+    quantize_set_imatrix(NULL);
+    return rc;
 }
 
 // Every flag that only has meaning while rewriting a file. Reaching here
@@ -6697,6 +6733,7 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
     if (o->context_out) return run_context_surgery(o, load_path);
     if (o->merge_out) return run_merge_lora(o);
     if (o->quant_out) return run_quantize(o);
+    if (o->quant_error_out) return run_quant_error(o);
     if (!cli_configure_serving(o)) return 1;
     if (!cli_rewrite_flags_ok(o)) return 1;
 
