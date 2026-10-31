@@ -2749,8 +2749,9 @@ alone does nothing: it sets the chunk width of a chunked score and is ignored wi
 `RUNNER_SCORE_CHUNKED=1`. `scripts/gold-logits.py` refuses two score files with the same
 scores, and, when both sides scored the same model file, a side scored solo, unless
 `--solo-ok` names a deliberate decode-route comparison (it says so in its output and
-report). Two different files (a quant against its parent) scored solo compare the files at
-the decode arithmetic, and pass.
+report). Two different files scored solo are a file comparison (a quant against its
+parent), where solo is the right mode, and pass; the model file in `score_route` is what
+lets the script tell the two cases apart.
 
 <a id="cli-gpu-route"></a>
 #### `--gpu-route R`
