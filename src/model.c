@@ -6867,7 +6867,7 @@ static void route_replay_load(void) {
     if (g_replay.tried) { pthread_mutex_unlock(&g_replay_mu); return; }
     const char *path = getenv("RUNNER_MOE_REPLAY");
     if (path && *path) {
-        FILE *f = fopen(path, "r");
+        FILE *f = plat_fopen(path, "r");
         if (!f) {
             fprintf(stderr, "error: RUNNER_MOE_REPLAY=%s cannot be opened\n", path);
             exit(1);
