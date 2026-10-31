@@ -498,6 +498,84 @@ static void check_ggml_golden(void) {
            "b10353 on a real tensor\n");
 }
 
+// R4.7.3: --quant-error. The report's error for a type is the writer's own:
+// it equals the weighted squared difference between the source rows and
+// what quantize_gguf writes for them, read back; the errors order q8_0 <
+// q4_0 < q3_k on random data; an imatrix reweights them; a row width a type
+// cannot describe reads null for it.
+static double report_error(const char *path, const char *tensor, const char *type) {
+    FILE *f = fopen(path, "r");
+    assert(f);
+    char line[4096], key[64];
+    double e = -1.0;
+    snprintf(key, sizeof key, "\"%s\":{\"bytes\":", type);
+    while (fgets(line, sizeof line, f)) {
+        char tk[160];
+        snprintf(tk, sizeof tk, "\"tensor\":\"%s\"", tensor);
+        if (!strstr(line, tk)) continue;
+        const char *p = strstr(line, key);
+        if (!p) { e = -2.0; break; }          // the type's entry is null
+        p = strstr(p, "\"error\":");
+        assert(p && sscanf(p + 8, "%lf", &e) == 1);
+        break;
+    }
+    fclose(f);
+    return e;
+}
+
+static void check_error_report(void) {
+    enum { NC = 256, NR = 8, NN = 96 };
+    static float x[NC * NR], y[NN * NR], imx[NC];
+    uint32_t st = 777u;
+    for (int i = 0; i < NC * NR; i++) {
+        st = st * 1664525u + 1013904223u;
+        x[i] = (float)(st >> 8) / 16777216.0f - 0.5f;
+    }
+    for (int i = 0; i < NN * NR; i++) y[i] = x[i] * 0.5f;
+    for (int c = 0; c < NC; c++) imx[c] = c % 16 < 3 ? 50.0f : 1.0f;
+    const char *in = "q_err_in.gguf", *rep = "q_err.jsonl", *repw = "q_err_w.jsonl",
+               *q4 = "q_err_q4.gguf", *dat = "q_err.dat";
+    tdesc ts[2] = { { "blk.0.attn_q.weight", {NC, NR}, 2, x, NC * NR, T_F32 },
+                    { "blk.0.attn_k.weight", {NN, NR}, 2, y, NN * NR, T_F32 } };
+    write_gguf(in, ts, 2, 0);
+    const int types[3] = { T_Q8_0, T_Q4_0, T_Q3_K };
+    assert(quantize_set_imatrix(NULL));
+    assert(quantize_error_report(in, types, 3, rep) == 0);
+    double e8 = report_error(rep, "blk.0.attn_q.weight", "q8_0");
+    double e4 = report_error(rep, "blk.0.attn_q.weight", "q4_0");
+    double e3 = report_error(rep, "blk.0.attn_q.weight", "q3_k");
+    assert(e8 > 0 && e8 < e4 && e4 < e3);
+    // a 96-wide row: no 256-block for q3_k, so null; q4_0 is costed
+    assert(report_error(rep, "blk.0.attn_k.weight", "q3_k") == -2.0);
+    assert(report_error(rep, "blk.0.attn_k.weight", "q4_0") > 0);
+    // the writer's own error: quantize to q4_0 and read the rows back
+    assert(quantize_gguf(in, q4, T_Q4_0, NULL) == 0);
+    size_t n;
+    unsigned char *b = slurp_tensor(q4, "blk.0.attn_q.weight", &n);
+    double want = 0;
+    float back[NC];
+    for (int r = 0; r < NR; r++) {
+        dequant_row(T_Q4_0, b + (size_t)r * ggml_row_size(T_Q4_0, NC), back, NC);
+        for (int j = 0; j < NC; j++) {
+            double d = (double)x[r * NC + j] - back[j];
+            want += d * d;
+        }
+    }
+    free(b);
+    assert(fabs(e4 - want) <= 1e-6 * want);
+    // an imatrix reweights the error (and the q4_0/q3_k writers)
+    write_imatrix_dat(dat, "blk.0.attn_q.weight", imx, NC, 1.0f);
+    assert(quantize_set_imatrix(dat));
+    assert(quantize_error_report(in, types, 3, repw) == 0);
+    assert(quantize_set_imatrix(NULL));
+    double w4 = report_error(repw, "blk.0.attn_q.weight", "q4_0");
+    assert(w4 > 0 && fabs(w4 - e4) > 1e-3 * e4);
+    const char *rm[] = { in, rep, repw, q4, dat };
+    for (size_t i = 0; i < sizeof rm / sizeof rm[0]; i++) remove(rm[i]);
+    printf("ok: --quant-error reports the writer's own error, ordered q8_0 < q4_0 < "
+           "q3_k, imatrix-weighted, null where a type cannot describe the row\n");
+}
+
 int main(void) {
     f16_init();   // dequant_row's scale lookup table (unused by the quantizer
                   // itself, but the round-trip check below dequantizes)
@@ -1093,6 +1171,7 @@ int main(void) {
     printf("ok: failed install left the destination untouched\n");
 
     check_mxfp4_dequant();
+    check_error_report();
     check_ggml_golden();
 
     remove(in); remove(out); remove(inplace); remove(dest); remove(bad);

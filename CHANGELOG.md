@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--quant-error` and `scripts/type-plan-by-sensitivity.py` write a type
+  plan by measurement.** `runner -m MODEL --quant-error OUT.jsonl --quant
+  q4_0,q3_k [--imatrix F]` writes no model: per tensor a rewrite would
+  quantize, each type's bytes and the (imatrix-weighted) squared round-trip
+  error of the writer the rewrite would use. The script demotes the groups
+  that add the least error per saved byte to the lower type until a group
+  count or byte target is met, and writes the `--type-plan`.
+
 - **A score file names its route, and a route comparison refuses what cannot
   have measured it.** `--score` is solo by default, so two score files of an
   NVFP4 file meant to compare its scalar and tensor-core prefill came out
