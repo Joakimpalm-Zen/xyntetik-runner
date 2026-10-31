@@ -2881,6 +2881,18 @@ else
 	@echo "test-metal-qwen35 skipped: macOS-only backend"
 endif
 
+# R3.25 (Metal half): the toy fixtures' honest Metal residue is 1e-8 to 2e-6
+# of the logit range, and structural mistakes move them 6e-5 to 8e-4: rope
+# skipped, rope one position off, the attention scale x1.05, the norm's eps
+# dropped all passed test-gpu-identity's cross-backend 2e-3. On Metal these
+# fixtures are held to bounds 10x and more over their residue (GPU_ID_LIMIT
+# only tightens); a CUDA host keeps the cross-backend bound until its own
+# audit sets its residue (R3.25, CUDA half).
+ifeq ($(BUILD_OS),Darwin)
+METAL_ID_TIGHT = GPU_ID_LIMIT=1e-5
+METAL_ID_TIGHT_SPARK = GPU_ID_LIMIT=2e-5
+endif
+
 # `make test` is three targets run one after another: the C gates, the batch
 # gates (the microbatch byte-identity family, long and independent), and the
 # python target (the client tests and the root pytest). A local run keeps the
@@ -3054,7 +3066,9 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_MV_TOL)
 	./$(TEST_ATTN_TOL)
 	./$(TEST_GPU_ID) --self-test
-	./$(TEST_GPU_ID)
+	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID)
+	$(PYTHON) scripts/make-test-model.py --noisy-norms --qk-norm test-noisy-norms.gguf > /dev/null
+	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-noisy-norms.gguf
 	./$(TEST_QUANTS_SIMD)
 	./$(TEST_IQ_DECODE)
 	./$(TEST_KQ_STAGE)
@@ -3083,7 +3097,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# no router bias or selects all its experts, and both hide a dropped bias
 	@# under the tolerances -- which is exactly how the CUDA fused path shipped
 	@# without one. See the fixture's comment in scripts/make-test-moe.py.
-	./$(TEST_GPU_ID) test-moe-fixture.gptoss-top1.gguf
+	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.gptoss-top1.gguf
 	./$(TEST_MOE_ROUTER) test-moe-fixture
 	./$(TEST_PAGING_WARN) test-moe-fixture
 	./$(TEST_AUTOFIT) test.gguf
@@ -3100,24 +3114,24 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	$(PYTHON) -m pytest -q tests/test_attn_knobs.py
 	@# CPU/GPU agreement at logit precision on each knob. Token identity (the
 	@# text gates) is blind at fixture scale -- see the test's header.
-	./$(TEST_GPU_ID) test-attn/k_off.gguf
-	./$(TEST_GPU_ID) test-attn/k_nope.gguf
-	./$(TEST_GPU_ID) test-attn/k_half.gguf
-	./$(TEST_GPU_ID) test-attn/k_temp_live.gguf
+	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_off.gguf
+	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_nope.gguf
+	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_half.gguf
+	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_temp_live.gguf
 	@# The same comparison with every forward a single token. That is a
 	@# backend STATE, not a slower schedule: scratch sized lazily on the first
 	@# multi-token batch stays nil for such a run, and the text gates above are
 	@# blind to what that does at fixture scale.
-	./$(TEST_GPU_ID) test.gguf 0 1
+	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test.gguf 0 1
 	@# spark2_5 on the device (2026-10-30): Q, K and V as row slices of one
 	@# fused tensor, the per-head output gate, the exact-erf GELU and two rope
 	@# widths and bases, against the CPU at logit precision, batched and one
 	@# token at a time, and with every layer sliding
 	$(PYTHON) scripts/make-test-model.py --spark2-5 test-spark.gguf > /dev/null
 	$(PYTHON) scripts/make-test-model.py --spark2-5 --spark-all-swa test-spark-swa.gguf > /dev/null
-	./$(TEST_GPU_ID) test-spark.gguf
-	./$(TEST_GPU_ID) test-spark.gguf 0 1
-	./$(TEST_GPU_ID) test-spark-swa.gguf
+	$(METAL_ID_TIGHT_SPARK) ./$(TEST_GPU_ID) test-spark.gguf
+	$(METAL_ID_TIGHT_SPARK) ./$(TEST_GPU_ID) test-spark.gguf 0 1
+	$(METAL_ID_TIGHT_SPARK) ./$(TEST_GPU_ID) test-spark-swa.gguf
 	./$(TEST_QUANTIZE)
 	./$(TEST_VRAM_ROLLBACK)
 	./$(TEST_GGUF_GETTERS)
