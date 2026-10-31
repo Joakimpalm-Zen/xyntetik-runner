@@ -4000,9 +4000,11 @@ static bool tc_type_promotable(int type) {
 //                          Wilcoxon p 0.36, McNemar p 0.48
 //                gpt-oss   gpt-oss-20b MXFP4: KL 0.08142 vs 0.08312 (closer,
 //                          p 1e-5), McNemar p 0.61
-//   moe-grouped  qwen3moe  with moe-tc, scored in 64-row chunks
-//                          (RUNNER_SPEC_BATCH=64, so its batched expert
-//                          GEMMs ran): KL 0.09178 vs 0.09170, Wilcoxon
+//   moe-grouped  qwen3moe  with moe-tc, scored chunked
+//                          (RUNNER_SCORE_CHUNKED=1, 64-row chunks by
+//                          RUNNER_SPEC_BATCH=64, so its batched expert
+//                          GEMMs ran; RUNNER_SPEC_BATCH alone scores solo
+//                          and runs none): KL 0.09178 vs 0.09170, Wilcoxon
 //                          p 0.83, McNemar p 1.0; Q4_K / Q6_K experts;
 //                          prefill 2.6-3.9x the fused path's at 512 / 2K
 //                not gemma4: gemma-4-26B-A4B-it, a plain Q4_0 of the
@@ -4121,7 +4123,8 @@ static bool tc_promoted(const model_t *m, int type) {
     // rule D1: 2,000 positions against the publisher's model, mean KL within
     // 1.01x of the scalar route's and neither a paired Wilcoxon nor McNemar
     // on margin-qualified top-1 worse at p < 0.05; the datacenter MIG slice,
-    // 64-row chunks so the GEMMs ran), Qwen3-4B quantized to each type:
+    // chunked scoring in 64-row chunks, RUNNER_SCORE_CHUNKED=1 with
+    // RUNNER_SPEC_BATCH=64, so the GEMMs ran), Qwen3-4B quantized to each type:
     //   Q5_K_M  0.02327 vs 0.02329  Wilcoxon p 0.019, TC closer
     //   Q3_K_M  0.27870 vs 0.27869  p 0.50
     //   Q2_K    0.91540 vs 0.91524  p 0.81

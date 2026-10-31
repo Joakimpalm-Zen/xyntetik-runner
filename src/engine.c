@@ -2480,7 +2480,8 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
     // (RNC-4: d[] used to be a bare 16 unlinked to spec_batch).
     enum { SPEC_DRAFT_MAX = 16 };  // capacity of b[]; the clamps below keep the
                                    // window inside it (RUNNER_SPEC_BATCH can raise
-                                   // spec_batch to 64 for chunked --score)
+                                   // spec_batch to 64 for a chunked --score,
+                                   // RUNNER_SCORE_CHUNKED=1)
     int K = e->draft_k;
     if (K < 1) K = 1;
     if (K > m->spec_batch - 1) K = m->spec_batch - 1;

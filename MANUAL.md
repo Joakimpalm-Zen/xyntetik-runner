@@ -2736,9 +2736,22 @@ are the ones scored.
 
 The run ends with one line on stderr, `score: route {...}`: the paths its forwards took
 (with counts and widest rows) and the counted kernels, the object `--bench-json` reports as
-`route`. Two score files that agree byte for byte say nothing about a route switch unless
-the route's kernels ran in one of them; the line shows whether they did, and stdout stays
-byte-comparable across routes.
+`route`. The JSON's last field, `score_route`, carries the part a comparison needs: the
+model file (`file`, `bytes`), the `paths` (`solo` or `keep`, each with `forwards` and
+`rows_max`), `backend` and `backend_detail`. A byte comparison of two score files leaves
+`score_route` out (`scripts/score_record.py`), since it differs whenever a route switch is
+on.
+
+**A prefill-route reading needs `RUNNER_SCORE_CHUNKED=1`.** A solo score never reaches a
+prefill GEMM (a tensor-core route, a batched MoE kernel), so two solo scores of one file
+with and without such a route are the same bytes and measure nothing. `RUNNER_SPEC_BATCH`
+alone does nothing: it sets the chunk width of a chunked score and is ignored without
+`RUNNER_SCORE_CHUNKED=1`. `scripts/gold-logits.py` refuses two score files with the same
+scores, and, when both sides scored the same model file, a side scored solo, unless
+`--solo-ok` names a deliberate decode-route comparison (it says so in its output and
+report). Two different files scored solo are a file comparison (a quant against its
+parent), where solo is the right mode, and pass; the model file in `score_route` is what
+lets the script tell the two cases apart.
 
 <a id="cli-gpu-route"></a>
 #### `--gpu-route R`

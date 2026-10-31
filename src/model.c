@@ -6673,6 +6673,28 @@ static int route_kernels(char *out, int cap) {
     return n;
 }
 
+// every path the run's forwards took, with how often and how wide
+static void route_paths_json(const model_t *m, char *paths, size_t cap) {
+    int pn = snprintf(paths, cap, "{");
+    for (int p = 0, first = 1; p < MODEL_ROUTE_PATHS; p++) {
+        if (!m->route_runs[p]) continue;
+        pn += snprintf(paths + pn, cap - (size_t)pn,
+                       "%s\"%s\":{\"forwards\":%u,\"rows_max\":%d}", first ? "" : ",",
+                       route_path_name[p], m->route_runs[p], m->route_rows[p]);
+        first = 0;
+    }
+    snprintf(paths + pn, cap - (size_t)pn, "}");
+}
+
+void model_score_route_json(const model_t *m, const char *model_json, char *out, int cap) {
+    route_facts r;
+    route_collect(m, &r);
+    char paths[400];
+    route_paths_json(m, paths, sizeof paths);
+    snprintf(out, cap, "{\"model\":%s,\"paths\":%s,\"backend\":\"%s\",\"backend_detail\":\"%s\"}",
+             model_json, paths, r.backend, r.detail);
+}
+
 void model_route_json(const model_t *m, char *out, int cap) {
     route_facts r;
     route_collect(m, &r);
@@ -6683,16 +6705,7 @@ void model_route_json(const model_t *m, char *out, int cap) {
     route_escape(r.tuning, tun, sizeof tun);
     route_escape(__VERSION__, cc, sizeof cc);
     route_kernels(kern, sizeof kern);
-    // every path the run's forwards took, with how often and how wide
-    int pn = snprintf(paths, sizeof paths, "{");
-    for (int p = 0, first = 1; p < MODEL_ROUTE_PATHS; p++) {
-        if (!m->route_runs[p]) continue;
-        pn += snprintf(paths + pn, sizeof paths - (size_t)pn,
-                       "%s\"%s\":{\"forwards\":%u,\"rows_max\":%d}", first ? "" : ",",
-                       route_path_name[p], m->route_runs[p], m->route_rows[p]);
-        first = 0;
-    }
-    snprintf(paths + pn, sizeof paths - (size_t)pn, "}");
+    route_paths_json(m, paths, sizeof paths);
     snprintf(out, cap,
              "{\"backend\":\"%s\",\"device\":\"%s\",\"gpu_layers\":%d,\"layers\":%d,"
              "\"experts_on_host\":%d,\"moe_layers\":%d,\"paths\":%s,"

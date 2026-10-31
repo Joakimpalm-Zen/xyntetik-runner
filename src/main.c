@@ -5899,13 +5899,27 @@ static int run_score(cli_opts *o, cli_run *rt) {
         }
         free(top_id); free(top_lp);
     }
+    // score_route (additive, last): the model file (name and bytes), the path
+    // the forwards took (solo or keep, with the widest rows) and the backend's
+    // detail line. A comparison of two routes of one file reads it, because two
+    // solo scores never reach a prefill GEMM and say nothing about one; a byte
+    // comparison of two scores leaves it out (scripts/score_record.py)
+    const char *mbase = o->model_path ? o->model_path : "";
+    for (const char *c = mbase; *c; c++)
+        if (*c == '/' || *c == '\\') mbase = c + 1;
+    char mesc[600], mjson[700];
+    json_escape(mbase, strlen(mbase), mesc, sizeof mesc);
+    plat_stat_t mst;
+    long long mbytes = o->model_path && plat_stat(o->model_path, &mst) == 0 ? (long long)mst.st_size : -1;
+    snprintf(mjson, sizeof mjson, "{\"file\":\"%s\",\"bytes\":%lld}", mesc, mbytes);
+    char sroute[1800];
+    model_score_route_json(&rt->m, mjson, sroute, sizeof sroute);
     printf("],\"n_vocab\":%d,\"top1\":%d,\"top1_rate\":%.9g,"
-           "\"nll_total\":%.9g,\"nll_mean\":%.9g,\"ppl\":%.9g}\n",
+           "\"nll_total\":%.9g,\"nll_mean\":%.9g,\"ppl\":%.9g,\"score_route\":%s}\n",
            rt->m.n_vocab, top1, (double)top1 / (n_prompt - 1),
-           nll, mean, exp(mean));
-    // the paths and kernels the forwards took, on stderr so the record's
-    // bytes stay comparable across routes: two equal scores say nothing about
-    // a route switch unless the route's kernels are shown to have run
+           nll, mean, exp(mean), sroute);
+    // the paths and kernels the forwards took, on stderr: the kernel counters
+    // show a route's kernels ran
     char route[4096];
     model_route_json(&rt->m, route, sizeof route);
     fprintf(stderr, "score: route %s\n", route);
