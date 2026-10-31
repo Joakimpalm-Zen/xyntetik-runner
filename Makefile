@@ -2826,6 +2826,7 @@ test-metal:
 	$(MAKE) --no-print-directory test-metal-kv-fp4
 	$(MAKE) --no-print-directory test-metal-kv-q8
 	$(MAKE) --no-print-directory test-metal-qwen35 PYTHON="$(PYTHON)"
+	$(MAKE) --no-print-directory test-metal-mamba2 PYTHON="$(PYTHON)"
 
 # qwen35 on Metal (R4.10): the Gated DeltaNet mixer and the gated attention on
 # the device, to the CPU's logits within reduction-order rounding at prefill
@@ -2834,6 +2835,37 @@ test-metal:
 # on the device, its rows byte-identical to solo steps across partial rounds
 # (the host rollback and re-fold). The anchor beyond the CPU is the CPU's own
 # gold against the publisher's float32 reference (docs/model-support.md).
+# The Mamba-2 hybrids on Metal (R4.10, dense granitehybrid): the scan, the
+# conv and the gated norm on the device, to the CPU's logits. The default toy
+# barely moves its logits through the recurrent branch (range ~0.07), so the
+# gate draws wider weights (HYBRID_TEST_AMP=1) and holds them to a bound 200x
+# under the cross-backend one (GPU_ID_LIMIT=1e-5; healthy residue ~1.4e-8, a
+# dropped D skip 4.9e-4), at d_state 40 (one group) and 72 and 128 (two
+# groups: the head-to-group map), and nemotron_h's fixture (its grouped scan
+# and gate-less squared-ReLU MLP blocks); then the verify walk on the device.
+test-metal-mamba2: runner $(TEST_GPU_ID) $(TEST_SPEC_ID)
+ifeq ($(BUILD_OS),Darwin)
+	@set -e; for c in 40:1 72:2 128:2; do w=$${c%%:*}; gr=$${c##*:}; \
+	  HYBRID_TEST_AMP=1 HYBRID_TEST_STATE=$$w HYBRID_TEST_GROUPS=$$gr \
+	    $(PYTHON) scripts/make-test-hybrid.py test-m2-s$$w-g$$gr --dense --rope > /dev/null; \
+	  f=test-m2-s$$w-g$$gr.gguf; \
+	  GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) $$f > test-metal-mamba2.out 2>&1 || { cat test-metal-mamba2.out; exit 1; }; \
+	  if grep -q 'skipped' test-metal-mamba2.out; then cat test-metal-mamba2.out; \
+	    echo "test-metal-mamba2: $$f did not run on the device"; exit 1; fi; \
+	  echo "$$f: $$(tail -1 test-metal-mamba2.out)"; \
+	  ./$(TEST_SPEC_ID) $$f | tail -1 | grep -q 'ok (gpu' || { ./$(TEST_SPEC_ID) $$f; exit 1; }; \
+	done; \
+	$(PYTHON) scripts/make-test-nemotron.py test-m2-nemotron > /dev/null; f=test-m2-nemotron.gguf; \
+	GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) $$f > test-metal-mamba2.out 2>&1 || { cat test-metal-mamba2.out; exit 1; }; \
+	if grep -q 'skipped' test-metal-mamba2.out; then cat test-metal-mamba2.out; \
+	  echo "test-metal-mamba2: $$f did not run on the device"; exit 1; fi; \
+	echo "$$f: $$(tail -1 test-metal-mamba2.out)"; \
+	./$(TEST_SPEC_ID) $$f | tail -1 | grep -q 'ok (gpu' || { ./$(TEST_SPEC_ID) $$f; exit 1; }; \
+	echo "test-metal-mamba2: ok"
+else
+	@echo "test-metal-mamba2 skipped: macOS-only backend"
+endif
+
 test-metal-qwen35: runner $(TEST_GPU_ID) $(TEST_SPEC_ID) test-ornith.gguf
 ifeq ($(BUILD_OS),Darwin)
 	@set -e; for w in 40 72 128; do \
