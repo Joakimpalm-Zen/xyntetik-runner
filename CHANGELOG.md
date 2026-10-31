@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **NVFP4 prefill on CUDA through the tensor cores, opt-in.** NVFP4 had no
+  batched GEMM on CUDA: qwen3.5-4b NVFP4 prefilled at 22 tok/s on an RTX 3070
+  with every layer on the card, against llama.cpp's 3,669. It now has
+  tensor-core kernels (the dequantizing route: Ampere has no FP4 tensor
+  cores, so each block becomes fp16 by a decoder equal to the CPU's bit for
+  bit), and the same prompt prefills at 1,170 tok/s with the same output. A
+  two-level file's companion tensor scale is applied to the GEMM's output.
+  The route is **opt-in until its float32-reference row is in**:
+  `RUNNER_CUDA_TC_NVFP4=1` turns it on for NVFP4 alone
+  (`docs/compat-reports/cuda-nvfp4-tc-2026-10-31/README.md`) (R4.9.5).
+
 - **Sampled decoding under a schema is faster where the grammar is
   narrow.** With top-k on, when fewer than k tokens of the vocabulary are
   valid (an enum member, an object key), the constrained sampler ranked the

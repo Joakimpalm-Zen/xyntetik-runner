@@ -40,4 +40,12 @@ static __device__ __forceinline__ void NAME(__half *dst, const uchar *rw,     \
 KQ_STAGE_32(tc_stage_q4_1, q41_stage32, 20)
 KQ_STAGE_32(tc_stage_q5_0, q50_stage32, 22)
 KQ_STAGE_32(tc_stage_q5_1, q51_stage32, 24)
+
+// NVFP4 (R4.9.5): a 64-element block is one segment; a row is a whole
+// number of blocks, so no segment reaches past n_in
+static __device__ __forceinline__ void tc_stage_nvfp4(__half *dst, const uchar *rw, int nb,
+                                                      int e0, int n_in) {
+    nvfp4_stage64(dst, rw + (ulong64)(e0 >> 6) * 36);
+    (void)nb; (void)n_in;
+}
 #endif // RUNNER_KERNELS_KQ_STAGE_CUH

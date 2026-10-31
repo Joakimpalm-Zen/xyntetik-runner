@@ -64,6 +64,7 @@ static void st_q2k(float *dst, const iq_byte *blk) {
 static void st_q41(float *dst, const iq_byte *blk) { q41_stage32(dst, blk); }
 static void st_q50(float *dst, const iq_byte *blk) { q50_stage32(dst, blk); }
 static void st_q51(float *dst, const iq_byte *blk) { q51_stage32(dst, blk); }
+static void st_nv4(float *dst, const iq_byte *blk) { nvfp4_stage64(dst, blk); }
 
 static const kq_format FORMATS[] = {
     { "Q5_K", T_Q5_K, 176, 256, { 0, 2 },   st_q5k },
@@ -72,6 +73,7 @@ static const kq_format FORMATS[] = {
     { "Q4_1", T_Q4_1, 20,  32,  { 0, 2 },   st_q41 },
     { "Q5_0", T_Q5_0, 22,  32,  { 0, -1 },  st_q50 },
     { "Q5_1", T_Q5_1, 24,  32,  { 0, 2 },   st_q51 },
+    { "NVFP4", T_NVFP4, 36, 64, { -1, -1 }, st_nv4 },   // UE4M3 scale bytes, no f16
 };
 
 static int block_matches(const kq_format *f, const iq_byte *blk, const char *what) {
@@ -90,7 +92,7 @@ static int block_matches(const kq_format *f, const iq_byte *blk, const char *wha
 
 static void fill(const kq_format *f, iq_byte *blk, unsigned d_bits, unsigned m_bits) {
     for (int i = 0; i < f->nbytes; i++) blk[i] = (iq_byte)rnd();
-    put_f16(blk + f->scale_at[0], d_bits);
+    if (f->scale_at[0] >= 0) put_f16(blk + f->scale_at[0], d_bits);
     if (f->scale_at[1] >= 0) put_f16(blk + f->scale_at[1], m_bits);
 }
 
@@ -109,7 +111,7 @@ int main(void) {
         }
         // the scale corners (zero, the smallest subnormal, the largest
         // half, both signs) on d and on the min
-        for (size_t c = 0; c < sizeof corners / sizeof *corners && ok; c++) {
+        for (size_t c = 0; c < sizeof corners / sizeof *corners && ok && f->scale_at[0] >= 0; c++) {
             fill(f, blk, corners[c], rnd_f16_scale());
             ok = block_matches(f, blk, "d corner");
             if (ok && f->scale_at[1] >= 0) {
@@ -120,10 +122,18 @@ int main(void) {
         // every quant and high bit set, then every one clear
         for (int v = 0; v < 2 && ok; v++) {
             memset(blk, v ? 0xFF : 0x00, sizeof blk);
-            put_f16(blk + f->scale_at[0], 0x3c00);
+            if (f->scale_at[0] >= 0) put_f16(blk + f->scale_at[0], 0x3c00);
             if (f->scale_at[1] >= 0) put_f16(blk + f->scale_at[1], 0x3800);
             ok = block_matches(f, blk, v ? "all-ones block" : "all-zeros block");
         }
+        // NVFP4: every UE4M3 scale byte (0 and 0x7F are zero, bit 7 is
+        // ignored) under random codes, in each sub-block
+        if (f->scale_at[0] < 0)
+            for (int sb = 0; sb < 256 && ok; sb++) {
+                fill(f, blk, 0, 0);
+                blk[0] = blk[1] = blk[2] = blk[3] = (iq_byte)sb;
+                ok = block_matches(f, blk, "scale byte sweep");
+            }
         checked += ok;
     }
     if (g_fail) {

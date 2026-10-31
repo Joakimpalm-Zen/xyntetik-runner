@@ -57,6 +57,7 @@ G2_80(k_gemm2_80_q2_K, G2Q2K)
 G2_80(k_gemm2_80_q4_1, G2Q41)
 G2_80(k_gemm2_80_q5_0, G2Q50)
 G2_80(k_gemm2_80_q5_1, G2Q51)
+G2_80(k_gemm2_80_nvfp4, G2NV4)
 
 // The 128-column tile: each weight dequantized once for 128 token columns
 // instead of 64, the integer work that bounds the 64-column kernel halved per
@@ -88,3 +89,4 @@ G2_80W(k_gemm2_80w_q2_K, G2Q2K)
 G2_80W(k_gemm2_80w_q4_1, G2Q41)
 G2_80W(k_gemm2_80w_q5_0, G2Q50)
 G2_80W(k_gemm2_80w_q5_1, G2Q51)
+G2_80W(k_gemm2_80w_nvfp4, G2NV4)

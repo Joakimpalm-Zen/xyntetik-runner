@@ -988,6 +988,7 @@ static const struct { int type; const char *name; } TC_KERNELS[] = {
     { T_Q4_1, "k_gemm_q4_1_tc" },
     { T_Q5_0, "k_gemm_q5_0_tc" },
     { T_Q5_1, "k_gemm_q5_1_tc" },
+    { T_NVFP4, "k_gemm_nvfp4_tc" },   // R4.9.5
 };
 bool gpu_tc_type_has_kernel(int type) {
     for (size_t i = 0; i < sizeof TC_KERNELS / sizeof *TC_KERNELS; i++)
@@ -2555,6 +2556,7 @@ static bool shared_load_module(gpu_weights *w) {
             { T_Q5_K, "k_gemm2_q5_K" }, { T_Q3_K, "k_gemm2_q3_K" },
             { T_Q2_K, "k_gemm2_q2_K" }, { T_Q4_1, "k_gemm2_q4_1" },
             { T_Q5_0, "k_gemm2_q5_0" }, { T_Q5_1, "k_gemm2_q5_1" },
+            { T_NVFP4, "k_gemm2_nvfp4" },
         };
         cu.ModuleGetFunction(&w->f_x_half, w->mod, "k_x_half_scaled");
         for (size_t i = 0; i < sizeof TC2_KERNELS / sizeof *TC2_KERNELS; i++) {
@@ -2586,6 +2588,7 @@ static bool shared_load_module(gpu_weights *w) {
                     { T_Q5_K, "k_gemm2_80_q5_K" }, { T_Q3_K, "k_gemm2_80_q3_K" },
                     { T_Q2_K, "k_gemm2_80_q2_K" }, { T_Q4_1, "k_gemm2_80_q4_1" },
                     { T_Q5_0, "k_gemm2_80_q5_0" }, { T_Q5_1, "k_gemm2_80_q5_1" },
+                    { T_NVFP4, "k_gemm2_80_nvfp4" },
                 };
                 for (size_t i = 0; i < sizeof TC2_80 / sizeof *TC2_80; i++) {
                     CUfunction f = NULL;
@@ -2607,6 +2610,7 @@ static bool shared_load_module(gpu_weights *w) {
                     { T_Q5_K, "k_gemm2_80w_q5_K" }, { T_Q3_K, "k_gemm2_80w_q3_K" },
                     { T_Q2_K, "k_gemm2_80w_q2_K" }, { T_Q4_1, "k_gemm2_80w_q4_1" },
                     { T_Q5_0, "k_gemm2_80w_q5_0" }, { T_Q5_1, "k_gemm2_80w_q5_1" },
+                    { T_NVFP4, "k_gemm2_80w_nvfp4" },
                 };
                 for (size_t i = 0; i < sizeof TC2_80W / sizeof *TC2_80W; i++) {
                     CUfunction f = NULL;
@@ -4221,6 +4225,19 @@ static bool tc_promoted(const model_t *m, int type) {
     return false;
 }
 
+// NVFP4's tensor-core route (R4.9.5), opt-in until its float32-reference row
+// is in: RUNNER_CUDA_TC_NVFP4=1 turns it on for NVFP4 tensors alone, every
+// other type keeping its route. RUNNER_CUDA_TC, when set, decides for every
+// type, NVFP4 included.
+static bool tc_nvfp4_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_TC_NVFP4");
+        on = e && *e && strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+    }
+    return on > 0;
+}
+
 static bool tc_on(const model_t *m, int type) {
     int st = g_tc_state;   // one read; gpu_tc_force may set it from a test meanwhile
     if (st == TC_ENV_UNSET) {
@@ -4230,6 +4247,7 @@ static bool tc_on(const model_t *m, int type) {
         // only from unread: a forced value set meanwhile stands
         st = atomic_compare_exchange_strong(&g_tc_state, &(int){ TC_ENV_UNSET }, v) ? v : g_tc_state;
     }
+    if (type == T_NVFP4 && st < 0 && tc_nvfp4_on()) return true;
     if (moe_tc_family(m)) {
         // a route pin decides, then RUNNER_CUDA_TC, then the default (on)
         int p = route_pinned(GR_MOE_TC);
@@ -4521,6 +4539,7 @@ static bool mv_twin_route(const gpu_t *g, const gguf_tensor *w, int n_in, int n_
 }
 static bool batch_mv_twin_ok(const gpu_t *g, const gguf_tensor *t);
 
+static bool enc_scale(gpu_t *g, CUdeviceptr x, float s, int n, int batch, int xs);
 static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                    CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias,
                    int batch, int xs, int ys) {
@@ -4594,7 +4613,11 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     // Prefill (batch>1) on the tensor-core route, the pipelined TC2 GEMM where
     // it has a kernel for the type: the window's column maxima and its fp16
     // activations once, then one launch over every column (kernels.cu TC2).
-    CUfunction f2 = batch > 1 && w->scale == 1.0f && g->xh ? tc2_fn(g, w->type) : NULL;
+    // NVFP4's two-level files carry a per-tensor scale (the X.scale companion):
+    // the tensor-core GEMMs read the blocks alone, so their output takes the
+    // scale after, where no bias has to be ordered against it (R4.9.5)
+    bool tc_scale_ok = w->scale == 1.0f || (w->type == T_NVFP4 && !bias);
+    CUfunction f2 = batch > 1 && tc_scale_ok && g->xh ? tc2_fn(g, w->type) : NULL;
     if (f2 && tc_on(m, w->type) && n_in % G2_BK == 0 &&
         n_in <= g->xh_cap && batch <= g->win) {
         if (g->xh_reuse && xh_reuse_on() && g->xh_seq == seq - 1 && g->xh_src == x &&
@@ -4626,18 +4649,22 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
             }
         }
         void *pg[] = { &weights, &g->xh, &y, &a, &b, &g->xsc };
-        return launch_smem(g, f2, (unsigned)((n_out + G2_BM - 1) / G2_BM),
-                           (unsigned)((batch + bn - 1) / bn), 1, 256, smem, pg);
+        if (!launch_smem(g, f2, (unsigned)((n_out + G2_BM - 1) / G2_BM),
+                         (unsigned)((batch + bn - 1) / bn), 1, 256, smem, pg))
+            return false;
+        return w->scale == 1.0f || enc_scale(g, y, w->scale, n_out, batch, ys);
     }
     // Prefill (batch>1), tensor-core GEMM when promoted for this (type, arch)
     // or forced by RUNNER_CUDA_TC: the block dequantizes a 64-row fp16 weight
     // tile once and its four warps' MMAs share it (TC_ROWS/block, 128 threads).
-    if (batch > 1 && w->scale == 1.0f && tc_on(m, w->type) && g->sw->f_gemm_tc[w->type]) {
+    if (batch > 1 && tc_scale_ok && tc_on(m, w->type) && g->sw->f_gemm_tc[w->type]) {
         g_tc_dispatches++;
         g_tc_dispatches_type[w->type]++;
-        return launch_tiled_xscaled(g, g->sw->f_gemm_tc[w->type],
-                                    (n_out + TC_ROWS - 1) / TC_ROWS, 128,
-                                    weights, x, y, a, b);
+        if (!launch_tiled_xscaled(g, g->sw->f_gemm_tc[w->type],
+                                  (n_out + TC_ROWS - 1) / TC_ROWS, 128,
+                                  weights, x, y, a, b))
+            return false;
+        return w->scale == 1.0f || enc_scale(g, y, w->scale, n_out, batch, ys);
     }
     // Prefill (batch>1) uses the tiled-GEMM variant where available (Q8_0/Q4_K):
     // GEMM_WARPS(=8) rows per block, 256 threads, x staged in shared memory.
@@ -8552,12 +8579,15 @@ const char *gpu_route_detail(const model_t *m) {
     // window: the prompt columns one pass of the device layers takes
     // (model_gpu_window); tc_cols: the column tile each tensor-core GEMM
     // launch covers inside it, so a window of 512 is 8 such launches
-    snprintf(buf, sizeof buf, "graph=%s tc=%s tc2=%s q8x=%s small_batch=%s attn_tile=%s "
+    // tc: the promoted, forced or off state, then "+nvfp4" where
+    // RUNNER_CUDA_TC_NVFP4 adds NVFP4's opt-in route to it
+    snprintf(buf, sizeof buf, "graph=%s tc=%s%s tc2=%s q8x=%s small_batch=%s attn_tile=%s "
              "window=%d tc_cols=%d%s%s%s",
              g->graph_bad ? "off" : g->gexec[0] || g->gexec[1] ? "replay" : "none",
              g_tc_state < 0 || moe_tc_family(m)
                  ? (moe_tc_family(m) ? (tc_on(m, T_Q4_K) ? "moe-tc" : "off") : "promoted")
                  : g_tc_state ? "forced" : "off",
+             g_tc_state < 0 && tc_nvfp4_on() ? "+nvfp4" : "",
              !g->xh ? "off" : g->sw->mod80 ? "on-sm80" : "on",
              gpu_q8x_on() ? "on" : "off", gpu_small_batch_on() ? "on" : "off",
              attn_tc_on(m) ? (attn_dec_on() ? "tc+dec" : "tc")

@@ -2053,7 +2053,8 @@ llama-quantize-path:
 # The tensor-core prefill of the K-quants and legacy quants that had none
 # until 2026-10-21 (kernels_kq_stage.cuh, decoders held to dequant_row by
 # test-kq-stage), through test-tc-tol's teacher-forced tolerance gate: a
-# 256-wide fixture at Q3_K (runner --quantize) and, where RUNNER_LLAMA_CPP_BIN
+# 256-wide fixture at Q3_K (runner --quantize) and at NVFP4 with its companion
+# tensor scale (make-test-model.py, R4.9.5) and, where RUNNER_LLAMA_CPP_BIN
 # has llama-quantize, at Q5_K, Q2_K, Q4_1, Q5_0 and Q5_1, each on the TC2
 # kernels TC2's auto mode picks (compute_80 at 8.0 and up), on the
 # compute_75 TC2 kernels and on the TC route's kernels. test-tc-tol forces
@@ -2063,7 +2064,8 @@ test-cuda-tc-kq: runner $(TEST_TC_TOL)
 	@set -e; \
 	$(PYTHON) scripts/make-test-model.py --wide test-tckq-wide.gguf > /dev/null; \
 	./$(RUNNER_EXE) -m test-tckq-wide.gguf --quantize test-tckq-q3_k.gguf --quant q3_k > /dev/null 2>&1; \
-	files="test-tckq-q3_k.gguf"; \
+	$(PYTHON) scripts/make-test-model.py --wide --quant nvfp4 test-tckq-nvfp4.gguf > /dev/null; \
+	files="test-tckq-q3_k.gguf test-tckq-nvfp4.gguf"; \
 	if lq=$$($(LLAMA_QUANTIZE)); then \
 	  for q in Q5_K_S Q2_K Q4_1 Q5_0 Q5_1; do \
 	    "$$lq" test-tckq-wide.gguf test-tckq-$$q.gguf $$q > /dev/null 2>&1 && files="$$files test-tckq-$$q.gguf" || \
