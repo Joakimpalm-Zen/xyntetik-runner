@@ -685,12 +685,12 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Qwen 3.6</b>, 1 model: CPU - · CUDA n/a · Metal n/a · Train -</summary>
+<summary><b>Qwen 3.6</b>, 1 model: CPU ✅ · CUDA n/a · Metal n/a · Train n/a</summary>
 <p><b>Qwen3.6-35B-A3B (Qwen)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#qwen3.6-35b-a3b-q4_k_m"><code>Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf</code></a></td><td></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
+<tr><td><a href="#qwen3.6-35b-a3b-q4_k_m"><code>Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.9.0<sup>b</sup><br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE on a Gated DeltaNet model</td></tr>
 </tbody>
 </table>
 </details>
@@ -2029,21 +2029,23 @@ Text path, RecursiveSI's own Q4_1 of flint (39.8B, mixture of experts): it loads
 <a id="qwen3.6-35b-a3b-q4_k_m"></a>
 ##### `Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf`
 
-Text path, bartowski's standard Q4_K_M of Qwen's Qwen3.6-35B-A3B: it tokenizes as the publisher's tokenizer.json does and renders the publisher's own template token for token; its admitting CPU cell and its fidelity against Qwen's BF16 parent are being recorded on the lab CPU lane.
+Text path, bartowski's standard Q4_K_M of Qwen's Qwen3.6-35B-A3B, which passes the fidelity bar by a hair: against Qwen's BF16 parent computed in float32 it reads 0.0475 mean KLD and 97.2% margin-qualified top-1 (bars 0.05 and 97%, 300 positions, CPU); the Q8_0 reads 0.0349 / 99.1%.
 
 - **File:** `Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf` (sha256 `b46fedd33e0bfb0cae308aa3c158d0a4b2c4a1d2185a1ed6f093cdaf39064772`, 22,285,080,192 bytes, from [bartowski/Qwen_Qwen3.6-35B-A3B-GGUF](https://huggingface.co/bartowski/Qwen_Qwen3.6-35B-A3B-GGUF) at revision `5c2410d71524`).
 - **Upstream checkpoint:** Qwen/Qwen3.6-35B-A3B at revision `995ad96eacd9`.
 - **Quantization:** Q4_K_M (bartowski).
 - **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison is feasible and owed):** This file: publisher tokenizer agreement (0 of 721 corpus strings and 0 of 247,091 vocabulary entries differ from Qwen's tokenizer.json at 995ad96e) and template conformance 23 of 23 in text and tokens against its chat_template.jinja, the same bytes in the GGUF. The qwen35moe arithmetic is checked against transformers' float32 on a converted random model. Record: docs/compat-reports/qwen35moe-toy-2026-10-30/README.md.
+- **Numerical anchor (a publisher float32 comparison exists):** Both bartowski files against Qwen's BF16 parent at 995ad96e computed in float32 on the CPU (transformers 5.16.1 Qwen3_5MoeForCausalLM, float32 arithmetic cast at use per decoder block, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files at a9eaca5f): Q4_K_M 0.0475 mean KLD / 89.0% top-1 / 97.2% margin-qualified, Q8_0 0.0349 / 94.7% / 99.1%. Tokenizer 0/721 corpus strings and 0/247,091 vocabulary entries against Qwen's tokenizer.json, template conformance 23/23 in text and tokens against the file's own chat_template.jinja (the repository's bytes). Record: docs/compat-reports/qwen3.6-35b-a3b-reference-2026-10-31/README.md.
 - **Context tested:** 4096.
-- **Known limitations:** CPU only: the GPU backends refuse qwen35moe by name and serve it on the CPU. Text only: the vision tower Qwen ships beside it is not loaded. Licence: Apache-2.0.
-- **Still missing:** The admitting CPU cell and the float32 reference against the BF16 parent (72 GB stored, cast to float32 per decoder block), both on the lab CPU lane; a GPU path.
-- **Evidence:** [docs/compat-reports/qwen35moe-toy-2026-10-30/README.md](compat-reports/qwen35moe-toy-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
-- **CPU:** ☐ not run
+- **Known limitations:** CPU only: the GPU backends refuse qwen35moe by name and serve it on the CPU. Text only: the vision tower Qwen ships beside it is not loaded. --mtp drafts from the file's NextN head with output unchanged, but is slower than plain decoding on the CPU (20.1 against 26.4 tok/s). Licence: Apache-2.0.
+- **Still missing:** A GPU path; task quality and the tool protocol on the real checkpoint (the parser is pinned on fixtures only).
+- **Evidence:** [docs/compat-reports/qwen3.6-35b-a3b-reference-2026-10-31/README.md](compat-reports/qwen3.6-35b-a3b-reference-2026-10-31/README.md), [docs/compat-reports/qwen35moe-toy-2026-10-30/README.md](compat-reports/qwen35moe-toy-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.9.0 on 2026-10-30.
+- **CPU:** ✅ v1.9.0 2026-10-30 on linux-x86_64-cuda (borrowed hardware) at commit `0dcbc6d8037c`, output sha256 `f3a25e63edc8ebf7`, [pin](../tests/compatibility/tier-smoke/qwen3.6-35b-a3b-q4_k_m.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** [n/a](../MANUAL.md#support-matrix): qwen35moe (Gated DeltaNet with routed experts) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.
 - **Metal:** [n/a](../MANUAL.md#support-matrix): The Qwen 3.5 hybrid (Gated DeltaNet) has no Metal path; Metal refuses it and the file runs on the CPU.
+- **LoRA training:** no: MoE on a Gated DeltaNet model (runner 1.9.0, 2026-10-30).
+- **LoRA adapter serving:** supported (runner 1.9.0, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
 <a id="tier3"></a>

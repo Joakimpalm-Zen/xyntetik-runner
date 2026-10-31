@@ -5551,7 +5551,7 @@
       "model": "Qwen3.6-35B-A3B (Qwen)",
       "family": "Qwen 3.6",
       "tier": "tier2",
-      "claim": "Text path, bartowski's standard Q4_K_M of Qwen's Qwen3.6-35B-A3B: it tokenizes as the publisher's tokenizer.json does and renders the publisher's own template token for token; its admitting CPU cell and its fidelity against Qwen's BF16 parent are being recorded on the lab CPU lane.",
+      "claim": "Text path, bartowski's standard Q4_K_M of Qwen's Qwen3.6-35B-A3B, which passes the fidelity bar by a hair: against Qwen's BF16 parent computed in float32 it reads 0.0475 mean KLD and 97.2% margin-qualified top-1 (bars 0.05 and 97%, 300 positions, CPU); the Q8_0 reads 0.0349 / 99.1%.",
       "architecture": "qwen35moe",
       "upstream": {
         "checkpoint": "Qwen/Qwen3.6-35B-A3B",
@@ -5572,22 +5572,41 @@
         "features": [
           "text"
         ],
-        "fp32_reference": "owed",
-        "anchor": "This file: publisher tokenizer agreement (0 of 721 corpus strings and 0 of 247,091 vocabulary entries differ from Qwen's tokenizer.json at 995ad96e) and template conformance 23 of 23 in text and tokens against its chat_template.jinja, the same bytes in the GGUF. The qwen35moe arithmetic is checked against transformers' float32 on a converted random model. Record: docs/compat-reports/qwen35moe-toy-2026-10-30/README.md.",
+        "fp32_reference": "measured",
+        "anchor": "Both bartowski files against Qwen's BF16 parent at 995ad96e computed in float32 on the CPU (transformers 5.16.1 Qwen3_5MoeForCausalLM, float32 arithmetic cast at use per decoder block, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files at a9eaca5f): Q4_K_M 0.0475 mean KLD / 89.0% top-1 / 97.2% margin-qualified, Q8_0 0.0349 / 94.7% / 99.1%. Tokenizer 0/721 corpus strings and 0/247,091 vocabulary entries against Qwen's tokenizer.json, template conformance 23/23 in text and tokens against the file's own chat_template.jinja (the repository's bytes). Record: docs/compat-reports/qwen3.6-35b-a3b-reference-2026-10-31/README.md.",
         "context": 4096,
-        "limitations": "CPU only: the GPU backends refuse qwen35moe by name and serve it on the CPU. Text only: the vision tower Qwen ships beside it is not loaded. Licence: Apache-2.0.",
+        "limitations": "CPU only: the GPU backends refuse qwen35moe by name and serve it on the CPU. Text only: the vision tower Qwen ships beside it is not loaded. --mtp drafts from the file's NextN head with output unchanged, but is slower than plain decoding on the CPU (20.1 against 26.4 tok/s). Licence: Apache-2.0.",
         "evidence": [
+          "docs/compat-reports/qwen3.6-35b-a3b-reference-2026-10-31/README.md",
           "docs/compat-reports/qwen35moe-toy-2026-10-30/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The admitting CPU cell and the float32 reference against the BF16 parent (72 GB stored, cast to float32 per decoder block), both on the lab CPU lane; a GPU path."
+        "missing": "A GPU path; task quality and the tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.9.0",
+          "date": "2026-10-30",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "0dcbc6d8037c0b332af6c699c72d9956043cb62e",
+          "caps": {
+            "version": "1.9.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": null,
+            "gpu_name": null
+          },
+          "output_sha256": "f3a25e63edc8ebf782ae5bb9ede7de145de7761ed2bcc1cb407cd7c1a9e384e2",
+          "ran": "runner -m Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3.6-35b-a3b-q4_k_m.linux-x86_64-cuda.cpu.txt"
+        },
         "cuda": {
           "kind": "limit",
           "reason": "qwen35moe (Gated DeltaNet with routed experts) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.",
@@ -5612,7 +5631,19 @@
           "reason": "Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane (policy 2026-10-27). Maintained on report.",
           "last_validated_release": null
         }
-      ]
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "MoE on a Gated DeltaNet model"
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.9.0",
+        "date": "2026-10-30"
+      }
     }
   ]
 }

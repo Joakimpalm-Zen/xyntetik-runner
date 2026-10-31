@@ -36,6 +36,15 @@ Current release and unreleased changes. Compatibility follows the
   level or inside `chat_template_kwargs` as `enable_thinking` is: `true`
   replays the thought of every assistant turn. Detected from the file's
   template, so a Qwen3.6 GGUF needs no flag.
+- **Qwen3.6-35B-A3B admitted at Tier 2 on the CPU; bartowski's Q4_K_M passes
+  the fidelity bar by a hair.** Against Qwen's BF16 parent with float32
+  arithmetic cast at use per decoder block (300 positions), the standard
+  Q4_K_M reads 0.0475 mean KLD and 97.2% margin-qualified top-1 (bars 0.05
+  and 97%); the Q8_0 reads 0.0349 and 99.1%, its error concentrated at two
+  positions another engine reproduces on the same file. The file carries
+  Qwen's NextN head, and `--mtp` drafts from it with output unchanged, but
+  slower than plain decoding on the CPU
+  (`docs/compat-reports/qwen3.6-35b-a3b-reference-2026-10-31/README.md`).
 - **The qwen35moe architecture on the CPU: Qwen3.5 and Qwen3.6-35B-A3B
   and the models built on them.** Qwen 3.5's Gated DeltaNet and gated
   attention with routed experts (softmax, top-k, renormalized) and a
