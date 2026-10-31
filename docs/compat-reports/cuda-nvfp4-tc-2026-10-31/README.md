@@ -51,3 +51,19 @@ batched GEMMs ran (solo scoring runs one row a forward and never reaches them; t
 8,106 scored positions each, 127 64-row forwards; the TC side counted 31,496 NVFP4 tensor-core GEMMs, the default
 side none. For the float32-reference comparison (gold-logits.py against Qwen/Qwen3.5-4B, side a the current route,
 side b the TC route).
+
+## The D1 row (2026-10-31)
+
+Both score files read against `Qwen/Qwen3.5-4B` at 851bf6e8, BF16 weights with float32 arithmetic cast at use, on
+the CPU, over 2,000 positions at stride 2 (`gold-logits-default-vs-tc.json`).
+
+| route | mean KLD | median | max | margin-qualified top-1 |
+|---|---|---|---|---|
+| default (scalar batched) | 0.23986 | 0.10407 | 8.18 | 88.54% |
+| `RUNNER_CUDA_TC_NVFP4=1` | 0.23979 | 0.10409 | 8.18 | 88.54% |
+
+The tensor-core route reads 0.9997x the current route's mean KL, inside D1's 1.01x. The paired Wilcoxon on
+per-position KL finds it closer (p 0.040; closer at 1,042 of 2,000 positions), McNemar on the 1,484 margin-qualified
+positions finds no discordant one, and no position differs by more than a nat between the two. It is no further from
+the publisher's float32 model than the route it replaces, which is what D1 asks before a default changes. The file's
+own distance from the reference (mean KLD 0.24) is NVFP4's, on both routes alike.
