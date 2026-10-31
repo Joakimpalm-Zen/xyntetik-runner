@@ -111,12 +111,12 @@ jobs:
             # works from the unpacked archive without a pip install
             # this step runs in the msys2 shell: PowerShell only through `powershell -Command`
             find python -name __pycache__ -type d -prune -exec rm -rf {} +
-            powershell -Command "Compress-Archive -Path '${{ matrix.artifact }}','BUILD-INFO.txt','README.md','MANUAL.md','LICENSE','python' -DestinationPath '${{ matrix.artifact }}.zip' -Force"
+            powershell -Command "Compress-Archive -Path '${{ matrix.artifact }}','BUILD-INFO.txt','README.md','MANUAL.md','LICENSE','NOTICE','LICENSES','python' -DestinationPath '${{ matrix.artifact }}.zip' -Force"
             ARCHIVE="${{ matrix.artifact }}.zip"
           else
             # python/src carries the stdlib-only client, so `runner --shadow-mode`
             # works from the unpacked archive without a pip install
-            tar --exclude='__pycache__' -czf "${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}" BUILD-INFO.txt README.md MANUAL.md LICENSE python/src python/README.md python/pyproject.toml
+            tar --exclude='__pycache__' -czf "${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}" BUILD-INFO.txt README.md MANUAL.md LICENSE NOTICE LICENSES python/src python/README.md python/pyproject.toml
             ARCHIVE="${{ matrix.artifact }}.tar.gz"
           fi
           # one checksum file per artifact; the release job concatenates them
@@ -149,6 +149,10 @@ jobs:
         # whichever form it downloaded
         run: |
           cat ./*.sha256 > SHA256SUMS
+          # the third-party notice published beside the raw binaries, under
+          # the names the release page shows (LICENSES/ is flattened there)
+          cp LICENSES/ggml-MIT.txt ggml-MIT.txt
+          sha256sum NOTICE ggml-MIT.txt >> SHA256SUMS
           cat SHA256SUMS
       - name: release notes from CHANGELOG
         # The release body is the CHANGELOG section for this version, not the
@@ -181,6 +185,8 @@ jobs:
             runner-linux-x86_64.tar.gz
             runner-macos-arm64.tar.gz
             runner-windows-x86_64.exe.zip
+            NOTICE
+            ggml-MIT.txt
             SHA256SUMS
 
   # CPU container image: the same binary on a distroless glibc base (Dockerfile

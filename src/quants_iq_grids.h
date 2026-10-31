@@ -1,6 +1,8 @@
 // i-quant codebook grids and sign tables, extracted VERBATIM from
 // llama.cpp b10353 ggml/src/ggml-common.h (MIT) by scripts note in
-// docs/model-evidence.md. Data, not code: do not edit.
+// docs/model-evidence.md. Data, not code: do not edit. Copyright (c)
+// 2023-2026 The ggml authors; the MIT notice is LICENSES/ggml-MIT.txt (see
+// NOTICE).
 #ifndef RUNNER_QUANTS_IQ_GRIDS_H
 #define RUNNER_QUANTS_IQ_GRIDS_H
 #include <stdint.h>

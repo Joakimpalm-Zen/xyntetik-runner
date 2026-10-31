@@ -34,7 +34,8 @@ static inline float softplus_f32(float x) {
     return x > 20.0f ? x : logf(1.0f + expf(x));
 }
 
-// xIELU (Apertus). Transcribed from ggml's op_xielu:
+// xIELU (Apertus). Transcribed from ggml's op_xielu (MIT, The ggml
+// authors; see NOTICE):
 //   x >  0 : alpha_p * x^2 + beta * x
 //   x <= 0 : (expm1(min(x, eps)) - x) * alpha_n + beta * x
 // `an` and `ap` are the EFFECTIVE parameters, already through the transform
