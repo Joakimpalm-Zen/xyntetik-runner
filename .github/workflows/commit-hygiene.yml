@@ -3,7 +3,8 @@ name: commit-hygiene
 # The mechanical half of AGENTS.md "Never publish conversation content or
 # session identifiers": every commit in a pull request, plus its title and
 # body, is scanned for session URLs and ids, e-mail addresses and
-# non-conforming Co-Authored-By trailers. No path filter: the rule applies to
+# non-conforming Co-Authored-By trailers, and every line the change adds to a
+# tracked file for host paths and machine or session names. No path filter: the rule applies to
 # a docs-only change exactly as much as to an engine change.
 on:
   pull_request:
@@ -20,8 +21,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - name: self-test the checker
-        run: python3 scripts/check-commit-hygiene.py --self-test
+      - name: self-test the checkers
+        run: |
+          python3 scripts/check-commit-hygiene.py --self-test
+          python3 scripts/check-content-hygiene.py --self-test
       - name: agent rule files are intact (AGENTS.md was shredded on 2026-10-06)
         run: |
           python3 scripts/check-agent-docs.py --self-test
@@ -43,3 +46,7 @@ jobs:
           echo "checking $range"
           python3 scripts/check-commit-hygiene.py --range "$range" \
             --text /tmp/pr-title.txt --text /tmp/pr-body.txt
+          # what the change adds to tracked files: no host paths, no machine
+          # or session names (a record PR's JSON carried the lab's paths on
+          # 2026-10-31; this read only messages)
+          python3 scripts/check-content-hygiene.py --range "$range"

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Local half of the publication rule for file content (AGENTS.md): refuse a
+# commit whose staged additions name a host path or a machine or session.
+# Installed by `make hooks`; CI runs the same check on every pull request.
+exec python3 "$(git rev-parse --show-toplevel)/scripts/check-content-hygiene.py" --staged
