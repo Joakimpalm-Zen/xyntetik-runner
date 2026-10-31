@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`RUNNER_MOE_REPLAY` pins MoE routing to a recorded trace on the CPU.**
+  A measurement switch, off by default: it reads a `RUNNER_MOE_TRACE` file
+  from an earlier run and forces the same expert choices at each recorded
+  position and layer, with this run's own routing weights, so two builds or
+  kernels compared under one replay differ only by their arithmetic. It
+  reports at exit how many choices it forced and how many differed from the
+  run's own and how many pairs the trace did not cover (a pinned reading
+  needs 0). A trace of another model, or one that records a (position,
+  layer) twice, is refused. Nothing changes without it.
+
 - **`--imatrix FILE` weights the rounding of q3_k and q4_0 rows.** A rewrite
   can now take an importance matrix (llama.cpp's GGUF or legacy `.dat`
   imatrix, so a published one serves as it is) and round each q3_k and q4_0

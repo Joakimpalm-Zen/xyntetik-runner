@@ -325,3 +325,19 @@ def test_upcast_at_use_takes_the_decoder_stack_not_the_longest_list():
     assert torch.equal(got, want), (got - want).abs().max().item()
     with pytest.raises(SystemExit):
         gold.upcast_at_use(Model(layers=3).to(torch.bfloat16))
+
+
+def test_large_disagreements_are_counted_per_side_with_a_one_sided_sign_test():
+    """R3.21.2's guard on an unpinned MoE run: positions whose KL differs by
+    more than a nat between the sides (the 6.c definition), who is worse at
+    them, and a one-sided sign test each way."""
+    def row(a, b):
+        return {"a": {"kld": a}, "b": {"kld": b}}
+    rows = [row(0.1, 2.0)] * 6 + [row(0.2, 0.3)] * 50 + [row(1.5, 0.4)]
+    ld = gold.large_disagreement(rows)
+    assert (ld["positions"], ld["a_worse"], ld["b_worse"]) == (7, 1, 6)
+    assert math.isclose(ld["p_b_worse"], 8 / 128)       # P(X >= 6 | 7)
+    assert math.isclose(ld["p_a_worse"], 1 - 1 / 128)   # P(X >= 1 | 7)
+    # the 6.c reading of A1 against A0: six large disagreements, all A1's
+    assert math.isclose(gold.sign_test_one_sided(6, 6), 1 / 64)
+    assert gold.large_disagreement([row(0.1, 0.2)])["p_b_worse"] == 1.0
