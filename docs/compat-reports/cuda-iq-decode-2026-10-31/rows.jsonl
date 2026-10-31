@@ -1,0 +1,40 @@
+{"file": "granite-4.2-3b-IQ3_S.gguf", "arm": "main", "round": 1, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 1886.801, "gen_tok_s": 90.375, "t": "2026-10-31T07:20:21+0100"}
+{"file": "granite-4.2-3b-IQ3_S.gguf", "arm": "branch", "round": 1, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 2010.198, "gen_tok_s": 96.3, "t": "2026-10-31T07:20:24+0100"}
+{"file": "granite-4.2-3b-IQ3_S.gguf", "arm": "main", "round": 2, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 1890.476, "gen_tok_s": 90.271, "t": "2026-10-31T07:20:26+0100"}
+{"file": "granite-4.2-3b-IQ3_S.gguf", "arm": "branch", "round": 2, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 2011.319, "gen_tok_s": 96.147, "t": "2026-10-31T07:20:29+0100"}
+{"file": "granite-4.2-3b-IQ3_S.gguf", "arm": "llama-b11748", "L": 512, "prefill": 5494.021098, "decode": 154.650326}
+{"file": "granite-4.2-3b-IQ3_XXS.gguf", "arm": "main", "round": 1, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 2198.723, "gen_tok_s": 89.318, "t": "2026-10-31T07:20:39+0100"}
+{"file": "granite-4.2-3b-IQ3_XXS.gguf", "arm": "branch", "round": 1, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 2230.861, "gen_tok_s": 101.72, "t": "2026-10-31T07:20:41+0100"}
+{"file": "granite-4.2-3b-IQ3_XXS.gguf", "arm": "main", "round": 2, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 2197.145, "gen_tok_s": 89.383, "t": "2026-10-31T07:20:44+0100"}
+{"file": "granite-4.2-3b-IQ3_XXS.gguf", "arm": "branch", "round": 2, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 2229.282, "gen_tok_s": 101.756, "t": "2026-10-31T07:20:47+0100"}
+{"file": "granite-4.2-3b-IQ3_XXS.gguf", "arm": "llama-b11748", "L": 512, "prefill": 5473.304487, "decode": 160.697813}
+{"file": "granite-4.2-3b-IQ2_XXS.gguf", "arm": "main", "round": 1, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 2139.898, "gen_tok_s": 48.407, "t": "2026-10-31T07:20:58+0100"}
+{"file": "granite-4.2-3b-IQ2_XXS.gguf", "arm": "branch", "round": 1, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 2594.136, "gen_tok_s": 104.432, "t": "2026-10-31T07:21:01+0100"}
+{"file": "granite-4.2-3b-IQ2_XXS.gguf", "arm": "main", "round": 2, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 2136.595, "gen_tok_s": 48.387, "t": "2026-10-31T07:21:04+0100"}
+{"file": "granite-4.2-3b-IQ2_XXS.gguf", "arm": "branch", "round": 2, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 2599.136, "gen_tok_s": 104.398, "t": "2026-10-31T07:21:07+0100"}
+{"file": "granite-4.2-3b-IQ2_XXS.gguf", "arm": "llama-b11748", "L": 512, "prefill": 5608.029261, "decode": 173.516817}
+{"file": "granite-4.2-3b-IQ1_M.gguf", "arm": "main", "round": 1, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 2467.601, "gen_tok_s": 64.787, "t": "2026-10-31T07:21:16+0100"}
+{"file": "granite-4.2-3b-IQ1_M.gguf", "arm": "branch", "round": 1, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 2513.675, "gen_tok_s": 68.571, "t": "2026-10-31T07:21:19+0100"}
+{"file": "granite-4.2-3b-IQ1_M.gguf", "arm": "main", "round": 2, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 2467.997, "gen_tok_s": 64.808, "t": "2026-10-31T07:21:22+0100"}
+{"file": "granite-4.2-3b-IQ1_M.gguf", "arm": "branch", "round": 2, "L": 512, "prompt_tokens": 512, "prompt_tok_s": 2513.126, "gen_tok_s": 68.588, "t": "2026-10-31T07:21:25+0100"}
+{"file": "granite-4.2-3b-IQ1_M.gguf", "arm": "llama-b11748", "L": 512, "prefill": 4553.336752, "decode": 176.645076}
+{"file": "granite-4.2-3b-IQ3_S.gguf", "arm": "main", "round": 1, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 1665.836, "gen_tok_s": 83.466, "t": "2026-10-31T07:22:56+0100"}
+{"file": "granite-4.2-3b-IQ3_S.gguf", "arm": "branch", "round": 1, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 1757.494, "gen_tok_s": 88.422, "t": "2026-10-31T07:23:00+0100"}
+{"file": "granite-4.2-3b-IQ3_S.gguf", "arm": "main", "round": 2, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 1666.531, "gen_tok_s": 83.401, "t": "2026-10-31T07:23:03+0100"}
+{"file": "granite-4.2-3b-IQ3_S.gguf", "arm": "branch", "round": 2, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 1756.597, "gen_tok_s": 88.465, "t": "2026-10-31T07:23:07+0100"}
+{"file": "granite-4.2-3b-IQ3_S.gguf", "arm": "llama-b11748", "L": 2048, "prefill": 5323.524198, "decode": 145.920806}
+{"file": "granite-4.2-3b-IQ3_XXS.gguf", "arm": "main", "round": 1, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 1901.474, "gen_tok_s": 82.687, "t": "2026-10-31T07:23:20+0100"}
+{"file": "granite-4.2-3b-IQ3_XXS.gguf", "arm": "branch", "round": 1, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 1930.762, "gen_tok_s": 93.448, "t": "2026-10-31T07:23:24+0100"}
+{"file": "granite-4.2-3b-IQ3_XXS.gguf", "arm": "main", "round": 2, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 1902.802, "gen_tok_s": 82.511, "t": "2026-10-31T07:23:27+0100"}
+{"file": "granite-4.2-3b-IQ3_XXS.gguf", "arm": "branch", "round": 2, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 1929.361, "gen_tok_s": 93.26, "t": "2026-10-31T07:23:31+0100"}
+{"file": "granite-4.2-3b-IQ3_XXS.gguf", "arm": "llama-b11748", "L": 2048, "prefill": 5314.566355, "decode": 151.907113}
+{"file": "granite-4.2-3b-IQ2_XXS.gguf", "arm": "main", "round": 1, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 1859.577, "gen_tok_s": 46.406, "t": "2026-10-31T07:23:46+0100"}
+{"file": "granite-4.2-3b-IQ2_XXS.gguf", "arm": "branch", "round": 1, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 2191.679, "gen_tok_s": 95.693, "t": "2026-10-31T07:23:49+0100"}
+{"file": "granite-4.2-3b-IQ2_XXS.gguf", "arm": "main", "round": 2, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 1859.37, "gen_tok_s": 46.394, "t": "2026-10-31T07:23:53+0100"}
+{"file": "granite-4.2-3b-IQ2_XXS.gguf", "arm": "branch", "round": 2, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 2193.049, "gen_tok_s": 95.804, "t": "2026-10-31T07:23:57+0100"}
+{"file": "granite-4.2-3b-IQ2_XXS.gguf", "arm": "llama-b11748", "L": 2048, "prefill": 5417.943571, "decode": 162.426474}
+{"file": "granite-4.2-3b-IQ1_M.gguf", "arm": "main", "round": 1, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 2102.173, "gen_tok_s": 61.155, "t": "2026-10-31T07:24:09+0100"}
+{"file": "granite-4.2-3b-IQ1_M.gguf", "arm": "branch", "round": 1, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 2134.716, "gen_tok_s": 64.608, "t": "2026-10-31T07:24:13+0100"}
+{"file": "granite-4.2-3b-IQ1_M.gguf", "arm": "main", "round": 2, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 2099.936, "gen_tok_s": 61.156, "t": "2026-10-31T07:24:17+0100"}
+{"file": "granite-4.2-3b-IQ1_M.gguf", "arm": "branch", "round": 2, "L": 2048, "prompt_tokens": 2048, "prompt_tok_s": 2135.593, "gen_tok_s": 64.575, "t": "2026-10-31T07:24:21+0100"}
+{"file": "granite-4.2-3b-IQ1_M.gguf", "arm": "llama-b11748", "L": 2048, "prefill": 4459.052753, "decode": 165.30929}

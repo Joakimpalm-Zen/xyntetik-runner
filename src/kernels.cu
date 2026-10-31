@@ -2726,6 +2726,7 @@ static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const floa
     if (row0 >= (unsigned)a.n_out) return; \
     int nb = a.n_in / 256; \
     float acc[IQ_ROWS] = {0}; \
+    _Pragma("unroll 4") \
     for (int b = 0; b < nb; b++) { \
         _Pragma("unroll") \
         for (int r = 0; r < IQ_ROWS; r++) \
