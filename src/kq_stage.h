@@ -142,4 +142,46 @@ IQ_FN void q51_stage32(iq_stage_t *dst, const iq_byte *blk) {
     }
 }
 
+// ------------------------------------------ NVFP4, a 64-element block
+// 36-byte block: four UE4M3 scale bytes (one per 16 elements), then 32 bytes
+// of E2M1 codes; within sub-block s, byte j's low nibble is element j and its
+// high nibble element j + 8 (llama.cpp block_nvfp4): dq_nvfp4. The scale and
+// the code values are built from their bits, the same on both sides, so the
+// staged floats equal ue4m3_to_fp32() and kvalues_mxfp4[] exactly.
+IQ_FN float kq_f32_bits(unsigned b) {
+#if defined(__CUDACC__)
+    return __int_as_float((int)b);
+#else
+    float f;
+    memcpy(&f, &b, sizeof f);
+    return f;
+#endif
+}
+// ue4m3_to_fp32 (quants.c): bits 3..6 the exponent, bits 0..2 the mantissa,
+// bit 7 ignored, 0 and 0x7F zero
+IQ_FN float kq_ue4m3(unsigned x) {
+    x &= 0xFF;
+    if (x == 0 || x == 0x7F) return 0.0f;
+    unsigned e = (x >> 3) & 0xF, man = x & 7;
+    if (e == 0) return (float)man * (1.0f / 512.0f);     // man * 2^-9, exact
+    return kq_f32_bits(((e + 120u) << 23) | (man << 20));  // (1 + man/8) * 2^(e-7)
+}
+// kvalues_mxfp4[q]: {0, .5, 1, 1.5, 2, 3, 4, 6}, negated for q >= 8 except
+// that entry 8 is +0
+IQ_FN float kq_e2m1(unsigned q) {
+    unsigned m = q & 7;
+    float v = m < 4 ? 0.5f * (float)m : m == 4 ? 2.0f : m == 5 ? 3.0f : m == 6 ? 4.0f : 6.0f;
+    return (q & 8) && m ? -v : v;
+}
+IQ_FN void nvfp4_stage64(iq_stage_t *dst, const iq_byte *blk) {
+    for (int s = 0; s < 4; s++) {
+        float d = kq_ue4m3(blk[s]);
+        const iq_byte *q = blk + 4 + 8 * s;
+        for (int j = 0; j < 8; j++) {
+            IQ_STORE(dst, 16 * s + j, kq_e2m1(q[j] & 0xF) * d);
+            IQ_STORE(dst, 16 * s + j + 8, kq_e2m1(q[j] >> 4) * d);
+        }
+    }
+}
+
 #endif // RUNNER_KQ_STAGE_H

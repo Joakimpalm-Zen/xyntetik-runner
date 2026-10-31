@@ -1836,7 +1836,16 @@ the k-quant ones included, stages its token columns scaled to fp16's range
 because real activations exceed it (Phi-4-mini's reach 1.6e5); `make
 test-tc-overflow` holds that. Per-type dispatch counts and every row in
 `docs/cuda-iq-tensorcore-2026-09-14.md`. Their single-token decode stays
-on the generic matvec.
+on the generic matvec. NVFP4 has a tensor-core kernel too (since 2026-10-31;
+Ampere has no FP4 tensor cores, so it dequantizes each block to fp16, by a
+decoder equal to the CPU's bit for bit), but it is **opt-in** until its
+float32-reference row is in: `RUNNER_CUDA_TC_NVFP4=1` turns it on for
+NVFP4 tensors alone and leaves every other type on its route, and the route
+line reads `tc=promoted+nvfp4`. `RUNNER_CUDA_TC=1` forces the tensor-core
+route for every type that has a kernel, NVFP4 among them, including the
+types not promoted by default. Without either, NVFP4 prefill runs on the
+scalar batched kernel (qwen3.5-4b NVFP4 on an RTX 3070: 22 tok/s, against
+1,170 with the switch).
 
 On Metal that now covers **decode as well as prefill**: the cooperative KV
 attention read was promoted on 2026-08-17 after clearing zero teacher-forced

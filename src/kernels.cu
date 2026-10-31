@@ -3086,6 +3086,8 @@ TC_GEMM_BLK_X(k_gemm_q2_K_tc, tc_stage_q2_K, 84, 256, 1)
 TC_GEMM_BLK_X(k_gemm_q4_1_tc, tc_stage_q4_1, 20, 32, 1)
 TC_GEMM_BLK_X(k_gemm_q5_0_tc, tc_stage_q5_0, 22, 32, 1)
 TC_GEMM_BLK_X(k_gemm_q5_1_tc, tc_stage_q5_1, 24, 32, 1)
+// NVFP4 (R4.9.5): the dequantizing route; Ampere has no FP4 tensor cores
+TC_GEMM_BLK_X(k_gemm_nvfp4_tc, tc_stage_nvfp4, 36, 64, 1)
 
 // MXFP4 (gpt-oss expert tensors): 17-byte block = one E8M0 scale byte (a
 // biased power-of-two exponent, 2^(e-127), NOT an fp16) + 32 packed E2M1
@@ -7015,6 +7017,7 @@ G2_KERNEL(k_gemm2_q2_K, G2Q2K)
 G2_KERNEL(k_gemm2_q4_1, G2Q41)
 G2_KERNEL(k_gemm2_q5_0, G2Q50)
 G2_KERNEL(k_gemm2_q5_1, G2Q51)
+G2_KERNEL(k_gemm2_nvfp4, G2NV4)
 
 // --------------------------------------- tensor-core prefill attention (C2)
 // C2 step 2 (RUNNER_CUDA_ATTN_TC, tile_attn in cuda.c): k_attn_tile's two

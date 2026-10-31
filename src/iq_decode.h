@@ -89,15 +89,6 @@ IQ_FN float iq_u8f(unsigned b) {
     return (float)(b & 0xFF);
 #endif
 }
-// a byte read as a signed char, as a float, exactly (2^23 + 128 offset)
-IQ_FN float iq_s8f(unsigned b) {
-#if defined(__CUDACC__)
-    return __int_as_float(0x4B000000 | ((b ^ 0x80) & 0xFF)) - 8388736.0f;
-#else
-    return (float)(signed char)(b & 0xFF);
-#endif
-}
-
 // weight j of an 8-magnitude grid entry (byte j), negated by sign bit j
 IQ_FN float iq_w8(iq_u64 grid, int j, unsigned signs) {
     float mag = iq_u8f((unsigned)(grid >> (8 * j)));
@@ -112,7 +103,7 @@ IQ_FN float iq_w4(unsigned grid, int j, unsigned signs) {
 
 // IQ1 grid bytes are signed (-1/0/1) and carry a per-index delta. Kept as an
 // I2F: the IQ1 GEMVs keep the FP32 pipe busy, and moving the conversion onto
-// it (iq_s8f) measured slower (granite-4.2-3b IQ1_M, 69.5 -> 64.5 tok/s)
+// it measured slower (granite-4.2-3b IQ1_M, 69.5 -> 64.5 tok/s)
 IQ_FN float iq1_w(iq_u64 grid, int j, float delta) {
     return (float)(signed char)((unsigned)(grid >> (8 * j)) & 0xFF) + delta;
 }

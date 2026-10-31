@@ -9,4 +9,5 @@ G2_DIRECT(G2Q2K, tc_stage_q2_K, 84, 256)
 G2_DIRECT(G2Q41, tc_stage_q4_1, 20, 32)
 G2_DIRECT(G2Q50, tc_stage_q5_0, 22, 32)
 G2_DIRECT(G2Q51, tc_stage_q5_1, 24, 32)
+G2_DIRECT(G2NV4, tc_stage_nvfp4, 36, 64)
 #endif // RUNNER_KERNELS_TC2_KQ_CUH
