@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A guide to measuring a quantized file against its publisher's
+  reference** (`docs/measure-a-quantized-file.md`), for anyone who publishes
+  GGUF quantizations: the publisher's checkpoint in float32 as the
+  reference, one `--score` pass per file, `scripts/gold-logits.py` for mean
+  KL and margin-qualified top-1 with a paired test between two files, and
+  the instrument's own floor stated first (BF16 files of 11 of 12 models
+  read 2.7e-5 to 2.4e-4 mean KL against their float32 references).
+
 - **An example snapshot test for a model's output.**
   `examples/deterministic-ci/` replays a committed `--record` of a greedy
   completion with a pinned Runner release and a pinned model file (both
