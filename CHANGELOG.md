@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Codebook i-quant decode on CUDA: IQ2_XXS twice as fast, IQ3 6 to 14%
+  faster.** The batch-1 IQ2 GEMVs converted each grid byte to float while it
+  was a 64-bit integer, which the GPU runs as I2F.U64 on a slow pipe:
+  granite-4.2-3b IQ2_XXS decoded at 48 tok/s on the RTX 3070 against 90 at
+  IQ3_S. A byte now becomes a float exactly through the mantissa of 2^23 (two
+  full-rate instructions, the same float), and the lane GEMVs keep four
+  blocks of loads in flight. IQ2_XXS decodes at 104 tok/s (60% of llama.cpp,
+  from 28%), IQ3_XXS at 102 (63%, from 56%), IQ3_S at 96 (62%, from 58%), and
+  prefill gains up to 21%; output is byte-identical. IQ1_M (39%) keeps a
+  one-lane-a-block layout whose fix changes the reduction order
+  (`docs/compat-reports/cuda-iq-decode-2026-10-31/README.md`).
 - **`--draft mtp` on CUDA is documented as such.** The NextN head has run on
   the device with the whole trunk offloaded since 2026-10-07, and the verify
   walk is target-exact there, but `--help` still called it the CPU path. On
