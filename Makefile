@@ -309,6 +309,15 @@ QUANTS_CFLAGS = $(filter-out -ffast-math,$(CFLAGS)) -fno-fast-math
 # tipping ~1-code-per-block differences vs ggml on identical input while the
 # fp16 block scale still matched. Build it fast-math-free, like quants.o.
 QUANTIZE_OBJ = $(OBJDIR)/quantize.o
+# ... and without floating-point contraction. A compiler that fuses a
+# multiply and an add into one FMA rounds once where ggml's reference rounds
+# twice; clang does that by default (and GCC more), and on a real BF16 tensor
+# it moved 88 of 27,648 q4_0 blocks, 34 of 3,456 q4_k and 8 of 3,456 q6_k
+# super-blocks off ggml's bytes by one rounding step. Uncontracted, every
+# writer is byte-identical to ggml's own built the same way, on every
+# compiler; test_quantize's ggml golden pins it. The object depends on this
+# Makefile so a change of these flags rebuilds it.
+QUANTIZE_CFLAGS = $(QUANTS_CFLAGS) -ffp-contract=off
 
 # These used to carry FORCE (rebuild on every invocation) because the
 # requested CC/CFLAGS were not encoded anywhere, and reusing a native
@@ -327,9 +336,9 @@ $(QUANTS_OBJ): src/quants.c $(HDR)
 	mkdir -p $(dir $@)
 	$(CC) $(QUANTS_CFLAGS) -I src -c src/quants.c -o $@
 
-$(QUANTIZE_OBJ): src/quantize.c $(HDR)
+$(QUANTIZE_OBJ): src/quantize.c $(HDR) Makefile
 	mkdir -p $(dir $@)
-	$(CC) $(QUANTS_CFLAGS) -I src -c src/quantize.c -o $@
+	$(CC) $(QUANTIZE_CFLAGS) -I src -c src/quantize.c -o $@
 
 # ---------------------------------------------------------------- object layer
 # Every test binary used to recompile the engine from source (model.c alone

@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The quantizer's q4_0, q4_k and q6_k output is now byte-identical to
+  ggml's reference.** NOTICE said it already was; on a real BF16 tensor it
+  was not: clang fused multiply-adds in the quantizer (ggml's reference
+  rounds twice where an FMA rounds once), moving 88 of 27,648 q4_0 blocks,
+  34 of 3,456 q4_k and 8 of 3,456 q6_k super-blocks by one rounding step.
+  The quantizer is now built with `-ffp-contract=off`, and all six writers
+  (q8_0, q4_0, q3_k, q4_k, q6_k, mxfp4) match ggml b10353 built the same way,
+  pinned on that tensor in `test_quantize`. A file written by an earlier
+  build may differ from one written now in about 1% of those blocks. ggml's
+  own Q4_K and Q6_K bytes depend on contraction too, so a llama.cpp build
+  that fuses multiply-adds differs from both by the same margin.
+
 - **`RUNNER_MOE_REPLAY` pins MoE routing to a recorded trace on the CPU.**
   A measurement switch, off by default: it reads a `RUNNER_MOE_TRACE` file
   from an earlier run and forces the same expert choices at each recorded

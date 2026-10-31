@@ -445,6 +445,59 @@ static double weighted_err(const char *path, const char *name, const float *x,
     return e;
 }
 
+// The reference writers against ggml's own on a real tensor: 16 rows of a
+// published BF16 weight (tests/fixtures/quant-golden, README there), written
+// by each writer and compared byte for byte with what ggml b10353's writers
+// emit for the same rows, compiled without floating-point contraction. The
+// rows are ones a build that fuses multiply-adds writes differently for q4_0,
+// q4_k and q6_k, which is why quantize.o is compiled -ffp-contract=off.
+static void check_ggml_golden(void) {
+    enum { ROWS = 16, COLS = 1536, N = ROWS * COLS };
+    const char *dir = "tests/fixtures/quant-golden/";
+    char path[256];
+    snprintf(path, sizeof path, "%ssmollm2-135m-l0-ffn_down-16rows.bf16", dir);
+    FILE *f = fopen(path, "rb");
+    assert(f);
+    static uint16_t bf[N];
+    static float x[N];
+    assert(fread(bf, 2, N, f) == N);
+    fclose(f);
+    for (int i = 0; i < N; i++) {
+        uint32_t u = (uint32_t)bf[i] << 16;
+        memcpy(&x[i], &u, 4);
+    }
+    static const struct { const char *name; int type; } T[] = {
+        { "q8_0", T_Q8_0 }, { "q4_0", T_Q4_0 }, { "q3_k", T_Q3_K },
+        { "q4_k", T_Q4_K }, { "q6_k", T_Q6_K }, { "mxfp4", T_MXFP4 },
+    };
+    const char *in = "q_golden_in.gguf", *out = "q_golden_out.gguf";
+    tdesc ts[1] = { { "blk.0.ffn_down.weight", {COLS, ROWS}, 2, x, N, T_F32 } };
+    write_gguf(in, ts, 1, 0);
+    for (size_t k = 0; k < sizeof T / sizeof T[0]; k++) {
+        assert(quantize_gguf(in, out, T[k].type, NULL) == 0);
+        size_t n;
+        unsigned char *mine = slurp_tensor(out, "blk.0.ffn_down.weight", &n);
+        snprintf(path, sizeof path, "%sggml-b10353-%s.bin", dir, T[k].name);
+        f = fopen(path, "rb");
+        assert(f);
+        unsigned char *ref = malloc(n + 1);
+        size_t got = fread(ref, 1, n + 1, f);
+        fclose(f);
+        size_t first = 0;
+        while (first < n && first < got && mine[first] == ref[first]) first++;
+        if (got != n || first != n) {
+            fprintf(stderr, "FAIL: %s writer differs from ggml b10353 at byte %zu of %zu "
+                    "(ggml file %zu bytes); is quantize.o built with -ffp-contract=off?\n",
+                    T[k].name, first, n, got);
+            assert(0);
+        }
+        free(mine); free(ref);
+    }
+    remove(in); remove(out);
+    printf("ok: q8_0, q4_0, q3_k, q4_k, q6_k and mxfp4 writers are byte-identical to ggml "
+           "b10353 on a real tensor\n");
+}
+
 int main(void) {
     f16_init();   // dequant_row's scale lookup table (unused by the quantizer
                   // itself, but the round-trip check below dequantizes)
@@ -1040,6 +1093,7 @@ int main(void) {
     printf("ok: failed install left the destination untouched\n");
 
     check_mxfp4_dequant();
+    check_ggml_golden();
 
     remove(in); remove(out); remove(inplace); remove(dest); remove(bad);
     printf("all quantize tests passed\n");
