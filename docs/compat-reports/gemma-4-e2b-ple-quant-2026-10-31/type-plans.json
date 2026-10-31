@@ -1,0 +1,47 @@
+{
+ "p8-r8": {
+  "default": "q8_0",
+  "rules": [
+   {
+    "match": "per_layer_token_embd",
+    "type": "q8_0"
+   }
+  ]
+ },
+ "p4k-r8": {
+  "default": "q8_0",
+  "rules": [
+   {
+    "match": "per_layer_token_embd",
+    "type": "q4_k"
+   }
+  ]
+ },
+ "p40-r8": {
+  "default": "q8_0",
+  "rules": [
+   {
+    "match": "per_layer_token_embd",
+    "type": "q4_0"
+   }
+  ]
+ },
+ "p8-r4k": {
+  "default": "q4_k",
+  "rules": [
+   {
+    "match": "per_layer_token_embd",
+    "type": "q8_0"
+   }
+  ]
+ },
+ "p4k-r4k": {
+  "default": "q4_k",
+  "rules": [
+   {
+    "match": "per_layer_token_embd",
+    "type": "q4_k"
+   }
+  ]
+ }
+}

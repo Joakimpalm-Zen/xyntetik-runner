@@ -1168,6 +1168,12 @@ rather than two-thirds bf16; a row no type can describe is kept as is. MoE route
 (`ffn_gate_inp*`) keep their source type on every path, including a
 `--type-plan` that names them: the router selects which expert runs, so an
 error there swaps a whole FFN, and it is a fraction of a percent of the file.
+Gemma 4's per-layer embedding table (`per_layer_token_embd`, about half of an
+E-series checkpoint) has no special case: it takes the target like any 2-D
+weight. Measured on E2B against Google's float32 reference, the table at Q4_K
+instead of Q8_0 adds 0.004 mean KLD and no margin-qualified top-1, for a file
+almost a quarter smaller; a plan that wants it at Q8_0 names it
+(`docs/compat-reports/gemma-4-e2b-ple-quant-2026-10-31/`).
 Metadata is copied.
 
 A `q4_0` repack is **lossless where the source is already on the q4_0 grid**,
