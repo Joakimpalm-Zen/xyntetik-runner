@@ -1,0 +1,33 @@
+Xyntetik Runner
+Licensed under the Apache License, Version 2.0 (LICENSE).
+
+Third-party code
+================
+
+Parts of this software are ported from ggml and llama.cpp
+(https://github.com/ggml-org/llama.cpp), MIT License,
+Copyright (c) 2023-2026 The ggml authors. The full notice is
+LICENSES/ggml-MIT.txt, copied verbatim from llama.cpp's LICENSE at tag
+b10353 (f8def7fe168bab245fbf15d3f18b26dbb1ef73c8). The ported parts:
+
+- src/quants_iq_grids.h: the i-quant codebook grids and sign tables,
+  verbatim from ggml/src/ggml-common.h (b10353).
+- src/quants.c: the GGUF block layouts, the i-quant dequantizers
+  (dequantize_row_iq*, ggml-quants.c b10353) and the UE4M3 scale conversion
+  (ggml_ue4m3_to_fp32).
+- src/quantize.c: the reference quantizers whose output is byte-identical
+  to ggml's: Q8_0, Q4_0, Q3_K, Q4_K and Q6_K, with ggml's make_qx_quants and
+  make_qkx2_quants; and, where present, the importance-weighted Q3_K and Q4_0
+  quantizers (quantize_row_q3_K_impl, quantize_row_q4_0_impl) and the MXFP4
+  writer (quantize_row_mxfp4_ref).
+- src/model.h: the xIELU activation, transcribed from ggml's op_xielu.
+
+Several architectures are implemented to match llama.cpp's graph for them
+(gpt-oss, afmoe, muse-glimmer, gemma4's per-layer embeddings, swiglu_oai);
+the comments at those places name the llama.cpp source they were checked
+against. Those are independent C implementations of the same arithmetic,
+not copies of llama.cpp code.
+
+src/ed25519.c (TweetNaCl, public domain) and src/mldsa/ (pq-crystals
+dilithium, public domain / CC0, also Apache 2.0) are described in README.md,
+"License".

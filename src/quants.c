@@ -264,7 +264,8 @@ static void dq_mxfp4(const block_mxfp4 *b, float *y) {
     }
 }
 
-// UE4M3 sub-block scale, verbatim llama.cpp ggml_ue4m3_to_fp32 EXCEPT the
+// UE4M3 sub-block scale (MIT, The ggml authors; see NOTICE), verbatim
+// llama.cpp ggml_ue4m3_to_fp32 EXCEPT the
 // trailing *0.5f: upstream pairs that halving with its doubled-integer E2M1
 // table, and kvalues_mxfp4 above is already the halved float table, so the
 // two conventions meet at identical values by dropping both factors.
@@ -469,7 +470,8 @@ static void dq_iq4_xs(const block_iq4_xs *b, float *y) {
 // ------------------------------------------------- codebook i-quant dequant
 // Transcribed per-block from llama.cpp b10353 ggml-quants.c
 // dequantize_row_iq* (the outer nb loop lives in dequant_row here); the
-// codebook grids and sign tables are in quants_iq_grids.h, verbatim.
+// codebook grids and sign tables are in quants_iq_grids.h, verbatim. MIT,
+// The ggml authors: LICENSES/ggml-MIT.txt (see NOTICE).
 
 static void dq_iq2_xxs(const block_iq2_xxs *b, float *y) {
     float d = f16_to_f32(b->d);

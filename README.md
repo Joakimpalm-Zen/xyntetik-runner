@@ -499,9 +499,13 @@ log. [SECURITY.md](SECURITY.md) has the threat model and
 
 ## License
 
-[Apache 2.0](LICENSE)
+[Apache 2.0](LICENSE).
 
-Third-party code: `src/ed25519.c` is the signing subset of TweetNaCl
+Third-party code: the GGUF block layouts, the i-quant grids and dequantizers,
+the reference and importance-weighted quantizers and the xIELU activation are
+ported from ggml and llama.cpp under the MIT License; [NOTICE](NOTICE) lists
+them file by file, and the MIT notice is
+[LICENSES/ggml-MIT.txt](LICENSES/ggml-MIT.txt). `src/ed25519.c` is the signing subset of TweetNaCl
 (Bernstein, van Gastel, Janssen, Lange, Schwabe, Smetsers), placed in the
 public domain by its authors; the file header records what was kept and what
 was changed. `src/mldsa/` is the ML-DSA-44 (FIPS 204) reference implementation

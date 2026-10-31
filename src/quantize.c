@@ -25,6 +25,11 @@
 #endif
 
 // ---------------------------------------------------------------- rows
+// The reference quantizers below (Q8_0, Q4_0, Q3_K, Q4_K, Q6_K, and the
+// make_qx_quants / make_qkx2_quants searches) are ports of ggml's
+// ggml-quants.c, kept byte-identical to it: MIT, Copyright (c) 2023-2026 The
+// ggml authors; the notice is LICENSES/ggml-MIT.txt (see NOTICE).
+
 // ------------------------------------------------ IEEE subnormals for quant
 // ggml computes quant block scales with IEEE subnormals (it is built without
 // -ffast-math). The runner engine links crtfastmath.o (-ffast-math), which
