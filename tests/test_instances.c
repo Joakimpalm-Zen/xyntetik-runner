@@ -13,11 +13,13 @@
 #ifdef _WIN32
 #include <process.h>
 #include <direct.h>
+#include <sys/utime.h>
 #define getpid _getpid
 #define setenv_compat(k, v) _putenv_s(k, v)
 #else
 #include <sys/wait.h>
 #include <unistd.h>
+#include <utime.h>
 #define setenv_compat(k, v) setenv(k, v, 1)
 #endif
 
@@ -56,6 +58,20 @@ static void write_lease_record(const char *path, long pid, const char *start,
         fprintf(o, "{\"owner_pid\": %ld, \"owner_start\": null, \"token\": \"%s\"}",
                 pid, token);
     fclose(o);
+}
+
+// the lease record's mtime set to `stamp`, as test_tray_core pins a file's
+static void pin_lease_mtime(const char *path, time_t stamp) {
+    char f[1300];
+#ifdef _WIN32
+    snprintf(f, sizeof f, "%s\\owner.json", path);
+    struct __utimbuf64 t = { (__time64_t)stamp, (__time64_t)stamp };
+    _utime64(f, &t);
+#else
+    snprintf(f, sizeof f, "%s/owner.json", path);
+    struct utimbuf t = { stamp, stamp };
+    utime(f, &t);
+#endif
 }
 
 // Helper modes for tests/test_lease_interop.py, which holds this C lease
@@ -305,6 +321,17 @@ int main(int argc, char **argv) {
         CHECK(!runner_lease_acquire(&a, lp), "a fresh unverifiable record is honoured");
         setenv_compat("RUNNER_UNVERIFIED_LEASE_TTL", "0");
         CHECK(runner_lease_acquire(&a, lp), "an unverifiable record ages out");
+        setenv_compat("RUNNER_UNVERIFIED_LEASE_TTL", "900");
+        runner_lease_release(&a);
+        // a record whose mtime reads ahead of the clock is no fresher than
+        // one written now. Linux can stamp a file finer than the coarse
+        // clock time() reads, so a record written this instant can read a
+        // second ahead: its age came out -1, below a TTL of 0, and the
+        // record was honoured (a CI flake, 2026-10-31)
+        write_lease_record(lp, (long)getpid(), NULL, "t3");
+        pin_lease_mtime(lp, time(NULL) + 1);
+        setenv_compat("RUNNER_UNVERIFIED_LEASE_TTL", "0");
+        CHECK(runner_lease_acquire(&a, lp), "a record dated ahead of the clock ages out");
         setenv_compat("RUNNER_UNVERIFIED_LEASE_TTL", "900");
         runner_lease_release(&a);
 

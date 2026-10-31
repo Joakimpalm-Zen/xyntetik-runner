@@ -605,7 +605,12 @@ static bool lease_unverified_fresh(const lease_rec *r) {
     plat_stat_t st;
     if (!r->source[0] || plat_stat(r->source, &st) != 0) return false;
     double ttl = env_f64("RUNNER_UNVERIFIED_LEASE_TTL", 0, 1e12, LEASE_TTL_DEFAULT);
-    return difftime(time(NULL), st.st_mtime) < ttl;
+    // an mtime ahead of time() is age 0, not negative: Linux can stamp a
+    // file finer than the coarse clock time() reads, so a record written
+    // this instant can read a second ahead, and -1 < 0 kept a record fresh
+    // under a TTL of 0
+    double age = difftime(time(NULL), st.st_mtime);
+    return (age > 0 ? age : 0) < ttl;
 }
 
 static bool lease_still_owned(const lease_rec *r) {
