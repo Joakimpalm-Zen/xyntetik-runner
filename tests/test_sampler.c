@@ -482,7 +482,7 @@ static void test_constrained_pick_ranks_a_prefix(void) {
     for (unsigned seed = 1; seed <= 40; seed++) {
         peaked_logits(base, V, seed);
         sampler a = { .temp = 0.8f, .top_p = 0.95f, .min_p = 0.05f,
-                      .repeat_penalty = 1.0f, .top_k = 40, .rng = seed };
+                      .repeat_penalty = 1.0f, .top_k = 40, .rng = sampler_seed_state(seed) };
         sampler b = a;
         memcpy(x, base, sizeof(float) * V);
         int free_pick = sample_pick(&a, x, V, NULL, NULL);
@@ -495,7 +495,7 @@ static void test_constrained_pick_ranks_a_prefix(void) {
 
         // top-k off: the likely tokens carry the mass, one prefix settles it
         sampler c = { .temp = 0.8f, .top_p = 0.9f, .repeat_penalty = 1.0f,
-                      .rng = seed };
+                      .rng = sampler_seed_state(seed) };
         memcpy(x, base, sizeof(float) * V);
         ok_calls = 0;
         int open_pick = sample_pick(&c, x, V, admit_all, NULL);
@@ -513,7 +513,7 @@ static void test_constrained_pick_ranks_a_prefix(void) {
     }
     for (unsigned seed = 1; seed <= 20; seed++) {
         sampler a = { .temp = 0.8f, .top_p = 0.95f, .repeat_penalty = 1.0f,
-                      .top_k = 40, .rng = seed };
+                      .top_k = 40, .rng = sampler_seed_state(seed) };
         sampler b = a;
         memcpy(x, base, sizeof(float) * V);
         int got = sample_pick(&a, x, V, refuse_marked, mark);
@@ -530,6 +530,61 @@ static void test_constrained_pick_ranks_a_prefix(void) {
         assert(first == best);
     }
     free(base); free(x); free(mark);
+}
+
+// A sparse grammar state (an enum member, a key): fewer than top_k entries of
+// the vocabulary are valid, so the ranking runs out of prefixes and the rest
+// of the vocabulary is scanned once instead of sorted (R3.23). Valid entries
+// sit both inside the sorted prefixes (ranks 300 to 2,000) and below them,
+// and the pick must equal the one over a vocabulary where the invalid entries
+// were never likely, with every entry asked about at most once: once with
+// fewer valid entries than top_k, once with far more (the scan's ranking then
+// decides which of them are the top_k).
+static const float *rank_base;
+static int by_logit_desc(const void *a, const void *b) {
+    float x = rank_base[*(const int *)a], y = rank_base[*(const int *)b];
+    return x < y ? 1 : x > y ? -1 : *(const int *)a - *(const int *)b;
+}
+
+static void test_sparse_filter_is_scanned_once(void) {
+    enum { V = 50000 };
+    float *base = malloc(sizeof(float) * V), *x = malloc(sizeof(float) * V);
+    int *rank = malloc(sizeof(int) * V);
+    unsigned char *refuse = malloc(V);
+    assert(base && x && rank && refuse);
+    peaked_logits(base, V, 91);
+    for (int i = 0; i < V; i++) rank[i] = i;
+    rank_base = base;
+    qsort(rank, V, sizeof(int), by_logit_desc);   // rank[r] = id at rank r
+    int picks[64] = {0};
+    for (int below = 20; below <= 1000; below += 980) {
+        memset(refuse, 1, V);
+        for (int j = 0; j < 5; j++) refuse[rank[300 + 337 * j]] = 0;       // inside the prefixes
+        for (int j = 0; j < below; j++) refuse[rank[2048 + 7 + 47 * j]] = 0;   // only the scan finds these
+        for (unsigned seed = 1; seed <= 30; seed++) {
+            // the seed is mixed as every caller's is: a raw small state draws
+            // near 0 and always takes the first candidate, where the order
+            // below it would never be seen
+            sampler a = { .temp = 0.8f, .top_p = 0.95f, .repeat_penalty = 1.0f,
+                          .top_k = 40, .rng = sampler_seed_state(seed) };
+            sampler b = a;
+            memcpy(x, base, sizeof(float) * V);
+            ok_calls = 0;
+            int got = sample_pick(&a, x, V, refuse_marked, refuse);
+            picks[got % 64]++;
+            assert(ok_calls <= V);                    // no entry asked twice
+            for (int i = 0; i < V; i++) x[i] = refuse[i] ? -1e30f : base[i];
+            int want = sample_pick(&b, x, V, NULL, NULL);
+            assert(got == want && !refuse[got]);
+            assert(a.rng == b.rng);
+        }
+    }
+    int distinct = 0;
+    for (int i = 0; i < 64; i++) distinct += picks[i] > 0;
+    assert(distinct >= 10);   // the picks spread, so the order is exercised
+    free(base); free(x); free(rank); free(refuse);
+    printf("ok: a sparse filter's pick is unchanged and each entry is asked once "
+           "(%d distinct pick buckets)\n", distinct);
 }
 
 // Greedy returns the FIRST index holding the greatest logit, as the single
@@ -659,6 +714,7 @@ int main(void) {
     test_no_filter_sampling_is_deterministic_and_unbiased();
     test_topk_selection_is_linear_on_ranked_input();
     test_constrained_pick_ranks_a_prefix();
+    test_sparse_filter_is_scanned_once();
     test_greedy_takes_the_first_of_equal_maxima();
     test_seed_is_mixed_before_it_seeds_the_sampler();
     puts("sampler tests ok");

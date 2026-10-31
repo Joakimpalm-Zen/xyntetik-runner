@@ -500,6 +500,32 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
     double top = 0, total = 0, seen = 0;
     for (;;) {
         if (m > n_vocab) m = n_vocab;
+        if (m == n_vocab && checked > 0) {
+            // The last round would sort the whole vocabulary to rank what
+            // lies below the `checked` entries already asked about, and in a
+            // narrow grammar state (an enum member, a key) the filter turns
+            // nearly all of it down: under top-k 20 on Qwen2.5-1.5B, 22 of 26
+            // sampled tokens of a schema reply got here, and the sort was two
+            // thirds of the constrained step (R3.23). Ask the filter about
+            // each remaining entry once and rank only the ones it admits.
+            // Every remaining entry ranks below the checked prefix, which is
+            // the top `checked` under cand_cmp (a total order), so the
+            // admitted ones, sorted, continue `valid` exactly as the full
+            // sort would have; the filter is a trial and has no state.
+            uint8_t *asked = calloc((size_t)n_vocab, 1);
+            cand_t *gv = asked ? realloc(valid, sizeof(cand_t) * (size_t)n_vocab) : NULL;
+            if (!gv) { free(asked); free(c); free(valid); return -2; }
+            valid = gv;
+            for (int i = 0; i < checked; i++) asked[c[i].id] = 1;
+            int k0 = k;
+            for (int id = 0; id < n_vocab; id++)
+                if (!asked[id] && ok(ud, id))
+                    valid[k++] = (cand_t){ logits[id] / temp, id };
+            free(asked);
+            qsort(valid + k0, (size_t)(k - k0), sizeof(cand_t), cand_cmp);
+            if (k > need) k = need;
+            break;
+        }
         cand_t *gc = realloc(c, sizeof(cand_t) * (size_t)m);
         if (gc) c = gc;
         cand_t *gv = gc ? realloc(valid, sizeof(cand_t) * (size_t)m) : NULL;
@@ -524,7 +550,11 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
                                      &r_pre);
             if (pick != -3) { free(c); free(valid); return pick; }
         }
-        m = m > n_vocab / 8 ? n_vocab : m * 8;
+        // With top-k on, a prefix cannot settle the pick early, so once the
+        // first two rounds have not found `need` admitted entries the rest of
+        // the vocabulary is scanned (above) rather than sorted at 16,384
+        // first: in the measured enum states that round was the next cost.
+        m = !open_ended && m >= 2048 ? n_vocab : m > n_vocab / 8 ? n_vocab : m * 8;
     }
     free(c);
     int pick = k == 0 ? -1
