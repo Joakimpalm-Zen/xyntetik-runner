@@ -75,7 +75,11 @@ def score(runner_bin, model, mv):
     assert r.stdout.strip(), "empty score output"
     route = re.search(r"\bmv=(\S+)", r.stderr)
     assert route, r.stderr
-    return r.stdout, route.group(1)
+    # the score file's own route record (score_route) names the matvec route,
+    # which is asserted above from stderr; the arms compare on their scores
+    scores = json.loads(r.stdout)
+    assert f"mv={route.group(1)} " in scores.pop("score_route")["backend_detail"]
+    return json.dumps(scores, sort_keys=True), route.group(1)
 
 
 def test_q4_k_takes_the_fast_kernel_by_default(runner_bin, fixtures):
