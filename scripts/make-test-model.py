@@ -77,6 +77,10 @@ YARN_ORIG_CTX = 0
 YARN_BETAS = None  # (fast, slow) declared as rope.scaling.yarn_beta_fast/_slow
 YARN_ATTN = None   # declared rope.scaling.yarn_attn_factor
 QK_NORM = False    # --qk-norm: per-head attn_q_norm/attn_k_norm (qwen3-style)
+# --noisy-norms: the output, attention and FFN norm weights drawn around 1
+# (1 +- 0.5) instead of all ones. With ones, a kernel that ignores the norm
+# weight gives the same logits (R3.25's Metal audit, 2026-10-31).
+NOISY_NORMS = False
 WIDE = False       # 256-wide rows, large enough for an i-quant test block
 # --quant for the codebook i-quants: GGML type id and bytes per 256-value block
 CODEBOOK = {"iq2_xxs": (16, 66), "iq2_xs": (17, 74), "iq2_s": (22, 82),
@@ -100,6 +104,8 @@ while i < len(args):
         SUPPRESS_ALL_BUT_EOS = True
     elif a == "--qk-norm":
         QK_NORM = True
+    elif a == "--noisy-norms":
+        NOISY_NORMS = True
     elif a == "--zero-first-dim":
         ZERO_FIRST_DIM = True
     elif a == "--wrap-first-offset":
@@ -477,6 +483,13 @@ def rnd():
     return (_state / 0x7FFFFFFF - 0.5) * 0.08
 
 
+def norm_w(n):
+    """A norm's weight: ones, or with --noisy-norms 1 +- 0.5."""
+    if not NOISY_NORMS:
+        return ones(n)
+    return struct.pack(f"<{n}f", *(1.0 + rnd() * 12.5 for _ in range(n)))
+
+
 def tensor_data(n, scale=1.0):
     # --specials makes the embedding table enormous, and a per-float LCG in
     # Python then dominates the generator's runtime (36 s for one fixture).
@@ -496,7 +509,7 @@ def _k2h_embd():
                        *[v * (8.0 ** ((j % N_EMBD) // gs)) for j, v in enumerate(raw)])
 tensors = [("token_embd.weight", [N_EMBD, N_VOCAB],
             _k2h_embd() if K2H_GROUPS > 1 else tensor_data(N_EMBD * N_VOCAB)),
-           ("output_norm.weight", [N_EMBD], ones(N_EMBD))]
+           ("output_norm.weight", [N_EMBD], norm_w(N_EMBD))]
 # MTP predictor heads are counted inside block_count by the exports that carry
 # them, exactly like the Qwen3.5 NextN blocks; the runner must strip them back
 # off and decode as if they were never there.
@@ -534,7 +547,7 @@ for i in range(N_LAYER + MTP_LAYERS):
         o_data = struct.pack(f"<{q_dim * N_EMBD}f", *([0.0] * (q_dim * N_EMBD)))
     drop_kv = i in DROPPED_KV
     tensors += [
-        (f"blk.{i}.attn_norm.weight", [N_EMBD], ones(N_EMBD)),
+        (f"blk.{i}.attn_norm.weight", [N_EMBD], norm_w(N_EMBD)),
         (f"blk.{i}.attn_q.weight", [N_EMBD, q_dim], q_data),
         *([] if drop_kv else
           [(f"blk.{i}.attn_k.weight", [N_EMBD, kv_dim], k_data)]),
@@ -546,7 +559,7 @@ for i in range(N_LAYER + MTP_LAYERS):
             tensor_data(N_EMBD // N_HEAD)),
            (f"blk.{i}.attn_k_norm.weight", [N_EMBD // N_HEAD],
             tensor_data(N_EMBD // N_HEAD))]),
-        (f"blk.{i}.ffn_norm.weight", [N_EMBD], ones(N_EMBD)),
+        (f"blk.{i}.ffn_norm.weight", [N_EMBD], norm_w(N_EMBD)),
         *([] if APERTUS else
           [(f"blk.{i}.ffn_gate.weight", [N_EMBD, N_FF_I],
             tensor_data(N_EMBD * N_FF_I, ACT_OVERFLOW or 1.0))]),
