@@ -39,7 +39,7 @@ from harness import (Client, ProtocolError, RunnerServer,  # noqa: E402
                      categorize, decode_events, find_runner, parse_stream,
                      rss_kind, validate_against_schema)
 
-SCHEMA_VERSION = "xyntetik.agent-torture.v4"
+SCHEMA_VERSION = "xyntetik.agent-torture.v5"
 
 
 class DegenerateBudget(ProtocolError):
@@ -226,6 +226,24 @@ REASON_SCHEMA = {
 REASON_TOOL = _tool("record_conclusion", REASON_SCHEMA,
                     "record the conclusion reached in the reasoning above")
 
+# reasoning_then_native_tool (v5): the same turn with a tool whose arguments
+# carry no length, pattern or range constraint. REASON_SCHEMA's minLength is
+# one a template's raw-text call syntax (Qwen3-Coder's function-XML) cannot
+# enforce, so Runner answers that family in its generic JSON envelope; this
+# family is the one a template's NATIVE call syntax can carry after the
+# model's own thinking, which v4 never exercised (R4.13.3).
+REASON_NATIVE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "cause": {"type": "string"},
+        "next_step": {"type": "string"},
+    },
+    "required": ["cause", "next_step"],
+    "additionalProperties": False,
+}
+REASON_NATIVE_TOOL = _tool("record_finding", REASON_NATIVE_SCHEMA,
+                           "record the finding reached in the reasoning above")
+
 # structured_final: a schema-constrained FINAL answer rather than a tool call.
 # The tool path and the response_format path reach the sampler differently, and
 # until now only the tool path was tortured. `additionalProperties: false` plus
@@ -248,7 +266,7 @@ FINAL_SCHEMA = {
 }
 
 
-def build_cases(count=120):
+def build_cases(count=126):
     """Return the stable public request matrix (round-robin by category)."""
     if count < 1:
         raise ValueError("count must be positive")
@@ -256,7 +274,8 @@ def build_cases(count=120):
     categories = ("nested_arguments", "tool_selection", "forced_truncation",
                   "stream_normalization", "tool_stream_normalization",
                   "large_enum_selection",
-                  "reasoning_then_tool", "structured_final")
+                  "reasoning_then_tool", "structured_final",
+                  "reasoning_then_native_tool")
     ordinals = Counter()
     for index in range(count):
         category = categories[index % len(categories)]
@@ -311,6 +330,22 @@ def build_cases(count=120):
                      "read path."},
                     {"role": "user", "content":
                      "Now record that conclusion with the tool, nothing else."},
+                ])
+        elif category == "reasoning_then_native_tool":
+            payload = dict(
+                base, max_tokens=96, tools=[REASON_NATIVE_TOOL],
+                tool_choice={"type": "function",
+                             "function": {"name": "record_finding"}},
+                messages=[
+                    {"role": "user", "content":
+                     f"Diagnose incident {index:03d} and think it through."},
+                    {"role": "assistant", "content":
+                     "The error rate rose when the new connection pool shipped, "
+                     "so the most likely cause is pool exhaustion under the "
+                     "retry storm."},
+                    {"role": "user", "content":
+                     "Now record that finding and the next step with the tool, "
+                     "nothing else."},
                 ])
         elif category == "structured_final":
             payload = dict(
@@ -414,11 +449,13 @@ def _verify_buffered(case, response):
                                 "call at a budget that can be split",
                                 max_tokens=budget)
     name, arguments = _only_tool(response)
-    if case["category"] == "reasoning_then_tool":
-        if name != "record_conclusion":
-            raise ProtocolError("wrong tool selected",
-                                expected="record_conclusion", got=name)
-        validate_against_schema(arguments, REASON_SCHEMA)
+    if case["category"] in ("reasoning_then_tool", "reasoning_then_native_tool"):
+        want, schema = (("record_conclusion", REASON_SCHEMA)
+                        if case["category"] == "reasoning_then_tool"
+                        else ("record_finding", REASON_NATIVE_SCHEMA))
+        if name != want:
+            raise ProtocolError("wrong tool selected", expected=want, got=name)
+        validate_against_schema(arguments, schema)
         # the point of the family: prose from the earlier turn must not ride
         # along with the call
         content = (response.choice.get("message") or {}).get("content")
